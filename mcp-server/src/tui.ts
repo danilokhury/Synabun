@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { retrieveMemory } from './services/memory-retrieval.js';
 
 // Load .env from parent directory before any service imports
 import { readFileSync } from 'fs';
@@ -559,8 +560,7 @@ async function searchScreen(): Promise<void> {
     const filter = must.length > 0 ? { must } : undefined;
 
     printSpinner('Generating embedding & searching...');
-    const vector = await generateEmbedding(query);
-    const results = await searchMemories(vector, 20, filter, 0.3);
+    const { results, engine } = await retrieveMemory({query,limit:20,category:catFilter !== '__all__' ? catFilter : undefined,min_importance:minImpStr !== '' ? Number(minImpStr) : undefined,include_sessions:false});
 
     if (results.length === 0) {
       console.log(warn(`\n  ${ICONS.cross} No matching memories found.`));
@@ -577,7 +577,7 @@ async function searchScreen(): Promise<void> {
     const choices = results.map(r => {
       const p = r.payload as unknown as MemoryPayload;
       const pct = Math.round(r.score * 100);
-      const scoreBar = pct >= 80 ? success(`${pct}%`) : pct >= 50 ? warn(`${pct}%`) : dim(`${pct}%`);
+      const scoreBar = engine === 'hybrid' ? dim(`rank ${r.score.toFixed(3)}`) : pct >= 80 ? success(`${pct}%`) : pct >= 50 ? warn(`${pct}%`) : dim(`${pct}%`);
       return {
         name: `  ${scoreBar.padEnd(18)} ${formatMemoryLine(r.id as string, p)}`,
         value: r.id as string,

@@ -35,7 +35,7 @@ export const browserNavigateDescription =
   'Navigate the browser to a specific Leonardo.ai page. Always use this as the first step before any browser-based generation.';
 
 export async function handleBrowserNavigate(args: { page: string; sessionId?: string; tabId?: string }) {
-  const resolved = await ni.resolveSession(args.sessionId, { url: LEO_BASE }, args.tabId);
+  const resolved = await ni.resolveSession(args.sessionId, { url: LEO_BASE }, args.tabId, { platform: true });
   if ('error' in resolved) return text('No browser session available. Open Leonardo.ai in the browser first using browser_navigate or the Apps menu.');
 
   const paths: Record<string, string> = {
@@ -77,7 +77,7 @@ export async function handleBrowserGenerate(args: {
   sessionId?: string;
   tabId?: string;
 }) {
-  const resolved = await ni.resolveSession(args.sessionId, { url: LEO_BASE }, args.tabId);
+  const resolved = await ni.resolveSession(args.sessionId, { url: LEO_BASE }, args.tabId, { platform: true });
   if ('error' in resolved) return text('No browser session available. Open Leonardo.ai first.');
 
   const genType = args.type || 'image';
@@ -119,7 +119,7 @@ export const browserLibraryDescription =
   'Open or search Leonardo.ai\'s library to view past generations. Use browser_snapshot after to see results.';
 
 export async function handleBrowserLibrary(args: { action: string; query?: string; sessionId?: string; tabId?: string }) {
-  const resolved = await ni.resolveSession(args.sessionId, { url: LEO_BASE }, args.tabId);
+  const resolved = await ni.resolveSession(args.sessionId, { url: LEO_BASE }, args.tabId, { platform: true });
   if ('error' in resolved) return text('No browser session available.');
 
   const navRes = await ni.navigate(resolved.sessionId, `${LEO_BASE}/library`, resolved.tabId);
@@ -149,7 +149,7 @@ export const browserDownloadDescription =
   'Capture a screenshot of the current Leonardo.ai page. Use to verify generation results or UI state.';
 
 export async function handleBrowserDownload(args: { action: string; sessionId?: string; tabId?: string }) {
-  const resolved = await ni.resolveSession(args.sessionId, { url: LEO_BASE }, args.tabId);
+  const resolved = await ni.resolveSession(args.sessionId, { url: LEO_BASE }, args.tabId, { platform: true });
   if ('error' in resolved) return text('No browser session available.');
 
   if (args.action === 'screenshot') {
@@ -194,7 +194,7 @@ export async function handleBrowserReference(args: {
   sessionId?: string;
   tabId?: string;
 }) {
-  const resolved = await ni.resolveSession(args.sessionId, { url: LEO_BASE }, args.tabId);
+  const resolved = await ni.resolveSession(args.sessionId, { url: LEO_BASE }, args.tabId, { platform: true });
   if ('error' in resolved) return text('No browser session available. Open Leonardo.ai first.');
 
   const { type, filePaths, autoClear = true } = args;

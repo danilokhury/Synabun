@@ -1,0 +1,12 @@
+{
+  "version": "2.1.0",
+  "updatedAt": "2026-10-02",
+  "summary": "Adds a Design section: read the project's DESIGN.md (or call style_guide) before UI, copy and image work, and propose changes instead of editing it",
+  "hashes": {
+    "claude": "2206c97cf003",
+    "codex": "939571cf2095",
+    "opencode": "49865561dc6e",
+    "gemini": "49865561dc6e",
+    "cursor": "49865561dc6e"
+  }
+}

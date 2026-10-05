@@ -114,7 +114,9 @@ export async function handleBrowserSession(args: {
   if (args.action === 'create') {
     const result = await ni.createSession(args.url);
     if (result.error) return text(`Create failed: ${result.error}`);
-    return text(`Created session ${result.sessionId} at ${args.url || 'about:blank'}`);
+    // Created, but MoreLogin refused the start URL (e.g. a localhost port missing from Port scan protection).
+    const blocked = result.moreLoginBlocked === true && typeof result.notice === 'string' ? `\n${result.notice}` : '';
+    return text(`Created session ${result.sessionId} at ${args.url || 'about:blank'}${blocked}`);
   }
 
   if (args.action === 'close') {

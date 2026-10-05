@@ -10,6 +10,7 @@
 // per-provider config (reasoningEffort / thinking / thinkingConfig / etc).
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { fetchProvidersFull } from './ocp-v2-providers.js';
 import { getDefaultStore } from './ocp-v2-state.js';
 
 let _currentStore = getDefaultStore();
@@ -18,7 +19,8 @@ const setVariant = (v) => _currentStore.setVariant(v);
 const subscribe = (l) => _currentStore.subscribe(l);
 
 const STOR_VARIANTS = 'ocp-v2-model-variants';   // { "providerID/modelID": "variantName" }
-const PREFERRED_ORDER = ['none', 'minimal', 'low', 'medium', 'high', 'max', 'xhigh'];
+// The canonical effort order (lib/effort-levels.js): xhigh before max, then ultra.
+const PREFERRED_ORDER = ['none', 'thinking', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 const ARROW_DOWN = '▾';
 
 let _root = null;
@@ -121,7 +123,7 @@ async function ensureLoaded() {
   const generation = _loadGeneration;
   _loadInflight = (async () => {
     try {
-      const res = await fetch('/api/opencode/providers/full').then((r) => r.json());
+      const res = await fetchProvidersFull();
       if (generation !== _loadGeneration) return;
       if (res?.ok === false) throw new Error(res.error || 'provider metadata unavailable');
       const data = res?.data || {};

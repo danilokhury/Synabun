@@ -1,0 +1,102 @@
+/* The workspace tour: handwriting on the board. The strokes (outlines, arrow,
+   underline) are SVG drawn by ui-tutorial-draw.js; this file styles the note.
+   Colours are the Style Guide's dark semantic roles. */
+#wb-tutorial-dom {
+  --tour-paper: var(--color-dark-background, #0e141c);   /* opaque: the handwriting stays AA over the graph, a menu or a panel */
+  --tour-text: var(--color-dark-text, #f0f3f7);
+  --tour-muted: var(--color-dark-text-muted, #8897ac);
+  --tour-accent: var(--color-dark-primary, #6da4ff);
+  --tour-on-accent: var(--color-dark-on-primary, #0e141c);
+  --tour-hand: 'Caveat', 'Segoe Print', 'Bradley Hand', cursive;
+  --tour-ease: cubic-bezier(0.2, 0, 0, 1);
+  position: fixed; inset: 0; z-index: 500001; pointer-events: none;
+  font: 14px/1.5 Inter, system-ui, sans-serif; color: var(--tour-text);
+}
+#wb-tutorial {
+  position: fixed; inset: 0; width: 100%; height: 100%; z-index: 500002;
+  pointer-events: none; overflow: hidden;
+}
+#wb-tutorial path { filter: drop-shadow(0 1px 2px rgba(14, 20, 28, 0.9)); }
+#wb-tutorial g { transition: opacity 120ms linear; }
+#wb-tutorial g.tour-leaving { opacity: 0; }
+
+/* No border: the outline is sketched around the note by the drawing engine. */
+.tour-note {
+  position: absolute; left: 0; top: 0; box-sizing: border-box;
+  width: 480px; max-width: calc(100vw - 32px); max-height: calc(100dvh - 32px);
+  overflow: auto; overscroll-behavior: contain; scrollbar-width: none;
+  padding: 20px 26px 16px; border-radius: 18px 22px 16px 24px / 22px 16px 24px 18px;
+  background: var(--tour-paper); box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+  pointer-events: auto; opacity: 0; visibility: hidden;
+  transition: transform 250ms var(--tour-ease), opacity 200ms linear;
+}
+.tour-note.tour-placed { opacity: 1; visibility: visible; }
+.tour-note.tour-snap { transition: opacity 200ms linear; }
+.tour-note:focus { outline: none; }
+#wb-tutorial-dom [hidden] { display: none !important; }
+
+.tour-progress { display: flex; align-items: center; gap: 12px; color: var(--tour-muted); font-size: 12px; letter-spacing: 0.01em; }
+.tour-dots { display: flex; gap: 4px; margin-left: auto; }
+.tour-dots span { width: 16px; height: 3px; border-radius: 3px 2px 3px 2px; background: currentColor; opacity: 0.45; }
+.tour-dots span.current { background: var(--tour-accent); opacity: 1; }
+.tour-note h2 {
+  margin: 8px 0 14px; color: var(--tour-text);
+  font: 700 34px/1.1 var(--tour-hand); overflow-wrap: anywhere;
+}
+.tour-copy { margin: 0; font: 400 26px/1.3 var(--tour-hand); overflow-wrap: anywhere; }
+.tour-word { display: inline-block; animation: tour-write 180ms var(--tour-ease) both; }
+@keyframes tour-write { from { opacity: 0; transform: translateY(3px); } }
+.tour-status { margin: 12px 0 0; color: var(--tour-muted); font-size: 14px; }
+.tour-status:empty { display: none; }
+.tour-extra:empty { display: none; }
+.tour-extra { margin-top: 16px; animation: tour-fade 200ms linear 500ms both; }
+@keyframes tour-fade { from { opacity: 0; } }
+
+/* Controls: chalk-drawn buttons, native semantics. */
+.tour-nav { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 20px; }
+#wb-tutorial-dom button {
+  min-height: 44px; padding: 4px 18px; cursor: pointer;
+  font: 700 22px/1.1 var(--tour-hand); color: var(--tour-text);
+  background: transparent; border: 1.5px solid rgba(240, 243, 247, 0.62);
+  border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px;
+  transition: border-color 150ms linear, background-color 150ms linear, color 150ms linear;
+}
+#wb-tutorial-dom button:hover:not(:disabled) { border-color: var(--tour-accent); color: var(--tour-accent); }
+#wb-tutorial-dom button.primary { color: var(--tour-on-accent); background: var(--tour-accent); border-color: var(--tour-accent); }
+#wb-tutorial-dom button.primary:hover:not(:disabled) { color: var(--tour-on-accent); background: #9dc3ff; border-color: #9dc3ff; }
+#wb-tutorial-dom button:disabled { opacity: 0.5; cursor: default; }
+#wb-tutorial-dom button:focus-visible, #wb-tutorial-dom select:focus-visible {
+  outline: 2px solid var(--tour-accent); outline-offset: 3px;
+}
+#wb-tutorial-dom button.primary:focus-visible { outline-color: var(--tour-text); }
+#wb-tutorial-dom button.tour-link {
+  min-height: 44px; padding: 4px 6px; border-color: transparent; color: var(--tour-muted);
+  text-decoration: underline; text-decoration-style: wavy; text-decoration-thickness: 1px; text-underline-offset: 4px;
+}
+#wb-tutorial-dom button.tour-link:hover { color: var(--tour-text); border-color: transparent; }
+.tour-progress button.tour-link { min-height: 24px; padding: 0 4px; font-size: 18px; }
+.tour-nav .tour-skip { margin-left: auto; }
+.tour-key-hint { margin: 10px 0 0; color: var(--tour-muted); font-size: 12px; }
+
+/* First-run setup. */
+.tour-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+#wb-tutorial-dom .tour-choice { text-align: start; overflow-wrap: anywhere; }
+#wb-tutorial-dom .tour-choice[aria-pressed="true"] { border-color: var(--tour-accent); color: var(--tour-accent); }
+.tour-field { display: grid; gap: 6px; color: var(--tour-muted); font-size: 12px; }
+.tour-field + button, .tour-status + button { margin-top: 12px; }
+#wb-tutorial-dom select {
+  width: 100%; min-width: 0; min-height: 44px; padding: 8px 12px; cursor: pointer;
+  font: 400 14px/1.5 Inter, system-ui, sans-serif; color: var(--tour-text);
+  background: #1b232e; border: 1px solid #64748b; border-radius: 4px;
+}
+#wb-tutorial-dom select:disabled { opacity: 0.5; cursor: default; }
+
+@media (max-width: 600px) {
+  .tour-note { padding: 16px 18px 12px; }
+  .tour-note h2 { font-size: 30px; }
+  .tour-copy { font-size: 24px; }
+  .tour-options { grid-template-columns: 1fr; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #wb-tutorial *, #wb-tutorial-dom, #wb-tutorial-dom * { animation: none !important; transition: none !important; }
+}

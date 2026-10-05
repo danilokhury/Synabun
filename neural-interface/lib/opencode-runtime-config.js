@@ -1,3 +1,21 @@
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+/** The browser-policy plugin (assistant-brains/opencode-browser-policy.js) as a file URL a serve can load. */
+export const OPENCODE_BROWSER_POLICY_PLUGIN = pathToFileURL(resolve(dirname(fileURLToPath(import.meta.url)), 'assistant-brains', 'opencode-browser-policy.js')).href;
+
+/**
+ * An Assistant task run's serve config gets SynaBun's browser policy as a
+ * plugin (`cwd`: the run's project, for the scripts it reads). The user's own
+ * plugins stay; an earlier entry of ours is replaced. Returns `config`.
+ */
+export function withOpenCodeBrowserPolicy(config, { cwd = null } = {}) {
+  const plugins = (Array.isArray(config.plugin) ? config.plugin : []).filter((entry) => (Array.isArray(entry) ? entry[0] : entry) !== OPENCODE_BROWSER_POLICY_PLUGIN);
+  plugins.push([OPENCODE_BROWSER_POLICY_PLUGIN, cwd ? { cwd: String(cwd) } : {}]);
+  config.plugin = plugins;
+  return config;
+}
+
 /**
  * Build the SynaBun MCP entry used by managed OpenCode runtimes.
  *

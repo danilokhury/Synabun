@@ -539,6 +539,49 @@
   .mcp-other-section.open .mcp-other-chevron { transform: rotate(180deg); }
   .mcp-other-body { padding: 0 14px 12px; }
 
+  /* ── Rules (Step 5 option, Step 6 list): one row per connected tool ── */
+  .rules-option {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 14px;
+    font-size: 12px;
+    color: var(--t-secondary);
+    cursor: pointer;
+    user-select: none;
+  }
+  .rules-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+  .rules-list .mtr-state {
+    margin-left: 6px;
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--t-muted);
+  }
+  .rules-list .mtr-state.ok { color: var(--green); }
+  .rules-actions { display: flex; gap: 6px; flex-shrink: 0; }
+  .rules-actions button {
+    padding: 5px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--b-light);
+    background: var(--s-light);
+    color: var(--t-primary);
+    font-size: 11px;
+    font-family: inherit;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all var(--ease);
+  }
+  .rules-actions button:hover { background: var(--s-medium); color: var(--t-bright); border-color: var(--b-hover); }
+  .rules-actions button:disabled { opacity: 0.4; cursor: default; }
+  .rules-note { font-size: 11px; color: var(--t-muted); margin-bottom: 12px; line-height: 1.5; }
+  .rules-extra { margin-top: 8px; }
+  #rulesViewCode, #rulesCursorCode, #rulesCoexistCode { max-height: 160px; }
+
   /* ── Dependency List ── */
   .dep-list {
     list-style: none;
@@ -1147,6 +1190,13 @@
       <h2>AI Tool Integration</h2>
       <p class="subtitle">Toggle on the AI coding tools you use. SynaBun registers itself with each one automatically.</p>
       <div class="mcp-toggle-list" id="mcpToggleList"></div>
+      <label class="rules-option" for="rulesInstallOpt">
+        <span class="key-backup-checkbox-wrap">
+          <input type="checkbox" id="rulesInstallOpt" checked>
+          <span class="key-backup-checkmark"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></span>
+        </span>
+        <span>Install SynaBun's rules for this tool</span>
+      </label>
       <div class="mcp-other-section" id="mcpOtherSection">
         <div class="mcp-other-header" id="mcpOtherHeader">
           <span>Other providers (Cursor, Windsurf, etc.)</span>
@@ -1163,17 +1213,44 @@
       </div>
     </div>
 
-    <!-- Step 6: Ruleset -->
+    <!-- Step 6: SynaBun rules -->
     <div class="step right" data-step="6">
       <div style="position:relative;display:flex;justify-content:center;align-items:center;">
         <div class="step-eyes"></div>
+        <span class="mascot-toast" id="rulesToast"></span>
       </div>
-      <h2>Memory Ruleset</h2>
-      <p class="subtitle">Copy this into your project's <code id="rulesetFileName" style="color:var(--t-bright);">CLAUDE.md</code> so your AI tool knows how to use SynaBun.</p>
-      <div id="rulesetPanel">
-        <div class="code-copy-wrap" id="rulesetCodeWrap">
-          <div class="instructions-preview" id="rulesetCode" style="max-height:220px;">Loading...</div>
-          <span class="code-copy-label">copy</span>
+      <h2>SynaBun Rules</h2>
+      <p class="subtitle">SynaBun puts its rules where each tool loads them for every project, and keeps them up to date. There is nothing to paste.</p>
+      <div class="rules-note" id="rulesNote" style="display:none;"></div>
+      <div class="rules-list" id="rulesList"></div>
+      <div class="code-copy-wrap" id="rulesViewWrap" style="display:none;margin-bottom:12px;">
+        <div class="instructions-preview" id="rulesViewCode"></div>
+        <span class="code-copy-label">copy</span>
+      </div>
+      <div class="mcp-other-section" id="rulesCursorSection">
+        <div class="mcp-other-header" id="rulesCursorHeader">
+          <span>Cursor (copy and paste)</span>
+          <svg class="mcp-other-chevron" viewBox="0 0 24 24" width="14" height="14"><polyline points="6 9 12 15 18 9" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+        </div>
+        <div class="mcp-other-body" id="rulesCursorBody" style="display:none;">
+          <div style="font-size:12px;color:var(--t-secondary);margin-bottom:6px;">Cursor keeps User Rules inside the app. Paste this into Cursor Settings &rarr; Rules:</div>
+          <div class="code-copy-wrap" id="rulesCursorWrap">
+            <div class="instructions-preview" id="rulesCursorCode"></div>
+            <span class="code-copy-label">copy</span>
+          </div>
+        </div>
+      </div>
+      <div class="mcp-other-section rules-extra" id="rulesCoexistSection">
+        <div class="mcp-other-header" id="rulesCoexistHeader">
+          <span>Using another memory tool too? (optional snippet)</span>
+          <svg class="mcp-other-chevron" viewBox="0 0 24 24" width="14" height="14"><polyline points="6 9 12 15 18 9" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+        </div>
+        <div class="mcp-other-body" id="rulesCoexistBody" style="display:none;">
+          <div style="font-size:12px;color:var(--t-secondary);margin-bottom:6px;">Copy this, name the other tool in it, and paste it into your instructions file. SynaBun never installs it.</div>
+          <div class="code-copy-wrap" id="rulesCoexistWrap">
+            <div class="instructions-preview" id="rulesCoexistCode"></div>
+            <span class="code-copy-label">copy</span>
+          </div>
         </div>
       </div>
     </div>
@@ -1316,11 +1393,12 @@ const wizardState = {
 
 // Tools with server-side MCP install/uninstall endpoints. Each row maps a
 // toggle to the POST/DELETE endpoint that writes the provider's config file.
+// `id` is also the host name of the rules API (/api/setup/rules/:host).
 const TOOLS = [
-  { id: 'claude',   name: 'Claude Code', instrFile: 'CLAUDE.md', format: 'claude',  api: '/api/claude-code/mcp', configPath: '~/.claude.json' },
-  { id: 'gemini',   name: 'Gemini CLI',  instrFile: 'GEMINI.md', format: 'gemini',  api: '/api/setup/gemini/mcp', configPath: '~/.gemini/settings.json' },
-  { id: 'codex',    name: 'Codex CLI',   instrFile: 'AGENTS.md', format: 'codex',   api: '/api/setup/codex/mcp',  configPath: '~/.codex/config.toml' },
-  { id: 'opencode', name: 'OpenCode',    instrFile: 'AGENTS.md', format: 'generic', api: '/api/opencode/mcp',     configPath: '~/.config/opencode/config.json' },
+  { id: 'claude',   name: 'Claude Code', api: '/api/claude-code/mcp', configPath: '~/.claude.json' },
+  { id: 'gemini',   name: 'Gemini CLI',  api: '/api/setup/gemini/mcp', configPath: '~/.gemini/settings.json' },
+  { id: 'codex',    name: 'Codex CLI',   api: '/api/setup/codex/mcp',  configPath: '~/.codex/config.toml' },
+  { id: 'opencode', name: 'OpenCode',    api: '/api/opencode/mcp',     configPath: '~/.config/opencode/config.json' },
 ];
 
 // ═══════════════════════════════════════════
@@ -1445,8 +1523,8 @@ function validateStep(n) {
     case 5: {
       // Allow advancing once any tool is toggled on OR the user copied the generic JSON.
       if (wizardState.enabledTools.length === 0 && !wizardState.mcpWritten) return false;
-      // Default the ruleset preview (Step 6) + restart hint (Step 7) to the first
-      // toggled-on tool; fall back to Claude if only the generic JSON was copied.
+      // Default the restart hint (Step 7) to the first toggled-on tool; fall
+      // back to Claude if only the generic JSON was copied.
       if (!wizardState.selectedTool) {
         wizardState.selectedTool = wizardState.enabledTools[0] || 'claude';
       }
@@ -1747,13 +1825,13 @@ function renderHappyBun() {}
     resizeViewport(0);
 
     try {
-      const buffer = await file.arrayBuffer();
-
+      // Post the File itself so the browser streams it from disk instead of
+      // holding a multi-GB backup in memory.
       $statusText.textContent = 'Validating backup...';
       const previewRes = await fetch('/api/system/restore/preview', {
         method: 'POST',
         headers: { 'Content-Type': 'application/zip' },
-        body: buffer,
+        body: file,
       });
       if (!previewRes.ok) {
         let errMsg = 'Invalid backup file';
@@ -1764,7 +1842,7 @@ function renderHappyBun() {}
 
       // Show confirmation
       $statusEl.style.display = 'none';
-      showRestoreConfirm(m, buffer);
+      showRestoreConfirm(m, file);
 
     } catch (err) {
       $statusDot.className = 'wiz-status-dot red';
@@ -1773,7 +1851,7 @@ function renderHappyBun() {}
     }
   }
 
-  function showRestoreConfirm(m, buffer) {
+  function showRestoreConfirm(m, file) {
     const fileCount = (m.files || []).length;
     const hasDb = !!(m.database);
 
@@ -1827,7 +1905,7 @@ function renderHappyBun() {}
         const restoreRes = await fetch('/api/system/restore', {
           method: 'POST',
           headers: { 'Content-Type': 'application/zip' },
-          body: buffer,
+          body: file,
         });
         if (!restoreRes.ok) {
           let errMsg = 'Restore failed';
@@ -2352,6 +2430,7 @@ TOOLS.forEach(t => {
     <div class="mtr-body">
       <div class="mtr-name">${t.name}</div>
       <div class="mtr-path" data-role="path">${t.configPath}</div>
+      <div class="mtr-path" data-role="rules" style="display:none"></div>
     </div>
     <button class="mtr-toggle" data-role="toggle" aria-label="Toggle ${t.name}"></button>
   `;
@@ -2391,15 +2470,47 @@ function updateToggleRow(id, { connected, busy }) {
   }
 }
 
+// What the MCP toggle's response says about the tool's rules (its `rules`
+// object), as one line under the row: where they went, or why they did not.
+function showToggleRules(id, rules, { connected, wanted }) {
+  const row = $toggleList.querySelector(`[data-id="${id}"]`);
+  const line = row?.querySelector('[data-role="rules"]');
+  if (!line) return;
+  let text = '';
+  if (connected) {
+    if (!rules) text = wanted ? `Rules not installed yet. ${RESTART_HINT}` : '';
+    else if (rules.skipped) text = 'Rules not installed (you can install them in the next step)';
+    else if (rules.ok === false) text = `Rules not installed: ${rules.error || rules.state || 'refused'}`;
+    else if (rules.path) text = `Rules installed: ${rules.path}`;
+  } else if (rules && rules.ok !== false && rules.kept && rules.kept.length) {
+    // Disconnected. A copy the user edited is theirs: SynaBun left it where it is (and for OpenCode, so is a copy
+    // their own line in config.json points at).
+    text = `Your ${rules.kept[0].reason === 'listed-in-config' ? '' : 'edited '}rules were left in place: ${rules.kept[0].path}`;
+  } else if (rules && rules.ok === false && rules.error) {
+    // Disconnected, but rules could not be taken out (damaged markers, a symlink): say which and why.
+    text = `Rules not removed: ${rules.error}`;
+  }
+  line.textContent = text;
+  line.title = text;
+  line.style.display = text ? '' : 'none';
+  requestAnimationFrame(() => resizeViewport(currentStep));
+}
+
 async function toggleTool(id) {
   const tool = TOOLS.find(t => t.id === id);
   if (!tool) return;
   const row = $toggleList.querySelector(`[data-id="${id}"]`);
   const toggle = row.querySelector('[data-role="toggle"]');
   const wasOn = toggle.classList.contains('on');
+  // Connecting a tool installs its rules too, unless the box is unchecked.
+  const wantRules = document.getElementById('rulesInstallOpt')?.checked !== false;
   updateToggleRow(id, { busy: true });
   try {
-    const res = await fetch(tool.api, { method: wasOn ? 'DELETE' : 'POST' });
+    const res = await fetch(tool.api, wasOn ? { method: 'DELETE' } : {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(wantRules ? {} : { rules: false }),
+    });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || data.ok === false) {
       showMascotToast(data.error || `${tool.name} ${wasOn ? 'uninstall' : 'install'} failed`);
@@ -2408,6 +2519,7 @@ async function toggleTool(id) {
     }
     const nowOn = !wasOn;
     updateToggleRow(id, { connected: nowOn, busy: false });
+    showToggleRules(id, data.rules, { connected: nowOn, wanted: wantRules });
     if (nowOn) {
       if (!wizardState.enabledTools.includes(id)) wizardState.enabledTools.push(id);
       wizardState.mcpWritten = true;
@@ -2464,44 +2576,209 @@ document.getElementById('mcpCodeWrap').addEventListener('click', () => {
 });
 
 // ═══════════════════════════════════════════
-// STEP 6: Ruleset
+// STEP 6: SynaBun rules
 // ═══════════════════════════════════════════
+// One row per connected tool with where its rules are and what state they are
+// in (GET /api/setup/rules), plus copy boxes for Cursor and the coexistence
+// snippet. Nothing here has to be clicked to continue.
 
-async function onRulesetStep() {
-  const tool = TOOLS.find(t => t.id === wizardState.selectedTool) || TOOLS[0];
-  document.getElementById('rulesetFileName').textContent = tool.instrFile;
-  const format = tool.format || 'generic';
+const RESTART_HINT = 'Restart SynaBun to finish this update.';
+const RULES_STATE_TEXT = {
+  installed: 'Installed', newer: 'Installed by a newer SynaBun', outdated: 'Update available', modified: 'Edited', conflict: 'Conflict',
+  error: 'Error', shadowed: 'Shadowed', 'not-installed': 'Not installed',
+};
+const RULES_PRIMARY = { 'not-installed': 'Install', outdated: 'Update', modified: 'Replace' };
+let rulesStatus = null;       // null: the route is missing or failed
+const rulesTextCache = {};
 
-  const $code = document.getElementById('rulesetCode');
-  if ($code.dataset.loadedFormat === format) return; // already loaded
-
-  $code.textContent = 'Loading...';
+async function loadRulesStatus() {
   try {
-    const res = await fetch(`/api/claude-code/ruleset?format=${format}`);
+    const res = await fetch('/api/setup/rules');
+    if (!res.ok) return null;
     const data = await res.json();
-    if (data.ok && data.ruleset) {
-      $code.textContent = data.ruleset;
-      $code.dataset.loadedFormat = format;
-      wizardState.rulesetCopied = false;
-    } else {
-      $code.textContent = 'Could not load ruleset.';
-    }
-  } catch {
-    $code.textContent = 'Failed to load ruleset.';
-  }
-  if (currentStep === 6) resizeViewport(6);
+    return data && data.ok ? data : null;
+  } catch { return null; }
 }
 
-document.getElementById('rulesetCodeWrap').addEventListener('click', () => {
-  const code = document.getElementById('rulesetCode').textContent;
-  if (code === 'Loading...' || code.startsWith('Could not') || code.startsWith('Failed')) return;
-  navigator.clipboard.writeText(code);
-  wizardState.rulesetCopied = true;
-  const label = document.querySelector('#rulesetCodeWrap .code-copy-label');
-  label.textContent = 'copied!';
-  label.style.opacity = '1';
-  setTimeout(() => { label.textContent = 'copy'; label.style.opacity = ''; }, 2000);
+// The rendered text for a host, from the rules route or the older read-only endpoint.
+async function loadRulesText(host) {
+  if (rulesTextCache[host]) return rulesTextCache[host];
+  let text = '';
+  try {
+    const res = await fetch(`/api/setup/rules/${host}/text`);
+    if (res.ok) text = (await res.json()).text || '';
+  } catch { /* try the older endpoint */ }
+  if (!text) {
+    const format = host === 'opencode' ? 'generic' : host;
+    const res = await fetch(`/api/claude-code/ruleset?format=${format}`);
+    const data = res.ok ? await res.json() : {};
+    text = data.ruleset || '';
+  }
+  if (!text) throw new Error('Rules text not available');
+  rulesTextCache[host] = text;
+  return text;
+}
+
+function showRulesToast(msg, duration = 2600) {
+  const toast = document.getElementById('rulesToast');
+  if (!toast) return;
+  toast.textContent = msg;
+  toast.classList.add('show');
+  clearTimeout(toast._timer);
+  toast._timer = setTimeout(() => toast.classList.remove('show'), duration);
+}
+
+function enabledRuleTools() {
+  return wizardState.enabledTools.map(id => TOOLS.find(t => t.id === id)).filter(Boolean);
+}
+
+function renderRulesList() {
+  const $list = document.getElementById('rulesList');
+  const $note = document.getElementById('rulesNote');
+  const tools = enabledRuleTools();
+  $list.innerHTML = '';
+
+  const notes = [];
+  if (!rulesStatus) notes.push(`${RESTART_HINT} Until then the rules can be viewed and copied here.`);
+  if (!tools.length) notes.push('No tool was connected in the previous step. Connect one there, or copy the rules below.');
+  $note.textContent = notes.join(' ');
+  $note.style.display = notes.length ? '' : 'none';
+
+  for (const tool of tools) {
+    const info = rulesStatus && rulesStatus.hosts ? rulesStatus.hosts[tool.id] : null;
+    const state = info ? info.state : '';
+    const good = state === 'installed' || state === 'newer';
+    // A file without SynaBun's markers is the user's own: the server refuses to replace it, so no button.
+    const primary = info && info.detected !== false && info.replaceable !== false ? (RULES_PRIMARY[state] || '') : '';
+    const detail = !info ? RESTART_HINT
+      : info.detected === false ? `${tool.name} was not found on this machine`
+      : ((['conflict', 'error', 'shadowed'].includes(state) || info.replaceable === false) && (info.error || info.detail)) || info.path || '';
+
+    const row = document.createElement('div');
+    row.className = 'mcp-toggle-row' + (good ? ' connected' : '');
+    row.dataset.host = tool.id;
+    row.innerHTML = `
+      <div class="mtr-body">
+        <div class="mtr-name">${tool.name}<span class="mtr-state${good ? ' ok' : ''}" data-role="state"></span></div>
+        <div class="mtr-path" data-role="path"></div>
+      </div>
+      <div class="rules-actions">
+        ${primary ? `<button type="button" data-role="primary">${primary}</button>` : ''}
+        <button type="button" data-role="view">View</button>
+        <button type="button" data-role="copy">Copy</button>
+      </div>
+    `;
+    row.querySelector('[data-role="state"]').textContent = info ? (RULES_STATE_TEXT[state] || state) : 'Unavailable';
+    const $path = row.querySelector('[data-role="path"]');
+    $path.textContent = detail;
+    $path.title = detail;
+    row.querySelector('[data-role="primary"]')?.addEventListener('click', (e) => installToolRules(tool, state, e.currentTarget));
+    row.querySelector('[data-role="view"]').addEventListener('click', () => viewRules(tool.id, tool.name));
+    row.querySelector('[data-role="copy"]').addEventListener('click', () => copyRules(tool.id, tool.name));
+    $list.appendChild(row);
+  }
+  requestAnimationFrame(() => resizeViewport(currentStep));
+}
+
+async function installToolRules(tool, state, btn) {
+  const force = state === 'modified';
+  if (force && !confirm(`Replace your edited ${tool.name} rules with SynaBun's current version?\n\nYour edited copy is backed up first.`)) return;
+  btn.disabled = true;
+  try {
+    const res = await fetch(`/api/setup/rules/${tool.id}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ force }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) showRulesToast(data.error || (res.status === 404 ? RESTART_HINT : `${tool.name} rules were not installed`), 5000);
+    else showRulesToast(`${tool.name} rules installed`);
+  } catch (err) {
+    showRulesToast(`Failed: ${err.message}`, 5000);
+  }
+  rulesStatus = await loadRulesStatus();
+  renderRulesList();
+}
+
+async function viewRules(host, name) {
+  const $wrap = document.getElementById('rulesViewWrap');
+  const $code = document.getElementById('rulesViewCode');
+  if ($wrap.style.display !== 'none' && $wrap.dataset.host === host) {
+    $wrap.style.display = 'none';
+  } else {
+    try { $code.textContent = await loadRulesText(host); }
+    catch { $code.textContent = `The ${name} rules could not be loaded. ${RESTART_HINT}`; }
+    $wrap.dataset.host = host;
+    $wrap.style.display = '';
+  }
+  requestAnimationFrame(() => resizeViewport(currentStep));
+}
+
+async function copyRules(host, name) {
+  let text;
+  try { text = await loadRulesText(host); }
+  catch { showRulesToast(`Could not load the ${name} rules. ${RESTART_HINT}`, 5000); return; }
+  try {
+    await navigator.clipboard.writeText(text);
+    showRulesToast(`${name} rules copied`);
+  } catch {
+    // A refused clipboard is the browser's doing; restarting SynaBun would not help.
+    showRulesToast('Could not copy: the browser refused access to the clipboard.', 5000);
+  }
+}
+
+// A click-to-copy code box (the pattern of the MCP JSON box in Step 5). The
+// label says "copied!" only once the clipboard took the text; a browser that
+// refuses (no permission, no focus, no secure context) gets "copy failed".
+function wireRulesCopyBox(wrapId, codeId) {
+  document.getElementById(wrapId).addEventListener('click', async () => {
+    const $code = document.getElementById(codeId);
+    if (!$code.dataset.loaded) return;
+    const label = document.querySelector(`#${wrapId} .code-copy-label`);
+    let copied = false;
+    try {
+      await navigator.clipboard.writeText($code.textContent);
+      copied = true;
+    } catch { /* reported on the label below */ }
+    label.textContent = copied ? 'copied!' : 'copy failed';
+    label.style.opacity = '1';
+    clearTimeout(label._timer);
+    label._timer = setTimeout(() => { label.textContent = 'copy'; label.style.opacity = ''; }, copied ? 2000 : 4000);
+  });
+}
+
+// A collapsible copy-only section: loads its text the first time it opens.
+function wireRulesExtra(sectionId, headerId, bodyId, wrapId, codeId, host, name) {
+  const $section = document.getElementById(sectionId);
+  const $body = document.getElementById(bodyId);
+  const $code = document.getElementById(codeId);
+  document.getElementById(headerId).addEventListener('click', async () => {
+    const isOpen = $section.classList.toggle('open');
+    $body.style.display = isOpen ? '' : 'none';
+    if (isOpen && !$code.dataset.loaded) {
+      $code.textContent = 'Loading...';
+      try { $code.textContent = await loadRulesText(host); $code.dataset.loaded = '1'; }
+      catch { $code.textContent = `The ${name} could not be loaded. ${RESTART_HINT}`; }
+    }
+    requestAnimationFrame(() => resizeViewport(currentStep));
+  });
+  wireRulesCopyBox(wrapId, codeId);
+}
+
+wireRulesExtra('rulesCursorSection', 'rulesCursorHeader', 'rulesCursorBody', 'rulesCursorWrap', 'rulesCursorCode', 'cursor', 'Cursor rules');
+wireRulesExtra('rulesCoexistSection', 'rulesCoexistHeader', 'rulesCoexistBody', 'rulesCoexistWrap', 'rulesCoexistCode', 'coexistence', 'coexistence snippet');
+
+document.getElementById('rulesViewWrap').addEventListener('click', () => {
+  const $wrap = document.getElementById('rulesViewWrap');
+  const tool = TOOLS.find(t => t.id === $wrap.dataset.host);
+  if (tool) copyRules(tool.id, tool.name);
 });
+
+async function onRulesetStep() {
+  rulesStatus = await loadRulesStatus();
+  renderRulesList();
+  if (currentStep === 6) resizeViewport(6);
+}
 
 // ═══════════════════════════════════════════
 // STEP 7: Complete
@@ -2510,7 +2787,7 @@ document.getElementById('rulesetCodeWrap').addEventListener('click', () => {
 async function onCompleteStep() {
   renderHappyBun();
 
-  // List every tool the user toggled on; fall back to the ruleset tool if none.
+  // List every tool the user toggled on; fall back to the selected tool if none.
   const enabled = wizardState.enabledTools.length
     ? wizardState.enabledTools.map(id => TOOLS.find(t => t.id === id)).filter(Boolean)
     : [TOOLS.find(t => t.id === wizardState.selectedTool) || TOOLS[0]];
@@ -2528,12 +2805,18 @@ async function onCompleteStep() {
     } catch { /* non-critical — user can enable via Settings later */ }
   }
 
+  // Rules count as installed when every connected tool has its copy in place.
+  rulesStatus = await loadRulesStatus();
+  const ruleTools = enabledRuleTools();
+  const rulesInstalled = ruleTools.length > 0 && !!rulesStatus
+    && ruleTools.every(t => ['installed', 'newer', 'shadowed'].includes(rulesStatus.hosts?.[t.id]?.state));
+
   const items = [
     { label: 'Memory name set', done: !!wizardState.collectionName },
     { label: 'Dependencies installed & MCP built', done: wizardState.buildReady },
     { label: 'Projects registered', done: (wizardState.projects || []).length > 0 },
     { label: 'AI tool integration enabled', done: wizardState.enabledTools.length > 0 || wizardState.mcpWritten },
-    { label: 'Ruleset copied', done: !!wizardState.rulesetCopied },
+    { label: 'Rules installed', done: rulesInstalled },
   ];
 
   const $list = document.getElementById('checklist');

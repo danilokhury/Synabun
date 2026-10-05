@@ -50,6 +50,46 @@ const {
   sendSocket,
 } = await import('../public/shared/cdx/cdx-ws.js');
 
+test('every compat reply reaches its requester once, with unsolicited capabilities and dedicated routing preserved', () => {
+  const tab = { id: 'compat', threadId: 'thread-compat', closed: false };
+  const received = [], dedicated = [];
+  connectTab(tab, {
+    onGenericResponse: msg => received.push(msg),
+    onThreadList: msg => dedicated.push(msg),
+    onError: msg => dedicated.push(msg),
+  });
+  const socket = tab.ws;
+  socket.open();
+  const envelope = { sessionId: tab.id, connectionEpoch: tab.connectionEpoch };
+  const replyTypes = [
+    'attachment_added', 'gateway_oauth_state', 'gateway_oauth_started', 'gateway_oauth_canceled',
+    'verification_status', 'verification_enrolled', 'verification_deleted', 'verification_verified', 'verification_canceled',
+    'attachment_list', 'attachment_removed', 'memory_status', 'background_list', 'background_terminated',
+    'background_cleaned', 'goal_data', 'goal_updated', 'goal_cleared', 'hooks_list', 'skills_config_saved',
+    'app_data', 'experimental_features_saved', 'feedback_uploaded', 'thread_settings_updated',
+    'collaboration_modes', 'capabilities',
+  ];
+  for (const type of replyTypes) {
+    const packet = { ...envelope, type, requestId: `request-${type}`, threadId: tab.threadId };
+    socket.message(packet);
+    assert.equal(received.filter(msg => msg.requestId === packet.requestId).length, 1, type);
+    assert.deepEqual(received.at(-1), packet);
+  }
+  socket.message({ ...envelope, type: 'capabilities', capabilities: {} });
+  assert.equal(received.length, replyTypes.length + 1);
+  socket.message({ ...envelope, type: 'future_compat_reply', requestId: 0 });
+  assert.equal(received.at(-1).requestId, 0);
+  socket.message({ ...envelope, type: 'unrelated_notification' });
+  assert.equal(received.length, replyTypes.length + 2);
+  socket.message({ ...envelope, type: 'thread_list', requestId: 'list' });
+  socket.message({ ...envelope, type: 'error', requestId: 'error' });
+  assert.equal(dedicated.length, 2);
+  assert.equal(received.length, replyTypes.length + 2, 'specialized replies are not delivered twice');
+  socket.message({ ...envelope, type: 'attachment_list', requestId: 'stale', connectionEpoch: 'old' });
+  assert.equal(received.length, replyTypes.length + 2, 'ownership still rejects stale replies');
+  disconnectTab(tab, { releaseWriter: false });
+});
+
 test('restored Codex tab keeps its new socket through bootstrap and ready', () => {
   const tab = {
     id: 'panel-a',

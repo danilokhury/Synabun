@@ -8,9 +8,11 @@ import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
 import { config } from '../config.js';
 import { getAllCategories } from './categories.js';
 import { VectorCache } from './vector-cache.js';
+import { migrateMemory } from './memory-schema.js';
 import { REGION_BY_CURRENCY, resolveClassification } from './fb-regions.js';
 import type { MemoryPayload, MemoryStats, SessionChunkPayload } from '../types.js';
 
@@ -21,7 +23,7 @@ export const CATEGORIES_POINT_ID = '00000000-0000-0000-0000-000000000000';
 
 let db: DatabaseSync | null = null;
 
-function getDbPath(): string {
+export function getDbPath(): string {
   const envPath = process.env.SQLITE_DB_PATH;
   const defaultPath = path.join(config.dataDir, 'memory.db');
   if (!envPath) return defaultPath;
@@ -31,28 +33,77 @@ function getDbPath(): string {
   return envPath;
 }
 
-function getDb(): DatabaseSync {
+/**
+ * Refuse to open a store outside the temp directory while tests are running.
+ *
+ * On 2026-09-18 `npm test` deleted all 24,346 live memories: `tests/setup.ts`
+ * redirects SQLITE_DB_PATH at a temp dir, but it only runs if a vitest config
+ * lists it under `setupFiles`, and it wasn't wired in. `memory-v2.test.ts`
+ * opens with `DELETE FROM memories`, so the damage was silent and total.
+ *
+ * This lives here rather than in setup.ts deliberately: a guard inside the
+ * setup file cannot fire when the setup file is the thing that didn't run.
+ * It also catches the quieter path — getDbPath() falls back to the default
+ * live store whenever the env path's parent directory is missing, so a typo'd
+ * SQLITE_DB_PATH silently aims at production.
+ *
+ * `node --test` sets NODE_TEST_CONTEXT in every test-file process and the
+ * processes it spawns; the Neural Interface suites import this module through
+ * dist and would otherwise migrate the live store on their first getDb().
+ */
+function assertTestDbIsDisposable(dbPath: string): void {
+  if ((!process.env.VITEST && !process.env.NODE_TEST_CONTEXT) || dbPath === ':memory:') return;
+  // os.tmpdir() is /var/folders/... on macOS, so an explicit /tmp path is
+  // legitimate but would not match it. Resolve symlinks on both sides too:
+  // /tmp is a link to /private/tmp, and os.tmpdir() to /private/var/folders/...
+  const real = (p: string) => { try { return fs.realpathSync(p); } catch { return p; } };
+  const roots = new Set([os.tmpdir(), '/tmp'].flatMap(r => [r, real(r)]));
+  const under = (child: string, root: string) => child === root || child.startsWith(root.endsWith(path.sep) ? root : root + path.sep);
+  const resolved = path.resolve(dbPath);
+  const resolvedReal = real(path.dirname(resolved)) + path.sep + path.basename(resolved);
+  for (const root of roots) if (under(resolved, root) || under(resolvedReal, root)) return;
+  throw new Error(
+    `Refusing to open ${dbPath} under a test runner — a test database must live under ${os.tmpdir()} or /tmp. ` +
+    'Check that vitest.config.ts still lists setupFiles: [\'tests/setup.ts\'], and that ' +
+    'SQLITE_DB_PATH points at a directory that exists (getDbPath falls back to the live ' +
+    'store when the parent is missing).',
+  );
+}
+
+export function getDb(): DatabaseSync {
   if (!db) {
-    db = new DatabaseSync(getDbPath());
+    const dbPath = getDbPath();
+    assertTestDbIsDisposable(dbPath);
+    if (dbPath !== ':memory:') fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+    db = new DatabaseSync(dbPath);
+    db.exec('PRAGMA busy_timeout = 5000');
     db.exec('PRAGMA journal_mode = WAL');
     db.exec('PRAGMA foreign_keys = ON');
-    db.exec('PRAGMA busy_timeout = 5000');
+    db.exec('PRAGMA recursive_triggers = ON');
+    try {
+      db.exec(SCHEMA_SQL);
+      db.exec(FB_SCHEMA_SQL);
+      db.exec(FTS_SQL);
+      migrateMemory(db, dbPath);
+    } catch (error) { db.close(); db = null; throw error; }
   }
   return db;
 }
 
 // --- In-memory vector caches (see vector-cache.ts for coherence model) ---
 
-const memoryVectors = new VectorCache(
+export const memoryVectors = new VectorCache(
   getDb,
   'SELECT id, vector FROM memories WHERE trashed_at IS NULL',
   'SELECT vector FROM memories WHERE id = ? AND trashed_at IS NULL',
+  'memories',
 );
 
-const chunkVectors = new VectorCache(
+export const chunkVectors = new VectorCache(
   getDb,
   'SELECT id, vector FROM session_chunks',
   'SELECT vector FROM session_chunks WHERE id = ?',
+  'session_chunks',
 );
 
 // --- Vector encoding/decoding ---
@@ -66,7 +117,7 @@ function encodeVector(vector: number[]): Uint8Array {
 
 interface FilterCondition {
   key: string;
-  match?: { value: string | number };
+  match?: { value: string | number; aliases?: string[] };
   range?: { gte?: number; lte?: number; gt?: number; lt?: number };
   is_empty?: { key: string };
 }
@@ -107,6 +158,12 @@ function translateFilter(filter?: Record<string, unknown>): { where: string; par
       clauses.push(`(${sanitizeColumn(cond.is_empty.key)} IS NULL OR ${sanitizeColumn(cond.is_empty.key)} = '')`);
     }
   }
+
+  const alternatives = (f.should || []).filter(c => c.key === 'tags' && c.match).map(c => {
+    params.push(c.match!.value);
+    return 'EXISTS (SELECT 1 FROM json_each(tags) WHERE json_each.value = ?)';
+  });
+  if (alternatives.length) clauses.push('(' + alternatives.join(' OR ') + ')');
 
   for (const cond of f.must_not || []) {
     if (cond.match) {
@@ -221,10 +278,10 @@ CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
 );
 `;
 
-// Facebook group directory — structured single source of truth for the Critical Pixel
-// group collection. One row per group (fb_groups), one append-only row per posting event
-// (fb_post_log). Replaces the fragile single-text seed-queue memory whose [QUEUE] was once
-// wiped by a whole-body reflect(); atomic per-row writes make that data-loss class impossible.
+// Facebook group directory — structured single source of truth for the group
+// collection. One row per group (fb_groups), one append-only row per posting event
+// (fb_post_log). Replaces a single-text seed-queue memory, which one whole-body
+// reflect() can overwrite; atomic per-row writes make that data-loss class impossible.
 const FB_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS fb_groups (
   url            TEXT PRIMARY KEY,
@@ -271,14 +328,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_fbpl_url_offer_day
 // --- Public API: Collection initialization ---
 
 export async function ensureCollection(): Promise<void> {
-  const d = getDb();
-  d.exec(SCHEMA_SQL);
-  d.exec(FB_SCHEMA_SQL);
-  try {
-    d.exec(FTS_SQL);
-  } catch {
-    // FTS5 may already exist or not be available
-  }
+  getDb();
 }
 
 export async function ensureSessionCollection(): Promise<void> {
@@ -292,19 +342,24 @@ export async function ensureDatabase(): Promise<void> {
 
 // --- Public API: Memory operations ---
 
-export async function upsertMemory(
+export function upsertMemory(
   id: string,
   vector: number[],
   payload: MemoryPayload
-): Promise<void> {
+): void {
   const d = getDb();
   const stmt = d.prepare(`
-    INSERT OR REPLACE INTO memories
+    INSERT INTO memories
       (id, vector, content, category, subcategory, project, tags, importance, source,
        created_at, updated_at, accessed_at, access_count, related_files,
        related_memory_ids, file_checksums, trashed_at, source_session_chunks)
     VALUES
       (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      vector=excluded.vector,content=excluded.content,category=excluded.category,subcategory=excluded.subcategory,
+      project=excluded.project,tags=excluded.tags,importance=excluded.importance,source=excluded.source,
+      updated_at=excluded.updated_at,related_files=excluded.related_files,related_memory_ids=excluded.related_memory_ids,
+      file_checksums=excluded.file_checksums,trashed_at=excluded.trashed_at,source_session_chunks=excluded.source_session_chunks
   `);
   stmt.run(
     id,
@@ -330,16 +385,10 @@ export async function upsertMemory(
   if (payload.trashed_at) memoryVectors.remove(id);
   else memoryVectors.set(id, vector);
 
-  // Update FTS index
-  try {
-    d.prepare(`INSERT OR REPLACE INTO memories_fts(rowid, content, category, project, tags)
-      SELECT rowid, content, category, project, tags FROM memories WHERE id = ?`).run(id);
-  } catch {
-    // FTS update failure is non-fatal
-  }
+
 }
 
-export async function searchMemories(
+export function searchMemories(
   vector: number[],
   limit: number,
   filter?: Record<string, unknown>,
@@ -396,10 +445,10 @@ export async function getMemory(id: string) {
   return { id: row.id as string, payload: rowToPayload(row) };
 }
 
-export async function updatePayload(
+export function updatePayload(
   id: string,
   payload: Partial<MemoryPayload>
-): Promise<void> {
+): void {
   const d = getDb();
   const sets: string[] = [];
   const params: SQLValue[] = [];
@@ -426,13 +475,7 @@ export async function updatePayload(
     else memoryVectors.setFromDb(id);
   }
 
-  // Update FTS if content changed
-  if (payload.content) {
-    try {
-      d.prepare(`INSERT OR REPLACE INTO memories_fts(rowid, content, category, project, tags)
-        SELECT rowid, content, category, project, tags FROM memories WHERE id = ?`).run(id);
-    } catch { /* non-fatal */ }
-  }
+
 }
 
 export async function updateVector(
@@ -474,13 +517,21 @@ export async function updatePayloadByFilter(
   if ('trashed_at' in payload) memoryVectors.invalidate();
 }
 
-export async function deleteMemory(id: string): Promise<void> {
+export function deleteMemory(id: string): void {
   const d = getDb();
+  d.exec('SAVEPOINT memory_purge');
+  try {
   d.prepare('DELETE FROM memories WHERE id = ?').run(id);
   memoryVectors.remove(id);
-  try {
-    d.prepare('DELETE FROM memories_fts WHERE rowid = (SELECT rowid FROM memories WHERE id = ?)').run(id);
-  } catch { /* non-fatal */ }
+  d.prepare('DELETE FROM memory_revisions WHERE memory_id = ?').run(id);
+  d.prepare('DELETE FROM memory_metadata WHERE memory_id = ?').run(id);
+  d.prepare('DELETE FROM memory_relations WHERE from_id = ? OR to_id = ?').run(id, id);
+  d.prepare('DELETE FROM memory_feedback WHERE memory_id = ?').run(id);
+    d.exec('RELEASE memory_purge');
+  } catch (error) {
+    d.exec('ROLLBACK TO memory_purge'); d.exec('RELEASE memory_purge');
+    memoryVectors.invalidate(); throw error;
+  }
 }
 
 export async function softDeleteMemory(id: string): Promise<void> {
@@ -667,7 +718,7 @@ export async function searchMemoriesFTS(
              rank
       FROM memories_fts fts
       JOIN memories m ON m.rowid = fts.rowid
-      WHERE memories_fts MATCH ? AND m.trashed_at IS NULL${where}
+      WHERE memories_fts MATCH ? AND m.id IN (SELECT id FROM memories WHERE trashed_at IS NULL${where})
       ORDER BY rank
       LIMIT ?
     `).all(ftsQuery, ...params, limit) as Array<Record<string, unknown>>;
@@ -692,7 +743,7 @@ export async function searchMemoriesFTS(
 
 // --- Session Chunks ---
 
-export async function searchSessionChunks(
+export function searchSessionChunks(
   vector: number[],
   limit: number,
   filter?: Record<string, unknown>,
@@ -1340,7 +1391,7 @@ function parseJsonOrDefault<T>(value: unknown, defaultValue: T): T {
   return value as T;
 }
 
-function rowToPayload(row: Record<string, unknown>): MemoryPayload {
+export function rowToPayload(row: Record<string, unknown>): MemoryPayload {
   return {
     content: row.content as string,
     category: row.category as string,
@@ -1361,7 +1412,7 @@ function rowToPayload(row: Record<string, unknown>): MemoryPayload {
   };
 }
 
-function rowToSessionChunkPayload(row: Record<string, unknown>): SessionChunkPayload {
+export function rowToSessionChunkPayload(row: Record<string, unknown>): SessionChunkPayload {
   return {
     content: row.content as string,
     summary: (row.summary as string) || '',

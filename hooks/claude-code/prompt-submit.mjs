@@ -12,19 +12,35 @@
  *
  * Conversation recall triggers have highest priority (above all tiers).
  *
- * Lightweight — reads stdin, analyzes the prompt, outputs additionalContext
- * only when a recall-worthy signal is detected.
+ * Jev (TypeSafe, via the Neural Interface) makes these calls when available,
+ * in ONE prompt request whose riders are asked only when they matter: whether
+ * this prompt starts a new task while edits are unsaved (task boundary),
+ * whether it refers to a past session, whether it reveals a working
+ * preference. Nudges Jev decided carry a `[Jev]` tag; every missing answer
+ * falls back to the regex/counter rule it replaced. The judgment and the
+ * ranked auto-recall (surface rerank, relevance floor) run in parallel inside
+ * the hook's 3 s budget.
+ *
+ * System-injected "prompts" (task notifications, cross-session messages,
+ * mailbox relays, local-command output, continuation banners) are skipped
+ * entirely: no judgment, recall, message count or regex (prompt-origin.mjs).
  */
 
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, renameSync, readdirSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { detectProject, DATA_DIR, appendLoopLog, recallMemories, appendCapped } from './shared.mjs';
+import { withStateLock, writeJsonAtomic } from './state.mjs';
+import { startTaskTurn } from './task-gate.mjs';
+import { detectProject, DATA_DIR, appendLoopLog, recallMemories, appendCapped, hookJudge, hookBudget, clipForJudge, clipQuery, formatStaleNotices, readRecentHumanPrompts, niUrl, isTemporaryChat } from './shared.mjs';
+import { classifyPrompt, isTrivialPrompt } from './prompt-origin.mjs';
 
 // Cross-platform safety: catch uncaught errors and output valid hook JSON
 process.on('uncaughtException', () => { try { process.stdout.write('{}'); } catch {} process.exit(0); });
 process.on('unhandledRejection', () => { try { process.stdout.write('{}'); } catch {} process.exit(0); });
+
+// UserPromptSubmit has 3 s. Node startup counts against it.
+const budget = hookBudget(3000);
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const HOOK_FEATURES_PATH = join(DATA_DIR, 'hook-features.json');
@@ -157,7 +173,7 @@ function buildGreetingContext(cwd, project, features) {
 
   // Session Boot Sequence
   const bootSteps = [
-    `1. Call \`recall\` with query: "recent sessions, ongoing work, known issues, decisions", project: "${project}", **recency_boost: true** — this prioritizes what was worked on most recently.`,
+    `1. Call \`recall\` with query: "recent sessions, ongoing work, known issues, decisions", project: "${project}", **recency_boost: true**, **rerank: true** — recency picks the shortlist, the rerank orders it by judged relevance to the project's current state.`,
   ];
 
   if (features.userLearning !== false) {
@@ -212,17 +228,43 @@ function readStdin() {
 // delays prompt processing by up to the fetch timeout on EVERY message.
 
 let _heartbeatPromise = null;
+let _dispatchDirective = '';
+const DISPATCH_DIRECTIVE = 'Before composing or launching any Task/Agent subagent (including Explore and general-purpose), complete an explicit, task-focused SynaBun recall. Tool discovery is allowed if needed to make recall callable. Do not launch recall and subagents in the same parallel batch. Fold relevant exact file paths, prior fixes, and constraints into each subagent prompt so it searches narrowly. Automatic Related Memories context helps focus this lookup; it does not replace explicit recall.';
 
 async function emitAndExit(obj) {
+  if (_dispatchDirective && obj && typeof obj === 'object') {
+    const previous = obj.hookSpecificOutput?.additionalContext || '';
+    obj = { ...obj, hookSpecificOutput: { ...obj.hookSpecificOutput,
+      hookEventName: 'UserPromptSubmit', additionalContext: [previous, _dispatchDirective].filter(Boolean).join('\n\n') } };
+  }
   // Give an in-flight heartbeat a short window to land (localhost: ~5ms)
   if (_heartbeatPromise) {
     try {
-      await Promise.race([_heartbeatPromise, new Promise(r => setTimeout(r, 300))]);
+      const wait = Math.max(0, Math.min(300, budget.remaining() - 50));
+      await Promise.race([_heartbeatPromise, new Promise(r => setTimeout(r, wait))]);
     } catch { /* heartbeat is best-effort */ }
   }
   const json = typeof obj === 'string' ? obj : JSON.stringify(obj);
   process.stdout.write(json, () => process.exit(0));
   setTimeout(() => process.exit(0), 250); // failsafe if the write callback never fires
+}
+
+/**
+ * The whole hook for a temporary chat: the human's words as one memory search,
+ * with no session beside them and no judgment (typesafeOff() is true for the
+ * marker), and the Related Memories block as the only context. A trivial or
+ * system prompt searches nothing.
+ */
+async function temporaryChatPrompt(prompt, project) {
+  let context = '';
+  try {
+    const origin = classifyPrompt(prompt);
+    const text = origin.origin === 'system' ? '' : String(origin.text || '');
+    if (text.trim() && !isTrivialPrompt(text)) {
+      context = await recallMemories({ query: clipQuery(text), project, limit: 3, minScore: 0.4, tokenBudget: 600, timeoutMs: 2000 }) || '';
+    }
+  } catch { context = ''; }
+  await emitAndExit(context ? { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: context } } : {});
 }
 
 // ── Loop helper functions ──────────────────────────────────────
@@ -444,30 +486,16 @@ const CONVERSATION_RECALL_TRIGGERS = [
   /\b(yesterday|last week|other day).*(session|conversation|worked|discussed|implemented)/i,
 ];
 
-// ============================================================
-// SKIP PATTERNS — Messages that never need recall
-// ============================================================
-
-const SKIP_PATTERNS = [
-  // Trivial confirmations
-  /^(yes|no|ok|sure|thanks|ty|thank you|perfect|great|good|nice|cool|got it|yep|nope|nah)\b/i,
-  // Continuation commands
-  /^(do it|go ahead|proceed|continue|keep going|next|done|stop|cancel|abort|nevermind)\b/i,
-  // Empty or whitespace
-  /^\s*$/,
-  // Slash commands (Claude Code handles these)
-  /^\/\w+/,
-  // Very short messages (< 8 chars, likely just a word)
-  /^.{1,7}$/,
-  // Direct file operations (no memory needed)
-  /^(read|open|show|cat|look at|check) .+\.\w{1,5}$/i,
-  // Run commands
-  /^(run|execute|start|npm|node|git|pnpm|yarn|bun) /i,
-];
+// Messages that never need recall: isTrivialPrompt() in prompt-origin.mjs
+// (whole-string patterns; the old prefix patterns here dropped prompts such as
+// "no, the bug is in X" before any judgment or recall).
 
 // ============================================================
 // NUDGE TEMPLATES
 // ============================================================
+
+// Nudges whose decision came from Jev say so.
+const jev = (text) => `[Jev] ${text}`;
 
 const NUDGE = {
   pendingRemember: (editCount, files) => {
@@ -495,14 +523,14 @@ const NUDGE = {
   ].join(' '),
 
   tier1: [
-    `You MUST call \`recall\` before responding to this message.`,
+    `You MUST call \`recall\` before responding or making any task-related tool call, including launching Task/Agent/Explore subagents. Tool discovery needed to make recall callable is allowed.`,
     `The user is referencing past work, prior decisions, or historical context that your persistent memory likely holds.`,
     `Search for: the specific topic mentioned, related past decisions, known issues, or prior implementations.`,
     `Do NOT respond without checking memory first.`,
   ].join(' '),
 
   tier2: [
-    `Before responding, call \`recall\` to check your persistent memory for relevant context.`,
+    `Before responding or making any task-related tool call, including launching Task/Agent/Explore subagents, call \`recall\` for relevant context. Tool discovery needed to make recall callable is allowed.`,
     `This topic likely has prior knowledge stored — past bugs, architecture decisions, or domain-specific patterns.`,
     `Skip recall only if you already have full context from this session.`,
   ].join(' '),
@@ -592,6 +620,8 @@ function looksEnglish(text) {
 
 // Max user-learning nudges per session (overridable via hook-features.json)
 const USER_LEARNING_MAX_NUDGES_DEFAULT = 3;
+// Human messages required between two user-learning nudges.
+const USER_LEARNING_MIN_GAP = 3;
 
 /**
  * Debug logger for user-learning nudge diagnostics.
@@ -602,11 +632,34 @@ function debugUL(msg) {
 }
 
 /**
- * Check if user-learning nudge should fire.
- * Fires at threshold multiples (3, 6, 9...) up to max nudges.
+ * Whether a user-learning nudge may fire at all right now, whatever decides
+ * it. `total` counts human messages this session (system prompts never count).
+ */
+function userLearningGate(features, sessionId, flag) {
+  if (features.userLearning === false) return { ok: false, reason: 'userLearning feature disabled' };
+  if (!sessionId) return { ok: false, reason: 'no sessionId' };
+  if (!flag || typeof flag !== 'object') return { ok: false, reason: 'no flag' };
+  const total = flag.totalSessionMessages || flag.messageCount || 0;
+  const nudgeCount = flag.userLearningNudgeCount || 0;
+  const maxNudges = features.userLearningMaxNudges || USER_LEARNING_MAX_NUDGES_DEFAULT;
+  const threshold = features.userLearningThreshold || 8;
+  const lastAt = Number.isFinite(flag.userLearningLastNudgeAt) ? flag.userLearningLastNudgeAt : null;
+  const state = { total, nudgeCount, maxNudges, threshold, lastAt, sinceLast: total - (lastAt ?? 0) };
+  // If a style observation was already stored/updated this session, skip further nudges
+  if (flag.userLearningObserved) return { ok: false, reason: 'userLearningObserved=true (already stored this session)', ...state };
+  if (nudgeCount >= maxNudges) return { ok: false, reason: `max nudges reached (${nudgeCount} >= ${maxNudges})`, ...state };
+  return { ok: true, ...state };
+}
+
+/**
+ * Decide, record and return a user-learning nudge (call under the state lock).
+ *   reveals === true   Jev saw a working preference in this prompt: nudge when
+ *                      ≥3 human messages passed since the last nudge
+ *   reveals === false  Jev saw none: no nudge
+ *   reveals === null   not judged: nudge at threshold multiples (3, 6, 9…)
  * Returns nudge text or empty string.
  */
-function checkUserLearning(features, sessionId) {
+function checkUserLearning(features, sessionId, reveals = null) {
   if (features.userLearning === false) {
     debugUL(`SKIP: userLearning feature disabled`);
     return '';
@@ -615,9 +668,6 @@ function checkUserLearning(features, sessionId) {
     debugUL(`SKIP: no sessionId`);
     return '';
   }
-
-  const threshold = features.userLearningThreshold || 8;
-  const maxNudges = features.userLearningMaxNudges || USER_LEARNING_MAX_NUDGES_DEFAULT;
   const flagPath = join(PENDING_REMEMBER_DIR, `${sessionId}.json`);
   if (!existsSync(flagPath)) {
     debugUL(`SKIP: flag file not found at ${flagPath}`);
@@ -632,50 +682,55 @@ function checkUserLearning(features, sessionId) {
     return '';
   }
 
-  const msgCount = flag.totalSessionMessages || flag.messageCount || 0;
-  const nudgeCount = flag.userLearningNudgeCount || 0;
-  const observed = flag.userLearningObserved || false;
-
-  debugUL(`CHECK: session=${sessionId.slice(0, 8)}... msgCount=${msgCount} threshold=${threshold} nudgeCount=${nudgeCount} maxNudges=${maxNudges} observed=${observed}`);
-
-  // If a style observation was already stored/updated this session, skip further nudges
-  if (observed) {
-    debugUL(`SKIP: userLearningObserved=true (already stored this session)`);
+  const gate = userLearningGate(features, sessionId, flag);
+  debugUL(`CHECK: session=${sessionId.slice(0, 8)}... msgCount=${gate.total} threshold=${gate.threshold} nudgeCount=${gate.nudgeCount} maxNudges=${gate.maxNudges} observed=${!!flag.userLearningObserved} judged=${reveals}`);
+  if (!gate.ok) {
+    debugUL(`SKIP: ${gate.reason}`);
     return '';
   }
-
-  if (nudgeCount >= maxNudges) {
-    debugUL(`SKIP: max nudges reached (${nudgeCount} >= ${maxNudges})`);
+  if (reveals === false) {
+    debugUL(`SKIP: judged: this prompt reveals no working preference`);
     return '';
   }
-  if (msgCount < threshold) {
-    debugUL(`SKIP: msgCount ${msgCount} < threshold ${threshold}`);
-    return '';
+  if (reveals === true) {
+    if (gate.sinceLast < USER_LEARNING_MIN_GAP) {
+      debugUL(`SKIP: judged preference, but only ${gate.sinceLast} messages since the last nudge`);
+      return '';
+    }
+  } else {
+    if (gate.total < gate.threshold) {
+      debugUL(`SKIP: msgCount ${gate.total} < threshold ${gate.threshold}`);
+      return '';
+    }
+    const expectedNudges = Math.floor(gate.total / gate.threshold);
+    if (expectedNudges <= gate.nudgeCount) {
+      debugUL(`SKIP: expectedNudges ${expectedNudges} <= nudgeCount ${gate.nudgeCount}`);
+      return '';
+    }
+    if (gate.lastAt !== null && gate.sinceLast < USER_LEARNING_MIN_GAP) {
+      debugUL(`SKIP: only ${gate.sinceLast} messages since the last nudge`);
+      return '';
+    }
   }
 
-  const expectedNudges = Math.floor(msgCount / threshold);
-  if (expectedNudges <= nudgeCount) {
-    debugUL(`SKIP: expectedNudges ${expectedNudges} <= nudgeCount ${nudgeCount}`);
-    return '';
-  }
-
-  debugUL(`FIRE: nudge #${nudgeCount + 1} (expectedNudges=${expectedNudges})`);
+  debugUL(`FIRE: nudge #${gate.nudgeCount + 1} (${reveals === true ? 'judged' : 'count'})`);
 
   // Persist nudge count + pending flag (best-effort — don't block nudge on write failure)
-  flag.userLearningNudgeCount = nudgeCount + 1;
+  flag.userLearningNudgeCount = gate.nudgeCount + 1;
   flag.userLearningPending = true;
+  flag.userLearningLastNudgeAt = gate.total;
   try {
-    writeFileSync(flagPath, JSON.stringify(flag));
-    debugUL(`PERSIST: nudgeCount saved as ${nudgeCount + 1}`);
+    writeJsonAtomic(flagPath, flag);
+    debugUL(`PERSIST: nudgeCount saved as ${gate.nudgeCount + 1}`);
   } catch (e) {
     debugUL(`PERSIST FAILED (nudge still fires): ${e.message}`);
   }
 
   // First nudge: full instructions. Subsequent: short reminder.
-  if (nudgeCount === 0) {
-    return NUDGE.userLearning;
-  }
-  return `SynaBun User Learning reminder: You've had ${msgCount} exchanges. If you've noticed new behavioral patterns (how they give instructions, correct you, make decisions, or signal frustration), call \`recall\` category \`communication-style\` — then \`reflect\` to update an existing entry, or \`remember\` only if genuinely new. Do NOT create duplicates. Do NOT store surface-level formatting observations.`;
+  const text = gate.nudgeCount === 0
+    ? NUDGE.userLearning
+    : `SynaBun User Learning reminder: You've had ${gate.total} exchanges. If you've noticed new behavioral patterns (how they give instructions, correct you, make decisions, or signal frustration), call \`recall\` category \`communication-style\` — then \`reflect\` to update an existing entry, or \`remember\` only if genuinely new. Do NOT create duplicates. Do NOT store surface-level formatting observations.`;
+  return reveals === true ? jev(text) : text;
 }
 
 // ============================================================
@@ -684,19 +739,44 @@ function checkUserLearning(features, sessionId) {
 // and formats them for injection into additionalContext.
 // ============================================================
 
-// Thin wrapper around the shared recall helper — resolves the project from cwd.
-async function autoRecall(prompt, cwd) {
-  return recallMemories({ query: prompt, project: detectProject(cwd) });
+function readContextGeneration(sessionId) {
+  if (!sessionId || !/^[a-zA-Z0-9_-]+$/.test(sessionId)) return undefined;
+  try { return JSON.parse(readFileSync(join(DATA_DIR, 'memory-context', sessionId + '.json'), 'utf8')).generation; } catch { return undefined; }
+}
+
+function readFlag(sessionId) {
+  if (!/^[a-zA-Z0-9_-]+$/.test(sessionId || '')) return null;
+  try { return JSON.parse(readFileSync(join(PENDING_REMEMBER_DIR, `${sessionId}.json`), 'utf-8')); } catch { return null; }
+}
+
+// The previous human prompt, for the task-boundary question. The transcript
+// may or may not already hold the current prompt, so skip an exact repeat.
+function previousHumanPrompt(transcriptPath, current) {
+  try {
+    const now = String(current || '').trim();
+    return readRecentHumanPrompts(transcriptPath, 2).find((p) => p.trim() !== now) || '';
+  } catch { return ''; }
+}
+
+// Fallback for the task boundary when it was not judged: unsaved edits from
+// a turn that reached Stop. When the edits are newer than the last Stop, the
+// turn was interrupted (Claude Code runs no Stop after an interrupt) and this
+// prompt is most likely a correction of that same work.
+function stopCameAfterEdits(flag) {
+  const stop = Date.parse(flag?.lastStopAt || '');
+  const edit = Date.parse(flag?.lastEditAt || '');
+  return Number.isFinite(stop) && Number.isFinite(edit) && stop >= edit;
 }
 
 async function main() {
   let prompt = '';
   let sessionId = '';
   let cwd = '';
+  let input = {};
   try {
     const raw = await readStdin();
-    const input = JSON.parse(raw);
-    prompt = input.prompt || '';
+    input = JSON.parse(raw);
+    prompt = typeof input.prompt === 'string' ? input.prompt : '';
     sessionId = input.session_id || '';
     cwd = input.cwd || '';
   } catch { /* proceed with empty */ }
@@ -704,13 +784,22 @@ async function main() {
   const trimmed = prompt.trim();
   const project = detectProject(cwd);
 
+  // A temporary chat (see isTemporaryChat): related memories are still read
+  // into the prompt. Nothing is counted, flagged, judged or gated, and the
+  // session is named to nobody.
+  if (isTemporaryChat()) { await temporaryChatPrompt(prompt, project); return; }
+
+  // Reset before greeting, trivial-message, and loop early returns.
+  try { startTaskTurn(input); } catch { /* gate state is best-effort */ }
+  if (!input.agent_id && /^[a-zA-Z0-9_-]+$/.test(sessionId) && typeof input.prompt === 'string'
+    && getHookFeatures().taskRecallGate !== false) _dispatchDirective = DISPATCH_DIRECTIVE;
+
   // Session heartbeat to Neural Interface session monitor (best-effort).
   // Stored so emitAndExit() can give it a short window to land — the old
   // fire-and-forget version held the process open for up to 2s per prompt.
   if (sessionId) {
-    const niUrl = process.env.SYNABUN_NI_URL || 'http://localhost:3344';
     try {
-      _heartbeatPromise = fetch(`${niUrl}/api/sessions/heartbeat`, {
+      _heartbeatPromise = fetch(`${niUrl()}/api/sessions/heartbeat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ claudeSessionId: sessionId }),
@@ -762,7 +851,7 @@ async function main() {
           // currentIteration === 0) could steal this loop file.
           state.currentIteration = 1;
           // Preserve terminalSessionId — loop driver needs it for session isolation
-          writeFileSync(targetPath, JSON.stringify(state, null, 2));
+          writeJsonAtomic(targetPath, state);
           appendLoopLog(terminalSessionEnv, 'prompt-submit:inject', 'iteration 1 context built — emitting additionalContext', { task: state.task?.slice(0, 200), totalIterations: state.totalIterations, usesBrowser: !!state.usesBrowser });
 
           const browserNote = buildBrowserNote(state);
@@ -839,7 +928,7 @@ async function main() {
 
             const parts = [
               // Memory rules (session-start won't re-inject after /clear)
-              'SynaBun memory is active. CLAUDE.md contains the memory rules. Follow them.',
+              'SynaBun memory is active. Follow the SynaBun rules in your instructions.',
               '',
             ];
 
@@ -910,6 +999,25 @@ async function main() {
     } catch { /* fall through to ordinary hook behavior */ }
   }
 
+  // --- Who wrote this "prompt"? ---
+  // Task notifications, cross-session/teammate messages, mailbox relays,
+  // local-command output and continuation banners are not the human: no
+  // judgment, no recall, no message count, no regex. The task turn was
+  // already started above and emitAndExit still appends the dispatch
+  // directive, exactly as before.
+  const origin = classifyPrompt(prompt);
+  if (origin.origin === 'system') {
+    await emitAndExit({});
+    return;
+  }
+  // The assistant brain recalls in-process (assistant-memory.js); running here too injected every memory twice and paid Jev twice.
+  if (process.env.SYNABUN_ASSISTANT_SESSION) {
+    await emitAndExit({});
+    return;
+  }
+  // The human's own words, with IDE/hook wrappers removed.
+  const text = origin.text;
+
   // --- Active loop detection for non-loop-marker messages ---
   // When user sends a regular message during an active browser loop, inject
   // loop context so Claude knows where it was, and sync the session ID file.
@@ -937,125 +1045,187 @@ async function main() {
     }
   }
 
-  // --- Track message count (BEFORE skip check — all messages count) ---
+  // --- Track message count (BEFORE the trivial check — every human message counts) ---
   let currentMessageCount = 0;
-  if (sessionId && trimmed.length > 0) {
-    const flagPath = join(PENDING_REMEMBER_DIR, `${sessionId}.json`);
-    if (!existsSync(PENDING_REMEMBER_DIR)) mkdirSync(PENDING_REMEMBER_DIR, { recursive: true });
-    let flag = { editCount: 0, retries: 0, files: [], messageCount: 0 };
-    if (existsSync(flagPath)) {
-      try { flag = JSON.parse(readFileSync(flagPath, 'utf-8')); } catch { /* start fresh */ }
-    }
-    flag.messageCount = (flag.messageCount || 0) + 1;
-    flag.totalSessionMessages = (flag.totalSessionMessages || 0) + 1;
-    currentMessageCount = flag.messageCount;
-    if (!flag.firstMessageAt) flag.firstMessageAt = new Date().toISOString();
-    flag.lastMessageAt = new Date().toISOString();
-    try { writeFileSync(flagPath, JSON.stringify(flag)); } catch { /* ok */ }
+  let greetingContext = "";
+  let flag = null; // snapshot after this message was counted
+  if (/^[a-zA-Z0-9_-]+$/.test(sessionId) && text.length > 0) {
+    try {
+      withStateLock(() => {
+        const flagPath = join(PENDING_REMEMBER_DIR, `${sessionId}.json`);
+        if (!existsSync(PENDING_REMEMBER_DIR)) mkdirSync(PENDING_REMEMBER_DIR, { recursive: true });
+        let current = { editCount: 0, retries: 0, files: [], messageCount: 0 };
+        if (existsSync(flagPath)) {
+          try { current = JSON.parse(readFileSync(flagPath, 'utf-8')); } catch { /* start fresh */ }
+        }
+        current.messageCount = (current.messageCount || 0) + 1;
+        current.totalSessionMessages = (current.totalSessionMessages || 0) + 1;
+        currentMessageCount = current.messageCount;
+        if (!current.firstMessageAt) current.firstMessageAt = new Date().toISOString();
+        current.lastMessageAt = new Date().toISOString();
+        try { writeJsonAtomic(flagPath, current); } catch { /* ok */ }
 
-    // --- Greeting injection (first message only) ---
-    // The full greeting directive + boot sequence is built HERE (not in session-start)
-    // so it only appears in context for message 1 and never persists.
-    if (flag.messageCount === 1 && !flag.greetingDelivered) {
-      const greetingFeatures = getHookFeatures();
-      const greetingCtx = buildGreetingContext(cwd, project, greetingFeatures);
-      if (greetingCtx) {
-        flag.greetingDelivered = true;
-        try { writeFileSync(flagPath, JSON.stringify(flag)); } catch { /* ok */ }
-        await emitAndExit({
-          hookSpecificOutput: {
-            hookEventName: 'UserPromptSubmit',
-            additionalContext: greetingCtx + '\nIf the user\'s message is just a greeting (hi, hello, hey, or a single character), the greeting IS your full response — no need to ask what they need.',
-          },
-        });
-        return;
-      }
-    }
-
+        // --- Greeting injection (first message only) ---
+        // The full greeting directive + boot sequence is built HERE (not in session-start)
+        // so it only appears in context for message 1 and never persists.
+        if (current.messageCount === 1 && !current.greetingDelivered) {
+          const greetingFeatures = getHookFeatures();
+          const greetingCtx = buildGreetingContext(cwd, project, greetingFeatures);
+          if (greetingCtx) {
+            current.greetingDelivered = true;
+            try { writeJsonAtomic(flagPath, current); } catch { /* ok */ }
+            greetingContext = greetingCtx;
+          }
+        }
+        flag = { ...current };
+      }, { timeoutMs: 500 });
+    } catch { flag = readFlag(sessionId); /* contended: judge with what is on disk */ }
   }
 
-  // Skip trivial messages first (fastest path)
-  if (SKIP_PATTERNS.some(p => p.test(trimmed))) {
+  if (greetingContext) {
+    await emitAndExit({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit',
+      additionalContext: greetingContext + '\nIf the user message is just a greeting, the greeting is your full response.' } });
+    return;
+  }
+
+  // Skip trivial messages first (fastest path). Whole-string patterns only.
+  if (isTrivialPrompt(text)) {
     await emitAndExit({});
     return;
   }
 
   const features = getHookFeatures();
 
-  // --- Collect primary context from priority chain ---
-  let primaryContext = '';
-
-  // Priority 0: TASK BOUNDARY — pending-remember check (highest priority)
-  if (!primaryContext && sessionId) {
-    const flagPath = join(PENDING_REMEMBER_DIR, `${sessionId}.json`);
-    if (existsSync(flagPath)) {
-      try {
-        const flag = JSON.parse(readFileSync(flagPath, 'utf-8'));
-        const editCount = flag.editCount || 0;
-        if (editCount >= 1) {
-          const files = Array.isArray(flag.files) ? flag.files : [];
-          primaryContext = NUDGE.pendingRemember(editCount, files);
-        }
-      } catch { /* corrupt flag — ignore, don't block */ }
-    }
+  // --- What to ask Jev (one request; riders only when they can matter) ---
+  const editCount = Number(flag?.editCount) || 0;
+  const files = Array.isArray(flag?.files) ? flag.files.filter((f) => typeof f === 'string') : [];
+  const hasUnsaved = !!sessionId && editCount >= 1;
+  const conversationOn = features.conversationMemory !== false;
+  const ulGate = userLearningGate(features, sessionId, flag);
+  const ask = {};
+  if (hasUnsaved) ask.new_task = true;
+  if (conversationOn) ask.past_session = true;
+  if (ulGate.ok && ulGate.sinceLast >= USER_LEARNING_MIN_GAP) ask.reveals_preference = true;
+  let unsavedWork;
+  if (ask.new_task) {
+    unsavedWork = { files: files.slice(0, 10), edit_count: editCount };
+    const previous = previousHumanPrompt(input.transcript_path, text);
+    if (previous) unsavedWork.previous_prompt = previous.slice(0, 1000);
   }
 
-  // Priority 1: Conversation recall (highest recall priority)
-  if (!primaryContext) {
-    const conversationMemoryEnabled = features.conversationMemory !== false;
-    if (conversationMemoryEnabled) {
-      const convMatches = CONVERSATION_RECALL_TRIGGERS.filter(p => p.test(prompt));
-      if (convMatches.length >= 1) {
-        primaryContext = NUDGE.conversation;
-      }
-    }
-  }
+  // The judgment and the ranked recall run side by side, each bounded by what
+  // is left of the 3 s budget (typical ≈1 s, worst case ≈2.2 s).
+  const callMs = Math.min(2000, budget.callTimeout(250));
+  const judgmentRequest = hookJudge('prompt', {
+    text: clipForJudge(text), project,
+    session_id: sessionId || undefined, cwd: cwd || undefined,
+    ask: Object.keys(ask).length ? ask : undefined,
+    unsaved_work: unsavedWork,
+  }, { timeoutMs: callMs });
 
-  // Priority 2: Tier 1 — MUST recall (>= 1 match)
-  if (!primaryContext) {
-    const t1 = TIER1_TRIGGERS.filter(p => p.test(prompt));
-    if (t1.length >= 1) primaryContext = NUDGE.tier1;
-  }
-
-  // Priority 3: Tier 2 — SHOULD recall (>= 1 match)
-  if (!primaryContext) {
-    const t2 = TIER2_TRIGGERS.filter(p => p.test(prompt));
-    if (t2.length >= 1) primaryContext = NUDGE.tier2;
-  }
-
-  // Priority 4: Tier 3 — CONSIDER recall (>= 2 matches)
-  if (!primaryContext) {
-    const t3 = TIER3_TRIGGERS.filter(p => p.test(prompt));
-    if (t3.length >= 2) primaryContext = NUDGE.tier3;
-  }
-
-  // Priority 5: Non-English (non-Latin scripts)
-  if (!primaryContext && isNonEnglish(prompt)) {
-    primaryContext = NUDGE.nonEnglish;
-  }
-
-  // Priority 6: Latin-script non-English catch-all
-  if (!primaryContext && trimmed.length > 30 && !looksEnglish(trimmed)) {
-    primaryContext = NUDGE.nonEnglish;
-  }
-
-  // --- Auto-recall: inject relevant memories from NI server ---
   // When greeting is enabled, message 1 gets recall via the boot sequence in buildGreetingContext().
   // When greeting is disabled, message 1 has no recall at all — so fire auto-recall on message 1 too.
-  let autoRecallContext = '';
   const greetingEnabled = features.greeting === true;
   const autoRecallMinMessage = greetingEnabled ? 2 : 1;
-  if (!activeLoopNotice && currentMessageCount >= autoRecallMinMessage) {
-    autoRecallContext = await autoRecall(trimmed, cwd);
+  const staleShown = Array.isArray(flag?.staleShown) ? flag.staleShown.filter((id) => typeof id === 'string') : [];
+  const recallRequest = (!activeLoopNotice && currentMessageCount >= autoRecallMinMessage)
+    ? recallMemories({
+      query: clipQuery(text), project, sessionId, contextGeneration: readContextGeneration(sessionId),
+      limit: 3, minScore: 0.4, tokenBudget: 600, timeoutMs: callMs, budgetMs: callMs,
+      // Jev ranks the shortlist and the floor drops what it judged irrelevant.
+      // Memories are never dropped here after the fact: the server has already
+      // recorded them as delivered in the injection ledger.
+      surface: 'rerank', floor: true,
+      // Edit-time stale verdicts ride along; the ones the Stop hook already
+      // showed are acknowledged instead of shown twice.
+      wantStale: true, staleAck: staleShown,
+      returnMeta: true,
+    })
+    : Promise.resolve(null);
+
+  const [judged, recall] = await Promise.all([judgmentRequest, recallRequest]);
+
+  // --- Collect primary context from priority chain ---
+  let primaryContext = '';
+  let primaryKind = '';
+
+  // Priority 0: TASK BOUNDARY — unsaved edits and a new task.
+  //   newTask true  → nudge ([Jev]);  false → none (a correction or follow-up)
+  //   not judged    → nudge only if a Stop came after the edits
+  if (hasUnsaved) {
+    if (judged.newTask === true) {
+      primaryContext = jev(NUDGE.pendingRemember(editCount, files));
+      primaryKind = 'boundary';
+    } else if (typeof judged.newTask !== 'boolean' && stopCameAfterEdits(flag)) {
+      primaryContext = NUDGE.pendingRemember(editCount, files);
+      primaryKind = 'boundary';
+    }
   }
 
+  // Priority 1: Conversation recall. The judgment wins; the English-only
+  // regexes are the fallback.
+  if (!primaryContext && conversationOn) {
+    if (typeof judged.pastSession === 'boolean') {
+      if (judged.pastSession) { primaryContext = jev(NUDGE.conversation); primaryKind = 'conversation'; }
+    } else if (CONVERSATION_RECALL_TRIGGERS.some(p => p.test(text))) {
+      primaryContext = NUDGE.conversation;
+      primaryKind = 'conversation';
+    }
+  }
+
+  // Priorities 2-6: would searching memory first change the answer?
+  //
+  // One judgment replaces the Tier1/2/3 regex ladder and both non-English
+  // catch-alls. The ladder could only match phrasings someone thought to
+  // enumerate, and the language tests were proxies for "this prompt is in a
+  // language our triggers don't cover" — a judgment reads intent directly, in
+  // any language, so the separate language priorities are no longer needed.
+  // The regex ladder stays as the fallback when the judgment is unavailable.
+  if (!primaryContext) {
+    const { urgency } = judged;
+    if (urgency === 'must') { primaryContext = jev(NUDGE.tier1); primaryKind = 'tier1'; }
+    else if (urgency === 'should') { primaryContext = jev(NUDGE.tier2); primaryKind = 'tier2'; }
+    else if (urgency === 'consider') { primaryContext = jev(NUDGE.tier3); primaryKind = 'tier3'; }
+    else if (!urgency) {
+      if (TIER1_TRIGGERS.some(p => p.test(text))) { primaryContext = NUDGE.tier1; primaryKind = 'tier1'; }
+      else if (TIER2_TRIGGERS.some(p => p.test(text))) { primaryContext = NUDGE.tier2; primaryKind = 'tier2'; }
+      else if (TIER3_TRIGGERS.filter(p => p.test(text)).length >= 2) { primaryContext = NUDGE.tier3; primaryKind = 'tier3'; }
+      else if (isNonEnglish(text)) { primaryContext = NUDGE.nonEnglish; primaryKind = 'nonEnglish'; }
+      else if (text.length > 30 && !looksEnglish(text)) { primaryContext = NUDGE.nonEnglish; primaryKind = 'nonEnglish'; }
+    }
+  }
+
+  // --- Auto-recall: the memories injected from the NI server ---
+  const autoRecallContext = recall?.context || '';
+  if (autoRecallContext && ['tier1', 'tier2', 'tier3'].includes(primaryKind)) {
+    primaryContext = 'Relevant SynaBun context is available in the Related Memories block. Use it to focus your explicit task recall before composing subagent prompts, then include the exact file paths, prior fixes, and constraints in each prompt.';
+  }
+
+  // --- Stale memories flagged by edit-time checks (not already shown at Stop) ---
+  const alreadyShown = new Set(staleShown);
+  const staleContext = formatStaleNotices((recall?.stale || []).filter((v) => !alreadyShown.has(v.memory_id)));
+
   // --- User Learning (independent — appends to any primary context) ---
-  const userLearningContext = checkUserLearning(features, sessionId);
+  const reveals = typeof judged.revealsPreference === 'boolean' ? judged.revealsPreference : null;
+  let userLearningContext = "";
+  try {
+    userLearningContext = withStateLock(() => {
+      // The Stop hook's stale ids were acknowledged by the recall above.
+      if (recall?.responded && staleShown.length) {
+        const current = readFlag(sessionId);
+        if (current && Array.isArray(current.staleShown)) {
+          current.staleShown = current.staleShown.filter((id) => !alreadyShown.has(id));
+          try { writeJsonAtomic(join(PENDING_REMEMBER_DIR, `${sessionId}.json`), current); } catch { /* ok */ }
+        }
+      }
+      return checkUserLearning(features, sessionId, reveals);
+    }, { timeoutMs: Math.max(50, Math.min(500, budget.remaining() - 100)) });
+  } catch { /* best effort */ }
 
   // --- Emit combined output ---
   // NOTE: No bootCancel needed — greeting directive is only injected on message 1
   // via buildGreetingContext(), so it never persists in session context.
-  const combined = [activeLoopNotice, primaryContext, autoRecallContext, userLearningContext].filter(Boolean).join('\n\n');
+  const combined = [activeLoopNotice, primaryContext, autoRecallContext, staleContext, userLearningContext].filter(Boolean).join('\n\n');
 
   if (combined) {
     await emitAndExit({

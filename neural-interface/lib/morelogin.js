@@ -131,6 +131,27 @@ async function request(path, body, opts = {}) {
   return json ? json.data : null;
 }
 
+/**
+ * Normalize the `proxy` blob MoreLogin attaches to an env row. Kept (rather than
+ * dropped) because a profile's proxy is invisible from SynaBun otherwise — when a
+ * page fails to load there is no way to tell whether traffic left the machine.
+ * Shape varies by version; every field is best-effort.
+ */
+function normalizeProxy(p) {
+  if (!p || typeof p !== 'object') return null;
+  const host = p.proxyIp || p.host || p.ip || p.server || null;
+  const port = p.proxyPort ?? p.port ?? null;
+  const type = p.proxyType || p.type || p.protocol || null;
+  const country = p.country || p.countryCode || p.ipCountry || null;
+  if (!host && !type && !country) return null;
+  return {
+    type: type != null ? String(type) : null,
+    host: host != null ? String(host) : null,
+    port: port != null ? String(port) : null,
+    country: country != null ? String(country) : null,
+  };
+}
+
 function normalizeProfile(e = {}) {
   return {
     id: e.id != null ? String(e.id) : null,
@@ -138,6 +159,7 @@ function normalizeProfile(e = {}) {
     status: e.localStatus || e.status || null,
     groupId: e.groupId != null ? String(e.groupId) : null,
     proxyId: e.proxyId != null ? String(e.proxyId) : null,
+    proxy: normalizeProxy(e.proxy),
   };
 }
 
@@ -165,7 +187,9 @@ export async function probeMoreLoginApi(opts = {}) {
  * and waiting for it to come up if it isn't already running. Bounded by
  * timeoutMs (default 25s — MoreLogin is a heavier multi-process Electron app
  * than a plain browser relaunch). Never throws — mirrors probeMoreLoginApi's
- * always-resolve contract so callers can fall back to Chrome unconditionally.
+ * always-resolve contract. While MoreLogin is the default browser, a
+ * `running: false` result FAILS the session in createBrowserSession(); nothing
+ * falls back to Chrome.
  */
 export async function ensureMoreLoginRunning(opts = {}) {
   const timeoutMs = opts.timeoutMs ?? 25000;

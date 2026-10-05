@@ -17,10 +17,11 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { basename, dirname, extname, join, relative, resolve } from 'node:path';
+import { basename, dirname, extname, join, parse as parsePath, relative, resolve, sep } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import archiver from 'archiver';
-import AdmZip from 'adm-zip';
+import { openZipArchive, readZipEntry, verifyBackupChecksums } from './backup-zip-reader.js';
+import { LOCK_FILE_NAME } from './rulesets/lock.js';
 
 export const BACKUP_MANIFEST_VERSION = 3;
 export const BACKUP_PREFIX = 'synabun-auto-backup';
@@ -32,12 +33,46 @@ export const DEFAULT_BACKUP_RETENTION = Object.freeze({
   maxBytes: 10 * 1024 * 1024 * 1024,
 });
 
+/** The DATA_HOME folders every backup copies (createVerifiedBackup); DATA_HOME/.env goes too, as a file. */
+export const BACKUP_DATA_DIRS = Object.freeze(['data', 'mcp-data']);
+
+/**
+ * Every folder a backup copies from: BACKUP_DATA_DIRS under `dataHome`, then
+ * the folders of the caller's `additionalEntries` (server.js: skills, agents,
+ * skins). A secret that must never be archived (the WhatsApp session keys)
+ * has to live outside all of them.
+ */
+export function backupRoots(dataHome, additionalEntries = []) {
+  const roots = BACKUP_DATA_DIRS.map((dir) => resolve(dataHome, dir));
+  for (const entry of Array.isArray(additionalEntries) ? additionalEntries : []) {
+    const diskPath = typeof entry === 'string' ? entry : entry?.diskPath;
+    if (diskPath) roots.push(resolve(diskPath));
+  }
+  return [...new Set(roots)];
+}
+
 const TRANSIENT_DATA_NAMES = new Set([
   'server-stdout.log',
   'server-stderr.log',
   'restart-requested',
   'opencode-managed.pid',
 ]);
+
+/**
+ * Files in a data folder that are operating-system locks, not data: the rules
+ * installer's writer lock (lib/rulesets/lock.js). A backup never opens, reads
+ * or copies one (closing any descriptor on the file drops this process's lock
+ * on it), and a restore never extracts one over the live file (that would put
+ * two servers on two different files): system-restore.js reads this list.
+ */
+export const LOCK_ONLY_DATA_FILES = Object.freeze([LOCK_FILE_NAME]);
+const SQLITE_SIDE_FILES = ['', '-journal', '-wal', '-shm'];
+
+/** True for a lock-only file and for the journal, WAL and shm names SQLite could put beside it. Case does not count. */
+export function isLockOnlyDataFile(name) {
+  const lower = String(name).toLowerCase();
+  return LOCK_ONLY_DATA_FILES.some(file => SQLITE_SIDE_FILES.some(suffix => lower === `${file}${suffix}`));
+}
 
 const IMMUTABLE_BACKUP_EXTENSIONS = new Set([
   '.avif', '.gif', '.ico', '.jpeg', '.jpg', '.mov', '.mp3', '.mp4', '.ogg',
@@ -140,10 +175,6 @@ function archiveNameFor(kind, createdAt) {
   return `synabun-${kind}-${safeTimestamp(createdAt)}.zip`;
 }
 
-function hashBuffer(buffer) {
-  return createHash('sha256').update(buffer).digest('hex');
-}
-
 function hashFile(path) {
   return new Promise((resolveHash, reject) => {
     const digest = createHash('sha256');
@@ -180,6 +211,11 @@ function createConsistentSqliteSnapshot(sourcePath, snapshotPath) {
   }
 }
 
+// SQLite rollback journals, including the ones left beside migration copies
+// (memory.db.pre-v4-….bak-journal). They are only meaningful next to the file
+// they belonged to, and that file is snapshotted consistently or not at all.
+const SQLITE_JOURNAL_RE = /\.(?:db|bak)-journal$/i;
+
 function shouldSkipDataPath(relativePath) {
   const normalized = relativePath.replace(/\\/g, '/');
   const parts = normalized.split('/');
@@ -188,9 +224,58 @@ function shouldSkipDataPath(relativePath) {
   if (parts[0] === 'logs') return true;
   if (parts.length > 1 && EXCLUDED_DATA_DIRS.has(parts[0])) return true;
   if (TRANSIENT_DATA_NAMES.has(name)) return true;
+  if (isLockOnlyDataFile(name)) return true;
   if (name.endsWith('.tmp') || name.endsWith('.pid')) return true;
   if (/\.db-(?:wal|shm)$/i.test(name)) return true;
+  if (SQLITE_JOURNAL_RE.test(name)) return true;
   return false;
+}
+
+/**
+ * mcp-data holds full copies of memory.db written by schema migrations and
+ * manual repairs (memory.db.pre-v7-….bak, memory.db.backup-….bak). Each is as
+ * large as the live database, and the archive already carries a consistent
+ * snapshot of that, so six of them grew a 1.3 GB data home into a 3 GB archive.
+ */
+export function isDatabaseCopyArtifact(relativePath) {
+  const name = relativePath.replace(/\\/g, '/').split('/').at(-1);
+  return /^memory\.db\../i.test(name) || SQLITE_JOURNAL_RE.test(name);
+}
+
+/**
+ * A destination on a removable drive that is not mounted. mkdir -p would try
+ * to create the mount point itself and fail with a baffling
+ * `EACCES: mkdir '/Volumes/<drive>'` (or, worse, succeed as root and fill the
+ * system disk), so it is reported as the drive being absent instead.
+ */
+export function missingBackupVolume(folderPath, { volumesRoot = '/Volumes' } = {}) {
+  if (!folderPath) return null;
+  const target = resolve(folderPath);
+  const root = parsePath(target).root;
+  // Windows: an unplugged drive letter has no root at all.
+  if (root && !existsSync(root)) return { name: root.replace(/[\\/]+$/, ''), mountPoint: root };
+  const volumes = resolve(volumesRoot);
+  if (!target.startsWith(volumes + sep)) return null;
+  const name = target.slice(volumes.length + 1).split(sep)[0];
+  if (!name) return null;
+  const mountPoint = join(volumes, name);
+  return existsSync(mountPoint) ? null : { name, mountPoint };
+}
+
+export class BackupDestinationUnavailableError extends Error {
+  constructor({ name, mountPoint, folderPath }) {
+    super(`Backup drive "${name}" is not connected (${mountPoint}). Connect it or choose another backup folder.`);
+    this.name = 'BackupDestinationUnavailableError';
+    this.code = 'EBACKUPDRIVE';
+    this.mountPoint = mountPoint;
+    this.folderPath = folderPath;
+    this.retryable = true;
+  }
+}
+
+export function assertBackupDestinationMounted(folderPath, options) {
+  const missing = missingBackupVolume(folderPath, options);
+  if (missing) throw new BackupDestinationUnavailableError({ ...missing, folderPath });
 }
 
 function collectFiles(root, archiveRoot, { filter = () => true } = {}) {
@@ -371,18 +456,22 @@ async function writeArchive({ tempPath, files, manifest, level = 6 }) {
   });
 }
 
-export function verifyBackupArchive(path) {
-  const zip = new AdmZip(path);
-  const manifestEntry = zip.getEntry(`${BACKUP_PREFIX}/manifest.json`);
-  if (!manifestEntry) throw new Error('Backup verification failed: manifest is missing');
-  const manifest = JSON.parse(manifestEntry.getData().toString('utf-8'));
-  for (const [archivePath, expected] of Object.entries(manifest.checksums || {})) {
-    const entry = zip.getEntry(`${BACKUP_PREFIX}/${archivePath}`);
-    if (!entry) throw new Error(`Backup verification failed: ${archivePath} is missing`);
-    const actual = `sha256:${hashBuffer(entry.getData())}`;
-    if (actual !== expected) throw new Error(`Backup verification failed: checksum mismatch for ${archivePath}`);
+/**
+ * Reopen a finished archive and stream every manifest-listed entry through
+ * sha256. Streaming matters: reading the archive into memory failed every
+ * backup over 2 GiB, which is when a backup matters most.
+ */
+export async function verifyBackupArchive(path) {
+  const zip = await openZipArchive(path);
+  try {
+    const manifestEntry = zip.getEntry(`${BACKUP_PREFIX}/manifest.json`);
+    if (!manifestEntry) throw new Error('Backup verification failed: manifest is missing');
+    const manifest = JSON.parse((await readZipEntry(zip, manifestEntry)).toString('utf-8'));
+    await verifyBackupChecksums(zip, { prefix: BACKUP_PREFIX, manifest });
+    return manifest;
+  } finally {
+    await zip.close();
   }
-  return manifest;
 }
 
 /** Create, reopen, checksum-verify, and atomically publish one immutable ZIP. */
@@ -408,6 +497,7 @@ export async function createVerifiedBackup({
   const report = typeof onProgress === 'function' ? onProgress : () => {};
   if (!dataHome || !folderPath) throw new Error('dataHome and folderPath are required');
   const createdAt = now();
+  assertBackupDestinationMounted(folderPath);
   mkdirSync(folderPath, { recursive: true });
   cleanupStaleBackupArtifacts(folderPath);
   const destination = resolve(folderPath, archiveNameFor(kind, createdAt));
@@ -422,12 +512,15 @@ export async function createVerifiedBackup({
     const files = [];
     const envPath = resolve(dataHome, '.env');
     if (existsSync(envPath)) files.push({ diskPath: envPath, archivePath: 'env.bak' });
-    files.push(...collectFiles(resolve(dataHome, 'data'), 'data', { filter: rel => !shouldSkipDataPath(rel) }));
-    files.push(...collectFiles(resolve(dataHome, 'mcp-data'), 'mcp-data', {
-      filter: rel => !shouldSkipDataPath(rel)
+    // BACKUP_DATA_DIRS is the list other modules read (backupRoots): every folder copied here is on it.
+    const dataDirFilters = {
+      data: rel => !shouldSkipDataPath(rel),
+      'mcp-data': rel => !shouldSkipDataPath(rel)
+        && !isDatabaseCopyArtifact(rel)
         && !/^memory\.db(?:-wal|-shm)?$/i.test(rel)
         && !/\.db-(?:wal|shm)$/i.test(rel),
-    }));
+    };
+    for (const dir of BACKUP_DATA_DIRS) files.push(...collectFiles(resolve(dataHome, dir), dir, { filter: dataDirFilters[dir] }));
     files.push(...normalizeAdditionalEntries(additionalEntries));
 
     // De-duplicate before estimating work space so explicit additional entries
@@ -518,7 +611,7 @@ export async function createVerifiedBackup({
     // SQLite and JSON, where fast deflate still shrinks well.
     await writeArchive({ tempPath, files: finalFiles, manifest, level: leanSnapshot ? 1 : 6 });
     report({ phase: 'verify', files: finalFiles.length });
-    const publishedManifest = verifyBackupArchive(tempPath);
+    const publishedManifest = await verifyBackupArchive(tempPath);
     renameSync(tempPath, destination);
     return {
       path: destination,
@@ -684,15 +777,32 @@ export function normalizeBackupConfig(value = {}) {
   };
 }
 
-export function getBackupHealth(configValue, { now = () => new Date(), snapshots = null } = {}) {
+/**
+ * When the scheduler fires next. After a failure it waits one interval from
+ * the failed attempt, not from the last success; health reads this same
+ * function so it cannot advertise a due date weeks in the past.
+ */
+export function nextBackupDueMs(configValue, { lastAttemptMs = 0, now = () => new Date() } = {}) {
   const config = normalizeBackupConfig(configValue);
   const intervalMs = config.intervalMinutes * 60 * 1000;
+  const baseline = config.lastBackupError
+    ? new Date(config.lastAttemptAt || 0).getTime()
+    : new Date(config.lastVerifiedBackup || 0).getTime();
+  const effective = Math.max(Number.isFinite(baseline) ? baseline : 0, Number(lastAttemptMs) || 0);
+  return effective > 0 ? effective + intervalMs : now().getTime();
+}
+
+export function getBackupHealth(configValue, { now = () => new Date(), snapshots = null } = {}) {
+  const config = normalizeBackupConfig(configValue);
   const lastMs = config.lastVerifiedBackup ? new Date(config.lastVerifiedBackup).getTime() : null;
-  const nextDueMs = Number.isFinite(lastMs) ? lastMs + intervalMs : now().getTime();
+  const nextDueMs = nextBackupDueMs(config, { now });
   let status = 'healthy';
   let reason = null;
   let destinationError = null;
-  if (config.folderPath) {
+  const missingVolume = config.folderPath ? missingBackupVolume(config.folderPath) : null;
+  if (missingVolume) {
+    destinationError = new BackupDestinationUnavailableError({ ...missingVolume, folderPath: config.folderPath }).message;
+  } else if (config.folderPath) {
     try {
       let probe = resolve(config.folderPath);
       while (!existsSync(probe) && dirname(probe) !== probe) probe = dirname(probe);

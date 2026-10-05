@@ -209,7 +209,7 @@ export function initGraph(container, callbacks = {}) {
   _canvas.addEventListener('wheel', _onWheel, { passive: false });
   _canvas.addEventListener('dblclick', _onDblClick);
   _canvas.addEventListener('contextmenu', _onContextMenu);
-  window.addEventListener('resize', _resizeCanvas);
+  window.addEventListener('resize', _scheduleCanvasResize);
 
   // Hidden tab → stop the loop entirely; resume on return unless externally stopped
   document.addEventListener('visibilitychange', () => {
@@ -406,12 +406,18 @@ export function resumeInteraction() {
 function _renderLoop(time) {
   if (!_canvas || !_ctx) return;
 
+  // Pending window resize: apply it now (once this frame) and draw this frame
+  // even when idle — resizing cleared the canvas.
+  const resized = _resizePending;
+  if (resized) _resizeCanvas();
+
   // Idle gate: while any viewport motion is in flight stay at full rate;
   // after 2s of stillness drop to IDLE_FPS (skip the frame, keep the loop)
   if (_animating || _smoothZoom.active || _panInertia.active) {
     _lastActivityTime = time;
   }
-  if (time - _lastActivityTime > IDLE_AFTER_MS &&
+  if (!resized &&
+      time - _lastActivityTime > IDLE_AFTER_MS &&
       time - _lastIdleRenderTime < 1000 / IDLE_FPS) {
     _animFrameId = requestAnimationFrame(_renderLoop);
     return;
@@ -1339,6 +1345,9 @@ const DRAG_THRESHOLD = 5; // pixels before drag/pan starts
 
 function _onPointerMove(e) {
   if (_focusPaused) return;
+  // A window/panel/terminal drag that passes over the canvas is not graph
+  // activity — don't wake the render loop or hover-pick under it.
+  if (document.body.classList.contains('ui-interacting')) return;
   _lastActivityTime = performance.now();
   // Check if we've exceeded the drag threshold before actually moving
   if ((_pointer.isPanning || _pointer.isDragging) && !_pointer.hasMoved) {
@@ -1611,6 +1620,7 @@ function _zoomToRegion(region, duration = 400) {
 
 function _resizeCanvas() {
   if (!_canvas) return;
+  _resizePending = false;
   _dpr = Math.min(window.devicePixelRatio || 1, MAX_DPR);
   const w = window.innerWidth;
   const h = window.innerHeight;
@@ -1620,6 +1630,20 @@ function _resizeCanvas() {
   // CSS display size stays at viewport dimensions
   _canvas.style.width = w + 'px';
   _canvas.style.height = h + 'px';
+}
+
+// Window resizes arrive many times per frame while a window or sidepanel is
+// dragged; each buffer resize clears and reallocates the canvas. Apply at most
+// once per frame: the render loop applies it right before it draws (so the
+// cleared canvas is redrawn in the same frame); a stopped loop gets a one-off
+// frame to apply it.
+let _resizePending = false;
+function _scheduleCanvasResize() {
+  if (_resizePending) return;
+  _resizePending = true;
+  if (!_animFrameId) {
+    requestAnimationFrame(() => { if (_resizePending) _resizeCanvas(); });
+  }
 }
 
 

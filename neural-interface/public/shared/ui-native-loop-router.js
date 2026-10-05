@@ -134,9 +134,14 @@ async function claim(run) {
 
 async function attach(run, focus) {
   const provider = run.provider;
+  const buffered = _providerEventBuffers.get(run.runId);
   const options = {
     focus,
     isCancelled: () => _suspended || _dismissed.has(run.runId) || !_ownedClaims.has(run.runId),
+    // Provider events this window buffered before the run had a tab (replayed
+    // right after attach), so a panel can skip a history read they already cover.
+    bufferedEvents: buffered ? buffered.map((message) => message.event) : [],
+    bufferTruncated: !!buffered?.truncated,
   };
   if (provider === 'claude-code' || provider === 'claude') {
     return attachClaudeAutomation(run, options);
@@ -264,6 +269,45 @@ async function routeLatest(runId) {
   return false;
 }
 
+/** Latest known descriptor for a run this router has seen (null when unknown). */
+export function getNativeLoopRun(runId) {
+  if (!runId) return null;
+  return _latestRuns.get(runId)?.run || null;
+}
+
+/**
+ * Bring a dispatched run's sidepanel tab to the front. Attaches with
+ * focus:true even when this window already owns the claim (the normal route
+ * path only focuses on first attach). Falls back to a fetch when the run has
+ * not been broadcast to this window yet.
+ */
+export async function focusNativeLoopRun(runId) {
+  if (!runId || _suspended) return false;
+  let run = getNativeLoopRun(runId);
+  if (!run) {
+    try {
+      const response = await fetch(`/api/sidepanel-runs/${encodeURIComponent(runId)}`);
+      if (response.ok) {
+        const data = await response.json();
+        run = descriptorFrom(data) || descriptorFrom(data?.run);
+      }
+    } catch {}
+  }
+  if (!run?.runId) return false;
+  if (run.surface && run.surface !== 'sidepanel') return false;
+  const entry = _latestRuns.get(run.runId);
+  if (!entry || isNewerDescriptor(run, entry.run)) _latestRuns.set(run.runId, { run, focus: true });
+  else entry.focus = true;
+  if (_ownedClaims.has(run.runId) && _attached.has(run.runId)) {
+    // Already attached here — re-attach with focus so the panel raises the tab.
+    try {
+      const result = await attach(_latestRuns.get(run.runId)?.run || run, true);
+      if (result?.ok) return true;
+    } catch {}
+  }
+  return routeNativeLoopRun(_latestRuns.get(run.runId)?.run || run, { focus: true, retry: true });
+}
+
 export function routeNativeLoopRun(payload, { focus, retry = false } = {}) {
   const run = descriptorFrom(payload);
   if (!run?.runId || run.surface !== 'sidepanel') return Promise.resolve(false);
@@ -361,12 +405,23 @@ export function initNativeLoopRouter() {
     }
     const buffered = _providerEventBuffers.get(run.runId) || [];
     buffered.push(message);
-    if (buffered.length > 500) buffered.shift();
+    if (buffered.length > 500) {
+      buffered.shift();
+      buffered.truncated = true;
+    }
     _providerEventBuffers.set(run.runId, buffered);
     if (!_routeQueues.has(run.runId)) routeNativeLoopRun(run, { focus: false }).catch(() => {});
   });
   on('sync:schedule:completed', (message) => {
     if (message?.surface === 'sidepanel') route(message.run || message);
+  });
+  // Assistant "Focus" (POST /api/assistant/runs/:id/focus) → raise the run's sidepanel tab
+  on('sync:assistant:focus', (message) => {
+    const runId = message?.runId || descriptorFrom(message)?.runId;
+    if (!runId) return;
+    const run = descriptorFrom(message);
+    if (run?.runId && run.surface === 'sidepanel') recordLatestRun(run, true);
+    focusNativeLoopRun(runId).catch(() => {});
   });
   window.addEventListener('pagehide', () => {
     _suspended = true;

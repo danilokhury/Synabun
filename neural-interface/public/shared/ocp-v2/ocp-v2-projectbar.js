@@ -7,7 +7,9 @@
 
 import { getDefaultStore } from './ocp-v2-state.js';
 import { sendTextMessage } from './ocp-v2-send.js';
-import { api } from './ocp-v2-ws.js';
+import { api, onEvent } from './ocp-v2-ws.js';
+import { captureBinding, latestOnly } from './ocp-v2-binding.js';
+import { setSessionMcpProfile } from './ocp-v2-session-actions.js';
 import { storage } from '../storage.js';
 import { on } from '../state.js';
 
@@ -59,7 +61,10 @@ function saveSessionProfile(sessionId, profile) {
 async function syncProfileForActiveSession() {
   const version = ++_profileSyncVersion;
   const state = getState();
-  const sessionId = state.sessionId;
+  // The session this read is for (ocp-v2-binding.js): its answer is that
+  // session's, and reaches the selector only while the panel is still on it.
+  const at = captureBinding(_currentStore);
+  const sessionId = at.sessionId;
   const profile = state.sessionInfo?.mcpProfile
     || savedSessionProfile(sessionId)
     || _defaultProfile;
@@ -73,7 +78,7 @@ async function syncProfileForActiveSession() {
     // A running serve is authoritative across windows. If no serve is pinned
     // yet, retain the session's persisted browser-side choice for first launch.
     if (!remote?.pinned || !remote.profile) return;
-    if (version !== _profileSyncVersion || getState().sessionId !== sessionId) return;
+    if (version !== _profileSyncVersion || !at.isCurrent()) return;
     saveSessionProfile(sessionId, remote.profile);
     _currentStore.setMcpProfile(remote.profile);
     _currentProfile = remote.profile;
@@ -237,6 +242,12 @@ function ddSetLabel(dd, text, hasValue) {
   else dd.classList.remove('has-value');
 }
 
+// A menu that has to load something before it opens (the project list, the
+// tool profiles, the recall setting) opens only when it is still the one the
+// user asked for last: not after another menu was opened or everything was
+// closed while it loaded.
+const _menuOpenings = latestOnly();
+
 function ddOpen(dd) {
   if (!dd) return;
   closeAllDropdowns(dd);
@@ -252,6 +263,8 @@ function ddClose(dd) {
 function ddIsOpen(dd) { return !!dd?.classList.contains('open'); }
 
 function closeAllDropdowns(except) {
+  // Closing everything (an outside click) also calls off a menu that is still loading.
+  if (!except) _menuOpenings.cancel();
   document.querySelectorAll('.ocpv2-dropdown.open').forEach((dd) => {
     if (dd === except) return;
     ddClose(dd);
@@ -289,7 +302,9 @@ function wireProjectDd() {
   _projectDd.addEventListener('click', async (event) => {
     if (event.target.closest('.ocpv2-dd-menu')) return;
     if (ddIsOpen(_projectDd)) { ddClose(_projectDd); return; }
+    const wanted = _menuOpenings.begin();
     try { await _ctx.ensureProjectsLoaded?.(); } catch {}
+    if (!wanted()) return;
     paintProjectMenu();
     ddOpen(_projectDd);
   });
@@ -316,7 +331,11 @@ function wireBranchDd() {
     const cwd = getState().cwd;
     if (!cwd) return;
     if (ddIsOpen(_branchDd)) { ddClose(_branchDd); return; }
+    const wanted = _menuOpenings.begin();
     await loadBranchesFor(cwd, /* force */ false);
+    // Another project was selected while its branches were read: this menu
+    // would be the old project's. (Or the user opened another menu meanwhile.)
+    if (!wanted() || getState().cwd !== cwd) return;
     paintBranchMenu();
     ddOpen(_branchDd);
   });
@@ -360,7 +379,9 @@ function paintBranchMenu() {
       });
       _branchCache.delete(cwd);
       const fresh = await loadBranchesFor(cwd, true);
-      if (fresh) ddSetLabel(_branchDd, fresh.current || value, !!(fresh.current || value));
+      // The label shows the branch of the project on screen: `cwd` is the one
+      // the checkout was for, and the panel may be in another by now.
+      if (fresh && (getState().cwd || '') === cwd) ddSetLabel(_branchDd, fresh.current || value, !!(fresh.current || value));
     } catch (err) {
       console.warn('[ocp-v2-projectbar] checkout failed', err);
     }
@@ -368,6 +389,23 @@ function paintBranchMenu() {
 }
 
 // ── State sync ─────────────────────────────────────────────────────────────
+
+// OpenCode saw the branch change (a checkout by the model, the user or
+// another tool): drop what is cached and re-read the branch of the project on
+// screen. The event does not say which project it is about, and one refetch
+// is cheap.
+let _branchRefreshTimer = null;
+onEvent((eventType) => {
+  if (eventType !== 'vcs.branch.updated' || !_branchDd) return;
+  if (_branchRefreshTimer) clearTimeout(_branchRefreshTimer);
+  _branchRefreshTimer = setTimeout(() => {
+    _branchRefreshTimer = null;
+    const cwd = getState().cwd;
+    if (!cwd) return;
+    _branchCache.delete(cwd);
+    syncToCwd(cwd);
+  }, 300);
+});
 
 function syncToCwd(cwd) {
   // Project label
@@ -386,6 +424,9 @@ function syncToCwd(cwd) {
   } else {
     ddSetLabel(_branchDd, '…', false);
     loadBranchesFor(cwd, false).then(() => {
+      // Keyed by directory: a late answer for the project the panel has left
+      // does not relabel the one it is in.
+      if ((getState().cwd || '') !== cwd) return;
       const fresh = _branchCache.get(cwd);
       if (fresh) ddSetLabel(_branchDd, fresh.current || (_branchDd?.dataset.placeholder || 'branch'), !!fresh.current);
       else ddSetLabel(_branchDd, _branchDd?.dataset.placeholder || 'branch', false);
@@ -400,9 +441,13 @@ function wireProfileDd() {
     if (event.target.closest('.ocpv2-dd-menu')) return;
     if (getState().running) return;
     if (ddIsOpen(_profileDd)) { ddClose(_profileDd); return; }
+    const wanted = _menuOpenings.begin();
     if (!_profileLoaded) {
       try { await loadCurrentProfile(); } catch {}
     }
+    // The menu changes the profile of the session on screen: it does not open
+    // over a turn that started while the profiles loaded.
+    if (!wanted() || getState().running) return;
     paintProfileMenu();
     ddOpen(_profileDd);
   });
@@ -468,12 +513,17 @@ function paintProfileMenu() {
       ddClose(_profileDd);
       if (p.id === _currentProfile) return;
       const previous = _currentProfile;
+      const at = captureBinding(_currentStore);
       _currentProfile = p.id;
       applyProfileLabel();
       try { await updateMcpProfile(p.id); }
       catch (err) {
-        _currentProfile = previous;
-        applyProfileLabel();
+        // The label is rolled back only where it was changed: after a move the
+        // selector already shows the profile of the session on screen.
+        if (at.isCurrent()) {
+          _currentProfile = previous;
+          applyProfileLabel();
+        }
         console.error('[ocp-v2-projectbar] updateMcpProfile failed', err);
       }
     });
@@ -486,15 +536,15 @@ async function updateMcpProfile(profile) {
   if (state.running) throw new Error('Wait for the active turn to finish before changing its MCP profile.');
   let effective = profile;
   if (state.sessionId) {
-    const result = await api.mcpProfileSet(state.sessionId, profile);
-    if (result?.error || result?.ok === false || Number(result?.status || 200) >= 400) {
-      throw new Error(result?.error || result?.data?.error || `Could not switch MCP profile (${result?.status || 'unknown error'})`);
+    // The change is for the session it was asked on (setSessionMcpProfile
+    // captures it before the request): the answer is saved under that
+    // session's key, and the store and the selector take it only while the
+    // panel is still on that binding.
+    const changed = await setSessionMcpProfile(_currentStore, api, profile, { save: saveSessionProfile });
+    if (changed?.applied) {
+      _currentProfile = changed.profile;
+      applyProfileLabel();
     }
-    effective = result?.data?.profile || profile;
-    saveSessionProfile(state.sessionId, effective);
-    _currentStore.setMcpProfile(effective);
-    _currentProfile = effective;
-    applyProfileLabel();
     return;
   }
   // With no active session the selector intentionally edits only the default
@@ -518,9 +568,11 @@ function wireRecallDd() {
   _recallDd.addEventListener('click', async (event) => {
     if (event.target.closest('.ocpv2-dd-menu')) return;
     if (ddIsOpen(_recallDd)) { ddClose(_recallDd); return; }
+    const wanted = _menuOpenings.begin();
     if (!_recallLoaded) {
       try { await loadRecallProfile(); } catch {}
     }
+    if (!wanted()) return;
     paintRecallMenu();
     ddOpen(_recallDd);
   });
@@ -585,9 +637,11 @@ async function saveRecallProfile(profile) {
 function wireDocClick() {
   if (_docClickWired) return;
   _docClickHandler = (event) => {
+    if (event.target?.closest?.('.ocpv2-dropdown')) return;
+    // A click elsewhere also calls off a menu that is still loading.
+    _menuOpenings.cancel();
     const open = document.querySelector('.ocpv2-dropdown.open');
     if (!open) return;
-    if (event.target.closest('.ocpv2-dropdown')) return;
     closeAllDropdowns(null);
   };
   document.addEventListener('mousedown', _docClickHandler);

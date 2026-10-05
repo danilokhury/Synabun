@@ -10,7 +10,13 @@ import {
   CODEX_GREETING_MARKER_START, CODEX_GREETING_MARKER_END,
   CODEX_PLAN_MODE_PREFIXES,
 } from './cdx-icons.js';
-import { buildCodexPlanRevisionPrompt, selectCodexHistoryRenderSource } from './cdx-protocol.js';
+import { buildCodexPlanRevisionPrompt, codexGenericCardHead, codexReadableValue, codexTranscriptPresentation, selectCodexHistoryRenderSource } from './cdx-protocol.js';
+import { getPlanMarkdown, approvePlan, extractProposedPlan, syncPlanMirrors, isRecordedPlanTurn, isPlanMessageCandidate, selectPlanAdoptionMessage } from './cdx-plan.js';
+import { bindExpandableCard, setCardExpanded } from './cdx-cards.js';
+import { mountMcpAppCard } from './cdx-mcp-app-host.js';
+import { OUTPUT_LIMITS, boundedText, jsonAnswer, prettyJsonFences, readableStructuredValue, fileChangeDiffs, parseUnifiedDiff, deduplicateTurnDiff } from './cdx-output-model.js';
+import { renderReadableOutput, renderReadableBlock, cleanOutputBlocks, hydrateOutputControls, observeOutputBlocks, renderDiffView, restoreDiffViews } from './cdx-output.js';
+export { setCardExpanded } from './cdx-cards.js';
 
 // ── Shared context (set by cdx-tabs via setRenderContext) ──
 let _ctx = {
@@ -93,16 +99,39 @@ export function esc(s) {
 // HTML without re-parsing.
 const _mdCache = new Map();
 const _MD_CACHE_LIMIT = 512;
+let _mdRenderer = null;
+let _mdParser;
+function markdownFallback(text) {
+  const source = prettyJsonFences(text);
+  const fence = /^(`{3,}|~{3,})([\w-]*)[ \t]*\r?\n([\s\S]*?)\r?\n\1[ \t]*$/gm;
+  let html = '', last = 0;
+  for (const match of source.matchAll(fence)) {
+    html += esc(source.slice(last, match.index)).replace(/\n/g, '<br>');
+    html += `<pre><code${match[2] ? ` class="language-${esc(match[2])}"` : ''}>${esc(match[3])}</code></pre>`;
+    last = match.index + match[0].length;
+  }
+  return html + esc(source.slice(last)).replace(/\n/g, '<br>');
+}
 export function md(text) {
+  // Contexts expose marked through a live getter: it can arrive after the first
+  // render or be replaced without setRenderContext being called again.
+  const renderer = _ctx.marked;
+  const parser = renderer?.parse;
+  if (renderer !== _mdRenderer || parser !== _mdParser) {
+    _mdCache.clear();
+    _mdRenderer = renderer;
+    _mdParser = parser;
+  }
   const key = text || '';
+  if (key.length > OUTPUT_LIMITS.input) return `<pre class="cxp-card-pre cxp-output-raw"><code>${esc(boundedText(key))}</code></pre>`;
   const cached = _mdCache.get(key);
   if (cached !== undefined) return cached;
   let html;
-  if (!_ctx.marked) {
-    html = esc(key).replace(/\n/g, '<br>');
+  if (!renderer) {
+    html = markdownFallback(key);
   } else {
-    try { html = _ctx.marked.parse(key); }
-    catch { html = esc(key).replace(/\n/g, '<br>'); }
+    try { html = parser.call(renderer, prettyJsonFences(key)); }
+    catch { html = markdownFallback(key); }
   }
   if (_mdCache.size >= _MD_CACHE_LIMIT) {
     const firstKey = _mdCache.keys().next().value;
@@ -112,9 +141,9 @@ export function md(text) {
   return html;
 }
 
-export function renderAssistantMarkdown(text) {
+export function renderAssistantMarkdown(text, { streaming = false } = {}) {
   const tpl = document.createElement('template');
-  tpl.innerHTML = md(text || '');
+  if (!renderReadableOutput(tpl.content, text || '', { streaming })) tpl.innerHTML = md(text || '');
   // Codex occasionally emits standalone separators that render as stray rules in the sidepanel.
   tpl.content.querySelectorAll('hr').forEach((node) => node.remove());
   tpl.content.querySelectorAll('p').forEach((node) => {
@@ -314,15 +343,17 @@ export function convertInlineChoices(container) {
 
 export function postProcessRenderedHtml(container) {
   if (!container) return;
+  cleanOutputBlocks(container);
+  hydrateOutputControls(container);
   container.querySelectorAll('pre').forEach((pre) => {
+    if (pre.closest('.cxp-readable, .cxp-output-source, .cxp-diff-view') || pre.querySelector('.cxp-readable')) return;
     if (pre.querySelector('.cxp-copy-btn')) return;
     const btn = document.createElement('button');
     btn.className = 'cxp-copy-btn';
     btn.textContent = 'Copy';
+    const copyText = (pre.querySelector('code') || pre).textContent || '';
     btn.addEventListener('click', () => {
-      const code = pre.querySelector('code');
-      const text = (code || pre).textContent || '';
-      navigator.clipboard.writeText(text).then(() => {
+      navigator.clipboard.writeText(copyText).then(() => {
         btn.textContent = 'Copied!';
         setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
       }).catch(() => {});
@@ -507,6 +538,9 @@ export function pretty(value) {
 
 export function parseJsonishString(value) {
   if (typeof value !== 'string') return value;
+  if (value.length > OUTPUT_LIMITS.input) return value;
+  const answer = jsonAnswer(value);
+  if (answer?.kind === 'json') return answer.value;
   const trimmed = value.trim();
   if (!trimmed) return value;
   if (!/^(?:\{|\[|")/.test(trimmed)) return value;
@@ -613,7 +647,7 @@ export function summarizeCommandExecution(command, cwd = '') {
 }
 
 function computeDiffStats(text) {
-  const value = String(text || '');
+  const value = String(text || '').slice(0, OUTPUT_LIMITS.input);
   if (!value.trim()) return '';
   let added = 0;
   let removed = 0;
@@ -635,7 +669,7 @@ function describeFileChange(change) {
 }
 
 function resolveFileChangeSummary(item) {
-  const changes = Array.isArray(item?.changes) ? item.changes : [];
+  const changes = Array.isArray(item?.changes) ? item.changes.slice(0, OUTPUT_LIMITS.files) : [];
   const lines = changes.map((change) => describeFileChange(change)).filter(Boolean);
   if (lines.length) return lines.join('\n');
   return 'Pending file changes';
@@ -644,8 +678,7 @@ function resolveFileChangeSummary(item) {
 function collectStructuredText(value, seen = new Set()) {
   const parsed = parseJsonishString(value);
   if (parsed !== value) {
-    const parsedBlocks = collectStructuredText(parsed, seen);
-    if (parsedBlocks.length || isStructuredEmpty(parsed)) return parsedBlocks;
+    return [readableStructuredValue(parsed)];
   }
   if (value == null) return [];
   if (typeof value === 'string') return value.trim() ? [value] : [];
@@ -697,27 +730,20 @@ function collectStructuredText(value, seen = new Set()) {
 }
 
 export function extractStructuredText(value) {
+  const parsed = parseJsonishString(value);
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && !parsed.type && !Array.isArray(parsed.content)) return readableStructuredValue(parsed);
+  if (typeof value === 'string') return readableStructuredValue(value);
+  if (Array.isArray(parsed) && !parsed.some(entry => entry && typeof entry === 'object' && entry.type)) return readableStructuredValue(parsed);
   return collectStructuredText(value).join('\n\n');
 }
 
 export function formatStructuredValue(value) {
-  const parsed = parseJsonishString(value);
-  if (isStructuredEmpty(parsed)) return '';
-  return pretty(parsed);
+  return readableStructuredValue(parseJsonishString(value));
 }
 
 export function resolveFinalMarkdownText(state, nextText) {
-  const incoming = typeof nextText === 'string' ? nextText : '';
-  const current = typeof state?.buffer === 'string' ? state.buffer : '';
-  const incomingTrim = incoming.trim();
-  const currentTrim = current.trim();
-  if (!incomingTrim) return current;
-  if (!currentTrim) return incoming;
-  if (incoming === current) return incoming;
-  if (incoming.includes(current)) return incoming;
-  if (current.includes(incoming)) return current;
-  if (current.length - incoming.length > 40) return current;
-  return incoming;
+  // Completed items are authoritative, including explicit empty/shorter text.
+  return typeof nextText === 'string' ? nextText : String(state?.buffer || '');
 }
 
 // ═══════════════════════════════════════════
@@ -798,6 +824,9 @@ export function sanitizeStoredTranscriptDom(container) {
   // MCP startup/auth notices describe live app-server state. Restoring them
   // from an HTML snapshot would leave a stale, disabled authentication action.
   container.querySelectorAll('.cxp-mcp-startup-notice').forEach((node) => node.remove());
+  // These actions require a live completed item identity; history rendering
+  // reinstalls them once the authoritative item is available.
+  container.querySelectorAll('.cxp-use-as-plan').forEach((node) => node.remove());
   container.querySelectorAll('.cxp-msg-user .cxp-msg-body').forEach((bodyEl) => {
     const messageEl = bodyEl.closest('.cxp-msg-user');
     const textBlocks = Array.from(bodyEl.querySelectorAll('.cxp-msg-user-text'));
@@ -824,10 +853,78 @@ export function sanitizeStoredTranscriptDom(container) {
     }
     bodyEl.textContent = text;
   });
+  container.querySelectorAll('.cxp-msg-assistant .cxp-msg-rendered').forEach(body => {
+    if (body.querySelector('.cxp-readable')) { hydrateOutputControls(body); return; }
+    const text = body.textContent || '';
+    if (!body.querySelector('pre, code') && jsonAnswer(text)) renderReadableOutput(body, text);
+  });
+  if (!_ctx.running) container.querySelectorAll('.cxp-reasoning').forEach(card => {
+    const body = card.querySelector('.cxp-reasoning-body');
+    if (body && /^Waiting for reasoning summary/.test(body.textContent)) body.textContent = 'No reasoning summary was provided.';
+    const pill = card.querySelector('.cxp-status-pill');
+    if (pill?.textContent === 'live') pill.textContent = 'complete';
+  });
+  syncStatusPillTones(container);
+  cleanOutputBlocks(container);
+  // Old snapshots retain their classes; replace just their verbose diff body.
+  container.querySelectorAll('[data-item-type="fileChange"]').forEach(card => {
+    const fold = card.querySelector('.cxp-fold-diff');
+    const raw = fold?.querySelector('.cxp-card-pre-diff')?.textContent;
+    if (!raw) return;
+    const view = document.createElement('div');
+    fold.replaceWith(view);
+    renderDiffView(view, parseUnifiedDiff(raw), { lazy: true, cwd: _ctx.boundTab?.project || _ctx.project, summaryEl: card.querySelector('.cxp-card-meta') });
+    if (card.dataset.userCollapsed !== '1') setCardExpanded(card, true);
+  });
+  restoreDiffViews(container, { cwd: _ctx.boundTab?.project || _ctx.project });
+}
+
+// ═══════════════════════════════════════════
+// Status pill tone (presentation only)
+// ═══════════════════════════════════════════
+
+// Pills get their label from many call sites as plain text. The stylesheet
+// needs a hook to give a status its colour, so the label is mirrored into
+// data-tone here; nothing else reads it.
+const STATUS_PILL_TONES = [
+  ['error', /^(failed|failure|error|errored|denied|rejected)\b/],
+  ['warning', /^(waiting|declined|cancell?ed|interrupted|aborted|blocked|retry|stale|unsupported|timed ?out|paused)\b/],
+  ['running', /^(in ?progress|running|live|working|starting|started|submitting|streaming|active)\b/],
+  ['success', /^(allowed|accepted|approved|authenticated|ready)\b/],
+];
+
+export function statusPillTone(text) {
+  const label = String(text || '').trim().toLowerCase();
+  return STATUS_PILL_TONES.find(([, pattern]) => pattern.test(label))?.[0] || '';
+}
+
+function applyStatusPillTone(pill) {
+  if (!pill) return;
+  const tone = statusPillTone(pill.textContent);
+  if (tone) pill.dataset.tone = tone;
+  else delete pill.dataset.tone;
+}
+
+const _statusPillObserver = typeof MutationObserver === 'function'
+  ? new MutationObserver((records) => {
+    for (const record of records) {
+      const node = record.target.nodeType === 1 ? record.target : record.target.parentElement;
+      applyStatusPillTone(node?.closest?.('.cxp-status-pill'));
+    }
+  })
+  : null;
+
+export function syncStatusPillTones(root) {
+  const pills = root?.querySelectorAll?.('.cxp-status-pill') || [];
+  for (const pill of pills) {
+    applyStatusPillTone(pill);
+    _statusPillObserver?.observe(pill, { childList: true, characterData: true, subtree: true });
+  }
 }
 
 export function removePostPlanCards(messagesEl = _ctx.messagesEl) {
   messagesEl?.querySelectorAll('.cxp-post-plan-msg').forEach((node) => node.remove());
+  messagesEl?.querySelectorAll('.cxp-plan-document-toolbar [data-plan-action="edit"]').forEach((button) => { button.hidden = false; });
 }
 
 export function removePostCompactionCards(messagesEl = _ctx.messagesEl) {
@@ -847,7 +944,7 @@ function getUserAttachmentPath(item) {
 }
 
 function getUserAttachmentLabel(item) {
-  return item?.name || basenamePath(getUserAttachmentPath(item)) || 'image';
+  return item?.name || item?.fileId || item?.file_id || basenamePath(getUserAttachmentPath(item)) || 'image';
 }
 
 function normalizeRenderableImageUrl(rawUrl) {
@@ -984,6 +1081,7 @@ export function renderUserMessageContent(bodyEl, content) {
 // ═══════════════════════════════════════════
 
 export function extractToolResultText(result) {
+  if (result && typeof result === 'object' && hasOwnField(result, 'structuredContent')) return formatStructuredValue(result.structuredContent);
   return extractStructuredText(result);
 }
 
@@ -1074,6 +1172,7 @@ export function appendElement(el) {
     return;
   }
   _ctx.hideEmpty();
+  observeOutputBlocks(_ctx.messagesEl);
   if (_ctx.threadId) {
     el.dataset.codexAccountId = String(_ctx.accountId || 'default');
     el.dataset.codexThreadId = String(_ctx.threadId);
@@ -1082,6 +1181,7 @@ export function appendElement(el) {
     if (_ctx.activeTurnId) el.dataset.codexTurnId = String(_ctx.activeTurnId);
   }
   _ctx.messagesEl.appendChild(el);
+  syncStatusPillTones(el);
   _ctx.pruneTranscriptDom(_ctx.messagesEl);
   if (_ctx.threadId) {
     _ctx.setTranscriptSourceMeta({
@@ -1275,20 +1375,184 @@ export function updatePostPlanTranscriptMeta(tab = _ctx.boundTab) {
       });
     }
     _ctx.scheduleThreadSnapshotSave(tab);
-    if (_ctx.isActiveTab(tab)) _ctx.scrollEnd();
+  });
+}
+
+export function syncPlanEditorActions(tab = _ctx.boundTab) {
+  if (!tab?.messagesEl) return;
+  syncMessagePlanActions(tab);
+  const blocked = !!(tab.planEditor?.dirty || tab.planEditor?.saving);
+  tab.messagesEl.querySelectorAll('[data-plan-action]').forEach((button) => {
+    const action = button.dataset.planAction;
+    const card = button.closest('.cxp-post-plan-card');
+    button.disabled = !!(tab.running || tab.startingThread || tab.compacting)
+      || !!card?.classList.contains('is-busy')
+      || (action === 'feedback' && !card?.querySelector('.cxp-post-plan-feedback')?.value.trim())
+      || ((action === 'continue' || action === 'feedback' || action === 'compact' || action === 'adopt') && blocked)
+      || (action === 'edit' && !!tab.planEditor?.saving);
+    if (action === 'continue') button.title = blocked ? 'Save or cancel the open plan edits first.' : '';
+    if (action === 'edit' && button.closest('.cxp-plan-document-toolbar')) {
+      button.hidden = !!tab.messagesEl.querySelector('.cxp-post-plan-msg [data-plan-action="edit"]');
+    }
+  });
+  const notice = tab.messagesEl.querySelector('.cxp-plan-editor-notice');
+  if (notice) {
+    notice.hidden = !blocked;
+    notice.textContent = tab.planEditor?.saving ? 'Saving plan…' : 'Save or cancel your editor changes before continuing.';
+  }
+}
+
+export async function openCodexPlanEditor(tab = _ctx.boundTab) {
+  if (!tab?.planDocument || tab.closed || tab.running || tab.startingThread || tab.compacting || tab.planEditor?.saving) return false;
+  const document = tab.planDocument;
+  const identity = {
+    source: 'codex', tabId: tab.id, planId: document.id, revision: document.revision,
+    accountId: document.accountId, threadId: document.threadId,
+  };
+  try {
+    // Materialize and verify every revision; a cached path can contain old text.
+    const filePath = await _ctx.ensurePlanFile?.(tab);
+    if (tab.closed) return false;
+    if (!filePath) throw new Error('The complete plan could not be saved for editing.');
+    if (tab.planDocument?.id !== document.id || tab.planDocument?.revision !== document.revision) {
+      throw new Error('The plan changed while opening the editor. Open the latest revision again.');
+    }
+    _ctx.emit('open-plan-editor', {
+      ...identity, filePath, expectedMarkdown: document.markdown,
+      save: (edit) => tab.closed
+        ? { ok: false, reason: 'This conversation was closed. Your edits are still available to copy.' }
+        : _ctx.savePlanEdit(tab, { ...identity, ...edit }),
+    });
+    return true;
+  } catch (error) {
+    _ctx.withTab(tab, () => appendSystem(error?.message || 'Could not open the plan editor.', 'error'));
+    return false;
+  }
+}
+
+function renderPlanDocument(tab) {
+  const plan = tab.planDocument;
+  let el = tab.messagesEl.querySelector('.cxp-plan-document-msg');
+  if (!getPlanMarkdown(tab)) {
+    el?.remove();
+    tab.messagesEl.querySelectorAll('[data-plan-source-hidden]').forEach((node) => {
+      node.hidden = false;
+      delete node.dataset.planSourceHidden;
+    });
+    return null;
+  }
+  if (!el) {
+    _ctx.withTab(tab, () => {
+      const shell = createMessageShell('assistant', 'Codex');
+      el = shell.el;
+      el.classList.add('cxp-plan-document-msg');
+    });
+  }
+  const body = el.querySelector('.cxp-msg-body');
+  const changed = el.dataset.planId !== plan.id || Number(el.dataset.planRevision) !== plan.revision;
+  el.dataset.planId = plan.id;
+  el.dataset.planRevision = String(plan.revision);
+  el.dataset.codexThreadId = plan.threadId || '';
+  el.dataset.codexAccountId = plan.accountId || 'default';
+  el.dataset.codexTurnId = plan.turnId || '';
+  // Snapshot HTML has no event handlers; rebind toolbar on every restoration.
+  let toolbar = body.querySelector('.cxp-plan-document-toolbar');
+  if (!toolbar) {
+    toolbar = document.createElement('div');
+    toolbar.className = 'cxp-plan-document-toolbar';
+  }
+  toolbar.replaceChildren();
+  let label = body.querySelector('.cxp-plan-document-label');
+  if (!label) {
+    label = document.createElement('div');
+    label.className = 'cxp-plan-document-label';
+  }
+  label.textContent = `${plan.status === 'complete' ? 'Plan' : 'Draft plan'} · revision ${plan.revision}`;
+  body.prepend(label);
+  const copy = _ctx.createRequestButton('Copy plan', 'secondary');
+  copy.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(getPlanMarkdown(tab)); copy.textContent = 'Copied'; }
+    catch { _ctx.withTab(tab, () => appendSystem('Could not copy the plan.', 'error')); }
+  });
+  const edit = _ctx.createRequestButton(tab.planEditor?.open ? 'Reopen editor' : 'Edit plan', 'secondary');
+  edit.dataset.planAction = 'edit';
+  edit.addEventListener('click', () => openCodexPlanEditor(tab));
+  const collapse = _ctx.createRequestButton(el.dataset.planCollapsed === '1' ? 'Expand plan' : 'Collapse plan', 'secondary');
+  collapse.addEventListener('click', () => {
+    const collapsed = el.dataset.planCollapsed !== '1';
+    el.dataset.planCollapsed = collapsed ? '1' : '0';
+    content.hidden = collapsed;
+    collapse.textContent = collapsed ? 'Expand plan' : 'Collapse plan';
+    _ctx.scheduleThreadSnapshotSave(tab);
+  });
+  toolbar.append(copy, edit, collapse);
+  let content = body.querySelector('.cxp-plan-document-content');
+  if (!content) {
+    content = document.createElement('div');
+    content.className = 'cxp-plan-document-content';
+  }
+  // Re-establish document-first order for live updates and old saved snapshots.
+  body.append(content, toolbar);
+  if (changed || !el._planDocumentBound || !content.childNodes.length) {
+    content.innerHTML = md(plan.markdown);
+    postProcessRenderedHtml(content);
+  }
+  el._planDocumentBound = true;
+  content.hidden = el.dataset.planCollapsed === '1';
+  tab.messagesEl.querySelectorAll('[data-item-id]').forEach((node) => {
+    const sameSource = node.dataset.itemId === plan.itemId;
+    if (sameSource || node.dataset.planSourceHidden) {
+      node.hidden = sameSource;
+      if (sameSource) node.dataset.planSourceHidden = '1';
+      else delete node.dataset.planSourceHidden;
+    }
+    // A regenerated plan can arrive later in the transcript. Keep its document
+    // and the following review controls beside that current source item.
+    if (sameSource && node.parentElement === tab.messagesEl && node !== el && node.nextElementSibling !== el) node.after(el);
+  });
+  syncPlanEditorActions(tab);
+  return el;
+}
+
+function renderRecoverablePlanDraft(tab) {
+  tab.messagesEl.querySelectorAll('.cxp-plan-draft-msg').forEach((node) => node.remove());
+  const draft = tab.planDraft;
+  if (!draft?.markdown) return;
+  _ctx.withTab(tab, () => {
+    const shell = createMessageShell('assistant', 'Draft plan');
+    shell.el.classList.add('cxp-plan-draft-msg');
+    const note = document.createElement('p');
+    note.textContent = 'This draft needs review before it can become the implementation plan.';
+    const content = document.createElement('div');
+    content.innerHTML = md(draft.markdown);
+    postProcessRenderedHtml(content);
+    const adopt = _ctx.createRequestButton('Use as plan', 'secondary');
+    adopt.dataset.planAction = 'adopt';
+    adopt.disabled = !!(tab.running || tab.planEditor?.dirty || tab.planEditor?.saving);
+    adopt.addEventListener('click', () => {
+      if (tab.running || tab.planEditor?.dirty || tab.planEditor?.saving) return;
+      _ctx.adoptMessageAsPlan?.(tab, {
+        itemId: draft.itemId || 'recovered-draft', turnId: draft.turnId || '', markdown: draft.markdown,
+      });
+    });
+    shell.body.append(note, content, adopt);
   });
 }
 
 export function renderPostPlanActions(tab = _ctx.boundTab, headerText = null) {
   if (!tab?.messagesEl) return;
+  syncPlanMirrors(tab);
+  syncMessagePlanActions(tab);
   tab.postPlanHeader = headerText || tab.postPlanHeader || 'PLAN COMPLETE';
-  if (_ctx.isActiveTab(tab)) {
+  if (_ctx.boundTab === tab) {
     // Sync the module-level _postPlanHeader via context
     if (typeof _ctx.setPostPlanHeader === 'function') _ctx.setPostPlanHeader(tab.postPlanHeader);
   }
 
+  const planEl = renderPlanDocument(tab);
+  renderRecoverablePlanDraft(tab);
   removePostPlanCards(tab.messagesEl);
-  if (!tab.showPostPlanActions || !tab.planContent) {
+  if (!tab.showPostPlanActions || tab.planDocument?.status !== 'complete' || !getPlanMarkdown(tab)) {
     updatePostPlanTranscriptMeta(tab);
     return;
   }
@@ -1296,67 +1560,32 @@ export function renderPostPlanActions(tab = _ctx.boundTab, headerText = null) {
   const el = document.createElement('div');
   el.className = 'cxp-msg cxp-msg-assistant cxp-post-plan-msg';
 
-  const avatar = document.createElement('div');
-  avatar.className = 'cxp-msg-avatar';
-  avatar.innerHTML = OPENAI_ICON;
-  el.appendChild(avatar);
-
   const cardWrap = document.createElement('div');
   cardWrap.className = 'cxp-msg-card';
-
-  const head = document.createElement('div');
-  head.className = 'cxp-msg-head';
-  const labelEl = document.createElement('div');
-  labelEl.className = 'cxp-msg-label';
-  labelEl.textContent = 'Codex';
-  head.appendChild(labelEl);
-  cardWrap.appendChild(head);
 
   const body = document.createElement('div');
   body.className = 'cxp-msg-body';
 
   const card = document.createElement('div');
   card.className = 'cxp-post-plan-card';
+  card.setAttribute('role', 'group');
+  card.setAttribute('aria-label', 'Plan review');
 
-  const topLine = document.createElement('div');
-  topLine.className = 'cxp-post-plan-topline';
-
-  const mark = document.createElement('span');
-  mark.className = 'cxp-post-plan-mark';
-  mark.innerHTML = ICON_PLAN;
-  mark.setAttribute('aria-hidden', 'true');
-
-  const heading = document.createElement('div');
-  heading.className = 'cxp-post-plan-heading';
-  const header = document.createElement('div');
-  header.className = 'cxp-post-plan-header';
-  header.textContent = tab.postPlanHeader || 'PLAN COMPLETE';
-  const title = document.createElement('div');
-  title.className = 'cxp-post-plan-title';
-  title.textContent = 'Plan ready for review';
-  heading.append(header, title);
-  topLine.append(mark, heading);
-  card.appendChild(topLine);
-
-  const note = document.createElement('div');
-  note.className = 'cxp-post-plan-note';
-  note.textContent = 'Implement it now, or tell Codex exactly what should change.';
-  card.appendChild(note);
-
-  const continueBtn = _ctx.createRequestButton('Implement plan', 'primary');
+  const continueBtn = _ctx.createRequestButton('Continue with implementation', 'primary');
   const compactBtn = _ctx.createRequestButton('Compact context', 'secondary');
   const editBtn = _ctx.createRequestButton('Edit plan', 'secondary');
+  continueBtn.dataset.planAction = 'continue';
+  compactBtn.dataset.planAction = 'compact';
+  editBtn.dataset.planAction = 'edit';
+  const editorNotice = document.createElement('div');
+  editorNotice.className = 'cxp-plan-editor-notice';
+  editorNotice.setAttribute('role', 'status');
+  editorNotice.hidden = true;
+  card.appendChild(editorNotice);
 
   const decision = document.createElement('div');
   decision.className = 'cxp-post-plan-decision';
   decision.appendChild(continueBtn);
-
-  const divider = document.createElement('div');
-  divider.className = 'cxp-post-plan-divider';
-  divider.setAttribute('role', 'separator');
-  const dividerLabel = document.createElement('span');
-  dividerLabel.textContent = 'or refine it';
-  divider.appendChild(dividerLabel);
 
   const feedbackGroup = document.createElement('div');
   feedbackGroup.className = 'cxp-post-plan-feedback-group';
@@ -1364,7 +1593,7 @@ export function renderPostPlanActions(tab = _ctx.boundTab, headerText = null) {
   const feedbackLabel = document.createElement('label');
   feedbackLabel.className = 'cxp-post-plan-feedback-label';
   feedbackLabel.htmlFor = feedbackId;
-  feedbackLabel.textContent = 'What should Codex change?';
+  feedbackLabel.textContent = 'Suggest changes';
   const feedback = document.createElement('textarea');
   feedback.id = feedbackId;
   feedback.className = 'cxp-post-plan-feedback';
@@ -1380,6 +1609,7 @@ export function renderPostPlanActions(tab = _ctx.boundTab, headerText = null) {
   feedbackHint.className = 'cxp-post-plan-feedback-hint';
   feedbackHint.textContent = '⌘/Ctrl + Enter to update';
   const updateBtn = _ctx.createRequestButton('Update plan', 'secondary');
+  updateBtn.dataset.planAction = 'feedback';
   updateBtn.classList.add('cxp-post-plan-update');
   feedbackFooter.append(feedbackHint, updateBtn);
 
@@ -1405,7 +1635,9 @@ export function renderPostPlanActions(tab = _ctx.boundTab, headerText = null) {
       || !feedback.value.trim()
       || _ctx.running
       || _ctx.startingThread
-      || _ctx.compacting;
+      || _ctx.compacting
+      || tab.planEditor?.dirty
+      || tab.planEditor?.saving;
   };
   const showFeedbackError = (message = '') => {
     feedbackError.textContent = message;
@@ -1418,6 +1650,7 @@ export function renderPostPlanActions(tab = _ctx.boundTab, headerText = null) {
     card.setAttribute('aria-busy', busy ? 'true' : 'false');
     [continueBtn, compactBtn, editBtn].forEach((btn) => { btn.disabled = busy; });
     feedback.disabled = busy;
+    if (!busy) syncPlanEditorActions(tab);
     syncFeedbackAction();
   };
 
@@ -1434,14 +1667,14 @@ export function renderPostPlanActions(tab = _ctx.boundTab, headerText = null) {
 
   const submitFeedback = () => {
     _ctx.withTab(tab, () => {
-      if (busy || _ctx.running || _ctx.startingThread || _ctx.compacting) return;
+      if (busy || _ctx.running || _ctx.startingThread || _ctx.compacting || tab.planEditor?.dirty || tab.planEditor?.saving) return;
       const requestedChanges = feedback.value.trim();
       if (!requestedChanges) {
         syncFeedbackAction();
         feedback.focus();
         return;
       }
-      const planText = tab.editedPlanContent || tab.planContent || '';
+      const planText = getPlanMarkdown(tab);
       const prompt = buildCodexPlanRevisionPrompt(planText, requestedChanges);
       if (!prompt) return;
 
@@ -1481,12 +1714,27 @@ export function renderPostPlanActions(tab = _ctx.boundTab, headerText = null) {
   });
   updateBtn.addEventListener('click', submitFeedback);
 
-  continueBtn.addEventListener('click', () => {
+  continueBtn.addEventListener('click', async () => {
+    if (busy) return;
+    const selectedPlan = tab.planDocument;
+    const initialApproval = approvePlan(tab);
+    if (!initialApproval.ok) { showFeedbackError(initialApproval.reason); return; }
+    setBusy(true);
+    try {
+      await _ctx.persistPlanDocument(tab);
+      if (tab.closed) { setBusy(false); return; }
+      if (tab.planDocument !== selectedPlan) throw new Error('The plan changed. Review the latest revision before continuing.');
+    } catch (error) {
+      setBusy(false);
+      showFeedbackError(error?.message || 'Could not verify the approved plan.');
+      return;
+    }
     _ctx.withTab(tab, () => {
-      if (_ctx.running) return;
-      const finalPrompt = tab.editedPlanContent
-        ? `The user has reviewed and approved this updated plan:\n\n${tab.editedPlanContent}\n\nProceed with implementation.`
-        : 'Continue with the implementation based on the approved plan.';
+      if (_ctx.running || _ctx.startingThread || _ctx.compacting) { setBusy(false); return; }
+      const approval = approvePlan(tab);
+      if (!approval.ok) { setBusy(false); showFeedbackError(approval.reason); return; }
+      const finalPrompt = approval.prompt;
+      const previousPlanMode = !!tab.planMode;
       tab.planMode = false;
       tab.showPostPlanActions = false;
       tab.planApprovalPending = false;
@@ -1501,7 +1749,7 @@ export function renderPostPlanActions(tab = _ctx.boundTab, headerText = null) {
       _ctx.syncToolbarState();
       const sent = _ctx.dispatchPrompt(finalPrompt, { tab, forcePlanModePrefix: false });
       if (!sent) {
-        tab.planMode = true;
+        tab.planMode = previousPlanMode;
         tab.showPostPlanActions = true;
         tab.planApprovalPending = true;
         if (typeof _ctx.setShowPostPlanActions === 'function') _ctx.setShowPostPlanActions(true);
@@ -1510,6 +1758,11 @@ export function renderPostPlanActions(tab = _ctx.boundTab, headerText = null) {
         renderPostPlanActions(tab);
         return;
       }
+      _ctx.markPlanImplementationSubmitted?.(tab, selectedPlan);
+      selectedPlan.approvedRevision = selectedPlan.revision;
+      _ctx.persistPlanDocument(tab).catch((error) => {
+        _ctx.withTab(tab, () => appendSystem(error?.message || 'Could not save the plan approval.', 'error'));
+      });
       tab.planFeedbackDraft = '';
       if (typeof _ctx.setPlanFeedbackDraft === 'function') _ctx.setPlanFeedbackDraft('');
       removePostPlanCards(tab.messagesEl);
@@ -1520,64 +1773,29 @@ export function renderPostPlanActions(tab = _ctx.boundTab, headerText = null) {
 
   compactBtn.addEventListener('click', () => {
     _ctx.withTab(tab, () => {
-      if (_ctx.running || _ctx.startingThread || _ctx.compacting) return;
+      if (_ctx.running || _ctx.startingThread || _ctx.compacting || tab.planEditor?.dirty || tab.planEditor?.saving) return;
       _ctx.startCompaction();
     });
   });
 
   editBtn.addEventListener('click', async () => {
     setBusy(true);
-    const noFile = () => {
-      setBusy(false);
-      _ctx.withTab(tab, () => appendSystem('No plan file found. Keep editing in chat or regenerate the plan.', 'error'));
-    };
-
-    try {
-      let filePath = tab.planFilePath || '';
-      if (!filePath) {
-        filePath = typeof _ctx.ensurePlanFile === 'function' ? await _ctx.ensurePlanFile(tab) : '';
-        if (!filePath) {
-          const planText = _ctx.capturePlanContent(tab);
-          if (!planText) {
-            noFile();
-            return;
-          }
-          const res = await fetch('/api/create-plan', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ content: planText, cwd: tab.project || _ctx.project || '' }),
-          });
-          const result = await res.json();
-          if (!res.ok || !result?.ok || !result.path) {
-            noFile();
-            return;
-          }
-          filePath = result.path;
-        }
-        if (!filePath) {
-          noFile();
-          return;
-        }
-        tab.planFilePath = filePath;
-        if (_ctx.isActiveTab(tab)) {
-          if (typeof _ctx.setPlanFilePath === 'function') _ctx.setPlanFilePath(filePath);
-        }
-        _ctx.saveTabs();
-      }
-      _ctx.emit('open-plan-editor', { filePath, tabId: tab.id, source: 'codex' });
-    } catch {
-      noFile();
-    }
+    await openCodexPlanEditor(tab);
+    setBusy(false);
   });
 
-  card.append(decision, divider, feedbackGroup, utilities);
+  card.append(decision, feedbackGroup, utilities);
   body.appendChild(card);
   cardWrap.appendChild(body);
   el.appendChild(cardWrap);
 
-  _ctx.withTab(tab, () => appendElement(el));
+  // Actions belong immediately below their document, including after a save.
+  if (planEl?.parentElement === tab.messagesEl) planEl.after(el);
+  else _ctx.withTab(tab, () => appendElement(el));
   autosizeFeedback();
+  syncPlanEditorActions(tab);
   syncFeedbackAction();
+  updatePostPlanTranscriptMeta(tab);
 }
 
 export function renderPostCompactionActions(tab = _ctx.boundTab) {
@@ -1736,15 +1954,19 @@ export function createCard(item, iconSvg, title, subtitle = '') {
   body.className = 'cxp-card-body';
 
   el.append(head, body);
+  bindCardHead(el);
   appendElement(el);
   return { el, head, body, titleEl, subtitleEl, pill };
 }
 
-export function setCardExpanded(card, expanded) {
-  if (!card) return;
-  const next = !!expanded;
-  card.classList.toggle('cxp-collapsed', !next);
-  card.dataset.expanded = next ? '1' : '0';
+export function bindCardHead(card) {
+  bindExpandableCard(card, (node, expanded) => {
+    node.dataset.userCollapsed = expanded ? '0' : '1';
+    const state = expanded && node.dataset.itemId ? _ctx.items.get(node.dataset.itemId) : null;
+    if (state) flushCardBody(state);
+    _ctx.scheduleThreadSnapshotSave(_ctx.boundTab);
+    _ctx.saveTabs();
+  });
 }
 
 export function createFoldSection(label, {
@@ -1847,6 +2069,8 @@ function isCompleteStatus(status) {
 
 function isReasoningComplete(item, hasIncomingText = false) {
   return isCompleteStatus(item?.status)
+    || !!item?._synabunCompleted
+    || (!_ctx.running && item?._synabunOwnership?.source === 'history')
     || !!item?.completedAt
     || !!item?.completed_at
     || item?.durationMs != null
@@ -1866,7 +2090,7 @@ function getReasoningPreviewText(state) {
 
 function updateReasoningChrome(state, { complete = false } = {}) {
   if (!state) return;
-  if (state.summaryEl) state.summaryEl.textContent = getReasoningPreviewText(state);
+  if (state.summaryEl) state.summaryEl.textContent = complete && !state.summaryLines?.some(line => String(line).trim()) && !state.contentLines?.some(line => String(line).trim()) ? 'No reasoning summary was provided.' : getReasoningPreviewText(state);
   if (state.pillEl) state.pillEl.textContent = complete ? 'complete' : 'live';
   if (state.el) state.el.classList.toggle('cxp-reasoning-done', !!complete);
 }
@@ -1899,9 +2123,11 @@ function cacheCollapsedCardState(state, item, itemType) {
     case 'mcpToolCall': {
       if (hasOwnField(item, 'server')) state.toolServer = item.server || '';
       if (hasOwnField(item, 'tool')) state.toolName = item.tool || '';
-      if (item.durationMs != null) state.toolSubtitle = `${item.durationMs}ms`;
+      const ui = item.mcpAppUi;
+      const metadata = [item.durationMs != null ? `${item.durationMs}ms` : '', ui?.resourceUri || item.mcpAppResourceUri || '', ui?.preferredModelDisplayMode ? `Display: ${ui.preferredModelDisplayMode}` : ''].filter(Boolean).join(' · ');
+      if (metadata) state.toolSubtitle = metadata;
       else if (!state.toolSubtitle) state.toolSubtitle = 'Tool call';
-      if (hasOwnField(item, 'arguments')) state.argsText = item.arguments == null ? '' : formatStructuredValue(item.arguments);
+      if (hasOwnField(item, 'arguments')) state.argsText = formatStructuredValue(item.arguments);
       if (hasOwnField(item, 'error')) {
         state.progressText = item.error
           ? `Error: ${extractStructuredText(item.error) || formatStructuredValue(item.error)}`
@@ -1913,10 +2139,10 @@ function cacheCollapsedCardState(state, item, itemType) {
       break;
     }
     case 'dynamicToolCall': {
-      if (hasOwnField(item, 'tool')) state.dynamicToolName = item.tool || '';
+      if (hasOwnField(item, 'tool')) state.dynamicToolName = [item.namespace, item.tool].filter(Boolean).join(' / ');
       if (item.durationMs != null) state.dynamicSubtitle = `${item.durationMs}ms`;
       else if (!state.dynamicSubtitle) state.dynamicSubtitle = 'Client tool call';
-      if (hasOwnField(item, 'arguments')) state.argsText = item.arguments == null ? '' : formatStructuredValue(item.arguments);
+      if (hasOwnField(item, 'arguments')) state.argsText = formatStructuredValue(item.arguments);
       if (hasOwnField(item, 'contentItems') || hasOwnField(item, 'success')) {
         state.resultText = extractDynamicToolResultText(item.contentItems)
           || (item.success === false ? 'Client tool call failed' : '');
@@ -1990,7 +2216,7 @@ export function flushCardBody(state) {
     case 'fileChange':
       if (state.metaEl) state.metaEl.textContent = state.fileMetaText || 'Pending file changes';
       if (state.filesEl) state.filesEl.textContent = state.filesText || 'Pending file changes';
-      setOptionalSection(state.outputSectionEl, state.outputEl, state.outputBuf || '');
+      refreshFileChangeView(state);
       break;
     case 'collabAgentToolCall':
       if (state.titleEl) state.titleEl.textContent = state.collabToolName || 'Agent collaboration';
@@ -2006,7 +2232,7 @@ export function flushCardBody(state) {
 
 export function setOptionalSection(sectionEl, bodyEl, text) {
   const value = typeof text === 'string' ? text : '';
-  if (bodyEl) bodyEl.textContent = value;
+  if (bodyEl) renderReadableBlock(bodyEl, value);
   if (sectionEl) sectionEl.hidden = !value.trim();
 }
 
@@ -2034,8 +2260,69 @@ export function queueMarkdownRender(state) {
   }, 32);
 }
 
+function planMessageModels(tab) {
+  const items = tab === _ctx.boundTab ? (_ctx.items || tab.items) : tab.items;
+  return [...tab.messagesEl.querySelectorAll('.cxp-msg-assistant[data-plan-message-candidate="1"]')].map(el => {
+    const state = items?.get(el.dataset.itemId);
+    return { id: el.dataset.itemId, type: 'agentMessage', turnId: el.dataset.codexTurnId || '',
+      threadId: el.dataset.codexThreadId || tab.threadId, phase: state?.phase || el.dataset.phase || '',
+      text: state?.buffer ?? el.dataset.planSourceText ?? '', completed: state?.completed ?? el.dataset.messageCompleted === '1',
+      planTurn: el.dataset.planTurn === '1', el, bodyEl: state?.bodyEl || el.querySelector('.cxp-msg-body') };
+  });
+}
+
+export function syncMessagePlanActions(tab = _ctx.boundTab) {
+  if (!tab?.messagesEl) return;
+  const messages = planMessageModels(tab);
+  const nativePlans = [...tab.messagesEl.querySelectorAll('[data-item-type="plan"]')].map(el => ({ itemId: el.dataset.itemId, turnId: el.dataset.codexTurnId || '' }));
+  const selected = selectPlanAdoptionMessage(tab, messages, nativePlans);
+  tab.messagesEl.querySelectorAll('.cxp-use-as-plan').forEach(button => {
+    if (button.closest('.cxp-msg-assistant')?.dataset.itemId !== selected) button.remove();
+  });
+  const message = messages.find(entry => entry.id === selected);
+  if (!message?.bodyEl) return;
+  let button = message.bodyEl.querySelector('.cxp-use-as-plan');
+  if (!button) {
+    button = _ctx.createRequestButton('Use as plan', 'secondary');
+    button.dataset.planAction = 'adopt';
+    button.classList.add('cxp-use-as-plan');
+    button.addEventListener('click', async () => {
+      const current = planMessageModels(tab);
+      const plans = [...tab.messagesEl.querySelectorAll('[data-item-type="plan"]')].map(el => ({ itemId: el.dataset.itemId, turnId: el.dataset.codexTurnId || '' }));
+      if (selectPlanAdoptionMessage(tab, current, plans) !== message.id || tab.planEditor?.dirty || tab.planEditor?.saving) return;
+      const candidate = current.find(entry => entry.id === message.id);
+      button.disabled = true;
+      try {
+        await _ctx.adoptMessageAsPlan?.(tab, { itemId: candidate.id, turnId: candidate.turnId,
+          markdown: extractProposedPlan(candidate.text) || candidate.text });
+        renderPostPlanActions(tab);
+      } finally { syncMessagePlanActions(tab); }
+    });
+    message.bodyEl.appendChild(button);
+  }
+  button.hidden = false;
+  button.disabled = !!(tab.planEditor?.dirty || tab.planEditor?.saving);
+}
+
 function renderAssistantMessage(state) {
-  const rendered = renderAssistantMarkdown(state.buffer || '');
+  const text = String(state.buffer || '').replace(/<\/?proposed_plan>/g, '');
+  const streaming = !state.completed;
+  const parser = _ctx.marked?.parse;
+  const tab = _ctx.boundTab;
+  const turnId = state.el?.dataset.codexTurnId || '';
+  const candidate = isPlanMessageCandidate(tab, { type: 'agentMessage', text: state.buffer, phase: state.phase,
+    turnId, planTurn: state.el?.dataset.planTurn === '1' || isRecordedPlanTurn(tab, turnId) });
+  if (state.el) {
+    state.el.dataset.messageCompleted = state.completed ? '1' : '0';
+    if (candidate) {
+      state.el.dataset.planMessageCandidate = '1';
+      if (isRecordedPlanTurn(tab, turnId)) state.el.dataset.planTurn = '1';
+      if (state.buffer.length <= OUTPUT_LIMITS.input) state.el.dataset.planSourceText = state.buffer;
+      else delete state.el.dataset.planSourceText;
+    } else { delete state.el.dataset.planMessageCandidate; delete state.el.dataset.planSourceText; }
+  }
+  if (state._renderedText === text && state._renderedStreaming === streaming && state._renderedParser === parser && state._renderedPhase === state.phase) { syncMessagePlanActions(tab); return; }
+  state._renderedText = text; state._renderedStreaming = streaming; state._renderedParser = parser; state._renderedPhase = state.phase;
   const phase = normalizeAssistantPhase(state.phase || '');
   if (phase === 'commentary' && state.summaryBodyEl && state.verboseSectionEl && state.verboseBodyEl && state.renderedEl) {
     state.renderedEl.hidden = true;
@@ -2044,16 +2331,20 @@ function renderAssistantMessage(state) {
     state.verboseSectionEl.hidden = true;
     state.verboseBodyEl.innerHTML = '';
     if (state.el) state.el.classList.toggle('cxp-msg-empty', !state.summaryBodyEl.textContent.trim());
+    syncMessagePlanActions(tab);
     return;
   }
 
-  if (state.renderedEl) {
-    state.renderedEl.hidden = false;
-    state.renderedEl.innerHTML = rendered.html;
-    postProcessRenderedHtml(state.renderedEl);
-  } else if (state.bodyEl) {
-    state.bodyEl.innerHTML = rendered.html;
-    postProcessRenderedHtml(state.bodyEl);
+  const target = state.renderedEl || state.bodyEl;
+  let hasContent = false;
+  if (target) {
+    target.hidden = false;
+    if (renderReadableOutput(target, text, { streaming })) hasContent = true;
+    else {
+      const rendered = renderAssistantMarkdown(text, { streaming });
+      target.innerHTML = rendered.html; hasContent = rendered.hasContent;
+    }
+    postProcessRenderedHtml(target);
   }
   if (state.summaryBodyEl) {
     state.summaryBodyEl.hidden = true;
@@ -2063,7 +2354,8 @@ function renderAssistantMessage(state) {
     state.verboseSectionEl.hidden = true;
   }
   if (state.verboseBodyEl) state.verboseBodyEl.innerHTML = '';
-  if (state.el) state.el.classList.toggle('cxp-msg-empty', !rendered.hasContent);
+  if (state.el) state.el.classList.toggle('cxp-msg-empty', !hasContent);
+  syncMessagePlanActions(tab);
 }
 
 export function setMarkdownBuffer(state, text, final = false) {
@@ -2194,6 +2486,8 @@ export function ensurePlanState(item) {
   let state = _ctx.items.get(item.id);
   if (state) return state;
   const card = createCard(item, ICON_SPARK, 'Plan', 'Structured plan output');
+  card.el.classList.add('cxp-plan-card');
+  setCardExpanded(card.el, true);
   card.el.dataset.itemId = item.id || '';
   const body = document.createElement('div');
   body.className = 'cxp-msg-body';
@@ -2325,10 +2619,87 @@ export function ensureDynamicToolState(item) {
   return state;
 }
 
+function refreshFileChangeView(state) {
+  if (!state?.outputEl) return;
+  const item = { ...state._lastItem, aggregatedOutput: state.outputBuf || state._lastItem?.aggregatedOutput || '' };
+  const files = fileChangeDiffs(item);
+  state.diffFiles = files;
+  renderDiffView(state.outputEl, files, { lazy: state._lastItem?._synabunOwnership?.source === 'history', cwd: _ctx.boundTab?.project || _ctx.project, summaryEl: state.metaEl });
+  state.outputEl.hidden = !files.length;
+  const turnId = state.el?.dataset.codexTurnId;
+  const latest = _ctx.boundTab?.latestTurnDiff;
+  if (latest?.turnId === turnId) renderTurnDiff(turnId, latest.diff);
+  const itemId = state.el?.dataset.itemId;
+  for (const view of _ctx.messagesEl?.querySelectorAll('[data-approval-diff-item]') || []) {
+    if (view.dataset.approvalDiffItem !== itemId || !files.length) continue;
+    view.classList.remove('cxp-output-note');
+    renderDiffView(view, files, { cwd: _ctx.boundTab?.project || _ctx.project });
+  }
+}
+
+// Aggregate events include shell edits. Only omit a file when an item card in
+// this same turn already contains the same patch; the synthetic card is reused.
+export function renderTurnDiff(turnId, diff, { lazy = false } = {}) {
+  if (!turnId || !_ctx.messagesEl) return;
+  const id = `turn-diff:${turnId}`;
+  const shown = [];
+  for (const [itemId, state] of _ctx.items) {
+    if (itemId === id || state.type !== 'fileChange' || state.el?.dataset.codexTurnId !== String(turnId)) continue;
+    shown.push(...(state.diffFiles || fileChangeDiffs({ ...state._lastItem, aggregatedOutput: state.outputBuf || '' })));
+  }
+  // HTML snapshots may not have item states until native history catches up.
+  for (const card of _ctx.messagesEl.querySelectorAll('[data-item-type="fileChange"]')) {
+    if (card.dataset.itemId === id || _ctx.items.has(card.dataset.itemId) || card.dataset.codexTurnId !== String(turnId)) continue;
+    const raw = card.querySelector('.cxp-diff-source')?.textContent;
+    if (raw) shown.push(...parseUnifiedDiff(raw));
+  }
+  const files = deduplicateTurnDiff(parseUnifiedDiff(diff), shown);
+  let state = _ctx.items.get(id);
+  if (!state) {
+    const old = [..._ctx.messagesEl.querySelectorAll('[data-turn-diff]')].find(card => card.dataset.codexTurnId === String(turnId));
+    if (old) {
+      state = { type: 'fileChange', el: old, pillEl: old.querySelector('.cxp-status-pill'), metaEl: old.querySelector('.cxp-card-meta'), outputEl: old.querySelector('.cxp-diff-view'), outputBuf: '' };
+      _ctx.items.set(id, state);
+    }
+  }
+  if (!files.length) {
+    if (state) { state.el.hidden = true; _ctx.scheduleThreadSnapshotSave(_ctx.boundTab, { force: true }); }
+    return;
+  }
+  if (!state) {
+    state = ensureFileChangeState({ id, type: 'fileChange' });
+    state.el.dataset.codexTurnId = String(turnId);
+    state.el.dataset.turnDiff = '1';
+  }
+  state.el.hidden = false;
+  state.pillEl.textContent = 'completed';
+  state.metaEl.textContent = `${files.length} file change${files.length === 1 ? '' : 's'}`;
+  state.diffFiles = files;
+  renderDiffView(state.outputEl, files, { lazy, cwd: _ctx.boundTab?.project || _ctx.project, summaryEl: state.metaEl });
+  const anchor = [..._ctx.messagesEl.children].filter(node => node !== state.el && node.dataset?.codexTurnId === String(turnId)).at(-1);
+  if (anchor && anchor.nextElementSibling !== state.el) anchor.after(state.el);
+  _ctx.scheduleThreadSnapshotSave(_ctx.boundTab, { force: true });
+}
+
+export function completeTurnOutputs(turnId) {
+  for (const state of _ctx.items.values()) {
+    if (turnId && state.el?.dataset.codexTurnId !== String(turnId)) continue;
+    if (state.type === 'reasoning') {
+      updateReasoningChrome(state, { complete: true });
+      if (state.bodyEl) state.bodyEl.textContent = getReasoningBodyText(state, { complete: true });
+      if (!state.userToggled && state.el) { state.el.open = false; state.el.dataset.expanded = '0'; }
+    } else if (state.type === 'agentMessage' && !state.completed) {
+      state.completed = true;
+      renderAssistantMessage(state);
+    }
+  }
+}
+
 export function ensureFileChangeState(item) {
   let state = _ctx.items.get(item.id);
   if (state) return state;
   const card = createCard(item, ICON_FILES, 'File change', 'Proposed file updates');
+  setCardExpanded(card.el, true);
 
   const summary = document.createElement('div');
   summary.className = 'cxp-card-meta';
@@ -2344,11 +2715,10 @@ export function ensureFileChangeState(item) {
   filesSection.append(filesLabel, filesBody);
   card.body.appendChild(filesSection);
 
-  const outputSection = createFoldSection('Verbose diff', {
-    className: 'cxp-fold-diff',
-    bodyClassName: 'cxp-card-pre cxp-card-pre-diff',
-  });
-  card.body.appendChild(outputSection.sectionEl);
+  const outputEl = document.createElement('div');
+  outputEl.className = 'cxp-card-pre-diff';
+  card.body.appendChild(outputEl);
+  filesSection.hidden = true;
 
   state = {
     type: 'fileChange',
@@ -2356,8 +2726,8 @@ export function ensureFileChangeState(item) {
     pillEl: card.pill,
     metaEl: summary,
     filesEl: filesBody,
-    outputSectionEl: outputSection.sectionEl,
-    outputEl: outputSection.bodyEl,
+    outputSectionEl: outputEl,
+    outputEl,
     outputBuf: '',
   };
   _ctx.items.set(item.id, state);
@@ -2400,7 +2770,8 @@ export function ensureGenericState(item) {
   let state = _ctx.items.get(item.id);
   if (state) return state;
   const summary = _ctx.itemHeadline(item);
-  const card = createCard(item, ICON_TOOL, summary.detail || item.type || 'Item', summary.title || 'Codex item');
+  const head = codexGenericCardHead(item, summary);
+  const card = createCard(item, ICON_TOOL, head.title, head.subtitle || 'Codex item');
   const pre = document.createElement('pre');
   pre.className = 'cxp-card-pre';
   card.body.appendChild(pre);
@@ -2459,6 +2830,7 @@ export function setGuardianReviewState(targetItemId, review) {
     if (text) appendSystem(`Approval review · ${text}`, review?.status === 'approved' ? 'muted' : 'working');
     return;
   }
+
   const body = state.bodyEl || state.el.querySelector('.cxp-card-body');
   if (!body) return;
   if (!state.reviewEl) {
@@ -2479,6 +2851,49 @@ function getRenderableItemType(item) {
   if (!item || typeof item !== 'object') return '';
   if (item.type === 'collabToolCall') return 'collabAgentToolCall';
   return item.type || '';
+}
+
+function renderAgentMetadata(state, item) {
+  const metadata = { delivery: item.delivery, questions: item.questions, memoryCitation: item.memoryCitation };
+  const signature = JSON.stringify(metadata);
+  if (state.agentMetadataSignature === signature) return;
+  state.agentMetadataSignature = signature;
+  state.agentMetadataEl?.remove();
+  if (!item.delivery && !item.questions?.length && !item.memoryCitation) return;
+  const section = document.createElement('div');
+  section.className = 'cxp-card-section cxp-ask';
+  if (item.memoryCitation) {
+    const note = document.createElement('div'); note.className = 'cxp-card-meta';
+    note.textContent = `Memory references\n${codexReadableValue(item.memoryCitation)}`;
+    section.appendChild(note);
+  }
+  if (item.questions?.length) {
+    const note = document.createElement('div'); note.className = 'cxp-request-note';
+    note.textContent = 'Codex can continue working while you answer.'; section.appendChild(note);
+    const fields = item.questions.map(question => {
+      const label = document.createElement('label'); label.className = 'cxp-config-row';
+      const title = document.createElement('span'); title.className = 'cxp-config-label'; title.textContent = question.title;
+      const input = document.createElement('input'); input.className = 'cxp-config-input';
+      label.append(title, input); section.appendChild(label);
+      for (const option of question.options || []) {
+        const button = _ctx.createRequestButton(option, 'secondary');
+        button.addEventListener('click', () => { input.value = option; }); section.appendChild(button);
+      }
+      return { question, input };
+    });
+    const send = _ctx.createRequestButton('Send answers');
+    const tab = _ctx.boundTab;
+    send.addEventListener('click', () => {
+      const answers = fields.filter(field => field.input.value.trim()).map(field => `${field.question.title}\n${field.input.value.trim()}`);
+      if (!answers.length) return;
+      if (_ctx.dispatchPrompt(answers.join('\n\n'), { tab })) {
+        send.disabled = true; fields.forEach(field => { field.input.disabled = true; });
+      }
+    });
+    section.appendChild(send);
+  }
+  state.agentMetadataEl = section;
+  state.bodyEl.appendChild(section);
 }
 
 export function updateItemFromData(item) {
@@ -2506,15 +2921,25 @@ export function updateItemFromData(item) {
     }
   }
 
+  if (itemType === 'agentMessage' || itemType === 'plan') {
+    state.completed = !!(state.completed || item._synabunCompleted || isCompleteStatus(item.status) || (!_ctx.running && typeof item.text === 'string'));
+  }
+  if (state.el && (item._synabunOwnership?.turnId || item.turnId)) state.el.dataset.codexTurnId = String(item._synabunOwnership?.turnId || item.turnId);
+  if (itemType === 'plan') syncMessagePlanActions(_ctx.boundTab);
+
   // Store last item for lazy flush; skip body DOM writes for collapsed cards
   const _isCard = state.el?.classList.contains('cxp-card');
   if (_isCard) {
     state._lastItem = state._lastItem ? { ...state._lastItem, ...item } : item;
     cacheCollapsedCardState(state, state._lastItem, itemType);
+    if (itemType === 'mcpToolCall') mountMcpAppCard({ card: state.el, item: state._lastItem,
+      tab: _ctx.boundTab, request: _ctx.requestForTab, draft: _ctx.setMcpAppDraft });
     // Always update head elements (visible even when collapsed)
     if (state.titleEl) {
-      const h = _ctx.itemHeadline(item);
-      state.titleEl.textContent = h.detail || item.type || 'Item';
+      const h = _ctx.itemHeadline(state._lastItem);
+      const head = state.preEl ? codexGenericCardHead(state._lastItem, h) : null;
+      state.titleEl.textContent = head?.title || h.detail || item.type || 'Item';
+      if (head && state.subtitleEl) state.subtitleEl.textContent = head.subtitle;
     }
     if (state.pillEl && item.status != null) state.pillEl.textContent = _ctx.formatStatus(item.status);
     if (isCardBodyHidden(state)) { state._bodyDirty = true; _ctx.scheduleThreadSnapshotSave(_ctx.boundTab); return; }
@@ -2537,6 +2962,7 @@ export function updateItemFromData(item) {
         state.phaseEl.textContent = phase === 'final_answer' ? 'Final' : '';
       }
       setMarkdownBuffer(state, resolveFinalMarkdownText(state, item.text), true);
+      renderAgentMetadata(state, item);
       break;
     }
     case 'reasoning': {
@@ -2565,9 +2991,8 @@ export function updateItemFromData(item) {
       break;
     }
     case 'plan':
-      if (state.pillEl) state.pillEl.textContent = 'complete';
+      if (state.pillEl) state.pillEl.textContent = state.completed ? 'complete' : 'draft';
       setMarkdownBuffer(state, resolveFinalMarkdownText(state, item.text), true);
-      if (state.buffer) _ctx.capturePlanContent(_ctx.boundTab, state.buffer);
       break;
     case 'commandExecution': {
       state.titleEl.textContent = state.commandTitle || 'Running shell command';
@@ -2609,10 +3034,8 @@ export function updateItemFromData(item) {
       if (state.filesEl) state.filesEl.textContent = state.filesText || 'Pending file changes';
       if (item.aggregatedOutput != null) {
         state.outputBuf = extractStructuredText(item.aggregatedOutput) || item.aggregatedOutput || '';
-        setOptionalSection(state.outputSectionEl, state.outputEl, state.outputBuf);
-      } else if (state.outputBuf) {
-        setOptionalSection(state.outputSectionEl, state.outputEl, state.outputBuf);
       }
+      refreshFileChangeView(state);
       break;
     }
     case 'collabAgentToolCall': {
@@ -2634,8 +3057,7 @@ export function updateItemFromData(item) {
       }
       if (state.pillEl) state.pillEl.textContent = item.action?.type || 'search';
       if (state.preEl) {
-        state.preEl.classList.add('cxp-card-pre-json');
-        state.preEl.textContent = pretty(item.action || { query: item.query || '' });
+        state.preEl.textContent = codexReadableValue({ action: item.action, results: item.results, query: item.query });
       }
       break;
     case 'imageView':
@@ -2684,6 +3106,8 @@ export function updateItemFromData(item) {
           item.revisedPrompt ? `Prompt\n${item.revisedPrompt}` : '',
           item.savedPath ? `Saved path\n${item.savedPath}` : '',
           item.result ? `Result\n${item.result}` : '',
+          item.failure ? `Failure\n${codexReadableValue(item.failure)}` : '',
+          item.transparentBackground != null ? `Transparent background: ${item.transparentBackground ? 'yes' : 'no'}` : '',
         ].filter(Boolean).join('\n\n');
       }
       break;
@@ -2706,15 +3130,16 @@ export function updateItemFromData(item) {
       if (state.pillEl) state.pillEl.textContent = 'complete';
       if (state.preEl) state.preEl.textContent = item.review || '';
       break;
-    default:
+    default: {
+      const presentation = codexTranscriptPresentation(item);
       if (state.titleEl || state.subtitleEl) {
-        const summary = _ctx.itemHeadline(item);
-        if (state.titleEl) state.titleEl.textContent = summary.detail || item.type || 'Item';
-        if (state.subtitleEl) state.subtitleEl.textContent = summary.title || 'Codex item';
+        if (state.titleEl) state.titleEl.textContent = presentation.title;
+        if (state.subtitleEl) state.subtitleEl.textContent = presentation.subtitle;
       }
-      if (state.pillEl) state.pillEl.textContent = _ctx.formatStatus(item.status || 'complete');
-      if (state.preEl) state.preEl.textContent = pretty(item);
+      if (state.pillEl) state.pillEl.textContent = _ctx.formatStatus(presentation.status);
+      if (state.preEl) state.preEl.textContent = presentation.text;
       break;
+    }
   }
   _ctx.scheduleThreadSnapshotSave(_ctx.boundTab);
 }
@@ -2738,13 +3163,13 @@ export function appendPlanDelta(itemId, delta) {
 }
 
 export function getReasoningBodyText(state, { complete = false } = {}) {
-  if (!state) return complete ? '(reasoning complete)' : 'Waiting for reasoning summary...';
+  if (!state) return complete ? 'No reasoning summary was provided.' : 'Waiting for reasoning summary...';
   const contentText = Array.isArray(state.contentLines) ? state.contentLines.join('').trim() : '';
   if (contentText) return contentText;
   const summaryText = Array.isArray(state.summaryLines)
     ? state.summaryLines.map((line) => String(line || '').trim()).filter(Boolean).join('\n')
     : '';
-  return summaryText || (complete ? '(reasoning complete)' : 'Waiting for reasoning summary...');
+  return summaryText || (complete ? 'No reasoning summary was provided.' : 'Waiting for reasoning summary...');
 }
 
 export function appendReasoningDelta(itemId, delta, isSummary = false, summaryIndex = null) {
@@ -2784,7 +3209,8 @@ export function appendOutputDelta(itemId, delta, fallbackType = 'commandExecutio
   if (!state.outputEl) return;
   state.outputBuf = (state.outputBuf || '') + (delta || '');
   if (isCardBodyHidden(state)) { state._bodyDirty = true; return; }
-  setOptionalSection(state.outputSectionEl, state.outputEl, state.outputBuf);
+  if (state.type === 'fileChange') refreshFileChangeView(state);
+  else setOptionalSection(state.outputSectionEl, state.outputEl, state.outputBuf);
   _ctx.scrollEnd();
   _ctx.scheduleThreadSnapshotSave(_ctx.boundTab);
 }
@@ -2869,7 +3295,9 @@ export function resolveHistoryRenderSource(thread, fallbackItems = null, storedS
 // History Rendering
 // ═══════════════════════════════════════════
 
-export function renderHistory(thread, fallbackItems = null) {
+// `authoritative`: the thread's turns are its whole history (a revert reply),
+// so the saved rendering is never used in their place, even when none remain.
+export function renderHistory(thread, fallbackItems = null, { authoritative = false } = {}) {
   _ctx.flushThreadSnapshotSave(_ctx.boundTab);
   const preservedTokenUsage = thread?.id && _ctx.threadId && thread.id === _ctx.threadId
     ? _ctx.threadTokenUsage
@@ -2878,7 +3306,7 @@ export function renderHistory(thread, fallbackItems = null) {
   const historySource = resolveHistoryRenderSource(
     thread,
     fallbackItems,
-    storedSnapshot,
+    authoritative ? null : storedSnapshot,
   );
   _ctx.clearTranscript(historySource.items.length || historySource.snapshot
     ? 'Rendering saved Codex thread…'
@@ -2906,15 +3334,39 @@ export function renderHistory(thread, fallbackItems = null) {
     _ctx.showEmpty('Continue this Codex thread or start a fresh one.');
     return;
   }
+  const historyTurns = new Map((thread.turns || []).flatMap(turn => (turn.items || []).map(item => [item?.id, turn.id])));
   for (const item of historySource.items) {
     updateItemFromData({
       ...item,
       _synabunOwnership: {
         accountId: _ctx.accountId || 'default',
         threadId: thread.id,
+        turnId: item.turnId || historyTurns.get(item.id) || '',
         source: 'history',
       },
     });
+  }
+  // Native items do not include the aggregated shell-edit diff. Retain only
+  // locally saved turn-diff text with the same ownership manifest, rebuilding
+  // it through the normal renderer after authoritative items have been shown.
+  const normalizedSnapshot = _ctx.normalizeThreadSnapshotEntry(storedSnapshot, thread.id, _ctx.accountId || 'default');
+  if (normalizedSnapshot?.html) {
+    const tpl = document.createElement('template');
+    tpl.innerHTML = normalizedSnapshot.html;
+    const acceptedItems = new Set(normalizedSnapshot.acceptedItemIds || []);
+    const acceptedTurns = new Set(normalizedSnapshot.acceptedTurnIds || []);
+    const nativeTurns = new Set((thread.turns || []).map(turn => String(turn.id)));
+    for (const saved of tpl.content.querySelectorAll('[data-turn-diff="1"]')) {
+      const turnId = saved.dataset.codexTurnId;
+      if (!turnId || saved.dataset.codexThreadId !== String(thread.id) || saved.dataset.codexAccountId !== String(_ctx.accountId || 'default')
+        || saved.dataset.itemId !== `turn-diff:${turnId}` || !acceptedItems.has(saved.dataset.itemId)
+        || !acceptedTurns.has(turnId) || nativeTurns.size && !nativeTurns.has(turnId)) continue;
+      const raw = saved.querySelector('.cxp-diff-source')?.textContent;
+      if (!raw) continue;
+      renderTurnDiff(turnId, raw, { lazy: true });
+      const restored = _ctx.items.get(`turn-diff:${turnId}`);
+      if (restored && saved.dataset.userCollapsed === '1') { setCardExpanded(restored.el, false); restored.el.dataset.userCollapsed = '1'; }
+    }
   }
   _ctx.setTranscriptSourceMeta({
     sourceType: historySource.sourceType,

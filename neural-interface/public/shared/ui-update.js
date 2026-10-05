@@ -253,11 +253,16 @@ function openUpdateModal() {
       ? '<span class="update-channel-pill update-channel-pill--beta">beta</span>'
       : '';
 
-    const srcCopy = src === 'both'
-      ? 'A new version of SynaBun is available on npm and GitHub.'
-      : src === 'github'
-        ? 'A new SynaBun release is tagged on GitHub. The npm publish may still be in progress.'
-        : 'A new version of SynaBun has been published to npm.';
+    // The plan knows whether npm has the version shown: say what step 3 will do.
+    const plan = _versionData.installPlan || {};
+    const githubOnly = 'A new SynaBun release is tagged on GitHub. The npm publish may still be in progress.';
+    const srcCopy = plan.reason === 'not-on-npm' || plan.reason === 'npm-unreachable'
+      ? githubOnly
+      : src === 'both'
+        ? 'A new version of SynaBun is available on npm and GitHub.'
+        : src === 'github' && plan.canAutoUpdate !== true
+          ? githubOnly
+          : 'A new version of SynaBun has been published to npm.';
 
     const npmStable = _versionData.npmLatestStable
       ? `npm latest v${esc(_versionData.npmLatestStable)}`
@@ -315,9 +320,15 @@ function openUpdateModal() {
     const installCmd = canAutoUpdate
       ? (installPlan.displayCommand || 'npm i -g synabun@latest')
       : repoUrl;
+    // The server pins the command to the exact version shown in step 1. A
+    // version that is on GitHub but not on npm yet is a manual update.
     const installIntro = canAutoUpdate
       ? 'SynaBun will close and run this command in a new terminal window:'
-      : 'This SynaBun install was not detected as an npm install. Open the GitHub repository to update from your checkout or installer:';
+      : installPlan.reason === 'not-on-npm'
+        ? 'This version is on GitHub but not on npm yet, so SynaBun cannot install it automatically. Open the release on GitHub, or check for updates again later:'
+        : installPlan.reason === 'npm-unreachable'
+          ? 'SynaBun could not reach npm to confirm this version is published there, so it cannot install it automatically. Check for updates again, or open the release on GitHub:'
+          : 'This SynaBun install was not detected as an npm install. Open the GitHub repository to update from your checkout or installer:';
     const title = canAutoUpdate ? 'Run the Update' : 'Update from GitHub';
     const installSource = canAutoUpdate
       ? 'Installing from npm.'
@@ -444,7 +455,9 @@ function openUpdateModal() {
       icon.className = 'update-backup-icon';
       icon.textContent = '↗';
       icon.style.color = '#4fc3f7';
-      text.innerHTML = `<strong>GitHub repository opened</strong><span class="update-run-detail">Use the repository instructions to update this non-npm installation.</span>`;
+      text.innerHTML = installPlan.reason === 'not-on-npm' || installPlan.reason === 'npm-unreachable'
+        ? `<strong>GitHub release opened</strong><span class="update-run-detail">Nothing was installed. Check for updates again once npm has this version.</span>`
+        : `<strong>GitHub repository opened</strong><span class="update-run-detail">Use the repository instructions to update this non-npm installation.</span>`;
       return;
     }
 
@@ -462,12 +475,17 @@ function openUpdateModal() {
       const res = await fetch('/api/system/run-update', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ autoRestart }),
+        // The server installs its own plan; naming the version on screen lets it
+        // refuse when that plan has moved on since this modal was rendered.
+        body: JSON.stringify({ autoRestart, target: installPlan.target }),
       });
       if (!res.ok) {
         let msg = `Updater failed (${res.status})`;
-        try { const b = await res.json(); msg = b.error || msg; } catch {}
-        throw new Error(msg);
+        let code = null;
+        try { const b = await res.json(); msg = b.error || msg; code = b.code || null; } catch {}
+        const failure = new Error(msg);
+        failure.code = code;
+        throw failure;
       }
       await res.json();
 
@@ -485,10 +503,19 @@ function openUpdateModal() {
       icon.className = 'update-backup-icon';
       icon.textContent = '✗';
       icon.style.color = 'var(--accent-red)';
-      text.textContent = 'Failed to launch updater: ' + err.message;
-      runBtn.disabled = false;
+      // A newer version is offered than the one on screen: load it, and keep the
+      // stale command from being run. Going back re-renders the steps with it.
+      const targetChanged = err.code === 'target-changed';
+      if (targetChanged) {
+        try {
+          const fresh = await fetch('/api/system/version');
+          if (fresh.ok) { _versionData = await fresh.json(); applyTopRightButton(_versionData); }
+        } catch {}
+      }
+      text.textContent = targetChanged ? err.message : 'Failed to launch updater: ' + err.message;
+      runBtn.disabled = targetChanged;
       backBtn.disabled = false;
-      if (manualBtn) manualBtn.disabled = false;
+      if (manualBtn) manualBtn.disabled = targetChanged;
       runBtn.innerHTML = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><polyline points="8 17 12 21 16 17"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.88 18.09A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.29"/></svg> Retry`;
     }
   }

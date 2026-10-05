@@ -1,9 +1,10 @@
 // ═══════════════════════════════════════════
-// SynaBun Neural Interface — 3D Variant Entry Point
+// SynaBun Neural Interface — 3D Variant Entry Point (Memory Map)
 // ═══════════════════════════════════════════
 //
-// Registers the 3D variant, imports all shared & variant modules,
-// wires event listeners, and boots the application.
+// Registers the 3D variant, wires the shared UI to the memory map and boots.
+// The map paints as soon as /api/map arrives; the full memory list (sidebar,
+// explorer, cards, tooltips) hydrates right behind it.
 
 // ── Storage (self-hydrating — importing it populates the cache) ──
 import { storage } from '../../shared/storage.js';
@@ -11,8 +12,7 @@ import { posStore } from '../../shared/node-positions-store.js';
 
 // ── Shared foundation ──
 import { state, emit, on } from '../../shared/state.js';
-import { registerVariant, registerMenuItem, registerHelpSection } from '../../shared/registry.js';
-import { fetchMemories } from '../../shared/api.js';
+import { registerVariant, registerHelpSection } from '../../shared/registry.js';
 import { normalizeNodes } from '../../shared/utils.js';
 import { injectSharedHTML } from '../../shared/html-shell.js';
 import { KEYS } from '../../shared/constants.js';
@@ -23,17 +23,16 @@ import { initTooltip } from '../../shared/ui-tooltip.js';
 import { initPanelSystem, initPinToggle, clampPanelsToViewport } from '../../shared/ui-panels.js';
 import { initLoading, showLoadingError, hideLoading } from '../../shared/ui-loading.js';
 import { initNavbar } from '../../shared/ui-navbar.js';
-import { initMenubar } from '../../shared/ui-menubar.js';
+import { initMenubar, closeMenubar } from '../../shared/ui-menubar.js';
 import { initSearch } from '../../shared/ui-search.js';
-import { buildCategorySidebar, initSidebar, preloadCategoryLogos, loadCategories } from '../../shared/ui-sidebar.js';
+import { buildCategorySidebar, initSidebar, loadCategories } from '../../shared/ui-sidebar.js';
 import { openMemoryCard, restoreOpenCards, initDetailPanel, setDetailCallbacks } from '../../shared/ui-detail.js';
 import { initSettings, restoreInterfaceConfig, restoreSkin, loadIfaceConfig } from '../../shared/ui-settings.js';
 import { initTrash } from '../../shared/ui-trash.js';
 import { initBookmarks } from '../../shared/ui-bookmarks.js';
 import { initResume } from '../../shared/ui-resume.js';
-import { initLayouts, registerBuiltinPresets } from '../../shared/ui-layouts.js';
 import { initHelp } from '../../shared/ui-help.js';
-import { initMultiSelect } from '../../shared/ui-multiselect.js';
+import { initMultiSelect, clearMultiSelect } from '../../shared/ui-multiselect.js';
 import { updateStats, initStats } from '../../shared/ui-stats.js';
 import { initExplorer } from '../../shared/ui-explorer.js';
 import { initFileExplorer } from '../../shared/ui-file-explorer.js';
@@ -46,239 +45,347 @@ import { initCostWidget } from '../../shared/ui-cost-widget.js';
 import { initGames, clearGameOnLoad } from '../../shared/ui-games.js';
 import { initWorkspaces } from '../../shared/ui-workspaces.js';
 import { initInvite } from '../../shared/ui-invite.js';
-import { initSync } from '../../shared/ui-sync.js';
-import { initKeybinds } from '../../shared/ui-keybinds.js';
+import { initSync, isGuest } from '../../shared/ui-sync.js';
+import { initKeybinds, registerAction } from '../../shared/ui-keybinds.js';
 import { initTutorial } from '../../shared/ui-tutorial.js';
 import { initImageGallery } from '../../shared/ui-image-gallery.js';
 import { initScheduleQueue } from '../../shared/ui-schedule-queue.js';
-
-// ── 3D variant modules ──
-import { gfx } from './gfx.js';
-import { setGraphicsHooks } from './settings-gfx.js';
 import { initAutomationStudio } from '../../shared/ui-automation-studio.js';
 import { initSchedulesStudio } from '../../shared/ui-schedules-studio.js';
 import { initNativeLoopRouter } from '../../shared/ui-native-loop-router.js';
 import { initCommandRunner } from '../../shared/ui-command-runner.js';
-import { initCamera, updateCameraMovement, animateCameraToNode, frameCameraToExtent, saveCameraState, restoreCameraState, pauseCamera, resumeCamera } from './camera.js';
-import { applyFloorStyle, applyBgTheme, animateBackground } from './background.js';
-import {
-  initGraph, getGraph, getBloomPass, applyGraphData,
-  preloadCategoryLogos as preloadGraphLogos,
-  applyLinkVisibility, setLinkMode, setLinkTypeFilter,
-  navigateToNode, scheduleGraphRemoval, cancelScheduledRemoval,
-  saveNodePositions, clearSavedPositions, resetLayout,
-  setBloomParams, setBloomEnabled, stopAnimation, startAnimation,
-  pauseInteraction, resumeInteraction,
-} from './graph.js';
+
+// ── Memory map (three.js itself loads only when the map is shown) ──
+import { createLabelLayer } from './map-labels.js';
+import { createMapView } from './map-view.js';
+import { initMapControls } from './map-controls.js';
+import { fetchMap, requestRebuild } from './map-data.js';
 
 
 // ═══════════════════════════════════════════
 // 1. REGISTER VARIANT
 // ═══════════════════════════════════════════
 
-registerVariant({
-  variant: '3d',
-  capabilities: ['camera-hud', 'controls-panel', 'bloom', 'floor-effects', 'background-theme'],
-});
+registerVariant({ variant: '3d', capabilities: ['memory-map'] });
 
 
 // ═══════════════════════════════════════════
-// 2. REGISTER VARIANT-SPECIFIC MENU ITEMS
-// ═══════════════════════════════════════════
-
-registerMenuItem({
-  menu: 'view',
-  order: 25,
-  type: 'toggle',
-  id: 'menu-3d-controls',
-  label: '3D Controls',
-  init: (el) => {
-    el.addEventListener('click', () => {
-      const panel = document.getElementById('controls-panel');
-      if (panel) panel.classList.toggle('visible');
-      el.classList.toggle('active', panel?.classList.contains('visible'));
-    });
-  },
-});
-
-
-// ═══════════════════════════════════════════
-// 3. REGISTER VARIANT HELP SECTION
-// ═══════════════════════════════════════════
-
-registerHelpSection({
-  order: 50,
-  html: `<div class="help-section">
-    <div class="help-section-title">3D Navigation</div>
-    <div class="help-row"><div class="help-keys"><span class="help-key">W</span><span class="help-key">A</span><span class="help-key">S</span><span class="help-key">D</span></div><span class="help-desc">Move camera</span></div>
-    <div class="help-row"><div class="help-keys"><span class="help-key">Q</span><span class="help-key">E</span></div><span class="help-desc">Move camera down / up</span></div>
-    <div class="help-row"><div class="help-keys"><span class="help-key">Shift</span></div><span class="help-desc">Boost speed (hold)</span></div>
-    <div class="help-row"><div class="help-keys"><span class="help-key">Mouse</span><span class="help-key">+</span><span class="help-key">W</span></div><span class="help-desc">Fly towards look direction</span></div>
-    <div class="help-row"><div class="help-keys"><span class="help-key">Drag</span></div><span class="help-desc">Orbit camera</span></div>
-    <div class="help-row"><div class="help-keys"><span class="help-key">Scroll</span></div><span class="help-desc">Zoom in / out</span></div>
-  </div>`,
-});
-
-
-// ═══════════════════════════════════════════
-// 4. LOAD TRANSLATIONS & INJECT SHARED HTML
+// 2. TRANSLATIONS, SHARED HTML, HELP
 // ═══════════════════════════════════════════
 
 await initI18n();
 injectSharedHTML();
 
-// Provide hooks to the 3D graphics settings tab
-setGraphicsHooks({
-  applyBgTheme: (theme) => {
-    const g = getGraph();
-    const bloom = getBloomPass();
-    if (g) applyBgTheme(g, bloom);
-  },
-  applyFloorStyle: (style) => {
-    const g = getGraph();
-    if (g) applyFloorStyle(style, g);
-  },
-  getGraph,
-  setBloomEnabled,
+const helpRow = (keys, desc) =>
+  `<div class="help-row"><div class="help-keys">${keys.map((k) => `<span class="help-key">${k}</span>`).join('')}</div><span class="help-desc">${desc}</span></div>`;
+registerHelpSection({
+  order: 50,
+  html: `<div class="help-section">
+    <div class="help-section-title">${t('map.help.title')}</div>
+    ${helpRow(['Drag'], t('map.help.orbit'))}
+    ${helpRow(['Right-drag'], t('map.help.pan'))}
+    ${helpRow(['Scroll'], t('map.help.zoom'))}
+    ${helpRow(['←', '→', '↑', '↓'], t('map.help.keysPan'))}
+    ${helpRow(['Shift', '←', '→'], t('map.help.keysOrbit'))}
+    ${helpRow(['Click'], t('map.help.open'))}
+    ${helpRow(['⌘/Ctrl', 'Click'], t('map.help.multi'))}
+    ${helpRow(['Click name'], t('map.help.flyTo'))}
+    ${helpRow(['H'], t('map.help.frameAll'))}
+    ${helpRow(['Esc'], t('map.help.clear'))}
+    <div class="help-row"><span class="help-desc">${t('map.help.legend')}</span></div>
+  </div>`,
 });
 
 
 // ═══════════════════════════════════════════
-// 5. WIRE EVENT BUS — connect shared events to variant actions
+// 3. THE MAP
 // ═══════════════════════════════════════════
 
-// When shared UI emits graph:navigate, move camera to node
-on('graph:navigate', ({ node, zoom }) => {
-  if (node) navigateToNode(node, { zoom });
-});
+let renderer = null;
+let labels = null;
+let view = null;
+let mapInit = null;
+let _vizEnabled = loadIfaceConfig().visualizationEnabled !== false;
+let _inFocusMode = false;
+let _bootComplete = false;
+const _seenCategories = new Set();
 
-// When shared UI requests data reload (e.g. after OpenClaw bridge sync)
-on('data:reload', async () => {
-  try {
-    const needLinks = state.linkMode !== 'off';
-    const res = await fetch(`/api/memories${needLinks ? '' : '?links=false'}`);
-    if (!res.ok) return;
-    const data = await res.json();
-    state.allNodes = normalizeNodes(data.nodes);
-    state.allLinks = data.links;
-
-    await loadCategories();
-    // Preload logos into graph module's own map (sidebar has a separate one)
-    const _logoCats = Object.entries(state.categoryMetadata)
-      .filter(([, m]) => m.logo)
-      .map(([name, m]) => ({ name, logo: m.logo }));
-    preloadGraphLogos(_logoCats);
-
-    const presentCats = new Set(state.allNodes.map(n => n.payload.category));
-    state.activeCategories = new Set([...presentCats, ...state.allCategoryNames]);
-
-    buildCategorySidebar(presentCats);
-    applyGraphData();
-    updateStats();
-  } catch (err) {
-    console.error('data:reload failed:', err);
+function statusPill(container) {
+  let el = document.getElementById('map-status');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'map-status';
+    container.appendChild(el);
   }
-});
+  return el;
+}
 
-// When categories change, rebuild sidebar and refresh graph
-on('categories-changed', () => {
-  // Re-preload logos in case a category logo was added/changed
-  const _lc = Object.entries(state.categoryMetadata)
-    .filter(([, m]) => m.logo)
-    .map(([name, m]) => ({ name, logo: m.logo }));
-  preloadGraphLogos(_lc);
-  applyGraphData();
-});
+function showMapMessage(text) {
+  const container = document.getElementById('graph-container');
+  if (!container) return;
+  const el = statusPill(container);
+  el.textContent = text;
+  el.classList.add('visible', 'error');
+}
 
-// When search applies, refresh graph to show/hide nodes
-on('search:apply', () => {
-  applyGraphData();
-});
-
-on('search:clear', () => {
-  applyGraphData();
-});
-
-// Link mode changes
-on('link-mode-changed', (mode) => {
-  setLinkMode(mode);
-});
-
-on('link-type-changed', (filter) => {
-  setLinkTypeFilter(filter);
-});
-
-// Node selection — zoom camera + open detail card
-on('node-selected', (node) => {
-  if (node) {
-    animateCameraToNode(node, { zoom: 'close' });
-    openMemoryCard(node);
+/** Create renderer, labels, view and input once; three.js is fetched here. */
+function ensureMap() {
+  if (!mapInit) {
+    mapInit = (async () => {
+      const container = document.getElementById('graph-container');
+      const { createMapRenderer } = await import('./map-renderer.js');
+      labels = createLabelLayer(container);
+      let v = null;
+      renderer = createMapRenderer(container, {
+        onFrame: (now) => (v ? v.drawLabels(now) : false),
+        onSettle: () => v?.onSettle(),
+        onResize: (w, h) => labels.resize(w, h),
+        onMorphEnd: () => v?.onMorphEnd(),
+      });
+      labels.resize(renderer.size.width, renderer.size.height);
+      v = createMapView({ renderer, labels, statusEl: statusPill(container), onMissingNodes: (ids) => addMissingMemories(ids) });
+      initMapControls({ renderer, view: v, labels });
+      view = v;
+      applyRunState();
+      syncMapMenuChecks();
+      return v;
+    })();
+    mapInit.catch((err) => {
+      console.error('[map] could not start:', err);
+      showMapMessage(t('map.status.noWebgl'));
+    });
   }
-});
+  return mapInit;
+}
 
-// Graph refresh request (from settings sliders, etc.)
-on('graph:refresh', () => {
-  applyGraphData();
-});
+/** The map renders only while the visualisation is on and focus mode is off. */
+function applyRunState() {
+  if (!view) return;
+  if (_vizEnabled && !_inFocusMode) view.resume();
+  else view.pause();
+}
 
-// Per-frame WASD camera movement
-on('camera-tick', () => {
-  updateCameraMovement();
-});
 
-// Animation tick — update background animations
-on('animate-tick', ({ time, graph: g }) => {
-  animateBackground(time, g);
-});
+// ═══════════════════════════════════════════
+// 4. DATA
+// ═══════════════════════════════════════════
 
-// When a category is removed and its nodes should disappear
-on('category:schedule-removal', () => {
-  scheduleGraphRemoval();
-});
+const prefetch = window.__synPrefetch || {};
 
-on('category:cancel-removal', () => {
-  cancelScheduledRemoval();
-});
+async function fetchJson(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
 
-// Layout commands
-on('layout:reset', () => {
-  clearSavedPositions();
-  resetLayout();
-});
+function activateNewCategories(names) {
+  for (const name of names) {
+    if (_seenCategories.has(name)) continue;
+    _seenCategories.add(name);
+    state.activeCategories.add(name);
+  }
+}
 
-on('layout:frame', (nodes) => {
-  frameCameraToExtent(nodes || state.allNodes);
-});
-
-// Stats update
-on('stats-changed', () => {
+// Memories the map already shows but the page has no data for (written through
+// MCP, which never broadcasts). A few are fetched one by one; the 23 MB list is
+// re-downloaded only when many are missing, and at most once a minute.
+const _missingAsked = new Map(); // id → when it was last requested
+let _lastFullReload = 0;
+async function addMissingMemories(ids) {
+  const now = Date.now();
+  if (!ids) {
+    if (now - _lastFullReload < 60_000) return;
+    _lastFullReload = now;
+    scheduleReload();
+    return;
+  }
+  const want = ids.filter((id) => now - (_missingAsked.get(id) || 0) > 60_000);
+  if (!want.length) return;
+  for (const id of want) _missingAsked.set(id, now);
+  const fetched = [];
+  for (let i = 0; i < want.length; i += 6) {
+    const batch = await Promise.all(want.slice(i, i + 6).map((id) =>
+      fetch(`/api/memory/${encodeURIComponent(id)}`).then((r) => (r.ok ? r.json() : null)).catch(() => null)));
+    for (const m of batch) if (m?.id && m.payload) fetched.push({ id: m.id, payload: m.payload });
+  }
+  const known = new Set(state.allNodes.map((n) => n.id));
+  const fresh = normalizeNodes(fetched).filter((n) => !known.has(n.id));
+  if (!fresh.length) return;
+  state.allNodes = [...fresh, ...state.allNodes]; // the list is newest-first
+  const presentCats = new Set(state.allNodes.map((n) => n.payload.category));
+  activateNewCategories([...presentCats]);
+  buildCategorySidebar(presentCats);
+  view?.hydrate();
+  view?.refreshVisibility();
   updateStats();
+}
+
+let _reloadTimer = null;
+let _reloading = null;
+function scheduleReload() {
+  if (_reloadTimer) return;
+  _reloadTimer = setTimeout(() => { _reloadTimer = null; reloadMemories(); }, 300);
+}
+
+/** Refetch the memory list (slim payload) and the map (304 when unchanged). */
+async function reloadMemories() {
+  if (_reloading) return _reloading;
+  _reloading = (async () => {
+    try {
+      const data = await fetchJson('/api/memories?links=false&fields=graph');
+      state.allNodes = normalizeNodes(data.nodes);
+      state.allLinks = data.links || [];
+      await loadCategories();
+      const presentCats = new Set(state.allNodes.map((n) => n.payload.category));
+      activateNewCategories([...presentCats, ...state.allCategoryNames]);
+      buildCategorySidebar(presentCats);
+      view?.hydrate();
+      view?.refreshColors();
+      view?.refreshVisibility();
+      view?.refetch();
+      updateStats();
+    } catch (err) {
+      console.error('data:reload failed:', err);
+    } finally {
+      _reloading = null;
+    }
+  })();
+  return _reloading;
+}
+
+/** Old 3D renderer state that nothing reads any more. Idempotent. */
+function dropLegacy3dState() {
+  try {
+    posStore.removeItem(KEYS.NODE_POS_3D);
+    for (const key of ['neural-gfx-config', 'neural-gfx-preset', 'neural-cam-hud-pinned', 'neural-cam-hud-pos', 'synabun-layout-version']) {
+      storage.removeItem(key);
+    }
+  } catch {}
+}
+
+
+// ═══════════════════════════════════════════
+// 5. EVENT BUS
+// ═══════════════════════════════════════════
+
+on('graph:navigate', ({ node }) => { if (node) view?.select(node.id, { fly: true }); });
+
+on('node-selected', (node) => {
+  if (!node) return;
+  view?.select(node.id, { fly: true });
+  openMemoryCard(node);
+});
+
+on('search:apply', ({ ids, results } = {}) => view?.applySearch(ids, results));
+on('search:clear', () => view?.clearSearch());
+
+// A category toggle emits links:dirty immediately and graph:refresh 600 ms later.
+on('links:dirty', () => view?.refreshVisibility());
+on('graph:refresh', () => { view?.refreshVisibility(); updateStats(); });
+
+const onCategoriesChanged = () => { view?.refreshColors(); view?.refreshVisibility(); };
+on('categories-changed', onCategoriesChanged);
+on('categories:changed', onCategoriesChanged);
+on('graph:nodeThreeObject', () => view?.refreshColors()); // a category colour changed
+
+on('data:reload', () => scheduleReload());
+on('graph:reload', () => scheduleReload());
+
+on('multiselect:cleared', () => view?.refreshVisibility());
+on('detail:opened', () => view?.syncSelectionFromState());
+on('detail:closed', () => view?.syncSelectionFromState());
+
+on('layout:reset', () => view?.frameAll());
+on('sync:map:updated', (msg) => view?.onServerUpdate(msg));
+
+on('workspace:get-scene', (callback) => callback(view ? view.getScene() : { nodePositions: {}, camera: null }));
+on('workspace:restore-scene', (scene) => view?.restoreScene(scene));
+
+// Visualisation off / focus mode (whiteboard): zero frames, no input.
+on('viz:toggle', (enabled) => {
+  _vizEnabled = !!enabled;
+  if (!_bootComplete) return;
+  if (_vizEnabled && !view) {
+    ensureMap().then(async (v) => {
+      const json = await fetchMap().catch(() => null);
+      if (json) { v.applyMap(json, { morph: false }); v.hydrate(); v.refreshVisibility(); v.frameAll(0); }
+    }).catch(() => {});
+    return;
+  }
+  applyRunState();
+});
+on('focus:enter', () => {
+  _inFocusMode = true;
+  state.hoveredNodeId = null;
+  applyRunState();
+});
+on('focus:exit', () => {
+  _inFocusMode = false;
+  applyRunState();
 });
 
 
 // ═══════════════════════════════════════════
-// 6. DETAIL PANEL CALLBACKS
+// 6. DETAIL CARD CALLBACKS (the names ui-detail.js calls)
 // ═══════════════════════════════════════════
 
 setDetailCallbacks({
-  navigateToNode: (node) => navigateToNode(node, { zoom: 'close' }),
-  refreshGraph: () => applyGraphData(),
-  scheduleRemoval: () => scheduleGraphRemoval(),
-  cancelRemoval: () => cancelScheduledRemoval(),
+  applyGraphData: () => {
+    view?.hydrate();
+    view?.syncFocusFromState();
+    view?.refreshVisibility();
+  },
+  updateStats: () => updateStats(),
+  buildCategorySidebar: (cats) => buildCategorySidebar(cats),
+  clearMultiSelect: () => clearMultiSelect(),
+  fetchTrashItems: () => emit('trash:refresh'),
+  refreshNodeAppearance: () => { view?.refreshColors(); view?.refreshVisibility(); },
 });
 
 
 // ═══════════════════════════════════════════
-// 7. BOOT SEQUENCE
+// 7. MAP MENU + KEYS
+// ═══════════════════════════════════════════
+
+const MAP_TOGGLES = { 'menu-map-neighbors': 'neighbors', 'menu-map-recency': 'recency', 'menu-map-grid': 'grid' };
+
+function syncMapMenuChecks() {
+  const opts = view?.options;
+  if (!opts) return;
+  for (const [id, key] of Object.entries(MAP_TOGGLES)) document.getElementById(id)?.classList.toggle('active', !!opts[key]);
+}
+
+function wireMapMenu() {
+  const click = (id, fn) => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('click', () => { closeMenubar(); fn(el); });
+    return el;
+  };
+  click('menu-map-frame-all', () => view?.frameAll());
+  for (const [id, key] of Object.entries(MAP_TOGGLES)) {
+    click(id, () => { if (!view) return; view.setOption(key, !view.options[key]); syncMapMenuChecks(); });
+  }
+  const rebuild = click('menu-map-rebuild', () => {
+    requestRebuild().catch((err) => console.warn('[map] rebuild failed:', err?.message || err));
+  });
+  const syncGuest = () => { if (rebuild) rebuild.style.display = isGuest() ? 'none' : ''; };
+  syncGuest();
+  on('session:info', syncGuest);
+}
+
+registerAction('map-frame-all', () => view?.frameAll());
+
+
+// ═══════════════════════════════════════════
+// 8. BOOT
 // ═══════════════════════════════════════════
 
 async function boot() {
   try {
-    // Restore interface customization + active skin before anything renders
     restoreInterfaceConfig();
     restoreSkin();
+    dropLegacy3dState();
 
-    // Pre-flight health check
     try {
       const healthRes = await fetch('/api/health');
       const health = await healthRes.json();
@@ -294,83 +401,60 @@ async function boot() {
         return;
       }
     } catch {
-      // /api/health failed — continue to try /api/memories
+      // /api/health failed — continue to try the data
     }
 
-    // Fetch all memories (skip expensive link computation — loaded on demand)
-    const res = await fetch('/api/memories?links=false&fields=graph');
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
+    const memoriesP = prefetch.memories || fetchJson('/api/memories?links=false&fields=graph');
+    const mapP = prefetch.map || fetchMap().catch(() => null);
 
-    state.allNodes = normalizeNodes(data.nodes);
-    state.allLinks = data.links;
-
-    // Fetch category definitions
+    // Categories first, so the first frame already has the sidebar's colours.
     await loadCategories();
-    // Preload logos into graph module's own map (sidebar has a separate one)
-    const _logoCats = Object.entries(state.categoryMetadata)
-      .filter(([, m]) => m.logo)
-      .map(([name, m]) => ({ name, logo: m.logo }));
-    preloadGraphLogos(_logoCats);
 
-    // Discover all categories present
-    const presentCats = new Set(state.allNodes.map(n => n.payload.category));
-    state.activeCategories = new Set([...presentCats, ...state.allCategoryNames]);
-
-    // Build category sidebar
-    buildCategorySidebar(presentCats);
-
-    // Init the 3D graph (skip if visualization is disabled or already init'd by viz:toggle)
-    const container = document.getElementById('graph-container');
-    const vizEnabled = loadIfaceConfig().visualizationEnabled !== false;
-
-    if (vizEnabled && !getGraph()) {
-      initGraph(container, {
-        onApplyBgTheme: (theme) => {
-          const g = getGraph();
-          const bloom = getBloomPass();
-          if (g) applyBgTheme(g, bloom);
-        },
-      });
-
-      // Init camera controls
-      const g = getGraph();
-      if (g) initCamera(g);
-
-      // Apply floor style from saved config
-      if (g) applyFloorStyle(gfx.floorStyle || 'grid', g);
-    }
-
-    // Update stats
-    updateStats();
-
-    // Notify shared modules that data is ready
-    emit('data-loaded', data);
-
-    // Restore previously open memory cards (persisted positions)
-    restoreOpenCards();
-
-    // Check for cross-variant node switch
-    const switchNodeId = sessionStorage.getItem('neural-selected-node-switch');
-    if (switchNodeId) {
-      sessionStorage.removeItem('neural-selected-node-switch');
-      const switchNode = state.allNodes.find(n => n.id === switchNodeId);
-      if (switchNode) {
-        state.selectedNodeId = switchNodeId;
-        openMemoryCard(switchNode);
-        setTimeout(() => navigateToNode(switchNode, { zoom: 'close' }), 500);
+    if (_vizEnabled) {
+      try {
+        const [v, mapJson] = await Promise.all([ensureMap(), mapP]);
+        if (mapJson) {
+          state.activeCategories = new Set([...state.allCategoryNames, ...mapJson.islands.map((i) => i.name)]);
+          v.applyMap(mapJson, { morph: false });
+          v.frameAll(0);
+          hideLoading(150); // the map is up; the rest fills in behind it
+        } else {
+          showMapMessage(t('map.status.error'));
+        }
+      } catch {
+        // ensureMap already reported it; the rest of the app still works
       }
     }
 
-    // Fetch trash count
+    const data = await memoriesP;
+    if (data?.error) throw data.error;
+    state.allNodes = normalizeNodes(data.nodes);
+    state.allLinks = data.links || [];
+    const presentCats = new Set(state.allNodes.map((n) => n.payload.category));
+    state.activeCategories = new Set([...presentCats, ...state.allCategoryNames]);
+    for (const name of state.activeCategories) _seenCategories.add(name);
+    buildCategorySidebar(presentCats);
+    view?.hydrate();
+    view?.refreshVisibility();
+    updateStats();
+
+    emit('data-loaded', data);
+    restoreOpenCards();
+
+    // Handed over from the 2D view
+    const switchNodeId = sessionStorage.getItem('neural-selected-node-switch');
+    if (switchNodeId) {
+      sessionStorage.removeItem('neural-selected-node-switch');
+      const node = state.allNodes.find((n) => n.id === switchNodeId);
+      if (node) {
+        openMemoryCard(node);
+        view?.select(node.id, { fly: true });
+      }
+    }
+
     try { emit('trash:refresh'); } catch {}
-
-    // Fade out loading
     hideLoading(400);
-
-    // Mark boot complete — viz:toggle handler can now respond to user toggles
     _bootComplete = true;
-
   } catch (err) {
     console.error('Init error:', err);
     const isNetworkError = err.message === 'Failed to fetch' || err.name === 'TypeError';
@@ -378,18 +462,18 @@ async function boot() {
       isNetworkError ? t('loading.serverOffline') : t('loading.connectionFailed'),
       isNetworkError ? t('loading.serverNotRunning') : err.message,
       false,
-      isNetworkError
+      isNetworkError,
     );
   }
 }
 
 
 // ═══════════════════════════════════════════
-// 8. INIT ALL SHARED UI SYSTEMS
+// 9. INIT ALL SHARED UI SYSTEMS
 // ═══════════════════════════════════════════
 
 initLoading({ onInit: boot });
-initKeybinds();  // async — loads keybinds from server, installs central dispatcher
+initKeybinds();
 initTooltip();
 initPanelSystem();
 initPinToggle();
@@ -402,7 +486,6 @@ initSettings();
 initTrash();
 initBookmarks();
 initResume();
-initLayouts();
 initWorkspaces();
 initInvite();
 initSync();
@@ -426,98 +509,8 @@ initWhiteboard();
 initCostWidget();
 initGames();
 initTutorial();
+wireMapMenu();
 
-// View switch handler
-{
-  const switchBtn = document.querySelector('.view-toggle-btn:not(.active)');
-  if (switchBtn) {
-    switchBtn.addEventListener('click', (e) => {
-      e.preventDefault();
-      if (state.selectedNodeId) sessionStorage.setItem('neural-selected-node-switch', state.selectedNodeId);
-      window.location.href = switchBtn.getAttribute('href');
-    });
-  }
-}
+window.addEventListener('resize', () => clampPanelsToViewport());
 
-// Window resize handler
-window.addEventListener('resize', () => {
-  clampPanelsToViewport();
-});
-
-// Visualization toggle — pause/resume 3D rendering
-// Guard: ignore viz:toggle events emitted during boot (from restoreInterfaceConfig).
-// Boot handles graph init itself; this handler is only for runtime user toggles.
-let _bootComplete = false;
-// The graph loop has two independent stop reasons: viz disabled (user turned the
-// graph off) or focus mode (whiteboard) active. It runs ONLY when viz is on AND
-// not in focus — so toggling viz while the whiteboard is up never restarts the
-// loop behind it, and re-entering focus always re-pauses it.
-let _vizEnabled = loadIfaceConfig().visualizationEnabled !== false;
-let _inFocusMode = false;
-function _applyGraphAnimation() {
-  if (_vizEnabled && !_inFocusMode) startAnimation();
-  else stopAnimation();
-}
-on('viz:toggle', (enabled) => {
-  if (!_bootComplete) return;
-  _vizEnabled = enabled;
-  if (enabled && !getGraph()) {
-    // First-time init if graph was never created (was disabled at boot)
-    const container = document.getElementById('graph-container');
-    initGraph(container, {
-      onApplyBgTheme: () => {
-        const g = getGraph();
-        const bloom = getBloomPass();
-        if (g) applyBgTheme(g, bloom);
-      },
-    });
-    const g = getGraph();
-    if (g) initCamera(g);
-    if (g) applyFloorStyle(gfx.floorStyle || 'grid', g);
-    applyGraphData();
-  }
-  _applyGraphAnimation();
-});
-
-// Focus mode isolation — zero-resource mode for 3D
-on('focus:enter', () => {
-  state.hoveredNodeId = null;
-  document.body.style.cursor = 'default';
-  // Whiteboard covers the graph — stop the loop (it idled at 24fps behind
-  // #static-bg). _applyGraphAnimation re-evaluates viz + focus together, so a viz
-  // toggle while the whiteboard is up never restarts the loop behind it.
-  _inFocusMode = true;
-  _applyGraphAnimation();
-  pauseInteraction();
-  pauseCamera();
-});
-
-on('focus:exit', () => {
-  _inFocusMode = false;
-  resumeInteraction();
-  resumeCamera();
-  _applyGraphAnimation();
-});
-
-// Workspace scene snapshot (3D)
-on('workspace:get-scene', (callback) => {
-  const graph = getGraph();
-  if (!graph) return callback({ nodePositions: {}, camera: null });
-  const gd = graph.graphData();
-  const positions = {};
-  for (const n of gd.nodes) {
-    if (n.x != null) positions[n.id] = { x: n.x, y: n.y, z: n.z };
-  }
-  callback({ nodePositions: positions, camera: saveCameraState() });
-});
-
-on('workspace:restore-scene', ({ nodePositions, camera }) => {
-  if (nodePositions && Object.keys(nodePositions).length > 0) {
-    posStore.setItem(KEYS.NODE_POS_3D, JSON.stringify(nodePositions));
-  }
-  if (camera) restoreCameraState(camera, 1500);
-  applyGraphData();
-});
-
-// Boot
 boot();

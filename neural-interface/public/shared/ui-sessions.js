@@ -1,7 +1,7 @@
 // ═══════════════════════════════════════════
 // SynaBun — Notifications Drawer
 // Centralised notification window: pending updates (SynaBun core, CLI tools,
-// CLAUDE.md / AGENTS.md ruleset versions), active sessions, agents, loops,
+// SynaBun's rules), active sessions, agents, loops,
 // and leak detection. Proper draggable/resizable window with tabbed sections.
 //
 // Note: CSS classes, DOM IDs, and event names use the legacy `session-monitor`
@@ -16,6 +16,7 @@ import { getProviderMeta } from './provider-icons.js';
 import { sendToPanel as sendToClaudePanel, isClaudePanelOpen } from './ui-claude-panel.js';
 import { toggleCodexPanel, isCodexPanelOpen } from './cdx/cdx-panel.js';
 import { openOpencodeWithPrompt } from './ui-opencode-panel-v2.js';
+import { fetchRulesStatus, installAllRules, ackRulesNotice } from './api.js';
 
 // ── State ──
 let ws = null;
@@ -36,25 +37,18 @@ const PROVIDER_LABELS = { claude: 'Claude Code', codex: 'Codex', opencode: 'Open
 let _prPicker = { open: false, provider: 'claude', model: '', modelsByProvider: {}, loading: null };
 
 // ── Notifications state ──
-const NOTIF_ACK_KEY = 'synabun:notifications:acked-v1';
-const RULESET_FORMATS = ['claude', 'codex', 'cursor', 'generic', 'gemini'];
-const RULESET_LABELS = {
-  claude:  { title: 'CLAUDE.md ruleset',           target: 'CLAUDE.md',  section: 'setup-claude'   },
-  codex:   { title: 'AGENTS.md ruleset (Codex)',   target: 'AGENTS.md',  section: 'setup-codex'    },
-  generic: { title: 'AGENTS.md ruleset (OpenCode)', target: 'AGENTS.md',  section: 'setup-opencode' },
-  cursor:  { title: 'Cursor ruleset',              target: '.cursorrules', section: 'setup-claude' },
-  gemini:  { title: 'GEMINI.md ruleset',           target: 'GEMINI.md',  section: 'setup-claude'   },
+// SynaBun's rules, as GET /api/setup/rules reports them (lib/rulesets/installer.js).
+// null until it answers and on a server without the route: the drawer then
+// simply has no rules items. The server holds what was acknowledged.
+const RULES_HOSTS = {
+  claude:   { label: 'Claude Code', provider: 'claude-code', section: 'setup-claude' },
+  codex:    { label: 'Codex',       provider: 'codex',       section: 'setup-codex' },
+  opencode: { label: 'OpenCode',    provider: 'opencode',    section: 'setup-opencode' },
+  gemini:   { label: 'Gemini',      provider: 'gemini',      section: 'setup-gemini' },
 };
-const RULESET_PROVIDER = {
-  claude:  'claude-code',
-  codex:   'codex',
-  generic: 'opencode',
-  cursor:  'claude-code',
-  gemini:  'gemini',
-};
-let _rulesetVersions = null;       // server payload — { formats: { claude: {fingerprint, ...}, ... } }
-let _acked = _loadAcked();         // { rulesets: {fmt: fingerprint}, synabun: latest, tools: {key: latest} }
-let _ackedSeeded = false;          // becomes true after first-run seed of ruleset fingerprints
+// The host states that need the user: each one opens Settings > Setup.
+const RULES_ATTENTION = { outdated: 'Update available', modified: 'Edited copy', conflict: 'Needs repair' };
+let _rulesStatus = null;
 
 // ── Icons ──
 const ICON_TERMINAL = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="2" width="13" height="12" rx="2"/><path d="M4.5 6l2.5 2-2.5 2M8.5 10h3"/></svg>';
@@ -204,40 +198,19 @@ function buildPanelHTML() {
   `;
 }
 
-// Acknowledge every pending update in one shot. Used by the "Dismiss all"
-// action in the Updates tab.
+// Acknowledge every dismissable update in one shot. Used by the "Dismiss all"
+// action in the Updates tab. Only the rules notice can be dismissed.
 function markAllUpdatesRead() {
-  const items = computeUpdates();
-  for (const it of items) {
-    if (it.kind === 'ruleset') ackRulesetUpdate(it.key);
-  }
-  if (_panel) render();
+  if (computeUpdates().some(it => it.dismissable)) dismissRulesNotice();
+  else if (_panel) render();
 }
 
 // ── Notifications engine ──
 
-function _loadAcked() {
-  try {
-    const raw = localStorage.getItem(NOTIF_ACK_KEY);
-    if (!raw) return { rulesets: {}, synabun: '', tools: {} };
-    const parsed = JSON.parse(raw);
-    return {
-      rulesets: parsed.rulesets || {},
-      synabun: parsed.synabun || '',
-      tools: parsed.tools || {},
-    };
-  } catch {
-    return { rulesets: {}, synabun: '', tools: {} };
-  }
-}
-
-function _saveAcked() {
-  try { localStorage.setItem(NOTIF_ACK_KEY, JSON.stringify(_acked)); } catch {}
-}
-
-// Build the notification list from current ruleset versions, SynaBun core
-// update data, and CLI tool update data. Each item is shown in the Updates tab
-// SynaBun and CLI updates show whenever available (not dismissable). Rulesets use acked fingerprint.
+// Build the notification list from SynaBun core update data, CLI tool update
+// data and the rules status. Each item is shown in the Updates tab.
+// SynaBun and CLI updates show whenever available (not dismissable). Of the
+// rules items only the notice can be dismissed; the server remembers that.
 function computeUpdates() {
   const items = [];
 
@@ -272,26 +245,52 @@ function computeUpdates() {
     }
   }
 
-  // Rulesets
-  if (_rulesetVersions?.formats && _ackedSeeded) {
-    for (const fmt of RULESET_FORMATS) {
-      const cur = _rulesetVersions.formats[fmt];
-      if (!cur) continue;
-      const acked = _acked.rulesets[fmt];
-      if (acked === cur.fingerprint) continue;
-      const meta = RULESET_LABELS[fmt] || { title: fmt, target: '', section: 'setup-claude' };
+  // SynaBun rules: at most one notice, then one item per tool that needs attention.
+  if (_rulesStatus?.hosts) {
+    const names = (hosts) => (hosts || []).map(h => RULES_HOSTS[h]?.label || h).join(', ');
+    const notice = _rulesStatus.notice;
+    if (notice?.kind === 'offer-install' && notice.hosts?.length) {
       items.push({
         kind: 'ruleset',
-        key: fmt,
-        title: meta.title,
-        subtitle: cur.source === 'manifest' && cur.version
-          ? `New version ${cur.version}`
-          : 'Updated content available',
-        meta: cur.summary || (cur.source === 'manifest' && cur.updatedAt ? `Updated ${cur.updatedAt}` : ''),
-        target: meta.target,
-        section: meta.section,
-        fingerprint: cur.fingerprint,
-        action: 'Open & copy',
+        key: 'offer-install',
+        hosts: notice.hosts,
+        title: 'Install SynaBun rules',
+        subtitle: names(notice.hosts),
+        meta: 'SynaBun can put its rules where these tools load them for every project, and keep them up to date.',
+        action: 'Install',
+        dismissable: true,
+        severity: 'normal',
+      });
+    } else if (notice?.kind === 'updated') {
+      items.push({
+        kind: 'ruleset',
+        key: 'updated',
+        hosts: notice.hosts || [],
+        title: 'SynaBun rules updated',
+        subtitle: notice.from && notice.to ? `v${notice.from} \u2192 v${notice.to}` : (notice.to ? `v${notice.to}` : 'Updated'),
+        meta: notice.hosts?.length ? `Updated for ${names(notice.hosts)}` : '',
+        section: 'setup-rules',
+        action: 'Open Setup',
+        dismissable: true,
+        severity: 'normal',
+      });
+    }
+    for (const [host, info] of Object.entries(_rulesStatus.hosts)) {
+      const what = RULES_ATTENTION[info?.state];
+      if (!what || !RULES_HOSTS[host]) continue;
+      items.push({
+        kind: 'ruleset',
+        key: `host:${host}`,
+        host,
+        title: `${RULES_HOSTS[host].label} rules`,
+        subtitle: what,
+        meta: info.state === 'outdated' ? (_rulesStatus.version ? `Version ${_rulesStatus.version} is available` : '')
+            : info.state === 'modified' ? 'This copy was edited, so SynaBun no longer updates it'
+            : (info.error || info.detail || ''),
+        path: info.path || '',
+        section: RULES_HOSTS[host].section,
+        action: 'Open Setup',
+        dismissable: false,
         severity: 'normal',
       });
     }
@@ -304,54 +303,45 @@ function emitNotificationsUpdate() {
   emit('notifications:updated', { unreadCount: computeUpdates().length });
 }
 
-async function refreshRulesetVersions() {
+async function refreshRulesStatus() {
+  _rulesStatus = await fetchRulesStatus();
+  emitNotificationsUpdate();
+}
+
+// Settings > Setup re-reads the status after every rules action and passes it on.
+on('rules:changed', (status) => {
+  _rulesStatus = status?.ok ? status : null;
+  emitNotificationsUpdate();
+  if (_panel) render();
+});
+
+function openRulesSetup(section) {
+  if (_panel) closePanel();
+  const sections = [...new Set(['setup-rules', section].filter(Boolean))];
+  openSettingsModal({ tab: 'ai-connections', expand: sections, highlight: [section || 'setup-rules'], scrollTo: section || 'setup-rules' });
+}
+
+// "Install" on the offer: install for the offered tools, then acknowledge the
+// notice so it is not offered again. When a tool refuses (an edited copy, a
+// CLI that is gone) Setup shows which one and why.
+async function installOfferedRules(item) {
+  let refused = false;
   try {
-    const res = await fetch('/api/claude-code/ruleset/versions');
-    if (!res.ok) return;
-    const data = await res.json();
-    _rulesetVersions = data;
-
-    // First-run seed: if the user has never acked any ruleset, seed acks to
-    // current fingerprints so existing users don't get a flood of "new" alerts.
-    if (!_ackedSeeded) {
-      const hasAny = Object.keys(_acked.rulesets || {}).length > 0;
-      if (!hasAny && data?.formats) {
-        for (const fmt of RULESET_FORMATS) {
-          const cur = data.formats[fmt];
-          if (cur?.fingerprint) _acked.rulesets[fmt] = cur.fingerprint;
-        }
-        _saveAcked();
-      }
-      _ackedSeeded = true;
-    }
-
-    emitNotificationsUpdate();
-  } catch {}
+    const result = await installAllRules(item.hosts);
+    refused = result?.ok === false;
+    await ackRulesNotice();
+  } catch {
+    refused = true;
+  }
+  await refreshRulesStatus();
+  if (refused) openRulesSetup('setup-rules');
+  else if (_panel) render();
 }
 
-function ackRulesetUpdate(fmt) {
-  const cur = _rulesetVersions?.formats?.[fmt];
-  if (!cur?.fingerprint) return;
-  _acked.rulesets[fmt] = cur.fingerprint;
-  _saveAcked();
-  emitNotificationsUpdate();
-}
-
-function ackSynabunUpdate() {
-  const data = getSynabunUpdateData();
-  if (!data?.latest) return;
-  _acked.synabun = data.latest;
-  _saveAcked();
-  emitNotificationsUpdate();
-}
-
-function ackToolUpdate(key) {
-  const data = getToolUpdateData();
-  const info = data?.tools?.[key];
-  if (!info?.latest) return;
-  _acked.tools[key] = info.latest;
-  _saveAcked();
-  emitNotificationsUpdate();
+async function dismissRulesNotice() {
+  try { await ackRulesNotice(); } catch { /* still there next time */ }
+  await refreshRulesStatus();
+  if (_panel) render();
 }
 
 function handleUpdateAction(item) {
@@ -367,20 +357,18 @@ function handleUpdateAction(item) {
     return;
   }
   if (item.kind === 'ruleset') {
-    ackRulesetUpdate(item.key);
-    if (_panel) closePanel();
-    openSettingsModal({
-      tab: 'connections',
-      expand: [item.section],
-      highlight: [item.section],
-    });
+    if (item.key === 'offer-install') installOfferedRules(item);
+    else openRulesSetup(item.section);
   }
 }
 
 function handleUpdateAck(item) {
   if (!item) return;
-  if (item.kind === 'ruleset') ackRulesetUpdate(item.key);
-  else handleUpdateAction(item);
+  if (item.kind === 'ruleset') {
+    if (item.dismissable) dismissRulesNotice();
+    return;
+  }
+  handleUpdateAction(item);
   if (_panel) render();
 }
 
@@ -390,7 +378,7 @@ function renderUpdatesTab() {
     return `<div class="sm-empty-state">
       <div class="sm-empty-icon sm-empty-ok">${ICON_BELL}</div>
       <div class="sm-empty-title">All caught up</div>
-      <div class="sm-empty-desc">No new updates. We'll let you know when SynaBun, CLI tools, or the CLAUDE.md / AGENTS.md rulesets change.</div>
+      <div class="sm-empty-desc">No new updates. We'll let you know when SynaBun, CLI tools or SynaBun's rules need attention.</div>
     </div>`;
   }
 
@@ -398,15 +386,15 @@ function renderUpdatesTab() {
   const groups = [
     { id: 'synabun', label: 'SynaBun', items: items.filter(i => i.kind === 'synabun') },
     { id: 'tool',    label: 'CLI tools', items: items.filter(i => i.kind === 'tool') },
-    { id: 'ruleset', label: 'Rulesets', items: items.filter(i => i.kind === 'ruleset') },
+    { id: 'ruleset', label: 'Rules', items: items.filter(i => i.kind === 'ruleset') },
   ];
 
   let html = '';
-  // Only show Dismiss all when there are dismissable (ruleset) updates
-  const hasDismissable = items.some(i => i.kind === 'ruleset');
-  if (hasDismissable) {
+  // Only show Dismiss all when there is something dismissable (the rules notice)
+  const dismissableCount = items.filter(i => i.dismissable).length;
+  if (dismissableCount > 0) {
     html += `<div class="sm-actionbar">
-      <span class="sm-actionbar-label">${items.filter(i => i.kind === 'ruleset').length} ruleset update${items.filter(i => i.kind === 'ruleset').length === 1 ? '' : 's'} to dismiss</span>
+      <span class="sm-actionbar-label">${dismissableCount} rules notice${dismissableCount === 1 ? '' : 's'} to dismiss</span>
       <button class="sm-btn sm-btn-ghost" id="sm-updates-mark-all">Dismiss all</button>
     </div>`;
   }
@@ -434,14 +422,14 @@ function renderUpdateCard(item, idx) {
     icon = meta.icon;
     providerColor = meta.color;
   } else {
-    const providerId = RULESET_PROVIDER[item.key] || 'claude-code';
-    const meta = getProviderMeta(providerId);
+    // A tool's own icon for its item; SynaBun's for the notice that covers several tools.
+    const meta = getProviderMeta(RULES_HOSTS[item.host]?.provider || 'synabun');
     icon = meta.icon;
     providerColor = meta.color;
   }
   const kindLabel = item.kind === 'synabun' ? 'SynaBun'
                  : item.kind === 'tool'    ? 'CLI tool'
-                 : 'Ruleset';
+                 : 'Rules';
   let html = `<div class="sm-card sm-card-update" data-update-idx="${esc(idx)}">`;
   html += `<div class="sm-update-row">`;
   html += `<div class="sm-update-icon" aria-hidden="true" style="color:${providerColor}">${icon}</div>`;
@@ -454,12 +442,12 @@ function renderUpdateCard(item, idx) {
   if (item.meta) {
     html += `<div class="sm-update-meta">${esc(item.meta)}</div>`;
   }
-  if (item.kind === 'ruleset' && item.target) {
-    html += `<div class="sm-update-meta sm-update-meta-target"><span class="sm-update-meta-key">Paste into</span><span class="sm-update-meta-val mono">${esc(item.target)}</span></div>`;
+  if (item.kind === 'ruleset' && item.path) {
+    html += `<div class="sm-update-meta sm-update-meta-target"><span class="sm-update-meta-key">File</span><span class="sm-update-meta-val mono">${esc(item.path)}</span></div>`;
   }
   html += `</div>`;
   html += `<div class="sm-update-actions">`;
-  if (item.kind === 'ruleset') { html += `<button class="sm-btn sm-btn-ghost" data-update-ack="${esc(idx)}" title="Dismiss update">Dismiss</button>`; }
+  if (item.dismissable) { html += `<button class="sm-btn sm-btn-ghost" data-update-ack="${esc(idx)}" title="Dismiss">Dismiss</button>`; }
   html += `<button class="sm-btn sm-btn-primary" data-update-action="${esc(idx)}">${esc(item.action)}</button>`;
   html += `</div>`;
   html += `</div>`;
@@ -905,7 +893,7 @@ async function refreshSessions() {
     staleLoopCount = loopRes.staleCount || 0;
     emitLoopsUpdate();
     // Refresh notification feed alongside session/loop data
-    refreshRulesetVersions().catch(() => {});
+    refreshRulesStatus().then(() => render()).catch(() => {});
     forceCheckSynabunUpdate().then(() => render()).catch(() => {});
     render();
   } catch {}
@@ -1268,11 +1256,11 @@ export async function fetchLoopsForBadge() {
   } catch {}
 }
 
-// Bootstrap fetch for Updates badge — pulls ruleset versions and emits the
+// Bootstrap fetch for Updates badge — reads the rules status and emits the
 // notifications:updated event so the navbar can show its count without the
 // drawer ever being opened.
 export async function fetchNotificationsForBadge() {
-  await refreshRulesetVersions();
+  await refreshRulesStatus();
   // Also re-emit on next tick so ui-update / ui-tool-updates have a chance to
   // populate their cached state before the count is computed for the badge.
   setTimeout(() => emitNotificationsUpdate(), 1500);
@@ -1286,19 +1274,6 @@ export function openUpdatesTab() {
     _panel.querySelectorAll('.sm-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === 'updates'));
     render();
   }
-}
-
-// Widget mode for claude-chat skin
-export function mountSessionWidget(container) {
-  const widget = document.createElement('div');
-  widget.className = 'session-widget';
-  widget.innerHTML = `<div class="sm-body" id="sm-body"></div>`;
-  container.appendChild(widget);
-  _panel = widget;
-  _activeTab = 'sessions';
-  isVisible = true;
-  connectWs();
-  return widget;
 }
 
 // Kept for backwards compat

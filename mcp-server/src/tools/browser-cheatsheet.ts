@@ -133,7 +133,9 @@ export const browserCheatsheetDescription =
 const UNIVERSAL_NOTES =
   'Universal: prefer refs over selectors — browser_snapshot (default mode "ai") labels elements [ref=eN]; pass ref:"eN" to browser_click/fill/type for an exact match. ' +
   'Use the selectors below when you need to act without a fresh snapshot (e.g. scripted loops). ' +
-  'For feed harvesting use the browser_extract_* tools with scrolls/minItems instead of snapshots.';
+  'For feed harvesting use the browser_extract_* tools with scrolls/minItems instead of snapshots. ' +
+  'To check how a page looks or fails (localhost included): browser_screenshot (width/height for breakpoints, fullPage, save for a file) and browser_console (level "error" for errors). ' +
+  'Jev assists; fresh refs and the guards decide: a "Jev assessment" / "Jev target" line or a composer `judgment` is advice, a sign-in, verification or consent reading means stop for the human, and a suggested Post/Reply control is never clicked without a fresh probe.';
 
 export async function handleBrowserCheatsheet(args: { platform: Platform; action?: Action }) {
   const entry = CHEATSHEET[args.platform];

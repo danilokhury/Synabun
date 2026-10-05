@@ -1,260 +1,268 @@
 import { z } from 'zod';
 import * as ni from '../services/neural-interface.js';
 import { text, image } from './response.js';
+import { SHAPE_TYPES, SECTION_TYPE_NAMES, ELEMENT_TYPES, DEFAULT_VIEWPORT, type WbElement, type WbViewport } from '../services/whiteboard-geometry.js';
+import {
+  formatReadText,
+  formatReadJson,
+  formatAddResult,
+  formatOpResults,
+  formatScreenshotMeta,
+  scopedWarnings,
+  type WbReadData,
+  type WbAddedSummary,
+  type WbOpResult,
+} from './whiteboard-format.js';
+
+// ═══════════════════════════════════════════
+// Shared schema pieces
+// ═══════════════════════════════════════════
+
+const shapeEnum = z.enum(SHAPE_TYPES);
+const sectionTypeEnum = z.enum(SECTION_TYPE_NAMES);
+const pointSchema = z.array(z.number()).length(2);
+const coordModeSchema = z.enum(['px', 'pct']).optional().describe(
+  '"px" (default): absolute canvas pixels — NOT offset; the usable area starts at the origin whiteboard_read reports and values are clamped into it. '
+  + '"pct": 0-100 of the usable area (or of the parent section when parent is set); offsets applied; also converts arrow/pen points.',
+);
+
+const COLOR_HELP = 'CSS color. Default rgba(255,255,255,0.85). Palette: #ef4444 red, #f97316 orange, #eab308 yellow, #22c55e green, #3b82f6 blue, #a855f7 purple, #ec4899 pink, #06b6d4 cyan';
+
+/** After a mutation, re-read the board (no image payloads) for scoped warnings. */
+async function warningsFor(ids: string[]): Promise<string[]> {
+  if (!ids.length) return [];
+  try {
+    const data = await ni.getWhiteboard({ images: false });
+    if (data.error || !Array.isArray(data.elements)) return [];
+    const vp = (data.viewport as WbViewport | undefined) || DEFAULT_VIEWPORT;
+    return scopedWarnings(data.elements as WbElement[], vp, ids);
+  } catch {
+    return [];
+  }
+}
+
+function warningsBlock(label: string, warnings: string[]): string {
+  if (!warnings.length) return '';
+  return `\n${label}:\n${warnings.map(w => `  - ${w}`).join('\n')}`;
+}
 
 // ═══════════════════════════════════════════
 // whiteboard_read
 // ═══════════════════════════════════════════
 
-export const whiteboardReadSchema = {};
+export const whiteboardReadSchema = {
+  format: z.enum(['text', 'json']).optional().describe('"text" (default): annotated element list + layout analysis. "json": {viewport, connection, elements, analysis} as JSON.'),
+  verbose: z.boolean().optional().describe('Text mode only: print full text content (default truncates at 300 chars) and every list item (default 20).'),
+};
 
 export const whiteboardReadDescription =
-  'Read the current whiteboard state. Returns element descriptions with IDs, positions, and properties, plus the usable viewport dimensions (width x height in pixels, excluding navbar and terminal). ALWAYS call this before placing elements — the viewport tells you the exact canvas boundaries. All elements must fit within these dimensions.';
+  'Read the whiteboard. Returns viewport truth (usable canvas size, origin offset, whether a browser is connected and in Focus mode), '
+  + 'every element with its final box x,y,w,h (text/list sizes are browser-measured; ~ marks server estimates not yet measured), z-order, rotation, '
+  + 'resolved arrow endpoints and anchors, then a layout analysis: content bounds, elements overflowing the usable area, overlapping pairs, '
+  + 'section containment (with spill-outs), z-order and dangling-anchor notes. Call it before placing or moving elements and after edits to verify. '
+  + "format:'json' returns the same as structured JSON; verbose:true prints full text.";
 
-interface WhiteboardElement {
-  id: string;
-  type: string;
-  x: number;
-  y: number;
-  width?: number;
-  height?: number;
-  content?: string;
-  items?: string[];
-  ordered?: boolean;
-  shape?: string;
-  color?: string;
-  fontSize?: number;
-  bold?: boolean;
-  italic?: boolean;
-  points?: number[][];
-  startAnchor?: string | null;
-  endAnchor?: string | null;
-  strokeWidth?: number;
-  rotation?: number;
-  zIndex?: number;
-  dataUrl?: string;
-  sectionType?: string;
-  label?: string;
-}
-
-function describeElement(el: WhiteboardElement): string {
-  const pos = `at (${Math.round(el.x)}, ${Math.round(el.y)})`;
-
-  switch (el.type) {
-    case 'text': {
-      const style = [
-        el.bold && 'bold',
-        el.italic && 'italic',
-        el.fontSize && `${el.fontSize}px`,
-        el.color && `color:${el.color}`,
-      ].filter(Boolean).join(', ');
-      const content = el.content || '(empty)';
-      const preview = content.length > 80 ? content.slice(0, 80) + '...' : content;
-      return `[${el.id}] TEXT ${pos}: "${preview}"${style ? ` (${style})` : ''}`;
-    }
-    case 'shape': {
-      const dims = `${Math.round(el.width || 160)}x${Math.round(el.height || 100)}`;
-      return `[${el.id}] SHAPE:${el.shape || 'rect'} ${pos} ${dims}${el.color ? ` color:${el.color}` : ''}`;
-    }
-    case 'arrow': {
-      const pts = (el.points || []).map(p => `(${Math.round(p[0])},${Math.round(p[1])})`).join(' → ');
-      const anchors = [];
-      if (el.startAnchor) anchors.push(`from:${el.startAnchor}`);
-      if (el.endAnchor) anchors.push(`to:${el.endAnchor}`);
-      return `[${el.id}] ARROW: ${pts}${anchors.length ? ` anchored ${anchors.join(', ')}` : ''}`;
-    }
-    case 'pen': {
-      const ptCount = el.points?.length || 0;
-      return `[${el.id}] PEN ${pos} (${ptCount} points, stroke:${el.strokeWidth || 3})${el.color ? ` color:${el.color}` : ''}`;
-    }
-    case 'list': {
-      const items = el.items || [];
-      const preview = items.slice(0, 5).map((it, i) => `  ${i + 1}. ${it}`).join('\n');
-      const more = items.length > 5 ? `\n  ... +${items.length - 5} more` : '';
-      return `[${el.id}] LIST ${pos} (${items.length} item${items.length !== 1 ? 's' : ''}):\n${preview}${more}`;
-    }
-    case 'image': {
-      const dims = `${Math.round(el.width || 0)}x${Math.round(el.height || 0)}`;
-      return `[${el.id}] IMAGE ${pos} ${dims}`;
-    }
-    case 'section': {
-      const dims = `${Math.round(el.width || 0)}x${Math.round(el.height || 0)}`;
-      const sType = el.sectionType || 'unknown';
-      const label = el.label || sType;
-      return `[${el.id}] SECTION:${sType} ${pos} ${dims} "${label}"`;
-    }
-    default:
-      return `[${el.id}] ${el.type.toUpperCase()} ${pos}`;
-  }
-}
-
-export async function handleWhiteboardRead() {
-  const result = await ni.getWhiteboard();
+export async function handleWhiteboardRead(args: { format?: string; verbose?: boolean } = {}) {
+  const result = await ni.getWhiteboard({ images: false });
   if (result.error) {
     return text(`Failed to read whiteboard: ${result.error}`);
   }
-
-  const elements = (result.elements || []) as WhiteboardElement[];
-  const viewport = result.viewport as { width: number; height: number; yOffset?: number; xOffset?: number } | null;
-
-  if (elements.length === 0) {
-    let emptyText = 'Whiteboard is empty. No elements present.';
-    if (viewport) emptyText += `\nUsable viewport: ${viewport.width}x${viewport.height} (origin offset: x=${viewport.xOffset || 0}, y=${viewport.yOffset || 0})\n⚠️ Design compact layouts centered in the viewport. Do NOT fill the entire width — use ~70-80% of viewport width, centered. All sections must fit vertically within the viewport height. Scale section heights proportionally to fit.`;
-    return text(emptyText);
-  }
-
-  let msg = `Whiteboard: ${elements.length} element(s)`;
-  if (viewport) msg += ` | Usable viewport: ${viewport.width}x${viewport.height} (origin: x=${viewport.xOffset || 0}, y=${viewport.yOffset || 0})`;
-  msg += '\n\n';
-  msg += elements.map(describeElement).join('\n');
-
-  // Spatial bounds summary
-  const positioned = elements.filter(e => e.x != null && e.y != null);
-  if (positioned.length > 0) {
-    const xs = positioned.map(e => e.x);
-    const ys = positioned.map(e => e.y);
-    msg += `\n\nBounds: x=[${Math.round(Math.min(...xs))}, ${Math.round(Math.max(...xs))}], y=[${Math.round(Math.min(...ys))}, ${Math.round(Math.max(...ys))}]`;
-  }
-
-  return text(msg);
+  const data = result as unknown as WbReadData;
+  if (args.format === 'json') return text(formatReadJson(data));
+  return text(formatReadText(data, { verbose: !!args.verbose }));
 }
-
 
 // ═══════════════════════════════════════════
 // whiteboard_add
 // ═══════════════════════════════════════════
 
+const addElementSchema = z.object({
+  type: z.enum(ELEMENT_TYPES).describe('Element type'),
+  id: z.string().optional().describe('Optional ID. Must be unique; a taken ID is regenerated and reported (requestedId).'),
+  parent: z.string().optional().describe('Section ID. x/y (px or pct) become relative to that section box and the element is clamped inside it. Not stored — a moved section does not move its children.'),
+  x: z.number().optional().describe('X in canvas px (or % of the frame with coordMode pct). Required unless layout is set.'),
+  y: z.number().optional().describe('Y in canvas px (or %).'),
+  width: z.number().optional().describe('Width (shape/image/section). Ignored for text/list — they auto-size.'),
+  height: z.number().optional().describe('Height (shape/image/section). Ignored for text/list.'),
+  content: z.string().optional().describe('Text content (text). \\n = line break. Text does not wrap: long single lines get wide.'),
+  items: z.array(z.string()).optional().describe('List items (list). One string per bullet.'),
+  ordered: z.boolean().optional().describe('Numbered list instead of bullets (list). Default false.'),
+  fontSize: z.number().optional().describe('Font size px. Defaults: text 22, list 18.'),
+  color: z.string().optional().describe(COLOR_HELP),
+  bold: z.boolean().optional().describe('Bold (text).'),
+  italic: z.boolean().optional().describe('Italic (text).'),
+  shape: shapeEnum.optional().describe('Shape subtype (shape). Default rect.'),
+  points: z.array(pointSchema).min(2).optional().describe('[[x,y],...] waypoints for arrow/pen (2+). Converted with pct too.'),
+  startAnchor: z.string().optional().describe('Element ID the arrow start snaps to (edge intersection). Unknown IDs are dropped with a warning.'),
+  endAnchor: z.string().optional().describe('Element ID the arrow end snaps to.'),
+  strokeWidth: z.number().optional().describe('Pen stroke width (default 3).'),
+  rotation: z.number().optional().describe('Rotation in degrees.'),
+  url: z.string().optional().describe('Image path served by the Neural Interface (e.g. "/games/TicTacToe/Cross.svg"); must resolve inside public/ or games/. Server embeds it as a dataUrl.'),
+  sectionType: sectionTypeEnum.optional().describe('Section semantics (section); sets default size/color/label. Default content.'),
+  label: z.string().optional().describe('Section label (section). Defaults to the section type name.'),
+});
+
 export const whiteboardAddSchema = {
-  coordMode: z.enum(['px', 'pct']).optional().describe('Coordinate mode. "px" (default) = absolute pixels. "pct" = percentage of viewport (0-100). x:50 y:50 = exact center.'),
-  layout: z.enum(['row', 'column', 'grid', 'center']).optional().describe('Auto-layout (overrides x/y). "row" = horizontal centered. "column" = vertical centered. "grid" = auto columns. "center" = stacked center.'),
-  elements: z.array(z.object({
-    type: z.enum(['text', 'list', 'shape', 'arrow', 'pen', 'image', 'section']).describe('Element type'),
-    x: z.number().optional().describe('X position (pixels from left). Required for text, list, shape.'),
-    y: z.number().optional().describe('Y position (pixels from top). Required for text, list, shape.'),
-    width: z.number().optional().describe('Width in pixels (shapes). Default: 160'),
-    height: z.number().optional().describe('Height in pixels (shapes). Default: 100'),
-    content: z.string().optional().describe('Text content (for text elements). Use \\n for line breaks.'),
-    items: z.array(z.string()).optional().describe('List items array (for list elements). Each string is one bullet point.'),
-    ordered: z.boolean().optional().describe('Use numbered list instead of bullets (list elements). Default: false'),
-    fontSize: z.number().optional().describe('Font size in px (text: default 22, list: default 18)'),
-    color: z.string().optional().describe('Color as CSS value. Default: rgba(255,255,255,0.85). Options: #ef4444 (red), #f97316 (orange), #eab308 (yellow), #22c55e (green), #3b82f6 (blue), #a855f7 (purple), #ec4899 (pink), #06b6d4 (cyan)'),
-    bold: z.boolean().optional().describe('Bold text (text elements)'),
-    italic: z.boolean().optional().describe('Italic text (text elements)'),
-    shape: z.enum(['rect', 'pill', 'circle', 'drawn-circle']).optional().describe('Shape subtype (for shape elements). Default: rect'),
-    points: z.array(z.array(z.number()).length(2)).optional().describe('Array of [x,y] waypoints (for arrow and pen elements). Arrows need 2+ points.'),
-    startAnchor: z.string().optional().describe('Element ID to anchor arrow start to'),
-    endAnchor: z.string().optional().describe('Element ID to anchor arrow end to'),
-    strokeWidth: z.number().optional().describe('Stroke width for pen elements (default 3)'),
-    rotation: z.number().optional().describe('Rotation in degrees'),
-    url: z.string().optional().describe('URL path for image elements (e.g., "/games/TicTacToe/Cross.svg"). Server resolves to base64 dataUrl.'),
-    sectionType: z.enum(['navbar', 'hero', 'sidebar', 'content', 'footer', 'card', 'form', 'image-placeholder', 'button', 'text-block', 'grid', 'modal']).optional().describe('Section type for wireframe elements (type=section). Determines default size, color, and semantic meaning.'),
-    label: z.string().optional().describe('Display label for section elements. Defaults to section type name.'),
-  })).describe('Array of elements to add to the whiteboard'),
+  coordMode: coordModeSchema,
+  layout: z.enum(['row', 'column', 'grid', 'center']).optional().describe('Auto-layout using real element sizes; overrides x/y. Runs inside the parent section when parent is set.'),
+  elements: z.array(addElementSchema).min(1).max(100).describe('Elements to add (1-100).'),
 };
 
 export const whiteboardAddDescription =
-  'Add elements to the whiteboard. ALWAYS call whiteboard_read first to get the usable viewport size.\n\n⚠️ LAYOUT RULES (MANDATORY):\n1. COMPACT DESIGN — Do NOT fill the entire viewport. Use ~70-80% of viewport width, centered horizontally. This creates a clean, contained wireframe.\n2. VERTICAL FIT — ALL elements MUST fit within the viewport height. Scale section heights proportionally if the total exceeds the available space. Leave ~20px padding from top and bottom edges.\n3. NO OVERFLOW — No element should extend beyond viewport edges. The viewport already excludes the navbar, toolbar, and terminal. Coordinates are auto-offset to the usable area.\n4. PROPORTIONAL SCALING — Section default sizes are for manual use. When building full-page wireframes via MCP, calculate heights as fractions of viewport height (e.g. navbar=6%, hero=30%, content=40%, footer=10%).\n\nCoordinate modes (coordMode): "px" (default) = absolute pixels. "pct" = percentage of usable viewport (0-100), e.g. x:10 y:5 = near top-left of usable area. Coordinates are automatically offset past the navbar and toolbar.\n\nAuto-layout (layout): overrides individual x/y. "row" = horizontal row centered vertically. "column" = vertical stack centered horizontally. "grid" = auto-grid (2-4 columns based on count). "center" = stacked in center. Layouts auto-fit within viewport.\n\nSupports: text (\\n for line breaks), list (items array), shape (rect/pill/circle/drawn-circle), arrow (points + optional anchoring), pen, image (server URL), section (wireframe blocks). Returns assigned IDs. Good defaults: text fontSize 22, list fontSize 18, shapes 160x100.\n\nWireframe sections (type "section"): Semantic website layout blocks. Set sectionType (navbar/hero/sidebar/content/footer/card/form/image-placeholder/button/text-block/grid/modal) and optional label. When using "pct" coordMode, set widths as % of viewport (e.g. 70 for 70%) and heights as % too. Center horizontally with x: 15 for a 70%-width element.';
+  'Add elements. Coordinates: px (default) are absolute canvas pixels and are NOT offset — start at the origin reported by whiteboard_read (values are clamped into the usable area). '
+  + 'pct = 0-100 of the usable area (offsets applied; also converts arrow/pen points). parent:<sectionId> makes x/y relative to that section and clamps inside it. '
+  + 'layout row/column/grid/center overrides x/y using real sizes. Sizes: text/list auto-size (do not pass width/height); shapes default 160x100 (rect, pill, circle, triangle, drawn-circle); '
+  + 'sections default per sectionType; images need width/height. Arrows: 2+ points plus optional startAnchor/endAnchor (unknown IDs dropped with a warning; anchored ends snap to the target edge). '
+  + 'Returns the FINAL geometry per element after defaults/pct/layout/clamping with the adjustments made, then overflow/overlap warnings for the new elements. '
+  + 'Guidance: keep content within ~70-80% of the usable width, centered, fit vertically, ~20px margins.';
 
 export async function handleWhiteboardAdd(args: { elements: Record<string, unknown>[]; coordMode?: string; layout?: string }) {
   const result = await ni.addWhiteboardElements(args.elements, args.coordMode, args.layout);
   if (result.error) {
-    return text(`Failed to add elements: ${result.error}`);
+    const errors = Array.isArray(result.errors) ? (result.errors as { index: number; type?: string; error: string }[]) : [];
+    const detail = errors.length ? '\n' + errors.map(e => `  #${e.index + 1} ${e.type || '?'} — ${e.error}`).join('\n') : '';
+    return text(`Failed to add elements: ${result.error}${detail}`);
   }
 
-  const added = result.added as { id: string; type: string; zIndex: number }[];
-  const summary = added.map(a => `  ${a.id} (${a.type}, z:${a.zIndex})`).join('\n');
-  return text(`Added ${added.length} element(s):\n${summary}`);
+  const added = (result.added || []) as WbAddedSummary[];
+  let out = formatAddResult(result as Parameters<typeof formatAddResult>[0], args.elements.length);
+  const warnings = await warningsFor(added.map(a => a.id));
+  out += warningsBlock('Warnings for the new elements', warnings);
+  return text(out);
 }
-
 
 // ═══════════════════════════════════════════
 // whiteboard_update
 // ═══════════════════════════════════════════
 
+const updateFieldsSchema = z.object({
+  x: z.number().optional(),
+  y: z.number().optional(),
+  width: z.number().optional().describe('Ignored for text/list (auto-sized).'),
+  height: z.number().optional().describe('Ignored for text/list (auto-sized).'),
+  content: z.string().optional().describe('New text content (text). \\n = line break.'),
+  items: z.array(z.string()).optional().describe('New list items (list).'),
+  ordered: z.boolean().optional(),
+  fontSize: z.number().optional(),
+  color: z.string().optional().describe(COLOR_HELP),
+  bold: z.boolean().optional(),
+  italic: z.boolean().optional(),
+  shape: shapeEnum.optional(),
+  points: z.array(pointSchema).min(2).optional().describe('New waypoints (arrow/pen).'),
+  startAnchor: z.string().nullable().optional().describe('New start anchor ID (null to detach).'),
+  endAnchor: z.string().nullable().optional().describe('New end anchor ID (null to detach).'),
+  rotation: z.number().optional(),
+  strokeWidth: z.number().optional(),
+  sectionType: sectionTypeEnum.optional(),
+  label: z.string().optional(),
+}).describe('Only listed fields change. width/height are ignored for text/list (auto-sized).');
+
 export const whiteboardUpdateSchema = {
-  coordMode: z.enum(['px', 'pct']).optional().describe('Coordinate mode for position/size values. "pct" = percentage of viewport.'),
-  id: z.string().describe('The element ID to update (from whiteboard_read results)'),
-  updates: z.object({
-    x: z.number().optional().describe('New X position'),
-    y: z.number().optional().describe('New Y position'),
-    width: z.number().optional().describe('New width'),
-    height: z.number().optional().describe('New height'),
-    content: z.string().optional().describe('New text content (text elements). Use \\n for line breaks.'),
-    items: z.array(z.string()).optional().describe('New list items array (list elements)'),
-    ordered: z.boolean().optional().describe('Switch between bullet/numbered list (list elements)'),
-    fontSize: z.number().optional().describe('New font size'),
-    color: z.string().optional().describe('New color'),
-    bold: z.boolean().optional().describe('Bold text'),
-    italic: z.boolean().optional().describe('Italic text'),
-    shape: z.enum(['rect', 'pill', 'circle', 'drawn-circle']).optional().describe('Change shape type'),
-    points: z.array(z.array(z.number()).length(2)).optional().describe('New points array'),
-    startAnchor: z.string().nullable().optional().describe('New start anchor ID (null to detach)'),
-    endAnchor: z.string().nullable().optional().describe('New end anchor ID (null to detach)'),
-    rotation: z.number().optional().describe('New rotation in degrees'),
-    strokeWidth: z.number().optional().describe('New stroke width'),
-    sectionType: z.enum(['navbar', 'hero', 'sidebar', 'content', 'footer', 'card', 'form', 'image-placeholder', 'button', 'text-block', 'grid', 'modal']).optional().describe('Change section type'),
-    label: z.string().optional().describe('Change section label'),
-  }).describe('Fields to update. Only specified fields are changed; others remain untouched.'),
+  coordMode: coordModeSchema,
+  id: z.string().optional().describe('Single form: element ID (use together with updates).'),
+  updates: updateFieldsSchema.optional().describe('Single form: fields to change.'),
+  parent: z.string().optional().describe('Single form: interpret x/y (px or pct) relative to this section and clamp inside it.'),
+  items: z.array(z.object({
+    id: z.string(),
+    updates: updateFieldsSchema,
+    parent: z.string().optional(),
+  })).min(1).max(100).optional().describe('Batch form: many updates in one save / one render / one undo step. Per-item results; a missing ID fails only that item. (List bullet text goes in updates.items, not here.)'),
 };
 
 export const whiteboardUpdateDescription =
-  'Update properties of an existing whiteboard element. Use whiteboard_read first to get element IDs. Only the specified fields are changed; others remain untouched. Set coordMode to "pct" to use percentage-based positioning. Changes appear in real-time.';
+  'Update one element ({id, updates}) or many atomically ({items:[{id, updates}]}: one save, one render, one undo step in the browser). '
+  + 'Only listed fields change; changing content/items/fontSize re-estimates a text/list size until the browser re-measures it. '
+  + 'coordMode pct and parent:<sectionId> work as in whiteboard_add. Positions are clamped into the usable area; unknown anchor IDs are dropped with a warning. '
+  + 'Per-item results include the final geometry; a missing ID fails only that item.';
 
-export async function handleWhiteboardUpdate(args: { id: string; updates: Record<string, unknown>; coordMode?: string }) {
-  const result = await ni.updateWhiteboardElement(args.id, args.updates, args.coordMode);
-  if (result.error) {
-    return text(`Failed to update element: ${result.error}`);
+interface UpdateItem { id: string; updates: Record<string, unknown>; parent?: string }
+
+export async function handleWhiteboardUpdate(args: { id?: string; updates?: Record<string, unknown>; parent?: string; items?: unknown; coordMode?: string }) {
+  const hasSingle = typeof args.id === 'string' && args.id.length > 0;
+  const hasBatch = Array.isArray(args.items) && args.items.length > 0;
+  if (hasBatch && (args.items as unknown[]).every(i => typeof i === 'string')) {
+    return text('items must be an array of {id, updates} objects. To set a list\'s bullet text use the single form: {id, updates: {items: [...]}}.');
+  }
+  if (hasSingle === hasBatch) {
+    return text('Provide exactly one form: {id, updates} for one element, or {items: [{id, updates}, ...]} for a batch.');
   }
 
-  const el = result.element as WhiteboardElement;
-  return text(`Updated: ${describeElement(el)}`);
-}
+  const items: UpdateItem[] = hasSingle
+    ? [{ id: args.id as string, updates: args.updates || {}, parent: args.parent }]
+    : (args.items as UpdateItem[]);
+  if (hasSingle && !Object.keys(items[0].updates).length) {
+    return text('updates is empty — nothing to change.');
+  }
 
+  const ops = items.map(it => ({ op: 'update', id: it.id, updates: it.updates, ...(it.parent ? { parent: it.parent } : {}) }));
+  const result = await ni.batchWhiteboardOps(ops, args.coordMode);
+  if (result.error) {
+    return text(`Failed to update: ${result.error}`);
+  }
+
+  const results = (result.results || []) as WbOpResult[];
+  const okCount = results.filter(r => r.ok).length;
+  const lines = [`Updated ${okCount} of ${items.length} element${items.length === 1 ? '' : 's'}:`, ...formatOpResults(results)];
+  const warnings = await warningsFor(results.filter(r => r.ok).map(r => r.id));
+  return text(lines.join('\n') + warningsBlock('Warnings for the updated elements', warnings));
+}
 
 // ═══════════════════════════════════════════
 // whiteboard_remove
 // ═══════════════════════════════════════════
 
 export const whiteboardRemoveSchema = {
-  id: z.string().optional().describe('Element ID to remove. Omit to clear the entire whiteboard.'),
+  id: z.string().optional().describe('Element ID to remove.'),
+  ids: z.array(z.string()).min(1).max(200).optional().describe('Several element IDs removed atomically (one save, one undo step).'),
 };
 
 export const whiteboardRemoveDescription =
-  'Remove a specific element from the whiteboard by ID, or clear the entire whiteboard if no ID is provided. Use whiteboard_read first to see element IDs. Arrows anchored to a removed element will be detached.';
+  'Remove one element ({id}) or several atomically ({ids}). Arrows anchored to a removed element are detached and their endpoint moved to its centre (reported as cascade updates). '
+  + 'Omit both to clear the whole board (undoable in the browser with Ctrl+Z).';
 
-export async function handleWhiteboardRemove(args: { id?: string }) {
-  if (!args.id) {
+export async function handleWhiteboardRemove(args: { id?: string; ids?: string[] } = {}) {
+  const ids = Array.isArray(args.ids) && args.ids.length ? args.ids : (args.id ? [args.id] : []);
+  if (!ids.length) {
     const result = await ni.clearWhiteboard();
     if (result.error) {
       return text(`Failed to clear whiteboard: ${result.error}`);
     }
-    return text('Whiteboard cleared.');
+    return text('Whiteboard cleared (undoable in the browser with Ctrl+Z).');
   }
 
-  const result = await ni.removeWhiteboardElement(args.id);
+  const result = await ni.batchWhiteboardOps(ids.map(id => ({ op: 'remove', id })));
   if (result.error) {
-    return text(`Failed to remove element: ${result.error}`);
+    return text(`Failed to remove: ${result.error}`);
   }
-
-  const removed = result.removed as { id: string; type: string };
-  return text(`Removed ${removed.type} element ${removed.id}`);
+  const results = (result.results || []) as WbOpResult[];
+  const okCount = results.filter(r => r.ok).length;
+  const lines = [`Removed ${okCount} of ${ids.length} element${ids.length === 1 ? '' : 's'}:`, ...formatOpResults(results)];
+  return text(lines.join('\n'));
 }
-
 
 // ═══════════════════════════════════════════
 // whiteboard_screenshot
 // ═══════════════════════════════════════════
 
-export const whiteboardScreenshotSchema = {};
+export const whiteboardScreenshotSchema = {
+  crop: z.enum(['full', 'usable']).optional().describe('"full" (default): the whole canvas, so image px ÷ scale = canvas px. "usable": cropped to the usable viewport (origin offset reported in the text block).'),
+};
 
 export const whiteboardScreenshotDescription =
-  'Take a visual screenshot of the whiteboard. Returns a JPEG image showing all current elements. Requires the Neural Interface to be open in a browser with Focus mode active. After receiving the screenshot, spawn a Haiku Task agent to interpret the visual contents if needed.';
+  'Capture the live whiteboard from the primary connected browser window as a JPEG, preceded by a text block with the coordinate mapping '
+  + '(canvas size, image scale: image px ÷ scale = canvas px, usable viewport origin, element count). Fails with a clear message when no browser is connected. '
+  + 'Use whiteboard_read for exact numbers; use this to judge visual overlap, legibility and how the board actually looks.';
 
-export async function handleWhiteboardScreenshot() {
-  const result = await ni.whiteboardScreenshot();
+export async function handleWhiteboardScreenshot(args: { crop?: string } = {}) {
+  const result = await ni.whiteboardScreenshot({ crop: args.crop });
   if (result.error) {
     return text(`Screenshot failed: ${result.error}`);
   }
 
-  return image(result.data as string, 'image/jpeg');
+  return {
+    content: [
+      ...text(formatScreenshotMeta(result)).content,
+      ...image(result.data as string, 'image/jpeg').content,
+    ],
+  };
 }

@@ -37,8 +37,8 @@ describe('remember input schema', () => {
   it('accepts a fully specified call', () => {
     const result = z.object(schema).safeParse({
       content: 'x',
-      category: 'criticalpixel-bugs',
-      project: 'criticalpixel',
+      category: 'my-web-app-bugs',
+      project: 'my-web-app',
       importance: 8,
       tags: ['a', 'b'],
     });

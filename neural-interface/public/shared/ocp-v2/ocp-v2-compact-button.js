@@ -1,85 +1,75 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// OpenCode V2 — Compact button (mounts inside the contextbar, next to gauge)
+// OpenCode V2 — Compact (the button is in the Context settings popover)
 // Calls the proper SDK route via api.compact → server WS session:compact →
 // opencodeV2Client.session.compact (which prefers client.v2.session.compact and
 // falls back to client.session.compact / client.session.summarize).
-// Disabled when there's no session, a turn is running, or a compact request is
-// already in flight. The server's session.idle + message events repaint state
-// automatically — no local message juggling required.
+// This is the control without its button: ocp-v2-context-menu.js draws it from
+// view() and starts it with run(). Not available without a session, while a
+// turn is running, or while a compact request is already in flight. The
+// server's session.idle + message events repaint state automatically — no
+// local message juggling required.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { api } from './ocp-v2-ws.js';
 import { getDefaultStore } from './ocp-v2-state.js';
+import { captureBinding, onRebind } from './ocp-v2-binding.js';
 
-const ICON_COMPACT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9V5h4M20 9V5h-4M4 15v4h4M20 15v4h-4"/><path d="M9 12h6"/></svg>';
-
-export function mountCompactButton(rootEl, store = getDefaultStore()) {
-  if (!rootEl) return { element: null, destroy() {} };
-
-  const btn = document.createElement('button');
-  btn.type = 'button';
-  btn.className = 'ocpv2-compact-btn';
-  btn.setAttribute('data-tooltip', 'Compact context');
-  btn.setAttribute('data-tooltip-pos', 'bottom');
-  btn.innerHTML = `${ICON_COMPACT}<span class="ocpv2-compact-btn-label">compact</span>`;
-  rootEl.appendChild(btn);
-
+export function createCompactControl(store = getDefaultStore()) {
   let compacting = false;
   let destroyed = false;
+  const listeners = new Set();
+  const changed = () => { for (const fn of listeners) { try { fn(); } catch { /* listener's problem */ } } };
 
-  function sync() {
-    if (destroyed) return;
+  /** What the button shows: read again on every render. */
+  function view() {
     const s = store.getState();
-    const hasSession = !!s.sessionId;
-    const running = !!s.running;
-    btn.disabled = !hasSession || running || compacting;
-    btn.classList.toggle('ocpv2-compact-btn-busy', compacting);
-    btn.setAttribute(
-      'data-tooltip',
-      compacting ? 'Compacting…'
-        : !hasSession ? 'No active session'
-        : running ? 'Wait for the current turn to finish'
-        : 'Compact context',
-    );
+    return { hasSession: !!s.sessionId, running: !!s.running, compacting };
   }
 
-  async function onClick(event) {
-    event.preventDefault();
-    event.stopPropagation();
-    if (btn.disabled) return;
+  async function run() {
+    if (destroyed || compacting) return;
     const s = store.getState();
-    if (!s.sessionId) return;
+    if (!s.sessionId || s.running) return;
+    // The session being compacted. `s` is the live state and is only read
+    // here, before the request; the busy state and a failure are that
+    // session's, and are neither shown in nor cleared for another one.
+    const at = captureBinding(store);
     compacting = true;
-    sync();
+    changed();
     try {
       const res = await api.compact({
-        sessionId: s.sessionId,
+        sessionId: at.sessionId,
         cwd: s.cwd || undefined,
         mcpProfile: s.mcpProfile || undefined,
+        // OpenCode 1.18 compacts through session.summarize, which needs a model.
+        model: s.model || undefined,
       });
-      if (res?.error || res?.ok === false) {
+      if (at.isCurrent() && (res?.error || res?.ok === false)) {
         const msg = res?.error || res?.data?.error || 'Compact failed';
         store.pushError?.({ message: msg });
       }
     } catch (err) {
-      store.pushError?.({ message: err?.message || 'Compact failed' });
+      if (at.isCurrent()) store.pushError?.({ message: err?.message || 'Compact failed' });
     } finally {
-      compacting = false;
-      sync();
+      if (at.isCurrent()) {
+        compacting = false;
+        changed();
+      }
     }
   }
 
-  btn.addEventListener('click', onClick);
-  const unsubscribe = store.subscribe(() => sync());
-  sync();
+  // Another session is on screen: "Compacting…" was the previous one's.
+  const unsubscribeRebind = onRebind(store, () => { compacting = false; changed(); });
 
   return {
-    element: btn,
+    view,
+    run,
+    /** Calls `fn` when the busy state changes. Returns the unsubscribe. */
+    onChange(fn) { listeners.add(fn); return () => listeners.delete(fn); },
     destroy() {
       destroyed = true;
-      try { unsubscribe?.(); } catch {}
-      btn.removeEventListener('click', onClick);
-      btn.remove();
+      listeners.clear();
+      try { unsubscribeRebind(); } catch {}
     },
   };
 }

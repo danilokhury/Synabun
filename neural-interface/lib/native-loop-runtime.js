@@ -27,6 +27,8 @@ function cleanDescriptor(record) {
     task: record.task,
     cwd: record.cwd,
     model: record.model || null,
+    contextMode: record.contextMode || null,
+    modelContextWindow: record.modelContextWindow || null,
     effort: record.effort || null,
     mcpProfile: record.mcpProfile || null,
     accountId: record.accountId || null,
@@ -43,6 +45,11 @@ function cleanDescriptor(record) {
     claimedAt: record.claimedAt || null,
     error: record.error || null,
     version: Number(record.version) || 0,
+    // Task-mode (assistant dispatch) fields. Absent/null for classic loops so
+    // existing consumers (router, sidepanels, schedules) are unaffected.
+    runMode: record.runMode || 'loop',
+    turnState: record.turnState || null,
+    assistantSessionId: record.assistantSessionId || null,
   };
 }
 
@@ -81,10 +88,15 @@ export class NativeLoopRuntime {
     providerStartupTimeoutMs = 30_000,
     claimTtlMs = 90_000,
     ledgerFlushMs = 200,
+    // Optional (state, result, {iteration,total}) => {met, probability} | null.
+    // A truthy `met` ends the run early with stoppedReason 'goal_met'; the
+    // iteration and time caps stay the fallback.
+    judgeGoal = null,
   } = {}) {
     if (!stateDir) throw new Error('NativeLoopRuntime requires stateDir');
     if (typeof buildPrompt !== 'function') throw new Error('NativeLoopRuntime requires buildPrompt');
     this.stateDir = stateDir;
+    this.judgeGoal = typeof judgeGoal === 'function' ? judgeGoal : null;
     this.ledgerPath = ledgerPath || resolve(dirname(stateDir), 'native-loop-runs.json');
     this.providerFactories = { ...providerFactories };
     this.buildPrompt = buildPrompt;
@@ -102,12 +114,51 @@ export class NativeLoopRuntime {
     this._pendingPersist = false;
     this._persistTimer = null;
     this._alwaysPersist = false;
+    this._listeners = new Set();
     this._loadLedger();
   }
 
   registerProvider(profile, factory) {
     if (typeof factory !== 'function') throw new Error(`Provider factory for ${profile} must be a function`);
     this.providerFactories[profile] = factory;
+  }
+
+  /**
+   * In-process fan-out of every run event and provider event. Unlike the
+   * onEvent → broadcastSync path (which may drop high-volume provider events
+   * for slow WebSocket clients), subscribers always receive every message.
+   * Returns an unsubscribe function.
+   */
+  subscribe(listener) {
+    if (typeof listener !== 'function') throw new Error('NativeLoopRuntime.subscribe requires a function');
+    this._listeners.add(listener);
+    return () => { this._listeners.delete(listener); };
+  }
+
+  _notifyListeners(message) {
+    for (const listener of this._listeners) {
+      try { listener(message); } catch {}
+    }
+  }
+
+  _emitProviderEvent(record, event) {
+    const message = { type: 'sidepanel:provider-event', run: cleanDescriptor(record), event };
+    try { this.onEvent(message); } catch {}
+    this._notifyListeners(message);
+  }
+
+  /**
+   * Task-mode helper: records the wrapper's turn phase ('starting' | 'running' |
+   * 'idle' | 'awaiting_permission' | 'terminal') and broadcasts it so panels and
+   * the assistant dock can render it. No-op for unknown runs.
+   */
+  setTurnState(runId, turnState) {
+    const record = this.records.get(runId);
+    if (!record) return null;
+    const next = turnState ? String(turnState) : null;
+    if (record.turnState === next) return cleanDescriptor(record);
+    record.turnState = next;
+    return this._emit('sidepanel:run-updated', record, { reason: 'turn-state' });
   }
 
   _loadLedger() {
@@ -220,7 +271,9 @@ export class NativeLoopRuntime {
     const terminal = ['completed', 'failed', 'stopped', 'interrupted'].includes(record.status);
     this._persistLedger({ force: terminal });
     const descriptor = cleanDescriptor(record);
-    try { this.onEvent({ type, run: descriptor, ...extra }); } catch {}
+    const message = { type, run: descriptor, ...extra };
+    try { this.onEvent(message); } catch {}
+    this._notifyListeners(message);
     return descriptor;
   }
 
@@ -243,8 +296,15 @@ export class NativeLoopRuntime {
     }
   }
 
-  async launch({ runId, state, source = 'manual', focus = source === 'manual', title, scheduleId = null, claimedBy = null } = {}) {
+  async launch({
+    runId, state, source = 'manual', focus = source === 'manual', title, scheduleId = null, claimedBy = null,
+    // Task-mode overrides (assistant dispatch): a per-run prompt builder and an
+    // adapter wrapper that can drive follow-up turns inside a single iteration.
+    buildPrompt = null, wrapAdapter = null,
+  } = {}) {
     if (!runId) throw new Error('Native loop runId is required');
+    if (buildPrompt !== null && typeof buildPrompt !== 'function') throw new Error('Native loop buildPrompt override must be a function');
+    if (wrapAdapter !== null && typeof wrapAdapter !== 'function') throw new Error('Native loop wrapAdapter override must be a function');
     if (!state?.profile || !isNativeLoopProfile(state.profile)) {
       throw new Error(`Unsupported native loop profile: ${state?.profile || 'unknown'}`);
     }
@@ -280,6 +340,8 @@ export class NativeLoopRuntime {
       task: String(state.task || '').slice(0, 240),
       cwd: state.cwd || process.cwd(),
       model: state.model || null,
+      contextMode: state.contextMode || null,
+      modelContextWindow: state.modelContextWindow || null,
       effort: state.effort || null,
       mcpProfile: state.mcpProfile || null,
       accountId: state.codexAccountId || null,
@@ -301,6 +363,11 @@ export class NativeLoopRuntime {
       execution: null,
       stopping: false,
       startupAbortController: new AbortController(),
+      runMode: state.runMode === 'task' ? 'task' : 'loop',
+      turnState: null,
+      assistantSessionId: state.assistantSessionId || null,
+      buildPrompt,
+      wrapAdapter,
     };
     record.identityPromise = new Promise((resolveIdentity) => { record._resolveIdentity = resolveIdentity; });
     record.startupCancelPromise = new Promise((resolveCancel) => { record._cancelStartup = resolveCancel; });
@@ -318,9 +385,7 @@ export class NativeLoopRuntime {
         title: record.title,
         signal: startupSignal,
         onIdentity: (identity) => this._setIdentity(record, identity),
-        onEvent: (event) => {
-          try { this.onEvent({ type: 'sidepanel:provider-event', run: cleanDescriptor(record), event }); } catch {}
-        },
+        onEvent: (event) => this._emitProviderEvent(record, event),
       }));
     let startupTimer = null;
     let candidate = null;
@@ -385,9 +450,20 @@ export class NativeLoopRuntime {
           cancelled.code = 'NATIVE_LOOP_START_CANCELLED';
           throw cancelled;
         }
-        record.adapter = adapter;
         candidateAccepted = true;
-        this._setIdentity(record, record.adapter.identity?.() || record.adapter);
+        record.adapter = record.wrapAdapter
+          ? record.wrapAdapter(adapter, {
+              runId,
+              emit: (event) => this._emitProviderEvent(record, event),
+              setTurnState: (turnState) => this.setTurnState(runId, turnState),
+              readState: () => this._readState(runId),
+            })
+          : adapter;
+        if (!record.adapter || typeof record.adapter.runTurn !== 'function') {
+          await cleanupCandidate(adapter, 'invalid_wrapped_adapter');
+          throw new Error(`${state.profile} native provider wrapper did not return a runnable adapter`);
+        }
+        this._setIdentity(record, record.adapter.identity?.() || adapter.identity?.() || record.adapter);
         record.status = 'running';
         this._emit('sidepanel:run-updated', record, { reason: 'started' });
         record.execution = this._drive(record).catch((error) => this._fail(record, error));
@@ -459,7 +535,7 @@ export class NativeLoopRuntime {
       this._emit('sidepanel:run-updated', record, { reason: 'iteration-started' });
 
       try {
-        const prompt = this.buildPrompt(nextState, iteration);
+        const prompt = (record.buildPrompt || this.buildPrompt)(nextState, iteration);
         const result = await record.adapter.runTurn(prompt, { iteration, total });
         failures = 0;
         this._setIdentity(record, result || record.adapter.identity?.() || {});
@@ -474,6 +550,16 @@ export class NativeLoopRuntime {
         delete fresh.lastIterationError;
         this._writeState(record.runId, fresh);
         this._emit('sidepanel:run-updated', record, { reason: 'iteration-completed' });
+        // Not after the final iteration: the run ends anyway, so a judgment could save nothing.
+        if (this.judgeGoal && !(total > 0 && iteration >= total)) {
+          let verdict = null;
+          try { verdict = await this.judgeGoal(fresh, result, { iteration, total, runId: record.runId }); } catch { verdict = null; }
+          if (verdict?.met) {
+            this.log(record.runId, 'native:goal-met', 'loop ended early: task judged complete', { iteration, total, probability: verdict.probability });
+            await this._complete(record, 'goal_met');
+            return;
+          }
+        }
       } catch (error) {
         if (!['starting', 'running'].includes(record.status)) return;
         if (record.adapter?.isAlive && !record.adapter.isAlive()) {
@@ -518,6 +604,9 @@ export class NativeLoopRuntime {
     record.startupCancelPromise = null;
     record._cancelStartup = null;
     record.startupAbortController = null;
+    record.buildPrompt = null;
+    record.wrapAdapter = null;
+    if (record.turnState && record.turnState !== 'terminal') record.turnState = 'terminal';
   }
 
   async _complete(record, reason = 'completed') {

@@ -36,6 +36,8 @@ const GROUP_TOOL_ESTIMATES: Record<string, number> = {
   youtube: 11,
   styleguide: 1,
   morelogin: 1,
+  agents: 11,
+  computer: 4,
 };
 
 export async function handleProfile(runtime: ProfileRuntime, args: { action: string; profile?: string }) {
@@ -50,6 +52,8 @@ export async function handleProfile(runtime: ProfileRuntime, args: { action: str
       currentProfile: profile,
       activeGroups,
       catalogMode: runtime.getCatalogMode(),
+      // Role-gated groups (agents) follow the role, not the profile.
+      role: runtime.getRole(),
       presets,
       validGroups: Array.from(VALID_GROUPS),
     }, null, 2));

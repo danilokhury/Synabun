@@ -2,79 +2,78 @@
 // OpenCode V2 — Slash-command suggestions (port of v1's #ocp-slash-hints)
 // One instance per compose. Owns its own panel DOM scoped inside the compose
 // root so child/floating OCP v2 panels each get their own picker. Catalog is
-// module-shared (single fetch) but render state is per-instance.
+// module-shared but render state is per-instance.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// `tui: true` marks commands that have no v2 SDK equivalent — selecting them
-// in the picker should launch the OpenCode CLI in the Terminal panel and
-// auto-type the slash, rather than sending it as a chat prompt (the v2 server
-// would echo it back). Commands without `tui` have a working v2 API path or
-// are routed by us in-panel.
-const BUILTIN_SLASH_COMMANDS = [
-  { name: 'new',       description: 'Start a new session',                          source: 'builtin' },
-  { name: 'sessions',  description: 'List & switch sessions',                       source: 'builtin', tui: true },
-  { name: 'resume',    description: 'Resume a session',                             source: 'builtin' },
-  { name: 'continue',  description: 'Continue last session',                        source: 'builtin' },
-  { name: 'share',     description: 'Share current session',                        source: 'builtin' },
-  { name: 'unshare',   description: 'Stop sharing session',                         source: 'builtin' },
-  { name: 'export',    description: 'Export session as JSON',                       source: 'builtin' },
-  { name: 'import',    description: 'Import session from JSON',                     source: 'builtin' },
-  { name: 'compact',   description: 'Compact context', aliases: ['summarize'],      source: 'builtin' },
-  { name: 'clear',     description: 'Clear all messages',                           source: 'builtin' },
-  { name: 'undo',      description: 'Undo last message',                            source: 'builtin' },
-  { name: 'redo',      description: 'Redo undone message',                          source: 'builtin' },
-  { name: 'models',    description: 'Pick a model',                                 source: 'builtin', tui: true },
-  { name: 'providers', description: 'Manage providers & auth',                      source: 'builtin', tui: true },
-  { name: 'agents',    description: 'Switch agent', aliases: ['agent'],             source: 'builtin', tui: true },
-  { name: 'themes',    description: 'Pick a theme',                                 source: 'builtin', tui: true },
-  { name: 'init',      description: 'Initialize project (AGENTS.md)',               source: 'builtin', tui: true },
-  { name: 'editor',    description: 'Open in editor',                               source: 'builtin', tui: true },
-  { name: 'tokens',    description: 'Token usage stats',                            source: 'builtin', tui: true },
-  { name: 'config',    description: 'Open config',                                  source: 'builtin', tui: true },
-  { name: 'login',     description: 'Provider login',                               source: 'builtin', tui: true },
-  { name: 'logout',    description: 'Provider logout',                              source: 'builtin', tui: true },
-  { name: 'help',      description: 'Show help',                                    source: 'builtin', tui: true },
-  { name: 'exit',      description: 'Exit OpenCode', aliases: ['quit'],             source: 'builtin', tui: true },
-];
+import { api, capabilities, supports } from './ocp-v2-ws.js';
+import { buildSlashCatalog, createSlashCatalogCache } from './ocp-v2-composer-logic.js';
+import { replyFailed } from './ocp-v2-caps.js';
 
-let SLASH_COMMANDS = [...BUILTIN_SLASH_COMMANDS];
-let _catalogPromise = null;
-const _instances = new Set();
+// The catalog is built by buildSlashCatalog (ocp-v2-composer-logic.js):
+//   local    a panel action                → options.onLocalSelect / send.js
+//   command  an OpenCode command, skill or MCP prompt (command:list) → `/name `
+//            is inserted so arguments can follow; Enter runs it (command:run)
+//   tui      terminal-UI only              → options.onTuiSelect
+//   text     legacy lists on a server without command:run → sent as typed
+// Commands depend on the project, and several composers share this module (the
+// panel and a sub-agent panel), so catalogs are kept per directory: a composer
+// reads the one of its own directory and never replaces another's.
+const _instances = new Set();   // { refresh, getCwd }
 
-function loadCatalog() {
-  if (_catalogPromise) return _catalogPromise;
-  const seen = new Set();
-  for (const c of BUILTIN_SLASH_COMMANDS) {
-    seen.add(c.name);
-    (c.aliases || []).forEach((a) => seen.add(a));
-  }
-  _catalogPromise = Promise.allSettled([
+async function fetchLegacyLists() {
+  const [skillsRes, userRes] = await Promise.allSettled([
     fetch('/api/skills').then((r) => r.json()).catch(() => null),
     fetch('/api/opencode/commands').then((r) => r.json()).catch(() => null),
-  ]).then(([skillsRes, userRes]) => {
-    const merged = [...BUILTIN_SLASH_COMMANDS];
-    const skills = Array.isArray(skillsRes.value?.skills) ? skillsRes.value.skills : [];
-    for (const s of skills) {
-      const name = String(s.name || s.dirName || '').trim();
-      if (!name || seen.has(name)) continue;
-      merged.push({ name, description: String(s.description || '').trim(), source: 'skill' });
-      seen.add(name);
-    }
-    const userCmds = Array.isArray(userRes.value?.commands) ? userRes.value.commands : [];
-    for (const c of userCmds) {
-      const name = String(c.name || '').trim();
-      if (!name || seen.has(name)) continue;
-      merged.push({ name, description: String(c.description || '').trim(), source: 'user' });
-      seen.add(name);
-    }
-    SLASH_COMMANDS = merged;
-    for (const inst of _instances) inst.refresh();
-    return SLASH_COMMANDS;
-  });
-  return _catalogPromise;
+  ]);
+  return {
+    skills: Array.isArray(skillsRes.value?.skills) ? skillsRes.value.skills : [],
+    userCommands: Array.isArray(userRes.value?.commands) ? userRes.value.commands : [],
+  };
 }
 
-loadCatalog();
+async function fetchCatalog(cwd) {
+  if (supports('command:list', 'command:run')) {
+    const [res, policy] = await Promise.all([
+      api.commandList({ cwd: cwd || undefined }),
+      // /share is not offered when the OpenCode config disables sharing.
+      api.sessionSharePolicy({ cwd: cwd || undefined }).catch(() => null),
+    ]);
+    if (replyFailed(res)) throw new Error(res?.error || 'command list failed');
+    return buildSlashCatalog({
+      serverCommands: res.data,
+      supports,
+      sharePolicy: replyFailed(policy) ? null : policy.data?.share,
+    });
+  }
+  return buildSlashCatalog({ legacy: await fetchLegacyLists(), supports });
+}
+
+const _catalogs = createSlashCatalogCache({
+  load: fetchCatalog,
+  fallback: () => buildSlashCatalog({ supports }),
+});
+
+/** The catalog of the project at `cwd` (the built-ins until it is loaded). */
+export function getSlashCatalog(cwd = '') { return _catalogs.get(cwd); }
+
+/** Load the catalog of `cwd` once; composers showing that directory refresh. */
+export async function loadSlashCatalog(cwd = '') {
+  const key = String(cwd || '');
+  const had = _catalogs.has(key);
+  const catalog = await _catalogs.load(key);
+  if (!had) {
+    for (const inst of _instances) { if (String(inst.getCwd() || '') === key) inst.refresh(); }
+  }
+  return catalog;
+}
+
+// A restarted server may list more (or fewer) request types: every catalog is
+// built again, each composer asking for its own directory.
+capabilities.subscribe(() => {
+  _catalogs.invalidate();
+  const wanted = new Set([..._instances].map((inst) => String(inst.getCwd() || '')));
+  for (const cwd of wanted) loadSlashCatalog(cwd).catch((err) => console.warn('[ocp-v2-slash-hints] catalog load failed', err));
+});
 
 // ── Public mount API ────────────────────────────────────────────────────────
 
@@ -82,6 +81,9 @@ export function mountSlashHints(rootEl, inputEl, options = {}) {
   if (!rootEl || !inputEl) return { destroy() {}, isOpen: () => false };
 
   const onTuiSelect = typeof options.onTuiSelect === 'function' ? options.onTuiSelect : null;
+  const onLocalSelect = typeof options.onLocalSelect === 'function' ? options.onLocalSelect : null;
+  // The directory this composer's session runs in: it picks the catalog.
+  const getCwd = typeof options.getCwd === 'function' ? options.getCwd : () => '';
 
   const browser = document.createElement('div');
   browser.className = 'ocpv2-slash-browser';
@@ -111,7 +113,7 @@ export function mountSlashHints(rootEl, inputEl, options = {}) {
     token = tokenInfo || token;
 
     const scored = [];
-    for (const cmd of SLASH_COMMANDS) {
+    for (const cmd of getSlashCatalog(getCwd())) {
       const m = rankSlashMatch(cmd, query);
       if (!m) continue;
       scored.push({ cmd, score: m.score, indices: m.indices });
@@ -160,14 +162,14 @@ export function mountSlashHints(rootEl, inputEl, options = {}) {
           item.className = 'ocpv2-slash-item' + (itemIdx === 0 ? ' active' : '');
           item.dataset.name = entry.cmd.name;
           item.dataset.source = src;
-          const tui = !!entry.cmd.tui;
+          const tui = entry.cmd.kind === 'tui';
           if (tui) item.classList.add('ocpv2-slash-item-tui');
           const descBase = esc(entry.cmd.description || '');
           const descHtml = tui
             ? `${descBase}<span class="ocpv2-slash-tag">CLI</span>`
             : descBase;
           item.innerHTML = `
-            <span class="ocpv2-slash-icon" data-source="${src}">${src === 'builtin' ? '▸' : src === 'skill' ? '✦' : '★'}</span>
+            <span class="ocpv2-slash-icon" data-source="${src}">${src === 'builtin' ? '▸' : src === 'skill' ? '✦' : src === 'mcp' ? '◆' : '★'}</span>
             <span class="ocpv2-slash-name">${renderHighlightedName(entry.cmd.name, entry.indices)}</span>
             <span class="ocpv2-slash-desc">${descHtml}</span>
           `;
@@ -196,8 +198,11 @@ export function mountSlashHints(rootEl, inputEl, options = {}) {
     browser.classList.add('open');
   }
 
+  const isAvailable = typeof options.isAvailable === 'function' ? options.isAvailable : () => true;
+
   function refreshFromInput() {
-    const tk = detectSlashToken(inputEl);
+    // In shell mode a leading "/" is a path, not a command.
+    const tk = isAvailable() ? detectSlashToken(inputEl) : null;
     if (tk) show(tk.query, tk);
     else hide();
   }
@@ -219,15 +224,16 @@ export function mountSlashHints(rootEl, inputEl, options = {}) {
     // TUI-only commands have no v2 SDK path. Hand them to the caller-provided
     // hook (which routes to the Terminal panel) and clear the typed `/cmd`
     // token from the input so the textarea isn't left with a dead prefix.
-    if (sel.cmd?.tui && onTuiSelect) {
+    const handler = sel.cmd?.kind === 'tui' ? onTuiSelect : (sel.cmd?.kind === 'local' ? onLocalSelect : null);
+    if (handler) {
       const before = inputEl.value.slice(0, token.start);
       const after = inputEl.value.slice(token.end);
       inputEl.value = before + after;
       try { inputEl.setSelectionRange(before.length, before.length); } catch {}
       inputEl.dispatchEvent(new Event('input', { bubbles: true }));
       hide();
-      try { onTuiSelect(sel.cmd); }
-      catch (err) { console.warn('[ocp-v2-slash-hints] onTuiSelect threw', err); }
+      try { handler(sel.cmd); }
+      catch (err) { console.warn('[ocp-v2-slash-hints] slash handler threw', err); }
       return true;
     }
     const before = inputEl.value.slice(0, token.start);
@@ -251,7 +257,7 @@ export function mountSlashHints(rootEl, inputEl, options = {}) {
   inputEl.addEventListener('input', onInput);
   inputEl.addEventListener('blur', onBlur);
 
-  const instance = { refresh: refreshFromInput };
+  const instance = { refresh: refreshFromInput, getCwd };
   _instances.add(instance);
 
   return {
@@ -272,8 +278,8 @@ export function mountSlashHints(rootEl, inputEl, options = {}) {
 
 // ── Internals ───────────────────────────────────────────────────────────────
 
-const SLASH_GROUP_ORDER = ['builtin', 'skill', 'user'];
-const SLASH_GROUP_LABEL = { builtin: 'OpenCode', skill: 'Skills', user: 'Custom' };
+const SLASH_GROUP_ORDER = ['builtin', 'command', 'skill', 'mcp'];
+const SLASH_GROUP_LABEL = { builtin: 'OpenCode', command: 'Commands', skill: 'Skills', mcp: 'MCP prompts' };
 
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));

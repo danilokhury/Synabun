@@ -26,7 +26,7 @@ export async function resolve(
   tabId?: string,
   autoCreate = true,
 ): Promise<Resolved | { error: string }> {
-  const r = await ni.resolveSession(sessionId, autoCreate ? { url: STUDIO_BASE } : undefined, tabId);
+  const r = await ni.resolveSession(sessionId, autoCreate ? { url: STUDIO_BASE } : undefined, tabId, { platform: true });
   if ('error' in r) return r;
   return { sessionId: r.sessionId, tabId: r.tabId };
 }

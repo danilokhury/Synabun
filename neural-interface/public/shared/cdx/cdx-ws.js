@@ -189,6 +189,16 @@ function handleSocketMessage(msg, tab, callbacks) {
     case 'model_list':
       callbacks.onModelList?.(msg);
       break;
+    case 'catalogs_changed':
+    case 'attachment_added':
+    case 'gateway_oauth_state':
+    case 'gateway_oauth_started':
+    case 'gateway_oauth_canceled':
+    case 'verification_status':
+    case 'verification_enrolled':
+    case 'verification_deleted':
+    case 'verification_verified':
+    case 'verification_canceled':
     case 'account_info':
     case 'account_login_started':
     case 'account_logged_out':
@@ -232,6 +242,7 @@ function handleSocketMessage(msg, tab, callbacks) {
       callbacks.onClosed?.(msg, tab);
       break;
     default:
+      if (msg.requestId != null || msg.type === 'capabilities') callbacks.onGenericResponse?.(msg);
       break;
   }
 }

@@ -1,8 +1,12 @@
-// ── Statusline: activity verb + elapsed, permission-mode chip, MCP dots ──
-// Lives inside the existing #cp-context-bar next to the gauge; renderGauge()
-// stays untouched.
+// ── Statusline: what is happening right now ──
+// The activity verb with its elapsed time, the background work and a usage
+// limit that is close: each shows only while it has something to say. It sits
+// in the bottom toolbar, left of the toggles. What a tab is and has (context,
+// MCP servers, session settings) is in the context settings popover
+// (cp-context-menu.js), which is refreshed from here.
 
 import { cpCtx } from './cp-ctx.js';
+import { syncContextMenu } from './cp-context-menu.js';
 
 const SPINNER_FRAMES = ['·', '✢', '✳', '✶', '✻', '✽'];
 let _spinnerIdx = 0;
@@ -27,6 +31,16 @@ export function cpActivityVerb(toolName, input) {
     case 'ToolSearch': return 'Loading tools';
     case 'AskUserQuestion': return 'Asking you';
     case 'ExitPlanMode': return 'Plan ready';
+    case 'TaskCreate': case 'TaskUpdate': case 'TaskList': case 'TaskGet': return 'Updating tasks';
+    case 'TaskStop': return 'Stopping a background task';
+    case 'Monitor': return `Monitoring ${(i.description || '').slice(0, 40)}`.trim();
+    case 'ScheduleWakeup': return i.stop ? 'Stopping the loop' : 'Scheduling a wakeup';
+    case 'CronCreate': case 'CronDelete': case 'CronList': return 'Managing scheduled jobs';
+    case 'Workflow': return `Starting workflow ${(i.title || i.name || '').slice(0, 40)}`.trim();
+    case 'EnterWorktree': return 'Entering a worktree';
+    case 'ExitWorktree': return 'Leaving the worktree';
+    case 'PushNotification': return 'Sending a notification';
+    case 'Skill': return `Loading skill ${i.skill || ''}`.trim();
     default:
       if (toolName?.startsWith('mcp__')) {
         const parts = toolName.split('__');
@@ -46,7 +60,7 @@ function ensureDom() {
   const { panel } = cpCtx;
   const $panel = panel();
   if (!$panel) return null;
-  const bar = $panel.querySelector('#cp-context-bar');
+  const bar = $panel.querySelector('.cp-toolbar-left');
   if (!bar) return null;
   let sl = bar.querySelector('#cp-statusline');
   if (!sl) {
@@ -55,9 +69,9 @@ function ensureDom() {
     sl.className = 'cp-statusline';
     sl.innerHTML = `
       <span class="cp-sl-activity" id="cp-sl-activity" hidden><span class="cp-sl-spinner"></span><span class="cp-sl-verb"></span><span class="cp-sl-elapsed"></span></span>
-      <span class="cp-sl-spacer"></span>
-      <span class="cp-sl-mcp" id="cp-sl-mcp"></span>`;
-    bar.insertBefore(sl, bar.firstChild);
+      <span class="cp-sl-bg" id="cp-sl-bg" hidden></span>
+      <span class="cp-sl-limit" id="cp-sl-limit" hidden></span>`;
+    bar.appendChild(sl);
   }
   return sl;
 }
@@ -100,20 +114,37 @@ export function renderStatusline(tab) {
     act.hidden = true;
   }
 
-  // (Permission mode moved to the project-bar #cp-mode dropdown)
-
-  // MCP dots
-  const mcp = sl.querySelector('#cp-sl-mcp');
-  mcp.innerHTML = '';
-  const servers = tab.mcpServers || [];
-  for (const s of servers.slice(0, 8)) {
-    const dot = document.createElement('span');
-    const status = (s.status || '').toLowerCase();
-    const tone = /connect|ok|ready|running/.test(status) ? 'ok' : /pend|start/.test(status) ? 'warn' : 'err';
-    dot.className = `cp-sl-mcp-dot cp-mcp-${tone}`;
-    dot.title = `${s.name}: ${s.status}`;
-    mcp.appendChild(dot);
+  // Background work — agents and shells still running after their turn ended.
+  // Shown whether or not a turn is running.
+  const bg = sl.querySelector('#cp-sl-bg');
+  const work = tab.backgroundWork || [];
+  if (bg) {
+    const crons = Array.isArray(tab.sessionCrons) ? tab.sessionCrons.length : 0;
+    bg.hidden = work.length === 0 && crons === 0;
+    bg.textContent = [
+      work.length ? `⧗ ${work.length} background task${work.length === 1 ? '' : 's'}` : '',
+      crons ? `${crons} scheduled` : '',
+    ].filter(Boolean).join(' · ');
+    bg.title = [...work.map(w => w.description || w.type), crons ? 'Click for details (/tasks)' : ''].filter(Boolean).join('\n');
+    if (!bg._wired) {
+      bg._wired = true;
+      bg.addEventListener('click', () => { const t = cpCtx.activeTab(); if (t) { try { cpCtx.openTasks(t); } catch {} } });
+    }
   }
+
+  // Plan usage limit (rate_limit_event): shown while a limit is close or reached.
+  const limit = sl.querySelector('#cp-sl-limit');
+  if (limit) {
+    const rl = tab.rateLimit;
+    limit.hidden = !rl?.pill;
+    limit.textContent = rl?.pill || '';
+    limit.title = rl?.text || '';
+    limit.className = `cp-sl-limit${rl ? ` cp-sl-limit-${rl.level}` : ''}`;
+  }
+
+  // The popover shows the running state, the servers and the session settings
+  // that change with the calls that end up here.
+  syncContextMenu(tab);
 }
 
 export function setActivity(tab, verb) {

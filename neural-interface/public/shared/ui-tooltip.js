@@ -21,6 +21,20 @@ export function initTooltip() {
   let repositionEndHandler = null;
   let repositionRafId = 0;
 
+  // Dropdowns that keep their open menu inside the [data-tooltip] control
+  // (the sidepanels' cp/cx/ocpv2 project-bar, model and mode controls). Hovering
+  // that menu still resolves closest() to the control, which pinned the
+  // control's tooltip over the open menu: while one is open, the control stays
+  // quiet.
+  const OPEN_MENU_INSIDE = '.cp-dropdown.open > .cp-dd-menu, .cxp-dropdown.open > .cxp-dd-menu, .ocpv2-dropdown.open > .ocpv2-dd-menu';
+  function openMenuInside(el) { return !!el.querySelector(OPEN_MENU_INSIDE); }
+
+  // Swap the placement class only: a reposition (the follow loop below) must keep .visible.
+  function setPlacement(placement) {
+    tip.classList.remove('above', 'below', 'left', 'right');
+    tip.classList.add(placement);
+  }
+
   function positionTip(el) {
     const r = el.getBoundingClientRect();
     const tw = tip.offsetWidth;
@@ -31,10 +45,10 @@ export function initTooltip() {
     // Left-side placement (session dropdowns in sidepanels)
     // Anchor to the left edge of the containing sidepanel so tooltip always appears fully outside
     if (preferred === 'left') {
-      const panel = el.closest('.claude-panel, .codex-panel, .ocp-panel, .menubar-dropdown--resume');
+      const panel = el.closest('.claude-panel, .codex-panel, .ocp-panel, .assistant-panel, .menubar-dropdown--resume');
       const anchorLeft = panel ? panel.getBoundingClientRect().left : r.left;
       if (anchorLeft - gap - tw > 4) {
-        tip.className = 'ui-tooltip left';
+        setPlacement('left');
         tip.style.top = (r.top + r.height / 2 - th / 2) + 'px';
         tip.style.left = (anchorLeft - gap - tw) + 'px';
         tip.style.setProperty('--arrow-y', (th / 2) + 'px');
@@ -47,7 +61,7 @@ export function initTooltip() {
     const rightAnchor = el.closest('.menubar-dropdown--resume');
     const anchorRight = rightAnchor ? rightAnchor.getBoundingClientRect().right : r.right;
     if ((preferred === 'right' || inWbToolbar) && anchorRight + gap + tw < window.innerWidth - 4) {
-      tip.className = 'ui-tooltip right';
+      setPlacement('right');
       tip.style.top = (r.top + r.height / 2 - th / 2) + 'px';
       tip.style.left = (anchorRight + gap) + 'px';
       tip.style.setProperty('--arrow-y', (th / 2) + 'px');
@@ -65,7 +79,7 @@ export function initTooltip() {
     let left = r.left + r.width / 2 - tw / 2;
     if (left < 4) left = 4;
     if (left + tw > window.innerWidth - 4) left = window.innerWidth - 4 - tw;
-    tip.className = 'ui-tooltip ' + placement;
+    setPlacement(placement);
     tip.style.top = top + 'px';
     tip.style.left = left + 'px';
     const arrowLeft = r.left + r.width / 2 - left;
@@ -100,7 +114,7 @@ export function initTooltip() {
 
   function show(el) {
     let text = el.getAttribute('data-tooltip');
-    if (!text) return;
+    if (!text || openMenuInside(el)) return;
     clearTimeout(hideTimer);
     suppressTitle(el);
     const textEl = tip.querySelector('.ui-tooltip-text');
@@ -202,6 +216,10 @@ export function initTooltip() {
   document.addEventListener('mouseover', (e) => {
     const el = e.target.closest('[data-tooltip]');
     if (!el) return;
+    // A dropdown whose menu is open keeps the menu as a child of the control:
+    // it (and the control) then resolve here, and the tooltip must not show —
+    // and any tooltip already up (for this control or another) goes away.
+    if (openMenuInside(el)) { if (currentTarget) hide(); return; }
     if (el === currentTarget) { clearTimeout(hideTimer); return; }
     clearTimeout(showTimer);
     clearTimeout(hideTimer);
@@ -216,6 +234,7 @@ export function initTooltip() {
   document.addEventListener('mouseout', (e) => {
     const el = e.target.closest('[data-tooltip]');
     if (!el) return;
+    if (openMenuInside(el)) { hide(); return; }
     const related = e.relatedTarget;
     if (related && el.contains(related)) return;
     hide();
@@ -223,4 +242,23 @@ export function initTooltip() {
 
   document.addEventListener('scroll', hide, true);
   document.addEventListener('pointerdown', hide, true);
+
+  // Keyboard focus shows the tooltip too, but only inside the Assistant
+  // (.asst-root, and .asst-bar: its toolbar, which the sidepanel places in its
+  // header), where glyph-only capsules have no visible label. Every other
+  // surface stays hover-only.
+  const FOCUS_SCOPE = '.asst-root, .asst-bar';
+  document.addEventListener('focusin', (e) => {
+    const el = e.target;
+    if (!el?.closest || !el.hasAttribute?.('data-tooltip') || !el.closest(FOCUS_SCOPE)) return;
+    let keyboard = false;
+    try { keyboard = el.matches(':focus-visible'); } catch { keyboard = false; }
+    if (!keyboard || el === currentTarget) return;
+    clearTimeout(showTimer);
+    if (currentTarget) hide();
+    show(el);
+  });
+  document.addEventListener('focusout', (e) => {
+    if (currentTarget && e.target === currentTarget && currentTarget.closest(FOCUS_SCOPE)) hide();
+  });
 }

@@ -4,11 +4,15 @@
  * which manages Playwright sessions, CDP screencast, stealth, etc.
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { randomUUID } from 'node:crypto';
+
 import {
   type CallerIdentity,
   getIdentity,
   effectivePins,
   terminalIdFor,
+  callerRole,
   setReleaseHook,
   peekStdioIdentity,
   isHttpMode,
@@ -19,6 +23,71 @@ const BASE_URL = process.env.NEURAL_INTERFACE_URL
 const DEFAULT_TIMEOUT = 10_000;
 const LONG_TIMEOUT = 30_000;
 const SESSION_CREATE_TIMEOUT = 70_000;
+// Existing engagement spacing can consume 90 seconds before the click begins.
+const CLICK_TIMEOUT = 120_000;
+
+export function isBrowserV2Enabled(): boolean {
+  return process.env.SYNABUN_BROWSER_V2 !== '0';
+}
+
+type BrowserRoute = { sessionId: string; tabId?: string };
+const resolvedRoutes = new WeakMap<CallerIdentity, { key: string; route: BrowserRoute; sessionId?: string; tabId?: string; autoCreate?: { url?: string }; platform?: boolean }>();
+const resolutionRefresh = new AsyncLocalStorage<boolean>();
+export interface BrowserBatchContext {
+  route: BrowserRoute;
+  errors: NiResponse[];
+}
+const browserCancellation = new AsyncLocalStorage<{ signal: AbortSignal; scope: 'browser' | 'batch' }>();
+export function runWithBrowserCancellation<T>(signal: AbortSignal | undefined, run: () => T, scope: 'browser' | 'batch' = 'browser'): T {
+  return signal ? browserCancellation.run({ signal, scope }, run) : run();
+}
+const batchContext = new AsyncLocalStorage<BrowserBatchContext>();
+export function runBrowserBatchContext<T>(context: BrowserBatchContext, run: () => T): T {
+  return batchContext.run(context, run);
+}
+/** Inside a browser_batch step. Browser assistance is off there: a batch is a known sequence. */
+export function inBrowserBatch(): boolean {
+  return batchContext.getStore() !== undefined;
+}
+/** The MCP caller's cancellation signal, so an advisory judgment ends with the tool call that asked for it. */
+export function currentBrowserSignal(): AbortSignal | undefined {
+  return browserCancellation.getStore()?.signal;
+}
+
+function browserMetric(record: Record<string, unknown>): void {
+  if (process.env.SYNABUN_BROWSER_METRICS === '1') {
+    console.error(JSON.stringify({ source: 'browser-client', ...record }));
+  }
+}
+
+// Platform tools (BlueSky, X, Facebook, YouTube, …) always act on normal pages, so
+// inside this scope resolution requires the default browser: an explicit session
+// the server says does not serve it is dropped for the default one.
+const platformRoute = new AsyncLocalStorage<boolean>();
+export function withPlatformRoute<T>(run: () => T): T {
+  return platformRoute.run(true, run);
+}
+function inPlatformRoute(): boolean {
+  return platformRoute.getStore() === true;
+}
+
+// The default browser as the Neural Interface last described it (its
+// X-Synabun-Browser-Default header on every /api/browser response: connect mode
+// and MoreLogin env). Part of every route key, so a change of browser settings
+// drops every cached route of this process; the server in-process calls
+// noteBrowserDefault when the settings are saved.
+let browserDefault = '';
+export function noteBrowserDefault(signature: string | null | undefined): void {
+  if (typeof signature === 'string' && signature !== browserDefault) browserDefault = signature;
+}
+
+function routeKey(id: CallerIdentity, sessionId?: string, tabId?: string, wantsDefaultBrowser = false): string {
+  const pins = effectivePins(id);
+  // Only an explicit id resolves differently for page-opening and platform calls
+  // (resolveSessionUncached may drop it), so only then do they get their own slot.
+  return JSON.stringify([sessionId, tabId, pins.browserSessionId, pins.browserTabId,
+    id.state.ancestorPinnedSession, id.state.ancestorPinnedTab, sessionId ? wantsDefaultBrowser : null, browserDefault]);
+}
 
 export function isBrowserFastMode(): boolean {
   return process.env.SYNABUN_BROWSER_FAST === '1';
@@ -44,9 +113,14 @@ export interface BrowserSessionInfo {
    *  Used to tell a pristine (manual) session apart from one another automation
    *  already drives, so we never adopt-and-collide with its tab. */
   tabOwners?: Record<string, string>;
+  profileMode?: string;
+  moreloginEnvId?: string | null;
+  /** Server's verdict (sessionServesMoreLoginDefault): may this session carry normal
+   *  pages? False only while MoreLogin is the default; absent on older servers. */
+  servesDefault?: boolean;
 }
 
-interface NiResponse {
+export interface NiResponse {
   ok?: boolean;
   error?: string;
   tabRecovered?: boolean;
@@ -54,13 +128,28 @@ interface NiResponse {
   [key: string]: unknown;
 }
 
-async function request(
+async function requestOnce(
   method: string,
   path: string,
   body?: Record<string, unknown>,
   timeout = DEFAULT_TIMEOUT
 ): Promise<NiResponse> {
+  const cancellation = browserCancellation.getStore();
+  const callerSignal = cancellation?.signal;
+  const cancellationCode = cancellation?.scope === 'batch' ? 'BATCH_CANCELLED' : 'BROWSER_CANCELLED';
+  const cancellationLabel = cancellation?.scope === 'batch' ? 'Browser batch' : 'Browser request';
+  if (callerSignal?.aborted) return { error: `${cancellationLabel} cancelled before the request started.`, code: cancellationCode, actionStarted: false };
+  const requestId = randomUUID();
+  const startedAt = performance.now();
+  const deadline = Date.now() + timeout;
+  let responseBytes = 0;
+  let estimatedTextTokens = 0;
+  let status: number | undefined;
   const controller = new AbortController();
+  const cancel = () => controller.abort();
+  callerSignal?.addEventListener('abort', cancel, { once: true });
+  if (callerSignal?.aborted) cancel();
+  let sent = false;
   const timer = setTimeout(() => controller.abort(), timeout);
 
   try {
@@ -69,6 +158,14 @@ async function request(
     // tab (_tabOwners) so tab-less browser calls never land on another
     // automation's tab. Derived per-request over HTTP, per-process for stdio.
     headers['X-Synabun-Terminal'] = terminalIdFor(getIdentity());
+    // Assistant runtimes forward their role so /api/assistant/* can tell an
+    // orchestrator apart from a worker run (workers must never dispatch).
+    const role = callerRole();
+    if (role) headers['X-Synabun-Role'] = role;
+    headers['X-Synabun-Request-Id'] = requestId;
+    headers['X-Synabun-Deadline'] = String(deadline);
+    // Lets the server refuse advisory payloads and auto-heal for a batch step on its own authority.
+    if (batchContext.getStore()) headers['X-Synabun-Batch'] = '1';
     const opts: RequestInit = {
       method,
       headers,
@@ -77,21 +174,102 @@ async function request(
     if (body && method !== 'GET') {
       opts.body = JSON.stringify(body);
     }
+    if (callerSignal?.aborted) return { error: `${cancellationLabel} cancelled before the request started.`, code: cancellationCode, actionStarted: false };
+    sent = true;
     const res = await fetch(`${BASE_URL}${path}`, opts);
-    const data = await res.json() as NiResponse;
+    status = res.status;
+    noteBrowserDefault(res.headers?.get?.('X-Synabun-Browser-Default'));
+    const responseText = await res.text();
+    const data = JSON.parse(responseText) as NiResponse;
+    if (process.env.SYNABUN_BROWSER_METRICS === '1') {
+      responseBytes = Buffer.byteLength(responseText, 'utf8');
+      // Approximation, not provider-billed usage; exclude base64 image fields.
+      const { image: _image, screenshot: _screenshot, data: _data, ...textFields } = data;
+      estimatedTextTokens = Math.ceil(JSON.stringify(textFields).length / 4);
+    }
     if (!res.ok && !data.error) {
       data.error = `HTTP ${res.status}`;
     }
     return data;
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    if (msg.includes('abort')) {
-      return { error: `Request timed out after ${timeout}ms` };
+    if (callerSignal?.aborted) {
+      return { error: `${cancellationLabel} cancelled; inspect the page before retrying.`, code: cancellationCode, ...(sent ? { outcome: 'uncertain' } : { actionStarted: false }) };
     }
-    return { error: `Neural Interface unreachable: ${msg}. Is the Neural Interface server running?` };
+    if (controller.signal.aborted || /abort/i.test(msg)) {
+      return { error: `Request timed out after ${timeout}ms; outcome may be uncertain. Inspect the page before retrying.`, code: 'REQUEST_TIMEOUT', outcome: 'uncertain' };
+    }
+    return { error: `Neural Interface unreachable: ${msg}. Is the Neural Interface server running?`, code: 'TRANSPORT_ERROR', outcome: 'uncertain' };
   } finally {
     clearTimeout(timer);
+    callerSignal?.removeEventListener('abort', cancel);
+    if (path.startsWith('/api/browser/')) {
+      browserMetric({ requestId, phase: 'http', method,
+        operation: path.split('?')[0].replace(/\/sessions\/[^/]+/, '/sessions/:id'),
+        durationMs: Math.round((performance.now() - startedAt) * 100) / 100,
+        status, responseBytes, estimatedTextTokens });
+    }
   }
+}
+
+async function request(
+  method: string,
+  path: string,
+  body?: Record<string, unknown>,
+  timeout = DEFAULT_TIMEOUT,
+): Promise<NiResponse> {
+  const result = await requestOnce(method, path, body, timeout);
+  const context = batchContext.getStore();
+  const missingRoute = result.actionStarted === false
+    && (result.code === 'SESSION_NOT_FOUND' || result.code === 'TAB_NOT_FOUND');
+  const match = /^\/api\/browser\/sessions\/([^/?]+)\/(.+)$/.exec(path);
+  if (isBrowserV2Enabled() && missingRoute && match) {
+    const id = getIdentity();
+    const cached = resolvedRoutes.get(id);
+    resolvedRoutes.delete(id);
+    // Batches are pinned to their original tab and never recover midway.
+    const pinnedSession = effectivePins(id).browserSessionId || id.state.ancestorPinnedSession;
+    if (!context && cached?.route.sessionId === match[1]
+      && (!cached.sessionId || cached.sessionId === pinnedSession)) {
+      // Clear unpinned fast-mode state too: a force-refresh must not reuse it.
+      if (id.state.interactiveSessionId === match[1]) {
+        id.state.interactiveSessionId = null;
+        id.state.interactiveTabId = null;
+      }
+      if (id.state.affinitySessionId === match[1]) id.state.affinitySessionId = null;
+      const refreshed = await resolutionRefresh.run(true, () => resolveSession(
+        cached.sessionId, cached.autoCreate, cached.tabId, { platform: cached.platform === true },
+      ));
+      if (!('error' in refreshed)) {
+        const nextPath = path.replace(`/sessions/${match[1]}/`, `/sessions/${refreshed.sessionId}/`);
+        const nextBody = body ? { ...body, tabId: refreshed.tabId } : undefined;
+        const url = new URL(nextPath, BASE_URL);
+        if (refreshed.tabId) url.searchParams.set('tabId', refreshed.tabId);
+        else url.searchParams.delete('tabId');
+        return requestOnce(method, `${url.pathname}${url.search}`, nextBody, timeout);
+      }
+      // Recovery failed: report why (e.g. "MoreLogin connect failed: …"), not the
+      // bare "Session not found" that triggered it. Nothing was started.
+      return { ...result, error: refreshed.error, recoveryFailed: true };
+    }
+  }
+  // The server refused a session that does not serve the default browser (the
+  // settings changed under a cached route): forget it, so the next call resolves
+  // the default browser. Not retried here: the page the call meant is in the other browser.
+  if (result.code === 'NOT_DEFAULT_BROWSER' && match) {
+    const id = getIdentity();
+    resolvedRoutes.delete(id);
+    if (id.state.interactiveSessionId === match[1]) {
+      id.state.interactiveSessionId = null;
+      id.state.interactiveTabId = null;
+    }
+    if (id.state.affinitySessionId === match[1]) id.state.affinitySessionId = null;
+  }
+  if (context && result.error) context.errors.push(result);
+  else if (context && typeof result.snapshotError === 'string') {
+    context.errors.push({ error: result.snapshotError, code: 'SNAPSHOT_FAILED' });
+  }
+  return result;
 }
 
 /**
@@ -164,6 +342,27 @@ async function acquireInteractive(id: CallerIdentity, url?: string): Promise<{ s
   return { sessionId: id.state.interactiveSessionId, tabId: id.state.interactiveTabId || undefined };
 }
 
+function adoptCreatedSession(id: CallerIdentity, created: NiResponse, tabId?: string): { sessionId: string; tabId?: string } {
+  const sessionId = created.sessionId as string;
+  id.state.affinitySessionId = sessionId;
+  return { sessionId, tabId };
+}
+
+// Pages (localhost included) only run where the server says the default browser
+// is. Absent servesDefault (older server, or a managed / real-Chrome setup) keeps
+// the previous behavior.
+function servesDefault(s: BrowserSessionInfo): boolean {
+  return s.servesDefault !== false;
+}
+function describeSession(s: BrowserSessionInfo): string {
+  return `${s.profileMode || 'unknown'} mode${s.moreloginEnvId ? `, MoreLogin env ${s.moreloginEnvId}` : ''}`;
+}
+function describeDefault(list: NiResponse): string {
+  const def = list.defaultBrowser as { connectMode?: string | null; moreloginEnvId?: string | null } | undefined;
+  if (def?.connectMode === 'morelogin') return `MoreLogin${def.moreloginEnvId ? ` env ${def.moreloginEnvId}` : ''}`;
+  return 'the configured browser';
+}
+
 // Best-effort release of an identity's owned tab, so the shared browser can be
 // grace-reaped once no owners remain. Fire-and-forget — never blocks shutdown.
 // Also registered as the identity-eviction hook (HTTP DELETE / idle TTL).
@@ -188,8 +387,27 @@ function releaseOnExit(): void {
   if (stdio) releaseTabFor(stdio);
 }
 process.once('exit', releaseOnExit);
-process.once('SIGTERM', () => { releaseOnExit(); process.exit(0); });
-process.once('SIGINT', () => { releaseOnExit(); process.exit(0); });
+
+// SIGTERM / SIGINT end a stdio server here: release its tab, exit 0. Served
+// over HTTP, the process belongs to its host. The Neural Interface runs
+// mcp-server/dist in process and owns these signals (server.js
+// gracefulShutdown: WhatsApp Link, terminal host, then the database); this
+// listener is registered before its listeners, so exiting here would preempt
+// all of them. The mode is read when the signal arrives, not at import:
+// server.js loads this module through its static imports, long before
+// createMcpRoutes() calls markHttpMode(). A host with no listener of its own
+// (the standalone dist/http.js) still exits here, because registering this
+// listener already took Node's default exit on the signal away from it.
+function exitOnSignal(signal: 'SIGTERM' | 'SIGINT'): () => void {
+  const onSignal = (): void => {
+    if (isHttpMode() && process.listeners(signal).some((listener) => listener !== onSignal)) return;
+    releaseOnExit();
+    process.exit(0);
+  };
+  return onSignal;
+}
+process.once('SIGTERM', exitOnSignal('SIGTERM'));
+process.once('SIGINT', exitOnSignal('SIGINT'));
 
 // Ancestor-PID fallback (Layer B). Walks the process tree once and caches the
 // resolved loop pins on the identity. Used when codex/opencode strip
@@ -259,15 +477,35 @@ async function resolveFromAncestors(id: CallerIdentity): Promise<void> {
  * - If 0 sessions exist and autoCreate is true, create one.
  * - If multiple sessions and no ID, return error listing them.
  */
-export async function resolveSession(
+async function resolveSessionUncached(
   sessionId?: string,
   autoCreate?: { url?: string },
-  tabId?: string
+  tabId?: string,
+  platform = false,
 ): Promise<{ sessionId: string; tabId?: string } | { error: string }> {
   // Per-caller identity: pins come from launch headers (HTTP) or live env
   // (stdio); all caches below live on the identity, never module-level.
   const id = getIdentity();
   const pins = effectivePins(id);
+  // Every page tool runs in the default browser only. An explicit id the server
+  // says does not serve it (managed Chrome, or another MoreLogin env while
+  // MoreLogin is the default) is dropped for a navigation (localhost included)
+  // or a platform tool, and the default browser resolved instead; any other page
+  // tool is refused, since the page it names is in the other browser. The
+  // server refuses them too (NOT_DEFAULT_BROWSER).
+  const wantsDefaultBrowser = platform || !!autoCreate;
+  if (sessionId && sessionId !== (pins.browserSessionId || id.state.ancestorPinnedSession)) {
+    const listed = await request('GET', '/api/browser/sessions');
+    const named = ((listed.sessions || []) as BrowserSessionInfo[]).find(s => s.id === sessionId);
+    if (named && !servesDefault(named)) {
+      if (!wantsDefaultBrowser) {
+        return { error: `Browser session ${sessionId} is not the default browser (${describeSession(named)}; the default is ${describeDefault(listed)}), so SynaBun's browser tools do not act on it. Leave sessionId out: browser_navigate opens the page in the default browser.` };
+      }
+      console.error(`[MCP] not using session ${sessionId} (${describeSession(named)}) — resolving ${describeDefault(listed)}`);
+      sessionId = undefined;
+      tabId = undefined;
+    }
+  }
 
   // Resolve tab ID from explicit param or pin.
   // When a tab is pinned (loop/agent context), the pin wins even if the caller
@@ -304,6 +542,11 @@ export async function resolveSession(
 
     const check = await request('GET', '/api/browser/sessions');
     const active = ((check.sessions || []) as BrowserSessionInfo[]).find(s => s.id === pinnedSession);
+    // A run's pinned browser must be the default one. Hard-fail rather than work
+    // in the wrong browser.
+    if (active && !servesDefault(active)) {
+      return { error: `Pinned browser session ${pinnedSession} is not the default browser (${describeSession(active)}; the default is ${describeDefault(check)}), so this run will not use it. Start the run again so it acquires the default browser.` };
+    }
     if (active) {
       // Also verify the resolved tab still exists in the session; if not, recover.
       const tabList = active.tabs;
@@ -345,8 +588,8 @@ export async function resolveSession(
   }
 
   if (sessionId) {
-    // Trust the server — it will 404 if the session doesn't exist.
-    // Skipping the extra GET /api/browser/sessions verification call saves a full round-trip.
+    // Checked above against the default browser; the server 404s a session that
+    // does not exist. The route cache spares the check on the next calls.
     id.state.affinitySessionId = sessionId;
     return { sessionId, tabId: resolvedTabId };
   }
@@ -362,7 +605,7 @@ export async function resolveSession(
     }
     const check = await request('GET', '/api/browser/sessions');
     const alive = ((check.sessions || []) as BrowserSessionInfo[]).find(s => s.id === id.state.interactiveSessionId);
-    if (alive) return { sessionId: id.state.interactiveSessionId, tabId: resolvedTabId || id.state.interactiveTabId || undefined };
+    if (alive && servesDefault(alive)) return { sessionId: id.state.interactiveSessionId, tabId: resolvedTabId || id.state.interactiveTabId || undefined };
     id.state.interactiveSessionId = null;
     id.state.interactiveTabId = null; // session gone — fall through to re-acquire
   }
@@ -379,8 +622,7 @@ export async function resolveSession(
       if (/lock/i.test(created.error)) return acquireInteractive(id, autoCreate.url);
       return { error: `Failed to auto-create session: ${created.error}` };
     }
-    id.state.affinitySessionId = created.sessionId as string;
-    return { sessionId: id.state.affinitySessionId, tabId: resolvedTabId };
+    return adoptCreatedSession(id, created, resolvedTabId);
   }
 
   // List sessions (single GET used for both affinity check and auto-selection)
@@ -391,13 +633,16 @@ export async function resolveSession(
   // Check affinity — reuse session this caller previously used/created
   if (id.state.affinitySessionId) {
     const affinityAlive = allSessions.find(s => s.id === id.state.affinitySessionId);
-    if (affinityAlive) return { sessionId: id.state.affinitySessionId, tabId: resolvedTabId };
-    id.state.affinitySessionId = null; // session gone, clear affinity
+    if (affinityAlive && servesDefault(affinityAlive)) {
+      return { sessionId: id.state.affinitySessionId, tabId: resolvedTabId };
+    }
+    id.state.affinitySessionId = null; // session gone (or not the default browser), clear affinity
   }
 
   // Interactive sessions (no pinned env var) must not grab loop/agent/interactive-owned
   // sessions. Pinned sessions already returned above; explicit sessionId trusted above.
-  const sessions = allSessions.filter(s => !s.loopOwned && !s.agentOwned && !s.interactiveOwned);
+  // Never adopt or auto-select a browser that is not the default one for normal pages.
+  const sessions = allSessions.filter(s => !s.loopOwned && !s.agentOwned && !s.interactiveOwned && servesDefault(s));
 
   // Under a persistent profile, a second launchPersistentContext fails with "profile is
   // locked", and any owned session means a shared persistent browser is already running.
@@ -414,8 +659,7 @@ export async function resolveSession(
       if (/lock/i.test(created.error)) return acquireInteractive(id, autoCreate?.url);
       return { error: `Failed to auto-create session: ${created.error}` };
     }
-    id.state.affinitySessionId = created.sessionId as string;
-    return { sessionId: id.state.affinitySessionId, tabId: resolvedTabId };
+    return adoptCreatedSession(id, created, resolvedTabId);
   };
 
   // If autoCreate is available (browser_navigate) and unowned sessions exist but none
@@ -462,6 +706,50 @@ export async function resolveSession(
   return { error: `Multiple browser sessions open. Specify sessionId:\n${list}` };
 }
 
+/**
+ * Per-caller route cache. Only the server can declare an action safe to retry.
+ * `platform` (or a withPlatformRoute scope) marks a platform tool call: like a
+ * navigation, it only runs in the default browser.
+ */
+export async function resolveSession(
+  sessionId?: string,
+  autoCreate?: { url?: string },
+  tabId?: string,
+  opts: { platform?: boolean } = {},
+): Promise<BrowserRoute | { error: string }> {
+  const context = batchContext.getStore();
+  if (context) return context.route;
+  const startedAt = performance.now();
+  const id = getIdentity();
+  const platform = opts.platform === true || inPlatformRoute();
+  const key = routeKey(id, sessionId, tabId, platform || !!autoCreate);
+  const cached = resolvedRoutes.get(id);
+  if (isBrowserV2Enabled() && !resolutionRefresh.getStore() && cached?.key === key) {
+    browserMetric({ phase: 'session-resolution', cached: true, durationMs: performance.now() - startedAt });
+    return { ...cached.route };
+  }
+  const result = await resolveSessionUncached(sessionId, autoCreate, tabId, platform);
+  if (!('error' in result)) resolvedRoutes.set(id, { key: routeKey(id, sessionId, tabId, platform || !!autoCreate), route: { ...result }, sessionId, tabId, autoCreate, platform });
+  browserMetric({ phase: 'session-resolution', cached: false, durationMs: performance.now() - startedAt });
+  return result;
+}
+
+/** Batches require a concrete tab owned by this caller, verified once up front. */
+export async function resolveBatchRoute(sessionId?: string, tabId?: string): Promise<BrowserRoute | { error: string }> {
+  const resolved = await resolveSession(sessionId, undefined, tabId);
+  if ('error' in resolved) return resolved;
+  const result = await listSessions();
+  if (result.error) return { error: result.error };
+  const session = (result.sessions as BrowserSessionInfo[] | undefined)?.find(s => s.id === resolved.sessionId);
+  const id = getIdentity();
+  const ownedTabs = [session?.tabOwners?.[terminalIdFor(id)], session?.tabOwners?.[id.clientId]].filter(Boolean);
+  const ownedTab = resolved.tabId || ownedTabs[0];
+  if (!ownedTab || !ownedTabs.includes(ownedTab)) {
+    return { error: 'browser_batch requires a tab owned by this caller. Use browser_navigate to acquire a tab first.' };
+  }
+  return { sessionId: resolved.sessionId, tabId: ownedTab };
+}
+
 // ── Cache invalidation ──
 
 export async function invalidateCache(reason: string, id?: string): Promise<void> {
@@ -497,13 +785,18 @@ export async function navigate(
   url: string,
   tabId?: string,
   returnSnapshot?: { mode?: string; selector?: string; viewport?: boolean },
-  snapshot?: 'diff' | 'full' | 'none'
+  snapshot?: 'diff' | 'full' | 'none',
+  snapshotOptions?: { baselineId?: string; snapshotMaxChars?: number },
+  assist?: { semanticContext?: boolean },
 ): Promise<NiResponse> {
   return request('POST', `/api/browser/sessions/${sessionId}/navigate`, {
     url,
     ...(isBrowserCompactMode() && { compact: true }),
     ...(snapshot && { snapshot }),
+    ...(isBrowserV2Enabled() && { snapshotMaxChars: 12000 }),
+    ...snapshotOptions,
     ...(returnSnapshot && { returnSnapshot }),
+    ...(assist?.semanticContext && { semanticContext: true }),
     ...(tabId && { tabId }),
   }, LONG_TIMEOUT);
 }
@@ -530,36 +823,41 @@ export async function click(
   textHint?: string,
   returnSnapshot?: { mode?: string; selector?: string; viewport?: boolean },
   ref?: string,
-  snapshot?: 'diff' | 'full' | 'none'
+  snapshot?: 'diff' | 'full' | 'none',
+  snapshotOptions?: { baselineId?: string; snapshotMaxChars?: number },
+  assist?: boolean,
 ): Promise<NiResponse> {
   return request('POST', `/api/browser/sessions/${sessionId}/click`, {
     ...(selector && { selector }),
     ...(ref && { ref }),
     ...(nthMatch !== undefined && { nthMatch }),
     ...(textHint && { textHint }),
+    ...(assist && { assist: true }),
     ...(isBrowserCompactMode() && { compact: true }),
     ...(snapshot && { snapshot }),
+    ...(isBrowserV2Enabled() && { snapshotMaxChars: 6000 }),
+    ...snapshotOptions,
     ...(returnSnapshot && { returnSnapshot }),
     ...(tabId && { tabId }),
-  });
+  }, CLICK_TIMEOUT);
 }
 
-export async function fill(sessionId: string, selector: string | undefined, value: string, nthMatch?: number, tabId?: string, textHint?: string, ref?: string): Promise<NiResponse> {
-  return request('POST', `/api/browser/sessions/${sessionId}/fill`, { ...(selector && { selector }), ...(ref && { ref }), value, ...(nthMatch !== undefined && { nthMatch }), ...(textHint && { textHint }), ...(isBrowserCompactMode() && { compact: true }), ...(tabId && { tabId }) });
+export async function fill(sessionId: string, selector: string | undefined, value: string, nthMatch?: number, tabId?: string, textHint?: string, ref?: string, assist?: boolean): Promise<NiResponse> {
+  return request('POST', `/api/browser/sessions/${sessionId}/fill`, { ...(selector && { selector }), ...(ref && { ref }), value, ...(assist && { assist: true }), ...(nthMatch !== undefined && { nthMatch }), ...(textHint && { textHint }), ...(isBrowserCompactMode() && { compact: true }), ...(tabId && { tabId }) });
 }
 
-export async function type(sessionId: string, selector: string | null, text: string, nthMatch?: number, tabId?: string, textHint?: string, mode?: 'sequential' | 'insert' | 'paragraphs', ref?: string): Promise<NiResponse> {
+export async function type(sessionId: string, selector: string | null, text: string, nthMatch?: number, tabId?: string, textHint?: string, mode?: 'sequential' | 'insert' | 'paragraphs', ref?: string, assist?: boolean): Promise<NiResponse> {
   // An explicit mode (including 'paragraphs') is always honored; only the unset case falls back to fast-mode insert.
   const resolvedMode = mode || (isBrowserFastMode() ? 'insert' : 'sequential');
-  return request('POST', `/api/browser/sessions/${sessionId}/type`, { selector, ...(ref && { ref }), text, mode: resolvedMode, ...(nthMatch !== undefined && { nthMatch }), ...(textHint && { textHint }), ...(isBrowserCompactMode() && { compact: true }), ...(tabId && { tabId }) });
+  return request('POST', `/api/browser/sessions/${sessionId}/type`, { selector, ...(ref && { ref }), text, mode: resolvedMode, ...(assist && { assist: true }), ...(nthMatch !== undefined && { nthMatch }), ...(textHint && { textHint }), ...(isBrowserCompactMode() && { compact: true }), ...(tabId && { tabId }) });
 }
 
-export async function hover(sessionId: string, selector: string | undefined, nthMatch?: number, tabId?: string, textHint?: string, ref?: string): Promise<NiResponse> {
-  return request('POST', `/api/browser/sessions/${sessionId}/hover`, { ...(selector && { selector }), ...(ref && { ref }), ...(nthMatch !== undefined && { nthMatch }), ...(textHint && { textHint }), ...(isBrowserCompactMode() && { compact: true }), ...(tabId && { tabId }) });
+export async function hover(sessionId: string, selector: string | undefined, nthMatch?: number, tabId?: string, textHint?: string, ref?: string, assist?: boolean): Promise<NiResponse> {
+  return request('POST', `/api/browser/sessions/${sessionId}/hover`, { ...(selector && { selector }), ...(ref && { ref }), ...(assist && { assist: true }), ...(nthMatch !== undefined && { nthMatch }), ...(textHint && { textHint }), ...(isBrowserCompactMode() && { compact: true }), ...(tabId && { tabId }) });
 }
 
-export async function selectOption(sessionId: string, selector: string | undefined, value: string, nthMatch?: number, tabId?: string, ref?: string): Promise<NiResponse> {
-  return request('POST', `/api/browser/sessions/${sessionId}/select`, { ...(selector && { selector }), ...(ref && { ref }), value, ...(nthMatch !== undefined && { nthMatch }), ...(isBrowserCompactMode() && { compact: true }), ...(tabId && { tabId }) });
+export async function selectOption(sessionId: string, selector: string | undefined, value: string, nthMatch?: number, tabId?: string, ref?: string, textHint?: string, assist?: boolean): Promise<NiResponse> {
+  return request('POST', `/api/browser/sessions/${sessionId}/select`, { ...(selector && { selector }), ...(ref && { ref }), value, ...(textHint && { textHint }), ...(assist && { assist: true }), ...(nthMatch !== undefined && { nthMatch }), ...(isBrowserCompactMode() && { compact: true }), ...(tabId && { tabId }) });
 }
 
 export async function pressKey(sessionId: string, key: string, tabId?: string): Promise<NiResponse> {
@@ -568,10 +866,10 @@ export async function pressKey(sessionId: string, key: string, tabId?: string): 
 
 export async function scroll(
   sessionId: string,
-  opts: { direction: string; distance?: number; selector?: string; ref?: string; snapshot?: 'diff' | 'full' | 'none'; returnSnapshot?: { mode?: string; selector?: string; viewport?: boolean } },
+  opts: { direction: string; distance?: number; selector?: string; ref?: string; snapshot?: 'diff' | 'full' | 'none'; baselineId?: string; snapshotMaxChars?: number; returnSnapshot?: { mode?: string; selector?: string; viewport?: boolean } },
   tabId?: string
 ): Promise<NiResponse> {
-  return request('POST', `/api/browser/sessions/${sessionId}/scroll`, { ...opts, ...(isBrowserCompactMode() && { compact: true }), ...(tabId && { tabId }) } as Record<string, unknown>);
+  return request('POST', `/api/browser/sessions/${sessionId}/scroll`, { ...(isBrowserV2Enabled() && { snapshotMaxChars: 12000 }), ...opts, ...(isBrowserCompactMode() && { compact: true }), ...(tabId && { tabId }) } as Record<string, unknown>, LONG_TIMEOUT);
 }
 
 export async function upload(
@@ -580,9 +878,11 @@ export async function upload(
   filePaths: string[],
   nthMatch?: number,
   tabId?: string,
-  ref?: string
+  ref?: string,
+  textHint?: string,
+  assist?: boolean,
 ): Promise<NiResponse> {
-  return request('POST', `/api/browser/sessions/${sessionId}/upload`, { ...(selector && { selector }), ...(ref && { ref }), filePaths, ...(nthMatch !== undefined && { nthMatch }), ...(isBrowserCompactMode() && { compact: true }), ...(tabId && { tabId }) }, LONG_TIMEOUT);
+  return request('POST', `/api/browser/sessions/${sessionId}/upload`, { ...(selector && { selector }), ...(ref && { ref }), filePaths, ...(textHint && { textHint }), ...(assist && { assist: true }), ...(nthMatch !== undefined && { nthMatch }), ...(isBrowserCompactMode() && { compact: true }), ...(tabId && { tabId }) }, LONG_TIMEOUT);
 }
 
 // ── Observation ──
@@ -591,9 +891,9 @@ export async function snapshot(
   sessionId: string,
   selector?: string,
   tabId?: string,
-  opts?: { mode?: string; viewport?: boolean; depth?: number; diff?: boolean; force?: boolean; maxChars?: number }
+  opts?: { mode?: string; viewport?: boolean; depth?: number; diff?: boolean; force?: boolean; maxChars?: number; baselineId?: string; includeFullText?: boolean }
 ): Promise<NiResponse> {
-  const hasOpts = !!(opts && (opts.mode || opts.viewport || opts.depth || opts.diff || opts.force || opts.maxChars));
+  const hasOpts = !!(opts && (opts.mode || opts.viewport || opts.depth || opts.diff || opts.force || opts.maxChars || opts.baselineId || opts.includeFullText));
   // Always POST when selector OR opts present (POST supports a body); GET only for bare defaults.
   if (selector || hasOpts) {
     return request('POST', `/api/browser/sessions/${sessionId}/snapshot`, {
@@ -604,6 +904,9 @@ export async function snapshot(
       ...(opts?.diff && { diff: true }),
       ...(opts?.force && { force: true }),
       ...(opts?.maxChars && { maxChars: opts.maxChars }),
+      ...(opts?.baselineId && { baselineId: opts.baselineId }),
+      // Intent ranking parses every ref of this capture even when only a diff is shown; never a second capture.
+      ...(opts?.includeFullText && { includeFullText: true }),
       ...(tabId && { tabId }),
     }, LONG_TIMEOUT);
   }
@@ -611,20 +914,22 @@ export async function snapshot(
   return request('GET', `/api/browser/sessions/${sessionId}/snapshot${qs}`);
 }
 
-export async function getContent(sessionId: string, tabId?: string, opts?: { maxChars?: number; offset?: number }): Promise<NiResponse> {
+export async function getContent(sessionId: string, tabId?: string, opts?: { maxChars?: number; offset?: number; selector?: string }): Promise<NiResponse> {
   const params = new URLSearchParams();
   if (tabId) params.set('tabId', tabId);
   if (opts?.maxChars) params.set('maxChars', String(opts.maxChars));
   if (opts?.offset) params.set('offset', String(opts.offset));
+  if (opts?.selector) params.set('selector', opts.selector);
   const qs = params.size ? `?${params}` : '';
   return request('GET', `/api/browser/sessions/${sessionId}/content${qs}`);
 }
 
-export async function getMarkdown(sessionId: string, tabId?: string, opts?: { maxChars?: number; offset?: number }): Promise<NiResponse> {
+export async function getMarkdown(sessionId: string, tabId?: string, opts?: { maxChars?: number; offset?: number; selector?: string }): Promise<NiResponse> {
   const params = new URLSearchParams();
   if (tabId) params.set('tabId', tabId);
   if (opts?.maxChars) params.set('maxChars', String(opts.maxChars));
   if (opts?.offset) params.set('offset', String(opts.offset));
+  if (opts?.selector) params.set('selector', opts.selector);
   const qs = params.size ? `?${params}` : '';
   return request('GET', `/api/browser/sessions/${sessionId}/markdown${qs}`, undefined, LONG_TIMEOUT);
 }
@@ -633,13 +938,48 @@ export async function fetchMarkdown(url: string, timeout?: number): Promise<NiRe
   return request('POST', '/api/fetch-markdown', { url, timeout }, LONG_TIMEOUT);
 }
 
-export async function screenshot(sessionId: string, tabId?: string, opts?: { maxWidth?: number; quality?: number }): Promise<NiResponse> {
+export interface ScreenshotOptions {
+  maxWidth?: number;
+  quality?: number;
+  /** Viewport size for this capture only (CDP device metrics, cleared right after). */
+  width?: number;
+  height?: number;
+  fullPage?: boolean;
+  format?: 'png' | 'jpeg';
+  save?: boolean;
+  path?: string;
+}
+
+export async function screenshot(sessionId: string, tabId?: string, opts?: ScreenshotOptions): Promise<NiResponse> {
   const params = new URLSearchParams();
   if (tabId) params.set('tabId', tabId);
   if (opts?.maxWidth !== undefined) params.set('maxWidth', String(opts.maxWidth));
   if (opts?.quality !== undefined) params.set('quality', String(opts.quality));
+  if (opts?.width !== undefined) params.set('width', String(opts.width));
+  if (opts?.height !== undefined) params.set('height', String(opts.height));
+  if (opts?.fullPage) params.set('fullPage', '1');
+  if (opts?.format) params.set('format', opts.format);
+  if (opts?.save) params.set('save', '1');
+  if (opts?.path) params.set('path', opts.path);
   const qs = params.size ? `?${params}` : '';
-  return request('GET', `/api/browser/sessions/${sessionId}/screenshot-base64${qs}`);
+  // A resized or full-page capture (and a saved file) takes longer than a plain one.
+  return request('GET', `/api/browser/sessions/${sessionId}/screenshot-base64${qs}`, undefined, LONG_TIMEOUT);
+}
+
+/** The tab's buffered console messages and page errors (browser_console). */
+export async function consoleMessages(
+  sessionId: string,
+  tabId?: string,
+  opts?: { level?: string; since?: string; limit?: number; clear?: boolean },
+): Promise<NiResponse> {
+  const params = new URLSearchParams();
+  if (tabId) params.set('tabId', tabId);
+  if (opts?.level) params.set('level', opts.level);
+  if (opts?.since) params.set('since', opts.since);
+  if (opts?.limit !== undefined) params.set('limit', String(opts.limit));
+  if (opts?.clear) params.set('clear', '1');
+  const qs = params.size ? `?${params}` : '';
+  return request('GET', `/api/browser/sessions/${sessionId}/console${qs}`);
 }
 
 // ── Advanced ──
@@ -648,10 +988,68 @@ export async function evaluate(sessionId: string, script: string, tabId?: string
   return request('POST', `/api/browser/sessions/${sessionId}/evaluate`, { script, ...(tabId && { tabId }) }, LONG_TIMEOUT);
 }
 
+export interface BrowserExtractOptions {
+  scrolls?: number;
+  minItems?: number;
+  maxItems?: number;
+  dedupeKeys: string[];
+  scrollTarget?: string;
+  scrollDistance?: number;
+  scrollDirection?: 1 | -1;
+  settleMs?: number;
+  scrollIfEmpty?: boolean;
+  fields?: string[];
+  maxChars?: number;
+  timeoutMs?: number;
+}
+
+export async function extract(sessionId: string, script: string, tabId: string | undefined, opts: BrowserExtractOptions): Promise<NiResponse> {
+  return request('POST', `/api/browser/sessions/${sessionId}/extract`, {
+    script, ...opts, ...(tabId && { tabId }),
+  }, Math.min(30_000, opts.timeoutMs || 15_000) + 2_000);
+}
+
 // Read-only structured state of the X/Twitter composer (quote card, submit button, modal,
 // stale draft). The detection script lives server-side so the loop publish gate shares it.
 export async function xComposeState(sessionId: string, tabId?: string): Promise<NiResponse> {
   return request('POST', `/api/browser/sessions/${sessionId}/x-compose-state`, { ...(tabId && { tabId }) }, LONG_TIMEOUT);
+}
+
+// ── Browser assistance (read-only context; the judgments run in this process, never in the Neural Interface) ──
+
+/** Bounded, value-free description of the current page. Read-only: safe to call after any outcome. */
+export async function semanticContext(
+  sessionId: string,
+  tabId?: string,
+  opts?: { purpose?: 'page-state' | 'empty-extractor' | 'social' | 'batch'; scope?: string; social?: boolean },
+): Promise<NiResponse> {
+  return request('POST', `/api/browser/sessions/${sessionId}/semantic-context`, {
+    ...(opts?.purpose && { purpose: opts.purpose }),
+    ...(opts?.scope && { scope: opts.scope }),
+    ...(opts?.social && { social: true }),
+    ...(tabId && { tabId }),
+  }, 6000);
+}
+
+/**
+ * The one auto-heal click. It names a candidate inside a context the server
+ * minted after a click it confirmed never started; the selector and the
+ * fingerprint stay on the server. Deliberately `requestOnce`: route recovery
+ * could re-issue this on another tab, and a heal is never sent twice.
+ */
+export async function clickAutoHeal(
+  sessionId: string,
+  tabId: string | undefined,
+  pick: { contextId: string; candidateId: string },
+  snapshot?: 'diff' | 'full' | 'none',
+): Promise<NiResponse> {
+  return requestOnce('POST', `/api/browser/sessions/${sessionId}/click`, {
+    autoHeal: { contextId: pick.contextId, candidateId: pick.candidateId },
+    ...(isBrowserCompactMode() && { compact: true }),
+    ...(snapshot && { snapshot }),
+    ...(isBrowserV2Enabled() && { snapshotMaxChars: 6000 }),
+    ...(tabId && { tabId }),
+  }, 15_000);
 }
 
 // Upload a local image file to BlueSky as a blob, using the page's own session
@@ -672,8 +1070,10 @@ export async function waitFor(
 
 // ── Whiteboard ──
 
-export async function getWhiteboard(): Promise<NiResponse> {
-  return request('GET', '/api/whiteboard');
+/** Read the board. `images: false` asks the server to replace image dataUrls
+ *  with their byte size (the tools never need the base64 payload). */
+export async function getWhiteboard(opts: { images?: boolean } = {}): Promise<NiResponse> {
+  return request('GET', opts.images === false ? '/api/whiteboard?images=0' : '/api/whiteboard');
 }
 
 export async function addWhiteboardElements(
@@ -682,6 +1082,14 @@ export async function addWhiteboardElements(
   layout?: string
 ): Promise<NiResponse> {
   return request('POST', '/api/whiteboard/elements', { elements, coordMode, layout } as Record<string, unknown>);
+}
+
+/** Atomic update/remove ops (one save, one broadcast, per-op results). */
+export async function batchWhiteboardOps(
+  ops: Record<string, unknown>[],
+  coordMode?: string
+): Promise<NiResponse> {
+  return request('POST', '/api/whiteboard/elements/batch', { ops, coordMode } as Record<string, unknown>);
 }
 
 export async function updateWhiteboardElement(
@@ -700,8 +1108,9 @@ export async function clearWhiteboard(): Promise<NiResponse> {
   return request('POST', '/api/whiteboard/clear');
 }
 
-export async function whiteboardScreenshot(): Promise<NiResponse> {
-  return request('GET', '/api/whiteboard/screenshot', undefined, 15_000);
+export async function whiteboardScreenshot(opts: { crop?: string } = {}): Promise<NiResponse> {
+  const query = opts.crop === 'usable' ? '?crop=usable' : '';
+  return request('GET', `/api/whiteboard/screenshot${query}`, undefined, 15_000);
 }
 
 // ── Cards (Memory Card MCP integration) ──
@@ -776,8 +1185,52 @@ export async function gitBranches(path: string): Promise<NiResponse> {
 
 // ── Style Guide ──
 
+// `projectPath` is any path inside a registered project; the server resolves it to the project root.
+function styleGuideQuery(params: Record<string, string | undefined | null>): string {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) if (value !== undefined && value !== null && value !== '') query.set(key, value);
+  return query.toString();
+}
+
 export async function getStyleGuide(projectPath: string): Promise<NiResponse> {
-  return request('GET', `/api/style-guide?projectPath=${encodeURIComponent(projectPath)}`);
+  return request('GET', `/api/style-guide?${styleGuideQuery({ projectPath })}`);
+}
+
+/** The compact text agents get: { summary, tokensEstimate, saved, revision, projectPath }. */
+export async function getStyleGuideSummary(projectPath: string, taskClass?: string): Promise<NiResponse> {
+  return request('GET', `/api/style-guide/summary?${styleGuideQuery({ projectPath, taskClass })}`);
+}
+
+/** One export format as text: { format, contentType, filename, text, revision }. */
+export async function getStyleGuideExport(projectPath: string, format: string, theme?: string): Promise<NiResponse> {
+  return request('GET', `/api/style-guide/export?${styleGuideQuery({ projectPath, format, theme, as: 'json' })}`);
+}
+
+/** Write the project's artifacts now: { written: [{ format, path, changed }] }. */
+export async function writeStyleGuideExports(projectPath: string, formats?: string[]): Promise<NiResponse> {
+  return request('POST', '/api/style-guide/export', { projectPath, ...(formats?.length ? { formats } : {}) });
+}
+
+/** WCAG ratio + APCA for two colors (or aliases, with a project): { ratio, aa, aaa, aaLarge, apca, fg, bg }. */
+export async function styleGuideContrast(body: { fg: string; bg: string; size?: string; projectPath?: string; theme?: string }): Promise<NiResponse> {
+  return request('POST', '/api/style-guide/contrast', body);
+}
+
+/** An agent's only write to a guide: a merge patch the user accepts or rejects. { id, pending, ignored, diff } */
+export async function proposeStyleGuideChange(body: { projectPath: string; changes: Record<string, unknown>; reason: string; runId?: string; provider?: string; model?: string }): Promise<NiResponse> {
+  const identity = getIdentity();
+  const runId = effectivePins(identity).terminalSessionId || identity.state.ancestorPinnedTerminal;
+  return request('POST', '/api/style-guide/proposals', { ...(!body.runId && runId ? { runId } : {}), ...body });
+}
+
+/** The project's proposals (a bare array on success). */
+export async function listStyleGuideProposals(projectPath: string, status?: string): Promise<NiResponse> {
+  return request('GET', `/api/style-guide/proposals?${styleGuideQuery({ projectPath, status })}`);
+}
+
+/** Registered projects with their guide's status (a bare array on success). */
+export async function listStyleGuideProjects(): Promise<NiResponse> {
+  return request('GET', '/api/style-guide/projects');
 }
 
 export async function listProjects(): Promise<NiResponse> {
@@ -882,4 +1335,154 @@ export async function moreloginStop(envId: string): Promise<NiResponse> {
 
 export async function moreloginUseDefault(envId: string | null): Promise<NiResponse> {
   return request('POST', '/api/morelogin/use-default', envId ? { envId } : { clear: true });
+}
+
+// ── SynaBun assistant orchestration (role-gated `agents` tool group) ──
+// Thin proxies over /api/assistant/* (neural-interface/lib/assistant-api.js),
+// which owns dispatch state, rails and authorization. requestOnce already
+// sends X-Synabun-Terminal (the assistant pin) and X-Synabun-Role.
+
+export type AssistantProvider = 'claude-code' | 'codex' | 'opencode';
+
+export type AssistantDispatchBody = {
+  /** Optional when routeId names an approved route (the server applies it). */
+  provider?: AssistantProvider;
+  task: string;
+  cwd: string;
+  assistantSessionId: string;
+  model?: string;
+  effort?: string;
+  mcpProfile?: string;
+  routeId?: string;
+  taskClass?: string;
+  confidence?: number;
+  usesComputer?: boolean;
+  agent?: string;
+  accountId?: string;
+  codexAccountId?: string;
+  claudeAccountId?: string;
+  permissionPolicy?: 'auto' | 'ask' | 'restricted';
+  capability?: 'read-only' | 'workspace' | 'full';
+  maxMinutes?: number;
+  budgetUsd?: number;
+  usesBrowser?: boolean;
+  focus?: boolean;
+  title?: string;
+  context?: string;
+  tags?: string[];
+  workflowId?: string;
+  parentRunId?: string;
+  outputSchema?: Record<string, unknown>;
+  idempotencyKey?: string;
+  briefId?: string;
+  independent?: boolean;
+};
+
+// A dispatch may acquire a browser tab before the run is accepted.
+const ASSISTANT_DISPATCH_TIMEOUT = 90_000;
+// Long-poll waits block server-side for up to timeoutMs; the HTTP deadline
+// must always outlive them so a timed-out wait is reported by the server.
+const ASSISTANT_WAIT_MARGIN_MS = 15_000;
+
+function assistantRunPath(runId: string, suffix = ''): string {
+  return `/api/assistant/runs/${encodeURIComponent(runId)}${suffix}`;
+}
+
+function queryString(params: Record<string, string | number | boolean | undefined | null>): string {
+  const qs = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null || value === '') continue;
+    qs.set(key, String(value));
+  }
+  const rendered = qs.toString();
+  return rendered ? `?${rendered}` : '';
+}
+
+export async function assistantCatalog(opts: { provider?: string; search?: string } = {}): Promise<NiResponse> {
+  return request('GET', `/api/assistant/catalog${queryString({ view: 'brain', provider: opts.provider, q: opts.search })}`, undefined, LONG_TIMEOUT);
+}
+
+// agent_route may show the user a route card and wait for the answer; the
+// server caps its own wait below this deadline (X-Synabun-Deadline).
+const ASSISTANT_ROUTE_TIMEOUT = 115_000;
+
+export async function assistantRoute(body: {
+  assistantSessionId: string;
+  task_class: string;
+  summary: string;
+  confidence: number;
+  needs_vision?: boolean;
+  proposals: Array<{ kind: 'direct' | 'dispatch'; provider?: string; model?: string; effort?: string; reason?: string }>;
+  independent?: boolean;
+}): Promise<NiResponse> {
+  return request('POST', '/api/assistant/route', body as unknown as Record<string, unknown>, ASSISTANT_ROUTE_TIMEOUT);
+}
+
+// agent_clarify shows the user a question card and waits briefly for the
+// answers; like agent_route, the server caps its wait below this deadline.
+export async function assistantClarify(body: {
+  assistantSessionId: string;
+  summary: string;
+  questions: Array<{ id?: string; header?: string; question: string; options: Array<{ label: string; description?: string }>; multi_select?: boolean }>;
+  constraints?: string[];
+  assumptions?: string[];
+}): Promise<NiResponse> {
+  return request('POST', '/api/assistant/clarify', body as unknown as Record<string, unknown>, ASSISTANT_ROUTE_TIMEOUT);
+}
+
+export async function assistantListRuns(opts: { activeOnly?: boolean; assistantSessionId?: string; workflowId?: string } = {}): Promise<NiResponse> {
+  return request('GET', `/api/assistant/runs${queryString({
+    active: opts.activeOnly ? 1 : undefined,
+    assistantSessionId: opts.assistantSessionId,
+    workflowId: opts.workflowId,
+  })}`);
+}
+
+/** Usage of one task ("current", an id) or the session ("all"); `runId` with "all" adds that run's totals over its tasks. */
+export async function assistantUsage(assistantSessionId: string, task = 'current', runId?: string): Promise<NiResponse> {
+  return request('GET', `/api/assistant/sessions/${encodeURIComponent(assistantSessionId)}/usage${queryString({ task, run: runId })}`);
+}
+
+export async function assistantDispatch(body: AssistantDispatchBody): Promise<NiResponse> {
+  return request('POST', '/api/assistant/dispatch', body, ASSISTANT_DISPATCH_TIMEOUT);
+}
+
+export async function assistantRun(runId: string): Promise<NiResponse> {
+  return request('GET', assistantRunPath(runId));
+}
+
+export async function assistantResult(runId: string): Promise<NiResponse> {
+  return request('GET', assistantRunPath(runId, '/result'));
+}
+
+export async function assistantTranscript(runId: string, opts: { format?: string; tail?: number; maxChars?: number } = {}): Promise<NiResponse> {
+  return request('GET', assistantRunPath(runId, `/transcript${queryString({ format: opts.format, tail: opts.tail, maxChars: opts.maxChars })}`), undefined, LONG_TIMEOUT);
+}
+
+export async function assistantSend(runId: string, body: { text: string; queue?: boolean }): Promise<NiResponse> {
+  return request('POST', assistantRunPath(runId, '/send'), body, LONG_TIMEOUT);
+}
+
+export async function assistantPermission(runId: string, body: { requestId: string; behavior: 'allow' | 'deny'; answers?: Record<string, unknown>; message?: string }): Promise<NiResponse> {
+  return request('POST', assistantRunPath(runId, '/permission'), body, LONG_TIMEOUT);
+}
+
+export async function assistantWaitRun(runId: string, opts: { until?: string; timeoutMs: number }): Promise<NiResponse> {
+  return request('GET', assistantRunPath(runId, `/wait${queryString({ until: opts.until, timeout: opts.timeoutMs })}`), undefined, opts.timeoutMs + ASSISTANT_WAIT_MARGIN_MS);
+}
+
+export async function assistantWaitMany(body: { runIds?: string[]; workflowId?: string; mode?: string; until?: string; timeoutMs: number }): Promise<NiResponse> {
+  return request('POST', '/api/assistant/wait', body, body.timeoutMs + ASSISTANT_WAIT_MARGIN_MS);
+}
+
+export async function assistantStop(runId: string, reason?: string): Promise<NiResponse> {
+  return request('POST', assistantRunPath(runId, '/stop'), reason ? { reason } : {}, LONG_TIMEOUT);
+}
+
+export async function assistantKillAll(body: { assistantSessionId?: string; workflowId?: string; reason?: string } = {}): Promise<NiResponse> {
+  return request('POST', '/api/assistant/kill-all', body, LONG_TIMEOUT);
+}
+
+export async function assistantFocus(runId: string, focus: boolean): Promise<NiResponse> {
+  return request('POST', assistantRunPath(runId, '/focus'), { focus });
 }

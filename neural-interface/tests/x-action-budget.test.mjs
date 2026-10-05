@@ -22,11 +22,11 @@ let seq = 0;
 
 // Every X lane writes one memory per action, tagged with the account, the target and
 // the action type. That tag shape is the whole contract this module reads.
-function seedEngagement({ action, handle = 'someone', status = null, acct = 'crit_pix', ago = 0, extraTags = [] }) {
+function seedEngagement({ action, handle = 'someone', status = null, acct = 'acme_games', ago = 0, extraTags = [] }) {
   const id = `m${++seq}`;
   const when = new Date(Date.now() - ago).toISOString();
   const tags = [
-    'critpix', 'twitter', 'x-engaged',
+    'acme', 'twitter', 'x-engaged',
     `acct:${acct}`,
     `handle:${handle}`,
     ...(status ? [`status:${status}`] : []),
@@ -36,18 +36,18 @@ function seedEngagement({ action, handle = 'someone', status = null, acct = 'cri
   db.prepare(
     `INSERT INTO memories (id, vector, content, category, project, tags, created_at, updated_at, accessed_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(id, new Uint8Array(4), `${action} -> @${handle}`, 'social-interactions', 'criticalpixel', JSON.stringify(tags), when, when, when);
+  ).run(id, new Uint8Array(4), `${action} -> @${handle}`, 'social-interactions', 'acme-games', JSON.stringify(tags), when, when, when);
   return id;
 }
 
-function seedCaps(content, { ago = 0, acct = null } = {}) {
+function seedCaps(content, { ago = 0, acct = null, capsTag = 'acme-x-engagement-caps' } = {}) {
   const id = `caps${++seq}`;
   const when = new Date(Date.now() - ago).toISOString();
-  const tags = ['critpix', 'twitter', 'critpix-x-engagement-caps', ...(acct ? [`acct:${acct}`] : [])];
+  const tags = ['acme', 'twitter', capsTag, ...(acct ? [`acct:${acct}`] : [])];
   db.prepare(
     `INSERT INTO memories (id, vector, content, category, project, tags, created_at, updated_at, accessed_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(id, new Uint8Array(4), content, 'social-interactions', 'criticalpixel', JSON.stringify(tags), when, when, when);
+  ).run(id, new Uint8Array(4), content, 'social-interactions', 'acme-games', JSON.stringify(tags), when, when, when);
   return id;
 }
 
@@ -71,7 +71,7 @@ test('counts one action per ledger memory, bucketed by type', () => {
   seedEngagement({ action: 'like', handle: 'e' });
   seedEngagement({ action: 'follow', handle: 'f' });
 
-  const spent = getXActionBudget({ account: 'Crit_Pix', sinceIso: new Date(Date.now() - 3600_000).toISOString() });
+  const spent = getXActionBudget({ account: 'Acme_Games', sinceIso: new Date(Date.now() - 3600_000).toISOString() });
   assert.equal(spent.reply, 2);
   assert.equal(spent.like, 3);
   assert.equal(spent.follow, 1);
@@ -84,7 +84,7 @@ test('counts one action per ledger memory, bucketed by type', () => {
 test('a leading @ and mixed case on the account still match the acct: tag', () => {
   reset();
   seedEngagement({ action: 'reply', handle: 'a' });
-  for (const account of ['crit_pix', 'Crit_Pix', '@Crit_Pix', '  @CRIT_PIX  ']) {
+  for (const account of ['acme_games', 'Acme_Games', '@Acme_Games', '  @ACME_GAMES  ']) {
     const spent = getXActionBudget({ account, sinceIso: new Date(Date.now() - 3600_000).toISOString() });
     assert.equal(spent.reply, 1, `account "${account}" should resolve to the same ledger`);
   }
@@ -92,12 +92,12 @@ test('a leading @ and mixed case on the account still match the acct: tag', () =
 
 test('the ledger is account-scoped — another handle does not spend our budget', () => {
   reset();
-  seedEngagement({ action: 'reply', handle: 'a', acct: 'crit_pix' });
+  seedEngagement({ action: 'reply', handle: 'a', acct: 'acme_games' });
   seedEngagement({ action: 'reply', handle: 'b', acct: 'synabunai' });
   seedEngagement({ action: 'reply', handle: 'c', acct: 'synabunai' });
 
   const since = new Date(Date.now() - 3600_000).toISOString();
-  assert.equal(getXActionBudget({ account: 'Crit_Pix', sinceIso: since }).reply, 1);
+  assert.equal(getXActionBudget({ account: 'Acme_Games', sinceIso: since }).reply, 1);
   assert.equal(getXActionBudget({ account: 'SynabunAI', sinceIso: since }).reply, 2);
   // No account given = every lane on the box, which is the cross-account total.
   assert.equal(getXActionBudget({ sinceIso: since }).reply, 3);
@@ -113,7 +113,7 @@ test('REGRESSION: yesterday\'s actions do not eat today\'s budget', () => {
   // a rolling window would carry last night's replies into the morning run and
   // silently halve the day's quota.
   const startOfDay = new Date(Date.now() - 8 * 3600_000).toISOString();
-  assert.equal(getXActionBudget({ account: 'crit_pix', sinceIso: startOfDay }).reply, 1);
+  assert.equal(getXActionBudget({ account: 'acme_games', sinceIso: startOfDay }).reply, 1);
 });
 
 test('a blocked-by-them memory is an outcome, not an action we spent', () => {
@@ -121,7 +121,7 @@ test('a blocked-by-them memory is an outcome, not an action we spent', () => {
   seedEngagement({ action: 'reply', handle: 'a' });
   seedEngagement({ action: 'blocked', handle: 'hostile' });
 
-  const spent = getXActionBudget({ account: 'crit_pix', sinceIso: new Date(Date.now() - 3600_000).toISOString() });
+  const spent = getXActionBudget({ account: 'acme_games', sinceIso: new Date(Date.now() - 3600_000).toISOString() });
   assert.equal(spent.total, 1, 'action:blocked must not be counted as a spent action');
   assert.equal(spent.reply, 1);
 });
@@ -134,7 +134,7 @@ test('adding action: tags does not corrupt the existing skip-list contract', () 
 
   // getRecentXEngagements predates this module; "action:reply" must not be picked
   // up by its `tags LIKE '%action:blocked%'` blocklist probe.
-  const { handles, statusIds, blocked } = getRecentXEngagements({ account: 'crit_pix', days: 7 });
+  const { handles, statusIds, blocked } = getRecentXEngagements({ account: 'acme_games', days: 7 });
   assert.deepEqual(handles.sort(), ['engaged_one', 'engaged_two']);
   assert.deepEqual(statusIds.sort(), ['111', '222']);
   assert.deepEqual(blocked, ['hostile']);
@@ -146,7 +146,7 @@ test('an unknown or missing action tag is ignored rather than miscounted', () =>
   seedEngagement({ action: null, handle: 'b' });          // legacy row, no action tag
   seedEngagement({ action: 'reply', handle: 'c' });
 
-  const spent = getXActionBudget({ account: 'crit_pix', sinceIso: new Date(Date.now() - 3600_000).toISOString() });
+  const spent = getXActionBudget({ account: 'acme_games', sinceIso: new Date(Date.now() - 3600_000).toISOString() });
   assert.equal(spent.total, 1);
   assert.equal(spent.reply, 1);
 });
@@ -155,7 +155,7 @@ test('a row is charged once even when it carries a second action tag', () => {
   reset();
   seedEngagement({ action: 'reply', handle: 'a', extraTags: ['action:like'] });
 
-  const spent = getXActionBudget({ account: 'crit_pix', sinceIso: new Date(Date.now() - 3600_000).toISOString() });
+  const spent = getXActionBudget({ account: 'acme_games', sinceIso: new Date(Date.now() - 3600_000).toISOString() });
   assert.equal(spent.total, 1, 'one ledger memory is one action');
 });
 
@@ -165,13 +165,13 @@ test('trashed ledger rows stop counting', () => {
   seedEngagement({ action: 'reply', handle: 'b' });
   db.prepare('UPDATE memories SET trashed_at = ? WHERE id = ?').run(new Date().toISOString(), id);
 
-  const spent = getXActionBudget({ account: 'crit_pix', sinceIso: new Date(Date.now() - 3600_000).toISOString() });
+  const spent = getXActionBudget({ account: 'acme_games', sinceIso: new Date(Date.now() - 3600_000).toISOString() });
   assert.equal(spent.reply, 1);
 });
 
 test('every budgeted action type is present on a zero result', () => {
   reset();
-  const spent = getXActionBudget({ account: 'crit_pix', sinceIso: new Date().toISOString() });
+  const spent = getXActionBudget({ account: 'acme_games', sinceIso: new Date().toISOString() });
   for (const t of X_ACTION_TYPES) assert.equal(spent[t], 0, `${t} must be present and zero`);
   assert.equal(spent.total, 0);
 });
@@ -180,8 +180,8 @@ test('every budgeted action type is present on a zero result', () => {
 
 test('reads the tier from the canonical caps memory', () => {
   reset();
-  seedCaps('critpix-x-engagement-caps\ntier: 2\ntierSince: 2026-09-04\ncleanDayCount: 7');
-  const { tier, caps, source } = getXEngagementTier({ account: 'crit_pix' });
+  seedCaps('acme-x-engagement-caps\ntier: 2\ntierSince: 2026-09-04\ncleanDayCount: 7');
+  const { tier, caps, source } = getXEngagementTier({ account: 'acme_games' });
   assert.equal(tier, 2);
   assert.equal(source, 'memory');
   assert.deepEqual(caps, X_ENGAGEMENT_TIERS[2]);
@@ -192,7 +192,7 @@ test('the newest caps memory wins', () => {
   seedCaps('tier: 1', { ago: 3 * 86400_000 });
   seedCaps('tier: 3', { ago: 86400_000 });
   seedCaps('tier: 2');
-  assert.equal(getXEngagementTier({ account: 'crit_pix' }).tier, 2);
+  assert.equal(getXEngagementTier({ account: 'acme_games' }).tier, 2);
 });
 
 test('caps ceilings widen monotonically with the tier', () => {
@@ -200,14 +200,14 @@ test('caps ceilings widen monotonically with the tier', () => {
     assert.ok(X_ENGAGEMENT_TIERS[1][t] <= X_ENGAGEMENT_TIERS[2][t], `tier 2 must not narrow ${t}`);
     assert.ok(X_ENGAGEMENT_TIERS[2][t] <= X_ENGAGEMENT_TIERS[3][t], `tier 3 must not narrow ${t}`);
   }
-  // Tier 1 is the post-shadow-ban restart: no quoting until the account proves clean.
+  // Tier 1 is the most conservative tier: no quoting until the account proves clean.
   assert.equal(X_ENGAGEMENT_TIERS[1].quote, 0);
 });
 
 test('an unreadable ledger narrows the budget instead of widening it', () => {
   reset();
   // No caps memory at all.
-  const missing = getXEngagementTier({ account: 'crit_pix' });
+  const missing = getXEngagementTier({ account: 'acme_games' });
   assert.equal(missing.tier, X_DEFAULT_TIER);
   assert.equal(missing.source, 'default');
   assert.deepEqual(missing.caps, X_ENGAGEMENT_TIERS[X_DEFAULT_TIER]);
@@ -216,7 +216,7 @@ test('an unreadable ledger narrows the budget instead of widening it', () => {
   for (const content of ['engagement caps: see the weekly review', 'tier: 9', 'tier: banana']) {
     reset();
     seedCaps(content);
-    const got = getXEngagementTier({ account: 'crit_pix' });
+    const got = getXEngagementTier({ account: 'acme_games' });
     assert.equal(got.tier, X_DEFAULT_TIER, `"${content}" must fall back to the conservative tier`);
     assert.equal(got.source, 'default');
   }
@@ -224,16 +224,30 @@ test('an unreadable ledger narrows the budget instead of widening it', () => {
 
 test('an account-scoped caps memory beats none, and unscoped caps still apply', () => {
   reset();
-  seedCaps('tier: 3', { acct: 'crit_pix' });
-  assert.equal(getXEngagementTier({ account: 'crit_pix' }).tier, 3);
+  seedCaps('tier: 3', { acct: 'acme_games' });
+  assert.equal(getXEngagementTier({ account: 'acme_games' }).tier, 3);
 
   reset();
   seedCaps('tier: 3', { acct: 'synabunai' });
   assert.equal(
-    getXEngagementTier({ account: 'crit_pix' }).tier,
+    getXEngagementTier({ account: 'acme_games' }).tier,
     X_DEFAULT_TIER,
     'another account\'s caps must not raise our ceiling',
   );
+});
+
+test('each account reads its own program caps memory', () => {
+  reset();
+  seedCaps('tier: 1', { acct: 'acme_games' });
+  seedCaps('synabun-x-strategy-state\nmode: active\ntier: 2', { acct: 'synabunai', capsTag: 'synabun-x-engagement-caps' });
+  assert.equal(getXEngagementTier({ account: 'SynabunAI' }).tier, 2);
+  assert.equal(getXEngagementTier({ account: 'Acme_Games' }).tier, 1);
+});
+
+test('a tag that only mentions caps in passing is not a caps memory', () => {
+  reset();
+  seedCaps('tier: 3', { acct: 'synabunai', capsTag: 'x-engagement-caps-notes' });
+  assert.equal(getXEngagementTier({ account: 'synabunai' }).source, 'default');
 });
 
 // ── failure containment ──
@@ -244,11 +258,11 @@ test('a broken database never throws and never invents budget headroom', () => {
   const original = process.env.SQLITE_DB_PATH;
   process.env.SQLITE_DB_PATH = join(TMP_DIR, 'no-such-dir', 'nested', 'memory.db');
 
-  const spent = getXActionBudget({ account: 'crit_pix', sinceIso: new Date().toISOString() });
+  const spent = getXActionBudget({ account: 'acme_games', sinceIso: new Date().toISOString() });
   for (const t of X_ACTION_TYPES) assert.equal(spent[t], 0);
   assert.equal(spent.total, 0);
 
-  const tierResult = getXEngagementTier({ account: 'crit_pix' });
+  const tierResult = getXEngagementTier({ account: 'acme_games' });
   assert.equal(tierResult.tier, X_DEFAULT_TIER);
   assert.deepEqual(tierResult.caps, X_ENGAGEMENT_TIERS[X_DEFAULT_TIER]);
 

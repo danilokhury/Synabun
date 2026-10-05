@@ -140,11 +140,30 @@ export function updateAgentTodoBadge(scope, todos) {
   entry.todoBadgeEl.hidden = todos.length === 0;
 }
 
-// Called from updateToolResult when the Task tool's own result arrives in the
-// ROOT feed, and from the synthetic `subagent stop` event.
-export function finalizeAgentCard(tab, toolUseId, { isError = false, resultText = '' } = {}) {
+// The agent went to the background: its Task tool_result is only a launch
+// placeholder, and the agent keeps working until a `subagent stop` arrives from
+// its task notification (or from the CLI process ending).
+export function markAgentBackground(tab, toolUseId) {
   const entry = tab.agents?.get(toolUseId);
   if (!entry) return false;
+  entry.background = true;
+  entry.status = 'running';
+  delete entry.cardEl.dataset.resolved;
+  entry.pillEl.classList.remove('cp-agent-done', 'cp-agent-error');
+  entry.pillEl.classList.add('cp-agent-running');
+  entry.pillEl.textContent = '◐';
+  entry.nowEl.textContent = 'running in background';
+  return true;
+}
+
+// Called from updateToolResult when the Task tool's own result arrives in the
+// ROOT feed, and from the synthetic `subagent stop` event (force: authoritative).
+// A background agent's tool_result is a placeholder, so only a forced call —
+// its real end — finalizes it.
+export function finalizeAgentCard(tab, toolUseId, { isError = false, resultText = '', status = '', force = false } = {}) {
+  const entry = tab.agents?.get(toolUseId);
+  if (!entry) return false;
+  if (entry.background && !force) return true;
   // The synthetic `subagent stop` event finalizes the pill first; the Task
   // tool_result (carrying the summary text) arrives right after — always
   // append the summary even when the card is already finalized.
@@ -156,11 +175,12 @@ export function finalizeAgentCard(tab, toolUseId, { isError = false, resultText 
     pruneAgentFeed(entry);
   }
   if (entry.status !== 'running') return true;
+  entry.background = false;
   entry.status = isError ? 'error' : 'done';
   entry.cardEl.dataset.resolved = '1';
   entry.pillEl.classList.remove('cp-agent-running');
   entry.pillEl.classList.add(isError ? 'cp-agent-error' : 'cp-agent-done');
   entry.pillEl.textContent = isError ? '✕' : '✓';
-  entry.nowEl.textContent = isError ? 'failed' : 'done';
+  entry.nowEl.textContent = status === 'stopped' ? 'stopped' : (isError ? 'failed' : 'done');
   return true;
 }

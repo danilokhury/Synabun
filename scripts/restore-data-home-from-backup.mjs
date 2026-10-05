@@ -21,11 +21,16 @@ import {
 import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { basename, dirname, isAbsolute, relative, resolve } from 'node:path';
-import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
-const requireFromNeuralInterface = createRequire(new URL('../neural-interface/package.json', import.meta.url));
-const AdmZip = requireFromNeuralInterface('adm-zip');
+// Streaming reader: AdmZip buffered the whole archive, which Node refuses past
+// 2 GiB, so large data homes could be backed up but never restored.
+import {
+  extractZipEntry,
+  openZipArchive,
+  readBackupManifest,
+  verifyBackupChecksums,
+} from '../neural-interface/lib/backup-zip-reader.js';
 
 function pathIsInside(candidate, parent) {
   const rel = relative(resolve(parent), resolve(candidate));
@@ -36,28 +41,22 @@ function timestamp(date) {
   return date.toISOString().replace(/[:.]/g, '-');
 }
 
-function hashBuffer(value) {
-  return `sha256:${createHash('sha256').update(value).digest('hex')}`;
-}
-
-function parseArchive(backupPath) {
-  const zip = new AdmZip(backupPath);
-  const entries = zip.getEntries();
-  const manifestEntry = entries.find(entry => entry.entryName.endsWith('/manifest.json'));
-  if (!manifestEntry) throw new Error('Invalid backup: manifest.json is missing');
-  const prefix = manifestEntry.entryName.slice(0, -'/manifest.json'.length);
-  const manifest = JSON.parse(manifestEntry.getData().toString('utf-8'));
-  if (![2, 3].includes(manifest.version)) {
-    throw new Error(`Unsupported backup version: ${manifest.version}. Expected v2 or v3.`);
+/** Open the archive and stream-verify every checksum before anything is extracted. */
+async function parseArchive(backupPath) {
+  const zip = await openZipArchive(backupPath);
+  try {
+    const found = await readBackupManifest(zip);
+    if (!found || !found.prefix) throw new Error('Invalid backup: manifest.json is missing');
+    const { manifest, prefix } = found;
+    if (![2, 3].includes(manifest.version)) {
+      throw new Error(`Unsupported backup version: ${manifest.version}. Expected v2 or v3.`);
+    }
+    await verifyBackupChecksums(zip, { prefix, manifest, label: 'Invalid backup' });
+    return { zip, entries: zip.entries, manifest, prefix };
+  } catch (error) {
+    await zip.close().catch(() => {});
+    throw error;
   }
-  const byName = new Map(entries.map(entry => [entry.entryName, entry]));
-  for (const [archivePath, expected] of Object.entries(manifest.checksums || {})) {
-    const entry = byName.get(`${prefix}/${archivePath}`);
-    if (!entry) throw new Error(`Invalid backup: ${archivePath} is missing`);
-    const actual = hashBuffer(entry.getData());
-    if (actual !== expected) throw new Error(`Invalid backup: checksum mismatch for ${archivePath}`);
-  }
-  return { zip, entries, manifest, prefix };
 }
 
 function restoredRelativePath(entryName, prefix) {
@@ -68,19 +67,18 @@ function restoredRelativePath(entryName, prefix) {
   return null;
 }
 
-function writeSelectedEntries({ entries, prefix, stageRoot }) {
-  const restored = [];
+async function writeSelectedEntries({ zip, entries, prefix, stageRoot }) {
+  const selected = [];
   for (const entry of entries) {
-    if (entry.isDirectory || !entry.entryName.startsWith(`${prefix}/`)) continue;
-    const rel = restoredRelativePath(entry.entryName, prefix);
+    if (entry.isDirectory || !entry.name.startsWith(`${prefix}/`)) continue;
+    const rel = restoredRelativePath(entry.name, prefix);
     if (!rel) continue;
     const target = resolve(stageRoot, rel);
-    if (!pathIsInside(target, stageRoot)) throw new Error(`Unsafe backup path: ${entry.entryName}`);
-    mkdirSync(dirname(target), { recursive: true });
-    writeFileSync(target, entry.getData());
-    restored.push(rel);
+    if (!pathIsInside(target, stageRoot) || target === resolve(stageRoot)) throw new Error(`Unsafe backup path: ${entry.name}`);
+    selected.push({ entry, rel, target });
   }
-  return [...new Set(restored)].sort();
+  for (const { entry, target } of selected) await extractZipEntry(zip, entry, target);
+  return [...new Set(selected.map(item => item.rel))].sort();
 }
 
 function normalizeEnv(stageRoot, targetRoot) {
@@ -116,10 +114,24 @@ function walkJson(root, current = root, result = []) {
   return result;
 }
 
+/**
+ * JSON that does not parse is restored exactly as it was backed up and
+ * reported. The checksums already proved these bytes match the archive, so a
+ * bad file here was bad in the source. One torn hook-state write
+ * (data/pending-remember/*.json) used to refuse the restore of a whole data home.
+ */
+function findInvalidJson(stageRoot) {
+  const invalid = [];
+  for (const path of walkJson(stageRoot)) {
+    try { JSON.parse(readFileSync(path, 'utf-8')); }
+    catch (error) { invalid.push({ path: relative(stageRoot, path), error: error.message }); }
+  }
+  return invalid;
+}
+
 function validateStage(stageRoot) {
   const dbPath = resolve(stageRoot, 'mcp-data', 'memory.db');
   if (!existsSync(dbPath)) throw new Error('Backup does not contain database/memory.db');
-  for (const path of walkJson(stageRoot)) JSON.parse(readFileSync(path, 'utf-8'));
   let database;
   try {
     database = new DatabaseSync(dbPath, { readOnly: true });
@@ -135,7 +147,7 @@ function validateStage(stageRoot) {
   }
 }
 
-export function restoreDataHomeFromBackup({
+export async function restoreDataHomeFromBackup({
   backupPath,
   targetRoot,
   legacyRoot = null,
@@ -147,21 +159,21 @@ export function restoreDataHomeFromBackup({
   const target = resolve(targetRoot);
   if (!existsSync(backup)) throw new Error(`Backup not found: ${backup}`);
 
-  const parsed = parseArchive(backup);
+  const parsed = await parseArchive(backup);
   const createdAt = now();
   const targetName = basename(target).replace(/^\.+/, '') || 'synabun';
   const parent = dirname(target);
   const stage = resolve(parent, `.${targetName}.restore-stage-${process.pid}-${Date.now()}`);
   const displacedTarget = resolve(parent, `.${targetName}.pre-restore-${timestamp(createdAt)}`);
-  mkdirSync(parent, { recursive: true });
-  mkdirSync(stage, { recursive: true });
-
   let activated = false;
   let targetMoved = false;
   try {
-    const restoredFiles = writeSelectedEntries({ ...parsed, stageRoot: stage });
+    mkdirSync(parent, { recursive: true });
+    mkdirSync(stage, { recursive: true });
+    const restoredFiles = await writeSelectedEntries({ ...parsed, stageRoot: stage });
     normalizeEnv(stage, target);
     const database = validateStage(stage);
+    const invalidJson = findInvalidJson(stage);
     const existingManifest = existsSync(resolve(target, '.synabun-data-home.json'))
       ? JSON.parse(readFileSync(resolve(target, '.synabun-data-home.json'), 'utf-8'))
       : {};
@@ -185,6 +197,7 @@ export function restoreDataHomeFromBackup({
       displacedTarget: existsSync(target) ? displacedTarget : null,
       manifest: parsed.manifest,
       database,
+      invalidJson,
       restoredFiles,
     };
     if (!apply) return result;
@@ -200,6 +213,7 @@ export function restoreDataHomeFromBackup({
     if (targetMoved && !existsSync(target) && existsSync(displacedTarget)) renameSync(displacedTarget, target);
     throw error;
   } finally {
+    await parsed.zip.close().catch(() => {});
     if (!activated) rmSync(stage, { recursive: true, force: true });
   }
 }
@@ -211,7 +225,7 @@ function option(name) {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    const result = restoreDataHomeFromBackup({
+    const result = await restoreDataHomeFromBackup({
       backupPath: option('--backup') || option('--from'),
       targetRoot: option('--target'),
       legacyRoot: option('--legacy-root'),

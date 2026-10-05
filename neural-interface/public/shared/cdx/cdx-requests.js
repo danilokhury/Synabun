@@ -3,16 +3,21 @@ import {
   ICON_SPARK, ICON_TOOL, ICON_FILES, ICON_TERMINAL,
 } from './cdx-icons.js';
 import { notify, NOTIF_TYPE } from '../ui-notifications.js';
+import { fileChangeDiffs } from './cdx-output-model.js';
+import { renderDiffView, cleanOutputBlocks } from './cdx-output.js';
 import {
-  esc, pretty, appendElement, formatPermissionProfile,
+  esc, pretty, appendElement, formatPermissionProfile, bindCardHead,
 } from './cdx-render.js';
 import {
   buildSynaBunChoiceContent,
   codexApprovalDecisionActions,
+  codexHeldServerRequests,
   codexMcpElicitationMeta,
   codexMcpToolApprovalActions,
   codexPermissionApprovalActions,
   codexRequestIdentityKey,
+  codexReadableValue,
+  codexVerificationResolution,
   isCodexMcpToolApproval,
   normalizeSynaBunChoiceElicitation,
   shouldCodexAutoAcceptRequest,
@@ -20,6 +25,7 @@ import {
 
 const _pendingReplyAcks = new Map();
 const _requestMetadata = new Map();
+const _verificationRequests = new Set();
 const DRAFT_STORAGE_PREFIX = 'synabun:codex-request-draft:';
 
 function requestMetadataKey(requestId, correlation = null) {
@@ -36,15 +42,37 @@ function requestStorageKey(requestId, correlation = null) {
 }
 
 function saveRequestDraft(requestId, value, correlation = null) {
+  if (_verificationRequests.has(requestMetadataKey(requestId, correlation))) { clearRequestDraft(requestId, correlation); return; }
   try { globalThis.sessionStorage?.setItem(requestStorageKey(requestId, correlation), JSON.stringify(value)); } catch {}
 }
 
 function loadRequestDraft(requestId, correlation = null) {
+  if (_verificationRequests.has(requestMetadataKey(requestId, correlation))) { clearRequestDraft(requestId, correlation); return null; }
   try { return JSON.parse(globalThis.sessionStorage?.getItem(requestStorageKey(requestId, correlation)) || 'null'); } catch { return null; }
 }
 
 function clearRequestDraft(requestId, correlation = null) {
   try { globalThis.sessionStorage?.removeItem(requestStorageKey(requestId, correlation)); } catch {}
+}
+
+// The requests the bridge sent for the bound tab and still holds unanswered.
+// They outlive the transcript: a history render drops the cards, not these.
+function heldRequests() {
+  const tab = _ctx.boundTab;
+  if (!tab) return null;
+  if (!(tab.heldServerRequests instanceof Map)) tab.heldServerRequests = new Map();
+  return tab.heldServerRequests;
+}
+
+// A reply sent on an earlier connection is acknowledged before the bridge
+// replays its requests: one still unacknowledged after that never arrived.
+function replyAwaitsAck(requestId) {
+  for (const pending of _pendingReplyAcks.values()) {
+    if (String(pending.requestId) === String(requestId)
+      && pending.correlation?.sessionId === (_ctx.boundTab?.id || '')
+      && pending.connectionEpoch === _ctx.connectionEpoch) return true;
+  }
+  return false;
 }
 
 function logRequestLifecycle(event, requestId, details = {}, correlation = null) {
@@ -61,6 +89,7 @@ let _ctx = {
   get requestCards() { return new Map(); },
   get messagesEl() { return null; },
   get boundTab() { return null; },
+  get connectionEpoch() { return ''; },
   scrollEnd() {},
   sendSocket() {},
   activeTab() { return null; },
@@ -140,9 +169,12 @@ export function sendServerRequestReply(requestId, {
   if (!_ctx.sendSocket(packet)) {
     logRequestLifecycle('socket_send_failed', requestId, { responseToken }, requestCorrelation);
     _ctx.appendSystem('Codex is not connected', 'error');
+    if (entry?.verificationGate) lockRequestCard(entry, 'delivery failed');
     return false;
   }
-  _pendingReplyAcks.set(responseToken, { requestId, entry, label, correlation: requestCorrelation });
+  _pendingReplyAcks.set(responseToken, {
+    requestId, entry, label, correlation: requestCorrelation, connectionEpoch: _ctx.connectionEpoch,
+  });
   lockRequestCard(entry, 'submitting');
   return true;
 }
@@ -159,7 +191,16 @@ export function handleServerRequestResponseResult(msg) {
     }, pending.correlation);
     clearRequestDraft(pending.requestId, pending.correlation);
     _requestMetadata.delete(requestMetadataKey(pending.requestId, pending.correlation));
-    lockRequestCard(pending.entry, pending.label);
+    heldRequests()?.delete(String(pending.requestId));
+    lockRequestCard(pending.entry, pending.resolvedLabel || pending.label);
+    _ctx.onBlockingServerRequestAnswered?.(pending.requestId);
+    return true;
+  }
+  if (pending.entry?.verificationGate && pending.resolvedLabel) {
+    heldRequests()?.delete(String(pending.requestId));
+    clearRequestDraft(pending.requestId, pending.correlation);
+    _requestMetadata.delete(requestMetadataKey(pending.requestId, pending.correlation));
+    lockRequestCard(pending.entry, pending.resolvedLabel);
     _ctx.onBlockingServerRequestAnswered?.(pending.requestId);
     return true;
   }
@@ -168,6 +209,8 @@ export function handleServerRequestResponseResult(msg) {
     responseToken,
     status: msg.status || 'delivery_failed',
   }, pending.correlation);
+  // Stale or cancelled with its turn: the bridge no longer holds the request.
+  if (msg.status === 'stale' || msg.status === 'turn_canceled') heldRequests()?.delete(String(pending.requestId));
   if (msg.status === 'stale') {
     clearRequestDraft(pending.requestId, pending.correlation);
     _requestMetadata.delete(requestMetadataKey(pending.requestId, pending.correlation));
@@ -216,6 +259,7 @@ export function createInteractiveRequestCard(requestId, {
   const body = document.createElement('div');
   body.className = 'cxp-card-body';
   card.appendChild(body);
+  bindCardHead(card);
   appendElement(card);
 
   const entry = {
@@ -254,7 +298,9 @@ export function buildContentItemsText(items) {
 }
 
 export function resolveRequestCard(requestId, label = 'resolved') {
+  heldRequests()?.delete(String(requestId));
   const entry = getRequestCardEntry(requestId);
+  entry?.verificationGate?.claim();
   const correlation = entry?.correlation || getRequestMetadata(requestId);
   let awaitingAck = false;
   for (const pending of _pendingReplyAcks.values()) {
@@ -264,12 +310,12 @@ export function resolveRequestCard(requestId, label = 'resolved') {
       awaitingAck = true;
     }
   }
-  if (awaitingAck) return;
+  if (awaitingAck) { if (entry?.verificationGate) lockRequestCard(entry, label); return; }
   clearRequestDraft(requestId, correlation);
   _requestMetadata.delete(requestMetadataKey(requestId, correlation));
   if (!entry) return;
   const currentLabel = entry.pillEl?.textContent?.trim().toLowerCase();
-  lockRequestCard(entry, currentLabel === 'waiting' || currentLabel === 'submitted' ? label : (entry.pillEl?.textContent || label));
+  lockRequestCard(entry, entry.verificationGate || ['waiting', 'submitted', 'running'].includes(currentLabel) ? label : (entry.pillEl?.textContent || label));
 }
 
 export function renderUserInputRequest(requestId, params, protocol = {}) {
@@ -523,7 +569,7 @@ export function renderMcpToolApprovalRequest(requestId, params) {
 
   const actions = createRequestActions();
   for (const action of codexMcpToolApprovalActions(params)) {
-    const button = createRequestButton(action.label, action.style);
+    const button = createRequestButton(action.label, action.style || (action.id === 'once' ? '' : 'secondary'));
     button.addEventListener('click', () => sendServerRequestReply(requestId, {
       result: action.result,
       persist: action.persist || null,
@@ -534,7 +580,50 @@ export function renderMcpToolApprovalRequest(requestId, params) {
   bodyEl.appendChild(actions);
 }
 
+export function renderUserVerificationRequest(requestId, params) {
+  if (_ctx.requestCards.has(String(requestId))) return;
+  const tab = _ctx.boundTab;
+  const correlation = getRequestMetadata(requestId);
+  _verificationRequests.add(requestMetadataKey(requestId, correlation));
+  clearRequestDraft(requestId, correlation);
+  const entry = createInteractiveRequestCard(requestId, { title: params.title || 'User verification', subtitle: 'device verification' });
+  const note = document.createElement('div'); note.className = 'cxp-request-note'; note.textContent = params.description || '';
+  entry.bodyEl.append(note);
+  const actions = createRequestActions();
+  const verify = createRequestButton('Verify');
+  const decline = createRequestButton('Decline', 'secondary');
+  const gate = codexVerificationResolution(); entry.verificationGate = gate;
+  const supported = tab?.codexCapabilities?.verification_verify?.supported === true;
+  verify.disabled = !supported;
+  if (!supported) {
+    const reason = document.createElement('div'); reason.className = 'cxp-request-note';
+    reason.textContent = tab?.codexCapabilities?.verification_verify?.reason || 'Verification is unavailable in this runtime.'; entry.bodyEl.append(reason);
+  }
+  const reply = (action, content = null) => {
+    if (!gate.claim()) return;
+    _ctx.withRequestTab(tab, () => sendServerRequestReply(requestId, { result: { action, content }, correlation, label: action === 'accept' ? 'verified' : 'declined' }));
+  };
+  decline.addEventListener('click', () => reply('decline'));
+  verify.addEventListener('click', async () => {
+    if (verify.disabled || gate.resolved) return;
+    verify.disabled = true; entry.pillEl.textContent = 'running';
+    try {
+      const response = await _ctx.requestForTab(tab, 'verification_verify', { elicitationId: requestId });
+      reply('accept', response.verification.proof);
+    } catch {
+      // The bridge also settles failure: this local gate prevents a late success from accepting it.
+      reply('decline');
+    }
+  });
+  actions.append(verify, decline); entry.bodyEl.append(actions);
+}
+
 export function renderMcpElicitationRequest(requestId, params) {
+  if (params?.mode === 'openai/userVerification') { renderUserVerificationRequest(requestId, params); return; }
+  if (params?.mode && !['form', 'openai/form', 'openaiForm', 'url'].includes(params.mode)) {
+    renderGenericServerRequest(requestId, { method: 'mcpServer/elicitation/request', params });
+    return;
+  }
   if (_ctx.requestCards.has(String(requestId))) return;
 
   if (isCodexMcpToolApproval(params)) {
@@ -800,10 +889,22 @@ export function renderApprovalRequest(requestId, method, params) {
   }
   bodyEl.appendChild(details);
 
+  if (isFile) {
+    const itemState = _ctx.items?.get(params?.itemId);
+    const supplied = Array.isArray(params?.changes) || params?.diff || params?.patch;
+    const files = fileChangeDiffs(supplied ? { ...params, aggregatedOutput: params.diff || params.patch || '' } : { ...itemState?._lastItem, aggregatedOutput: itemState?.outputBuf || '' });
+    const view = document.createElement('div');
+    if (files.length) renderDiffView(view, files, { cwd: _ctx.boundTab?.project || params?.cwd || _ctx.project || '' });
+    else { view.className = 'cxp-output-note'; view.textContent = 'Patch not supplied by Codex. The proposed changes cannot be previewed yet.'; }
+    view.dataset.approvalDiffItem = params?.itemId || '';
+    bodyEl.appendChild(view);
+  }
+  cleanOutputBlocks(bodyEl);
+
   const actions = createRequestActions();
   if (isPermissions) {
     for (const action of codexPermissionApprovalActions(params)) {
-      const button = createRequestButton(action.label, action.style);
+      const button = createRequestButton(action.label, action.style || (action.id === 'always' ? 'secondary' : ''));
       button.addEventListener('click', () => sendServerRequestReply(requestId, {
         result: action.result,
         persist: action.persist || null,
@@ -821,15 +922,11 @@ export function renderApprovalRequest(requestId, method, params) {
       decline: { label: 'Decline', style: 'secondary', resultLabel: 'declined' },
       cancel: { label: 'Cancel Turn', style: 'danger', resultLabel: 'cancelled' },
     };
-    const always = createRequestButton('Always Allow');
-    always.addEventListener('click', () => sendServerRequestReply(requestId, {
-      result: { decision: approval.alwaysDecision },
-      label: approval.durable ? 'always allowed' : 'allowed for session (maximum supported)',
-    }));
-    actions.appendChild(always);
     for (const decision of approval.decisions) {
-      const info = decisionMap[decision] || { label: decision, style: 'secondary', resultLabel: decision };
+      const name = typeof decision === 'string' ? decision : Object.keys(decision)[0];
+      const info = decisionMap[name] || { label: name, style: 'secondary', resultLabel: name };
       const btn = createRequestButton(info.label, info.style);
+      if (typeof decision === 'object') btn.title = pretty(decision);
       btn.addEventListener('click', () => sendServerRequestReply(requestId, { result: { decision }, label: info.resultLabel }));
       actions.appendChild(btn);
     }
@@ -906,33 +1003,30 @@ export function renderGenericServerRequest(requestId, request) {
 
   const note = document.createElement('div');
   note.className = 'cxp-request-note';
-  note.textContent = 'This request type does not have a custom renderer yet. You can inspect the payload and either send an empty result or reject it.';
+  note.textContent = 'This request is unsupported by the sidepanel. Codex receives a protocol error and can continue without waiting for a reply.';
   bodyEl.appendChild(note);
 
   const details = document.createElement('pre');
   details.className = 'cxp-card-pre';
-  details.textContent = pretty({
+  details.textContent = codexReadableValue({
     method: request?.method || '',
-    params: request?.params || {},
+    params: request?.params?.mode === 'openai/userVerification' ? { title: request.params.title, description: request.params.description, mode: request.params.mode } : request?.params || {},
   });
   bodyEl.appendChild(details);
 
-  const actions = createRequestActions();
-  const emptyResult = createRequestButton('Send Empty Result');
-  emptyResult.addEventListener('click', () => sendServerRequestReply(requestId, {
-    result: {},
-    label: 'submitted',
-  }));
-  const reject = createRequestButton('Reject', 'danger');
-  reject.addEventListener('click', () => sendServerRequestReply(requestId, {
+  if (!request?.resolved) sendServerRequestReply(requestId, {
     error: {
       code: -32601,
       message: `Unsupported in SynaBun Codex panel: ${request?.method || 'unknown request'}`,
     },
-    label: 'rejected',
-  }));
-  actions.append(emptyResult, reject);
-  bodyEl.appendChild(actions);
+    label: 'unsupported',
+  });
+  lockRequestCard(entry, 'unsupported');
+  // Terminal cards stay in the transcript, not in the pending request registry.
+  // A retired app-server can reuse its numeric ids for a later real approval.
+  _ctx.requestCards.delete(String(requestId));
+  heldRequests()?.delete(String(requestId));
+  if (request?.resolved) _requestMetadata.delete(requestMetadataKey(requestId));
 }
 
 export function handleServerRequest(request) {
@@ -944,16 +1038,29 @@ export function handleServerRequest(request) {
     toolCallId: request.params?.toolCallId || request.params?.callId || request.params?.itemId || '',
   });
   _requestMetadata.set(requestMetadataKey(requestId, correlation), correlation);
+  if (request.params?.mode === 'openai/userVerification') {
+    _verificationRequests.add(requestMetadataKey(requestId, correlation));
+    clearRequestDraft(requestId, correlation);
+  } else _verificationRequests.delete(requestMetadataKey(requestId, correlation));
+  if (request.resolved) {
+    renderGenericServerRequest(requestId, request);
+    return;
+  }
+  heldRequests()?.set(String(requestId), request);
   if (_ctx.isBlockingServerRequest?.(request.method)) {
     _ctx.onBlockingServerRequestStart?.(requestId, request.method, request.params || {});
   }
   // Auto-accept: if enabled, immediately approve approval requests
-  const tab = _ctx.activeTab();
+  const tab = _ctx.boundTab;
   if (tab?.autoAccept) {
     if (shouldCodexAutoAcceptRequest(request.method)) {
-      sendServerRequestReply(requestId, { result: { decision: 'acceptForSession' }, correlation });
-      _ctx.appendSystem(`Auto-accepted: ${request.method.split('/').slice(1, -1).join('/')}`, 'muted');
-      return;
+      const decisions = codexApprovalDecisionActions(request.params).decisions;
+      const decision = ['acceptForSession', 'accept'].find((value) => decisions.includes(value));
+      if (decision) {
+        sendServerRequestReply(requestId, { result: { decision }, correlation });
+        _ctx.appendSystem(`Auto-accepted: ${request.method.split('/').slice(1, -1).join('/')}`, 'muted');
+        return;
+      }
     }
   }
   if (tab) {
@@ -976,6 +1083,11 @@ export function handleServerRequest(request) {
       }
     }
   }
+  renderServerRequest(request);
+}
+
+function renderServerRequest(request) {
+  const requestId = request.requestId;
   switch (request.method) {
     case 'item/tool/requestUserInput':
     case 'tool/requestUserInput':
@@ -993,7 +1105,32 @@ export function handleServerRequest(request) {
       renderDynamicToolCallRequest(requestId, request.params);
       return;
     default:
-      _ctx.appendSystem(`Codex requested ${request.method}. Rendering generic request card.`, 'working');
       renderGenericServerRequest(requestId, request);
     }
+}
+
+/** What the bridge still holds for the bound tab, read before a history render. */
+export function heldServerRequests() {
+  return codexHeldServerRequests(_ctx.boundTab?.heldServerRequests, _ctx.boundTab);
+}
+
+/**
+ * A re-attached bridge replays the requests it still holds and then sends the
+ * history, which rebuilds the transcript without them. Whichever came first,
+ * each held request ends up as one card at the end. This only renders: nothing
+ * here answers a request, whatever the tab's AUTO says.
+ */
+export function restoreServerRequests(requests = []) {
+  for (const request of requests) {
+    const requestId = request.requestId;
+    if (!heldRequests()?.has(String(requestId)) || _ctx.requestCards.has(String(requestId)) || replyAwaitsAck(requestId)) continue;
+    // A saved rendering can still carry the card, dead: only the live one stays.
+    for (const card of _ctx.messagesEl?.querySelectorAll('.cxp-card[data-request-id]') || []) {
+      if (card.dataset.requestId === String(requestId)) card.remove();
+    }
+    if (_ctx.isBlockingServerRequest?.(request.method)) {
+      _ctx.onBlockingServerRequestStart?.(requestId, request.method, request.params || {});
+    }
+    renderServerRequest(request);
+  }
 }

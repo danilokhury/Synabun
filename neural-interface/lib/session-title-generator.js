@@ -4,6 +4,7 @@ import {
   fallbackSessionTitle,
   normalizeSessionTitle,
 } from '../public/shared/session-title.js';
+import { codexReasoningEffort } from './effort-levels.js';
 
 export const SESSION_TITLE_TIMEOUT_MS = 20_000;
 export const SESSION_TITLE_PROMPT_LIMIT = 4_000;
@@ -38,7 +39,7 @@ function cleanClaudeEnv(source = process.env) {
   )));
 }
 
-function extractOpenCodeText(response) {
+export function extractOpenCodeText(response) {
   const data = response?.data || response || {};
   const parts = Array.isArray(data?.parts) ? data.parts : [];
   const text = parts
@@ -52,7 +53,7 @@ function extractOpenCodeText(response) {
   return '';
 }
 
-function extractCodexText(stdout) {
+export function extractCodexText(stdout) {
   let last = '';
   for (const line of String(stdout || '').split(/\r?\n/)) {
     if (!line.trim()) continue;
@@ -81,6 +82,8 @@ async function generateClaudeTitle(input, deps) {
         effort: CLAUDE_EFFORT_LEVELS.includes(input.effort) ? input.effort : undefined,
         systemPrompt: TITLE_SYSTEM_PROMPT,
         settingSources: [],
+        // Since SDK 0.3.286 an omitted mode is left to Claude Code's own settings.
+        permissionMode: 'default',
         allowedTools: [],
         maxTurns: 1,
         persistSession: false,
@@ -93,7 +96,7 @@ async function generateClaudeTitle(input, deps) {
     let result = '';
     for await (const event of q) {
       if (event?.type !== 'result') continue;
-      if (event.subtype !== 'success') throw new Error(event.error || event.result || 'Claude title request failed');
+      if (event.subtype !== 'success') throw new Error(event.errors?.[0] || event.error || event.result || 'Claude title request failed');
       result = event.result || '';
     }
     return result;
@@ -112,12 +115,8 @@ async function generateCodexTitle(input, deps) {
   ];
   if (input.cwd) args.push('-C', input.cwd);
   if (input.model) args.push('-m', input.model);
-  if (input.effort && input.effort !== 'off') {
-    const effort = input.effort === 'max' ? 'xhigh' : input.effort;
-    if (['minimal', 'low', 'medium', 'high', 'xhigh'].includes(effort)) {
-      args.push('-c', `model_reasoning_effort="${effort}"`);
-    }
-  }
+  const effort = codexReasoningEffort(input.effort);
+  if (effort) args.push('-c', `model_reasoning_effort="${effort}"`);
   args.push(titlePrompt(input));
   const env = {
     ...(deps.env || process.env),

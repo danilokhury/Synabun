@@ -1,3 +1,4 @@
+import { hostedSidepanelId, sidepanelHost } from './ui-sidepanel-runtime.js';
 // ═══════════════════════════════════════════
 // SynaBun — Claude Code Panel (Main Area)
 // Stream-JSON renderer embedded in the Neural Interface viewport
@@ -9,20 +10,43 @@ import { state, emit, on } from './state.js';
 import { fetchClaudeSessions, fetchBrowserSessions, searchSessions } from './api.js';
 import { createFrameRenderer } from './utils.js';
 import { notify, NOTIF_TYPE } from './ui-notifications.js';
-import { reserveRightPanelLayout, clearRightPanelLayout, setRightPanelResizing } from './ui-sidepanel-layout.js';
+import { registerSidepanel, setSidepanelVisible, syncSidepanelLayout, focusSidepanel, openAnotherSidepanelSession, isHostedSessionFocused } from './ui-sidepanel-windows.js';
 import { subscribeCliStatus, recheckCliStatus, getCliDocUrl, getCliInstallCommand, getCliLabel } from './cli-status.js';
-import { toggleOpencodePanel, isOpencodePanelOpen } from './ui-opencode-panel-v2.js';
 import { nativeLoopWindowId } from './ui-native-window-id.js';
 import { createStickyScrollController } from './ui-scroll-follow.js';
 import { requestGeneratedSessionTitle } from './session-title.js';
 // ── cp/ feature modules (SDK-engine CLI parity: diffs, agents, bash, perms, statusline) ──
 import { setCpCtx } from './cp/cp-ctx.js';
 import { buildDiffCard, buildDiffPreviewEl, finalizeDiffCard } from './cp/cp-diff.js';
-import { buildBashCard, updateBashResult, handleBgToolUse, handleBgToolResult, renderBgTray } from './cp/cp-bash.js';
-import { buildAgentCard, ensureAgentScope, noteAgentActivity, updateAgentTodoBadge, finalizeAgentCard } from './cp/cp-agents.js';
-import { renderPermissionCard, renderPlanApprovalCard, PERMISSION_MODES, MODE_LABELS } from './cp/cp-permissions.js';
+import { buildBashCard, updateBashResult, handleBgToolUse, handleBgToolResult, renderBgTray, reconcileBgTasks } from './cp/cp-bash.js';
+import { decorateToolCard, applyStructuredResult, appendResultText, buildHistoryAskCard, buildHistoryPlanCard, fillHistoryCard, settleReplayedCards, planCardSummaryHtml } from './cp/cp-tool-cards.js';
+import { buildAgentCard, ensureAgentScope, noteAgentActivity, updateAgentTodoBadge, finalizeAgentCard, markAgentBackground } from './cp/cp-agents.js';
+import { renderPermissionCard, renderPlanApprovalCard, renderElicitationCard, decorateAskCard, askAnnotations, markAskAnswered, PERMISSION_MODES, MODE_LABELS } from './cp/cp-permissions.js';
+import { normalizeSession, changedStartSettings, sessionFlags, sessionRows, fastModeSupported, fastModeReason, mergeSessionModels, parseMcpServerLines, formatMcpServerLines } from './cp/cp-session-model.js';
+import { renderSessionSettingsCard } from './cp/cp-session-settings.js';
+import { describeOrigin, reconcileTasks, adoptLiveTasks, describeHistorySystemRow, workEndedByRestart } from './cp/cp-tasks-model.js';
+import { renderTasksCard } from './cp/cp-tasks.js';
+import { sessionListLabel, collectTags, tagSession as tagClaudeSession, sessionActionsAvailable, sessionOpsSupported, labelledSessionIds, mergeSessionSearch, writeSessionTitle, forkSession as forkClaudeSession, deleteSession as deleteClaudeSession, fetchSubagentMessages, forkTitle, entryBefore, promptText, removeFrom, sessionRowParts, fillSelectOptions } from './cp/cp-sessions.js';
+import { contextCard, usageCard, mcpRows, rewindPreviewText, rewindResultText } from './cp/cp-usage-model.js';
+import { permissionModesFor, isDefaultableMode, autoModeSupported, grantedRuleLine, permissionRuleSections, hasSessionRules, MODE_HINTS, TOOL_POLICIES, toolPolicyId, bypassOffer, modeControl, BYPASS_MODE, pickMode, leavePlanMode, statedMode, modeStatement, planExitTarget, sessionReport, sessionEnteredPlan, statementSent, statementDropped, connectionOpened, sessionForgotten, controlFacts, savedMode, restoredMode, runEvent, isPermissionsCommand, reportReceived, modeTooltip, settingsDefaultMode, settingsModeNote } from './cp/cp-permission-model.js';
 import { renderStatusline, setActivity, cpActivityVerb } from './cp/cp-statusline.js';
+import { catalogModel, catalogContextWindow, mainLoopContextWindow, gaugeContextWindow, contextWindowSource } from './cp/cp-context-window.js';
+import { mcpToolCounts } from './cp/cp-context-model.js';
+import { initContextMenu, syncContextMenu, closeContextMenu } from './cp/cp-context-menu.js';
+import { historyHasResultSupport, historyResultsNotice, snapshotWantsResults, fullResultFromHistory, HISTORY_NO_RESULTS_CLASS } from './cp/cp-tool-results.js';
 import { CP_STYLES } from './cp/cp-styles.js';
+import { TEMPORARY_CAPABILITY, keepsNothing, chooseTemporary, applyTemporary, temporaryRefusal, endTemporary, leaveTemporary, tabAfterTemporary, persistableTabs, temporaryBlocks, reattaches } from './cp/cp-temporary.js';
+import { paintTemporary } from './cp/cp-temporary-view.js';
+import { renderMarkdown, scrubStoredHtml } from './cp/cp-markdown.js';
+import { escapeHtml, classToken } from './cp/cp-markdown.js';
+import { rehydrateStoredTranscript } from './cp/cp-rehydrate.js';
+import { compactHolds, compactQueue, isCompactCommand, newConversation, nextQueued, ownsQueued, queuedRefusal, restoredQueue, QUEUED_REFUSAL_LINES } from './cp/cp-compose.js';
+import { scrubSavedTab, historyProjectOf, shownUuids, shownTail, snapshotVerdict, withStartConfig, historyOutcome, transcriptOwner, historyNotFoundText } from './cp/cp-restore.js';
+import { hasCapability, slashCommandRoute, bypassesPromptBuffer, idleEndsTurn, describeResult, describeTurnFooter, localCommandOutput, splitAssistantBlocks, normalizeSlashCommands, matchSlashCommands, listSlashCommands, slashMenuMaxHeight, splitCommandsByCapability, readInit, statusRows } from './cp/cp-events.js';
+import {
+  renderSdkEvent, noteUnhandledEvent, applyEngineHello, renderCompactBoundary, markDeniedFromResult, endTurnRows,
+  renderLocalCommandResult, renderAssistantExtras, annotateAssistantRow, noteToolInputStart, noteToolInputDelta, appendTurnFooter,
+} from './cp/cp-event-rows.js';
 
 const CLAUDE_ICON = '<svg fill="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M4.709 15.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.698-.073-2.339-.097-2.266-.122-.571-.121L0 11.784l.055-.352.48-.321.686.06 1.52.103 2.278.158 1.652.097 2.449.255h.389l.055-.157-.134-.098-.103-.097-2.358-1.596-2.552-1.688-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.893.686 1.908 1.476 2.491 1.833.365.304.145-.103.019-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97 2.97 0 01-.104-.729L6.283.134 6.696 0l.996.134.42.364.62 1.414 1.002 2.229 1.555 3.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286 1.851-.559 2.903-.364 1.942h.212l.243-.242.985-1.306 1.652-2.064.73-.82.85-.904.547-.431h1.033l.76 1.129-.34 1.166-1.064 1.347-.881 1.142-1.264 1.7-.79 1.36.073.11.188-.02 2.856-.606 1.543-.28 1.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061 1.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093 1.068 2.006 1.81 2.509 2.33.127.578-.322.455-.34-.049-2.205-1.657-.851-.747-1.926-1.62h-.128v.17l.444.649 2.345 3.521.122 1.08-.17.353-.608.213-.668-.122-1.374-1.925-1.415-2.167-1.143-1.943-.14.08-.674 7.254-.316.37-.729.28-.607-.461-.322-.747.322-1.476.389-1.924.315-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434 1.967-2.18 2.945-1.726 1.845-.414.164-.717-.37.067-.662.401-.589 2.388-3.036 1.44-1.882.93-1.086-.006-.158h-.055L4.132 18.56l-1.13.146-.487-.456.061-.746.231-.243 1.908-1.312-.006.006z"/></svg>';
 
@@ -91,7 +115,7 @@ const SYNABUN_GROUPS = {
 
 function getSynaBunMeta(name) {
   const key = synaBunToolKey(name);
-  if (SYNABUN_TOOLS[key]) return SYNABUN_TOOLS[key];
+  if (Object.prototype.hasOwnProperty.call(SYNABUN_TOOLS, key)) return SYNABUN_TOOLS[key];
   for (const [prefix, meta] of Object.entries(SYNABUN_GROUPS)) {
     if (key.startsWith(prefix + '_') || key === prefix) {
       const action = key.slice(prefix.length + 1) || '';
@@ -103,7 +127,7 @@ function getSynaBunMeta(name) {
 }
 
 function toolIconSvg(name) {
-  if (TOOL_ICONS[name]) return TOOL_ICONS[name];
+  if (Object.prototype.hasOwnProperty.call(TOOL_ICONS, name)) return TOOL_ICONS[name];
   if (isSynaBunTool(name)) {
     const meta = getSynaBunMeta(name);
     if (meta) return meta.icon;
@@ -119,11 +143,14 @@ let _visible = false;
 let _totalCost = 0;
 let _projects = [];
 let _models = [];
+let _modelsFetchedAt = 0;   // when _models last came from the server (see refreshModels)
+let _modelsSource = '';     // 'cli' | 'cache' | 'fallback' — fallback is an unverified list
+let _modelsRefresh = null;  // in-flight refreshModels() request
 let _skillsCache = null;    // cached skills list for slash command hints
 
 // Window-scoped persistence id. Duplicated tabs clone sessionStorage, so active
 // native automation ownership can force this document onto a fresh id below.
-let _windowId = sessionStorage.getItem('cp-window-id') || (() => { const id = crypto.randomUUID(); sessionStorage.setItem('cp-window-id', id); return id; })();
+let _windowId = hostedSidepanelId || sessionStorage.getItem('cp-window-id') || (() => { const id = crypto.randomUUID(); sessionStorage.setItem('cp-window-id', id); return id; })();
 
 // ── Multi-session tab system ──
 let _tabs = [];           // TabState[]
@@ -151,12 +178,17 @@ let _marked = null;
   } catch {}
 })();
 
+// The one Markdown helper of this panel (cpCtx.md is the same function): marked's
+// output goes through the allowlist sanitiser in cp/cp-markdown.js, because what
+// a model, a command or a replayed transcript says is not trusted markup.
 function md(text) {
-  if (!_marked) return esc(text).replace(/\n/g, '<br>');
-  try { return _marked.parse(text); }
-  catch { return esc(text).replace(/\n/g, '<br>'); }
+  return renderMarkdown(text, { parse: _marked ? (t) => _marked.parse(t) : null });
 }
-function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+// The one escaper of this panel (cpCtx.esc and escH() are the same function):
+// escapeHtml in cp/cp-markdown.js, safe as element text and inside a quoted
+// attribute. Every value interpolated into markup the panel builds goes through
+// it; a value assigned to a DOM property (textContent, title, value) needs none.
+function esc(s) { return escapeHtml(s); }
 
 // Shared context for cp/ modules — function declarations hoist, so this is safe
 // at module scope. panel() resolves lazily because _panel is assigned later.
@@ -169,6 +201,30 @@ setCpCtx({
   activeTab: () => activeTab(),
   saveTabs: () => saveTabs(),
   appendStatus: (tab, text) => appendStatus(tab, text),
+  appendWarn: (tab, text) => appendWarn(tab, text),
+  appendError: (tab, text) => appendError(tab, text),
+  appendInfoCard: (tab, card) => appendInfoCard(tab, card),
+  buildTool: (block, tab) => buildTool(block, tab),
+  updateToolResult: (tab, ev) => updateToolResult(tab, ev),
+  compactStarted: (tab) => _compactStarted(tab),
+  compactEnded: (tab) => { tab.compacting = false; if (tab === activeTab()) _setCompactingUI(false); },
+  applyPermissionMode: (tab, mode, modeSeq, ev) => _syncPermissionModeFromCli(tab, mode, modeSeq, ev),
+  setSlashCommands: (tab, commands) => _setSlashCommands(tab, commands),
+  resetUsage: (tab) => { tab.usage = { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheWrite: 0 }; if (tab === activeTab()) renderGauge(tab); },
+  renderTodoWidget: (tab) => renderTodoWidget(tab),
+  recordRealHook: (tab, entry) => _recordRealHook(tab, entry),
+  openTasks: (tab) => _openTasks(tab),
+  contextMenuData: (tab, opts) => _contextMenuData(tab, opts),
+  contextMenuAction: (tab, action) => _contextMenuAction(tab, action),
+  showSuggestion: (tab, text) => { tab.suggestion = text; if (tab === activeTab()) _renderSuggestion(tab); },
+  sessionStateChanged: (tab, state) => _onSessionState(tab, state),
+  sessionInfoChanged: (tab) => {
+    // The session's own model list: models the picker did not know are added,
+    // and the capability flags (Auto mode, fast mode) come from the session.
+    _mergeSessionModelList(tab.sessionInfo?.models);
+    if (tab === activeTab()) populateModeDropdown(_panel?.querySelector('#cp-mode'), tab);
+  },
+  prefillInput: (text) => { const $input = _panel?.querySelector('#cp-input'); if ($input) { $input.value = text; autoResize(); $input.focus(); } },
   recordHookEvent: (tab, ev, detail) => recordHookEvent(tab, ev, detail),
   toolIconSvg: (name) => toolIconSvg(name),
   panel: () => _panel,
@@ -216,7 +272,7 @@ const _snapshotsReady = fetchBlobNamespace('claude-snapshots')
 const EFFORT_LEVELS = ['off', 'low', 'medium', 'high', 'xhigh', 'max'];
 const EFFORT_LABELS = { off: 'Think', low: 'lo', medium: 'med', high: 'hi', xhigh: 'xhi', max: 'max' };
 const EFFORT_TITLES = {
-  off: 'Thinking off',
+  off: 'Effort: model default (thinking not shown; /session can turn thinking off)',
   low: 'Thinking: low',
   medium: 'Thinking: medium',
   high: 'Thinking: high',
@@ -252,6 +308,18 @@ const SLASH_COMMANDS = [
   { name: 'logout', desc: 'Open Claude account sign-out', kind: 'action' },
   { name: 'plan', desc: 'Toggle plan mode', kind: 'action' },
   { name: 'btw', desc: 'Add context while Claude is processing (Shift+Enter)', kind: 'info' },
+  // `needs` names a bridge capability: hidden until the running server has it.
+  { name: 'reload-skills', desc: 'Reload skills and commands from disk', kind: 'action', needs: 'reload_skills' },
+  { name: 'tools', desc: 'Limit this tab\'s tools: full, read-only or no-web', kind: 'action', needs: 'tool_policy' },
+  { name: 'session', desc: 'Session settings: fast mode, thinking, limits, directories, plugins, sandbox', kind: 'action', needs: 'session_settings' },
+  { name: 'fast', desc: 'Turn fast mode on or off for this tab', kind: 'action', needs: 'session_settings' },
+  { name: 'output-style', desc: 'Switch the output style for this tab', kind: 'action', needs: 'session_settings' },
+  { name: 'budget', desc: 'Set a spend limit in USD for this tab (0 removes it)', kind: 'action', needs: 'session_settings' },
+  { name: 'reload-plugins', desc: 'Reload plugins without restarting the session', kind: 'action', needs: 'reload_plugins' },
+  { name: 'tasks', desc: 'Background work of this tab: running tasks (with stop) and scheduled wakeups', kind: 'info' },
+  { name: 'usage', desc: 'This session\'s cost and the plan\'s usage limits', kind: 'info', needs: 'session_requests' },
+  { name: 'account', desc: 'Choose the Claude account this tab runs under', kind: 'action', needs: 'accounts' },
+  { name: 'effective-settings', desc: 'The Claude Code settings in effect here, and the file each comes from', kind: 'info', needs: 'settings_view' },
 ];
 
 // ── View modes (normal | transcript | focus) — Ctrl+O cycles ──
@@ -277,6 +345,10 @@ function buildPanel() {
         <button class="cp-header-btn cp-new-btn" data-tooltip="New session">
           <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         </button>
+        <button class="cp-header-btn cp-cog-btn" id="cp-cog-btn" type="button" data-tooltip="Context settings" aria-label="Context settings" aria-haspopup="dialog" aria-expanded="false" aria-controls="cp-context-popover">
+          <svg viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+          <span class="cp-cog-dot" hidden></span>
+        </button>
         <button class="cp-header-btn cp-minimize-btn" data-tooltip="Minimize to pill">
           <svg viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12"/></svg>
         </button>
@@ -288,13 +360,6 @@ function buildPanel() {
         </button>
       </div>
       <div class="cp-session-menu" id="cp-session-menu"></div>
-    </div>
-    <div class="cp-context-bar" id="cp-context-bar">
-      <div class="cp-gauge" id="cp-gauge">
-        <div class="cp-ctx-fill" id="cp-ctx-fill"></div>
-        <span class="cp-gauge-label" id="cp-gauge-label">context pending</span>
-      </div>
-      <button class="cp-compact-btn" id="cp-compact-btn" title="Compress conversation context to free up space">compact</button>
     </div>
     <div class="cp-messages-container" id="cp-messages-container"></div>
     <div class="cp-browser-embed" id="cp-browser-embed">
@@ -1531,12 +1596,12 @@ function injectStyles() {
 
     .cp-cost {
       font-size: 9px; font-family: 'JetBrains Mono', monospace;
-      color: rgba(255,255,255,0.18); padding: 2px 6px;
+      color: var(--t-muted); padding: 2px 6px;
       white-space: nowrap; flex-shrink: 0;
       transition: color 0.2s;
     }
-    .cp-cost:hover { color: rgba(255,255,255,0.45); }
-    .cp-cost.flash { color: rgba(255,255,255,0.7); }
+    .cp-cost:hover { color: var(--t-secondary); }
+    .cp-cost.flash { color: var(--t-primary); }
 
     .cp-btn {
       background: none; border: 1px solid var(--b-subtle); color: var(--t-faint);
@@ -1852,22 +1917,6 @@ function injectStyles() {
     .cp-messages .cp-diff-del { display: inline-block; width: 100%; background: rgba(255,100,80,0.08); color: rgba(255,180,160,0.95); padding: 0 2px; border-left: 2px solid rgba(255,100,80,0.5); }
     .cp-messages .cp-diff-hunk { color: rgba(100,180,255,0.8); font-weight: 600; }
     .cp-messages .cp-diff-file { color: rgba(255,210,60,0.85); font-weight: 600; }
-
-    /* ── Cache-hit badge (in gauge label) ── */
-    .cp-gauge-label .cp-cache-hit {
-      display: inline-flex; align-items: center; gap: 2px;
-      margin-left: 8px;
-      color: rgba(150,200,220,0.55);
-      font-family: 'JetBrains Mono', monospace;
-      font-weight: 500;
-      letter-spacing: 0.02em;
-    }
-    .cp-gauge-label .cp-cache-hit svg {
-      width: 7px; height: 9px; flex-shrink: 0;
-      opacity: 0.85;
-    }
-    /* Slightly brighter when the cache hit ratio is high — signal value without shouting */
-    .cp-gauge-label .cp-cache-hit[data-ratio="high"] { color: rgba(170,215,230,0.75); }
 
     /* ── MCP collapse markers ── */
     .tool-mcp-badge {
@@ -2333,71 +2382,6 @@ function injectStyles() {
     }
     @keyframes cp-pill-pulse { 0%,100% { opacity: 0.4; } 50% { opacity: 1; } }
 
-    /* ── Context gauge bar ── */
-    .cp-context-bar {
-      display: flex; align-items: center; gap: 8px;
-      padding: 6px 10px; flex-shrink: 0;
-      margin: 6px 8px 0;
-      background: rgba(22, 22, 26, 0.95);
-      border-radius: 10px;
-      z-index: 2;
-      box-shadow: var(--shadow-sm), 0 0 0 1px rgba(255,255,255,0.06);
-    }
-    .cp-gauge {
-      flex: 1; min-width: 0; height: 16px; border-radius: 6px;
-      background: rgba(255,255,255,0.03);
-      position: relative; overflow: hidden; cursor: default;
-    }
-    .cp-ctx-fill {
-      position: absolute; left: 0; top: 0; bottom: 0;
-      border-radius: 6px; width: 0%;
-      background: rgba(232,224,220,0.18);
-      transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1), background 0.5s;
-    }
-    .cp-gauge-label {
-      position: absolute; left: 6px; right: 6px; top: 50%; transform: translateY(-50%);
-      font-size: 9px; font-family: 'JetBrains Mono', monospace;
-      color: rgba(255,255,255,0.35); white-space: nowrap;
-      overflow: hidden; text-overflow: ellipsis;
-      pointer-events: none;
-    }
-    .cp-compact-btn {
-      background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.06);
-      border-radius: 6px; color: rgba(255,255,255,0.35); cursor: pointer;
-      font-size: 9px; font-family: 'JetBrains Mono', monospace;
-      letter-spacing: 0.05em; text-transform: uppercase;
-      padding: 2px 8px; height: 22px;
-      flex-shrink: 0; position: relative; overflow: hidden;
-      transition: all 0.15s;
-    }
-    .cp-compact-btn:hover:not(:disabled) {
-      color: rgba(255,255,255,0.65);
-      background: rgba(255,255,255,0.08);
-      border-color: rgba(255,255,255,0.14);
-      transform: scale(1.03);
-    }
-    .cp-compact-btn:active:not(:disabled) { transform: scale(0.96); }
-    .cp-compact-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-    .cp-compact-btn.compacting {
-      color: rgba(140,130,220,0.7);
-      border-color: rgba(140,130,220,0.2);
-      background: rgba(140,130,220,0.06);
-      pointer-events: none;
-    }
-    .cp-compact-btn.compacting::after {
-      content: '';
-      position: absolute; left: 0; bottom: 0;
-      width: 100%; height: 2px;
-      background: linear-gradient(90deg, transparent, rgba(140,130,220,0.6), transparent);
-      animation: cp-compact-sweep 1.2s ease-in-out infinite;
-    }
-    @keyframes cp-compact-sweep {
-      0% { transform: translateX(-100%); }
-      100% { transform: translateX(100%); }
-    }
-    .cp-gauge.compacting { opacity: 0.6; }
-    .cp-gauge-label.compacting { color: rgba(140,130,220,0.4) !important; }
-
     /* ── Think intensity toggle ── */
     /* ── Shared toggle base ── */
     .cp-toggle-icon { width: 10px; height: 10px; display: block; flex-shrink: 0; }
@@ -2782,12 +2766,19 @@ function _getModelId() {
   const cw = cwRaw ? parseInt(cwRaw, 10) : 0;
   return cw > 200000 ? `${id}[1m]` : id;
 }
-function _getContextWindow() {
-  const raw = ddGetValue(_panel?.querySelector('#cp-model'));
-  const known = _models.find(m => m.id === raw);
-  if (known?.contextWindow) return known.contextWindow;
-  const parts = raw.split(':');
-  return parts[1] ? parseInt(parts[1], 10) : 200000;
+// Denominator of the context gauge, /context and /doctor (see cp-context-window.js).
+// Reads the tab's own model, not the shared dropdown: ddPopulateModels leaves the
+// previous tab's value in place while the catalog is still empty.
+function _contextWindowFor(tab) {
+  const u = tab?.usage || {};
+  // Always a number (0 = unknown): the gauge and /context put it into markup,
+  // and a stored snapshot can hand back anything.
+  return Number(gaugeContextWindow({
+    reported: tab?.contextWindow || 0,
+    selected: catalogContextWindow(_models, tab?.model || _getDefaultModel()),
+    used: (u.inputTokens || 0) + (u.cacheRead || 0) + (u.cacheWrite || 0),
+    models: _models,
+  })) || 0;
 }
 
 // ── Default model helper ──
@@ -2846,13 +2837,15 @@ document.addEventListener('click', (e) => {
 });
 
 // ── Tab lifecycle ──
-function createTab(sessionId = null, label = 'New chat', { autoSwitch = true, id = null } = {}) {
-  if (_tabs.length >= MAX_TABS) return null;
+// What a tab is before anything has happened in it. createTab() builds every
+// tab from this, and a tab that leaves a temporary chat is put back to it
+// (_afterTemporary), except for what CARRIED_OVER in cp/cp-temporary.js names:
+// a field added here is covered there without being named.
+function newTabState(sessionId = null, label = 'New chat', id = null) {
   // Capture current dropdown state for the new tab's project/model/effort
   const _$proj = _panel?.querySelector('#cp-project');
-  const _$mod = _panel?.querySelector('#cp-model');
   const _$think = _panel?.querySelector('#cp-think-toggle');
-  const tab = {
+  return {
     id: id || crypto.randomUUID(),
     sessionId,
     label,
@@ -2879,7 +2872,8 @@ function createTab(sessionId = null, label = 'New chat', { autoSwitch = true, id
     titleRequestId: null,
     titleRequestController: null,
     usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 0, // 0 = use dropdown fallback; set from result.modelUsage or session history
+    contextWindow: 0, // main loop's window as the CLI last reported it (result.modelUsage); 0 = not yet → selected model's
+    mainModel: null,  // API model of the latest main-loop message — picks the main loop out of result.modelUsage
     compacting: false,
     turns: 0,
     thinkStartedAt: null,
@@ -2892,6 +2886,7 @@ function createTab(sessionId = null, label = 'New chat', { autoSwitch = true, id
     queue: [],
     queuePaused: false,
     queueExpanded: false,
+    conversation: newConversation(), // names the conversation this tab holds; a queued prompt carries it (cp-compose.js)
     // ── CLI-parity additions ──
     promptHistory: [],        // string[] — prompts typed in this tab (Up/Down recall)
     promptHistoryIdx: -1,     // -1 means not navigating
@@ -2902,18 +2897,43 @@ function createTab(sessionId = null, label = 'New chat', { autoSwitch = true, id
     hookStripVisible: false,  // Ctrl+Shift+H toggles
     lastEscAt: 0,             // for Esc+Esc undo detection
     _fileRefs: [],            // @file references captured in the current prompt
-    // ── SDK-engine additions ──
-    sdkMode: false,           // true when the server announces engine:'sdk'
-    permissionMode: storage.getItem(STOR.permissionMode) || 'default',
+    sdkMode: false,           // true once the bridge said hello on this tab's socket (or the tab shows an automation run)
+    temporary: false,         // a temporary chat: nothing of it is saved (written by cp/cp-temporary.js, with the two below)
+    tempStarted: false,       // its first message was sent: the choice is fixed
+    tempEnded: '',            // why it is over ('' while it lives)
+    // A new tab starts in the approval mode last picked. Plan and Bypass are per
+    // tab, never a new tab's default (an older build stored them).
+    permissionMode: ((mode) => (isDefaultableMode(mode) ? mode : 'default'))(storage.getItem(STOR.permissionMode)),
+    modeChosen: isDefaultableMode(storage.getItem(STOR.permissionMode)), // false: the user's Claude Code settings pick the starting mode
+    bypassChosen: false,      // true: Bypass is this tab's mode because the user picked it (pickMode in cp/cp-permission-model.js)
+    planFrom: null,           // in plan mode: what the tab was before it (its pick, or following the settings); leaving without naming a mode goes back there
+    modeSeq: 0,               // the number of this tab's latest statement of its mode (saved: it only grows, also across a reload)
+    actualMode: '',           // the mode this tab's session last reported (the bridge's fact: shown, never stated)
+    mayBypass: false,         // the tab's session may be in Bypass: the tab stated Bypass or a report said so, and no report at or after its latest statement says it is out (saved; the control warns)
+    settingsMode: '',         // the mode the session reported while the tab followed the user's settings (shown, never stated)
+    runMode: '',              // the mode an automation run shown here reports for itself (information, never this tab's mode)
+    toolPolicy: 'full',       // 'full' | 'read-only' | 'no-web' (tools removed from this tab's session)
+    session: normalizeSession(null), // /session: fast mode, thinking, limits, directories, plugins, sandbox, …
+    accountId: '',            // the Claude account this tab runs under ('' = the default account)
+    grantedRules: [],         // permission rules granted from cards in this tab (/permissions shows them)
     slashCommands: [],        // server-provided slash commands (commands_list event)
     agents: new Map(),        // Task tool_use id → agent card entry (runtime only)
     bgTasks: new Map(),       // background Bash tool_use id → task entry (runtime only)
+    backgroundWork: [],       // live background tasks the CLI reports (background_tasks_changed, non-ambient)
+    tasks: new Map(),         // task_id → task, from task_started / task_progress / task_updated / task_notification
+    sessionCrons: [],         // wakeups scheduled for this session (system/session_crons)
+    suggestion: '',           // the next prompt the CLI suggests (prompt_suggestion)
     currentActivity: null,    // { verb, at } for the statusline
     mcpServers: [],           // from system/init + mcp_status events
     automationRunId: null,
     automationActive: false,
     automationOwnerId: null,
   };
+}
+
+function createTab(sessionId = null, label = 'New chat', { autoSwitch = true, id = null } = {}) {
+  if (_tabs.length >= MAX_TABS) return null;
+  const tab = newTabState(sessionId, label, id);
   // Create messages div — kept DETACHED until the tab activates. Inactive
   // transcripts used to sit in the document as display:none subtrees; with
   // many tabs that taxes every style recalc and :has() invalidation. All
@@ -2930,6 +2950,7 @@ function createTab(sessionId = null, label = 'New chat', { autoSwitch = true, id
   connectTab(tab);
   // Create pill (rendered in shared tray, not inside panel)
   tab.pillEl = _createTrayPill(tab);
+  _paintTemporary(tab);
   _tabs.push(tab);
   if (autoSwitch) switchTab(_tabs.length - 1);
   if (sessionId) loadSessionHistory(sessionId, tab.messagesEl);
@@ -2942,18 +2963,44 @@ function connectTab(tab) {
   if (tab.closed) return;
   if (tab.ws && (tab.ws.readyState === WebSocket.OPEN || tab.ws.readyState === WebSocket.CONNECTING)) return;
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  tab.ws = new WebSocket(`${proto}//${location.host}/ws/claude-skin`);
-  tab.ws.addEventListener('open', () => {
+  // Handlers act on THIS socket only: a dead socket's late error/close/message
+  // must not touch the one that replaced it.
+  const ws = new WebSocket(`${proto}//${location.host}/ws/claude-skin`);
+  tab.ws = ws;
+  ws.addEventListener('open', () => {
+    if (tab.ws !== ws) return;
     clearTimeout(tab.reconnectTimer);
-    // If this tab was running before disconnect (page refresh), try to reattach
-    if (tab._wasRunning && tab.sessionId) {
-      console.log('[claude-panel] Attempting reattach for session', tab.sessionId);
-      tab.ws.send(JSON.stringify({ type: 'reattach', windowId: _windowId, sessionId: tab.sessionId }));
+    connectionOpened(tab); // no statement of the tab's mode was made on this socket yet
+    // Reclaim this tab's server session if it outlived the old socket — a turn in
+    // flight, a permission card, background agents or a scheduled wakeup. The
+    // server answers ok:false when there is nothing to reclaim.
+    // (A temporary chat is never asked back: the bridge ended it with its socket.)
+    if (tab.sessionId && !tab.automationRunId && reattaches(tab)) {
+      tab._reattachExpectRunning = !!(tab._wasRunning || tab.running);
+      tab._reattachSentAt = Date.now();
+      ws.send(JSON.stringify({ type: 'reattach', windowId: _windowId, sessionId: tab.sessionId }));
+    } else if (tab._queueWaits === 'session') {
+      // No session to ask after: nothing says the Compact finished.
+      _compactQueue.after(tab, 'lost');
     }
   });
-  tab.ws.addEventListener('message', (e) => { try { handleTabMsg(tab, JSON.parse(e.data)); } catch (err) { console.error('[claude-panel] handleTabMsg error:', err, e.data?.slice?.(0, 200)); } });
-  tab.ws.addEventListener('close', () => { if (!tab.closed) tab.reconnectTimer = setTimeout(() => connectTab(tab), 2000); });
-  tab.ws.addEventListener('error', () => tab.ws.close());
+  ws.addEventListener('message', (e) => {
+    if (tab.ws !== ws) return;
+    try { handleTabMsg(tab, JSON.parse(e.data)); } catch (err) { console.error('[claude-panel] handleTabMsg error:', err, e.data?.slice?.(0, 200)); }
+  });
+  ws.addEventListener('close', () => {
+    if (tab.closed || tab.ws !== ws) return;
+    // A temporary chat is not kept by the bridge once its socket is gone: it is over, and the tab says so.
+    _temporaryOver(tab, 'connection');
+    // A drop mid-turn is reclaimed on reconnect, same as a page reload.
+    if (tab.running) tab._wasRunning = true;
+    // A Compact that was under way can no longer be followed: it holds nothing back.
+    tab._compactSentAt = 0;
+    // What is queued behind it waits for the reconnect to say whether the session is still there.
+    if (tab._queueWaits === 'compact') _compactQueue.after(tab, 'closed');
+    tab.reconnectTimer = setTimeout(() => connectTab(tab), 2000);
+  });
+  ws.addEventListener('error', () => ws.close());
 }
 
 // Attach a tab's transcript to the document (idempotent). Counterpart of the
@@ -3070,10 +3117,12 @@ function switchTab(idx) {
   renderHookStrip(tab);
   try { renderStatusline(tab); } catch {}
   try { renderBgTray(tab); } catch {}
+  try { _renderSuggestion(tab); } catch {}
   _applyViewMode(tab);
   _setCompactingUI(!!tab.compacting);
   populateViewDropdown(_panel?.querySelector('#cp-view'), tab);
   populateModeDropdown(_panel?.querySelector('#cp-mode'), tab);
+  _paintTemporary(tab);
   saveTabs();
 }
 
@@ -3097,9 +3146,21 @@ function closeTab(idx, { detachAutomation = false } = {}) {
   tab.titleRequestController = null;
   clearTimeout(tab.reconnectTimer);
   finishTab(tab, true);
+  // Closing a tab ends its session — a turn in flight and background agents
+  // included. Without this the server orphans it for a reattach that never comes.
+  if (tab.ws?.readyState === WebSocket.OPEN) {
+    try { tab.ws.send(JSON.stringify({ type: 'dispose' })); } catch {}
+  } else if (tab.sessionId && !tab.automationRunId && !keepsNothing(tab)) {
+    // (A temporary chat was ended by the bridge when its socket closed; nothing names it to the server.)
+    fetch('/api/sidepanel/kill-session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: 'claude', windowId: _windowId, sessionId: tab.sessionId }),
+    }).catch(() => {});
+  }
   if (tab.ws) tab.ws.close();
   // Release session lock
-  if (tab.sessionId) _releaseSessionLock(tab.sessionId);
+  if (tab.sessionId && !keepsNothing(tab)) _releaseSessionLock(tab.sessionId);
   tab.scrollController?.destroy();
   tab.scrollController = null;
   tab.messagesEl.remove();
@@ -3140,6 +3201,7 @@ function _createTrayPill(tab) {
     if (idx >= 0) {
       if (!_visible) toggleClaudePanel();
       switchTab(idx);
+      focusSidepanel(PANEL_OWNER);
     }
   });
   pill.querySelector('.term-minimized-pill-close').addEventListener('click', (e) => {
@@ -3200,7 +3262,9 @@ function updatePillRunning(tab) {
 
 function saveTabs() {
   try {
-    const localTabs = _tabs.map(t => ({ id: t.id, sessionId: t.sessionId, label: t.label, titleState: t.titleState === 'generating' ? 'default' : (t.titleState || 'default'), sessionCost: t.sessionCost || 0, running: t.running || false, project: t.project || '', model: t.model || '', effort: t.effort || 'off', planMode: t.planMode || false, permissionMode: t.permissionMode || 'default', planFilePath: t.planFilePath || '', queue: t.queue || [], queuePaused: t.queuePaused || false, automationRunId: t.automationRunId || null, automationActive: !!t.automationActive, automationOwnerId: t.automationOwnerId || null }));
+    // A temporary tab is never written: not the tab, its label, its queue or its session id.
+    const kept = persistableTabs(_tabs, _activeTabIdx);
+    const localTabs = kept.tabs.map(t => ({ id: t.id, sessionId: t.sessionId, label: t.label, titleState: t.titleState === 'generating' ? 'default' : (t.titleState || 'default'), sessionCost: t.sessionCost || 0, running: t.running || false, project: t.project || '', model: t.model || '', effort: t.effort || 'off', planMode: t.planMode || false, ...savedMode(t), toolPolicy: t.toolPolicy || 'full', accountId: t.accountId || '', session: normalizeSession(t.session), transcriptAt: t.transcriptAt || null, planFilePath: t.planFilePath || '', conversation: t.conversation || '', queue: t.queue || [], queuePaused: t.queuePaused || false, automationRunId: t.automationRunId || null, automationActive: !!t.automationActive, automationOwnerId: t.automationOwnerId || null }));
     const localRunIds = new Set(localTabs.map((tab) => tab.automationRunId).filter(Boolean));
     let foreignAutomationTabs = [];
     try {
@@ -3213,7 +3277,7 @@ function saveTabs() {
     } catch {}
     storage.setItem(STOR.tabs, JSON.stringify({
       tabs: [...localTabs, ...foreignAutomationTabs],
-      activeIdx: _activeTabIdx,
+      activeIdx: kept.activeIdx,
     }));
     _updateWindowRegistry();
   } catch {}
@@ -3282,9 +3346,12 @@ _cleanStaleWindows();
 _updateWindowRegistry();
 
 // Drop runtime-only fields from saved tab payload after a server restart.
-// Keep what the Claude CLI can still resume (sessionId, label, project, model),
-// drop transient state that no longer reflects reality (running flags, queued
-// prompts, in-flight plan banners, last session cost — re-synced on attach).
+// Keep what the Claude CLI can still resume (sessionId, label, project, model)
+// and what the user configured for the tab (its Claude account, tool policy,
+// permission mode, session settings: a restricted tab must not come back
+// unrestricted). Drop transient state that no longer reflects reality (running
+// flags, queued prompts, in-flight plan banners, last session cost — re-synced
+// on attach). The list of what stays is scrubSavedTab() in cp/cp-restore.js.
 function _scrubStaleTabState(key) {
   try {
     const raw = storage.getItem(key);
@@ -3292,18 +3359,7 @@ function _scrubStaleTabState(key) {
     const data = JSON.parse(raw);
     if (!Array.isArray(data?.tabs)) { storage.removeItem(key); return; }
     const scrubbed = data.tabs
-      .map((t) => (t.automationActive && t.automationOwnerId !== nativeLoopWindowId ? t : ({
-        id: t.id,
-        sessionId: t.sessionId || null,
-        label: t.label || '',
-        titleState: t.titleState || (t.sessionId || (t.label && t.label !== 'New chat') ? 'manual' : 'default'),
-        project: t.project || '',
-        model: t.model || '',
-        effort: t.effort || '',
-        automationRunId: t.automationRunId || null,
-        automationActive: false,
-        automationOwnerId: t.automationOwnerId || null,
-      })))
+      .map((t) => (t.automationActive && t.automationOwnerId !== nativeLoopWindowId ? t : scrubSavedTab(t)))
       .filter((t) => {
         if (t.sessionId) return true;
         const label = String(t.label || '').trim().toLowerCase();
@@ -3335,11 +3391,17 @@ function restoreTabs() {
           if (t) t.titleState = saved.titleState || (saved.sessionId || (saved.label && saved.label !== 'New chat') ? 'manual' : 'default');
           if (t) t.model = saved.model || _getDefaultModel();
           if (t && saved.effort) t.effort = saved.effort;
-          if (t && saved.planMode) t.planMode = true;
-          // permissionMode migration: stored planMode without a mode → 'plan'
-          if (t) t.permissionMode = saved.permissionMode || (saved.planMode ? 'plan' : t.permissionMode);
+          // The mode it comes back in (stored planMode without a mode → 'plan'). A
+          // saved Bypass only as the user's recorded pick: anything else that says
+          // Bypass in storage comes back as a tab that never picked a mode.
+          if (t) Object.assign(t, restoredMode(saved, { permissionMode: t.permissionMode, modeChosen: t.modeChosen }));
+          if (t && TOOL_POLICIES[saved.toolPolicy]) t.toolPolicy = saved.toolPolicy;
+          if (t && saved.session) t.session = normalizeSession(saved.session);
+          if (t && typeof saved.accountId === 'string') t.accountId = saved.accountId;
+          if (t && saved.transcriptAt) t.transcriptAt = saved.transcriptAt;
           if (t && saved.planFilePath) t.planFilePath = saved.planFilePath;
-          if (t && saved.queue?.length) t.queue = saved.queue;
+          if (t && saved.conversation) t.conversation = saved.conversation;
+          if (t && saved.queue?.length) t.queue = restoredQueue(t, saved.queue);
           if (t && saved.queuePaused) t.queuePaused = true;
           if (t && saved.automationRunId) t.automationRunId = saved.automationRunId;
           if (t && saved.automationRunId) t.automationActive = !!saved.automationActive;
@@ -3397,7 +3459,7 @@ function _startHeartbeat() {
   if (_heartbeatInterval) return;
   _heartbeatInterval = setInterval(() => {
     for (const tab of _tabs) {
-      if (tab.sessionId && tab.ws?.readyState === WebSocket.OPEN) {
+      if (tab.sessionId && !keepsNothing(tab) && tab.ws?.readyState === WebSocket.OPEN) {
         tab.ws.send(JSON.stringify({ type: 'heartbeat', sessionId: tab.sessionId, windowId: _windowId }));
       }
     }
@@ -3455,6 +3517,10 @@ window.addEventListener('beforeunload', () => {
 window.addEventListener('pagehide', () => {
   flushAllSessionSnapshots();
   flushBlobs({ useBeacon: true });
+  // A temporary chat ends with the page: its session is told now, not only by the socket closing.
+  for (const t of _tabs) {
+    if (keepsNothing(t) && t.ws?.readyState === WebSocket.OPEN) { try { t.ws.send(JSON.stringify({ type: 'dispose' })); } catch {} }
+  }
 });
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { flushAllSessionSnapshots(); flushBlobs(); }
@@ -3469,16 +3535,12 @@ window.addEventListener('focus', () => {
   for (const t of _tabs) {
     if (t.closed || !t.ws) continue;
     if (t.ws.readyState <= WebSocket.OPEN) continue; // connecting or open — fine
-    if (t.running) {
-      console.warn('[claude-panel] Focus re-sync: tab running but WS dead — forcing finish', t.label);
-      finishTab(t, true);
-      appendStatus(t, 'Connection lost — session recovered.');
-      notify('panel', NOTIF_TYPE.ERROR, t.label || 'Claude Code', { tabId: t.id });
-    } else {
-      // Kick reconnection now instead of waiting out a throttled timer
-      clearTimeout(t.reconnectTimer);
-      connectTab(t);
-    }
+    // Kick reconnection now instead of waiting out a throttled timer. A running
+    // tab reattaches to its turn, which the server kept going; the reattach
+    // result finishes the tab only if the turn is really gone.
+    if (t.running) t._wasRunning = true;
+    clearTimeout(t.reconnectTimer);
+    connectTab(t);
   }
   const tab = activeTab();
   if (!tab) return;
@@ -3517,7 +3579,7 @@ function timeGroup(d) {
 }
 function trunc(s, n) { return s.length > n ? s.slice(0, n) + '...' : s; }
 function fmtDate(d) { if (!d) return ''; const dt = new Date(d); if (isNaN(dt)) return ''; return dt.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) + ' at ' + dt.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }); }
-function escH(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function escH(s) { return escapeHtml(s); }
 
 // ── Session menu state ──
 let _cpSessSearch = '';
@@ -3527,6 +3589,7 @@ let _cpSessSessions = [];   // accumulated sessions (flat, with projectPath)
 let _cpSessTotal = 0;
 let _cpSessLoading = false;
 let _cpSessBranch = '';      // '' = all
+let _cpSessTag = '';         // '' = all (the CLI's session tag)
 let _cpSessHideEmpty = false;
 let _cpSessShowArchived = false;
 let _cpSessObserver = null;
@@ -3539,6 +3602,7 @@ function cpSessApplyFilters(sessions) {
     if (!_cpSessShowArchived && isArchived(s.sessionId)) return false;
     if (_cpSessHideEmpty && s.messageCount === 0 && !getLabel(s.sessionId)) return false;
     if (_cpSessBranch && (s.gitBranch || '') !== _cpSessBranch) return false;
+    if (_cpSessTag && (s.tag || '') !== _cpSessTag) return false;
     // Client-side label search (server already filtered firstPrompt/branch/sessionId)
     if (_cpSessSearch) {
       const q = _cpSessSearch.toLowerCase();
@@ -3550,6 +3614,23 @@ function cpSessApplyFilters(sessions) {
   });
 }
 
+// The tag filter lists the tags among the loaded sessions; hidden while there are none.
+function _cpSessSyncTagFilter(menu) {
+  const select = menu?.querySelector('.cp-sess-tag-select');
+  if (!select) return;
+  const tags = collectTags(_cpSessSessions);
+  if (_cpSessTag && !tags.includes(_cpSessTag)) _cpSessTag = '';
+  select.innerHTML = '<option value="">All tags</option>';
+  for (const t of tags) {
+    const opt = document.createElement('option');
+    opt.value = t;
+    opt.textContent = `#${t}`;
+    select.appendChild(opt);
+  }
+  select.value = _cpSessTag;
+  select.style.display = tags.length ? '' : 'none';
+}
+
 function cpSessCollectBranches(sessions) {
   const set = new Set();
   for (const s of sessions) { if (s.gitBranch) set.add(s.gitBranch); }
@@ -3557,7 +3638,9 @@ function cpSessCollectBranches(sessions) {
 }
 
 function cpSessRenderItem(s, projectPath, menu) {
-  const label = getLabel(s.sessionId) || cleanPrompt(s.firstPrompt) || 'Empty session';
+  // The name given here, else the title the CLI holds (set with /rename or in a
+  // terminal), else the first prompt.
+  const label = getLabel(s.sessionId) || cleanPrompt(sessionListLabel(s)) || 'Empty session';
   const active = s.sessionId === activeTab()?.sessionId ? ' active' : '';
   const archived = isArchived(s.sessionId);
   const archivedClass = archived ? ' cp-sess-item--archived' : '';
@@ -3574,20 +3657,83 @@ function cpSessRenderItem(s, projectPath, menu) {
     item.setAttribute('data-tooltip-pos', 'left');
   }
 
-  let metaHtml = `<span>${relDate(s.modified || s.created)}</span>`;
-  if (s.gitBranch) metaHtml += `<span class="cp-sess-branch">${escH(s.gitBranch)}</span>`;
-  if (s.messageCount) metaHtml += `<span>${s.messageCount} msgs</span>`;
+  // The title, the tag, the branch and the id are the session's: `row` holds
+  // them escaped for text and for quoted attributes (sessionRowParts() in
+  // cp/cp-sessions.js). Nothing else of the session goes into this markup.
+  const row = sessionRowParts({
+    label: trunc(label, 60),
+    sessionId: s.sessionId,
+    tag: s.tag,
+    branch: s.gitBranch,
+    messageCount: s.messageCount,
+    when: relDate(s.modified || s.created),
+  });
 
-  const archiveBtn = archived
-    ? `<button class="cp-sess-unarchive-btn" data-sid="${escH(s.sessionId)}" title="Unarchive">&#x21A9;</button>`
-    : `<button class="cp-sess-archive-btn" data-sid="${escH(s.sessionId)}" title="Archive">&#x2716;</button>`;
+  const archiveBtnHtml = archived
+    ? `<button class="cp-sess-unarchive-btn" data-sid="${row.sid}" title="Unarchive">&#x21A9;</button>`
+    : `<button class="cp-sess-archive-btn" data-sid="${row.sid}" title="Archive">&#x2716;</button>`;
 
+  // Fork and Delete call routes a server that was not restarted does not have:
+  // they show only once a connected server advertises `session_ops`.
+  const sessionOps = sessionOpsSupported(_tabs);
   item.innerHTML = `
-    <div class="cp-sess-prompt">${escH(trunc(label, 60))}</div>
-    ${archiveBtn}
-    <button class="cp-sess-rename" data-sid="${escH(s.sessionId)}" title="Rename">&#x270E;</button>
-    <div class="cp-sess-meta">${metaHtml}</div>
+    <div class="cp-sess-prompt">${row.label}</div>
+    ${archiveBtnHtml}
+    <button class="cp-sess-rename" data-sid="${row.sid}" title="Rename">&#x270E;</button>
+    ${sessionOps ? `<button class="cp-sess-rename cp-sess-tag-btn" title="${row.tagTitle}">#</button>
+    <button class="cp-sess-rename cp-sess-fork" title="Fork: continue a copy in a new tab">&#x2442;</button>
+    <button class="cp-sess-rename cp-sess-delete" title="Delete this session for good">&#x1F5D1;</button>` : ''}
+    <div class="cp-sess-meta">${row.meta}</div>
   `;
+
+  // Fork: a copy of the whole session, opened in a new tab.
+  item.querySelector('.cp-sess-fork')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const title = forkTitle(label);
+    forkClaudeSession(s.sessionId, { title, project: projectPath }).then((r) => {
+      storage.setItem(LABEL_PREFIX + r.sessionId, title);
+      menu.classList.remove('open');
+      const t = createTab(r.sessionId, title);
+      if (t) { t.project = projectPath; saveTabs(); }
+    }).catch((err) => { const t = activeTab(); if (t) appendStatus(t, `Could not fork the session: ${err.message}`); });
+  });
+
+  // Tag: a word the CLI keeps with the session (`claude --resume` shows it too).
+  item.querySelector('.cp-sess-tag-btn')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const next = prompt('Tag for this session (empty to clear):', s.tag || '');
+    if (next === null) return;
+    tagClaudeSession(s.sessionId, next, projectPath).then((r) => {
+      s.tag = r.tag || '';
+      // Re-render the list: the chip, the tooltip and the tag filter follow.
+      const listEl = menu.querySelector('.cp-sess-list');
+      if (listEl) { listEl.innerHTML = ''; cpSessRenderItems(cpSessApplyFilters(_cpSessSessions), listEl, menu); }
+      _cpSessSyncTagFilter(menu);
+    }).catch((err) => { const t = activeTab(); if (t) appendStatus(t, `Could not tag the session: ${err.message}`); });
+  });
+
+  // Delete: irreversible, so the first click only arms it.
+  const delBtn = item.querySelector('.cp-sess-delete');
+  delBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (_tabs.some(t => t.sessionId === s.sessionId)) { const t = activeTab(); if (t) appendStatus(t, 'This session is open in a tab. Close the tab before deleting it.'); return; }
+    if (!delBtn.classList.contains('cp-sess-delete-armed')) {
+      delBtn.classList.add('cp-sess-delete-armed');
+      delBtn.textContent = 'Delete?';
+      delBtn.title = 'Click again to delete the transcript for good. This cannot be undone.';
+      setTimeout(() => { if (delBtn.isConnected) { delBtn.classList.remove('cp-sess-delete-armed'); delBtn.innerHTML = '&#x1F5D1;'; } }, 4000);
+      return;
+    }
+    deleteClaudeSession(s.sessionId, projectPath).then((r) => {
+      // The transcript is gone; what SynaBun could not drop of its own records is said.
+      if (r?.warning) { const t = activeTab(); if (t) appendWarn(t, r.warning); }
+      try { storage.removeItem(LABEL_PREFIX + s.sessionId); } catch {}
+      // The server drops its records of the session (cost row, indexed chunks,
+      // list cache, stored snapshot); this page forgets its copy of the snapshot.
+      try { delete _sessionSnapshots[s.sessionId]; deleteBlob('claude-snapshots', s.sessionId); } catch {}
+      item.remove();
+    }).catch((err) => { const t = activeTab(); if (t) appendStatus(t, `Could not delete the session: ${err.message}`); });
+  });
 
   // Click to resume
   item.addEventListener('click', () => {
@@ -3648,6 +3794,9 @@ function cpSessRenderItem(s, projectPath, menu) {
       if (val) {
         storage.setItem(LABEL_PREFIX + sid, val);
         promptEl.textContent = trunc(val, 60);
+        // A name the user typed is also the session's title for the CLI, on a
+        // server that has the route (the name is kept here either way).
+        if (sessionOpsSupported(_tabs)) writeSessionTitle(sid, val, item.dataset.cwd);
       } else {
         storage.removeItem(LABEL_PREFIX + sid);
         promptEl.textContent = currentName;
@@ -3688,6 +3837,31 @@ function cpSessRenderItems(sessions, listEl, menu) {
   }
 }
 
+// A search looks in three places: the conversations' text (full-text and
+// semantic), the list's own fields (first prompt, branch, the CLI's title and
+// tag) and the names given in this panel, which only this page knows. They are
+// merged, so a title the list shows is always found by typing it.
+async function _cpSessSearchAll(q) {
+  const project = _cpSessProject || undefined;
+  const flat = (d) => (d?.projects || []).flatMap(p => (p.sessions || []).map(s => ({ ...s, _projectPath: p.path })));
+  const [ranked, listed] = await Promise.all([
+    searchSessions({ q, provider: 'claude-code', project, limit: 100 }).then(flat).catch(() => []),
+    fetchClaudeSessions({ search: q, project, limit: 100 }).then(flat).catch(() => []),
+  ]);
+  // Sessions named here that neither search returned: the list route finds a
+  // session by its id.
+  const have = new Set([...ranked, ...listed].map(s => s.sessionId));
+  const keys = typeof storage.keys === 'function' ? storage.keys() : [];
+  const labels = keys.filter(k => k.startsWith(LABEL_PREFIX)).map((k) => { const id = k.slice(LABEL_PREFIX.length); return [id, getLabel(id)]; });
+  const missing = labelledSessionIds(labels, q).filter(id => !have.has(id));
+  const named = (await Promise.all(missing.map(id =>
+    fetchClaudeSessions({ search: id, project, limit: 5 }).then(d => flat(d).find(s => s.sessionId === id) || null).catch(() => null)
+  ))).filter(Boolean);
+  const sessions = mergeSessionSearch(q, { ranked, listed: [...listed, ...named], labelOf: getLabel });
+  if (!sessions.length) return { projects: [] };
+  return { projects: [{ path: sessions[0]._projectPath, total: sessions.length, sessions }] };
+}
+
 async function cpSessLoadBatch(menu, listEl, refresh = false) {
   if (_cpSessLoading) return;
   _cpSessLoading = true;
@@ -3702,12 +3876,7 @@ async function cpSessLoadBatch(menu, listEl, refresh = false) {
     // falls back to fetchClaudeSessions for the plain paginated list.
     let data;
     if (_cpSessSearch && _cpSessSearch.trim().length >= 2 && _cpSessOffset === 0) {
-      data = await searchSessions({
-        q: _cpSessSearch,
-        provider: 'claude-code',
-        project: _cpSessProject || undefined,
-        limit: 100,
-      });
+      data = await _cpSessSearchAll(_cpSessSearch.trim());
     } else {
       data = await fetchClaudeSessions(opts);
     }
@@ -3720,7 +3889,7 @@ async function cpSessLoadBatch(menu, listEl, refresh = false) {
     }
 
     _cpSessTotal = proj.total || 0;
-    const newSessions = (proj.sessions || []).map(s => ({ ...s, _projectPath: proj.path }));
+    const newSessions = (proj.sessions || []).map(s => ({ ...s, _projectPath: s._projectPath || proj.path }));
     _cpSessSessions.push(...newSessions);
     _cpSessOffset += newSessions.length;
 
@@ -3729,13 +3898,12 @@ async function cpSessLoadBatch(menu, listEl, refresh = false) {
     const branchSelect = menu.querySelector('.cp-sess-branch-select');
     if (branchSelect) {
       const prevVal = branchSelect.value;
-      branchSelect.innerHTML = '<option value="">All branches</option>';
-      for (const b of branches) {
-        branchSelect.innerHTML += `<option value="${escH(b)}">${escH(b)}</option>`;
-      }
+      // A branch name is the repository's: options are built as elements.
+      fillSelectOptions(branchSelect, [{ value: '', label: 'All branches' }, ...branches.map(b => ({ value: b, label: b }))]);
       branchSelect.value = prevVal;
       branchSelect.style.display = branches.length ? '' : 'none';
     }
+    _cpSessSyncTagFilter(menu);
 
     const filtered = cpSessApplyFilters(newSessions);
     cpSessRenderItems(filtered, listEl, menu);
@@ -3788,6 +3956,7 @@ async function renderSessionMenu() {
     </div>
     <div class="cp-sess-filters">
       <select class="cp-sess-branch-select" style="display:none"><option value="">All branches</option></select>
+      <select class="cp-sess-branch-select cp-sess-tag-select" style="display:none"><option value="">All tags</option></select>
       <div class="cp-sess-filter-pill${_cpSessHideEmpty ? ' active' : ''}" data-filter="empty">Hide empty</div>
       <div class="cp-sess-filter-pill${_cpSessShowArchived ? ' active' : ''}" data-filter="archived">Archived</div>
     </div>
@@ -3852,6 +4021,13 @@ async function renderSessionMenu() {
     cpSessRenderItems(filtered, listEl, menu);
   });
   branchSelect.addEventListener('click', (e) => e.stopPropagation());
+  const tagSelect = searchEl.querySelector('.cp-sess-tag-select');
+  tagSelect?.addEventListener('change', () => {
+    _cpSessTag = tagSelect.value;
+    listEl.innerHTML = '';
+    cpSessRenderItems(cpSessApplyFilters(_cpSessSessions), listEl, menu);
+  });
+  tagSelect?.addEventListener('click', (e) => e.stopPropagation());
 
   searchEl.querySelectorAll('.cp-sess-filter-pill').forEach(pill => {
     pill.addEventListener('click', (e) => {
@@ -3888,15 +4064,23 @@ async function renderSessionMenu() {
 async function selectSession(sid, label) {
   const tab = activeTab();
   if (!tab) return;
-  // If current tab is running, spawn a new tab instead of killing the running session
-  if (tab.running) {
+  // If current tab is running — or its background agents are — spawn a new tab
+  // instead of killing the running session
+  const inNewTab = () => {
     if (_tabs.length >= MAX_TABS) {
       appendStatus(tab, 'Max tabs reached — close a tab first.');
       return;
     }
     createTab(sid, label || 'New chat');
-    return;
-  }
+  };
+  if (tab.running || tab.backgroundWork?.length) { inNewTab(); return; }
+  // A Compact under way in the tab counts the same (cp-compose.js): the tab and
+  // its queue stay with their conversation.
+  if (compactHolds(tab)) { inNewTab(); return; }
+  // A temporary chat that has started is never replaced by a session picked in
+  // the menu: it could not be come back to. (New chat does leave it: that is
+  // the user ending it.)
+  if (sid && tab.tempStarted && temporaryBlocks(tab, 'resume')) { appendStatus(tab, temporaryBlocks(tab, 'resume')); inNewTab(); return; }
   // Check lock before selecting an existing session
   if (sid) {
     const lock = await _checkSessionLock(sid);
@@ -3906,11 +4090,30 @@ async function selectSession(sid, label) {
     }
   }
   // Release previous session lock if switching
-  if (tab.sessionId && tab.sessionId !== sid) _releaseSessionLock(tab.sessionId);
+  // (A temporary chat took no lock and keeps no snapshot: no request names its session.)
+  if (tab.sessionId && tab.sessionId !== sid && !keepsNothing(tab)) {
+    // Save the outgoing session first, as switchTab does for the tab it leaves —
+    // otherwise its last turn, usage and context window never reach its snapshot.
+    flushSessionSnapshotSave(tab);
+    _releaseSessionLock(tab.sessionId);
+  }
   tab.titleRequestController?.abort();
   tab.titleRequestController = null;
   tab.titleRequestId = null;
+  // Another conversation: what is queued in this tab was typed for the one it leaves, and is never sent here.
+  // (What was known of the old session's mode is not about the next one. The tab's own mode stays.)
+  if (!sid || sid !== tab.sessionId) sessionForgotten(tab);
+  if (!sid || sid !== tab.sessionId) { tab.conversation = newConversation(); _compactQueue.drop(tab); }
   tab.sessionId = sid;
+  // The tab leaves its temporary chat: the bridge is told to end the session now rather than with the
+  // next message, and the tab becomes what a new tab is. Nothing of the conversation stays on it, and
+  // its socket ends with it: the next conversation gets a socket of its own, so nothing the old one
+  // still delivers (the rest of an interrupted turn) reaches this tab.
+  const wasTemporary = leaveTemporary(tab);
+  if (wasTemporary) {
+    _afterTemporary(tab, sid, label);
+    connectTab(tab);
+  }
   tab.pendingLabel = null;
   tab.sessionCost = 0;
   tab.currentMsgEl = null;
@@ -3919,15 +4122,24 @@ async function selectSession(sid, label) {
   tab.titleState = sid || (tab.label && tab.label !== 'New chat') ? 'manual' : 'default';
   tab.usage = { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheWrite: 0 };
   tab.contextWindow = 0;
+  tab.mainModel = null;
+  tab._modelChangedMidTurn = false;
   tab.compacting = false;
+  tab._compactSentAt = 0;
   _setCompactingUI(false);
   tab.turns = 0;
+  if (tab.queue.length) { tab.queueExpanded = true; renderQueue(tab); } // shown, marked as not sent
   _updateCostLabel();
+  _paintMode(tab);
   renderGauge(tab);
   updatePillLabel(tab);
   const btn = _panel?.querySelector('.cp-session-label');
   if (btn) btn.textContent = tab.label;
   tab.messagesEl.innerHTML = `<div class="cp-empty"><div class="cp-empty-logo">${CLAUDE_ICON}</div><span class="cp-empty-name">Claude</span><span class="cp-empty-hint">Send a message to start</span></div>`;
+  // (The scroll controller of a temporary chat went with it: the next conversation gets its own, made
+  // once the old transcript is out of the conversation area, so it never watches a row of it.)
+  if (wasTemporary) tab.scrollController = createStickyScrollController(tab.messagesEl, { active: tab === activeTab() });
+  _paintTemporary(tab);
   if (sid) {
     loadSessionHistory(sid, tab.messagesEl);
     // Restore session cost from server
@@ -3939,6 +4151,8 @@ async function selectSession(sid, label) {
       }
     }).catch(() => {});
   }
+  // (After a temporary chat the composer, its previews and the tab's widgets still showed the conversation it left: they are drawn again from the tab.)
+  if (wasTemporary && tab === activeTab()) switchTab(_activeTabIdx);
   saveTabs();
 }
 
@@ -3951,6 +4165,8 @@ function markClaudeSessionTitleManual(tab) {
 }
 
 function requestClaudeSessionTitle(tab, prompt, { cwd, model, effort, paths, hasImages } = {}) {
+  // A temporary chat gets no title: the request would send its prompt to be summarised.
+  if (keepsNothing(tab)) return;
   if (!tab || tab.closed || tab.automationActive || tab.turns > 0 || tab.titleState !== 'default') return;
   const requestId = crypto.randomUUID();
   const controller = new AbortController();
@@ -3975,7 +4191,7 @@ function requestClaudeSessionTitle(tab, prompt, { cwd, model, effort, paths, has
     tab.titleRequestController = null;
     tab.pendingLabel = tab.sessionId ? null : title;
     tab.label = title;
-    if (tab.sessionId) storage.setItem(LABEL_PREFIX + tab.sessionId, title);
+    if (tab.sessionId && !keepsNothing(tab)) storage.setItem(LABEL_PREFIX + tab.sessionId, title);
     updatePillLabel(tab);
     if (tab === activeTab()) {
       const headerLabel = _panel?.querySelector('.cp-session-label');
@@ -3989,6 +4205,8 @@ function requestClaudeSessionTitle(tab, prompt, { cwd, model, effort, paths, has
 }
 
 function renameSession(sid, currentLabel) {
+  // (A temporary chat has no name.)
+  if (temporaryBlocks(activeTab(), 'rename')) { appendStatus(activeTab(), temporaryBlocks(activeTab(), 'rename')); return; }
   const btn = _panel?.querySelector('.cp-session-label');
   if (!btn) return;
 
@@ -4028,7 +4246,7 @@ function renameSession(sid, currentLabel) {
     }
     if (val) {
       markClaudeSessionTitleManual(tab);
-      if (effectiveSid) storage.setItem(LABEL_PREFIX + effectiveSid, val);
+      if (effectiveSid && !keepsNothing(tab)) { storage.setItem(LABEL_PREFIX + effectiveSid, val); if (sessionActionsAvailable(tab)) writeSessionTitle(effectiveSid, val, tab?.project); }
       else if (tab) tab.pendingLabel = val;
       btn.textContent = val;
     } else {
@@ -4070,7 +4288,7 @@ function promptNameNewSession() {
       <div class="cp-name-modal-row">
         <label class="cp-name-modal-label">Project</label>
         <select class="cp-name-modal-select" data-role="project">
-          ${projectOptions.map(p => `<option value="${p.path.replace(/"/g, '&quot;')}">${p.name}</option>`).join('')}
+          ${projectOptions.map(p => `<option value="${esc(p.path)}">${esc(p.name)}</option>`).join('')}
         </select>
       </div>
       <div class="cp-name-modal-row">
@@ -4116,7 +4334,7 @@ function promptNameNewSession() {
       branchSel.innerHTML = '<option value="">(none)</option>';
       branchSel.disabled = true;
     } else {
-      branchSel.innerHTML = branches.map(b => `<option value="${b.replace(/"/g, '&quot;')}">${b}</option>`).join('');
+      fillSelectOptions(branchSel, branches.map(b => ({ value: b, label: b })));
       if (branchOriginal) branchSel.value = branchOriginal;
       branchSel.disabled = false;
     }
@@ -4167,8 +4385,8 @@ function promptNameNewSession() {
     if (!val) return;
     const sid = t?.sessionId;
     markClaudeSessionTitleManual(t);
-    if (sid) storage.setItem(LABEL_PREFIX + sid, val);
-    else if (t) t.pendingLabel = val;
+    if (sid && !keepsNothing(t)) { storage.setItem(LABEL_PREFIX + sid, val); if (sessionActionsAvailable(t)) writeSessionTitle(sid, val, t?.project); }
+    else if (t && !keepsNothing(t)) t.pendingLabel = val;
     if (labelEl) labelEl.textContent = val;
     if (t) { t.label = val; updatePillLabel(t); saveTabs(); }
   };
@@ -4196,10 +4414,14 @@ function _normalizeSnapshotEntry(entry) {
     label: typeof entry.label === 'string' ? entry.label : '',
     usage: (entry.usage && typeof entry.usage === 'object') ? entry.usage : null,
     todos: Array.isArray(entry.todos) ? entry.todos : null,
-    contextWindow: Number(entry.contextWindow) || 0,
+    // Before v3 the window was read off the first result.modelUsage key — often a
+    // subagent's Haiku (200K) — so older snapshots fall back to the selected model's.
+    contextWindow: Number(entry.v) >= 3 ? Number(entry.contextWindow) || 0 : 0,
     turns: Number(entry.turns) || 0,
     sessionCost: Number(entry.sessionCost) || 0,
     itemCount: Number(entry.itemCount) || 0,
+    // 1: rebuilt from a history route that returns tool results (cp-tool-results.js).
+    results: entry.results ? 1 : 0,
   };
 }
 
@@ -4243,6 +4465,8 @@ function getSessionSnapshot(sid) {
 
 function writeSessionSnapshot(tab) {
   if (tab?._agentScope) tab = tab._rootTab || Object.getPrototypeOf(tab);
+  // A temporary chat's transcript is never stored.
+  if (keepsNothing(tab)) return;
   const sid = tab?.sessionId || null;
   const $msgs = tab?.messagesEl || null;
   if (!sid || !$msgs) return;
@@ -4257,7 +4481,7 @@ function writeSessionSnapshot(tab) {
     !n.classList?.contains('cp-empty') && !n.classList?.contains('thinking')
   ).length;
   _sessionSnapshots[sid] = {
-    v: 2,
+    v: 3,
     html,
     updatedAt: Date.now(),
     label: tab.label || '',
@@ -4267,6 +4491,7 @@ function writeSessionSnapshot(tab) {
     turns: tab.turns || 0,
     sessionCost: tab.sessionCost || 0,
     itemCount,
+    results: tab._historyResults || _sessionSnapshots[sid]?.results ? 1 : 0,
   };
   _persistSessionSnapshots(sid);
 }
@@ -4313,7 +4538,7 @@ function scheduleSessionSnapshotSave(tab) {
   // Agent scopes inherit sessionId but own a tiny nested-feed messagesEl —
   // snapshotting one would overwrite the real transcript. Resolve the root.
   if (tab?._agentScope) tab = tab._rootTab || Object.getPrototypeOf(tab);
-  if (!tab?.sessionId || !tab?.messagesEl) return;
+  if (!tab?.sessionId || !tab?.messagesEl || keepsNothing(tab)) return;
   tab._snapshotDirty = true;
   _armSnapshotFlusher();
 }
@@ -4333,24 +4558,25 @@ function flushAllSessionSnapshots() {
 function renderStoredSession(snapshot, $msgs, tab) {
   const norm = _normalizeSnapshotEntry(snapshot);
   if (!norm || !$msgs) return false;
-  $msgs.innerHTML = norm.html;
-  // Disable interactive controls — restored DOM has no event handlers and
-  // any pending state (permission prompts, plan cards, ask cards) is stale.
-  $msgs.querySelectorAll('button, input, select, textarea').forEach(node => { node.disabled = true; });
-  // Drop transient overlays that should never resurrect after a fresh load
-  $msgs.querySelectorAll('.thinking, .msg-permission-prompt, .post-plan-card').forEach(n => n.remove());
-  // SDK-era transients: pending plan approvals / permission cards / rewind popovers
-  $msgs.querySelectorAll('.cp-plan-approval-card.active-perm, .perm-card.active-perm, .cp-rewind-confirm').forEach(n => {
-    const msgRow = n.closest('.msg');
-    (n.classList.contains('cp-rewind-confirm') ? n : (msgRow || n)).remove();
-  });
-  // Restored rewind buttons have no listeners — drop them (live ones re-stamp on replay)
-  $msgs.querySelectorAll('.cp-rewind-btn').forEach(n => n.remove());
-  $msgs.querySelectorAll('.tool-streaming').forEach(n => n.classList.remove('tool-streaming'));
-  // Agent cards restored mid-run: mark them inert so pills stop pulsing
-  $msgs.querySelectorAll('.cp-agent-pill.cp-agent-running').forEach(p => {
-    p.classList.remove('cp-agent-running');
-    p.textContent = '·';
+  // A snapshot comes back from storage and may predate the sanitiser: nothing
+  // that can run or load code is put back (cp/cp-markdown.js).
+  $msgs.replaceChildren(scrubStoredHtml(norm.html));
+  // Restored DOM has no event handlers. Pending prompts (permission, plan, ask
+  // cards) are stale and go, answered ones stay inert; the read-only actions
+  // are wired again from what the markup saved: rewind (prompt uuid), the
+  // header toggle of Bash / diff / agent cards, "Show all" on a clipped result,
+  // a past subagent's transcript, "Load earlier". See cp/cp-rehydrate.js.
+  rehydrateStoredTranscript($msgs, {
+    attachRewind: (row, uuid) => _attachRewindButton(tab, row, uuid),
+    wireSubagent: (card, agentId) => _wireSubagentTranscript(tab, card, agentId),
+    loadFullResult: (toolUseId) => _fetchToolResultText(tab, toolUseId),
+    // The stored note gives way to a live one for the same page.
+    restorePager: (note, state) => {
+      const sid = $msgs._historySid || tab?.sessionId;
+      if (!sid || !tab || tab.messagesEl !== $msgs) throw new Error('no tab to load into');
+      note.remove();
+      _addHistoryPager(tab, $msgs, sid, _historyProject(tab) || undefined, { total: state.total, start: state.start, messages: { length: state.total - state.start } });
+    },
   });
   // Re-attach copy buttons + file path links — innerHTML wipes their listeners
   $msgs.querySelectorAll('pre .cp-copy-btn').forEach(btn => btn.remove());
@@ -4376,6 +4602,222 @@ function renderStoredSession(snapshot, $msgs, tab) {
   return true;
 }
 
+// One row of GET /api/claude-code/sessions/:id/messages into the transcript.
+// Same cards as the live path: buildTool for calls, updateToolResult (with the
+// typed output) for results, so a reopened session looks like it did live.
+function _renderHistoryRow(tab, $msgs, m) {
+  const live = !!tab && tab.messagesEl === $msgs; // the live renderers resolve cards through the tab
+  if (m.role === 'user') {
+    const el = document.createElement('div'); el.className = 'msg msg-user';
+    const bubble = document.createElement('div'); bubble.className = 'msg-bubble'; bubble.textContent = m.text;
+    el.appendChild(bubble); $msgs.appendChild(el);
+    // A slash or shell command the user ran, or a prompt queued while Claude worked.
+    if (m.command) el.classList.add('cp-msg-command');
+    if (m.queued) bubble.title = 'Sent while Claude was working';
+    // The prompt's uuid: what rewind and "edit and retry" address. (A local
+    // command has no checkpoint and is not a point to rewind to.)
+    if (m.uuid && !m.command) { if (live) _stampUserMessageUuid(tab, m.uuid); else el.dataset.uuid = m.uuid; }
+    return;
+  }
+  if (m.role === 'assistant') {
+    const el = document.createElement('div'); el.className = 'msg msg-assistant';
+    if (m.uuid) el.dataset.uuids = m.uuid;
+    const avatar = document.createElement('div'); avatar.className = 'msg-avatar';
+    avatar.innerHTML = CLAUDE_ICON; el.appendChild(avatar);
+    const wrap = document.createElement('div'); wrap.className = 'msg-content';
+    if (m.thinking) {
+      const thinkEl = document.createElement('details');
+      thinkEl.className = 'msg-thinking';
+      thinkEl.innerHTML = `<summary><span class="msg-thinking-icon">${THINKING_ICON}</span><span class="msg-thinking-label">Thinking</span><span class="msg-thinking-chevron">&#x203A;</span></summary><div class="msg-thinking-content"></div>`;
+      thinkEl.querySelector('.msg-thinking-content').textContent = m.thinking;
+      wrap.appendChild(thinkEl);
+    }
+    if (m.text) {
+      const body = document.createElement('div'); body.className = 'msg-body';
+      body._rawMd = m.text;
+      body.innerHTML = md(m.text);
+      linkifyFilePaths(body);
+      addCopyButtons(body);
+      wrap.appendChild(body);
+    }
+    for (const t of m.tools || []) {
+      if (typeof t === 'object' && t.name) {
+        // A question or a plan that was already answered: a record of it, not
+        // the interactive card (and not a JSON dump).
+        if (t.name === 'AskUserQuestion') wrap.appendChild(buildHistoryAskCard(t));
+        else if (t.name === 'ExitPlanMode') wrap.appendChild(buildHistoryPlanCard(t));
+        else wrap.appendChild(buildTool(t, tab));
+      } else {
+        // Legacy: tool name string only
+        const tName = String(t);
+        const summary = document.createElement('div'); summary.className = 'msg-tools-summary';
+        if (isSynaBunTool(tName)) {
+          const sMeta = getSynaBunMeta(tName);
+          summary.textContent = sMeta?.label || synaBunToolKey(tName);
+          summary.classList.add('synabun-summary');
+        } else {
+          summary.textContent = tName;
+        }
+        wrap.appendChild(summary);
+      }
+    }
+    el.appendChild(wrap); $msgs.appendChild(el);
+    return;
+  }
+  if (m.role === 'tool_result' && m.toolUseId) {
+    if (fillHistoryCard($msgs, m)) return;
+    if (live) {
+      updateToolResult(tab, { type: 'tool_result', tool_use_id: m.toolUseId, content: m.text || '', is_error: !!m.isError, tool_use_result: m.structured });
+      // A subagent of a past session: its own transcript loads when the card is opened.
+      const agentId = m.structured?.agentId;
+      const agentCard = agentId && sessionActionsAvailable(tab) ? $msgs.querySelector(`.cp-agent-card[data-tool-id="${CSS.escape(m.toolUseId)}"]`) : null;
+      if (agentCard) _wireSubagentTranscript(tab, agentCard, String(agentId));
+      return;
+    }
+    // No tab behind this container: plain text into the card.
+    const card = $msgs.querySelector(`.tool-card[data-tool-id="${CSS.escape(m.toolUseId)}"]`);
+    const rLbl = card?.querySelector('.tool-result-label');
+    const rSec = card?.querySelector('.tool-result-content');
+    if (rSec && m.text) {
+      rSec.textContent = m.text.slice(0, 2000);
+      rLbl.hidden = false; rSec.hidden = false;
+      card.classList.add(m.isError ? 'tool-error' : 'tool-ok');
+    }
+    return;
+  }
+  if (m.role === 'system' && m.subtype === 'compact_boundary') {
+    renderCompactBoundary({ messagesEl: $msgs }, m);
+    return;
+  }
+  // What started a turn nobody typed, a warning the CLI wrote, a command's output.
+  const view = describeHistorySystemRow(m);
+  if (!view) return;
+  if (view.kind === 'output') {
+    const el = document.createElement('div');
+    el.className = `msg msg-info-card cp-info-${view.isError ? 'warn' : 'info'}`;
+    const inner = document.createElement('div'); inner.className = 'cp-info-body';
+    const title = document.createElement('div'); title.className = 'cp-info-title'; title.textContent = 'Command output';
+    const content = document.createElement('div'); content.className = 'cp-info-content';
+    content.innerHTML = md(view.text.replace(/\x1b\[[0-9;]*[A-Za-z]/g, ''));
+    inner.append(title, content); el.appendChild(inner); $msgs.appendChild(el);
+    return;
+  }
+  const el = document.createElement('div');
+  el.className = view.kind === 'warn' ? 'msg-warn' : (view.kind === 'error' ? 'msg-error' : 'msg-status');
+  el.textContent = view.text;
+  $msgs.appendChild(el);
+}
+
+// A replayed agent card has no nested feed (subagent messages are stored in
+// their own transcript). Opening the card fetches it, once.
+function _wireSubagentTranscript(tab, card, agentId) {
+  const hdr = card.querySelector('.tool-hdr');
+  const feed = card.querySelector('.cp-agent-feed');
+  // Wired once per element. (The agent id is also kept in the markup, so a card
+  // restored from a snapshot can be wired again: it lost this listener.)
+  if (!tab || !hdr || !feed || card._transcriptWired) return;
+  card._transcriptWired = true;
+  card.dataset.agentId = agentId;
+  hdr.addEventListener('click', () => {
+    if (card.dataset.transcript || !tab.sessionId || !sessionActionsAvailable(tab) || keepsNothing(tab)) return;
+    card.dataset.transcript = 'loading';
+    fetchSubagentMessages(tab.sessionId, agentId, tab.project).then((r) => {
+      card.dataset.transcript = 'loaded';
+      const box = document.createElement('div');
+      box.className = 'cp-agent-transcript';
+      for (const m of r.messages || []) { try { _renderHistoryRow(null, box, m); } catch {} }
+      if (box.childElementCount) feed.insertBefore(box, feed.firstChild);
+    }).catch(() => { card.dataset.transcript = ''; });
+  });
+}
+
+// The full text of one tool result, read again from the transcript: a restored
+// snapshot holds only the part of a long result that was on screen.
+async function _fetchToolResultText(tab, toolUseId) {
+  // (A temporary chat has no transcript to read it from.)
+  if (!tab?.sessionId || !toolUseId || keepsNothing(tab)) return null;
+  const params = new URLSearchParams({ tool: toolUseId });
+  const project = _historyProject(tab);
+  if (project) params.set('project', project);
+  if (tab.accountId) params.set('account', tab.accountId);
+  const res = await fetch(`/api/claude-code/sessions/${encodeURIComponent(tab.sessionId)}/messages?${params}`);
+  const full = fullResultFromHistory(await res.json(), toolUseId);
+  // A server that was not restarted cannot return one result: say that.
+  if (full.notice) throw Object.assign(new Error(full.notice), { notice: full.notice });
+  return full.text;
+}
+
+// "Showing the last N of M": with a server that pages (it sends `start`), the
+// note carries a button that loads the page before it.
+function _addHistoryPager(tab, $msgs, sid, project, data) {
+  if (!(data.total > data.messages.length)) return;
+  const note = document.createElement('div'); note.className = 'msg-status cp-history-pager';
+  const label = document.createElement('span');
+  const start = Number.isFinite(data.start) ? data.start : null;
+  label.textContent = start === null
+    ? `Showing last ${data.messages.length} of ${data.total} messages`
+    : `Showing ${data.total - start} of ${data.total} entries`;
+  note.appendChild(label);
+  // Where this page starts: a snapshot restore builds a live pager from it
+  // (cp/cp-rehydrate.js), a stored button being markup without a listener.
+  if (start !== null) { note.dataset.start = String(start); note.dataset.total = String(data.total); }
+  $msgs.prepend(note);
+  if (start === null || start <= 0 || !tab || tab.messagesEl !== $msgs) return;
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'cp-engine-retry';
+  btn.textContent = 'Load earlier';
+  note.append(' ', btn);
+  btn.addEventListener('click', async () => {
+    if (tab.running) { appendStatus(tab, 'Earlier messages can be loaded once Claude is idle.'); return; }
+    btn.disabled = true;
+    try {
+      const params = new URLSearchParams({ limit: '500', before: String(start) });
+      if (project) params.set('project', project);
+      if (tab.accountId) params.set('account', tab.accountId);
+      const page = await fetch(`/api/claude-code/sessions/${encodeURIComponent(sid)}/messages?${params}`).then(r => r.json());
+      if (!page.messages?.length || tab.closed) { note.remove(); return; }
+      // Render at the end (the live renderers append), then move the block up.
+      const tail = $msgs.lastElementChild;
+      tab._replaying = (tab._replaying || 0) + 1;
+      try { for (const m of page.messages) _renderHistoryRow(tab, $msgs, m); }
+      finally { tab._replaying = Math.max(0, (tab._replaying || 1) - 1); }
+      const added = [];
+      for (let n = tail?.nextElementSibling; n; n = n.nextElementSibling) added.push(n);
+      const anchor = note.nextElementSibling;
+      for (const n of added) $msgs.insertBefore(n, anchor);
+      try { settleReplayedCards($msgs, tab); } catch {}
+      // What the user asked to see must survive the next prune.
+      $msgs._pruneCap = $msgs.childElementCount + MAX_MSG_CHILDREN;
+      note.remove();
+      _addHistoryPager(tab, $msgs, sid, project, { total: page.total, start: page.start, messages: { length: page.total - page.start } });
+    } catch {
+      btn.disabled = false;
+      label.textContent = 'Could not load earlier messages';
+    }
+  });
+}
+
+// The project a tab's history is read from: its own (the picker shows the
+// active tab's, so it stands in only for that one). cp/cp-restore.js.
+function _historyProject(tab) {
+  return historyProjectOf(tab, { pickerProject: ddGetValue(_panel?.querySelector('#cp-project')), isActive: !tab || tab === activeTab() });
+}
+
+// The registered project a session's transcript is under, when it is not the
+// one the tab names: read from the session's own entry in the session list
+// (the list finds a session by its id). '' when the list does not know it.
+// `account`: the tab's Claude account. A named account keeps its transcripts
+// in its own config directory, so the list is asked for that catalogue.
+async function _transcriptOwner(sid, project, account) {
+  try { return transcriptOwner(await fetchClaudeSessions({ search: sid, limit: 5, account: account || '' }), sid, project || ''); } catch { return ''; }
+}
+
+// Forget a session's stored snapshot (its transcript no longer says what it shows).
+function _dropSessionSnapshot(sid) {
+  try { delete _sessionSnapshots[sid]; deleteBlob('claude-snapshots', sid); } catch {}
+}
+
 async function loadSessionHistory(sid, $msgs) {
   if (!$msgs) $msgs = activeTab()?.messagesEl;
   if (!$msgs) return;
@@ -4384,36 +4826,97 @@ async function loadSessionHistory(sid, $msgs) {
   // load doesn't miss its own snapshots and rebuild from JSONL needlessly.
   try { await _snapshotsReady; } catch {}
   const snap = getSessionSnapshot(sid);
+  let restored = null; // the rows the snapshot put back, when a rebuild follows it
   if (snap && snap.html) {
     const tab = _tabs.find(t => t.messagesEl === $msgs) || activeTab();
+    $msgs._historySid = sid; // the session this transcript shows (a restored pager loads its earlier pages)
     if (renderStoredSession(snap, $msgs, tab)) {
+      restored = [...$msgs.children];
       scrollEnd();
       // Background refresh: pull latest JSONL in case the session continued in
-      // another window. If upstream has more turns than the snapshot, fall back
-      // to the rebuild path below so the resumed view is current.
+      // another window, or was rewound there. The probe reads what the owning
+      // tab reads (its project, its Claude account). The snapshot stays only
+      // when the transcript still ends where the snapshot does: more rows,
+      // another branch (even a shorter one), an account that is gone or tool
+      // results the server can now return fall through to the rebuild below
+      // (snapshotVerdict, cp/cp-restore.js).
       try {
-        const $project = _panel?.querySelector('#cp-project');
-        const project = ddGetValue($project) || undefined;
+        const project = _historyProject(tab);
         const params = new URLSearchParams({ limit: '1' });
         if (project) params.set('project', project);
+        if (tab?.accountId) params.set('account', tab.accountId);
         const probe = await fetch(`/api/claude-code/sessions/${encodeURIComponent(sid)}/messages?${params}`);
         const probeData = await probe.json();
-        if ((probeData?.total || 0) > (snap.itemCount || 0) + 2) {
+        // `visible` counts prompts and replies only (a server that predates it sends `total`).
+        if ((probeData?.visible ?? probeData?.total ?? 0) > (snap.itemCount || 0) + 2) {
           // Upstream has materially more content — fall through to full rebuild
+        } else if (snapshotWantsResults(snap, probeData)) {
+          // Stored while the server could not return tool results; it can now.
+        } else if (snapshotVerdict(snap, probeData, shownUuids($msgs), { tail: shownTail($msgs) }) === 'rebuild') {
+          // The transcript does not end where the snapshot does: another branch
+          // is active, it was cut back to an entry shown further up, it is
+          // empty, it is not in the tab's project, or the tab's account is gone.
         } else {
           return;
         }
       } catch { return; }
     }
   }
-  const $project = _panel?.querySelector('#cp-project');
-  const project = ddGetValue($project) || undefined;
-  const params = new URLSearchParams({ limit: '500' });
-  if (project) params.set('project', project);
-  try {
+  const accountTab = _tabs.find(t => t.messagesEl === $msgs);
+  let project = _historyProject(accountTab || activeTab()) || undefined;
+  const readHistory = async (from) => {
+    const params = new URLSearchParams({ limit: '500' });
+    if (from) params.set('project', from);
+    // A tab under another Claude account reads that account's transcripts.
+    if (accountTab?.accountId) params.set('account', accountTab.accountId);
     const res = await fetch(`/api/claude-code/sessions/${encodeURIComponent(sid)}/messages?${params}`);
-    const data = await res.json();
-    if (!data.messages?.length) {
+    return res.json();
+  };
+  try {
+    let data = await readHistory(project);
+    // The tab's Claude account was removed in Settings: say so. Its transcripts
+    // are not looked for under the default account (another identity's folder).
+    if (data.code === 'account_unavailable') {
+      const note = document.createElement('div');
+      note.className = 'msg-error';
+      note.textContent = `${data.error || 'The Claude account of this tab is no longer set up in SynaBun.'} Its history cannot be shown; pick another account with /account to start a new chat.`;
+      $msgs.replaceChildren(note);
+      return;
+    }
+    // The transcript is not in the project the tab names. The server looks
+    // nowhere else for a named project; the session's own entry in the
+    // session list says which registered project it is under, and it is read
+    // from there (and remembered for this session, so the tab asks there next time).
+    if (historyOutcome(data) === 'not_in_project') {
+      const owner = await _transcriptOwner(sid, project, accountTab?.accountId || '');
+      const moved = owner ? await readHistory(owner) : null;
+      if (moved && historyOutcome(moved) !== 'not_in_project' && historyOutcome(moved) !== 'not_found' && historyOutcome(moved) !== 'refused') {
+        data = moved;
+        project = owner;
+        if (accountTab && accountTab.sessionId === sid) { accountTab.transcriptAt = { sessionId: sid, project: owner }; saveTabs(); }
+      }
+    }
+    // Not found is said as such: the session is not empty, its transcript is
+    // somewhere this tab does not look, or gone.
+    if (historyOutcome(data) === 'not_in_project' || historyOutcome(data) === 'not_found') {
+      const missing = document.createElement('div');
+      missing.className = 'msg-status cp-history-missing';
+      missing.textContent = historyNotFoundText(data, { project });
+      $msgs.replaceChildren(missing);
+      return;
+    }
+    // The route refused (the tab's project is not a registered one): that is
+    // said, not shown as an empty session.
+    if (data.error && !data.messages?.length) {
+      const refused = document.createElement('div');
+      refused.className = 'msg-status';
+      refused.textContent = `This session's history could not be read: ${data.error}`;
+      $msgs.replaceChildren(refused);
+      return;
+    }
+    if (historyOutcome(data) === 'empty') {
+      // An empty transcript: what a snapshot still shows of it is stale.
+      if (restored) _dropSessionSnapshot(sid);
       $msgs.innerHTML = '<div class="msg-status">No messages in this session</div>';
       return;
     }
@@ -4423,78 +4926,39 @@ async function loadSessionHistory(sid, $msgs) {
     // tab close) — the newer run owns the transcript.
     const ownerTab = _tabs.find(t => t.messagesEl === $msgs) || activeTab();
     const gen = ownerTab ? (ownerTab._historyGen = (ownerTab._historyGen || 0) + 1) : 0;
-    let processed = 0;
-    for (const m of data.messages) {
-      if (++processed % 40 === 0) {
-        await new Promise(r => setTimeout(r, 0));
-        if (ownerTab && (ownerTab._historyGen !== gen || ownerTab.closed)) return;
+    // The rebuild replaces the snapshot that was put back above (only those
+    // rows: what a live turn appended meanwhile stays).
+    if (restored) for (const node of restored) node.remove();
+    // Replay goes through the live renderers (tool cards, typed results), marked
+    // so it leaves no activity behind: no hook-strip entries, no statusline verb.
+    if (ownerTab) ownerTab._replaying = (ownerTab._replaying || 0) + 1;
+    try {
+      let processed = 0;
+      for (const m of data.messages) {
+        if (++processed % 40 === 0) {
+          await new Promise(r => setTimeout(r, 0));
+          if (ownerTab && (ownerTab._historyGen !== gen || ownerTab.closed)) return;
+        }
+        _renderHistoryRow(ownerTab, $msgs, m);
       }
-      if (m.role === 'user') {
-        const el = document.createElement('div'); el.className = 'msg msg-user';
-        const bubble = document.createElement('div'); bubble.className = 'msg-bubble'; bubble.textContent = m.text;
-        el.appendChild(bubble); $msgs.appendChild(el);
-      } else if (m.role === 'assistant') {
-        const el = document.createElement('div'); el.className = 'msg msg-assistant';
-        const avatar = document.createElement('div'); avatar.className = 'msg-avatar';
-        avatar.innerHTML = CLAUDE_ICON; el.appendChild(avatar);
-        const wrap = document.createElement('div'); wrap.className = 'msg-content';
-        if (m.thinking) {
-          const thinkEl = document.createElement('details');
-          thinkEl.className = 'msg-thinking';
-          thinkEl.innerHTML = `<summary><span class="msg-thinking-icon">${THINKING_ICON}</span><span class="msg-thinking-label">Thinking</span><span class="msg-thinking-chevron">&#x203A;</span></summary><div class="msg-thinking-content"></div>`;
-          thinkEl.querySelector('.msg-thinking-content').textContent = m.thinking;
-          wrap.appendChild(thinkEl);
-        }
-        if (m.text) {
-          const body = document.createElement('div'); body.className = 'msg-body';
-          body._rawMd = m.text;
-          body.innerHTML = md(m.text);
-          linkifyFilePaths(body);
-          addCopyButtons(body);
-          wrap.appendChild(body);
-        }
-        if (m.tools?.length) {
-          for (const t of m.tools) {
-            if (typeof t === 'object' && t.name) {
-              wrap.appendChild(buildTool(t, ownerTab));
-            } else {
-              // Legacy: tool name string only
-              const tName = String(t);
-              const summary = document.createElement('div'); summary.className = 'msg-tools-summary';
-              if (isSynaBunTool(tName)) {
-                const sMeta = getSynaBunMeta(tName);
-                summary.textContent = sMeta?.label || synaBunToolKey(tName);
-                summary.classList.add('synabun-summary');
-              } else {
-                summary.textContent = tName;
-              }
-              wrap.appendChild(summary);
-            }
-          }
-        }
-        el.appendChild(wrap); $msgs.appendChild(el);
-      } else if (m.role === 'tool_result' && m.toolUseId) {
-        // Match result to its tool card
-        const card = $msgs.querySelector(`.tool-card[data-tool-id="${CSS.escape(m.toolUseId)}"]`);
-        if (card && card.classList.contains('synabun-card') && m.text) {
-          updateSynaBunResult(card, { content: m.text, is_error: m.isError });
-        } else if (card) {
-          const rLbl = card.querySelector('.tool-result-label');
-          const rSec = card.querySelector('.tool-result-content');
-          if (rSec && m.text) {
-            rSec.textContent = m.text.slice(0, 2000);
-            rLbl.hidden = false; rSec.hidden = false;
-            card.classList.add(m.isError ? 'tool-error' : 'tool-ok');
-          }
-        }
-      }
+    } finally {
+      if (ownerTab) ownerTab._replaying = Math.max(0, (ownerTab._replaying || 1) - 1);
     }
+    // Calls whose result is not in this page (interrupted, or cut by the page) stop looking busy.
+    try { settleReplayedCards($msgs, ownerTab); } catch {}
     pruneMessages($msgs);
-    if (data.total > data.messages.length) {
-      const note = document.createElement('div'); note.className = 'msg-status';
-      note.textContent = `Showing last ${data.messages.length} of ${data.total} messages`;
-      $msgs.prepend(note);
+    _addHistoryPager(ownerTab, $msgs, sid, project, data);
+    // A server that was not restarted returns the calls without their results:
+    // one quiet line instead of silently empty cards. The snapshot stored below
+    // carries it, and is rebuilt once the server can return them.
+    const noResults = historyResultsNotice(data);
+    if (noResults) {
+      const note = document.createElement('div');
+      note.className = `msg-status ${HISTORY_NO_RESULTS_CLASS}`;
+      note.textContent = noResults;
+      $msgs.appendChild(note);
     }
+    if (ownerTab) ownerTab._historyResults = historyHasResultSupport(data);
     // Populate context gauge from session history usage
     const tab = ownerTab;
     if (tab && data.usage) {
@@ -4588,7 +5052,7 @@ async function loadMonthlyCost() {
 
 async function syncSessionCosts() {
   for (const tab of _tabs) {
-    if (!tab.sessionId) continue;
+    if (!tab.sessionId || keepsNothing(tab)) continue;
     try {
       const res = await fetch(`/api/claude-skin/cost/session/${tab.sessionId}`);
       if (!res.ok) continue;
@@ -4614,74 +5078,89 @@ function _updateCostLabel() {
   if (navLabel) navLabel.textContent = '$' + sc.toFixed(2);
 }
 
-// ── Context gauge ──
+// ── Context settings (header cog + popover, cp/cp-context-menu.js) ──
 
+// Whether the active tab shows as compacting. The Compact button is in the
+// popover, which exists only while it is open: the state is kept here and every
+// render of the popover reads it, so a call made while it is closed is not lost.
+let _compactingUI = false;
 function _setCompactingUI(on) {
-  const $gauge = _panel?.querySelector('#cp-gauge');
-  const $label = _panel?.querySelector('#cp-gauge-label');
-  const $btn = _panel?.querySelector('#cp-compact-btn');
-  if (on) {
-    $gauge?.classList.add('compacting');
-    $label?.classList.add('compacting');
-    if ($btn) { $btn.classList.add('compacting'); $btn.textContent = 'compacting'; }
-  } else {
-    $gauge?.classList.remove('compacting');
-    $label?.classList.remove('compacting');
-    if ($btn) { $btn.classList.remove('compacting'); $btn.textContent = 'compact'; }
-  }
+  _compactingUI = !!on;
+  const tab = activeTab();
+  if (tab) syncContextMenu(tab);
 }
 
+// The context reading has no element of its own: the cog carries a dot when the
+// window is nearly full and the popover shows the numbers.
 function renderGauge(tab) {
-  // The gauge (#cp-ctx-fill) is a single shared element — rendering for a
-  // background tab both wastes work and clobbers the active tab's numbers
-  // (multi-tab restore used to do exactly that). switchTab re-renders on
-  // activation, so skipping here loses nothing.
+  // One cog and one popover for every tab: a background tab must not paint
+  // them (multi-tab restore used to clobber the active tab's numbers).
+  // switchTab re-renders on activation, so skipping here loses nothing.
   if (tab !== activeTab()) return;
-  const $fill = _panel?.querySelector('#cp-ctx-fill');
-  const $label = _panel?.querySelector('#cp-gauge-label');
-  if (!$fill) return;
+  syncContextMenu(tab);
+}
 
-  const u = tab.usage;
-  const cacheRead = u.cacheRead || 0;
-  const cacheWrite = u.cacheWrite || 0;
-  const uncachedInput = u.inputTokens || 0;
-  const total = uncachedInput + cacheRead + cacheWrite;
-  const ctxWindow = tab.contextWindow || _getContextWindow();
-  const fmt = (v) => {
-    if (v >= 1_000_000) {
-      const m = v / 1_000_000;
-      return (Number.isInteger(m) ? m.toFixed(0) : m.toFixed(1)) + 'M';
-    }
-    if (v >= 1000) return Math.round(v / 1000) + 'k';
-    return String(v);
+// What the cog and the popover read of a tab. The cog's dot needs the reading
+// alone; `full` adds what the open popover shows. The window is a number only
+// when something named it (contextWindowSource): the popover never shows the
+// fallback size _contextWindowFor() divides by.
+function _contextMenuData(tab, { full = false } = {}) {
+  const modelId = tab?.model || _getDefaultModel();
+  const source = contextWindowSource({ reported: tab?.contextWindow || 0, models: _models, modelId });
+  const data = { usage: tab?.usage || null, window: source ? _contextWindowFor(tab) : 0, source };
+  if (!full) return data;
+  const $mode = _panel?.querySelector('#cp-mode');
+  return {
+    ...data,
+    modelLabel: catalogModel(_models, modelId)?.label || modelId || '',
+    compacting: _compactingUI,
+    running: !!tab.running,
+    connected: tab.ws?.readyState === WebSocket.OPEN,
+    mcpServers: tab.mcpServers || [],
+    toolCounts: tab.mcpToolCounts || {},
+    init: tab.init || null,
+    slashCommands: (tab.slashCommands || []).length,
+    sdkVersion: tab.sdkVersion || '',
+    sessionId: tab.sessionId || '',
+    folder: tab.init?.cwd || tab.project || '',
+    // The mode as the project bar words it (it knows Bypass and "from settings").
+    mode: ($mode && !$mode.hidden && $mode.querySelector('.cp-dd-label')?.textContent) || tab.permissionMode || '',
+    account: [tab.accountInfo?.email, tab.accountInfo?.organization].filter(Boolean).join(' · '),
+    flags: sessionFlags(tab.session, { toolPolicy: tab.toolPolicy, fastModeState: tab.fastModeState, account: tab.accountId }),
+    limit: tab.rateLimit?.text || '',
+    backgroundTasks: (tab.backgroundWork || []).length,
+    scheduled: Array.isArray(tab.sessionCrons) ? tab.sessionCrons.length : 0,
+    turns: Number(tab.turns) || 0,
+    cost: Number(tab.sessionCost) || 0,
   };
+}
 
-  if (total === 0) {
-    $fill.style.width = '0%';
-    $fill.style.background = 'rgba(232,224,220,0.18)';
-    if ($label) { $label.textContent = 'context pending'; $label.title = ''; }
-    return;
-  }
+// The Compact button of the popover.
+function _compactNow() {
+  const tab = activeTab();
+  if (!tab || !tab.ws || tab.ws.readyState !== WebSocket.OPEN) return;
+  if (tab.running) { appendStatus(tab, 'Cannot compact while Claude is processing.'); return; }
+  if (compactHolds(tab)) return; // a Compact is already under way: a second click does nothing
+  tab.compacting = true;
+  tab._compactSentAt = Date.now();
+  _setCompactingUI(true);
+  recordHookEvent(tab, 'PreCompact', 'starting compaction');
+  _sendControl(tab, { type: 'compact' });
+  _compactQueue.watch(tab); // prompts already in the queue wait for it too
+  appendStatus(tab, 'Compacting context...');
+}
 
-  const pct = Math.min(100, (total / ctxWindow) * 100);
-  $fill.style.width = pct > 0 ? pct + '%' : '0%';
-  $fill.style.background = pct > 80
-    ? 'rgba(220,80,60,0.45)'
-    : pct > 60
-      ? 'rgba(220,150,50,0.38)'
-      : 'rgba(232,224,220,0.18)';
-
-  if ($label) {
-    const cacheRatio = total > 0 ? Math.round((cacheRead / total) * 100) : 0;
-    // Inline monochrome SVG (currentColor) keeps the badge on-theme with the
-    // muted gauge label instead of an emoji's hard-coded color/size.
-    const boltSvg = '<svg viewBox="0 0 7 9" aria-hidden="true"><path d="M4.2 0 0 5.3h2.1L1.5 9 7 3.5H4.8L5.6 0z" fill="currentColor"/></svg>';
-    const ratioClass = cacheRatio >= 80 ? ' data-ratio="high"' : '';
-    const cacheBadge = cacheRead > 0
-      ? ` <span class="cp-cache-hit"${ratioClass} title="Cache hit ratio · ${fmt(cacheRead)} of ${fmt(total)} context tokens served from Anthropic prompt cache">${boltSvg}${cacheRatio}%</span>`
-      : '';
-    $label.innerHTML = `${fmt(total)} / ${fmt(ctxWindow)} ctx${cacheBadge}`;
-    $label.title = `${Math.round(pct)}% context · ${fmt(u.outputTokens || 0)} output · cache read ${fmt(cacheRead)} / write ${fmt(cacheWrite)} · ${tab.turns} turn${tab.turns !== 1 ? 's' : ''}`;
+function _contextMenuAction(tab, action) {
+  if (action === 'compact') { _compactNow(); return; }
+  if (action === 'breakdown') { _showContextUsage(tab); return; }
+  if (action === 'mcp') { _showMcp(tab); return; }
+  if (action === 'tasks') { _openTasks(tab); return; }
+  if (action === 'session') {
+    // The /session card, without spending what is typed in the input on it.
+    const $input = _panel?.querySelector('#cp-input');
+    const draft = $input?.value || '';
+    runSlashCommand(tab, '/session');
+    if ($input && draft && !$input.value) { $input.value = draft; $input.dispatchEvent(new Event('input')); }
   }
 }
 
@@ -4729,6 +5208,9 @@ function updateAttachBadge() {
 
 // ── WebSocket (per-tab) ──
 function handleTabMsg(tab, msg) {
+  // The bridge session that wrote this message's mode report is the one the tab
+  // talks to now: noted on arrival, before the message may wait in the buffer.
+  reportReceived(tab, msg);
   // Track WS activity for running timeout safety net
   tab._lastWsActivity = Date.now();
   // Discard stale messages from a killed process until terminal signal arrives
@@ -4743,7 +5225,9 @@ function handleTabMsg(tab, msg) {
   // Nothing appears until the user interacts — only control_request passes through
   // so new permission cards can still queue up, and control_cancelled/reattach_result
   // must bypass too (they RESOLVE the pending state; buffering them deadlocks the card).
-  const _bufferBypass = msg.type === 'control_request' || msg.type === 'control_cancelled' || msg.type === 'reattach_result';
+  // An MCP server's elicitation_complete resolves the URL card that is waiting
+  // (bypassesPromptBuffer in cp/cp-events.js lists what passes).
+  const _bufferBypass = bypassesPromptBuffer(msg);
   // Also buffer while a chunked drain is in progress (or older messages still
   // queue) — without this, live events overtake buffered ones between slices.
   if ((tab._activePerm || tab.pendingAskRequestId || tab._draining || tab._msgBuffer.length) && !_bufferBypass) {
@@ -4781,20 +5265,61 @@ function _flushMsgBuffer(tab) {
   step();
 }
 
+// The CLI's own word on the session (system/session_state_changed). `idle`
+// means the turn is over: a tab that still shows it running a few seconds
+// later, with nothing received since, lost the message that ends it.
+const IDLE_STATE_GRACE_MS = 5000;
+function _onSessionState(tab, state) {
+  clearTimeout(tab._idleStateTimer);
+  tab._idleStateTimer = null;
+  if (state !== 'idle' || !tab.running) return;
+  const seenAt = tab._lastWsActivity;
+  tab._idleStateTimer = setTimeout(() => {
+    tab._idleStateTimer = null;
+    if (idleEndsTurn(tab, seenAt)) finishTab(tab, true);
+  }, IDLE_STATE_GRACE_MS);
+}
+
+// Background tasks the CLI is running for this tab after their turn ended
+// (background_tasks_changed / reattach_result). Ambient ones — housekeeping,
+// watchers — keep the session alive but stay out of the indicator.
+function _setBackgroundWork(tab, tasks) {
+  // A background command whose task id left the live list has ended.
+  try { reconcileBgTasks(tab, tasks); } catch {}
+  // The list is the authority: a task this tab has no entry for (the page was
+  // reloaded while it ran) gets one, so /tasks can show and stop it.
+  try { adoptLiveTasks(tab.tasks, tasks); } catch {}
+  try { reconcileTasks(tab.tasks, tasks); } catch {}
+  tab.backgroundWork = (Array.isArray(tasks) ? tasks : [])
+    .filter(t => t && !t.ambient)
+    .map(t => ({ id: t.task_id, type: t.task_type || '', description: t.description || '' }));
+  if (tab === activeTab()) { try { renderStatusline(tab); } catch {} }
+}
+
 function _processTabMsg(tab, msg) {
   switch (msg.type) {
-    case 'engine':
-      // Server hello announcing which bridge engine drives this connection.
-      tab.sdkMode = msg.engine === 'sdk';
+    case 'engine': {
+      // Server hello announcing which bridge engine drives this connection, and
+      // what that engine supports (features newer than the running server stay hidden).
+      const hello = applyEngineHello(tab, msg, {
+        reconnect: () => { const old = tab.ws; tab.ws = null; try { old?.close(); } catch {} connectTab(tab); },
+      });
+      tab.capabilities = new Set(hello.capabilities);
+      _paintTemporary(tab);
+      // No engine attached: the tab keeps the mode it had, nothing can run anyway.
+      if (hello.unavailable) { if (tab.running) finishTab(tab, true); break; }
+      tab.sdkMode = hello.sdk;
       if (msg.sdkVersion) tab.sdkVersion = msg.sdkVersion;
+      _refreshBypassPolicy(tab);
       if (tab === activeTab()) {
         renderStatusline(tab);
         populateModeDropdown(_panel?.querySelector('#cp-mode'), tab);
       }
       break;
+    }
     case 'rewind_result':
       if (msg.ok) {
-        appendStatus(tab, 'Files rewound to checkpoint');
+        appendStatus(tab, rewindResultText(msg));
         if (msg.userMessageUuid && tab.messagesEl) {
           // Dim everything after the anchor user message
           const anchor = tab.messagesEl.querySelector(`.msg-user[data-uuid="${CSS.escape(msg.userMessageUuid)}"]`);
@@ -4822,15 +5347,22 @@ function _processTabMsg(tab, msg) {
         tab.askRenderedViaControl = false;
         tab.messagesEl?.querySelectorAll('.ask-card .ask-option, .ask-card .ask-text-input, .ask-submit').forEach(n => { n.disabled = true; });
       }
+      if (tab._pendingPlan?.requestId === msg.request_id) tab._pendingPlan = null;
       if (tab._activePerm) { tab._activePerm = false; _showNextPerm(tab); }
       else _flushMsgBuffer(tab);
       break;
     }
-    case 'reattach_result':
+    case 'reattach_result': {
+      const expectRunning = !!tab._reattachExpectRunning;
+      tab._reattachExpectRunning = false;
       tab._wasRunning = false;
       if (msg.ok) {
         console.log('[claude-panel] Reattached to running process, session:', msg.sessionId);
         if (msg.sessionId) tab.sessionId = msg.sessionId;
+        // The mode the reclaimed session is in, with the number of the latest
+        // statement it applied. A pick made while the socket was down is said
+        // to it now, before anything else is sent.
+        _sessionSaysMode(tab, msg.mode, 'reattach', msg);
         // Orphan buffer overflowed while detached — rebuild transcript from JSONL
         if (msg.resynced && tab.sessionId) {
           try { loadSessionHistory(tab.sessionId, tab.messagesEl); } catch {}
@@ -4840,11 +5372,75 @@ function _processTabMsg(tab, msg) {
           showThinking(tab);
           setRunning(tab, true);
         }
+        // Prompts queued behind a Compact when the socket closed: the session is there.
+        if (tab._queueWaits === 'session') _compactQueue.after(tab, 'reattached');
+        _setBackgroundWork(tab, msg.backgroundTasks);
+        // The wakeups scheduled for the session, with their schedule and prompt.
+        if (Array.isArray(msg.sessionCronList)) tab.sessionCrons = msg.sessionCronList;
+        // What "Always" granted in this session (the bridge's record).
+        if (Array.isArray(msg.grantedRules)) tab.grantedRules = msg.grantedRules;
+        if (tab === activeTab()) { try { renderStatusline(tab); } catch {} }
         saveTabs();
       } else {
-        // No orphan found — process died during refresh, clear running state
-        console.log('[claude-panel] No orphan to reattach — session idle');
-        finishTab(tab, true);
+        // Nothing to reclaim. Only a tab that was mid-turn when its socket dropped
+        // has anything to finish — and not if a new turn already started on the
+        // fresh socket. Idle tabs are left alone.
+        _setBackgroundWork(tab, []);
+        // The session is gone and so is what was known of its mode. A pick made
+        // while the socket was down is said to the new one first.
+        sessionForgotten(tab);
+        if (tab.modeUnsent) _stateOwnMode(tab, { quiet: true });
+        _paintMode(tab);
+        if (expectRunning && !(tab.sendStartedAt > tab._reattachSentAt)) {
+          console.log('[claude-panel] No orphan to reattach — the turn ended while disconnected');
+          finishTab(tab, true);
+          appendStatus(tab, 'Connection lost — this turn did not survive the disconnect.');
+        }
+        // Prompts queued behind a Compact when the socket closed: nothing says it finished.
+        if (tab._queueWaits === 'session') _compactQueue.after(tab, 'lost');
+        saveTabs();
+      }
+      break;
+    }
+    case 'rewind_conversation_result': {
+      const row = tab._rewindRow;
+      tab._rewindRow = null;
+      if (!msg.ok) { appendStatus(tab, `Could not rewind the conversation: ${msg.error || 'unknown error'}`); break; }
+      // The model no longer has this prompt or anything after it: neither does the transcript.
+      const text = row?.isConnected ? promptText(row) : '';
+      if (row?.isConnected) removeFrom(row);
+      appendStatus(tab, `Conversation rewound to before that message${Number.isFinite(msg.fileCount) ? `; ${msg.fileCount} file${msg.fileCount === 1 ? '' : 's'} restored` : ''}. The prompt is back in the input.`);
+      if (text && tab === activeTab()) { const $input = _panel?.querySelector('#cp-input'); if ($input && !$input.value) { $input.value = text; autoResize(); } }
+      scheduleSessionSnapshotSave(tab);
+      break;
+    }
+    case 'session_response': {
+      const pending = tab._sessionRequests?.get(msg.id);
+      if (!pending) break;
+      tab._sessionRequests.delete(msg.id);
+      clearTimeout(pending.timer);
+      if (msg.ok) pending.resolve(msg.data || {}); else pending.reject(Object.assign(new Error(msg.error || 'The request failed.'), { code: msg.code || '', data: msg.data || null }));
+      break;
+    }
+    case 'task_control_result':
+      if (!msg.ok) appendStatus(tab, `${msg.action === 'stop_task' ? 'Could not stop the task' : 'Could not send it to the background'}: ${msg.error || 'unknown error'}`);
+      else if (msg.action === 'background_tasks') appendStatus(tab, 'Sent to the background: it keeps running and reports back when done.');
+      break;
+    case 'reload_result': {
+      const what = msg.what === 'plugins' ? 'plugins' : 'skills';
+      if (!msg.ok) { appendStatus(tab, `Could not reload ${what}: ${msg.error || 'unknown error'}`); break; }
+      appendStatus(tab, what === 'plugins'
+        ? `Plugins reloaded: ${msg.count} loaded${msg.errorCount ? `, ${msg.errorCount} with errors (see /plugin)` : ''}.`
+        : `Skills reloaded${Number.isFinite(msg.count) ? `: ${msg.count} command${msg.count === 1 ? '' : 's'} available` : ''}.`);
+      break;
+    }
+    case 'turn_started':
+      // The CLI began a turn on its own — a background agent finished, a
+      // scheduled wakeup fired. Show it working; the turn's `done` finishes it.
+      if (!tab.running) {
+        tab.sendStartedAt = Date.now();
+        showThinking(tab);
+        setRunning(tab, true);
         saveTabs();
       }
       break;
@@ -4857,7 +5453,12 @@ function _processTabMsg(tab, msg) {
       if (msg.event?.type === 'result') {
         recordHookEvent(tab, 'Stop', msg.event.subtype || 'turn end');
       }
-      handleTabEvent(tab, msg.event); break;
+      // An automation run's events carry no mode into this tab, and what the
+      // run does (its EnterPlanMode) is not written as this tab's plan mode:
+      // runEvent() in cp/cp-permission-model.js, and `_runEvent` while one is handled.
+      if (msg.fromRun === true) { tab._runEvent = true; try { handleTabEvent(tab, runEvent(tab, msg.event)); } finally { tab._runEvent = false; } }
+      else handleTabEvent(tab, msg.event);
+      break;
     case 'control_request':
       if (msg.request?.subtype === 'permission_request' || msg.request?.subtype === 'can_use_tool') {
         recordHookEvent(tab, 'PermissionRequest', msg.request?.tool_name || '');
@@ -4865,13 +5466,6 @@ function _processTabMsg(tab, msg) {
       handleControlRequest(tab, msg); break;
     case 'stderr': if (msg.text?.trim()) appendStatus(tab, msg.text.trim()); break;
     case 'done':
-      // Plan completion: check BEFORE finishTab clears flags (same pattern as result handler).
-      // SDK engine: the plan-approval card owns the flow — skip the legacy card entirely.
-      if (!tab.sdkMode && tab._exitPlanPending && !tab._exitPlanHandled) {
-        tab._exitPlanHandled = true;
-        tab._exitPlanPending = false;
-        renderPostPlanActions(tab);
-      }
       finishTab(tab, !tab.running);
       if (tab.compacting) {
         recordHookEvent(tab, 'PostCompact', 'context compressed');
@@ -4887,6 +5481,7 @@ function _processTabMsg(tab, msg) {
       }
       break;
     case 'aborted':
+      tab._abortedAt = Date.now(); // the interrupt's own result follows; it is not a failure
       finishTab(tab, !!tab._btwPending);
       if (tab.compacting) { tab.compacting = false; if (tab === activeTab()) _setCompactingUI(false); }
       // /btw: if there's a pending message, send it immediately instead of showing "Aborted"
@@ -4899,7 +5494,6 @@ function _processTabMsg(tab, msg) {
         // Restore files from btw snapshot so buildPromptWithAttachments can process them
         if (btw.files) tab.attachedFiles = btw.files;
         let prompt = buildPromptWithAttachments(tab, btw.text);
-        if (tab.planMode && prompt && !tab.sdkMode) prompt = `[PLAN MODE — think step by step, create a detailed plan, do NOT make code changes.]\n\nCRITICAL — When you have questions or need clarification during planning:\n1. First call ToolSearch with query "select:AskUserQuestion" to load the tool schema\n2. Then call AskUserQuestion to present your questions as interactive options (2-4 choices per question, max 4 questions)\n3. NEVER write questions as plain text — ALWAYS use the AskUserQuestion tool\n4. Use ExitPlanMode when the plan is ready for approval\n\nSTRICT ORDERING — ExitPlanMode MUST be your FINAL action in the turn: do ALL research (Grep, Read, Glob) and write the full plan text BEFORE calling ExitPlanMode. Never emit any text or tool call AFTER ExitPlanMode — anything after is dropped and the user only sees the PLAN COMPLETE approval card.\n\n${prompt}`;
         const btwMsg = {
           type: 'query', prompt,
           cwd: ddGetValue($project) || undefined,
@@ -4908,7 +5502,7 @@ function _processTabMsg(tab, msg) {
           effort: _getEffort() || undefined,
           windowId: _windowId,
         };
-        if (tab.sdkMode) btwMsg.permissionMode = tab.planMode ? 'plan' : (tab.permissionMode || 'default');
+        _applySessionOptions(tab, btwMsg);
         if (btw.images) {
           btwMsg.images = btw.images.map(i => ({ base64: i.base64, mediaType: i.mediaType }));
           tab.attachedImages = [];
@@ -4925,15 +5519,32 @@ function _processTabMsg(tab, msg) {
         }
       }
       break;
+    case 'temporary_ended':
+      // The bridge: this temporary chat's session has stopped, and it cannot be resumed.
+      _temporaryOver(tab, 'process');
+      break;
     case 'error':
       finishTab(tab, true);
+      // Prompts queued behind a Compact are not sent after an error: the queue is stopped, with the reason.
+      if (tab._queueWaits === 'compact') _compactQueue.after(tab, 'failed');
       if (tab.compacting) { tab.compacting = false; if (tab === activeTab()) _setCompactingUI(false); }
+      // (A temporary chat the bridge no longer has: the error says so, the tab is marked.)
+      if (msg.code === 'temporary_ended') _temporaryOver(tab, 'gone', { quiet: true });
+      // The engine hello already put the reason (and a retry) in the transcript.
+      if (msg.code === 'engine_unavailable' && tab.engineError) {
+        const row = tab.messagesEl?.querySelector('.cp-engine-error');
+        if (row) { tab.messagesEl.appendChild(row); if (tab === activeTab()) scrollEnd(); }
+        break;
+      }
       appendError(tab, msg.message);
       notify('panel', NOTIF_TYPE.ERROR, tab.label || 'Claude Code', { tabId: tab.id });
       if (typeof msg.message === 'string' && /Claude CLI not found|ENOENT/i.test(msg.message)) {
         flagClaudeCliInstallFailure(msg.message);
       }
       break;
+    default:
+      // A wire message this panel version does not know (newer server).
+      noteUnhandledEvent(tab, `ws:${msg.type}`);
   }
 }
 
@@ -4948,25 +5559,52 @@ function handleTabEvent(tab, ev) {
   const scope = _parentId ? ensureAgentScope(tab, _parentId) : tab;
 
   // ── New SDK-engine event types ──
+  if (ev.type === 'mode_behind') {
+    // The bridge dropped a statement of this tab's as older than the one it holds
+    // (the page's saved number was lost): the tab takes the number and says its mode again.
+    if (statementDropped(tab, ev.modeSeq)) { _stateOwnMode(tab, { quiet: true }); saveTabs(); }
+    return;
+  }
+  if (ev.type === 'mode_state') {
+    // What the session is in changed and nothing else said so (a switch the CLI
+    // acknowledged, one that failed, the process ending): never a line here.
+    _sessionSaysMode(tab, ev.mode, 'mode_state', ev);
+    return;
+  }
   if (ev.type === 'mode_changed') {
-    if (ev.mode) {
-      tab.permissionMode = ev.mode;
-      tab.planMode = ev.mode === 'plan';
-      const $plan = _panel?.querySelector('#cp-plan-toggle');
-      if ($plan && tab === activeTab()) $plan.classList.toggle('active', tab.planMode);
-      if (tab === activeTab()) {
-        renderStatusline(tab);
-        populateModeDropdown(_panel?.querySelector('#cp-mode'), tab);
-      }
-      appendStatus(tab, `Permission mode: ${MODE_LABELS[ev.mode] || ev.mode}`);
+    // The bridge's word on this tab's mode (_sessionSaysMode). One that is
+    // older than the tab's latest statement, and a Bypass this tab did not
+    // choose, change nothing and say nothing.
+    const quiet = Number.isSafeInteger(ev.modeSeq) && tab._quietSeq === ev.modeSeq;
+    const verdict = _sessionSaysMode(tab, ev.mode, 'mode_changed', ev);
+    if (verdict.taken && ev.mode) {
+      // (The tab's mode is the one the session holds for it: while the switch to it is under way, `switching` names it.)
+      const said = ev.switching || ev.mode;
+      // A switch that was refused or undone comes with the reason (Bypass turned
+      // off by the user's settings, or switched on by something that is not them).
+      if (ev.reason) appendWarn(tab, `${String(ev.reason)} This tab is in ${MODE_LABELS[said] || said}.`);
+      else if (quiet) { /* the tab said its mode again and the session confirms it: nothing new */ }
+      else if (said === BYPASS_MODE) appendWarn(tab, 'Permission mode: Bypass. Every tool runs without asking in this tab, until you pick another mode.');
+      else appendStatus(tab, `Permission mode: ${MODE_LABELS[said] || said}${ev.fromSettings === true ? ' (from your Claude Code settings)' : ''}`);
       saveTabs();
     }
     return;
   }
   if (ev.type === 'subagent') {
-    if (ev.subtype === 'stop' && ev.tool_use_id) {
-      finalizeAgentCard(tab, ev.tool_use_id, { isError: !!ev.is_error });
+    if (ev.subtype === 'background' && ev.tool_use_id) {
+      // Launched into the background: its tool_result is only a placeholder.
+      markAgentBackground(tab, ev.tool_use_id);
+    } else if (ev.subtype === 'stop' && ev.tool_use_id) {
+      // Authoritative end: the agent returned, reported back from the
+      // background, or died with the CLI process.
+      finalizeAgentCard(tab, ev.tool_use_id, {
+        isError: !!ev.is_error, resultText: ev.summary || '', status: ev.status || '', force: true,
+      });
     }
+    return;
+  }
+  if (ev.type === 'system' && ev.subtype === 'background_tasks_changed') {
+    _setBackgroundWork(tab, ev.tasks);
     return;
   }
   if (ev.type === 'user') {
@@ -4978,13 +5616,30 @@ function handleTabEvent(tab, ev) {
       const isToolResultOnly = ev.message.content.every(b => b?.type === 'tool_result');
       if (hasText && !isToolResultOnly) _stampUserMessageUuid(tab, ev.uuid);
     }
+    // A turn nobody typed: say what started it (a background task reporting
+    // back, a scheduled wakeup, another session).
+    if (!_parentId && ev.origin && ev.origin.kind !== 'human') {
+      const from = describeOrigin(ev.origin);
+      if (from && tab._lastOriginUuid !== (ev.uuid || from)) {
+        tab._lastOriginUuid = ev.uuid || from;
+        const el = appendStatus(tab, from);
+        if (el) el.classList.add('cp-row-notice');
+      }
+    }
+    // The tool's typed output rides on this message (tool_use_result), next to
+    // the result block. Keep it for the synthetic tool_result event that follows.
+    if (ev.tool_use_result != null && Array.isArray(ev.message?.content)) {
+      const results = ev.message.content.filter(b => b?.type === 'tool_result' && b.tool_use_id);
+      if (results.length === 1) {
+        tab._typedResults = tab._typedResults || new Map();
+        tab._typedResults.set(results[0].tool_use_id, ev.tool_use_result);
+        if (tab._typedResults.size > 64) tab._typedResults.delete(tab._typedResults.keys().next().value);
+      }
+    }
     return;
   }
   if (ev.type === 'system' && ev.subtype === 'commands_list') {
-    if (Array.isArray(ev.commands) && ev.commands.length) {
-      tab.slashCommands = ev.commands;
-      try { storage.setItem(STOR.commands, JSON.stringify({ at: Date.now(), commands: ev.commands })); } catch {}
-    }
+    _setSlashCommands(tab, ev.commands);
     return;
   }
   if (ev.type === 'system' && ev.subtype === 'mcp_status') {
@@ -5003,31 +5658,20 @@ function handleTabEvent(tab, ev) {
   // session continues — this must not render as a fatal error.
   if (ev.type === 'system' && ev.subtype === 'runtime_notice') {
     if (ev.level === 'error') appendError(tab, ev.message || 'Runtime error');
+    else if (ev.level === 'info') appendStatus(tab, ev.message || 'Runtime notice');
     else appendWarn(tab, ev.message || 'Runtime notice');
     return;
   }
 
   if (ev.type === 'system' && (ev.subtype === 'compact' || ev.subtype === 'compact_started')) {
-    tab.compacting = true;
-    // Reuse a single compact status element to avoid duplicate lines
-    const $msgs = tab.messagesEl;
-    if ($msgs) {
-      let el = $msgs.querySelector('.msg-compact-status');
-      if (!el) {
-        el = document.createElement('div');
-        el.className = 'msg-status msg-compact-status';
-        $msgs.appendChild(el);
-      }
-      el.textContent = 'Compacting context\u2026';
-      if (tab === activeTab()) scrollEnd();
-    }
-    if (tab === activeTab()) _setCompactingUI(true);
+    _compactStarted(tab);
     return;
   }
   if (ev.type === 'system' && ev.subtype === 'compact_boundary') {
-    // Update existing compact status instead of appending a new line
-    const el = tab.messagesEl?.querySelector('.msg-compact-status');
-    if (el) el.textContent = 'Context compacted';
+    // What the compaction did (trigger, tokens before and after), on its own row
+    // even when no "compacting" line preceded it.
+    renderCompactBoundary(tab, ev);
+    if (tab === activeTab()) scrollEnd();
     return;
   }
   if (ev.type === 'system' && ev.subtype === 'compact_detected') {
@@ -5064,28 +5708,39 @@ function handleTabEvent(tab, ev) {
     // Server-side ExitPlanMode hook authored the plan file. Arrives BEFORE the
     // assistant event so renderAssistant's eager capture sees planFilePath set
     // and skips its redundant POST.
-    if (ev.path) {
+    // (Not for an automation run's event: its plan is not this tab's.)
+    if (ev.path && !tab._runEvent) {
       tab.planFilePath = ev.path;
       saveTabs();
     }
     return;
   }
   if (ev.type === 'system' && ev.subtype === 'init') {
-    // SDK init carries live capabilities — feed the statusline + slash hints
+    // SDK init carries live capabilities — feed the statusline + slash hints.
+    // The whole message is kept for /status (model, CLI version, credential, plugins).
+    tab.init = readInit(ev);
+    tab.mcpToolCounts = mcpToolCounts(ev.tools);
+    _noteFastModeState(tab, ev);
+    if (tab.init.pluginErrors.length) {
+      // Sent with every turn's init: report a given set of load errors once.
+      const sig = tab.init.pluginErrors.map(e => `${e.plugin}:${e.message}`).join('|');
+      if (tab._pluginErrorSig !== sig) {
+        tab._pluginErrorSig = sig;
+        appendWarn(tab, tab.init.pluginErrors.map(e => `Plugin ${e.plugin || '(unnamed)'} did not load cleanly: ${e.message || e.type}`).join('\n'));
+      }
+    }
     if (Array.isArray(ev.mcp_servers)) {
       tab.mcpServers = ev.mcp_servers;
       if (tab === activeTab()) renderStatusline(tab);
     }
-    if (ev.permissionMode && tab.sdkMode) {
-      tab.permissionMode = ev.permissionMode;
-      tab.planMode = ev.permissionMode === 'plan';
-    }
+    if (ev.permissionMode) _sessionSaysMode(tab, ev.permissionMode, 'init', ev);
     if (Array.isArray(ev.slash_commands) && ev.slash_commands.length && !tab.slashCommands.length) {
       tab.slashCommands = ev.slash_commands.map(name => (typeof name === 'string' ? { name } : name));
     }
     if (ev.session_id) {
+      if (!tab.sessionId) tab._freshSessionId = ev.session_id;
       tab.sessionId = ev.session_id;
-      if (tab.pendingLabel) {
+      if (tab.pendingLabel && !keepsNothing(tab)) {
         storage.setItem(LABEL_PREFIX + ev.session_id, tab.pendingLabel);
         tab.label = tab.pendingLabel;
         tab.pendingLabel = null;
@@ -5112,17 +5767,28 @@ function handleTabEvent(tab, ev) {
       // scope.usage is the root tab's object only for root-scope events; agent
       // scopes carry their own copy so subagent usage never skews the gauge.
       const u = ev.message.usage;
-      scope.usage.inputTokens = u.input_tokens ?? scope.usage.inputTokens;
-      scope.usage.outputTokens = u.output_tokens ?? scope.usage.outputTokens;
-      scope.usage.cacheRead = u.cache_read_input_tokens ?? scope.usage.cacheRead;
-      scope.usage.cacheWrite = u.cache_creation_input_tokens ?? scope.usage.cacheWrite;
+      // Synthetic messages ("No response requested.", API errors) have model
+      // "<synthetic>" and all-zero usage — they say nothing about the context.
+      if ((u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0) > 0) {
+        scope.usage.inputTokens = u.input_tokens ?? scope.usage.inputTokens;
+        scope.usage.outputTokens = u.output_tokens ?? scope.usage.outputTokens;
+        scope.usage.cacheRead = u.cache_read_input_tokens ?? scope.usage.cacheRead;
+        scope.usage.cacheWrite = u.cache_creation_input_tokens ?? scope.usage.cacheWrite;
+        if (scope === tab && ev.message.model) tab.mainModel = ev.message.model;
+      }
       if (tab.compacting && scope === tab) {
         tab.compacting = false;
         if (tab === activeTab()) _setCompactingUI(false);
       }
       if (scope === tab && tab === activeTab()) renderGauge(tab);
     }
+    // A synthetic message that carries the turn's API error: the result repeats
+    // its text, and must not print it a second time.
+    if (ev.error && scope === tab) tab._assistantErrorShown = true;
     renderAssistant(scope, ev.message);
+    if (scope === tab && Array.isArray(ev.message.content) && ev.message.content.some(b => b?.type === 'text' && (b.text || '').trim())) tab._turnOutputShown = true;
+    // Wrapper state: wire uuid (for retractions), typed error, interrupted / cut off.
+    try { annotateAssistantRow(tab, scope, ev); } catch (err) { console.warn('[claude-panel] annotate failed:', err); }
     // Reposition thinking indicator to bottom (stays visible while running)
     // appendChild on an existing child moves it atomically — no separate remove() needed
     if (tab.thinkingEl && tab.running && tab.thinkingEl !== tab.messagesEl.lastElementChild) {
@@ -5132,6 +5798,10 @@ function handleTabEvent(tab, ev) {
     return;
   }
   if (ev.type === 'tool_result') {
+    if (ev.tool_use_result == null && tab._typedResults?.has(ev.tool_use_id)) {
+      ev = { ...ev, tool_use_result: tab._typedResults.get(ev.tool_use_id) };
+      tab._typedResults.delete(ev.tool_use_id);
+    }
     updateToolResult(scope, ev);
     scheduleSessionSnapshotSave(tab);
     // Re-show thinking — Claude is processing the tool result
@@ -5139,22 +5809,34 @@ function handleTabEvent(tab, ev) {
     return;
   }
   if (ev.type === 'result') {
-    const isError = (ev.subtype === 'error_during_execution' || ev.subtype === 'error') && (ev.error || ev.result);
-    // Display error for error_during_execution results
-    if (isError) {
-      appendError(tab, ev.error || ev.result);
-    }
-    // Plan completion: check BEFORE finishTab clears flags. --print mode emits result
-    // event (not done message) as the terminal event, so this is the primary handler.
-    // SDK engine: the plan-approval card owns the flow — skip the legacy card entirely.
-    if (!tab.sdkMode && tab._exitPlanPending && !tab._exitPlanHandled) {
-      tab._exitPlanHandled = true;
-      tab._exitPlanPending = false;
-      renderPostPlanActions(tab);
-    }
+    // Why the turn ended: max turns, spend limit, execution or startup failure,
+    // an API error. The result an interrupt produces is not a failure.
+    const outcome = describeResult(ev, {
+      recentlyAborted: Date.now() - (tab._abortedAt || 0) < 15_000,
+      assistantErrorShown: !!tab._assistantErrorShown,
+    });
+    tab._assistantErrorShown = false;
+    const isError = outcome.isError;
+    _noteFastModeState(tab, ev);
+    // A pass-through slash command can answer through the result text alone.
+    renderLocalCommandResult(tab, localCommandOutput(ev));
+    tab._turnOutputShown = false;
+    markDeniedFromResult(tab, ev.permission_denials);
+    if (outcome.text) appendError(tab, outcome.text);
+    // Duration, steps, tokens and cost of this turn (modelUsage is cumulative: difference it).
+    // The baseline is the previous result of the same session; a session born in
+    // this tab starts from zero; a resumed one has no baseline for its first result.
+    const usageSid = ev.session_id || tab.sessionId || '';
+    const usageBase = tab._modelUsagePrev?.sid === usageSid ? tab._modelUsagePrev.usage
+      : (tab._freshSessionId === usageSid ? {} : null);
+    const footer = describeTurnFooter(ev, usageBase, { stopReason: tab._streamStopReason, noBaseline: usageBase === null });
+    tab._modelUsagePrev = { sid: usageSid, usage: footer.next };
+    tab._streamStopReason = null;
+    if (!outcome.aborted) appendTurnFooter(tab, footer);
+    endTurnRows(tab);
     finishTab(tab, true);
     if (isError) notify('panel', NOTIF_TYPE.ERROR, tab.label || 'Claude Code', { tabId: tab.id });
-    else notify('panel', NOTIF_TYPE.DONE, tab.label || 'Claude Code', { tabId: tab.id });
+    else if (outcome.notify === 'done') notify('panel', NOTIF_TYPE.DONE, tab.label || 'Claude Code', { tabId: tab.id });
     tab.turns++;
     // NOTE: result.usage is CUMULATIVE across all API calls in this CLI process,
     // not the current context window state. Do NOT update tab.usage from it —
@@ -5165,17 +5847,16 @@ function handleTabEvent(tab, ev) {
         if (tab === activeTab()) _setCompactingUI(false);
       }
     }
-    // Extract actual context window from modelUsage (CLI reports the real value)
-    if (ev.modelUsage) {
-      const modelKey = Object.keys(ev.modelUsage)[0];
-      if (modelKey) {
-        const cw = ev.modelUsage[modelKey].contextWindow;
-        if (cw && cw > 0) {
-          tab.contextWindow = cw;
-          if (tab === activeTab()) renderGauge(tab);
-        }
+    // The CLI reports the real window per model; take the main loop's entry. A model
+    // picked mid-turn applies from the next turn, so this result describes the old one.
+    if (ev.modelUsage && !tab._modelChangedMidTurn) {
+      const cw = mainLoopContextWindow(ev.modelUsage, tab.mainModel, catalogModel(_models, tab.model));
+      if (cw > 0) {
+        tab.contextWindow = cw;
+        if (tab === activeTab()) renderGauge(tab);
       }
     }
+    tab._modelChangedMidTurn = false;
     if (ev.total_cost_usd != null) {
       const prevCost = tab.sessionCost;
       tab.sessionCost = ev.total_cost_usd;
@@ -5191,7 +5872,10 @@ function handleTabEvent(tab, ev) {
     }
     if (ev.session_id) { tab.sessionId = ev.session_id; saveTabs(); }
     // Post-plan actions shown only on 'done' (handleTabMsg), not mid-stream
+    return;
   }
+  // Everything the branches above did not consume.
+  renderSdkEvent(tab, scope, ev);
 }
 
 // ── Incremental streaming markdown ──
@@ -5326,10 +6010,12 @@ function handleStreamDelta(tab, apiEvent) {
 
   if (evType === 'message_delta') {
     // Extract cumulative output tokens from message_delta for real-time gauge
-    if (apiEvent.usage?.output_tokens) {
+    if (apiEvent.usage?.output_tokens != null) {
       tab.usage.outputTokens = apiEvent.usage.output_tokens;
       if (tab === activeTab()) renderGauge(tab);
     }
+    // Why the message stopped (max_tokens = cut off); the turn footer reports it.
+    if (apiEvent.delta?.stop_reason && !tab._agentScope) tab._streamStopReason = apiEvent.delta.stop_reason;
     return;
   }
 
@@ -5374,6 +6060,7 @@ function handleStreamDelta(tab, apiEvent) {
       }
       const wrapEl = tab._stream.el.querySelector('.msg-content');
       const cb = apiEvent.content_block;
+      noteToolInputStart(tab._stream, tab._stream.blockIdx, cb);
       if (wrapEl && !wrapEl.querySelector(`.tool-card[data-tool-id="${CSS.escape(cb.id)}"]`)) {
         const ghost = document.createElement('div');
         ghost.className = 'tool-card tool-streaming';
@@ -5431,6 +6118,11 @@ function handleStreamDelta(tab, apiEvent) {
     const delta = apiEvent.delta;
     if (!delta) return;
 
+    // The tool call's input as the model types it: preview it on the ghost card.
+    if (delta.type === 'input_json_delta') {
+      noteToolInputDelta(tab._stream, apiEvent.index ?? tab._stream.blockIdx, delta.partial_json);
+      return;
+    }
     if (delta.type === 'thinking_delta' && delta.thinking && tab._stream.thinkEl) {
       tab._stream.thinkBuf += delta.thinking;
       // Throttle: assigning the whole growing buffer per token is O(n²) over
@@ -5551,7 +6243,8 @@ function renderPostPlanActions(tab, headerText) {
     { label: 'Continue with implementation', prompt: 'Continue with the implementation based on the approved plan.', primary: true },
     { label: 'Continue planning', action: 'continue-planning' },
     { label: 'Compact context', action: 'compact' },
-    { label: 'Edit plan', action: 'plan' },
+    // (A temporary chat keeps no plan file to edit.)
+    ...(keepsNothing(tab) ? [] : [{ label: 'Edit plan', action: 'plan' }]),
   ];
   for (const a of actions) {
     const btn = document.createElement('button');
@@ -5567,10 +6260,14 @@ function renderPostPlanActions(tab, headerText) {
       } else if (a.action === 'compact') {
         // Guard: cannot compact while running
         if (tab.running) { appendStatus(tab, 'Cannot compact while Claude is processing.'); card.style.opacity = '1'; card.style.pointerEvents = 'auto'; return; }
+        // A Compact is already under way: a second one does nothing.
+        if (compactHolds(tab)) { card.style.opacity = '1'; card.style.pointerEvents = 'auto'; return; }
         if (tab.ws?.readyState === WebSocket.OPEN) {
           tab.compacting = true;
+          tab._compactSentAt = Date.now();
           if (tab === activeTab()) _setCompactingUI(true);
-          tab.ws.send(JSON.stringify({ type: 'compact' }));
+          _sendControl(tab, { type: 'compact' });
+          _compactQueue.watch(tab); // prompts already in the queue wait for it too
           appendStatus(tab, 'Compacting context...');
         } else {
           appendStatus(tab, 'Connection lost — cannot compact. Try refreshing.');
@@ -5611,9 +6308,7 @@ function renderPostPlanActions(tab, headerText) {
                 // After the first ExitPlanMode call, planMode was toggled off, so a
                 // plain re-prompt would be answered as prose with no tool call —
                 // which means no plan_file_written event and no Edit-plan path.
-                tab.planMode = true;
-                const $planToggle = _panel?.querySelector('#cp-plan-toggle');
-                if ($planToggle) $planToggle.classList.add('active');
+                if (!tab.planMode) setPermissionModeUI(tab, 'plan', { announce: false });
                 const $input = _panel?.querySelector('#cp-input');
                 if ($input) {
                   $input.value = 'The previous plan output was empty. Please re-create the full plan from your prior analysis and call ExitPlanMode with the complete plan text.';
@@ -5708,10 +6403,14 @@ function renderPostPlanActions(tab, headerText) {
           return;
         }
       } else if (a.prompt) {
-        // Exit plan mode before sending implementation prompt
-        tab.planMode = false;
-        const $plan = _panel?.querySelector('#cp-plan-toggle');
-        if ($plan) $plan.classList.remove('active');
+        // While the plan's approval is still pending (the plan was edited from
+        // the approval card), this button is the answer to that approval, with
+        // the edited plan: a message would wait behind the unanswered card.
+        if (_approvePendingPlan(tab)) return;
+        // Leave plan mode before the implementation prompt: back to the mode
+        // the tab was in before it entered plan mode, said to its session at
+        // once (the prompt states the same mode).
+        _leavePlanUI(tab, { announce: false });
         if (!tab.ws || tab.ws.readyState !== WebSocket.OPEN) {
           appendStatus(tab, 'Connection lost — cannot send. Try refreshing.');
           card.style.opacity = '1'; card.style.pointerEvents = 'auto';
@@ -5751,7 +6450,7 @@ function _cleanupEmptyAssistantRow(el) {
     const hasText = (b.textContent || '').trim().length > 0;
     if (!hasRaw && !hasRichChild && !hasText) b.remove();
   });
-  const visible = wrap.querySelector('.msg-body, .msg-thinking, .tool-card, .plan-card, .ask-card, .post-plan-card, .perm-card');
+  const visible = wrap.querySelector('.msg-body, .msg-thinking, .tool-card, .plan-card, .ask-card, .post-plan-card, .perm-card, .cp-citations, .cp-assistant-error');
   if (!visible) { el.remove(); return true; }
   return false;
 }
@@ -5763,9 +6462,12 @@ function renderAssistant(tab, msg) {
   const thinks = content.filter(b => b.type === 'thinking');
   const texts = content.filter(b => b.type === 'text');
   const tools = content.filter(b => b.type === 'tool_use');
+  // Server-side tool calls and results, citations, redacted thinking.
+  const extras = splitAssistantBlocks(content);
+  const showThinks = !!_getEffort();
   // Suppress thinking display when Think toggle is off
-  if (!_getEffort()) thinks.length = 0;
-  if (!texts.length && !tools.length && !thinks.length) return;
+  if (!showThinks) thinks.length = 0;
+  if (!texts.length && !tools.length && !thinks.length && !extras.any) return;
 
   const askTools = tools.filter(t => t.name === 'AskUserQuestion');
   const regularTools = tools.filter(t => t.name !== 'AskUserQuestion');
@@ -5784,46 +6486,14 @@ function renderAssistant(tab, msg) {
 
   // EnterPlanMode detection: record message boundary so extractPlanText() only
   // searches messages rendered DURING plan mode, not pre-plan preamble.
-  if (tools.some(t => t.name === 'EnterPlanMode')) {
-    tab.planMode = true;
-    tab._planContent = null;
-    tab._planContentCaptured = false;
-    tab.planFilePath = '';
-    tab._editedPlanContent = null;
-    tab._planModeStartedAt = Date.now();
-    tab._planModeStartMsgIndex = tab.messagesEl?.querySelectorAll('.msg.msg-assistant').length || 0;
-    const $plan = _panel?.querySelector('#cp-plan-toggle');
-    if ($plan) $plan.classList.add('active');
-    saveTabs();
-  }
-
-  // ExitPlanMode detection: render post-plan actions IMMEDIATELY when detected in the
-  // stream, before Claude streams any further implementation text. --print mode doesn't
-  // emit tool_result events for built-in tools, so updateToolResult() is only a fallback.
-  // Detect regardless of current planMode state — it may have been toggled off mid-stream
-  // (tab switch, reconnect, race). Track whether it WAS active.
-  // SDK engine: the ExitPlanMode control_request owns the approval flow — skip entirely.
-  if (!tab.sdkMode && tools.some(t => t.name === 'ExitPlanMode') && !tab._exitPlanHandled) {
-    tab._exitPlanWasPlanMode = tab._exitPlanWasPlanMode || tab.planMode;
-    tab._exitPlanPending = true;
-    tab.planMode = false;
-    const $plan = _panel?.querySelector('#cp-plan-toggle');
-    if ($plan) $plan.classList.remove('active');
-    // Capture plan content from the tool input. The plan FILE is authored by the
-    // server-side ExitPlanMode hook (see server.js) and arrives via plan_file_written
-    // before this event — no /api/create-plan POST needed here.
-    if (!tab._planContentCaptured) {
-      const exitBlock = tools.find(t => t.name === 'ExitPlanMode');
-      const direct = (exitBlock?.input?.plan || '').trim();
-      if (direct) {
-        tab._planContentCaptured = true;
-        tab._planContent = direct;
-        tab._exitPlanPending = false;
-      }
-    }
-    // Render post-plan actions IMMEDIATELY — don't wait for result/updateToolResult
-    tab._exitPlanHandled = true;
-    renderPostPlanActions(tab);
+  // Only for the tab's own session, on its main thread: what an automation run
+  // shown here does is the run's (`_runEvent`), and nothing of this tab's plan
+  // state is written for it. With a bridge that numbers statements the tab
+  // enters plan mode when its session reports it (a call the user denied never
+  // does); an older bridge says nothing, so there the call itself does.
+  if (tab === _rootOf(tab) && !tab._runEvent && tools.some(t => t.name === 'EnterPlanMode')) {
+    if (!hasCapability(tab, 'mode_statements') && sessionEnteredPlan(tab)) _paintMode(tab);
+    _planEntered(tab);
     saveTabs();
   }
 
@@ -5891,18 +6561,7 @@ function renderAssistant(tab, msg) {
           wrap.appendChild(buildAskFromToolUse(tab, t));
         }
       }
-    }
-    // Eager capture plan content in dedup path — streaming creates the element via
-    // handleStreamDelta, so renderAssistant always takes this dedup branch.
-    // File authoring is server-side; this just stashes the content for the prompt flow.
-    if (tab._exitPlanPending && !tab._planContentCaptured) {
-      const exitBlock = tools.find(t => t.name === 'ExitPlanMode');
-      const direct = (exitBlock?.input?.plan || '').trim();
-      if (direct) {
-        tab._planContentCaptured = true;
-        tab._planContent = direct;
-        tab._exitPlanPending = false;
-      }
+      renderAssistantExtras(tab, wrap, extras, { showThinking: showThinks });
     }
     // Ensure post-plan card stays at the bottom of the messages
     const postPlanMsgD = $msgs.querySelector('.post-plan-card')?.closest('.msg');
@@ -5954,6 +6613,8 @@ function renderAssistant(tab, msg) {
   for (const t of askTools) wrap.appendChild(buildAskFromToolUse(tab, t));
   el.appendChild(wrap);
   $msgs.appendChild(el);
+  // After the row is in the transcript: a server tool's result looks its card up there.
+  renderAssistantExtras(tab, wrap, extras, { showThinking: showThinks });
   pruneMessages($msgs);
 
   // Drop the row if it ended up with nothing visible (all text blocks were whitespace
@@ -5964,18 +6625,6 @@ function renderAssistant(tab, msg) {
   }
 
   if (msgId) { tab.currentMsgId = msgId; tab.currentMsgEl = el; }
-
-  // Eagerly capture plan content the moment ExitPlanMode is detected.
-  // File authoring is server-side; this just stashes the content for the prompt flow.
-  if (tab._exitPlanPending && !tab._planContentCaptured) {
-    const exitBlock = tools.find(t => t.name === 'ExitPlanMode');
-    const direct = (exitBlock?.input?.plan || '').trim();
-    if (direct) {
-      tab._planContentCaptured = true;
-      tab._planContent = direct;
-      tab._exitPlanPending = false;
-    }
-  }
 
   // Ensure post-plan card stays at the bottom of the messages
   const postPlanMsg = $msgs.querySelector('.post-plan-card')?.closest('.msg');
@@ -6090,6 +6739,8 @@ function buildAskFromToolUse(tab, block) {
         btn.addEventListener('click', () => {
           // Changelog "Edit first" — bypass batch, trigger editor directly
           if (isChangelogAsk && /edit first/i.test(optLabel)) {
+            // (A temporary chat writes no draft file.)
+            if (keepsNothing(tab)) { appendStatus(tab, temporaryBlocks(tab, 'plan-file')); return; }
             opts.querySelectorAll('.ask-option').forEach(b => { b.disabled = true; });
             btn.classList.add('selected');
             tab._changelogAsk = { questions: allQuestions, questionText };
@@ -6170,15 +6821,21 @@ function buildAskFromToolUse(tab, block) {
       updateSubmitState();
     });
     container.appendChild(textInput);
+    // Option previews and a note for this question (same as the control-request card).
+    try { decorateAskCard(container, q, { notes: hasCapability(tab, 'ask_annotations'), optionsEl: container.querySelector(`.ask-options[data-qidx="${qIndex}"]`) || textInput }); } catch {}
   }
 
   // Submit button — sends all answers as a batch
   submitBtn.addEventListener('click', () => {
+    // An answer is shown as given only once it can be sent: until then the card stays as it is.
+    if (tab.ws?.readyState !== WebSocket.OPEN) { appendStatus(tab, ASK_ANSWER_UNSENT); return; }
     container.querySelectorAll('.ask-option').forEach(b => { b.disabled = true; });
-    container.querySelectorAll('.ask-text-input').forEach(i => { i.disabled = true; });
+    container.querySelectorAll('.ask-text-input, .ask-notes').forEach(i => { i.disabled = true; });
     submitBtn.disabled = true;
     submitBtn.textContent = 'Submitted';
-    sendAskAnswer(tab, allQuestions, pendingAnswers);
+    const annotations = askAnnotations(container, pendingAnswers);
+    markAskAnswered(container, pendingAnswers);
+    sendAskAnswer(tab, allQuestions, pendingAnswers, annotations);
   });
   container.appendChild(submitBar);
 
@@ -6187,8 +6844,9 @@ function buildAskFromToolUse(tab, block) {
   return container;
 }
 
-function sendAskAnswer(tab, questions, answers) {
-  if (!tab.ws || tab.ws.readyState !== WebSocket.OPEN) return;
+// Returns whether the answer left: false while the tab's socket is closed.
+function sendAskAnswer(tab, questions, answers, annotations = null) {
+  if (!tab.ws || tab.ws.readyState !== WebSocket.OPEN) return false;
 
   const requestId = tab.pendingAskRequestId;
   const answerText = Object.values(answers).join(', ');
@@ -6199,7 +6857,7 @@ function sendAskAnswer(tab, questions, answers) {
     tab.ws.send(JSON.stringify({
       type: 'control_response',
       request_id: requestId,
-      response: { behavior: 'allow', updatedInput: { questions, answers } },
+      response: { behavior: 'allow', updatedInput: annotations ? { questions, answers, annotations } : { questions, answers } },
     }));
   } else {
     // No request_id yet — buffer the answer for when control_request arrives.
@@ -6215,14 +6873,17 @@ function sendAskAnswer(tab, questions, answers) {
       tab.pendingAskBufferedAnswer = null;
       const fallbackText = Object.values(buffered.answers).join(', ');
       const $project = _panel?.querySelector('#cp-project');
-      tab.ws.send(JSON.stringify({
+      const fallbackMsg = {
         type: 'query',
         prompt: `The user answered your question: "${fallbackText}"\nContinue based on their selection.`,
         sessionId: tab.sessionId || undefined,
         model: _getModelId() || undefined,
         cwd: ddGetValue($project) || undefined,
         effort: _getEffort() || undefined,
-      }));
+        windowId: _windowId,
+      };
+      _applySessionOptions(tab, fallbackMsg);
+      tab.ws.send(JSON.stringify(fallbackMsg));
     }, 3000);
   }
 
@@ -6236,6 +6897,7 @@ function sendAskAnswer(tab, questions, answers) {
   tab.askRenderedViaControl = false;
   showThinking(tab);
   setRunning(tab, true);
+  return true;
 }
 
 function isPlanFile(filePath) {
@@ -6270,17 +6932,12 @@ function extractPlanTextFromMessage(msg) {
 
 function buildPlanCard(block) {
   const i = block.input || {};
-  const fileName = (i.file_path || '').split(/[/\\]/).pop() || 'plan.md';
   const card = document.createElement('details');
   card.className = 'plan-card';
   card.dataset.toolId = block.id || '';
   card.open = true;
-  card.innerHTML = `<summary>
-    <span class="plan-icon">P</span>
-    <span class="plan-label">Plan</span>
-    <span class="plan-file">${fileName}</span>
-    <span class="plan-chevron">&#x203A;</span>
-  </summary>`;
+  // The file name is the model's: planCardSummaryHtml() escapes it (cp/cp-tool-cards.js).
+  card.innerHTML = planCardSummaryHtml(i.file_path);
   const body = document.createElement('div');
   body.className = 'plan-body msg-body';
   body.innerHTML = md(i.content || '');
@@ -6295,17 +6952,17 @@ function formatSynaBunInput(input) {
   const pairs = [];
   for (const [key, val] of Object.entries(input)) {
     const label = key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-    let displayVal;
+    let valueHtml;
     if (typeof val === 'string') {
-      displayVal = esc(val.length > 200 ? val.slice(0, 200) + '\u2026' : val);
+      valueHtml = esc(val.length > 200 ? val.slice(0, 200) + '\u2026' : val);
     } else if (Array.isArray(val)) {
-      displayVal = val.map(v => `<span class="synabun-tag">${esc(String(v))}</span>`).join(' ');
+      valueHtml = val.map(v => `<span class="synabun-tag">${esc(String(v))}</span>`).join(' ');
     } else if (typeof val === 'number' || typeof val === 'boolean') {
-      displayVal = `<span class="synabun-value">${val}</span>`;
+      valueHtml = `<span class="synabun-value">${esc(val)}</span>`;
     } else {
-      displayVal = esc(JSON.stringify(val));
+      valueHtml = esc(JSON.stringify(val));
     }
-    pairs.push(`<div class="synabun-kv"><span class="synabun-kv-key">${esc(label)}</span> ${displayVal}</div>`);
+    pairs.push(`<div class="synabun-kv"><span class="synabun-kv-key">${esc(label)}</span> ${valueHtml}</div>`);
   }
   return pairs.join('');
 }
@@ -6531,7 +7188,15 @@ function updateSynaBunResult(card, ev) {
   card.classList.add(ev.is_error ? 'tool-error' : 'tool-ok');
 }
 
+// Every tool card: built by _buildToolCard, then given its call details
+// (header detail, chips, readable input) and its input kept for the result.
 function buildTool(block, tab) {
+  const card = _buildToolCard(block, tab);
+  try { decorateToolCard(card, block); } catch (e) { console.warn('[claude-panel] tool card details failed:', e); }
+  return card;
+}
+
+function _buildToolCard(block, tab) {
   // NOTE: `tab` may be an agent SCOPE (Object.create(tab) with its own feed) —
   // tab-level reads fall through the prototype chain; _agentScope marks it.
   const isAgentScope = !!tab?._agentScope;
@@ -6540,8 +7205,9 @@ function buildTool(block, tab) {
   // Subagent todos never touch the dock — they update the agent card badge.
   if (block.name === 'TodoWrite' && tab) {
     try {
-      const todos = block.input?.todos || [];
-      if (Array.isArray(todos) && todos.length) {
+      const todos = block.input?.todos;
+      // An empty list is a real update: the model cleared its todos.
+      if (Array.isArray(todos)) {
         if (isAgentScope) {
           updateAgentTodoBadge(tab, todos);
         } else {
@@ -6558,8 +7224,9 @@ function buildTool(block, tab) {
     recordHookEvent(tab, 'PreToolUse', block.name || '');
     if (block.name === 'Agent' || block.name === 'Task') recordHookEvent(tab, 'SubagentStart', block.input?.subagent_type || block.input?.description || '');
     else if (['Edit', 'Write', 'NotebookEdit'].includes(block.name)) recordHookEvent(tab, 'FileChanged', (block.input?.file_path || '').split(/[/\\]/).pop() || '');
-    // Statusline activity verb (root) / collapsed activity line (agent cards)
-    try {
+    // Statusline activity verb (root) / collapsed activity line (agent cards).
+    // Not while a transcript is being replayed: nothing is running.
+    if (!tab._replaying) try {
       const verb = cpActivityVerb(block.name, block.input);
       if (isAgentScope) noteAgentActivity(tab, verb);
       else if (verb) setActivity(tab, verb);
@@ -6567,13 +7234,12 @@ function buildTool(block, tab) {
   }
   // Plan files get a special rendered card — track path on tab for editor access
   if (block.name === 'Write' && isPlanFile(block.input?.file_path)) {
-    if (tab) tab.planFilePath = block.input.file_path;
+    if (tab && !tab._runEvent) tab.planFilePath = block.input.file_path; // (an automation run's plan file is the run's)
     return buildPlanCard(block);
   }
-  // ── SDK-engine rich cards ──
+  // ── Rich cards ──
   // Subagents: nested live-feed card (messages route into it via parent_tool_use_id).
-  // Legacy engine never emits parent ids or stop events — keep the generic card there.
-  if ((block.name === 'Task' || block.name === 'Agent') && tab?.agents && tab.sdkMode) {
+  if ((block.name === 'Task' || block.name === 'Agent') && tab?.agents) {
     return buildAgentCard(block, tab);
   }
   // File edits: unified diff card
@@ -6637,6 +7303,11 @@ function updateToolResult(tab, ev) {
   const toolNm = card.dataset.toolName || '';
   recordHookEvent(tab, ev.is_error ? 'PostToolUseFailure' : 'PostToolUse', toolNm);
   if (toolNm === 'Agent' || toolNm === 'Task') recordHookEvent(tab, 'SubagentStop', ev.is_error ? 'error' : 'ok');
+  // The typed output the SDK delivered with the result: chips, sections and
+  // notes on the card; `content` is the readable text for a generic card.
+  let typed = null;
+  try { typed = applyStructuredResult(tab, card, ev); } catch (e) { console.warn('[claude-panel] typed result failed:', e); }
+  if (typed?.content != null) ev = { ...ev, content: typed.content };
   // ── SDK-engine rich cards ──
   if (card.classList.contains('cp-agent-card')) {
     let resultText = '';
@@ -6646,10 +7317,10 @@ function updateToolResult(tab, ev) {
     return;
   }
   if (card.classList.contains('cp-bash-card')) {
-    try { updateBashResult(card, ev, tab); return; } catch (e) { console.warn('[claude-panel] bash result failed:', e); }
+    try { updateBashResult(card, ev, tab, typed?.view); return; } catch (e) { console.warn('[claude-panel] bash result failed:', e); }
   }
   if (card.classList.contains('cp-diff-card')) {
-    finalizeDiffCard(card, ev);
+    finalizeDiffCard(card, ev, typed?.view);
     if (!ev.is_error) return; // success: stats in the header say it all — skip noisy RESULT text
   }
   // Collapse adjacent repeated MCP tool calls (post-insert) — cheap, DOM-local
@@ -6664,24 +7335,12 @@ function updateToolResult(tab, ev) {
     updateSynaBunResult(card, ev);
     return;
   }
-  // ExitPlanMode — clear plan mode and mark handled so done handler doesn't double-render.
-  // Sidepanel plan mode is SIMULATED (prompt prefix, not native EnterPlanMode), so ExitPlanMode
-  // always errors with "You are not in plan mode" in --print mode. Render post-plan actions if
-  // either: ExitPlanMode succeeded (native) OR we were in simulated plan mode (error is expected).
-  const toolName = card.dataset.toolName || '';
-  if (toolName === 'ExitPlanMode' && !tab.sdkMode) {
-    // Already handled at ExitPlanMode detection time in renderAssistant — skip to avoid double-render.
-    // This path is a fallback for native (non-simulated) plan mode where tool_result fires first.
-    // (SDK engine: the plan-approval card owns the flow; this legacy fallback stays inert.)
-    if (tab._exitPlanHandled) return;
-    const wasPlanMode = tab._exitPlanWasPlanMode || tab.planMode;
-    tab.planMode = false;
-    tab._exitPlanHandled = true;
-    tab._exitPlanPending = false;
-    const $plan = _panel?.querySelector('#cp-plan-toggle');
-    if ($plan) $plan.classList.remove('active');
-    saveTabs();
-    if (!ev.is_error || wasPlanMode) renderPostPlanActions(tab);
+  // The plan-mode entry card says what the mode means; the tool's result is the
+  // CLI's instruction text for the model and is not shown (cp-tool-cards.js).
+  if (card.classList.contains('cp-plan-enter')) {
+    card.classList.remove('tool-streaming');
+    card.classList.add(ev.is_error ? 'tool-error' : 'tool-ok');
+    return;
   }
   const rLbl = card.querySelector('.tool-result-label');
   const rSec = card.querySelector('.tool-result-content');
@@ -6699,33 +7358,24 @@ function updateToolResult(tab, ev) {
           rSec.appendChild(img);
         }
       } else {
-        // Text content block
+        // Text content block (cut for the first view, expandable)
         const text = b.text || b.data || '';
-        if (text) {
-          const pre = document.createElement('pre');
-          pre.style.cssText = 'margin:0;background:none;border:none;white-space:pre-wrap;word-break:break-all;';
-          pre.textContent = text.slice(0, 2000) + (text.length > 2000 ? '\n...' : '');
-          rSec.appendChild(pre);
-        }
+        if (text) appendResultText(rSec, text);
       }
     }
   } else if (typeof ev.content === 'string') {
-    const pre = document.createElement('pre');
-    pre.style.cssText = 'margin:0;background:none;border:none;white-space:pre-wrap;word-break:break-all;';
-    pre.textContent = ev.content.slice(0, 2000) + (ev.content.length > 2000 ? '\n...' : '');
-    rSec.appendChild(pre);
+    appendResultText(rSec, ev.content);
   }
   rLbl.hidden = false; rSec.hidden = false;
   card.classList.add(ev.is_error ? 'tool-error' : 'tool-ok');
 }
 
 // ── Control requests (AskUserQuestion, permission prompts) ──
+// The global Auto-approve toggle: while it is on, the page answers every
+// permission request with Allow (questions, plan approvals and MCP elicitations
+// are still shown). It is not a permission mode and never switches one: the
+// mode control says that it is on (modeControl in cp/cp-permission-model.js).
 let _autoAcceptAll = false;
-const _autoAllowTools = new Set([
-  // Starts empty — permission prompts shown for every tool on first use.
-  // User clicks "Always" checkbox to build up auto-allow set during session (mirrors terminal CLI behavior).
-  // AskUserQuestion is always handled via the ask card flow, never auto-allowed.
-]);
 
 function handleControlRequest(tab, msg) {
   // Normalize: request may be nested or flat depending on CLI version
@@ -6735,6 +7385,22 @@ function handleControlRequest(tab, msg) {
   const subtype = req.subtype || (toolName ? 'can_use_tool' : undefined);
   console.log('[claude-panel] handleControlRequest:', subtype, toolName, 'request_id:', requestId, 'raw:', JSON.stringify(msg).slice(0, 300));
   if (!requestId) { console.warn('[claude-panel] control_request missing request_id, ignoring'); return; }
+  // reattach re-sends every pending request so a reloaded page gets its cards
+  // back. One still open here is a duplicate; one already answered is not (the
+  // answer may have gone out on the dead socket), so it gets a fresh card.
+  if (tab.pendingAskRequestId === requestId
+    || tab._permQueue.some(p => p.requestId === requestId)
+    || tab.messagesEl?.querySelector(`.active-perm[data-request-id="${CSS.escape(requestId)}"]`)) {
+    return;
+  }
+
+  // An MCP server asks for input or a sign-in (the bridge sends these only to a
+  // panel that declared it can show them).
+  if (req.subtype === 'elicitation') {
+    tab._permQueue.push({ requestId, req, kind: 'elicit' });
+    _showNextPerm(tab);
+    return;
+  }
 
   if (toolName === 'AskUserQuestion') {
     // AskUserQuestion: save the request_id — answer is sent via control_response when user picks an option
@@ -6754,9 +7420,9 @@ function handleControlRequest(tab, msg) {
     return;
   }
 
-  // ExitPlanMode (SDK engine): real plan approval — the canUseTool callback is
-  // paused server-side until the user decides. Same turn continues on approve.
-  if (toolName === 'ExitPlanMode' && tab.sdkMode) {
+  // ExitPlanMode: real plan approval — the canUseTool callback is paused
+  // server-side until the user decides. Same turn continues on approve.
+  if (toolName === 'ExitPlanMode') {
     tab._permQueue.push({ requestId, req, kind: 'plan' });
     _showNextPerm(tab);
     return;
@@ -6768,11 +7434,6 @@ function handleControlRequest(tab, msg) {
       sendPermissionResponse(tab, requestId, 'allow');
       return;
     }
-    // Permission prompt — auto-allow only if user clicked "Always" for this tool
-    if (_autoAllowTools.has(toolName)) {
-      sendPermissionResponse(tab, requestId, 'allow');
-      return;
-    }
     tab._permQueue.push({ requestId, req });
     _showNextPerm(tab);
     return;
@@ -6781,42 +7442,404 @@ function handleControlRequest(tab, msg) {
   console.warn('[claude-panel] Unhandled control_request:', JSON.stringify(msg).slice(0, 500));
 }
 
-// ── Permission mode (SDK engine): default / acceptEdits / plan / bypassPermissions ──
+// What a query tells the bridge about this tab's session: the permission mode
+// (or that the user's own settings should pick it), the tool policy, and what
+// this panel can render. Keys a server that predates them ignores.
+function _applySessionOptions(tab, msg) {
+  // The tab's own mode (statedMode() in cp/cp-permission-model.js: Bypass only
+  // as the user's recorded pick). A tab that never picked one leaves it to the
+  // user's Claude Code settings (permissions.defaultMode).
+  Object.assign(msg, statedMode(tab, { settingsPick: hasCapability(tab, 'permission_modes_v2'), ..._modeBridge(tab) }));
+  // (From a statement of Bypass on, the tab may be in Bypass: saved when that is new.)
+  if (statementSent(tab, { ..._modeBridge(tab), counted: msg.type === 'query' || msg.type === 'warm' })) saveTabs();
+  if (hasCapability(tab, 'tool_policy')) msg.toolPolicy = tab.toolPolicy || 'full';
+  // The tab's session settings (/session): the bridge validates them again.
+  if (hasCapability(tab, 'session_settings')) msg.session = normalizeSession(tab.session);
+  // The Claude account this tab runs under (the default account sends nothing).
+  if (hasCapability(tab, 'accounts')) msg.accountId = tab.accountId || 'default';
+  // A name typed before the first message becomes the new session's title.
+  if (hasCapability(tab, 'session_title') && !tab.sessionId && tab.pendingLabel) msg.title = tab.pendingLabel;
+  msg.features = ['elicitation', 'task_stop'];
+  // A temporary chat says so with every message that can start its session, and sends no title.
+  if (applyTemporary(tab, msg).temporary) _paintTemporary(tab);
+}
+
+// ── Temporary chat (cp/cp-temporary.js decides, cp/cp-temporary-view.js draws) ──
+// The control of a new tab, the pill's mark and the line at the top of the
+// conversation, from the tab's state. Called wherever the conversation area is
+// rebuilt and when the bridge's hello says whether the control exists.
+function _paintTemporary(tab) {
+  if (!tab) return;
+  paintTemporary(tab, { capable: hasCapability(tab, TEMPORARY_CAPABILITY), onToggle: (on) => _chooseTemporary(tab, on) });
+}
+
+// The user's choice on a new tab. A process kept ready for the other kind of
+// conversation is not this one's: the next keystroke asks for a new one.
+function _chooseTemporary(tab, on) {
+  if (!chooseTemporary(tab, on, { capable: hasCapability(tab, TEMPORARY_CAPABILITY) })) return;
+  updatePillLabel(tab);
+  if (tab === activeTab()) { const label = _panel?.querySelector('.cp-session-label'); if (label) label.textContent = tab.label; }
+  _paintTemporary(tab);
+  saveTabs();
+}
+
+// The tab left its temporary chat (New chat, or a session picked before its
+// first message): nothing of that conversation stays on it. From here it is
+// the tab a new tab would be (newTabState); what identifies it, the owner's
+// own settings and its permission mode are carried over (CARRIED_OVER in
+// cp/cp-temporary.js, each with its reason). The caller opens the next
+// conversation's socket (connectTab) and makes its scroll controller.
+function _afterTemporary(tab, sid, label) {
+  // Its socket ends with it. The bridge is told to end the session; then the tab stops listening (a
+  // socket's handlers act only while it is the tab's own: connectTab) and the socket is closed. Whatever
+  // it still delivers, the rest of an interrupted turn included, is handled by nobody.
+  const ws = tab.ws;
+  if (ws?.readyState === WebSocket.OPEN) { try { ws.send(JSON.stringify({ type: 'dispose' })); } catch {} }
+  clearTimeout(tab.reconnectTimer);
+  tab.ws = null;
+  try { ws?.close(); } catch {}
+  // So does its scroll controller, which watches every row of the transcript.
+  tab.scrollController?.destroy();
+  // What the conversation left running or waiting stops with it.
+  clearInterval(tab.thinkTimerInterval);
+  for (const key of ['_idleStateTimer', '_runningTimeout', '_snapshotTimer', '_compactTimer']) clearTimeout(tab[key]);
+  for (const waiting of tab._sessionRequests?.values() || []) { clearTimeout(waiting.timer); try { waiting.reject(new Error('The temporary chat has ended.')); } catch {} }
+  // An open history search lists its prompts.
+  if (tab === activeTab()) _panel?.querySelector('.cp-rsearch')?.remove();
+  tabAfterTemporary(tab, newTabState(sid, label || 'New chat', tab.id));
+}
+
+// The tab's temporary chat is over: its socket closed, or the bridge says its
+// session is gone. Said once, in the transcript and in the line at the top.
+function _temporaryOver(tab, reason, { quiet = false } = {}) {
+  const line = endTemporary(tab, reason);
+  if (!line) return;
+  if (tab.running) finishTab(tab, true);
+  if (tab.queue?.length) { tab.queuePaused = true; tab.queueExpanded = true; if (tab === activeTab()) renderQueue(tab); }
+  if (!quiet) appendStatus(tab, line);
+  _paintTemporary(tab);
+}
+
+// The tab's configuration as a query states it, without a prompt. After a
+// server restart (or when an idle tab's socket was replaced) the bridge holds
+// nothing of this tab but its session id, and whatever reaches it first must
+// bring the account, the tool policy, the permission mode and the session
+// settings: a query does, and so does every other message that can start the
+// CLI process (START_CONFIG_TYPES in cp/cp-restore.js). The pickers show the
+// active tab's project, model and effort; another tab states its own.
+function _startConfig(tab) {
+  const active = tab === activeTab();
+  const config = {
+    cwd: (active ? ddGetValue(_panel?.querySelector('#cp-project')) : tab.project) || undefined,
+    sessionId: tab.sessionId || undefined,
+    model: (active ? _getModelId() : tab.model) || undefined,
+    effort: (active ? _getEffort() : (tab.effort && tab.effort !== 'off' ? tab.effort : '')) || undefined,
+    windowId: _windowId,
+  };
+  _applySessionOptions(tab, config);
+  return config;
+}
+
+// Send a message that is not a query to the tab's session. The ones that can
+// start its process go with the tab's configuration (see _startConfig).
+function _sendControl(tab, msg) {
+  tab.ws.send(JSON.stringify(withStartConfig(msg, _startConfig(tab))));
+}
+
+// The first keystroke in an idle tab: ask the bridge to start the CLI process
+// now, so the message that follows does not wait for it. At most once per idle
+// stretch; the bridge ignores it when a process is already there. Never for a
+// slash or shell command, an automation tab, or a tab that is running.
+const WARM_INTERVAL_MS = 4 * 60 * 1000;
+function _maybeWarm(tab, typed) {
+  if (!tab || tab.running || tab.automationRunId || !hasCapability(tab, 'warm_start')) return false;
+  if (!typed || typed === '/' || typed === '!' || tab.ws?.readyState !== WebSocket.OPEN) return false;
+  if (tab._warmSentAt && Date.now() - tab._warmSentAt < WARM_INTERVAL_MS) return false;
+  tab._warmSentAt = Date.now();
+  const msg = {
+    type: 'warm',
+    cwd: ddGetValue(_panel?.querySelector('#cp-project')) || undefined,
+    sessionId: tab.sessionId || undefined,
+    model: _getModelId() || undefined,
+    effort: _getEffort() || undefined,
+    windowId: _windowId,
+  };
+  _applySessionOptions(tab, msg);
+  tab.ws.send(JSON.stringify(msg));
+  return true;
+}
+
+// Change some of a tab's session settings and say what happens next: live
+// settings apply with the next message, start-level ones restart the session.
+function _patchSession(tab, patch, note = '') {
+  if (!hasCapability(tab, 'session_settings')) { appendStatus(tab, 'Session settings need a newer SynaBun server: restart it to enable them.'); return false; }
+  const before = normalizeSession(tab.session);
+  tab.session = normalizeSession({ ...before, ...patch });
+  const restarts = changedStartSettings(before, tab.session);
+  saveTabs();
+  if (tab === activeTab()) renderStatusline(tab);
+  const when = restarts.length && tab.sessionId
+    ? ` Applies from the next message: the session restarts with the new ${restarts.join(', ')} (the conversation is kept).`
+    : ' Applies from the next message.';
+  appendStatus(tab, `${note || 'Session settings saved.'}${when}`);
+  return true;
+}
+
+// Bring the picker's catalog in line with a session's own model list.
+function _mergeSessionModelList(sessionModels) {
+  const merged = mergeSessionModels(_models, sessionModels);
+  if (!merged.changed) return;
+  _models = merged.models;
+  const $model = _panel?.querySelector('#cp-model');
+  const tab = activeTab();
+  if (!$model || !tab) return;
+  const items = _models.map(m => ({ value: m.id, label: m.label }));
+  ddPopulateModels($model, items, _resolveModelValue(items, tab.model || _getDefaultModel()));
+  _syncThinkAvailability();
+}
+
+// The model list, agents and output styles the tab's session reported, or the
+// last ones any session did (a new tab has none of its own yet).
+let _sessionInfoSeen = null;
+function _sessionInfoFor(tab) {
+  if (tab?.sessionInfo) _sessionInfoSeen = tab.sessionInfo;
+  return tab?.sessionInfo || _sessionInfoSeen || {};
+}
+
+// ── Bypass: can this tab take it, and why not ──
+// The bridge runs Bypass as the SDK's bypassPermissions (capability
+// `bypass_mode`); the user's Claude Code settings or a policy can turn it off,
+// which the server answers per project and account (`bypass_policy`). Claude
+// Code enforces it either way: this is what lets the control say so first.
+// Bypass exists only against a bridge that announces both `bypass_mode` and
+// `mode_statements`: against any other the page states no Bypass, the option
+// cannot be picked and a saved Bypass pick waits (cp/cp-permission-model.js).
+const _modeBridge = (tab) => ({ numbered: hasCapability(tab, 'mode_statements'), bypass: hasCapability(tab, 'bypass_mode') && hasCapability(tab, 'mode_statements') });
+const PLAN_ANSWER_UNSENT = 'Not connected: your answer to the plan was not sent. Answer again once this tab is connected.';
+const ASK_ANSWER_UNSENT = 'Not connected: your answer was not sent. Submit it again once this tab is connected.';
+const _bypassPolicies = new Map(); // "project\naccount" → { available, reason, source, at, pending? }
+const BYPASS_POLICY_TTL_MS = 30_000;
+function _bypassPolicyKey(tab) {
+  const project = (tab === activeTab() ? ddGetValue(_panel?.querySelector('#cp-project')) : tab.project) || tab.project || '';
+  return `${project}\n${tab.accountId || ''}`;
+}
+function _bypassOffer(tab) {
+  const policy = _bypassPolicies.get(_bypassPolicyKey(tab));
+  // (The last answer stands while a newer one is on its way.)
+  return bypassOffer({ real: _modeBridge(tab).bypass, policy: policy?.at ? policy : null });
+}
+function _refreshBypassPolicy(tab) {
+  if (!tab || !hasCapability(tab, 'bypass_policy')) return;
+  const key = _bypassPolicyKey(tab);
+  const known = _bypassPolicies.get(key);
+  if (known && (known.pending || Date.now() - known.at < BYPASS_POLICY_TTL_MS)) return;
+  _bypassPolicies.set(key, { ...(known || {}), pending: true });
+  const [project, account] = key.split('\n');
+  const query = new URLSearchParams();
+  if (project) query.set('project', project);
+  if (account) query.set('account', account);
+  fetch(`/api/claude-code/bypass-policy?${query}`, { headers: { Accept: 'application/json' } })
+    .then(res => (res.ok ? res.json() : null))
+    .then((data) => {
+      // No answer claims nothing: the option stays offered and Claude Code decides.
+      _bypassPolicies.set(key, data?.ok ? { available: data.available !== false, reason: String(data.reason || ''), source: String(data.source || ''), at: Date.now() } : { available: true, reason: '', source: '', at: Date.now() });
+    })
+    .catch(() => { _bypassPolicies.set(key, { available: true, reason: '', source: '', at: Date.now() }); })
+    .finally(() => { const t = activeTab(); if (t && _bypassPolicyKey(t) === key) populateModeDropdown(_panel?.querySelector('#cp-mode'), t); });
+}
+
+// ── The mode the settings ask for ──
+// What the settings files name as the starting mode (permissions.defaultMode),
+// per project and account. Claude Code can decline it (auto mode is not
+// available for every model, plan or setting) and start the session in
+// Default: /permissions and the mode control's tooltip then say that the
+// settings asked for another mode (settingsModeNote() in
+// cp/cp-permission-model.js). /permissions reads the rules anyway; the control
+// asks for a tab that follows the settings and has a session, where the two
+// can differ.
+const _settingsAsks = new Map(); // "project\naccount" → { mode, at, pending? }
+function _noteSettingsAsk(tab, rules) {
+  if (rules) _settingsAsks.set(_bypassPolicyKey(tab), { mode: settingsDefaultMode(rules), at: Date.now() });
+  return _settingsAsks.get(_bypassPolicyKey(tab))?.mode || '';
+}
+function _settingsAsk(tab) {
+  const key = _bypassPolicyKey(tab);
+  const known = _settingsAsks.get(key);
+  if (tab.modeChosen === true || !tab.sessionId) return known?.mode || '';
+  if (known && (known.pending || Date.now() - known.at < BYPASS_POLICY_TTL_MS)) return known.mode || '';
+  const [project, account] = key.split('\n');
+  // (A named Claude account's rules need a server that can answer for it: as in /permissions.)
+  const named = !!account && account !== 'default';
+  if (named && !hasCapability(tab, 'account_settings')) return known?.mode || '';
+  _settingsAsks.set(key, { ...(known || {}), pending: true });
+  const params = new URLSearchParams({ project });
+  if (named) params.set('account', account);
+  fetch(`/api/claude-code/permission-rules?${params}`, { headers: { Accept: 'application/json' } })
+    .then(res => (res.ok ? res.json() : null))
+    .then((data) => { _settingsAsks.set(key, { mode: settingsDefaultMode(data?.rules), at: Date.now() }); })
+    .catch(() => { _settingsAsks.set(key, { mode: '', at: Date.now() }); })
+    .finally(() => { const t = activeTab(); if (t && _bypassPolicyKey(t) === key) populateModeDropdown(_panel?.querySelector('#cp-mode'), t); });
+  return known?.mode || '';
+}
+
+// ── Permission mode: default / acceptEdits / plan / bypassPermissions, and
+//    dontAsk / auto with a bridge that accepts them ──
 function setPermissionModeUI(tab, mode, { announce = true } = {}) {
   if (!PERMISSION_MODES.includes(mode)) return;
-  tab.permissionMode = mode;
-  tab.planMode = mode === 'plan';
-  if (tab.planMode) {
-    tab._planContent = null; tab._planContentCaptured = false; tab.planFilePath = '';
-    tab._editedPlanContent = null; tab._planModeStartedAt = Date.now();
-    tab._planModeStartMsgIndex = tab.messagesEl?.querySelectorAll('.msg.msg-assistant').length || 0;
+  // Bypass only where it is real and not turned off: otherwise the tab keeps
+  // its mode and is told why.
+  if (mode === BYPASS_MODE) {
+    const offer = _bypassOffer(tab);
+    if (!offer.available) {
+      appendWarn(tab, offer.reason);
+      if (tab === activeTab()) populateModeDropdown(_panel?.querySelector('#cp-mode'), tab);
+      return;
+    }
   }
-  const $plan = _panel?.querySelector('#cp-plan-toggle');
-  if ($plan && tab === activeTab()) $plan.classList.toggle('active', tab.planMode);
-  storage.setItem(STOR.permissionMode, mode);
-  if (tab === activeTab()) {
-    renderStatusline(tab);
-    populateModeDropdown(_panel?.querySelector('#cp-mode'), tab);
-  }
-  // Live switch on the running session; otherwise the next query carries it
-  if (tab.sdkMode && tab.ws?.readyState === WebSocket.OPEN && tab.running) {
-    tab.ws.send(JSON.stringify({ type: 'set_permission_mode', mode }));
+  pickMode(tab, mode);
+  if (tab.planMode) _planEntered(tab);
+  // New tabs inherit the approval mode, never plan: it would run them in plan with
+  // the toggle off. Auto, Don't Ask and Bypass are a choice per tab, never a default.
+  // (Not from a temporary tab: nothing of it is saved, its pick included.)
+  if (!keepsNothing(tab)) { if (isDefaultableMode(mode)) storage.setItem(STOR.permissionMode, mode); }
+  _paintMode(tab);
+  // Said to the tab's session at once (_stateOwnMode); the session's answer
+  // says it in the transcript. A tab with no session to tell says it here.
+  if (_stateOwnMode(tab)) { /* confirmed by the session's mode_changed */ }
+  else if (mode === BYPASS_MODE) {
+    appendWarn(tab, 'Permission mode: Bypass. Every tool runs without asking in this tab, until you pick another mode.');
   } else if (announce) {
     appendStatus(tab, `Permission mode: ${MODE_LABELS[mode] || mode}`);
   }
   saveTabs();
 }
 
-// Send a control_response with an arbitrary inner payload (SDK engine cards).
-// Keeps the legacy double-nested envelope the server normalizes.
+// Say the tab's own mode to its session now: a pick, leaving plan mode, or the
+// tab saying its mode again (modeStatement() in cp/cp-permission-model.js).
+// Running or idle: an idle session still starts turns by itself (a background
+// task, a scheduled wakeup), and a tab that left Bypass must not stay in it
+// until its next message. A tab without a session says it with its next query.
+// While the socket is down the statement waits for it (reattach_result).
+// Returns whether it was sent.
+function _stateOwnMode(tab, { quiet = false } = {}) {
+  if (!(tab.running || (tab.sessionId && !tab.automationActive))) return false;
+  if (tab.ws?.readyState !== WebSocket.OPEN) { tab.modeUnsent = true; return false; }
+  tab.ws.send(JSON.stringify({ type: 'set_permission_mode', ...modeStatement(tab, _modeBridge(tab)) }));
+  if (statementSent(tab, _modeBridge(tab))) saveTabs();
+  tab.modeUnsent = false;
+  if (quiet) tab._quietSeq = tab.modeSeq;
+  return true;
+}
+
+// The tab's session says which mode it is in: a turn's init, a status, the
+// bridge's mode_changed, the answer to reattach. sessionReport() in
+// cp/cp-permission-model.js decides what that changes: a report older than the
+// tab's latest statement changes nothing of the tab's own, a Bypass that is
+// not the tab's is not taken, and when the session is behind a statement that
+// was not sent to it the tab says its mode again. Returns the model's verdict.
+function _sessionSaysMode(tab, mode, from, carrier) {
+  const numbered = hasCapability(tab, 'mode_statements');
+  const wasPlan = tab.planMode;
+  const verdict = sessionReport(tab, numbered && typeof mode !== 'string' ? '' : mode, from, { seq: carrier?.modeSeq, numbered, mayBypass: carrier?.mayBypass, switching: carrier?.switching, failed: carrier?.failed, rev: carrier?.modeRev, revOf: carrier?.modeRevOf });
+  if (verdict.restate) _stateOwnMode(tab, { quiet: true });
+  if (tab.planMode && !wasPlan) _planEntered(tab);
+  _paintMode(tab);
+  // (Also when only what the tab knows of its session changed: whether it may be in Bypass is restored by a reload.)
+  if (verdict.changed || verdict.warned) saveTabs();
+  return verdict;
+}
+
+// The mode control, the plan toggle and the statusline, from the tab's state.
+function _paintMode(tab) {
+  if (!tab || tab !== activeTab()) return;
+  const $plan = _panel?.querySelector('#cp-plan-toggle');
+  if ($plan) $plan.classList.toggle('active', !!tab.planMode);
+  try { renderStatusline(tab); } catch {}
+  populateModeDropdown(_panel?.querySelector('#cp-mode'), tab);
+}
+
+// The tab entered plan mode: what was captured of an earlier plan is not this one's.
+function _planEntered(tab) {
+  tab._planContent = null; tab._planContentCaptured = false; tab.planFilePath = '';
+  tab._editedPlanContent = null; tab._planModeStartedAt = Date.now();
+  tab._planModeStartMsgIndex = tab.messagesEl?.querySelectorAll('.msg.msg-assistant').length || 0;
+}
+
+// The tab leaves plan mode without naming a mode (the plan toggle, /plan, the
+// post-plan card): back to the mode it was in before it entered plan mode, the
+// user's pick or following their settings, and said to its session at once, so
+// a live session leaves plan mode too.
+function _leavePlanUI(tab, { announce = true } = {}) {
+  if (!leavePlanMode(tab)) return false;
+  _paintMode(tab);
+  if (!_stateOwnMode(tab) && announce) appendStatus(tab, 'Plan mode OFF');
+  saveTabs();
+  return true;
+}
+
+// A button of the plan card approved the plan: the user's pick of the mode it
+// continues in. The tab takes it first, so the answer carries the number of
+// that statement. Returns the answer as it is sent.
+function _planApproved(tab, inner) {
+  const mode = inner.planDecision;
+  pickMode(tab, mode === 'acceptEdits' || mode === BYPASS_MODE ? mode : 'default');
+  if (tab.ws?.readyState === WebSocket.OPEN) statementSent(tab, _modeBridge(tab));
+  return hasCapability(tab, 'mode_statements') ? { ...inner, modeSeq: tab.modeSeq } : inner;
+}
+
+// The post-plan card's "Continue with implementation" while the plan's approval
+// is still pending: the answer to that approval. The plan as edited goes back
+// as the tool's input (Claude Code reads `plan` from the approved input and
+// takes it as the plan), and the plan leaves to the mode the tab was in before
+// it entered plan mode. Returns false when no approval is pending.
+function _approvePendingPlan(tab) {
+  const pending = tab._pendingPlan;
+  if (!pending || !tab._activePerm || tab.ws?.readyState !== WebSocket.OPEN) return false;
+  const numbered = hasCapability(tab, 'mode_statements');
+  const exit = planExitTarget(tab, { bypass: _bypassOffer(tab).available });
+  const plan = String(pending.req?.input?.plan || '').trim();
+  const edited = String(tab._editedPlanContent || '').trim();
+  leavePlanMode(tab);
+  _sendControlInner(tab, pending.requestId, {
+    behavior: 'allow',
+    planDecision: exit.planDecision,
+    ...(numbered ? { planExit: exit.planExit, modeSeq: tab.modeSeq } : {}),
+    ...(edited && edited !== plan ? { updatedInput: { ...(pending.req?.input || {}), plan: edited } } : {}),
+  });
+  if (statementSent(tab, _modeBridge(tab))) saveTabs();
+  delete tab._editedPlanContent;
+  tab._pendingPlan = null;
+  // The approval card is answered: it is locked as its own buttons would lock it.
+  const card = tab.messagesEl?.querySelector(`.cp-plan-approval-card[data-request-id="${CSS.escape(pending.requestId)}"]`);
+  if (card) {
+    card.classList.remove('active-perm');
+    card.classList.add('resolved');
+    card.querySelectorAll('button, textarea').forEach(n => { n.disabled = true; });
+    const badge = card.querySelector('.perm-status');
+    if (badge) { badge.textContent = 'Approved'; badge.hidden = false; }
+  }
+  recordHookEvent(tab, 'PermissionRequest', 'plan approved (edited)');
+  _paintMode(tab);
+  saveTabs();
+  tab._activePerm = false;
+  showThinking(tab);
+  setRunning(tab, true);
+  _showNextPerm(tab);
+  return true;
+}
+
+// Send a control_response with an arbitrary inner payload (the cards' answers).
+// Keeps the double-nested envelope the bridge normalizes.
+// Returns whether it was sent: an answer is shown as given only then.
 function _sendControlInner(tab, requestId, inner) {
-  if (!tab.ws || tab.ws.readyState !== WebSocket.OPEN) return;
+  if (!tab.ws || tab.ws.readyState !== WebSocket.OPEN) return false;
   console.log('[claude-panel] control_response:', requestId, JSON.stringify(inner).slice(0, 200));
   tab.ws.send(JSON.stringify({
     type: 'control_response',
     request_id: requestId,
     response: { subtype: 'success', request_id: requestId, response: inner },
   }));
+  return true;
 }
 
 function _showNextPerm(tab) {
@@ -6832,22 +7855,45 @@ function _showNextPerm(tab) {
     _showNextPerm(tab);
   };
 
-  if (next.kind === 'plan' && tab.sdkMode) {
+  if (next.kind === 'elicit') {
     hideThinking(tab);
     setRunning(tab, false);
-    renderPlanApprovalCard(tab, next.requestId, next.req, {
+    renderElicitationCard(tab, next.requestId, next.req, {
       sendResponse: (rid, inner) => _sendControlInner(tab, rid, inner),
+      onResolved: (action) => {
+        recordHookEvent(tab, 'Elicitation', `${next.req.server_name || 'MCP'}: ${action}`);
+        finishPerm();
+      },
+    });
+    notify('panel', NOTIF_TYPE.ASK, tab.label || 'Claude Code', { tabId: tab.id });
+    return;
+  }
+
+  if (next.kind === 'plan') {
+    hideThinking(tab);
+    setRunning(tab, false);
+    // Kept while the card waits: the post-plan card can answer it too (_approvePendingPlan).
+    tab._pendingPlan = { requestId: next.requestId, req: next.req };
+    renderPlanApprovalCard(tab, next.requestId, next.req, {
+      // An approval is the user's pick of the mode the plan continues in (_planApproved).
+      // Nothing is picked and nothing is shown as answered unless the answer can be sent.
+      sendResponse: (rid, inner) => {
+        if (tab.ws?.readyState !== WebSocket.OPEN) { appendStatus(tab, PLAN_ANSWER_UNSENT); return false; }
+        return _sendControlInner(tab, rid, inner?.behavior === 'allow' ? _planApproved(tab, inner) : inner);
+      },
+      // The plan as changed in the editor, if it was: that is what gets approved.
+      editedPlan: () => tab._editedPlanContent || '',
+      // The CLI's "approve and bypass permissions", where this tab can take Bypass.
+      bypass: _bypassOffer(tab),
       onApproved: (mode) => {
-        tab.planMode = false;
-        tab.permissionMode = mode === 'acceptEdits' ? 'acceptEdits' : 'default';
-        const $plan = _panel?.querySelector('#cp-plan-toggle');
-        if ($plan && tab === activeTab()) $plan.classList.remove('active');
-        if (tab === activeTab()) renderStatusline(tab);
+        tab._pendingPlan = null;
+        _paintMode(tab);
         recordHookEvent(tab, 'PermissionRequest', `plan approved (${mode})`);
         saveTabs();
         finishPerm();
       },
       onKeepPlanning: () => {
+        tab._pendingPlan = null;
         recordHookEvent(tab, 'PermissionDenied', 'keep planning');
         finishPerm();
       },
@@ -6856,24 +7902,23 @@ function _showNextPerm(tab) {
     return;
   }
 
-  if (tab.sdkMode) {
-    hideThinking(tab);
-    setRunning(tab, false);
-    renderPermissionCard(tab, next.requestId, next.req, {
-      sendResponse: (rid, inner) => _sendControlInner(tab, rid, inner),
-      autoAllow: (toolName) => _autoAllowTools.add(toolName),
-      onResolved: (behavior, always) => {
-        recordHookEvent(tab, behavior === 'deny' ? 'PermissionDenied' : 'PermissionRequest', behavior === 'deny' ? 'denied' : (always ? 'always' : 'allowed'));
-        // SDK engine: deny is in-band — the agent continues, nothing is killed,
-        // so the queue/buffer stay intact (unlike the legacy kill-on-deny path).
-        finishPerm();
-      },
-    });
-    notify('panel', NOTIF_TYPE.ACTION, tab.label || 'Claude Code', { tabId: tab.id });
-    return;
-  }
-
-  renderPermissionPrompt(tab, next.requestId, next.req);
+  hideThinking(tab);
+  setRunning(tab, false);
+  renderPermissionCard(tab, next.requestId, next.req, {
+    sendResponse: (rid, inner) => _sendControlInner(tab, rid, inner),
+    // "Always" sends the CLI's suggested rules (cp-permission-model.js), not a
+    // blanket allow for the whole tool: nothing is remembered client-side.
+    canInterrupt: hasCapability(tab, 'deny_interrupt'),
+    onResolved: (behavior, always, extra = {}) => {
+      if (extra.granted?.length) { tab.grantedRules = [...(tab.grantedRules || []), ...extra.granted].slice(-100); }
+      // "Deny and stop" ends the turn: its result is an interrupt, not a failure.
+      if (extra.interrupt) tab._abortedAt = Date.now();
+      recordHookEvent(tab, behavior === 'deny' ? 'PermissionDenied' : 'PermissionRequest', behavior === 'deny' ? 'denied' : (always ? 'always' : 'allowed'));
+      // A deny is in-band: the agent continues, nothing is killed, so the
+      // queue and the buffer stay intact.
+      finishPerm();
+    },
+  });
   notify('panel', NOTIF_TYPE.ACTION, tab.label || 'Claude Code', { tabId: tab.id });
 }
 
@@ -6995,6 +8040,8 @@ function renderAskUserQuestion(tab, requestId, input) {
         btn.addEventListener('click', () => {
           // Changelog "Edit first" — bypass batch, trigger editor directly
           if (isChangelogAsk && /edit first/i.test(optLabel)) {
+            // (A temporary chat writes no draft file.)
+            if (keepsNothing(tab)) { appendStatus(tab, temporaryBlocks(tab, 'plan-file')); return; }
             opts.querySelectorAll('.ask-option').forEach(b => { b.disabled = true; });
             btn.classList.add('selected');
             tab._changelogAsk = { questions: allQuestions, questionText };
@@ -7075,135 +8122,34 @@ function renderAskUserQuestion(tab, requestId, input) {
       updateSubmitState();
     });
     card.appendChild(textInput);
+    card.dataset.question = questionText;
+    // Options can carry a preview (a mockup, a code sample): shown for the one
+    // picked or hovered. A note can go with the answer when the bridge keeps it.
+    try { decorateAskCard(card, { ...q, question: questionText }, { notes: hasCapability(tab, 'ask_annotations') }); } catch {}
     wrap.appendChild(card);
   }
 
   // Submit button — sends all answers as a batch
   submitBtn.addEventListener('click', () => {
+    // An answer is shown as given only once it can be sent: until then the card stays as it is.
+    if (tab.ws?.readyState !== WebSocket.OPEN) { appendStatus(tab, ASK_ANSWER_UNSENT); return; }
     wrap.querySelectorAll('.ask-option').forEach(b => { b.disabled = true; });
-    wrap.querySelectorAll('.ask-text-input').forEach(i => { i.disabled = true; });
+    wrap.querySelectorAll('.ask-text-input, .ask-notes').forEach(i => { i.disabled = true; });
     submitBtn.disabled = true;
     submitBtn.textContent = 'Submitted';
-    sendAskAnswer(tab, allQuestions, pendingAnswers);
+    // What was answered stays readable on the card.
+    const annotations = askAnnotations(wrap, pendingAnswers);
+    wrap.querySelectorAll('.ask-card').forEach((c) => {
+      const question = c.dataset.question || '';
+      if (pendingAnswers[question]) markAskAnswered(c, { [question]: pendingAnswers[question] });
+    });
+    sendAskAnswer(tab, allQuestions, pendingAnswers, annotations);
   });
   wrap.appendChild(submitBar);
 
   el.appendChild(wrap);
   $msgs.appendChild(el);
   setRunning(tab, false);
-  if (tab === activeTab()) scrollEnd();
-}
-
-function renderPermissionPrompt(tab, requestId, req) {
-  const $msgs = tab.messagesEl;
-  if (!$msgs) return;
-  hideThinking(tab);
-  setRunning(tab, false);
-
-  const toolName = req.tool_name || 'Unknown';
-  const input = req.input || {};
-  const isSynaBun = isSynaBunTool(toolName);
-  const synMeta = isSynaBun ? getSynaBunMeta(toolName) : null;
-
-  // Detail line
-  let detail = '';
-  if (isSynaBun && synMeta?.detailFn) detail = synMeta.detailFn(input);
-  else if (['Read','Edit','Write'].includes(toolName)) detail = input.file_path || '';
-  else if (toolName === 'Bash') detail = input.command || '';
-  else if (toolName === 'Glob' || toolName === 'Grep') detail = input.pattern || '';
-  else if (toolName === 'Agent') detail = input.description || input.prompt?.slice(0, 80) || '';
-  else detail = Object.keys(input).length ? JSON.stringify(input).slice(0, 120) : '';
-
-  const el = document.createElement('div');
-  el.className = 'msg msg-assistant';
-  const avatar = document.createElement('div');
-  avatar.className = 'msg-avatar';
-  avatar.innerHTML = CLAUDE_ICON;
-  el.appendChild(avatar);
-
-  const wrap = document.createElement('div');
-  wrap.className = 'msg-content';
-
-  const card = document.createElement('div');
-  card.className = 'perm-card active-perm' + (isSynaBun ? ' synabun-perm' : '');
-
-  // Header label
-  const hdr = document.createElement('div');
-  hdr.className = 'perm-header';
-  hdr.textContent = 'PERMISSION';
-  card.appendChild(hdr);
-
-  // Tool line
-  const toolLine = document.createElement('div');
-  toolLine.className = 'perm-tool-line';
-  const icon = document.createElement('span');
-  icon.className = 'perm-tool-icon';
-  icon.innerHTML = toolIconSvg(toolName);
-  const name = document.createElement('span');
-  name.className = 'perm-tool-name';
-  name.textContent = synMeta?.label || toolName;
-  toolLine.append(icon, name);
-  card.appendChild(toolLine);
-
-  // Detail
-  if (detail) {
-    const detailEl = document.createElement('div');
-    detailEl.className = 'perm-detail';
-    detailEl.textContent = detail;
-    card.appendChild(detailEl);
-  }
-
-  // Actions
-  const actions = document.createElement('div');
-  actions.className = 'perm-actions';
-
-  const alwaysBtn = document.createElement('button');
-  alwaysBtn.className = 'perm-btn perm-btn-always';
-  alwaysBtn.innerHTML = '<span class="perm-btn-icon">' + ICON_CHECK + '</span>Always';
-
-  const allowBtn = document.createElement('button');
-  allowBtn.className = 'perm-btn perm-btn-allow';
-  allowBtn.innerHTML = '<span class="perm-btn-icon">' + ICON_CHECK + '</span>Allow';
-
-  const denyBtn = document.createElement('button');
-  denyBtn.className = 'perm-btn perm-btn-deny';
-  denyBtn.innerHTML = '<span class="perm-btn-icon">' + ICON_X + '</span>Deny';
-
-  // Status badge for resolved state
-  const statusBadge = document.createElement('span');
-  statusBadge.className = 'perm-status';
-  statusBadge.hidden = true;
-
-  const resolve = (behavior, always = false) => {
-    if (always) _autoAllowTools.add(toolName);
-    card.classList.remove('active-perm');
-    card.classList.add('resolved', behavior === 'allow' ? 'resolved-allow' : 'resolved-deny');
-    allowBtn.disabled = true;
-    alwaysBtn.disabled = true;
-    denyBtn.disabled = true;
-    statusBadge.textContent = always ? 'Always' : (behavior === 'allow' ? 'Allowed' : 'Denied');
-    statusBadge.hidden = false;
-    sendPermissionResponse(tab, requestId, behavior, always);
-    recordHookEvent(tab, behavior === 'deny' ? 'PermissionDenied' : 'PermissionRequest', (behavior === 'deny' ? 'denied' : (always ? 'always' : 'allowed')));
-    // On deny: clear queued permissions and buffered messages — process is being killed
-    if (behavior === 'deny') {
-      tab._permQueue.length = 0;
-      tab._msgBuffer.length = 0;
-      tab._draining = false; // abandon any in-flight chunked drain
-    }
-    tab._activePerm = false;
-    _showNextPerm(tab);
-  };
-
-  alwaysBtn.addEventListener('click', () => resolve('allow', true));
-  allowBtn.addEventListener('click', () => resolve('allow'));
-  denyBtn.addEventListener('click', () => resolve('deny'));
-
-  actions.append(alwaysBtn, allowBtn, denyBtn, statusBadge);
-  card.appendChild(actions);
-  wrap.appendChild(card);
-  el.appendChild(wrap);
-  $msgs.appendChild(el);
   if (tab === activeTab()) scrollEnd();
 }
 
@@ -7260,7 +8206,17 @@ function _stampUserMessageUuid(tab, uuid) {
   const row = rows.find(r => !r.dataset.uuid);
   if (!row) return;
   row.dataset.uuid = uuid;
-  if (!tab.sdkMode || row.querySelector('.cp-rewind-btn')) return;
+  if (!tab.sdkMode) return;
+  _attachRewindButton(tab, row, uuid);
+}
+
+// "Rewind to here" on a prompt row. Also called for the rows of a restored
+// snapshot, which kept their uuid but lost the button's listener.
+function _attachRewindButton(tab, row, uuid) {
+  // No rewind on an automation tab: its run is not this tab's socket session.
+  if (!tab || !row || !uuid || tab.automationRunId || row.querySelector('.cp-rewind-btn')) return;
+  // Nor on a temporary chat: it keeps no checkpoints and no transcript, so there is nothing to rewind or fork.
+  if (keepsNothing(tab)) return;
   const btn = document.createElement('button');
   btn.className = 'cp-rewind-btn';
   btn.textContent = '↺ Rewind to here';
@@ -7268,16 +8224,62 @@ function _stampUserMessageUuid(tab, uuid) {
   btn.addEventListener('click', (e) => {
     e.stopPropagation();
     if (tab.running) { appendStatus(tab, 'Rewind is unavailable while Claude is working.'); return; }
+    if (!tab.sdkMode) { appendStatus(tab, 'Rewind needs a connected Claude Code session.'); return; }
     if (row.querySelector('.cp-rewind-confirm')) return;
     const pop = document.createElement('div');
     pop.className = 'cp-rewind-confirm';
     pop.innerHTML = `<div class="cp-rewind-confirm-text">Restore files to the state before this message? The conversation stays; files are rewound.</div>
       <div class="cp-rewind-confirm-actions"><button class="cp-rewind-no">Cancel</button><button class="cp-rewind-yes">Rewind files</button></div>`;
+    // What the rewind would change, before the user confirms it.
+    if (hasCapability(tab, 'session_requests')) {
+      const textEl = pop.querySelector('.cp-rewind-confirm-text');
+      const preview = document.createElement('div');
+      preview.className = 'cp-rewind-confirm-text cp-rewind-preview';
+      preview.textContent = 'Checking what would change…';
+      textEl.after(preview);
+      _sessionRequest(tab, 'rewind_preview', { userMessageUuid: uuid })
+        .then((r) => { preview.textContent = rewindPreviewText(r); if (r.canRewind === false) pop.querySelector('.cp-rewind-yes').disabled = true; })
+        .catch((err) => { preview.textContent = `No preview: ${err.message}`; });
+    }
+    // The conversation too (the model forgets this prompt and what followed),
+    // or a copy of the conversation up to here in a new tab.
+    const before = entryBefore(row);
+    const actions = pop.querySelector('.cp-rewind-confirm-actions');
+    if (before && hasCapability(tab, 'conversation_rewind')) {
+      const both = document.createElement('button');
+      both.className = 'cp-rewind-yes cp-rewind-convo';
+      both.textContent = 'Rewind files and conversation';
+      both.title = 'Restore the files, and take the conversation back to before this message. The prompt returns to the input.';
+      both.addEventListener('click', () => {
+        pop.remove();
+        tab._rewindRow = row;
+        if (tab.ws?.readyState === WebSocket.OPEN) _sendControl(tab, { type: 'rewind_conversation', messageUuid: before, userMessageUuid: uuid });
+      });
+      actions.appendChild(both);
+    }
+    if (before && tab.sessionId && sessionActionsAvailable(tab)) {
+      const fork = document.createElement('button');
+      fork.className = 'cp-rewind-no cp-rewind-fork';
+      fork.textContent = 'Fork from here';
+      fork.title = 'Open a copy of the conversation up to before this message in a new tab.';
+      fork.addEventListener('click', () => {
+        pop.remove();
+        const title = forkTitle(tab.label);
+        // The server finds where the copy ends from the transcript (the entry
+        // this prompt follows); `before` is this page's own answer, a fallback.
+        forkClaudeSession(tab.sessionId, { beforeMessageId: uuid, upToMessageId: before, title, project: tab.project }).then((r) => {
+          storage.setItem(LABEL_PREFIX + r.sessionId, title);
+          const t = createTab(r.sessionId, title);
+          if (t) { t.project = tab.project; saveTabs(); }
+        }).catch(err => appendStatus(tab, `Could not fork: ${err.message}`));
+      });
+      actions.appendChild(fork);
+    }
     pop.querySelector('.cp-rewind-no').addEventListener('click', () => pop.remove());
     pop.querySelector('.cp-rewind-yes').addEventListener('click', () => {
       pop.remove();
       if (tab.ws?.readyState === WebSocket.OPEN) {
-        tab.ws.send(JSON.stringify({ type: 'rewind', userMessageUuid: uuid }));
+        _sendControl(tab, { type: 'rewind', userMessageUuid: uuid });
       }
     });
     row.appendChild(pop);
@@ -7340,12 +8342,14 @@ function appendStatus(tab, text) {
   const el = document.createElement('div'); el.className = 'msg-status'; el.textContent = text;
   $msgs.appendChild(el); pruneMessages($msgs); if (tab === activeTab()) scrollEnd();
   scheduleSessionSnapshotSave(tab);
+  return el;
 }
 function appendError(tab, text) {
   const $msgs = tab.messagesEl; if (!$msgs) return;
   const el = document.createElement('div'); el.className = 'msg-error'; el.textContent = text;
   $msgs.appendChild(el); pruneMessages($msgs); if (tab === activeTab()) scrollEnd();
   scheduleSessionSnapshotSave(tab);
+  return el;
 }
 // Amber, between status (grey, ignorable) and error (red, fatal): something went
 // wrong and was worked around, and the user should know the session is degraded.
@@ -7354,6 +8358,7 @@ function appendWarn(tab, text) {
   const el = document.createElement('div'); el.className = 'msg-warn'; el.textContent = text;
   $msgs.appendChild(el); pruneMessages($msgs); if (tab === activeTab()) scrollEnd();
   scheduleSessionSnapshotSave(tab);
+  return el;
 }
 
 function scrollEnd(force) {
@@ -7371,8 +8376,10 @@ const MAX_MSG_CHILDREN = 600;
 const PRUNE_BATCH = 150;
 
 function pruneMessages($msgs) {
-  if (!$msgs || $msgs.childElementCount <= MAX_MSG_CHILDREN) return;
-  const removeCount = Math.min(PRUNE_BATCH, $msgs.childElementCount - (MAX_MSG_CHILDREN - PRUNE_BATCH));
+  // _pruneCap: raised when the user loaded earlier history into this transcript.
+  const max = $msgs?._pruneCap || MAX_MSG_CHILDREN;
+  if (!$msgs || $msgs.childElementCount <= max) return;
+  const removeCount = Math.min(PRUNE_BATCH, $msgs.childElementCount - (max - PRUNE_BATCH));
   for (let i = 0; i < removeCount; i++) {
     const child = $msgs.firstElementChild;
     if (!child) break;
@@ -7444,10 +8451,12 @@ function finishTab(tab, skipNotif) {
   const wasRunning = tab.running;
   // Turn end is the primary snapshot boundary (appends only mark dirty)
   if (tab.sessionId && tab._snapshotDirty) flushSessionSnapshotSave(tab);
-  hideThinking(tab); setRunning(tab, false); tab._wasRunning = false; tab.currentMsgEl = null; tab.currentMsgId = null; tab.pendingAskToolUseId = null; tab.pendingAskRequestId = null; tab.pendingAskBufferedAnswer = null; tab.askRenderedViaControl = false; tab.sendStartedAt = null; tab._exitPlanMsgId = null; tab._exitPlanPending = false; tab._exitPlanHandled = false; tab._exitPlanWasPlanMode = false; tab._planContentCaptured = false; if (tab._stream?.mdTimer) clearTimeout(tab._stream.mdTimer); tab._stream = null;
+  hideThinking(tab); setRunning(tab, false); tab._wasRunning = false; tab.currentMsgEl = null; tab.currentMsgId = null; tab.pendingAskToolUseId = null; tab.pendingAskRequestId = null; tab.pendingAskBufferedAnswer = null; tab.askRenderedViaControl = false; tab.sendStartedAt = null; tab._planContentCaptured = false; if (tab._stream?.mdTimer) clearTimeout(tab._stream.mdTimer); tab._stream = null;
   tab.currentActivity = null;
   if (tab === activeTab()) { try { renderStatusline(tab); } catch {} }
   if (tab.compacting) { tab.compacting = false; if (tab === activeTab()) _setCompactingUI(false); }
+  tab._compactSentAt = 0; // a Compact the user started ends here too (cp-compose.js)
+  _compactQueue.ended(tab); // prompts queued behind it are moved from here should no `done` follow
   saveTabs();
   if (wasRunning && !skipNotif) notify('panel', NOTIF_TYPE.DONE, tab.label || 'Claude Code', { tabId: tab.id });
 }
@@ -7457,7 +8466,7 @@ function appendInfoCard(tab, { title = '', kind = 'info', body = '', html = null
   const $msgs = tab?.messagesEl;
   if (!$msgs) return null;
   const el = document.createElement('div');
-  el.className = 'msg msg-info-card cp-info-' + esc(kind);
+  el.className = 'msg msg-info-card cp-info-' + classToken(kind);
   const inner = document.createElement('div');
   inner.className = 'cp-info-body';
   if (title) {
@@ -7482,7 +8491,310 @@ function appendInfoCard(tab, { title = '', kind = 'info', body = '', html = null
 // Local-only UX commands (clear, model, resume, rename, cost, theme, view, btw,
 // plan, help, memory, config, login, logout, compact*) stay client-handled.
 // (*compact keeps its dedicated WS path for the compacting UI.)
-const SDK_NATIVE_COMMANDS = new Set(['init', 'doctor', 'context', 'permissions', 'agents', 'status', 'mcp', 'add-dir', 'plugin']);
+// (/status is answered here from the session's own init message: model, CLI
+// version, credential, MCP servers, plugins and their load errors.)
+// (/permissions is answered here too: the mode, the rules granted from cards in
+// this tab, and the rules in the settings files.)
+// (/agents and /plugin list what the session itself reported; /add-dir changes
+// the tab's session settings.)
+// (/context and /mcp ask the live session through the bridge when it can
+// answer.)
+// Which of the two answers a typed command is decided by slashCommandRoute()
+// in cp/cp-events.js: a command whose local handler needs bridge support the
+// connected server does not advertise goes to the CLI, as it did before.
+
+// Ask the tab's live session something (context usage, plan usage, MCP status,
+// a rewind preview). Resolves with the data, rejects with a message for the user.
+let _sessionRequestSeq = 0;
+function _sessionRequest(tab, what, args = {}) {
+  return new Promise((resolve, reject) => {
+    if (!hasCapability(tab, 'session_requests')) { reject(new Error('This needs a newer SynaBun server: restart it to enable it.')); return; }
+    if (tab.ws?.readyState !== WebSocket.OPEN) { reject(new Error('Not connected.')); return; }
+    const id = `sr-${Date.now().toString(36)}-${++_sessionRequestSeq}`;
+    tab._sessionRequests = tab._sessionRequests || new Map();
+    const timer = setTimeout(() => { if (tab._sessionRequests.delete(id)) reject(new Error('The session did not answer in time.')); }, 30_000);
+    tab._sessionRequests.set(id, { resolve, reject, timer });
+    _sendControl(tab, { type: 'session_request', id, what, args });
+  });
+}
+
+const _infoRows = (rows) => rows.map(([k, v, tone]) => `<div class="cp-info-row"><span class="cp-doctor-k">${esc(k)}</span><span class="cp-doctor-v${tone ? ` cp-info-${classToken(tone)}` : ''}">${esc(v)}</span></div>`).join('');
+
+// /context from the CLI's own accounting. The summary is free; the full
+// breakdown costs token-count calls, so it is fetched only on request.
+function _showContextUsage(tab, detail = 'summary') {
+  _sessionRequest(tab, 'context_usage', { detail }).then((data) => {
+    const view = contextCard(data);
+    let html = `<div class="cp-info-row"><b>${esc(view.headline)}</b></div>${_infoRows(view.rows)}`;
+    for (const note of view.notes) html += `<div class="cp-info-row muted">${esc(note)}</div>`;
+    for (const section of view.sections) html += `<div class="cp-help-section-label">${esc(section.label)}</div>${_infoRows(section.rows.map(r => [r[0], r[1], '']))}`;
+    const card = appendInfoCard(tab, { title: detail === 'full' ? 'Context (full count)' : 'Context', kind: 'info', html });
+    if (card && detail !== 'full') {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'cp-engine-retry';
+      btn.textContent = 'Count exactly (uses tokens)';
+      btn.addEventListener('click', () => { btn.disabled = true; _showContextUsage(tab, 'full'); });
+      card.querySelector('.cp-info-body')?.appendChild(btn);
+    }
+  }).catch((err) => {
+    // No live session, or an older server: what the panel measured itself.
+    const u = tab.usage || {};
+    const total = (Number(u.inputTokens) || 0) + (Number(u.cacheRead) || 0) + (Number(u.cacheWrite) || 0);
+    const cw = _contextWindowFor(tab);
+    appendInfoCard(tab, { title: 'Context', kind: 'info', html: `<div class="cp-info-row"><b>${total.toLocaleString()}</b> / ${cw.toLocaleString()} tokens (${Math.min(100, Math.round((total / cw) * 100))}%), as measured from the last reply</div><div class="cp-info-row muted">${esc(err.message)}</div>` });
+  });
+}
+
+function _showUsage(tab) {
+  _sessionRequest(tab, 'usage').then((data) => {
+    const view = usageCard(data);
+    let html = `<div class="cp-help-section-label">This session</div>${view.session.length ? _infoRows(view.session) : '<div class="cp-info-row muted">Nothing spent yet.</div>'}`;
+    html += `<div class="cp-help-section-label">Plan limits${view.plan ? ` (${esc(view.plan)})` : ''}</div>`;
+    html += view.limits.length ? _infoRows(view.limits) : `<div class="cp-info-row muted">${esc(view.limitsNote || 'No limit data.')}</div>`;
+    appendInfoCard(tab, { title: 'Usage', kind: 'info', html });
+  }).catch(err => appendInfoCard(tab, { title: 'Usage', kind: 'info', body: err.message }));
+}
+
+// /account: the Claude accounts set up in SynaBun, and which one this tab uses.
+// A conversation belongs to the account it started under (its transcript lives
+// in that account's config directory), so the account is chosen before the
+// first message of a tab.
+function _showAccounts(tab, wanted = '') {
+  if (!hasCapability(tab, 'accounts')) { appendStatus(tab, 'Choosing an account needs a newer SynaBun server: restart it to enable this.'); return; }
+  fetch('/api/claude/accounts').then(r => r.json()).then((d) => {
+    const accounts = Array.isArray(d?.accounts) ? d.accounts : [];
+    const pick = (account) => {
+      const id = account.isDefault ? '' : account.id;
+      if (id === (tab.accountId || '')) { appendStatus(tab, `This tab already uses ${account.label}.`); return; }
+      if (tab.sessionId) { appendStatus(tab, 'This conversation belongs to the account it started under. Start a new chat (or a new tab) to use another account.'); return; }
+      if (!account.loggedIn) { appendStatus(tab, `${account.label} is not signed in yet. Sign it in from Settings first.`); return; }
+      tab.accountId = id;
+      saveTabs();
+      if (tab === activeTab()) renderStatusline(tab);
+      appendStatus(tab, `This tab runs under ${account.label}${account.email ? ` (${account.email})` : ''}.`);
+    };
+    if (wanted) {
+      const w = wanted.trim().toLowerCase();
+      const match = accounts.find(a => a.id.toLowerCase() === w || String(a.label || '').toLowerCase() === w || String(a.email || '').toLowerCase() === w);
+      if (!match) { appendStatus(tab, `No account "${wanted}". Use /account to list them.`); return; }
+      pick(match);
+      return;
+    }
+    const current = tab.accountId || 'default';
+    const html = accounts.map(a => `<div class="cp-task-row" data-account="${esc(a.id)}"><div class="cp-task-head">
+        <span class="cp-task-title">${esc(a.label)}${a.id === current ? ' ✓' : ''}</span>
+        <span class="cp-chip ${a.loggedIn ? 'cp-chip-ok' : 'cp-chip-warn'}">${a.loggedIn ? 'signed in' : 'not signed in'}</span>
+        ${a.id !== current ? '<button type="button" class="cp-engine-retry" data-use>Use for this tab</button>' : ''}</div>
+        <div class="cp-task-stats">${esc([a.email, a.organization].filter(Boolean).join(' · ') || 'no identity yet')}</div></div>`).join('')
+      + '<div class="cp-info-row muted">Accounts are added and signed in from Settings. The default account is what Claude Code uses in a terminal.</div>';
+    const card = appendInfoCard(tab, { title: 'Claude accounts', kind: 'info', html });
+    card?.querySelectorAll('[data-use]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = btn.closest('[data-account]')?.dataset.account;
+        const account = accounts.find(a => a.id === id);
+        if (account) pick(account);
+      });
+    });
+  }).catch(() => appendStatus(tab, 'Could not read the accounts.'));
+}
+
+// /mcp: every server of the session with its state, and what can be done about it.
+function _showMcp(tab, servers = null) {
+  const render = (list, { live = true } = {}) => {
+    tab.messagesEl?.querySelectorAll('.cp-mcp-card').forEach(n => n.remove());
+    // Reconnect / Disable / Enable act on a live session through the bridge:
+    // without one (or on a server that was not restarted) they are not offered.
+    const rows = mcpRows(list, { controls: live });
+    const html = rows.length ? rows.map(r => `<div class="cp-task-row" data-server="${esc(r.name)}">
+        <div class="cp-task-head"><span class="cp-task-title">${esc(r.name)}</span><span class="cp-chip cp-chip-${classToken(r.tone === 'muted' ? '' : r.tone)}">${esc(r.status)}</span>
+          ${r.canReconnect ? '<button type="button" class="cp-engine-retry" data-mcp="reconnect">Reconnect</button>' : ''}
+          ${r.canDisable ? '<button type="button" class="cp-engine-retry" data-mcp="disable">Disable</button>' : ''}
+          ${r.canEnable ? '<button type="button" class="cp-engine-retry" data-mcp="enable">Enable</button>' : ''}</div>
+        ${r.detail ? `<div class="cp-task-stats">${esc(r.detail)}</div>` : ''}${r.error ? `<div class="cp-task-line cp-info-warn">${esc(r.error)}</div>` : ''}</div>`).join('')
+      : '<div class="cp-info-row muted">This session has no MCP servers.</div>';
+    const whyHtml = live ? '' : `<div class="cp-info-row muted">${hasCapability(tab, 'session_requests') ? 'Reconnect, disable and enable are available while the session is running.' : 'Reconnect, disable and enable need the SynaBun server restart.'}</div>`;
+    const card = appendInfoCard(tab, { title: 'MCP servers', kind: 'info', html: html + whyHtml });
+    if (!card) return;
+    card.classList.add('cp-mcp-card');
+    card.querySelectorAll('[data-mcp]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const serverName = btn.closest('[data-server]')?.dataset.server || '';
+        const action = btn.dataset.mcp;
+        card.querySelectorAll('button').forEach(b => { b.disabled = true; });
+        const req = action === 'reconnect'
+          ? _sessionRequest(tab, 'mcp_reconnect', { serverName })
+          : _sessionRequest(tab, 'mcp_toggle', { serverName, enabled: action === 'enable' });
+        req.then(d => _showMcp(tab, d.servers)).catch((err) => { appendStatus(tab, `${serverName}: ${err.message}`); _showMcp(tab); });
+      });
+    });
+    _decorateMcpCard(tab, card, { live });
+  };
+  if (servers) { render(servers); return; }
+  _sessionRequest(tab, 'mcp_status').then(d => render(d.servers)).catch((err) => {
+    // No live session yet: the servers the last init reported, without controls.
+    const known = (tab.mcpServers || []).map(sv => ({ name: sv.name, status: sv.status, scope: sv.source || '' }));
+    if (known.length || hasCapability(tab, 'session_settings_v2')) render(known, { live: false });
+    else appendInfoCard(tab, { title: 'MCP servers', kind: 'info', body: err.message });
+  });
+}
+
+// What the /mcp card adds on a server that supports it: per server, whether its
+// calls always prompt (live session only), and the tab's own remote servers,
+// which can be changed without restarting the session.
+function _decorateMcpCard(tab, card, { live }) {
+  const content = card.querySelector('.cp-info-content');
+  if (!content) return;
+  if (live && hasCapability(tab, 'mcp_dynamic')) {
+    tab._mcpModes = tab._mcpModes || {};
+    card.querySelectorAll('[data-server]').forEach((row) => {
+      const serverName = row.dataset.server || '';
+      const head = row.querySelector('.cp-task-head');
+      if (!serverName || !head) return;
+      const select = document.createElement('select');
+      select.className = 'cp-elicit-input cp-mcp-mode';
+      select.title = 'Whether calls to this server ask for permission in this session';
+      for (const [value, label] of [['', 'Prompts: session mode'], ['default', 'Prompts: always ask'], ['auto', 'Prompts: auto mode decides']]) {
+        const opt = document.createElement('option');
+        opt.value = value;
+        opt.textContent = label;
+        select.appendChild(opt);
+      }
+      select.value = tab._mcpModes[serverName] || '';
+      select.addEventListener('change', () => {
+        const mode = select.value || null;
+        _sessionRequest(tab, 'mcp_permission_mode', { serverName, mode })
+          .then((d) => { tab._mcpModes[serverName] = d.mode || ''; if (d.warning) appendStatus(tab, `${serverName}: ${d.warning}`); })
+          .catch((err) => { select.value = tab._mcpModes[serverName] || ''; appendStatus(tab, `${serverName}: ${err.message}`); });
+      });
+      head.appendChild(select);
+    });
+  }
+  if (!hasCapability(tab, 'session_settings_v2')) return;
+  const label = document.createElement('div');
+  label.className = 'cp-help-section-label';
+  label.textContent = 'Servers of this tab';
+  const area = document.createElement('textarea');
+  area.className = 'cp-elicit-input';
+  area.rows = 2;
+  area.placeholder = 'name https://host/mcp [sse] [always] [timeout=60]';
+  area.value = formatMcpServerLines(normalizeSession(tab.session).mcpServers);
+  const hint = document.createElement('div');
+  hint.className = 'cp-info-row muted';
+  hint.textContent = 'Remote servers only (http or sse), one per line. A server that needs a command line or a token belongs in your Claude Code settings.';
+  const problems = document.createElement('div');
+  problems.className = 'cp-elicit-error';
+  problems.hidden = true;
+  const apply = document.createElement('button');
+  apply.type = 'button';
+  apply.className = 'cp-engine-retry';
+  apply.textContent = live && hasCapability(tab, 'mcp_dynamic') ? 'Apply now' : 'Save';
+  apply.addEventListener('click', () => {
+    const parsed = parseMcpServerLines(area.value);
+    if (parsed.errors.length) { problems.textContent = parsed.errors.join('\n'); problems.hidden = false; return; }
+    problems.hidden = true;
+    if (!(live && hasCapability(tab, 'mcp_dynamic'))) { _patchSession(tab, { mcpServers: parsed.servers }, 'MCP servers of this tab saved.'); return; }
+    apply.disabled = true;
+    _sessionRequest(tab, 'mcp_set_servers', { servers: parsed.servers }).then((d) => {
+      // The live session has them: keep the tab's settings in step, so the next
+      // message does not restart the session over the same change.
+      tab.session = normalizeSession({ ...normalizeSession(tab.session), mcpServers: d.applied || parsed.servers });
+      saveTabs();
+      const said = [d.added?.length ? `added ${d.added.join(', ')}` : '', d.removed?.length ? `removed ${d.removed.join(', ')}` : ''].filter(Boolean).join('; ');
+      appendStatus(tab, `MCP servers of this tab updated${said ? `: ${said}` : ''}.`);
+      for (const note of d.notes || []) appendWarn(tab, note);
+      for (const [name, error] of Object.entries(d.errors || {})) appendWarn(tab, `${name} could not connect: ${error}`);
+      _showMcp(tab, d.servers);
+    }).catch((err) => { apply.disabled = false; appendStatus(tab, `Could not change the MCP servers: ${err.message}`); });
+  });
+  content.append(label, area, hint, problems, apply);
+}
+
+// The /permissions card: the mode, what "Always" granted in this session, and
+// the rules of the three settings files, each with a Remove (two clicks).
+// `rules` is undefined on a server that predates the rules endpoint.
+function _renderPermissionsCard(tab, headHtml, row, rules, projectPath) {
+  let html = headHtml;
+  // The settings ask for a mode the session did not get: said here, as in the mode control's tooltip.
+  const unmet = settingsModeNote(controlFacts(tab, { settingsPick: hasCapability(tab, 'permission_modes_v2'), ..._modeBridge(tab) }), _noteSettingsAsk(tab, rules));
+  if (unmet) html += row('Settings', unmet, 'warn');
+  // A tab under a named Claude account: the user-scope rules are that account's
+  // (the server reads and edits its settings file when it advertises
+  // `account_settings`; without that nothing is shown as this account's).
+  const namedAccount = !!tab.accountId && tab.accountId !== 'default';
+  const accountReady = !namedAccount || hasCapability(tab, 'account_settings');
+  const granted = (tab.grantedRules || []).map(grantedRuleLine).filter(Boolean);
+  const canForget = hasCapability(tab, 'permission_rules') && hasSessionRules(tab.grantedRules);
+  html += '<div class="cp-help-section-label">Granted from this tab</div>';
+  html += granted.length ? granted.map(g => `<div class="cp-info-row">${esc(g)}</div>`).join('') : '<div class="cp-info-row muted">Nothing yet. "Always" on a permission card adds a rule here.</div>';
+  if (canForget) html += '<div class="cp-info-row"><button type="button" class="cp-engine-retry" data-forget-session>Forget this session\'s rules</button><span class="muted"> Restarts the session; the conversation is kept.</span></div>';
+  const canEdit = hasCapability(tab, 'permission_rules_edit');
+  // Remove edits a file: for a named account's user scope, only one the server
+  // says it can write (never a link to a file SynaBun does not manage).
+  const canRemove = (scope) => canEdit && accountReady && !(scope === 'user' && namedAccount && rules?.user?.editable === false);
+  const sections = permissionRuleSections(rules);
+  for (const s of sections) {
+    html += `<div class="cp-help-section-label">${esc(s.title)}</div>`;
+    if (s.scope === 'user' && namedAccount && rules?.user?.shared) html += '<div class="cp-info-row muted">This file is shared with the default account: removing a rule here removes it for both.</div>';
+    if (s.scope === 'user' && namedAccount && rules?.user?.editable === false) html += '<div class="cp-info-row muted">This account\'s settings file is a link to a file SynaBun does not manage: change it there.</div>';
+    if (s.error) { html += row('Settings file', s.error, 'warn'); continue; }
+    if (s.defaultMode) html += row('Default mode', MODE_LABELS[s.defaultMode] || s.defaultMode);
+    html += s.items.map(it => `<div class="cp-info-row cp-rule-row" data-scope="${esc(s.scope)}" data-list="${esc(it.list)}" data-rule="${esc(it.rule)}"><span class="cp-doctor-k">${esc(it.label)}</span><span class="cp-doctor-v">${esc(it.rule)}</span>${canRemove(s.scope) ? '<button type="button" class="cp-engine-retry" data-remove-rule>Remove</button>' : ''}</div>`).join('');
+    if (s.more) html += `<div class="cp-info-row muted">+${Number(s.more) || 0} more in the file.</div>`;
+    if (!s.defaultMode && !s.items.length) html += '<div class="cp-info-row muted">No rules.</div>';
+  }
+  if (!accountReady) html += '<div class="cp-info-row muted">This tab runs under another Claude account. Its rules in the settings files show after the SynaBun server restarts.</div>';
+  else if (rules === undefined) html += '<div class="cp-info-row muted">The rules in the settings files show after the SynaBun server restarts.</div>';
+  const card = appendInfoCard(tab, { title: 'Permissions', kind: 'info', html });
+  if (!card) return;
+  const forgetBtn = card.querySelector('[data-forget-session]');
+  forgetBtn?.addEventListener('click', () => {
+    // Forgetting ends the CLI process, and with it what runs there without a
+    // turn: background tasks and scheduled wake-ups. That is said first, and
+    // done on a second click. The bridge asks the same for work this page does
+    // not know of (`confirm_required`).
+    const atRisk = () => workEndedByRestart({ tasks: tab.tasks, live: tab.backgroundWork, crons: tab.sessionCrons }).sentence;
+    const arm = (sentence) => {
+      forgetBtn.dataset.armed = '1';
+      forgetBtn.disabled = false;
+      forgetBtn.textContent = 'End them and forget the rules';
+      const note = forgetBtn.nextElementSibling;
+      if (note) note.textContent = ` ${sentence} The conversation is kept.`;
+    };
+    const confirmed = forgetBtn.dataset.armed === '1';
+    if (!confirmed) { const sentence = atRisk(); if (sentence) { arm(sentence); return; } }
+    forgetBtn.disabled = true;
+    (confirmed ? _sessionRequest(tab, 'forget_session_rules', { confirm: true }) : _sessionRequest(tab, 'forget_session_rules'))
+      .then((d) => { tab.grantedRules = Array.isArray(d?.granted) ? d.granted : []; appendStatus(tab, d?.restarted ? 'Session rules forgotten. The session restarts with the next message; the conversation is kept.' : 'Session rules forgotten.'); card.remove(); })
+      .catch((err) => {
+        if (err.code === 'confirm_required' && !confirmed) { arm(workEndedByRestart({ live: err.data?.backgroundTasks, crons: err.data?.wakeups }).sentence || err.message); return; }
+        appendStatus(tab, `Could not forget the session rules: ${err.message}`);
+        forgetBtn.disabled = false;
+      });
+  });
+  card.querySelectorAll('[data-remove-rule]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const line = btn.closest('.cp-rule-row');
+      if (!line) return;
+      // Removing a deny or ask rule loosens what Claude may do: ask twice.
+      if (btn.dataset.armed !== '1') {
+        btn.dataset.armed = '1';
+        btn.textContent = 'Remove?';
+        setTimeout(() => { if (btn.isConnected && btn.dataset.armed === '1') { btn.dataset.armed = ''; btn.textContent = 'Remove'; } }, 4000);
+        return;
+      }
+      btn.disabled = true;
+      fetch('/api/claude-code/permission-rules', {
+        method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scope: line.dataset.scope, list: line.dataset.list, rule: line.dataset.rule, project: projectPath, ...(namedAccount ? { account: tab.accountId } : {}) }),
+      }).then(r => r.json().then(d => ({ ok: r.ok && d?.ok !== false, d }))).then(({ ok, d }) => {
+        if (!ok) throw new Error(d?.error || 'the server refused');
+        line.remove();
+        appendStatus(tab, d.removed ? 'Rule removed from the settings file. Claude Code picks the change up by itself.' : 'That rule was already gone.');
+      }).catch((err) => { btn.disabled = false; btn.dataset.armed = ''; btn.textContent = 'Remove'; appendStatus(tab, `Could not remove the rule: ${err.message}`); });
+    });
+  });
+}
 
 // ── Slash command router ──
 // Returns true if handled (caller should short-circuit and not send to Claude).
@@ -7491,12 +8803,12 @@ function runSlashCommand(tab, raw) {
   if (!trimmed.startsWith('/')) return false;
   const space = trimmed.indexOf(' ');
   const cmd = (space === -1 ? trimmed.slice(1) : trimmed.slice(1, space)).toLowerCase();
-  // SDK engine: fall through (return false) so the command is sent as a prompt
-  // and the CLI executes its native implementation.
-  if (tab?.sdkMode && SDK_NATIVE_COMMANDS.has(cmd)) return false;
   const args = space === -1 ? '' : trimmed.slice(space + 1).trim();
   const spec = SLASH_COMMANDS.find(c => c.name === cmd);
-  if (!spec) return false;
+  // Fall through (return false) so the command is sent as a prompt and the CLI
+  // runs its own implementation: its native commands, anything the panel does
+  // not know, and a local handler the connected server cannot back yet.
+  if (slashCommandRoute(cmd, spec, { has: (name) => hasCapability(tab, name) }) === 'cli') return false;
   const $input = _panel?.querySelector('#cp-input');
 
   const clearInput = () => { if ($input) { $input.value = ''; autoResize(); } };
@@ -7504,10 +8816,14 @@ function runSlashCommand(tab, raw) {
   switch (cmd) {
     case 'help': {
       clearInput();
-      const rows = SLASH_COMMANDS
+      // Commands whose handler needs bridge support the server does not
+      // advertise are not listed as available: one line names them.
+      const { available, locked } = splitCommandsByCapability(SLASH_COMMANDS, (name) => hasCapability(tab, name));
+      const rowsHtml = available
         .map(c => `<div class="cp-help-row"><span class="cp-help-cmd">/${esc(c.name)}</span><span class="cp-help-desc">${esc(c.desc)}</span></div>`)
-        .join('');
-      const keys = [
+        .join('')
+        + (locked.length ? `<div class="cp-info-row muted">Available after the SynaBun server restart: ${esc(locked.map(c => `/${c.name}`).join(', '))}</div>` : '');
+      const keysHtml = [
         ['Enter', 'Send message'],
         ['Shift+Enter', 'New line (while idle) — /btw interrupt (while running)'],
         ['Shift+Tab', 'Toggle plan mode'],
@@ -7522,17 +8838,20 @@ function runSlashCommand(tab, raw) {
         ['@file', 'Reference a file from project'],
         ['!cmd', 'Run command in Bash and include output'],
       ].map(([k, d]) => `<div class="cp-help-row"><span class="cp-help-cmd">${esc(k)}</span><span class="cp-help-desc">${esc(d)}</span></div>`).join('');
-      appendInfoCard(tab, { title: 'Commands & Keybinds', kind: 'help', html: `<div class="cp-help-section-label">Slash commands</div>${rows}<div class="cp-help-section-label">Keybinds</div>${keys}` });
+      appendInfoCard(tab, { title: 'Commands & Keybinds', kind: 'help', html: `<div class="cp-help-section-label">Slash commands</div>${rowsHtml}<div class="cp-help-section-label">Keybinds</div>${keysHtml}` });
       return true;
     }
-    case 'clear': { clearInput(); if (tab.messagesEl) tab.messagesEl.innerHTML = ''; return true; }
+    case 'clear': { clearInput(); if (tab.messagesEl) tab.messagesEl.innerHTML = ''; _paintTemporary(tab); return true; }
     case 'compact': {
       clearInput();
       if (tab.running) { appendStatus(tab, 'Cannot compact while Claude is processing.'); return true; }
+      if (compactHolds(tab)) return true; // a Compact is already under way: a second one does nothing
       if (tab.ws?.readyState === WebSocket.OPEN) {
         tab.compacting = true;
+        tab._compactSentAt = Date.now();
         _setCompactingUI(true);
-        tab.ws.send(JSON.stringify({ type: 'compact' }));
+        _sendControl(tab, { type: 'compact' });
+        _compactQueue.watch(tab); // prompts already in the queue wait for it too
         appendStatus(tab, 'Compacting context...');
       }
       return true;
@@ -7545,6 +8864,7 @@ function runSlashCommand(tab, raw) {
     }
     case 'resume': {
       clearInput();
+      if (temporaryBlocks(tab, 'resume')) appendStatus(tab, temporaryBlocks(tab, 'resume'));
       const $sessBtn = _panel?.querySelector('#cp-session-btn');
       const $sessMenu = _panel?.querySelector('#cp-session-menu');
       if ($sessMenu) { $sessMenu.classList.add('open'); renderSessionMenu(); }
@@ -7559,26 +8879,24 @@ function runSlashCommand(tab, raw) {
     }
     case 'agents': {
       clearInput();
-      const html = `
-        <div class="cp-info-row"><b>Built-in Agent tool</b> — Claude can spawn isolated subagents via the <code>Agent</code> tool. Each has its own context window, custom system prompt, and tool restrictions.</div>
-        <div class="cp-info-row"><b>Available via the Agent tool:</b><ul>
-          <li><code>general-purpose</code> — multi-step research and tasks</li>
-          <li><code>Explore</code> — fast codebase search</li>
-          <li><code>Plan</code> — architecture planning</li>
-          <li><code>claude-code-guide</code> — Claude Code / SDK / API docs</li>
-          <li><code>statusline-setup</code> — configure status line</li>
-        </ul></div>
-        <div class="cp-info-row muted">Define custom agents in <code>.claude/agents/</code> or <code>~/.claude/agents/</code>.</div>`;
+      // The agents this session can actually spawn, as it reported them.
+      const info = _sessionInfoFor(tab);
+      const agents = Array.isArray(info.agents) && info.agents.length
+        ? info.agents
+        : (tab.init?.agents || []).map(name => ({ name, description: '' }));
+      const current = normalizeSession(tab.session).agent;
+      const rowsHtml = agents.map(a => `<div class="cp-help-row"><span class="cp-help-cmd">${esc(a.name)}${a.name === current ? ' ✓' : ''}</span><span class="cp-help-desc">${esc(a.description || '')}${a.model ? ` · ${esc(a.model)}` : ''}</span></div>`).join('');
+      const html = agents.length
+        ? `${rowsHtml}<div class="cp-info-row muted">Claude spawns these through the Agent tool. ${hasCapability(tab, 'session_settings') ? 'To run this tab as one of them, set "Run as agent" in <code>/session</code>. ' : ''}Custom agents live in <code>.claude/agents/</code> or <code>~/.claude/agents/</code>.</div>`
+        : '<div class="cp-info-row muted">The list appears once this tab has started a session.</div>';
       appendInfoCard(tab, { title: 'Subagents', kind: 'info', html });
       return true;
     }
-    case 'mcp': {
-      clearInput();
-      fetch('/api/claude-code/mcp').then(r => r.json()).then(d => {
-        const installed = d?.installed ? '<span class="cp-info-ok">installed</span>' : '<span class="cp-info-warn">not installed</span>';
-        appendInfoCard(tab, { title: 'MCP — SynaBun', kind: 'info', html: `<div class="cp-info-row">Status: ${installed}</div><div class="cp-info-row muted">Tool naming: <code>mcp__SynaBun__&lt;tool&gt;</code></div>` });
-      }).catch(() => appendInfoCard(tab, { title: 'MCP', kind: 'info', body: 'Could not reach MCP status endpoint.' }));
-      return true;
+    case 'mcp': { clearInput(); _showMcp(tab); return true; }
+    case 'usage': {
+      // Without a bridge that answers it, the CLI's own /usage runs (its output is shown).
+      if (!hasCapability(tab, 'session_requests')) return false;
+      clearInput(); _showUsage(tab); return true;
     }
     case 'memory': {
       clearInput();
@@ -7598,84 +8916,202 @@ function runSlashCommand(tab, raw) {
       const proj = tab.project || '(none)';
       const model = _getModelId() || '(default)';
       const effort = _getEffort() || 'off';
-      const ctxw = _getContextWindow() || 0;
+      const ctxw = _contextWindowFor(tab);
       const rows = [
         ['WebSocket', wsOk ? 'connected' : 'disconnected', wsOk ? 'ok' : 'warn'],
         ['Project', proj, proj === '(none)' ? 'warn' : 'ok'],
         ['Model', model, 'ok'],
         ['Thinking effort', effort, 'ok'],
-        ['Context window', ctxw ? `${(ctxw/1000).toFixed(0)}K tokens` : '(auto)', 'ok'],
+        ['Context window', `${ctxw.toLocaleString()} tokens`, 'ok'],
         ['Plan mode', tab.planMode ? 'on' : 'off', 'ok'],
         ['Queue', String(tab.queue?.length || 0), 'ok'],
         ['Running', tab.running ? 'yes' : 'no', 'ok'],
       ];
-      const html = rows.map(([k, v, s]) => `<div class="cp-info-row"><span class="cp-doctor-k">${esc(k)}</span><span class="cp-doctor-v cp-info-${esc(s)}">${esc(v)}</span></div>`).join('');
+      const html = rows.map(([k, v, s]) => `<div class="cp-info-row"><span class="cp-doctor-k">${esc(k)}</span><span class="cp-doctor-v cp-info-${classToken(s)}">${esc(v)}</span></div>`).join('');
       appendInfoCard(tab, { title: 'Doctor', kind: 'doctor', html });
       return true;
     }
-    case 'context': {
-      clearInput();
-      const u = tab.usage || {};
-      // Context window consumption = uncached input + cached prefixes.
-      // Output tokens are generated, not part of the input context.
-      const total = (u.inputTokens || 0) + (u.cacheRead || 0) + (u.cacheWrite || 0);
-      const cw = tab.contextWindow || _getContextWindow() || 200000;
-      const pct = Math.min(100, Math.round((total / cw) * 100));
-      const html = `
-        <div class="cp-info-row"><b>${total.toLocaleString()}</b> / ${cw.toLocaleString()} tokens used (${pct}%)</div>
-        <div class="cp-info-row"><span class="cp-doctor-k">Input</span><span class="cp-doctor-v">${(u.inputTokens||0).toLocaleString()}</span></div>
-        <div class="cp-info-row"><span class="cp-doctor-k">Output</span><span class="cp-doctor-v">${(u.outputTokens||0).toLocaleString()}</span></div>
-        <div class="cp-info-row"><span class="cp-doctor-k">Cache read</span><span class="cp-doctor-v">${(u.cacheRead||0).toLocaleString()}</span></div>
-        <div class="cp-info-row"><span class="cp-doctor-k">Cache write</span><span class="cp-doctor-v">${(u.cacheWrite||0).toLocaleString()}</span></div>`;
-      appendInfoCard(tab, { title: 'Context', kind: 'info', html });
-      return true;
-    }
+    case 'context': { clearInput(); _showContextUsage(tab); return true; }
     case 'config': { clearInput(); emit('settings:open'); appendStatus(tab, 'Opening settings…'); return true; }
     case 'permissions': {
       clearInput();
-      fetch('/api/claude-code/tool-permissions').then(r => r.json()).then(d => {
-        const auto = _autoAcceptAll ? 'on (all tools auto-approve)' : 'off (prompt per tool)';
-        const allow = d?.permissions?.allow || d?.allow || [];
-        const html = `<div class="cp-info-row"><b>Auto-approve:</b> ${esc(auto)}</div>
-          <div class="cp-info-row muted">${allow.length ? `${allow.length} tool rule(s) allowed` : 'No pre-approved tools.'}</div>
-          <div class="cp-info-row"><em>Edit rules in <code>~/.claude/settings.json</code> under <code>permissions.allow</code>.</em></div>`;
-        appendInfoCard(tab, { title: 'Permissions', kind: 'info', html });
-      }).catch(() => appendInfoCard(tab, { title: 'Permissions', kind: 'info', body: 'Could not read permission settings.' }));
+      const row = (k, v, tone = '') => `<div class="cp-info-row"><span class="cp-doctor-k">${esc(k)}</span><span class="cp-doctor-v${tone ? ` cp-info-${classToken(tone)}` : ''}">${esc(v)}</span></div>`;
+      // The tab's own mode, or that it follows the settings; and that its session may still be in Bypass.
+      const facts = controlFacts(tab, { settingsPick: hasCapability(tab, 'permission_modes_v2'), ..._modeBridge(tab) });
+      const mode = facts.mode;
+      const modeText = `${MODE_LABELS[mode] || mode}: ${MODE_HINTS[mode] || ''}`;
+      let html = row('Mode', facts.follows ? `From your Claude Code settings (this tab has no pick)${facts.known ? `. ${modeText}` : ''}` : modeText, mode === BYPASS_MODE && (facts.known || !facts.follows) ? 'warn' : '');
+      if (facts.leaving) html += row('Session', 'May be in Bypass: its switch to another mode is not confirmed by Claude Code yet, so tools can still run without asking', 'warn');
+      if (facts.waiting) html += row('Bypass', 'Unavailable until the SynaBun server restarts: this tab\'s Bypass pick waits for it, and until then the tab runs in Default', 'warn');
+      // An automation run shown here has its own mode: said as the run's, never as this tab's.
+      if (tab.automationActive && tab.runMode) html += row('Automation run', `${MODE_LABELS[tab.runMode] || tab.runMode}: the run's own mode. This tab's mode applies to what you send after it.`, tab.runMode === BYPASS_MODE ? 'warn' : '');
+      if (_autoAcceptAll) html += row('Auto-approve', 'On: permission requests are answered Allow without a card, in every tab', 'warn');
+      if (tab.toolPolicy && tab.toolPolicy !== 'full') html += row('Tools', TOOL_POLICIES[tab.toolPolicy]?.hint || tab.toolPolicy, 'warn');
+      const projectPath = ddGetValue(_panel?.querySelector('#cp-project')) || '';
+      // The bridge keeps the session's own record (it survives a page reload);
+      // an older server leaves this tab with what it noted itself.
+      const record = hasCapability(tab, 'permission_rules')
+        ? _sessionRequest(tab, 'permission_rules').then((d) => { if (Array.isArray(d?.granted)) tab.grantedRules = d.granted; }).catch(() => {})
+        : Promise.resolve();
+      // A tab under a named Claude account asks for that account's rules. A
+      // server that cannot answer for an account (not restarted) is not asked:
+      // it would return the default account's.
+      const named = !!tab.accountId && tab.accountId !== 'default';
+      const ruleParams = new URLSearchParams({ project: projectPath });
+      if (named) ruleParams.set('account', tab.accountId);
+      const files = named && !hasCapability(tab, 'account_settings')
+        ? Promise.resolve(undefined)
+        : fetch(`/api/claude-code/permission-rules?${ruleParams}`).then(r => (r.ok ? r.json() : Promise.reject(new Error('unavailable')))).then(d => d?.rules || null).catch(() => undefined);
+      Promise.all([record, files]).then(([, rules]) => _renderPermissionsCard(tab, html, row, rules, projectPath));
+      return true;
+    }
+    case 'effective-settings': {
+      clearInput();
+      // The CLI's own merge of user, project, local and managed settings, read
+      // by the server. Values that can hold a secret come back as "set".
+      const projectPath = ddGetValue(_panel?.querySelector('#cp-project')) || '';
+      // A tab under a named Claude account: the server answers for that account
+      // or says it cannot; it is never shown the default account's as its own.
+      const named = !!tab.accountId && tab.accountId !== 'default';
+      if (named && !hasCapability(tab, 'account_settings')) { appendStatus(tab, 'This tab runs under another Claude account. The settings in effect for it show after the SynaBun server restarts.'); return true; }
+      const params = new URLSearchParams({ project: projectPath });
+      if (named) params.set('account', tab.accountId);
+      fetch(`/api/claude-code/settings/resolved?${params}`).then(r => r.json()).then((d) => {
+        if (!d?.ok) throw new Error(d?.error || 'unavailable');
+        let html = d.rows.length
+          ? d.rows.map(r => `<div class="cp-info-row" title="${esc(r.path || '')}"><span class="cp-doctor-k">${esc(r.key)}</span><span class="cp-doctor-v">${esc(r.value)}${r.source ? ` <span class="muted">· ${esc(r.source)}</span>` : ''}</span></div>`).join('')
+          : '<div class="cp-info-row muted">No settings are set.</div>';
+        if (d.sources.length) {
+          html += '<div class="cp-help-section-label">Read from</div>';
+          html += d.sources.map(s => `<div class="cp-info-row"><span class="cp-doctor-k">${esc(s.label)}</span><span class="cp-doctor-v">${esc(s.path || 'no file')} <span class="muted">· ${Number(s.keys) || 0} key${s.keys === 1 ? '' : 's'}</span></span></div>`).join('');
+        }
+        const overrides = sessionRows(tab.session).filter(([k]) => k === 'Settings for this tab' || k === 'Fast mode' || k === 'Output style');
+        if (overrides.length) html += `<div class="cp-help-section-label">Overridden by this tab</div>${_infoRows(overrides.map(([k, v]) => [k, v, '']))}`;
+        if (d.sharedUserSettings) html += '<div class="cp-info-row muted">This tab\'s Claude account shares its user settings with the default account.</div>';
+        html += '<div class="cp-info-row muted">Secrets, helper commands and environment values are shown as "set". Change a tab\'s own overrides in <code>/session</code>.</div>';
+        appendInfoCard(tab, { title: d.project ? 'Settings in effect for this project' : 'Settings in effect (your own)', kind: 'info', html });
+      }).catch((err) => appendStatus(tab, `Could not read the settings: ${err.message}`));
+      return true;
+    }
+    case 'tools': {
+      clearInput();
+      if (!hasCapability(tab, 'tool_policy')) { appendStatus(tab, 'Limiting tools needs a newer SynaBun server: restart it to enable this.'); return true; }
+      const id = toolPolicyId(args);
+      if (!args) {
+        const rowsHtml = Object.entries(TOOL_POLICIES).map(([k, p]) => `<div class="cp-help-row"><span class="cp-help-cmd">/tools ${esc(k)}${k === (tab.toolPolicy || 'full') ? ' ✓' : ''}</span><span class="cp-help-desc">${esc(p.hint)}</span></div>`).join('');
+        appendInfoCard(tab, { title: 'Tools for this tab', kind: 'info', html: rowsHtml });
+        return true;
+      }
+      if (!id) { appendStatus(tab, `Unknown tool policy "${args}". Use full, read-only or no-web.`); return true; }
+      tab.toolPolicy = id;
+      saveTabs();
+      appendStatus(tab, `Tools: ${TOOL_POLICIES[id].label}. ${TOOL_POLICIES[id].hint}. Applies from the next message (the session restarts with it).`);
       return true;
     }
     case 'add-dir': {
       clearInput();
       const dir = args || prompt('Enter directory path to add to allowed file access:');
       if (!dir) return true;
-      appendStatus(tab, `Added directory: ${dir} (applies to next session spawn)`);
-      tab._addedDirs = tab._addedDirs || [];
-      tab._addedDirs.push(dir);
+      const current = normalizeSession(tab.session).additionalDirectories;
+      if (current.includes(dir.trim())) { appendStatus(tab, `${dir} is already in this tab's directories.`); return true; }
+      _patchSession(tab, { additionalDirectories: [...current, dir.trim()] }, `Added directory ${dir.trim()}.`);
       return true;
     }
     case 'theme': { clearInput(); emit('settings:open', { section: 'theme' }); return true; }
     case 'plugin': {
       clearInput();
-      (async () => {
-        try {
-          const res = await fetch('/api/claude-code/skills').then(r => r.json());
-          const skills = res.skills || [];
-          const html = skills.length
-            ? `<div class="cp-info-row"><b>${skills.length}</b> skills loaded</div>` + skills.slice(0, 20).map(s => `<div class="cp-info-row"><code>/${esc(s.name||s.dirName)}</code> — ${esc((s.description||'').slice(0,80))}</div>`).join('')
-            : '<div class="cp-info-row muted">No skills installed.</div>';
-          appendInfoCard(tab, { title: 'Plugins & Skills', kind: 'info', html });
-        } catch { appendInfoCard(tab, { title: 'Plugins', kind: 'info', body: 'Could not list plugins.' }); }
-      })();
+      // What the session loaded (init), with versions and load errors.
+      const init = tab.init;
+      if (!init) { appendInfoCard(tab, { title: 'Plugins', kind: 'info', html: '<div class="cp-info-row muted">The list appears once this tab has started a session.</div>' }); return true; }
+      let html = init.plugins.length
+        ? init.plugins.map(p => `<div class="cp-help-row"><span class="cp-help-cmd">${esc(p.name)}</span><span class="cp-help-desc">${esc(p.version || '')}</span></div>`).join('')
+        : '<div class="cp-info-row muted">No plugins loaded in this session.</div>';
+      for (const e of init.pluginErrors) html += `<div class="cp-info-row"><span class="cp-doctor-k">${esc(e.plugin || 'plugin')}</span><span class="cp-doctor-v cp-info-warn">${esc(e.message || e.type)}</span></div>`;
+      if (init.skills.length) html += `<div class="cp-info-row muted">${Number(init.skills.length) || 0} skill${init.skills.length === 1 ? '' : 's'} available as slash commands.</div>`;
+      const hintsHtml = `${hasCapability(tab, 'reload_plugins') ? '<code>/reload-plugins</code> picks up plugins installed since the session started. ' : ''}${hasCapability(tab, 'session_settings') ? 'A local plugin directory can be loaded for this tab in <code>/session</code>.' : ''}`;
+      if (hintsHtml) html += `<div class="cp-info-row muted">${hintsHtml}</div>`;
+      appendInfoCard(tab, { title: 'Plugins', kind: 'info', html });
+      return true;
+    }
+    case 'tasks': { clearInput(); _openTasks(tab); return true; }
+    case 'account': { clearInput(); _showAccounts(tab, args); return true; }
+    case 'reload-plugins': {
+      clearInput();
+      if (!hasCapability(tab, 'reload_plugins')) { appendStatus(tab, 'Reloading plugins needs a newer SynaBun server: restart it to enable this.'); return true; }
+      if (tab.ws?.readyState === WebSocket.OPEN) tab.ws.send(JSON.stringify({ type: 'reload_plugins' }));
+      return true;
+    }
+    case 'session': {
+      clearInput();
+      if (!hasCapability(tab, 'session_settings')) { appendStatus(tab, 'Session settings need a newer SynaBun server: restart it to enable them.'); return true; }
+      const info = _sessionInfoFor(tab);
+      renderSessionSettingsCard(tab, {
+        session: tab.session,
+        models: info.models || [],
+        agents: info.agents || [],
+        outputStyles: info.availableOutputStyles || [],
+        fastSupported: fastModeSupported(info.models, tab.mainModel || _getModelId()),
+        // Tools, MCP servers, agents, skills, settings overrides, the debug log:
+        // only on a server whose bridge reads them.
+        advanced: hasCapability(tab, 'session_settings_v2'),
+        onSave: (next) => _patchSession(tab, next),
+      });
+      return true;
+    }
+    case 'fast': {
+      clearInput();
+      const want = /^(on|true|1)$/i.test(args) ? true : /^(off|false|0)$/i.test(args) ? false : !normalizeSession(tab.session).fastMode;
+      const info = _sessionInfoFor(tab);
+      if (want && info.models?.length && !fastModeSupported(info.models, tab.mainModel || _getModelId())) {
+        appendStatus(tab, 'The model in use does not support fast mode.');
+        return true;
+      }
+      _patchSession(tab, { fastMode: want }, `Fast mode ${want ? 'on' : 'off'}.`);
+      return true;
+    }
+    case 'output-style': {
+      clearInput();
+      const styles = _sessionInfoFor(tab).availableOutputStyles || [];
+      if (!args) {
+        const current = normalizeSession(tab.session).outputStyle || tab.init?.outputStyle || 'default';
+        appendInfoCard(tab, { title: 'Output style', kind: 'info', html: `<div class="cp-info-row">Current: <b>${esc(current)}</b></div>${styles.length ? `<div class="cp-info-row muted">Available: ${styles.map(esc).join(', ')}. Use <code>/output-style name</code>.</div>` : '<div class="cp-info-row muted">The available styles show once this tab has started a session.</div>'}` });
+        return true;
+      }
+      const name = args.trim();
+      const match = styles.find(st => st.toLowerCase() === name.toLowerCase());
+      if (styles.length && !match) { appendStatus(tab, `No output style "${name}". Available: ${styles.join(', ')}.`); return true; }
+      const value = (match || name).toLowerCase() === 'default' ? '' : (match || name);
+      _patchSession(tab, { outputStyle: value }, `Output style: ${value || 'default'}.`);
+      return true;
+    }
+    case 'budget': {
+      clearInput();
+      const amount = Number(String(args).replace(/^\$/, ''));
+      if (!args || !Number.isFinite(amount) || amount < 0) { appendStatus(tab, `Spend limit: ${normalizeSession(tab.session).maxBudgetUsd > 0 ? `$${normalizeSession(tab.session).maxBudgetUsd}` : 'none'}. Use /budget 5 to stop at $5, /budget 0 to remove it.`); return true; }
+      _patchSession(tab, { maxBudgetUsd: amount }, amount > 0 ? `Spend limit: $${amount}.` : 'Spend limit removed.');
       return true;
     }
     case 'status': {
       clearInput();
-      const lines = [
-        `Session: ${tab.sessionId || '(new)'} — "${tab.label}"`,
-        `Model: ${_getModelId() || '(default)'}  ·  Effort: ${_getEffort()}`,
-        `Plan mode: ${tab.planMode ? 'ON' : 'off'}  ·  Auto-approve: ${_autoAcceptAll ? 'ON' : 'off'}`,
-        `Queue: ${tab.queue?.length || 0}  ·  Turns: ${tab.turns || 0}  ·  Cost: $${(tab.sessionCost || 0).toFixed(4)}`,
-      ].join('\n');
-      appendInfoCard(tab, { title: 'Status', kind: 'info', body: lines });
+      // What the session itself reported at init, not the panel's guesses.
+      const rows = statusRows({ init: tab.init || null, account: tab.accountInfo || null, tab });
+      if (!tab.init) {
+        rows.push(['Model (selected)', _getModelId() || '(default)', '']);
+        rows.push(['Effort (selected)', _getEffort() || 'off', '']);
+      }
+      for (const [k, v] of sessionRows(tab.session)) rows.push([k, v, '']);
+      if (tab.sessionState) rows.push(['Session state', { running: 'running', idle: 'idle', requires_action: 'waiting for your answer' }[tab.sessionState] || tab.sessionState]);
+      if (tab.fastModeState && tab.fastModeState !== 'off') rows.push(['Fast mode state', `${tab.fastModeState}${tab.fastModeReason ? ` (${fastModeReason(tab.fastModeReason)})` : ''}`, tab.fastModeState === 'on' ? 'ok' : 'warn']);
+      if (tab.toolPolicy && tab.toolPolicy !== 'full') rows.push(['Tools', TOOL_POLICIES[tab.toolPolicy]?.label || tab.toolPolicy, 'warn']);
+      rows.push(['Queue', String(tab.queue?.length || 0), '']);
+      const html = rows.map(([k, v, tone]) => `<div class="cp-info-row"><span class="cp-doctor-k">${esc(k)}</span><span class="cp-doctor-v${tone ? ` cp-info-${classToken(tone)}` : ''}">${esc(v)}</span></div>`).join('');
+      appendInfoCard(tab, { title: 'Status', kind: 'info', html });
+      return true;
+    }
+    case 'reload-skills': {
+      clearInput();
+      if (!hasCapability(tab, 'reload_skills')) { appendStatus(tab, 'Reloading skills needs a newer SynaBun server: restart it to enable this.'); return true; }
+      if (tab.ws?.readyState === WebSocket.OPEN) tab.ws.send(JSON.stringify({ type: 'reload_skills' }));
       return true;
     }
     case 'cost': { clearInput(); emit('cost:toggle'); return true; }
@@ -7683,10 +9119,9 @@ function runSlashCommand(tab, raw) {
     case 'logout': { clearInput(); window.open('https://claude.ai/logout', '_blank'); return true; }
     case 'plan': {
       clearInput();
-      tab.planMode = !tab.planMode;
-      if (tab.planMode) { tab._planContent = null; tab._planContentCaptured = false; tab.planFilePath = ''; tab._editedPlanContent = null; tab._planModeStartedAt = Date.now(); tab._planModeStartMsgIndex = tab.messagesEl?.querySelectorAll('.msg.msg-assistant').length || 0; }
-      const $plan = _panel?.querySelector('#cp-plan-toggle');
-      if ($plan) $plan.classList.toggle('active', tab.planMode);
+      // The one path for plan mode: on is the user's pick of Plan, off goes back
+      // to the mode the tab was in before, and a live session is told either way.
+      if (tab.planMode) _leavePlanUI(tab, { announce: false }); else setPermissionModeUI(tab, 'plan', { announce: false });
       appendStatus(tab, tab.planMode ? 'Plan mode ON — Claude will plan without making changes' : 'Plan mode OFF');
       return true;
     }
@@ -7712,6 +9147,13 @@ function send({ shift = false } = {}) {
   const $model = _panel?.querySelector('#cp-model');
   if (!$input) return;
   const text = $input.value.trim();
+  // /permissions is local and read-only, and has a row for the run's own mode:
+  // it opens while an automation run owns the tab. Nothing else does.
+  if (tab.automationActive && isPermissionsCommand(text) && !tab.attachedImages.length && !tab.attachedFiles.length) {
+    hideSlashHints();
+    if (runSlashCommand(tab, text)) _pushPromptHistory(tab, text);
+    return;
+  }
   if (tab.automationActive && !tab.running) {
     appendStatus(tab, 'This conversation is owned by a running automation. Stop it before sending a manual turn.');
     return;
@@ -7721,21 +9163,32 @@ function send({ shift = false } = {}) {
       appendStatus(tab, 'This conversation is owned by a running automation. Stop it before sending a manual turn.');
       return;
     }
+    // Stop the automation; the tab only shows it stopped once the server said so.
     fetch('/api/loop/stop', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ runId: tab.automationRunId }),
-    }).catch(() => {});
-    setRunning(tab, false);
+    }).then(async (res) => {
+      if (res.ok) { setRunning(tab, false); return; }
+      let reason = '';
+      try { reason = (await res.json())?.error || ''; } catch {}
+      appendStatus(tab, `Could not stop the automation${reason ? `: ${reason}` : ` (${res.status})`}. It is still running.`);
+    }).catch(() => appendStatus(tab, 'Could not reach the server to stop the automation. It is still running.'));
     return;
   }
   if (!tab.ws || tab.ws.readyState !== WebSocket.OPEN) return;
-  if (tab.running) {
+  // A Compact the user started is a turn the tab does not show as running
+  // (cp-compose.js): what is sent meanwhile waits in the queue, as it does
+  // behind a turn. An empty send and a second /compact do nothing.
+  const compactHeld = compactHolds(tab);
+  if (compactHeld && isCompactCommand(text)) { $input.value = ''; autoResize(); hideSlashHints(); return; }
+  if (compactHeld && !text && !tab.attachedImages.length && !tab.attachedFiles.length) return;
+  if (tab.running || compactHeld) {
     if (!text && !tab.attachedImages.length && !tab.attachedFiles.length) {
       // Empty send while running = abort (stop)
       tab.ws.send(JSON.stringify({ type: 'abort' })); return;
     }
-    if (shift) {
+    if (shift && !compactHeld) {
       // Shift+Enter: /btw — interrupt and continue with new context
       tab.ws.send(JSON.stringify({ type: 'abort' }));
       tab._btwPending = { text, images: tab.attachedImages.length ? [...tab.attachedImages] : null, files: tab.attachedFiles.length ? [...tab.attachedFiles] : null };
@@ -7761,9 +9214,6 @@ function send({ shift = false } = {}) {
 
   // Clear post-plan action cards and stale exit-plan flags on new message
   tab.messagesEl?.querySelectorAll('.post-plan-card').forEach(el => { const msg = el.closest('.msg'); if (msg) msg.remove(); else el.remove(); });
-  tab._exitPlanPending = false;
-  tab._exitPlanHandled = false;
-  tab._exitPlanWasPlanMode = false;
 
   // ── Client-side slash command router (CLI parity) ──
   if (text.startsWith('/')) {
@@ -7774,6 +9224,9 @@ function send({ shift = false } = {}) {
     }
     // Unknown slash command — fall through to send as prompt.
   }
+
+  // A temporary chat that is over, or one the running server would save: nothing is sent.
+  { const refusal = temporaryRefusal(tab, { capable: hasCapability(tab, TEMPORARY_CAPABILITY) }); if (refusal) { appendStatus(tab, refusal); return; } }
 
   // ── !bash shortcut — prefix a Bash-tool hint so Claude executes the command ──
   if (text.startsWith('!') && text.length > 1) {
@@ -7796,6 +9249,9 @@ function send({ shift = false } = {}) {
       effort: _getEffort() || undefined,
       windowId: _windowId,
     };
+    // A shell shortcut is a query like any other: it can be the first message
+    // a restored tab sends, and brings the tab's account and restrictions.
+    _applySessionOptions(tab, msg);
     hideSlashHints();
     tab.ws.send(JSON.stringify(msg));
     return;
@@ -7832,10 +9288,6 @@ function send({ shift = false } = {}) {
   });
   appendUser(tab, text, pendingImages, pendingFiles); tab.sendStartedAt = Date.now(); showThinking(tab); setRunning(tab, true);
   let prompt = buildPromptWithAttachments(tab, text);
-  // SDK engine uses NATIVE plan mode (permissionMode:'plan') — no prompt prefix.
-  if (tab.planMode && prompt && !tab.sdkMode) {
-    prompt = `[PLAN MODE — think step by step, create a detailed plan, do NOT make code changes.]\n\nCRITICAL — When you have questions or need clarification during planning:\n1. First call ToolSearch with query "select:AskUserQuestion" to load the tool schema\n2. Then call AskUserQuestion to present your questions as interactive options (2-4 choices per question, max 4 questions)\n3. NEVER write questions as plain text — ALWAYS use the AskUserQuestion tool\n4. Use ExitPlanMode when the plan is ready for approval\n\nSTRICT ORDERING — ExitPlanMode MUST be your FINAL action in the turn: do ALL research (Grep, Read, Glob) and write the full plan text BEFORE calling ExitPlanMode. Never emit any text or tool call AFTER ExitPlanMode — anything after is dropped and the user only sees the PLAN COMPLETE approval card.\n\n${prompt}`;
-  }
 
   const msg = {
     type: 'query', prompt,
@@ -7845,7 +9297,9 @@ function send({ shift = false } = {}) {
     effort: _getEffort() || undefined,
     windowId: _windowId,
   };
-  if (tab.sdkMode) msg.permissionMode = tab.planMode ? 'plan' : (tab.permissionMode || 'default');
+  _applySessionOptions(tab, msg);
+  // Typed here by the user (a queued or replayed prompt is not marked).
+  if (hasCapability(tab, 'origin_human')) msg.typed = true;
   if (pendingImages) {
     msg.images = pendingImages.map(i => ({ base64: i.base64, mediaType: i.mediaType }));
     tab.attachedImages = [];
@@ -7857,7 +9311,54 @@ function send({ shift = false } = {}) {
   _pushPromptHistory(tab, text);
   // Synthetic UserPromptSubmit hook event
   recordHookEvent(tab, 'UserPromptSubmit', text.slice(0, 50));
+  tab.suggestion = '';
+  _renderSuggestion(tab);
   tab.ws.send(JSON.stringify(msg));
+}
+
+// The prompt the CLI predicts next (prompt_suggestion, after a turn): a chip
+// above the input. A click, or Tab on an empty input, takes it.
+function _renderSuggestion(tab) {
+  const area = _panel?.querySelector('.cp-input-area');
+  if (!area) return;
+  let chip = area.querySelector('#cp-suggestion');
+  const text = tab === activeTab() ? (tab?.suggestion || '') : '';
+  if (!text) { if (chip) chip.hidden = true; return; }
+  if (!chip) {
+    chip = document.createElement('div');
+    chip.id = 'cp-suggestion';
+    chip.className = 'cp-suggestion';
+    chip.innerHTML = '<span class="cp-suggestion-text"></span><span class="cp-suggestion-key">Tab</span>';
+    chip.addEventListener('click', () => _acceptSuggestion(activeTab()));
+    area.insertBefore(chip, area.firstChild);
+  }
+  chip.querySelector('.cp-suggestion-text').textContent = text;
+  chip.title = text;
+  chip.hidden = false;
+}
+
+function _acceptSuggestion(tab) {
+  const $input = _panel?.querySelector('#cp-input');
+  if (!tab?.suggestion || !$input) return false;
+  $input.value = tab.suggestion;
+  tab.suggestion = '';
+  _renderSuggestion(tab);
+  autoResize();
+  $input.focus();
+  return true;
+}
+
+// Background work of a tab: its tasks (with a stop control each) and the
+// wakeups scheduled for the session.
+function _openTasks(tab) {
+  const canControl = hasCapability(tab, 'task_control') && tab.ws?.readyState === WebSocket.OPEN;
+  renderTasksCard(tab, {
+    canControl,
+    // Why a running task has no Stop here, when the server is the reason.
+    controlNote: hasCapability(tab, 'task_control') ? '' : 'Stopping a task from here needs the SynaBun server restart.',
+    onStop: (taskId) => tab.ws?.send(JSON.stringify({ type: 'stop_task', taskId })),
+    onBackground: (toolUseId) => tab.ws?.send(JSON.stringify({ type: 'background_tasks', toolUseId })),
+  });
 }
 
 // ── Message Queue System ──
@@ -7872,10 +9373,12 @@ function addToQueue(tab, text, images, files) {
     text,
     images: images?.length ? [...images] : null,
     files: files?.length ? [...files] : null,
+    conversation: tab.conversation, // the conversation it was typed for: sent there or nowhere (cp-compose.js)
   });
   tab._queueWasActive = true;
   renderQueue(tab);
   saveTabs();
+  _compactQueue.watch(tab);
   // If Claude is idle and queue was just started and not paused, auto-advance
   if (tab.queue.length === 1 && !tab.running && !tab.queuePaused && !tab._activePerm && !tab.pendingAsk) {
     setTimeout(() => advanceQueue(tab), 300);
@@ -7915,6 +9418,9 @@ function renderQueue(tab) {
     el.draggable = true;
     el.dataset.idx = idx;
     el.dataset.id = item.id;
+    // Typed for a conversation the tab has left: the queue never sends it here (cp-compose.js).
+    const stranded = !ownsQueued(tab, item);
+    if (stranded) el.classList.add('stranded');
 
     const drag = document.createElement('span');
     drag.className = 'cp-queue-drag';
@@ -7922,8 +9428,8 @@ function renderQueue(tab) {
 
     const textSpan = document.createElement('span');
     textSpan.className = 'cp-queue-text';
-    textSpan.textContent = item.text.length > 60 ? item.text.slice(0, 60) + '…' : item.text;
-    textSpan.title = item.text;
+    textSpan.textContent = (stranded ? 'Not sent (typed for another conversation): ' : '') + (item.text.length > 60 ? item.text.slice(0, 60) + '…' : item.text);
+    textSpan.title = stranded ? `Typed for another conversation, so it was not sent here. Remove it, or edit it to copy its text.\n\n${item.text}` : item.text;
 
     const attachBadge = document.createElement('span');
     attachBadge.className = 'cp-queue-attach-badge';
@@ -7982,15 +9488,40 @@ function renderQueue(tab) {
   });
 }
 
+// Prompts queued behind a Compact whose hold ends without the `done` that
+// advances the queue (cp-compose.js): sent when the session can take them,
+// otherwise the queue is paused where the user sees it, with the reason.
+const _compactQueue = compactQueue({
+  connected: (tab) => tab.ws?.readyState === WebSocket.OPEN,
+  advance: (tab) => advanceQueue(tab),
+  say: (tab, line) => appendStatus(tab, line),
+  stop: (tab) => { tab.queuePaused = true; tab.queueExpanded = true; renderQueue(tab); saveTabs(); },
+  unlabel: (tab) => { tab.compacting = false; if (tab === activeTab()) _setCompactingUI(false); },
+});
+
 function advanceQueue(tab) {
-  if (!tab.queue.length || tab.queuePaused || tab.running || tab._activePerm || tab.pendingAsk || tab.pendingAskRequestId) return;
+  if (tab._queueSending || !tab.queue.length || tab.queuePaused || tab.running || tab._activePerm || tab.pendingAsk || tab.pendingAskRequestId) return;
+  // The socket closed under a Compact: what was queued behind it goes on when the reconnect has answered (_compactQueue).
+  if (tab._queueWaits === 'session' && tab.ws?.readyState !== WebSocket.OPEN) return;
+  // A Compact the user started is under way: the queue goes on when it ends (the `done` that follows it, or _compactQueue).
+  _compactQueue.watch(tab);
+  if (compactHolds(tab)) return;
+  // The next prompt typed for this conversation; one typed for another stays in the tray (cp-compose.js).
+  const next = nextQueued(tab);
+  if (next < 0) return;
+  if (next > 0) tab.queue.unshift(...tab.queue.splice(next, 1));
   const item = tab.queue.shift();
+  tab._queueWaits = '';
+  tab._queueSending = true; // until it is sent: an advance that comes meanwhile takes nothing
   // Brief highlight before sending
   const $tray = _panel?.querySelector('#cp-queue-tray');
-  const firstItem = $tray?.querySelector('.cp-queue-item');
+  const firstItem = $tray?.querySelector(`.cp-queue-item[data-id="${CSS.escape(item.id)}"]`);
   if (firstItem) firstItem.classList.add('sending');
   setTimeout(() => {
-    _sendQueued(tab, item);
+    tab._queueSending = false;
+    // Taken 200 ms ago: sent only if the tab still holds its conversation and has a socket; kept otherwise.
+    const refused = queuedRefusal(tab, item, { connected: tab.ws?.readyState === WebSocket.OPEN });
+    if (refused) _keepQueued(tab, item, refused); else _sendQueued(tab, item);
     renderQueue(tab);
     saveTabs();
     // Queue complete notification
@@ -8000,12 +9531,19 @@ function advanceQueue(tab) {
   }, 200);
 }
 
+// A prompt taken off the queue that cannot be sent goes back to the front of it,
+// with the reason. Without a socket the queue is paused: Resume sends it.
+function _keepQueued(tab, item, refused) {
+  tab.queue.unshift(item);
+  if (refused === 'closed') { tab.queuePaused = true; tab.queueExpanded = true; }
+  appendStatus(tab, QUEUED_REFUSAL_LINES[refused]);
+}
+
 function _sendQueued(tab, item) {
   if (!tab.ws || tab.ws.readyState !== WebSocket.OPEN) return;
+  // (A temporary chat that is over, or one the running server would save: the prompt stays in the queue.)
+  { const refusal = temporaryRefusal(tab, { capable: hasCapability(tab, TEMPORARY_CAPABILITY) }); if (refusal) { tab.queue.unshift(item); tab.queuePaused = true; tab.queueExpanded = true; appendStatus(tab, refusal); return; } }
   // Clear stale exit-plan flags before starting queued turn
-  tab._exitPlanPending = false;
-  tab._exitPlanHandled = false;
-  tab._exitPlanWasPlanMode = false;
   const $project = _panel?.querySelector('#cp-project');
   appendUser(tab, item.text, item.images, item.files);
   tab.sendStartedAt = Date.now();
@@ -8015,9 +9553,6 @@ function _sendQueued(tab, item) {
   // Restore attachments for buildPromptWithAttachments
   if (item.files) tab.attachedFiles = item.files;
   let prompt = buildPromptWithAttachments(tab, item.text);
-  if (tab.planMode && prompt && !tab.sdkMode) {
-    prompt = `[PLAN MODE — think step by step, create a detailed plan, do NOT make code changes.]\n\nCRITICAL — When you have questions or need clarification during planning:\n1. First call ToolSearch with query "select:AskUserQuestion" to load the tool schema\n2. Then call AskUserQuestion to present your questions as interactive options (2-4 choices per question, max 4 questions)\n3. NEVER write questions as plain text — ALWAYS use the AskUserQuestion tool\n4. Use ExitPlanMode when the plan is ready for approval\n\nSTRICT ORDERING — ExitPlanMode MUST be your FINAL action in the turn: do ALL research (Grep, Read, Glob) and write the full plan text BEFORE calling ExitPlanMode. Never emit any text or tool call AFTER ExitPlanMode — anything after is dropped and the user only sees the PLAN COMPLETE approval card.\n\n${prompt}`;
-  }
 
   // Update pill label if first message
   if (tab.label === 'New chat' && item.text) {
@@ -8036,7 +9571,7 @@ function _sendQueued(tab, item) {
     effort: _getEffort() || undefined,
     windowId: _windowId,
   };
-  if (tab.sdkMode) msg.permissionMode = tab.planMode ? 'plan' : (tab.permissionMode || 'default');
+  _applySessionOptions(tab, msg);
   if (item.images) {
     msg.images = item.images.map(i => ({ base64: i.base64, mediaType: i.mediaType }));
     tab.attachedImages = [];
@@ -8304,6 +9839,8 @@ async function loadConfig() {
     if (!res.ok) return;
     _projects = res.projects || [];
     _models = res.models || [];
+    _modelsFetchedAt = Date.now();
+    _modelsSource = res.modelsSource || '';
 
     // Detect server restart — scrub runtime-only state but preserve resumable
     // session identity so sidepanel pills still open the underlying Claude
@@ -8340,6 +9877,54 @@ async function loadConfig() {
       _syncThinkAvailability();
     }
   } catch {}
+}
+
+// loadConfig() runs once, when the panel is built, but the CLI updates itself while
+// this page stays open — so without this the picker keeps offering whatever the CLI
+// knew at page load (Opus 5, after 2.1.280 had shipped Opus 5.5). Re-ask whenever
+// someone is about to look at the list: panel shown, model menu opened. The server
+// answers from a cache keyed to the CLI binary, so this is a local round trip unless
+// the CLI actually changed. A fallback list skips the 30s throttle, so the first look
+// after a failed discovery (e.g. mid-restart) repairs it.
+const MODELS_REFRESH_MS = 30_000;
+
+function refreshModels() {
+  if (_modelsRefresh) return _modelsRefresh;
+  if (_modelsSource !== 'fallback' && Date.now() - _modelsFetchedAt < MODELS_REFRESH_MS) {
+    return Promise.resolve();
+  }
+  _modelsRefresh = (async () => {
+    try {
+      const res = await fetch('/api/claude/models').then(r => r.json());
+      const models = Array.isArray(res?.models) ? res.models : [];
+      if (!res?.ok || !models.length) return;
+      _modelsFetchedAt = Date.now();
+      // Never trade a verified list for the unverified fallback: a discovery that
+      // failed mid-update must not strip the versions off a working picker.
+      if (res.source === 'fallback' && _modelsSource !== 'fallback' && _models.length) return;
+      _modelsSource = res.source || '';
+      if (JSON.stringify(models) === JSON.stringify(_models)) return;
+      // What a running session reported about its models stays on top of the catalog.
+      _models = mergeSessionModels(models, _sessionInfoSeen?.models).models;
+      const $model = _panel?.querySelector('#cp-model');
+      if (!$model) return;
+      // Same resolution switchTab() applies: keep the tab's model when the CLI still
+      // offers it, otherwise land on the CLI default rather than a blank dropdown.
+      const items = _models.map(m => ({ value: m.id, label: m.label }));
+      const tab = activeTab();
+      const modelVal = _resolveModelValue(items, tab?.model || _getDefaultModel());
+      ddPopulateModels($model, items, modelVal);
+      if (tab && modelVal && modelVal !== tab.model) { tab.model = modelVal; saveTabs(); }
+      _syncThinkAvailability();
+      // The gauge falls back to the catalog's window until the CLI reports one.
+      if (tab) renderGauge(tab);
+    } catch {
+      // Server restarting or unreachable — the next trigger retries.
+    } finally {
+      _modelsRefresh = null;
+    }
+  })();
+  return _modelsRefresh;
 }
 
 // 60s per-path cache — switchTab calls this on EVERY tab switch; without the
@@ -8408,7 +9993,7 @@ function populateRecallDropdown($dd) {
     const el = document.createElement('div');
     el.className = 'cp-dd-item' + (p.value === _recallProfile ? ' selected' : '');
     el.dataset.value = p.value;
-    el.innerHTML = `<span>${p.label}</span><span style="opacity:0.35;margin-left:auto;font-size:9px">${p.hint}</span>`;
+    el.innerHTML = `<span>${esc(p.label)}</span><span style="opacity:0.35;margin-left:auto;font-size:9px">${esc(p.hint)}</span>`;
     el.style.display = 'flex'; el.style.gap = '6px';
     el.addEventListener('click', () => {
       if (p.value === _recallProfile) { $dd.classList.remove('open'); return; }
@@ -8441,11 +10026,7 @@ async function saveRecallProfile(profile) {
 // Pass a numeric `knownWidth` during drag-resize to skip the getBoundingClientRect
 // measure (we already know the target width) and avoid a forced reflow every frame.
 function syncReservedWidth(knownWidth) {
-  if (_visible && _panel) {
-    reserveRightPanelLayout(PANEL_OWNER, typeof knownWidth === 'number' ? knownWidth + 20 : _panel, 20);
-  } else {
-    clearRightPanelLayout(PANEL_OWNER);
-  }
+  syncSidepanelLayout(PANEL_OWNER, knownWidth);
 }
 
 // ── CLI installation status (banner + send-block) ──
@@ -8468,7 +10049,7 @@ function _ensureCliBannerEl() {
       <div class="cp-cli-banner-body"></div>
     </div>
     <div class="cp-cli-banner-actions">
-      <a class="cp-cli-banner-link" href="${url}" target="_blank" rel="noopener noreferrer">Install guide</a>
+      <a class="cp-cli-banner-link" href="${esc(url || '#')}" target="_blank" rel="noopener noreferrer">Install guide</a>
       <button class="cp-cli-banner-recheck" type="button">Re-check</button>
     </div>
   `;
@@ -8593,8 +10174,10 @@ function _onMessagesClick(e) {
   const hdr = e.target.closest('.tool-hdr');
   if (hdr && !e.target.closest('button, a, input, select, textarea')) {
     const card = hdr.closest('.tool-card');
-    if (card && !card.classList.contains('cp-bash-card') && !card.classList.contains('cp-diff-card')
-        && !card.classList.contains('cp-agent-card')) {
+    // Bash, diff and agent cards toggle through their own header listener,
+    // except when they came back from a snapshot (it holds no listeners).
+    if (card && (card.dataset.restored === '1' || (!card.classList.contains('cp-bash-card') && !card.classList.contains('cp-diff-card')
+        && !card.classList.contains('cp-agent-card')))) {
       card.classList.toggle('open');
     }
   }
@@ -8606,6 +10189,12 @@ async function _ensureClaudePanelReady() {
     injectStyles();
     _panel = buildPanel();
     document.body.appendChild(_panel);
+    registerSidepanel({
+      owner: PANEL_OWNER, provider: 'claude', element: _panel,
+      header: _panel.querySelector('.cp-header'), actions: _panel.querySelector('.cp-header-actions'),
+      buttonClass: 'cp-header-btn', dockHandle: _panel.querySelector('.cp-resize-handle'),
+      applyVisibility: applyClaudeVisibility,
+    });
     wireEvents();
     _panel.querySelector('#cp-messages-container')?.addEventListener('click', _onMessagesClick);
     await loadConfig();   // must complete before restoreTabs — checks server boot ID
@@ -8622,20 +10211,24 @@ async function _ensureClaudePanelReady() {
 
 export async function toggleClaudePanel() {
   await _ensureClaudePanelReady();
-  _visible = !_visible;
+  setSidepanelVisible(PANEL_OWNER, !_visible);
+}
+
+function applyClaudeVisibility(visible) {
+  _visible = visible;
   if (_visible) {
-    // Mutual exclusion — close OpenCode V2 panel if it's open.
-    if (isOpencodePanelOpen()) { try { await toggleOpencodePanel(); } catch {} }
     if (_tabs.length === 0) createTab(null, 'New chat');
     state.lastActivePanel = 'claude';
     _panel.classList.add('open');
     syncReservedWidth();
     _panel.querySelector('#cp-input')?.focus();
     _refreshCliBanners();
+    refreshModels();
   } else {
     const tab = activeTab();
     const $input = _panel?.querySelector('#cp-input');
     if (tab && $input) tab.draft = $input.value;
+    closeContextMenu();
     _panel.classList.remove('open');
     syncReservedWidth();
   }
@@ -8647,6 +10240,10 @@ export async function toggleClaudePanel() {
 
 export function isClaudePanelOpen() { return _visible; }
 
+export function endHostedClaudeSessions() {
+  while (_tabs.length) closeTab(_tabs.length - 1);
+}
+
 export async function attachClaudeAutomation(run, { focus = !!run?.focus, isCancelled = () => false } = {}) {
   if (!run?.runId || !run?.providerSessionId) return { ok: false, reason: 'identity_pending' };
   await _ensureClaudePanelReady();
@@ -8654,7 +10251,7 @@ export async function attachClaudeAutomation(run, { focus = !!run?.focus, isCanc
   let tab = _tabs.find((entry) => entry.automationRunId === run.runId)
     || _tabs.find((entry) => entry.sessionId === run.providerSessionId);
   if (!tab) {
-    tab = _tabs.find((entry) => !entry.sessionId && !entry.running && !entry.turns
+    tab = _tabs.find((entry) => !entry.sessionId && !entry.running && !entry.turns && !keepsNothing(entry)
       && (!entry.draft || !entry.draft.trim()) && (!entry.queue || entry.queue.length === 0)) || null;
     if (tab) {
       tab.id = run.runId;
@@ -8695,6 +10292,8 @@ export async function attachClaudeAutomation(run, { focus = !!run?.focus, isCanc
     tab._automationLifecycleError = run.error;
     appendError(tab, run.error);
   }
+  // The mode control is hidden while the run is active and back when it ended.
+  if (tab === activeTab()) populateModeDropdown(_panel?.querySelector('#cp-mode'), tab);
   const idx = _tabs.indexOf(tab);
   if (focus) {
     if (!_visible) await toggleClaudePanel();
@@ -8723,7 +10322,7 @@ export function handleClaudeAutomationEvent(runId, payload) {
     appendError(tab, event.message || 'Claude Code automation failed');
     return true;
   }
-  handleTabMsg(tab, { type: 'event', event });
+  handleTabMsg(tab, { type: 'event', event, fromRun: true });
   return true;
 }
 
@@ -8851,10 +10450,12 @@ async function loadSkills() {
     }
     // Extras beyond the SLASH_COMMANDS registry (skills that still appear as `/foo`)
     const extras = [
-      { name: 'commit', description: 'Stage and commit changes' },
-      { name: 'review-pr', description: 'Review a pull request' },
-      { name: 'simplify', description: 'Review changed code for quality and efficiency' },
-      { name: 'loop', description: 'Run a command on a recurring interval' },
+      // Guesses for before the first session: once the CLI has sent its own
+      // command list, one it does not carry is dropped (showSlashHints).
+      { name: 'commit', description: 'Stage and commit changes', guess: true },
+      { name: 'review-pr', description: 'Review a pull request', guess: true },
+      { name: 'simplify', description: 'Review changed code for quality and efficiency', guess: true },
+      { name: 'loop', description: 'Run a command on a recurring interval', guess: true },
     ];
     for (const b of extras) { if (!seen.has(b.name)) { _skillsCache.push(b); seen.add(b.name); } }
     try {
@@ -8878,10 +10479,59 @@ function _serverSlashCommands() {
   if (!list?.length) {
     try { list = JSON.parse(storage.getItem(STOR.commands) || 'null')?.commands; } catch {}
   }
-  if (!Array.isArray(list)) return [];
-  return list.map(c => (typeof c === 'string' ? { name: c } : c))
-    .filter(c => c?.name)
-    .map(c => ({ name: String(c.name).replace(/^\//, ''), description: c.description || 'CLI command', argumentHint: c.argumentHint || c.argument_hint || '' }));
+  // Aliases and the builtin marker come along; commands bound to a terminal are left out.
+  return normalizeSlashCommands(list, { terminalOnly: tab?.init?.terminalSlashCommands });
+}
+
+// The CLI's command list for a tab: commands_list at init, commands_changed
+// whenever it changes mid-session (skills discovered while working in a subdirectory).
+function _setSlashCommands(tab, commands) {
+  if (!Array.isArray(commands) || !commands.length) return;
+  tab.slashCommands = commands;
+  try { storage.setItem(STOR.commands, JSON.stringify({ at: Date.now(), commands })); } catch {}
+}
+
+// Fast mode as the session reports it (init and every result): on, cooling
+// down, or off with the reason. Said once per change, when the tab asked for it.
+function _noteFastModeState(tab, ev) {
+  if (!ev.fast_mode_state) return;
+  const before = tab.fastModeState;
+  tab.fastModeState = ev.fast_mode_state;
+  tab.fastModeReason = ev.fast_mode_disabled_reason || '';
+  if (before === tab.fastModeState) return;
+  if (tab === activeTab()) renderStatusline(tab);
+  if (!normalizeSession(tab.session).fastMode) return;
+  if (tab.fastModeState === 'off') appendWarn(tab, `Fast mode is not active${tab.fastModeReason ? `: ${fastModeReason(tab.fastModeReason)}` : ''}.`);
+  else if (tab.fastModeState === 'cooldown') appendStatus(tab, 'Fast mode is cooling down: replies run at normal speed for now.');
+}
+
+// The CLI changed the permission mode itself (system/status): the tab follows
+// what its session reports (_sessionSaysMode), without storing it as the
+// default for new tabs.
+// (`ev`: the status itself, for what it says beside the mode: whether the
+// session may be in Bypass, the mode a switch is under way to, and the
+// revision the bridge gave the report.)
+function _syncPermissionModeFromCli(tab, mode, modeSeq, ev) {
+  if (!mode) return;
+  _sessionSaysMode(tab, mode, 'status', { modeSeq, mayBypass: ev?.mayBypass, switching: ev?.switching, modeRev: ev?.modeRev, modeRevOf: ev?.modeRevOf });
+}
+
+// A compaction began (PreCompact hook, or the CLI's own status message).
+function _compactStarted(tab) {
+  tab.compacting = true;
+  // One line per compaction: reuse it while this compaction is still running.
+  const $msgs = tab.messagesEl;
+  if ($msgs) {
+    let el = $msgs.querySelector('.msg-compact-status:not(.cp-compact-done)');
+    if (!el) {
+      el = document.createElement('div');
+      el.className = 'msg-status msg-compact-status';
+      $msgs.appendChild(el);
+    }
+    el.textContent = 'Compacting context\u2026';
+    if (tab === activeTab()) scrollEnd();
+  }
+  if (tab === activeTab()) _setCompactingUI(true);
 }
 
 async function showSlashHints(filter) {
@@ -8891,18 +10541,35 @@ async function showSlashHints(filter) {
   if (!_skillsCache) return;
   const q = filter.toLowerCase();
   // Merge: client registry + skills first, then server CLI commands (deduped)
-  const seen = new Set(_skillsCache.map(s => s.name.toLowerCase()));
-  const merged = [..._skillsCache];
-  for (const c of _serverSlashCommands()) {
+  const serverCommands = _serverSlashCommands();
+  const serverNames = new Set(serverCommands.map(c => c.name.toLowerCase()));
+  const tabNow = activeTab();
+  const local = _skillsCache.filter((s) => {
+    if (s.guess && serverNames.size && !serverNames.has(s.name.toLowerCase())) return false;
+    const needs = SLASH_COMMANDS.find(c => c.name === s.name)?.needs;
+    return !needs || hasCapability(tabNow, needs);
+  });
+  const seen = new Set(local.map(s => s.name.toLowerCase()));
+  const merged = [...local];
+  for (const c of serverCommands) {
     if (!seen.has(c.name.toLowerCase())) { seen.add(c.name.toLowerCase()); merged.push(c); }
   }
-  const matches = merged.filter(s => s.name.toLowerCase().startsWith(q));
-  if (!matches.length || !filter) { hideSlashHints(); return; }
+  // A bare "/" lists every command, as the CLI does; typed text matches by
+  // name, or by an alias (/cost finds /usage).
+  const matches = q ? matchSlashCommands(merged, q) : listSlashCommands(merged);
+  if (!matches.length) { hideSlashHints(); return; }
+  // The whole list scrolls inside the space above the input, so a long one
+  // never leaves the panel.
+  // (Measured on the parent: the menu itself is not laid out while closed.)
+  const anchor = $hints.parentElement;
+  const room = anchor && _panel ? anchor.getBoundingClientRect().top - _panel.getBoundingClientRect().top : 0;
+  $hints.style.maxHeight = `${slashMenuMaxHeight(room)}px`;
+  $hints.scrollTop = 0;
   $hints.innerHTML = '';
   matches.forEach((s, i) => {
     const el = document.createElement('div');
     el.className = 'cp-slash-item' + (i === 0 ? ' active' : '');
-    el.innerHTML = `<div class="cp-slash-name">/${esc(s.name)}${s.argumentHint ? `<span class="cp-slash-arg">${esc(s.argumentHint)}</span>` : ''}</div><div class="cp-slash-desc">${esc(s.description)}</div>`;
+    el.innerHTML = `<div class="cp-slash-name">/${esc(s.name)}${s.via ? `<span class="cp-slash-arg">alias /${esc(s.via)}</span>` : ''}${s.argumentHint ? `<span class="cp-slash-arg">${esc(s.argumentHint)}</span>` : ''}</div><div class="cp-slash-desc">${esc(s.description)}</div>`;
     el.addEventListener('click', () => {
       const $input = _panel?.querySelector('#cp-input');
       if ($input) { $input.value = '/' + s.name + ' '; $input.focus(); }
@@ -8926,6 +10593,8 @@ function navigateSlashHints(dir) {
   items[_slashHintIdx]?.classList.remove('active');
   _slashHintIdx = Math.max(0, Math.min(items.length - 1, _slashHintIdx + dir));
   items[_slashHintIdx]?.classList.add('active');
+  // A long list scrolls: the highlighted row stays in view.
+  items[_slashHintIdx]?.scrollIntoView?.({ block: 'nearest' });
 }
 function acceptSlashHint() {
   const $hints = _panel?.querySelector('#cp-slash-hints');
@@ -9062,7 +10731,7 @@ function _openReverseSearch() {
   const render = (query) => {
     const q = query.toLowerCase();
     const matches = q ? hist.filter(h => h.toLowerCase().includes(q)) : hist;
-    $list.innerHTML = matches.slice(0, 30).map((h, i) => `<div class="cp-rsearch-row${i===selected?' active':''}" data-idx="${i}">${esc(h.slice(0,200))}</div>`).join('') || '<div class="cp-rsearch-empty">No matches</div>';
+    $list.innerHTML = matches.slice(0, 30).map((h, i) => `<div class="cp-rsearch-row${i===selected?' active':''}" data-idx="${Number(i)}">${esc(h.slice(0,200))}</div>`).join('') || '<div class="cp-rsearch-empty">No matches</div>';
     return matches;
   };
   let matches = render('');
@@ -9209,32 +10878,77 @@ function populateViewDropdown($dd, tab) {
   }
 }
 
-// ── Permission-mode dropdown (project bar, SDK engine only) ──
+// ── Permission-mode dropdown (project bar) ──
+let _sdkModelsSeen = null; // the last model list a session reported (which models support auto mode)
+const MODE_CONTROL_TOOLTIP = 'Permission mode (Shift+Tab cycles)';
+
 function populateModeDropdown($dd, tab) {
   if (!$dd || !tab) return;
-  // Legacy engine has no live permission modes — keep the dropdown hidden
-  $dd.hidden = !tab.sdkMode;
-  if (!tab.sdkMode) return;
+  // Hidden until the bridge said hello on the tab's socket, and while the tab
+  // shows a running automation: that run lives in the loop runtime, and the
+  // mode of this tab's own session would not reach it. Once the run has ended,
+  // what the user sends here runs in this tab's session, in the mode picked here.
+  $dd.hidden = !tab.sdkMode || !!tab.automationActive;
+  if ($dd.hidden) return;
   const menu = $dd.querySelector('.cp-dd-menu');
   const label = $dd.querySelector('.cp-dd-label');
   if (!menu || !label) return;
-  const mode = tab.permissionMode || 'default';
+  // The tab's pick, or that it follows the user's settings (and the mode they
+  // gave its session, once known); and whether its session is or may still be
+  // in Bypass (controlFacts() in cp/cp-permission-model.js).
+  const facts = controlFacts(tab, { settingsPick: hasCapability(tab, 'permission_modes_v2'), ..._modeBridge(tab) });
+  const mode = facts.mode;
+  const bypass = _bypassOffer(tab);
+  // What the control says: the mode, and that tools run without asking when
+  // the tab is in Bypass or the Auto-approve toggle is on.
+  const shown = modeControl({ ...facts, autoApprove: _autoAcceptAll });
   menu.innerHTML = '';
-  label.textContent = MODE_LABELS[mode] || mode;
+  label.textContent = shown.text;
+  // The label is sized to its text (cp-styles.js); short of room, the ellipsis
+  // takes its end and never the part it keeps ("Bypass", the mode after the
+  // arrow). The tooltip has it in full, and says when the settings ask for a
+  // mode the session did not get.
+  $dd.style.setProperty('--cp-mode-keep', String(shown.keep.length));
+  $dd.dataset.tooltip = modeTooltip(shown, { fallback: MODE_CONTROL_TOOLTIP, note: settingsModeNote(facts, _settingsAsk(tab)) });
   $dd.classList.add('has-value');
-  $dd.classList.remove('cp-mode-default', 'cp-mode-acceptEdits', 'cp-mode-plan', 'cp-mode-bypassPermissions');
+  $dd.classList.remove(...PERMISSION_MODES.map(m => `cp-mode-${m}`));
   $dd.classList.add(`cp-mode-${mode}`);
+  $dd.classList.toggle('cp-mode-unasked', shown.state === 'bypass' || shown.state === 'autoapprove');
   $dd._value = mode;
-  for (const m of PERMISSION_MODES) {
+  _refreshBypassPolicy(tab);
+  // Don't Ask and Auto need a bridge that accepts them; Auto also needs a model
+  // that supports it (the session's own model list says so).
+  if (tab.sessionInfo?.models?.length) _sdkModelsSeen = tab.sessionInfo.models;
+  const offered = permissionModesFor({
+    extended: hasCapability(tab, 'permission_modes_v2'),
+    autoSupported: autoModeSupported(tab.sessionInfo?.models || _sdkModelsSeen || _models, tab.mainModel || _getModelId()),
+    current: facts.follows && !facts.known ? '' : mode,
+  });
+  for (const m of offered) {
     const el = document.createElement('div');
-    el.className = 'cp-dd-item' + (m === mode ? ' selected' : '');
+    el.className = 'cp-dd-item' + (m === mode && !facts.follows ? ' selected' : '');
     el.dataset.value = m;
     el.textContent = MODE_LABELS[m] || m;
+    el.title = MODE_HINTS[m] || '';
+    // Bypass that cannot be taken (turned off in the user's settings, or a
+    // server that was not restarted) is listed, not offered: with the reason.
+    const blocked = m === BYPASS_MODE && !bypass.available;
+    if (blocked) {
+      el.classList.add('cp-dd-disabled');
+      el.setAttribute('aria-disabled', 'true');
+      el.title = bypass.reason;
+      const note = document.createElement('span');
+      note.className = 'cp-dd-item-note';
+      note.textContent = bypass.note;
+      el.appendChild(note);
+    }
     el.addEventListener('click', () => {
       const t = activeTab();
       if (!t) return;
       $dd.classList.remove('open');
-      if (m === t.permissionMode) return;
+      if (blocked) { appendWarn(t, bypass.reason); return; }
+      // Every choice is a pick, also of the mode the control already shows: a
+      // tab that never picked one follows the settings until it does.
       setPermissionModeUI(t, m);
     });
     menu.appendChild(el);
@@ -9242,8 +10956,19 @@ function populateModeDropdown($dd, tab) {
 }
 
 // ── Hook event activity strip (synthetic hook events from stream) ──
+// The hooks that really ran (system/hook_response), when the session sends them.
+// From then on the strip shows those and the client-side guesses are dropped.
+function _recordRealHook(tab, entry) {
+  if (!tab || !entry) return;
+  if (!tab._realHooks) { tab._realHooks = true; tab.hookEvents = []; }
+  tab.hookEvents.push({ ...entry, at: Date.now() });
+  if (tab.hookEvents.length > 60) tab.hookEvents.shift();
+  renderHookStrip(tab);
+}
+
 function recordHookEvent(tab, event, detail = '') {
-  if (!tab) return;
+  if (!tab || tab._replaying) return; // a replayed transcript is not activity
+  if (tab._realHooks) return;         // the session reports its real hook events
   tab.hookEvents = tab.hookEvents || [];
   tab.hookEvents.push({ event, detail, at: Date.now() });
   if (tab.hookEvents.length > 30) tab.hookEvents.shift();
@@ -9261,8 +10986,9 @@ function renderHookStrip(tab) {
     tab.messagesEl.parentElement.after(strip);
   }
   const recent = tab.hookEvents.slice(-6);
+  // A real hook's output is hook-authored text: cut short, and only in the tooltip.
   strip.innerHTML = `<div class="cp-hook-strip-title">Hook events</div>` + recent.map(h =>
-    `<div class="cp-hook-ev" title="${esc(h.detail)}"><span class="cp-hook-dot"></span><span class="cp-hook-name">${esc(h.event)}</span>${h.detail ? `<span class="cp-hook-detail">${esc(h.detail.slice(0,60))}</span>` : ''}</div>`
+    `<div class="cp-hook-ev${h.outcome && h.outcome !== 'success' ? ` cp-hook-${classToken(h.outcome)}` : ''}" title="${esc(h.output ? `${h.detail}\n\n${h.output}` : h.detail)}"><span class="cp-hook-dot"></span><span class="cp-hook-name">${esc(h.event)}</span>${h.detail ? `<span class="cp-hook-detail">${esc(h.detail.slice(0,60))}</span>` : ''}</div>`
   ).join('');
 }
 
@@ -9372,6 +11098,14 @@ function wireEvents() {
         if (text.startsWith('/') && !text.includes(' ') && acceptSlashHint()) { e.preventDefault(); return; }
       }
     }
+    // A first character in an idle tab: start its CLI process ahead of the message.
+    if (tab && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey && !$input.value) _maybeWarm(tab, e.key);
+    // Tab on an empty input takes the suggested next prompt.
+    if (e.key === 'Tab' && !e.shiftKey && tab?.suggestion && !$input.value) {
+      e.preventDefault();
+      _acceptSuggestion(tab);
+      return;
+    }
     // Up/Down prompt history (only when input is empty or already navigating)
     if (tab && (e.key === 'ArrowUp' || e.key === 'ArrowDown') && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
       const navigating = tab.promptHistoryIdx !== -1;
@@ -9418,18 +11152,11 @@ function wireEvents() {
     if (e.key === 'Tab' && e.shiftKey) {
       e.preventDefault();
       if (!tab) return;
-      if (tab.sdkMode) {
-        // CLI parity: Shift+Tab cycles default → acceptEdits → plan → default
-        const cycle = ['default', 'acceptEdits', 'plan'];
-        const next = cycle[(cycle.indexOf(tab.permissionMode) + 1) % cycle.length] || 'default';
-        setPermissionModeUI(tab, next);
-        return;
-      }
-      tab.planMode = !tab.planMode;
-      if (tab.planMode) { tab._planContent = null; tab._planContentCaptured = false; tab.planFilePath = ''; tab._editedPlanContent = null; tab._planModeStartedAt = Date.now(); tab._planModeStartMsgIndex = tab.messagesEl?.querySelectorAll('.msg.msg-assistant').length || 0; }
-      const $plan = _panel?.querySelector('#cp-plan-toggle');
-      if ($plan) $plan.classList.toggle('active', tab.planMode);
-      appendStatus(tab, tab.planMode ? 'Plan mode ON — Claude will plan without making changes' : 'Plan mode OFF');
+      // CLI parity: Shift+Tab cycles default → acceptEdits → plan → default.
+      // Bypass is never part of the cycle: it is picked in the mode control.
+      const cycle = ['default', 'acceptEdits', 'plan'];
+      const next = cycle[(cycle.indexOf(tab.permissionMode) + 1) % cycle.length] || 'default';
+      setPermissionModeUI(tab, next);
       return;
     }
     // Ctrl+L to clear
@@ -9588,6 +11315,7 @@ function wireEvents() {
     });
   }
   $new.addEventListener('click', () => {
+    if (openAnotherSidepanelSession(PANEL_OWNER, 'claude', { project: activeTab()?.project || '' })) return;
     if (_tabs.length >= MAX_TABS) { appendStatus(activeTab(), 'Max sessions reached — close one first.'); return; }
     createTab(null, 'New chat');
     promptNameNewSession();
@@ -9625,31 +11353,29 @@ function wireEvents() {
     $plan.addEventListener('click', () => {
       const tab = activeTab();
       if (!tab) return;
-      if (tab.sdkMode) {
-        setPermissionModeUI(tab, tab.planMode ? 'default' : 'plan', { announce: false });
-        return;
-      }
-      tab.planMode = !tab.planMode;
-      if (tab.planMode) { tab._planContent = null; tab._planContentCaptured = false; tab.planFilePath = ''; tab._editedPlanContent = null; tab._planModeStartedAt = Date.now(); tab._planModeStartMsgIndex = tab.messagesEl?.querySelectorAll('.msg.msg-assistant').length || 0; }
-      $plan.classList.toggle('active', tab.planMode);
+      // On is the user's pick of Plan; off goes back to the mode the tab was in before plan mode.
+      if (tab.planMode) _leavePlanUI(tab, { announce: false }); else setPermissionModeUI(tab, 'plan', { announce: false });
     });
   }
 
-  // Auto-accept toggle. Under the SDK engine this maps to bypassPermissions mode
-  // (one-time storage migration below); the client-side fast path still applies.
+  // Auto-approve toggle: the page answers permission requests itself (see
+  // _autoAcceptAll). It is not a permission mode and switches none: Bypass is
+  // picked in the mode control. That control says when this is on, so nobody
+  // expects to be asked.
   const $auto = _panel.querySelector('#cp-auto-toggle');
   if ($auto) {
     _autoAcceptAll = storage.getItem(STOR.autoAccept) === 'true';
-    if (_autoAcceptAll && !storage.getItem(STOR.permissionMode)) {
-      storage.setItem(STOR.permissionMode, 'bypassPermissions');
-    }
     $auto.classList.toggle('active', _autoAcceptAll);
     $auto.addEventListener('click', () => {
       _autoAcceptAll = !_autoAcceptAll;
       $auto.classList.toggle('active', _autoAcceptAll);
       storage.setItem(STOR.autoAccept, _autoAcceptAll);
       const tab = activeTab();
-      if (tab?.sdkMode) setPermissionModeUI(tab, _autoAcceptAll ? 'bypassPermissions' : 'default');
+      if (tab) {
+        populateModeDropdown(_panel?.querySelector('#cp-mode'), tab);
+        if (_autoAcceptAll) appendWarn(tab, 'Auto-approve is on: permission requests are answered Allow without a card, in every tab.');
+        else appendStatus(tab, 'Auto-approve is off: permission requests are shown again.');
+      }
     });
   }
 
@@ -9713,20 +11439,8 @@ function wireEvents() {
     document.addEventListener('visibilitychange', () => { if (document.hidden) stopVoice(); });
   }
 
-  // Compact button
-  const $compact = _panel.querySelector('#cp-compact-btn');
-  if ($compact) {
-    $compact.addEventListener('click', () => {
-      const tab = activeTab();
-      if (!tab || !tab.ws || tab.ws.readyState !== WebSocket.OPEN) return;
-      if (tab.running) { appendStatus(tab, 'Cannot compact while Claude is processing.'); return; }
-      tab.compacting = true;
-      _setCompactingUI(true);
-      recordHookEvent(tab, 'PreCompact', 'starting compaction');
-      tab.ws.send(JSON.stringify({ type: 'compact' }));
-      appendStatus(tab, 'Compacting context...');
-    });
-  }
+  // Context settings: the header cog and its popover (Compact lives there)
+  initContextMenu();
 
   // Bar action buttons (quick skills)
   _panel.querySelector('#cp-action-changelog')?.addEventListener('click', () => {
@@ -9806,6 +11520,10 @@ function wireEvents() {
   const $recall = _panel.querySelector('#cp-recall');
   const $view = _panel.querySelector('#cp-view');
   ddSetup($project); ddSetup($model); ddSetup($branch); ddSetup($recall); ddSetup($view); ddSetup(_panel.querySelector('#cp-mode'));
+  // Registered after ddSetup's toggle, so `open` already reflects this click.
+  $model.addEventListener('click', (e) => {
+    if (!e.target.closest('.cp-dd-item') && $model.classList.contains('open')) refreshModels();
+  });
   loadRecallProfile();
   populateViewDropdown($view, activeTab());
   $project.addEventListener('change', () => {
@@ -9826,7 +11544,16 @@ function wireEvents() {
     if (val) storage.setItem(STOR.defaultModel, val);
     else storage.removeItem(STOR.defaultModel);
     const tab = activeTab();
-    if (tab) { tab.model = val; renderGauge(tab); saveTabs(); }
+    if (!tab) return;
+    if (val !== tab.model) {
+      // The CLI's last report described the previous model: show the picked one's
+      // window until the next result. A running turn finishes on the old model.
+      tab.contextWindow = 0;
+      if (tab.running) tab._modelChangedMidTurn = true;
+    }
+    tab.model = val;
+    renderGauge(tab);
+    saveTabs();
   });
   $branch.addEventListener('change', async () => {
     if (!ddGetValue($branch) || !ddGetValue($project)) return;
@@ -9838,57 +11565,10 @@ function wireEvents() {
     } catch {}
   });
 
-  // ── Resize handle drag ──
-  const $handle = _panel.querySelector('.cp-resize-handle');
-  if ($handle) {
-    let dragging = false;
-    let pendingWidth = 0;
-    let resizeRaf = 0;
-    const applyResizeWidth = () => {
-      resizeRaf = 0;
-      if (!dragging || !_panel || !pendingWidth) return;
-      _panel.style.width = pendingWidth + 'px';
-      syncReservedWidth(pendingWidth);
-    };
-    $handle.addEventListener('mousedown', (e) => {
-      e.preventDefault();
-      dragging = true;
-      pendingWidth = _panel?.offsetWidth || 0;
-      _panel.style.transition = 'none';
-      document.body.style.cursor = 'col-resize';
-      document.body.style.userSelect = 'none';
-      setRightPanelResizing(true);
-    });
-    window.addEventListener('mousemove', (e) => {
-      if (!dragging) return;
-      pendingWidth = Math.min(700, Math.max(320, window.innerWidth - e.clientX - 20));
-      if (!resizeRaf) resizeRaf = requestAnimationFrame(applyResizeWidth);
-    });
-    window.addEventListener('mouseup', () => {
-      if (!dragging) return;
-      dragging = false;
-      if (resizeRaf) {
-        cancelAnimationFrame(resizeRaf);
-        resizeRaf = 0;
-      }
-      if (pendingWidth) {
-        _panel.style.width = pendingWidth + 'px';
-        syncReservedWidth(pendingWidth);
-      }
-      _panel.style.transition = '';
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      setRightPanelResizing(false);
-      window.dispatchEvent(new Event('resize'));
-    });
-  }
-
-  window.addEventListener('resize', syncReservedWidth);
-
   // ── Whiteboard "Send to Panel" — receive image via event bus ──
   on('wb:send-to-panel', ({ dataUrl }) => {
     if (!dataUrl) return;
-    if (!_visible && state.lastActivePanel !== 'claude') return;
+    if (state.lastActivePanel !== 'claude' || isHostedSessionFocused()) return;
     if (!_visible) toggleClaudePanel();
     const tab = activeTab();
     if (!tab) return;

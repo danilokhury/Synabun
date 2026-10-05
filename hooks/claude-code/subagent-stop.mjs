@@ -19,7 +19,7 @@
 
 import { existsSync, mkdirSync, writeFileSync, readdirSync, statSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import { readStdin, getHookFeatures, DATA_DIR } from './shared.mjs';
+import { readStdin, getHookFeatures, DATA_DIR, isTemporaryChat } from './shared.mjs';
 
 process.on('uncaughtException', () => { try { process.stdout.write('{}'); } catch {} process.exit(0); });
 process.on('unhandledRejection', () => { try { process.stdout.write('{}'); } catch {} process.exit(0); });
@@ -61,6 +61,9 @@ async function main() {
 
   let input = {};
   try { input = JSON.parse(await readStdin()); } catch { /* empty */ }
+
+  // A temporary chat (see isTemporaryChat): a worker is not asked to store what it found.
+  if (isTemporaryChat()) { process.stdout.write('{}'); return; }
 
   if (process.env.SYNABUN_HOOK_DEBUG) {
     try { process.stderr.write(`[SubagentStop] ${JSON.stringify(input)}\n`); } catch { /* ok */ }

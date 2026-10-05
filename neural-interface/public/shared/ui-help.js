@@ -3,7 +3,7 @@
 // Shared help sections + variant section injection via registry
 // ═══════════════════════════════════════════
 
-import { getHelpSections } from './registry.js';
+import { getHelpSections, getVariant } from './registry.js';
 import { registerAction, getDisplayKey } from './ui-keybinds.js';
 
 // Shared help sections that appear in all variants
@@ -31,7 +31,7 @@ function getSharedHelpSections() {
     html: `<div class="help-section">
       <div class="help-section-title">Mouse &mdash; Graph</div>
       <div class="help-row"><div class="help-keys"><span class="help-key">Click</span><span class="help-key">Node</span></div><span class="help-desc">Select &amp; inspect memory</span></div>
-      <div class="help-row"><div class="help-keys"><span class="help-key">Drag</span><span class="help-key">Node</span></div><span class="help-desc">Move &amp; pin node in place</span></div>
+      ${getVariant() === '2d' ? '<div class="help-row"><div class="help-keys"><span class="help-key">Drag</span><span class="help-key">Node</span></div><span class="help-desc">Move &amp; pin node in place</span></div>' : ''}
       <div class="help-row"><div class="help-keys"><span class="help-key">Hover</span><span class="help-key">Node</span></div><span class="help-desc">Show tooltip preview</span></div>
       <div class="help-row"><div class="help-keys"><span class="help-key">Ctrl</span><span class="help-key">Click</span></div><span class="help-desc">Multi-select nodes</span></div>
       <div class="help-row"><div class="help-keys"><span class="help-key">Click</span><span class="help-key">Background</span></div><span class="help-desc">Deselect / close detail panel</span></div>

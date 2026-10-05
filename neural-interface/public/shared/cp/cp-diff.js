@@ -82,13 +82,24 @@ function renderDiffLines(lines) {
     const text = document.createElement('span');
     text.className = 'cp-diff-text';
     text.textContent = l.text;
-    row.append(gutter, text);
+    // Real line numbers, when the diff came from the CLI's structured patch.
+    if (l.oldNo != null || l.newNo != null) {
+      const no = document.createElement('span');
+      no.className = 'cp-diff-lineno';
+      no.textContent = String(l.kind === 'del' ? l.oldNo : l.newNo ?? '');
+      row.append(no, gutter, text);
+    } else {
+      row.append(gutter, text);
+    }
     wrap.appendChild(row);
   }
   return wrap;
 }
 
-function statsEl({ add, del }) {
+function statsEl(stats) {
+  // Line counts: numbers, whatever the caller passed.
+  const add = Number(stats?.add) || 0;
+  const del = Number(stats?.del) || 0;
   const el = document.createElement('span');
   el.className = 'cp-diff-stats';
   el.innerHTML = `${add ? `<span class="cp-diff-stat-add">+${add}</span>` : ''}${del ? `<span class="cp-diff-stat-del">−${del}</span>` : ''}`;
@@ -103,7 +114,9 @@ function diffForInput(input, toolName) {
     const lines = String(i.content ?? '').split('\n');
     const shown = lines.slice(0, MAX_WRITE_PREVIEW).map(text => ({ kind: 'add', text }));
     if (lines.length > MAX_WRITE_PREVIEW) shown.push({ kind: 'gap', text: `… ${lines.length - MAX_WRITE_PREVIEW} more lines` });
-    return { sections: [{ lines: shown, label: null }], stats: { add: lines.length, del: 0 }, badge: 'new file' };
+    // Whether this creates or overwrites is only known from the result
+    // (FileWriteOutput.type): no "new file" claim before that.
+    return { sections: [{ lines: shown, label: null }], stats: { add: lines.length, del: 0 }, badge: null };
   }
   if (toolName === 'MultiEdit' && Array.isArray(i.edits)) {
     const sections = i.edits.map((e, idx) => {
@@ -115,6 +128,9 @@ function diffForInput(input, toolName) {
     return { sections, stats: total, badge: null };
   }
   if (toolName === 'NotebookEdit') {
+    if (i.edit_mode === 'delete') {
+      return { sections: [{ lines: [{ kind: 'gap', text: 'the cell is removed' }], label: `cell ${i.cell_id ?? ''}` }], stats: { add: 0, del: 0 }, badge: 'delete' };
+    }
     const lines = String(i.new_source ?? '').split('\n').map(text => ({ kind: 'add', text }));
     return { sections: [{ lines, label: `cell ${i.cell_id ?? ''}` }], stats: { add: lines.length, del: 0 }, badge: i.edit_mode || null };
   }
@@ -212,7 +228,23 @@ export function buildDiffCard(block, tab) {
 
 // Called from updateToolResult for cp-diff-card: collapse on success, keep
 // open + error styling on failure.
-export function finalizeDiffCard(card, ev) {
+export function finalizeDiffCard(card, ev, view = null) {
+  // The typed result carries the patch the CLI actually applied (hunks with
+  // line numbers): it replaces the diff computed from the input.
+  if (!ev.is_error && Array.isArray(view?.diff) && view.diff.length) {
+    const body = card.querySelector('.tool-body');
+    const old = body ? [...body.querySelectorAll('.cp-diff')] : [];
+    if (old.length) {
+      const lines = view.diff.length > 600
+        ? [...view.diff.slice(0, 600), { kind: 'gap', text: `… ${view.diff.length - 600} more lines` }]
+        : view.diff;
+      old[0].replaceWith(renderDiffLines(lines));
+      for (const extra of old.slice(1)) extra.remove();
+      for (const label of [...body.querySelectorAll('.cp-diff-section-label')]) label.remove();
+      const stats = card.querySelector('.tool-hdr .cp-diff-stats');
+      if (stats) stats.replaceWith(statsEl(cpDiffStats(view.diff)));
+    }
+  }
   if (ev.is_error) {
     card.classList.add('tool-error');
     card.classList.add('open');

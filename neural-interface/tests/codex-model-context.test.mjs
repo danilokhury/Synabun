@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
 
 import {
   expectedEffectiveContextWindow,
@@ -166,4 +168,46 @@ test('default and invalid modes never emit a context override', () => {
     assert.equal(resolved.config, null);
     assert.equal(resolved.reason, 'default-context');
   }
+});
+
+// Run the production activation boundary without booting the application or
+// touching account config. Its live model/list dependency is deterministic.
+function activationFixture({ cached, live, activeMode = 'default' }) {
+  const source = readFileSync(new URL('../server.js', import.meta.url), 'utf8');
+  const start = source.indexOf('  async function resolveCodexThreadRuntimeOptions(');
+  const end = source.indexOf('  function rememberActiveThreadRuntime(', start);
+  let reads = 0;
+  const context = {
+    codexContextModels: cached,
+    activeThreadRuntimeFingerprint: JSON.stringify({ model: 'gpt-5.6-sol', contextMode: activeMode, modelContextWindow: activeMode === 'extended' ? 872000 : null }),
+    resolveCodexExtendedContext,
+    getCachedConfigValue: () => 'gpt-5.6-sol',
+    listCodexModelsWithContext: async () => { reads++; return live; },
+  };
+  return {
+    resolve: runInNewContext(`${source.slice(start, end)}; resolveCodexThreadRuntimeOptions;`, context),
+    reads: () => reads,
+  };
+}
+
+test('a changed extended activation refreshes cached metadata before choosing its override', async () => {
+  const cached = mergeCodexModelContextCapabilities(APP_SERVER_MODELS, RUNTIME_CATALOG);
+  const live = [{ ...cached[0], maxContextWindow: 900000 }];
+  const fixture = activationFixture({ cached, live });
+  const result = await fixture.resolve({ model: 'gpt-5.6-sol', contextMode: 'extended' });
+  assert.equal(fixture.reads(), 1);
+  assert.equal(result.config.model_context_window, 900000);
+  assert.equal(result.expectedEffectiveContextWindow, 855000);
+});
+
+test('fresh discovery rejects revoked support but steady-state and default modes avoid extra reads', async () => {
+  const cached = mergeCodexModelContextCapabilities(APP_SERVER_MODELS, RUNTIME_CATALOG);
+  const revoked = activationFixture({ cached, live: [{ ...cached[0], maxContextWindow: 272000 }] });
+  await assert.rejects(revoked.resolve({ model: 'gpt-5.6-sol', contextMode: 'extended' }), /Extended context is unavailable/);
+  const stable = activationFixture({ cached, live: [], activeMode: 'extended' });
+  const result = await stable.resolve({ model: 'gpt-5.6-sol', contextMode: 'extended' });
+  assert.equal(result.config.model_context_window, 872000);
+  assert.equal(stable.reads(), 0);
+  assert.equal((await stable.resolve({ model: 'gpt-5.6-sol', contextMode: 'default' })).config, null);
+  assert.equal(stable.reads(), 0);
 });

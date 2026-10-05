@@ -12,16 +12,16 @@ import {
 
 // ── fb_groups — structured Facebook group directory + per-group posting checklist ──
 //
-// Single source of truth for the Critical Pixel group collection. Replaces the fragile
-// single-text seed-queue memory (whose ~496-group [QUEUE] was once wiped by a whole-body
-// reflect()) with two SQLite tables: fb_groups (one row per group) and fb_post_log (one
+// Single source of truth for the Facebook group collection. Replaces a single-text
+// seed-queue memory (one whole-body reflect() can overwrite such a list) with two
+// SQLite tables: fb_groups (one row per group) and fb_post_log (one
 // append-only row per posting event). worklist = the efficient region fetch + resume engine;
 // mark = the durable per-group checklist tick replacing the reflect-into-ledger pattern.
 
-// Memories that still hold recoverable group data after the QUEUE wipe.
+// Seed memories read (pipe-delimited lines) when import is run with no explicit memory ids.
 const DEFAULT_SEED_MEMORY_IDS = [
-  'd959e3f0-c9c8-4ca6-88d8-a90c1f754c25', // intact English/UK seed-queue (url | lang | currency | lastOffer | date)
-  'dc301b83-4859-4a55-9713-03a5c0a12197', // corrupted master — only its [Ledger] survives
+  'd959e3f0-c9c8-4ca6-88d8-a90c1f754c25', // seed-queue lines (url | lang | currency | lastOffer | date)
+  'dc301b83-4859-4a55-9713-03a5c0a12197', // ledger lines
 ];
 // Subcategories scanned (prose) when import is run with no explicit memory ids.
 const DEFAULT_IMPORT_SUBCATEGORIES: Array<{ sub: string; source: string; forceExclude: boolean }> = [
@@ -36,7 +36,7 @@ export const fbGroupsSchema = {
     .describe('worklist: ordered groups still to post to (region/currency + offerSlug). mark: tick one group after posting. set: curate classification (region/lang/currency) for one or many groups. import: (re)build the directory from memories + a live extract. exclude: forbid promo in a group. list/stats: coverage. recategorize: re-derive region/lang/currency for every group and backfill allows_promo from history.'),
   region: z.string().optional().describe('UK | US | EU | Brazil | LatAm | Turkey | Australia | Canada | Unknown (case-insensitive). Alternative to currency for worklist/list/stats. LatAm = Spanish-speaking Latin America (posts the USD link).'),
   currency: z.string().optional().describe('GBP | USD | EUR | BRL | TRY | AUD | CAD. Preferred worklist filter (authoritative seed-queue currency). USD covers both US and LatAm — add lang:"es" to target LatAm groups specifically.'),
-  offerSlug: z.string().optional().describe('Offer/campaign slug, e.g. "crownseeker". Required for worklist and mark.'),
+  offerSlug: z.string().optional().describe('Offer/campaign slug, e.g. "spring-sale". Required for worklist and mark.'),
   url: z.string().optional().describe('Group URL (normalized internally). Required for mark and exclude.'),
   status: z.string().optional().describe('mark status: posted/visible-post, pending/pending-approval (cooldown 48h, counts as success), failed/posting-failed, or skipped. Synonyms accepted.'),
   postUrl: z.string().optional().describe('mark: the resulting post URL, if known.'),
@@ -285,7 +285,7 @@ export async function handleFbGroups(args: {
 }) {
   switch (args.action) {
     case 'worklist': {
-      if (!args.offerSlug?.trim()) return text('Error: worklist requires offerSlug (the campaign slug, e.g. "crownseeker").');
+      if (!args.offerSlug?.trim()) return text('Error: worklist requires offerSlug (the campaign slug, e.g. "spring-sale").');
       const items = selectFbWorklist({
         region: args.region || null,
         currency: args.currency || null,

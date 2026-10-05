@@ -1,0 +1,258 @@
+{
+  "generatedAt": "2026-09-08T03:42:40.330Z",
+  "runsPerVariant": 20,
+  "coldLaunchMs": 139.725417,
+  "benchmarkType": "local browser components; not full MCP/provider end-to-end",
+  "comparison": "Same required task data. Legacy performance path versus V2; article adds explicit selector, extraction adds explicit field projection. Both snapshot paths include correctness fixes.",
+  "limitations": [
+    "Intentional social write spacing excluded; no real publishing.",
+    "HTTP counts derived from component algorithm, not measured network requests.",
+    "Text token counts are character estimates, not provider usage.",
+    "Fixture results alone do not authorize default rollout or establish real-site accuracy."
+  ],
+  "processingReduction": 0.7819843114275185,
+  "estimatedTokenReduction": 0.23104780299372285,
+  "satisfiesOriginalOutputTokenTarget": false,
+  "results": [
+    {
+      "name": "article",
+      "group": "general",
+      "cold": {
+        "legacy": {
+          "durationMs": 29.35145799999998,
+          "bytes": 102,
+          "estimatedTokens": 26,
+          "captures": 0,
+          "componentHttpCalls": 1,
+          "success": true
+        },
+        "improved": {
+          "durationMs": 4.151542000000006,
+          "bytes": 102,
+          "estimatedTokens": 26,
+          "captures": 0,
+          "componentHttpCalls": 1,
+          "success": true
+        }
+      },
+      "legacy": {
+        "medianMs": 1.4932909999999993,
+        "p95Ms": 3.069416999999987,
+        "medianEstimatedTokens": 26,
+        "medianBytes": 102,
+        "medianCaptures": 0,
+        "medianComponentHttpCalls": 1,
+        "successful": 20
+      },
+      "improved": {
+        "medianMs": 1.8262080000000083,
+        "p95Ms": 2.4752920000000245,
+        "medianEstimatedTokens": 26,
+        "medianBytes": 102,
+        "medianCaptures": 0,
+        "medianComponentHttpCalls": 1,
+        "successful": 20
+      }
+    },
+    {
+      "name": "search",
+      "group": "general",
+      "cold": {
+        "legacy": {
+          "durationMs": 52.18983400000002,
+          "bytes": 5927,
+          "estimatedTokens": 1482,
+          "captures": 4,
+          "componentHttpCalls": 1,
+          "success": true
+        },
+        "improved": {
+          "durationMs": 21.844041999999945,
+          "bytes": 5968,
+          "estimatedTokens": 1492,
+          "captures": 2,
+          "componentHttpCalls": 1,
+          "success": true
+        }
+      },
+      "legacy": {
+        "medianMs": 41.34229200000004,
+        "p95Ms": 48.7930409999999,
+        "medianEstimatedTokens": 1491,
+        "medianBytes": 5962,
+        "medianCaptures": 4,
+        "medianComponentHttpCalls": 1,
+        "successful": 20
+      },
+      "improved": {
+        "medianMs": 21.11720800000012,
+        "p95Ms": 27.33666600000015,
+        "medianEstimatedTokens": 1491,
+        "medianBytes": 5962,
+        "medianCaptures": 2,
+        "medianComponentHttpCalls": 1,
+        "successful": 20
+      }
+    },
+    {
+      "name": "dynamic-form",
+      "group": "general",
+      "cold": {
+        "legacy": {
+          "durationMs": 128.6755830000002,
+          "bytes": 200,
+          "estimatedTokens": 50,
+          "captures": 1,
+          "componentHttpCalls": 1,
+          "success": true
+        },
+        "improved": {
+          "durationMs": 101.52687500000002,
+          "bytes": 200,
+          "estimatedTokens": 50,
+          "captures": 1,
+          "componentHttpCalls": 1,
+          "success": true
+        }
+      },
+      "legacy": {
+        "medianMs": 99.1424590000006,
+        "p95Ms": 99.58995899999991,
+        "medianEstimatedTokens": 50,
+        "medianBytes": 200,
+        "medianCaptures": 1,
+        "medianComponentHttpCalls": 1,
+        "successful": 20
+      },
+      "improved": {
+        "medianMs": 99.46520800000008,
+        "p95Ms": 115.59787500000039,
+        "medianEstimatedTokens": 50,
+        "medianBytes": 200,
+        "medianCaptures": 1,
+        "medianComponentHttpCalls": 1,
+        "successful": 20
+      }
+    },
+    {
+      "name": "feed",
+      "group": "social",
+      "cold": {
+        "legacy": {
+          "durationMs": 74.53483299999971,
+          "bytes": 5982,
+          "estimatedTokens": 1496,
+          "captures": 4,
+          "componentHttpCalls": 1,
+          "success": true
+        },
+        "improved": {
+          "durationMs": 34.15445799999998,
+          "bytes": 5982,
+          "estimatedTokens": 1496,
+          "captures": 2,
+          "componentHttpCalls": 1,
+          "success": true
+        }
+      },
+      "legacy": {
+        "medianMs": 48.56779099999949,
+        "p95Ms": 69.0288330000003,
+        "medianEstimatedTokens": 1496,
+        "medianBytes": 5982,
+        "medianCaptures": 4,
+        "medianComponentHttpCalls": 1,
+        "successful": 20
+      },
+      "improved": {
+        "medianMs": 25.403291999999965,
+        "p95Ms": 42.17279100000087,
+        "medianEstimatedTokens": 1496,
+        "medianBytes": 5982,
+        "medianCaptures": 2,
+        "medianComponentHttpCalls": 1,
+        "successful": 20
+      }
+    },
+    {
+      "name": "composer",
+      "group": "social",
+      "cold": {
+        "legacy": {
+          "durationMs": 110.75312499999927,
+          "bytes": 206,
+          "estimatedTokens": 52,
+          "captures": 1,
+          "componentHttpCalls": 1,
+          "success": true
+        },
+        "improved": {
+          "durationMs": 96.46404099999927,
+          "bytes": 206,
+          "estimatedTokens": 52,
+          "captures": 1,
+          "componentHttpCalls": 1,
+          "success": true
+        }
+      },
+      "legacy": {
+        "medianMs": 99.20062499999949,
+        "p95Ms": 100.52170800000022,
+        "medianEstimatedTokens": 52,
+        "medianBytes": 206,
+        "medianCaptures": 1,
+        "medianComponentHttpCalls": 1,
+        "successful": 20
+      },
+      "improved": {
+        "medianMs": 99.04683299999851,
+        "p95Ms": 100.07870899999944,
+        "medianEstimatedTokens": 52,
+        "medianBytes": 206,
+        "medianCaptures": 1,
+        "medianComponentHttpCalls": 1,
+        "successful": 20
+      }
+    },
+    {
+      "name": "virtualized-feed",
+      "group": "social",
+      "cold": {
+        "legacy": {
+          "durationMs": 1812.5526250000003,
+          "bytes": 4105,
+          "estimatedTokens": 1027,
+          "captures": 0,
+          "componentHttpCalls": 5,
+          "success": true
+        },
+        "improved": {
+          "durationMs": 210.59279200000128,
+          "bytes": 277,
+          "estimatedTokens": 70,
+          "captures": 0,
+          "componentHttpCalls": 1,
+          "success": true
+        }
+      },
+      "legacy": {
+        "medianMs": 1805.112334000005,
+        "p95Ms": 1811.6639170000053,
+        "medianEstimatedTokens": 1027,
+        "medianBytes": 4105,
+        "medianCaptures": 0,
+        "medianComponentHttpCalls": 5,
+        "successful": 20
+      },
+      "improved": {
+        "medianMs": 209.8533329999991,
+        "p95Ms": 213.98037499999919,
+        "medianEstimatedTokens": 70,
+        "medianBytes": 277,
+        "medianCaptures": 0,
+        "medianComponentHttpCalls": 1,
+        "successful": 20
+      }
+    }
+  ]
+}

@@ -29,11 +29,16 @@ export class VectorCache {
   private capacity = 0;
   private loaded = false;
   private lastDataVersion = -1;
+  private lastSequence = -1;
+  private refreshing = false;
+  public reloadCount = 0;
+  private connection: DatabaseSync | null = null;
 
   constructor(
     private getDb: () => DatabaseSync,
     private loadSql: string, // must select (id, vector)
     private getVectorSql: string, // must select (vector) by id = ?
+    private entity?: string,
   ) {}
 
   /** Drop everything; next query reloads from the database. */
@@ -46,6 +51,7 @@ export class VectorCache {
     this.capacity = 0;
     this.dim = 0;
     this.lastDataVersion = -1;
+    this.lastSequence = -1;
   }
 
   private dataVersion(): number {
@@ -54,6 +60,23 @@ export class VectorCache {
   }
 
   private ensureFresh(): void {
+    if (this.refreshing) return;
+    const connection = this.getDb();
+    if(connection !== this.connection) {this.invalidate();this.connection=connection;}
+    if (this.entity && this.loaded) {
+      this.refreshing = true;
+      try {
+        const rows = this.getDb().prepare('SELECT seq,id FROM memory_changes WHERE entity=? AND seq>? ORDER BY seq LIMIT 2049')
+          .all(this.entity, this.lastSequence) as Array<{seq:number;id:string}>;
+        if (rows.length > 2048) { this.reload(); return; }
+        for (const id of new Set(rows.map(r => r.id))) {
+          this.remove(id);
+          this.setFromDb(id);
+        }
+        if (rows.length) this.lastSequence = rows[rows.length - 1].seq;
+        return;
+      } finally { this.refreshing = false; }
+    }
     if (this.loaded) {
       // data_version only changes when another connection commits —
       // our own writes are already applied incrementally.
@@ -64,6 +87,10 @@ export class VectorCache {
   }
 
   private reload(): void {
+    this.reloadCount++;
+    // Read the watermark BEFORE the rows. A concurrent commit will then be
+    // replayed on the next call instead of accidentally marked as observed.
+    if (this.entity) this.lastSequence = Number((this.getDb().prepare('SELECT COALESCE(MAX(seq),0) AS seq FROM memory_changes WHERE entity=?').get(this.entity) as {seq:number}).seq);
     const rows = this.getDb().prepare(this.loadSql).all() as Array<{ id: string; vector: Uint8Array }>;
     this.ids = [];
     this.rowIndexById.clear();
@@ -120,7 +147,10 @@ export class VectorCache {
   /** Insert or replace a row's vector (same-process write hook). */
   set(id: string, vector: number[] | Float32Array): void {
     if (!this.loaded) return; // nothing cached yet — next query loads fresh
-    if (this.dim === 0) this.dim = vector.length;
+    if (this.dim === 0) {
+      this.dim = vector.length;
+      this.matrix = new Float32Array(this.capacity * this.dim);
+    }
     if (vector.length !== this.dim) { this.invalidate(); return; }
 
     let idx = this.rowIndexById.get(id);
@@ -176,16 +206,42 @@ export class VectorCache {
     if (this.count === 0 || this.dim === 0) return [];
 
     const q = query instanceof Float32Array ? query : new Float32Array(query);
+    if (q.length !== this.dim || !q.every(Number.isFinite) || k < 1) return [];
     const dim = this.dim;
     const m = this.matrix;
     const hits: TopKResult[] = [];
 
-    for (let r = 0; r < this.count; r++) {
+    const selected = allowedIds && allowedIds.size < this.count / 2
+      ? [...allowedIds].map(id=>this.rowIndexById.get(id)).filter((r): r is number=>r !== undefined) : undefined;
+    for (let index = 0; index < (selected?.length ?? this.count); index++) {
+      const r = selected ? selected[index] : index;
       if (allowedIds && !allowedIds.has(this.ids[r])) continue;
       const base = r * dim;
       let dot = 0;
       for (let i = 0; i < dim; i++) dot += q[i] * m[base + i];
-      if (dot >= threshold) hits.push({ id: this.ids[r], score: dot });
+      if (dot < threshold) continue;
+      const hit = { id: this.ids[r], score: dot };
+      if (hits.length < k) {
+        hits.push(hit);
+        let i = hits.length - 1;
+        while (i > 0) {
+          const parent = (i - 1) >> 1;
+          if (hits[parent].score <= hits[i].score) break;
+          [hits[parent], hits[i]] = [hits[i], hits[parent]];
+          i = parent;
+        }
+      } else if (dot > hits[0].score) {
+        hits[0] = hit;
+        let i = 0;
+        while (true) {
+          let child = i * 2 + 1;
+          if (child >= hits.length) break;
+          if (child + 1 < hits.length && hits[child + 1].score < hits[child].score) child++;
+          if (hits[i].score <= hits[child].score) break;
+          [hits[i], hits[child]] = [hits[child], hits[i]];
+          i = child;
+        }
+      }
     }
 
     hits.sort((a, b) => b.score - a.score);

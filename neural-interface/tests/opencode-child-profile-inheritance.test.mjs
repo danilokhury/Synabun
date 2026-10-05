@@ -121,5 +121,7 @@ test('isolated event relay and child panel construction apply profile inheritanc
   assert.match(sessionDelete, /entry\?\.sessions\?\.delete\(msg\.sessionId\)/);
   assert.match(sessionDelete, /entry\.sessions\.size === 0/);
 
-  assert.match(manager, /inheritChildPanelMcpProfile\(store, _primary\?\.store, childInfo\)/);
+  // Review 3 (T12): the primary store speaks for the parent only while it is
+  // bound to it; the parent session and its saved profile are passed along.
+  assert.match(manager, /inheritChildPanelMcpProfile\(store, _primary\?\.store, childInfo, \{ parentSessionId, savedProfile: savedSessionProfile \}\)/);
 });

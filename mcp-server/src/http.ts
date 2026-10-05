@@ -23,12 +23,14 @@ import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { ensureDatabase } from './services/sqlite.js';
 import { initCategoryCache } from './services/categories.js';
 import { warmupEmbeddings } from './services/local-embeddings.js';
-import { createMcpServer, refreshServerSchemas, onSchemaRefresh } from './index.js';
+import { createMcpServer, refreshServerSchemas, onSchemaRefresh, setServerRole, setServerCapabilities } from './index.js';
 import {
   type CallerIdentity,
   markHttpMode,
   obtainIdentity,
+  sanitizeDesktopGrant,
   sanitizePin,
+  sanitizeRole,
   runWithIdentity,
   releaseIdentity,
   startIdentitySweeper,
@@ -97,21 +99,39 @@ onSchemaRefresh(() => {
  * CLI windows fall back to their unique Mcp-Session-Id.
  */
 function deriveIdentity(req: Request, sid: string | undefined): CallerIdentity {
+  const memoryContext = {
+    project: req.get('x-synabun-project')?.slice(0,200),
+    session: req.get('x-synabun-memory-session')?.slice(0,200),
+    generation: req.get('x-synabun-context-generation')?.slice(0,200),
+  };
+  // Re-read on every request: the assistant brain sends X-Synabun-Role with
+  // each call, so the role never outlives the headers that granted it.
+  // Tunnel callers (a remote MCP-key holder) can claim neither the assistant
+  // role nor a computer-use grant.
+  const remote = !!req.get('cf-connecting-ip');
+  const role = remote ? null : sanitizeRole(req.get('x-synabun-role'));
+  const desktopGrant = remote ? null : sanitizeDesktopGrant(req.get('x-synabun-desktop-grant'));
   const headerTerminal = sanitizePin(req.get('x-synabun-terminal'));
   if (headerTerminal) {
-    return obtainIdentity(headerTerminal, {
+    const identity = obtainIdentity(headerTerminal, {
       source: 'header',
       pins: {
         terminalSessionId: headerTerminal,
         browserSessionId: sanitizePin(req.get('x-synabun-browser-session')),
         browserTabId: sanitizePin(req.get('x-synabun-browser-tab')),
       },
+      role,
+      desktopGrant,
     });
+    identity.memoryContext = { ...identity.memoryContext, ...Object.fromEntries(Object.entries(memoryContext).filter(([,v])=>v !== undefined)) };
+    return identity;
   }
   // The initialize request has no session id yet — identity for it is
   // irrelevant (no tool calls happen during initialize), so a throwaway key
   // is fine; real requests carry the assigned Mcp-Session-Id.
-  return obtainIdentity(sid || `init-${randomUUID()}`, { source: 'mcp-session' });
+  const identity = obtainIdentity(sid || `init-${randomUUID()}`, { source: 'mcp-session', role, desktopGrant });
+  identity.memoryContext = { ...identity.memoryContext, ...Object.fromEntries(Object.entries(memoryContext).filter(([,v])=>v !== undefined)) };
+  return identity;
 }
 
 function jsonRpcError(res: express.Response, status: number, code: number, message: string): void {
@@ -127,13 +147,12 @@ export async function ensureInit() {
   if (initialized) return;
   if (initPromise) return initPromise;
   initPromise = (async () => {
-    try { await ensureDatabase(); } catch {}
+    await ensureDatabase();
     await initCategoryCache();
-    await warmupEmbeddings();
+    warmupEmbeddings().catch(error=>console.error('[memory] Local model unavailable; keyword recall remains available:',error.message));
     initialized = true;
   })();
-  await initPromise;
-  initPromise = null;
+  try { await initPromise; } finally { initPromise = null; }
 }
 
 /**
@@ -178,8 +197,20 @@ export function createMcpRoutes(): Router {
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (newSid) => {
           mcpSessions.set(newSid, { transport, server, lastSeen: Date.now() });
+          deriveIdentity(req, newSid);
           const terminal = sanitizePin(req.get('x-synabun-terminal'));
-          console.error(`[mcp-http] session ${newSid} init (terminal=${terminal || 'none'}, sessions=${mcpSessions.size})`);
+          // The warm server was built role-less. The SDK awaits this hook
+          // BEFORE dispatching the initialize request, so binding the role
+          // here makes the handshake instructions and the client's first
+          // tools/list already advertise the role-gated `agents` group.
+          const remote = !!req.get('cf-connecting-ip');
+          const role = remote ? null : sanitizeRole(req.get('x-synabun-role'));
+          if (role) setServerRole(server, role);
+          // The capability-gated `computer` group is advertised only to a caller
+          // presenting a desktop grant (re-checked server-side on every call).
+          const grant = remote ? null : sanitizeDesktopGrant(req.get('x-synabun-desktop-grant'));
+          if (grant) setServerCapabilities(server, { computer: true });
+          console.error(`[mcp-http] session ${newSid} init (terminal=${terminal || 'none'}${role ? `, role=${role}` : ''}${grant ? ', computer' : ''}, sessions=${mcpSessions.size})`);
         },
       });
       // Re-entry guard: server.close() closes its transport, which fires

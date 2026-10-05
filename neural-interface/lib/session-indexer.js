@@ -1,30 +1,23 @@
+import { queueMemoryCapture, captureMemoryFileBatch } from './memory-session-capture.js';
 /**
  * Session Indexer — Pipeline orchestrator for indexing Claude Code session transcripts.
- * Reads JSONL files, chunks them, embeds chunks, stores in SQLite, cross-references with memories.
+ * Queues local JSONL files through the shared, incremental memory event intake.
  *
  * Runs in the Neural Interface server process. Uses shared SQLite database + local embeddings
  * via lib/db.js (same memory.db as MCP server, WAL mode for concurrent access).
  */
 
-import { readFileSync, writeFileSync, existsSync, statSync, readdirSync } from 'node:fs';
-import { join, basename } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { readFileSync, writeFileSync, existsSync, statSync, readdirSync, mkdirSync, renameSync } from 'node:fs';
+import { join, basename, dirname } from 'node:path';
 import { getDataHome } from '../../lib/paths.js';
-import { chunkSession, parseLine } from './session-chunker.js';
-import {
-  getDb, getEmbedding, getEmbeddingBatch,
-  encodeVector, decodeVector, cosineSimilarity,
-  searchMemories, getMemoryById, updateMemoryPayload,
-  memoryVectors, chunkVectors,
-} from './db.js';
+import { getDb, getMemoryById, memoryVectors } from './db.js';
+import { upsertMemory as sharedUpsert } from '../../mcp-server/dist/services/sqlite.js';
 
 const DATA_HOME = getDataHome();
 const DATA_DIR = join(DATA_HOME, 'data');
 const STATE_FILE = join(DATA_DIR, 'session-index-state.json');
 
-const EMBEDDING_BATCH_SIZE = 20;
 const UPSERT_BATCH_SIZE = 50;
-const DEDUP_THRESHOLD = 0.92;
 
 // --- State management ---
 
@@ -38,7 +31,10 @@ function loadState() {
 }
 
 function saveState(state) {
-  writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+  mkdirSync(dirname(STATE_FILE),{recursive:true});
+  const temporary=STATE_FILE+'.'+process.pid+'.tmp';
+  writeFileSync(temporary, JSON.stringify(state, null, 2));
+  renameSync(temporary,STATE_FILE);
 }
 
 // --- Project detection ---
@@ -55,30 +51,7 @@ function loadRegisteredProjects() {
   return [];
 }
 
-function detectProject(cwd) {
-  if (!cwd) return 'global';
-  const lower = cwd.toLowerCase().replace(/\\/g, '/');
-  const projects = loadRegisteredProjects();
-
-  // Registered project match (most specific path wins)
-  const sorted = projects
-    .map(p => ({ path: p.path.toLowerCase().replace(/\\/g, '/'), label: p.label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') }))
-    .sort((a, b) => b.path.length - a.path.length);
-
-  for (const p of sorted) {
-    if (lower.startsWith(p.path + '/') || lower === p.path) return p.label;
-  }
-  for (const p of sorted) {
-    const folder = basename(p.path).toLowerCase();
-    if (lower.includes(folder)) return p.label;
-  }
-
-  // Fallback to directory basename
-  const base = basename(cwd).toLowerCase().replace(/[^a-z0-9-]/g, '-');
-  return base || 'global';
-}
-
-/** Derive project label from Claude's directory name (e.g. "j--Sites-CriticalPixel" → "criticalpixel") */
+/** Derive project label from Claude's directory name (e.g. "j--Sites-MyApp" → "myapp") */
 function detectProjectFromDir(dirName) {
   if (!dirName) return 'global';
   const lower = dirName.toLowerCase();
@@ -93,176 +66,10 @@ function detectProjectFromDir(dirName) {
   return (parts[parts.length - 1] || 'global').toLowerCase();
 }
 
-// --- Embedding ---
-
-async function embedBatch(texts) {
-  if (texts.length === 0) return [];
-  return getEmbeddingBatch(texts);
-}
-
-// --- Session file parsing ---
-
-function parseSessionFile(filePath) {
-  const content = readFileSync(filePath, 'utf-8');
-  const rawLines = content.split('\n');
-  const lines = [];
-  let sessionMeta = null;
-
-  for (let i = 0; i < rawLines.length; i++) {
-    const parsed = parseLine(rawLines[i]);
-    if (!parsed) continue;
-    lines.push(parsed);
-
-    if (!sessionMeta && parsed.type === 'user' && parsed.message && !parsed.isMeta) {
-      sessionMeta = {
-        sessionId: parsed.sessionId || basename(filePath, '.jsonl'),
-        cwd: parsed.cwd || null,
-        gitBranch: parsed.gitBranch || null,
-        project: detectProject(parsed.cwd),
-      };
-    }
-  }
-
-  if (!sessionMeta) {
-    for (const line of lines) {
-      if (line.sessionId) {
-        sessionMeta = {
-          sessionId: line.sessionId,
-          cwd: line.cwd || null,
-          gitBranch: line.gitBranch || null,
-          project: detectProject(line.cwd),
-        };
-        break;
-      }
-    }
-  }
-
-  return { lines, sessionMeta, lineCount: rawLines.length };
-}
-
-// --- Cross-referencing ---
-
-function findRelatedMemories(chunkStartTs, chunkEndTs, project) {
-  const d = getDb();
-  const clauses = ['trashed_at IS NULL'];
-  const params = [];
-
-  if (chunkStartTs) {
-    clauses.push('created_at >= ?');
-    params.push(chunkStartTs);
-  }
-  if (chunkEndTs) {
-    clauses.push('created_at <= ?');
-    params.push(chunkEndTs);
-  }
-  if (project && project !== 'global') {
-    clauses.push('project = ?');
-    params.push(project);
-  }
-
-  const where = clauses.length > 0 ? 'WHERE ' + clauses.join(' AND ') : '';
-  const rows = d.prepare(`SELECT id FROM memories ${where} LIMIT 20`).all(...params);
-  return rows.map(r => r.id);
-}
-
-function findDedupMemory(vector) {
-  // Search all non-trashed memories and find near-duplicate by cosine similarity
-  const results = searchMemories(vector, 1, { scoreThreshold: DEDUP_THRESHOLD });
-  if (results.length > 0) {
-    return results[0].id;
-  }
-  return null;
-}
-
-function backlinkMemory(memoryId, sessionId, chunkId) {
-  try {
-    const mem = getMemoryById(memoryId);
-    if (!mem) return;
-
-    const existing = mem.source_session_chunks || [];
-    if (existing.some(e => e.chunk_id === chunkId)) return;
-
-    updateMemoryPayload(memoryId, {
-      source_session_chunks: [...existing, { session_id: sessionId, chunk_id: chunkId }],
-    });
-  } catch { /* ignore backlink failures */ }
-}
-
-// --- SQLite upsert helpers ---
-
-function upsertSessionChunks(points) {
-  const d = getDb();
-  d.exec('BEGIN');
-  try {
-    const stmt = d.prepare(`INSERT OR REPLACE INTO session_chunks
-      (id, vector, content, summary, session_id, project, git_branch, cwd,
-       chunk_index, start_timestamp, end_timestamp, tools_used, files_modified,
-       files_read, user_messages, turn_count, related_memory_ids, dedup_memory_id, indexed_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-
-    for (const p of points) {
-      const pl = p.payload;
-      stmt.run(
-        p.id, encodeVector(p.vector), pl.content, pl.summary || null,
-        pl.session_id || null, pl.project || null, pl.git_branch || null, pl.cwd || null,
-        pl.chunk_index ?? 0, pl.start_timestamp || null, pl.end_timestamp || null,
-        JSON.stringify(pl.tools_used || []), JSON.stringify(pl.files_modified || []),
-        JSON.stringify(pl.files_read || []), JSON.stringify(pl.user_messages || []),
-        pl.turn_count ?? 0, JSON.stringify(pl.related_memory_ids || []),
-        pl.dedup_memory_id || null, pl.indexed_at || new Date().toISOString()
-      );
-    }
-    d.exec('COMMIT');
-  } catch (err) {
-    d.exec('ROLLBACK');
-    throw err;
-  }
-  // Same-connection write — patch the vector cache explicitly
-  for (const p of points) chunkVectors.set(p.id, p.vector);
-}
-
 function upsertMemories(points) {
-  const d = getDb();
-  d.exec('BEGIN');
-  try {
-    const stmt = d.prepare(`INSERT OR REPLACE INTO memories
-      (id, vector, content, category, subcategory, project, tags, importance, source,
-       created_at, updated_at, accessed_at, access_count, related_files,
-       related_memory_ids, source_session_chunks)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-
-    for (const p of points) {
-      const pl = p.payload;
-      stmt.run(
-        p.id, encodeVector(p.vector), pl.content, pl.category, pl.subcategory || null,
-        pl.project || 'global', JSON.stringify(pl.tags || []), pl.importance ?? 5,
-        pl.source || 'auto-saved', pl.created_at, pl.updated_at, pl.accessed_at,
-        pl.access_count ?? 0, JSON.stringify(pl.related_files || []),
-        JSON.stringify(pl.related_memory_ids || []),
-        JSON.stringify(pl.source_session_chunks || [])
-      );
-    }
-    d.exec('COMMIT');
-  } catch (err) {
-    d.exec('ROLLBACK');
-    throw err;
-  }
-  // Same-connection write — patch the vector cache explicitly
-  for (const p of points) memoryVectors.set(p.id, p.vector);
-}
-
-// --- Retry helper ---
-
-async function withRetry(fn, maxRetries = 3) {
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      return await fn();
-    } catch (err) {
-      if (attempt === maxRetries) throw err;
-      const delay = Math.pow(3, attempt) * 1000;
-      await new Promise(r => setTimeout(r, delay));
-    }
-  }
+  const d=getDb(); d.exec('BEGIN IMMEDIATE');
+  try { for(const point of points) sharedUpsert(point.id,point.vector,point.payload);d.exec('COMMIT'); }
+  catch(error){d.exec('ROLLBACK');memoryVectors.invalidate();throw error;}
 }
 
 // --- Main indexing pipeline ---
@@ -290,7 +97,7 @@ export async function startIndexing(options = {}) {
 
   // Discover sessions to index by scanning ~/.claude/projects/ directly
   const homeDir = process.env.USERPROFILE || process.env.HOME;
-  const claudeProjectsDir = join(homeDir, '.claude', 'projects');
+  const claudeProjectsDir = options.projectsDir || join(homeDir, '.claude', 'projects');
 
   const sessionsToIndex = [];
 
@@ -330,7 +137,7 @@ export async function startIndexing(options = {}) {
 
       try {
         const stat = statSync(filePath);
-        if (stat.size < 1024) continue;
+        if (stat.size === 0) continue;
         sessionsToIndex.push({
           sessionId,
           filePath,
@@ -361,165 +168,28 @@ export async function startIndexing(options = {}) {
     emit({ type: 'indexing:session-started', sessionId: session.sessionId, sessionIndex: si, totalSessions });
 
     try {
-      // Step 1: Parse session file
-      emit({ type: 'indexing:session-progress', sessionId: session.sessionId, phase: 'parsing' });
-      const { lines, sessionMeta, lineCount } = parseSessionFile(session.filePath);
-
-      if (!sessionMeta || lines.length < 3) {
-        state.sessions[session.sessionId] = {
-          session_id: session.sessionId,
-          file_path: session.filePath,
-          file_size: session.fileSize,
-          file_mtime: session.fileMtime,
-          chunk_count: 0,
-          chunk_ids: [],
-          indexed_at: new Date().toISOString(),
-          project: sessionMeta?.project || detectProjectFromDir(session.projectDir),
-          status: 'complete',
-          last_line_indexed: lineCount,
-        };
-        emit({ type: 'indexing:session-complete', sessionId: session.sessionId, chunkCount: 0, sessionIndex: si, totalSessions });
-        continue;
+      // All providers use the same durable event intake and local embedding queue.
+      // Preserve this entry point and its UI progress events for Claude hooks.
+      queueMemoryCapture({host:'claude-code',sessionId:session.sessionId,filePath:session.filePath,project:detectProjectFromDir(session.projectDir)});
+      let complete=false;
+      while(!isCancelled?.()) {
+        const before=getDb().prepare('SELECT byte_offset,status FROM memory_capture_files WHERE host=? AND session_id=?').get('claude-code',session.sessionId);
+        const outcome=await captureMemoryFileBatch({host:'claude-code',sessionId:session.sessionId});
+        if(outcome?.busy){await new Promise(resolve=>setTimeout(resolve,20));continue;}
+        if(outcome?.paused)break;
+        const after=getDb().prepare('SELECT byte_offset,status,error FROM memory_capture_files WHERE host=? AND session_id=?').get('claude-code',session.sessionId);
+        if(after?.status==='failed')throw new Error(after.error);
+        if(after?.status==='complete'){complete=true;break;}
+        if(after?.byte_offset===before?.byte_offset)break; // incomplete JSONL tail
+        emit({type:'indexing:session-progress',sessionId:session.sessionId,phase:'indexing'});
       }
-
-      // Step 2: Chunk
-      const chunks = chunkSession(lines, sessionMeta);
-      if (chunks.length === 0) {
-        state.sessions[session.sessionId] = {
-          session_id: session.sessionId,
-          file_path: session.filePath,
-          file_size: session.fileSize,
-          file_mtime: session.fileMtime,
-          chunk_count: 0,
-          chunk_ids: [],
-          indexed_at: new Date().toISOString(),
-          project: sessionMeta.project,
-          status: 'complete',
-          last_line_indexed: lineCount,
-        };
-        emit({ type: 'indexing:session-complete', sessionId: session.sessionId, chunkCount: 0, sessionIndex: si, totalSessions });
-        continue;
-      }
-
-      // Step 3: Embed chunks (local model — no API key needed)
-      emit({ type: 'indexing:session-progress', sessionId: session.sessionId, phase: 'embedding' });
-      const contentTexts = chunks.map(c => c.content);
-      const vectors = await withRetry(() => embedBatch(contentTexts));
-
-      // Step 4: Dedup check + cross-reference
-      emit({ type: 'indexing:session-progress', sessionId: session.sessionId, phase: 'cross-referencing' });
-      const chunkIds = [];
-      const points = [];
-
-      for (let ci = 0; ci < chunks.length; ci++) {
-        const chunk = chunks[ci];
-        const vector = vectors[ci];
-        const chunkId = randomUUID();
-        chunkIds.push(chunkId);
-
-        const dedupMemoryId = findDedupMemory(vector);
-
-        let relatedMemoryIds = [];
-        if (chunk.startTimestamp && chunk.endTimestamp) {
-          relatedMemoryIds = findRelatedMemories(
-            chunk.startTimestamp, chunk.endTimestamp,
-            sessionMeta.project
-          );
-        }
-
-        const payload = {
-          content: chunk.content,
-          summary: chunk.summary,
-          session_id: sessionMeta.sessionId,
-          project: sessionMeta.project,
-          git_branch: sessionMeta.gitBranch,
-          cwd: sessionMeta.cwd,
-          chunk_index: chunk.chunkIndex,
-          start_timestamp: chunk.startTimestamp,
-          end_timestamp: chunk.endTimestamp,
-          tools_used: chunk.toolsUsed,
-          files_modified: chunk.filesModified,
-          files_read: chunk.filesRead,
-          user_messages: chunk.userMessages,
-          turn_count: chunk.turnCount,
-          related_memory_ids: relatedMemoryIds,
-          dedup_memory_id: dedupMemoryId,
-          indexed_at: new Date().toISOString(),
-        };
-
-        points.push({ id: chunkId, vector, payload });
-      }
-
-      // Step 5: Upsert to SQLite session_chunks
-      emit({ type: 'indexing:session-progress', sessionId: session.sessionId, phase: 'upserting' });
-      for (let i = 0; i < points.length; i += UPSERT_BATCH_SIZE) {
-        const batch = points.slice(i, i + UPSERT_BATCH_SIZE);
-        upsertSessionChunks(batch);
-      }
-
-      // Step 6: Mirror chunks to memories as conversations category
-      emit({ type: 'indexing:session-progress', sessionId: session.sessionId, phase: 'mirroring' });
-      const mirrorPoints = [];
-      for (const point of points) {
-        if (point.payload.dedup_memory_id) continue;
-
-        const chunk = point.payload;
-        const mirrorPayload = {
-          content: chunk.content,
-          category: 'conversations',
-          subcategory: 'session-chunk',
-          project: chunk.project || 'global',
-          tags: [
-            'session-index',
-            ...(chunk.git_branch ? [`branch:${chunk.git_branch}`] : []),
-            ...(chunk.tools_used || []).slice(0, 3),
-          ],
-          importance: 3,
-          source: 'auto-saved',
-          created_at: chunk.start_timestamp || new Date().toISOString(),
-          updated_at: chunk.indexed_at,
-          accessed_at: chunk.indexed_at,
-          access_count: 0,
-          related_files: (chunk.files_modified || []).slice(0, 20),
-          related_memory_ids: chunk.related_memory_ids || [],
-          source_session_chunks: [{ session_id: chunk.session_id, chunk_id: point.id }],
-        };
-
-        mirrorPoints.push({ id: point.id, vector: point.vector, payload: mirrorPayload });
-      }
-
-      if (mirrorPoints.length > 0) {
-        for (let i = 0; i < mirrorPoints.length; i += UPSERT_BATCH_SIZE) {
-          const batch = mirrorPoints.slice(i, i + UPSERT_BATCH_SIZE);
-          upsertMemories(batch);
-        }
-      }
-
-      // Step 7: Backlink memories
-      for (const point of points) {
-        const { related_memory_ids } = point.payload;
-        for (const memId of related_memory_ids) {
-          backlinkMemory(memId, sessionMeta.sessionId, point.id);
-        }
-      }
-
-      // Step 8: Update state
-      totalChunks += chunks.length;
-      state.sessions[session.sessionId] = {
-        session_id: session.sessionId,
-        file_path: session.filePath,
-        file_size: session.fileSize,
-        file_mtime: session.fileMtime,
-        chunk_count: chunks.length,
-        chunk_ids: chunkIds,
-        indexed_at: new Date().toISOString(),
-        project: sessionMeta.project,
-        status: 'complete',
-        last_line_indexed: lineCount,
-      };
+      const chunks=getDb().prepare('SELECT chunk_id FROM memory_session_sources WHERE host=? AND session_id=?').all('claude-code',session.sessionId);
+      totalChunks+=chunks.length;
+      state.sessions[session.sessionId]={session_id:session.sessionId,file_path:session.filePath,file_size:session.fileSize,file_mtime:session.fileMtime,
+        chunk_count:chunks.length,chunk_ids:chunks.map(r=>r.chunk_id),indexed_at:new Date().toISOString(),project:detectProjectFromDir(session.projectDir),
+        status:complete ? 'complete' : 'partial',last_line_indexed:0};
       saveState(state);
-
-      emit({ type: 'indexing:session-complete', sessionId: session.sessionId, chunkCount: chunks.length, sessionIndex: si, totalSessions });
+      emit({type:'indexing:session-complete',sessionId:session.sessionId,chunkCount:chunks.length,sessionIndex:si,totalSessions});
 
     } catch (err) {
       errors++;

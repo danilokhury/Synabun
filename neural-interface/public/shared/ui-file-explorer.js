@@ -1,3 +1,4 @@
+import { sendToFocusedSession } from './ui-sidepanel-windows.js';
 // ═══════════════════════════════════════════
 // SynaBun Neural Interface — File Explorer
 // ═══════════════════════════════════════════
@@ -8,24 +9,21 @@
 import { KEYS } from './constants.js';
 import { registerAction } from './ui-keybinds.js';
 import { storage } from './storage.js';
-import { sendToPanel as sendToClaudePanel, isClaudePanelOpen } from './ui-claude-panel.js';
-import { isOpencodePanelOpen, attachPathToOpencode } from './ui-opencode-panel-v2.js';
+import { sendToPanel as sendToClaudePanel } from './ui-claude-panel.js';
+import { attachPathToOpencode } from './ui-opencode-panel-v2.js';
 import { isCodexPanelOpen, toggleCodexPanel } from './cdx/cdx-panel.js';
 import { addPathChip as addCodexPathChip } from './cdx/cdx-tabs.js';
 import { on, emit, state } from './state.js';
 import { debounce, rafThrottle } from './utils.js';
 
-// Route a file path to whichever side panel is currently active. Falls back
-// to the last-active panel (`state.lastActivePanel`) if none are visible, and
-// finally to Claude. Each panel attaches the path in its native format
-// (chips for Claude/Codex/OpenCode).
+// Route to the most recently focused provider, even when several panels
+// are visible. The provider opens if minimized and attaches its native path chip.
 async function sendPathToActivePanel(filePath) {
-  let target;
-  if (isOpencodePanelOpen()) target = 'opencode';
-  else if (isCodexPanelOpen()) target = 'codex';
-  else if (isClaudePanelOpen()) target = 'claude';
-  else target = state.lastActivePanel || 'claude';
+  if (sendToFocusedSession('path', filePath)) return;
+  const target = state.lastActivePanel || 'claude';
 
+  // The Assistant sidepanel: through the bus (a static import would close an import cycle).
+  if (target === 'assistant') { emit('assistant:attach-path', { path: filePath }); return; }
   if (target === 'opencode') {
     await attachPathToOpencode(filePath);
   } else if (target === 'codex') {
@@ -66,6 +64,9 @@ let _planEditMode = false;        // true when editing a plan file from Claude p
 let _planEditFilePath = null;     // path of the plan file being edited
 let _planEditSource = null;       // panel that opened the plan editor
 let _planEditTabId = null;        // tab id to route plan editor events back
+let _planEditContract = null;     // optional versioned document identity and atomic save callback
+let _editorSaving = false;
+let _editorOpenSequence = 0;
 let _changelogEditMode = false;   // true when editing a changelog draft from Claude panel
 let _changelogEditFilePath = null; // path of the changelog draft being edited
 
@@ -78,15 +79,24 @@ function planEditorSourceLabel(source) {
   return 'Claude';
 }
 
+function planEditorEvent(extra = {}) {
+  const { planId, revision, accountId, threadId, sidepanelWindowId = null } = _planEditContract || {};
+  return { source: _planEditSource, tabId: _planEditTabId, planId, revision, accountId, threadId, sidepanelWindowId, ...extra };
+}
+
+function emitPlanEditorState() {
+  if (_planEditMode) emit('plan-editor-state', planEditorEvent({ dirty: _editorDirty, saving: _editorSaving, open: _editorOpen }));
+}
+
 function cancelPlanEditMode() {
   if (!_planEditMode) return;
-  const source = _planEditSource;
-  const tabId = _planEditTabId;
+  const event = planEditorEvent();
   _planEditMode = false;
   _planEditFilePath = null;
   _planEditSource = null;
   _planEditTabId = null;
-  emit('plan-edit-cancelled', { source, tabId });
+  _planEditContract = null;
+  emit('plan-edit-cancelled', event);
 }
 
 // ─── SVG icons ────────────────────────
@@ -1290,6 +1300,7 @@ function showContextMenu(e, item, nodeEl, rowEl, iconEl, depth) {
     // ── Edit File
     menu.appendChild(_ctxItem(editIcon, 'Edit File', () => {
       dismissCtxMenu();
+      if ((_editorOpen || _planEditMode) && !closeFileEditor()) return;
       openFileEditor(item.fullPath);
     }));
   }
@@ -1808,6 +1819,7 @@ function editorPushUndo(ta) {
 }
 
 function editorInsertText(ta, text) {
+  if (_editorSaving) return;
   editorPushUndo(ta);
   const start = ta.selectionStart;
   const end = ta.selectionEnd;
@@ -1818,12 +1830,14 @@ function editorInsertText(ta, text) {
 }
 
 function editorReplaceRange(ta, from, to, text) {
+  if (_editorSaving) return;
   editorPushUndo(ta);
   ta.value = ta.value.substring(0, from) + text + ta.value.substring(to);
   ta.dispatchEvent(new Event('input'));
 }
 
 function editorUndo(ta) {
+  if (_editorSaving) return;
   if (_undoStack.length === 0) return;
   _redoStack.push({ value: ta.value, selStart: ta.selectionStart, selEnd: ta.selectionEnd });
   const state = _undoStack.pop();
@@ -1836,6 +1850,7 @@ function editorUndo(ta) {
 }
 
 function editorRedo(ta) {
+  if (_editorSaving) return;
   if (_redoStack.length === 0) return;
   _undoStack.push({ value: ta.value, selStart: ta.selectionStart, selEnd: ta.selectionEnd });
   const state = _redoStack.pop();
@@ -1873,10 +1888,13 @@ function focusEditorLocation(lineNum, columnNum = 1) {
 }
 
 async function openFileEditor(filePath, opts = {}) {
+  const openSequence = ++_editorOpenSequence;
+  const contract = _planEditContract;
   try {
     const normalizedPath = String(filePath || '').replace(/\\/g, '/');
     const res = await fetch(`/api/file-content?path=${encodeURIComponent(filePath)}`);
     const data = await res.json();
+    if (openSequence !== _editorOpenSequence) return;
     if (!res.ok) {
       const isOpencodeConfig = normalizedPath.endsWith('/.config/opencode/config.json');
       const isAllowlistMiss = res.status === 403 && data?.error === 'Path outside registered project roots';
@@ -1890,8 +1908,15 @@ async function openFileEditor(filePath, opts = {}) {
       return;
     }
 
+    if (typeof contract?.expectedMarkdown === 'string'
+      && String(data.content).replace(/\r\n/g, '\n') !== contract.expectedMarkdown.replace(/\r\n/g, '\n')) {
+      showToast('The plan file changed. Reopen the current plan revision.');
+      cancelPlanEditMode();
+      return;
+    }
     _editorOpen = true;
     _editorFilePath = data.path;
+    if (_planEditMode) _planEditFilePath = data.path;
     // Normalize line endings — textarea always returns \n, server may send \r\n on Windows
     _editorOriginal = data.content.replace(/\r\n/g, '\n');
     _editorDirty = false;
@@ -1949,7 +1974,9 @@ async function openFileEditor(filePath, opts = {}) {
     if (_planEditMode) {
       const banner = document.createElement('div');
       banner.className = 'fe-plan-banner';
-      banner.textContent = `Editing plan — save to send to ${planEditorSourceLabel(_planEditSource)}`;
+      banner.textContent = _planEditSource === 'codex'
+        ? 'Editing plan — save to return to review'
+        : `Editing plan — save to send to ${planEditorSourceLabel(_planEditSource)}`;
       edPanel?.prepend(banner);
     } else if (_changelogEditMode) {
       const banner = document.createElement('div');
@@ -1976,14 +2003,16 @@ async function openFileEditor(filePath, opts = {}) {
 }
 
 function closeFileEditor() {
+  if (_editorSaving) return false;
   if (_editorDirty) {
     if (!confirm('Discard unsaved changes?')) return false;
   }
 
   // Emit cancel events before clearing flags so Claude panel can re-enable buttons
-  if (_planEditMode) emit('plan-edit-cancelled', { source: _planEditSource, tabId: _planEditTabId });
+  if (_planEditMode) cancelPlanEditMode();
   if (_changelogEditMode) emit('changelog-edit-cancelled');
 
+  ++_editorOpenSequence;
   _editorOpen = false;
   _editorFilePath = null;
   _editorOriginal = '';
@@ -2023,58 +2052,75 @@ function closeFileEditor() {
 }
 
 async function saveFileEditor() {
-  if (!_editorFilePath) return;
+  if (!_editorFilePath || _editorSaving) return;
   const textarea = $('fe-editor-textarea');
   if (!textarea) return;
-
+  const savedContent = textarea.value;
+  const savedPath = _editorFilePath;
+  const planEvent = _planEditMode ? planEditorEvent() : null;
+  const contract = _planEditContract;
+  _editorSaving = true;
+  textarea.readOnly = true;
+  updateEditorDirtyState();
+  let saved = false;
+  let result = null;
   try {
-    const res = await fetch('/api/file-content', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: _editorFilePath, content: textarea.value })
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      showToast(data.error || 'Save failed');
-      return;
+    if (planEvent?.source === 'codex' && typeof contract?.save !== 'function') {
+      throw new Error('This plan editor is missing its revision. Reopen the plan to save.');
     }
-    _editorOriginal = textarea.value;
+    if (typeof contract?.save === 'function') {
+      result = await contract.save({ ...planEvent, content: savedContent });
+      if (!result?.ok) throw new Error(result?.reason || result?.error || 'The plan changed. Reopen the latest revision before saving.');
+    } else {
+      const res = await fetch('/api/file-content', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: savedPath, content: savedContent }),
+      });
+      result = await res.json();
+      if (!res.ok) throw new Error(result.error || 'Save failed');
+    }
+    _editorOriginal = savedContent;
+    saved = true;
+  } catch (error) {
+    showToast(error?.message || 'Save failed');
+    if (_planEditSource === 'codex') {
+      const banner = $('fe-editor-panel')?.querySelector('.fe-plan-banner');
+      if (banner) banner.textContent = `${error?.message || 'Save failed'} Your edits are still open.`;
+    }
+  } finally {
+    _editorSaving = false;
+    textarea.readOnly = false;
     updateEditorDirtyState();
-
-    // Plan edit: emit saved content to Claude panel, then close editor
-    if (_planEditMode && _editorFilePath === _planEditFilePath) {
-      const savedContent = textarea.value;
-      const savedPath = _editorFilePath;
-      const savedSource = _planEditSource;
-      const savedTabId = _planEditTabId;
-      _planEditMode = false;
-      _planEditFilePath = null;
-      _planEditSource = null;
-      _planEditTabId = null;
-      showToast('Plan saved');
-      emit('plan-saved', { filePath: savedPath, content: savedContent, source: savedSource, tabId: savedTabId });
-      closeFileEditor();
-      return;
-    }
-
-    // Changelog edit: emit saved content to Claude panel, then close editor
-    if (_changelogEditMode && _editorFilePath === _changelogEditFilePath) {
-      const savedContent = textarea.value;
-      _changelogEditMode = false;
-      _changelogEditFilePath = null;
-      showToast('Changelog saved — sending to Claude');
-      emit('changelog-saved', { content: savedContent });
-      closeFileEditor();
-      return;
-    }
-
-    showToast('Saved');
-  } catch {
-    showToast('Save failed');
   }
+  if (!saved) return;
+
+  if (planEvent && _planEditMode && savedPath === _planEditFilePath) {
+    _planEditMode = false;
+    _planEditFilePath = null;
+    _planEditSource = null;
+    _planEditTabId = null;
+    _planEditContract = null;
+    showToast('Plan saved');
+    emit('plan-saved', {
+      ...planEvent, filePath: result?.path || savedPath, content: savedContent,
+      persisted: typeof contract?.save === 'function', savedRevision: result?.document?.revision,
+    });
+    closeFileEditor();
+    return;
+  }
+  if (_changelogEditMode && savedPath === _changelogEditFilePath) {
+    _changelogEditMode = false;
+    _changelogEditFilePath = null;
+    showToast('Changelog saved — sending to Claude');
+    emit('changelog-saved', { content: savedContent });
+    closeFileEditor();
+    return;
+  }
+  showToast('Saved');
 }
 
 function discardFileEditor() {
+  if (_editorSaving) return;
   if (!confirm('Discard changes?')) return;
   const textarea = $('fe-editor-textarea');
   if (textarea) textarea.value = _editorOriginal;
@@ -2090,12 +2136,13 @@ function updateEditorDirtyState() {
 
   const saveBtn = $('fe-editor-save');
   if (saveBtn) {
-    saveBtn.disabled = !_editorDirty;
+    saveBtn.disabled = _editorSaving || (!_editorDirty && !_planEditMode);
     saveBtn.classList.toggle('dirty', _editorDirty);
   }
 
   const discardBtn = $('fe-editor-discard');
-  if (discardBtn) discardBtn.disabled = !_editorDirty;
+  if (discardBtn) discardBtn.disabled = _editorSaving || !_editorDirty;
+  emitPlanEditorState();
 }
 
 // ─── Markdown rendering (same as Skills Studio) ────────────
@@ -2257,6 +2304,7 @@ function updateFindCount() {
 }
 
 function doReplace() {
+  if (_editorSaving) return;
   const textarea = $('fe-editor-textarea');
   const replaceInput = $('fe-editor-replace-input');
   if (!textarea || !replaceInput || _findMatches.length === 0 || _findIndex < 0) return;
@@ -2277,6 +2325,7 @@ function doReplace() {
 }
 
 function doReplaceAll() {
+  if (_editorSaving) return;
   const textarea = $('fe-editor-textarea');
   const findInput = $('fe-editor-find-input');
   const replaceInput = $('fe-editor-replace-input');
@@ -2626,16 +2675,30 @@ export function initFileExplorer() {
   });
 
   // ── Plan editor — open plan file from Claude panel for direct editing ──
-  on('open-plan-editor', ({ filePath, source = 'claude', tabId = null }) => {
+  on('open-plan-editor', (contract = {}) => {
+    const { filePath, source = 'claude', tabId = null } = contract;
+    if (!filePath) return;
+    if (_planEditMode && _planEditFilePath === filePath
+      && _planEditSource === source && _planEditTabId === tabId
+      && _planEditContract?.planId === contract.planId && _planEditContract?.revision === contract.revision) {
+      $('fe-editor-textarea')?.focus();
+      return;
+    }
+    if ((_editorOpen || _planEditMode) && !closeFileEditor()) {
+      emit('plan-edit-cancelled', { source, tabId, planId: contract.planId, revision: contract.revision, accountId: contract.accountId, threadId: contract.threadId, sidepanelWindowId: contract.sidepanelWindowId || null });
+      return;
+    }
     _planEditMode = true;
     _planEditFilePath = filePath;
     _planEditSource = source;
     _planEditTabId = tabId;
+    _planEditContract = contract;
     openFileEditor(filePath);
   });
 
   // ── Changelog editor — open changelog draft from Claude panel for direct editing ──
   on('open-changelog-editor', ({ filePath }) => {
+    if ((_editorOpen || _planEditMode) && !closeFileEditor()) return;
     _changelogEditMode = true;
     _changelogEditFilePath = filePath;
     openFileEditor(filePath);
@@ -2643,6 +2706,8 @@ export function initFileExplorer() {
 
   on('open-file-editor', ({ filePath, line, column } = {}) => {
     if (!filePath) return;
+    if ((_editorOpen || _planEditMode) && !closeFileEditor()) return;
+    _planEditContract = null;
     _planEditMode = false;
     _planEditFilePath = null;
     _planEditSource = null;
@@ -2835,6 +2900,7 @@ export function initFileExplorer() {
     let _undoBurstTimer = null;
 
     editorTextarea.addEventListener('keydown', (e) => {
+      if (_editorSaving) return;
       const ta = e.target;
       const mod = e.ctrlKey || e.metaKey;
 

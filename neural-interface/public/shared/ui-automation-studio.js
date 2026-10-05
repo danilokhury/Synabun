@@ -6,6 +6,8 @@
 
 import { emit, on } from './state.js';
 import { storage } from './storage.js';
+import { initI18n, isReady as i18nReady, t } from './i18n.js';
+import { fetchStyleGuideProjects, fetchStyleGuideSummary } from './api.js';
 import { isGuest, hasPermission, showGuestToast } from './ui-sync.js';
 import {
   getNativeLoopRouterClaimToken,
@@ -26,6 +28,11 @@ import {
   normalizeEffortForProfile,
   profileSupportsEffort,
 } from './agent-runtime-options.js';
+import {
+  automationContextOptions,
+  automationModelOptions,
+  normalizeAutomationSelection,
+} from './automation-context.js';
 // sendToPanel removed — all launches use floating browser only
 import {
   fetchLoopTemplates,
@@ -191,7 +198,14 @@ const _modelLoadAttempts = new Set();
 
 // Persistent launch preferences (remembered across launches in session)
 let _launchProfile = storage.getItem('as-launch-profile') || 'claude-code';
-let _launchModel = storage.getItem('as-launch-model') || null;
+const _initialLaunchSelection = normalizeAutomationSelection(
+  storage.getItem('as-launch-profile') || 'claude-code',
+  storage.getItem('as-launch-model'), storage.getItem('as-launch-context-mode'),
+);
+let _launchModel = _initialLaunchSelection.model;
+let _launchContextMode = _initialLaunchSelection.contextMode || 'default';
+storage.setItem('as-launch-model', _launchModel || '');
+storage.setItem('as-launch-context-mode', _launchContextMode);
 let _launchEffort = storage.getItem('as-launch-effort') || 'off';
 let _launchMcpProfile = storage.getItem('as-launch-mcp-profile') || 'full';
 let _launchAccount = storage.getItem('as-launch-account') || 'default'; // Codex ChatGPT account (CODEX_HOME)
@@ -217,6 +231,15 @@ function wireAccountChips(container) {
       btn.classList.add('active');
       _launchAccount = btn.dataset.account || 'default';
       storage.setItem('as-launch-account', _launchAccount);
+      setLaunchContextMode('default');
+      ensureModelsForProfile('codex', false, _launchAccount).then(() => {
+        const models = getModelsForProfile('codex', _launchAccount);
+        if (!models.some((model) => model.id === _launchModel)) _launchModel = (models.find((model) => model.isDefault) || models[0])?.id || null;
+        storage.setItem('as-launch-model', _launchModel || '');
+        const box = container.querySelector('#as-launch-models');
+        if (box) { box.innerHTML = renderModelChips('codex', _launchModel); wireModelChips(container); }
+        refreshManualContext(container);
+      });
     });
   });
 }
@@ -490,6 +513,13 @@ const PRESET_TEMPLATES = [
             <div class="awiz-field">
               <label>Style Guide Notes <span class="awiz-optional">(optional)</span></label>
               <textarea data-key="styleNotes" placeholder="e.g. Follow ESLint config, prefer named exports" rows="3">${esc(state.styleNotes || '')}</textarea>
+              <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-top:12px">
+                <input type="checkbox" data-key="useProjectStyleGuide" ${state.useProjectStyleGuide ? 'checked' : ''}>
+                ${esc(t('styleguide.automationToggle'))}
+              </label>
+              <label for="awiz-style-project" style="font-size:13px">${esc(t('styleguide.automationProject'))}</label>
+              <select id="awiz-style-project" data-key="styleGuideProject" aria-label="${esc(t('styleguide.automationProject'))}" style="font-size:13px;max-width:100%"></select>
+              <span class="awiz-hint" style="font-size:12px">${esc(t('styleguide.automationHelp'))}</span>
             </div>
             <div class="awiz-field">
               <label>Skip / Ignore <span class="awiz-optional">(optional)</span></label>
@@ -837,7 +867,7 @@ function formatLoopCommand(taskText, state) {
   const lines = ['Start a loop with these settings:', `Task: ${taskText}`];
   if (state.usesBrowser) {
     lines.push('', 'BROWSER: This automation REQUIRES the SynaBun internal browser.',
-      'Use ONLY SynaBun browser tools (browser_navigate, browser_go_back, browser_go_forward, browser_reload, browser_click, browser_fill, browser_type, browser_hover, browser_select, browser_press, browser_scroll, browser_upload, browser_snapshot, browser_content, browser_screenshot, browser_evaluate, browser_wait, browser_session, browser_extract_tweets, browser_extract_fb_posts, browser_fb_composer_state, browser_extract_fb_groups, browser_extract_tiktok_videos, browser_extract_tiktok_search, browser_extract_tiktok_studio, browser_extract_tiktok_profile, browser_extract_wa_chats, browser_extract_wa_messages, browser_extract_ig_feed, browser_extract_ig_profile, browser_extract_ig_post, browser_extract_ig_reels, browser_extract_ig_search, browser_extract_li_feed, browser_extract_li_profile, browser_extract_li_post, browser_extract_li_notifications, browser_extract_li_messages, browser_extract_li_search_people, browser_extract_li_network, browser_extract_li_jobs, bluesky_session, bluesky_timeline, bluesky_author_feed, bluesky_thread, bluesky_profile, bluesky_search_posts, bluesky_search_actors, bluesky_notifications, bluesky_graph, bluesky_likes, bluesky_feed, bluesky_post, bluesky_action, bluesky_resolve, bluesky_dm).',
+      'Use ONLY SynaBun browser tools (browser_navigate, browser_go_back, browser_go_forward, browser_reload, browser_click, browser_fill, browser_type, browser_hover, browser_select, browser_press, browser_scroll, browser_upload, browser_snapshot, browser_content, browser_screenshot, browser_console, browser_evaluate, browser_wait, browser_session, browser_extract_tweets, browser_extract_fb_posts, browser_fb_composer_state, browser_extract_fb_groups, browser_extract_tiktok_videos, browser_extract_tiktok_search, browser_extract_tiktok_studio, browser_extract_tiktok_profile, browser_extract_wa_chats, browser_extract_wa_messages, browser_extract_ig_feed, browser_extract_ig_profile, browser_extract_ig_post, browser_extract_ig_reels, browser_extract_ig_search, browser_extract_li_feed, browser_extract_li_profile, browser_extract_li_post, browser_extract_li_notifications, browser_extract_li_messages, browser_extract_li_search_people, browser_extract_li_network, browser_extract_li_jobs, bluesky_session, bluesky_timeline, bluesky_author_feed, bluesky_thread, bluesky_profile, bluesky_search_posts, bluesky_search_actors, bluesky_notifications, bluesky_graph, bluesky_likes, bluesky_feed, bluesky_post, bluesky_action, bluesky_resolve, bluesky_dm).',
       'Start by calling browser_navigate with your target URL — it auto-creates a session.',
       'NEVER use Playwright plugin tools or WebFetch — they bypass the visible browser.');
   }
@@ -846,7 +876,7 @@ function formatLoopCommand(taskText, state) {
   return lines.join('\n');
 }
 
-const BROWSER_CONTEXT = 'BROWSER REQUIRED: Use ONLY SynaBun browser tools: browser_navigate, browser_go_back, browser_go_forward, browser_reload, browser_click, browser_fill, browser_type, browser_hover, browser_select, browser_press, browser_scroll, browser_upload, browser_snapshot, browser_content, browser_screenshot, browser_evaluate, browser_wait, browser_session, browser_extract_tweets, browser_extract_fb_posts, browser_fb_composer_state, browser_extract_fb_groups, browser_extract_tiktok_videos, browser_extract_tiktok_search, browser_extract_tiktok_studio, browser_extract_tiktok_profile, browser_extract_wa_chats, browser_extract_wa_messages, browser_extract_ig_feed, browser_extract_ig_profile, browser_extract_ig_post, browser_extract_ig_reels, browser_extract_ig_search, browser_extract_li_feed, browser_extract_li_profile, browser_extract_li_post, browser_extract_li_notifications, browser_extract_li_messages, browser_extract_li_search_people, browser_extract_li_network, browser_extract_li_jobs, bluesky_session, bluesky_timeline, bluesky_author_feed, bluesky_thread, bluesky_profile, bluesky_search_posts, bluesky_search_actors, bluesky_notifications, bluesky_graph, bluesky_likes, bluesky_feed, bluesky_post, bluesky_action, bluesky_resolve, bluesky_dm. For BlueSky, open a logged-in bsky.app tab then use the bluesky_* tools (they call the AT Protocol API directly). Start by calling browser_navigate with your target URL — it auto-creates a session. NEVER use Playwright plugin tools or WebFetch.';
+const BROWSER_CONTEXT = 'BROWSER REQUIRED: Use ONLY SynaBun browser tools: browser_navigate, browser_go_back, browser_go_forward, browser_reload, browser_click, browser_fill, browser_type, browser_hover, browser_select, browser_press, browser_scroll, browser_upload, browser_snapshot, browser_content, browser_screenshot, browser_console, browser_evaluate, browser_wait, browser_session, browser_extract_tweets, browser_extract_fb_posts, browser_fb_composer_state, browser_extract_fb_groups, browser_extract_tiktok_videos, browser_extract_tiktok_search, browser_extract_tiktok_studio, browser_extract_tiktok_profile, browser_extract_wa_chats, browser_extract_wa_messages, browser_extract_ig_feed, browser_extract_ig_profile, browser_extract_ig_post, browser_extract_ig_reels, browser_extract_ig_search, browser_extract_li_feed, browser_extract_li_profile, browser_extract_li_post, browser_extract_li_notifications, browser_extract_li_messages, browser_extract_li_search_people, browser_extract_li_network, browser_extract_li_jobs, bluesky_session, bluesky_timeline, bluesky_author_feed, bluesky_thread, bluesky_profile, bluesky_search_posts, bluesky_search_actors, bluesky_notifications, bluesky_graph, bluesky_likes, bluesky_feed, bluesky_post, bluesky_action, bluesky_resolve, bluesky_dm. For BlueSky, open a logged-in bsky.app tab then use the bluesky_* tools (they call the AT Protocol API directly). Start by calling browser_navigate with your target URL — it auto-creates a session. NEVER use Playwright plugin tools or WebFetch.';
 
 // ── Inline launch panel ──
 // Instead of an overlay modal, swap the detail content area with launch configuration
@@ -861,8 +891,20 @@ function showLaunchInline(params) {
     params.context = BROWSER_CONTEXT;
   }
   // Apply template-preset launch defaults (CLI / model / effort / MCP profile)
-  if (params.profile) { _launchProfile = params.profile; storage.setItem('as-launch-profile', _launchProfile); }
-  if (params.model)   { _launchModel = params.model; storage.setItem('as-launch-model', _launchModel); }
+  if (params.profile) {
+    if (params.profile !== _launchProfile && !params.model) {
+      _launchModel = null;
+      setLaunchContextMode('default');
+    }
+    _launchProfile = params.profile;
+    storage.setItem('as-launch-profile', _launchProfile);
+  }
+  if (params.model || params.contextMode) {
+    const selection = normalizeAutomationSelection(params.profile || _launchProfile, params.model || _launchModel, params.contextMode);
+    _launchModel = selection.model;
+    setLaunchContextMode(selection.contextMode || 'default');
+    storage.setItem('as-launch-model', _launchModel || '');
+  }
   if (params.effort)  { _launchEffort = params.effort; storage.setItem('as-launch-effort', _launchEffort); }
   if (params.mcpProfile) { _launchMcpProfile = params.mcpProfile; storage.setItem('as-launch-mcp-profile', _launchMcpProfile); }
   if (params.codexAccountId) { _launchAccount = params.codexAccountId; storage.setItem('as-launch-account', _launchAccount); }
@@ -881,9 +923,11 @@ function showLaunchInline(params) {
   }
 
   const profile = _launchProfile || 'claude-code';
-  const models = getModelsForProfile(profile);
+  const models = automationModels(profile, _launchModel);
   const defaultModel = models.find(m => m.tier === 'default') || models[0];
   const currentModel = _launchModel && models.some(m => modelMatchesSelector(m, _launchModel)) ? _launchModel : modelSelectorValue(defaultModel);
+  _launchModel = currentModel || null;
+  storage.setItem('as-launch-model', _launchModel || '');
 
   const iterCount = params.iterations || 10;
   const timeCount = params.maxMinutes || 30;
@@ -926,6 +970,10 @@ function showLaunchInline(params) {
           <div class="as-launch-models" id="as-launch-models">
             ${renderModelChips(profile, currentModel)}
           </div>
+        </div>
+        <div class="as-launch-section" id="as-launch-context-section">
+          <label class="as-launch-label">Context</label>
+          ${renderAutomationContextSelect(profile, currentModel, _launchContextMode, 'as-launch-context')}
         </div>
         <div class="as-launch-section" id="as-launch-effort-section" style="${profileSupportsEffort(profile) ? '' : 'display:none'}">
           <label class="as-launch-label">Think</label>
@@ -1017,12 +1065,12 @@ function showLaunchInline(params) {
 
   // Async-load dynamic models and re-render chips when ready.
   // Retries a couple of times in case OpenCode is still booting.
-  if (isDynamicModelProfile(profile) && !_modelLoadRequests.has(`launch:${profile}`)) {
-    const loadKey = `launch:${profile}`;
+  if (isDynamicModelProfile(profile) && !_modelLoadRequests.has(`launch:${profile}:${_launchAccount}`)) {
+    const loadKey = `launch:${profile}:${_launchAccount}`;
     _modelLoadAttempts.add(profile);
     _modelLoadRequests.add(loadKey);
     const refresh = async (attempt = 0) => {
-      const list = await ensureModelsForProfile(profile);
+      const list = await ensureModelsForProfile(profile, false, _launchAccount);
       if (!_launchPanelActive || _launchProfile !== profile) return;
       if (!list.length && attempt < 4) {
         setTimeout(() => refresh(attempt + 1), 1500);
@@ -1033,12 +1081,14 @@ function showLaunchInline(params) {
       if (!_launchModel || !list.some(m => modelMatchesSelector(m, _launchModel))) {
         _launchModel = modelSelectorValue(def) || null;
         storage.setItem('as-launch-model', _launchModel);
+        setLaunchContextMode('default');
       }
       const box = contentEl.querySelector('#as-launch-models');
       if (box) {
         box.innerHTML = renderModelChips(profile, _launchModel);
         wireModelChips(contentEl.querySelector('.as-launch-inline'));
       }
+      refreshManualContext(contentEl.querySelector('.as-launch-inline'));
     };
     refresh();
   }
@@ -1088,13 +1138,48 @@ function dynamicModelEmptyText(profileId) {
 }
 
 function preserveSavedDynamicModel(profileId, models, selectedModel) {
+  selectedModel = normalizeAutomationSelection(profileId, selectedModel).model;
   if (!isDynamicModelProfile(profileId) || !selectedModel) return models;
   if (models.some(m => m.id === selectedModel)) return models;
   return [{ id: selectedModel, label: selectedModel, desc: 'Saved selection' }, ...models];
 }
 
+function automationModels(profileId, selectedModel = null, accountId = _launchAccount) {
+  return preserveSavedDynamicModel(profileId,
+    automationModelOptions(profileId, getModelsForProfile(profileId, accountId)), selectedModel);
+}
+
+function automationContextOptionHtml(profileId, model, mode, accountId = _launchAccount) {
+  const choices = automationContextOptions(profileId, model, getModelsForProfile(profileId, accountId));
+  const selected = mode || 'default';
+  const options = choices.map((choice) => `<option value="${_escLaunch(choice.id)}"${selected === choice.id ? ' selected' : ''}>${_escLaunch(choice.label)}</option>`);
+  if (!choices.some((choice) => choice.id === selected)) {
+    options.push(`<option value="${_escLaunch(selected)}" selected>${_escLaunch(selected)} (unavailable — choose another)</option>`);
+  }
+  return options.join('');
+}
+
+function renderAutomationContextSelect(profileId, model, mode, id, accountId = _launchAccount) {
+  return `<select class="as-input as-select" id="${id}">${automationContextOptionHtml(profileId, model, mode, accountId)}</select>`;
+}
+
+function automationContextAvailable(profileId, model, mode, accountId = _launchAccount) {
+  return automationContextOptions(profileId, model, getModelsForProfile(profileId, accountId))
+    .some((choice) => choice.id === (mode || 'default'));
+}
+
+function automationModelAvailable(profileId, model, accountId = _launchAccount) {
+  if (profileId !== 'codex' || !model) return true;
+  const models = getModelsForProfile('codex', accountId);
+  return !models.length || models.some((entry) => entry.id === model);
+}
+
+function setLaunchContextMode(mode = 'default') {
+  _launchContextMode = mode;
+  storage.setItem('as-launch-context-mode', mode);
+}
 function renderModelChips(profileId, selectedModel) {
-  const models = preserveSavedDynamicModel(profileId, getModelsForProfile(profileId), selectedModel);
+  const models = automationModels(profileId, selectedModel);
   if (!models.length) {
     return `<span class="as-launch-no-models">${_escLaunch(dynamicModelEmptyText(profileId))}</span>`;
   }
@@ -1107,6 +1192,13 @@ function renderModelChips(profileId, selectedModel) {
       <span class="as-launch-model-desc">${m.desc}</span>
     </button>
   `).join('');
+}
+
+function refreshManualContext(root) {
+  const field = root?.querySelector('#as-launch-context-section');
+  if (!field) return;
+  field.innerHTML = `<label class="as-launch-label">Context</label>${renderAutomationContextSelect(_launchProfile, _launchModel, _launchContextMode, 'as-launch-context')}`;
+  field.querySelector('select')?.addEventListener('change', (event) => setLaunchContextMode(event.target.value));
 }
 
 function _escLaunch(s) {
@@ -1272,21 +1364,23 @@ function wireLaunchInline(container) {
       const profileId = btn.dataset.profile;
       _launchProfile = profileId;
       storage.setItem('as-launch-profile', profileId);
-      const models = getModelsForProfile(profileId);
+      const models = automationModels(profileId);
       const defaultModel = models.find(m => m.tier === 'default') || models[0];
       _launchModel = modelSelectorValue(defaultModel) || null;
       storage.setItem('as-launch-model', _launchModel);
+      setLaunchContextMode('default');
       const modelsContainer = root.querySelector('#as-launch-models');
       if (modelsContainer) {
         modelsContainer.innerHTML = renderModelChips(profileId, _launchModel);
         wireModelChips(root);
       }
-      if (isDynamicModelProfile(profileId) && !_modelLoadRequests.has(`launch:${profileId}`)) {
-        const loadKey = `launch:${profileId}`;
+      refreshManualContext(root);
+      if (isDynamicModelProfile(profileId) && !_modelLoadRequests.has(`launch:${profileId}:${_launchAccount}`)) {
+        const loadKey = `launch:${profileId}:${_launchAccount}`;
         _modelLoadAttempts.add(profileId);
         _modelLoadRequests.add(loadKey);
         const refresh = async (attempt = 0) => {
-          const list = await ensureModelsForProfile(profileId);
+          const list = await ensureModelsForProfile(profileId, false, _launchAccount);
           if (!_launchPanelActive || _launchProfile !== profileId) return;
           if (!list.length && attempt < 4) {
             setTimeout(() => refresh(attempt + 1), 1500);
@@ -1301,6 +1395,7 @@ function wireLaunchInline(container) {
             box.innerHTML = renderModelChips(profileId, _launchModel);
             wireModelChips(root);
           }
+          refreshManualContext(root);
         };
         refresh();
       }
@@ -1341,6 +1436,7 @@ function wireLaunchInline(container) {
   });
 
   wireModelChips(root);
+  refreshManualContext(root);
   wireEffortChips(root);
   wireAccountChips(root);
   if (_launchProfile === 'codex') loadLaunchAccounts(root);
@@ -1370,11 +1466,15 @@ function wireModelChips(container) {
       btn.classList.add('active');
       _launchModel = btn.dataset.model;
       storage.setItem('as-launch-model', _launchModel);
+      setLaunchContextMode('default');
+      refreshManualContext(container);
     });
   });
   wireLaunchSelect(container, 'model', (value) => {
     _launchModel = value;
     storage.setItem('as-launch-model', _launchModel);
+    setLaunchContextMode('default');
+    refreshManualContext(container);
   });
 }
 
@@ -1418,6 +1518,14 @@ function closeLaunchInline() {
 
 async function confirmLaunch() {
   if (!_pendingLaunchParams) return;
+  if (!automationModelAvailable(_launchProfile, _launchModel)) {
+    showToast('This model is unavailable for the selected account');
+    return;
+  }
+  if (!automationContextAvailable(_launchProfile, _launchModel, _launchContextMode)) {
+    showToast('This context window is unavailable for the selected model and account');
+    return;
+  }
   const effort = normalizeEffortForProfile(_launchProfile, _launchEffort) || undefined;
   const mcpProfile = _launchProfile !== 'claude-code' ? _launchMcpProfile : undefined;
   const codexAccountId = _launchProfile === 'codex' ? (_launchAccount || 'default') : undefined;
@@ -1425,6 +1533,7 @@ async function confirmLaunch() {
     ..._pendingLaunchParams,
     profile: _launchProfile,
     model: _launchModel,
+    contextMode: _launchContextMode,
     effort,
     mcpProfile,
     codexAccountId,
@@ -1450,6 +1559,7 @@ async function confirmLaunch() {
       const result = await launchAgent({
         task: params.task,
         model: params.model || undefined,
+        contextMode: params.contextMode,
         effort: params.effort || undefined,
         cwd: params.cwd || undefined,
         maxTurns: params.usesBrowser ? 100 : 75,
@@ -1599,7 +1709,7 @@ function debounce(fn, ms) {
 function buildTemplateCommand(template) {
   const isPreset = template.id?.startsWith('__preset_');
   if (isPreset && template.buildCommand) {
-    return template.buildCommand(template._lastState || {});
+    return wizardCommand(template, template._lastState || {});
   }
   let cmd = template.task || '';
   if (template.context) cmd += '\n\n' + template.context;
@@ -1618,6 +1728,7 @@ export function initAutomationStudio() {
 }
 
 async function openPanel(opts = {}) {
+  if (!i18nReady()) await initI18n();
   if (isGuest() && !hasPermission('automations')) {
     showGuestToast('Automation Studio is disabled by the host');
     return;
@@ -2562,9 +2673,11 @@ function renderDetailMain() {
 function buildDetailMeta(t, isPreset) {
   const disabled = isPreset ? 'disabled readonly' : '';
   const tProfile = t.profile || 'claude-code';
-  let tModelsList = preserveSavedDynamicModel(tProfile, getModelsForProfile(tProfile), t.model);
+  const templateAccountId = t.codexAccountId || 'default';
+  let tModelsList = automationModels(tProfile, t.model, templateAccountId);
   const tDefaultModel = tModelsList.find(m => m.tier === 'default') || tModelsList[0];
-  const tModel = (t.model && tModelsList.some(m => modelMatchesSelector(m, t.model))) ? t.model : (modelSelectorValue(tDefaultModel) || '');
+  const tModel = (t.model && tModelsList.some(m => modelMatchesSelector(m, t.model))) ? normalizeAutomationSelection(tProfile, t.model).model : (modelSelectorValue(tDefaultModel) || '');
+  const tContextMode = t.contextMode || normalizeAutomationSelection(tProfile, t.model).contextMode || 'default';
   const tEffort = t.effort || 'off';
   const tMcp = t.mcpProfile || 'full';
   return `
@@ -2672,6 +2785,10 @@ function buildDetailMeta(t, isPreset) {
                 ? tModelsList.map(m => `<option value="${esc(modelSelectorValue(m))}"${modelMatchesSelector(m, tModel) ? ' selected' : ''}>${esc(m.label)}${m.desc ? ' \u2014 ' + esc(m.desc) : ''}</option>`).join('')
                 : `<option value="">${esc(dynamicModelEmptyText(tProfile))}</option>`}
             </select>
+          </div>
+          <div class="as-runtime-field">
+            <label>Context</label>
+            ${renderAutomationContextSelect(tProfile, tModel, tContextMode, 'as-f-context', templateAccountId)}
           </div>
           <div class="as-runtime-field" id="as-f-effort-field" style="${profileSupportsEffort(tProfile) ? '' : 'display:none'}">
             <label>Think</label>
@@ -2889,10 +3006,12 @@ function wireFolderPicker(isPreset) {
 function wireLaunchDefaults(isPreset) {
   const profileSel = $('as-f-profile');
   const modelSel = $('as-f-model');
+  const contextSel = $('as-f-context');
   const effortSel = $('as-f-effort');
   const mcpSel = $('as-f-mcp');
   const effortField = $('as-f-effort-field');
   const mcpField = $('as-f-mcp-field');
+  const templateAccountId = _selected?.codexAccountId || 'default';
   if (!profileSel) return;
 
   effortSel?.addEventListener('change', () => { if (!isPreset) markDirty(); });
@@ -2918,7 +3037,7 @@ function wireLaunchDefaults(isPreset) {
 
   const renderModelOptions = (profileId, preferredId) => {
     if (!modelSel) return;
-    const models = preserveSavedDynamicModel(profileId, getModelsForProfile(profileId), preferredId);
+    const models = automationModels(profileId, preferredId, templateAccountId);
     const def = models.find(m => m.tier === 'default') || models[0];
     const selectedId = preferredId && models.some(m => modelMatchesSelector(m, preferredId)) ? preferredId : modelSelectorValue(def);
     modelSel.innerHTML = models.length
@@ -2926,6 +3045,10 @@ function wireLaunchDefaults(isPreset) {
           `<option value="${esc(modelSelectorValue(m))}"${modelMatchesSelector(m, selectedId) ? ' selected' : ''}>${esc(m.label)}${m.desc ? ' \u2014 ' + esc(m.desc) : ''}</option>`
         ).join('')
       : `<option value="">${esc(dynamicModelEmptyText(profileId))}</option>`;
+  };
+
+  const renderContextOptions = (mode = contextSel?.value || 'default') => {
+    if (contextSel) contextSel.innerHTML = automationContextOptionHtml(profileSel.value, modelSel?.value, mode, templateAccountId);
   };
 
   const renderEffortOptions = (profileId, preferredId) => {
@@ -2943,16 +3066,18 @@ function wireLaunchDefaults(isPreset) {
     if (_modelLoadRequests.has(key)) return;
     _modelLoadAttempts.add(profileId);
     _modelLoadRequests.add(key);
-    ensureModelsForProfile(profileId).then((list) => {
+    ensureModelsForProfile(profileId, false, templateAccountId).then((list) => {
       if (!list.length) _modelLoadRequests.delete(key);
       if (profileSel.value !== profileId) return;
       renderModelOptions(profileId, preferredId);
+      renderContextOptions();
     });
   };
 
   profileSel.addEventListener('change', () => {
     const profileId = profileSel.value;
     renderModelOptions(profileId, null);
+    renderContextOptions('default');
     refreshDynamicModelOptionsIfNeeded(profileId, null);
     renderEffortOptions(profileId, 'off');
     if (effortField) effortField.style.display = profileSupportsEffort(profileId) ? '' : 'none';
@@ -2963,7 +3088,11 @@ function wireLaunchDefaults(isPreset) {
     if (!isPreset) markDirty();
   });
 
-  modelSel?.addEventListener('change', () => { if (!isPreset) markDirty(); });
+  modelSel?.addEventListener('change', () => {
+    renderContextOptions('default');
+    if (!isPreset) markDirty();
+  });
+  contextSel?.addEventListener('change', () => { if (!isPreset) markDirty(); });
   mcpSel?.addEventListener('change', () => { if (!isPreset) markDirty(); });
 
   if (profileSel.value !== 'claude-code') loadMcpOptions();
@@ -3002,6 +3131,7 @@ async function saveCurrentTemplate() {
   const task = $('as-cmd-editor')?.value?.trim() || '';
   const profile = $('as-f-profile')?.value || null;
   const model = $('as-f-model')?.value || null;
+  const contextMode = $('as-f-context')?.value || 'default';
   const effort = normalizeEffortForProfile(profile || 'claude-code', $('as-f-effort')?.value || null);
   const mcpProfile = profile && profile !== 'claude-code' ? ($('as-f-mcp')?.value || null) : null;
   const folderIdRaw = $('as-f-folder')?.value;
@@ -3009,8 +3139,14 @@ async function saveCurrentTemplate() {
 
   if (!name) { showToast('Name is required'); return; }
   if (!task) { showToast('Task description is required'); return; }
+  if (!automationModelAvailable(profile || 'claude-code', model, _selected?.codexAccountId || 'default')) {
+    showToast('This model is unavailable for the selected account'); return;
+  }
+  if (!automationContextAvailable(profile || 'claude-code', model, contextMode, _selected?.codexAccountId || 'default')) {
+    showToast('This context window is unavailable for the selected model'); return;
+  }
 
-  const payload = { name, icon: iconKey, category, task, context: '', description: description || task.slice(0, 120), iterations, maxMinutes, usesBrowser, profile, model, effort, mcpProfile, folderId };
+  const payload = { name, icon: iconKey, category, task, context: '', description: description || task.slice(0, 120), iterations, maxMinutes, usesBrowser, profile, model, contextMode, effort, mcpProfile, folderId };
 
   try {
     if (_selected.id) { await updateLoopTemplate(_selected.id, payload); }
@@ -3115,6 +3251,7 @@ async function customizePreset(preset) {
       description: preset.description,
       profile: $('as-f-profile')?.value || null,
       model: $('as-f-model')?.value || null,
+      contextMode: $('as-f-context')?.value || 'default',
       effort: normalizeEffortForProfile($('as-f-profile')?.value || 'claude-code', $('as-f-effort')?.value || null),
       mcpProfile: ($('as-f-profile')?.value || 'claude-code') !== 'claude-code' ? ($('as-f-mcp')?.value || null) : null,
     };
@@ -3141,6 +3278,7 @@ function handleTestRun() {
   const usesBrowser = browserEl ? browserEl.checked : (_selected.usesBrowser || false);
   const profile = $('as-f-profile')?.value || _selected.profile || null;
   const model = $('as-f-model')?.value || _selected.model || null;
+  const contextMode = $('as-f-context')?.value || _selected.contextMode || 'default';
   const effort = normalizeEffortForProfile(profile || 'claude-code', $('as-f-effort')?.value || _selected.effort || null);
   const mcpProfile = profile && profile !== 'claude-code' ? ($('as-f-mcp')?.value || _selected.mcpProfile || null) : null;
   serverLaunchLoop({
@@ -3148,7 +3286,7 @@ function handleTestRun() {
     context: null,
     iterations: 1, maxMinutes: 10,
     usesBrowser,
-    profile, model, effort, mcpProfile,
+    profile, model, contextMode, effort, mcpProfile,
   });
 }
 
@@ -3175,13 +3313,14 @@ function proceedWithLaunch() {
   const usesBrowser = browserEl ? browserEl.checked : (_selected.usesBrowser || false);
   const profile = $('as-f-profile')?.value || _selected.profile || null;
   const model = $('as-f-model')?.value || _selected.model || null;
+  const contextMode = $('as-f-context')?.value || _selected.contextMode || 'default';
   const effort = normalizeEffortForProfile(profile || 'claude-code', $('as-f-effort')?.value || _selected.effort || null);
   const mcpProfile = profile && profile !== 'claude-code' ? ($('as-f-mcp')?.value || _selected.mcpProfile || null) : null;
   serverLaunchLoop({
     task: cmd,
     context: null,
     iterations, maxMinutes, usesBrowser,
-    profile, model, effort, mcpProfile,
+    profile, model, contextMode, effort, mcpProfile,
   });
 }
 
@@ -3310,6 +3449,7 @@ function renderWizardStep() {
 
   wireChipEvents(_panel);
   wireInputSync(_panel);
+  wireWizardStyleGuide(_panel);
   if (!isLastStep) {
     const step = _wizardPreset.steps[_wizardStep];
     if (step?.afterRender) step.afterRender(_panel, _wizardState);
@@ -3319,7 +3459,7 @@ function renderWizardStep() {
 function buildReviewStep() {
   const state = _wizardState;
   const preset = _wizardPreset;
-  const command = preset.buildCommand(state);
+  const command = wizardCommand(preset, state);
 
   const summaryPairs = [];
   for (const step of preset.steps) {
@@ -3402,15 +3542,56 @@ function wireReviewEvents() {
   }
 }
 
+// The notes field remains in each preset's buildCommand; this adds only the project guide.
+// One composition for the wizard and buildAutomationStyleGuidePrompt, so the tested path is the shipped one.
+export function appendStyleGuideSummary(command, state) {
+  return state?.useProjectStyleGuide && state.styleGuideSummary
+    ? command + '\n\n' + t('styleguide.automationBlock', { summary: state.styleGuideSummary }) : command;
+}
+function wizardCommand(preset, state) {
+  return appendStyleGuideSummary(preset.buildCommand(state), state);
+}
+export async function buildAutomationStyleGuidePrompt(command, state) {
+  if (!state.useProjectStyleGuide) return command;
+  if (!state.styleGuideProject) throw new Error(t('styleguide.empty'));
+  const data = await fetchStyleGuideSummary(state.styleGuideProject);
+  return appendStyleGuideSummary(command, { ...state, styleGuideSummary: data.summary });
+}
+async function refreshWizardStyleGuide(state) {
+  if (!state?.useProjectStyleGuide) { if(state) state.styleGuideSummary = ''; return; }
+  const path = state.styleGuideProject;
+  if (!path) throw new Error(t('styleguide.empty'));
+  try {
+    const data = await fetchStyleGuideSummary(path);
+    if (state.useProjectStyleGuide && state.styleGuideProject === path) state.styleGuideSummary = data.summary;
+  } catch (err) { throw new Error(t('styleguide.automationError', {message:err.message})); }
+}
+function wireWizardStyleGuide(container) {
+  const project = container?.querySelector('#awiz-style-project');
+  if (!project || project.dataset.wired) return;
+  project.dataset.wired = 'true';
+  const state = _wizardState;
+  fetchStyleGuideProjects().then(projects => {
+    if (_wizardState !== state || !project.isConnected) return;
+    project.innerHTML = projects.map(p => `<option value="${esc(p.path)}">${esc(p.label || p.path)}</option>`).join('');
+    const selected = projects.some(p => p.path === state.styleGuideProject) ? state.styleGuideProject : projects[0]?.path || '';
+    project.value = selected; state.styleGuideProject = selected;
+    if(state.useProjectStyleGuide) refreshWizardStyleGuide(state).then(updateWizardPreview).catch(err=>showToast(err.message));
+  }).catch(err=>showToast(err.message));
+  const update = () => { state.styleGuideProject = project.value; refreshWizardStyleGuide(state).then(updateWizardPreview).catch(err=>showToast(err.message)); };
+  project.addEventListener('change', update);
+  container.querySelector('[data-key="useProjectStyleGuide"]')?.addEventListener('change', e => {state.useProjectStyleGuide = e.target.checked; update();});
+}
+
 function updateWizardPreview() {
   const pre = _panel?.querySelector('.awiz-preview-text');
-  if (pre) pre.textContent = formatLoopCommand(_wizardPreset.buildCommand(_wizardState), _wizardState);
+  if (pre) pre.textContent = formatLoopCommand(wizardCommand(_wizardPreset, _wizardState), _wizardState);
 }
 
 function collectInputValues() {
   if (!_panel) return;
-  _panel.querySelectorAll('.awiz-step-content input[data-key], .awiz-step-content textarea[data-key]').forEach(input => {
-    _wizardState[input.dataset.key] = input.type === 'number' ? Number(input.value) : input.value;
+  _panel.querySelectorAll('.awiz-step-content input[data-key], .awiz-step-content textarea[data-key], .awiz-step-content select[data-key]').forEach(input => {
+    _wizardState[input.dataset.key] = input.type === 'checkbox' ? input.checked : input.type === 'number' ? Number(input.value) : input.value;
   });
   _panel.querySelectorAll('.awiz-chips').forEach(group => {
     const key = group.dataset.key;
@@ -3739,7 +3920,7 @@ function setupScheduleWebSocket() {
   // Quick timer events
   on('sync:quick-timer:set', (data) => {
     if (data?.timerId && !_quickTimers.some(t => t.id === data.timerId)) {
-      _quickTimers.push({ id: data.timerId, templateName: data.templateName, firesAt: data.firesAt, minutes: data.minutes, profile: data.profile, model: data.model, effort: data.effort, mcpProfile: data.mcpProfile, usesBrowser: data.usesBrowser });
+      _quickTimers.push({ id: data.timerId, templateName: data.templateName, firesAt: data.firesAt, minutes: data.minutes, profile: data.profile, model: data.model, contextMode: data.contextMode, effort: data.effort, mcpProfile: data.mcpProfile, usesBrowser: data.usesBrowser });
       if (_view === 'schedules') renderSchedulesMain();
     }
   });
@@ -3963,6 +4144,7 @@ async function handlePanelClick(e) {
 
     case 'wizard-next': {
       collectInputValues();
+      try { await refreshWizardStyleGuide(_wizardState); } catch (err) { showToast(err.message); return; }
       const step = _wizardPreset.steps[_wizardStep];
       if (step?.validate) { const err = step.validate(_wizardState); if (err) { showToast(err); return; } }
       _wizardStep++;
@@ -3972,14 +4154,16 @@ async function handlePanelClick(e) {
 
     case 'wizard-copy': {
       collectInputValues();
-      const cmd = formatLoopCommand(_wizardPreset.buildCommand(_wizardState), _wizardState);
+      try { await refreshWizardStyleGuide(_wizardState); } catch (err) { showToast(err.message); return; }
+      const cmd = formatLoopCommand(wizardCommand(_wizardPreset, _wizardState), _wizardState);
       navigator.clipboard.writeText(cmd).then(() => showToast('Copied to clipboard')).catch(() => showToast('Copy failed'));
       break;
     }
 
     case 'wizard-open-editor': {
       collectInputValues();
-      const cmd = _wizardPreset.buildCommand(_wizardState);
+      try { await refreshWizardStyleGuide(_wizardState); } catch (err) { showToast(err.message); return; }
+      const cmd = wizardCommand(_wizardPreset, _wizardState);
       _wizardPreset._lastState = { ..._wizardState };
       _selected = _wizardPreset;
       _editorContent = cmd;
@@ -3993,13 +4177,16 @@ async function handlePanelClick(e) {
 
     case 'wizard-launch': {
       collectInputValues();
-      const taskText = _wizardPreset.buildCommand(_wizardState);
+      try { await refreshWizardStyleGuide(_wizardState); } catch (err) { showToast(err.message); return; }
+      const taskText = wizardCommand(_wizardPreset, _wizardState);
       const wizIterations = _wizardState.iterations;
       const wizMaxMinutes = _wizardState.maxMinutes;
       const wizUsesBrowser = _wizardState.usesBrowser;
+      const wizProject = _wizardState.useProjectStyleGuide ? _wizardState.styleGuideProject : undefined;
       _wizardState = null; _wizardStep = 0; _wizardPreset = null;
       serverLaunchLoop({
         task: taskText,
+        cwd: wizProject,
         context: null,
         iterations: wizIterations,
         maxMinutes: wizMaxMinutes,
@@ -4105,18 +4292,19 @@ async function handlePanelClick(e) {
       _launchProfile = profileId;
       storage.setItem('as-launch-profile', profileId);
       // Update model to default for new profile
-      const models = getModelsForProfile(profileId);
+      const models = automationModels(profileId);
       const defaultModel = models.find(m => m.tier === 'default') || models[0];
       _launchModel = modelSelectorValue(defaultModel) || null;
       storage.setItem('as-launch-model', _launchModel);
+      setLaunchContextMode('default');
       _launchEffort = 'off';
       storage.setItem('as-launch-effort', _launchEffort);
       renderSchedulesMain();
-      if (isDynamicModelProfile(profileId) && !_modelLoadRequests.has(`qt:${profileId}`)) {
-        const loadKey = `qt:${profileId}`;
+      if (isDynamicModelProfile(profileId) && !_modelLoadRequests.has(`qt:${profileId}:${_launchAccount}`)) {
+        const loadKey = `qt:${profileId}:${_launchAccount}`;
         _modelLoadAttempts.add(profileId);
         _modelLoadRequests.add(loadKey);
-        ensureModelsForProfile(profileId).then(list => {
+        ensureModelsForProfile(profileId, false, _launchAccount).then(list => {
           if (!list.length) _modelLoadRequests.delete(loadKey);
           if (_launchProfile !== profileId) return;
           const def = list.find(m => m.tier === 'default') || list[0];
@@ -4133,6 +4321,9 @@ async function handlePanelClick(e) {
       if (!modelId) break;
       _launchModel = modelId;
       storage.setItem('as-launch-model', _launchModel);
+      setLaunchContextMode('default');
+      const contextSelect = $('as-qt-context');
+      if (contextSelect) contextSelect.innerHTML = automationContextOptionHtml(_launchProfile, _launchModel, _launchContextMode);
       // Update visual selection inline (avoid full re-render)
       $('as-qt-models')?.querySelectorAll('.as-launch-model').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
@@ -4154,6 +4345,8 @@ async function handlePanelClick(e) {
       if (!accountId) break;
       _launchAccount = accountId;
       storage.setItem('as-launch-account', _launchAccount);
+      setLaunchContextMode('default');
+      ensureModelsForProfile('codex', false, accountId).then(() => renderSchedulesMain());
       $('as-qt-accounts')?.querySelectorAll('.as-launch-account-chip').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       break;
@@ -4181,15 +4374,18 @@ async function handlePanelClick(e) {
       if (!mins) { showToast('Select a time or enter minutes'); break; }
       const qtProfile = _launchProfile || 'claude-code';
       const qtModel = _launchModel || null;
+      const qtContextMode = $('as-qt-context')?.value || _launchContextMode;
+      if (!automationModelAvailable(qtProfile, qtModel)) { showToast('This model is unavailable for the selected account'); break; }
+      if (!automationContextAvailable(qtProfile, qtModel, qtContextMode)) { showToast('This context window is unavailable for the selected model and account'); break; }
       const qtBrowser = !!$('as-qt-browser')?.checked;
       const qtEffort = normalizeEffortForProfile(qtProfile, _launchEffort) || undefined;
       const qtMcpProfile = qtProfile !== 'claude-code' ? _launchMcpProfile : undefined;
       const qtAccount = qtProfile === 'codex' ? (_launchAccount || 'default') : undefined;
       try {
-        const result = await createQuickTimer(templateId, mins, { profile: qtProfile, model: qtModel, usesBrowser: qtBrowser, effort: qtEffort, mcpProfile: qtMcpProfile, codexAccountId: qtAccount });
+        const result = await createQuickTimer(templateId, mins, { profile: qtProfile, model: qtModel, contextMode: qtContextMode, usesBrowser: qtBrowser, effort: qtEffort, mcpProfile: qtMcpProfile, codexAccountId: qtAccount });
         // Guard: WebSocket sync:quick-timer:set may arrive before this HTTP response
         if (!_quickTimers.some(t => t.id === result.timerId)) {
-          _quickTimers.push({ id: result.timerId, templateId, templateName: result.templateName, firesAt: result.firesAt, minutes: result.minutes, profile: result.profile, model: result.model, effort: result.effort, mcpProfile: result.mcpProfile, usesBrowser: result.usesBrowser });
+          _quickTimers.push({ id: result.timerId, templateId, templateName: result.templateName, firesAt: result.firesAt, minutes: result.minutes, profile: result.profile, model: result.model, contextMode: result.contextMode, effort: result.effort, mcpProfile: result.mcpProfile, usesBrowser: result.usesBrowser });
         }
         _selectedQtMinutes = null;
         _qtUsesBrowser = null;
@@ -4205,6 +4401,9 @@ async function handlePanelClick(e) {
       if (!templateId) { showToast('Select a template first'); break; }
       const qtProfile = _launchProfile || 'claude-code';
       const qtModel = _launchModel || null;
+      const qtContextMode = $('as-qt-context')?.value || _launchContextMode;
+      if (!automationModelAvailable(qtProfile, qtModel)) { showToast('This model is unavailable for the selected account'); break; }
+      if (!automationContextAvailable(qtProfile, qtModel, qtContextMode)) { showToast('This context window is unavailable for the selected model and account'); break; }
       const qtBrowser = !!$('as-qt-browser')?.checked;
       const qtEffort = normalizeEffortForProfile(qtProfile, _launchEffort) || undefined;
       const qtMcpProfile = qtProfile !== 'claude-code' ? _launchMcpProfile : undefined;
@@ -4213,6 +4412,7 @@ async function handlePanelClick(e) {
         const result = await triggerQuickTimerNow(templateId, {
           profile: qtProfile,
           model: qtModel,
+          contextMode: qtContextMode,
           usesBrowser: qtBrowser,
           effort: qtEffort,
           mcpProfile: qtMcpProfile,
@@ -4362,9 +4562,9 @@ function wireChipEvents(container) {
 }
 
 function wireInputSync(container) {
-  container.querySelectorAll('.awiz-step-content input[data-key], .awiz-step-content textarea[data-key]').forEach(input => {
+  container.querySelectorAll('.awiz-step-content input[data-key], .awiz-step-content textarea[data-key], .awiz-step-content select[data-key]').forEach(input => {
     input.addEventListener('input', () => {
-      _wizardState[input.dataset.key] = input.type === 'number' ? Number(input.value) : input.value;
+      _wizardState[input.dataset.key] = input.type === 'checkbox' ? input.checked : input.type === 'number' ? Number(input.value) : input.value;
     });
   });
 }
@@ -4488,7 +4688,7 @@ function renderSchedulesMain() {
       const profileLabel = CLI_PROFILES.find(p => p.id === qt.profile)?.label || qt.profile || 'Claude Code';
       const modelObj = qt.model ? getModelsForProfile(qt.profile || 'claude-code').find(m => modelMatchesSelector(m, qt.model)) : null;
       const modelLabel = modelObj?.label || (qt.profile === 'opencode' ? qt.model : '');
-      const metaParts = [profileLabel, modelLabel, qt.effort ? `think:${qt.effort}` : '', qt.mcpProfile ? `mcp:${qt.mcpProfile}` : '', qt.usesBrowser ? 'Browser' : ''].filter(Boolean);
+      const metaParts = [profileLabel, modelLabel, qt.contextMode && qt.contextMode !== 'default' ? `context:${qt.contextMode}` : '', qt.effort ? `think:${qt.effort}` : '', qt.mcpProfile ? `mcp:${qt.mcpProfile}` : '', qt.usesBrowser ? 'Browser' : ''].filter(Boolean);
       timerCards += `
         <div class="as-qt-active-card">
           <div class="as-qt-active-pulse"></div>
@@ -4504,8 +4704,10 @@ function renderSchedulesMain() {
   }
 
   // ── Quick Timer Creator ──
+  const selectedTpl = $('as-qt-template')?.value || '';
+  const customMinutes = $('as-qt-custom-min')?.value || '';
   const templateOptions = allTemplates.map(t =>
-    `<option value="${t.id}">${esc(t.name)}</option>`
+    `<option value="${t.id}"${selectedTpl === t.id ? ' selected' : ''}>${esc(t.name)}</option>`
   ).join('');
 
   const qtPresetButtons = [
@@ -4515,15 +4717,15 @@ function renderSchedulesMain() {
 
   // CLI/Model/Browser settings for quick timer
   const qtProfile = _launchProfile || 'claude-code';
-  const qtModels = preserveSavedDynamicModel(qtProfile, getModelsForProfile(qtProfile), _launchModel);
+  const qtModels = automationModels(qtProfile, _launchModel);
   const qtDefaultModel = qtModels.find(m => m.tier === 'default') || qtModels[0];
   const qtCurrentModel = _launchModel && qtModels.some(m => modelMatchesSelector(m, _launchModel)) ? _launchModel : modelSelectorValue(qtDefaultModel);
   // Kick off async dynamic model load and re-render when ready.
-  if (isDynamicModelProfile(qtProfile) && !_modelLoadRequests.has(`qt:${qtProfile}`)) {
-    const loadKey = `qt:${qtProfile}`;
+  if (isDynamicModelProfile(qtProfile) && !_modelLoadRequests.has(`qt:${qtProfile}:${_launchAccount}`)) {
+    const loadKey = `qt:${qtProfile}:${_launchAccount}`;
     _modelLoadAttempts.add(qtProfile);
     _modelLoadRequests.add(loadKey);
-    ensureModelsForProfile(qtProfile).then((list) => {
+    ensureModelsForProfile(qtProfile, false, _launchAccount).then((list) => {
       if (!list.length) _modelLoadRequests.delete(loadKey);
       if ((_launchProfile || 'claude-code') === qtProfile) renderSchedulesMain();
     });
@@ -4567,7 +4769,6 @@ function renderSchedulesMain() {
   `).join('');
 
   // Determine browser toggle default from selected template
-  const selectedTpl = $('as-qt-template')?.value;
   const selectedTemplate = selectedTpl ? allTemplates.find(t => t.id === selectedTpl) : null;
   const qtBrowserDefault = _qtUsesBrowser !== null ? _qtUsesBrowser : (selectedTemplate ? !!selectedTemplate.usesBrowser : false);
 
@@ -4584,6 +4785,10 @@ function renderSchedulesMain() {
       <div class="as-qt-group">
         <span class="as-launch-label">Model</span>
         <div class="as-launch-models" id="as-qt-models">${qtModelChips}</div>
+      </div>
+      <div class="as-qt-group">
+        <span class="as-launch-label">Context</span>
+        ${renderAutomationContextSelect(qtProfile, qtCurrentModel, _launchContextMode, 'as-qt-context')}
       </div>
       <div class="as-qt-group" id="as-qt-effort-section" style="${profileSupportsEffort(qtProfile) ? '' : 'display:none'}">
         <span class="as-launch-label">Think</span>
@@ -4604,7 +4809,7 @@ function renderSchedulesMain() {
       <div class="as-qt-group">
         <span class="as-launch-label">Timer</span>
         <div class="as-qt-presets">${qtPresetButtons}
-          <input class="as-qt-custom-input" id="as-qt-custom-min" type="number" min="1" max="1440" placeholder="min" />
+          <input class="as-qt-custom-input" id="as-qt-custom-min" type="number" min="1" max="1440" value="${esc(customMinutes)}" placeholder="min" />
         </div>
       </div>
       <div class="as-qt-actions">
@@ -4712,8 +4917,12 @@ function renderSchedulesMain() {
     wireLaunchSelect(qtModelsBox, 'qt-model', (value) => {
       _launchModel = value;
       storage.setItem('as-launch-model', _launchModel);
+      setLaunchContextMode('default');
+      const contextSelect = $('as-qt-context');
+      if (contextSelect) contextSelect.innerHTML = automationContextOptionHtml(_launchProfile, _launchModel, _launchContextMode);
     });
   }
+  $('as-qt-context')?.addEventListener('change', (event) => setLaunchContextMode(event.target.value));
 }
 
 function renderScheduleEditorMain() {

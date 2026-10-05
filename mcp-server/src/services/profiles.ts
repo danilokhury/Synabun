@@ -4,6 +4,7 @@
  */
 import type { RegisteredTool } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { config } from '../config.js';
+import { sanitizeDesktopGrant, sanitizeRole, type CallerRole } from './identity.js';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { dirname, join } from 'path';
 
@@ -32,7 +33,37 @@ export const PROFILE_PRESETS: Record<string, string[]> = {
 export const VALID_GROUPS = new Set([
   ...ALL_BROWSER_GROUPS,
   'whiteboard', 'card', 'tictactoe', 'discord', 'git', 'leonardo', 'image', 'gsc', 'youtube', 'styleguide', 'morelogin',
+  'agents', 'computer',
 ]);
+
+/**
+ * Groups that only a caller with the matching role may see. They are never
+ * part of a preset: the role — not the profile — decides, so `profile set`
+ * can neither reveal `agents` to a plain runtime nor hide it from the
+ * assistant, and a deferred Codex catalog does not leak it either.
+ */
+export const ROLE_GATED_GROUPS: Readonly<Record<string, CallerRole>> = Object.freeze({ agents: 'assistant' as const });
+
+export function isRoleGatedGroup(group: string): boolean {
+  return Object.prototype.hasOwnProperty.call(ROLE_GATED_GROUPS, group);
+}
+
+/**
+ * Groups unlocked by a capability the caller proves, not by a role or a
+ * profile: `computer` needs a desktop grant the Neural Interface minted for
+ * this brain or worker run (and macOS). Like role-gated groups they are never
+ * part of a preset and a deferred catalog never leaks them.
+ */
+export type CallerCapability = 'computer';
+export const CAPABILITY_GATED_GROUPS: Readonly<Record<string, CallerCapability>> = Object.freeze({ computer: 'computer' as const });
+
+export function isCapabilityGatedGroup(group: string): boolean {
+  return Object.prototype.hasOwnProperty.call(CAPABILITY_GATED_GROUPS, group);
+}
+
+export function isGatedGroup(group: string): boolean {
+  return isRoleGatedGroup(group) || isCapabilityGatedGroup(group);
+}
 
 export const PROFILE_PATH = join(config.dataDir, 'active-profile.json');
 const PROFILE_REGISTRY_PATH = join(config.dataHome, 'data', 'mcp-registry.json');
@@ -200,18 +231,36 @@ export class ProfileRuntime {
   private activeGroups: Set<string>;
   private activeProfileName: string;
   private readonly catalogMode: ToolCatalogMode;
+  private role: CallerRole | null;
+  private capabilities: Set<CallerCapability>;
+  private readonly platform: string;
   private readonly toolGroups = new Map<string, RegisteredTool[]>();
   private onProfileChanged: (() => void | Promise<void>) | null = null;
   private notificationTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(initialProfile: string, options: { catalogMode?: ToolCatalogMode } = {}) {
+  constructor(initialProfile: string, options: { catalogMode?: ToolCatalogMode; role?: CallerRole | null; capabilities?: CallerCapability[] | null; platform?: string } = {}) {
     const normalized = String(initialProfile || 'full').toLowerCase().trim() || 'full';
     if (!isValidProfileSelection(normalized)) {
       throw new Error(`Unknown MCP profile or tool group selection: ${initialProfile}`);
     }
+    // stdio children of the Codex/OpenCode assistant brains receive the role
+    // through their launch env; HTTP sessions bind it later via setRole().
+    this.role = options.role !== undefined ? options.role : sanitizeRole(process.env.SYNABUN_ROLE);
+    // Same for the desktop grant: env for stdio, setCapabilities() for HTTP.
+    this.capabilities = new Set(options.capabilities ?? (sanitizeDesktopGrant(process.env.SYNABUN_DESKTOP_GRANT) ? ['computer'] : []));
+    this.platform = options.platform || process.platform;
     this.activeProfileName = normalized;
-    this.activeGroups = resolveProfileGroups(normalized);
+    this.activeGroups = this.resolveGroupsForRole(normalized);
     this.catalogMode = options.catalogMode || readToolCatalogMode();
+  }
+
+  getCapabilities(): CallerCapability[] {
+    return [...this.capabilities];
+  }
+
+  /** Plain setter — callers re-apply the current profile afterwards. */
+  setCapabilities(capabilities: CallerCapability[]): void {
+    this.capabilities = new Set(capabilities);
   }
 
   getActiveProfile(): { profile: string; activeGroups: string[] } {
@@ -228,6 +277,33 @@ export class ProfileRuntime {
 
   getCatalogMode(): ToolCatalogMode {
     return this.catalogMode;
+  }
+
+  getRole(): CallerRole | null {
+    return this.role;
+  }
+
+  /** Plain setter — callers re-apply the current profile afterwards so
+   *  role-gated groups flip (index.ts setServerRole does both). */
+  setRole(role: CallerRole | null): void {
+    this.role = role;
+  }
+
+  /** Profile groups with the role gate applied: a gated group is active iff
+   *  this runtime's role matches, whatever the profile or registry says. */
+  private resolveGroupsForRole(profileName: string): Set<string> {
+    const groups = resolveProfileGroups(profileName);
+    for (const [group, gate] of Object.entries(ROLE_GATED_GROUPS)) {
+      if (this.role === gate) groups.add(group);
+      else groups.delete(group);
+    }
+    // Capability gates: computer use exists only on macOS, for grant holders.
+    for (const [group, capability] of Object.entries(CAPABILITY_GATED_GROUPS)) {
+      const available = this.capabilities.has(capability) && (capability !== 'computer' || this.platform === 'darwin');
+      if (available) groups.add(group);
+      else groups.delete(group);
+    }
+    return groups;
   }
 
   setToolGroup(name: string, tools: RegisteredTool[]): void {
@@ -271,13 +347,18 @@ export class ProfileRuntime {
       throw new Error(`Unknown MCP profile or tool group selection: ${profileName}`);
     }
     const normalized = profileName.toLowerCase().trim();
-    const newGroups = resolveProfileGroups(normalized);
+    const newGroups = this.resolveGroupsForRole(normalized);
     const enabled: string[] = [];
     const disabled: string[] = [];
 
     for (const [group, tools] of this.toolGroups) {
       const profileEnablesGroup = newGroups.has(group);
-      const shouldAdvertise = this.catalogMode === 'deferred' || profileEnablesGroup;
+      // Gated groups (role or capability) ignore the catalog mode: the deferred
+      // Codex catalog advertises everything else up front, but never a group
+      // the caller's role or grant does not unlock.
+      const shouldAdvertise = isGatedGroup(group)
+        ? profileEnablesGroup
+        : this.catalogMode === 'deferred' || profileEnablesGroup;
       for (const tool of tools) {
         // Direct mutation bypasses RegisteredTool.enable()/disable(), each of
         // which emits its own notification. The caller schedules one refresh
@@ -295,7 +376,10 @@ export class ProfileRuntime {
 
     let totalTools = 11;
     for (const [group, tools] of this.toolGroups) {
-      if (this.catalogMode === 'deferred' || this.activeGroups.has(group)) totalTools += tools.length;
+      const advertised = isGatedGroup(group)
+        ? this.activeGroups.has(group)
+        : this.catalogMode === 'deferred' || this.activeGroups.has(group);
+      if (advertised) totalTools += tools.length;
     }
 
     const changed = previousProfile !== normalized || enabled.length > 0 || disabled.length > 0;

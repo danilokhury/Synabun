@@ -10,6 +10,19 @@ import { getDefaultStore } from './ocp-v2-state.js';
 import { notify as uiNotify, NOTIF_TYPE } from '../ui-notifications.js';
 import { nativeLoopWindowId } from '../ui-native-window-id.js';
 import { registerAutomationSession } from './ocp-v2-automation-ownership.js';
+import { applyEvent, resolveEventTargets } from './ocp-v2-events.js';
+import { createCapabilities, gatedRequest } from './ocp-v2-caps.js';
+import { shouldAutoAccept, autoAcceptRequest, autoAcceptInherited } from './ocp-v2-approvals.js';
+import { verifyDescendant, knownDescendant, createReconnectNotifier, requestOwner } from './ocp-v2-rehydrate.js';
+
+// Request types the connected server answers. Empty against a server that
+// predates the list; cleared on every disconnect and refilled on reconnect.
+export const capabilities = createCapabilities();
+export const supports = (...types) => capabilities.hasAll(...types);
+// The @opencode-ai/sdk version the server answered `init` with ('' from a
+// server that does not say).
+let _sdkVersion = '';
+export const sdkVersion = () => _sdkVersion;
 
 const _notifiedPermissionIds = new Set();
 // Per-store DONE/ERROR dedup: once an outcome fires for a turn, suppress
@@ -85,6 +98,7 @@ export async function connect() {
       try { ws.send(JSON.stringify({ type: 'identify', windowId: nativeLoopWindowId })); }
       catch (err) { console.warn('[ocp-v2-ws] identify failed', err); }
       _connecting = null;
+      _reconnects.opened();
       resolve(ws);
     });
 
@@ -98,6 +112,8 @@ export async function connect() {
       console.log('[ocp-v2-ws] close');
       _ws = null;
       _connecting = null;
+      capabilities.clear();
+      _reconnects.closed();
       for (const [, p] of _pending) p.reject(new Error('websocket closed'));
       _pending.clear();
       broadcastServerStatus({ status: 'reconnecting' });
@@ -154,6 +170,11 @@ export function subscribeSession(sessionId, store) {
   };
 }
 
+/** True when some panel is bound to this session. */
+export function hasSessionStore(sessionId) {
+  return !!_storesBySession.get(sessionId)?.size;
+}
+
 // session.created events — used by the panel manager to detect sub-agent
 // spawns (info.parentID points at the parent session). Newly attached
 // listeners replay the recent buffer so a late subscription still catches
@@ -182,6 +203,12 @@ function handleMessage(msg) {
     return;
   }
 
+  if (msg.type === 'capabilities') {
+    capabilities.set(msg.capabilities);
+    _reconnects.capabilities();
+    return;
+  }
+
   if (msg.type === 'event') {
     // Native OpenCode runs travel over a different WebSocket than the run
     // router. Register ownership before any child-session listener runs so a
@@ -198,6 +225,10 @@ function handleMessage(msg) {
     const p = _pending.get(msg.id);
     _pending.delete(msg.id);
     clearTimeout(p.timeout);
+    if (msg.type === 'init:result') {
+      capabilities.set(msg.capabilities);
+      if (typeof msg.sdkVersion === 'string') _sdkVersion = msg.sdkVersion;
+    }
     p.resolve(msg);
     return;
   }
@@ -208,6 +239,7 @@ function handleEvent(eventType, ev) {
   // Don't dispatch as a state mutation — the spawned panel's own subscribeSession
   // call will catch its own subsequent message events.
   if (eventType === 'session.created') {
+    rememberParent(ev);
     _sessionCreatedBuffer.push({ ts: Date.now(), event: ev });
     if (_sessionCreatedBuffer.length > SESSION_CREATED_BUFFER_MAX) {
       _sessionCreatedBuffer.splice(0, _sessionCreatedBuffer.length - SESSION_CREATED_BUFFER_MAX);
@@ -218,123 +250,201 @@ function handleEvent(eventType, ev) {
     return;
   }
 
-  const sid = ev.sessionID || ev.sessionId || ev.info?.id;
-  if (!sid) return;
-  const targets = _storesBySession.get(sid);
-  if (!targets || !targets.size) return;
+  // session.updated can be the first event that carries a child's parentID.
+  if (eventType === 'session.updated') rememberParent(ev);
+  // (A request that is answered while it is being handed over: handOverRequests.)
+  if (ANSWERED.has(eventType)) noteAnswered(ev);
 
-  for (const store of targets) dispatchEvent(store, eventType, ev);
+  const targets = resolveEventTargets({
+    eventType, ev, storesBySession: _storesBySession, parentOf: _parentOf, allStores: _allStores,
+  });
+  for (const store of targets) applyEvent(store, eventType, ev, EVENT_HOOKS);
 }
 
-function dispatchEvent(store, eventType, ev) {
-  switch (eventType) {
-    case 'message.updated':
-      if (ev.info) {
-        store.upsertMessage(ev.info);
-        // If the message arrives WITHOUT a completed timestamp, the server is
-        // still streaming it — the local `running` flag may be stale (e.g.,
-        // page reloaded mid-turn). Flip it on so the header shows "running"
-        // instead of the stuck "idle". session.idle clears this.
-        const completed = ev.info?.time?.completed;
-        if (ev.info?.role === 'assistant' && (completed == null || completed === 0)) {
-          if (!store.getState().running) store.setRunning(true);
-        }
-      }
-      break;
-    case 'message.removed':
-      if (ev.messageID) store.removeMessage(ev.messageID);
-      break;
-    case 'message.part.updated':
-      if (ev.part) {
-        store.upsertPart(ev.part);
-        // Live signal: any part still running/pending means the session is
-        // running, regardless of whether send() was the local trigger. Catches
-        // sub-agent-driven activity + post-reload state recovery.
-        const partStatus = ev.part?.state?.status || ev.part?.status || '';
-        if (partStatus === 'running' || partStatus === 'pending') {
-          if (!store.getState().running) store.setRunning(true);
-        }
-      }
-      break;
-    case 'session.idle': {
-      const wasRunning = store.getState().running;
-      store.setRunning(false);
-      // Only fire DONE on a real running→idle transition; idle echoes after
-      // the panel was already idle (e.g., reconnect) should not notify.
-      if (wasRunning) _fireOutcomeNotify(store, NOTIF_TYPE.DONE);
-      break;
+// child sessionID → parent sessionID, learned from session.created/updated.
+// Lets a sub-agent's permission or question reach the panel of its parent
+// when no child panel is open for it.
+const _parentOf = new Map();
+function rememberParent(ev) {
+  const info = ev?.info || ev?.session || ev || {};
+  const childId = info.id || ev?.sessionID || ev?.sessionId;
+  const parentId = info.parentID || info.parentId || info.parent_id || ev?.parentID || ev?.parentId;
+  if (childId && parentId && childId !== parentId) _parentOf.set(childId, parentId);
+}
+
+/**
+ * A parent link the server reported some other way than a session event: the
+ * children it listed for a session (the panel manager's scan after a reload).
+ * Not for a link that was only inferred (a task tool's part): such a link is
+ * read from the session itself when it is needed (isDescendantSession).
+ */
+export function rememberSessionParent(childId, parentId) {
+  const child = String(childId || '');
+  const parent = String(parentId || '');
+  if (child && parent && child !== parent) _parentOf.set(child, parent);
+}
+
+// The parent session of `sessionId` as far as the page knows it: the link the
+// server reported, else the one the panel on that session was made with.
+function parentSessionOf(sessionId) {
+  const known = _parentOf.get(sessionId);
+  if (known) return known;
+  for (const store of _storesBySession.get(sessionId) || []) {
+    const parent = store.getState().parentSessionId;
+    if (parent) return parent;
+  }
+  return '';
+}
+
+// Requests that were answered a moment ago (the newest 256 ids).
+const ANSWERED = new Set(['permission.replied', 'question.replied', 'question.rejected']);
+const _answered = new Set();
+function noteAnswered(ev) {
+  const id = String(ev?.requestID || ev?.id || ev?.permissionID || '');
+  if (!id) return;
+  _answered.delete(id);
+  _answered.add(id);
+  while (_answered.size > 256) _answered.delete(_answered.values().next().value);
+}
+
+// Roots: sessions the server said have no parent (saves asking again).
+const _rootSessions = new Set();
+
+/**
+ * Verified ancestry: is `sessionId` a sub-agent session (at any depth) of
+ * `ancestorId`? Known links come from session events; an unknown one is read
+ * from the session itself. Anything that cannot be established is false.
+ */
+export function isDescendantSession(sessionId, ancestorId) {
+  return verifyDescendant(sessionId, ancestorId, {
+    parentOf: _parentOf,
+    roots: _rootSessions,
+    fetchParent: async (id) => {
+      const res = await api.sessionGet(id);
+      if (!res || res.error || (typeof res.status === 'number' && res.status >= 400) || !res.data?.id) return null;
+      return String(res.data.parentID || res.data.parentId || '');
+    },
+  });
+}
+
+/**
+ * The same question answered from what is already known (session events and
+ * earlier verified lookups), without asking the server. For rendering: a card
+ * is drawn only for a request of the bound session or of a known sub-agent.
+ */
+export function isKnownDescendantSession(sessionId, ancestorId) {
+  return knownDescendant(sessionId, ancestorId, _parentOf);
+}
+
+// The socket came back after an outage: whatever was sent meanwhile reached no
+// panel. Listeners re-read their session (the primary panel does it through its
+// auto-heal; the panel manager does it for the sub-agent panel).
+const _reconnectListeners = new Set();
+const _reconnects = createReconnectNotifier(() => {
+  for (const fn of _reconnectListeners) {
+    try { fn(); } catch (e) { console.warn('[ocp-v2-ws] reconnect listener error', e); }
+  }
+});
+export function onReconnect(listener) {
+  _reconnectListeners.add(listener);
+  return () => _reconnectListeners.delete(listener);
+}
+
+// A sub-agent's panel follows the switch of the session that spawned it, up
+// the chain: a sub-agent of a sub-agent follows the session in the main panel.
+// The chain is the sessions' own (child → parent), not the panels that happen
+// to be open: a sub-agent whose parent's panel was closed still inherits.
+function autoAcceptEnabledFor(store) {
+  const s = store.getState();
+  if (s.autoAccept) return true;
+  return autoAcceptInherited(s.sessionId, {
+    parentOf: (sessionId) => (sessionId === s.sessionId && s.parentSessionId) || parentSessionOf(sessionId),
+    isOn: (sessionId) => [...(_storesBySession.get(sessionId) || [])].some((panel) => panel.getState().autoAccept === true),
+  });
+}
+
+function sessionLabel(store) {
+  const s = store.getState();
+  const baseLabel = s.sessionInfo?.title || s.sessionInfo?.info?.title || 'OpenCode';
+  return s.parentSessionId ? `↳ ${baseLabel}` : baseLabel;
+}
+
+const _compactedListeners = new Set();
+/** Called with the store after OpenCode compacted its session (transcript changed). */
+export function onSessionCompacted(listener) {
+  _compactedListeners.add(listener);
+  return () => _compactedListeners.delete(listener);
+}
+
+// What the reducer cannot do itself: desktop notifications and refetches.
+const EVENT_HOOKS = {
+  onOutcome(store, outcome) {
+    _fireOutcomeNotify(store, outcome === 'error' ? NOTIF_TYPE.ERROR : NOTIF_TYPE.DONE);
+  },
+  onAsk(store, id, kind, ev) {
+    if (!id || _notifiedPermissionIds.has(id)) return;
+    _notifiedPermissionIds.add(id);
+    // Auto-accept is the user's standing answer for this session: reply and
+    // stay quiet. A refused reply leaves the card up for them.
+    if (kind === 'permission' && shouldAutoAccept(autoAcceptEnabledFor(store), ev)) {
+      const s = store.getState();
+      // The label of the session that asked, read now: by the time the reply
+      // is back the store may show another session's title.
+      const label = sessionLabel(store);
+      autoAcceptRequest(store, api, ev, { cwd: s.cwd || s.sessionInfo?.directory || undefined, isDescendant: isDescendantSession })
+        .then((accepted) => { if (!accepted) notifyAsk(store, label); })
+        .catch((err) => console.warn('[ocp-v2-ws] auto-accept failed', err));
+      return;
     }
-    case 'session.updated':
-      // Per-store filter already handled by registry; just refresh sessionInfo
-      // when the SDK provides updated metadata (title, etc.). Avoid setSession
-      // since it would clear the message map.
-      // No-op for now — consumers re-render via existing subscriptions.
-      break;
-    case 'session.error':
-      store.pushError({ message: ev.error?.message || ev.error?.name || 'session error', raw: ev.error });
-      store.setRunning(false);
-      _fireOutcomeNotify(store, NOTIF_TYPE.ERROR);
-      break;
-    case 'mcp.profile.changed':
-      store.setMcpProfile(ev.profile || null);
-      break;
-    case 'mcp.profile.refresh.failed':
-      store.pushError({
-        message: ev.error || `MCP profile changed to ${ev.profile || 'the requested profile'}, but OpenCode could not reload its tools.`,
-        raw: ev,
-      });
-      break;
-    case 'permission.asked':
-    case 'permission.updated': {
-      store.setPendingPermission(ev);
-      const permId = String(ev.id || ev.permissionID || '');
-      if (permId && !_notifiedPermissionIds.has(permId)) {
-        _notifiedPermissionIds.add(permId);
-        const s = store.getState();
-        const baseLabel = s.sessionInfo?.title || s.sessionInfo?.info?.title || 'OpenCode';
-        const label = s.parentSessionId ? `↳ ${baseLabel}` : baseLabel;
-        try {
-          uiNotify('panel', NOTIF_TYPE.ASK, label, { panel: 'opencode', provider: 'opencode' });
-        } catch (err) { console.warn('[ocp-v2-ws] notify failed', err); }
-      }
-      break;
+    notifyAsk(store);
+  },
+  onAskCleared(id) {
+    if (id) _notifiedPermissionIds.delete(id);
+  },
+  onCompacted(store) {
+    for (const fn of _compactedListeners) {
+      try { fn(store); } catch (e) { console.warn('[ocp-v2-ws] compacted listener error', e); }
     }
-    case 'permission.replied':
-    case 'permission.rejected': {
-      const pend = store.getState().pendingPermission;
-      if (pend && (pend.id === ev.id || pend.permissionID === ev.permissionID)) {
-        store.setPendingPermission(null);
-      }
-      const permId = String(ev.id || ev.permissionID || '');
-      if (permId) _notifiedPermissionIds.delete(permId);
-      break;
-    }
-    case 'question.asked':
-      if (ev && ev.id) {
-        store.addPendingQuestion(ev);
-        const qId = String(ev.id || '');
-        if (qId && !_notifiedPermissionIds.has(qId)) {
-          _notifiedPermissionIds.add(qId);
-          const s = store.getState();
-          const baseLabel = s.sessionInfo?.title || s.sessionInfo?.info?.title || 'OpenCode';
-          const label = s.parentSessionId ? `↳ ${baseLabel}` : baseLabel;
-          try {
-            uiNotify('panel', NOTIF_TYPE.ASK, label, { panel: 'opencode', provider: 'opencode' });
-          } catch (err) { console.warn('[ocp-v2-ws] question notify failed', err); }
-        }
-      }
-      break;
-    case 'question.replied':
-    case 'question.rejected': {
-      const reqId = ev?.requestID || ev?.id;
-      if (reqId) {
-        store.removePendingQuestion(reqId);
-        _notifiedPermissionIds.delete(String(reqId));
-      }
-      break;
-    }
-    default:
-      break;
+  },
+};
+
+function notifyAsk(store, label = sessionLabel(store)) {
+  try {
+    uiNotify('panel', NOTIF_TYPE.ASK, label, { panel: 'opencode', provider: 'opencode' });
+  } catch (err) { console.warn('[ocp-v2-ws] notify failed', err); }
+}
+
+/**
+ * A panel was closed while requests were waiting in it: its own, or those of
+ * sub-agents below it that have no panel. OpenCode still waits for an answer,
+ * so each goes, at once, where it would have gone had that panel never
+ * existed: to the nearest session above its own that has a panel
+ * (resolveEventTargets). Call it after the closed panel's store was
+ * unsubscribed.
+ * A request whose chain of parents is not known here (its sub-agent was
+ * announced by a task card only) has the chain read first, up to `within`
+ * (the session the main panel has as a tab), and is shown then, unless it was
+ * answered while that read was out.
+ * A request that was announced when it was raised is not announced again.
+ */
+export function handOverRequests(store, { within = '' } = {}) {
+  const s = store.getState();
+  const asks = [
+    ...(s.pendingPermissions || []).map((req) => ['permission.asked', req]),
+    ...(s.pendingQuestions || []).map((req) => ['question.asked', req]),
+  ];
+  for (const [eventType, held] of asks) {
+    // (`_auto`: a reply the closed panel sent is still out; refused, the card stays.)
+    const { _auto, ...req } = held || {};
+    const deliver = () => {
+      const targets = resolveEventTargets({ eventType, ev: req, storesBySession: _storesBySession, parentOf: _parentOf, allStores: _allStores });
+      for (const target of targets) applyEvent(target, eventType, req, EVENT_HOOKS);
+      return targets.length > 0;
+    };
+    if (deliver() || !within) continue;
+    isDescendantSession(requestOwner(req), within)
+      .then((known) => { if (known && !_answered.has(String(req.requestID || req.id || req.permissionID || ''))) deliver(); })
+      .catch((err) => console.warn('[ocp-v2-ws] handing over a closed panel\'s request failed', err));
   }
 }
 
@@ -367,7 +477,9 @@ function request(payload, timeoutMs = 30000) {
 
 export const api = {
   init:           ()              => request({ type: 'init', windowId: nativeLoopWindowId }),
-  sessionList:    ()              => request({ type: 'session:list' }),
+  // options: { search, archived, roots, limit }. A server without
+  // feature:session-list-filters ignores them and lists every live session.
+  sessionList:    (options)       => request(options ? { type: 'session:list', options } : { type: 'session:list' }),
   sessionCreate:  (body, cwd)     => request({ type: 'session:create', body, cwd }),
   sessionGet:     (sessionId)     => request({ type: 'session:get', sessionId }),
   sessionUpdate:  (sessionId, body) => request({ type: 'session:update', sessionId, body }),
@@ -377,12 +489,57 @@ export const api = {
   send: ({ sessionId, parts, model, agent, mode, variant, cwd, mcpProfile, noAbortPrev }) =>
     request({ type: 'message:send', sessionId, parts, model, agent, mode, variant, cwd, mcpProfile, noAbortPrev: !!noAbortPrev }, 30 * 60 * 1000),
   abort: (sessionId) => request({ type: 'message:abort', sessionId }),
-  compact: ({ sessionId, cwd, mcpProfile } = {}) => request({ type: 'session:compact', sessionId, cwd, mcpProfile }, 2 * 60 * 1000),
-  permissionReply: ({ sessionId, permissionId, response, cwd }) =>
-    request({ type: 'permission:reply', sessionId, permissionId, response, cwd }),
+  compact: ({ sessionId, cwd, mcpProfile, model } = {}) => request({ type: 'session:compact', sessionId, cwd, mcpProfile, model }, 5 * 60 * 1000),
+  permissionReply: ({ sessionId, permissionId, response, cwd, message }) =>
+    request({ type: 'permission:reply', sessionId, permissionId, response, cwd, message }),
   questionList:   ({ cwd, sessionId } = {})   => request({ type: 'question:list', cwd, sessionId }),
   questionReply:  ({ requestId, answers, cwd, sessionId }) => request({ type: 'question:reply', requestId, answers, cwd, sessionId }),
   questionReject: ({ requestId, sessionId })  => request({ type: 'question:reject', requestId, sessionId }),
   mcpProfileGet:  (sessionId) => request({ type: 'mcp:profile:get', sessionId }),
   mcpProfileSet:  (sessionId, profile) => request({ type: 'mcp:profile:set', sessionId, profile }, 45_000),
+
+  // ── Newer request types: sent only when the server lists them (see
+  //    ocp-v2-caps.js); otherwise they resolve { ok:false, unsupported:true }.
+  sessionStatus:  ({ sessionId, cwd } = {}) => gated({ type: 'session:status', sessionId, cwd }),
+  permissionList: ({ sessionId, cwd } = {}) => gated({ type: 'permission:list', sessionId, cwd }),
+  sessionTodo:    ({ sessionId, cwd } = {}) => gated({ type: 'session:todo', sessionId, cwd }),
+  sessionRevert:   ({ sessionId, messageID, partID, cwd } = {}) => gated({ type: 'session:revert', sessionId, messageID, partID, cwd }),
+  sessionUnrevert: ({ sessionId, cwd } = {}) => gated({ type: 'session:unrevert', sessionId, cwd }),
+  sessionFork:     ({ sessionId, messageID, cwd } = {}) => gated({ type: 'session:fork', sessionId, messageID, cwd }),
+  sessionChildren: ({ sessionId, cwd } = {}) => gated({ type: 'session:children', sessionId, cwd }),
+  sessionShare:    ({ sessionId, cwd } = {}) => gated({ type: 'session:share', sessionId, cwd }),
+  sessionUnshare:  ({ sessionId, cwd } = {}) => gated({ type: 'session:unshare', sessionId, cwd }),
+  sessionSharePolicy: ({ cwd } = {}) => gated({ type: 'session:share:policy', cwd }),
+  messageDelete:   ({ sessionId, messageID, cwd } = {}) => gated({ type: 'message:delete', sessionId, messageID, cwd }),
+  commandList:     ({ cwd } = {}) => gated({ type: 'command:list', cwd }),
+  // A command is a turn: it can run as long as a prompt does.
+  commandRun:      ({ sessionId, command, arguments: args, agent, model, variant, parts, cwd, mcpProfile } = {}) =>
+    gated({ type: 'command:run', sessionId, command, arguments: args, agent, model, variant, parts, cwd, mcpProfile }, 30 * 60 * 1000),
+  sessionShell:    ({ sessionId, command, agent, model, cwd, mcpProfile } = {}) =>
+    gated({ type: 'session:shell', sessionId, command, agent, model, cwd, mcpProfile }, 10 * 60 * 1000),
+  findFiles:       ({ query, cwd, dirs } = {}) => gated({ type: 'find:files', query, cwd, dirs }, 10000),
+  findSymbols:     ({ sessionId, query, cwd } = {}) => gated({ type: 'find:symbols', sessionId, query, cwd }, 10000),
+  resourceList:    ({ sessionId, cwd } = {}) => gated({ type: 'resource:list', sessionId, cwd }, 15000),
+  referenceList:   ({ sessionId, cwd } = {}) => gated({ type: 'reference:list', sessionId, cwd }, 15000),
+  agentList:       ({ cwd } = {}) => gated({ type: 'agent:list', cwd }, 15000),
+  sessionDiff:     ({ sessionId, messageID, cwd } = {}) => gated({ type: 'session:diff', sessionId, messageID, cwd }),
+  vcsGet:          ({ cwd } = {}) => gated({ type: 'vcs:get', cwd }),
+  vcsStatus:       ({ cwd } = {}) => gated({ type: 'vcs:status', cwd }),
+  vcsDiff:         ({ cwd, mode } = {}) => gated({ type: 'vcs:diff', cwd, mode }, 60_000),
+  worktreeList:    ({ cwd } = {}) => gated({ type: 'worktree:list', cwd }),
+  worktreeCreate:  ({ cwd, name } = {}) => gated({ type: 'worktree:create', cwd, name }, 60_000),
+  worktreeRemove:  ({ cwd, directory } = {}) => gated({ type: 'worktree:remove', cwd, directory }, 60_000),
+  mcpStatus:       ({ sessionId, cwd } = {}) => gated({ type: 'mcp:status', sessionId, cwd }),
+  mcpConnect:      ({ sessionId, name, cwd } = {}) => gated({ type: 'mcp:connect', sessionId, name, cwd }, 60_000),
+  mcpDisconnect:   ({ sessionId, name, cwd } = {}) => gated({ type: 'mcp:disconnect', sessionId, name, cwd }, 60_000),
+  // OAuth: OpenCode opens the browser and waits for the callback.
+  mcpAuthenticate: ({ sessionId, name, cwd } = {}) => gated({ type: 'mcp:authenticate', sessionId, name, cwd }, 5 * 60 * 1000 + 5000),
+  // Registers a server on the serve running this session and, with `persist`,
+  // saves it to the OpenCode config in the same request (see ocp-v2-status.js).
+  mcpAdd:          ({ sessionId, name, config, persist, cwd } = {}) => gated({ type: 'mcp:add', sessionId, name, config, persist: persist === true, cwd }, 60_000),
+  envStatus:       ({ sessionId, cwd } = {}) => gated({ type: 'env:status', sessionId, cwd }),
 };
+
+function gated(payload, timeoutMs) {
+  return gatedRequest(capabilities, request, payload, timeoutMs);
+}

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const root = resolve(import.meta.dirname, '..', '..');
@@ -52,7 +52,11 @@ test('OpenCode sidepanel profiles are pinned to dedicated session serves', () =>
   assert.match(server, /_ocpSessionProfiles\.set\(sessionId, profile\)/);
   assert.match(server, /eventType: 'mcp\.profile\.changed'/);
   assert.match(server, /_ocpSessionProfiles\.set\(providerSessionId, state\.mcpProfile \|\| entry\.mcpProfile\)/);
-  assert.match(server, /turnClientForSession\(msg\.sessionId, msg\.mcpProfile\)/);
+  // Compaction runs on the session's dedicated serve too. Its request body
+  // moved to lib/opencode-v2-ws-requests.js; server.js hands it the resolver.
+  const wsRequests = read('neural-interface/lib/opencode-v2-ws-requests.js');
+  assert.match(server, /turn: turnClientForSession,/);
+  assert.match(wsRequests, /deps\.turn\(sessionKeyOf\(msg\), msg\.mcpProfile\)/);
   assert.doesNotMatch(server, /startMcpProfileWatchers\(\)/);
   assert.match(opencodeClient, /mcp:\s*\{/);
   assert.match(opencodeClient, /req\(\)\.mcp\.disconnect/);
@@ -92,13 +96,18 @@ test('Codex sidepanel profile is a per-WebSocket app-server override', () => {
 test('sidepanel selectors keep active-session state separate from the shared default', () => {
   const opencode = read('neural-interface/public/shared/ocp-v2/ocp-v2-projectbar.js');
   assert.match(opencode, /savedSessionProfile\(sessionId\)/);
-  assert.match(opencode, /api\.mcpProfileSet\(state\.sessionId, profile\)/);
+  // The switch itself is setSessionMcpProfile (ocp-v2-session-actions.js): it
+  // captures the session before the request, so the answer is saved under
+  // that session's key and not under whichever one is selected by then.
+  const opencodeActions = read('neural-interface/public/shared/ocp-v2/ocp-v2-session-actions.js');
+  assert.match(opencode, /await setSessionMcpProfile\(_currentStore, api, profile, \{ save: saveSessionProfile \}\)/);
+  assert.match(opencodeActions, /api\.mcpProfileSet\(at\.sessionId, profile\)/);
   assert.match(opencode, /api\.mcpProfileGet\(sessionId\)/);
   assert.match(opencode, /if \(!remote\?\.pinned \|\| !remote\.profile\) return/);
   assert.doesNotMatch(opencode, /api\/opencode\/mcp/);
   assert.match(opencode, /getState\(\)\.sessionId \? null : _defaultProfile/);
   assert.match(opencode, /event\?\.type === 'config:mcp-profile'/);
-  assert.match(opencode, /result\?\.error \|\| result\?\.ok === false/);
+  assert.match(opencodeActions, /result\?\.error \|\| result\?\.ok === false/);
   const updateProfile = opencode.slice(
     opencode.indexOf('async function updateMcpProfile'),
     opencode.indexOf('// ── Recall dropdown wiring'),
@@ -108,9 +117,12 @@ test('sidepanel selectors keep active-session state separate from the shared def
     'an active-session switch returns before the explicit future-default endpoint',
   );
 
+  // The socket layer hands every bus event to the reducer in ocp-v2-events.js.
   const opencodeWs = read('neural-interface/public/shared/ocp-v2/ocp-v2-ws.js');
-  assert.match(opencodeWs, /case 'mcp\.profile\.changed':/);
-  assert.match(opencodeWs, /store\.setMcpProfile\(ev\.profile \|\| null\)/);
+  const opencodeEvents = read('neural-interface/public/shared/ocp-v2/ocp-v2-events.js');
+  assert.match(opencodeWs, /applyEvent\(store, eventType, ev, EVENT_HOOKS\)/);
+  assert.match(opencodeEvents, /case 'mcp\.profile\.changed':/);
+  assert.match(opencodeEvents, /store\.setMcpProfile\(ev\.profile \|\| null\)/);
 
   const codex = read('neural-interface/public/shared/cdx/cdx-panel.js');
   assert.match(codex, /requestSocketPayload\('mcp_profile_set'/);
@@ -125,9 +137,14 @@ test('sidepanel selectors keep active-session state separate from the shared def
   const sessions = read('neural-interface/public/shared/ui-sessions.js');
   assert.match(sessions, /from '\.\/ui-opencode-panel-v2\.js'/);
   assert.doesNotMatch(sessions, /from '\.\/ocp\/ocp-panel\.js'/);
-  const compatibilityBarrel = read('neural-interface/public/shared/ui-opencode-panel.js');
-  assert.match(compatibilityBarrel, /from '\.\/ui-opencode-panel-v2\.js'/);
-  assert.doesNotMatch(compatibilityBarrel, /from '\.\/ocp\/ocp-panel\.js'/);
+  // The shared-profile panel (ocp/) and its compatibility barrel are deleted,
+  // so no import can reach the retired UI: every module names the v2 barrel.
+  const shared = 'neural-interface/public/shared';
+  assert.equal(existsSync(resolve(root, shared, 'ui-opencode-panel.js')), false);
+  assert.equal(existsSync(resolve(root, shared, 'ocp')), false);
+  for (const name of readdirSync(resolve(root, shared)).filter((file) => file.endsWith('.js'))) {
+    assert.doesNotMatch(read(`${shared}/${name}`), /from '\.\/(?:ui-opencode-panel\.js|ocp\/)/, name);
+  }
 });
 
 test('native run descriptors persist runtime-local MCP profile changes', () => {
@@ -154,11 +171,19 @@ test('OpenCode profile routing is permissioned with native tool ids and never mu
   const launch = automation.slice(automation.indexOf('async function confirmLaunch'), automation.indexOf('// Loop mode — route based on destination'));
   assert.doesNotMatch(launch, /fetch\('\/api\/mcp\/profile'/);
 
-  const legacy = read('neural-interface/public/shared/ocp/ocp-panel.js');
-  const legacySwitch = legacy.slice(legacy.indexOf('async function updateMcpProfile'), legacy.indexOf('// ── Recall Profile'));
-  assert.doesNotMatch(legacySwitch, /fetch\('\/api\/mcp\/profile'|fetch\('\/api\/opencode\/mcp'/);
+  // The retired panel ran on the shared serve and was kept fail-closed: its
+  // profile switch wrote neither the shared default nor the global MCP config.
+  // It is deleted now; the switch that exists is a request on the session's
+  // own socket, and it writes neither of them.
+  assert.equal(existsSync(resolve(root, 'neural-interface/public/shared/ocp/ocp-panel.js')), false);
+  const liveActions = read('neural-interface/public/shared/ocp-v2/ocp-v2-session-actions.js');
+  const liveSwitch = liveActions.slice(liveActions.indexOf('export async function setSessionMcpProfile'));
+  assert.match(liveSwitch, /api\.mcpProfileSet\(at\.sessionId, profile\)/);
+  assert.doesNotMatch(liveActions, /fetch\('\/api\/mcp\/profile'|fetch\('\/api\/opencode\/mcp'/);
   const upgrade = server.slice(server.indexOf("httpServer.on('upgrade'"), server.indexOf("wss.on('connection'"));
   assert.doesNotMatch(upgrade, /\/ws\/opencode-skin/);
+  // Its socket is not only refused at upgrade: the handler no longer exists.
+  assert.doesNotMatch(server, /\/ws\/opencode-skin|function handleOpencodeWs\b/);
 });
 
 test('loop and timer launches validate and capture isolated profiles before spawning', () => {
@@ -180,5 +205,7 @@ test('loop and timer launches validate and capture isolated profiles before spaw
   const plan = read('neural-interface/public/shared/ocp-v2/ocp-v2-plan.js');
   assert.match(ws, /session:compact', sessionId, cwd, mcpProfile/);
   assert.match(compactButton, /mcpProfile: s\.mcpProfile \|\| undefined/);
-  assert.match(plan, /mcpProfile: s\.mcpProfile \|\| undefined/);
+  // The plan card's Compact reads the profile from the binding snapshot it
+  // captured before the request (ocp-v2-binding.js), not from the live state.
+  assert.match(plan, /mcpProfile: at\.mcpProfile \|\| undefined/);
 });

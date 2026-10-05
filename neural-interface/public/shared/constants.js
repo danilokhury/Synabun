@@ -23,17 +23,13 @@ export const KEYS = {
   SELECTED_NODE:       'neural-selected-node',
   SELECTED_SWITCH:     'neural-selected-node-switch',   // sessionStorage — preserve selection across variant switch
   UI_SCALE:            'neural-ui-scale',
-  GFX_CONFIG_3D:       'neural-gfx-config',
   GFX_CONFIG_2D:       'neural-gfx-config-2d',
-  GFX_PRESET:          'neural-gfx-preset',
   LAYOUT_PRESETS_3D:   'neural-layout-presets',
   LAYOUT_PRESETS_2D:   'neural-user-presets-2d',
   PANEL_PREFIX:        'neural-panel-',
   NODE_POS_3D:         'synabun-node-positions',
   NODE_POS_2D:         'synabun-node-positions-2d',
-  CAM_HUD_PINNED:      'neural-cam-hud-pinned',
-  CAM_HUD_POS:         'neural-cam-hud-pos',
-  LAYOUT_VERSION:      'synabun-layout-version',
+  MAP_VIEW:            'neural-map-view',        // 3D memory map options {neighbors, recency, grid}
   INTERFACE_CONFIG:    'neural-interface-config',
   EXPLORER_CAT_ORDER:  'neural-explorer-cat-order',
   EXPLORER_COLLAPSED:  'neural-explorer-collapsed',
@@ -47,6 +43,7 @@ export const KEYS = {
   TERMINAL_SESSIONS:   'neural-terminal-active-sessions',
   TERMINAL_SPLIT_RATIO: 'neural-terminal-split-ratio',
   TERMINAL_NOTIFICATIONS: 'neural-terminal-notifications',
+  TERMINAL_FONT_SIZE:  'neural-terminal-font-size',   // Cmd+= / Cmd+− / Cmd+0 (9–24 px)
   NOTIF_SOUND:           'neural-notif-sound',
   NOTIF_SOUND_VOLUME:    'neural-notif-sound-volume',
   NOTIF_SOUND_TYPE:      'neural-notif-sound-type',
@@ -59,6 +56,7 @@ export const KEYS = {
   NOTIF_TRIGGER_ACTION:  'neural-notif-trigger-action',
   NOTIF_TRIGGER_ASK:     'neural-notif-trigger-ask',
   NOTIF_TRIGGER_ERROR:   'neural-notif-trigger-error',
+  SETTINGS_LAST_PAGE:    'neural-settings-last-page',   // the Settings page shown last (a page id from settings/settings-ia.js)
   NOTIF_TOAST:           'neural-notif-toast',
   NOTIF_TOAST_DURATION:  'neural-notif-toast-duration',
   NOTIF_TOAST_POSITION:  'neural-notif-toast-position',
@@ -93,6 +91,14 @@ export const KEYS = {
   COST_WIDGET_DOCKED:     'neural-cost-widget-docked',
   NODE_LIMIT:             'neural-node-limit',
   MINIMAP_POS:            'synabun-2d-minimap-pos',
+  // Assistant (CLI-region tab) — last-used brain + per-tab state prefix
+  ASSISTANT_BRAIN:        'neural-assistant-brain',
+  ASSISTANT_TAB_PREFIX:   'neural-assistant-tab:',
+  ASSISTANT_DOCK_OPEN:    'neural-assistant-dock-open',
+  ASSISTANT_DOCK_SHOW_ALL:'neural-assistant-dock-show-all',
+  ASSISTANT_ROUTE_MODE:   'neural-assistant-route-mode', // last-used route mode (always-ask|ask-unsure|never)
+  // Assistant sidepanel — open tabs {v:1, activeIdx, tabs:[{sessionId,label,userRenamed}]}
+  ASSISTANT_PANEL_TABS:   'synabun-assistant-panel-tabs',
 };
 
 /** Default keybind mappings — action ID → combo string.
@@ -110,6 +116,8 @@ export const DEFAULT_KEYBINDS = {
   'toggle-focus-mode':   'v',
   'toggle-minimap':      'm',
   'open-keybinds':       'n',
+  'launch-assistant':    'a',
+  'toggle-assistant':    'Ctrl+a',
   'launch-claude':       '1',
   'launch-codex':        '2',
   'launch-gemini':       '3',
@@ -118,6 +126,7 @@ export const DEFAULT_KEYBINDS = {
   'launch-youtube':      'y',
   'toggle-file-explorer': 'e',
   'open-settings':       's',
+  'map-frame-all':       'h',
 };
 
 /** Display metadata for each rebindable action. */
@@ -132,8 +141,12 @@ export const KEYBIND_META = {
   'toggle-explorer':     { label: 'Toggle Explorer',       group: 'Navigation' },
   'toggle-focus-mode':   { label: 'Toggle Focus Mode',     group: 'Navigation' },
   'toggle-minimap':      { label: 'Toggle Minimap',        group: 'View' },
+  'toggle-toolbar':      { label: 'Hide All Toolbars',    group: 'View' },
   'open-settings':       { label: 'Open Settings',          group: 'Settings' },
   'open-keybinds':       { label: 'Open Keybinds',         group: 'Settings' },
+  'launch-assistant':    { label: 'Assistant',             group: 'Launch App', icon: 'assistant' },
+  'toggle-assistant':    { label: 'Toggle Assistant',      group: 'Launch App', icon: 'assistant' },
+  'toggle-assistant-panel': { label: 'Toggle Assistant Sidepanel', group: 'Launch App', icon: 'assistant' },
   'launch-claude':       { label: 'Claude Code',           group: 'Launch App', icon: 'claude' },
   'launch-codex':        { label: 'Codex CLI',             group: 'Launch App', icon: 'codex' },
   'launch-gemini':       { label: 'Gemini CLI',            group: 'Launch App', icon: 'gemini' },
@@ -141,4 +154,5 @@ export const KEYBIND_META = {
   'launch-browser':      { label: 'Browser',               group: 'Launch App', icon: 'browser' },
   'launch-youtube':      { label: 'YouTube',               group: 'Launch App', icon: 'youtube' },
   'toggle-file-explorer': { label: 'Toggle File Explorer', group: 'Navigation' },
+  'map-frame-all':       { label: 'Frame Whole Map',       group: 'View' },
 };

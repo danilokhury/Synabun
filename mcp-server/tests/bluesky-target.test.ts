@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const ni = vi.hoisted(() => ({
   evaluate: vi.fn(),
   navigate: vi.fn(),
+  reload: vi.fn(),
   resolveSession: vi.fn(),
 }));
 
@@ -24,6 +25,7 @@ describe('BlueSky assigned-tab targeting', () => {
   beforeEach(() => {
     ni.evaluate.mockReset();
     ni.navigate.mockReset();
+    ni.reload.mockReset();
     ni.resolveSession.mockReset();
   });
 
@@ -91,11 +93,12 @@ describe('BlueSky assigned-tab targeting', () => {
     ni.evaluate
       .mockResolvedValueOnce(topLevel('about:blank'))
       .mockResolvedValueOnce(topLevel('https://bsky.app/', 'Bluesky'))
+      .mockResolvedValueOnce({ ok: true, result: { state: 'fresh', expiresAt: Date.now() + 3_600_000, pageAgeMs: 900 } })
       .mockResolvedValueOnce({
         ok: true,
         result: {
-          did: 'did:plc:criticalpixel',
-          handle: 'critpixel.bsky.social',
+          did: 'did:plc:acmeaccount',
+          handle: 'acme.bsky.social',
           pdsUrl: 'https://example.host.bsky.network',
         },
       });
@@ -106,8 +109,9 @@ describe('BlueSky assigned-tab targeting', () => {
       tabId: 'tab-1',
     });
 
-    expect(result?.content?.[0]?.text).toContain('critpixel.bsky.social');
+    expect(result?.content?.[0]?.text).toContain('acme.bsky.social');
     expect(ni.navigate).toHaveBeenCalledTimes(1);
-    expect(ni.evaluate).toHaveBeenCalledTimes(3);
+    expect(ni.evaluate).toHaveBeenCalledTimes(4);
+    expect(ni.reload).not.toHaveBeenCalled();
   });
 });

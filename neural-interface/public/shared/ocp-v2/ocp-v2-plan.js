@@ -10,6 +10,8 @@ import { emit, on } from '../state.js';
 import { storage } from '../storage.js';
 import { api } from './ocp-v2-ws.js';
 import { hasRunningChildForParent } from './ocp-v2-manager.js';
+import { captureBinding } from './ocp-v2-binding.js';
+import { replyFailed, replyError } from './ocp-v2-caps.js';
 
 const PLAN_SOURCE = 'opencode';
 const STOR_MODE = 'opencode-v2-mode';
@@ -18,20 +20,49 @@ const TASKS_REGEX = /^(tasks?|todo[_-]?write)$/i;
 
 const _registrations = new Map(); // store → { sendTextMessage, unsub }
 let _globalInstalled = false;
-const _finalizing = new WeakSet(); // stores currently finalizing
-const _planFilePromises = new WeakMap(); // store → Promise<string>
+// A plan file is keyed by store AND binding: one of the session the panel has
+// left does not serve the session it is on now.
+// A finalization is keyed by store, binding AND plan turn: the transcript read
+// of an older plan turn (which will reject itself when it is back) does not
+// stand in the way of the turn that is open now. While a turn's own read is
+// out, a second finalizer of that same turn is turned away, but not lost: it
+// is noted on the lock (`again`) and runs when the read is back, should the
+// turn still be open then.
+const _finalizing = new WeakMap(); // store → Map(`${binding}:${planTurnId}` → { again, saidProse })
+function finalizationsOf(store) {
+  let locks = _finalizing.get(store);
+  if (!locks) { locks = new Map(); _finalizing.set(store, locks); }
+  return locks;
+}
+const _planFilePromises = new WeakMap(); // store → { binding, content, promise }
+// The transcript read of a finalization can fail (an error reply, a request
+// that timed out). That is not an empty transcript: the read is asked again,
+// this many times in all, with a pause in between.
+export const PLAN_READ_ATTEMPTS = 3;
+export const PLAN_READ_RETRY_MS = 800;
 
 export function configurePlanLifecycle({ sendTextMessage, store } = {}) {
   if (!store) return () => {};
   const prev = _registrations.get(store);
   if (prev?.unsub) { try { prev.unsub(); } catch {} }
 
+  // The timer fires a tick later: it finalizes the plan turn of the binding
+  // the event was for, not of whatever the panel is on by then.
+  const finalizeLater = (reason) => {
+    const at = captureBinding(store);
+    // ...and of the plan turn the event was about, not of one begun after it.
+    const planTurn = store.getState().planTurnId;
+    setTimeout(() => {
+      if (!at.isCurrent()) return;
+      maybeFinalizePlanTurn(reason, store, { lenient: true, planTurn }).catch(() => {});
+    }, 0);
+  };
   const unsub = store.subscribe((event, state) => {
     if (event?.type === 'running:set' && !state.running && state.planTurnActive) {
-      setTimeout(() => { maybeFinalizePlanTurn('session.idle', store, { lenient: true }).catch(() => {}); }, 0);
+      finalizeLater('session.idle');
     }
     if (event?.type === 'questions:set' && !state.running && state.planTurnActive && !(state.pendingQuestions || []).length) {
-      setTimeout(() => { maybeFinalizePlanTurn('questions:cleared', store, { lenient: true }).catch(() => {}); }, 0);
+      finalizeLater('questions:cleared');
     }
   });
 
@@ -55,7 +86,11 @@ function installGlobalLifecycle() {
     if (!text) return;
     for (const [store] of _registrations) {
       const s = store.getState();
-      if (tabId && s.sessionId && tabId !== s.sessionId) continue;
+      // The editor was opened for one session (tabId): its plan goes to the
+      // panel that is on that session, and to no other. An event that names
+      // no session has no owner and is applied nowhere (this panel's Edit
+      // always names one).
+      if (!ownsEditorEvent(s, tabId)) continue;
       store.setPlanContent(text, {
         edited: true,
         filePath: filePath || s.planFilePath || '',
@@ -70,77 +105,173 @@ function installGlobalLifecycle() {
     if (source && source !== PLAN_SOURCE) return;
     for (const [store] of _registrations) {
       const s = store.getState();
-      if (tabId && s.sessionId && tabId !== s.sessionId) continue;
+      if (!ownsEditorEvent(s, tabId)) continue;
       if (currentPlanText(store)) store.setPostPlanActions(true, s.postPlanHeader || 'PLAN COMPLETE');
     }
   });
 }
 
+// An editor event belongs to the store that is on the session it names.
+const ownsEditorEvent = (state, tabId) => !!tabId && !!state.sessionId && tabId === state.sessionId;
+
+/** Starts the plan turn of a send. Returns its identity (state.planTurnId). */
 export function beginPlanTurnForSend(store) {
   const s = store.getState();
   const count = (s.messageOrder || []).filter((id) => !String(id).startsWith('local-')).length;
   store.beginPlanTurn({ sessionId: s.sessionId, startMessageCount: count });
+  return store.getState().planTurnId || 0;
 }
 
 export function isPostPlanBlocked(store) {
   return !!store.getState().showPostPlanActions;
 }
 
-export async function maybeFinalizePlanTurn(reason = 'terminal', store, { force = false, lenient = false } = {}) {
+// `planTurn` (optional) is the identity of the plan turn the caller means (the
+// send that started it): a continuation of an older turn does not finalize a
+// newer plan turn of the same session. (`retryOf` is this function's own: the
+// lock of the read a turned-away finalizer waited for.)
+export async function maybeFinalizePlanTurn(reason = 'terminal', store, { force = false, lenient = false, planTurn, retryOf = null } = {}) {
   if (!store) return false;
   const s = store.getState();
   if (!s.planTurnActive || !s.sessionId) return false;
+  if (planTurn && s.planTurnId !== planTurn) return false;
+  // The plan turn being finalized: this session, under this binding, with
+  // this identity. Everything below is for that turn; `s` is the live state
+  // and is not read again after the await.
+  const at = captureBinding(store);
+  const planTurnId = s.planTurnId;
+  const startCount = s.planTurnStartMessageCount || 0;
   // When pending questions are present we used to bail entirely. Now we still
   // proceed so the PLAN COMPLETE card can stack ABOVE the question card —
   // but only if a real plan body or explicit ExitPlanMode is present.
   // The flag below tightens the gate inside extraction.
   const hasPendingQuestions = !!(s.pendingQuestions || []).length;
-  if (_finalizing.has(store)) return false;
+  // One read at a time per plan turn. A read that is out for an older plan
+  // turn holds another key and is not in this turn's way.
+  const locks = finalizationsOf(store);
+  const lockKey = `${at.binding}:${planTurnId}`;
+  const held = locks.get(lockKey);
+  if (held) {
+    // This turn is being read right now. The transcript that read gets may be
+    // older than what this finalizer was raised for, and the read may be held
+    // to a stricter test: this one runs after it, unless it completed the plan.
+    held.again = { reason, force: force || held.again?.force === true, lenient: lenient || held.again?.lenient === true };
+    return false;
+  }
 
   // Defer if a sub-agent of this parent is still running. Otherwise we would
   // capture the parent's pre-handoff text as the "plan" before the agent
   // returns and the parent has a chance to integrate the report. The child's
   // running:set→false subscription in ocp-v2-manager.js re-pokes us when the
   // sub-agent finishes.
-  if (!force && hasRunningChildForParent(s.sessionId)) return false;
+  if (!force && hasRunningChildForParent(at.sessionId)) return false;
 
-  _finalizing.add(store);
+  const lock = { again: null, saidProse: retryOf?.saidProse === true };
+  locks.set(lockKey, lock);
+  let completed = false;
+  let failure = null;
   try {
-    const list = await api.sessionMessages(s.sessionId);
-    const items = Array.isArray(list?.data) ? list.data : [];
-    syncMessages(store, items);
-
-    const extracted = extractPlanFromMessages(items, {
-      startCount: s.planTurnStartMessageCount || 0,
-      force,
-    });
-    const plan = String(extracted.text || '').trim();
-    if (!plan) return false;
-
-    if (!force && !extracted.explicitExit && looksLikeProseQuestions(plan)) {
-      // Don't surface the prose-question error when the agent already used the
-      // question tool (the question card itself is the clarification UX).
-      if (!hasPendingQuestions) {
-        store.pushError({
-          message: 'Plan mode ended with clarification questions in prose. Reply in Plan mode, or ask OpenCode to use its question tool.',
-          reason,
-        });
-      }
-      return false;
-    }
-
-    if (!force && !lenient && !extracted.explicitExit && !isRealPlanContent(plan)) return false;
-
-    // With pending questions, only fire PLAN COMPLETE for explicit exits or
-    // unambiguously plan-shaped bodies — never for a passing mention.
-    if (hasPendingQuestions && !extracted.explicitExit && !isRealPlanContent(plan)) return false;
-
-    store.completePlanTurn({ content: plan, header: 'PLAN COMPLETE' });
-    ensurePlanFile(store).catch(() => {});
-    return true;
-  } finally {
-    _finalizing.delete(store);
+    completed = await readAndFinalize(store, at, { planTurnId, startCount, hasPendingQuestions, force, lenient, reason, lock });
+  } catch (err) {
+    failure = err;
   }
+  // Only this read's own entry: never the lock of another plan turn.
+  if (locks.get(lockKey) === lock) locks.delete(lockKey);
+  const again = lock.again;
+  if (again && !completed && planTurnStillOpen(store, at, planTurnId)) {
+    // The finalizer that was turned away while this read was out.
+    const retry = maybeFinalizePlanTurn(again.reason, store, { force: again.force, lenient: again.lenient, planTurn: planTurnId, retryOf: lock });
+    if (!failure) return retry;
+    retry.catch(() => {});
+  }
+  if (failure) throw failure;
+  return completed;
+}
+
+// The transcript of the plan turn's session: `{ items }`. A read that fails is
+// asked again, PLAN_READ_ATTEMPTS times in all: `{ error }` when every one
+// failed. `{ over: true }` as soon as the panel moved or the plan turn is over
+// (cleared, or a newer one began): nothing more is read for it then.
+async function readPlanTranscript(store, at, planTurnId) {
+  let error = '';
+  for (let attempt = 1; attempt <= PLAN_READ_ATTEMPTS; attempt += 1) {
+    let list;
+    try { list = await api.sessionMessages(at.sessionId); } catch (err) { list = { ok: false, error: err?.message || String(err) }; }
+    if (!planTurnStillOpen(store, at, planTurnId)) return { over: true };
+    if (!replyFailed(list)) return { items: Array.isArray(list.data) ? list.data : [] };
+    error = replyError(list, 'no answer');
+    if (attempt < PLAN_READ_ATTEMPTS) {
+      await new Promise((resolve) => setTimeout(resolve, PLAN_READ_RETRY_MS));
+      if (!planTurnStillOpen(store, at, planTurnId)) return { over: true };
+    }
+  }
+  return { error };
+}
+
+// The read of one plan turn and what it leads to. Resolves whether the plan
+// turn was completed (PLAN COMPLETE).
+async function readAndFinalize(store, at, { planTurnId, startCount, hasPendingQuestions, force, lenient, reason, lock }) {
+  const read = await readPlanTranscript(store, at, planTurnId);
+  // The panel moved, or this plan turn is over: the transcript and the plan
+  // in it are not for what is on screen.
+  if (read.over) return false;
+  if (!read.items) {
+    // The transcript could not be read. While the turn is still running its
+    // idle event reads again. Once it is idle nothing else would: the plan
+    // turn would stay open, with no card, and hold the queue for ever. It is
+    // ended here, and said: the queue is then held by that error like after
+    // any turn that failed, and goes on Resume.
+    if (store.getState().running) return false;
+    // (The error first: it holds the queue before the plan turn lets go of it.)
+    store.pushError({
+      message: `Could not read the plan of this turn from OpenCode (${read.error}). The plan turn has ended without a plan card. Ask for the plan again to get one.`,
+      reason,
+    });
+    store.clearPlanState({ preserveMode: true });
+    return false;
+  }
+  const items = read.items;
+  syncMessages(store, items);
+
+  const extracted = extractPlanFromMessages(items, {
+    startCount,
+    force,
+  });
+  const plan = String(extracted.text || '').trim();
+  if (!plan) return false;
+
+  if (!force && !extracted.explicitExit && looksLikeProseQuestions(plan)) {
+    // Don't surface the prose-question error when the agent already used the
+    // question tool (the question card itself is the clarification UX), nor a
+    // second time for the read that follows a turned-away finalizer.
+    if (!hasPendingQuestions && !lock.saidProse) {
+      lock.saidProse = true;
+      store.pushError({
+        message: 'Plan mode ended with clarification questions in prose. Reply in Plan mode, or ask OpenCode to use its question tool.',
+        reason,
+      });
+    }
+    return false;
+  }
+
+  if (!force && !lenient && !extracted.explicitExit && !isRealPlanContent(plan)) return false;
+
+  // With pending questions, only fire PLAN COMPLETE for explicit exits or
+  // unambiguously plan-shaped bodies — never for a passing mention.
+  if (hasPendingQuestions && !extracted.explicitExit && !isRealPlanContent(plan)) return false;
+
+  store.completePlanTurn({ content: plan, header: 'PLAN COMPLETE' });
+  ensurePlanFile(store).catch(() => {});
+  return true;
+}
+
+// Is the plan turn `planTurnId`, under binding `at`, still the one the store
+// holds, and still open? Clearing the plan or starting the next plan turn
+// changes the identity; leaving plan mode (Build) ends the turn without
+// changing it, so `planTurnActive` is part of the answer.
+function planTurnStillOpen(store, at, planTurnId) {
+  const s = store.getState();
+  return at.isCurrent() && s.planTurnActive === true && s.planTurnId === planTurnId;
 }
 
 export async function handlePostPlanAction(action, store) {
@@ -170,11 +301,16 @@ export async function handlePostPlanAction(action, store) {
 
   if (action === 'compact') {
     if (!s.sessionId) return false;
+    const at = captureBinding(store);
     const res = await api.compact({
-      sessionId: s.sessionId,
-      cwd: s.cwd || undefined,
-      mcpProfile: s.mcpProfile || undefined,
+      sessionId: at.sessionId,
+      cwd: at.cwd || undefined,
+      mcpProfile: at.mcpProfile || undefined,
+      model: at.model || undefined,
     });
+    // The compaction was that session's. On another binding there is no plan
+    // card of it to relabel and nobody to tell about its failure.
+    if (!at.isCurrent()) return false;
     if (res?.error) throw new Error(res.error);
     store.setPostPlanActions(true, 'CONTEXT COMPACTED');
     return true;
@@ -182,10 +318,14 @@ export async function handlePostPlanAction(action, store) {
 
   if (action === 'edit') {
     if (!plan) throw new Error('No plan content to edit');
+    const at = captureBinding(store);
     const filePath = await ensurePlanFile(store);
+    // The editor is opened for the session whose plan this is: once the panel
+    // is on another binding there is nothing to open, and no error to show.
+    if (!at.isCurrent()) return false;
     if (!filePath) throw new Error('Could not create plan file');
     store.setPostPlanActions(false);
-    emit('open-plan-editor', { filePath, tabId: s.sessionId, source: PLAN_SOURCE });
+    emit('open-plan-editor', { filePath, tabId: at.sessionId, source: PLAN_SOURCE });
     return true;
   }
 
@@ -198,8 +338,10 @@ export async function handlePostPlanAction(action, store) {
 export function dispatchPostPlanAction(action) {
   const first = _registrations.keys().next().value;
   if (!first) return;
+  // A failure is reported in the session the action was started in.
+  const at = captureBinding(first);
   handlePostPlanAction(action, first).catch((err) => {
-    first.pushError({ message: err?.message || 'Plan action failed' });
+    if (at.isCurrent()) first.pushError({ message: err?.message || 'Plan action failed' });
   });
 }
 
@@ -219,35 +361,45 @@ function currentPlanText(store) {
 async function ensurePlanFile(store) {
   const s = store.getState();
   if (s.planFilePath) return s.planFilePath;
-  const existing = _planFilePromises.get(store);
-  if (existing) return existing;
-
+  const at = captureBinding(store);
   const content = normalizePlanFileContent(currentPlanText(store));
+  // A file being made for this very plan is shared; one for another session's
+  // plan, or for a plan that has changed since, is not.
+  const existing = _planFilePromises.get(store);
+  if (existing && existing.binding === at.binding && existing.content === content) return existing.promise;
   if (!content) return '';
 
+  // Still the plan this file was made from, on the binding it was made under?
+  const stillThisPlan = () => at.isCurrent() && normalizePlanFileContent(currentPlanText(store)) === content;
+  const entry = { binding: at.binding, content, promise: null };
   store.setPlanMaterializing(true);
-  const promise = fetch('/api/create-plan', {
+  entry.promise = fetch('/api/create-plan', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content, cwd: s.cwd || '', projectPath: s.cwd || '' }),
+    body: JSON.stringify({ content, cwd: at.cwd || '', projectPath: at.cwd || '' }),
   })
     .then(async (res) => {
       const result = await res.json().catch(() => ({}));
       if (!res.ok || !result?.ok || !result.path) throw new Error(result?.error || 'create-plan failed');
+      // The path belongs to the plan it was written from. Another session's
+      // plan (or a newer one of this session) never gets it.
+      if (!stillThisPlan()) return '';
       store.setPlanContent(currentPlanText(store), { filePath: result.path });
       return result.path;
     })
     .catch((err) => {
-      store.pushError({ message: err?.message || 'Could not create plan file' });
+      if (at.isCurrent()) store.pushError({ message: err?.message || 'Could not create plan file' });
       return '';
     })
     .finally(() => {
-      _planFilePromises.delete(store);
-      store.setPlanMaterializing(false);
+      if (_planFilePromises.get(store) === entry) _planFilePromises.delete(store);
+      // The flag of the binding on screen is that binding's (the store reset
+      // it when the transcript was cleared).
+      if (at.isCurrent()) store.setPlanMaterializing(false);
     });
-  _planFilePromises.set(store, promise);
+  _planFilePromises.set(store, entry);
 
-  return promise;
+  return entry.promise;
 }
 
 function normalizePlanFileContent(content) {

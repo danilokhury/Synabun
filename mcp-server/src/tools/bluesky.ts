@@ -13,11 +13,19 @@
  * Requirement: a browser context logged in to bsky.app — localStorage is
  * per-origin, so a blank assigned tab is initialized at bsky.app before the
  * session token is read. Nonblank tabs are never navigated implicitly.
+ *
+ * The stored access token lives about 2 hours; bsky.app renews it with its
+ * refresh token when it boots or when a call reports ExpiredToken. A tab read
+ * right after it loaded can still hold the expired one, so every tool first
+ * makes sure the token is fresh (waiting for the page's own refresh, then
+ * reloading the tab once) and only then reports "not logged in" — when the page
+ * really holds no session.
  */
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import * as ni from '../services/neural-interface.js';
 import { text } from './response.js';
+import { coerceBoolean } from './utils.js';
 
 // ─────────────────────────────────────────────────────────────────────────
 // In-page JS helpers — prepended to every tool script. Plain ES5-ish JS with
@@ -46,13 +54,38 @@ function __bskySession(){
       || (sess.accessJwt ? sess : null);
     if (cand && cand.accessJwt && cand.did){ acct = cand; break; }
   }
-  if(!acct) return { __bskyError: 'Not logged in to BlueSky (no session token found on this page). Open a bsky.app tab, sign in, then retry.' };
+  if(!acct) return { __bskyNoSession: true, __bskyError: 'Not logged in to BlueSky (no session token found on this page). Open a bsky.app tab, sign in, then retry.' };
   var pdsUrl = String(acct.pdsUrl || acct.service || 'https://bsky.social').replace(/[/]+$/, '');
   return { accessJwt: acct.accessJwt, did: acct.did, handle: acct.handle || null, pdsUrl: pdsUrl };
 }
 `;
 
+// Token freshness from the access JWT's exp claim. bsky.app rewrites
+// BSKY_STORAGE when it refreshes, so re-reading picks up the new token.
+const BSKY_TOKEN_JS = `
+function __bskyJwtExpMs(jwt){
+  try {
+    var part = String(jwt || '').split('.')[1];
+    if (!part) return null;
+    part = part.replace(/-/g, '+').replace(/_/g, '/');
+    while (part.length % 4) part += '=';
+    var claims = JSON.parse(atob(part));
+    return typeof claims.exp === 'number' ? claims.exp * 1000 : null;
+  } catch(e){ return null; }
+}
+function __bskyTokenState(){
+  var pageAgeMs = null;
+  try { pageAgeMs = Math.round(performance.now()); } catch(e){}
+  var s = __bskySession();
+  if (s.__bskyError) return { state: s.__bskyNoSession ? 'none' : 'error', error: s.__bskyError, pageAgeMs: pageAgeMs };
+  var exp = __bskyJwtExpMs(s.accessJwt);
+  if (exp === null) return { state: 'unknown', handle: s.handle, pageAgeMs: pageAgeMs };
+  return { state: exp - Date.now() > 15000 ? 'fresh' : 'expired', expiresAt: exp, handle: s.handle, pageAgeMs: pageAgeMs };
+}
+`;
+
 const BSKY_XRPC_JS = `
+var __bskyWrites = 0;
 async function __bskyXrpc(method, opts){
   opts = opts || {};
   var verb = opts.verb || 'GET';
@@ -87,13 +120,15 @@ async function __bskyXrpc(method, opts){
   if (!res.ok){
     var errName = data && data.error;
     if (res.status === 401 || errName === 'ExpiredToken')
-      return { __bskyExpired: true, __bskyError: 'BlueSky token expired. Reload the bsky.app tab (browser_reload) to refresh the session, then retry.' };
+      return { __bskyExpired: true, __bskyWrote: __bskyWrites > 0, __bskyError: 'BlueSky rejected the session token as expired on ' + method + '.' };
     if (res.status === 429){
       var reset = null; try { reset = res.headers.get('ratelimit-reset'); } catch(e){}
       return { __bskyError: 'BlueSky rate limit hit on ' + method + (reset ? ' (resets at epoch ' + reset + ')' : '') + '. Back off and retry later.' };
     }
     return { __bskyError: 'XRPC ' + method + ' failed (' + res.status + '): ' + (errName || '') + ' ' + ((data && data.message) || '') };
   }
+  // Writes that already landed make a whole-script retry unsafe (see runPrepared).
+  if (verb === 'POST') __bskyWrites++;
   return data == null ? {} : data;
 }
 `;
@@ -134,6 +169,8 @@ async function __bskyUploadBlobFromUrl(imgUrl){
   try { up = await fetch(s.pdsUrl + '/xrpc/com.atproto.repo.uploadBlob', { method:'POST', headers:{ 'Authorization':'Bearer '+s.accessJwt, 'Content-Type': ct }, body: buf }); }
   catch(e){ return { __bskyError: 'uploadBlob network error: ' + (e && e.message || e) }; }
   var d = null; try { d = await up.json(); } catch(e){}
+  if (!up.ok && (up.status === 401 || (d && d.error) === 'ExpiredToken'))
+    return { __bskyExpired: true, __bskyWrote: __bskyWrites > 0, __bskyError: 'BlueSky rejected the session token as expired on uploadBlob.' };
   if (!up.ok) return { __bskyError: 'uploadBlob failed (' + up.status + '): ' + (d && d.error || '') };
   return (d && d.blob) ? { blob: d.blob } : { __bskyError: 'uploadBlob returned no blob' };
 }
@@ -169,7 +206,8 @@ const HELPERS = [BSKY_SESSION_JS, BSKY_XRPC_JS, BSKY_NORMURI_JS, BSKY_UPLOAD_JS,
 
 interface SessionArgs { sessionId?: string; tabId?: string }
 interface CursorArgs extends SessionArgs { limit?: number; cursor?: string; maxItems?: number }
-type BskyResult = { data: any } | { error: string };
+/** `expired`: the server rejected the token; `wrote`: a write had already landed in that script. */
+type BskyResult = { data: any } | { error: string; expired?: boolean; wrote?: boolean };
 
 const BSKY_APP_URL = 'https://bsky.app/';
 const BSKY_TARGET_PROBE_JS = `(() => {
@@ -277,16 +315,160 @@ async function evalBsky(sessionId: string, tabId: string | undefined, body: stri
   const res = await ni.evaluate(sessionId, script, tabId);
   if (res.error) return { error: `BlueSky call failed: ${res.error}` };
   const r = res.result as any;
-  if (r && r.__bskyError) return { error: r.__bskyError };
+  if (r && r.__bskyError) return { error: r.__bskyError, expired: r.__bskyExpired === true, wrote: r.__bskyWrote === true };
   return { data: r };
 }
 
-async function runBsky(args: SessionArgs, body: string): Promise<BskyResult> {
-  const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
+// ── Token recovery ──
+// A freshly initialized tab is usually still booting, and bsky.app renews an
+// expired token during boot — so wait for that first; a page past its boot
+// window gets one reload instead.
+const TOKEN_POLL_MS = 500;
+const TOKEN_BOOT_WAIT_MS = 8_000;
+const TOKEN_RELOAD_WAIT_MS = 15_000;
+const TOKEN_BOOT_WINDOW_MS = 20_000;
+const TOKEN_STATE_SCRIPT = `(() => {\n${BSKY_SESSION_JS}\n${BSKY_TOKEN_JS}\nreturn __bskyTokenState();\n})()`;
+
+// One deadline for the whole tool call: OpenCode and Codex stop an MCP tool call at
+// about 60 s. Finding and opening the tab, the token checks and the reload must end
+// SCRIPT_RESERVE before the deadline, so the tool's own request always has time.
+const BSKY_CALL_BUDGET_MS = 48_000;
+const BSKY_SCRIPT_RESERVE_MS = 12_000;
+const BSKY_RENEW_MIN_MS = 3_000;
+
+type TokenState = {
+  state: 'fresh' | 'expired' | 'unknown' | 'none' | 'error';
+  error?: string;
+  expiresAt?: number;
+  pageAgeMs?: number | null;
+};
+type FreshSession = { ok: true; reloaded: boolean } | { error: string };
+type OutOfTime = { error: string; timedOut: true };
+
+const NOT_LOGGED_IN = 'Not logged in to BlueSky (no session token found on this page). Open a bsky.app tab, sign in, then retry.';
+const tokenUsable = (st: TokenState) => st.state === 'fresh' || st.state === 'unknown';
+const sleep = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
+
+/** Race one step against the call's deadline; the step itself keeps running. */
+function beforeDeadline<T>(work: Promise<T>, deadlineAt: number, what: string): Promise<T | OutOfTime> {
+  const ms = deadlineAt - Date.now();
+  const outOfTime = (): OutOfTime => ({ error: `This BlueSky call ran out of its ${BSKY_CALL_BUDGET_MS / 1000} s time limit while ${what}.`, timedOut: true });
+  if (ms <= 0) return Promise.resolve(outOfTime());
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const limit = new Promise<OutOfTime>((done) => { timer = setTimeout(() => done(outOfTime()), ms); });
+  return Promise.race([work, limit]).finally(() => clearTimeout(timer));
+}
+const timedOut = (value: unknown): value is OutOfTime => !!value && typeof value === 'object' && (value as OutOfTime).timedOut === true;
+
+async function readTokenState(sessionId: string, tabId: string | undefined, deadlineAt: number): Promise<TokenState> {
+  const res = await beforeDeadline(ni.evaluate(sessionId, TOKEN_STATE_SCRIPT, tabId), deadlineAt, 'reading the BlueSky session token');
+  if (timedOut(res)) return { state: 'error', error: res.error };
+  if (res.error) return { state: 'error', error: `BlueSky call failed: ${res.error}` };
+  const r = res.result as TokenState | null;
+  if (!r || typeof r.state !== 'string') return { state: 'error', error: 'BlueSky call failed: invalid session probe response.' };
+  return r;
+}
+
+/** Poll until the page holds a usable token (or none at all), the wait ends, or the
+ *  call's deadline passes. `staleExpiresAt` names a token the server already rejected. */
+async function waitForToken(sessionId: string, tabId: string | undefined, timeoutMs: number, deadlineAt: number, staleExpiresAt?: number): Promise<TokenState> {
+  const waitUntil = Math.min(Date.now() + timeoutMs, deadlineAt);
+  for (;;) {
+    const st = await readTokenState(sessionId, tabId, deadlineAt);
+    const renewed = staleExpiresAt === undefined || st.expiresAt !== staleExpiresAt;
+    // A page mid-reload can fail to evaluate for a moment; keep polling.
+    if (st.state === 'none' || (tokenUsable(st) && renewed)) return st;
+    if (Date.now() + TOKEN_POLL_MS > waitUntil) return st;
+    await sleep(TOKEN_POLL_MS);
+  }
+}
+
+/**
+ * Make sure the assigned bsky.app tab holds a usable session token before a
+ * tool runs: wait for the page's own refresh, then reload the tab once. Reports
+ * "not logged in" only when the page holds no session at all. Everything ends by
+ * `deadlineAt`. `forceReload`: the server rejected a token the page believed fresh.
+ */
+export async function ensureFreshBlueskySession(
+  sessionId: string,
+  tabId: string | undefined,
+  opts: { forceReload?: boolean; deadlineAt?: number } = {},
+): Promise<FreshSession> {
+  const by = opts.deadlineAt ?? Date.now() + BSKY_CALL_BUDGET_MS - BSKY_SCRIPT_RESERVE_MS;
+  const first = await readTokenState(sessionId, tabId, by);
+  if (first.state === 'none') return { error: first.error || NOT_LOGGED_IN };
+  if (first.state === 'error') return { error: first.error || 'BlueSky call failed.' };
+  if (!opts.forceReload) {
+    if (tokenUsable(first)) return { ok: true, reloaded: false };
+    const pageAge = typeof first.pageAgeMs === 'number' ? first.pageAgeMs : Infinity;
+    if (pageAge < TOKEN_BOOT_WINDOW_MS) {
+      const booted = await waitForToken(sessionId, tabId, TOKEN_BOOT_WAIT_MS, by);
+      if (booted.state === 'none') return { error: booted.error || NOT_LOGGED_IN };
+      if (tokenUsable(booted)) return { ok: true, reloaded: false };
+    }
+  }
+  // Reload this bsky.app tab once so the app resumes its session and renews the token.
+  const reloaded = await beforeDeadline(ni.reload(sessionId, tabId), by, 'reloading the bsky.app tab to renew the session');
+  if (timedOut(reloaded)) return { error: `BlueSky token expired, and this call ran out of its ${BSKY_CALL_BUDGET_MS / 1000} s time limit while reloading the bsky.app tab to renew it. Try again; the next call starts with a fresh time limit.` };
+  if (reloaded.error) return { error: `BlueSky token expired, and reloading the bsky.app tab to renew it failed: ${reloaded.error}` };
+  const after = await waitForToken(sessionId, tabId, TOKEN_RELOAD_WAIT_MS, by, opts.forceReload ? first.expiresAt : undefined);
+  if (after.state === 'none') {
+    return { error: 'Not logged in to BlueSky: after reloading the bsky.app tab the page holds no session (the account was signed out). Sign in again in this browser profile, then retry.' };
+  }
+  if (tokenUsable(after)) return { ok: true, reloaded: true };
+  if (after.state === 'error') return { error: `BlueSky token expired, and the bsky.app tab could not be read after reloading it: ${after.error}` };
+  if (Date.now() >= by) return { error: 'BlueSky token was still expired when this call\'s time limit ran out (the bsky.app tab was reloaded once). Try again; the next call starts with a fresh time limit.' };
+  return { error: 'BlueSky token is still expired after waiting for bsky.app to renew it and reloading the tab once, so the saved session could not be renewed. Open bsky.app in this browser profile and sign in again if it asks.' };
+}
+
+type BskyRoute = { sessionId: string; tabId?: string; reloaded: boolean; deadlineAt: number };
+
+/** Resolve the caller's tab in the default browser, make sure it is a
+ *  top-level bsky.app page, and make sure it holds a usable session token — all
+ *  before the call's deadline minus the time kept for the tool's own request. */
+async function prepareBsky(args: SessionArgs, deadlineAt = Date.now() + BSKY_CALL_BUDGET_MS): Promise<BskyRoute | { error: string }> {
+  const prepBy = deadlineAt - BSKY_SCRIPT_RESERVE_MS;
+  const resolved = await beforeDeadline(ni.resolveSession(args.sessionId, undefined, args.tabId, { platform: true }), prepBy, 'finding the bsky.app tab');
   if ('error' in resolved) return { error: resolved.error };
-  const ready = await ensureBlueskyPageTarget(resolved.sessionId, resolved.tabId);
-  if ('error' in ready) return ready;
-  return evalBsky(resolved.sessionId, resolved.tabId, body);
+  const ready = await beforeDeadline(ensureBlueskyPageTarget(resolved.sessionId, resolved.tabId), prepBy, 'opening bsky.app');
+  if ('error' in ready) return { error: ready.error };
+  const fresh = await ensureFreshBlueskySession(resolved.sessionId, resolved.tabId, { deadlineAt: prepBy });
+  if ('error' in fresh) return fresh;
+  return { sessionId: resolved.sessionId, tabId: resolved.tabId, reloaded: fresh.reloaded, deadlineAt };
+}
+
+const UNCERTAIN = 'It may still finish in the page, so check the account before repeating a post, like, follow or message.';
+
+/**
+ * Run a script on a prepared tab, within the call's deadline. When the server still
+ * rejects the token (revoked, clock skew) the tab is renewed and the script runs
+ * once more — only if nothing was written yet, the tab was not already reloaded
+ * for this call, and there is time left — so no post, like or message can repeat.
+ */
+async function runPrepared(route: BskyRoute, body: string): Promise<BskyResult> {
+  const first = await beforeDeadline(evalBsky(route.sessionId, route.tabId, body), route.deadlineAt, 'waiting for BlueSky to answer');
+  if (timedOut(first)) return { error: `${first.error} ${UNCERTAIN}` };
+  if (!('error' in first) || !first.expired) return first;
+  if (first.wrote || route.reloaded) {
+    return { error: `${first.error} The bsky.app tab was ${route.reloaded ? 'already reloaded once for this call' : 'not retried because part of this action was already written'}; check the account before trying again.`, expired: true, wrote: first.wrote };
+  }
+  if (route.deadlineAt - Date.now() < BSKY_SCRIPT_RESERVE_MS + BSKY_RENEW_MIN_MS) {
+    return { error: `${first.error} Not enough of this call's time limit is left to renew the session and try again; the next BlueSky call renews it first.`, expired: true, wrote: false };
+  }
+  const renewed = await ensureFreshBlueskySession(route.sessionId, route.tabId, { forceReload: true, deadlineAt: route.deadlineAt - BSKY_SCRIPT_RESERVE_MS });
+  if ('error' in renewed) return renewed;
+  const second = await beforeDeadline(evalBsky(route.sessionId, route.tabId, body), route.deadlineAt, 'waiting for BlueSky to answer the retry');
+  if (timedOut(second)) return { error: `${second.error} ${UNCERTAIN}` };
+  if ('error' in second && second.expired) {
+    return { error: `${second.error} It was still rejected after the bsky.app tab renewed its session; sign in again in this browser profile if bsky.app asks.`, expired: true, wrote: second.wrote };
+  }
+  return second;
+}
+
+async function runBsky(args: SessionArgs, body: string): Promise<BskyResult> {
+  const route = await prepareBsky(args);
+  if ('error' in route) return route;
+  return runPrepared(route, body);
 }
 
 // ── Trimmers: shrink verbose AT Proto views to the useful, token-cheap fields ──
@@ -383,11 +565,11 @@ const cursorFields = {
 // ═════════════════════════════════════════════════════════════════════════
 
 const blueskySessionSchema = {
-  validate: z.coerce.boolean().optional().describe('Also call com.atproto.server.getSession to verify the token server-side.'),
+  validate: coerceBoolean().optional().describe('Also call com.atproto.server.getSession to verify the token server-side.'),
   ...sessionFields,
 };
 const blueskySessionDescription =
-  'BlueSky: who am I? Returns the logged-in account (did, handle, pdsUrl). Use first to confirm you are signed in. A blank assigned tab is safely initialized at bsky.app; nonblank tabs are never navigated implicitly. Pass validate:true to check the token against the server.';
+  'BlueSky: who am I? Returns the logged-in account (did, handle, pdsUrl). Use first to confirm you are signed in. A blank assigned tab is safely initialized at bsky.app; nonblank tabs are never navigated implicitly. An expired session token is renewed inside the tool (waiting for bsky.app, then reloading its tab at most once), so "not logged in" means the page really has no session. Pass validate:true to check the token against the server.';
 async function handleBlueskySession(args: { validate?: boolean } & SessionArgs) {
   const body = `
     var s = __bskySession();
@@ -543,8 +725,8 @@ async function handleBlueskySearchActors(args: { q: string } & CursorArgs) {
 // ═════════════════════════════════════════════════════════════════════════
 
 const blueskyNotificationsSchema = {
-  priority: z.coerce.boolean().optional().describe('Only priority notifications.'),
-  markSeen: z.coerce.boolean().optional().describe('Mark notifications seen (updates the seen timestamp) after fetching.'),
+  priority: coerceBoolean().optional().describe('Only priority notifications.'),
+  markSeen: coerceBoolean().optional().describe('Mark notifications seen (updates the seen timestamp) after fetching.'),
   ...cursorFields, ...sessionFields,
 };
 const blueskyNotificationsDescription =
@@ -672,10 +854,8 @@ async function handleBlueskyPost(args: {
   text: string; replyTo?: string; quote?: string;
   images?: Array<{ url?: string; path?: string; alt?: string }>; langs?: string[];
 } & SessionArgs) {
-  const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
+  const resolved = await prepareBsky(args);
   if ('error' in resolved) return text(resolved.error);
-  const ready = await ensureBlueskyPageTarget(resolved.sessionId, resolved.tabId);
-  if ('error' in ready) return text(ready.error);
 
   const images = args.images || [];
   if (images.length > 4) return text('BlueSky allows at most 4 images per post.');
@@ -685,8 +865,8 @@ async function handleBlueskyPost(args: {
   const preImages: Array<{ blob: unknown; alt: string }> = [];
   for (const img of images) {
     if (img.path) {
-      const up = await ni.uploadBlueskyBlob(resolved.sessionId, img.path, resolved.tabId);
-      if (up.error) return text(`Image upload failed for ${img.path}: ${up.error}`);
+      const up = await beforeDeadline(ni.uploadBlueskyBlob(resolved.sessionId, img.path, resolved.tabId), resolved.deadlineAt - BSKY_SCRIPT_RESERVE_MS, `uploading ${img.path}`);
+      if (up.error) return text(`Image upload failed for ${img.path}: ${up.error}${timedOut(up) ? ' Nothing was posted.' : ''}`);
       const blob = (up as any).blob;
       if (!blob) return text(`Image upload returned no blob for ${img.path}.`);
       preImages.push({ blob, alt: img.alt || '' });
@@ -791,7 +971,7 @@ async function handleBlueskyPost(args: {
     if (cr.__bskyError) return cr;
     return { uri: cr.uri, cid: cr.cid };`;
 
-  const r = await evalBsky(resolved.sessionId, resolved.tabId, body);
+  const r = await runPrepared(resolved, body);
   if ('error' in r) return text(r.error);
   return text(`Posted to BlueSky: ${JSON.stringify({ uri: r.data.uri, cid: r.data.cid })}`);
 }

@@ -90,8 +90,6 @@ synabun/
 
 Runtime data is not stored in the checkout. It defaults to `~/.synabun` on macOS/Linux and `%APPDATA%\synabun` on Windows; `SYNABUN_DATA_HOME` overrides the location.
 
-See the [README File Structure](./README.md#file-structure) section for a complete listing.
-
 ## Where to Make Changes (for forkers)
 
 | Change type | Where |

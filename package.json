@@ -1,6 +1,6 @@
 {
   "name": "synabun",
-  "version": "2026.9.5",
+  "version": "2.0.0",
   "description": "Local-first persistent vector memory, MCP tooling, and multi-agent workflows for AI assistants",
   "license": "Apache-2.0",
   "author": "The SynaBun Authors",
@@ -43,20 +43,39 @@
     "hooks/claude-code/post-plan.mjs",
     "hooks/claude-code/post-remember.mjs",
     "hooks/claude-code/pre-compact.mjs",
+    "hooks/claude-code/pre-task.mjs",
     "hooks/claude-code/pre-websearch.mjs",
+    "hooks/claude-code/prompt-origin.mjs",
     "hooks/claude-code/prompt-submit.mjs",
     "hooks/claude-code/session-start.mjs",
     "hooks/claude-code/shared.mjs",
+    "hooks/claude-code/state.mjs",
     "hooks/claude-code/stop.mjs",
     "hooks/claude-code/subagent-start.mjs",
     "hooks/claude-code/subagent-stop.mjs",
+    "hooks/claude-code/task-gate.mjs",
     "skills/",
     "lib/paths.js",
     "lib/paths.d.ts",
     "lib/data-home-migration.js",
+    "lib/first-launch-protection.js",
     "lib/client-config-repair.js",
+    "lib/claude-hooks.js",
+    "lib/claude-usage-audit.js",
     "scripts/recover-user-config.mjs",
     "scripts/restore-data-home-from-backup.mjs",
+    "scripts/audit-claude-hook-usage.mjs",
+    "scripts/audit-memory-duplicates.mjs",
+    "scripts/measure-claude-hook-overhead.mjs",
+    "docs/browser-v2.md",
+    "docs/hook-integrity.md",
+    "docs/judgments.md",
+    "docs/style-guide.md",
+    "docs/whatsapp.md",
+    "benchmarks/browser-v2-results.json",
+    "benchmarks/browser-live-results.json",
+    "benchmarks/fixtures/browser/",
+    "benchmarks/fixtures/desktop/",
     "README.md",
     "CHANGELOG.md"
   ],
@@ -94,6 +113,7 @@
     "node": ">=22.19.0"
   },
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "tag": "latest"
   }
 }

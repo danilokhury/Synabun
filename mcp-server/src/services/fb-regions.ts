@@ -23,7 +23,7 @@ export const COUNTRY_BY_CURRENCY: Record<string, string> = {
 };
 
 // Spain vs LatAm: both Spanish-speaking but different supported deal currency (Spain = EUR/EU,
-// LatAm = USD — criticalpixel.gg has no local LatAm currency, so LatAm posts the USD link).
+// LatAm = USD — the deal links have no local LatAm currency, so LatAm posts the USD link).
 // Used by classifyGroupName/resolveClassification to split the broad 'es' bucket correctly.
 export const SPAIN_RE = /\b(espa[ñn]a|madrid|barcelona|valencia|sevilla|zaragoza|bilbao|m[áa]laga|ib[ée]rica?)\b/i;
 export const LATAM_RE = /\b(m[ée]xico|mexican[oa]?|argentin[oa]?|chilen[oa]?|chile|peruan[oa]?|per[uú]|colombian[oa]?|colombia|venezolan[oa]?|venezuela|uruguay|paraguay|bolivia|ecuador|guatemala|hondure[ñn]o|nicaragua|panam[áa]|costa rica|rep[uú]blica dominicana|latinoam[ée]rica|latino\s?am[ée]rica|sudam[ée]rica|latin[oa]s?|latam|hispano)\b/i;
@@ -54,7 +54,7 @@ const REGION_TO_CURRENCY: Record<string, string> = {
 const REGION_TO_LANG: Record<string, string> = {
   UK: 'en', US: 'en', Brazil: 'pt', Turkey: 'tr', Australia: 'en', Canada: 'en', LatAm: 'es', // EU omitted: ambiguous
 };
-// Posting currency a language maps to (the SUPPORTED Critical Pixel deal-link currency, not the
+// Posting currency a language maps to (the SUPPORTED deal-link currency, not the
 // local currency — Polish/Italian post the EUR link). 'es' = USD: Spanish skews LatAm (USD); Spain
 // (EUR) is split back out by name in classifyGroupName. 'en' stays null: needs a country/seed signal.
 const CURRENCY_BY_LANG: Record<string, string> = {

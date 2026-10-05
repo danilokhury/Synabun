@@ -1,28 +1,23 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// OpenCode V2 — Context window gauge
+// OpenCode V2 — Context window gauge (the reading, not a widget)
 // Derives usage from the newest assistant message already in the panel store
 // (populated by sessionMessages + live message.updated events) and uses
 // provider model metadata as the context-window denominator. We do NOT call
 // the v2 session.context endpoint: chat traffic still flows through the v1
 // prompt API, so v2's separate context projection is empty for our sessions.
+// The reading is kept in the store's `contextGauge`; the header cog and its
+// Context settings popover (ocp-v2-context-menu.js) are what show it.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { getDefaultStore } from './ocp-v2-state.js';
+import { fetchProvidersFull } from './ocp-v2-providers.js';
+import { captureBinding } from './ocp-v2-binding.js';
 
 let _providers = null;
 let _providersPromise = null;
 
-export function mountContextGauge(rootEl, store = getDefaultStore()) {
-  if (!rootEl) return { element: null, destroy() {}, refresh() {} };
-
-  const gauge = document.createElement('div');
-  gauge.className = 'ocpv2-context-gauge ocpv2-context-gauge-pending';
-  gauge.setAttribute('data-tooltip-pos', 'bottom');
-  gauge.innerHTML = '<div class="ocpv2-context-gauge-fill"></div><span class="ocpv2-context-gauge-label">context pending</span>';
-  rootEl.appendChild(gauge);
-
-  const fill = gauge.querySelector('.ocpv2-context-gauge-fill');
-  const label = gauge.querySelector('.ocpv2-context-gauge-label');
+/** Keeps `store.contextGauge` current for the session the store is on. */
+export function trackContextGauge(store = getDefaultStore()) {
   let destroyed = false;
   let refreshTimer = 0;
   let refreshSeq = 0;
@@ -48,6 +43,9 @@ export function mountContextGauge(rootEl, store = getDefaultStore()) {
     }
 
     const seq = ++refreshSeq;
+    // The gauge of the binding this refresh was started on: an answer for an
+    // earlier one (another session, or an earlier visit to this one) is dropped.
+    const at = captureBinding(store);
     const current = s.contextGauge || {};
     if (current.status !== 'ready') {
       store.setContextGauge?.({ status: 'pending', error: '', updatedAt: Date.now() });
@@ -55,7 +53,7 @@ export function mountContextGauge(rootEl, store = getDefaultStore()) {
 
     try {
       const providers = await loadProviders();
-      if (destroyed || seq !== refreshSeq || store.getState().sessionId !== sessionId) return false;
+      if (destroyed || seq !== refreshSeq || !at.isCurrent()) return false;
 
       const tokenBlock = findNewestTokenBlockFromStore(store.getState());
       const model = resolveActiveModel(store.getState(), tokenBlock);
@@ -78,7 +76,7 @@ export function mountContextGauge(rootEl, store = getDefaultStore()) {
       });
       return true;
     } catch (err) {
-      if (destroyed || seq !== refreshSeq || store.getState().sessionId !== sessionId) return false;
+      if (destroyed || seq !== refreshSeq || !at.isCurrent()) return false;
       store.setContextGauge?.({
         status: 'pending',
         updatedAt: Date.now(),
@@ -95,22 +93,18 @@ export function mountContextGauge(rootEl, store = getDefaultStore()) {
   }
 
   const unsubscribe = store.subscribe((event, state) => {
-    renderGauge(gauge, fill, label, state?.contextGauge);
     if (shouldRefreshForEvent(event, state)) scheduleRefresh(event?.type || 'state');
   });
   document.addEventListener('ocp-providers-changed', onProvidersChanged);
 
-  renderGauge(gauge, fill, label, store.getState().contextGauge);
   scheduleRefresh('mount', 50);
 
   return {
-    element: gauge,
     destroy() {
       destroyed = true;
       clearTimeout(refreshTimer);
       unsubscribe?.();
       document.removeEventListener('ocp-providers-changed', onProvidersChanged);
-      gauge.remove();
     },
     refresh: () => refresh('manual'),
   };
@@ -133,62 +127,10 @@ function shouldRefreshForEvent(event, state) {
   return false;
 }
 
-function renderGauge(gauge, fill, label, value = {}) {
-  if (!gauge || !fill || !label) return;
-  const used = Number(value.usedTokens) || 0;
-  const contextWindow = Number(value.contextWindow) || 0;
-  const pct = contextWindow > 0 ? (used / contextWindow) * 100 : 0;
-  const ready = value.status === 'ready' && used > 0 && contextWindow > 0;
-
-  gauge.className = 'ocpv2-context-gauge';
-  gauge.classList.add(ready ? 'ocpv2-context-gauge-ready' : 'ocpv2-context-gauge-pending');
-  if (ready && pct >= 90) gauge.classList.add('ocpv2-context-gauge-danger');
-  else if (ready && pct >= 70) gauge.classList.add('ocpv2-context-gauge-warn');
-
-  fill.style.width = ready ? `${Math.min(100, Math.max(0, pct))}%` : '0%';
-  label.textContent = ready
-    ? `${formatCompact(used)} / ${formatCompact(contextWindow)} · ${formatPercent(pct)}`
-    : 'context pending';
-
-  const tooltip = buildTooltip(value, ready, pct);
-  gauge.title = tooltip;
-  gauge.setAttribute('data-tooltip', tooltip);
-}
-
-function buildTooltip(value, ready, pct) {
-  const breakdown = value?.breakdown || {};
-  const model = value?.providerID && value?.model ? `${value.providerID}/${value.model}` : value?.model;
-  const lines = ready ? [
-    `${formatPercent(pct)} context window used`,
-    `Used:           ${formatExact(value.usedTokens)}`,
-    `Context window: ${formatExact(value.contextWindow)}`,
-  ] : ['Context pending'];
-  if (model) lines.push(`Model:          ${model}`);
-  if (breakdown.inputTokens || breakdown.cacheReadTokens || breakdown.cacheWriteTokens) {
-    lines.push(
-      '',
-      `Input:          ${formatExact(breakdown.inputTokens)}`,
-      `Cache read:     ${formatExact(breakdown.cacheReadTokens)}`,
-      `Cache write:    ${formatExact(breakdown.cacheWriteTokens)}`,
-    );
-  }
-  if (breakdown.outputTokens || breakdown.reasoningTokens) {
-    lines.push(
-      `Output:         ${formatExact(breakdown.outputTokens)}`,
-      `Reasoning:      ${formatExact(breakdown.reasoningTokens)}`,
-    );
-  }
-  if (value?.basis) lines.push('', `Source:         ${value.basis}`);
-  if (value?.updatedAt) lines.push(`Updated:        ${new Date(value.updatedAt).toLocaleString()}`);
-  if (value?.error) lines.push('', `Note: ${value.error}`);
-  return lines.filter(Boolean).join('\n');
-}
-
 async function loadProviders() {
   if (_providers) return _providers;
   if (_providersPromise) return _providersPromise;
-  _providersPromise = fetch('/api/opencode/providers/full')
-    .then((r) => r.json())
+  _providersPromise = fetchProvidersFull()
     .then((json) => {
       if (json?.ok === false) throw new Error(json.error || 'provider metadata unavailable');
       _providers = normalizeProviders(json?.data ?? json);
@@ -307,26 +249,4 @@ function readNumber(...values) {
     if (Number.isFinite(parsed) && parsed > 0) return Math.floor(parsed);
   }
   return 0;
-}
-
-function formatExact(value) {
-  const n = Number(value) || 0;
-  return n.toLocaleString();
-}
-
-function formatCompact(value) {
-  const n = Number(value) || 0;
-  if (n >= 1_000_000) return `${trimFixed(n / 1_000_000)}m`;
-  if (n >= 1_000) return `${trimFixed(n / 1_000)}k`;
-  return String(Math.round(n));
-}
-
-function formatPercent(value) {
-  const n = Number(value) || 0;
-  return `${n >= 10 ? n.toFixed(0) : n.toFixed(1)}%`;
-}
-
-function trimFixed(value) {
-  const fixed = value >= 10 ? value.toFixed(0) : value.toFixed(1);
-  return fixed.replace(/\.0$/, '');
 }

@@ -33,7 +33,7 @@ import { initBookmarks } from '../../shared/ui-bookmarks.js';
 import { initResume } from '../../shared/ui-resume.js';
 import { initLayouts } from '../../shared/ui-layouts.js';
 import { initHelp } from '../../shared/ui-help.js';
-import { initMultiSelect } from '../../shared/ui-multiselect.js';
+import { initMultiSelect, clearMultiSelect } from '../../shared/ui-multiselect.js';
 import { updateStats, initStats } from '../../shared/ui-stats.js';
 import { initExplorer } from '../../shared/ui-explorer.js';
 import { initFileExplorer } from '../../shared/ui-file-explorer.js';
@@ -280,6 +280,13 @@ setDetailCallbacks({
   refreshGraph: () => applyGraphData(),
   scheduleRemoval: () => scheduleGraphRemoval(),
   cancelRemoval: () => cancelScheduledRemoval(),
+  // The names ui-detail.js actually calls (card delete, focus, category move).
+  applyGraphData: () => applyGraphData(),
+  updateStats: () => updateStats(),
+  buildCategorySidebar: (cats) => buildCategorySidebar(cats),
+  clearMultiSelect: () => clearMultiSelect(),
+  fetchTrashItems: () => emit('trash:refresh'),
+  refreshNodeAppearance: () => refreshGraph(),
 });
 
 
@@ -384,6 +391,12 @@ async function boot() {
 
     // Mark boot complete
     _bootComplete = true;
+
+    // Focus mode restored at load: the viz:toggle emitted by applyIfaceConfig
+    // ran before boot and was ignored above, so apply the persisted state to
+    // the main canvas now — otherwise it keeps intercepting pointer events on
+    // top of the whiteboard (the board looks completely locked).
+    if (!_vizEnabled) document.getElementById('canvas-main')?.classList.add('viz-hidden-2d');
 
   } catch (err) {
     console.error('Init error:', err);

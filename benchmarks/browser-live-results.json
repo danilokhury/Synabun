@@ -1,0 +1,79 @@
+{
+  "generatedAt": "2026-09-08T03:59:21.092Z",
+  "transport": "configured SynaBun browser HTTP engine",
+  "scope": "Updated snapshot/content/extraction algorithms over SynaBun engine adapter; read-only live pages. New route wiring covered separately by local Express tests.",
+  "results": [
+    {
+      "group": "general",
+      "url": "https://example.com/",
+      "status": "passed",
+      "finalUrl": "https://example.com/",
+      "title": "Example Domain",
+      "snapshotChars": 298,
+      "captures": 1,
+      "scopedHtmlChars": 220,
+      "extractedLinks": 1,
+      "durationMs": 8361
+    },
+    {
+      "group": "general",
+      "url": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array",
+      "status": "passed",
+      "finalUrl": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array",
+      "title": "Array - JavaScript | MDN",
+      "snapshotChars": 5965,
+      "captures": 2,
+      "scopedHtmlChars": 91581,
+      "extractedLinks": 10,
+      "durationMs": 8384
+    },
+    {
+      "group": "general",
+      "url": "https://en.wikipedia.org/wiki/Web_browser",
+      "status": "passed",
+      "finalUrl": "https://en.wikipedia.org/wiki/Web_browser",
+      "title": "Web browser - Wikipedia",
+      "snapshotChars": 5982,
+      "captures": 2,
+      "scopedHtmlChars": 403828,
+      "extractedLinks": 10,
+      "durationMs": 3207
+    },
+    {
+      "group": "social",
+      "url": "https://bsky.app/",
+      "status": "passed",
+      "finalUrl": "https://bsky.app/",
+      "title": "Discover — Bluesky",
+      "snapshotChars": 1823,
+      "captures": 1,
+      "scopedHtmlChars": 87619,
+      "extractedLinks": 10,
+      "durationMs": 2596
+    },
+    {
+      "group": "social",
+      "url": "https://www.youtube.com/",
+      "status": "passed",
+      "finalUrl": "https://www.youtube.com/",
+      "title": "YouTube",
+      "snapshotChars": 5999,
+      "captures": 2,
+      "scopedHtmlChars": 576986,
+      "extractedLinks": 10,
+      "durationMs": 4583
+    },
+    {
+      "group": "social",
+      "url": "https://x.com/explore",
+      "status": "passed",
+      "finalUrl": "https://x.com/explore",
+      "title": "Explorar / X",
+      "snapshotChars": 318,
+      "captures": 1,
+      "scopedHtmlChars": 4936,
+      "extractedLinks": 1,
+      "durationMs": 1802
+    }
+  ]
+}

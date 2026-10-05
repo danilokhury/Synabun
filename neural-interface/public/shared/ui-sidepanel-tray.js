@@ -271,7 +271,7 @@ function pickMostRecentMeaningfulPayload(provider, currentKey) {
   for (let i = keys.length - 1; i >= 0; i--) {
     const k = keys[i];
     if (k === currentKey) continue;
-    if (!k.startsWith(prefix)) continue;
+    if (!k.startsWith(prefix) || k.slice(prefix.length).startsWith('session-')) continue;
     const payload = readPayload(k, meta);
     if (payload) {
       const transferableTabs = payload.tabs.filter((tab) => !tab.automationRunId);
@@ -468,16 +468,10 @@ function migrateSourceToCurrentWindow(provider, sourceKey) {
 async function openProvider(provider, tabIdValue, sourceKey) {
   migrateSourceToCurrentWindow(provider, sourceKey);
   if (provider === 'claude') {
-    if (isCodexPanelOpen()) await toggleCodexPanel();
-    if (isOpencodePanelOpen()) await toggleOpencodePanel();
     if (!isClaudePanelOpen()) await toggleClaudePanel();
   } else if (provider === 'codex') {
-    if (isClaudePanelOpen()) await toggleClaudePanel();
-    if (isOpencodePanelOpen()) await toggleOpencodePanel();
     if (!isCodexPanelOpen()) await toggleCodexPanel();
   } else if (provider === 'opencode') {
-    if (isClaudePanelOpen()) await toggleClaudePanel();
-    if (isCodexPanelOpen()) await toggleCodexPanel();
     if (!isOpencodePanelOpen()) await toggleOpencodePanel();
   }
   emit(PROVIDERS[provider]?.eventName, { tabId: tabIdValue });

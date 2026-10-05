@@ -135,6 +135,7 @@ export function initMenubar() {
     'menu-automations-schedule-groups': 'automations',
     'menu-automations-new': 'automations',
     'menu-automations-import': 'automations',
+    'menu-terminal-assistant': 'terminal',
     'menu-terminal-claude': 'terminal',
     'menu-terminal-codex': 'terminal',
     'menu-terminal-gemini': 'terminal',
@@ -368,6 +369,7 @@ function wireAutomationsMenu() {
 
 function wireTerminalMenu() {
   const items = {
+    'menu-terminal-assistant': () => emit('assistant:open'),
     'menu-terminal-claude':  () => emit('terminal:open', { profile: 'claude-code' }),
     'menu-terminal-codex':   () => emit('terminal:open', { profile: 'codex' }),
     'menu-terminal-gemini':   () => emit('terminal:open', { profile: 'gemini' }),

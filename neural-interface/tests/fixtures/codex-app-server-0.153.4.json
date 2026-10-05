@@ -1,0 +1,919 @@
+{
+  "cliVersion": "0.153.4",
+  "source": "codex app-server generate-json-schema --experimental",
+  "methods": {
+    "thread/backgroundTerminals/list": {
+      "experimental": true,
+      "params": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "threadId"
+        ],
+        "type": "object"
+      }
+    },
+    "thread/backgroundTerminals/terminate": {
+      "experimental": true,
+      "params": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "processId": {
+            "type": "string"
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "processId",
+          "threadId"
+        ],
+        "type": "object"
+      }
+    },
+    "thread/backgroundTerminals/clean": {
+      "experimental": true,
+      "params": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "threadId"
+        ],
+        "type": "object"
+      }
+    },
+    "thread/goal/get": {
+      "experimental": false,
+      "params": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "threadId"
+        ],
+        "type": "object"
+      }
+    },
+    "thread/goal/set": {
+      "experimental": false,
+      "params": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "definitions": {
+          "ThreadGoalStatus": {
+            "enum": [
+              "active",
+              "paused",
+              "blocked",
+              "usageLimited",
+              "budgetLimited",
+              "complete"
+            ],
+            "type": "string"
+          }
+        },
+        "properties": {
+          "objective": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ThreadGoalStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "tokenBudget": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "threadId"
+        ],
+        "type": "object"
+      }
+    },
+    "thread/goal/clear": {
+      "experimental": false,
+      "params": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "threadId"
+        ],
+        "type": "object"
+      }
+    },
+    "hooks/list": {
+      "experimental": false,
+      "params": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "cwds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "skills/config/write": {
+      "experimental": false,
+      "params": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "definitions": {
+          "AbsolutePathBuf": {
+            "type": "string"
+          }
+        },
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "path": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/AbsolutePathBuf"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "type": "object"
+      }
+    },
+    "app/read": {
+      "experimental": false,
+      "params": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "appIds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "includeTools": {
+            "type": "boolean"
+          },
+          "threadId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "appIds"
+        ],
+        "type": "object"
+      }
+    },
+    "experimentalFeature/enablement/set": {
+      "experimental": false,
+      "params": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "enablement": {
+            "additionalProperties": {
+              "type": "boolean"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "enablement"
+        ],
+        "type": "object"
+      }
+    },
+    "feedback/upload": {
+      "experimental": false,
+      "params": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "classification": {
+            "type": "string"
+          },
+          "extraLogFiles": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "includeLogs": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tags": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "threadId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "classification"
+        ],
+        "type": "object"
+      }
+    },
+    "thread/settings/update": {
+      "experimental": true,
+      "params": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "definitions": {
+          "AbsolutePathBuf": {
+            "type": "string"
+          },
+          "ApprovalsReviewer": {
+            "enum": [
+              "user",
+              "auto_review",
+              "guardian_subagent"
+            ],
+            "type": "string"
+          },
+          "AskForApproval": {
+            "oneOf": [
+              {
+                "enum": [
+                  "untrusted",
+                  "on-request",
+                  "never"
+                ],
+                "type": "string"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "granular": {
+                    "properties": {
+                      "mcp_elicitations": {
+                        "type": "boolean"
+                      },
+                      "request_permissions": {
+                        "default": false,
+                        "type": "boolean"
+                      },
+                      "rules": {
+                        "type": "boolean"
+                      },
+                      "sandbox_approval": {
+                        "type": "boolean"
+                      },
+                      "skill_approval": {
+                        "default": false,
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "mcp_elicitations",
+                      "rules",
+                      "sandbox_approval"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "granular"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "CollaborationMode": {
+            "properties": {
+              "mode": {
+                "$ref": "#/definitions/ModeKind"
+              },
+              "settings": {
+                "$ref": "#/definitions/Settings"
+              }
+            },
+            "required": [
+              "mode",
+              "settings"
+            ],
+            "type": "object"
+          },
+          "ModeKind": {
+            "enum": [
+              "plan",
+              "default"
+            ],
+            "type": "string"
+          },
+          "MultiAgentMode": {
+            "oneOf": [
+              {
+                "enum": [
+                  "explicitRequestOnly",
+                  "proactive"
+                ],
+                "type": "string"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "custom": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "custom"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "NetworkAccess": {
+            "enum": [
+              "restricted",
+              "enabled"
+            ],
+            "type": "string"
+          },
+          "Personality": {
+            "enum": [
+              "none",
+              "friendly",
+              "pragmatic"
+            ],
+            "type": "string"
+          },
+          "ReasoningEffort": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "ReasoningSummary": {
+            "oneOf": [
+              {
+                "enum": [
+                  "auto",
+                  "concise",
+                  "detailed"
+                ],
+                "type": "string"
+              },
+              {
+                "enum": [
+                  "none"
+                ],
+                "type": "string"
+              }
+            ]
+          },
+          "SandboxPolicy": {
+            "oneOf": [
+              {
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "dangerFullAccess"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "networkAccess": {
+                    "default": false,
+                    "type": "boolean"
+                  },
+                  "type": {
+                    "enum": [
+                      "readOnly"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "networkAccess": {
+                    "allOf": [
+                      {
+                        "$ref": "#/definitions/NetworkAccess"
+                      }
+                    ],
+                    "default": "restricted"
+                  },
+                  "type": {
+                    "enum": [
+                      "externalSandbox"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "excludeSlashTmp": {
+                    "default": false,
+                    "type": "boolean"
+                  },
+                  "excludeTmpdirEnvVar": {
+                    "default": false,
+                    "type": "boolean"
+                  },
+                  "networkAccess": {
+                    "default": false,
+                    "type": "boolean"
+                  },
+                  "type": {
+                    "enum": [
+                      "workspaceWrite"
+                    ],
+                    "type": "string"
+                  },
+                  "writableRoots": {
+                    "default": [],
+                    "items": {
+                      "$ref": "#/definitions/AbsolutePathBuf"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "Settings": {
+            "properties": {
+              "developer_instructions": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "model": {
+                "type": "string"
+              },
+              "reasoning_effort": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/ReasoningEffort"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "model"
+            ],
+            "type": "object"
+          }
+        },
+        "properties": {
+          "approvalPolicy": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/AskForApproval"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "approvalsReviewer": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ApprovalsReviewer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "collaborationMode": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/CollaborationMode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cwd": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "effort": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ReasoningEffort"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "multiAgentMode": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/MultiAgentMode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "permissions": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "personality": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Personality"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sandboxPolicy": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/SandboxPolicy"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "serviceTier": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ReasoningSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "threadId"
+        ],
+        "type": "object"
+      }
+    },
+    "review/start": {
+      "experimental": false,
+      "params": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "definitions": {
+          "ReviewDelivery": {
+            "enum": [
+              "inline",
+              "detached"
+            ],
+            "type": "string"
+          },
+          "ReviewTarget": {
+            "oneOf": [
+              {
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "uncommittedChanges"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "branch": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "enum": [
+                      "baseBranch"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "branch",
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "sha": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "enum": [
+                      "commit"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "sha",
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "instructions": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "enum": [
+                      "custom"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "instructions",
+                  "type"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "properties": {
+          "delivery": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ReviewDelivery"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "target": {
+            "$ref": "#/definitions/ReviewTarget"
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "target",
+          "threadId"
+        ],
+        "type": "object"
+      }
+    },
+    "config/read": {
+      "experimental": false,
+      "params": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "cwd": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "includeLayers": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "experimentalFeature/list": {
+      "experimental": false,
+      "params": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "threadId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      }
+    },
+    "app/list": {
+      "experimental": false,
+      "params": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "forceRefetch": {
+            "type": "boolean"
+          },
+          "limit": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "threadId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      }
+    },
+    "collaborationMode/list": {
+      "experimental": true,
+      "params": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object"
+      }
+    },
+    "model/list": {
+      "experimental": false,
+      "params": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "includeHidden": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "limit": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      }
+    }
+  },
+  "configEnums": {
+    "WebSearchMode": {
+      "enum": [
+        "disabled",
+        "cached",
+        "indexed",
+        "live"
+      ],
+      "type": "string"
+    },
+    "SandboxMode": {
+      "enum": [
+        "read-only",
+        "workspace-write",
+        "danger-full-access"
+      ],
+      "type": "string"
+    }
+  }
+}

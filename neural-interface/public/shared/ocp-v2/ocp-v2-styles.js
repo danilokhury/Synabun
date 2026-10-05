@@ -67,21 +67,23 @@ const CSS = `
 }
 
 /* ── Header card ──────────────────────────────────────────────────────── */
+/* The same card as the other side panels: the split title control on the left
+   (session button, then the rename pencil), the action buttons on the right
+   edge, the session menu under the card. */
 .ocpv2-header {
   position: relative;
   flex-shrink: 0;
   display: flex;
   align-items: center;
-  gap: 8px;
   margin: 8px 8px 0 8px;
-  padding: 10px 12px;
+  padding: 10px 10px 10px 14px;
   background: rgba(22, 22, 26, 0.95);
   border-radius: 10px;
-  box-shadow: 0 6px 18px rgba(0,0,0,0.28), 0 0 0 1px rgba(255,255,255,0.06);
+  box-shadow: var(--shadow-sm, 0 1px 2px rgba(0,0,0,0.35), 0 2px 6px rgba(0,0,0,0.2), 0 5px 14px rgba(0,0,0,0.12)), 0 0 0 1px rgba(255,255,255,0.06);
   z-index: 3;
 }
 
-/* Session button + rename group (replaces plain title text) */
+/* Session button + rename pencil: one split control, as wide as its title */
 .ocpv2-session-btn {
   background: rgba(255,255,255,0.03);
   border: none;
@@ -91,11 +93,12 @@ const CSS = `
   color: rgba(255,255,255,0.55);
   font-size: 11px;
   font-family: 'JetBrains Mono', ui-monospace, monospace;
+  line-height: normal;
   cursor: pointer;
   padding: 5px 10px;
   border-radius: 8px 0 0 8px;
   transition: background 0.15s, color 0.15s;
-  flex: 1;
+  max-width: 100%;
   min-width: 0;
   overflow: hidden;
 }
@@ -103,36 +106,49 @@ const CSS = `
   background: rgba(255,255,255,0.06);
   color: rgba(255,255,255,0.75);
 }
+/* A sub-agent panel's title: the same chip, with no menu behind it. */
+.ocpv2-session-btn-static,
+.ocpv2-session-btn-static:hover {
+  background: rgba(255,255,255,0.03);
+  color: rgba(255,255,255,0.55);
+  cursor: default;
+}
 .ocpv2-session-label {
-  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  text-align: left;
 }
 .ocpv2-rename-input {
   width: 100%;
   min-width: 0;
-  border: none;
-  outline: none;
-  background: transparent;
-  color: rgba(255,255,255,0.86);
-  font: inherit;
-  padding: 0;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(100,160,255,0.3);
+  border-radius: 4px;
+  color: rgba(255,255,255,0.9);
+  font-size: 11px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  padding: 2px 6px;
   margin: 0;
+  outline: none;
 }
+.ocpv2-rename-input:focus { border-color: rgba(100,160,255,0.5); }
 .ocpv2-rename-input::placeholder { color: rgba(255,255,255,0.3); }
-.ocpv2-dd-arrow {
-  font-size: 7px;
-  color: rgba(255,255,255,0.15);
-  flex-shrink: 0;
-  pointer-events: none;
-  transition: transform 0.2s, color 0.2s;
+.ocpv2-session-btn .ocpv2-dd-arrow {
+  font-size: 9px;
+  padding: 4px 6px;
+  margin: -4px -6px -4px 0;
+  border-radius: 0 6px 6px 0;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: background 0.15s, color 0.2s, transform 0.2s;
 }
-.ocpv2-session-btn:hover .ocpv2-dd-arrow { color: rgba(255,255,255,0.3); }
+.ocpv2-session-btn .ocpv2-dd-arrow:hover {
+  background: rgba(255,255,255,0.08);
+  color: rgba(255,255,255,0.5);
+}
 .ocpv2-header-rename {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   justify-content: center;
   width: 24px;
@@ -144,52 +160,65 @@ const CSS = `
   color: rgba(255,255,255,0.4);
   cursor: pointer;
   transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+  position: relative;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
   flex-shrink: 0;
 }
 .ocpv2-header-rename:hover:not(:disabled) {
-  color: rgba(232,224,220,0.95);
-  background: rgba(232,224,220,0.14);
+  color: rgba(100,160,255,0.95);
+  background: rgba(100,160,255,0.14);
 }
+.ocpv2-header-rename:active:not(:disabled) { transform: scale(0.92); transition-duration: 0.06s; }
 .ocpv2-header-rename:disabled { opacity: 0.4; cursor: not-allowed; }
 .ocpv2-header-rename svg {
   width: 12px; height: 12px;
   stroke: currentColor; fill: none;
   stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+  pointer-events: none;
 }
 
 /* Session dropdown menu */
 .ocpv2-session-menu {
   display: none;
   position: absolute;
-  top: calc(100% + 6px);
+  top: calc(100% + 2px);
   left: 8px;
   right: 8px;
-  background: rgba(22,22,26,0.98);
+  background: rgba(12, 12, 14, 0.98);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
   border: 1px solid rgba(255,255,255,0.08);
   border-radius: 10px;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
-  z-index: 50;
-  max-height: 280px;
-  overflow-y: auto;
   padding: 4px;
+  z-index: 310;
+  max-height: 360px;
+  overflow-y: auto;
+  box-shadow: var(--shadow-lg, 0 2px 4px rgba(0,0,0,0.3), 0 6px 16px rgba(0,0,0,0.2), 0 20px 44px rgba(0,0,0,0.15));
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.06) transparent;
 }
 .ocpv2-session-menu.open { display: block; }
+.ocpv2-session-menu::-webkit-scrollbar { width: 3px; }
+.ocpv2-session-menu::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 3px; }
 .ocpv2-session-item {
+  position: relative;
   display: flex;
   align-items: center;
-  padding: 7px 10px;
+  padding: 5px 8px;
   border-radius: 6px;
   font-size: 11px;
-  color: rgba(255,255,255,0.6);
+  line-height: 1.4;
+  color: rgba(255,255,255,0.5);
   cursor: pointer;
   transition: background 0.12s;
   font-family: 'JetBrains Mono', ui-monospace, monospace;
   gap: 6px;
 }
-.ocpv2-session-item:hover { background: rgba(255,255,255,0.06); }
+.ocpv2-session-item:hover { background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.8); }
 .ocpv2-session-item.active {
-  color: rgba(232,224,220,0.95);
-  background: rgba(232,224,220,0.08);
+  color: rgba(255,255,255,0.75);
+  background: rgba(255,255,255,0.08);
 }
 .ocpv2-session-item-label {
   flex: 1;
@@ -223,121 +252,87 @@ const CSS = `
   color: rgba(255,255,255,0.35);
   text-align: center;
 }
-.ocpv2-header-status {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+.ocpv2-session-menu .ocpv2-session-menu-empty {
+  padding: 12px 8px;
+  font-size: 10px;
+  color: rgba(255,255,255,0.2);
+}
+/* The session's state (idle, running, awaiting permission, …). It reads in the
+   footer toolbar's left group, after the agent buttons, and takes only the
+   room that is left there: the dot stays when the text does not fit. */
+.ocpv2-footer-status {
+  flex: 1 1 0;
+  min-width: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 10.5px;
-  padding: 3px 8px;
-  border-radius: 999px;
-  background: rgba(255,255,255,0.04);
+  line-height: 16px;
   color: rgba(255,255,255,0.55);
   font-family: 'JetBrains Mono', ui-monospace, monospace;
   letter-spacing: 0.02em;
 }
-.ocpv2-header-status::before {
+.ocpv2-footer-status::before {
   content: '';
+  display: inline-block;
   width: 6px;
   height: 6px;
+  margin-right: 6px;
   border-radius: 999px;
+  vertical-align: middle;
   background: rgba(200,180,140,0.85);
 }
-.ocpv2-header-status.ocpv2-status-ready::before    { background: rgba(140,200,160,0.75); }
-.ocpv2-header-status.ocpv2-status-running::before  { background: rgba(140,180,220,0.85); animation: ocpv2-pulse 1s infinite; }
-.ocpv2-header-status.ocpv2-status-error::before    { background: rgba(220,120,120,0.85); }
-.ocpv2-header-status.ocpv2-status-healing,
-.ocpv2-header-status.ocpv2-status-reconnecting    { color: rgba(180,205,255,0.9); }
-.ocpv2-header-status.ocpv2-status-healing::before,
-.ocpv2-header-status.ocpv2-status-reconnecting::before { background: rgba(120,170,255,0.9); animation: ocpv2-pulse 1.1s infinite; }
-.ocpv2-header-status.ocpv2-status-awaiting        { color: rgba(255,200,120,0.95); }
-.ocpv2-header-status.ocpv2-status-awaiting::before { background: rgba(232,180,80,0.9); animation: ocpv2-pulse 1.2s infinite; }
-.ocpv2-contextbar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  flex-shrink: 0;
-  margin: 6px 8px 0;
-  background: rgba(22, 22, 26, 0.95);
-  border-radius: 10px;
-  z-index: 2;
-  box-shadow: 0 6px 16px rgba(0,0,0,0.18), 0 0 0 1px rgba(255,255,255,0.06);
-}
-.ocpv2-context-gauge {
-  position: relative;
-  flex: 1;
-  min-width: 0;
-  height: 16px;
-  border-radius: 6px;
-  background: rgba(255,255,255,0.03);
-  overflow: hidden;
-  cursor: default;
-}
-.ocpv2-context-gauge-fill {
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 0%;
-  border-radius: 6px;
-  background: rgba(232,224,220,0.18);
-  transition: width 0.55s cubic-bezier(0.4, 0, 0.2, 1), background 0.35s ease;
-}
-.ocpv2-context-gauge-ready .ocpv2-context-gauge-fill { background: rgba(232,224,220,0.22); }
-.ocpv2-context-gauge-warn .ocpv2-context-gauge-fill { background: rgba(220,150,50,0.36); }
-.ocpv2-context-gauge-danger .ocpv2-context-gauge-fill { background: rgba(220,80,60,0.46); }
-.ocpv2-context-gauge-label {
-  position: absolute;
-  left: 6px;
-  right: 6px;
-  top: 50%;
-  transform: translateY(-50%);
-  z-index: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: rgba(255,255,255,0.46);
-  font-size: 9px;
-  font-family: 'JetBrains Mono', ui-monospace, monospace;
-  letter-spacing: 0.01em;
-  pointer-events: none;
-}
-.ocpv2-context-gauge-ready .ocpv2-context-gauge-label { color: rgba(255,255,255,0.66); }
-.ocpv2-context-gauge-pending .ocpv2-context-gauge-label { color: rgba(255,255,255,0.32); }
-.ocpv2-compact-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  flex-shrink: 0;
-  height: 22px;
-  padding: 0 8px;
-  border: 1px solid rgba(255,255,255,0.08);
-  border-radius: 6px;
-  background: rgba(255,255,255,0.04);
-  color: rgba(255,255,255,0.55);
-  font-size: 9px;
-  font-family: 'JetBrains Mono', ui-monospace, monospace;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  cursor: pointer;
-  transition: color 0.15s, background 0.15s, border-color 0.15s, transform 0.12s;
-}
-.ocpv2-compact-btn svg { width: 12px; height: 12px; }
-.ocpv2-compact-btn-label { line-height: 1; }
-.ocpv2-compact-btn:hover:not(:disabled) {
-  color: rgba(255,255,255,0.9);
-  background: rgba(255,255,255,0.08);
-  border-color: rgba(255,255,255,0.16);
-  transform: scale(1.03);
-}
-.ocpv2-compact-btn:active:not(:disabled) { transform: scale(0.96); }
-.ocpv2-compact-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-.ocpv2-compact-btn-busy {
-  color: rgba(180,205,255,0.95);
-  border-color: rgba(120,170,255,0.35);
-  background: rgba(120,170,255,0.08);
-}
-.ocpv2-compact-btn-busy svg { animation: ocpv2-pulse 1.1s infinite; }
+.ocpv2-footer-status.ocpv2-status-ready::before    { background: rgba(140,200,160,0.75); }
+.ocpv2-footer-status.ocpv2-status-running::before  { background: rgba(140,180,220,0.85); animation: ocpv2-pulse 1s infinite; }
+.ocpv2-footer-status.ocpv2-status-error::before    { background: rgba(220,120,120,0.85); }
+.ocpv2-footer-status.ocpv2-status-healing,
+.ocpv2-footer-status.ocpv2-status-reconnecting    { color: rgba(180,205,255,0.9); }
+.ocpv2-footer-status.ocpv2-status-healing::before,
+.ocpv2-footer-status.ocpv2-status-reconnecting::before { background: rgba(120,170,255,0.9); animation: ocpv2-pulse 1.1s infinite; }
+.ocpv2-footer-status.ocpv2-status-awaiting        { color: rgba(255,200,120,0.95); }
+.ocpv2-footer-status.ocpv2-status-awaiting::before { background: rgba(232,180,80,0.9); animation: ocpv2-pulse 1.2s infinite; }
+/* ── Context settings: the header cog and its popover (ocp-v2-context-menu.js) ── */
+.ocpv2-cog-btn { position: relative; }
+.ocpv2-cog-btn[aria-expanded="true"] { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.75); }
+.ocpv2-cog-dot { position: absolute; top: 2px; right: 2px; width: 6px; height: 6px; border-radius: 50%; background: #d4a848; pointer-events: none; }
+.ocpv2-cog-dot[hidden] { display: none; }
+.ocpv2-cog-dot-critical { background: #ef7070; }
+/* One grammar: a 28px head (title, at most one action) and 28px rows (label
+   left, one value on the right edge). 12px around, 12px + a hairline + 12px
+   between sections. The popover is a child of <body>. */
+.ocpv2-ctxpop { position: fixed; box-sizing: border-box; overflow-x: hidden; overflow-y: auto; padding: 12px; background: rgba(22,22,26,0.98); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; box-shadow: 0 8px 32px rgba(0,0,0,0.4); font: 400 11px/16px 'JetBrains Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; color: rgba(255,255,255,0.86); outline: none; }
+.ocpv2-ctxpop-section + .ocpv2-ctxpop-section { margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.06); }
+.ocpv2-ctxpop-head, .ocpv2-ctxpop-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; height: 28px; }
+.ocpv2-ctxpop-head { margin-bottom: 4px; }
+.ocpv2-ctxpop-title { flex: 1 1 0; min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 11px/16px 'JetBrains Mono', ui-monospace, monospace; color: rgba(255,255,255,0.92); }
+.ocpv2-ctxpop-act { display: inline-flex; flex-shrink: 0; }
+.ocpv2-ctxpop-bar { height: 4px; margin: 8px 0; border-radius: 2px; background: rgba(255,255,255,0.08); overflow: hidden; }
+.ocpv2-ctxpop-fill { height: 100%; border-radius: 2px; background: rgba(232,224,220,0.55); }
+.ocpv2-ctxpop-fill.ocpv2-ctxpop-high { background: #d4a848; }
+.ocpv2-ctxpop-fill.ocpv2-ctxpop-critical { background: #ef7070; }
+.ocpv2-ctxpop-usage { display: flex; align-items: center; justify-content: space-between; gap: 12px; height: 20px; margin-bottom: 4px; }
+.ocpv2-ctxpop-used { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ocpv2-ctxpop-share { flex-shrink: 0; }
+.ocpv2-ctxpop-k { flex: 0 0 auto; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: rgba(255,255,255,0.6); }
+.ocpv2-ctxpop-v { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; color: rgba(255,255,255,0.86); }
+.ocpv2-ctxpop-muted { color: rgba(255,255,255,0.4); }
+.ocpv2-ctxpop-row-server > .ocpv2-ctxpop-k { flex: 1 1 0; min-width: 0; max-width: none; }
+.ocpv2-ctxpop-row-server > .ocpv2-ctxpop-v { flex: 0 0 auto; }
+.ocpv2-ctxpop-status { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+.ocpv2-ctxpop-dot { flex-shrink: 0; width: 6px; height: 6px; border-radius: 50%; background: rgba(255,255,255,0.3); }
+.ocpv2-ctxpop-dot-ok { background: #5fcf83; }
+.ocpv2-ctxpop-dot-warn { background: #d4a848; }
+.ocpv2-ctxpop-dot-err { background: #ef7070; }
+.ocpv2-ctxpop-btn { box-sizing: border-box; height: 22px; padding: 0 10px; border: 1px solid rgba(255,255,255,0.08); border-radius: 5px; background: rgba(255,255,255,0.07); color: rgba(255,255,255,0.92); font: 400 11px/20px 'JetBrains Mono', ui-monospace, monospace; cursor: pointer; }
+.ocpv2-ctxpop-btn:hover:not(:disabled) { background: rgba(255,255,255,0.12); }
+.ocpv2-ctxpop-btn:disabled { opacity: 0.45; cursor: default; pointer-events: none; }
+.ocpv2-ctxpop-link { flex: 0 0 auto; height: 20px; padding: 0; border: none; background: none; color: rgba(180,205,255,0.9); font: 400 11px/20px 'JetBrains Mono', ui-monospace, monospace; text-decoration: none; cursor: pointer; }
+.ocpv2-ctxpop-link:hover:not(:disabled) { filter: brightness(1.2); }
+.ocpv2-ctxpop-link:disabled { color: rgba(255,255,255,0.4); cursor: default; pointer-events: none; }
+.ocpv2-ctxpop-switch { display: inline-flex; align-items: center; gap: 6px; }
+.ocpv2-ctxpop-copy { padding: 0; border: none; background: none; font: inherit; line-height: 20px; cursor: pointer; }
+.ocpv2-ctxpop-copy:hover, .ocpv2-ctxpop-copy.ocpv2-ctxpop-copied { color: rgba(180,205,255,0.9); }
+.ocpv2-ctxpop-btn:focus-visible, .ocpv2-ctxpop-link:focus-visible, .ocpv2-ctxpop-copy:focus-visible { outline: 1px solid rgba(255,255,255,0.45); outline-offset: 2px; }
 .ocpv2-header-btn {
   background: rgba(255,255,255,0.04);
   border: 1px solid rgba(255,255,255,0.08);
@@ -356,40 +351,47 @@ const CSS = `
   border-color: rgba(255,255,255,0.12);
 }
 
-/* ── Header action buttons (+ / minimize / close) ────────────────────────── */
+/* ── Header action buttons (detach / + / cog / minimize / close / slide) ─── */
 .ocpv2-actions {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 3px;
+  margin-left: auto;
   flex-shrink: 0;
 }
 .ocpv2-btn {
-  background: transparent;
-  border: none;
-  color: rgba(255,255,255,0.5);
-  padding: 4px;
-  width: 24px;
-  height: 24px;
-  border-radius: 5px;
-  cursor: pointer;
-  display: inline-flex;
+  display: flex;
   align-items: center;
   justify-content: center;
-  transition: background 0.15s, color 0.15s;
-}
-.ocpv2-btn svg {
-  width: 14px;
-  height: 14px;
-  display: block;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  border: none;
+  background: rgba(255,255,255,0.04);
+  color: rgba(255,255,255,0.4);
+  cursor: pointer;
+  transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+  position: relative;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
 }
 .ocpv2-btn:hover {
   background: rgba(255,255,255,0.08);
-  color: rgba(255,255,255,0.92);
+  color: rgba(255,255,255,0.75);
+  transform: scale(1.05);
 }
-.ocpv2-btn-danger:hover {
-  background: rgba(220,100,100,0.12);
-  color: rgba(255,166,166,0.95);
+.ocpv2-btn:active { transform: scale(0.92); transition-duration: 0.06s; }
+.ocpv2-btn svg {
+  width: 12px; height: 12px;
+  stroke: currentColor; fill: none;
+  stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+  pointer-events: none;
 }
+.ocpv2-btn-new:hover { color: rgba(110,181,255,0.95); background: rgba(110,181,255,0.14); }
+.ocpv2-btn-minimize:hover { color: rgba(255,200,50,0.95); background: rgba(255,200,50,0.14); }
+.ocpv2-btn-danger:hover { color: rgba(255,82,82,0.95); background: rgba(255,82,82,0.14); }
+.ocpv2-btn-danger svg,
+.ocpv2-btn-slide svg { stroke-width: 2.5; }
 
 @keyframes ocpv2-pulse {
   0%, 100% { opacity: 1; }
@@ -495,6 +497,15 @@ const CSS = `
   color: rgba(180, 200, 255, 1);
   text-shadow: 0 0 6px rgba(180, 200, 255, 0.55);
   animation: ocpv2-pill-pulse 1.4s ease-in-out infinite;
+}
+
+/* A sub-agent of this session waits for an answer (a permission, a question):
+   the marker turns amber, so it is noticeable without opening anything. */
+.ocpv2-session-pill.ocpv2-pill-child-waiting .term-minimized-pill-label::after {
+  content: ' ↳ ?';
+  color: #f5a524;
+  text-shadow: 0 0 6px rgba(245, 165, 36, 0.6);
+  animation: ocpv2-pill-pulse 1.2s ease-in-out infinite;
 }
 
 /* ── New-session modal (project + branch + name) ────────────────────────── */
@@ -1702,6 +1713,15 @@ const CSS = `
   padding: 4px;
 }
 .ocpv2-dd-menu.open { display: block; }
+/* Project-bar menus open inside the panel. Anchored to each dropdown's right
+   edge, a 200px menu under a 90px dropdown at the panel's left edge spilled
+   over whatever sits beside the panel; anchored to the bar it cannot. */
+.ocpv2-projectbar .ocpv2-dropdown { position: static; }
+.ocpv2-projectbar .ocpv2-dd-menu {
+  left: 10px;
+  right: auto;
+  max-width: min(320px, calc(100% - 20px));
+}
 .ocpv2-dd-menu::-webkit-scrollbar { width: 4px; }
 .ocpv2-dd-menu::-webkit-scrollbar-track { background: transparent; }
 .ocpv2-dd-menu::-webkit-scrollbar-thumb {
@@ -2531,7 +2551,8 @@ img.ocpv2-tool-screenshot {
 }
 .ocpv2-dd-model-option {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto 18px;
+  grid-template-columns: minmax(0, 1fr) auto auto 18px;
+  grid-auto-flow: row;
   gap: 8px;
   align-items: center;
   min-height: 34px;
@@ -2539,6 +2560,8 @@ img.ocpv2-tool-screenshot {
   border: 1px solid transparent;
   transition: background 0.13s ease, border-color 0.13s ease, transform 0.13s ease;
 }
+.ocpv2-dd-model-name + .ocpv2-dd-model-meta:empty { display: none; }
+.ocpv2-dd-caps:empty { display: none; }
 .ocpv2-dd-model-option:hover {
   background: rgba(255,255,255,0.055);
   border-color: rgba(255,255,255,0.055);
@@ -2560,10 +2583,9 @@ img.ocpv2-tool-screenshot {
 .ocpv2-dd-model-option.selected .ocpv2-dd-model-name { color: rgba(232,224,220,0.96); }
 .ocpv2-dd-caps {
   display: inline-flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   justify-content: flex-end;
   gap: 3px;
-  max-width: 220px;
   opacity: 0.6;
   transition: opacity 0.15s;
 }
@@ -2656,10 +2678,22 @@ const CHILD_CSS = `
      set inline via --right-panel-offset-{owner}. */
   border: 0.5px dashed rgba(180, 200, 255, 0.18);
 }
-.ocpv2-panel-child .ocpv2-header-child {
-  gap: 6px;
+.ocpv2-panel-child .ocpv2-child-crumbs {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  flex-shrink: 1;
+  overflow: hidden;
+  margin-right: 6px;
 }
-.ocpv2-panel-child .ocpv2-child-parent-link {
+.ocpv2-panel-child .ocpv2-child-crumbs:empty { display: none; }
+.ocpv2-panel-child .ocpv2-child-crumb-sep {
+  flex-shrink: 0;
+  color: rgba(180, 200, 255, 0.4);
+  font-size: 10px;
+}
+.ocpv2-panel-child .ocpv2-child-crumb {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -2672,9 +2706,11 @@ const CHILD_CSS = `
   padding: 2px 6px 2px 4px;
   cursor: pointer;
   max-width: 140px;
+  min-width: 26px;
+  flex-shrink: 1;
   overflow: hidden;
 }
-.ocpv2-panel-child .ocpv2-child-parent-link:hover {
+.ocpv2-panel-child .ocpv2-child-crumb:hover {
   color: rgba(200, 215, 255, 0.9);
   border-color: rgba(180, 200, 255, 0.18);
 }
@@ -2688,15 +2724,6 @@ const CHILD_CSS = `
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.ocpv2-panel-child .ocpv2-child-title {
-  flex: 1;
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: rgba(255,255,255,0.86);
-  font-weight: 500;
 }
 /* Sub-agent pill: physically docked to its parent. Anchored to the parent's
    right edge, top-right squared, and lifted up to kiss the parent's bottom
@@ -2724,6 +2751,73 @@ const CHILD_CSS = `
   margin-top: -5px;
   border-top-right-radius: 0;
 }
+/* One pill per sub-agent of the session the main panel shows, in the order
+   they were started, in one group under their parent's pill. The group is
+   bounded (eight rows): with many sub-agents it scrolls instead of growing
+   down the page, so the tray never reaches the compose box. */
+.ocpv2-subagent-pills {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  max-height: min(310px, 45vh);
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 2px 0 2px 14px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(180, 200, 255, 0.28) transparent;
+  overscroll-behavior: contain;
+}
+.ocpv2-subagent-pills.ocpv2-pills-docked {
+  margin-top: -5px;
+  padding-top: 0;
+}
+.ocpv2-subagent-pills > .term-minimized-pill { flex-shrink: 0; }
+.ocpv2-subagent-pills .ocpv2-session-pill-child:hover { transform: none; }
+/* A sub-agent of a sub-agent sits a step in from the edge. */
+.ocpv2-session-pill-child[data-depth="1"] { margin-right: 10px; }
+.ocpv2-session-pill-child[data-depth="2"] { margin-right: 20px; }
+.ocpv2-session-pill-child[data-depth="3"] { margin-right: 30px; }
+/* How many there are and how many need attention: shown once the group scrolls. */
+.ocpv2-subagent-summary {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  flex-shrink: 0;
+  /* As wide as the group, so the pills scroll under it and not beside it. */
+  align-self: stretch;
+  text-align: right;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(180, 200, 255, 0.18);
+  background: rgba(14, 16, 26, 0.97);
+  color: rgba(200, 215, 255, 0.8);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.ocpv2-subagent-summary[hidden] { display: none; }
+.ocpv2-subagent-summary.ocpv2-summary-waiting {
+  color: #ffd591;
+  border-color: rgba(245, 165, 36, 0.55);
+}
+/* Waiting for an answer: the one state that needs the user. */
+.ocpv2-session-pill-child.ocpv2-pill-waiting {
+  border-color: rgba(245, 165, 36, 0.85) !important;
+  animation: ocpv2-pill-waiting 1.6s ease-in-out infinite;
+}
+.ocpv2-session-pill-child.ocpv2-pill-waiting .term-minimized-pill-icon { color: #f5a524; }
+@keyframes ocpv2-pill-waiting {
+  0%, 100% { box-shadow: 0 0 0 1px rgba(245, 165, 36, 0.25), 0 0 8px rgba(245, 165, 36, 0.2); }
+  50%      { box-shadow: 0 0 0 1px rgba(245, 165, 36, 0.5), 0 0 16px rgba(245, 165, 36, 0.5); }
+}
+.ocpv2-session-pill-child.ocpv2-pill-failed { border-color: rgba(217, 59, 59, 0.6) !important; }
+/* The sub-agent whose panel is the one on screen. */
+.ocpv2-session-pill-child.ocpv2-pill-shown {
+  border-color: rgba(200, 215, 255, 0.9) !important;
+  background: rgba(46, 58, 96, 0.92);
+}
+.ocpv2-session-pill-child.ocpv2-pill-shown .term-minimized-pill-label { color: #fff; }
 .ocpv2-session-pill-child .term-minimized-pill-icon { color: rgba(180, 200, 255, 0.7); }
 .ocpv2-session-pill-child.ocpv2-pill-running .term-minimized-pill-icon { color: rgba(200, 215, 255, 1); }
 .ocpv2-session-pill-child:hover {
@@ -2805,14 +2899,638 @@ const CHILD_CSS = `
   color: #fff;
   background: rgba(255,255,255,0.16);
 }
+.ocpv2-pill-badge[data-kind]:not([data-kind=""]) {
+  display: inline-flex;
+}
 .ocpv2-pill-badge[data-kind="question"]   { background: #2f6bff; }
 .ocpv2-pill-badge[data-kind="permission"] { background: #f5a524; color: #1a1208; }
 .ocpv2-pill-badge[data-kind="error"]      { background: #d93b3b; }
 .ocpv2-pill-badge[data-kind="done"]       { background: rgba(80, 200, 120, 0.85); }
 `;
 
+// Rules for the SDK 1.18 surfaces (errors, retries, compaction, the approval
+// queue). Same palette as above: white alphas, the amber of the permission
+// card, the red of the error banner, the blue of the running states.
+const PARITY_CSS = `
+/* ── Notes: subtask / agent / patch markers, retries, "Stopped" ───────── */
+.ocpv2-part-note {
+  font-size: 10.5px;
+  color: rgba(255,255,255,0.4);
+  padding: 4px 2px;
+  overflow-wrap: anywhere;
+}
+.ocpv2-part-note-warn { color: rgba(255,200,120,0.8); }
+
+/* ── Live reasoning preview ───────────────────────────────────────────── */
+.ocpv2-thinking-live { display: flex; flex-direction: column; gap: 2px; }
+.ocpv2-thinking-preview {
+  font-size: 10.5px;
+  color: rgba(255,255,255,0.4);
+  padding: 0 2px 2px 16px;
+  max-height: 3.2em;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+/* ── Per-message error ────────────────────────────────────────────────── */
+.ocpv2-message-error {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  background: rgba(220,100,100,0.06);
+  border: 1px solid rgba(220,100,100,0.22);
+  color: rgba(255,166,166,0.92);
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 11px;
+}
+.ocpv2-message-error-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.ocpv2-inline-action {
+  flex-shrink: 0;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  color: rgba(255,255,255,0.78);
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 10px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  letter-spacing: 0.02em;
+  text-decoration: none;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.ocpv2-inline-action:hover:not(:disabled) {
+  background: rgba(255,255,255,0.08);
+  border-color: rgba(255,255,255,0.14);
+  color: rgba(255,255,255,0.95);
+}
+.ocpv2-inline-action:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ── Error banner: dismissible ────────────────────────────────────────── */
+.ocpv2-error-banner { display: flex; align-items: flex-start; gap: 8px; }
+.ocpv2-error-banner-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.ocpv2-error-banner-dismiss {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: rgba(255,166,166,0.6);
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+}
+.ocpv2-error-banner-dismiss:hover { color: rgba(255,166,166,1); }
+
+/* ── Retry banner ─────────────────────────────────────────────────────── */
+.ocpv2-retry-banner {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  background: rgba(120,170,255,0.08);
+  border: 1px solid rgba(120,170,255,0.35);
+  color: rgba(180,205,255,0.95);
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+}
+.ocpv2-retry-title { font-weight: 600; }
+.ocpv2-retry-message { flex: 1; min-width: 0; color: rgba(255,255,255,0.62); overflow-wrap: anywhere; }
+
+/* ── Permission card: origin, what "Always" remembers, reject reason ──── */
+.ocpv2-permission-origin {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 9px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: rgba(255,200,120,0.95);
+  border: 1px solid rgba(232,180,80,0.22);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+.ocpv2-permission-always,
+.ocpv2-permission-more {
+  font-size: 10px;
+  color: rgba(255,255,255,0.4);
+  overflow-wrap: anywhere;
+}
+.ocpv2-permission-always code { color: rgba(255,255,255,0.62); }
+.ocpv2-permission-more { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
+.ocpv2-permission-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: rgba(255,255,255,0.55);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.ocpv2-permission-link:hover { color: rgba(255,255,255,0.9); }
+.ocpv2-permission-reason { display: flex; gap: 6px; }
+.ocpv2-permission-reason[hidden] { display: none; }
+.ocpv2-permission-reason-input {
+  flex: 1;
+  min-width: 0;
+  background: rgba(0,0,0,0.25);
+  border: 1px solid rgba(255,255,255,0.08);
+  color: rgba(255,255,255,0.92);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 11px;
+  outline: none;
+}
+.ocpv2-permission-reason-input:focus { border-color: rgba(232,224,220,0.4); background: rgba(0,0,0,0.4); }
+.ocpv2-permission-reason .ocpv2-permission-btn { flex: 0 0 auto; }
+
+/* ── Message actions (copy / undo / fork / delete / retry) ───────────── */
+.ocpv2-msg-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 2px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.ocpv2-msg:hover .ocpv2-msg-actions,
+.ocpv2-msg:hover + .ocpv2-msg-actions-row .ocpv2-msg-actions,
+.ocpv2-msg-actions:focus-within { opacity: 1; }
+.ocpv2-msg-actions-row { padding-top: 0; padding-bottom: 0; }
+.ocpv2-msg-action {
+  background: none;
+  border: none;
+  padding: 0;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  color: rgba(255,255,255,0.4);
+  cursor: pointer;
+}
+.ocpv2-msg-action:hover:not(:disabled) { color: rgba(255,255,255,0.9); }
+.ocpv2-msg-action:disabled { opacity: 0.4; cursor: default; }
+.ocpv2-msg-action[data-action="delete"]:hover:not(:disabled) { color: rgba(255,166,166,0.92); }
+
+/* ── Copy button on code blocks ───────────────────────────────────────── */
+.ocpv2-code-block { position: relative; }
+.ocpv2-code-copy {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  background: rgba(22, 22, 26, 0.95);
+  border: 1px solid rgba(255,255,255,0.08);
+  color: rgba(255,255,255,0.55);
+  border-radius: 6px;
+  padding: 1px 6px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 9px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+}
+.ocpv2-code-block:hover .ocpv2-code-copy,
+.ocpv2-code-copy:focus { opacity: 1; }
+.ocpv2-code-copy:hover { color: rgba(255,255,255,0.9); }
+
+/* ── Reverted (undone) banner: the retry banner in neutral tones ──────── */
+.ocpv2-revert-banner {
+  background: rgba(255,255,255,0.04);
+  border-color: rgba(255,255,255,0.08);
+}
+
+/* ── Session menu: search, sections, per-item actions ─────────────────── */
+.ocpv2-session-search {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  gap: 4px;
+  padding: 6px 6px 4px;
+  background: rgba(12, 12, 14, 0.98);
+}
+.ocpv2-session-search-input {
+  flex: 1;
+  min-width: 0;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.08);
+  color: rgba(255,255,255,0.8);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.ocpv2-session-search-input::placeholder { color: rgba(255,255,255,0.2); }
+.ocpv2-session-search-input:focus { border-color: rgba(100,160,255,0.35); }
+.ocpv2-session-menu-note {
+  padding: 4px 12px;
+  font-size: 9.5px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.32);
+}
+.ocpv2-session-menu .ocpv2-session-menu-note {
+  padding: 6px 8px 2px;
+  font-size: 9px;
+  letter-spacing: 0.5px;
+  color: rgba(255,255,255,0.2);
+}
+.ocpv2-session-menu-sep { height: 1px; background: rgba(255,255,255,0.06); margin: 4px 8px; }
+.ocpv2-session-item-meta { font-size: 9px; opacity: 0.45; margin-left: 6px; }
+.ocpv2-session-item-action {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  padding: 0 4px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 9px;
+  color: rgba(255,255,255,0.4);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+}
+.ocpv2-session-item:hover .ocpv2-session-item-action { opacity: 1; }
+.ocpv2-session-item-action:hover { color: rgba(255,255,255,0.9); }
+.ocpv2-session-share-url {
+  padding: 2px 12px 6px;
+  font-size: 10px;
+  color: rgba(255,255,255,0.55);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+/* ── Composer: queue tray ─────────────────────────────────────────────── */
+.ocpv2-queue-tray {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0 10px 4px;
+  padding: 6px 8px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 8px;
+  max-height: 120px;
+  overflow-y: auto;
+}
+.ocpv2-queue-tray[hidden] { display: none; }
+.ocpv2-queue-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 9.5px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.4);
+}
+.ocpv2-queue-head span { flex: 1; min-width: 0; }
+.ocpv2-queue-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: rgba(255,255,255,0.62);
+}
+.ocpv2-queue-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ocpv2-queue-action {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  padding: 0 2px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10px;
+  color: rgba(255,255,255,0.4);
+  cursor: pointer;
+}
+.ocpv2-queue-action:hover { color: rgba(255,255,255,0.9); }
+
+/* ── Composer: shell mode (the amber of the permission card: this runs) ─ */
+.ocpv2-input-wrap.ocpv2-shell-mode {
+  background: rgba(232,180,80,0.22);
+  box-shadow: 0 0 20px rgba(232,180,80,0.04);
+}
+.ocpv2-input-wrap.ocpv2-shell-mode::before { opacity: 0; animation: none; }
+.ocpv2-input-wrap.ocpv2-shell-mode .ocpv2-input-inner::before {
+  content: '!';
+  align-self: center;
+  margin-right: 4px;
+  font-weight: 700;
+  color: rgba(255,200,120,0.95);
+}
+.ocpv2-input-wrap.ocpv2-shell-mode .ocpv2-compose-input { color: rgba(255,200,120,0.95); }
+
+/* ── Composer: attach button, agent toggle with more than two agents ──── */
+.ocpv2-attach-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  border-radius: 7px;
+  border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(255,255,255,0.035);
+  color: rgba(232,224,220,0.55);
+  cursor: pointer;
+}
+.ocpv2-attach-btn:hover { color: rgba(232,224,220,0.88); background: rgba(255,255,255,0.045); }
+.ocpv2-mode-toggle { max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+.ocpv2-mode-toggle::-webkit-scrollbar { display: none; }
+.ocpv2-mode-btn { white-space: nowrap; flex-shrink: 0; }
+.ocpv2-image-strip .ocpv2-path-chip { align-self: center; }
+
+/* ── Tool cards (collapsible; same shell as .ocpv2-part-tool) ─────────── */
+.ocpv2-tool-card .ocpv2-tc-head { cursor: pointer; user-select: none; transition: background 0.12s; }
+.ocpv2-tool-card .ocpv2-tc-head:hover { background: rgba(255,255,255,0.03); }
+.ocpv2-tc-icon {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  background: rgba(255,255,255,0.04);
+  color: rgba(255,255,255,0.62);
+}
+.ocpv2-tc-icon svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.ocpv2-tc-titles { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.ocpv2-tc-titles .ocpv2-tool-name { flex: none; line-height: 1.3; }
+.ocpv2-tc-summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgba(255,255,255,0.45);
+  font-size: 10.5px;
+  line-height: 1.35;
+}
+.ocpv2-tc-meta { flex-shrink: 0; font-size: 10px; color: rgba(255,255,255,0.4); white-space: nowrap; }
+.ocpv2-tc-chevron {
+  flex-shrink: 0;
+  display: inline-flex;
+  color: rgba(255,255,255,0.32);
+  transition: transform 0.18s;
+}
+.ocpv2-tool-card.ocpv2-tool-expanded .ocpv2-tc-chevron { transform: rotate(90deg); }
+.ocpv2-tc-body { display: none; flex-direction: column; }
+.ocpv2-tool-card.ocpv2-tool-expanded .ocpv2-tc-body { display: flex; }
+.ocpv2-tc-more {
+  display: block;
+  margin-top: 6px;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: rgba(255,255,255,0.55);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.ocpv2-tc-more:hover { color: rgba(255,255,255,0.9); }
+.ocpv2-tc-actions {
+  display: flex;
+  gap: 10px;
+  padding: 6px 12px;
+  border-top: 1px solid rgba(255,255,255,0.05);
+}
+.ocpv2-tc-diff { white-space: pre; overflow-x: auto; }
+.ocpv2-diff-line { min-height: 1.5em; }
+.ocpv2-diff-add { color: rgba(140,200,160,0.85); background: rgba(140,200,160,0.04); }
+.ocpv2-diff-del { color: rgba(220,140,140,0.82); background: rgba(220,100,100,0.04); }
+.ocpv2-diff-hunk { color: rgba(180,205,255,0.9); }
+.ocpv2-diff-meta { color: rgba(255,255,255,0.4); }
+
+/* ── Todos: the widget above the composer and the todowrite card ──────── */
+.ocpv2-todo-widget {
+  flex-shrink: 0;
+  margin: 0 8px 4px;
+  background: rgba(22, 22, 26, 0.95);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 10px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+  overflow: hidden;
+}
+.ocpv2-todo-widget[hidden] { display: none; }
+.ocpv2-todo-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  background: none;
+  border: none;
+  font: inherit;
+  color: rgba(255,255,255,0.62);
+  cursor: pointer;
+  text-align: left;
+}
+.ocpv2-todo-head:hover { background: rgba(255,255,255,0.03); }
+.ocpv2-todo-count {
+  flex-shrink: 0;
+  font-size: 9.5px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.4);
+}
+.ocpv2-todo-active { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ocpv2-todo-list { padding: 2px 10px 8px; max-height: 160px; overflow-y: auto; }
+.ocpv2-todo-item { display: flex; gap: 8px; line-height: 1.5; color: rgba(255,255,255,0.62); }
+.ocpv2-todo-mark { flex-shrink: 0; width: 1em; text-align: center; color: rgba(255,255,255,0.4); }
+.ocpv2-todo-text { min-width: 0; overflow-wrap: anywhere; }
+.ocpv2-todo-completed { color: rgba(255,255,255,0.4); }
+.ocpv2-todo-completed .ocpv2-todo-mark { color: rgba(140,200,160,0.85); }
+.ocpv2-todo-completed .ocpv2-todo-text,
+.ocpv2-todo-cancelled .ocpv2-todo-text { text-decoration: line-through; }
+.ocpv2-todo-in_progress { color: rgba(255,255,255,0.92); }
+.ocpv2-todo-in_progress .ocpv2-todo-mark { color: rgba(140,200,255,0.85); }
+.ocpv2-todo-cancelled { color: rgba(255,255,255,0.32); }
+
+/* ── Per-message meta ─────────────────────────────────────────────────── */
+.ocpv2-msg-meta {
+  font-size: 9.5px;
+  letter-spacing: 0.02em;
+  color: rgba(255,255,255,0.32);
+  overflow-wrap: anywhere;
+}
+
+/* ── Changes: the bar above the composer and the diff viewer ──────────── */
+.ocpv2-changes-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  margin: 0 8px 4px;
+  padding: 6px 10px;
+  background: rgba(22, 22, 26, 0.95);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 10px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+  color: rgba(255,255,255,0.62);
+  cursor: pointer;
+  text-align: left;
+}
+.ocpv2-changes-bar[hidden] { display: none; }
+.ocpv2-changes-bar:hover { border-color: rgba(255,255,255,0.14); color: rgba(255,255,255,0.9); }
+.ocpv2-changes-bar-label { flex: 1; min-width: 0; }
+.ocpv2-changes-stat { flex-shrink: 0; font-size: 10px; color: rgba(255,255,255,0.45); }
+.ocpv2-changes-bar-action {
+  flex-shrink: 0;
+  font-size: 9.5px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.55);
+}
+.ocpv2-changes-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,0.55);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  display: flex;
+  z-index: 300;
+  border-radius: 16px;
+  padding: 10px;
+}
+.ocpv2-changes-sheet {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: rgba(22,22,26,0.98);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+  overflow: hidden;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+}
+.ocpv2-changes-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.ocpv2-changes-head .ocpv2-msg-action { font-size: 10.5px; }
+.ocpv2-changes-list { flex: 1; overflow-y: auto; padding: 6px; }
+.ocpv2-changes-file {
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 8px;
+  margin-bottom: 6px;
+  overflow: hidden;
+}
+.ocpv2-changes-file-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 11px;
+  color: rgba(255,255,255,0.78);
+  cursor: pointer;
+  list-style: none;
+}
+.ocpv2-changes-file-head::-webkit-details-marker { display: none; }
+.ocpv2-changes-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.ocpv2-changes-mark { flex-shrink: 0; width: 1em; text-align: center; font-weight: 700; color: rgba(180,205,255,0.9); }
+.ocpv2-changes-added { color: rgba(140,200,160,0.85); }
+.ocpv2-changes-deleted { color: rgba(220,140,140,0.82); }
+.ocpv2-changes-file .ocpv2-tool-output { max-height: 320px; }
+
+/* ── New-session dialog: worktree option ──────────────────────────────── */
+.ocpv2-name-modal-worktree[hidden],
+.ocpv2-name-modal-worktrees[hidden] { display: none; }
+.ocpv2-name-modal-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: rgba(255,255,255,0.78);
+  cursor: pointer;
+}
+.ocpv2-name-modal-worktrees {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 10px;
+  color: rgba(255,255,255,0.4);
+  max-height: 72px;
+  overflow-y: auto;
+}
+
+/* ── Environment popover ("Manage" in Context settings), under the header ── */
+.ocpv2-env-popover {
+  position: absolute;
+  top: 58px;
+  left: 8px;
+  right: 8px;
+  max-height: 60%;
+  overflow-y: auto;
+  background: rgba(22,22,26,0.98);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 10px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  z-index: 60;
+  padding: 6px 4px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+}
+.ocpv2-env-popover[hidden] { display: none; }
+.ocpv2-env-section { padding: 2px 0 6px; }
+.ocpv2-env-section > .ocpv2-permission-link { margin: 2px 12px; font-size: 10px; }
+.ocpv2-env-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 12px;
+  color: rgba(255,255,255,0.78);
+}
+.ocpv2-env-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ocpv2-env-state { flex-shrink: 0; font-size: 10px; }
+.ocpv2-env-row .ocpv2-permission-link { flex-shrink: 0; font-size: 10px; }
+.ocpv2-env-note { padding: 0 12px 2px; font-size: 10px; color: rgba(255,255,255,0.4); overflow-wrap: anywhere; }
+.ocpv2-env-ok { color: rgba(140,200,160,0.85); }
+.ocpv2-env-warn { color: rgba(255,200,120,0.95); }
+.ocpv2-env-error { color: rgba(255,166,166,0.92); }
+.ocpv2-env-muted { color: rgba(255,255,255,0.4); }
+/* "Add a server…": name, command or URL, Add. Wraps in a narrow panel. */
+.ocpv2-env-section .ocpv2-permission-reason { flex-wrap: wrap; padding: 4px 12px; }
+.ocpv2-env-section .ocpv2-permission-reason-input { flex: 1 1 150px; }
+.ocpv2-env-section .ocpv2-permission-reason-input:first-child { flex: 0 1 110px; }
+
+/* ── Model picker: status and catalog price of a model ────────────────── */
+.ocpv2-dd-model-meta { flex-shrink: 0; font-size: 9px; color: rgba(255,255,255,0.4); white-space: nowrap; }
+.ocpv2-dd-model-status { color: rgba(255,200,120,0.95); margin-right: 4px; }
+
+/* ── In-panel confirmation: the revert banner with its two answers ───── */
+.ocpv2-confirm { margin: 4px 0; }
+.ocpv2-confirm .ocpv2-confirm-text { flex: 1 1 100%; white-space: pre-line; }
+.ocpv2-confirm-yes { color: rgba(255,166,166,0.92); border-color: rgba(255,82,82,0.6); }
+.ocpv2-confirm-yes:hover:not(:disabled) { color: #ff5252; background: rgba(255,82,82,0.12); border-color: rgba(255,82,82,0.6); }
+/* Tab close and message delete ask above the compose box, whatever is scrolled. */
+.ocpv2-confirm-slot { padding: 0 12px; }
+.ocpv2-confirm-slot:empty { display: none; }
+.ocpv2-session-menu .ocpv2-confirm, .ocpv2-env-section .ocpv2-confirm { margin: 4px 8px; }
+
+/* ── /help card: the plan card's frame, one line per thing ───────────── */
+.ocpv2-help-card .ocpv2-session-menu-note { padding: 4px 0 0; }
+.ocpv2-help-row { display: flex; align-items: baseline; gap: 8px; font-size: 10.5px; line-height: 1.45; }
+.ocpv2-help-name { flex-shrink: 0; color: rgba(232,224,220,0.95); font-family: 'JetBrains Mono', ui-monospace, monospace; }
+.ocpv2-help-text { flex: 1; min-width: 0; color: rgba(255,255,255,0.62); overflow-wrap: anywhere; }
+.ocpv2-help-row .ocpv2-session-item-meta { flex-shrink: 0; margin-left: 0; }
+`;
+
 export function injectStyles() {
-  const full = CSS + '\n' + CHILD_CSS;
+  const full = CSS + '\n' + PARITY_CSS + '\n' + CHILD_CSS;
   const existing = document.getElementById(STYLE_ID);
   if (existing) {
     if (existing.textContent !== full) existing.textContent = full;

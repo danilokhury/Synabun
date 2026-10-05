@@ -30,6 +30,7 @@ Thumbs.db
 .env*
 !.env.example
 .npmrc
+!neural-interface/lib/whatsapp/connector/.npmrc
 connections.json
 
 # Logs
@@ -50,3 +51,6 @@ npm-debug.log*
 
 # Coverage
 coverage/
+
+# Design-run captures and harnesses written by SynaBun workers
+.synabun/design/

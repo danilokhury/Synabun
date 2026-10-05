@@ -3,14 +3,15 @@
 
 import { storage } from '../storage.js';
 import { state, emit, on } from '../state.js';
-import { reserveRightPanelLayout, clearRightPanelLayout, setRightPanelResizing } from '../ui-sidepanel-layout.js';
+import { registerSidepanel, setSidepanelVisible, sidepanelAcceptsKeyboard, openAnotherSidepanelSession } from '../ui-sidepanel-windows.js';
 import { subscribeCliStatus, recheckCliStatus, getCliDocUrl, getCliInstallCommand, getCliLabel } from '../cli-status.js';
-import { isClaudePanelOpen, toggleClaudePanel } from '../ui-claude-panel.js';
-import { isOpencodePanelOpen, toggleOpencodePanel } from '../ui-opencode-panel-v2.js';
 import { nativeLoopWindowId } from '../ui-native-window-id.js';
 import { createStickyScrollController, getStickyScrollController } from '../ui-scroll-follow.js';
 import { injectStyles } from './cdx-styles.js';
-import { appendAssistantMarkdownMessage, appendSystem, flushCardBody, renderPostPlanActions } from './cdx-render.js';
+import { mountContextMenu } from './cdx-context-menu.js';
+import { teardownMcpApps } from './cdx-mcp-app-host.js';
+import { appendSystem, renderPostPlanActions, syncPlanEditorActions } from './cdx-render.js';
+import { codexAutomationBufferCoversRun, codexAutomationItem, codexAutomationTurnKey } from './cdx-protocol.js';
 import {
   OPENAI_ICON, ICON_SPARK, ICON_PLUS, ICON_MINIMIZE, ICON_X, ICON_STOP,
   ICON_EDIT, ICON_SHIELD, ICON_PLAN, ICON_BRAIN, SYNABUN_LOGO_ICON,
@@ -25,7 +26,8 @@ import {
   cycleEffort, toggleEffortMenu, togglePlanMode, toggleAutoAccept, toggleContextMode, syncToolbarState,
   requestModelList, populateModelDropdown,
   setSessionLabel, renameActiveSession, promptNameNewSession, openSettingsPanel, renderSessionMenu,
-  toggleAccountMenu, syncAccountChip,
+  toggleAccountMenu,
+  contextMenuData, contextMenuReading, refreshContextMenuDetails,
   addImageFromFile, removeImage, renderImageStrip,
   addPathChip, removePathChip, renderPathStrip,
   initVoiceInput, showSlashHints, hideComposerHints, selectSlashHint, navigateSlashHints, confirmSlashHint,
@@ -97,6 +99,8 @@ let _planFilePath = '';
 // ═══════════════════════════════════════════
 
 let _host = {};
+// The header cog and its Context settings popover (cdx-context-menu.js).
+let _contextMenu = null;
 
 /**
  * Register host-side callbacks for functions that still live in the
@@ -268,22 +272,7 @@ function buildPanel() {
         <button class="cxp-btn" id="cxp-slide" title="Slide panel"><svg viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg></button>
       </div>
       <div class="cxp-session-menu" id="cxp-session-menu"></div>
-    </div>
-    <div class="cxp-contextbar" id="cxp-contextbar">
-      <div class="cxp-gauge" id="cxp-gauge">
-        <div class="cxp-ctx-fill" id="cxp-ctx-fill"></div>
-        <span class="cxp-gauge-label" id="cxp-gauge-label">context pending</span>
-      </div>
-      <button class="cxp-compact-btn" id="cxp-compact-btn" type="button" title="Compress conversation context to free up space">compact</button>
-      <button class="cxp-account-chip" id="cxp-account-btn" type="button" title="Switch ChatGPT account for this tab">
-        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.5"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/></svg>
-        <span class="cxp-account-label" id="cxp-account-label">Default</span>
-        <span class="cxp-dd-arrow">&#x25BE;</span>
-      </button>
       <div class="cxp-account-menu" id="cxp-account-menu"></div>
-      <button class="cxp-btn cxp-settings-btn" id="cxp-settings-btn" type="button" title="Codex settings">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-      </button>
     </div>
     <div class="cxp-messages-container" id="cxp-messages-container"></div>
     <div class="cxp-bottom">
@@ -355,12 +344,12 @@ function buildPanel() {
           <button class="cxp-toolbar-toggle" id="cxp-plan-toggle" title="Plan mode: off">${ICON_PLAN}<span class="cxp-btn-label">Plan</span></button>
           <button class="cxp-toolbar-toggle" id="cxp-autoaccept-toggle" title="Auto-accept: off">${ICON_SHIELD}<span class="cxp-btn-label">Auto</span></button>
           <button class="cxp-toolbar-toggle" id="cxp-context-toggle" type="button" aria-pressed="false" title="Context: provider default">${ICON_SPARK}<span class="cxp-btn-label">Default</span></button>
+          <button class="cxp-toolbar-toggle" id="cxp-context-retry" type="button" hidden aria-label="Retry model capabilities" title="Reload model capabilities">Retry</button>
           <div class="cxp-dropdown" id="cxp-model" data-placeholder="model...">
             <span class="cxp-dd-label">model...</span>
             <span class="cxp-dd-arrow">&#x25BE;</span>
             <div class="cxp-dd-menu"></div>
           </div>
-          <span class="cxp-cost" id="cxp-cost" title="Estimated cost based on token usage"></span>
         </div>
       </div>
     </div>
@@ -538,7 +527,9 @@ function ensureCliSubscription() {
 
 function _cdxDocEscHandler(event) {
   if (event.key !== 'Escape') return;
-  if (!_visible) return;
+  if (!_visible || !sidepanelAcceptsKeyboard('codex', event)) return;
+  // The open Context settings popover takes this Escape (cdx-context-menu.js).
+  if (_contextMenu?.isOpen()) return;
   if (!activeTab()?.running) return;
   const hintsEl = panelEl('#cxp-slash-hints');
   if (hintsEl && !hintsEl.hidden) return; // let input-level handler dismiss hints first
@@ -547,9 +538,23 @@ function _cdxDocEscHandler(event) {
   interruptTurn();
 }
 
+// The whiteboard takes Escape at the document, ahead of this panel, whenever
+// the focus is not in a text field. A request waiting for an answer disables
+// the composer, so after a re-attach that is every Escape. A key pressed inside
+// the panel is the panel's: it is handled one step earlier, at the window.
+function _cdxPanelEscHandler(event) {
+  if (_panel?.contains(event.target)) _cdxDocEscHandler(event);
+}
+
 function setVisible(nextVisible) {
+  setSidepanelVisible(PANEL_OWNER, nextVisible);
+}
+
+function applyVisibility(nextVisible) {
   if (!_panel) return;
   if (!nextVisible) {
+    _contextMenu?.close();
+    teardownMcpApps(null, 'Panel closed');
     const tab = activeTab();
     const input = panelEl('#cxp-input');
     if (tab && input) tab.draft = input.value;
@@ -561,6 +566,7 @@ function setVisible(nextVisible) {
   renderPills();
   emit('codex-panel:visibility', _visible);
   if (_visible) {
+    window.addEventListener('keydown', _cdxPanelEscHandler, { capture: true });
     document.addEventListener('keydown', _cdxDocEscHandler, { capture: true });
     if (!_tabs.length) createTab({ project: storage.getItem(STOR.project) || '' });
     state.lastActivePanel = 'codex';
@@ -570,6 +576,7 @@ function setVisible(nextVisible) {
     panelEl('#cxp-input')?.focus();
     refreshCliBanner();
   } else {
+    window.removeEventListener('keydown', _cdxPanelEscHandler, { capture: true });
     document.removeEventListener('keydown', _cdxDocEscHandler, { capture: true });
   }
   window.dispatchEvent(new Event('resize'));
@@ -778,28 +785,12 @@ async function saveRecallProfile(profile) {
 // ═══════════════════════════════════════════
 
 function wireEvents() {
-  // Card collapse/expand delegation — covers new cards and snapshot-restored HTML
+  // Project links retain their existing handling; card heads bind in cdx-render.
   const msgContainer = panelEl('#cxp-messages-container');
   if (msgContainer) {
     msgContainer.addEventListener('click', (e) => {
       const link = e.target.closest('a[href]');
       if (link && msgContainer.contains(link) && _host.maybeOpenProjectFileLink?.(link.getAttribute('href'), e)) return;
-      const head = e.target.closest('.cxp-card-head');
-      if (!head) return;
-      const card = head.parentElement;
-      if (!card?.classList.contains('cxp-card')) return;
-      if (e.target.closest('button, input, select, textarea, a')) return;
-      const wasCollapsed = card.classList.contains('cxp-collapsed');
-      card.classList.toggle('cxp-collapsed');
-      card.dataset.expanded = wasCollapsed ? '1' : '0';
-      // Lazy flush: render body content on first expand
-      if (wasCollapsed) {
-        const itemId = card.dataset.itemId;
-        const itemState = itemId ? activeTab()?.items?.get(itemId) : null;
-        if (itemState) flushCardBody(itemState);
-      }
-      scheduleThreadSnapshotSave(activeTab());
-      saveTabs();
     });
   }
 
@@ -808,13 +799,11 @@ function wireEvents() {
   const minimizeBtn = panelEl('#cxp-minimize');
   const newBtn = panelEl('#cxp-new');
   const closeBtn = panelEl('#cxp-close');
-  const compactBtn = panelEl('#cxp-compact-btn');
   const projectDd = panelEl('#cxp-project');
   const sessionBtn = panelEl('#cxp-session-btn');
   const sessionLabelEl = panelEl('#cxp-session-label');
   const sessionMenu = panelEl('#cxp-session-menu');
   const renameBtn = panelEl('#cxp-header-rename');
-  const resizeHandle = _panel?.querySelector('.cxp-resize-handle');
 
   input?.addEventListener('input', () => {
     const tab = activeTab();
@@ -892,16 +881,36 @@ function wireEvents() {
   });
   minimizeBtn?.addEventListener('click', () => setVisible(false));
   newBtn?.addEventListener('click', () => {
+    if (openAnotherSidepanelSession(PANEL_OWNER, 'codex', { project: activeTab()?.project || '' })) return;
     const tab = createTab({ project: activeTab()?.project || storage.getItem(STOR.project) || '' });
     if (!tab) return;
     promptNameNewSession();
   });
   closeBtn?.addEventListener('click', () => closeActiveTab());
-  compactBtn?.addEventListener('click', () => startCompaction());
-  const settingsBtn = panelEl('#cxp-settings-btn');
-  settingsBtn?.addEventListener('click', () => openSettingsPanel());
-  const accountBtn = panelEl('#cxp-account-btn');
-  accountBtn?.addEventListener('click', (event) => { event.stopPropagation(); toggleAccountMenu(); });
+  // Context settings: the cog and its popover take the place of the context bar.
+  _contextMenu?.destroy();
+  _contextMenu = mountContextMenu(panelEl('.cxp-actions'), _panel, {
+    reading: contextMenuReading,
+    data: () => {
+      const data = contextMenuData();
+      // A new conversation since the last read: its servers and settings are read again.
+      if (data?.detailsPending) refreshContextMenuDetails();
+      return data;
+    },
+    onOpen: () => {
+      sessionMenu?.classList.remove('open');
+      panelEl('#cxp-account-menu')?.classList.remove('open');
+      panelEl('#cxp-effort-menu')?.classList.remove('open');
+      refreshContextMenuDetails();
+    },
+    onCompact: () => startCompaction(),
+    onManage: () => openSettingsPanel({ section: 'mcp' }),
+    onSettings: () => openSettingsPanel(),
+    // After this click has reached the document, whose handler closes the menu.
+    onAccount: () => setTimeout(() => toggleAccountMenu(), 0),
+  });
+  // The account menu hangs under the header, which a floating window is moved by.
+  panelEl('#cxp-account-menu')?.addEventListener('pointerdown', (event) => event.stopPropagation());
   const slideBtn = panelEl('#cxp-slide');
   slideBtn?.addEventListener('click', () => setVisible(false));
   const changelogBtn = panelEl('#cxp-action-changelog');
@@ -917,6 +926,11 @@ function wireEvents() {
   ddSetup(projectDd);
   const modelDd = panelEl('#cxp-model');
   ddSetup(modelDd);
+  modelDd?.addEventListener('click', event => {
+    if (!event.target.closest('.cxp-dd-menu') && modelDd.classList.contains('open')) {
+      requestModelList(activeTab(), { force: true });
+    }
+  });
   const effortToggle = panelEl('#cxp-effort-toggle');
   const planToggle = panelEl('#cxp-plan-toggle');
   const autoAcceptToggle = panelEl('#cxp-autoaccept-toggle');
@@ -925,6 +939,7 @@ function wireEvents() {
   planToggle?.addEventListener('click', () => togglePlanMode());
   autoAcceptToggle?.addEventListener('click', () => toggleAutoAccept());
   contextToggle?.addEventListener('click', () => toggleContextMode());
+  panelEl('#cxp-context-retry')?.addEventListener('click', () => requestModelList(activeTab(), { force: true }));
   const queuePauseBtn = panelEl('#cxp-queue-pause');
   const queueClearBtn = panelEl('#cxp-queue-clear');
   queuePauseBtn?.addEventListener('click', () => toggleQueuePause());
@@ -1013,60 +1028,14 @@ function wireEvents() {
   });
   document.addEventListener('click', (event) => {
     if (!event.target.closest('.cxp-header')) sessionMenu?.classList.remove('open');
-    if (!event.target.closest('#cxp-account-btn') && !event.target.closest('#cxp-account-menu')) {
-      panelEl('#cxp-account-menu')?.classList.remove('open');
-    }
+    if (!event.target.closest('#cxp-account-menu')) panelEl('#cxp-account-menu')?.classList.remove('open');
     if (!event.target.closest('.cxp-dropdown')) {
       _panel?.querySelectorAll('.cxp-dropdown.open').forEach((node) => node.classList.remove('open'));
     }
     if (!event.target.closest('.cxp-effort-wrap')) panelEl('#cxp-effort-menu')?.classList.remove('open');
   });
 
-  if (resizeHandle) {
-    let dragging = false;
-    let pendingWidth = 0;
-    let resizeRaf = 0;
-    const applyResizeWidth = () => {
-      resizeRaf = 0;
-      if (!dragging || !_panel || !pendingWidth) return;
-      _panel.style.width = `${pendingWidth}px`;
-      syncReservedWidth(pendingWidth);
-    };
-    resizeHandle.addEventListener('mousedown', (event) => {
-      event.preventDefault();
-      dragging = true;
-      pendingWidth = _panel?.offsetWidth || 0;
-      _panel.style.transition = 'none';
-      document.body.style.cursor = 'col-resize';
-      document.body.style.userSelect = 'none';
-      setRightPanelResizing(true);
-    });
-    window.addEventListener('mousemove', (event) => {
-      if (!dragging || !_panel) return;
-      pendingWidth = Math.min(700, Math.max(320, window.innerWidth - event.clientX - 20));
-      if (!resizeRaf) resizeRaf = requestAnimationFrame(applyResizeWidth);
-    });
-    window.addEventListener('mouseup', () => {
-      if (!dragging || !_panel) return;
-      dragging = false;
-      if (resizeRaf) {
-        cancelAnimationFrame(resizeRaf);
-        resizeRaf = 0;
-      }
-      if (pendingWidth) {
-        _panel.style.width = `${pendingWidth}px`;
-        syncReservedWidth(pendingWidth);
-      }
-      _panel.style.transition = '';
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      setRightPanelResizing(false);
-      window.dispatchEvent(new Event('resize'));
-    });
-  }
-
   if (!_resizeBound) {
-    window.addEventListener('resize', () => syncReservedWidth());
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState !== 'visible') {
         // Page hidden — pause stall timer to prevent false interrupts from browser throttling
@@ -1117,28 +1086,39 @@ function wireEvents() {
     applyMcpProfileState(activeTab()?.mcpProfile || _defaultMcpProfile, msg.presets);
   });
 
-  on('claude-panel:show', () => {
-    if (_visible) setVisible(false);
-  });
-
   on('codex-panel:show', async (data) => {
-    if (!_visible) {
-      if (isClaudePanelOpen()) await toggleClaudePanel();
-      if (isOpencodePanelOpen()) await toggleOpencodePanel();
-      setVisible(true);
-    }
+    setVisible(true);
     if (data?.tabId) {
       const idx = _tabs.findIndex((entry) => entry.id === data.tabId);
       if (idx >= 0) switchTab(idx);
     }
   });
 
-  on('plan-saved', ({ filePath, content, source, tabId } = {}) => {
-    if (source && source !== 'codex') return;
-    const tab = _tabs.find((entry) => entry.id === tabId) || activeTab();
-    if (!tab) return;
-    tab.planContent = content || tab.planContent || '';
-    tab.editedPlanContent = content || tab.editedPlanContent || '';
+  const findPlanEditorTab = ({ source, tabId, planId, accountId, threadId } = {}) => {
+    if (source !== 'codex' || !tabId || !planId || !accountId || !threadId) return null;
+    return _tabs.find((entry) => entry.id === tabId
+      && entry.planDocument?.id === planId
+      && entry.planDocument?.accountId === accountId
+      && entry.planDocument?.threadId === threadId) || null;
+  };
+
+  on('plan-editor-state', (event = {}) => {
+    const tab = findPlanEditorTab(event);
+    if (!tab || (tab.planEditor?.open && tab.planEditor.revision !== event.revision)) return;
+    if (tab.planDocument.revision !== event.revision && tab.planEditor?.revision !== event.revision) return;
+    tab.planEditor = { planId: event.planId, revision: event.revision, dirty: !!event.dirty, saving: !!event.saving, open: !!event.open };
+    syncPlanEditorActions(tab);
+  });
+
+  on('plan-saved', (event = {}) => {
+    const { filePath, content, savedRevision } = event;
+    const tab = findPlanEditorTab(event);
+    // The optional editor save callback commits atomically before this event.
+    // Never route an unscoped/old event to whichever tab happens to be active.
+    if (!tab || !event.persisted || tab.planDocument.revision !== savedRevision || tab.planDocument.markdown !== content) return;
+    tab.planEditor = null;
+    tab.planContent = content;
+    tab.editedPlanContent = content;
     tab.planFeedbackDraft = '';
     tab.showPostPlanActions = true;
     tab.postPlanHeader = 'PLAN UPDATED';
@@ -1156,7 +1136,6 @@ function wireEvents() {
       _lastPlanTurnId = '';
       if (filePath) _planFilePath = filePath;
     }
-    appendAssistantMarkdownMessage(tab, content || '');
     renderPostPlanActions(tab, 'PLAN UPDATED');
     saveTabs();
   });
@@ -1195,18 +1174,18 @@ function wireEvents() {
     if (!sent) _host.appendSystem?.('Failed to send edited changelog entries back to Codex.', 'error');
   });
 
-  on('plan-edit-cancelled', ({ source, tabId } = {}) => {
-    if (source && source !== 'codex') return;
-    const tab = _tabs.find((entry) => entry.id === tabId) || activeTab();
-    if (!tab) return;
-    tab.showPostPlanActions = true;
-    tab.planApprovalPending = true;
-    tab.planTurnActive = false;
+  on('plan-edit-cancelled', (event = {}) => {
+    const tab = findPlanEditorTab(event);
+    if (!tab || (tab.planEditor?.open && tab.planEditor.revision !== event.revision)) return;
+    if (tab.planDocument.revision !== event.revision && tab.planEditor?.revision !== event.revision) return;
+    tab.planEditor = null;
+    const reviewPending = tab.planDocument?.status === 'complete' && !tab.planDocument.approvedRevision;
+    tab.showPostPlanActions = reviewPending;
+    tab.planApprovalPending = reviewPending;
     tab.postPlanHeader = tab.postPlanHeader || 'PLAN COMPLETE';
     if (isActiveTab(tab)) {
-      _showPostPlanActions = true;
-      _planApprovalPending = true;
-      _planTurnActive = false;
+      _showPostPlanActions = reviewPending;
+      _planApprovalPending = reviewPending;
       _postPlanHeader = tab.postPlanHeader;
     }
     renderPostPlanActions(tab, tab.postPlanHeader);
@@ -1235,6 +1214,11 @@ function ensurePanel() {
   injectStyles();
   _panel = buildPanel();
   document.body.appendChild(_panel);
+  registerSidepanel({
+    owner: PANEL_OWNER, provider: 'codex', element: _panel,
+    header: panelEl('.cxp-header'), actions: panelEl('.cxp-actions'),
+    buttonClass: 'cxp-btn', dockHandle: panelEl('.cxp-resize-handle'), applyVisibility,
+  });
 
   // Wire cdx-tabs with DOM callbacks
   setPanelRef(() => _panel);
@@ -1252,6 +1236,7 @@ function ensurePanel() {
     activeTabChanged: (tab) => {
       applyMcpProfileState(tab?.mcpProfile || _defaultMcpProfile, null);
     },
+    contextMenuSync: () => _contextMenu?.sync(),
   });
 
   initContextBridge();
@@ -1261,17 +1246,6 @@ function ensurePanel() {
   syncInputEnabled();
   ensureCliSubscription();
   window.dispatchEvent(new CustomEvent('sidepanel-tray:provider-loaded', { detail: { provider: 'codex' } }));
-  // Close Codex when a Claude/OpenCode pill is clicked (mutual exclusion)
-  const tray = document.getElementById('term-minimized-tray');
-  if (tray) {
-    tray.addEventListener('click', (e) => {
-      if (!_visible) return;
-      const pill = e.target.closest('.cp-session-pill') || e.target.closest('.ocp-session-pill');
-      if (pill && !e.target.closest('.term-minimized-pill-close')) {
-        setVisible(false);
-      }
-    }, true);
-  }
 }
 
 // ═══════════════════════════════════════════
@@ -1289,12 +1263,12 @@ export async function toggleCodexPanel() {
     return;
   }
   await ensureProjectsLoaded();
-  if (isClaudePanelOpen()) await toggleClaudePanel();
-  if (isOpencodePanelOpen()) { try { await toggleOpencodePanel(); } catch {} }
   setVisible(true);
 }
 
-export async function attachCodexAutomation(run, { focus = !!run?.focus, isCancelled = () => false } = {}) {
+export async function attachCodexAutomation(run, {
+  focus = !!run?.focus, isCancelled = () => false, bufferedEvents = [], bufferTruncated = false,
+} = {}) {
   const threadId = run?.providerThreadId || run?.providerSessionId;
   if (!run?.runId || !threadId) return { ok: false, reason: 'identity_pending' };
   ensurePanel();
@@ -1318,6 +1292,8 @@ export async function attachCodexAutomation(run, { focus = !!run?.focus, isCance
   }
   if (!tab) return { ok: false, reason: 'tab_limit' };
   const running = run.status === 'starting' || run.status === 'running';
+  // A task-mode worker between turns (waiting for a follow-up) is alive, not working.
+  const working = running && run.turnState !== 'idle' && run.turnState !== 'terminal';
   tab.automationRunId = run.runId;
   tab.automationActive = running;
   tab.automationOwnerId = nativeLoopWindowId;
@@ -1329,8 +1305,10 @@ export async function attachCodexAutomation(run, { focus = !!run?.focus, isCance
   tab.planMode = false;
   if (focus) applyMcpProfileState(tab.mcpProfile, null);
   clearPlanHandoffState(tab);
-  withTab(tab, () => setRunning(running));
-  if (running && !tab._automationHydrated) {
+  withTab(tab, () => setRunning(working));
+  // The router replays what it buffered right after this attach; when that
+  // reaches back to the first prompt, history would only render it twice.
+  if (running && !tab._automationHydrated && !codexAutomationBufferCoversRun(bufferedEvents, bufferTruncated)) {
     await hydrateCodexAutomationHistory(tab);
     if (isCancelled() || tab.closed) {
       await detachCodexAutomation(run.runId);
@@ -1352,47 +1330,15 @@ export async function attachCodexAutomation(run, { focus = !!run?.focus, isCance
   return { ok: true, tabId: tab.id };
 }
 
-function nativeCodexItem(item, eventType) {
-  if (!item?.id) return null;
-  const completed = eventType === 'item.completed';
-  switch (item.type) {
-    case 'agent_message':
-      return { ...item, type: 'agentMessage', phase: 'final_answer', status: completed ? 'completed' : 'inProgress' };
-    case 'reasoning':
-      return { ...item, type: 'reasoning', status: completed ? 'complete' : 'inProgress' };
-    case 'command_execution':
-      return {
-        ...item,
-        type: 'commandExecution',
-        aggregatedOutput: item.aggregated_output || '',
-        exitCode: item.exit_code,
-      };
-    case 'file_change':
-      return { ...item, type: 'fileChange' };
-    case 'mcp_tool_call':
-      return { ...item, type: 'mcpToolCall', args: item.arguments };
-    case 'web_search':
-      return { ...item, type: 'webSearch', status: completed ? 'completed' : 'inProgress' };
-    case 'todo_list':
-      return {
-        ...item,
-        type: 'plan',
-        text: (item.items || []).map((entry) => `- [${entry.completed ? 'x' : ' '}] ${entry.text}`).join('\n'),
-      };
-    default:
-      return { ...item, status: item.status || (completed ? 'completed' : 'inProgress') };
-  }
-}
-
 export function handleCodexAutomationEvent(runId, payload) {
   const tab = allTabs().find((entry) => entry.automationRunId === runId);
   const event = payload?.event || payload;
   if (!tab || !event?.type) return false;
   tab._automationLiveEvents = (tab._automationLiveEvents || 0) + 1;
-  const turnId = `${runId}:${payload?.iteration || tab._automationIteration || 0}`;
+  const turnId = codexAutomationTurnKey(runId, payload, tab._automationIteration);
   return withTab(tab, () => {
     if (event.type === 'synabun.user_prompt') {
-      const key = `${payload?.iteration || tab._automationIteration || 0}:${event.text || ''}`;
+      const key = `${turnId}:${event.text || ''}`;
       tab._automationPromptKeys ||= new Set();
       if (!tab._automationPromptKeys.has(key)) {
         tab._automationPromptKeys.add(key);
@@ -1404,12 +1350,15 @@ export function handleCodexAutomationEvent(runId, payload) {
     else if (event.type === 'turn.completed') handleNotify('turn/completed', { turn: { id: turnId }, usage: event.usage });
     else if (event.type === 'turn.failed') handleNotify('turn/completed', { turn: { id: turnId, error: event.error } });
     else if (event.type === 'item.started' || event.type === 'item.updated' || event.type === 'item.completed') {
-      const item = nativeCodexItem(event.item, event.type);
+      const item = codexAutomationItem(event.item, event.type, {
+        runId, turnKey: turnId, accountId: tab.accountId, threadId: tab.threadId,
+      });
       if (item) handleNotify(event.type === 'item.completed' ? 'item/completed' : 'item/started', { item });
     } else if (event.type === 'error') {
-      handleNotify('item/completed', {
-        item: { id: `${turnId}:error`, type: 'error', status: 'failed', message: event.message },
+      const item = codexAutomationItem({ id: 'error', type: 'error', status: 'failed', message: event.message }, 'item.completed', {
+        runId, turnKey: turnId, accountId: tab.accountId, threadId: tab.threadId,
       });
+      handleNotify('item/completed', { item });
     }
     return true;
   });

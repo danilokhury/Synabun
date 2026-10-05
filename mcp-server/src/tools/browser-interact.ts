@@ -2,6 +2,7 @@ import { z } from 'zod';
 import * as ni from '../services/neural-interface.js';
 import { text } from './response.js';
 import { formatInlineSnapshot, formatAiSnapshotBody } from './browser-observe.js';
+import * as assist from '../services/browser-assist.js';
 
 const returnSnapshotField = z.object({
   mode: z.enum(['full', 'interactive', 'landmarks']).optional(),
@@ -41,6 +42,20 @@ function formatClickHints(result: Record<string, unknown>): string {
   return msg;
 }
 
+/**
+ * Hints, then — when the server stamped this as a pre-action resolution failure and attached
+ * `assist` — Jev's ranking of the candidates against what the caller was aiming at. Shadow by
+ * default: the hint list is reordered and annotated, and nothing else happens.
+ */
+async function describeFailure(result: Record<string, unknown>, request: { action: string; selector?: string; textHint?: string; asked: boolean }): Promise<{ text: string; recovery: assist.Recovery }> {
+  // Only when this handler asked for it: an `assist` block that arrives unrequested (a batch step, Jev off) is ignored, not judged.
+  const recovery = request.asked && result.assist ? await assist.recoverFailedTarget(result, request) : { annotation: '' };
+  return { text: `${formatClickHints(recovery.hints ? { ...result, hints: recovery.hints } : result)}${recovery.annotation}`, recovery };
+}
+
+/** Ask for candidates only for selector targets: a stale ref has no hint list to rank, and a fresh snapshot is the fix. */
+const wantsTargetAssist = (args: { ref?: string; selector?: string | null }) => Boolean(args.selector) && !args.ref && assist.assistAvailable('browser-target');
+
 function locationSuffix(result: Record<string, unknown>): string {
   if (ni.isBrowserCompactMode()) return '';
   return result.url ? ` — ${result.url} "${result.title}"` : '';
@@ -61,7 +76,7 @@ export const browserClickSchema = {
   ref: refField,
   selector: selectorField('the element to click'),
   nthMatch: z.coerce.number().int().min(0).optional().describe('If the selector matches multiple elements, target the Nth (0-indexed).'),
-  textHint: z.string().optional().describe('Auto-heal: if the selector matches 0 elements, server retries with role=*[name~="<textHint>"].'),
+  textHint: z.string().optional().describe('What you meant to click, in words (e.g. "Account settings"). If the selector matches nothing the server first tries an exact role+name match; failing that, the visible candidates are ranked against this phrase and the best one is named in the error. Advisory unless safe auto-heal is switched on.'),
   snapshot: z.enum(['diff', 'full', 'none']).optional().describe('Inline AI snapshot after the click. Default "diff" = only the changed region vs your last snapshot. "none" = terse response.'),
   returnSnapshot: returnSnapshotField,
   sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
@@ -93,14 +108,30 @@ export async function handleBrowserClick(args: {
   // New-style inline AI snapshot: default 'diff' unless legacy returnSnapshot was
   // passed or auto-snapshot is globally disabled.
   const snapshot = args.snapshot ?? (rs || !autosnapshotEnabled() ? undefined : 'diff');
-  const result = await ni.click(resolved.sessionId, args.selector, args.nthMatch, resolved.tabId, args.textHint, rs, args.ref, snapshot);
-  if (result.error) return text(`Click failed: ${result.error}${formatClickHints(result)}`);
+  const asked = wantsTargetAssist(args);
+  let result = await ni.click(resolved.sessionId, args.selector, args.nthMatch, resolved.tabId, args.textHint, rs, args.ref, snapshot, undefined, asked);
+  let healedBy = '';
+  if (result.error) {
+    const failure = await describeFailure(result, { action: 'click', selector: args.selector, textHint: args.textHint, asked });
+    // Safe auto-heal: off unless a recorded benchmark vouches for the running configuration, and then
+    // exactly one retry, of a plain navigation link, through a context the server minted for this
+    // failure. attemptAutoHeal is a direct transport call; this handler is never re-entered.
+    const outcome = failure.recovery.heal
+      ? await assist.attemptAutoHeal(failure.recovery.heal, { sessionId: resolved.sessionId, tabId: resolved.tabId, snapshot })
+      : null;
+    if (outcome?.status === 'uncertain') {
+      return text(`Click failed: ${result.error}\n\nJev auto-heal was then attempted once and its outcome is uncertain: ${outcome.error}\nInspect the page before doing anything else; nothing is retried.`);
+    }
+    if (outcome?.status !== 'healed') return text(`Click failed: ${result.error}${failure.text}${outcome?.note ?? ''}`);
+    healedBy = ` (auto-healed via Jev to "${outcome.label}": ${outcome.verdict}; ${describeTarget(args.ref, args.selector)} matched nothing)`;
+    result = outcome.result;
+  }
 
-  const healed = result.healed ? ' (auto-healed via textHint)' : '';
+  const healed = healedBy || (result.healed ? ' (auto-healed via textHint)' : '');
   let msg = `Clicked ${describeTarget(args.ref, args.selector)}${healed}${locationSuffix(result)}`;
   if (snapshot && snapshot !== 'none') {
     msg = appendAiSnapshot(msg, result);
-  } else if (args.returnSnapshot) {
+  } else if (args.returnSnapshot && !healedBy) {
     const snap = formatInlineSnapshot(result, {
       mode: args.returnSnapshot.mode,
       format: args.returnSnapshot.format,
@@ -131,8 +162,10 @@ export async function handleBrowserFill(args: { ref?: string; selector?: string;
   const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const result = await ni.fill(resolved.sessionId, args.selector, args.value, args.nthMatch, resolved.tabId, args.textHint, args.ref);
-  if (result.error) return text(`Fill failed: ${result.error}${formatClickHints(result)}`);
+  const asked = wantsTargetAssist(args);
+  const result = await ni.fill(resolved.sessionId, args.selector, args.value, args.nthMatch, resolved.tabId, args.textHint, args.ref, asked);
+  // The value being filled is never part of what is judged: only the target phrase and the page's candidates are.
+  if (result.error) return text(`Fill failed: ${result.error}${(await describeFailure(result, { action: 'fill', selector: args.selector, textHint: args.textHint, asked })).text}`);
 
   const healed = result.healed ? ' (auto-healed via textHint)' : '';
   return text(`Filled ${describeTarget(args.ref, args.selector)}${healed} with "${args.value.slice(0, 100)}"${locationSuffix(result)}`);
@@ -158,8 +191,9 @@ export async function handleBrowserType(args: { ref?: string; selector?: string;
   const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const result = await ni.type(resolved.sessionId, args.selector ?? null, args.text, args.nthMatch, resolved.tabId, args.textHint, args.mode, args.ref);
-  if (result.error) return text(`Type failed: ${result.error}${formatClickHints(result)}`);
+  const asked = wantsTargetAssist(args);
+  const result = await ni.type(resolved.sessionId, args.selector ?? null, args.text, args.nthMatch, resolved.tabId, args.textHint, args.mode, args.ref, asked);
+  if (result.error) return text(`Type failed: ${result.error}${(await describeFailure(result, { action: 'type', selector: args.selector, textHint: args.textHint, asked })).text}`);
 
   const target = args.ref ? `ref "${args.ref}"` : args.selector ? `"${args.selector}"` : 'focused element';
   const healed = result.healed ? ' (auto-healed via textHint)' : '';
@@ -185,8 +219,9 @@ export async function handleBrowserHover(args: { ref?: string; selector?: string
   const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const result = await ni.hover(resolved.sessionId, args.selector, args.nthMatch, resolved.tabId, args.textHint, args.ref);
-  if (result.error) return text(`Hover failed: ${result.error}${formatClickHints(result)}`);
+  const asked = wantsTargetAssist(args);
+  const result = await ni.hover(resolved.sessionId, args.selector, args.nthMatch, resolved.tabId, args.textHint, args.ref, asked);
+  if (result.error) return text(`Hover failed: ${result.error}${(await describeFailure(result, { action: 'hover', selector: args.selector, textHint: args.textHint, asked })).text}`);
 
   const healed = result.healed ? ' (auto-healed via textHint)' : '';
   return text(`Hovered over ${describeTarget(args.ref, args.selector)}${healed}${locationSuffix(result)}`);
@@ -199,6 +234,7 @@ export const browserSelectSchema = {
   selector: selectorField('the <select> element'),
   value: z.string().describe('The option value to select.'),
   nthMatch: z.coerce.number().int().min(0).optional().describe('If the selector matches multiple elements, select from the Nth one (0-indexed).'),
+  textHint: z.string().optional().describe('What the dropdown is for, in words (e.g. "Country"). If the selector matches nothing, the server tries an exact role+name match and the visible candidates are ranked against this phrase. Advisory.'),
   sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
   tabId: tabIdField,
 };
@@ -206,13 +242,14 @@ export const browserSelectSchema = {
 export const browserSelectDescription =
   'Select an option from a <select> dropdown by ref or selector, and option value.';
 
-export async function handleBrowserSelect(args: { ref?: string; selector?: string; value: string; nthMatch?: number; sessionId?: string; tabId?: string }) {
+export async function handleBrowserSelect(args: { ref?: string; selector?: string; value: string; nthMatch?: number; textHint?: string; sessionId?: string; tabId?: string }) {
   if (!args.ref && !args.selector) return text('Provide ref (from browser_snapshot) or selector.');
   const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const result = await ni.selectOption(resolved.sessionId, args.selector, args.value, args.nthMatch, resolved.tabId, args.ref);
-  if (result.error) return text(`Select failed: ${result.error}${formatClickHints(result)}`);
+  const asked = wantsTargetAssist(args);
+  const result = await ni.selectOption(resolved.sessionId, args.selector, args.value, args.nthMatch, resolved.tabId, args.ref, args.textHint, asked);
+  if (result.error) return text(`Select failed: ${result.error}${(await describeFailure(result, { action: 'select', selector: args.selector, textHint: args.textHint, asked })).text}`);
 
   return text(`Selected "${args.value}" in ${describeTarget(args.ref, args.selector)}${locationSuffix(result)}`);
 }
@@ -304,6 +341,7 @@ export const browserUploadSchema = {
   selector: selectorField('the file input element'),
   filePaths: z.array(z.string()).describe('Absolute file paths to upload.'),
   nthMatch: z.coerce.number().int().min(0).optional().describe('If the selector matches multiple file inputs, upload to the Nth (0-indexed).'),
+  textHint: z.string().optional().describe('What the upload control is, in words (e.g. "Add photo"). If the file input is not found, the visible controls are ranked against this phrase — usually the button that reveals the hidden input. Advisory.'),
   sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
   tabId: tabIdField,
 };
@@ -311,13 +349,14 @@ export const browserUploadSchema = {
 export const browserUploadDescription =
   'Upload files via a file input element (by ref or selector). For hidden/gated inputs, click the visible upload button first to reveal the input. See browser_cheatsheet for per-platform upload flows.';
 
-export async function handleBrowserUpload(args: { ref?: string; selector?: string; filePaths: string[]; nthMatch?: number; sessionId?: string; tabId?: string }) {
+export async function handleBrowserUpload(args: { ref?: string; selector?: string; filePaths: string[]; nthMatch?: number; textHint?: string; sessionId?: string; tabId?: string }) {
   if (!args.ref && !args.selector) return text('Provide ref (from browser_snapshot) or selector.');
   const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const result = await ni.upload(resolved.sessionId, args.selector, args.filePaths, args.nthMatch, resolved.tabId, args.ref);
-  if (result.error) return text(`Upload failed: ${result.error}${formatClickHints(result)}`);
+  const asked = wantsTargetAssist(args);
+  const result = await ni.upload(resolved.sessionId, args.selector, args.filePaths, args.nthMatch, resolved.tabId, args.ref, args.textHint, asked);
+  if (result.error) return text(`Upload failed: ${result.error}${(await describeFailure(result, { action: 'upload', selector: args.selector, textHint: args.textHint, asked })).text}`);
 
   return text(`Uploaded ${args.filePaths.length} file(s) via ${describeTarget(args.ref, args.selector)}${locationSuffix(result)}`);
 }

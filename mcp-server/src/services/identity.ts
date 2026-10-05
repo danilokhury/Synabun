@@ -42,7 +42,18 @@ export interface IdentityState {
   ancestorAttempts: number;
 }
 
+/** Caller roles that unlock role-gated tool groups (see profiles.ts
+ *  ROLE_GATED_GROUPS). Only the SynaBun assistant runtime exists today. */
+export type CallerRole = 'assistant';
+
 export interface CallerIdentity {
+  memoryContext?: { project?: string; session?: string; generation?: string };
+  /** Role claimed by the caller's launch headers (X-Synabun-Role) — refreshed
+   *  on every HTTP request; stdio children read SYNABUN_ROLE live instead. */
+  role?: CallerRole;
+  /** Computer-use grant (X-Synabun-Desktop-Grant), minted by the Neural
+   *  Interface per assistant brain / computer-use worker. Per request, like role. */
+  desktopGrant?: string;
   key: string;
   source: 'header' | 'mcp-session' | 'stdio';
   /** ownerKey for /api/browser/acquire|release AND the X-Synabun-Terminal
@@ -67,6 +78,13 @@ const emptyState = (): IdentityState => ({
 });
 
 const als = new AsyncLocalStorage<CallerIdentity>();
+export function callerMemoryContext() {
+  return als.getStore()?.memoryContext || (httpMode ? {} : {
+    project: process.env.SYNABUN_PROJECT,
+    session: process.env.SYNABUN_TERMINAL_SESSION,
+    generation: process.env.SYNABUN_CONTEXT_GENERATION,
+  });
+}
 const identities = new Map<string, CallerIdentity>();
 
 // Set by the HTTP transport at mount. Once true, a missing ALS store inside a
@@ -132,10 +150,47 @@ export function sanitizePin(v: string | undefined | null): string | null {
   return /^[A-Za-z0-9_-]{1,128}$/.test(v) ? v : null;
 }
 
+/** Only known roles are accepted; anything else (empty, template junk,
+ *  invented roles) is treated as "no role" so gating fails closed. */
+export function sanitizeRole(v: string | undefined | null): CallerRole | null {
+  return typeof v === 'string' && v.trim().toLowerCase() === 'assistant' ? 'assistant' : null;
+}
+
+/** Desktop grants look exactly like the tokens the Neural Interface mints. */
+export function sanitizeDesktopGrant(v: string | undefined | null): string | null {
+  return typeof v === 'string' && /^sbd_[A-Za-z0-9_-]{43}$/.test(v.trim()) ? v.trim() : null;
+}
+
+/**
+ * Computer-use grant of the current caller: the ALS identity's grant over HTTP
+ * (X-Synabun-Desktop-Grant on every request), SYNABUN_DESKTOP_GRANT for stdio
+ * children. Never the host's own env for an unidentified HTTP caller.
+ */
+export function callerDesktopGrant(): string | null {
+  const store = als.getStore();
+  if (store) return store.desktopGrant ?? null;
+  if (httpMode) return null;
+  return sanitizeDesktopGrant(process.env.SYNABUN_DESKTOP_GRANT);
+}
+
+/**
+ * Role of the current caller: the ALS identity's role over HTTP (derived from
+ * X-Synabun-Role on every request), or SYNABUN_ROLE for stdio children —
+ * Codex/OpenCode assistant brains pass the role to their MCP child via env.
+ * In HTTP mode a missing ALS store is a propagation bug, so the host
+ * process's own env must never grant a role to an unidentified caller.
+ */
+export function callerRole(): CallerRole | null {
+  const store = als.getStore();
+  if (store) return store.role ?? null;
+  if (httpMode) return null;
+  return sanitizeRole(process.env.SYNABUN_ROLE);
+}
+
 /** Create-or-touch the identity for an HTTP caller. */
 export function obtainIdentity(
   key: string,
-  opts: { source: 'header' | 'mcp-session'; pins?: Partial<PinSet> }
+  opts: { source: 'header' | 'mcp-session'; pins?: Partial<PinSet>; role?: CallerRole | null; desktopGrant?: string | null }
 ): CallerIdentity {
   let id = identities.get(key);
   if (!id) {
@@ -151,12 +206,18 @@ export function obtainIdentity(
       state: emptyState(),
       lastSeen: Date.now(),
     };
+    if (opts.role) id.role = opts.role;
+    if (opts.desktopGrant) id.desktopGrant = opts.desktopGrant;
     identities.set(key, id);
   } else {
     // Refresh pins on every request — a loop relaunch may rebind its headers.
     if (opts.pins?.terminalSessionId !== undefined) id.pins.terminalSessionId = opts.pins.terminalSessionId;
     if (opts.pins?.browserSessionId !== undefined) id.pins.browserSessionId = opts.pins.browserSessionId;
     if (opts.pins?.browserTabId !== undefined) id.pins.browserTabId = opts.pins.browserTabId;
+    // The role is per-request: a request without the header carries no role,
+    // so a stale grant can never outlive the headers that justified it.
+    if (opts.role !== undefined) id.role = opts.role ?? undefined;
+    if (opts.desktopGrant !== undefined) id.desktopGrant = opts.desktopGrant ?? undefined;
     id.lastSeen = Date.now();
   }
   return id;

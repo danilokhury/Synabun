@@ -1,7 +1,7 @@
 import path from 'path';
 import fs from 'fs';
 import { getDataHome } from '../../lib/paths.js';
-import { isHttpMode } from './services/identity.js';
+import { isHttpMode, callerMemoryContext } from './services/identity.js';
 
 const dataHome = getDataHome();
 
@@ -52,6 +52,7 @@ function normalizeLabel(label: string): string {
 }
 
 export function detectProject(cwd?: string): string {
+  if (!cwd && callerMemoryContext().project) return callerMemoryContext().project!;
   // Over HTTP every caller shares the Neural Interface process, so process.cwd()
   // is the server's directory, not the caller's — it labeled every memory
   // "neural-interface" regardless of where the client actually was. Return a
@@ -84,4 +85,31 @@ export function detectProject(cwd?: string): string {
   // 3. Fallback to directory basename
   const base = path.basename(dir).toLowerCase().replace(/[^a-z0-9-]/g, '-');
   return base || 'global';
+}
+
+/**
+ * The registered root directory of a project label (or one of its aliases),
+ * or null. Relative `related_files` are relative to this, not to whichever
+ * process happens to read them — over HTTP that is the Neural Interface.
+ */
+export function projectRoot(project: string | null | undefined): string | null {
+  if (!project) return null;
+  const normalized = normalizeLabel(project);
+  for (const p of loadRegisteredProjects()) {
+    if (!p?.path) continue;
+    if (p.label?.toLowerCase() === project.toLowerCase() || (normalized && (normalizeLabel(p.label ?? '') === normalized || normalizeLabel(path.basename(p.path)) === normalized))) return p.path;
+  }
+  return null;
+}
+
+/** Resolve labels without changing the historic spelling on stored records. */
+export function projectAliases(project: string): string[] {
+  const normalized = normalizeLabel(project);
+  const aliases = new Set([project, normalized].filter(Boolean));
+  for (const p of loadRegisteredProjects()) {
+    if (p.label.toLowerCase() === project.toLowerCase() || (normalized && (normalizeLabel(p.label) === normalized || normalizeLabel(path.basename(p.path)) === normalized))) {
+      aliases.add(p.label); if (normalizeLabel(p.label)) aliases.add(normalizeLabel(p.label)); aliases.add(path.basename(p.path));
+    }
+  }
+  return [...aliases];
 }

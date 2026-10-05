@@ -1,3 +1,6 @@
+import { queueMemoryCapture } from './memory-session-capture.js';
+import { normalizeMemoryEvents, ingestMemoryEvents } from '../../mcp-server/dist/services/memory-sessions.js';
+import { detectProject } from '../../mcp-server/dist/config.js';
 /**
  * Session Cache Builder — populates session_cache + session_fts for
  * Claude Code, Codex CLI, and OpenCode so the Resume surfaces can do
@@ -168,6 +171,7 @@ export function rebuildClaudeCache({ project, onProgress } = {}) {
       if (stat.size > MAX_CLAUDE_FILE) continue;
 
       const sessionId = file.replace('.jsonl', '');
+      queueMemoryCapture({host:'claude-code',sessionId,filePath,project:projDir.name});
       const existing = getSessionCacheEntry(sessionId, 'claude-code');
       if (existing && existing.file_size === stat.size && existing.file_mtime === stat.mtime.toISOString()) {
         continue;
@@ -176,6 +180,7 @@ export function rebuildClaudeCache({ project, onProgress } = {}) {
       const parsed = parseClaudeSession(filePath);
       if (!parsed) continue;
 
+      queueMemoryCapture({host:'claude-code',sessionId:parsed.sessionId,filePath,cwd:parsed.cwd,project:projDir.name});
       upsertSessionCache({
         session_id: parsed.sessionId,
         provider: 'claude-code',
@@ -314,6 +319,7 @@ export function rebuildCodexCache({ project, projects, accounts, onProgress } = 
     if (projLower && session.cwd && !session.cwd.toLowerCase().includes(projLower)) continue;
     liveSessionIds.add(session.sessionId);
 
+    queueMemoryCapture({host:'codex',sessionId:session.sessionId,filePath,cwd:session.cwd || session.projectPath});
     const probe = probeStmt.get(filePath, 'codex');
     if (probe && probe.file_size === stat.size && probe.file_mtime === stat.mtime.toISOString()) {
       const cached = getSessionCacheEntry(session.sessionId, 'codex');
@@ -332,6 +338,7 @@ export function rebuildCodexCache({ project, projects, accounts, onProgress } = 
     const parsed = parseCodexSession(filePath);
     if (!parsed) continue;
 
+    queueMemoryCapture({host:'codex',sessionId:parsed.sessionId,filePath,cwd:parsed.cwd || session.cwd});
     upsertSessionCache({
       session_id: parsed.sessionId,
       provider: 'codex',
@@ -399,7 +406,7 @@ export function rebuildOpencodeCache({ getOpencodeDb, onProgress } = {}) {
   // Pull parts per message, decode JSON, grab text where type === 'text'.
   let partStmt;
   try {
-    partStmt = ocdb.prepare(`SELECT p.data AS pdata, m.data AS mdata
+    partStmt = ocdb.prepare(`SELECT p.id AS part_id, p.time_created AS part_created, p.data AS pdata, m.data AS mdata
                              FROM part p
                              LEFT JOIN message m ON m.id = p.message_id
                              WHERE p.session_id = ?
@@ -408,10 +415,18 @@ export function rebuildOpencodeCache({ getOpencodeDb, onProgress } = {}) {
 
   for (const row of sessions) {
     const sessionId = row.id;
+    const modifiedIso = row.time_updated ? new Date(row.time_updated).toISOString() : null;
+    // Unchanged since the last pass (same update time and message count): skip it,
+    // as the Claude pass does with file size + mtime. Re-reading every part of
+    // every session held the server's main thread for ~90 s on each start.
+    const existing = getSessionCacheEntry(sessionId, 'opencode');
+    if (existing && !existing.deleted && existing.file_mtime === modifiedIso
+        && Number(existing.message_count) === Number(row.message_count || 0)) continue;
     const projectPath = row.project_worktree || row.directory || null;
 
     let body = '';
     let firstPrompt = row.title || '';
+    const memoryRecords = [];
     if (partStmt) {
       try {
         const parts = partStmt.all(sessionId);
@@ -427,16 +442,17 @@ export function rebuildOpencodeCache({ getOpencodeDb, onProgress } = {}) {
             const md = p.mdata ? JSON.parse(p.mdata) : null;
             role = md?.role || null;
           } catch { /* skip */ }
+          memoryRecords.push({id:p.part_id,info:{role,time:{created:p.part_created}},parts:[{type:'text',text}]});
           const cleaned = stripTags(text);
           if (!cleaned) continue;
           if (role === 'user' && !firstPrompt) firstPrompt = cleaned.slice(0, 200);
           body = appendBody(body, cleaned.slice(0, MAX_MSG_CHARS));
-          if (body.length >= MAX_BODY) break;
+          // Memory intake keeps full visible events even when the resume preview is full.
         }
       } catch { /* part table schema varies */ }
     }
 
-    const modifiedIso = row.time_updated ? new Date(row.time_updated).toISOString() : null;
+    ingestMemoryEvents(normalizeMemoryEvents('opencode',memoryRecords,{session_id:sessionId,project:projectPath ? detectProject(projectPath) : 'global',cwd:projectPath}));
     const createdIso = row.time_created ? new Date(row.time_created).toISOString() : null;
 
     upsertSessionCache({

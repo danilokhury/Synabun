@@ -49,6 +49,7 @@ const PANEL_SHOW_EVENTS = {
   claude: 'claude-panel:show',
   codex: 'codex-panel:show',
   opencode: 'opencode-panel:show',
+  assistant: 'assistant-panel:show',
 };
 
 // ── Audio context (lazy-init) ──
@@ -175,9 +176,13 @@ function _getNotifMeta(source, opts = {}) {
   const providerMeta = getProviderMeta(provider);
   const panel = opts.panel || 'claude';
   const surfaceLabel = source === 'panel' ? 'Side Panel' : 'CLI Terminal';
-  const event = source === 'panel'
-    ? (PANEL_SHOW_EVENTS[panel] || PANEL_SHOW_EVENTS.claude)
-    : 'terminal:show';
+  // The Assistant runs in the terminal tab or the sidepanel; ui-assistant.js
+  // focuses the session wherever it is open (floats included).
+  const event = provider === 'assistant'
+    ? 'assistant:show'
+    : source === 'panel'
+      ? (PANEL_SHOW_EVENTS[panel] || PANEL_SHOW_EVENTS.claude)
+      : 'terminal:show';
   return {
     provider,
     providerMeta,

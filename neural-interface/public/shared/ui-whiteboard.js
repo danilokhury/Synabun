@@ -12,11 +12,24 @@ import { KEYS } from './constants.js';
 import { storage } from './storage.js';
 import { isGuest, hasPermission } from './ui-sync.js';
 import { openSettingsModal } from './ui-settings.js';
+import { fetchRulesStatus } from './api.js';
 
 // ── Helpers ──
 
 const $ = (id) => document.getElementById(id);
 const _genId = () => 'wb-' + Date.now() + '-' + Math.random().toString(36).slice(2, 5);
+
+// Stable per-tab id (survives reloads via sessionStorage). Sent with every
+// viewport/geometry/screenshot message so the server can tell windows apart
+// and pick the focus-active one for MCP coordinate math + screenshots.
+const _clientId = (() => {
+  const fresh = () => 'wbc-' + Math.random().toString(36).slice(2, 10);
+  try {
+    let id = sessionStorage.getItem('wb-client-id');
+    if (!id) { id = fresh(); sessionStorage.setItem('wb-client-id', id); }
+    return id;
+  } catch { return fresh(); }
+})();
 
 // ── Internal state ──
 
@@ -80,11 +93,17 @@ const SECTION_TYPES = {
 
 // Persist debounce + cross-client sync
 let _persistTimer = null;
-let _isRemoteUpdate = false; // Suppress WS echo when receiving remote state
 const PERSIST_DELAY = 600;
 const MAX_UNDO = 50;
 const SNAP_DIST = 30;    // px for arrow anchor snapping
 const MAX_IMAGE_DIM = 1920;
+
+// Rendered-size measurement for auto-sized text/list cards (see _runMeasurePass)
+let _measureScheduled = false;
+let _measurePending = false;        // a pass was skipped mid-gesture; run it at mouseup
+const _geometryDirty = new Map();   // id → { id, width, height } awaiting send to the server
+let _geometryTimer = null;
+const GEOMETRY_SEND_DELAY = 250;
 
 /**
  * Cross-browser clipboard write with fallback for non-secure contexts.
@@ -123,7 +142,10 @@ const IMAGE_QUALITY = 0.8;
 // DOM refs (set in init)
 let _root, _toolbar, _canvas, _arrowsSvg, _elementsDiv, _arrowPreview, _arrowHint;
 
-const RULESET_SETUP_SECTIONS = ['setup-claude', 'setup-codex', 'setup-opencode'];
+// The rules reminder beside the logo: shown only while a connected tool has no
+// SynaBun rules, an edited copy or damaged markers (GET /api/setup/rules).
+const RULES_REMINDER_STATES = ['not-installed', 'modified', 'conflict'];
+let _rulesReminderSections = []; // Settings > Setup sections of the tools that need attention
 
 
 // ═══════════════════════════════════════════
@@ -144,6 +166,65 @@ function _getRootRect() {
 
 function _invalidateRootRect() {
   _rootRectCached = null;
+}
+
+/**
+ * Abort any in-flight pointer gesture. Called whenever the board state is
+ * replaced under the user (state:full from another client, workspace restore,
+ * clear) and when a mouseup can no longer reach us (window blur / hidden tab),
+ * so a stale _drag/_marquee/_penPoints/_shapeCreating flag can never swallow
+ * every subsequent mousemove. `pointerOnly` keeps a multi-click arrow in
+ * progress (its waypoints survive an alt-tab; Escape still cancels it).
+ */
+function _cancelGesture({ pointerOnly = false } = {}) {
+  let needsRender = false;
+  if (_drag) {
+    // Positions already mutated by mousemove stay where they are — make sure
+    // they reach the server even though no mouseup will finalize them.
+    _drag = null;
+    persistDebounced();
+  }
+  if (_marquee) {
+    _marquee.rect?.remove();
+    _marquee = null;
+  }
+  if (_shapeCreating) {
+    _elements = _elements.filter(el => el.id !== _shapeCreating.id);
+    _shapeCreating = null;
+    needsRender = true;
+  }
+  if (_sectionCreating) {
+    _elements = _elements.filter(el => el.id !== _sectionCreating.id);
+    _sectionCreating = null;
+    needsRender = true;
+  }
+  if (_penLiveEl) _penLiveEl.remove();
+  _penLiveEl = null;
+  _penPoints = null;
+  if (!pointerOnly) {
+    _arrowCreating = null;
+    clearArrowPreview();
+    hideArrowHint();
+  }
+  document.body.classList.remove('ui-interacting');
+  _invalidateRootRect();
+  _invalidateElementMap();
+  if (needsRender) renderAll();
+}
+
+/**
+ * Prepare for a whole-board replacement (restore / clear / remote state:full):
+ * optionally commit + exit text/list editing, abort gestures, drop selection UI.
+ */
+function _beginStateReplace({ exitEdits = false } = {}) {
+  if (exitEdits) {
+    exitEditMode();
+    exitListEditMode();
+  }
+  _cancelGesture();
+  hideContextMenu();
+  _selectedId = null;
+  _selectedIds.clear();
 }
 
 function clientToCanvas(clientX, clientY) {
@@ -187,6 +268,17 @@ function undo() {
   } else if (entry.action === 'move' || entry.action === 'resize' || entry.action === 'edit') {
     const idx = _elements.findIndex(el => el.id === entry.before.id);
     if (idx >= 0) _elements[idx] = { ...entry.before };
+  } else if (entry.action === 'batch') {
+    // Reverse an external batch: restore removed, restore updated befores, drop added
+    for (const el of entry.before.removed) _elements.push({ ...el });
+    for (const snap of entry.before.updated) {
+      const idx = _elements.findIndex(el => el.id === snap.id);
+      if (idx >= 0) _elements[idx] = { ...snap, points: snap.points ? snap.points.map(p => [...p]) : undefined };
+    }
+    if (entry.before.added.length) {
+      const ids = new Set(entry.before.added);
+      _elements = _elements.filter(el => !ids.has(el.id));
+    }
   }
 
   _selectedId = null;
@@ -221,6 +313,17 @@ function redo() {
     const idx = _elements.findIndex(el => el.id === entry.after.id);
     if (idx >= 0) _elements[idx] = { ...entry.after };
     else _elements.push({ ...entry.after });
+  } else if (entry.action === 'batch') {
+    const removedIds = new Set(entry.before.removed.map(el => el.id));
+    if (removedIds.size) _elements = _elements.filter(el => !removedIds.has(el.id));
+    for (const snap of entry.after.updated) {
+      const idx = _elements.findIndex(el => el.id === snap.id);
+      const copy = { ...snap, points: snap.points ? snap.points.map(p => [...p]) : undefined };
+      if (idx >= 0) _elements[idx] = copy; else _elements.push(copy);
+    }
+    for (const el of entry.after.added) {
+      if (!_elements.some(e => e.id === el.id)) _elements.push({ ...el });
+    }
   }
 
   _selectedId = null;
@@ -247,7 +350,23 @@ function syncRulesetAlertVisibility() {
   if (!alert) return;
   const logo = document.querySelector('#static-bg .static-bg-logo');
   const logoHidden = logo?.style.display === 'none';
-  alert.classList.toggle('hidden', isRulesetAlertDismissed() || logoHidden);
+  alert.classList.toggle('hidden', isRulesetAlertDismissed() || logoHidden || _rulesReminderSections.length === 0);
+}
+
+// Which connected tools need their rules looked at. A tool the user opted out
+// of (managed === false) is not nagged about; an unknown status (no route, a
+// failed request, a guest) shows nothing.
+function applyRulesStatusToAlert(status) {
+  const hosts = status?.ok && status.hosts ? status.hosts : {};
+  _rulesReminderSections = Object.entries(hosts)
+    .filter(([, info]) => info?.mcp && RULES_REMINDER_STATES.includes(info.state) && !(info.state === 'not-installed' && info.managed === false))
+    .map(([host]) => `setup-${host}`);
+  syncRulesetAlertVisibility();
+}
+
+async function refreshRulesetAlert() {
+  if (isRulesetAlertDismissed()) return;
+  applyRulesStatusToAlert(await fetchRulesStatus());
 }
 
 function initRulesetAlert() {
@@ -260,10 +379,10 @@ function initRulesetAlert() {
   setupBtn?.addEventListener('click', (e) => {
     e.stopPropagation();
     openSettingsModal({
-      tab: 'setup',
-      expand: RULESET_SETUP_SECTIONS,
-      highlight: RULESET_SETUP_SECTIONS,
-      scrollTo: 'setup-claude-ruleset-preview',
+      tab: 'ai-connections',
+      expand: ['setup-rules', ..._rulesReminderSections],
+      highlight: _rulesReminderSections.length ? _rulesReminderSections : ['setup-rules'],
+      scrollTo: 'setup-rules',
     });
   });
 
@@ -273,7 +392,11 @@ function initRulesetAlert() {
     syncRulesetAlertVisibility();
   });
 
+  // Settings > Setup passes the fresh status on after every rules action.
+  on('rules:changed', applyRulesStatusToAlert);
+
   syncRulesetAlertVisibility();
+  refreshRulesetAlert();
 }
 
 
@@ -285,7 +408,7 @@ function initRulesetAlert() {
 function flushListEdits() {
   const dom = _root?.querySelector('.wb-list.editing');
   if (!dom) return;
-  const ul = dom.querySelector('ul');
+  const ul = dom.querySelector('ul, ol');
   const elId = dom.dataset.wbId;
   const el = _elements.find(e => e.id === elId);
   if (el && ul) {
@@ -311,9 +434,9 @@ function persistDebounced() {
     flushTextEdits();
     flushListEdits();
     const snapshot = { elements: _elements, nextZIndex: _nextZIndex };
-    // Don't persist remote-originated updates (the server already has them) or
-    // guest edits without whiteboard permission.
-    if (_isRemoteUpdate || (isGuest() && !hasPermission('whiteboard'))) return;
+    // Guest edits without whiteboard permission never persist. (Remote-originated
+    // changes never reach here: the external command handlers don't persist.)
+    if (isGuest() && !hasPermission('whiteboard')) return;
     if (_ws && _ws.readyState === 1) {
       // Live cross-client relay + server persistence (saveWhiteboard) in one.
       // The whiteboard no longer rides the ui-state PATCH cycle.
@@ -338,6 +461,7 @@ async function loadPersisted() {
     const data = await res.json();
     if (Array.isArray(data.elements)) _elements = data.elements;
     if (data.nextZIndex) _nextZIndex = data.nextZIndex;
+    _invalidateElementMap();
   } catch { /* server unreachable — start empty */ }
 }
 
@@ -369,14 +493,44 @@ function shortenPoints(pts, amount) {
   return result;
 }
 
+/** Box size for anchor/centre math. Prefers the stored size — for text/list
+ *  cards that is the browser-measured (or server-estimated) footprint — and
+ *  only falls back to the legacy 100x60 phantom when nothing is stored. */
+function _elBox(el) {
+  return {
+    w: el.width > 0 ? el.width : 100,
+    h: el.height > 0 ? el.height : 60,
+  };
+}
+
+/** Anchor-adjusted copy of an arrow's points — the exact geometry the DOM
+ *  renders. Shared by renderArrows, the drag fast path and the screenshot so
+ *  the three can never disagree. Resolution is progressive on the same copy
+ *  (a 2-point arrow's end is aimed at the resolved start); the server-side
+ *  port in mcp-server/src/services/whiteboard-geometry.ts mirrors this. */
+function resolveArrowPoints(el) {
+  const pts = (el.points || []).map(p => [...p]);
+  if (pts.length < 2) return pts;
+  if (el.startAnchor) {
+    const pt = getAnchorPoint(el.startAnchor, pts[1][0], pts[1][1]);
+    if (pt) pts[0] = [pt.x, pt.y];
+  }
+  if (el.endAnchor) {
+    const pt = getAnchorPoint(el.endAnchor, pts[pts.length - 2][0], pts[pts.length - 2][1]);
+    if (pt) pts[pts.length - 1] = [pt.x, pt.y];
+  }
+  return pts;
+}
+
 /** Get arrow endpoint from an anchored element. Returns edge intersection point. */
 function getAnchorPoint(anchorId, fromX, fromY) {
-  const el = _elements.find(e => e.id === anchorId);
+  const el = _findEl(anchorId);
   if (!el || el.type === 'arrow') return null;
-  const cx = el.x + (el.width || 100) / 2;
-  const cy = el.y + (el.height || 60) / 2;
-  const hw = (el.width || 100) / 2;
-  const hh = (el.height || 60) / 2;
+  const { w, h } = _elBox(el);
+  const cx = el.x + w / 2;
+  const cy = el.y + h / 2;
+  const hw = w / 2;
+  const hh = h / 2;
 
   const dx = fromX - cx;
   const dy = fromY - cy;
@@ -399,8 +553,9 @@ function findNearestAnchor(cx, cy, excludeId) {
   let bestDist = SNAP_DIST;
   for (const el of _elements) {
     if (el.type === 'arrow' || el.id === excludeId) continue;
-    const ecx = el.x + (el.width || 100) / 2;
-    const ecy = el.y + (el.height || 60) / 2;
+    const box = _elBox(el);
+    const ecx = el.x + box.w / 2;
+    const ecy = el.y + box.h / 2;
     const d = Math.sqrt((cx - ecx) ** 2 + (cy - ecy) ** 2);
     if (d < bestDist) {
       bestDist = d;
@@ -460,21 +615,46 @@ function compressImage(blob) {
 
 // Element ID → element lookup cache. Rebuilt lazily; many mousemove paths
 // previously did O(n) Array.prototype.find on every event.
-let _elementMap = null;
+//
+// The cache is SELF-VALIDATING. An earlier version keyed it on array length
+// only, so a same-count delete→add (or a whole-array replacement from a
+// workspace restore / another client's state:full) left it pointing at ghost
+// objects or missing new ids — drags silently no-op'd until the count changed
+// again (the "board is locked until I draw a pen stroke" bug). Every hit is now
+// checked against the live array by index and the map is rebuilt on any
+// mismatch, miss, identity change or length change.
+let _elementMap = null;      // Map<id, { el, idx }>
+let _elementMapSrc = null;   // the _elements array the map was built from
+let _elementMapLen = -1;
+
+function _rebuildElementMap() {
+  _elementMap = new Map();
+  for (let i = 0; i < _elements.length; i++) {
+    _elementMap.set(_elements[i].id, { el: _elements[i], idx: i });
+  }
+  _elementMapSrc = _elements;
+  _elementMapLen = _elements.length;
+}
 
 function _findEl(id) {
   if (!id) return null;
-  // Rebuild the map if length changed (covers add/remove). Same-length object
-  // replacement (undo/redo paths) calls _invalidateElementMap() explicitly.
-  if (!_elementMap || _elementMap._len !== _elements.length) {
-    _elementMap = new Map();
-    for (const e of _elements) _elementMap.set(e.id, e);
-    _elementMap._len = _elements.length;
+  if (!_elementMap || _elementMapSrc !== _elements || _elementMapLen !== _elements.length) {
+    _rebuildElementMap();
   }
-  return _elementMap.get(id) || null;
+  const hit = _elementMap.get(id);
+  if (hit && _elements[hit.idx] === hit.el) return hit.el;
+  // Stale entry (object replaced in place / same-length splice+push) or a
+  // brand-new id: rebuild once and retry.
+  _rebuildElementMap();
+  const again = _elementMap.get(id);
+  return again ? again.el : null;
 }
 
-function _invalidateElementMap() { _elementMap = null; }
+function _invalidateElementMap() {
+  _elementMap = null;
+  _elementMapSrc = null;
+  _elementMapLen = -1;
+}
 
 // Synchronous render. Earlier perf pass tried rAF-batching this — that caused
 // visible drag lag because the move/resize/rotate mousemove paths each call
@@ -519,6 +699,79 @@ function renderElements() {
   for (const [id, dom] of existing) {
     if (!activeIds.has(id)) dom.remove();
   }
+
+  _scheduleMeasure();
+}
+
+// ── Rendered-size measurement (text/list auto-size) ──────────────────
+// Text and list cards size themselves from content (CSS width:max-content), so
+// their stored width/height used to be 0/undefined forever. That left the MCP
+// tools, the server's viewport clamp and arrow anchoring blind to their real
+// footprint. After every render we read the border-box size once (coalesced
+// into a single rAF pass, never during a gesture) and write it back into the
+// element, then ship it to the server as a `geometry` message. This pass never
+// pushes undo entries, never persists the board and never re-renders — no loops.
+
+function _scheduleMeasure() {
+  if (_measureScheduled) return;
+  _measureScheduled = true;
+  requestAnimationFrame(_runMeasurePass);
+}
+
+function _gestureActive() {
+  return !!(_drag || _marquee || _shapeCreating || _sectionCreating || _penPoints);
+}
+
+function _runMeasurePass() {
+  _measureScheduled = false;
+  if (!_elementsDiv) return;
+  if (_gestureActive()) { _measurePending = true; return; }
+
+  const domById = new Map();
+  for (const child of _elementsDiv.children) domById.set(child.dataset.wbId, child);
+
+  const changedIds = [];
+  for (const el of _elements) {
+    if (el.type !== 'text' && el.type !== 'list') continue;
+    const dom = domById.get(el.id);
+    if (!dom) continue;
+    if (dom.classList.contains('editing') || dom.contains(document.activeElement)) continue;
+    const w = dom.offsetWidth, h = dom.offsetHeight;   // border-box; immune to transform:rotate
+    if (!w || !h) continue;
+    if (el.measured && Math.abs((el.width || 0) - w) < 1 && Math.abs((el.height || 0) - h) < 1) continue;
+    el.width = w;
+    el.height = h;
+    el.measured = true;
+    delete el.estimated;
+    _geometryDirty.set(el.id, { id: el.id, width: w, height: h });
+    changedIds.push(el.id);
+  }
+  if (!changedIds.length) return;
+
+  // Arrows pinned to a re-measured card need re-routing (the edge intersection
+  // depends on the box) — touch only those paths, never the whole SVG.
+  for (const aid of _anchoredArrowIds(changedIds)) {
+    const a = _findEl(aid);
+    if (a) _renderOneArrowPaths(a);
+  }
+  if (_ctxMenu && _selectedIds.size === 1) {
+    const sel = _findEl(_selectedId);
+    if (sel) positionContextMenu(sel);
+  }
+  _queueGeometrySend();
+}
+
+function _queueGeometrySend() {
+  clearTimeout(_geometryTimer);
+  _geometryTimer = setTimeout(() => {
+    _geometryTimer = null;
+    if (!_geometryDirty.size) return;
+    if (isGuest() && !hasPermission('whiteboard')) { _geometryDirty.clear(); return; }
+    if (!_ws || _ws.readyState !== 1) return;   // stays dirty — flushed on the next open/pass
+    const items = [..._geometryDirty.values()];
+    _geometryDirty.clear();
+    _ws.send(JSON.stringify({ type: 'geometry', clientId: _clientId, items }));
+  }, GEOMETRY_SEND_DELAY);
 }
 
 function createElementDOM(el) {
@@ -526,11 +779,12 @@ function createElementDOM(el) {
   div.dataset.wbId = el.id;
 
   if (el.type === 'text') {
+    // No resize handle: text cards auto-size from content (width:max-content).
     div.className = 'wb-text';
-    div.innerHTML = `<div class="wb-text-content" contenteditable="false"></div><div class="wb-resize-handle"></div>`;
+    div.innerHTML = `<div class="wb-text-content" contenteditable="false"></div>`;
   } else if (el.type === 'list') {
     div.className = 'wb-list';
-    div.innerHTML = `<ul></ul><div class="wb-resize-handle"></div>`;
+    div.innerHTML = el.ordered ? '<ol></ol>' : '<ul></ul>';
   } else if (el.type === 'shape') {
     div.className = 'wb-shape';
     const ns = 'http://www.w3.org/2000/svg';
@@ -542,7 +796,8 @@ function createElementDOM(el) {
     div.appendChild(handle);
   } else if (el.type === 'image') {
     div.className = 'wb-image';
-    div.innerHTML = `<img src="" alt=""><span class="wb-copy-path" data-tooltip="Copy image path"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></span><div class="wb-resize-handle"></div>`;
+    div.setAttribute('draggable', 'false');
+    div.innerHTML = `<img src="" alt="" draggable="false"><span class="wb-copy-path" data-tooltip="Copy image path"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></span><div class="wb-resize-handle"></div>`;
     // Wire click-to-copy-path
     const copyBtn = div.querySelector('.wb-copy-path');
     copyBtn.addEventListener('click', (e) => {
@@ -607,19 +862,34 @@ function updateElementDOM(dom, el) {
   if (el.type === 'text') {
     const content = dom.querySelector('.wb-text-content');
     if (content && !content.matches(':focus')) {
-      content.innerText = el.content || '';
+      // Skip the write when unchanged — this runs on every drag frame and
+      // setting innerText forces a layout.
+      const key = el.content || '';
+      if (dom._wbTextKey !== key) { content.innerText = key; dom._wbTextKey = key; }
     }
     if (el.fontSize) dom.style.fontSize = el.fontSize + 'px';
     dom.style.fontWeight = el.bold ? '700' : '400';
     dom.style.fontStyle = el.italic ? 'italic' : 'normal';
     if (el.color) dom.style.color = el.color;
   } else if (el.type === 'list') {
-    const ul = dom.querySelector('ul');
-    if (ul && !dom.classList.contains('editing')) {
+    let list = dom.querySelector('ul, ol');
+    if (list && !dom.classList.contains('editing')) {
       const items = el.items && el.items.length ? el.items : [''];
-      ul.innerHTML = items.map(item =>
-        `<li>${item.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</li>`
-      ).join('');
+      const wantTag = el.ordered ? 'OL' : 'UL';
+      if (list.tagName !== wantTag) {
+        // ordered flag changed — swap the container (never while editing)
+        const swapped = document.createElement(wantTag.toLowerCase());
+        list.replaceWith(swapped);
+        list = swapped;
+        dom._wbListKey = null;
+      }
+      const key = wantTag + '|' + JSON.stringify(items);
+      if (dom._wbListKey !== key) {
+        list.innerHTML = items.map(item =>
+          `<li>${item.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</li>`
+        ).join('');
+        dom._wbListKey = key;
+      }
     }
     if (el.fontSize) dom.style.fontSize = el.fontSize + 'px';
     if (el.color) dom.style.color = el.color;
@@ -661,6 +931,47 @@ function updateElementDOM(dom, el) {
   }
 }
 
+// ── Arrowhead markers ──
+// The static <defs> in html-shell.js only carry a white and a selected (blue)
+// head. Arrows honour el.color on the shaft, so the head must follow: one
+// <marker> per distinct colour, created on demand inside the persistent <defs>
+// (renderArrows re-appends that node, so generated markers survive rebuilds).
+const _markerIds = new Map();   // color → marker id
+
+function _arrowMarkerId(color) {
+  if (!color) return 'wb-arrowhead';
+  let id = _markerIds.get(color);
+  if (!id) {
+    id = 'wb-ah-' + color.replace(/[^a-zA-Z0-9]/g, '_');
+    _markerIds.set(color, id);
+  }
+  return id;
+}
+
+function _ensureArrowMarker(color) {
+  const id = _arrowMarkerId(color);
+  if (!color || !_arrowsSvg) return id;
+  const defs = _arrowsSvg.querySelector('defs');
+  if (!defs || defs.querySelector('#' + id)) return id;
+  const ns = 'http://www.w3.org/2000/svg';
+  const marker = document.createElementNS(ns, 'marker');
+  marker.setAttribute('id', id);
+  marker.setAttribute('markerWidth', '20');
+  marker.setAttribute('markerHeight', '20');
+  marker.setAttribute('refX', '2');
+  marker.setAttribute('refY', '10');
+  marker.setAttribute('orient', 'auto');
+  marker.setAttribute('markerUnits', 'userSpaceOnUse');
+  marker.setAttribute('overflow', 'visible');
+  const head = document.createElementNS(ns, 'path');
+  head.setAttribute('d', 'M 2 2 L 18 10 L 2 18 Z');
+  head.setAttribute('fill', color);
+  head.setAttribute('stroke', 'none');
+  marker.appendChild(head);
+  defs.appendChild(marker);
+  return id;
+}
+
 function renderArrows() {
   if (!_arrowsSvg) return;
   const defs = _arrowsSvg.querySelector('defs');
@@ -670,18 +981,8 @@ function renderArrows() {
   for (const el of _elements) {
     // ── Arrows ──
     if (el.type === 'arrow') {
-      const pts = (el.points || []).map(p => [...p]);
+      const pts = resolveArrowPoints(el);
       if (pts.length < 2) continue;
-
-      // Apply anchor offsets to first/last points
-      if (el.startAnchor) {
-        const pt = getAnchorPoint(el.startAnchor, pts[1][0], pts[1][1]);
-        if (pt) { pts[0] = [pt.x, pt.y]; }
-      }
-      if (el.endAnchor) {
-        const pt = getAnchorPoint(el.endAnchor, pts[pts.length - 2][0], pts[pts.length - 2][1]);
-        if (pt) { pts[pts.length - 1] = [pt.x, pt.y]; }
-      }
 
       const isSel = _selectedIds.has(el.id);
       const d = computeArrowPath(pts);
@@ -699,11 +1000,11 @@ function renderArrows() {
       const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
       path.setAttribute('d', d);
       path.setAttribute('fill', 'none');
-      path.setAttribute('stroke', isSel ? 'var(--accent-blue, #60a5fa)' : 'rgba(255,255,255,0.8)');
+      path.setAttribute('stroke', isSel ? 'var(--accent-blue, #60a5fa)' : (el.color || 'rgba(255,255,255,0.8)'));
       path.setAttribute('stroke-width', isSel ? '3' : '2');
       path.setAttribute('stroke-linecap', 'butt');
       path.setAttribute('stroke-linejoin', 'round');
-      path.setAttribute('marker-end', isSel ? 'url(#wb-arrowhead-sel)' : 'url(#wb-arrowhead)');
+      path.setAttribute('marker-end', isSel ? 'url(#wb-arrowhead-sel)' : `url(#${_ensureArrowMarker(el.color)})`);
       path.dataset.wbId = el.id;
       path.style.pointerEvents = 'none';
       if (isSel) path.classList.add('selected');
@@ -757,16 +1058,8 @@ function _renderOneArrowPaths(el) {
   if (!nodes.length) return false;
   let d;
   if (el.type === 'arrow') {
-    const pts = (el.points || []).map(p => [...p]);
+    const pts = resolveArrowPoints(el);
     if (pts.length < 2) return true;
-    if (el.startAnchor) {
-      const pt = getAnchorPoint(el.startAnchor, pts[1][0], pts[1][1]);
-      if (pt) pts[0] = [pt.x, pt.y];
-    }
-    if (el.endAnchor) {
-      const pt = getAnchorPoint(el.endAnchor, pts[pts.length - 2][0], pts[pts.length - 2][1]);
-      if (pt) pts[pts.length - 1] = [pt.x, pt.y];
-    }
     d = computeArrowPath(pts);
   } else { // pen
     d = el.pathD || pointsToSmoothPath(el.points || []);
@@ -827,8 +1120,13 @@ function _fastDragUpdate(ids, anchoredArrowIds) {
 // ELEMENT CRUD
 // ═══════════════════════════════════════════
 
-function addElement(el, { skipPersist = false } = {}) {
-  el.zIndex = _nextZIndex++;
+function addElement(el, { skipPersist = false, keepZIndex = false } = {}) {
+  if (keepZIndex && Number.isFinite(el.zIndex)) {
+    // Server-assigned z-order (MCP adds): honour it and keep our counter ahead.
+    _nextZIndex = Math.max(_nextZIndex, el.zIndex + 1);
+  } else {
+    el.zIndex = _nextZIndex++;
+  }
   _elements.push(el);
   pushUndo('add', null, { ...el });
   renderAll();
@@ -843,8 +1141,9 @@ function deleteElement(id) {
   _elements.splice(idx, 1);
 
   // Detach arrows anchored to deleted element
-  const cx = el.x + (el.width || 100) / 2;
-  const cy = el.y + (el.height || 60) / 2;
+  const box = _elBox(el);
+  const cx = el.x + box.w / 2;
+  const cy = el.y + box.h / 2;
   for (const a of _elements) {
     if (a.type !== 'arrow' || !a.points) continue;
     if (a.startAnchor === id) {
@@ -872,8 +1171,9 @@ function deleteMultipleElements(ids) {
     const el = { ..._elements[idx] };
     _elements.splice(idx, 1);
     // Detach arrows anchored to this element
-    const cx = el.x + (el.width || 100) / 2;
-    const cy = el.y + (el.height || 60) / 2;
+    const box = _elBox(el);
+    const cx = el.x + box.w / 2;
+    const cy = el.y + box.h / 2;
     for (const a of _elements) {
       if (a.type !== 'arrow' || !a.points) continue;
       if (a.startAnchor === id) { a.points[0] = [cx, cy]; a.startAnchor = null; }
@@ -1748,6 +2048,7 @@ function enterEditMode(dom, elId) {
       el.content = content.innerText.trimEnd() || '';
       pushUndo('edit', before, { ...el });
       persistDebounced();
+      _scheduleMeasure();   // content changed without a render — re-measure the card
     }
   };
   content.addEventListener('blur', onBlur);
@@ -1759,7 +2060,7 @@ function exitEditMode() {
 }
 
 function enterListEditMode(dom, elId) {
-  const ul = dom.querySelector('ul');
+  const ul = dom.querySelector('ul, ol');
   if (!ul) return;
   dom.classList.add('editing');
 
@@ -1782,7 +2083,7 @@ function enterListEditMode(dom, elId) {
 function exitListEditMode() {
   const dom = _root?.querySelector('.wb-list.editing');
   if (!dom) return;
-  const ul = dom.querySelector('ul');
+  const ul = dom.querySelector('ul, ol');
   const elId = dom.dataset.wbId;
 
   dom.classList.remove('editing');
@@ -1797,6 +2098,7 @@ function exitListEditMode() {
     el.items = rawItems.filter((t, i, arr) => t !== '' || arr.length === 1);
     if (!el.items.length) el.items = [''];
     pushUndo('edit', before, { ...el, items: [...el.items] });
+    dom._wbListKey = null;   // editing mutated the <li>s directly — force a clean rewrite
     renderElements();
     persistDebounced();
   }
@@ -1888,7 +2190,9 @@ function onMouseDown(e) {
     // Resize handle? (only when single-selected)
     if (e.target.closest('.wb-resize-handle') && targetId) {
       const el = _elements.find(e2 => e2.id === targetId);
-      if (el) {
+      // Text/list cards auto-size — they have no handle; guard anyway so a
+      // stray hit falls through to a plain move.
+      if (el && el.type !== 'text' && el.type !== 'list') {
         selectElement(targetId);
         _drag = {
           type: 'resize', id: targetId,
@@ -2333,9 +2637,11 @@ function onMouseMove(e) {
 }
 
 function onMouseUp(e) {
-  // Any interaction is ending — lift the transition/animation kill-switch
-  // (runs first so it fires on every early-return finalize path below).
+  // Any interaction is ending — lift the transition/animation kill-switch and
+  // drop the gesture-cached root rect (both run first so they fire on every
+  // early-return finalize path below).
   document.body.classList.remove('ui-interacting');
+  _invalidateRootRect();
 
   // Finalize marquee selection
   if (_marquee) {
@@ -2474,7 +2780,8 @@ function onMouseUp(e) {
     _drag = null;
     persistDebounced();
   }
-  _invalidateRootRect();
+  // A measurement pass skipped during the gesture runs now.
+  if (_measurePending) { _measurePending = false; _scheduleMeasure(); }
 }
 
 function onDblClick(e) {
@@ -2569,6 +2876,12 @@ function isWhiteboardActive() {
   return bg && bg.classList.contains('visible');
 }
 
+// A key pressed inside a side panel is the panel's: registerSidepanel marks every panel root
+// (Claude, Codex, OpenCode, Assistant) with data-sidepanel-provider.
+export function isSidepanelKeyTarget(el) {
+  return !!el?.closest?.('[data-sidepanel-provider]');
+}
+
 function onKeyDown(e) {
   if (!isWhiteboardActive()) return;
 
@@ -2578,6 +2891,12 @@ function onKeyDown(e) {
   const tag = ae?.tagName;
   const isTextField = tag === 'INPUT' || tag === 'TEXTAREA' || ae?.isContentEditable;
   if (isTextField && !ae.closest('#static-bg')) return;
+  // Nor while the keyboard is inside the Settings panel: its rows, buttons and dialogs take their own keys
+  // (Escape empties its search, then closes it), and a board shortcut must not fire from a setting.
+  if (ae?.closest?.('#settings-panel')) return;
+  // Nor while it is inside a side panel: Escape there stops a turn, and Delete, Backspace or
+  // Ctrl+A/Z/C on one of its controls is not a board edit.
+  if (isSidepanelKeyTarget(e.target) || isSidepanelKeyTarget(ae)) return;
 
   const isEditingText = !!document.activeElement?.closest('.wb-text.editing');
   const editingListLi = document.activeElement?.closest('.wb-list.editing li') || null;
@@ -2644,11 +2963,13 @@ function onKeyDown(e) {
       if (_shapeCreating) {
         _elements = _elements.filter(el => el.id !== _shapeCreating.id);
         _shapeCreating = null;
+        _invalidateElementMap();
         renderAll();
       }
       if (_sectionCreating) {
         _elements = _elements.filter(el => el.id !== _sectionCreating.id);
         _sectionCreating = null;
+        _invalidateElementMap();
         renderAll();
       }
       if (_arrowCreating) { _arrowCreating = null; clearArrowPreview(); }
@@ -2999,6 +3320,7 @@ export function restoreWhiteboardSnapshot(snap) {
     clearWhiteboard();
     return;
   }
+  _beginStateReplace({ exitEdits: true });
   _elements = (snap.elements || []).map(el => {
     // Migrate legacy arrow format (startX/endX → points)
     if (el.type === 'arrow' && !el.points && el.startX != null) {
@@ -3016,11 +3338,13 @@ export function restoreWhiteboardSnapshot(snap) {
   _arrowCreating = null;
   _sectionCreating = null;
   _clipboard = null;
+  _invalidateElementMap();
   renderAll();
   persistDebounced();
 }
 
 export function clearWhiteboard() {
+  _beginStateReplace({ exitEdits: true });
   _elements = [];
   _nextZIndex = 1;
   _undoStack = [];
@@ -3030,6 +3354,7 @@ export function clearWhiteboard() {
   _arrowCreating = null;
   _sectionCreating = null;
   _clipboard = null;
+  _invalidateElementMap();
   renderAll();
   persistDebounced();
 }
@@ -3102,13 +3427,32 @@ export function initWhiteboard() {
   window.addEventListener('mouseup', onMouseUp);
   _root.addEventListener('dblclick', onDblClick);
 
+  // Never let the browser start a native HTML5 drag inside the board (an <img>
+  // drag would swallow our mouseup and strand _drag). Nodes that opt in with
+  // draggable="true" (e.g. a future drag-to-terminal handle) are exempt.
+  _root.addEventListener('dragstart', (e) => {
+    if (e.target?.closest?.('[draggable="true"]')) return;
+    e.preventDefault();
+  });
+
   // Keyboard — capture phase so we fire before global keybinds
   document.addEventListener('keydown', onKeyDown, true);
 
   // Track Ctrl key for tool lock
   document.addEventListener('keydown', onCtrlTrack);
   document.addEventListener('keyup', onCtrlTrack);
-  window.addEventListener('blur', () => { _toolLocked = false; updateLockIndicator(); });
+  // A window blur or hidden tab means the matching mouseup may never arrive —
+  // drop the tool lock AND any in-flight pointer gesture so the board never
+  // ends up with a stale _drag/_marquee/_penPoints swallowing every mousemove.
+  window.addEventListener('blur', () => {
+    _toolLocked = false;
+    updateLockIndicator();
+    _cancelGesture({ pointerOnly: true });
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) _cancelGesture({ pointerOnly: true });
+    _sendViewport();   // `visible` flag feeds the server's primary-client pick
+  });
 
   // Paste — listen on document (not _root) because _root can't receive focus
   // and paste events only fire on the focused element's ancestor chain.
@@ -3139,6 +3483,7 @@ export function initWhiteboard() {
 
   // Auto-focus whiteboard when entering focus mode so Ctrl+V paste works immediately
   on('focus:enter', () => {
+    refreshRulesetAlert();
     setTimeout(() => _root.focus({ preventScroll: true }), 150);
     // Restore logo hidden state from session
     if (sessionStorage.getItem('wb-logo-hidden') === '1') {
@@ -3156,6 +3501,29 @@ export function initWhiteboard() {
 
   // Connect to server for external commands (Claude MCP)
   _connectWhiteboardWS();
+
+  // Viewport truth: re-report the usable area whenever anything that bounds it
+  // changes — root size, the CSS variables the navbar/terminal/right panel
+  // publish on <html>, focus mode, panel visibility, tab visibility.
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(() => _sendViewport()).observe(_root);
+  }
+  if (typeof MutationObserver !== 'undefined') {
+    new MutationObserver(() => _sendViewport())
+      .observe(document.documentElement, { attributes: true, attributeFilter: ['style'] });
+  }
+  // focus:enter/exit fire BEFORE ui-settings toggles #static-bg.visible (100 ms
+  // stagger), so report after the class has landed.
+  on('focus:enter', () => setTimeout(() => _sendViewport({ immediate: true }), 250));
+  on('focus:exit', () => setTimeout(() => _sendViewport({ immediate: true }), 250));
+  on('claude-panel:visibility', () => _sendViewport());
+
+  // First measurement of text/list cards once the real font is in (metrics
+  // taken with a fallback font would be wrong by a few px per glyph).
+  if (document.fonts?.ready) {
+    document.fonts.ready.then(_scheduleMeasure).catch(() => {});
+    document.fonts.addEventListener?.('loadingdone', _scheduleMeasure);
+  }
 
   // ── Guest permission: disable drawing tools when whiteboard perm is off ──
   function updateWbPermVisual() {
@@ -3203,15 +3571,12 @@ function _connectWhiteboardWS() {
   _ws.onopen = () => {
     console.log('[whiteboard-ws] Connected');
     if (_wsReconnectTimer) { clearInterval(_wsReconnectTimer); _wsReconnectTimer = null; }
-    // Report usable viewport dimensions (excluding navbar, toolbar, terminal) for MCP coordinate mapping
-    if (_root) {
-      const rect = _root.getBoundingClientRect();
-      const titleBar = document.getElementById('title-bar');
-      const toolbar = document.getElementById('wb-toolbar');
-      const navH = titleBar ? titleBar.getBoundingClientRect().height : 0;
-      const tbW = toolbar ? toolbar.getBoundingClientRect().right - rect.left + 12 : 60;
-      _ws.send(JSON.stringify({ type: 'viewport', width: Math.round(rect.width - tbW), height: Math.round(rect.height - navH), yOffset: Math.round(navH), xOffset: Math.round(tbW) }));
-    }
+    // Report the usable viewport (excluding navbar, tool rail, right panel,
+    // terminal) for MCP coordinate mapping, then flush any measured sizes that
+    // were collected while the socket was down.
+    _lastViewportJson = '';
+    _sendViewport({ immediate: true });
+    _queueGeometrySend();
   };
 
   _ws.onmessage = (event) => {
@@ -3232,22 +3597,63 @@ function _connectWhiteboardWS() {
   _ws.onerror = () => {}; // onclose fires after
 }
 
-// Debounced viewport resize reporting
-let _viewportResizeTimer = null;
-window.addEventListener('resize', () => {
+// ── Viewport reporting ──
+
+function _cssPx(name) {
+  const v = parseFloat(getComputedStyle(document.documentElement).getPropertyValue(name));
+  return Number.isFinite(v) ? v : 0;
+}
+
+/** Usable whiteboard viewport in CSS px relative to #wb-root's top-left: the
+ *  root minus the left tool rail, the navbar and the docked right-side agent
+ *  panel (its reserved width is published as --right-panel-width by
+ *  ui-sidepanel-layout.js; 0 when hidden or floating). #wb-root already ends
+ *  above a docked terminal (--terminal-height). Sent to the server so MCP
+ *  coordinate math and screenshots describe what the user can actually see. */
+function _computeViewport() {
+  const rect = _root.getBoundingClientRect();
+  const titleBar = document.getElementById('title-bar');
+  const toolbar = document.getElementById('wb-toolbar');
+  const navH = titleBar ? titleBar.getBoundingClientRect().height : _cssPx('--navbar-height');
+  const tbW = toolbar ? Math.max(0, toolbar.getBoundingClientRect().right - rect.left + 12) : 60;
+  const rightW = Math.max(0, _cssPx('--right-panel-width') || _cssPx('--claude-panel-width'));
+  return {
+    type: 'viewport',
+    clientId: _clientId,
+    focusActive: isWhiteboardActive(),
+    visible: document.visibilityState === 'visible',
+    width: Math.max(0, Math.round(rect.width - tbW - rightW)),
+    height: Math.max(0, Math.round(rect.height - navH)),
+    xOffset: Math.round(tbW),
+    yOffset: Math.round(navH),
+    rootWidth: Math.round(rect.width),
+    rootHeight: Math.round(rect.height),
+    rightPanelWidth: Math.round(rightW),
+    dpr: window.devicePixelRatio || 1,
+  };
+}
+
+let _viewportTimer = null;
+let _lastViewportJson = '';
+
+/** Debounced (150 ms), deduplicated viewport report. Every trigger also drops
+ *  the gesture-cached root rect since the layout just changed. */
+function _sendViewport({ immediate = false } = {}) {
   _invalidateRootRect();
-  clearTimeout(_viewportResizeTimer);
-  _viewportResizeTimer = setTimeout(() => {
-    if (_ws && _ws.readyState === 1 && _root) {
-      const rect = _root.getBoundingClientRect();
-      const titleBar = document.getElementById('title-bar');
-      const toolbar = document.getElementById('wb-toolbar');
-      const navH = titleBar ? titleBar.getBoundingClientRect().height : 0;
-      const tbW = toolbar ? toolbar.getBoundingClientRect().right - rect.left + 12 : 60;
-      _ws.send(JSON.stringify({ type: 'viewport', width: Math.round(rect.width - tbW), height: Math.round(rect.height - navH), yOffset: Math.round(navH), xOffset: Math.round(tbW) }));
-    }
-  }, 300);
-});
+  clearTimeout(_viewportTimer);
+  const send = () => {
+    _viewportTimer = null;
+    if (!_ws || _ws.readyState !== 1 || !_root) return;
+    const json = JSON.stringify(_computeViewport());
+    if (json === _lastViewportJson) return;
+    _lastViewportJson = json;
+    _ws.send(json);
+  };
+  if (immediate) send();
+  else _viewportTimer = setTimeout(send, 150);
+}
+
+window.addEventListener('resize', () => _sendViewport());
 
 function _handleExternalCommand(msg) {
   switch (msg.type) {
@@ -3256,7 +3662,17 @@ function _handleExternalCommand(msg) {
 
     case 'add':
       for (const el of (msg.elements || [])) {
-        addElement(el, { skipPersist: true });
+        const idx = _elements.findIndex(e => e.id === el.id);
+        if (idx >= 0) {
+          // The server re-sent an id we already hold — replace in place
+          // (no duplicate DOM node, no extra undo entry).
+          _elements[idx] = el;
+          if (Number.isFinite(el.zIndex)) _nextZIndex = Math.max(_nextZIndex, el.zIndex + 1);
+          _invalidateElementMap();
+          renderAll();
+          continue;
+        }
+        addElement(el, { skipPersist: true, keepZIndex: true });
       }
       break;
 
@@ -3285,30 +3701,79 @@ function _handleExternalCommand(msg) {
       break;
     }
 
-    case 'clear':
+    case 'clear': {
+      // External (MCP) clear is UNDOABLE: push a delete-multi entry (undo()
+      // pushes the copies back) instead of wiping the user's history.
+      _beginStateReplace({ exitEdits: true });
+      if (_elements.length) {
+        pushUndo('delete-multi', _elements.map(el => ({ ...el, points: el.points ? el.points.map(p => [...p]) : undefined })), null);
+      } else {
+        _nextZIndex = 1;
+      }
       _elements = [];
-      _nextZIndex = 1;
-      _undoStack = [];
-      _redoStack = [];
-      _selectedId = null;
-      _selectedIds.clear();
-      _arrowCreating = null;
-      _sectionCreating = null;
+      _invalidateElementMap();
       renderAll();
+      updateUndoButtons();
       break;
+    }
 
     case 'state:full':
       // Full state sync relayed from another client. The server already
       // persisted it (saveWhiteboard); just apply locally — no re-persist.
+      // Do NOT exit an in-progress text edit here (the user may be typing);
+      // gestures are cancelled so a drag can't continue on ghost objects.
+      _beginStateReplace({ exitEdits: false });
       _elements = msg.snapshot?.elements || [];
       _nextZIndex = msg.snapshot?.nextZIndex || 1;
-      _selectedId = null;
-      _selectedIds.clear();
+      _invalidateElementMap();
       renderAll();
       break;
 
+    case 'batch': {
+      // Several server-side ops (batch update/remove, delete cascades) applied
+      // atomically: one undo entry, one render, no persist (server already has it).
+      const ops = Array.isArray(msg.ops) ? msg.ops : [];
+      if (!ops.length) break;
+      const copyEl = (el) => ({ ...el, points: el.points ? el.points.map(p => [...p]) : undefined });
+      const befores = [], afters = [], removed = [], addedIds = [], addedCopies = [];
+      for (const op of ops) {
+        if (op.op === 'update') {
+          const el = _elements.find(e => e.id === op.id);
+          if (!el) continue;
+          befores.push(copyEl(el));
+          for (const [key, value] of Object.entries(op.updates || {})) {
+            if (key === 'id' || key === 'type') continue;
+            el[key] = value;
+          }
+          afters.push(copyEl(el));
+        } else if (op.op === 'remove') {
+          const idx = _elements.findIndex(e => e.id === op.id);
+          if (idx < 0) continue;
+          removed.push(copyEl(_elements[idx]));
+          _elements.splice(idx, 1);
+          _selectedIds.delete(op.id);
+          if (_selectedId === op.id) _selectedId = null;
+        } else if (op.op === 'add' && op.element?.id) {
+          if (_elements.some(e => e.id === op.element.id)) continue;
+          const el = op.element;
+          if (Number.isFinite(el.zIndex)) _nextZIndex = Math.max(_nextZIndex, el.zIndex + 1);
+          else el.zIndex = _nextZIndex++;
+          _elements.push(el);
+          addedIds.push(el.id);
+          addedCopies.push(copyEl(el));
+        }
+      }
+      if (befores.length || removed.length || addedIds.length) {
+        pushUndo('batch', { updated: befores, removed, added: addedIds }, { updated: afters, added: addedCopies });
+      }
+      if (_selectedIds.size === 0) hideContextMenu();
+      _invalidateElementMap();
+      renderAll();
+      break;
+    }
+
     case 'screenshot:request':
-      _captureScreenshot(msg.requestId);
+      _captureScreenshot(msg.requestId, { crop: msg.crop });
       break;
 
     case 'screenshot:auto': {
@@ -3348,138 +3813,267 @@ function _loadImage(src) {
   });
 }
 
-function _drawArrowhead(ctx, points) {
+function _roundRectPath(ctx, x, y, w, h, r) {
+  const rr = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.moveTo(x + rr, y);
+  ctx.lineTo(x + w - rr, y);
+  ctx.arcTo(x + w, y, x + w, y + rr, rr);
+  ctx.lineTo(x + w, y + h - rr);
+  ctx.arcTo(x + w, y + h, x + w - rr, y + h, rr);
+  ctx.lineTo(x + rr, y + h);
+  ctx.arcTo(x, y + h, x, y + h - rr, rr);
+  ctx.lineTo(x, y + rr);
+  ctx.arcTo(x, y, x + rr, y, rr);
+  ctx.closePath();
+}
+
+/** `color` with an alpha byte applied (hex2 like '0d'). Handles #rgb/#rrggbb
+ *  and rgb()/rgba(); anything else is returned unchanged. */
+function _withAlpha(color, hex2) {
+  const a = parseInt(hex2, 16) / 255;
+  let m = /^#([0-9a-f]{6})$/i.exec(color);
+  if (m) return color + hex2;
+  m = /^#([0-9a-f])([0-9a-f])([0-9a-f])$/i.exec(color);
+  if (m) return `#${m[1]}${m[1]}${m[2]}${m[2]}${m[3]}${m[3]}${hex2}`;
+  m = /^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)/i.exec(color);
+  if (m) return `rgba(${m[1]},${m[2]},${m[3]},${a.toFixed(3)})`;
+  return color;
+}
+
+/** Arrowhead identical to the SVG marker (path M 2 2 L 18 10 L 2 18, refX 2,
+ *  refY 10): a 16px triangle extending past the last point along the end tangent. */
+function _drawArrowhead(ctx, points, fill) {
   if (points.length < 2) return;
   const last = points[points.length - 1];
   const prev = points[points.length - 2];
   const angle = Math.atan2(last[1] - prev[1], last[0] - prev[0]);
-  const size = 20;
-  ctx.fillStyle = ctx.strokeStyle;
+  ctx.save();
+  ctx.translate(last[0], last[1]);
+  ctx.rotate(angle);
+  ctx.fillStyle = fill;
   ctx.beginPath();
-  ctx.moveTo(last[0], last[1]);
-  ctx.lineTo(last[0] - size * Math.cos(angle - Math.PI / 6), last[1] - size * Math.sin(angle - Math.PI / 6));
-  ctx.lineTo(last[0] - size * Math.cos(angle + Math.PI / 6), last[1] - size * Math.sin(angle + Math.PI / 6));
+  ctx.moveTo(0, -8);
+  ctx.lineTo(16, 0);
+  ctx.lineTo(0, 8);
   ctx.closePath();
   ctx.fill();
+  ctx.restore();
 }
 
-async function _captureScreenshot(requestId) {
-  try {
-    const canvas = document.createElement('canvas');
-    const rootRect = _root.getBoundingClientRect();
-    canvas.width = rootRect.width;
-    canvas.height = rootRect.height;
-    const ctx = canvas.getContext('2d');
+/** Baseline offset from the top of a CSS line box of `lineH` px for the
+ *  current ctx.font (half-leading + ascent), with metric fallbacks. */
+function _lineBaseline(ctx, fs, lineH) {
+  const m = ctx.measureText('Mg');
+  const ascent = m.fontBoundingBoxAscent > 0 ? m.fontBoundingBoxAscent : fs * 1.02;
+  const descent = m.fontBoundingBoxDescent > 0 ? m.fontBoundingBoxDescent : fs * 0.3;
+  return (lineH - (ascent + descent)) / 2 + ascent;
+}
 
-    // Background
-    ctx.fillStyle = '#0a0a0f';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+/**
+ * Re-render the board to an offscreen canvas for the MCP whiteboard_screenshot
+ * tool. This is a RECONSTRUCTION, so every stroke reuses the generators and
+ * constants the DOM uses: JetBrains Mono with the CSS paddings, the seeded
+ * hand-drawn shape paths, anchor-resolved Catmull-Rom arrows with the
+ * marker-shaped head, section/image chrome. Output is scaled up to 2x (capped
+ * so the long edge stays ≤ 2000 px) and the response carries the coordinate
+ * mapping (image px ÷ scale = canvas px) plus the usable viewport.
+ */
+async function _captureScreenshot(requestId, { crop } = {}) {
+  try {
+    flushTextEdits();
+    flushListEdits();
+    try {
+      if (document.fonts?.ready) await document.fonts.ready;
+      if (document.fonts?.load) {
+        await Promise.allSettled([
+          document.fonts.load('400 22px "JetBrains Mono"'),
+          document.fonts.load('700 22px "JetBrains Mono"'),
+          document.fonts.load('italic 400 22px "JetBrains Mono"'),
+        ]);
+      }
+    } catch { /* draw with whatever is loaded */ }
+
+    const rootRect = _root.getBoundingClientRect();
+    const vp = _computeViewport();
+    const usable = { x: vp.xOffset, y: vp.yOffset, width: vp.width, height: vp.height };
+    const box = crop === 'usable'
+      ? usable
+      : { x: 0, y: 0, width: Math.round(rootRect.width), height: Math.round(rootRect.height) };
+    const outW = Math.max(1, Math.round(box.width));
+    const outH = Math.max(1, Math.round(box.height));
+    let scale = Math.min(2, window.devicePixelRatio || 1);
+    const longEdge = Math.max(outW, outH);
+    if (longEdge * scale > 2000) scale = 2000 / longEdge;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(outW * scale));
+    canvas.height = Math.max(1, Math.round(outH * scale));
+    const ctx = canvas.getContext('2d');
+    ctx.scale(scale, scale);
+    ctx.translate(-box.x, -box.y);
+    ctx.imageSmoothingQuality = 'high';
+
+    // Background — same as #static-bg
+    ctx.fillStyle = '#070709';
+    ctx.fillRect(box.x, box.y, outW, outH);
+
+    const mono = '"JetBrains Mono", monospace';
+    const bodyFont = getComputedStyle(document.body).fontFamily || 'sans-serif';
+    const tttActive = _root.classList.contains('ttt-active');
+    const domById = new Map();
+    if (_elementsDiv) for (const child of _elementsDiv.children) domById.set(child.dataset.wbId, child);
 
     // Sort by zIndex for correct layering
     const sorted = [..._elements].sort((a, b) => (a.zIndex || 0) - (b.zIndex || 0));
 
     for (const el of sorted) {
       ctx.save();
-
-      if (el.rotation) {
-        const cx = el.x + (el.width || 0) / 2;
-        const cy = el.y + (el.height || 0) / 2;
-        ctx.translate(cx, cy);
-        ctx.rotate(el.rotation * Math.PI / 180);
-        ctx.translate(-cx, -cy);
-      }
-
-      if (el.type === 'text') {
-        const weight = el.bold ? '700' : '400';
-        const style = el.italic ? 'italic ' : '';
-        ctx.font = `${style}${weight} ${el.fontSize || 22}px Caveat, cursive`;
-        ctx.fillStyle = el.color || 'rgba(255,255,255,0.85)';
-        ctx.textBaseline = 'top';
-        const lines = (el.content || '').split('\n');
-        let lineY = el.y + 10;
-        for (const line of lines) {
-          ctx.fillText(line, el.x + 14, lineY);
-          lineY += (el.fontSize || 22) * 1.35;
+      try {
+        // Border-box size: measured for text/list (DOM fallback if unmeasured),
+        // explicit or default for the rest.
+        let bw = el.width || 0, bh = el.height || 0;
+        if ((el.type === 'text' || el.type === 'list') && (!bw || !bh)) {
+          const dom = domById.get(el.id);
+          if (dom) { bw = dom.offsetWidth; bh = dom.offsetHeight; }
+        } else if (el.type === 'shape') {
+          bw = el.width || 160; bh = el.height || 100;
+        } else if (el.type === 'section') {
+          const def = SECTION_TYPES[el.sectionType] || SECTION_TYPES.content;
+          bw = el.width || def.w; bh = el.height || def.h;
         }
-      } else if (el.type === 'list') {
-        const fs = el.fontSize || 18;
-        ctx.font = `400 ${fs}px JetBrains Mono, monospace`;
-        ctx.fillStyle = el.color || 'rgba(255,255,255,0.85)';
-        ctx.textBaseline = 'top';
-        const items = el.items && el.items.length ? el.items : [''];
-        let lineY = el.y + 10;
-        for (const item of items) {
-          ctx.fillText('• ' + item, el.x + 14, lineY);
-          lineY += fs * 1.5;
+
+        // CSS transform: rotate() about the rendered box centre (DOM elements
+        // only — arrows/pen bake rotation into their points)
+        if (el.rotation && el.type !== 'arrow' && el.type !== 'pen') {
+          const cx = el.x + bw / 2;
+          const cy = el.y + bh / 2;
+          ctx.translate(cx, cy);
+          ctx.rotate(el.rotation * Math.PI / 180);
+          ctx.translate(-cx, -cy);
         }
-      } else if (el.type === 'shape') {
-        ctx.strokeStyle = el.color || 'rgba(255,255,255,0.75)';
-        ctx.lineWidth = 3;
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
-        const w = el.width || 160, h = el.height || 100;
-        if (el.shape === 'circle' || el.shape === 'drawn-circle') {
+
+        if (el.type === 'text') {
+          // .wb-text: 1px border + 10px/14px padding, line-height 1.35
+          const fs = el.fontSize || 22;
+          ctx.font = `${el.italic ? 'italic ' : ''}${el.bold ? '700' : '400'} ${fs}px ${mono}`;
+          ctx.fillStyle = el.color || 'rgba(255,255,255,0.85)';
+          ctx.textBaseline = 'alphabetic';
+          ctx.textAlign = 'left';
+          const lineH = fs * 1.35;
+          const baseOff = _lineBaseline(ctx, fs, lineH);
+          let lineTop = el.y + 11;
+          for (const line of (el.content || '').split('\n')) {
+            if (line) ctx.fillText(line, el.x + 15, lineTop + baseOff);
+            lineTop += lineH;
+          }
+        } else if (el.type === 'list') {
+          // .wb-list: same box, line-height 1.5, <ul>/<ol> padding-left 1.4em
+          const fs = el.fontSize || 18;
+          ctx.font = `400 ${fs}px ${mono}`;
+          ctx.fillStyle = el.color || 'rgba(255,255,255,0.85)';
+          ctx.textBaseline = 'alphabetic';
+          const lineH = fs * 1.5;
+          const baseOff = _lineBaseline(ctx, fs, lineH);
+          const items = el.items && el.items.length ? el.items : [''];
+          const contentLeft = el.x + 15 + 1.4 * fs;
+          let lineTop = el.y + 11;
+          items.forEach((item, i) => {
+            const baseline = lineTop + baseOff;
+            ctx.textAlign = 'right';
+            ctx.fillText(el.ordered ? `${i + 1}.` : '•', contentLeft - 0.6 * fs, baseline);
+            ctx.textAlign = 'left';
+            if (item) ctx.fillText(item, contentLeft, baseline);
+            lineTop += lineH;
+          });
+        } else if (el.type === 'shape') {
+          // Same seeded hand-drawn path the DOM's inner SVG uses (stroke 4, 5px inset)
+          const shape = el.shape || 'rect';
+          const d = shape === 'drawn-circle'
+            ? generateDrawnCirclePath(bw, bh, el.id)
+            : generateHandDrawnShape(shape, bw, bh, el.id);
+          ctx.translate(el.x, el.y);
+          ctx.strokeStyle = el.color || 'rgba(255,255,255,0.8)';
+          ctx.lineWidth = 4;
+          ctx.lineCap = 'round';
+          ctx.lineJoin = 'round';
+          ctx.stroke(new Path2D(d));
+        } else if (el.type === 'image' && el.dataUrl) {
+          const img = await _loadImage(el.dataUrl).catch(() => null);
+          if (img && bw > 0 && bh > 0) {
+            // .wb-image: 2px border, radius 16 (img radius 14, object-fit: cover);
+            // during tic-tac-toe the chrome is stripped and cell markers are 20% opaque
+            const inset = tttActive ? 0 : 2;
+            const radius = tttActive ? 0 : 14;
+            const dx = el.x + inset, dy = el.y + inset;
+            const dw = Math.max(0, bw - inset * 2), dh = Math.max(0, bh - inset * 2);
+            const nw = img.naturalWidth || img.width || dw, nh = img.naturalHeight || img.height || dh;
+            const s = Math.max(dw / nw, dh / nh);
+            const sw = dw / s, sh = dh / s;
+            const sx = (nw - sw) / 2, sy = (nh - sh) / 2;
+            ctx.save();
+            if (tttActive && String(el.id).startsWith('ttt-cell-')) ctx.globalAlpha = 0.2;
+            ctx.beginPath();
+            _roundRectPath(ctx, dx, dy, dw, dh, radius);
+            ctx.clip();
+            ctx.drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh);
+            ctx.restore();
+            if (!tttActive) {
+              ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+              ctx.lineWidth = 2;
+              ctx.beginPath();
+              _roundRectPath(ctx, el.x + 1, el.y + 1, bw - 2, bh - 2, 16);
+              ctx.stroke();
+            }
+          }
+        } else if (el.type === 'arrow' && el.points && el.points.length >= 2) {
+          // Anchor-resolved, Catmull-Rom smoothed — identical to renderArrows()
+          const pts = resolveArrowPoints(el);
+          ctx.strokeStyle = el.color || 'rgba(255,255,255,0.8)';
+          ctx.lineWidth = 2;
+          ctx.lineCap = 'butt';
+          ctx.lineJoin = 'round';
+          ctx.stroke(new Path2D(computeArrowPath(pts)));
+          _drawArrowhead(ctx, pts, el.color || 'rgba(255,255,255,0.9)');
+        } else if (el.type === 'pen' && el.points && el.points.length >= 2) {
+          ctx.strokeStyle = el.color || 'rgba(255,255,255,0.8)';
+          ctx.lineWidth = el.strokeWidth || 3;
+          ctx.lineCap = 'round';
+          ctx.lineJoin = 'round';
+          ctx.stroke(new Path2D(el.pathD || pointsToSmoothPath(el.points)));
+        } else if (el.type === 'section') {
+          // .wb-section: 1px dashed border in the section colour, radius 4,
+          // background colour@0d, centred 28px icon @15%, 11px mono label @70%
+          const def = SECTION_TYPES[el.sectionType] || SECTION_TYPES.content;
+          const color = el.color || def.color;
           ctx.beginPath();
-          ctx.ellipse(el.x + w / 2, el.y + h / 2, w / 2, h / 2, 0, 0, Math.PI * 2);
+          _roundRectPath(ctx, el.x, el.y, bw, bh, 4);
+          ctx.fillStyle = _withAlpha(color, '0d');
+          ctx.fill();
+          ctx.setLineDash([3, 3]);
+          ctx.lineWidth = 1;
+          ctx.strokeStyle = color;
           ctx.stroke();
-        } else if (el.shape === 'pill') {
-          const r = Math.min(w, h) / 2;
-          ctx.beginPath();
-          ctx.roundRect(el.x, el.y, w, h, r);
-          ctx.stroke();
-        } else {
-          ctx.strokeRect(el.x, el.y, w, h);
+          ctx.setLineDash([]);
+          ctx.save();
+          ctx.globalAlpha = 0.15;
+          ctx.fillStyle = color;
+          ctx.font = `28px ${bodyFont}`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(def.icon, el.x + bw / 2, el.y + bh / 2);
+          ctx.restore();
+          ctx.save();
+          ctx.globalAlpha = 0.7;
+          ctx.fillStyle = color;
+          ctx.font = `11px ${mono}`;
+          ctx.textAlign = 'left';
+          ctx.textBaseline = 'top';
+          ctx.fillText(el.label || def.label, el.x + 8, el.y + 4);
+          ctx.restore();
         }
-      } else if (el.type === 'image' && el.dataUrl) {
-        try {
-          const img = await _loadImage(el.dataUrl);
-          ctx.drawImage(img, el.x, el.y, el.width, el.height);
-        } catch { /* skip broken images */ }
-      } else if (el.type === 'arrow' && el.points && el.points.length >= 2) {
-        ctx.strokeStyle = el.color || 'rgba(255,255,255,0.7)';
-        ctx.lineWidth = 3;
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
-        ctx.beginPath();
-        ctx.moveTo(el.points[0][0], el.points[0][1]);
-        for (let i = 1; i < el.points.length; i++) {
-          ctx.lineTo(el.points[i][0], el.points[i][1]);
-        }
-        ctx.stroke();
-        _drawArrowhead(ctx, el.points);
-      } else if (el.type === 'pen' && el.points && el.points.length >= 2) {
-        ctx.strokeStyle = el.color || 'rgba(255,255,255,0.7)';
-        ctx.lineWidth = el.strokeWidth || 3;
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
-        const pathD = el.pathD || pointsToSmoothPath(el.points);
-        const p2d = new Path2D(pathD);
-        ctx.stroke(p2d);
-      } else if (el.type === 'section') {
-        const def = SECTION_TYPES[el.sectionType] || SECTION_TYPES.content;
-        const color = el.color || def.color;
-        const w = el.width || def.w;
-        const h = el.height || def.h;
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 1;
-        ctx.setLineDash([6, 4]);
-        ctx.strokeRect(el.x, el.y, w, h);
-        ctx.setLineDash([]);
-        ctx.fillStyle = color + '1a';
-        ctx.fillRect(el.x, el.y, w, h);
-        ctx.font = '28px sans-serif';
-        ctx.fillStyle = color + '33';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(def.icon, el.x + w / 2, el.y + h / 2);
-        ctx.font = '12px JetBrains Mono, monospace';
-        ctx.fillStyle = color;
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'top';
-        ctx.fillText(el.label || def.label, el.x + 8, el.y + 6);
-        ctx.textAlign = 'start';
+      } catch (elErr) {
+        console.warn('[whiteboard] screenshot: skipped element', el.id, elErr);
       }
-
       ctx.restore();
     }
 
@@ -3487,12 +4081,25 @@ async function _captureScreenshot(requestId) {
     const base64 = dataUrl.split(',')[1];
 
     if (_ws && _ws.readyState === 1) {
-      _ws.send(JSON.stringify({ type: 'screenshot:response', requestId, data: base64 }));
+      _ws.send(JSON.stringify({
+        type: 'screenshot:response',
+        requestId,
+        data: base64,
+        clientId: _clientId,
+        focusActive: isWhiteboardActive(),
+        width: outW,
+        height: outH,
+        scale,
+        xOffset: vp.xOffset,
+        yOffset: vp.yOffset,
+        crop: crop === 'usable' ? 'usable' : 'full',
+        usable,
+      }));
     }
   } catch (err) {
     console.error('[whiteboard] Screenshot capture failed:', err);
     if (_ws && _ws.readyState === 1) {
-      _ws.send(JSON.stringify({ type: 'screenshot:error', requestId, error: err.message }));
+      _ws.send(JSON.stringify({ type: 'screenshot:error', requestId, error: err.message, clientId: _clientId }));
     }
   }
 }

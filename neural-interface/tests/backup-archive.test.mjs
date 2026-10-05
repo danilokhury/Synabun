@@ -27,7 +27,7 @@ test('backup archives remain compatible with file and buffer ZIP readers', async
       now: () => new Date('2026-07-20T12:00:00.000Z'),
     });
 
-    const manifest = verifyBackupArchive(result.path);
+    const manifest = await verifyBackupArchive(result.path);
     assert.equal(manifest.verified, true);
     assert.ok(manifest.checksums['env.bak']);
     assert.ok(manifest.checksums['data/settings.json']);

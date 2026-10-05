@@ -8,6 +8,7 @@
 
 import { emit } from './state.js';
 import { storage } from './storage.js';
+import { applyHiddenModels, hydrateHiddenModels } from './ocp-hidden-models.js';
 
 let _ws = null;
 let _reconnectTimer = null;
@@ -56,10 +57,23 @@ const SYNC_HANDLERS = {
   'category:created': () => { emit('categories:changed'); emit('categories-changed'); scheduleReload(); },
   'category:updated': () => { emit('categories:changed'); emit('categories-changed'); scheduleReload(); },
   'category:deleted': () => { emit('categories:changed'); emit('categories-changed'); scheduleReload(); },
+  // Memory map positions changed (new memories placed, an island refit, a rebuild).
+  'map:updated':     (msg) => emit('sync:map:updated', msg),
 
   // OpenCode history is global to the host. Drop stale per-window tab/session
   // references in every connected UI before reloading against the empty DB.
   'opencode:history-cleared': (msg) => clearOpenCodeHistoryClientState(msg),
+
+  // Settings → OpenCode model checkboxes changed in another window: refresh
+  // the localStorage mirror (fires ocp-hidden-models-changed when it differs).
+  'opencode:hidden-models-changed': (msg) => {
+    applyHiddenModels(msg.models);
+    emit('sync:opencode:hidden-models-changed', msg);
+  },
+
+  // Assistant → Models toggles (every provider): the Assistant's model menus,
+  // Routes editor and Models manager reload their lists.
+  'assistant:hidden-models-changed': (msg) => emit('sync:assistant:hidden-models-changed', msg),
 
   // Card sync (relayed from other clients)
   'card:opened':    (msg) => emit('sync:card:opened', msg),
@@ -81,6 +95,25 @@ const SYNC_HANDLERS = {
   'sidepanel:run-failed':    (msg) => emit('sync:sidepanel:run-failed', msg),
   'sidepanel:run-stopped':   (msg) => emit('sync:sidepanel:run-stopped', msg),
   'sidepanel:provider-event':(msg) => emit('sync:sidepanel:provider-event', msg),
+
+  // Assistant (CLI-region orchestrator) — sessions, dispatches, permissions, accounts
+  'assistant:session-created':     (msg) => emit('sync:assistant:session-created', msg),
+  'assistant:session-updated':     (msg) => emit('sync:assistant:session-updated', msg),
+  'assistant:session-ended':       (msg) => emit('sync:assistant:session-ended', msg),
+  'assistant:dispatch':            (msg) => emit('sync:assistant:dispatch', msg),
+  'assistant:run-removed':         (msg) => emit('sync:assistant:run-removed', msg),
+  'assistant:permission-request':  (msg) => emit('sync:assistant:permission-request', msg),
+  'assistant:permission-resolved': (msg) => emit('sync:assistant:permission-resolved', msg),
+  'assistant:focus':               (msg) => emit('sync:assistant:focus', msg),
+  'assistant:accounts-changed':    (msg) => emit('sync:assistant:accounts-changed', msg),
+  'assistant:mailbox':             (msg) => emit('sync:assistant:mailbox', msg),
+  'assistant:cost':                (msg) => emit('sync:assistant:cost', msg),
+  'assistant:desktop':             (msg) => emit('sync:assistant:desktop', msg),
+  'assistant:desktop-setup':       (msg) => emit('sync:assistant:desktop-setup', msg),
+  'assistant:routing-changed':     (msg) => emit('sync:assistant:routing-changed', msg),
+
+  // WhatsApp Link — states and counters only (never a QR, code, number or text); Settings → WhatsApp re-reads /api/whatsapp/status
+  'whatsapp:status':               (msg) => emit('sync:whatsapp:status', msg),
 
   // Browser session lifecycle sync
   'browser:session-created': (msg) => emit('sync:browser:created', msg),
@@ -165,6 +198,8 @@ const SYNC_HANDLERS = {
     _isGuest = !!msg.isGuest;
     _permissions = msg.permissions || {};
     emit('session:info', { isGuest: _isGuest, permissions: _permissions });
+    // Catch up on hidden-model changes missed while disconnected.
+    hydrateHiddenModels();
   },
 };
 

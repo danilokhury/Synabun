@@ -10,8 +10,10 @@
  * 3. Migrates data from old scaffolded installs if detected
  * 4. Installs npm deps for neural-interface/ and mcp-server/
  * 5. Builds the MCP server TypeScript (if dist/ is missing or stale)
- * 6. Starts the Neural Interface Express server
- * 7. Auto-opens browser to onboarding wizard (or main page if setup complete)
+ * 6. Takes a verified snapshot of user state before a new version first runs
+ *    (lib/first-launch-protection.js). If it cannot, the launch stops here.
+ * 7. Starts the Neural Interface Express server
+ * 8. Auto-opens browser to onboarding wizard (or main page if setup complete)
  */
 
 import { execSync, spawn, exec } from 'node:child_process';
@@ -36,6 +38,12 @@ import {
   resolveDataHomeConflict,
 } from './lib/data-home-migration.js';
 import { auditAndRepairClientConfigs } from './lib/client-config-repair.js';
+import {
+  SNAPSHOT_FAILED_EXIT_CODE,
+  describeSnapshotFailure,
+  protectFirstLaunchAfterUpdate,
+  recordLauncherFailure,
+} from './lib/first-launch-protection.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -233,80 +241,6 @@ function repairClientConfigs() {
     if (result.changed.length) ok(`Repaired ${result.changed.length} SynaBun client registration${result.changed.length === 1 ? '' : 's'}`);
   } catch (error) {
     warn(`Could not audit client registrations: ${error.message}`);
-  }
-}
-
-async function protectFirstLaunchAfterUpdate(version) {
-  const manifestPath = resolve(DATA_HOME, DATA_HOME_MANIFEST);
-  const handoffPath = resolve(DATA_HOME, 'data', 'update-handoff.json');
-  let manifest = {};
-  let handoff = null;
-  try { manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')); } catch {}
-  try { handoff = JSON.parse(readFileSync(handoffPath, 'utf-8')); } catch {}
-  const pendingHandoff = handoff && ['prepared', 'installed'].includes(handoff.status);
-  if (manifest.lastAppVersion === version && !pendingHandoff) return true;
-  if (!dataHomeHasState(DATA_HOME)) return true;
-
-  let snapshotPath = pendingHandoff && handoff.snapshotPath && existsSync(handoff.snapshotPath)
-    ? handoff.snapshotPath
-    : null;
-  try {
-    if (!snapshotPath) {
-      info(`Protecting user state before first launch of v${version}...`);
-      const { createVerifiedBackup, applyBackupRetention } = await import('./neural-interface/lib/backup-service.js');
-      const folderPath = resolve(DATA_HOME, 'backups', 'updates');
-      const snapshot = await createVerifiedBackup({
-        dataHome: DATA_HOME,
-        databasePath: resolve(DATA_HOME, 'mcp-data', 'memory.db'),
-        folderPath,
-        kind: 'pre-update',
-        appVersion: manifest.lastAppVersion || null,
-        // Without this the checksum and archive phases run silently for minutes
-        // on a large data home, which users read as a hang and kill.
-        onProgress: ({ phase, files, bytes, skippedFiles, skippedBytes }) => {
-          const size = bytes ? ` (${(bytes / 1024 / 1024).toFixed(0)} MB)` : '';
-          if (phase === 'collect') {
-            info(`  ${files} files to protect${size}`);
-            if (skippedFiles) {
-              info(`  Skipping ${skippedFiles} generated media files (${(skippedBytes / 1024 / 1024).toFixed(0)} MB) — an upgrade never touches them`);
-            }
-          } else if (phase === 'checksum') info(`  Checksumming ${files} files...`);
-          else if (phase === 'archive') info(`  Compressing${size}...`);
-          else if (phase === 'verify') info('  Verifying archive integrity...');
-        },
-      });
-      applyBackupRetention({ folderPath });
-      snapshotPath = snapshot.path;
-      ok(`Verified upgrade snapshot: ${snapshot.name}`);
-    }
-
-    const nextManifest = {
-      version: 1,
-      installationId: manifest.installationId || `${Date.now()}-${process.pid}`,
-      dataSchemaVersion: manifest.dataSchemaVersion || 1,
-      ...manifest,
-      lastAppVersion: version,
-      lastUpgradeVerifiedAt: new Date().toISOString(),
-      lastUpgradeSnapshot: snapshotPath,
-    };
-    const manifestTemp = `${manifestPath}.${process.pid}.tmp`;
-    writeFileSync(manifestTemp, JSON.stringify(nextManifest, null, 2) + '\n', 'utf-8');
-    renameSync(manifestTemp, manifestPath);
-
-    if (pendingHandoff) {
-      writeFileSync(handoffPath, JSON.stringify({
-        ...handoff,
-        status: 'verified',
-        verifiedAt: new Date().toISOString(),
-        launchedVersion: version,
-        snapshotPath,
-      }, null, 2) + '\n', 'utf-8');
-    }
-    return true;
-  } catch (error) {
-    warn(`Could not create a verified upgrade snapshot: ${error.message}`);
-    info('No user state was deleted. Run "synabun doctor" before cleaning or replacing the checkout.');
-    return false;
   }
 }
 
@@ -767,12 +701,13 @@ async function main() {
     const backupPath = readOption('--from') || readOption('--backup');
     if (!backupPath) throw new Error('Usage: synabun restore-backup --from <backup.zip> [--apply]');
     const { restoreDataHomeFromBackup } = await import('./scripts/restore-data-home-from-backup.mjs');
-    const result = restoreDataHomeFromBackup({
+    const result = await restoreDataHomeFromBackup({
       backupPath,
       targetRoot: DATA_HOME,
       legacyRoot: PACKAGE_ROOT,
       apply: process.argv.includes('--apply'),
     });
+    for (const item of result.invalidJson || []) warn(`Restored as backed up, but not valid JSON: ${item.path} (${item.error})`);
     if (!result.applied) {
       info(`Verified backup: ${result.database.memories} memories, SQLite ${result.database.integrity}`);
       info('Dry run only. Re-run with --apply after stopping SynaBun MCP/server processes.');
@@ -827,7 +762,22 @@ async function main() {
   buildMcpServer();
   console.log('');
 
-  await protectFirstLaunchAfterUpdate(version);
+  // A new version never runs on user state that has no verified snapshot. When
+  // the snapshot cannot be created the launch stops here, before the server
+  // (and any data migration) starts. There is no flag to launch anyway.
+  const protection = await protectFirstLaunchAfterUpdate({ dataHome: DATA_HOME, version, log: { info, ok, warn } });
+  if (protection.status === 'failed') {
+    const failure = describeSnapshotFailure({ ...protection, dataHome: DATA_HOME, version });
+    // Server logging has not begun, and a detached launch (the updater's
+    // relaunch, a restart without a terminal) has nowhere to print.
+    const logPath = recordLauncherFailure({ dataHome: DATA_HOME, exitCode: SNAPSHOT_FAILED_EXIT_CODE, ...failure });
+    console.log('');
+    fail(failure.headline);
+    for (const line of failure.lines) info(line);
+    if (logPath) info(`This message is also in: ${logPath}`);
+    console.log('');
+    process.exit(SNAPSHOT_FAILED_EXIT_CODE);
+  }
   console.log('');
 
   // Existing registrations can carry checkout-local DOTENV_PATH and data-home
@@ -849,5 +799,6 @@ async function main() {
 
 main().catch(error => {
   fail(error.message);
+  recordLauncherFailure({ dataHome: DATA_HOME, exitCode: 1, headline: `SynaBun did not start: ${error.message}` });
   process.exit(1);
 });

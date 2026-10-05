@@ -1,3 +1,5 @@
+import { isCodexUnsupportedMethod } from './codex-capabilities.js';
+
 const CODEX_HISTORY_PAGE_TIMEOUT_MS = 15000;
 const CODEX_TURN_PAGE_SIZE = 100;
 const CODEX_ITEM_PAGE_SIZE = 500;
@@ -21,7 +23,7 @@ function historyProtocolError(message) {
 
 export function isCodexItemsPaginationUnsupported(error) {
   if (!error) return false;
-  if (Number(error.code) === -32601) return true;
+  if (isCodexUnsupportedMethod(error)) return true;
   return /(?:method not found|unsupported[- ]method|not supported(?: yet)?|does not support item pagination)/i
     .test(codexErrorText(error));
 }
@@ -139,4 +141,25 @@ export async function hydrateCodexThreadHistory(request, threadId, options = {})
       source: 'turns-full-fallback',
     };
   }
+}
+
+/** 0.160 removed rollback; revert excludes a named turn and all later turns. */
+export async function revertCodexThreadHistory(request, threadId, { numTurns = 1, beforeTurnId } = {}) {
+  if (!threadId) throw new Error('No thread provided');
+  if (!Number.isSafeInteger(numTurns) || numTurns < 1) throw new Error('Turn count must be a positive integer.');
+  const turns = beforeTurnId ? null : await listCodexTurns(request, threadId, 'notLoaded', {});
+  const target = beforeTurnId || turns?.[Math.max(0, turns.length - numTurns)]?.id;
+  if (typeof target !== 'string' || !target) throw new Error('No turn is available to revert.');
+  let result;
+  try {
+    result = await request('thread/revert', { threadId, beforeTurnId: target }, CODEX_HISTORY_PAGE_TIMEOUT_MS);
+  } catch (error) {
+    if (!isCodexUnsupportedMethod(error)) throw error;
+    // Cheap compatibility with legacy 0.153 histories; do not hide real failures.
+    const count = turns ? Math.min(numTurns, turns.length) : 0;
+    if (!count) throw error;
+    return request('thread/rollback', { threadId, numTurns: count }, CODEX_HISTORY_PAGE_TIMEOUT_MS);
+  }
+  const history = await hydrateCodexThreadHistory(request, threadId);
+  return { ...result, thread: { ...result.thread, turns: history.turns } };
 }

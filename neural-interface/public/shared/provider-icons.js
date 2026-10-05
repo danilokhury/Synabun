@@ -11,6 +11,7 @@ const SVG_BROWSER = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" 
 const SVG_SYNABUN = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="8" y="5.5" width="11" height="5" rx="2.5" transform="rotate(-12 13.5 8)"/><rect x="4.5" y="12.5" width="11" height="5" rx="2.5" transform="rotate(-12 10 15)"/></svg>';
 
 const PROVIDER_META = {
+  assistant:     { id: 'assistant',   label: 'Assistant',   shortLabel: 'Assistant', icon: SVG_SYNABUN, color: '#FFD23C' },
   'claude-code': { id: 'claude-code', label: 'Claude Code', shortLabel: 'Claude', icon: SVG_CLAUDE, color: '#D4A27F' },
   codex:         { id: 'codex',       label: 'Codex',       shortLabel: 'Codex',  icon: SVG_OPENAI, color: '#74C7A5' },
   opencode:      { id: 'opencode',    label: 'OpenCode',    shortLabel: 'OpenCode', icon: SVG_OPENCODE, color: '#E8E0DC' },

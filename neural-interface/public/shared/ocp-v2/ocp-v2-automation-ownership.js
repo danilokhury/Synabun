@@ -52,3 +52,21 @@ export function shouldMaterializeChildPanel(parentSessionId, childSessionId) {
   const child = clean(childSessionId);
   return !!parent && !!child && parent !== child && !isAutomationSession(parent);
 }
+
+/**
+ * Stop the native loop that drives `sessionId` (Stop pressed in a session an
+ * automation is running). `sessionId` is passed by value, read before anything
+ * is awaited: the bookkeeping updated after the stop request is that
+ * session's, wherever the panel is by then.
+ *   books   { runIds: Map(sessionId → runId), running: Set(sessionId) }
+ *   stop    async (runId) → the request that stops the loop
+ * Resolves true when a loop was stopped (the caller's turn is over).
+ */
+export async function stopAutomationRun(sessionId, books, stop) {
+  const sid = clean(sessionId);
+  const runId = sid ? books?.runIds?.get(sid) : null;
+  if (!runId || !books.running.has(sid)) return false;
+  await stop(runId);
+  books.running.delete(sid);
+  return true;
+}

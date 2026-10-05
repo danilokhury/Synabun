@@ -205,8 +205,13 @@ test('settings and API require the same explicit destructive confirmation', () =
   assert.equal(OPENCODE_HISTORY_CONFIRMATION, 'DELETE OPENCODE HISTORY');
   const settingsSource = readFileSync(join(neuralRoot, 'public/shared/ui-settings.js'), 'utf8');
   const serverSource = readFileSync(join(neuralRoot, 'server.js'), 'utf8');
-  assert.match(settingsSource, /Clear all OpenCode history/);
-  assert.match(settingsSource, /This cannot be undone/);
+  // The button's words live in i18n now; the builder asks for them by inventory id.
+  const en = JSON.parse(readFileSync(join(neuralRoot, 'i18n/en.json'), 'utf8'));
+  assert.match(en.settings.redesign.control.ocp018.label, /Clear all OpenCode history/);
+  assert.match(en.settings.redesign.control.ocp018.help, /cannot be undone/);
+  assert.match(settingsSource, /id="stg-ocp-clear-history" \$\{kit\.inv\('OCP018'\)\}/);
+  assert.match(settingsSource, /settings\.redesign\.opencode\.thisCannotBeUndone/);
+  assert.equal(en.settings.redesign.opencode.thisCannotBeUndone, 'This cannot be undone.');
   assert.match(settingsSource, /DELETE OPENCODE HISTORY/);
   assert.match(serverSource, /req\.body\?\.confirmation !== OPENCODE_HISTORY_CONFIRMATION/);
   assert.match(serverSource, /Stop all active OpenCode conversations and automations/);

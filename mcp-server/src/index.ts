@@ -1,3 +1,7 @@
+import { startMemoryMaintenance, stopMemoryMaintenance } from './services/memory-maintenance.js';
+import { attachMemoryClient } from './services/memory-client.js';
+import { buildServerInstructionsText } from './services/server-instructions.js';
+import { isBrowserV2Enabled } from './services/neural-interface.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { ensureDatabase, closeDatabase, reopenDatabase } from './services/sqlite.js';
@@ -27,15 +31,18 @@ import { registerGscTools } from './tools/gsc.js';
 import { registerYoutubeTools } from './tools/youtube.js';
 import { registerStyleGuideTools } from './tools/style-guide.js';
 import { registerMoreLoginTools } from './tools/morelogin.js';
+import { registerAgentTools } from './tools/agents.js';
+import { registerComputerTools } from './tools/computer.js';
 import { profileSchema, profileDescription, handleProfile } from './tools/profile.js';
 import { choiceSchema, choiceDescription, handleChoice } from './tools/choice.js';
 import {
   PROFILE_PRESETS, VALID_GROUPS, ProfileRuntime,
   resolveProfileGroups, readInitialProfile, persistProfile, isClaudeCode,
-  logCodexConfigNoticeOnce,
+  logCodexConfigNoticeOnce, type CallerCapability,
 } from './services/profiles.js';
 import { invalidateCategoryCache, setOnExternalChange, startWatchingCategories, stopWatchingCategories, initCategoryCache } from './services/categories.js';
 import { healCodexConfig } from './services/codex-config-heal.js';
+import type { CallerRole } from './services/identity.js';
 import { getEnvPath, config } from './config.js';
 import { readFileSync, writeFileSync, watch, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
@@ -49,71 +56,23 @@ export { PROFILE_PRESETS, VALID_GROUPS, ProfileRuntime, resolveProfileGroups, pe
 // only at startup as the default for future processes; it is never a
 // cross-process runtime signal. The `profile` MCP tool changes only its server.
 
-const TOOL_GROUP_INSTRUCTIONS: Record<string, string> = {
-  browser: '- Browser (core): browser_navigate, browser_click, browser_type, browser_fill, browser_hover, browser_select, browser_press, browser_scroll, browser_upload, browser_go_back, browser_go_forward, browser_reload, browser_snapshot, browser_content, browser_screenshot, browser_evaluate, browser_wait, browser_session',
-  browser_twitter: '- Twitter/X: browser_extract_tweets, browser_x_compose_state (read-only compose probe — quote-card/submit-button/modal state before posting; loop tabs also get a server-side gate that blocks a quote misfiring into a bare reply)',
-  browser_facebook: '- Facebook: browser_extract_fb_posts, browser_fb_composer_state, browser_extract_fb_groups, fb_groups (structured group directory + per-group posting checklist: worklist/mark/import/exclude/list/stats)',
-  browser_tiktok: '- TikTok: browser_extract_tiktok_videos, browser_extract_tiktok_search, browser_extract_tiktok_studio, browser_extract_tiktok_profile',
-  browser_whatsapp: '- WhatsApp: browser_extract_wa_chats, browser_extract_wa_messages',
-  browser_instagram: '- Instagram: browser_extract_ig_feed, browser_extract_ig_profile, browser_extract_ig_post, browser_extract_ig_reels, browser_extract_ig_search',
-  browser_linkedin: '- LinkedIn: browser_extract_li_feed, browser_extract_li_profile, browser_extract_li_post, browser_extract_li_notifications, browser_extract_li_messages, browser_extract_li_search_people, browser_extract_li_network, browser_extract_li_jobs',
-  browser_bluesky: '- BlueSky (AT Protocol, full control — needs a browser context logged in to bsky.app; blank assigned tabs initialize safely at bsky.app): bluesky_session, bluesky_timeline, bluesky_author_feed, bluesky_thread, bluesky_profile, bluesky_search_posts, bluesky_search_actors, bluesky_notifications, bluesky_graph, bluesky_likes, bluesky_feed, bluesky_post (text/reply/quote/images), bluesky_action (like/repost/follow/mute/block/delete + undos), bluesky_resolve, bluesky_dm. Calls the XRPC API directly via the page session — reliable + token-efficient, no DOM scraping.',
-  whiteboard: '- Whiteboard: whiteboard_read, whiteboard_add, whiteboard_update, whiteboard_remove, whiteboard_screenshot',
-  card: '- Cards: card_list, card_open, card_close, card_update, card_screenshot',
-  tictactoe: '- TicTacToe: tictactoe (action: start/move/state/end)',
-  discord: '- Discord: discord_guild, discord_channel, discord_role, discord_message, discord_member, discord_onboarding, discord_webhook, discord_thread',
-  git: '- Git: git (action: status/diff/commit/log/branches)',
-  morelogin: '- MoreLogin (anti-detect browser): morelogin (action: status/list/create/start/stop/use_default). Set a profile as the default AI browser with use_default — afterwards all browser_* tools drive that MoreLogin profile. Needs the MoreLogin desktop app running.',
-  image: '- Images: image_staged (action: list/clear/remove)',
-  leonardo: '- Leonardo (browser-based): leonardo_browser_navigate, leonardo_browser_generate, leonardo_browser_library, leonardo_browser_download, leonardo_browser_reference',
-  gsc: '- Google Search Console (browser-based): gsc_navigate, gsc_property, gsc_inspect_url, gsc_inspect_test_live, gsc_inspect_request_indexing, gsc_inspect_view_crawled, gsc_performance_query, gsc_performance_export, gsc_performance_chart_screenshot, gsc_pages_report, gsc_pages_validate_fix, gsc_videos_report, gsc_sitemap, gsc_removals, gsc_removals_cancel, gsc_cwv_report, gsc_https_report, gsc_security_issues, gsc_manual_actions, gsc_enhancements, gsc_links_report, gsc_links_export, gsc_settings, gsc_crawl_stats, gsc_users, gsc_associations, gsc_disavow, gsc_shopping, gsc_extract_table, gsc_screenshot',
-  styleguide: '- Style Guide: style_guide (action: get/list) — per-project visual identity (colors, typography, shape/spacing, logo). ALWAYS call this before generating UI, design copy, marketing assets, or any creative work tied to a project.',
-};
-
 function buildServerInstructions(runtime: ProfileRuntime): string {
   const activeGroups = runtime.getActiveGroups();
-  const groupLines: string[] = [];
-  for (const [group, line] of Object.entries(TOOL_GROUP_INSTRUCTIONS)) {
-    if (activeGroups.has(group)) groupLines.push(line);
-  }
-
-  let instructions = `SynaBun — persistent vector memory system.
-
-IMPORTANT: Tool names below are base names. Your host prefixes them (e.g. "SynaBun_remember" in OpenCode, "mcp__SynaBun__remember" in Claude Code). Always use the EXACT tool names from your available tools list. Never invent tool names or use colon-separated names.
-
-Tool groups:
-- Memory: remember, recall, reflect, forget, restore, memories
-- Categories: category (action: create/update/delete/list)
-- Profile: profile (action: get/set) — always-available capability router; switches only this runtime
-- Interaction: choice — blocking multiple-choice elicitation for Codex Default mode
-${groupLines.join('\n')}
-- Sync: sync
-- Loop: loop (action: start/stop/status)
-
-Use "category" with action "list" to see valid category names before using remember/recall/reflect.
-
-Tool profile routing (all tool-capable hosts/models): if a task needs a SynaBun tool that is not currently listed, call "profile" with action "get", then action "set" with the narrowest suitable preset. Continue the task after the host refreshes its tool list; do not tell the user the capability is unavailable before trying. The switch is local to this sidepanel, loop, schedule, or CLI runtime and does not change other running sessions or the future-session default. Restore a temporary profile when appropriate.`;
-
-  if (runtime.getCatalogMode() === 'deferred') {
-    instructions += `\n\nCodex deferred-catalog mode: every SynaBun tool is already discoverable from the start of the turn. Profiles select the capability focus only; profile.set does not reload MCP servers or hide tools.`;
-  }
-
-  if (activeGroups.has('discord')) {
-    instructions += `\n\nDiscord tools require DISCORD_BOT_TOKEN in .env. Set DISCORD_GUILD_ID for default guild. Each tool uses an "action" parameter to select the operation.`;
-  }
-  if (activeGroups.has('leonardo')) {
-    instructions += `\n\nLeonardo tools are 100% browser-based — no API key needed. Use leonardo_browser_navigate to go to the right page, then use generic browser tools (browser_click, browser_fill, browser_snapshot) to configure settings (model, style, dimensions, motion controls), and leonardo_browser_generate to fill the prompt and click Generate. Use the /leonardo skill for the full guided creation experience.`;
-  }
-
-  // Dedupe this log — prewarming and new HTTP client sessions construct more
-  // than one server in this process and would otherwise repeat the same line.
+  const instructions = buildServerInstructionsText({
+    activeGroups,
+    catalogMode: runtime.getCatalogMode(),
+    browserV2: isBrowserV2Enabled(),
+    // Dispatched task runs (assistant workers) get their memory obligation
+    // from the instructions; the launcher sets SYNABUN_RUN_MODE=task.
+    runMode: process.env.SYNABUN_RUN_MODE,
+  });
+  // Profile switches update only this runtime's instruction focus.
   const profileName = runtime.getActiveProfileName();
   const sig = `${profileName}|${activeGroups.size}|${instructions.length}`;
   if (sig !== _lastInstructionsSig) {
     _lastInstructionsSig = sig;
     console.error(`[SynaBun] Profile: ${profileName} (${activeGroups.size} groups, instructions: ${instructions.length} chars)`);
   }
-
   return instructions;
 }
 
@@ -122,6 +81,7 @@ let _lastInstructionsSig: string | null = null;
 // Register ALL tools on a given McpServer instance.
 // All groups are always registered; applyProfile() enables/disables them.
 export function registerTools(server: McpServer, runtime: ProfileRuntime = new ProfileRuntime(readInitialProfile())) {
+  attachMemoryClient(server);
   // Core memory tools — always registered and always enabled
   // Use build*Schema() instead of module-level constants so HTTP transport
   // sessions always read current display-settings.json when constructed.
@@ -157,6 +117,12 @@ export function registerTools(server: McpServer, runtime: ProfileRuntime = new P
   runtime.setToolGroup('youtube',    registerYoutubeTools(server));
   runtime.setToolGroup('styleguide', registerStyleGuideTools(server));
   runtime.setToolGroup('morelogin',  registerMoreLoginTools(server));
+  // Role-gated: advertised only while the runtime's role is 'assistant'
+  // (profiles.ts ROLE_GATED_GROUPS), never by profile selection.
+  runtime.setToolGroup('agents',     registerAgentTools(server));
+  // Capability-gated: advertised only to callers holding a desktop grant
+  // (profiles.ts CAPABILITY_GATED_GROUPS), macOS only.
+  runtime.setToolGroup('computer',   registerComputerTools(server));
 
   // Apply initial profile (disables groups not in the active profile).
   // The notifier is registered AFTER this call so the initial sweep doesn't
@@ -240,7 +206,7 @@ export function getToolUsageSummary(runtime: ProfileRuntime = mainProfileRuntime
 
   // Determine which groups have actually been used
   const groupToolPrefixes: Record<string, string[]> = {
-    browser: ['browser_navigate', 'browser_go_', 'browser_reload', 'browser_click', 'browser_fill', 'browser_type', 'browser_hover', 'browser_select', 'browser_press', 'browser_scroll', 'browser_upload', 'browser_snapshot', 'browser_content', 'browser_screenshot', 'browser_evaluate', 'browser_wait', 'browser_session'],
+    browser: ['browser_batch', 'browser_navigate', 'browser_go_', 'browser_reload', 'browser_click', 'browser_fill', 'browser_type', 'browser_hover', 'browser_select', 'browser_press', 'browser_scroll', 'browser_upload', 'browser_snapshot', 'browser_content', 'browser_screenshot', 'browser_console', 'browser_evaluate', 'browser_wait', 'browser_session'],
     browser_twitter: ['browser_extract_tweets', 'browser_x_compose_state'],
     browser_facebook: ['browser_extract_fb_', 'browser_fb_', 'fb_groups'],
     browser_tiktok: ['browser_extract_tiktok_'],
@@ -257,6 +223,8 @@ export function getToolUsageSummary(runtime: ProfileRuntime = mainProfileRuntime
     image: ['image_staged'],
     gsc: ['gsc_'],
     styleguide: ['style_guide'],
+    agents: ['agent_'],
+    computer: ['computer'],
   };
   const usedGroups = new Set<string>();
   for (const tool of Object.keys(_usageCounts)) {
@@ -290,11 +258,11 @@ loadUsageCounts();
 // because HTTP clients (Claude Code) have ToolSearch / deferred loading and
 // don't need eager profile restriction. Stdio clients (Codex, OpenCode) keep
 // using readInitialProfile() via the singleton at the bottom of this file.
-export function createMcpServer(forceProfile?: string, options: { catalogMode?: 'profiled' | 'deferred' } = {}) {
+export function createMcpServer(forceProfile?: string, options: { catalogMode?: 'profiled' | 'deferred'; role?: CallerRole | null } = {}) {
   const initialProfile = forceProfile ?? readInitialProfile();
   const runtime = new ProfileRuntime(initialProfile, options);
   const server = new McpServer(
-    { name: 'claude-memory', version: '1.1.0' },
+    { name: 'claude-memory', version: '2.0.0' },
     { instructions: buildServerInstructions(runtime) }
   );
   const refs = registerTools(server, runtime);
@@ -309,6 +277,40 @@ const serverToolRefs = new WeakMap<McpServer, ReturnType<typeof registerTools>>(
 
 export function getServerProfileRuntime(target: McpServer): ProfileRuntime | null {
   return serverToolRefs.get(target)?.runtime || null;
+}
+
+/**
+ * Bind a caller role to a live server built by createMcpServer. Role-gated
+ * groups (agents) are advertised only while the role matches, so the runtime
+ * re-applies its current profile, and the initialize instructions are
+ * refreshed in place: the SDK reads Server._instructions when it answers the
+ * initialize request, and the HTTP transport calls this from
+ * onsessioninitialized, which runs before that request is dispatched.
+ */
+export function setServerRole(target: McpServer, role: CallerRole | null): boolean {
+  const runtime = getServerProfileRuntime(target);
+  if (!runtime) return false;
+  if (runtime.getRole() === role) return true;
+  runtime.setRole(role);
+  runtime.applyProfile(runtime.getActiveProfileName());
+  (target.server as unknown as { _instructions?: string })._instructions = buildServerInstructions(runtime);
+  return true;
+}
+
+/**
+ * Bind proven capabilities (a desktop grant → `computer`) to a live server;
+ * same mechanics as setServerRole, called from the HTTP initialize hook.
+ */
+export function setServerCapabilities(target: McpServer, caps: { computer?: boolean }): boolean {
+  const runtime = getServerProfileRuntime(target);
+  if (!runtime) return false;
+  const next: CallerCapability[] = caps.computer ? ['computer'] : [];
+  const current = runtime.getCapabilities();
+  if (current.length === next.length && current.every((cap) => next.includes(cap))) return true;
+  runtime.setCapabilities(next);
+  runtime.applyProfile(runtime.getActiveProfileName());
+  (target.server as unknown as { _instructions?: string })._instructions = buildServerInstructions(runtime);
+  return true;
 }
 
 // Refresh the category-dependent tool schemas of a specific server instance.
@@ -327,7 +329,7 @@ const _initialProfile = readInitialProfile();
 mainProfileRuntime = new ProfileRuntime(_initialProfile);
 
 const server = new McpServer(
-  { name: 'claude-memory', version: '1.1.0' },
+  { name: 'claude-memory', version: '2.0.0' },
   { instructions: buildServerInstructions(mainProfileRuntime) }
 );
 
@@ -383,6 +385,7 @@ async function main() {
 
   try {
     await ensureDatabase();
+    startMemoryMaintenance();
   } catch (err) {
     console.error(
       'Warning: Could not initialize SQLite database on startup.',
@@ -484,23 +487,29 @@ async function main() {
     }
   }
 
-  // Clean up on exit
-  process.on('SIGINT', () => {
-    flushUsageCounts();
-    if (envWatcher) envWatcher.close();
-    if (settingsWatcher) settingsWatcher.close();
-    stopWatchingCategories();
-    closeDatabase();
+  // Clean up on exit. Every path funnels through shutdown(): the signals, the
+  // client closing our stdin (a Claude Code / Codex / OpenCode session ending)
+  // and the MCP transport closing. The event loop never drains on its own
+  // after stdin ends — the category, .env and display-settings watchers keep
+  // it alive — so without an explicit exit every ended session left a server
+  // and its embedding worker running forever, still polling the job queue.
+  let shuttingDown = false;
+  const shutdown = () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    try { flushUsageCounts(); } catch { /* best effort */ }
+    try { if (envWatcher) envWatcher.close(); } catch { /* ok */ }
+    try { if (settingsWatcher) settingsWatcher.close(); } catch { /* ok */ }
+    try { stopWatchingCategories(); } catch { /* ok */ }
+    try { stopMemoryMaintenance(); } catch { /* ok */ }
+    try { closeDatabase(); } catch { /* ok */ }
     process.exit(0);
-  });
-  process.on('SIGTERM', () => {
-    flushUsageCounts();
-    if (envWatcher) envWatcher.close();
-    if (settingsWatcher) settingsWatcher.close();
-    stopWatchingCategories();
-    closeDatabase();
-    process.exit(0);
-  });
+  };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+  process.on('SIGHUP', shutdown);
+  process.stdin.once('end', shutdown);
+  process.stdin.once('close', shutdown);
   // Fix for the onnxruntime-node macOS at-exit abort (`libc++abi: ... mutex lock
   // failed`). Local embeddings load ORT, which always leaves ~4 ThreadPoolTempl
   // worker threads alive; on normal exit `__cxa_finalize` destroys the
@@ -516,6 +525,13 @@ async function main() {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
+  // connect() owns transport.onclose and forwards it here; chain after it so
+  // a closed transport also ends the process.
+  const previousOnClose = server.server.onclose;
+  server.server.onclose = () => {
+    try { previousOnClose?.(); } catch { /* ok */ }
+    shutdown();
+  };
 }
 
 // Only start stdio transport when run directly (not when imported by http.ts)

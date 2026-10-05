@@ -3,6 +3,8 @@ import * as ni from '../services/neural-interface.js';
 import { getMemory } from '../services/sqlite.js';
 import { cleanName, parseSeedQueue, regionForSeed, resolveClassification } from '../services/fb-regions.js';
 import { text, image } from './response.js';
+import * as assist from '../services/browser-assist.js';
+import { coerceBoolean } from './utils.js';
 
 const tabIdField = z.string().optional().describe('Target a specific tab within the session. Auto-resolved from environment if omitted.');
 
@@ -12,17 +14,19 @@ export const browserSnapshotSchema = {
   selector: z.string().optional().describe('Scope snapshot to a specific element\'s subtree. Dramatically reduces output on complex pages.'),
   mode: z.enum(['ai', 'full', 'interactive', 'landmarks']).optional().describe('"ai" (default) = compact YAML with [ref=eN] element refs — pass ref to browser_click/fill/type to act on elements. "interactive" = flat list of clickable elements with selector hints. "full" = legacy accessibility tree. "landmarks" = structural overview.'),
   depth: z.coerce.number().int().positive().optional().describe('Limit tree depth (mode="ai" only). Use 10-14 on deep feed pages to shrink output.'),
-  diff: z.coerce.boolean().optional().describe('Return only the changed region vs your previous snapshot of this tab (mode="ai" only).'),
-  force: z.coerce.boolean().optional().describe('Return the full snapshot even if the page is unchanged since your last snapshot.'),
-  viewport: z.coerce.boolean().optional().describe('Drop off-screen nodes (legacy modes only; ignored for mode="ai" — use depth/selector instead).'),
-  maxChars: z.coerce.number().int().positive().optional().describe('Cap output length in characters (default 30000).'),
+  diff: coerceBoolean().optional().describe('Return only the changed region vs your previous snapshot of this tab (mode="ai" only).'),
+  baselineId: z.string().optional().describe('Diff against this delivered snapshot ID. A missing or incompatible baseline returns a full view.'),
+  force: coerceBoolean().optional().describe('Return the full snapshot even if the page is unchanged since your last snapshot.'),
+  viewport: coerceBoolean().optional().describe('Drop off-screen nodes (legacy modes only; ignored for mode="ai" — use depth/selector instead).'),
+  maxChars: z.coerce.number().int().positive().optional().describe('Cap snapshot text in characters, excluding brief metadata (default 30000). Truncates at complete lines.'),
+  intent: z.string().max(300).optional().describe('What you want to do on this page, in words (e.g. "open account settings"). mode="ai" only: the refs of THIS snapshot are ranked against it and the best one is named in a "Jev target:" line. Advisory — nothing is clicked, and no ref is invented.'),
   format: z.enum(['text', 'json']).optional().describe('Only meaningful with mode="interactive": "json" = compact array.'),
   sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
   tabId: tabIdField,
 };
 
 export const browserSnapshotDescription =
-  'Token-efficient page "view". Default (mode="ai") returns a compact YAML tree where elements carry refs like [ref=e12] — act on them by passing ref:"e12" to browser_click/browser_fill/browser_type (exact, no selector guessing). Refs stay valid until the page changes or you re-snapshot. Identical repeat snapshots return "(unchanged)". Scope with selector or limit with depth on heavy pages.';
+  'Observe page structure and element refs for click/fill/type. Scope with selector on complex pages. AI mode deduplicates delivered observations and supports snapshot IDs and diffs. Refs target elements in the latest captured scope; refresh after navigation or a stale-ref error.';
 
 // Format the server's mode="ai" snapshot payload (snapshotText/unchanged/diff fields)
 // into the message body. Shared by snapshot, navigate, click, scroll.
@@ -31,21 +35,34 @@ export function formatAiSnapshotBody(
   maxChars: number
 ): string {
   if (result.snapshotError) return `(snapshot failed: ${result.snapshotError})`;
-  if (result.unchanged) return '(page unchanged since last snapshot — previous refs remain valid)';
-  let body = (result.snapshotText as string) || '(empty page)';
+  let body = result.unchanged ? '(observed scope unchanged)' : (result.snapshotText as string)
+    || (result.snapshotTruncated ? '(no complete lines fit the budget)' : '(empty page)');
   if (result.snapshotIsDiff) {
     const pre = result.diffPrefixLines as number | undefined;
     const suf = result.diffSuffixLines as number | undefined;
-    const ctx = (pre || suf) ? ` (${pre ?? 0} unchanged lines before, ${suf ?? 0} after)` : '';
-    body = `--- Snapshot diff: only the changed region${ctx}; previous refs outside it remain valid ---\n${body}`;
+    const ctx = (pre || suf) ? `; ${pre ?? 0} unchanged lines before, ${suf ?? 0} after` : '';
+    const signed = result.diffRemovedLines !== undefined ? '- removed, + added' : 'changed region';
+    body = `Diff (${signed}${ctx}):\n${body}`;
   }
-  if (body.length > maxChars) {
-    body = body.slice(0, maxChars) + '\n... (truncated — pass selector or depth to narrow, or raise maxChars)';
+  // New servers already cap complete delivered lines. Trimming again would hide
+  // lines that the server considers the caller's baseline and break later diffs.
+  let clientTruncated = false;
+  if (!result.snapshotBudgetApplied && body.length > maxChars) {
+    const end = body.lastIndexOf('\n', maxChars);
+    body = end < 0 ? '(no complete lines fit the budget)' : body.slice(0, end);
+    clientTruncated = true;
   }
-  if (result.aiDepth) {
-    body += `\n(depth-limited to ${result.aiDepth} levels to fit the size budget — pass selector to scope deeper, or depth/maxChars to override)`;
+  if (result.snapshotId) {
+    body = `Snapshot: ${result.snapshotId}${result.baselineId ? `; baseline: ${result.baselineId}` : ''}\n${body}`;
   }
+  if (result.snapshotTruncated || clientTruncated) body += '\n(truncated; narrow selector/depth or raise maxChars)';
+  if (result.aiDepth) body += `\n(depth ${result.aiDepth}; set depth to override)`;
   return body;
+}
+
+/** Origin only: the path and query of the page the agent is on never go into a judgment from here. */
+function safeOrigin(url: unknown): string {
+  try { const u = new URL(String(url)); return u.protocol === 'http:' || u.protocol === 'https:' ? u.origin : ''; } catch { return ''; }
 }
 
 // Roles that are pure structural containers with no semantic value when unnamed
@@ -177,9 +194,11 @@ export async function handleBrowserSnapshot(args: {
   mode?: 'ai' | SnapshotMode;
   depth?: number;
   diff?: boolean;
+  baselineId?: string;
   force?: boolean;
   viewport?: boolean;
   maxChars?: number;
+  intent?: string;
   format?: SnapshotFormat;
   sessionId?: string;
   tabId?: string;
@@ -188,6 +207,8 @@ export async function handleBrowserSnapshot(args: {
   if ('error' in resolved) return text(resolved.error);
 
   const mode = args.mode || 'ai';
+  const intent = typeof args.intent === 'string' ? args.intent.trim() : '';
+  const rank = mode === 'ai' && intent.length > 0 && assist.assistAvailable('browser-target');
   const format: SnapshotFormat = args.format || 'text';
   const maxChars = args.maxChars && args.maxChars > 0 ? args.maxChars : 30000;
 
@@ -196,8 +217,11 @@ export async function handleBrowserSnapshot(args: {
     viewport: args.viewport,
     depth: args.depth,
     diff: args.diff,
+    baselineId: args.baselineId,
     force: args.force,
     ...(mode === 'ai' && { maxChars }),
+    // Ranking needs every ref of this capture even when only a diff or "unchanged" is shown.
+    ...(rank && { includeFullText: true }),
   });
   if (result.error) return text(`Snapshot failed: ${result.error}`);
 
@@ -205,6 +229,12 @@ export async function handleBrowserSnapshot(args: {
     let msg = `Page: ${result.url}\nTitle: "${result.title}"\n`;
     if (args.selector) msg += `Scope: ${args.selector}\n`;
     msg += '\n' + formatAiSnapshotBody(result, maxChars);
+    if (rank) {
+      // The refs ranked are the ones this capture minted; a second capture would replace them.
+      const delivered = typeof result.snapshotFullText === 'string' ? result.snapshotFullText : typeof result.snapshotText === 'string' && !result.snapshotIsDiff ? result.snapshotText : '';
+      const line = delivered ? await assist.rankSnapshotRefs(delivered, intent, { origin: safeOrigin(result.url) }) : '';
+      if (line) msg += `\n\n${line}`;
+    }
     return text(msg);
   }
 
@@ -260,6 +290,7 @@ export async function handleBrowserSnapshot(args: {
 // ── browser_content ──
 
 export const browserContentSchema = {
+  selector: z.string().optional().describe('Read one article or result container instead of the whole page. Must match exactly one element.'),
   format: z.enum(['text', 'markdown']).optional().default('text').describe(
     'Output format. "text" = raw innerText. "markdown" = clean markdown (headings/links/lists, nav/footer/ads stripped) — better for LLM consumption.'
   ),
@@ -274,11 +305,12 @@ export const browserContentDescription =
 
 const DEFAULT_CONTENT_MAX_CHARS = 20000;
 
-export async function handleBrowserContent(args: { format?: string; maxChars?: number; offset?: number; sessionId?: string; tabId?: string }) {
+export async function handleBrowserContent(args: { selector?: string; format?: string; maxChars?: number; offset?: number; sessionId?: string; tabId?: string }) {
   const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
   const pageOpts = {
+    selector: args.selector,
     maxChars: args.maxChars && args.maxChars > 0 ? args.maxChars : DEFAULT_CONTENT_MAX_CHARS,
     offset: args.offset && args.offset > 0 ? args.offset : undefined,
   };
@@ -305,44 +337,146 @@ export async function handleBrowserContent(args: { format?: string; maxChars?: n
 // ── browser_screenshot ──
 
 export const browserScreenshotSchema = {
-  maxWidth: z.coerce.number().int().positive().optional().describe('Downscale to this width in px (default 1024). Pass 0 for native resolution.'),
-  quality: z.coerce.number().int().min(10).max(100).optional().describe('JPEG quality 10-100 (default 60).'),
+  width: z.coerce.number().int().min(100).max(4096).optional().describe('Viewport width in CSS px for this capture only, e.g. 375, 768 and 1440 for breakpoints. Emulated on the tab (mobile below 768) and reset right after.'),
+  height: z.coerce.number().int().min(100).max(4096).optional().describe('Viewport height in CSS px for this capture only (default: the current height).'),
+  fullPage: coerceBoolean().optional().describe('Capture the whole scrollable page instead of the viewport.'),
+  format: z.enum(['png', 'jpeg']).optional().describe('Image format. Default: JPEG for the returned image, PNG for a saved file.'),
+  save: coerceBoolean().optional().describe('Also save the full-resolution image as a file (default folder ~/.synabun/data/media/screenshots/<date>/) and return its path.'),
+  path: z.string().optional().describe('Absolute .png / .jpg / .jpeg file to save to, inside a registered project or the screenshots folder (implies save). Parent folders are created; only an existing image is ever replaced.'),
+  maxWidth: z.coerce.number().int().min(0).optional().describe('Downscale the returned image to this width in px (default 1024). 0 = native resolution. A saved file is always full resolution.'),
+  quality: z.coerce.number().int().min(10).max(100).optional().describe('JPEG quality 10-100 (default 60 for the returned image, 90 for a saved JPEG).'),
   sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
   tabId: tabIdField,
 };
 
 export const browserScreenshotDescription =
-  'Take a screenshot of the current page (JPEG, downscaled to 1024px wide by default). Use sparingly — prefer browser_snapshot as it is far more token-efficient.';
+  'Take a screenshot of the current page (localhost pages included): the viewport as JPEG, downscaled to 1024 px wide, by default. ' +
+  'For visual QA pass width/height (breakpoints 375 / 768 / 1440 — emulated for this capture only), fullPage for the whole page, and save or path to write a PNG and get its path. ' +
+  'Prefer browser_snapshot to read structure; it is far more token-efficient.';
 
-export async function handleBrowserScreenshot(args: { maxWidth?: number; quality?: number; sessionId?: string; tabId?: string }) {
+export async function handleBrowserScreenshot(args: {
+  width?: number;
+  height?: number;
+  fullPage?: boolean;
+  format?: 'png' | 'jpeg';
+  save?: boolean;
+  path?: string;
+  maxWidth?: number;
+  quality?: number;
+  sessionId?: string;
+  tabId?: string;
+}) {
   const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
   const result = await ni.screenshot(resolved.sessionId, resolved.tabId, {
     maxWidth: args.maxWidth,
     quality: args.quality,
+    width: args.width,
+    height: args.height,
+    fullPage: args.fullPage,
+    format: args.format,
+    save: args.save,
+    path: args.path,
   });
   if (result.error) return text(`Screenshot failed: ${result.error}`);
 
+  const details: string[] = [];
+  if (typeof result.width === 'number' && typeof result.height === 'number') details.push(`${result.width}×${result.height}`);
+  const viewport = result.viewport as { width?: number; height?: number } | undefined;
+  if (viewport?.width) details.push(`viewport ${viewport.width}×${viewport.height}`);
+  if (result.fullPage) details.push(result.truncated ? 'full page, cut at the capture limit' : 'full page');
+  let msg = `Screenshot of ${result.url} — "${result.title}"${details.length ? ` (${details.join(', ')})` : ''}`;
+  if (typeof result.savedPath === 'string') msg += `\nSaved: ${result.savedPath}`;
+  // The tab was closed (its viewport was not confirmed restored after the capture).
+  if (typeof result.notice === 'string') msg += `\n${result.notice}`;
   return {
     content: [
-      ...text(`Screenshot of ${result.url} — "${result.title}"`).content,
-      ...image(result.data as string, 'image/jpeg').content,
+      ...text(msg).content,
+      ...image(result.data as string, typeof result.mime === 'string' ? result.mime : 'image/jpeg').content,
     ],
   };
 }
 
+// ── browser_console ──
+
+export const browserConsoleSchema = {
+  level: z.enum(['all', 'error', 'warning', 'info', 'log']).optional().describe('Lowest level to return; each level includes the more severe ones (error < warning < info < log). Default "all". Uncaught page errors count as errors.'),
+  since: z.coerce.string().optional().describe('Only entries after this time (ISO timestamp or epoch ms), e.g. the "latest" value of a previous call.'),
+  limit: z.coerce.number().int().min(1).max(200).optional().describe('Return at most this many of the newest matching entries (default 50).'),
+  clear: coerceBoolean().optional().describe('Empty the tab\'s buffer after reading, so the next call shows only new entries.'),
+  sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
+  tabId: tabIdField,
+};
+
+export const browserConsoleDescription =
+  'Read the current tab\'s console messages and uncaught page errors (the last 200, kept from when SynaBun opened the tab), localhost pages included. ' +
+  'Use level "error" to check a page for errors, and clear or since to see only what a reload or an action produced.';
+
+type ConsoleEntry = { kind?: string; level?: string; type?: string; text?: string; message?: string; stack?: string | null; location?: string | null; popup?: string | null; at?: string };
+
+function formatConsoleEntry(entry: ConsoleEntry): string {
+  const time = typeof entry.at === 'string' ? entry.at.slice(11, 23) : '';
+  // A popup this tab opened (popups are not tabs of their own here).
+  const popup = typeof entry.popup === 'string' ? `[popup ${entry.popup}] ` : '';
+  if (entry.kind === 'pageerror') {
+    const stack = entry.stack && entry.stack !== entry.message ? `\n    ${entry.stack.split('\n').slice(1, 6).map(line => line.trim()).join('\n    ')}` : '';
+    return `[${time}] ${popup}page error  ${entry.message || ''}${stack}`;
+  }
+  const where = entry.location ? `  (${entry.location})` : '';
+  return `[${time}] ${popup}${entry.level || 'log'}  ${entry.text || ''}${where}`;
+}
+
+export async function handleBrowserConsole(args: {
+  level?: 'all' | 'error' | 'warning' | 'info' | 'log';
+  since?: string;
+  limit?: number;
+  clear?: boolean;
+  sessionId?: string;
+  tabId?: string;
+}) {
+  const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
+  if ('error' in resolved) return text(resolved.error);
+
+  const result = await ni.consoleMessages(resolved.sessionId, resolved.tabId, {
+    level: args.level,
+    since: args.since,
+    limit: args.limit,
+    clear: args.clear,
+  });
+  if (result.error) return text(`Console read failed: ${result.error}`);
+
+  const entries = (Array.isArray(result.entries) ? result.entries : []) as ConsoleEntry[];
+  const level = args.level && args.level !== 'all' ? ` at level ${args.level} or above` : '';
+  let msg = `Console of ${result.url} — "${result.title}"\n`;
+  if (result.attached === false) {
+    msg += 'SynaBun was not recording this tab yet; it records from now on. Reload the page and call browser_console again.';
+    return text(msg);
+  }
+  const matched = typeof result.matched === 'number' ? result.matched : entries.length;
+  msg += entries.length
+    ? `${entries.length === matched ? matched : `${entries.length} newest of ${matched}`} entr${matched === 1 ? 'y' : 'ies'}${level}:\n${entries.map(formatConsoleEntry).join('\n')}`
+    : `No entries${level}${args.since ? ` after ${args.since}` : ''}.`;
+  if (typeof result.dropped === 'number' && result.dropped > 0) msg += `\n(${result.dropped} older entries were dropped: the buffer keeps the last 200.)`;
+  if (typeof result.latest === 'string') msg += `\nlatest: ${result.latest}`;
+  if (result.cleared) msg += '\nThe buffer was cleared.';
+  return text(msg);
+}
+
 // ── Paged extraction (scroll → extract → merge → dedupe in ONE tool call) ──
-// MCP↔NI round trips are localhost HTTP and cost zero tokens; what costs tokens is
-// model round trips. These params collapse a manual scroll/extract loop into one call.
+// V2 performs the full cycle in one server operation, avoiding per-round HTTP
+// requests and returning only the requested data to the model.
 
 const pagedExtractorFields = {
   scrolls: z.coerce.number().int().min(0).max(10).optional().describe('Auto-scroll up to N times, extracting + deduping after each (default 0 = current view only). Stops early at minItems or end of feed.'),
   minItems: z.coerce.number().int().positive().optional().describe('Stop scrolling once this many unique items are collected.'),
   maxItems: z.coerce.number().int().positive().optional().describe('Cap on returned items (default 50).'),
+  fields: z.array(z.string().min(1)).min(1).optional().describe('Return only these fields; identity deduplication still uses the full items.'),
+  maxChars: z.coerce.number().int().min(2).optional().describe('Cap the JSON items in characters, keeping complete items. Defaults to no additional character cap.'),
+  timeoutMs: z.coerce.number().int().positive().max(30000).optional().describe('Total extraction deadline with browser V2 enabled (default 15000ms).'),
 };
 
-interface PagedArgs { scrolls?: number; minItems?: number; maxItems?: number }
+interface PagedArgs { scrolls?: number; minItems?: number; maxItems?: number; fields?: string[]; maxChars?: number; timeoutMs?: number }
 
 interface PagedOpts extends PagedArgs {
   dedupeKeys: string[];       // first non-null field is the item identity
@@ -358,6 +492,10 @@ interface PagedResult {
   raw: number;
   scrollsUsed: number;
   truncated: boolean;
+  partial?: boolean;
+  stopReason?: string;
+  failureReason?: string;
+  budgetReason?: string;
 }
 
 async function runPagedExtractor(
@@ -366,6 +504,14 @@ async function runPagedExtractor(
   script: string,
   opts: PagedOpts
 ): Promise<PagedResult | { error: string }> {
+  if (ni.isBrowserV2Enabled()) {
+    const result = await ni.extract(sessionId, script, tabId, opts);
+    if (result.error) return { error: result.error };
+    const res = result as unknown as PagedResult;
+    if (!Array.isArray(res.items)) return { error: 'Invalid extraction response: items are missing.' };
+    if (res.items.length === 0 && res.budgetReason === 'max_chars') return { error: 'maxChars is too small for the first complete item. Increase maxChars or select fewer fields.' };
+    return res;
+  }
   const scrolls = Math.min(Math.max(opts.scrolls ?? 0, 0), 10);
   const maxItems = opts.maxItems && opts.maxItems > 0 ? opts.maxItems : 50;
   const distance = (opts.scrollDistance ?? 1200) * (opts.scrollDirection ?? 1);
@@ -384,11 +530,13 @@ async function runPagedExtractor(
   let scrollsUsed = 0;
   let dryRounds = 0;
   let bonusRounds = 0;
+  let failureReason: string | undefined;
+  let stopReason = 'scroll_limit';
 
   for (let round = 0; ; round++) {
     const result = await ni.evaluate(sessionId, script, tabId);
     if (result.error) {
-      if (collected.size > 0) break; // keep what we already harvested
+      if (collected.size > 0) { failureReason = result.error; stopReason = 'extraction_error'; break; }
       return { error: result.error };
     }
     const items = Array.isArray(result.result) ? (result.result as Array<Record<string, unknown>>) : [];
@@ -398,18 +546,22 @@ async function runPagedExtractor(
       const key = itemKey(item);
       if (!collected.has(key)) collected.set(key, item);
     }
-    if (opts.minItems && collected.size >= opts.minItems) break;
-    if (collected.size >= maxItems) break;
+    if (opts.minItems && collected.size >= opts.minItems) { stopReason = 'min_items'; break; }
+    if (collected.size >= maxItems) { stopReason = 'max_items'; break; }
     // Some feeds (Facebook groups/Pages) virtualize content in only after a scroll, so
     // a fresh page can extract empty. Grant one bonus scroll round in that case.
     if (opts.scrollIfEmpty && round === 0 && collected.size === 0) bonusRounds = 1;
     if (round >= scrolls + bonusRounds) break;
     dryRounds = collected.size > before ? 0 : dryRounds + 1;
-    if (dryRounds >= 2) break; // end of feed: two consecutive extractions added nothing
+    if (dryRounds >= 2) { stopReason = 'end_of_feed'; break; }
     const scrollExpr = opts.scrollTarget
       ? `(() => { const el = ${opts.scrollTarget}; if (el) el.scrollBy(0, ${distance}); return true; })()`
       : `window.scrollBy(0, ${distance}); true`;
-    await ni.evaluate(sessionId, scrollExpr, tabId);
+    const scrolled = await ni.evaluate(sessionId, scrollExpr, tabId);
+    if (scrolled.error) {
+      if (!collected.size) return { error: scrolled.error };
+      failureReason = scrolled.error; stopReason = 'extraction_error'; break;
+    }
     scrollsUsed++;
     // Jitter the settle so the scroll cadence is not a fixed, fingerprintable
     // interval (~0.8x–1.5x of base). Floor keeps slow feeds readable.
@@ -418,17 +570,40 @@ async function runPagedExtractor(
   }
 
   const all = [...collected.values()];
-  const truncated = all.length > maxItems;
-  return { items: truncated ? all.slice(0, maxItems) : all, raw, scrollsUsed, truncated };
+  const items: Array<Record<string, unknown>> = [];
+  let chars = 2;
+  let budgetReason: string | undefined;
+  for (const item of all) {
+    if (items.length >= maxItems) { budgetReason = 'max_items'; break; }
+    const value = opts.fields ? Object.fromEntries(opts.fields.filter(key => Object.hasOwn(item, key)).map(key => [key, item[key]])) : item;
+    const size = JSON.stringify(value).length + (items.length ? 1 : 0);
+    if (opts.maxChars !== undefined && chars + size > opts.maxChars) { budgetReason = 'max_chars'; break; }
+    items.push(value); chars += size;
+  }
+  if (items.length === 0 && budgetReason === 'max_chars') return { error: 'maxChars is too small for the first complete item. Increase maxChars or select fewer fields.' };
+  return { items, raw, scrollsUsed, truncated: items.length < all.length, partial: !!failureReason, stopReason: budgetReason || stopReason, failureReason, budgetReason };
+}
+
+/**
+ * An extractor found nothing. Its own message stays the first line, word for word; when a
+ * page-state judgment is available it adds why — still loading, a sign-in or verification wall,
+ * a consent dialog, a rendered error, the wrong surface, or a page that really is empty.
+ * Populated results never come through here, and the maxChars budget error returns before it.
+ */
+async function emptyExtraction(resolved: { sessionId: string; tabId?: string }, tool: string, expectedSurface: string, message: string) {
+  const diagnosis = await assist.diagnoseEmptyExtraction(resolved.sessionId, resolved.tabId, { tool, expectedSurface }).catch(() => '');
+  return text(diagnosis ? `${message}\n${diagnosis}` : message);
 }
 
 // Compact single-line JSON: pretty-printing buys a model nothing and costs ~25-35%.
 function formatExtraction(noun: string, res: PagedResult): string {
   const extras: string[] = [];
-  if (res.raw > res.items.length) extras.push(`deduped from ${res.raw} raw`);
+  if (res.raw > res.items.length) extras.push(`${res.truncated ? 'selected' : 'deduped'} from ${res.raw} raw`);
   if (res.scrollsUsed > 0) extras.push(`${res.scrollsUsed} scroll(s)`);
+  if (res.stopReason) extras.push(`stopped: ${res.stopReason}`);
   let msg = `${res.items.length} ${noun}(s)${extras.length ? ` (${extras.join(', ')})` : ''}:\n\n${JSON.stringify(res.items)}`;
-  if (res.truncated) msg += '\n\n(capped at maxItems — re-run with scrolls to continue; the page keeps its scroll position)';
+  if (res.truncated) msg += `\n\n(capped at ${res.budgetReason === 'max_chars' ? 'maxChars — increase it or select fewer fields' : 'maxItems — increase it to return more items'}; complete items preserved)`;
+  if (res.partial) msg += `\n\nPartial results: ${res.failureReason || 'extraction ended before completion'}`;
   return msg;
 }
 
@@ -475,7 +650,7 @@ export async function handleBrowserExtractTweets(args: PagedArgs & { sessionId?:
     ...args, dedupeKeys: ['url'],
   });
   if ('error' in res) return text(`Extract failed: ${res.error}`);
-  if (res.items.length === 0) return text('No tweets found. Try browser_scroll (or pass scrolls:2) then retry.');
+  if (res.items.length === 0) return emptyExtraction(resolved, 'browser_extract_tweets', 'an X/Twitter timeline, profile or search results page', 'No tweets found. Try browser_scroll (or pass scrolls:2) then retry.');
 
   return text(formatExtraction('tweet', res));
 }
@@ -499,7 +674,8 @@ export const browserXComposeStateDescription =
   'QUOTE flow: navigate x.com/compose/tweet, browser_type the full status URL, call this probe, post via submitButton.selector ONLY if quoteCard.type==="quote". ' +
   'REPLY flow: click the reply icon, call this probe, if isModal close it and retry inline, type, post via submitButton.selector. ' +
   'After submitting, re-call this probe (composer should have cleared) and confirm with browser_extract_tweets on the author profile /with_replies (a NEW, higher status id = published). ' +
-  'On loop tabs a server-side gate ALSO blocks a tweetButton click when a status URL is in the body but quoteCard.type!=="quote" (response carries quoteGuard) — so a quote can never silently misfire into a bare reply. Read-only — never types or clicks.';
+  'On loop tabs a server-side gate ALSO blocks a tweetButton click when a status URL is in the body but quoteCard.type!=="quote" (response carries quoteGuard) — so a quote can never silently misfire into a bare reply. Read-only — never types or clicks. ' +
+  'When recommendedAction is "unknown" or warnings[] is non-empty, an additive `judgment` {advisory:true, state, confidence, suggestedControl?, note} may appear: a Jev reading of the ambiguous probe built from booleans and counts only (never the composer text or the quoted post). It never changes the fields above; re-probe after acting on it.';
 
 export async function handleBrowserXComposeState(args: { sessionId?: string; tabId?: string }) {
   const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
@@ -508,7 +684,9 @@ export async function handleBrowserXComposeState(args: { sessionId?: string; tab
   const result = await ni.xComposeState(resolved.sessionId, resolved.tabId);
   if (result.error) return text(`X compose state probe failed: ${result.error}`);
 
-  return text(JSON.stringify(result.result));
+  // Only when the probe could not decide. Jev sees booleans, counts and button names — never composerText or the quoted post.
+  const judgment = await assist.judgeComposer('x', result.result, resolved.sessionId, resolved.tabId).catch(() => null);
+  return text(JSON.stringify(judgment && result.result && typeof result.result === 'object' ? { ...(result.result as Record<string, unknown>), judgment } : result.result));
 }
 
 // ── browser_extract_fb_posts ──
@@ -551,7 +729,7 @@ export async function handleBrowserExtractFbPosts(args: PagedArgs & { sessionId?
   });
   if ('error' in res) return text(`Extract failed: ${res.error}`);
   if (res.items.length === 0) {
-    return text('No posts found even after an auto-scroll. The feed may still be loading — retry with scrolls:3.');
+    return emptyExtraction(resolved, 'browser_extract_fb_posts', 'a Facebook feed, group or Page with posts', 'No posts found even after an auto-scroll. The feed may still be loading — retry with scrolls:3.');
   }
 
   return text(formatExtraction('post', res));
@@ -740,7 +918,8 @@ export const browserFbComposerStateDescription =
   'recommendedAction {submit|type|open-composer|done|retry|unknown} — the deterministic next step (submit = composer open with text AND an enabled submit button; use it to FINISH a half-typed post before starting anything new). ' +
   'Locale-tolerant (PT/EN/TR/FR/ES/DE incl. approval-flow groups). Flow: probe; if recommendedAction is "submit", click submitButton.selector and confirm FIRST; else if no composer dialog, click trigger.suggestedSelector; re-probe; type the full post into the auto-focused isPostComposer box with browser_type mode:"insert" (blank lines between paragraphs, link alone on the final line — insertText keeps the paragraphs and the isolated URL without firing Enter, so the typeahead cannot hijack it; do NOT use mode:"paragraphs" on the modal, its Escape closes the dialog); wait for submitButton.enabled; submit via submitButton.selector; confirm via submission.state. ' +
   'Modal-aware: the group Create-post dialog is a valid surface; reject only personal-profile/share dialogs. ' +
-  'Also returns boostRisk {present, controls[], boostWhenPublishedToggle, warning}: if present, a PAID Boost/Promote/Turbinar control is on the page — NEVER click it and never submit via it (SynaBun posts organically only); submit ONLY via submitButton.selector and turn any "Boost when published" toggle OFF first.';
+  'Also returns boostRisk {present, controls[], boostWhenPublishedToggle, warning}: if present, a PAID Boost/Promote/Turbinar control is on the page — NEVER click it and never submit via it (SynaBun posts organically only); submit ONLY via submitButton.selector and turn any "Boost when published" toggle OFF first. ' +
+  'When recommendedAction or submission.state is "unknown", the submit match is "heuristic", or an open composer has no submitButton, an additive `judgment` {advisory:true, state, confidence, suggestedControl? {purpose, label, selector, enabled, confidence}, note} may appear: a Jev reading built from booleans, counts and the dialog button labels only (never the post text), with Boost/Promote controls removed before it is asked. It never changes recommendedAction, submitButton or boostRisk; treat suggestedControl as a hint to verify with a fresh probe, not as a selector to click blindly.';
 
 export async function handleBrowserFbComposerState(args: { sessionId?: string; tabId?: string }) {
   const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
@@ -749,7 +928,10 @@ export async function handleBrowserFbComposerState(args: { sessionId?: string; t
   const result = await ni.evaluate(resolved.sessionId, FB_COMPOSER_STATE_SCRIPT, resolved.tabId);
   if (result.error) return text(`Composer state probe failed: ${result.error}`);
 
-  return text(JSON.stringify(result.result));
+  // Only when the probe could not decide (unknown state or action, no submit button, or a heuristic match).
+  // Jev sees an allow-list pick of the probe and short button names — never the draft, the trigger text or a title.
+  const judgment = await assist.judgeComposer('facebook', result.result, resolved.sessionId, resolved.tabId).catch(() => null);
+  return text(JSON.stringify(judgment && result.result && typeof result.result === 'object' ? { ...(result.result as Record<string, unknown>), judgment } : result.result));
 }
 
 // ── browser_extract_fb_groups ──
@@ -805,10 +987,11 @@ function parseMembers(s?: string | null): number | null {
 
 export const browserExtractFbGroupsSchema = {
   ...pagedExtractorFields,
+  maxChars: z.coerce.number().int().min(2).optional().describe('Cap the complete grouped JSON response, preserving whole groups. Metadata must fit; unmatched duplicates are omitted first.'),
   sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
   tabId: tabIdField,
   region: z.string().optional().describe('Optional case-insensitive filter: only return groups in this region bucket (UK, US, EU, Brazil, LatAm, Turkey, Australia, Canada, Unknown).'),
-  seedQueueId: z.string().optional().describe('Memory id of the curated seed-queue (url | lang | currency) used to reconcile region/currency. Default: the Critical Pixel seed-queue.'),
+  seedQueueId: z.string().optional().describe('Memory id of the curated seed-queue (url | lang | currency) used to reconcile region/currency. Default: the built-in seed-queue memory id.'),
 };
 
 export const browserExtractFbGroupsDescription =
@@ -829,13 +1012,14 @@ export async function handleBrowserExtractFbGroups(args: PagedArgs & { sessionId
     scrolls: args.scrolls ?? 10,
     minItems: args.minItems,
     maxItems: args.maxItems ?? 1000,
+    timeoutMs: args.timeoutMs,
     dedupeKeys: ['url'],
     scrollIfEmpty: true,
   });
   if ('error' in res) return text(`Extract failed: ${res.error}`);
   const groups = res.items as Array<{ name: string; url: string; subtitle: string }>;
   if (groups.length === 0) {
-    return text('No joined groups found. Make sure you navigated to facebook.com/groups/joins/?ordering=viewer_added and the list rendered — browser_scroll down then retry.');
+    return emptyExtraction(resolved, 'browser_extract_fb_groups', 'the Facebook joined-groups list', 'No joined groups found. Make sure you navigated to facebook.com/groups/joins/?ordering=viewer_added and the list rendered — browser_scroll down then retry.');
   }
 
   // Reconcile with the curated seed-queue memory (url | lang | currency).
@@ -861,24 +1045,44 @@ export async function handleBrowserExtractFbGroups(args: PagedArgs & { sessionId
   const filter = (args.region || '').trim().toLowerCase();
   const visible = filter ? tagged.filter(g => g.region.toLowerCase() === filter) : tagged;
 
-  const byRegion: Record<string, typeof tagged> = {};
-  for (const g of visible.slice().sort((a, b) => a.region.localeCompare(b.region) || a.name.localeCompare(b.name))) {
-    (byRegion[g.region] ||= []).push(g);
-  }
+  const sorted = visible.slice().sort((a, b) => a.region.localeCompare(b.region) || a.name.localeCompare(b.name));
   const unmatched = tagged.filter(g => g.source === 'name-heuristic').map(g => ({ name: g.name, url: g.url, region: g.region }));
-
-  const payload = {
-    counts: {
-      total: tagged.length,
-      shown: visible.length,
-      inSeedQueue: tagged.filter(g => g.source === 'seed-queue').length,
-      unmatched: unmatched.length,
-      byRegion: Object.fromEntries(Object.entries(byRegion).map(([r, gs]) => [r, gs.length])),
-    },
-    byRegion,
-    unmatched,
+  const project = (item: Record<string, unknown>) => args.fields
+    ? Object.fromEntries(args.fields.filter(key => Object.hasOwn(item, key)).map(key => [key, item[key]])) : item;
+  const payloadFor = (count: number, includeUnmatched: boolean, capped: boolean) => {
+    const byRegion: Record<string, Array<Record<string, unknown>>> = {};
+    for (const group of sorted.slice(0, count)) (byRegion[group.region] ||= []).push(project(group));
+    return {
+      counts: {
+        total: tagged.length,
+        shown: count,
+        inSeedQueue: tagged.filter(g => g.source === 'seed-queue').length,
+        unmatched: unmatched.length,
+        byRegion: Object.fromEntries(Object.entries(byRegion).map(([r, gs]) => [r, gs.length])),
+      },
+      byRegion,
+      unmatched: includeUnmatched ? unmatched.map(project) : [],
+      extraction: { raw: res.raw, scrollsUsed: res.scrollsUsed, partial: !!res.partial, truncated: res.truncated || capped, stopReason: capped ? 'max_chars' : res.stopReason, ...(res.failureReason ? { failureReason: res.failureReason } : {}) },
+    };
   };
-  return text(JSON.stringify(payload));
+  let body = JSON.stringify(payloadFor(sorted.length, true, false));
+  if (args.maxChars !== undefined && body.length > args.maxChars) {
+    // Classification and region filtering happen before projection. Keep counts
+    // truthful while removing duplicate unmatched entries before actual groups.
+    body = JSON.stringify(payloadFor(sorted.length, false, true));
+    if (body.length > args.maxChars) {
+      let low = 0;
+      let high = sorted.length;
+      while (low < high) {
+        const mid = Math.ceil((low + high) / 2);
+        if (JSON.stringify(payloadFor(mid, false, true)).length <= args.maxChars) low = mid;
+        else high = mid - 1;
+      }
+      body = JSON.stringify(payloadFor(low, false, true));
+      if (body.length > args.maxChars) return text('Extract failed: maxChars is too small for grouped response metadata. Increase maxChars.');
+    }
+  }
+  return text(body);
 }
 
 // ── browser_extract_tiktok_videos ──
@@ -930,7 +1134,7 @@ export async function handleBrowserExtractTiktokVideos(args: PagedArgs & { sessi
   });
   if ('error' in res) return text(`Extract failed: ${res.error}`);
   if (res.items.length === 0) {
-    return text('No TikTok videos found. Make sure you are on tiktok.com/ or tiktok.com/following, then retry with scrolls:2.');
+    return emptyExtraction(resolved, 'browser_extract_tiktok_videos', 'the TikTok For You or Following feed', 'No TikTok videos found. Make sure you are on tiktok.com/ or tiktok.com/following, then retry with scrolls:2.');
   }
 
   return text(formatExtraction('video', res));
@@ -976,7 +1180,7 @@ export async function handleBrowserExtractTiktokSearch(args: PagedArgs & { sessi
   });
   if ('error' in res) return text(`Extract failed: ${res.error}`);
   if (res.items.length === 0) {
-    return text('No search results found. Make sure you are on tiktok.com/search?q=... then retry.');
+    return emptyExtraction(resolved, 'browser_extract_tiktok_search', 'TikTok search results', 'No search results found. Make sure you are on tiktok.com/search?q=... then retry.');
   }
 
   return text(formatExtraction('result', res));
@@ -1024,7 +1228,7 @@ export async function handleBrowserExtractTiktokStudio(args: PagedArgs & { sessi
   });
   if ('error' in res) return text(`Extract failed: ${res.error}`);
   if (res.items.length === 0) {
-    return text('No Studio posts found. Make sure you are on tiktok.com/tiktokstudio/content then retry.');
+    return emptyExtraction(resolved, 'browser_extract_tiktok_studio', 'the TikTok Studio content list', 'No Studio posts found. Make sure you are on tiktok.com/tiktokstudio/content then retry.');
   }
 
   return text(formatExtraction('post', res));
@@ -1072,7 +1276,7 @@ export async function handleBrowserExtractTiktokProfile(args: { sessionId?: stri
 
   const profile = result.result as Record<string, unknown>;
   if (!profile || (!profile.name && !profile.handle)) {
-    return text('No profile found. Make sure you are on tiktok.com/@username then retry.');
+    return emptyExtraction(resolved, 'browser_extract_tiktok_profile', 'a TikTok profile page', 'No profile found. Make sure you are on tiktok.com/@username then retry.');
   }
 
   return text(`Profile:\n\n${JSON.stringify(profile)}`);
@@ -1124,7 +1328,7 @@ export async function handleBrowserExtractWaChats(args: PagedArgs & { sessionId?
   });
   if ('error' in res) return text(`Extract failed: ${res.error}`);
   if (res.items.length === 0) {
-    return text('No chats found. Make sure you are on web.whatsapp.com with the chat list visible.');
+    return emptyExtraction(resolved, 'browser_extract_wa_chats', 'WhatsApp Web with the chat list visible', 'No chats found. Make sure you are on web.whatsapp.com with the chat list visible.');
   }
 
   return text(formatExtraction('chat', res));
@@ -1175,7 +1379,7 @@ export async function handleBrowserExtractWaMessages(args: PagedArgs & { session
   });
   if ('error' in res) return text(`Extract failed: ${res.error}`);
   if (res.items.length === 0) {
-    return text('No messages found. Open a chat first, then retry.');
+    return emptyExtraction(resolved, 'browser_extract_wa_messages', 'an open WhatsApp Web chat', 'No messages found. Open a chat first, then retry.');
   }
 
   return text(formatExtraction('message', res));
@@ -1224,7 +1428,7 @@ export async function handleBrowserExtractIgFeed(args: PagedArgs & { sessionId?:
   });
   if ('error' in res) return text(`Extract failed: ${res.error}`);
   if (res.items.length === 0) {
-    return text('No feed posts found. Navigate to instagram.com/ and retry with scrolls:2.');
+    return emptyExtraction(resolved, 'browser_extract_ig_feed', 'the Instagram home feed', 'No feed posts found. Navigate to instagram.com/ and retry with scrolls:2.');
   }
 
   return text(formatExtraction('post', res));
@@ -1287,7 +1491,7 @@ export async function handleBrowserExtractIgProfile(args: { sessionId?: string; 
 
   const profile = result.result as Record<string, unknown>;
   if (!profile || !profile.username) {
-    return text('No profile data found. Navigate to instagram.com/username/ first, then retry.');
+    return emptyExtraction(resolved, 'browser_extract_ig_profile', 'an Instagram profile page', 'No profile data found. Navigate to instagram.com/username/ first, then retry.');
   }
 
   return text(`Profile:\n\n${JSON.stringify(profile)}`);
@@ -1364,7 +1568,7 @@ export async function handleBrowserExtractIgPost(args: { sessionId?: string; tab
 
   const post = result.result as Record<string, unknown>;
   if (!post || !post.author) {
-    return text('No post data found. Navigate to instagram.com/p/POST_ID/ first, then retry.');
+    return emptyExtraction(resolved, 'browser_extract_ig_post', 'an Instagram post page', 'No post data found. Navigate to instagram.com/p/POST_ID/ first, then retry.');
   }
 
   return text(`Post:\n\n${JSON.stringify(post)}`);
@@ -1432,7 +1636,7 @@ export async function handleBrowserExtractIgReels(args: PagedArgs & { sessionId?
   });
   if ('error' in res) return text(`Extract failed: ${res.error}`);
   if (res.items.length === 0) {
-    return text('No reels found. Navigate to instagram.com/reels/ and retry with scrolls:2.');
+    return emptyExtraction(resolved, 'browser_extract_ig_reels', 'the Instagram Reels feed', 'No reels found. Navigate to instagram.com/reels/ and retry with scrolls:2.');
   }
 
   return text(formatExtraction('reel', res));
@@ -1468,7 +1672,7 @@ export async function handleBrowserExtractIgSearch(args: PagedArgs & { sessionId
   });
   if ('error' in res) return text(`Extract failed: ${res.error}`);
   if (res.items.length === 0) {
-    return text('No explore posts found. Navigate to instagram.com/explore/ and retry with scrolls:2.');
+    return emptyExtraction(resolved, 'browser_extract_ig_search', 'the Instagram Explore grid', 'No explore posts found. Navigate to instagram.com/explore/ and retry with scrolls:2.');
   }
 
   return text(formatExtraction('post', res));
@@ -1532,7 +1736,7 @@ export async function handleBrowserExtractLiFeed(args: PagedArgs & { sessionId?:
   });
   if ('error' in res) return text(`Extract failed: ${res.error}`);
   if (res.items.length === 0) {
-    return text('No LinkedIn feed posts found. Navigate to linkedin.com/feed/ and retry with scrolls:2.');
+    return emptyExtraction(resolved, 'browser_extract_li_feed', 'the LinkedIn home feed', 'No LinkedIn feed posts found. Navigate to linkedin.com/feed/ and retry with scrolls:2.');
   }
 
   return text(formatExtraction('post', res));
@@ -1588,7 +1792,7 @@ export async function handleBrowserExtractLiProfile(args: { sessionId?: string; 
 
   const profile = result.result as Record<string, unknown>;
   if (!profile || !profile.name) {
-    return text('No profile data found. Navigate to linkedin.com/in/USERNAME/ first, then retry.');
+    return emptyExtraction(resolved, 'browser_extract_li_profile', 'a LinkedIn profile page', 'No profile data found. Navigate to linkedin.com/in/USERNAME/ first, then retry.');
   }
 
   return text(`Profile:\n\n${JSON.stringify(profile)}`);
@@ -1645,7 +1849,7 @@ export async function handleBrowserExtractLiPost(args: { sessionId?: string; tab
 
   const post = result.result as Record<string, unknown>;
   if (!post || !post.author) {
-    return text('No post data found. Navigate to linkedin.com/feed/update/urn:li:activity:ID/ first, then retry.');
+    return emptyExtraction(resolved, 'browser_extract_li_post', 'a LinkedIn post page', 'No post data found. Navigate to linkedin.com/feed/update/urn:li:activity:ID/ first, then retry.');
   }
 
   return text(`Post:\n\n${JSON.stringify(post)}`);
@@ -1687,7 +1891,7 @@ export async function handleBrowserExtractLiNotifications(args: PagedArgs & { se
   });
   if ('error' in res) return text(`Extract failed: ${res.error}`);
   if (res.items.length === 0) {
-    return text('No notifications found. Navigate to linkedin.com/notifications/ first, then retry.');
+    return emptyExtraction(resolved, 'browser_extract_li_notifications', 'the LinkedIn notifications page', 'No notifications found. Navigate to linkedin.com/notifications/ first, then retry.');
   }
 
   return text(formatExtraction('notification', res));
@@ -1740,7 +1944,7 @@ export async function handleBrowserExtractLiMessages(args: { sessionId?: string;
   const convos = data?.conversations as Array<Record<string, unknown>> || [];
   const msgs = data?.activeThread as Array<Record<string, unknown>> || [];
   if (convos.length === 0 && msgs.length === 0) {
-    return text('No messages found. Navigate to linkedin.com/messaging/ first, then retry.');
+    return emptyExtraction(resolved, 'browser_extract_li_messages', 'LinkedIn messaging', 'No messages found. Navigate to linkedin.com/messaging/ first, then retry.');
   }
 
   return text(`${convos.length} conversation(s), ${msgs.length} message(s) in active thread:\n\n${JSON.stringify(data)}`);
@@ -1808,7 +2012,7 @@ export async function handleBrowserExtractLiSearchPeople(args: PagedArgs & { ses
   });
   if ('error' in res) return text(`Extract failed: ${res.error}`);
   if (res.items.length === 0) {
-    return text('No search results found. Navigate to linkedin.com/search/results/people/?keywords=QUERY first, then retry.');
+    return emptyExtraction(resolved, 'browser_extract_li_search_people', 'LinkedIn people search results', 'No search results found. Navigate to linkedin.com/search/results/people/?keywords=QUERY first, then retry.');
   }
 
   return text(formatExtraction('result', res));
@@ -1884,7 +2088,7 @@ export async function handleBrowserExtractLiNetwork(args: { sessionId?: string; 
   const invitations = data?.invitations as Array<Record<string, unknown>> || [];
   const suggestions = data?.suggestions as Array<Record<string, unknown>> || [];
   if (invitations.length === 0 && suggestions.length === 0) {
-    return text('No network data found. Navigate to linkedin.com/mynetwork/ first, then retry.');
+    return emptyExtraction(resolved, 'browser_extract_li_network', 'the LinkedIn My Network page', 'No network data found. Navigate to linkedin.com/mynetwork/ first, then retry.');
   }
 
   return text(`${invitations.length} invitation(s), ${suggestions.length} suggestion(s):\n\n${JSON.stringify(data)}`);
@@ -2011,7 +2215,7 @@ export async function handleBrowserExtractLiJobs(args: PagedArgs & { sessionId?:
   });
   if ('error' in res) return text(`Extract failed: ${res.error}`);
   if (res.items.length === 0) {
-    return text('No job listings found. Navigate to linkedin.com/jobs/ or linkedin.com/jobs/search/?keywords=QUERY first, then retry with scrolls:2.');
+    return emptyExtraction(resolved, 'browser_extract_li_jobs', 'LinkedIn job listings', 'No job listings found. Navigate to linkedin.com/jobs/ or linkedin.com/jobs/search/?keywords=QUERY first, then retry with scrolls:2.');
   }
 
   return text(formatExtraction('job', res));

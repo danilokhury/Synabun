@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import { codexReasoningEffort } from './effort-levels.js';
 
 function assertSingleLine(value, label) {
   const text = String(value ?? '');
@@ -6,13 +7,6 @@ function assertSingleLine(value, label) {
     throw new Error(`${label} must be a non-empty single-line value`);
   }
   return text;
-}
-
-function codexReasoningEffort(effort) {
-  const value = String(effort || '').trim().toLowerCase();
-  if (!value || value === 'off') return null;
-  if (value === 'max') return 'xhigh';
-  return ['minimal', 'low', 'medium', 'high', 'xhigh'].includes(value) ? value : null;
 }
 
 function codexConfigString(value) {

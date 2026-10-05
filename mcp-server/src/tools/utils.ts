@@ -1,6 +1,28 @@
 import { z } from 'zod';
 
 /**
+ * A boolean argument as a model sends it: true / false, "true" / "false"
+ * (any case, trimmed) or 1 / 0 (number or string). z.coerce.boolean() runs
+ * Boolean(value), so the string "false" became true. Anything else fails
+ * validation. neural-interface/lib/assistant-plan-permissions.js booleanArg
+ * reads the same forms.
+ */
+export function parseBooleanArg(value: unknown): unknown {
+  if (value === true || value === 1) return true;
+  if (value === false || value === 0) return false;
+  if (typeof value === 'string') {
+    const text = value.trim().toLowerCase();
+    if (text === 'true' || text === '1') return true;
+    if (text === 'false' || text === '0') return false;
+  }
+  return value;
+}
+
+export function coerceBoolean() {
+  return z.preprocess(parseBooleanArg, z.boolean());
+}
+
+/**
  * Zod schema that accepts an array of strings OR a string representation of one.
  *
  * Claude Code's MCP client sometimes serializes array arguments as strings

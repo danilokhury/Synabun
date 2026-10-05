@@ -5,14 +5,13 @@ import { join, resolve } from 'node:path';
 import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 
-import AdmZip from 'adm-zip';
-
 import {
   BACKUP_PREFIX,
   cleanupStaleBackupArtifacts,
   createVerifiedBackup,
   verifyBackupArchive,
 } from '../lib/backup-service.js';
+import { openZipArchive } from '../lib/backup-zip-reader.js';
 
 function makeDataHome() {
   const root = mkdtempSync(join(tmpdir(), 'synabun-backup-scope-'));
@@ -39,7 +38,7 @@ test('re-downloadable bulk media is excluded from the snapshot', async () => {
     // Checked against a complete backup: youtube-downloads is excluded by
     // directory for every kind, independently of the upgrade media policy.
     const snapshot = await createVerifiedBackup({ dataHome, folderPath, kind: 'scheduled' });
-    const archived = verifyBackupArchive(snapshot.path).files;
+    const archived = (await verifyBackupArchive(snapshot.path)).files;
 
     assert.ok(archived.includes('data/settings.json'), 'user state must be protected');
     assert.ok(archived.includes('data/images/art.png'), 'a complete backup keeps generated images');
@@ -64,16 +63,17 @@ test('already-compressed payloads are stored, not deflated', async () => {
     // A complete backup is where media actually lands, so that is where the
     // store-vs-deflate choice is observable.
     const snapshot = await createVerifiedBackup({ dataHome, folderPath, kind: 'scheduled' });
-    const zip = new AdmZip(snapshot.path);
+    const zip = await openZipArchive(snapshot.path);
     const entryFor = name => zip.getEntry(`${BACKUP_PREFIX}/${name}`);
 
     const png = entryFor('data/poster.png');
-    assert.equal(png.header.method, 0, '.png must use the STORE method');
-    assert.equal(png.header.compressedSize, png.header.size, 'stored entries keep their original size');
+    assert.equal(png.method, 0, '.png must use the STORE method');
+    assert.equal(png.compressedSize, png.uncompressedSize, 'stored entries keep their original size');
 
     const json = entryFor('data/notes.json');
-    assert.notEqual(json.header.method, 0, 'compressible text must still be deflated');
-    assert.ok(json.header.compressedSize < json.header.size, 'deflated entries must shrink');
+    assert.notEqual(json.method, 0, 'compressible text must still be deflated');
+    assert.ok(json.compressedSize < json.uncompressedSize, 'deflated entries must shrink');
+    await zip.close();
   } finally {
     rmSync(dataHome, { recursive: true, force: true });
   }
@@ -94,7 +94,7 @@ test('an upgrade snapshot archives state but not generated media', async () => {
     const snapshot = await createVerifiedBackup({
       dataHome, folderPath, kind: 'pre-update', onProgress: e => events.push(e),
     });
-    const manifest = verifyBackupArchive(snapshot.path);
+    const manifest = await verifyBackupArchive(snapshot.path);
 
     assert.ok(manifest.files.includes('data/settings.json'), 'state must be protected');
     assert.ok(manifest.files.includes('mcp-data/custom-categories.json'), 'mcp state must be protected');
@@ -137,7 +137,7 @@ test('an oversized data home falls back to irreplaceable state only', async () =
       upgradeSoftLimitBytes: 64 * 1024, // force the fallback deterministically
       onProgress: e => events.push(e),
     });
-    const manifest = verifyBackupArchive(snapshot.path);
+    const manifest = await verifyBackupArchive(snapshot.path);
 
     assert.ok(manifest.files.includes('data/settings.json'), 'config must survive');
     assert.ok(manifest.files.includes('mcp-data/custom-categories.json'), 'mcp state must survive');
@@ -163,7 +163,7 @@ test('a deliberate backup still captures everything', async () => {
 
     for (const kind of ['scheduled', 'manual']) {
       const snapshot = await createVerifiedBackup({ dataHome, folderPath, kind });
-      const manifest = verifyBackupArchive(snapshot.path);
+      const manifest = await verifyBackupArchive(snapshot.path);
       assert.ok(manifest.files.includes('data/images/a.png'), `${kind} must archive media`);
       assert.equal(manifest.scope, 'complete');
       assert.equal(manifest.excluded, null);
@@ -232,7 +232,65 @@ test('a backup still succeeds when no progress callback is supplied', async () =
   try {
     writeFileSync(resolve(dataHome, 'data', 'settings.json'), '{"keep":true}');
     const snapshot = await createVerifiedBackup({ dataHome, folderPath, kind: 'pre-update' });
-    assert.ok(verifyBackupArchive(snapshot.path).files.includes('data/settings.json'));
+    assert.ok((await verifyBackupArchive(snapshot.path)).files.includes('data/settings.json'));
+  } finally {
+    rmSync(dataHome, { recursive: true, force: true });
+  }
+});
+
+test('the WhatsApp session keys, connector and activity log are never archived', async () => {
+  const { resolveWhatsAppPaths } = await import('../lib/whatsapp/paths.js');
+  const dataHome = makeDataHome();
+  const folderPath = resolve(dataHome, 'backups');
+  try {
+    // Where the WhatsApp Link really puts things (lib/whatsapp/paths.js), on this platform.
+    const wa = resolveWhatsAppPaths({ dataHome, env: {}, platform: process.platform === 'win32' ? 'linux' : process.platform });
+    mkdirSync(wa.authDir, { recursive: true });
+    writeFileSync(resolve(wa.authDir, 'state.db'), Buffer.alloc(512, 3));
+    mkdirSync(resolve(wa.runtimeDir, 'node_modules', 'baileys'), { recursive: true });
+    writeFileSync(resolve(wa.runtimeDir, 'entry.mjs'), '// connector');
+    writeFileSync(resolve(wa.runtimeDir, 'node_modules', 'baileys', 'package.json'), '{}');
+    mkdirSync(wa.logsDir, { recursive: true });
+    writeFileSync(resolve(wa.logsDir, 'whatsapp-20260928.log'), '2026-09-28T10:00:00.000Z state Connected to WhatsApp\n');
+    writeFileSync(resolve(dataHome, 'data', 'settings.json'), '{"keep":true}');
+
+    const snapshot = await createVerifiedBackup({ dataHome, folderPath, kind: 'scheduled' });
+    const archived = (await verifyBackupArchive(snapshot.path)).files;
+    assert.ok(archived.includes('data/settings.json'));
+    assert.ok(!archived.includes('data/logs/whatsapp-20260928.log'), 'logs are never archived (data/logs is skipped)');
+    assert.ok(!archived.some((path) => /(^|\/)whatsapp\/auth\/|state\.db$/.test(path)), 'never a live WhatsApp session');
+    assert.ok(!archived.some((path) => path.startsWith('runtime/') || path.includes('node_modules/baileys')), 'never the connector');
+  } finally {
+    rmSync(dataHome, { recursive: true, force: true });
+  }
+});
+
+test('SYNABUN_WHATSAPP_HOME inside any folder a backup copies is refused (data/, mcp-data/, the extra roots); the session is never archived', async () => {
+  const { resolveWhatsAppPaths } = await import('../lib/whatsapp/paths.js');
+  const { BACKUP_DATA_DIRS, backupRoots } = await import('../lib/backup-service.js');
+  const dataHome = makeDataHome();
+  const folderPath = resolve(dataHome, 'backups');
+  const platform = process.platform === 'win32' ? 'linux' : process.platform;
+  try {
+    assert.deepEqual([...BACKUP_DATA_DIRS], ['data', 'mcp-data'], 'the DATA_HOME folders createVerifiedBackup copies');
+    const skins = resolve(dataHome, 'skins-extra');
+    assert.deepEqual(backupRoots(dataHome, [{ diskPath: skins, archivePath: 'skins' }]), [resolve(dataHome, 'data'), resolve(dataHome, 'mcp-data'), skins]);
+    for (const inside of [resolve(dataHome, 'data', 'wa'), resolve(dataHome, 'mcp-data', 'wa'), resolve(dataHome, 'mcp-data'), resolve(skins, 'wa')]) {
+      const wa = resolveWhatsAppPaths({ dataHome, env: { SYNABUN_WHATSAPP_HOME: inside }, platform, extraBackupRoots: [skins] });
+      assert.equal(wa.waHome, resolve(dataHome, 'whatsapp'), `refused: ${inside}`);
+      assert.equal(wa.warnings.length, 1, inside);
+      assert.match(wa.warnings[0], /inside a backed-up folder/);
+    }
+    const outside = resolve(dataHome, 'wa-secure');
+    assert.equal(resolveWhatsAppPaths({ dataHome, env: { SYNABUN_WHATSAPP_HOME: outside }, platform, extraBackupRoots: [skins] }).waHome, outside, 'outside every backed-up folder: kept');
+
+    // A session written where the refused override would have put it is never there; the real one is not archived.
+    const wa = resolveWhatsAppPaths({ dataHome, env: { SYNABUN_WHATSAPP_HOME: resolve(dataHome, 'mcp-data', 'wa') }, platform });
+    mkdirSync(wa.authDir, { recursive: true });
+    writeFileSync(resolve(wa.authDir, 'state.db'), Buffer.alloc(256, 5));
+    const snapshot = await createVerifiedBackup({ dataHome, folderPath, kind: 'scheduled' });
+    const archived = (await verifyBackupArchive(snapshot.path)).files;
+    assert.ok(!archived.some((path) => /state\.db$|(^|\/)wa\/auth\//.test(path)), `never a WhatsApp session: ${archived.join(', ')}`);
   } finally {
     rmSync(dataHome, { recursive: true, force: true });
   }

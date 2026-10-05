@@ -12,9 +12,10 @@
 
 import { spawn } from 'node:child_process';
 import { dirname, join, sep } from 'node:path';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { getAugmentedPath } from './augmented-path.js';
+import { resolveClaudeExecutableOverride } from './native-binary-runtime.js';
 
 // Effort ladder the Claude Code CLI accepts for --effort. Models advertise their
 // own subset via supportedEffortLevels; this is the superset used as a fallback
@@ -42,8 +43,27 @@ export const CLAUDE_FALLBACK_MODELS = Object.freeze([
 const DISCOVERY_TIMEOUT_MS = 15000;
 const CACHE_TTL_MS = 10 * 60 * 1000;
 
-let _cache = { at: 0, bin: '', models: [] };
+let _cache = { at: 0, key: '', models: [] };
 let _inflight = null;
+
+// What a cache keyed on "the CLI" has to key on. An update never changes the
+// configured path: the native installer and Homebrew re-point a symlink at a new
+// version directory, and npm rewrites the entrypoint in place. The resolved target
+// plus its mtime and size changes with every one of those, so a cache keyed on this
+// sees the update on the next request instead of serving the previous model table
+// until the TTL runs out or the server restarts. A bare command name has nothing to
+// resolve and keys on itself.
+export function binaryIdentity(bin) {
+  const value = String(bin || '');
+  if (!value) return '';
+  try {
+    const real = realpathSync(value);
+    const { mtimeMs, size } = statSync(real);
+    return `${real}|${mtimeMs}|${size}`;
+  } catch {
+    return value;
+  }
+}
 
 // The CLI marks a 1M-context variant with a `[1m]` suffix on the selector value.
 // `resolvedModel` carries it too for aliases (opus[1m] → claude-opus-5[1m]), but
@@ -115,6 +135,9 @@ export function normalizeClaudeModel(model) {
     effortLevels,
     supportsEffort: model?.supportsEffort === true && effortLevels.length > 0,
     supportsFastMode: model?.supportsFastMode === true,
+    // Which controls the sidepanel may offer for this model (Auto mode, thinking).
+    supportsAutoMode: model?.supportsAutoMode === true,
+    supportsAdaptiveThinking: model?.supportsAdaptiveThinking === true,
     cliReady: true,
     ...(id === 'default' ? { tier: 'default' } : {}),
   };
@@ -220,12 +243,13 @@ export function queryClaudeCliModels(claudeBin, { cwd, timeoutMs = DISCOVERY_TIM
 }
 
 // Cached discovery. `source` lets the UI distinguish a verified list from the
-// baked-in fallback. Cache is keyed on the resolved binary path so switching
-// the configured CLI (Settings > Terminal) re-discovers.
+// baked-in fallback. Cache is keyed on the binary's identity, so switching the
+// configured CLI (Settings > Terminal) or updating it re-discovers.
 export async function discoverClaudeModels(claudeBin, { force = false, cwd } = {}) {
   const bin = String(claudeBin || '');
+  const key = binaryIdentity(bin);
   const fresh = _cache.models.length
-    && _cache.bin === bin
+    && _cache.key === key
     && Date.now() - _cache.at < CACHE_TTL_MS;
   if (!force && fresh) return { source: 'cache', models: _cache.models };
   if (_inflight) return _inflight;
@@ -235,7 +259,7 @@ export async function discoverClaudeModels(claudeBin, { force = false, cwd } = {
       const raw = await queryClaudeCliModels(bin, { cwd });
       const models = normalizeClaudeModels(raw);
       if (models.length) {
-        _cache = { at: Date.now(), bin, models };
+        _cache = { at: Date.now(), key, models };
         return { source: 'cli', models };
       }
       return { source: 'fallback', models: [...CLAUDE_FALLBACK_MODELS] };
@@ -247,7 +271,10 @@ export async function discoverClaudeModels(claudeBin, { force = false, cwd } = {
 }
 
 export function clearClaudeModelCache() {
-  _cache = { at: 0, bin: '', models: [] };
+  _cache = { at: 0, key: '', models: [] };
+  _skewCache = { key: null, result: undefined };
+  _skewInflight.clear();
+  _alignFailures.clear();
 }
 
 // ── CLI version skew ──────────────────────────────────────────────────────────
@@ -258,7 +285,8 @@ export function clearClaudeModelCache() {
 // the versions drift the picker labels a model from one table and the session
 // silently runs whatever the other table calls "opus". That is invisible from
 // the outside: the only symptom is the model naming a different version of
-// itself. Compare the two and say so.
+// itself. Compare the two, say so, and — when the installed CLI is the newer
+// one — run sessions on it (see alignedClaudeExecutable below).
 
 const _require = createRequire(import.meta.url);
 
@@ -285,6 +313,21 @@ export function sdkBundledCliVersion() {
 export function parseCliVersion(text) {
   const m = /(\d+\.\d+\.\d+)/.exec(String(text || ''));
   return m ? m[1] : null;
+}
+
+// Numeric x.y.z comparison — a string compare would put 2.1.99 above 2.1.100.
+// 1 when `a` is newer, -1 when older, 0 when equal, null when either side is not
+// a version.
+export function compareCliVersions(a, b) {
+  const va = parseCliVersion(a);
+  const vb = parseCliVersion(b);
+  if (!va || !vb) return null;
+  const pa = va.split('.').map(Number);
+  const pb = vb.split('.').map(Number);
+  for (let i = 0; i < pa.length; i++) {
+    if (pa[i] !== pb[i]) return pa[i] > pb[i] ? 1 : -1;
+  }
+  return 0;
 }
 
 export function queryClaudeCliVersion(claudeBin, { timeoutMs = 10000 } = {}) {
@@ -327,28 +370,114 @@ export function queryClaudeCliVersion(claudeBin, { timeoutMs = 10000 } = {}) {
   });
 }
 
-// Report-only: a skew is not fatal (aliases still launch *something*), so this
-// never blocks discovery. Warns once per distinct pair so a 10-minute cache
-// refresh doesn't spam the log.
+// Never blocks discovery. The result is cached per binary identity — the model
+// endpoints ask on every request, and it now also decides which binary SDK
+// sessions run — so a `claude --version` spawn happens once per installed CLI,
+// not once per request. A CLI update changes the identity and re-probes. `null`
+// (nothing to compare: no SDK, unreadable CLI) is cached too. Warns once per
+// distinct pair so repeated checks don't spam the log.
 const _warnedSkew = new Set();
+let _skewCache = { key: null, result: undefined };
+const _skewInflight = new Map(); // binary identity → pending probe
 
-export async function checkClaudeCliSkew(claudeBin, { log = console.warn } = {}) {
-  const bundled = sdkBundledCliVersion();
-  if (!bundled) return null;
-  const discovered = await queryClaudeCliVersion(claudeBin);
-  if (!discovered) return null;
-  const skewed = discovered !== bundled;
-  const result = { discovered, bundled, skewed };
-  if (!skewed) return result;
-  const key = `${discovered}→${bundled}`;
-  if (!_warnedSkew.has(key)) {
-    _warnedSkew.add(key);
+function warnSkewOnce(result, claudeBin, log) {
+  const pair = `${result.discovered}→${result.bundled}`;
+  if (_warnedSkew.has(pair)) return;
+  _warnedSkew.add(pair);
+  if (result.installedNewer) {
     log(
-      `[claude-models] CLI version skew: model picker reads ${discovered} (${claudeBin}) `
-      + `but sidepanel sessions run ${bundled} (bundled with @anthropic-ai/claude-agent-sdk). `
-      + 'Alias ids like "opus[1m]" resolve per-binary, so a picked model can launch as a '
-      + 'different version. Align them: bump @anthropic-ai/claude-agent-sdk to match the CLI.',
+      `[claude-models] CLI version skew: the installed CLI ${result.discovered} (${claudeBin}) is newer `
+      + `than the ${result.bundled} bundled with @anthropic-ai/claude-agent-sdk. Sidepanel sessions and `
+      + 'native loops will run the installed CLI, so a picked model launches as the version the picker '
+      + 'names. Bump @anthropic-ai/claude-agent-sdk to the release that bundles it to re-align the runtime.',
     );
+    return;
   }
+  log(
+    `[claude-models] CLI version skew: model picker reads ${result.discovered} (${claudeBin}) `
+    + `but sidepanel sessions run ${result.bundled} (bundled with @anthropic-ai/claude-agent-sdk). `
+    + 'Alias ids like "opus[1m]" resolve per-binary, so a picked model can launch as a '
+    + `different version. Align them: update the installed Claude CLI to ${result.bundled} or newer.`,
+  );
+}
+
+export async function checkClaudeCliSkew(claudeBin, {
+  log = console.warn,
+  force = false,
+  queryVersion = queryClaudeCliVersion,
+  bundledVersion = sdkBundledCliVersion,
+} = {}) {
+  const key = binaryIdentity(claudeBin);
+  let result;
+  if (!force && _skewCache.key === key && _skewCache.result !== undefined) {
+    result = _skewCache.result;
+  } else {
+    let probe = _skewInflight.get(key);
+    if (!probe) {
+      probe = (async () => {
+        const bundled = bundledVersion();
+        const discovered = bundled ? await queryVersion(claudeBin) : null;
+        const order = compareCliVersions(discovered, bundled);
+        const value = order === null ? null : {
+          discovered,
+          bundled,
+          skewed: order !== 0,
+          installedNewer: order > 0,
+        };
+        _skewCache = { key, result: value };
+        return value;
+      })().finally(() => _skewInflight.delete(key));
+      _skewInflight.set(key, probe);
+    }
+    result = await probe;
+  }
+  if (result?.skewed) warnSkewOnce(result, claudeBin, log);
   return result;
+}
+
+// Synchronous view of the last probe for this binary: the result, null (probed,
+// nothing to compare), or undefined (not probed at this identity — typically
+// because the CLI was updated since).
+export function cachedClaudeCliSkew(claudeBin) {
+  return _skewCache.key === binaryIdentity(claudeBin) ? _skewCache.result : undefined;
+}
+
+// ── Runtime alignment ─────────────────────────────────────────────────────────
+// The picker's model table comes from the installed CLI; SDK sessions (sidepanel)
+// and native loops default to the CLI the SDK bundles. When the installed one is
+// newer, the same alias resolves to a newer model there — "opus[1m]" is Opus 5.5 on
+// 2.1.280 but Opus 5 on 2.1.278 — so the picker would promise a model the session
+// cannot launch. In that case sessions run the installed CLI instead. Everywhere
+// else the bundled, version-matched binary stays the default: when the versions
+// match, when the bundled one is the newer of the two, and when no usable CLI is
+// installed.
+const _alignFailures = new Set(); // binary identities whose aligned launch failed
+
+// A launch failure of the aligned CLI sends every later session back to the bundled
+// runtime. Keyed by identity, so the next CLI update gets a fresh chance.
+export function markAlignedClaudeExecutableFailed(claudeBin) {
+  const key = binaryIdentity(claudeBin);
+  if (key) _alignFailures.add(key);
+}
+
+// The path SDK sessions should run instead of the bundled CLI, or null to keep the
+// bundled one. Never blocks: when this binary has not been compared yet, the check
+// starts in the background and this call answers null, so no session waits on a
+// version probe — the next one aligns.
+export function alignedClaudeExecutable(claudeBin, {
+  skew = cachedClaudeCliSkew(claudeBin),
+  refresh = true,
+  resolveOverride = resolveClaudeExecutableOverride,
+} = {}) {
+  if (!claudeBin) return null;
+  if (skew === undefined) {
+    if (refresh) checkClaudeCliSkew(claudeBin).catch(() => {});
+    return null;
+  }
+  if (!skew?.installedNewer) return null;
+  if (_alignFailures.has(binaryIdentity(claudeBin))) return null;
+  // The SDK spawns this path verbatim with shell:false; the shared override
+  // contract rejects bare command names and anything that is not executable.
+  const candidate = resolveOverride(claudeBin);
+  return candidate?.ok && candidate.path ? candidate.path : null;
 }

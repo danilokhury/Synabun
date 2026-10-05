@@ -1,3 +1,4 @@
+import { hostedSidepanelId, sidepanelHost } from '../ui-sidepanel-runtime.js';
 import { CODEX_EFFORT_VALUE_IDS } from '../agent-runtime-options.js';
 
 // ═══════════════════════════════════════════
@@ -31,7 +32,7 @@ export const STATUS_TONE = {
 };
 
 // ── Window / Session Identity ──
-export let windowId = sessionStorage.getItem('cxp-window-id') || (() => {
+export let windowId = hostedSidepanelId || sessionStorage.getItem('cxp-window-id') || (() => {
   const id = crypto.randomUUID();
   sessionStorage.setItem('cxp-window-id', id);
   return id;

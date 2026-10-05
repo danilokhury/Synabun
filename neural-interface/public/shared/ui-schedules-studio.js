@@ -26,6 +26,11 @@ import {
   profileSupportsEffort,
 } from './agent-runtime-options.js';
 import {
+  automationContextOptions,
+  automationModelOptions,
+  normalizeAutomationSelection,
+} from './automation-context.js';
+import {
   fetchLoopTemplates,
   fetchSchedules,
   createSchedule,
@@ -74,7 +79,13 @@ let _promptKeyHandler = null;
 const _modelLoadRequests = new Set();
 
 let _launchProfile = storage.getItem('as-launch-profile') || 'claude-code';
-let _launchModel = storage.getItem('as-launch-model') || null;
+const _storedLaunchSelection = normalizeAutomationSelection(
+  _launchProfile, storage.getItem('as-launch-model'), storage.getItem('as-launch-context-mode'),
+);
+let _launchModel = _storedLaunchSelection.model;
+let _launchContextMode = _storedLaunchSelection.contextMode || 'default';
+storage.setItem('as-launch-model', _launchModel || '');
+storage.setItem('as-launch-context-mode', _launchContextMode);
 let _launchEffort = storage.getItem('as-launch-effort') || 'off';
 let _launchMcpProfile = storage.getItem('as-launch-mcp-profile') || 'full';
 let _launchAccount = storage.getItem('as-launch-account') || 'default'; // Codex ChatGPT account (CODEX_HOME)
@@ -501,6 +512,7 @@ function renderScheduleCards(container, list) {
     const runtimeParts = [
       profile,
       s.model,
+      s.contextMode && s.contextMode !== 'default' ? `context:${s.contextMode}` : '',
       s.effort ? `think:${s.effort}` : '',
       s.mcpProfile ? `mcp:${s.mcpProfile}` : '',
       s.usesBrowser === true ? 'browser:on' : s.usesBrowser === false ? 'browser:off' : '',
@@ -541,10 +553,15 @@ function renderScheduleCards(container, list) {
 function renderTimersTab() {
   const content = $('sched-content');
   if (!content) return;
-  const templateOptions = _templates.map(t => `<option value="${esc(t.id)}">${esc(t.name)}</option>`).join('');
-  const scheduleOptions = _schedules.map(s => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join('');
+  const selectedTemplate = $('sched-qt-template')?.value || '';
+  const customMinutes = $('sched-qt-custom-min')?.value || '';
+  const selectedSchedule = $('sched-existing-timer-schedule')?.value || '';
+  const scheduleMinutes = $('sched-existing-timer-min')?.value || '';
+  const templateOptions = _templates.map(t => `<option value="${esc(t.id)}"${selectedTemplate === t.id ? ' selected' : ''}>${esc(t.name)}</option>`).join('');
+  const scheduleOptions = _schedules.map(s => `<option value="${esc(s.id)}"${selectedSchedule === s.id ? ' selected' : ''}>${esc(s.name)}</option>`).join('');
   const profileOptions = CLI_PROFILES.map(p => `<option value="${p.id}"${p.id === _launchProfile ? ' selected' : ''}>${p.label}</option>`).join('');
-  const modelOptions = renderModelOptions(_launchProfile, _launchModel);
+  const modelOptions = renderModelOptions(_launchProfile, _launchModel, { accountId: _launchAccount });
+  const contextOptions = renderContextOptions(_launchProfile, _launchModel, _launchContextMode, { accountId: _launchAccount });
   const effortOptions = renderEffortOptions(_launchProfile, _launchEffort);
   const mcpOptions = renderMcpOptions(_launchMcpProfile);
   const accountOptions = renderAccountOptions(_launchAccount, false);
@@ -555,9 +572,10 @@ function renderTimersTab() {
     .map(min => `<button class="sched-time-chip${_selectedQtMinutes === min ? ' active' : ''}" data-action="qt-select" data-minutes="${min}">${min >= 60 ? `${min / 60}h` : `${min}m`}</button>`)
     .join('');
 
-  if (isDynamicModelProfile(_launchProfile) && !_modelLoadRequests.has(_launchProfile)) {
-    _modelLoadRequests.add(_launchProfile);
-    ensureModelsForProfile(_launchProfile).then(() => { if (_panel && _tab === 'timers') renderTimersTab(); });
+  const modelLoadKey = `${_launchProfile}:${_launchAccount}`;
+  if (isDynamicModelProfile(_launchProfile) && !_modelLoadRequests.has(modelLoadKey)) {
+    _modelLoadRequests.add(modelLoadKey);
+    ensureModelsForProfile(_launchProfile, false, _launchAccount).then(() => { if (_panel && _tab === 'timers') renderTimersTab(); });
   }
   if (showAccount) ensureCodexAccountsLoaded(() => { if (_panel && _tab === 'timers') renderTimersTab(); });
   if (showMcp && !Object.keys(getCachedMcpProfilePresets()).length) {
@@ -572,14 +590,15 @@ function renderTimersTab() {
         <label class="sched-field wide"><span>Automation</span><select id="sched-qt-template"><option value="">Select automation...</option>${templateOptions}</select></label>
         <label class="sched-field"><span>CLI</span><select id="sched-qt-profile">${profileOptions}</select></label>
         <label class="sched-field"><span>Model</span><select id="sched-qt-model">${modelOptions}</select></label>
+        <label class="sched-field"><span>Context</span><select id="sched-qt-context">${contextOptions}</select></label>
         <label class="sched-field" style="${showEffort ? '' : 'display:none'}"><span>Think</span><select id="sched-qt-effort">${effortOptions}</select></label>
         <label class="sched-field" style="${showMcp ? '' : 'display:none'}"><span>MCP</span><select id="sched-qt-mcp">${mcpOptions}</select></label>
         <label class="sched-field" id="sched-qt-account-field" style="${showAccount ? '' : 'display:none'}"><span>OpenAI Account</span><select id="sched-qt-account">${accountOptions}</select></label>
-        <label class="sched-toggle"><input type="checkbox" id="sched-qt-browser"><span>Uses browser</span></label>
+        <label class="sched-toggle"><input type="checkbox" id="sched-qt-browser" ${_qtUsesBrowser ? 'checked' : ''}><span>Uses browser</span></label>
       </div>
       <div class="sched-time-row">
         ${qtPresetButtons}
-        <input class="sched-min-input" id="sched-qt-custom-min" type="number" min="1" max="1440" placeholder="min">
+        <input class="sched-min-input" id="sched-qt-custom-min" type="number" min="1" max="1440" value="${esc(customMinutes)}" placeholder="min">
         <button class="sched-primary" data-action="qt-go">${ICONS.play} Go</button>
         <button class="sched-secondary" data-action="qt-now">${ICONS.bolt} Run Now</button>
       </div>
@@ -588,7 +607,7 @@ function renderTimersTab() {
       <div class="sched-section-head"><h4>Saved Schedule Timer</h4><span>Fire an existing cron schedule once after a delay</span></div>
       <div class="sched-form-grid compact">
         <label class="sched-field wide"><span>Schedule</span><select id="sched-existing-timer-schedule"><option value="">Select schedule...</option>${scheduleOptions}</select></label>
-        <label class="sched-field"><span>Minutes</span><input id="sched-existing-timer-min" type="number" min="1" max="1440" placeholder="15"></label>
+        <label class="sched-field"><span>Minutes</span><input id="sched-existing-timer-min" type="number" min="1" max="1440" value="${esc(scheduleMinutes)}" placeholder="15"></label>
         <button class="sched-primary align-end" data-action="schedule-timer-create">Set Timer</button>
       </div>
     </section>
@@ -598,9 +617,11 @@ function renderTimersTab() {
   qtProfile?.addEventListener('change', () => {
     _launchProfile = qtProfile.value;
     storage.setItem('as-launch-profile', _launchProfile);
-    const models = getModelsForProfile(_launchProfile);
+    const models = automationModelOptions(_launchProfile, getModelsForProfile(_launchProfile, _launchAccount));
     _launchModel = (models.find(m => m.tier === 'default') || models[0])?.id || '';
     storage.setItem('as-launch-model', _launchModel);
+    _launchContextMode = 'default';
+    storage.setItem('as-launch-context-mode', _launchContextMode);
     _launchEffort = 'off';
     storage.setItem('as-launch-effort', _launchEffort);
     renderTimersTab();
@@ -608,6 +629,14 @@ function renderTimersTab() {
   $('sched-qt-model')?.addEventListener('change', (e) => {
     _launchModel = e.target.value || null;
     storage.setItem('as-launch-model', _launchModel);
+    _launchContextMode = 'default';
+    storage.setItem('as-launch-context-mode', _launchContextMode);
+    const select = $('sched-qt-context');
+    if (select) select.innerHTML = renderContextOptions(_launchProfile, _launchModel, _launchContextMode, { accountId: _launchAccount });
+  });
+  $('sched-qt-context')?.addEventListener('change', (e) => {
+    _launchContextMode = e.target.value || 'default';
+    storage.setItem('as-launch-context-mode', _launchContextMode);
   });
   $('sched-qt-effort')?.addEventListener('change', (e) => {
     _launchEffort = e.target.value || 'off';
@@ -620,6 +649,17 @@ function renderTimersTab() {
   $('sched-qt-account')?.addEventListener('change', (e) => {
     _launchAccount = e.target.value || 'default';
     storage.setItem('as-launch-account', _launchAccount);
+    _launchContextMode = 'default';
+    storage.setItem('as-launch-context-mode', _launchContextMode);
+    ensureModelsForProfile('codex', false, _launchAccount).then(() => {
+      const models = automationModelOptions('codex', getModelsForProfile('codex', _launchAccount));
+      if (!models.some((model) => model.id === _launchModel)) _launchModel = (models.find((model) => model.isDefault) || models[0])?.id || null;
+      storage.setItem('as-launch-model', _launchModel || '');
+      const modelSelect = $('sched-qt-model');
+      if (modelSelect) modelSelect.innerHTML = renderModelOptions('codex', _launchModel, { accountId: _launchAccount });
+      const contextSelect = $('sched-qt-context');
+      if (contextSelect) contextSelect.innerHTML = renderContextOptions('codex', _launchModel, _launchContextMode, { accountId: _launchAccount });
+    });
   });
   $('sched-qt-browser')?.addEventListener('change', (e) => { _qtUsesBrowser = e.target.checked; });
   $('sched-qt-template')?.addEventListener('change', (e) => {
@@ -632,8 +672,9 @@ function renderTimersTab() {
   });
 }
 
-function renderModelOptions(profile, selected, { showService = false } = {}) {
-  const models = getModelsForProfile(profile);
+function renderModelOptions(profile, selected, { showService = false, accountId = 'default' } = {}) {
+  const models = automationModelOptions(profile, getModelsForProfile(profile, accountId));
+  selected = normalizeAutomationSelection(profile, selected).model || '';
   if (!models.length) {
     // List not loaded yet — preserve any stored selection so saving the form cannot
     // blank it (a blank <select> makes save send model:null, which DELETES the override).
@@ -663,6 +704,31 @@ function renderModelOptions(profile, selected, { showService = false } = {}) {
     opts.push(`<option value="${esc(selected)}" selected>${esc(selected)} (saved)</option>`);
   }
   return opts.join('');
+}
+
+function renderContextOptions(profile, model, selected, { accountId = 'default', inherit = false } = {}) {
+  const models = getModelsForProfile(profile, accountId);
+  const choices = automationContextOptions(profile, model, models);
+  const current = selected || (inherit ? '' : 'default');
+  const options = inherit ? [`<option value=""${!current ? ' selected' : ''}>No override</option>`] : [];
+  for (const choice of choices) {
+    options.push(`<option value="${esc(choice.id)}"${current === choice.id ? ' selected' : ''}>${esc(choice.label)}</option>`);
+  }
+  if (current && !choices.some((choice) => choice.id === current)) {
+    options.push(`<option value="${esc(current)}" selected>${esc(current)} (unavailable — choose another)</option>`);
+  }
+  return options.join('');
+}
+
+function contextChoiceAvailable(profile, model, contextMode, accountId = 'default') {
+  return !contextMode || automationContextOptions(profile, model, getModelsForProfile(profile, accountId))
+    .some((choice) => choice.id === contextMode);
+}
+
+function modelChoiceAvailable(profile, model, accountId = 'default') {
+  if (profile !== 'codex' || !model) return true;
+  const models = getModelsForProfile('codex', accountId);
+  return !models.length || models.some((entry) => entry.id === model);
 }
 
 function renderEffortOptions(profile, selected) {
@@ -724,7 +790,7 @@ function renderActiveTimers() {
 
   const quickTimers = _quickTimers.map(timer => `
     <div class="sched-active-timer">
-      <span>${esc(timer.templateName)}${timer.profile ? ` · ${esc(timer.profile)}` : ''}${timer.model ? ` · ${esc(timer.model)}` : ''}${timer.effort ? ` · think:${esc(timer.effort)}` : ''}${timer.mcpProfile ? ` · mcp:${esc(timer.mcpProfile)}` : ''}</span>
+      <span>${esc(timer.templateName)}${timer.profile ? ` · ${esc(timer.profile)}` : ''}${timer.model ? ` · ${esc(timer.model)}` : ''}${timer.contextMode && timer.contextMode !== 'default' ? ` · context:${esc(timer.contextMode)}` : ''}${timer.effort ? ` · think:${esc(timer.effort)}` : ''}${timer.mcpProfile ? ` · mcp:${esc(timer.mcpProfile)}` : ''}</span>
       <strong>${formatTimerCountdown(timer.firesAt)}</strong>
       <button class="sched-icon-btn" data-action="qt-cancel" data-id="${esc(timer.id)}">${ICONS.close}</button>
     </div>
@@ -741,6 +807,7 @@ function renderGroupOverrideSummary(group) {
     parts.push(p ? p.label : group.profile);
   }
   if (group.model) parts.push(group.model);
+  if (group.contextMode && group.contextMode !== 'default') parts.push(`context:${group.contextMode}`);
   if (group.effort) parts.push(`think:${group.effort}`);
   if (group.mcpProfile) parts.push(`mcp:${group.mcpProfile}`);
   if (group.usesBrowser === true) parts.push('browser:on');
@@ -748,35 +815,54 @@ function renderGroupOverrideSummary(group) {
   return parts.length ? `<span class="sched-group-overrides">${esc(parts.join(' · '))}</span>` : '';
 }
 
+function collectGroupEditorDraft() {
+  if (!_groupEditorDraft || !$('sched-ge-name')) return;
+  const browserRaw = $('sched-ge-browser')?.value || '';
+  Object.assign(_groupEditorDraft, {
+    name: $('sched-ge-name')?.value || _groupEditorDraft.name,
+    color: $('sched-ge-color')?.value || _groupEditorDraft.color,
+    profile: $('sched-ge-profile')?.value || null,
+    model: $('sched-ge-model')?.value || null,
+    contextMode: $('sched-ge-context')?.value || null,
+    effort: $('sched-ge-effort')?.value || null,
+    mcpProfile: $('sched-ge-mcp')?.value || null,
+    codexAccountId: $('sched-ge-account')?.value || null,
+    usesBrowser: browserRaw === '' ? undefined : browserRaw === 'true',
+  });
+}
+
 function renderGroupEditor(group) {
   const d = _groupEditorDraft || group;
   const profileForModels = d.profile || 'claude-code';
+  const accountId = d.codexAccountId || 'default';
   const profileOptions = [
     `<option value=""${!d.profile ? ' selected' : ''}>No override</option>`,
     ...CLI_PROFILES.map(p => `<option value="${p.id}"${d.profile === p.id ? ' selected' : ''}>${p.label}</option>`),
   ].join('');
-  const modelOptions = renderModelOptions(profileForModels, d.model || '', { showService: true });
+  const modelOptions = renderModelOptions(profileForModels, d.model || '', { showService: true, accountId });
+  const contextOptions = renderContextOptions(profileForModels, d.model, d.contextMode, { accountId, inherit: true });
   const effortOptions = renderEffortOptions(profileForModels, d.effort || '');
   const mcpOptions = renderMcpOptions(d.mcpProfile || '');
   const accountOptions = renderAccountOptions(d.codexAccountId || '', true);
   const showEffort = profileSupportsEffort(profileForModels);
   const showMcp = profileForModels !== 'claude-code';
   const showAccount = profileForModels === 'codex';
-  if (showAccount) ensureCodexAccountsLoaded(() => renderGroupsTab());
+  if (showAccount) ensureCodexAccountsLoaded(() => { collectGroupEditorDraft(); renderGroupsTab(); });
   if (showMcp && !Object.keys(getCachedMcpProfilePresets()).length) {
-    fetchMcpProfilePresets().then(() => { if (_panel && _groupEditorId) renderGroupsTab(); });
+    fetchMcpProfilePresets().then(() => { if (_panel && _groupEditorId) { collectGroupEditorDraft(); renderGroupsTab(); } });
   }
   const browserValue = d.usesBrowser === true ? 'true' : d.usesBrowser === false ? 'false' : '';
   return `
     <div class="sched-group-editor-body">
       <div class="sched-form-grid compact">
-        <label class="sched-field wide"><span>Name</span><input id="sched-ge-name" type="text" value="${esc(group.name)}"></label>
-        <label class="sched-field"><span>Color</span><input id="sched-ge-color" type="color" value="${esc(group.color || '#4fc3f7')}"></label>
+        <label class="sched-field wide"><span>Name</span><input id="sched-ge-name" type="text" value="${esc(d.name)}"></label>
+        <label class="sched-field"><span>Color</span><input id="sched-ge-color" type="color" value="${esc(d.color || '#4fc3f7')}"></label>
       </div>
       <div class="sched-section-head" style="margin-top:10px"><h4>Launch Overrides</h4><span>Applies to all schedules in this group (schedule-level overrides take priority)</span></div>
       <div class="sched-form-grid">
         <label class="sched-field"><span>CLI</span><select id="sched-ge-profile">${profileOptions}</select></label>
         <label class="sched-field"><span>Model</span><select id="sched-ge-model">${modelOptions}</select></label>
+        <label class="sched-field"><span>Context</span><select id="sched-ge-context">${contextOptions}</select></label>
         <label class="sched-field" style="${showEffort ? '' : 'display:none'}"><span>Think</span><select id="sched-ge-effort">
           <option value=""${!d.effort ? ' selected' : ''}>No override</option>
           ${effortOptions}
@@ -848,17 +934,34 @@ function renderGroupsTab() {
     const profileSelect = $('sched-ge-profile');
     if (profileSelect) {
       profileSelect.addEventListener('change', () => {
+        collectGroupEditorDraft();
         _groupEditorDraft.profile = profileSelect.value || null;
         _groupEditorDraft.model = null;
+        _groupEditorDraft.contextMode = _groupEditorDraft.profile ? 'default' : null;
         _groupEditorDraft.effort = null;
         _groupEditorDraft.mcpProfile = null;
         _groupEditorDraft.codexAccountId = null;
-        ensureModelsForProfile(_groupEditorDraft.profile || 'claude-code').then(() => renderGroupsTab());
+        ensureModelsForProfile(_groupEditorDraft.profile || 'claude-code', false, _groupEditorDraft.codexAccountId || 'default').then(() => renderGroupsTab());
         renderGroupsTab();
       });
     }
+    $('sched-ge-model')?.addEventListener('change', (e) => {
+      _groupEditorDraft.model = e.target.value || null;
+      _groupEditorDraft.contextMode = _groupEditorDraft.model ? 'default' : null;
+      const select = $('sched-ge-context');
+      if (select) select.innerHTML = renderContextOptions(_groupEditorDraft.profile || 'claude-code', _groupEditorDraft.model, _groupEditorDraft.contextMode, { accountId: _groupEditorDraft.codexAccountId || 'default', inherit: true });
+    });
+    $('sched-ge-context')?.addEventListener('change', (e) => { _groupEditorDraft.contextMode = e.target.value || null; });
     $('sched-ge-account')?.addEventListener('change', (e) => {
       _groupEditorDraft.codexAccountId = e.target.value || null;
+      _groupEditorDraft.contextMode = 'default';
+      ensureModelsForProfile('codex', false, _groupEditorDraft.codexAccountId || 'default').then(() => {
+        const account = _groupEditorDraft.codexAccountId || 'default';
+        const modelSelect = $('sched-ge-model');
+        if (modelSelect) modelSelect.innerHTML = renderModelOptions('codex', _groupEditorDraft.model, { accountId: account });
+        const contextSelect = $('sched-ge-context');
+        if (contextSelect) contextSelect.innerHTML = renderContextOptions('codex', _groupEditorDraft.model, _groupEditorDraft.contextMode, { accountId: account, inherit: true });
+      });
     });
   }
 }
@@ -903,15 +1006,19 @@ function renderScheduleEditor() {
     ...CLI_PROFILES.map(p => `<option value="${p.id}"${s.profile === p.id ? ' selected' : ''}>${p.label}</option>`),
   ].join('');
   const template = getTemplate(s.templateId);
-  const profileForModels = s.profile || template?.profile || 'claude-code';
-  const modelOptions = renderModelOptions(profileForModels, s.model || '', { showService: true });
+  const group = s.groupId ? getGroup(s.groupId) : null;
+  const profileForModels = s.profile || group?.profile || template?.profile || 'claude-code';
+  const accountId = s.codexAccountId || group?.codexAccountId || template?.codexAccountId || 'default';
+  const effectiveModel = s.model || group?.model || template?.model || null;
+  const modelOptions = renderModelOptions(profileForModels, s.model || '', { showService: true, accountId });
+  const contextOptions = renderContextOptions(profileForModels, effectiveModel, s.contextMode, { accountId, inherit: true });
   const effortOptions = renderEffortOptions(profileForModels, s.effort || '');
   const mcpOptions = renderMcpOptions(s.mcpProfile || '');
   const accountOptions = renderAccountOptions(s.codexAccountId || '', true);
   const showEffort = profileSupportsEffort(profileForModels);
   const showMcp = profileForModels !== 'claude-code';
   const showAccount = profileForModels === 'codex';
-  if (showAccount) ensureCodexAccountsLoaded(() => { if (_panel && _scheduleEditor) renderScheduleEditor(); });
+  if (showAccount) ensureCodexAccountsLoaded(() => { if (_panel && _scheduleEditor) { collectScheduleEditorDraft(); renderScheduleEditor(); } });
   const browserValue = s.usesBrowser === true ? 'true' : s.usesBrowser === false ? 'false' : '';
   const presetsHTML = CRON_PRESET_GROUPS.map(group => `
     <div class="sched-preset-group">
@@ -925,12 +1032,15 @@ function renderScheduleEditor() {
       <input type="text" data-day="${idx}" value="${esc(s.dayThemes?.[String(idx)]?.contextOverride || '')}" placeholder="Optional context override">
     </label>`).join('');
 
-  if (isDynamicModelProfile(profileForModels) && !_modelLoadRequests.has(profileForModels)) {
-    _modelLoadRequests.add(profileForModels);
-    ensureModelsForProfile(profileForModels).then(() => { if (_panel && _scheduleEditor) renderScheduleEditor(); });
+  const modelLoadKey = `${profileForModels}:${accountId}`;
+  if (isDynamicModelProfile(profileForModels) && !_modelLoadRequests.has(modelLoadKey)) {
+    _modelLoadRequests.add(modelLoadKey);
+    ensureModelsForProfile(profileForModels, false, accountId).then(() => {
+      if (_panel && _scheduleEditor) { collectScheduleEditorDraft(); renderScheduleEditor(); }
+    });
   }
   if (showMcp && !Object.keys(getCachedMcpProfilePresets()).length) {
-    fetchMcpProfilePresets().then(() => { if (_panel && _scheduleEditor) renderScheduleEditor(); });
+    fetchMcpProfilePresets().then(() => { if (_panel && _scheduleEditor) { collectScheduleEditorDraft(); renderScheduleEditor(); } });
   }
 
   main.innerHTML = `
@@ -961,6 +1071,7 @@ function renderScheduleEditor() {
           <div class="sched-form-grid">
             <label class="sched-field"><span>CLI</span><select id="sched-ed-profile">${profileOptions}</select></label>
             <label class="sched-field"><span>Model</span><select id="sched-ed-model">${modelOptions}</select></label>
+            <label class="sched-field"><span>Context</span><select id="sched-ed-context">${contextOptions}</select></label>
             <label class="sched-field" style="${showEffort ? '' : 'display:none'}"><span>Think</span><select id="sched-ed-effort">
               <option value=""${!s.effort ? ' selected' : ''}>Template/default</option>
               ${effortOptions}
@@ -997,19 +1108,44 @@ function renderScheduleEditor() {
     collectScheduleEditorDraft();
     _scheduleEditor.templateId = e.target.value || null;
     _scheduleEditor.model = null;
+    _scheduleEditor.contextMode = null;
     _scheduleEditor.effort = null;
     _scheduleEditor.mcpProfile = null;
     _scheduleEditor.codexAccountId = null;
+    renderScheduleEditor();
+  });
+  $('sched-ed-group')?.addEventListener('change', (e) => {
+    collectScheduleEditorDraft();
+    _scheduleEditor.groupId = e.target.value || null;
     renderScheduleEditor();
   });
   $('sched-ed-profile')?.addEventListener('change', (e) => {
     collectScheduleEditorDraft();
     _scheduleEditor.profile = e.target.value || null;
     _scheduleEditor.model = null;
+    _scheduleEditor.contextMode = _scheduleEditor.profile ? 'default' : null;
     _scheduleEditor.effort = null;
     _scheduleEditor.mcpProfile = null;
     _scheduleEditor.codexAccountId = null;
     renderScheduleEditor();
+  });
+  $('sched-ed-model')?.addEventListener('change', (e) => {
+    _scheduleEditor.model = e.target.value || null;
+    _scheduleEditor.contextMode = _scheduleEditor.model ? 'default' : null;
+    const select = $('sched-ed-context');
+    if (select) select.innerHTML = renderContextOptions(profileForModels, _scheduleEditor.model || group?.model || template?.model, _scheduleEditor.contextMode, { accountId, inherit: true });
+  });
+  $('sched-ed-context')?.addEventListener('change', (e) => { _scheduleEditor.contextMode = e.target.value || null; });
+  $('sched-ed-account')?.addEventListener('change', (e) => {
+    _scheduleEditor.codexAccountId = e.target.value || null;
+    _scheduleEditor.contextMode = 'default';
+    const nextAccount = _scheduleEditor.codexAccountId || 'default';
+    ensureModelsForProfile('codex', false, nextAccount).then(() => {
+      const modelSelect = $('sched-ed-model');
+      if (modelSelect) modelSelect.innerHTML = renderModelOptions('codex', _scheduleEditor.model, { accountId: nextAccount, showService: true });
+      const contextSelect = $('sched-ed-context');
+      if (contextSelect) contextSelect.innerHTML = renderContextOptions('codex', _scheduleEditor.model || effectiveModel, _scheduleEditor.contextMode, { accountId: nextAccount, inherit: true });
+    });
   });
 }
 
@@ -1035,6 +1171,7 @@ function collectScheduleEditorDraft() {
     cron: $('sched-ed-cron')?.value || _scheduleEditor.cron,
     profile: $('sched-ed-profile')?.value || null,
     model: $('sched-ed-model')?.value || null,
+    contextMode: $('sched-ed-context')?.value || null,
     effort: $('sched-ed-effort')?.value || null,
     mcpProfile: $('sched-ed-mcp')?.value || null,
     codexAccountId: $('sched-ed-account')?.value || null,
@@ -1052,11 +1189,20 @@ async function saveScheduleFromEditor() {
   const groupId = $('sched-ed-group')?.value || null;
   const profile = $('sched-ed-profile')?.value || null;
   const model = $('sched-ed-model')?.value || null;
+  const contextMode = $('sched-ed-context')?.value || null;
   const template = getTemplate(templateId);
-  const effectiveProfile = profile || template?.profile || 'claude-code';
+  const group = groupId ? getGroup(groupId) : null;
+  const effectiveProfile = profile || group?.profile || template?.profile || 'claude-code';
   const effort = normalizeEffortForProfile(effectiveProfile, $('sched-ed-effort')?.value || null);
   const mcpProfile = $('sched-ed-mcp')?.value || null;
   const codexAccountId = effectiveProfile === 'codex' ? ($('sched-ed-account')?.value || null) : null;
+  const effectiveModel = model || group?.model || template?.model || null;
+  if (!modelChoiceAvailable(effectiveProfile, effectiveModel, codexAccountId || group?.codexAccountId || template?.codexAccountId || 'default')) {
+    showToast('This model is unavailable for the selected account'); return;
+  }
+  if (!contextChoiceAvailable(effectiveProfile, effectiveModel, contextMode, codexAccountId || group?.codexAccountId || template?.codexAccountId || 'default')) {
+    showToast('This context window is unavailable for the selected model and account'); return;
+  }
   const browserRaw = $('sched-ed-browser')?.value || '';
   const enabled = $('sched-ed-enabled')?.checked ?? true;
 
@@ -1072,7 +1218,7 @@ async function saveScheduleFromEditor() {
 
   const payload = {
     name, templateId, cron, timezone, groupId, enabled, dayThemes,
-    profile, model, effort, mcpProfile, codexAccountId,
+    profile, model, contextMode, effort, mcpProfile, codexAccountId,
     usesBrowser: browserRaw === '' ? null : browserRaw === 'true',
   };
 
@@ -1338,8 +1484,13 @@ async function editGroup(id) {
     _groupEditorId = id;
     const group = getGroup(id);
     if (group) {
-      _groupEditorDraft = { name: group.name, color: group.color, profile: group.profile || null, model: group.model || null, effort: group.effort || null, mcpProfile: group.mcpProfile || null, codexAccountId: group.codexAccountId || null, usesBrowser: group.usesBrowser };
-      ensureModelsForProfile(_groupEditorDraft.profile || 'claude-code').then(() => renderGroupsTab());
+      _groupEditorDraft = { name: group.name, color: group.color, profile: group.profile || null, model: group.model || null, contextMode: group.contextMode || null, effort: group.effort || null, mcpProfile: group.mcpProfile || null, codexAccountId: group.codexAccountId || null, usesBrowser: group.usesBrowser };
+      ensureModelsForProfile(_groupEditorDraft.profile || 'claude-code', false, _groupEditorDraft.codexAccountId || 'default').then(() => {
+        if (_groupEditorDraft) {
+          collectGroupEditorDraft();
+          renderGroupsTab();
+        }
+      });
     }
   }
   renderGroupsTab();
@@ -1351,10 +1502,17 @@ async function saveGroupFromEditor(id) {
   const color = $('sched-ge-color')?.value || null;
   const profile = $('sched-ge-profile')?.value || null;
   const model = $('sched-ge-model')?.value || null;
+  const contextMode = $('sched-ge-context')?.value || null;
   const effectiveProfile = profile || 'claude-code';
   const effort = normalizeEffortForProfile(effectiveProfile, $('sched-ge-effort')?.value || null);
   const mcpProfile = $('sched-ge-mcp')?.value || null;
   const codexAccountId = effectiveProfile === 'codex' ? ($('sched-ge-account')?.value || null) : null;
+  if (!modelChoiceAvailable(effectiveProfile, model, codexAccountId || 'default')) {
+    showToast('This model is unavailable for the selected account'); return;
+  }
+  if (!contextChoiceAvailable(effectiveProfile, model, contextMode, codexAccountId || 'default')) {
+    showToast('This context window is unavailable for the selected model and account'); return;
+  }
   const browserRaw = $('sched-ge-browser')?.value || '';
   const usesBrowser = browserRaw === '' ? null : browserRaw === 'true';
   // Send only the launch fields the user actually changed. The server pushes changed
@@ -1364,7 +1522,7 @@ async function saveGroupFromEditor(id) {
   const group = getGroup(id) || {};
   const norm = (v) => (v === '' || v == null ? null : v);
   const payload = { name, color };
-  for (const [k, v] of [['profile', profile], ['model', model], ['effort', effort], ['mcpProfile', mcpProfile], ['codexAccountId', codexAccountId], ['usesBrowser', usesBrowser]]) {
+  for (const [k, v] of [['profile', profile], ['model', model], ['contextMode', contextMode], ['effort', effort], ['mcpProfile', mcpProfile], ['codexAccountId', codexAccountId], ['usesBrowser', usesBrowser]]) {
     if (norm(v) !== norm(group[k])) payload[k] = v;
   }
   try {
@@ -1539,6 +1697,13 @@ async function createQuickTimerFromForm(runNow) {
   const template = getTemplate(templateId);
   const profile = $('sched-qt-profile')?.value || 'claude-code';
   const model = $('sched-qt-model')?.value || null;
+  const contextMode = $('sched-qt-context')?.value || 'default';
+  if (!modelChoiceAvailable(profile, model, _launchAccount)) {
+    showToast('This model is unavailable for the selected account'); return;
+  }
+  if (!contextChoiceAvailable(profile, model, contextMode, _launchAccount)) {
+    showToast('This context window is unavailable for the selected model and account'); return;
+  }
   const effortRaw = $('sched-qt-effort')?.value || null;
   const effort = normalizeEffortForProfile(profile, effortRaw);
   const mcpProfile = profile !== 'claude-code' ? ($('sched-qt-mcp')?.value || _launchMcpProfile || null) : null;
@@ -1547,15 +1712,15 @@ async function createQuickTimerFromForm(runNow) {
   try {
     if (runNow) {
       const result = await triggerQuickTimerNow(templateId, {
-        profile, model, effort, mcpProfile, usesBrowser, codexAccountId,
+        profile, model, contextMode, effort, mcpProfile, usesBrowser, codexAccountId,
         sidepanelWindowId: getNativeLoopRouterWindowId(),
         sidepanelClaimToken: getNativeLoopRouterClaimToken(),
       });
       showToast(`Running now: ${result.templateName}`);
     } else {
-      const result = await createQuickTimer(templateId, minutes, { profile, model, effort, mcpProfile, usesBrowser, codexAccountId });
+      const result = await createQuickTimer(templateId, minutes, { profile, model, contextMode, effort, mcpProfile, usesBrowser, codexAccountId });
       if (!_quickTimers.some(t => t.id === result.timerId)) {
-        _quickTimers.push({ id: result.timerId, templateId, templateName: result.templateName, firesAt: result.firesAt, minutes: result.minutes, profile: result.profile, model: result.model, effort: result.effort, mcpProfile: result.mcpProfile, usesBrowser: result.usesBrowser });
+        _quickTimers.push({ id: result.timerId, templateId, templateName: result.templateName, firesAt: result.firesAt, minutes: result.minutes, profile: result.profile, model: result.model, contextMode: result.contextMode, effort: result.effort, mcpProfile: result.mcpProfile, usesBrowser: result.usesBrowser });
       }
       _selectedQtMinutes = null;
       showToast(`Timer set: ${result.templateName}`);
@@ -1695,7 +1860,7 @@ function setupSync() {
   });
   on('sync:quick-timer:set', (data) => {
     if (data?.timerId && !_quickTimers.some(t => t.id === data.timerId)) {
-      _quickTimers.push({ id: data.timerId, templateName: data.templateName, firesAt: data.firesAt, minutes: data.minutes, profile: data.profile, model: data.model, effort: data.effort, mcpProfile: data.mcpProfile, usesBrowser: data.usesBrowser });
+      _quickTimers.push({ id: data.timerId, templateName: data.templateName, firesAt: data.firesAt, minutes: data.minutes, profile: data.profile, model: data.model, contextMode: data.contextMode, effort: data.effort, mcpProfile: data.mcpProfile, usesBrowser: data.usesBrowser });
       if (_panel && _tab === 'timers') renderTimersTab();
     }
   });

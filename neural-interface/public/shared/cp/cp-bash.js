@@ -1,6 +1,7 @@
 // ── Bash cards: streaming-style output, exit pill, background task tray ──
 
 import { cpCtx } from './cp-ctx.js';
+import { backgroundTaskIdOf } from './cp-tool-results.js';
 
 const ANSI_RE = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*(?:\x07|\x1b\\)/g;
 export function stripAnsi(text) { return String(text ?? '').replace(ANSI_RE, ''); }
@@ -77,8 +78,11 @@ export function buildBashCard(block, tab) {
     elapsed.textContent = fmtElapsed(Date.now() - startedAt);
   }, 1000);
 
-  // Background task registration (bgTasks is inherited by agent scopes — root map)
-  if (isBg && tab?.bgTasks) {
+  // Background task registration (bgTasks is inherited by agent scopes — root map).
+  // A launch replayed from the transcript is history: it is not registered as
+  // running (nothing would ever end it). What is still alive comes from the
+  // session's own task list (reattach / background_tasks_changed → tab.tasks).
+  if (isBg && tab?.bgTasks && !tab._replaying) {
     tab.bgTasks.set(block.id, {
       toolUseId: block.id,
       label: (i.command || '').slice(0, 40),
@@ -103,18 +107,22 @@ function extractResultText(ev) {
   return stripAnsi(text);
 }
 
-export function updateBashResult(card, ev, tab) {
+// `view` is the typed result (cp-tool-results.js describeToolResult) when the
+// SDK delivered one: stdout apart from stderr, interrupted, the background id.
+export function updateBashResult(card, ev, tab, view = null) {
   card.dataset.resolved = '1';
   const out = card.querySelector('.cp-bash-out');
   const exitPill = card.querySelector('.cp-exit-pill');
-  const text = extractResultText(ev);
+  const merged = extractResultText(ev);
+  // stderr has its own section when the typed result split the streams.
+  const text = typeof view?.stdout === 'string' ? stripAnsi(view.stdout) : merged;
   if (out && text) {
     out.hidden = false;
     out.textContent = text.length > MAX_OUT_CHARS ? text.slice(0, MAX_OUT_CHARS) + '\n…(truncated)' : text;
     out.scrollTop = out.scrollHeight;
   }
   if (exitPill) {
-    const m = /exit code:?\s+(\d+)/i.exec(text);
+    const m = /exit code:?\s+(\d+)/i.exec(merged);
     const code = m ? Number(m[1]) : (ev.is_error ? 1 : 0);
     exitPill.textContent = String(code);
     exitPill.classList.add(code === 0 ? 'cp-exit-ok' : 'cp-exit-err');
@@ -122,18 +130,46 @@ export function updateBashResult(card, ev, tab) {
   }
   card.classList.add(ev.is_error ? 'tool-error' : 'tool-ok');
 
-  // Background tasks: capture the shell id from the result so BashOutput calls
-  // can be routed back to this card.
-  const task = tab?.bgTasks?.get(ev.tool_use_id);
+  // Background tasks: the task id the CLI gave this command (the typed result's
+  // backgroundTaskId, or "…running in background with ID: b46v84ew2"), so a
+  // later TaskStop and the live task list can be tied back to this card. A
+  // command the user or the CLI moved to the background after it started has
+  // no entry yet. A result replayed from the transcript registers nothing, like
+  // its call (buildBashCard): that launch is history, nothing would ever end
+  // the entry, and what still runs comes from the session's live task list.
+  const bgId = backgroundTaskIdOf(view?.bgTaskId ? { backgroundTaskId: view.bgTaskId } : ev.tool_use_result, merged);
+  let task = tab?.bgTasks?.get(ev.tool_use_id);
+  if (!task && bgId && view?.bgTaskId && tab?.bgTasks && !tab._replaying) {
+    task = {
+      toolUseId: ev.tool_use_id,
+      label: (card.querySelector('.cp-bash-cmd')?.textContent || 'background command').slice(0, 40),
+      status: 'running', bashId: null, cardEl: card, startedAt: Date.now(), dismissed: false,
+    };
+    tab.bgTasks.set(ev.tool_use_id, task);
+  }
   if (task) {
-    // Strict patterns only — a bare /bash\w+/ matches incidental words (bashrc…)
-    const idMatch = /\bID:?\s+(bash_[a-z0-9]+)\b/i.exec(text)
-      || /\bshell(?:\s*id)?[:\s]+(bash_[a-z0-9]+)\b/i.exec(text)
-      || /\b(bash_[a-z0-9]+)\b/.exec(text);
-    if (idMatch) task.bashId = idMatch[1];
+    if (bgId) task.bashId = bgId;
     // A bg Bash tool_result just acknowledges the launch — keep status running.
     renderBgTray(tab?._rootTab || tab);
   }
+}
+
+// background_tasks_changed carries every live task: a background command whose
+// id is no longer in it has ended.
+export function reconcileBgTasks(tab, liveTasks) {
+  if (!tab?.bgTasks?.size) return false;
+  const live = new Set((Array.isArray(liveTasks) ? liveTasks : []).map(t => t?.task_id).filter(Boolean));
+  let changed = false;
+  for (const task of tab.bgTasks.values()) {
+    if (!task.bashId || task.status !== 'running') continue;
+    if (live.has(task.bashId)) { task.seenLive = true; continue; }
+    // Only a task the list once carried can be told finished by its absence.
+    if (!task.seenLive) continue;
+    task.status = 'done';
+    changed = true;
+  }
+  if (changed) renderBgTray(tab);
+  return changed;
 }
 
 // BashOutput / KillShell / TaskStop awareness: route output to the origin card.

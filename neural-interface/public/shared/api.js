@@ -511,11 +511,40 @@ export async function uninstallSkillsBundled(dirName) {
   });
 }
 
-export async function importSkillsBundle(bundle, scope, projectPath) {
-  return jsonFetch('/api/skills-studio/import', {
+// `overwrite`: the user confirmed that files which already exist may be replaced.
+// The server refuses a bundle that would replace any without it, naming them:
+// that error carries `code: 'import_exists'` and `existing` (the file names).
+export async function importSkillsBundle(bundle, scope, projectPath, { overwrite = false } = {}) {
+  const res = await fetch('/api/skills-studio/import', {
     method: 'POST',
-    ...jsonBody({ bundle, scope, projectPath }),
+    ...jsonBody({ bundle, scope, projectPath, ...(overwrite === true ? { overwrite: true } : {}) }),
   });
+  if (res.ok) return res.json();
+  let body = {};
+  try { body = (await res.json()) || {}; } catch {}
+  const err = new Error(body.error || `HTTP ${res.status}`);
+  if (res.status === 403) {
+    // Same as jsonFetch: the global toast for a guest.
+    console.warn('[api] 403 Forbidden: /api/skills-studio/import');
+    window.dispatchEvent(new CustomEvent('synabun:forbidden', { detail: err.message }));
+    err.forbidden = true;
+  } else if (res.status === 409 && body.code === 'import_exists' && Array.isArray(body.existing)) {
+    err.code = body.code;
+    err.existing = body.existing.filter(n => typeof n === 'string');
+  }
+  throw err;
+}
+
+// Import a bundle, asking before anything that exists is replaced: `ask(existing)`
+// gets the names the server refused over, and only `true` sends the bundle
+// again as confirmed. Resolves to null when the answer was not a yes.
+export async function importSkillsBundleAsking(bundle, scope, projectPath, ask) {
+  try { return await importSkillsBundle(bundle, scope, projectPath); }
+  catch (err) {
+    if (err?.code !== 'import_exists' || !Array.isArray(err.existing) || !err.existing.length) throw err;
+    if ((await ask(err.existing)) !== true) return null;
+    return importSkillsBundle(bundle, scope, projectPath, { overwrite: true });
+  }
 }
 
 export function getSkillsExportUrl(encodedId) {
@@ -595,63 +624,59 @@ export async function fetchProjects() {
   return jsonFetch('/api/projects');
 }
 
-// ─── Style Guide ────────────────────────────
-
-export async function fetchStyleGuide(projectPath) {
-  return jsonFetch(`/api/style-guide?projectPath=${encodeURIComponent(projectPath)}`);
-}
-
-export async function saveStyleGuide(projectPath, config) {
-  return jsonFetch('/api/style-guide', {
-    method: 'PUT',
-    ...jsonBody({ projectPath, config }),
-  });
-}
-
+// ─── Style Guide v2 ────────────────────────────
+const sgQuery = values => new URLSearchParams(Object.entries(values).filter(([,v]) => v !== undefined && v !== null)).toString();
+const sgPost = (path, body) => jsonFetch(path, { method: 'POST', ...jsonBody(body) });
+export const fetchStyleGuide = projectPath => jsonFetch(`/api/style-guide?${sgQuery({projectPath})}`);
+export const saveStyleGuide = (projectPath, config, {source = 'ui', label} = {}) => jsonFetch('/api/style-guide', { method: 'PUT', ...jsonBody({projectPath, config, source, label}) });
+export const fetchStyleGuideProjects = () => jsonFetch('/api/style-guide/projects');
+export const fetchStyleGuideDefaults = projectPath => jsonFetch(`/api/style-guide/defaults?${sgQuery({projectPath})}`);
+export const fetchStyleGuideSummary = (projectPath, taskClass) => jsonFetch(`/api/style-guide/summary?${sgQuery({projectPath, taskClass})}`);
+export const fetchStyleGuideFonts = q => jsonFetch(`/api/style-guide/fonts?${sgQuery({q})}`);
+export const fetchStyleGuidePresets = () => jsonFetch('/api/style-guide/presets');
+export const applyStyleGuidePreset = (projectPath, presetId, merge) => sgPost('/api/style-guide/presets/apply', {projectPath, presetId, merge});
+export const importStyleGuide = (projectPath, options) => sgPost('/api/style-guide/import', {projectPath, ...options});
+export const writeStyleGuideExports = (projectPath, formats) => sgPost('/api/style-guide/export', {projectPath, formats});
+export const fetchStyleGuideHistory = projectPath => jsonFetch(`/api/style-guide/history?${sgQuery({projectPath})}`);
+export const restoreStyleGuideRevision = (projectPath, revision) => sgPost('/api/style-guide/history/restore', {projectPath, revision});
+export const fetchStyleGuideProposals = (projectPath, status) => jsonFetch(`/api/style-guide/proposals?${sgQuery({projectPath, status})}`);
+export const proposeStyleGuide = (projectPath, options) => sgPost('/api/style-guide/proposals', {projectPath, ...options});
+export const acceptStyleGuideProposal = (projectPath, id) => sgPost(`/api/style-guide/proposals/${encodeURIComponent(id)}/accept`, {projectPath});
+export const rejectStyleGuideProposal = (projectPath, id) => sgPost(`/api/style-guide/proposals/${encodeURIComponent(id)}/reject`, {projectPath});
+export const styleGuideContrast = options => sgPost('/api/style-guide/contrast', options);
+export const styleGuideScale = (base, options = {}) => sgPost('/api/style-guide/scale', {base, ...options});
+export const styleGuideDarkSemantic = (light, neutral) => sgPost('/api/style-guide/dark-semantic', {light, neutral});
+export const setStyleGuidePointers = (projectPath, enabled) => sgPost('/api/style-guide/pointers', {projectPath, enabled});
 export async function fetchStyleGuidePreviewMd(projectPath) {
-  const res = await fetch(`/api/style-guide/preview-md?projectPath=${encodeURIComponent(projectPath)}`);
+  const res = await fetch(`/api/style-guide/preview-md?${sgQuery({projectPath})}`);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.text();
 }
-
-export async function uploadStyleGuideLogo(projectPath, file, { variantId, name, bg } = {}) {
-  const params = new URLSearchParams({ projectPath });
-  if (variantId) params.set('variantId', variantId);
-  if (name) params.set('name', name);
-  if (bg) params.set('bg', bg);
-  const res = await fetch(`/api/style-guide/logo?${params}`, {
-    method: 'POST',
-    headers: { 'Content-Type': file.type || 'image/png' },
-    body: file,
-  });
-  if (!res.ok) {
-    let msg = `HTTP ${res.status}`;
-    try { const body = await res.json(); msg = body.error || msg; } catch {}
-    throw new Error(msg);
-  }
+export async function fetchStyleGuideExport(projectPath, format, theme) {
+  const data = await jsonFetch(`/api/style-guide/export?${sgQuery({projectPath, format, theme, as:'json'})}`);
+  return data.text;
+}
+export async function uploadStyleGuideLogo(projectPath, file, {variantId, name, bg, kind} = {}) {
+  const res = await fetch(`/api/style-guide/logo?${sgQuery({projectPath, variantId, name, bg, kind})}`, {method:'POST', headers:{'Content-Type':file.type || 'image/png'}, body:file});
+  if (!res.ok) { const data = await res.json().catch(() => ({})); throw new Error(data.error || `HTTP ${res.status}`); }
   return res.json();
 }
-
-export async function deleteStyleGuideLogo(projectPath, variantId) {
-  return jsonFetch(`/api/style-guide/logo/${encodeURIComponent(variantId)}?projectPath=${encodeURIComponent(projectPath)}`, {
-    method: 'DELETE',
-  });
-}
-
+export const deleteStyleGuideLogo = (projectPath, variantId) => jsonFetch(`/api/style-guide/logo/${encodeURIComponent(variantId)}?${sgQuery({projectPath})}`, {method:'DELETE'});
 export function styleGuideAssetUrl(assetsHash, file) {
-  if (!assetsHash || !file) return '';
-  return `/api/style-guide/assets/${assetsHash}/${encodeURIComponent(file)}`;
+  return assetsHash && file ? `/api/style-guide/assets/${encodeURIComponent(assetsHash)}/${encodeURIComponent(file)}` : '';
 }
 
 // ─── Claude Code Sessions (Resume) ─────
 
-export async function fetchClaudeSessions({ project, limit, offset, search, refresh } = {}) {
+export async function fetchClaudeSessions({ project, limit, offset, search, refresh, account } = {}) {
   const params = new URLSearchParams();
   if (project) params.set('project', project);
   if (limit) params.set('limit', String(limit));
   if (offset) params.set('offset', String(offset));
   if (search) params.set('search', search);
   if (refresh) params.set('refresh', 'true');
+  // A named Claude account: the session is looked up (by its id, in `search`) in that account's catalogue.
+  if (account && account !== 'default') params.set('account', account);
   return jsonFetch(`/api/claude-code/sessions?${params}`);
 }
 
@@ -901,15 +926,112 @@ export async function writeMcpJson(payload) {
   });
 }
 
-export async function writeInstructions(payload) {
-  return jsonFetch('/api/setup/write-instructions', {
+export async function completeSetup() {
+  return jsonFetch('/api/setup/complete', { method: 'POST' });
+}
+
+// ─── SynaBun rules (lib/rulesets/api.js) ──
+// A server that has not been restarted since the update answers 404 here.
+// The status read returns null for that; the actions throw, and callers show
+// the copy-only fallback or a "Restart SynaBun to finish this update" hint.
+// An action the files said no to is a 409 and throws too, with the server's
+// own sentence as the message: an edited copy on install, damaged markers, a
+// symlink, a file that changed while it was being written (code
+// CHANGED_UNDERNEATH) or another SynaBun process on the same data home that
+// was still at work when the wait ran out (code BUSY, `retryable: true`).
+// The last two mean "try again": nothing was changed. A 500 with code
+// LOCK_UNAVAILABLE means the server could not use its own lock file.
+
+/**
+ * {ok, version, autoUpdate, hosts:{<host>:{carrier, path, state, installedVersion, managed, error, …}}, legacy, notice},
+ * or null when the route is missing, refuses or fails. A host may also carry
+ * `replaceable: false` (state `modified`, but the file has no SynaBun markers:
+ * Replace and a forced Remove are refused), `partialRemoval: {at, error, paths}`
+ * (the last removal could not take these files out) and, for OpenCode,
+ * `entry: 'user'` (a line in config.json that SynaBun did not add lists the
+ * file: Remove keeps both unless it is sent with force). State `newer` is an
+ * untouched copy a newer SynaBun wrote: it is never updated from here. Unlike the calls below
+ * it never throws and never raises the guest "forbidden" toast: badges and
+ * reminders read it in the background on every page load.
+ */
+export async function fetchRulesStatus() {
+  try {
+    const res = await fetch('/api/setup/rules');
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data?.ok ? data : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The rendered text for a host (claude, codex, opencode, gemini, cursor) or the copy-only `coexistence` snippet. */
+export async function fetchRulesText(host) {
+  return jsonFetch(`/api/setup/rules/${encodeURIComponent(host)}/text`);
+}
+
+/**
+ * Install or update a host's rules. `force` replaces one well-formed copy the
+ * user edited (it is backed up first); damaged or duplicate markers are
+ * refused either way.
+ */
+export async function installRules(host, { force = false } = {}) {
+  return jsonFetch(`/api/setup/rules/${encodeURIComponent(host)}`, {
     method: 'POST',
-    ...jsonBody(payload),
+    ...jsonBody({ force }),
   });
 }
 
-export async function completeSetup() {
-  return jsonFetch('/api/setup/complete', { method: 'POST' });
+/**
+ * Remove a host's rules. A copy the user edited stays in place and is listed
+ * in the result's `kept` (`ok` is still true); `force` removes it after a
+ * backup. Throws (409) for what is refused either way: damaged markers, a
+ * symlink, a config that cannot be rewritten.
+ */
+export async function removeRules(host, { force = false } = {}) {
+  return jsonFetch(`/api/setup/rules/${encodeURIComponent(host)}`, { method: 'DELETE', ...jsonBody({ force }) });
+}
+
+/** Install for every connected tool, or only for `hosts` when given. */
+export async function installAllRules(hosts = null) {
+  return jsonFetch('/api/setup/rules/install-all', {
+    method: 'POST',
+    ...jsonBody(Array.isArray(hosts) && hosts.length ? { hosts } : {}),
+  });
+}
+
+export async function setRulesAutoUpdate(autoUpdate) {
+  return jsonFetch('/api/setup/rules/settings', {
+    method: 'PUT',
+    ...jsonBody({ autoUpdate: !!autoUpdate }),
+  });
+}
+
+/** Take a hash-exact pasted copy out of one of the files the status lists under `legacy`. */
+export async function removeLegacyRules(path) {
+  return jsonFetch('/api/setup/rules/legacy/remove', {
+    method: 'POST',
+    ...jsonBody({ path }),
+  });
+}
+
+export async function ackRulesNotice() {
+  return jsonFetch('/api/setup/rules/notice/ack', { method: 'POST' });
+}
+
+/**
+ * The text to show or copy for a host, from the rules route and, when that is
+ * not there, from the older read-only endpoint. Throws when neither answers.
+ */
+export async function fetchRulesTextWithFallback(host) {
+  try {
+    const data = await fetchRulesText(host);
+    if (data?.text) return data.text;
+  } catch { /* older server: try the endpoint it does have */ }
+  const format = host === 'opencode' ? 'generic' : host;
+  const data = await jsonFetch(`/api/claude-code/ruleset?format=${encodeURIComponent(format)}`);
+  if (!data?.ruleset) throw new Error('Rules text not available');
+  return data.ruleset;
 }
 
 // ─── Invite / Session Sharing ─────────────
@@ -1159,10 +1281,10 @@ export async function fetchScheduleTimers() {
 
 // ── Quick Timers ──
 
-export async function createQuickTimer(templateId, minutes, { profile, model, effort, mcpProfile, usesBrowser, codexAccountId } = {}) {
+export async function createQuickTimer(templateId, minutes, { profile, model, contextMode, effort, mcpProfile, usesBrowser, codexAccountId } = {}) {
   return jsonFetch('/api/quick-timer', {
     method: 'POST',
-    ...jsonBody({ templateId, minutes, profile, model, effort, mcpProfile, usesBrowser, codexAccountId }),
+    ...jsonBody({ templateId, minutes, profile, model, contextMode, effort, mcpProfile, usesBrowser, codexAccountId }),
   });
 }
 
@@ -1177,13 +1299,13 @@ export async function cancelQuickTimer(id) {
 }
 
 export async function triggerQuickTimerNow(templateId, {
-  profile, model, effort, mcpProfile, usesBrowser, codexAccountId,
+  profile, model, contextMode, effort, mcpProfile, usesBrowser, codexAccountId,
   sidepanelWindowId, sidepanelClaimToken,
 } = {}) {
   return jsonFetch('/api/quick-timer/now', {
     method: 'POST',
     ...jsonBody({
-      templateId, profile, model, effort, mcpProfile, usesBrowser, codexAccountId,
+      templateId, profile, model, contextMode, effort, mcpProfile, usesBrowser, codexAccountId,
       sidepanelWindowId, sidepanelClaimToken,
     }),
   });

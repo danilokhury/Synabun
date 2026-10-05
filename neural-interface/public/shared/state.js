@@ -1,3 +1,4 @@
+import { routeSidepanelEvent } from './ui-sidepanel-runtime.js';
 // ═══════════════════════════════════════════
 // STATE — shared reactive state store + event bus
 // ═══════════════════════════════════════════
@@ -45,7 +46,7 @@ export const state = {
   linkedSessionIds: new Set(),  // session IDs currently in an active link
 
   // ── Side panel routing ──
-  lastActivePanel: 'claude',   // 'claude' | 'codex' | 'opencode' — used by whiteboard "Send to Panel"
+  lastActivePanel: 'claude',   // 'claude' | 'codex' | 'opencode' | 'assistant' — used by whiteboard "Send to Panel"
 };
 
 
@@ -61,6 +62,7 @@ const _listeners = {};
  * @param {*}      [data]  Payload passed to each listener
  */
 export function emit(event, data) {
+  if (routeSidepanelEvent(event, data)) return;
   const fns = _listeners[event];
   if (fns) fns.forEach(fn => fn(data));
 }

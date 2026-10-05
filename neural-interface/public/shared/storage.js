@@ -1,3 +1,4 @@
+import { hostedSidepanelId, sidepanelHost } from './ui-sidepanel-runtime.js';
 // ═══════════════════════════════════════════
 // STORAGE — Server-synced persistent state
 // ═══════════════════════════════════════════
@@ -67,11 +68,12 @@ async function _hydrate() {
 }
 
 // Self-hydrate at module load — blocks dependents until cache is ready
-await _hydrate();
+if (hostedSidepanelId && sidepanelHost()?.storage) _hydrated = true;
+else await _hydrate();
 
 // ── Drop-in API (mirrors localStorage) ───────────────
 
-export const storage = {
+export const storage = (hostedSidepanelId && sidepanelHost()?.storageFor(hostedSidepanelId)) || {
   getItem(key) {
     return _cache[key] ?? null;
   },

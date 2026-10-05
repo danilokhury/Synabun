@@ -78,7 +78,6 @@ export function getSharedHTML() {
       <a class="view-toggle-btn${is3D ? '' : ' active'}" href="${is3D ? '/index2d.html' : '#'}" id="nav-2d-link">${t('nav.toggle2d')}</a>
       <a class="view-toggle-btn${is3D ? ' active' : ''}" href="${is3D ? '#' : '/'}" id="nav-3d-link">${t('nav.toggle3d')}</a>
       <span class="view-toggle-sep"></span>
-      <a class="view-toggle-btn" href="/claude-chat.html" id="nav-chat-link" data-tooltip="SynaBun Chat — full Claude Code UI" style="display:none">Chat</a>
     </div>
     <div class="bar-sep"></div>
 
@@ -89,6 +88,12 @@ export function getSharedHTML() {
       <div class="menubar-item" data-menu="apps">
         <button class="menubar-label">${t('nav.apps')}</button>
         <div class="menubar-dropdown glass">
+          <div class="menu-item" id="menu-terminal-assistant">
+            <span class="menu-check"></span>
+            <span class="menu-text"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="8" y="5.5" width="11" height="5" rx="2.5" transform="rotate(-12 13.5 8)"/><rect x="4.5" y="12.5" width="11" height="5" rx="2.5" transform="rotate(-12 10 15)"/></svg></span> ${t('menu.apps.assistant')}</span>
+            <span class="menu-shortcut" data-keybind-for="launch-assistant"></span>
+          </div>
+          <div class="menu-sep"></div>
           <div class="menu-item" id="menu-terminal-claude">
             <span class="menu-check"></span>
             <span class="menu-text"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M4.709 15.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.698-.073-2.339-.097-2.266-.122-.571-.121L0 11.784l.055-.352.48-.321.686.06 1.52.103 2.278.158 1.652.097 2.449.255h.389l.055-.157-.134-.098-.103-.097-2.358-1.596-2.552-1.688-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.893.686 1.908 1.476 2.491 1.833.365.304.145-.103.019-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97 2.97 0 01-.104-.729L6.283.134 6.696 0l.996.134.42.364.62 1.414 1.002 2.229 1.555 3.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286 1.851-.559 2.903-.364 1.942h.212l.243-.242.985-1.306 1.652-2.064.73-.82.85-.904.547-.431h1.033l.76 1.129-.34 1.166-1.064 1.347-.881 1.142-1.264 1.7-.79 1.36.073.11.188-.02 2.856-.606 1.543-.28 1.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061 1.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093 1.068 2.006 1.81 2.509 2.33.127.578-.322.455-.34-.049-2.205-1.657-.851-.747-1.926-1.62h-.128v.17l.444.649 2.345 3.521.122 1.08-.17.353-.608.213-.668-.122-1.374-1.925-1.415-2.167-1.143-1.943-.14.08-.674 7.254-.316.37-.729.28-.607-.461-.322-.747.322-1.476.389-1.924.315-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434 1.967-2.18 2.945-1.726 1.845-.414.164-.717-.37.067-.662.401-.589 2.388-3.036 1.44-1.882.93-1.086-.006-.158h-.055L4.132 18.56l-1.13.146-.487-.456.061-.746.231-.243 1.908-1.312-.006.006z"/></svg></span> ${t('menu.apps.claudeCode')} <span class="count-badge count-badge--green menu-update-badge" id="claude-menu-update-badge"></span></span>
@@ -144,10 +149,6 @@ export function getSharedHTML() {
           <div class="menu-item" id="menu-app-leonardo">
             <span class="menu-check"></span>
             <span class="menu-text"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M9.5 2l1.5 3.5L14.5 7l-3.5 1.5L9.5 12l-1.5-3.5L4.5 7l3.5-1.5L9.5 2zM19 10l1 2 2 1-2 1-1 2-1-2-2-1 2-1 1-2zM5 17l1 2 2 1-2 1-1 2-1-2-2-1 2-1 1-2z"/></svg></span> Leonardo.AI</span>
-          </div>
-          <div class="menu-item" id="menu-open-styleguide">
-            <span class="menu-check"></span>
-            <span class="menu-text"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></span> Style Guide</span>
           </div>
           <div class="menu-sep"></div>
           <div class="menu-item" id="menu-command-runner">
@@ -217,6 +218,38 @@ export function getSharedHTML() {
         </div>
       </div>
 
+${is3D ? `
+      <!-- Map menu (3D memory map) -->
+      <div class="menubar-item" data-menu="graph">
+        <button class="menubar-label">${t('nav.map')}</button>
+        <div class="menubar-dropdown glass">
+          <div class="menu-item" id="menu-map-frame-all">
+            <span class="menu-check"></span>
+            <span class="menu-text">${t('map.menu.frameAll')}</span>
+            <span class="menu-shortcut" data-keybind-for="map-frame-all"></span>
+          </div>
+          <div class="menu-sep"></div>
+          <div class="menu-item menu-toggle" id="menu-map-neighbors">
+            <span class="menu-check">&#10003;</span>
+            <span class="menu-text">${t('map.menu.neighbors')}</span>
+          </div>
+          <div class="menu-item menu-toggle" id="menu-map-recency">
+            <span class="menu-check">&#10003;</span>
+            <span class="menu-text">${t('map.menu.recency')}</span>
+          </div>
+          <div class="menu-item menu-toggle" id="menu-map-grid">
+            <span class="menu-check">&#10003;</span>
+            <span class="menu-text">${t('map.menu.grid')}</span>
+          </div>
+          <div class="menu-sep"></div>
+          <div class="menu-item" id="menu-map-rebuild">
+            <span class="menu-check"></span>
+            <span class="menu-text">${t('map.menu.rebuild')}</span>
+          </div>
+        </div>
+      </div>
+
+` : `
       <!-- Graph menu -->
       <div class="menubar-item" data-menu="graph">
         <button class="menubar-label">${t('nav.graph')}</button>
@@ -271,6 +304,7 @@ export function getSharedHTML() {
         </div>
       </div>
 
+`}
       <!-- Skills menu -->
       <div class="menubar-item" data-menu="skills">
         <button class="menubar-label">${t('nav.skills')}</button>
@@ -279,6 +313,10 @@ export function getSharedHTML() {
             <span class="menu-check"></span>
             <span class="menu-text">${t('menu.skills.skillsStudio')}</span>
             <span class="menu-shortcut">K</span>
+          </div>
+          <div class="menu-item" id="menu-open-styleguide">
+            <span class="menu-check"></span>
+            <span class="menu-text"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></span> ${t('styleguide.title')}</span>
           </div>
           <div class="menu-sep"></div>
           <div class="menu-item" id="menu-skills-new">
@@ -463,6 +501,9 @@ export function getSharedHTML() {
     </div>
   </div>
   </div>
+  <button id="topright-assistant-panel-btn" class="topright-icon-btn" data-tooltip="${t('assistant.panel.open')}">
+    <svg viewBox="0 0 24 24" fill="currentColor"><rect x="8" y="5.5" width="11" height="5" rx="2.5" transform="rotate(-12 13.5 8)"/><rect x="4.5" y="12.5" width="11" height="5" rx="2.5" transform="rotate(-12 10 15)"/></svg>
+  </button>
   <button id="topright-claude-panel-btn" class="topright-icon-btn" data-tooltip="Claude Code side panel">
     <svg fill="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M4.709 15.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.698-.073-2.339-.097-2.266-.122-.571-.121L0 11.784l.055-.352.48-.321.686.06 1.52.103 2.278.158 1.652.097 2.449.255h.389l.055-.157-.134-.098-.103-.097-2.358-1.596-2.552-1.688-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.893.686 1.908 1.476 2.491 1.833.365.304.145-.103.019-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97 2.97 0 01-.104-.729L6.283.134 6.696 0l.996.134.42.364.62 1.414 1.002 2.229 1.555 3.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286 1.851-.559 2.903-.364 1.942h.212l.243-.242.985-1.306 1.652-2.064.73-.82.85-.904.547-.431h1.033l.76 1.129-.34 1.166-1.064 1.347-.881 1.142-1.264 1.7-.79 1.36.073.11.188-.02 2.856-.606 1.543-.28 1.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061 1.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093 1.068 2.006 1.81 2.509 2.33.127.578-.322.455-.34-.049-2.205-1.657-.851-.747-1.926-1.62h-.128v.17l.444.649 2.345 3.521.122 1.08-.17.353-.608.213-.668-.122-1.374-1.925-1.415-2.167-1.143-1.943-.14.08-.674 7.254-.316.37-.729.28-.607-.461-.322-.747.322-1.476.389-1.924.315-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434 1.967-2.18 2.945-1.726 1.845-.414.164-.717-.37.067-.662.401-.589 2.388-3.036 1.44-1.882.93-1.086-.006-.158h-.055L4.132 18.56l-1.13.146-.487-.456.061-.746.231-.243 1.908-1.312-.006.006z"/></svg>
     <span class="count-badge count-badge--green" id="claude-update-badge"></span>
@@ -475,7 +516,7 @@ export function getSharedHTML() {
     <svg viewBox="0 0 24 30" fill="currentColor"><path d="M18 6H6V24H18V6ZM24 30H0V0H24V30Z"/></svg>
     <span class="count-badge count-badge--green" id="opencode-update-badge"></span>
   </button>
-  <button id="topright-collapse-btn" class="topright-collapse-btn" data-tooltip="Toggle toolbar">
+  <button id="topright-collapse-btn" class="topright-collapse-btn" data-tooltip="Hide all toolbars">
     <svg viewBox="0 0 24 24" class="collapse-chevron"><polyline points="9 18 15 12 9 6"/></svg>
     <span class="collapse-dots">
       <span></span><span></span><span></span>
@@ -723,8 +764,8 @@ export function getSharedHTML() {
   <div class="stat-divider"></div>
   <div>${t('stats.visible')} <span class="stat-value" id="stat-visible">0</span></div>
   <div class="stat-divider"></div>
-  <div>${t('stats.links')} <span class="stat-value" id="stat-links">0</span></div>
-  <div class="stat-divider"></div>
+  ${is3D ? '' : `<div>${t('stats.links')} <span class="stat-value" id="stat-links">0</span></div>
+  <div class="stat-divider"></div>`}
   <div id="stat-search-status"></div>
 </div>
 
@@ -732,9 +773,9 @@ export function getSharedHTML() {
 <div id="static-bg">
   <div class="focus-breathe"></div>
   <img src="synabun.png?v=2" alt="SynaBun" class="static-bg-logo">
-  <div id="wb-ruleset-alert" class="wb-ruleset-alert" aria-live="polite">
+  <div id="wb-ruleset-alert" class="wb-ruleset-alert hidden" aria-live="polite">
     <div class="wb-ruleset-alert-text">
-      Add <code>AGENTS.md</code> and <code>CLAUDE.md</code> rulesets so memory usage stays consistent.
+      A connected tool is missing SynaBun's rules, or its copy was edited. Open Setup to check.
     </div>
     <div class="wb-ruleset-alert-actions">
       <button type="button" id="wb-ruleset-settings" class="wb-ruleset-alert-btn">Setup</button>

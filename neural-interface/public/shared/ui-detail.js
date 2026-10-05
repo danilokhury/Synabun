@@ -1,3 +1,4 @@
+import { mountMemoryHistory } from './ui-memory-maintenance.js';
 // ═══════════════════════════════════════════
 // SynaBun Neural Interface — Detail Cards (Multi-Instance)
 // ═══════════════════════════════════════════
@@ -128,21 +129,19 @@ function showTagDeleteModal(tagName, onConfirm) {
 // MARKDOWN CONTENT EDITOR (edit mode)
 // ═══════════════════════════════════════════
 
-function enterEditMode(card, node) {
+async function enterEditMode(card, node) {
   const cardState = _openCards.get(node.id);
-  if (!cardState) return;
-
-  // Never edit a truncated graph payload — hydrate the full content first
-  if (node.payload.contentTruncated) {
-    fetchMemory(node.id).then((full) => {
-      const fullContent = full?.payload?.content ?? full?.content;
-      if (typeof fullContent === 'string') {
-        node.payload.content = fullContent;
-        delete node.payload.contentTruncated;
-      }
-      enterEditMode(card, node);
-    }).catch(() => {});
-    return;
+  if (!cardState || cardState.isEditing) return;
+  try {
+    const full = await fetchMemory(node.id);
+    if (!card.isConnected || _openCards.get(node.id) !== cardState) return;
+    if (typeof full?.payload?.content !== 'string') throw new Error('Could not load complete memory.');
+    node.payload.content=full.payload.content;
+    node.revision=full.revision;
+    delete node.payload.contentTruncated;
+  } catch(error) {
+    const warning=document.createElement('p');warning.textContent=error.message;
+    q(card,'content').prepend(warning);return;
   }
 
   cardState.isEditing = true;
@@ -279,10 +278,15 @@ async function exitEditMode(card, node, save) {
     const textarea = editor.querySelector('.md-textarea');
     const newContent = textarea.value;
     try {
-      await updateMemory(node.id, { content: newContent });
+      const saved = await updateMemory(node.id, { content: newContent, expected_revision: node.revision });
+      node.revision = saved.revision;
       node.payload.content = newContent;
     } catch (err) {
       console.error('Content save failed:', err);
+      let error = editor.querySelector('[data-save-error]');
+      if (!error) { error=document.createElement('p'); error.dataset.saveError='true';editor.append(error); }
+      error.textContent=err.message;
+      return; // Keep the unsaved draft available after a revision conflict.
     }
   }
 
@@ -623,6 +627,11 @@ export function openMemoryCard(node, savedPosition) {
 
   const panelId = 'detail-card-' + node.id.slice(0, 8);
   const card = createDetailCard(panelId);
+  if (!node.payload?._isOpenClaw && !isGuest()) mountMemoryHistory(card.querySelector('.detail-body'),node.id,async()=>{
+    const fresh=await fetchMemory(node.id);
+    if(fresh?.payload){node.payload=fresh.payload;const target=q(card,'content');if(target)target.innerHTML=formatMemoryContent(fresh.payload.content);}
+    emit('stats:update');
+  });
   const p = node.payload;
   const color = catColor(p.category);
 

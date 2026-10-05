@@ -12,7 +12,7 @@ import {
   fetchSkillsSubFile, saveSkillsSubFile, createSkillsSubFile, deleteSkillsSubFile,
   createSkillsArtifact, deleteSkillsArtifact, validateSkillsArtifact,
   installSkillsBundled, uninstallSkillsBundled,
-  importSkillsBundle, getSkillsExportUrl,
+  importSkillsBundleAsking, getSkillsExportUrl,
   getSkillsIconUrl, uploadSkillsIcon, deleteSkillsIcon,
 } from './api.js';
 
@@ -2747,6 +2747,14 @@ async function createFromWizard() {
 // IMPORT
 // ═══════════════════════════════════════════
 
+// What the import asks when the bundle names files that are already there.
+function importOverwriteQuestion(existing) {
+  const names = existing.slice(0, 12);
+  const more = existing.length - names.length;
+  const what = existing.length === 1 ? 'a file that already exists' : `${existing.length} files that already exist`;
+  return `This import would replace ${what}:\n\n${names.map(n => `  ${n}`).join('\n')}${more > 0 ? `\n  and ${more} more` : ''}\n\nReplace ${existing.length === 1 ? 'it' : 'them'}?`;
+}
+
 function triggerImport() {
   const input = document.createElement('input');
   input.type = 'file';
@@ -2768,7 +2776,10 @@ function triggerImport() {
       if (scope === 'project' && _projects.length > 0) {
         projectPath = _projects[0].path; // default to first project
       }
-      const result = await importSkillsBundle(bundle, scope, projectPath);
+      // A bundle that would replace files which are already there is refused by
+      // the server with their names: ask, and only a yes sends it again as confirmed.
+      const result = await importSkillsBundleAsking(bundle, scope, projectPath, (existing) => confirm(importOverwriteQuestion(existing)));
+      if (!result) { toast('Import cancelled. Nothing was replaced.', 'info'); return; }
       toast(`Imported "${result.name}"!`, 'info');
       await loadLibrary();
       renderLibrary();

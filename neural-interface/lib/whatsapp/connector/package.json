@@ -1,0 +1,8 @@
+{
+  "name": "synabun-whatsapp-connector",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "baileys": "7.0.0-rc14"
+  }
+}

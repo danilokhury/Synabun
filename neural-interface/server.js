@@ -1,3 +1,42 @@
+import { connectClaudeSkin } from './lib/claude-skin-connect.js';
+import { createHistoryCollector, createChainIndex, transcriptNotFound } from './lib/claude-history.js';
+import { readPermissionRules, removePermissionRule, userSettingsFile } from './lib/claude-permission-rules.js';
+import { slimResolvedSettings } from './lib/claude-settings-view.js';
+import { resolveBypassPolicy } from './lib/claude-bypass-policy.js';
+import { createSessionOps } from './lib/claude-session-ops.js';
+import { createSessionCleanup, dropSessionCost, deleteSessionRows } from './lib/claude-session-cleanup.js';
+import { createSessionListOverlay, overlaySessions, matchesSessionFilter } from './lib/claude-session-list.js';
+import { findSessionTranscript, sessionProjects, confineArtifact, confineSubPath, confineToRoot, staysInside, isInsideReal, isInside, isPlainName, PathConfineError } from './lib/path-confine.js';
+import { readConfinedFile, writeConfinedFile, makeConfinedDir, removeConfinedEntry, listConfined, openConfinedStream } from './lib/confined-fs.js';
+import { createClaudeAccounts as createPanelClaudeAccounts } from './lib/claude-accounts.js';
+import { claudeLegacyPricing, claudeUsageCostUsd } from './lib/assistant-pricing.js';
+import { HOOK_SCRIPTS, hookDefinitionsForEvent, hookCommandString, isSynaBunHookCommand, sweepSettingsHooks, ensureHookRoot } from '../lib/claude-hooks.js';
+import { browserV2Enabled, browserRequestMiddleware, assertBrowserRequestActive, browserActionTimeout, markBrowserActionStarted, runBrowserRequest, cancellableBrowserDelay, measureBrowserPhase, createEngagementScheduler, engagementTargetSelector, isEngagementWriteSelector, isXShortcutPublish, isXScriptedWrite } from './lib/browser-execution.js';
+import { describeLocatorMatches, healLocatorByText, validNthMatch, captureTargetIdentity, matchesTargetIdentity } from './lib/browser-targets.js';
+import { getInteractiveHints, collectSemanticContext, buildAssist, describeTargetFacts, verifyHealTarget, createAssistContextStore } from './lib/browser-semantic-context.js';
+import { createBrowserAssistRouter } from './lib/browser-assist-api.js';
+import { handleReflect as reflectMemory } from '../mcp-server/dist/tools/reflect.js';
+import { startMemoryCapture } from './lib/memory-session-capture.js';
+import { createMemoryApi } from './lib/memory-api.js';
+import { createMemoryMapService, createMemoryMapApi } from './lib/memory-map-api.js';
+import { createAiSnapshotStore, settleBrowserPage } from './lib/browser-snapshots.js';
+import { runBrowserExtraction, readBrowserContentHtml } from './lib/browser-extraction.js';
+import { attachConsoleBuffer, readConsoleBuffer, parseConsoleSince } from './lib/browser-console.js';
+import { parseScreenshotOptions, captureScreenshot, screenshotPathRefusal, defaultScreenshotPath, writeScreenshotFile } from './lib/browser-screenshot.js';
+import { memoryRevision } from '../mcp-server/dist/services/memory-maintenance.js';
+import { startGatedMemoryMaintenance } from './lib/memory-timers.js';
+import { createEventLoopMonitor } from './lib/event-loop-monitor.js';
+import { createRulesetInstaller } from './lib/rulesets/installer.js';
+import { registerRulesetRoutes, registerLegacyRulesetRoutes } from './lib/rulesets/api.js';
+import { createPtyHostManager } from './lib/pty-host/manager.js';
+import { isAllowedHost, isAllowedWebSocketOrigin, refuseUpgrade } from './lib/http-guards.js';
+import { createPhoneAuthority } from './lib/remote-policy.js';
+import { buildTerminalEnv, interactiveShellArgs, cliWrapperArgs } from './lib/terminal-env.js';
+import { startJudgeBackfill, stopJudgeBackfill } from '../mcp-server/dist/services/memory-judge-backfill.js';
+import { judgeLoopGoal } from '../mcp-server/dist/services/memory-judgments.js';
+import { surfaceConfig as typesafeSurfaceConfig, typesafeConfig, invalidateTypeSafeConfig } from '../mcp-server/dist/services/typesafe-config.js';
+import { autoHealGate } from '../mcp-server/dist/services/browser-assist-gate.js';
+import { typesafeEnabled } from '../mcp-server/dist/services/typesafe.js';
 import {
   BROWSER_EVALUATE_DEADLINE_MS,
   BROWSER_RECOVERY_PROBE_DEADLINE_MS,
@@ -30,9 +69,10 @@ import express from 'express';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { basename, delimiter, dirname, extname, join, resolve, sep } from 'path';
 import { config as dotenvConfig } from 'dotenv';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlinkSync, rmSync, statSync, lstatSync, symlinkSync, fstatSync, renameSync, cpSync, copyFileSync, appendFileSync, openSync, readSync, closeSync, chmodSync, watch as fsWatch, createWriteStream, createReadStream, realpathSync, fstat as fstatCb, read as readCb } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlinkSync, rmSync, statSync, lstatSync, symlinkSync, renameSync, cpSync, copyFileSync, openSync, readSync, closeSync, chmodSync, watch as fsWatch, createWriteStream, createReadStream, realpathSync } from 'fs';
 import * as fsp from 'fs/promises';
 import { createInterface as createReadlineInterface } from 'readline';
+import { jsonlLines } from './lib/jsonl-lines.js';
 import { randomBytes, randomUUID, createHash, pbkdf2Sync, createDecipheriv } from 'crypto';
 import { exec, execFile, execSync, spawn, spawnSync } from 'child_process';
 import { promisify } from 'util';
@@ -49,9 +89,6 @@ import os from 'node:os';
 // during AskUserQuestion. Undici's default bodyTimeout (300s) would otherwise
 // kill the socket mid-turn with `TypeError: terminated`.
 const _ocpLongPollDispatcher = new UndiciAgent({ bodyTimeout: 0, headersTimeout: 0 });
-let pty = null;
-try { pty = (await import('node-pty')).default; }
-catch (err) { console.warn('[pty] node-pty not available — terminal features disabled:', err.message); }
 import AdmZip from 'adm-zip';
 import { chromium } from 'playwright';
 import { NodeHtmlMarkdown } from 'node-html-markdown';
@@ -76,14 +113,28 @@ import {
   getBackupHealth,
   listBackupSnapshots,
   loadBackupConfig as loadBackupConfigFile,
+  nextBackupDueMs,
   normalizeBackupConfig,
   saveBackupConfig as saveBackupConfigFile,
 } from './lib/backup-service.js';
-import * as opencodeClient from './lib/opencode-client.js';
+import {
+  extractZipEntry,
+  openZipArchive,
+  readBackupManifest,
+  verifyBackupChecksums,
+} from './lib/backup-zip-reader.js';
+import { planRestoreWrites, removeRestoreUpload, saveRestoreUpload } from './lib/system-restore.js';
 import * as opencodeV2Client from './lib/opencode-v2-client.js';
+import {
+  handleOpencodeV2Request, opencodeV2WsCapabilities, opencodeSdkVersion, buildOpencodeRuntimeMcpConfig, shouldRelayOpencodeV2Message,
+  buildSessionListQuery, mapSessionListRow, OPENCODE_V2_WS_MUTATION_TYPES, guardOpencodeV2Request,
+} from './lib/opencode-v2-ws-requests.js';
 import { NativeLoopRuntime, isNativeLoopProfile } from './lib/native-loop-runtime.js';
+import { migrateAutomationContextFiles, normalizeAutomationRecord } from './lib/automation-storage-migration.js';
+import { createLoopGoalJudge } from './lib/native-loop-goal.js';
 import { McpProfileRefreshCoordinator } from './lib/mcp-profile-refresh-coordinator.js';
-import { buildManagedOpenCodeSynabunEntry } from './lib/opencode-runtime-config.js';
+import { buildManagedOpenCodeSynabunEntry, withOpenCodeBrowserPolicy } from './lib/opencode-runtime-config.js';
+import { codexReasoningEffort } from './lib/effort-levels.js';
 import {
   createClaudeNativeLoopAdapter,
   createCodexNativeLoopAdapter,
@@ -98,6 +149,12 @@ import {
   mergeCodexModelContextCapabilities,
   resolveCodexExtendedContext,
 } from './lib/codex-model-context.js';
+import {
+  claudeAutomationSupportsOneMillion,
+  normalizeAutomationSelection,
+  resolveAutomationOverrides,
+  validAutomationContextMode,
+} from './public/shared/automation-context.js';
 import {
   claudeRuntime,
   ensureVendoredExecutables,
@@ -114,7 +171,8 @@ import {
   resolveScheduleRunPresentation,
 } from './lib/schedule-launch-intent.js';
 import * as moreLogin from './lib/morelogin.js';
-import { renderDesignMd, defaultStyleGuide, STYLE_GUIDE_LOGO_DIR } from './lib/design-md.js';
+import { createStyleGuideStore } from './lib/style-guide/store.js';
+import { registerStyleGuideRoutes } from './lib/style-guide/api.js';
 import { initBlobStore, blobGetNamespace, blobGet, blobPut, blobDelete, blobClearNamespace, blobPrune, closeBlobStore } from './lib/ui-blob-store.js';
 import { memoCache, asyncPool } from './lib/memo-cache.js';
 import {
@@ -143,7 +201,7 @@ import {
   retireCodexChildProcess,
   shouldReleaseCodexWriter,
 } from './lib/codex-writer-lifecycle.js';
-import { hydrateCodexThreadHistory } from './lib/codex-thread-history.js';
+import { hydrateCodexThreadHistory, revertCodexThreadHistory } from './lib/codex-thread-history.js';
 import {
   buildCodexConfigEdits,
   buildCodexMcpServerApprovalEdit,
@@ -151,6 +209,11 @@ import {
   getCodexMcpServerConfig,
 } from './lib/codex-mcp-approvals.js';
 import { buildCodexCollaborationMode } from './lib/codex-collaboration-mode.js';
+import { CodexCapabilityRegistry, classifyCodexRpcError, isCodexUnsupportedMethod, parseCodexVersion, validateCodexConfigRequirements } from './lib/codex-capabilities.js';
+import { CodexVerificationOperation, codexVerificationCardParams } from './lib/codex-user-verification.js';
+import { automaticCodexServerReply, buildCodexReviewTarget, codexPagination, handleCodexCompatMessage, listCodexPages, validateCodexServerResponse } from './lib/codex-compat-rpc.js';
+import { createCodexAppBoundary } from './lib/codex-mcp-apps.js';
+import { CodexSessionSettingsStore } from './lib/codex-session-settings.js';
 import {
   CodexRequestJournal,
   CodexRequestJournalPersistenceError,
@@ -162,10 +225,13 @@ import { generateSessionTitle } from './lib/session-title-generator.js';
 import {
   CLAUDE_EFFORT_LEVELS,
   CLAUDE_FALLBACK_MODELS,
+  alignedClaudeExecutable,
   checkClaudeCliSkew,
   discoverClaudeModels,
 } from './lib/claude-model-catalog.js';
 import { getAugmentedPath } from './lib/augmented-path.js';
+import { semverNewer, synabunReleaseChannel } from './lib/synabun-version.js';
+import { selectSynabunUpdate, buildSynabunInstallPlan, refuseStaleUpdateClick } from './lib/synabun-update-plan.js';
 import {
   listCodexSessionsFromAccounts,
   mergeCodexSessionSummaries,
@@ -179,8 +245,19 @@ import {
   upsertCodexMcpConfig,
   upsertCodexMcpContent,
 } from '../mcp-server/dist/services/codex-config-heal.js';
+import {
+  DEFAULT_VIEWPORT as WB_DEFAULT_VIEWPORT,
+  usableRect as wbUsableRect,
+  ensureElementGeometry as wbEnsureElementGeometry,
+  elementBox as wbElementBox,
+  elementCenter as wbElementCenter,
+  clampBoxToRect as wbClampBoxToRect,
+  clampPointsToRect as wbClampPointsToRect,
+  convertPctInPlace as wbConvertPctInPlace,
+} from '../mcp-server/dist/services/whiteboard-geometry.js';
 import { ensureProjectCategories } from '../hooks/claude-code/shared.mjs';
-import { getDataHome, getDataHomeDiagnostics } from '../lib/paths.js';
+import { getDataHome, getDataHomeDiagnostics, pathIsInside } from '../lib/paths.js';
+import { launcherLogPath } from '../lib/first-launch-protection.js';
 import {
   getDb, closeDb, getDbPath, getEmbedding, getEmbeddingBatch, getEmbeddingDims, warmupEmbeddings,
   encodeVector, decodeVector, cosineSimilarity,
@@ -194,6 +271,7 @@ import {
   getKvConfig, setKvConfig, EMBEDDING_MODEL,
   searchSessionFts, listSessionCache, getSessionCacheEntry, clearSessionCacheProvider,
   memoryVectors, getRecentXEngagements, getXActionBudget, getXEngagementTier, X_ACTION_TYPES,
+  getFbActionBudget, getFbEngagementTier, FB_ACTION_TYPES,
 } from './lib/db.js';
 import {
   rebuildClaudeCache, rebuildCodexCache, rebuildOpencodeCache,
@@ -213,10 +291,6 @@ import {
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
-// Raw-fd async I/O (fs.promises only takes FileHandles). fs.read has a custom
-// promisify that resolves { bytesRead, buffer }.
-const fstatAsync = promisify(fstatCb);
-const readFdAsync = promisify(readCb);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -248,6 +322,12 @@ dotenvConfig({ path: resolve(getDataHome(), '.env') });
 const app = express();
 const SERVER_BOOT_ID = randomUUID();
 let _nativeLoopRuntime = null;
+// Main assistant (bottom CLI region): brains + orchestration. Wired after the
+// native loop runtime exists; see the "Main assistant" block below.
+let _assistantRuntime = null;
+let _assistantDispatcher = null;
+// The Assistant's model catalog (lib/assistant-catalog.js): Settings → WhatsApp checks its brain choice against it.
+let _assistantCatalog = null;
 app.use(express.json({ limit: '25mb' }));
 
 // Clean body-parser error handler: ui-state / whiteboard persist base64 images and can
@@ -323,12 +403,23 @@ const ADMIN_ONLY_PREFIXES = [
   '/api/bridges', '/api/keybinds',
   '/api/cli',
   '/api/file-content',
+  '/api/codex/plans',
   '/api/sidepanel',
   '/api/sidepanel-runs',
   '/api/loop',
   '/api/schedules',
   '/api/schedule-groups',
   '/api/quick-timer',
+  '/api/diagnostics',
+  '/api/desktop',
+  // WhatsApp Link: linking, the owner and the permission level (its router
+  // refuses guests and remote callers on its own too: lib/http-guards.js).
+  '/api/whatsapp',
+  // TypeSafe key/config/backfill, and the hook routes: /hook-recall returns
+  // memory content and /hook-judge spends the host's judgment budget.
+  '/api/typesafe',
+  '/api/hook-',
+  '/api/map/rebuild',
 ];
 
 app.use((req, res, next) => {
@@ -361,16 +452,24 @@ app.use((req, res, next) => {
   next();
 });
 
+import { registerCodexPlanRoutes } from './lib/codex-plan-store.js';
+import { createOpencodeHiddenModelsRouter, createOpencodeHiddenModelsStore } from './lib/opencode-hidden-models.js';
+
 const PORT = process.env.NEURAL_PORT || 3344;
 // SQLite database is used directly via lib/db.js
 const EMBEDDING_DIMS = getEmbeddingDims();
 const PACKAGE_ROOT = resolve(__dirname, '..');
 const DATA_HOME = getDataHome();
+registerCodexPlanRoutes(app, resolve(DATA_HOME, 'data', 'codex-plans'));
 const DATA_HOME_DIAGNOSTICS = getDataHomeDiagnostics(DATA_HOME, PACKAGE_ROOT);
 const CODEX_SIDEPANEL_PERMISSIONS_PATH = resolve(DATA_HOME, 'data', 'codex-sidepanel-permissions.json');
+// Settings → OpenCode model checkboxes (a denylist). Source of truth for the
+// Assistant catalog; browser windows mirror it into localStorage.
+const opencodeHiddenModels = createOpencodeHiddenModelsStore({ path: resolve(DATA_HOME, 'data', 'opencode-hidden-models.json') });
 const codexSidepanelPermissionStore = new CodexSidepanelPermissionStore(CODEX_SIDEPANEL_PERMISSIONS_PATH);
 const CODEX_REQUEST_JOURNAL_PATH = resolve(DATA_HOME, 'data', 'codex-request-journal.json');
 const codexRequestJournal = new CodexRequestJournal(CODEX_REQUEST_JOURNAL_PATH);
+const codexSessionSettings = new CodexSessionSettingsStore(resolve(DATA_HOME, 'data', 'codex-session-settings.json'));
 // Ensure in-process MCP server uses the same data directory as spawned agent processes
 if (!process.env.MEMORY_DATA_DIR) process.env.MEMORY_DATA_DIR = resolve(DATA_HOME, 'mcp-data');
 if (DATA_HOME_DIAGNOSTICS.dataHomeInsidePackage) {
@@ -655,6 +754,10 @@ app.get('/offline.html', (req, res) => {
     `const projectDir = localStorage.getItem('synabun-project-dir') || ${JSON.stringify(PACKAGE_ROOT)};`
   ));
 });
+
+// The standalone Claude chat page was retired (the sidepanel replaced it): its
+// old address lands on the main interface.
+app.get('/claude-chat.html', (req, res) => res.redirect('/'));
 
 app.use('/i18n', express.static(join(__dirname, 'i18n')));
 app.use('/games', express.static(join(__dirname, 'games')));
@@ -1141,28 +1244,101 @@ app.post('/api/cache/invalidate', (req, res) => {
   res.json({ ok: true });
 });
 
-// POST /api/search — Semantic vector search
-app.post('/api/search', async (req, res) => {
+app.use('/api', createMemoryApi({
+  heartbeat: (id) => { const entry = sessionRegistry.get(id); if (entry) entry.lastActivity = Date.now(); },
+  invalidate: (id, type = 'memory:updated') => { invalidateMemoriesCache(type,id); broadcastSync({type,id}); },
+  // The TypeSafe key lives in ~/.synabun/.env beside the other secrets; the
+  // router cannot import these helpers from here, so they are handed in.
+  envPath: ENV_PATH, parseEnvFile, writeEnvFile,
+  benchDir: resolve(PACKAGE_ROOT, 'benchmarks'),
+}));
+
+// Memory map (the 3D view): positions for every memory, computed in a worker
+// and kept current from the memory_changes feed. See lib/memory-map-api.js.
+const memoryMap = createMemoryMapService({
+  getDb,
+  memoryVectors,
+  cachePath: resolve(DATA_HOME, 'data', 'memory-map.json'),
+  loadCategories,
+  categoriesPath: getCategoriesPath,
+  getBridgeNodes: () => (loadBridgeConfig('openclaw')?.enabled ? _openclawNodes : []),
+  getBridgeCategories: () => (loadBridgeConfig('openclaw')?.enabled ? _openclawCategories : []),
+  broadcast: (message) => broadcastSync(message),
+});
+app.use('/api', createMemoryMapApi(memoryMap));
+
+// ── WhatsApp Link (lib/whatsapp/, docs/whatsapp.md) ──
+// Mounted here, synchronously, so the Settings tab never meets a 404 while the
+// Assistant boots; the service itself is built by startWhatsAppLink() at the
+// end of the Assistant block (its bridge drives the runtime and dispatcher).
+// Until then GET /status reports "unavailable" with a reason and every other
+// route answers 503. Nothing on this app compresses or buffers responses, so
+// the NDJSON link and claim streams reach the tab as they are written.
+let _whatsapp = null;
+let _whatsappDownReason = String(process.env.SYNABUN_WHATSAPP || '').trim().toLowerCase() === 'off' ? 'env' : 'starting';
+app.use('/api/whatsapp', (req, res, next) => {
+  if (_whatsapp) return _whatsapp.router(req, res, next);
+  res.set('Cache-Control', 'no-store');
+  if (req.method === 'GET' && req.path === '/status') return res.json({ ok: true, v: 1, state: 'unavailable', reason: _whatsappDownReason });
+  const error = _whatsappDownReason === 'starting' ? 'WhatsApp is still starting. Try again in a few seconds.' : 'WhatsApp is not available on this computer.';
+  return res.status(503).json({ ok: false, code: 'UNAVAILABLE', error });
+});
+
+/** The Assistant panel's last-used brain (asst-state.js readStoredBrain), for new WhatsApp conversations. */
+function readAssistantPanelBrain() {
   try {
-    const { query, limit = 10 } = req.body;
-    if (!query) return res.status(400).json({ error: 'query required' });
+    const raw = loadUiState()['neural-assistant-brain'];
+    const brain = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    return brain && typeof brain === 'object' && !Array.isArray(brain) ? brain : null;
+  } catch { return null; }
+}
 
-    const embedding = await getEmbedding(query);
-    const results = dbSearchMemories(embedding, limit, { scoreThreshold: 0.3 });
-
-    res.json({
-      results: results.map(r => ({
-        id: r.id,
-        score: r.score,
-        payload: { content: r.content, category: r.category, subcategory: r.subcategory, project: r.project, tags: r.tags, importance: r.importance, source: r.source, created_at: r.created_at, updated_at: r.updated_at, accessed_at: r.accessed_at, access_count: r.access_count, related_files: r.related_files, related_memory_ids: r.related_memory_ids, trashed_at: r.trashed_at },
-      })),
-      query,
+// What lets a WhatsApp conversation control the Mac is a capability, not the string "whatsapp"
+// (lib/remote-policy.js createPhoneAuthority). Made once, here, and split: the Assistant runtime
+// gets the verifier, the WhatsApp service the issuer, the one bridge it builds the capability.
+// Not exported, on no object, in no route: nothing else in the process can grant computer use.
+const _phoneAuthority = createPhoneAuthority();
+/**
+ * Build and start the WhatsApp Link once the Assistant runtime and dispatcher
+ * exist (or failed to: the tab can still pause and unlink). Never throws:
+ * SYNABUN_WHATSAPP=off loads nothing, and a failure leaves the tab reporting
+ * "unavailable" instead of taking the server down. The runtime, dispatcher,
+ * bridge and service share the process-wide remote-policy registry.
+ */
+async function startWhatsAppLink() {
+  // (the phone's authority is _phoneAuthority above: this service gets the issuer, the runtime the verifier)
+  if (_whatsappDownReason === 'env') { console.log('  WhatsApp:  off (SYNABUN_WHATSAPP=off)'); return; }
+  let service = null;
+  try {
+    const { createWhatsAppService } = await import('./lib/whatsapp/service.js');
+    service = createWhatsAppService({
+      dataHome: DATA_HOME,
+      port: Number(PORT),
+      getRuntime: () => _assistantRuntime,
+      getDispatcher: () => _assistantDispatcher,
+      getKvConfig, setKvConfig, broadcastSync, isGuestRequest,
+      log: (message, level) => (level === 'warn' || level === 'error' ? console.warn(message) : console.log(message)),
+      getDefaultBrain: readAssistantPanelBrain,
+      // "Same as the Assistant" or a model of the Assistant's own catalog (enabled models only).
+      getCatalog: () => _assistantCatalog,
+      // The issuer only: each bridge the service builds gets a fresh capability, the one before dies.
+      phoneAuthority: { issue: _phoneAuthority.issue, revoke: _phoneAuthority.revoke },
+      // Folders a backup copies besides DATA_HOME/data and mcp-data: the session keys never go there.
+      extraBackupRoots: getBackupAdditionalEntries().map((entry) => entry.diskPath),
     });
   } catch (err) {
-    console.error('POST /api/search error:', err.message);
-    res.status(500).json({ error: err.message });
+    _whatsappDownReason = 'error';
+    console.warn('[whatsapp] unavailable:', err?.message || err);
+    return;
   }
-});
+  _whatsapp = service;
+  try {
+    const status = await service.start();
+    console.log(`  WhatsApp:  ${status?.state || 'ready'}`);
+  } catch (err) {
+    console.warn('[whatsapp] start failed:', err?.message || err);
+  }
+}
 
 // GET /api/stats — Memory count including trash count (5s cache — UI polls this)
 let _statsCache = null; // { data, ts }
@@ -1185,44 +1361,6 @@ app.get('/api/stats', async (req, res) => {
   } catch (err) {
     console.error('GET /api/stats error:', err.message);
     res.status(500).json({ error: err.message });
-  }
-});
-
-// POST /api/hook-recall — Lightweight recall for hook-side auto-injection
-app.post('/api/hook-recall', async (req, res) => {
-  try {
-    const { query, project, limit = 3, min_score = 0.4, claudeSessionId } = req.body;
-
-    // Piggybacked session heartbeat — saves the hook a second HTTP round-trip
-    if (claudeSessionId) {
-      const entry = sessionRegistry.get(claudeSessionId);
-      if (entry) entry.lastActivity = Date.now();
-    }
-
-    if (!query) return res.status(400).json({ results: [] });
-
-    const embedding = await getEmbedding(query);
-    const results = dbSearchMemories(embedding, limit, {
-      project,
-      scoreThreshold: min_score,
-    });
-
-    res.json({
-      results: results.map(r => ({
-        id: r.id,
-        score: r.score,
-        category: r.category,
-        project: r.project,
-        content: r.content.length > 300 ? r.content.substring(0, 300) + '...' : r.content,
-        tags: r.tags,
-        importance: r.importance,
-        created_at: r.created_at,
-        related_files: r.related_files,
-      })),
-    });
-  } catch (err) {
-    // Graceful degradation — hooks should never be blocked by recall errors
-    res.json({ results: [] });
   }
 });
 
@@ -1265,7 +1403,7 @@ app.get('/api/memory/:id', async (req, res) => {
     if (!mem) return res.status(404).json({ error: 'Memory not found' });
 
     // Return in standard format for UI compatibility
-    res.json({ id: mem.id, payload: { content: mem.content, category: mem.category, subcategory: mem.subcategory, project: mem.project, tags: mem.tags, importance: mem.importance, source: mem.source, created_at: mem.created_at, updated_at: mem.updated_at, accessed_at: mem.accessed_at, access_count: mem.access_count, related_files: mem.related_files, related_memory_ids: mem.related_memory_ids, file_checksums: mem.file_checksums, trashed_at: mem.trashed_at, source_session_chunks: mem.source_session_chunks } });
+    res.json({ id: mem.id, revision: memoryRevision(mem.id), payload: { content: mem.content, category: mem.category, subcategory: mem.subcategory, project: mem.project, tags: mem.tags, importance: mem.importance, source: mem.source, created_at: mem.created_at, updated_at: mem.updated_at, accessed_at: mem.accessed_at, access_count: mem.access_count, related_files: mem.related_files, related_memory_ids: mem.related_memory_ids, file_checksums: mem.file_checksums, trashed_at: mem.trashed_at, source_session_chunks: mem.source_session_chunks } });
   } catch (err) {
     console.error('GET /api/memory/:id error:', err.message);
     res.status(500).json({ error: err.message });
@@ -1275,7 +1413,8 @@ app.get('/api/memory/:id', async (req, res) => {
 // PATCH /api/memory/:id — Update a memory's payload fields (category, tags, content)
 app.patch('/api/memory/:id', async (req, res) => {
   try {
-    const { category, tags, content } = req.body;
+    const { category, tags, content, expected_revision } = req.body;
+    if (expected_revision !== undefined && memoryRevision(req.params.id) !== expected_revision) return res.status(409).json({error:'Revision conflict; reload this memory before saving.'});
     if (!category && tags === undefined && content === undefined) {
       return res.status(400).json({ error: 'category, tags, or content is required' });
     }
@@ -1305,9 +1444,11 @@ app.patch('/api/memory/:id', async (req, res) => {
       payload.content = content;
     }
 
-    updateMemoryPayload(req.params.id, payload);
+    if (!getMemoryById(req.params.id)) return res.status(404).json({error:'Memory not found'});
+    const changed = await reflectMemory({memory_id:req.params.id,...payload,expected_revision});
+    if (changed.isError) return res.status(409).json({error:changed.content[0].text});
 
-    res.json({ ok: true, id: req.params.id, ...payload });
+    res.json({ ok: true, id: req.params.id, revision: memoryRevision(req.params.id), ...payload });
     invalidateMemoriesCache('memory:updated', req.params.id);
     broadcastSync({ type: 'memory:updated', id: req.params.id });
   } catch (err) {
@@ -2009,6 +2150,12 @@ async function runGracefulShutdown(reason) {
 
   // 3. Save snapshot + DB last so children release file handles before SQLite closes.
   try { saveSessionSnapshot(); } catch {}
+  // WhatsApp Link: the bridge persists its state, then the host closes the
+  // socket (never a logout) and exits. Before the DB closes: it writes kv_config.
+  try { await _whatsapp?.shutdown({ timeoutMs: 1500 }); } catch (err) { console.warn('  whatsapp stop err:', err?.message); }
+  // Terminal host: hang up every PTY. Its exit events are ignored from here on
+  // (a server shutdown must not mark loop files inactive).
+  try { await terminalHost.shutdown({ timeoutMs: 1500 }); } catch {}
   try { flushUiStateSync(); } catch {}
   try { flushWhiteboardSync(); } catch {}
   try { flushCostDataSync(); } catch {}
@@ -2016,6 +2163,9 @@ async function runGracefulShutdown(reason) {
   // 4. Brief grace period so SIGTERM'd children can flush.
   await new Promise(r => setTimeout(r, 500));
 
+  // The judge backfill flushes its last counters and releases its lease so
+  // the respawned server resumes immediately instead of waiting out the lease.
+  try { stopJudgeBackfill(); } catch {}
   try { closeDb(); } catch {}
   try { closeBlobStore(); } catch {}
 
@@ -2193,6 +2343,8 @@ function stageSynabunUpdater({ installPlan, serverPid, autoRestart, cleanupPids 
     cleanupPids,
     safetySnapshot,
     handoffPath,
+    // Where the relaunched launcher leaves its reason if it stops.
+    launcherLogPath: launcherLogPath(DATA_HOME),
   };
   writeFileSync(payloadPath, JSON.stringify(payload, null, 2) + '\n', 'utf8');
 
@@ -2251,12 +2403,30 @@ function stageSynabunUpdater({ installPlan, serverPid, autoRestart, cleanupPids 
   return { stageDir, runnerPath, payloadPath };
 }
 
+// A `prepared` handoff whose updater never ran must not stay pending: this
+// server keeps running and changing data, and the launcher would take a
+// snapshot for an update that did not happen.
+function cancelUpdateHandoff(handoffPath, reason) {
+  if (!handoffPath) return;
+  try {
+    const handoff = JSON.parse(readFileSync(handoffPath, 'utf8'));
+    if (handoff?.status !== 'prepared') return;
+    writeFileSync(handoffPath, JSON.stringify({
+      ...handoff,
+      status: 'cancelled',
+      cancelledAt: new Date().toISOString(),
+      reason: String(reason || ''),
+    }, null, 2) + '\n', 'utf8');
+  } catch {}
+}
+
 // POST /api/system/run-update - click-to-update flow.
 //
 // The updater is staged under DATA_HOME, not PACKAGE_ROOT, before launch. This
 // matters on Windows: a terminal cwd or command line inside node_modules/synabun
 // can lock the directory npm is trying to replace.
 app.post('/api/system/run-update', async (req, res) => {
+  let preparedHandoffPath = null;
   try {
     // Auto-restart is always on — running the click-to-update flow implies the
     // user wants the new version live without a manual relaunch step.
@@ -2268,6 +2438,11 @@ app.post('/api/system/run-update', async (req, res) => {
     const installPlan = _synabunUpdateCache.installPlan;
     if (!_synabunUpdateCache.updateAvailable || !installPlan) {
       return res.status(409).json({ error: 'No SynaBun update is currently available.' });
+    }
+    // The version the page showed must be the version this plan installs.
+    const staleClick = refuseStaleUpdateClick(installPlan, req.body?.target);
+    if (staleClick) {
+      return res.status(409).json({ ...staleClick, installPlan });
     }
     if (installPlan.canAutoUpdate === false) {
       return res.status(409).json({
@@ -2304,6 +2479,7 @@ app.post('/api/system/run-update', async (req, res) => {
       target: installPlan.target,
       snapshotPath: snapshot.path,
     }, null, 2) + '\n', 'utf8');
+    preparedHandoffPath = handoffPath;
     const staged = stageSynabunUpdater({
       installPlan,
       serverPid,
@@ -2413,6 +2589,7 @@ app.post('/api/system/run-update', async (req, res) => {
     if (!spawned) {
       const msg = launchError?.message || `Failed to launch updater terminal on ${plat}`;
       console.error('[server] run-update launch failed:', msg);
+      cancelUpdateHandoff(preparedHandoffPath, msg);
       return res.status(500).json({ error: msg });
     }
 
@@ -2438,6 +2615,8 @@ app.post('/api/system/run-update', async (req, res) => {
     }, 1200);
   } catch (err) {
     console.error('[server] run-update error:', err?.message);
+    // Only before the updater was launched: after that the handoff is the updater's.
+    if (!res.headersSent) cancelUpdateHandoff(preparedHandoffPath, err?.message);
     if (!res.headersSent) res.status(500).json({ error: err.message });
   }
 });
@@ -3276,7 +3455,8 @@ function getCodexSidepanelApprovalPolicy() {
 function buildCodexSandboxPolicy(cwd = PACKAGE_ROOT, sandboxMode) {
   const mode = sandboxMode || 'workspace-write';
   if (mode === 'read-only') {
-    return { type: 'readOnly', access: { type: 'fullAccess' } };
+    // Read-only means no network either (plan turns, and a WhatsApp session's Codex brain).
+    return { type: 'readOnly', access: { type: 'fullAccess' }, networkAccess: false };
   }
   if (mode === 'danger-full-access') {
     return { type: 'dangerFullAccess' };
@@ -3596,6 +3776,12 @@ function createCodexAccountHome(id) {
   // Share config + prompts with the canonical ~/.codex; isolate auth + sessions.
   linkSharedCodexResource(resolve(home, 'config.toml'), resolve(CODEX_DEFAULT_HOME, 'config.toml'), 'file');
   linkSharedCodexResource(resolve(home, 'prompts'), resolve(CODEX_DEFAULT_HOME, 'prompts'), 'dir');
+  // Global instructions (and SynaBun's rules block in them) reach every account.
+  // Only when the file exists: the rules installer links it later otherwise,
+  // and an empty ~/.codex/AGENTS.md is not ours to create.
+  if (existsSync(resolve(CODEX_DEFAULT_HOME, 'AGENTS.md'))) {
+    linkSharedCodexResource(resolve(home, 'AGENTS.md'), resolve(CODEX_DEFAULT_HOME, 'AGENTS.md'), 'file');
+  }
   return home;
 }
 
@@ -3636,9 +3822,12 @@ CRITICAL — When you need clarification during planning:
   let _codexOrphanBuffer = null;
   const pending = new Map(); // id -> { resolve, reject, timer }
   const pendingServerRequests = new Map();
+  const appBoundary = createCodexAppBoundary();
+  let supportsUserVerification = false;
   let codexJournalStorageDegraded = false;
   const pendingGreetingThreads = new Set();
   const _cachedConfig = {}; // effective config from config/read + config/batchWrite
+  let codexCapabilities = new CodexCapabilityRegistry();
   let activeTurnAutoAccept = false;
   const itemThreadOwners = new Map();
   const turnThreadOwners = new Map();
@@ -3649,6 +3838,59 @@ CRITICAL — When you need clarification during planning:
   let _codexLoginWatcher = null;
   let codexMcpRuntimeId = `codex-sp-${randomUUID()}`;
   let codexMcpRuntimeBinding = null;
+  // 'assistant' when this connection is the main assistant's brain: the MCP
+  // child gets SYNABUN_ROLE so the agents tool group is advertised to it.
+  let codexRole = null;
+  // The assistant brain's computer-use grant (lib/desktop/grants.js): unlocks
+  // the capability-gated `computer` group in this app-server's MCP child.
+  let codexDesktopGrant = null;
+  // The assistant brain's route gate (lib/assistant-route-gate-codex.js): a
+  // trusted session-flag PreToolUse hook plus the env it reads. Assistant only.
+  let codexRouteGate = null;
+
+  function codexCapabilitySnapshot() {
+    const capabilities = codexCapabilities.snapshot();
+    if (codexRole === 'assistant') for (const name of ['mcp_app_resource_read', 'mcp_app_tool_call']) {
+      capabilities[name] = { ...capabilities[name], supported: false, reason: 'Embedded apps are unavailable to the Assistant brain.' };
+    }
+    return {
+      capabilities,
+      runtime: { ...codexCapabilities.runtime, accountId: activeAccountId, codexHome: activeCodexHome },
+    };
+  }
+
+  async function readCodexRequirements() {
+    try {
+      const result = await request('configRequirements/read', {}, 10000);
+      codexCapabilities.updateRequirements(result);
+      return result;
+    } catch (error) {
+      if (isCodexUnsupportedMethod(error)) return null; // Older runtimes still enforce their own config rules.
+      throw error;
+    }
+  }
+
+  async function beforeCodexCompatRequest(type, params) {
+    if (type === 'thread_settings_update') {
+      validateCodexConfigRequirements({ approval_policy: params.approvalPolicy, approvals_reviewer: params.approvalsReviewer }, await readCodexRequirements());
+    } else if (type === 'experimental_features_set') {
+      validateCodexConfigRequirements({ features: params.enablement }, await readCodexRequirements());
+    } else if (type === 'feedback_upload') {
+      await readCodexRequirements();
+      codexCapabilities.assertAvailable(type);
+    }
+  }
+
+  async function afterCodexCompatRequest(type, params) {
+    if (type === 'thread_settings_update') {
+      const { threadId, ...settings } = params;
+      codexSessionSettings.set(activeAccountId, threadId, settings);
+    }
+    if (['skills_config_write', 'experimental_features_set'].includes(type)) {
+      if (type === 'experimental_features_set') codexContextModels = [];
+      sendToClient({ type: 'catalogs_changed', catalogs: type === 'skills_config_write' ? ['skills'] : ['models', 'skills', 'apps', 'mcp', 'features'] });
+    }
+  }
 
   function registerCodexMcpProfileRuntime() {
     const profilePath = writeCodexRuntimeProfile(codexMcpRuntimeId, codexMcpProfileState.value);
@@ -3713,8 +3955,21 @@ CRITICAL — When you need clarification during planning:
     });
   }
 
+  function settleCodexVerification(requestId, info, action, content = null) {
+    const settled = info.verification.finish(action, content);
+    if (!settled) return false;
+    pendingServerRequests.delete(String(requestId));
+    if (settled.cancelId != null) void request('userVerification/cancel', { requestId: settled.cancelId }, 10000).catch(() => {});
+    const delivered = sendRpcResult(info.rpcId ?? requestId, settled.result);
+    const correlation = requestCorrelation(requestId, info);
+    runCodexJournalOperation('finish', correlation, () => codexRequestJournal.finish(correlation, action === 'cancel' ? 'turn_canceled' : 'dismissed'));
+    sendToClient({ type: 'notify', method: 'serverRequest/resolved', params: { requestId: info.rpcId ?? requestId, threadId: info.threadId, turnId: info.turnId, status: action === 'accept' ? 'verified' : action === 'cancel' ? 'cancelled' : 'declined' } });
+    return delivered;
+  }
+
   function finishPendingServerRequests(status, error = '') {
     for (const [requestId, requestInfo] of pendingServerRequests) {
+      if (requestInfo.verification) { settleCodexVerification(requestId, requestInfo, 'cancel'); continue; }
       const correlation = requestCorrelation(requestId, requestInfo);
       const committed = runCodexJournalOperation('finish', correlation, () => (
         codexRequestJournal.finish(correlation, status, error)
@@ -3759,6 +4014,14 @@ CRITICAL — When you need clarification during planning:
   })();
 
   function sendToClient(data) {
+    if (data?.type === 'error') {
+      // Some legacy catch paths forward only a prefixed RPC message.
+      const rpcError = { ...data, code: data.code ?? (/Invalid request: unknown variant/i.test(data.message || '') ? -32600 : null) };
+      if (isCodexUnsupportedMethod(rpcError)) data = { ...data, ...classifyCodexRpcError(rpcError) };
+    }
+    if (data && (data.type === 'ready' || (data.type === 'reattach_result' && data.ok))) {
+      data = { ...data, ...codexCapabilitySnapshot() };
+    }
     const profiled = data && typeof data === 'object' && data.type === 'ready' && !data.mcpProfile
       ? { ...data, mcpProfile: codexMcpProfileState.value }
       : data;
@@ -3922,14 +4185,15 @@ CRITICAL — When you need clarification during planning:
     }
   }
 
-  function request(method, params, timeoutMs = 30000) {
+  function request(method, params, timeoutMs = 30000, onId = null) {
     return new Promise((resolve, reject) => {
       const id = nextRequestId++;
+      onId?.(id);
       const timer = setTimeout(() => {
         pending.delete(String(id));
         reject(new Error(`Timed out waiting for Codex response to ${method}`));
       }, timeoutMs);
-      pending.set(String(id), { resolve, reject, timer });
+      pending.set(String(id), { resolve, reject, timer, method });
       try {
         writeRpc({ jsonrpc: '2.0', id, method, params });
       } catch (err) {
@@ -3979,6 +4243,7 @@ CRITICAL — When you need clarification during planning:
       turnThreadOwners.clear();
     }
     activeThreadId = nextThreadId;
+    appBoundary.invalidate();
     displayedThreadId = nextThreadId;
     if (nextThreadId) rememberThreadSubscription(nextThreadId);
     if (unsubscribePrevious && previousThreadId && previousThreadId !== nextThreadId) {
@@ -4008,7 +4273,7 @@ CRITICAL — When you need clarification during planning:
   }
 
   function isCodexTranscriptNotification(method) {
-    return ['item/', 'turn/', 'thread/'].some((prefix) => String(method || '').startsWith(prefix));
+    return ['item/', 'turn/', 'thread/', 'hook/'].some((prefix) => String(method || '').startsWith(prefix));
   }
 
   function codexNotificationRejectionReason(method, threadId, turnId, expectedThreadId, expectedTurnId) {
@@ -4085,8 +4350,9 @@ CRITICAL — When you need clarification during planning:
     return input;
   }
 
-  async function readConfigState() {
-    const result = await request('config/read', { includeLayers: false }, 10000);
+  async function readConfigState(cwd = PACKAGE_ROOT) {
+    const result = await request('config/read', { includeLayers: true, cwd }, 10000);
+    for (const key of Object.keys(_cachedConfig)) delete _cachedConfig[key];
     Object.assign(_cachedConfig, extractCodexConfigValues(result));
     return result || {};
   }
@@ -4110,16 +4376,19 @@ CRITICAL — When you need clarification during planning:
   }
 
   async function buildStatusSnapshot(cwd = PACKAGE_ROOT) {
-    const config = await readConfigState();
-    const [accountResult, rateLimitResult, requirementsResult, experimentalResult, loadedThreadsResult] = await Promise.allSettled([
+    const config = await readConfigState(cwd);
+    const [accountResult, rateLimitResult, requirementsResult, experimentalResult, loadedThreadsResult, memoryResult] = await Promise.allSettled([
       request('account/read', { refreshToken: false }, 10000),
       request('account/rateLimits/read', {}, 10000),
-      request('configRequirements/read', {}, 10000),
+      readCodexRequirements(),
       request('experimentalFeature/list', { limit: 100 }, 10000),
       request('thread/loaded/list', {}, 10000),
+      request('memory/status', {}, 10000),
     ]);
     return {
+      capabilities: codexCapabilities.snapshot(),
       runtime: {
+        ...codexCapabilitySnapshot().runtime,
         codexBin: getCodexBin(),
         codexBinSource: _codexBinSource,
         sdkInstalled: _codexSdkInstalled,
@@ -4133,10 +4402,12 @@ CRITICAL — When you need clarification during planning:
           reasons: { ...isolationStats.reasons },
         },
         approvalPolicy: getCodexSidepanelApprovalPolicy(),
+        sessionOverrides: codexSessionSettings.get(activeAccountId, activeThreadId),
         cwd,
       },
       config,
       account: accountResult.status === 'fulfilled' ? accountResult.value || {} : { error: accountResult.reason?.message || 'Unavailable' },
+      memory: memoryResult.status === 'fulfilled' ? memoryResult.value || {} : { error: memoryResult.reason?.message || 'Unavailable' },
       rateLimits: rateLimitResult.status === 'fulfilled' ? rateLimitResult.value || {} : { error: rateLimitResult.reason?.message || 'Unavailable' },
       requirements: requirementsResult.status === 'fulfilled' ? requirementsResult.value || {} : { error: requirementsResult.reason?.message || 'Unavailable' },
       experimentalFeatures: experimentalResult.status === 'fulfilled' ? experimentalResult.value || {} : { error: experimentalResult.reason?.message || 'Unavailable' },
@@ -4147,10 +4418,13 @@ CRITICAL — When you need clarification during planning:
   }
 
   async function listCodexModelsWithContext(includeHidden = false) {
-    const result = await request('model/list', { includeHidden: !!includeHidden }, 10000);
-    const liveModels = Array.isArray(result?.models)
-      ? result.models
-      : (Array.isArray(result?.data) ? result.data : []);
+    const result = await listCodexPages(async (...args) => {
+      const page = await request(...args);
+      return { ...page, data: page?.data || page?.models };
+    }, 'model/list', { includeHidden: !!includeHidden, limit: 100 });
+    const liveModels = Array.isArray(result?.data)
+      ? result.data
+      : (Array.isArray(result?.models) ? result.models : []);
     const enriched = mergeCodexModelContextCapabilities(
       liveModels,
       readCodexRuntimeModelCatalog(activeCodexHome),
@@ -4174,14 +4448,18 @@ CRITICAL — When you need clarification during planning:
       };
     }
 
-    const models = codexContextModels.length
-      ? codexContextModels
-      : await listCodexModelsWithContext(false);
-    const resolved = resolveCodexExtendedContext({
-      models,
+    let resolved = resolveCodexExtendedContext({
+      models: codexContextModels,
       selectedModel: requestedModel,
       contextMode,
     });
+    // Revalidate a changed activation against current account capabilities.
+    // Steady-state turns can reuse their already-applied runtime fingerprint.
+    if (!resolved.applied || activeThreadRuntimeFingerprint !== codexThreadRuntimeFingerprint(resolved)) {
+      resolved = resolveCodexExtendedContext({
+        models: await listCodexModelsWithContext(false), selectedModel: requestedModel, contextMode,
+      });
+    }
     if (!resolved.applied) {
       const reason = resolved.reason === 'model-unavailable'
         ? 'the selected model is not available for this Codex account'
@@ -4232,6 +4510,10 @@ CRITICAL — When you need clarification during planning:
       sandbox: getCachedConfigValue('sandbox_mode', 'workspace-write'),
       personality: getCachedConfigValue('personality', 'pragmatic'),
     };
+    const sessionSettings = codexSessionSettings.get(activeAccountId, threadId);
+    for (const key of ['approvalPolicy', 'approvalsReviewer', 'personality', 'serviceTier']) {
+      if (Object.prototype.hasOwnProperty.call(sessionSettings, key)) params[key] = sessionSettings[key];
+    }
     if (runtime.model) params.model = runtime.model;
     else if (getCachedConfigValue('model')) params.model = getCachedConfigValue('model');
     if (runtime.config) params.config = runtime.config;
@@ -4735,6 +5017,14 @@ CRITICAL — When you need clarification during planning:
       'mcp_servers.SynaBun.env.SYNABUN_TOOL_CATALOG_MODE="deferred"',
       'app-server',
     ];
+    if (codexRole) args.splice(args.length - 1, 0, '-c', `mcp_servers.SynaBun.env.SYNABUN_ROLE=${JSON.stringify(codexRole)}`);
+    // agent_route may wait on the user's route card; Codex gives MCP tools 60 s by default.
+    if (codexRole === 'assistant') args.splice(args.length - 1, 0, '-c', 'mcp_servers.SynaBun.tool_timeout_sec=180');
+    // The Assistant's brain looks at pages only through SynaBun's browser tools
+    // (lib/browser-tool-policy.js), so Codex's own web search stays off, as for its workers.
+    if (codexRole === 'assistant') args.splice(args.length - 1, 0, '-c', 'web_search="disabled"');
+    if (codexDesktopGrant) args.splice(args.length - 1, 0, '-c', `mcp_servers.SynaBun.env.SYNABUN_DESKTOP_GRANT=${JSON.stringify(codexDesktopGrant)}`);
+    if (codexRole === 'assistant' && codexRouteGate?.flags?.length) args.splice(args.length - 1, 0, ...codexRouteGate.flags);
     if (/\.js$/i.test(codexBin)) {
       args.unshift(codexBin);
       codexBin = process.execPath;
@@ -4749,6 +5039,8 @@ CRITICAL — When you need clarification during planning:
       SYNABUN_TERMINAL_SESSION: codexMcpRuntimeId,
       SYNABUN_RUNTIME_PROFILE_PATH: runtimeProfilePath,
       SYNABUN_TOOL_CATALOG_MODE: 'deferred',
+      ...(codexDesktopGrant ? { SYNABUN_DESKTOP_GRANT: codexDesktopGrant } : {}),
+      ...(codexRole === 'assistant' && codexRouteGate?.env ? codexRouteGate.env : {}),
     };
     delete env.FORCE_COLOR;
     delete env.CLICOLOR_FORCE;
@@ -4787,8 +5079,14 @@ CRITICAL — When you need clarification during planning:
             const err = new Error(msg.error.message || `Codex request ${msg.id} failed`);
             err.code = msg.error.code;
             err.data = msg.error.data;
+            const unsupported = isCodexUnsupportedMethod(err);
+            const capabilityChanged = codexCapabilities.observe(entry.method, err);
+            if (capabilityChanged && unsupported) {
+              sendToClient({ type: 'capabilities', ...codexCapabilitySnapshot() });
+            }
             entry.reject(err);
           } else {
+            codexCapabilities.observe(entry.method);
             entry.resolve(msg.result);
           }
           continue;
@@ -4796,12 +5094,23 @@ CRITICAL — When you need clarification during planning:
 
         if (msg.id !== undefined && msg.method) {
           const requestId = msg.id;
+          const automatic = automaticCodexServerReply(msg.method, msg.params, Date.now(), { userVerification: supportsUserVerification && codexRole !== 'assistant' && ws.readyState === 1 });
+          if (automatic) {
+            try { writeRpc({ jsonrpc: '2.0', id: requestId, ...automatic }); } catch {}
+            if (automatic.error) sendToClient({
+              type: 'server_request', requestId, method: msg.method, params: codexVerificationCardParams(msg.params || {}), resolved: true,
+              threadId: msg.params?.threadId || activeThreadId || null,
+              turnId: msg.params?.turnId || activeTurnId || null,
+            });
+            continue;
+          }
 
           // Auto-accept MCP elicitations only when the active Codex tab's Auto
           // toggle is enabled. The Claude permissions list controls eligibility;
           // it should not bypass Codex approval cards by itself.
           const mcpApprovalMeta = msg.params?._meta ?? msg.params?.meta;
           if (msg.method === 'mcpServer/elicitation/request'
+            && msg.params?.mode !== 'openai/userVerification'
             && mcpApprovalMeta?.codex_approval_kind === 'mcp_tool_call') {
             const toolShort = mcpApprovalMeta.tool_name || '';
             const serverName = msg.params?.serverName || '';
@@ -4810,7 +5119,7 @@ CRITICAL — When you need clarification during planning:
               : (serverName && toolShort ? `mcp__${serverName}__${toolShort}` : '');
             const permitted = _codexPermittedTools.has(fullKey);
             console.log('[codex-skin] MCP elicitation for tool:', toolShort, '→', fullKey, 'auto:', activeTurnAutoAccept, 'permitted:', permitted);
-            if (activeTurnAutoAccept && permitted) {
+            if (activeTurnAutoAccept && permitted && serverRequestThreadIsOwned(msg.params?.threadId || activeThreadId)) {
               try { writeRpc({ jsonrpc: '2.0', id: requestId, result: { action: 'accept', content: {}, _meta: {} } }); } catch {}
               continue;
             }
@@ -4818,8 +5127,11 @@ CRITICAL — When you need clarification during planning:
 
           const requestParams = msg.params || {};
           const requestInfo = {
+            // The JSON-RPC id exactly as the app-server sent it (a number): the
+            // reply must carry the same value, and clients may echo it as a string.
+            rpcId: requestId,
             method: msg.method,
-            params: requestParams,
+            params: codexVerificationCardParams(requestParams),
             threadId: requestParams.threadId || activeThreadId || null,
             turnId: requestParams.turnId || activeTurnId || null,
             toolCallId: requestParams.toolCallId || requestParams.callId || requestParams.itemId || null,
@@ -4850,6 +5162,7 @@ CRITICAL — When you need clarification during planning:
             });
             continue;
           }
+          if (requestParams.mode === 'openai/userVerification') requestInfo.verification = new CodexVerificationOperation();
           pendingServerRequests.set(String(requestId), requestInfo);
           logRequestLifecycle('render', correlation, {
             method: msg.method,
@@ -4858,7 +5171,7 @@ CRITICAL — When you need clarification during planning:
             type: 'server_request',
             requestId,
             method: msg.method,
-            params: requestParams,
+            params: codexVerificationCardParams(requestParams),
             threadId: requestParams.threadId || activeThreadId || null,
             turnId: requestParams.turnId || activeTurnId || null,
           });
@@ -4899,6 +5212,7 @@ CRITICAL — When you need clarification during planning:
             threadOwnerRoots.delete(closedThreadId);
             if (closedThreadId === String(activeThreadId || '')) {
               activeThreadId = null;
+              appBoundary.invalidate();
               activeTurnId = null;
               activeTurnAutoAccept = false;
               activeThreadRuntimeFingerprint = null;
@@ -4907,6 +5221,11 @@ CRITICAL — When you need clarification during planning:
           }
           if (method === 'serverRequest/resolved' && params.requestId != null) {
             const resolvedRequest = pendingServerRequests.get(String(params.requestId));
+            if (resolvedRequest?.verification) {
+              params.status = 'cancelled';
+              const settled = resolvedRequest.verification.finish('cancel');
+              if (settled?.cancelId != null) void request('userVerification/cancel', { requestId: settled.cancelId }, 10000).catch(() => {});
+            }
             if (resolvedRequest) {
               const correlation = requestCorrelation(params.requestId, resolvedRequest);
               runCodexJournalOperation('finish', correlation, () => (
@@ -4995,6 +5314,15 @@ CRITICAL — When you need clarification during planning:
     }
     // Sync tool approvals only after the base transport is known to be valid.
     syncCodexToolPermissions([..._codexPermittedTools]);
+    const codexBin = getCodexBin();
+    let cliVersion = null;
+    let sdkVersion = null;
+    try {
+      const versionResult = spawnSync(codexBin, ['--version'], { encoding: 'utf-8', timeout: 5000, windowsHide: true });
+      cliVersion = parseCodexVersion(versionResult.stdout);
+    } catch {}
+    try { sdkVersion = JSON.parse(readFileSync(join(__dirname, 'node_modules', '@openai', 'codex-sdk', 'package.json'), 'utf-8')).version; } catch {}
+    codexCapabilities.reset({ codexBin, codexBinSource: _codexBinSource, cliVersion, sdkVersion });
     startChild();
     bootPromise = request('initialize', {
       clientInfo: {
@@ -5007,6 +5335,10 @@ CRITICAL — When you need clarification during planning:
       },
     }, 15000).then((result) => {
       initialized = true;
+      writeRpc({ jsonrpc: '2.0', method: 'initialized' });
+      codexCapabilities.runtime.serverInfo = result || {};
+      codexCapabilities.runtime.cliVersion ||= parseCodexVersion(result?.userAgent);
+      sendToClient({ type: 'capabilities', ...codexCapabilitySnapshot() });
       return result;
     }).finally(() => {
       bootPromise = null;
@@ -5035,6 +5367,7 @@ CRITICAL — When you need clarification during planning:
     initialized = false;
     bootPromise = null;
     activeThreadId = null;
+    appBoundary.invalidate();
     displayedThreadId = targetThreadId;
     activeTurnId = null;
     activeThreadRuntimeFingerprint = null;
@@ -5081,10 +5414,12 @@ CRITICAL — When you need clarification during planning:
     const oldHome = activeCodexHome;
     const oldThreadIds = ownedWriterThreadIds();
     setActiveCodexAccount(id);
+    for (const key of Object.keys(_cachedConfig)) delete _cachedConfig[key];
     const old = child;
     initialized = false;
     bootPromise = null;
     activeThreadId = null;
+    appBoundary.invalidate();
     displayedThreadId = null;
     activeTurnId = null;
     activeThreadRuntimeFingerprint = null;
@@ -5134,6 +5469,7 @@ CRITICAL — When you need clarification during planning:
     initialized = false;
     bootPromise = null;
     activeThreadId = null;
+    appBoundary.invalidate();
     displayedThreadId = null;
     activeTurnId = null;
     activeThreadRuntimeFingerprint = null;
@@ -5499,6 +5835,20 @@ CRITICAL — When you need clarification during planning:
     if (activeTurnId) {
       throw new Error('Codex is already processing a turn');
     }
+    if (pendingServerRequests.size) {
+      throw new Error('Answer or cancel the pending Codex question or approval before starting another turn.');
+    }
+    await readConfigState(cwd);
+    const savedSessionSettings = opts.fresh ? {} : codexSessionSettings.get(activeAccountId, opts.threadId || activeThreadId);
+    opts = { ...opts, model: opts.model || savedSessionSettings.model || null, effort: opts.effort || savedSessionSettings.effort || null };
+    if (!opts.model && !getCachedConfigValue('model')) {
+      const models = codexContextModels.length ? codexContextModels : await listCodexModelsWithContext(false);
+      const defaultModel = models.find(model => model.isDefault) || models[0];
+      opts.model = defaultModel?.model || defaultModel?.id || null;
+    }
+    if (!opts.model && !getCachedConfigValue('model')) {
+      throw new Error('Codex did not report a model for native collaboration mode. Select a model and retry.');
+    }
     const runtime = await resolveCodexThreadRuntimeOptions(opts);
     const desiredRuntimeFingerprint = codexThreadRuntimeFingerprint(runtime);
     let threadId = opts.fresh ? null : (opts.threadId || activeThreadId);
@@ -5542,13 +5892,19 @@ CRITICAL — When you need clarification during planning:
       cwd,
       approvalPolicy: getCodexSidepanelApprovalPolicy(),
       personality: getCachedConfigValue('personality', 'pragmatic'),
-      sandboxPolicy: buildCodexSandboxPolicy(cwd, isPlanModeTurn ? 'read-only' : getCachedConfigValue('sandbox_mode')),
+      // opts.sandboxMode 'read-only': the Assistant brain of a WhatsApp session (lib/assistant-brains/codex.js).
+      sandboxPolicy: buildCodexSandboxPolicy(cwd, isPlanModeTurn || opts.sandboxMode === 'read-only' ? 'read-only' : getCachedConfigValue('sandbox_mode')),
       input,
     };
+    if (Object.prototype.hasOwnProperty.call(_cachedConfig, 'service_tier')) turnParams.serviceTier = _cachedConfig.service_tier;
+    if (getCachedConfigValue('model_reasoning_summary')) turnParams.summary = getCachedConfigValue('model_reasoning_summary');
+    const sessionSettings = codexSessionSettings.get(activeAccountId, threadId);
+    for (const key of ['personality', 'summary', 'serviceTier', 'approvalPolicy', 'approvalsReviewer', 'disabledPluginIds']) {
+      if (Object.prototype.hasOwnProperty.call(sessionSettings, key)) turnParams[key] = sessionSettings[key];
+    }
     if (Array.isArray(opts.localImages) && opts.localImages.length) {
       turnParams.local_images = opts.localImages;
     }
-    if (getCachedConfigValue('web_search')) turnParams.search = true;
     if (runtime.model) turnParams.model = runtime.model;
     else if (getCachedConfigValue('model')) turnParams.model = getCachedConfigValue('model');
     if (opts.effort) turnParams.effort = opts.effort;
@@ -5556,9 +5912,10 @@ CRITICAL — When you need clarification during planning:
     const collaborationMode = buildCodexCollaborationMode({
       mode: isPlanModeTurn ? 'plan' : 'default',
       model: turnParams.model,
-      effort: isPlanModeTurn
-        ? getCachedConfigValue('plan_mode_reasoning_effort', 'medium')
-        : turnParams.effort,
+      effort: opts.effort || (isPlanModeTurn
+        ? getCachedConfigValue('plan_mode_reasoning_effort', turnParams.effort)
+        : turnParams.effort),
+      developerInstructions: opts.developerInstructions || null,
     });
     if (collaborationMode) turnParams.collaborationMode = collaborationMode;
     try {
@@ -5701,6 +6058,7 @@ CRITICAL — When you need clarification during planning:
         }
         clearTimeout(orphan.killTimer);
         child = orphan.child;
+        if (orphan.capabilityRegistry) codexCapabilities = orphan.capabilityRegistry;
         codexMcpRuntimeId = orphan.mcpRuntimeId || codexMcpRuntimeId;
         codexMcpRuntimeBinding = orphan.mcpRuntimeBinding
           || _codexMcpProfileRuntimes.get(codexMcpRuntimeId)
@@ -5710,6 +6068,7 @@ CRITICAL — When you need clarification during planning:
         codexMcpProfileState.value = orphanMcpProfile;
         initialized = orphan.initialized;
         activeThreadId = orphan.activeThreadId;
+        appBoundary.invalidate();
         displayedThreadId = orphan.displayedThreadId || orphan.activeThreadId || null;
         activeTurnId = orphan.activeTurnId;
         activeThreadRuntimeFingerprint = orphan.activeThreadRuntimeFingerprint || null;
@@ -5731,7 +6090,7 @@ CRITICAL — When you need clarification during planning:
         for (const [id, requestInfo] of orphan.pendingServerRequests) {
           pendingServerRequests.set(id, requestInfo);
         }
-        orphan.swapWs(ws, wsConnectionEpoch, wsSessionId);
+        orphan.swapWs(ws, wsConnectionEpoch, wsSessionId, { userVerification: msg.userVerification === true && msg.role !== 'assistant' });
         delegatedCodexMessageHandler = orphan.handleMessage;
         delegatedCodexCloseHandler = orphan.handleClose;
         console.log(`[codex-skin] Reattached orphan for ${okey}, buffered ${orphan.buffer.length} events`);
@@ -5748,7 +6107,7 @@ CRITICAL — When you need clarification during planning:
           const correlation = requestCorrelation(requestId, requestInfo);
           if (!serverRequestThreadIsOwned(correlation.threadId)) {
             recordCodexIsolationDecision('foreign_retained_server_request');
-            sendRpcError(requestId, 'Request no longer belongs to the displayed Codex sidepanel thread.', -32001);
+            sendRpcError(requestInfo.rpcId ?? requestId, 'Request no longer belongs to the displayed Codex sidepanel thread.', -32001);
             pendingServerRequests.delete(String(requestId));
             runCodexJournalOperation('finish', correlation, () => (
               codexRequestJournal.finish(correlation, 'turn_canceled', 'Dropped after sidepanel thread changed')
@@ -5760,7 +6119,7 @@ CRITICAL — When you need clarification during planning:
             type: 'server_request',
             requestId,
             method: requestInfo.method,
-            params: requestInfo.params || {},
+            params: codexVerificationCardParams(requestInfo.params || {}),
             threadId: correlation.threadId || null,
             turnId: correlation.turnId || null,
             recoveryStatus: retained?.status || 'pending',
@@ -5780,7 +6139,13 @@ CRITICAL — When you need clarification during planning:
         return;
       }
       if (msg.type === 'bootstrap') {
+        supportsUserVerification = msg.userVerification === true && msg.role !== 'assistant';
         if (msg.windowId) wsWindowId = msg.windowId;
+        if (!child && msg.role === 'assistant') codexRole = 'assistant';
+        if (!child && msg.role === 'assistant' && typeof msg.desktopGrant === 'string' && /^sbd_[A-Za-z0-9_-]{43}$/.test(msg.desktopGrant)) codexDesktopGrant = msg.desktopGrant;
+        if (!child && msg.role === 'assistant' && msg.routeGate && Array.isArray(msg.routeGate.flags) && msg.routeGate.flags.every((f) => typeof f === 'string')) {
+          codexRouteGate = { flags: [...msg.routeGate.flags], env: Object.fromEntries(Object.entries(msg.routeGate.env || {}).filter(([k, v]) => /^SYNABUN_ROUTE_GATE_[A-Z_]+$/.test(k) && typeof v === 'string')) };
+        }
         // Resolve the tab's account BEFORE first spawn so CODEX_HOME is correct.
         if (!child && msg.accountId) setActiveCodexAccount(msg.accountId);
         if (!child) codexMcpProfileState.value = normalizeMcpProfileName(msg.mcpProfile || readActiveMcpProfile());
@@ -5837,6 +6202,46 @@ CRITICAL — When you need clarification during planning:
         }
         return;
       }
+      if (msg.type === 'verification_requests_close') {
+        for (const [id, info] of pendingServerRequests) if (info.verification) settleCodexVerification(id, info, 'cancel');
+        return;
+      }
+      if (msg.type === 'verification_verify' || msg.type === 'verification_cancel') {
+        const info = pendingServerRequests.get(String(msg.elicitationId));
+        try {
+          if (!supportsUserVerification || !info?.verification || !serverRequestThreadIsOwned(info.threadId)) throw new Error('This verification request is no longer pending.');
+          codexCapabilities.assertAvailable(msg.type);
+          if (msg.type === 'verification_cancel') {
+            settleCodexVerification(msg.elicitationId, info, 'cancel');
+            sendToClient({ type: 'verification_canceled', requestId: msg.requestId, verification: {} });
+            return;
+          }
+          info.verification.start();
+          const { challenge, title, description } = info.params;
+          try {
+            const result = await request('userVerification/verify', { challenge, title, description }, 120000, id => info.verification.captureRpcId(id));
+            if (!info.verification.complete(result)) throw new Error('Verification was canceled.');
+            sendToClient({ type: 'verification_verified', requestId: msg.requestId, verification: result });
+          } catch (error) {
+            settleCodexVerification(msg.elicitationId, info, 'decline');
+            throw error;
+          }
+        } catch (error) {
+          sendToClient({ type: 'error', requestId: msg.requestId, ...classifyCodexRpcError(error) });
+        }
+        return;
+      }
+      if (await handleCodexCompatMessage(msg, {
+        activeThreadId, activeTurnId, cwd: PACKAGE_ROOT,
+        role: codexRole, getActiveThreadId: () => activeThreadId,
+        limitAppCall: message => appBoundary.consume(activeThreadId, message.originCallId),
+        resolveAppCard: (callId, threadId) => appBoundary.resolve(threadId, callId,
+          () => request('thread/read', { threadId, includeTurns: true }, 10000)),
+        ensureInitialized, request, send: sendToClient,
+        registry: codexCapabilities, capabilities: codexCapabilitySnapshot,
+        withWriterOperation: withCodexWriterOperation,
+        beforeRequest: beforeCodexCompatRequest, afterRequest: afterCodexCompatRequest,
+      })) return;
       if (msg.type === 'thread_list') {
         try {
           const result = await listThreads({
@@ -5874,6 +6279,7 @@ CRITICAL — When you need clarification during planning:
           ));
         } catch (err) {
           activeThreadId = null;
+          appBoundary.invalidate();
           activeThreadRuntimeFingerprint = null;
           displayedThreadId = msg.threadId || null;
           activeTurnId = null;
@@ -5980,8 +6386,10 @@ CRITICAL — When you need clarification during planning:
           localImages,
           mentions,
           planMode: !!msg.planMode,
+          sandboxMode: msg.sandboxMode === 'read-only' ? 'read-only' : null,
           autoAccept: !!msg.autoAccept,
           requestId: msg.requestId || null,
+          developerInstructions: typeof msg.developerInstructions === 'string' && msg.developerInstructions.trim() ? msg.developerInstructions : null,
         }));
         return;
       }
@@ -6076,7 +6484,9 @@ CRITICAL — When you need clarification during planning:
           const idx = data.accounts.findIndex((a) => a.id === msg.accountId);
           if (idx === -1) throw new Error('Unknown account');
           const nativeAccountInUse = _nativeLoopRuntime?.list({ activeOnly: true })
-            .some((run) => run.provider === 'codex' && run.accountId === msg.accountId);
+            .some((run) => run.provider === 'codex' && run.accountId === msg.accountId)
+            || _assistantRuntime?.accountInUse?.('codex', msg.accountId)
+            || _assistantDispatcher?.accountInUse?.('codex', msg.accountId);
           if (nativeAccountInUse) {
             throw new Error('Stop native Codex automations using this account before removing it');
           }
@@ -6137,8 +6547,8 @@ CRITICAL — When you need clarification during planning:
       if (msg.type === 'config_read') {
         try {
           await ensureInitialized();
-          const result = await readConfigState();
-          sendToClient({ type: 'config_data', requestId: msg.requestId || null, config: result || {} });
+          const result = await readConfigState(msg.cwd || PACKAGE_ROOT);
+          sendToClient({ type: 'config_data', requestId: msg.requestId || null, config: result || {}, sessionOverrides: codexSessionSettings.get(activeAccountId, msg.threadId || activeThreadId) });
         } catch (err) {
           sendToClient({ type: 'config_data', requestId: msg.requestId || null, config: {}, error: err.message });
         }
@@ -6147,10 +6557,13 @@ CRITICAL — When you need clarification during planning:
       if (msg.type === 'config_write') {
         try {
           await ensureInitialized();
-          const edits = buildCodexConfigEdits(msg.config || {});
+          const nextConfig = validateCodexConfigRequirements(msg.config || {}, await readCodexRequirements());
+          const edits = buildCodexConfigEdits(nextConfig);
           await request('config/batchWrite', { edits, reloadUserConfig: true }, 10000);
-          await readConfigState();
+          await readConfigState(msg.cwd || PACKAGE_ROOT);
+          codexContextModels = [];
           sendToClient({ type: 'config_saved', requestId: msg.requestId || null });
+          sendToClient({ type: 'catalogs_changed', catalogs: ['models', 'skills', 'apps', 'mcp', 'features', 'config'] });
         } catch (err) {
           sendToClient({ type: 'error', requestId: msg.requestId || null, message: `Config save failed: ${err.message}` });
         }
@@ -6160,7 +6573,7 @@ CRITICAL — When you need clarification during planning:
         try {
           await ensureInitialized();
           const [result, configResult] = await Promise.all([
-            request('mcpServerStatus/list', { detail: 'toolsAndAuthOnly' }, 10000),
+            request('mcpServerStatus/list', { detail: 'toolsAndAuthOnly', ...codexPagination(msg) }, 10000),
             readConfigState(),
           ]);
           const config = configResult?.config || configResult?.values || {};
@@ -6178,7 +6591,7 @@ CRITICAL — When you need clarification during planning:
                 alwaysAllowed: approvalMode === 'approve',
               };
             });
-          sendToClient({ type: 'mcp_status', requestId: msg.requestId || null, servers });
+          sendToClient({ type: 'mcp_status', requestId: msg.requestId || null, servers, nextCursor: result?.nextCursor || null });
         } catch (err) {
           sendToClient({ type: 'mcp_status', requestId: msg.requestId || null, servers: [], error: err.message });
         }
@@ -6245,7 +6658,7 @@ CRITICAL — When you need clarification during planning:
       if (msg.type === 'config_requirements') {
         try {
           await ensureInitialized();
-          const result = await request('configRequirements/read', {}, 10000);
+          const result = await readCodexRequirements();
           sendToClient({ type: 'config_requirements', requestId: msg.requestId || null, requirements: result || {} });
         } catch (err) {
           sendToClient({ type: 'config_requirements', requestId: msg.requestId || null, requirements: {}, error: err.message });
@@ -6255,7 +6668,7 @@ CRITICAL — When you need clarification during planning:
       if (msg.type === 'experimental_features') {
         try {
           await ensureInitialized();
-          const result = await request('experimentalFeature/list', { limit: Number.isFinite(msg.limit) ? msg.limit : 100 }, 10000);
+          const result = await request('experimentalFeature/list', codexPagination(msg), 10000);
           sendToClient({ type: 'experimental_features', requestId: msg.requestId || null, features: result || {} });
         } catch (err) {
           sendToClient({ type: 'experimental_features', requestId: msg.requestId || null, features: {}, error: err.message });
@@ -6281,22 +6694,11 @@ CRITICAL — When you need clarification during planning:
           await ensureInitialized();
           const result = await request('app/list', {
             threadId: msg.threadId || activeThreadId || null,
-            limit: Number.isFinite(msg.limit) ? msg.limit : 100,
-            cursor: msg.cursor || null,
+            ...codexPagination(msg),
           }, 10000);
           sendToClient({ type: 'app_list', requestId: msg.requestId || null, apps: result || {} });
         } catch (err) {
           sendToClient({ type: 'app_list', requestId: msg.requestId || null, apps: {}, error: err.message });
-        }
-        return;
-      }
-      if (msg.type === 'plugin_list') {
-        try {
-          await ensureInitialized();
-          const result = await request('plugin/list', { forceRemoteSync: !!msg.forceRemoteSync }, 10000);
-          sendToClient({ type: 'plugin_list', requestId: msg.requestId || null, plugins: result || {} });
-        } catch (err) {
-          sendToClient({ type: 'plugin_list', requestId: msg.requestId || null, plugins: {}, error: err.message });
         }
         return;
       }
@@ -6317,7 +6719,7 @@ CRITICAL — When you need clarification during planning:
             return request('review/start', {
               threadId: msg.threadId || activeThreadId,
               delivery: 'inline',
-              target: msg.target || { type: 'uncommittedChanges' },
+              target: buildCodexReviewTarget(msg.target),
             }, 10000);
           });
           activeTurnId = result?.turn?.id || result?.turnId || activeTurnId;
@@ -6330,23 +6732,19 @@ CRITICAL — When you need clarification during planning:
       if (msg.type === 'thread_rollback') {
         try {
           await ensureInitialized();
-          const result = await request('thread/rollback', {
-            threadId: msg.threadId || activeThreadId,
-            numTurns: Math.max(1, Number(msg.numTurns) || 1),
-          }, 10000);
+          const threadId = msg.threadId || activeThreadId;
+          if (!activeThreadId || threadId !== activeThreadId) throw new Error('This action belongs to another thread.');
+          if (activeTurnId || pendingServerRequests.size) throw new Error('Wait for the current turn and requests before reverting history.');
+          appBoundary.invalidate();
+          let result;
+          try {
+            result = await withCodexWriterOperation('thread_revert', () => revertCodexThreadHistory(request, threadId, {
+              numTurns: msg.numTurns ?? 1, beforeTurnId: msg.beforeTurnId,
+            }));
+          } finally { appBoundary.invalidate(); }
           sendToClient({ type: 'thread_rolled_back', requestId: msg.requestId || null, thread: sanitizeCodexThreadForClient(result?.thread || result || null) });
         } catch (err) {
-          sendToClient({ type: 'error', requestId: msg.requestId || null, message: `Rollback failed: ${err.message}` });
-        }
-        return;
-      }
-      if (msg.type === 'background_clean') {
-        try {
-          await ensureInitialized();
-          const result = await request('thread/backgroundTerminals/clean', { threadId: msg.threadId || activeThreadId }, 10000);
-          sendToClient({ type: 'background_cleaned', requestId: msg.requestId || null, result: result || {} });
-        } catch (err) {
-          sendToClient({ type: 'error', requestId: msg.requestId || null, message: `Stop background terminals failed: ${err.message}` });
+          sendToClient({ type: 'error', requestId: msg.requestId || null, ...classifyCodexRpcError(err), message: `Revert failed: ${err.message}` });
         }
         return;
       }
@@ -6473,6 +6871,7 @@ CRITICAL — When you need clarification during planning:
           finishPendingServerRequests('turn_canceled', 'Thread reset');
           pendingServerRequests.clear();
           activeThreadId = null;
+          appBoundary.invalidate();
           displayedThreadId = null;
           activeTurnId = null;
           activeThreadRuntimeFingerprint = null;
@@ -6534,6 +6933,13 @@ CRITICAL — When you need clarification during planning:
             });
             return;
           }
+          if (requestInfo.verification) {
+            const result = msg.error ? { action: 'decline', content: null } : msg.result;
+            validateCodexServerResponse(requestInfo.method, requestInfo.params, result);
+            const delivered = settleCodexVerification(requestId, requestInfo, result.action, result.content);
+            sendToClient({ type: 'server_request_response_result', requestId: msg.requestId, responseToken: msg.responseToken || null, ok: delivered, status: delivered ? 'answered' : 'delivery_failed' });
+            return;
+          }
           const retainedAnswer = codexRequestJournal.get(expectedCorrelation);
           if (retainedAnswer?.deliveredAt) {
             logRequestLifecycle('duplicate_acknowledged', expectedCorrelation, {});
@@ -6587,6 +6993,7 @@ CRITICAL — When you need clarification during planning:
           } else {
             result = msg.result || {};
           }
+          if (!msg.error) validateCodexServerResponse(requestInfo.method, requestInfo.params, result);
           const persistedAnswer = runCodexJournalOperation('persist_answer', expectedCorrelation, () => (
             codexRequestJournal.persistAnswer(expectedCorrelation, {
               responseToken: msg.responseToken || '',
@@ -6616,9 +7023,13 @@ CRITICAL — When you need clarification during planning:
           if (msg.persist === 'always') {
             persisted = codexSidepanelPermissionStore.grant(requestInfo.params?.permissions || {}).granted;
           }
+          // Reply with the app-server's own id: the Assistant's Codex brain echoes
+          // it as a string ("0"), and Codex drops a reply whose id is "0" for 0
+          // (the 2026-09-27 escalation approval stayed pending after "delivered").
+          const rpcId = requestInfo.rpcId ?? msg.requestId;
           const sent = msg.error
-            ? sendRpcError(msg.requestId, msg.error.message || 'Request rejected', msg.error.code || -32000, msg.error.data || null)
-            : sendRpcResult(msg.requestId, result);
+            ? sendRpcError(rpcId, msg.error.message || 'Request rejected', msg.error.code || -32000, msg.error.data || null)
+            : sendRpcResult(rpcId, result);
           if (!sent) {
             runCodexJournalOperation('record_delivery_failure', expectedCorrelation, () => (
               codexRequestJournal.recordDelivery(expectedCorrelation, {
@@ -6674,6 +7085,8 @@ CRITICAL — When you need clarification during planning:
     if (delegatedCodexCloseHandler) {
       return delegatedCodexCloseHandler();
     }
+    _codexOrphanBuffer ||= [];
+    for (const [id, info] of pendingServerRequests) if (info.verification) settleCodexVerification(id, info, 'cancel');
     if (writerLifecycleState.releaseRequested) {
       console.log(`[codex-writer] Intentional idle WebSocket release session=${wsSessionId || 'unknown'} thread=${activeThreadId || displayedThreadId || 'none'}`);
       if (!childRetirementPromise && child) {
@@ -6718,13 +7131,14 @@ CRITICAL — When you need clarification during planning:
           void previousOrphan.retire?.('superseded idle orphan registry entry');
         }
         console.log(`[codex-skin] WS closed — orphaning process pid ${child.pid} for ${okey} (${CODEX_ORPHAN_GRACE_MS / 1000}s grace)`);
-        _codexOrphanBuffer = [];
+        _codexOrphanBuffer ||= [];
         const orphan = {
           get child() { return child; },
           windowId: wsWindowId,
           sessionId: wsSessionId,
           accountId: activeAccountId,
           codexHome: activeCodexHome,
+          capabilityRegistry: codexCapabilities,
           mcpProfile: codexMcpProfileState.value,
           mcpProfileState: codexMcpProfileState,
           mcpRuntimeId: codexMcpRuntimeId,
@@ -6763,7 +7177,8 @@ CRITICAL — When you need clarification during planning:
               operationsInFlight: writerLifecycleState.operationsInFlight,
             });
           },
-          swapWs(newWs, newConnectionEpoch, newSessionId) {
+          swapWs(newWs, newConnectionEpoch, newSessionId, capabilities = {}) {
+            supportsUserVerification = capabilities.userVerification === true;
             ws = newWs;
             wsConnectionEpoch = newConnectionEpoch || wsConnectionEpoch;
             wsSessionId = newSessionId || wsSessionId;
@@ -6793,10 +7208,10 @@ CRITICAL — When you need clarification during planning:
   ws.on('close', handleCodexSocketClose);
 }
 
-let _codexModelListCache = { at: 0, models: [] };
+const _codexModelListCache = new Map();
 const CODEX_MODEL_LIST_CACHE_MS = 60_000;
 
-async function queryCodexAppServerModels() {
+async function queryCodexAppServerModels(codexHome = CODEX_DEFAULT_HOME) {
   let codexBin = loadCliConfig()?.codex?.command?.trim() || getCodexBin();
   const args = ['app-server'];
   if (!/\s/.test(codexBin) && /\.js$/i.test(codexBin)) {
@@ -6806,7 +7221,7 @@ async function queryCodexAppServerModels() {
   const useShell = /\s/.test(codexBin)
     || !codexBin.includes(sep)
     || (process.platform === 'win32' && /\.(cmd|bat)$/i.test(codexBin));
-  const env = { ...process.env, NO_COLOR: '1' };
+  const env = { ...process.env, CODEX_HOME: codexHome, NO_COLOR: '1' };
   delete env.FORCE_COLOR;
   delete env.CLICOLOR_FORCE;
 
@@ -6902,15 +7317,20 @@ async function queryCodexAppServerModels() {
 
 app.get('/api/codex/models', async (req, res) => {
   try {
+    const accountId = String(req.query?.accountId || 'default');
+    const account = findCodexAccount(accountId);
+    if (!account) return res.status(404).json({ ok: false, error: `Codex account not found: ${accountId}`, models: [] });
+    const codexHome = account.home || CODEX_DEFAULT_HOME;
     const force = req.query?.refresh === '1';
-    if (!force && _codexModelListCache.models.length && Date.now() - _codexModelListCache.at < CODEX_MODEL_LIST_CACHE_MS) {
-      return res.json({ ok: true, source: 'cache', models: _codexModelListCache.models });
+    const cached = _codexModelListCache.get(codexHome);
+    if (!force && cached?.models.length && Date.now() - cached.at < CODEX_MODEL_LIST_CACHE_MS) {
+      return res.json({ ok: true, source: 'cache', models: cached.models });
     }
     const models = mergeCodexModelContextCapabilities(
-      await queryCodexAppServerModels(),
-      readCodexRuntimeModelCatalog(CODEX_DEFAULT_HOME),
+      await queryCodexAppServerModels(codexHome),
+      readCodexRuntimeModelCatalog(codexHome),
     );
-    _codexModelListCache = { at: Date.now(), models };
+    _codexModelListCache.set(codexHome, { at: Date.now(), models });
     res.json({ ok: true, source: 'codex-app-server', models });
   } catch (err) {
     res.json({ ok: false, source: 'fallback', error: err.message, models: [] });
@@ -6940,10 +7360,8 @@ let _ocpStarting = false;
 let _ocpReady = false;
 let _ocpVersion = null;
 let _ocpHistoryClearInProgress = false;
-const _ocpWsClients = new Set(); // all connected /ws/opencode-skin clients
-let _ocpClientListenerInstalled = false; // wired once per process
 
-// ── OpenCode V2 (clean-slate sidepanel) — independent client set & bridge ──
+// ── OpenCode V2 (clean-slate sidepanel) — client set & bridge ──
 const _ocpV2WsClients = new Set();   // all connected /ws/opencode-v2 clients
 let _ocpV2ListenerInstalled = false;
 let _ocpV2ClientSeq = 0;
@@ -7086,7 +7504,7 @@ async function reconcileAuthIfStale() {
     _ocpAuthReconciling = true;
     console.log('[opencode] auth.json modified after last boot — restarting to pick up new credentials');
     await takeoverOpencodeServer();
-    broadcastToOpencodeClients({ type: 'providers:changed' });
+    broadcastToOpencodeV2Clients({ type: 'providers:changed' });
     console.log('[opencode] Restart complete after auth reconciliation');
     return true;
   } catch (err) {
@@ -7139,106 +7557,10 @@ async function waitForOpencodeShutdown(timeoutMs = 6000) {
   return false;
 }
 
-let _ocpSseEventSeq = 0;
-function broadcastToOpencodeClients(data) {
-  if (OCP_VERBOSE) {
-    const isEvent = data?.type === 'event';
-    ocpTrace('ws:broadcast', {
-      type: data?.type,
-      eventType: isEvent ? data?.eventType : undefined,
-      seq: isEvent ? ++_ocpSseEventSeq : undefined,
-      clients: _ocpWsClients.size,
-      bytes: _ocpByteLen(data),
-    });
-  }
-  // Compact, always-on log for session-scoped events so multi-session debugging
-  // does not require OCP_VERBOSE. Surfaces session.created (parent + child link),
-  // session.idle, session.error.
-  if (data?.type === 'event' && data.eventType) {
-    const ev = data.event || {};
-    const evSid = ev.sessionID || ev.sessionId || ev.session?.id || ev.info?.id || '';
-    const parentSid = ev.parentID || ev.parentId || ev.session?.parentID || '';
-    if (evSid) _ocpTrackSseEvent(evSid, data.eventType);
-    // High-signal SSE events go to the unified trace stream so the in-panel
-    // viewer correlates browser-side `event:in` with the server-side relay.
-    const TRACE_SSE = new Set([
-      'question.asked', 'question.replied', 'question.rejected',
-      'permission.asked', 'permission.replied', 'permission.rejected', 'permission.updated',
-      'session.created', 'session.idle', 'session.error', 'session.status',
-    ]);
-    if (TRACE_SSE.has(data.eventType)) {
-      const reqId = ev?.id || ev?.requestID || ev?.permissionID || '';
-      ocpTraceEmit('sse:relay', { eventType: data.eventType, sid: evSid, reqId, parent: parentSid || undefined });
-    }
-    if (data.eventType === 'session.created' && evSid) {
-      _ocpSessionLog('session.created', { sid: evSid, parent: parentSid || undefined, clients: _ocpWsClients.size });
-    } else if (data.eventType === 'session.idle' && evSid) {
-      const owners = _ocpSessionOwners.get(evSid);
-      _ocpSessionLog('session.idle', {
-        sid: evSid,
-        plan: owners?.planMode ? 1 : undefined,
-        owners: owners?.clients.size || 0,
-      });
-      _ocpMarkSendEnd(evSid, 'idle');
-    } else if (data.eventType === 'session.error' && evSid) {
-      _ocpSessionLog('session.error', { sid: evSid });
-      _ocpMarkSendEnd(evSid, 'error');
-    }
-  }
-  const msg = JSON.stringify(data);
-  for (const c of _ocpWsClients) {
-    if (c.readyState === 1) c.send(msg);
-  }
-  if (data?.type === 'providers:changed') {
-    broadcastToOpencodeV2Clients(data);
-  }
-}
-
-// ── opencode-client → broadcast bridge ──
-// Registered once per process. Translates SDK event envelopes into the wire
-// shape today's browser code already speaks ({ type:'event', eventType, event }).
-// Replaces the old hand-rolled startOpencodeSSERelay() reader.
-let _ocpRelayCount = 0;
-const _ocpHealthTimers = new Map(); // tid → intervalId
-function _ocpClearHealthTimer(tid) {
-  const t = _ocpHealthTimers.get(tid);
-  if (t) { clearInterval(t); _ocpHealthTimers.delete(tid); }
-}
-function installOpencodeClientListener() {
-  if (_ocpClientListenerInstalled) {
-    console.log('[ocp-relay] installOpencodeClientListener noop (already installed)');
-    return;
-  }
-  _ocpClientListenerInstalled = true;
-  console.log('[ocp-relay] installOpencodeClientListener installing event bridge');
-  opencodeClient.event.onEvent((envelope) => {
-    if (!envelope) {
-      console.log('[ocp-relay] empty envelope dropped');
-      return;
-    }
-    const { eventType, event } = envelope;
-    _ocpRelayCount++;
-    const evSid = event?.sessionID || event?.sessionId || event?.info?.id || event?.session?.id || '-';
-    console.log(`[ocp-relay] ev#${_ocpRelayCount} ${eventType} sid=${evSid} clients=${_ocpWsClients.size}`);
-    if (eventType === 'server:status') {
-      broadcastToOpencodeClients({
-        type: 'server:status',
-        status: event?.status || 'unknown',
-        version: _ocpVersion,
-        port: event?.port || _ocpPort,
-        managed: !!_ocpProc,
-      });
-      return;
-    }
-    broadcastToOpencodeClients({ type: 'event', eventType, event });
-  });
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // OpenCode V2 — clean-slate broadcast bridge & WS handler
 // Pass-through: forwards opencodeV2Client envelopes verbatim to /ws/opencode-v2
 // clients. No normalizers, no plan-mode injection, no shape translation.
-// Independent of legacy `_ocpWsClients` and `installOpencodeClientListener`.
 // ─────────────────────────────────────────────────────────────────────────────
 
 function activeNativeOpenCodeRunForSession(sessionId) {
@@ -7258,6 +7580,7 @@ const OPENCODE_NATIVE_MUTATION_TYPES = new Set([
   'session:update', 'session:delete', 'message:send', 'message:abort',
   'session:compact', 'permission:reply', 'question:reply', 'question:reject',
   'mcp:profile:set',
+  ...OPENCODE_V2_WS_MUTATION_TYPES,
 ]);
 const OPENCODE_HISTORY_WRITE_TYPES = new Set([
   'session:create', 'session:update', 'session:delete', 'session:compact',
@@ -7265,9 +7588,13 @@ const OPENCODE_HISTORY_WRITE_TYPES = new Set([
   'message:send', 'message:abort',
   'permission:reply', 'permission:respond', 'question:reply', 'question:reject',
   'mcp:profile:set', 'mcp:add', 'config:write', 'auth:set',
+  ...OPENCODE_V2_WS_MUTATION_TYPES,
 ]);
 
 function broadcastToOpencodeV2Clients(data, { nativeRunId = null } = {}) {
+  // OpenCode 1.18 mirrors every bus event as a `sync` envelope; the panel acts
+  // on the bus event, so relaying the mirror only doubles the traffic.
+  if (!shouldRelayOpencodeV2Message(data)) return;
   const event = data?.type === 'event' ? data.event || {} : null;
   const sessionId = event?.sessionID || event?.sessionId || event?.info?.id || event?.session?.id || null;
   const explicitRun = nativeRunId ? _nativeLoopRuntime?.get(nativeRunId) : null;
@@ -7714,7 +8041,7 @@ setInterval(() => {
   const allClosed = _ocpV2WsClients.size === 0;
   const now = Date.now();
   for (const [termId, entry] of _ocpIsoServes) {
-    if (entry.keepAlive && _nativeLoopRuntime?.isAlive(termId)) continue;
+    if (entry.keepAlive && (_nativeLoopRuntime?.isAlive(termId) || _assistantRuntime?.ownsIsolatedServe?.(termId))) continue;
     const startingForSession = entry.starting
       || [..._ocpSessionServeStarts.values()].some((pending) => pending.termId === termId);
     const hasActiveTurn = [...entry.sessions].some((sessionId) => _ocpActiveSessionTurns.has(sessionId));
@@ -7753,6 +8080,40 @@ function handleOpencodeV2Ws(ws) {
       try { ws.send(JSON.stringify(data)); } catch {}
     }
   };
+  // Request bodies that live in lib/opencode-v2-ws-requests.js get these.
+  const requestDeps = {
+    send,
+    shared: opencodeV2Client,
+    bound: boundIsoClient,
+    turn: turnClientForSession,
+    proxy: ocpProxy,
+    baseUrlFor: ocpBaseUrlForSession,
+    directoryQuery: ocpDirectoryQuery,
+    // mcp:add with persist: writes the OpenCode config file and starts nothing
+    // (the server was registered on the session's serve by the request itself).
+    persistMcp: (name, config) => persistMcpToOpencodeConfig(name, config),
+    isTurnActive: (sessionId) => sendAborts.has(sessionId)
+      || _ocpActiveSessionTurns.has(sessionId)
+      || _ocpSessionServeStarts.has(sessionId),
+    // The turn bookkeeping of message:send, for the other things that occupy a
+    // session (a slash command, a shell command): abort this socket's previous
+    // prompt, mark the session active so its serve is not reaped mid-turn.
+    turnScope: (sid) => {
+      const prev = sendAborts.get(sid);
+      if (prev) { try { prev.abort(); } catch {} }
+      const ctrl = new AbortController();
+      sendAborts.set(sid, ctrl);
+      const token = randomUUID();
+      _ocpActiveSessionTurns.set(sid, token);
+      return {
+        signal: ctrl.signal,
+        end() {
+          if (_ocpActiveSessionTurns.get(sid) === token) _ocpActiveSessionTurns.delete(sid);
+          if (sendAborts.get(sid) === ctrl) sendAborts.delete(sid);
+        },
+      };
+    },
+  };
 
   ws.on('message', async (raw) => {
     let msg;
@@ -7762,20 +8123,25 @@ function handleOpencodeV2Ws(ws) {
       if ((type === 'init' || type === 'identify') && msg.windowId) {
         ws._nativeLoopWindowId = String(msg.windowId).trim().slice(0, 128) || null;
       }
-      if (type === 'identify') return;
-      if (_ocpHistoryClearInProgress && OPENCODE_HISTORY_WRITE_TYPES.has(type)) {
-        send({ type: `${type}:result`, id, status: 409, error: 'OpenCode history is being cleared' });
+      if (type === 'identify') {
+        // Sent on every (re)connect: the panel gates features on this list.
+        send({ type: 'capabilities', capabilities: opencodeV2WsCapabilities() });
         return;
       }
-      const protectedRun = msg.sessionId ? activeNativeOpenCodeRunForSession(msg.sessionId) : null;
-      if (protectedRun && !opencodeV2ClientOwnsRun(ws, protectedRun)) {
-        send({ type: `${type}:result`, id, status: 409, error: 'Native automation session is owned by another window' });
+      // Canonical session id first (msg.sessionId is rewritten in place), then
+      // the history-clear and native-automation rules, all on that one value.
+      const refused = guardOpencodeV2Request(msg, {
+        historyClearing: _ocpHistoryClearInProgress,
+        historyWriteTypes: OPENCODE_HISTORY_WRITE_TYPES,
+        nativeMutationTypes: OPENCODE_NATIVE_MUTATION_TYPES,
+        protectedRunFor: activeNativeOpenCodeRunForSession,
+        ownsRun: (run) => opencodeV2ClientOwnsRun(ws, run),
+      });
+      if (refused) {
+        send({ type: `${type}:result`, id, ...refused });
         return;
       }
-      if (protectedRun && OPENCODE_NATIVE_MUTATION_TYPES.has(type)) {
-        send({ type: `${type}:result`, id, status: 409, error: 'Stop the native automation before modifying its session' });
-        return;
-      }
+      if (await handleOpencodeV2Request(msg, requestDeps)) return;
       switch (type) {
         case 'init': {
           const ready = await ensureOpencodeServer();
@@ -7785,9 +8151,11 @@ function handleOpencodeV2Ws(ws) {
             id,
             ready,
             version: _ocpVersion,
+            sdkVersion: opencodeSdkVersion(),
             port: _ocpPort,
             managed: !!_ocpProc,
             connected: opencodeV2Client.isConnected(),
+            capabilities: opencodeV2WsCapabilities(),
           });
           break;
         }
@@ -7797,33 +8165,17 @@ function handleOpencodeV2Ws(ws) {
           // the serve cwd (SynaBun), which hides sessions for every other
           // registered project. Reading the DB directly returns ALL sessions
           // so the sidepanel resume dropdown and boot tab-restore can
-          // surface sessions outside SynaBun (e.g. CriticalPixel, EllaCred).
+          // surface sessions outside SynaBun (every other registered project).
           const db = getOpencodeDb();
           if (db) {
             try {
-              const rows = db.prepare(`
-                SELECT s.id, s.title, s.directory, s.slug, s.project_id,
-                       s.time_created, s.time_updated,
-                       (SELECT COUNT(*) FROM message m WHERE m.session_id = s.id) AS message_count
-                FROM session s
-                WHERE s.time_archived IS NULL
-                ORDER BY s.time_updated DESC
-              `).all();
+              // msg.options: search / archived / roots / limit (see buildSessionListQuery).
+              const query = buildSessionListQuery(msg.options || {});
+              const rows = db.prepare(query.sql).all(...query.params);
               const sessions = rows.filter((row) => {
                 const run = activeNativeOpenCodeRunForSession(row.id);
                 return !run || opencodeV2ClientOwnsRun(ws, run);
-              }).map((row) => ({
-                id: row.id,
-                title: row.title || '',
-                slug: row.slug || '',
-                directory: row.directory || '',
-                projectID: row.project_id || '',
-                messageCount: row.message_count || 0,
-                time: {
-                  created: row.time_created ? Math.floor(new Date(row.time_created).getTime()) : 0,
-                  updated: row.time_updated ? Math.floor(new Date(row.time_updated).getTime()) : 0,
-                },
-              }));
+              }).map(mapSessionListRow);
               send({ type: 'session:list:result', id, status: 200, data: sessions });
               break;
             } catch (err) {
@@ -7860,7 +8212,7 @@ function handleOpencodeV2Ws(ws) {
         }
         case 'session:update': {
           let r;
-          try { r = await opencodeV2Client.session.update({ sessionID: msg.sessionId, ...(msg.body || {}) }); }
+          try { r = await opencodeV2Client.session.update({ ...(msg.body || {}), sessionID: msg.sessionId }); }
           catch (err) { r = { status: err?.status || 500, data: { error: err?.message } }; }
           send({ type: 'session:update:result', id, status: r.status, data: r.data });
           break;
@@ -7885,14 +8237,6 @@ function handleOpencodeV2Ws(ws) {
         case 'session:messages': {
           const r = await opencodeV2Client.session.messages({ sessionID: msg.sessionId });
           send({ type: 'session:messages:result', id, status: r.status, data: r.data });
-          break;
-        }
-        case 'session:context': {
-          const r = await opencodeV2Client.session.context({
-            sessionID: msg.sessionId,
-            directory: msg.cwd || undefined,
-          });
-          send({ type: 'session:context:result', id, status: r.status, data: r.data });
           break;
         }
         case 'mcp:profile:get': {
@@ -7976,19 +8320,6 @@ function handleOpencodeV2Ws(ws) {
           }
           break;
         }
-        case 'session:compact': {
-          try {
-            const compactClient = await turnClientForSession(msg.sessionId, msg.mcpProfile);
-            const r = await compactClient.session.compact({
-              sessionID: msg.sessionId,
-              directory: msg.cwd || undefined,
-            });
-            send({ type: 'session:compact:result', id, status: r.status, data: r.data });
-          } catch (err) {
-            send({ type: 'session:compact:result', id, ok: false, error: err?.message || String(err) });
-          }
-          break;
-        }
         case 'message:abort': {
           const sid = msg.sessionId;
           const ctrl = sendAborts.get(sid);
@@ -7999,43 +8330,6 @@ function handleOpencodeV2Ws(ws) {
             send({ type: 'message:abort:result', id, ok: true });
           } catch (err) {
             send({ type: 'message:abort:result', id, ok: false, error: err?.message });
-          }
-          break;
-        }
-        case 'permission:reply': {
-          try {
-            // SDK shape: POST /permission/{requestID}/reply, body { reply }.
-            // The permission id is the path param `requestID`; the decision is
-            // the body field `reply` ('once'|'always'|'reject'). Passing
-            // sessionID/permissionID/response dropped every recognized param
-            // (→ POST /permission/undefined/reply → 404), which left the card
-            // greyed and the agent stalled. Mirror the working v1 handler.
-            // Propagate `directory` (cwd) so the reply matches the scope the
-            // permission was raised under — same fix as question:reply. Without
-            // it the reply hits the default scope, never matches the pending
-            // permission, and the card stays locked forever.
-            const directory = msg.cwd || undefined;
-            let r = await boundIsoClient(msg.sessionId).permission.reply({
-              requestID: msg.permissionId,
-              reply: msg.response,  // 'once' | 'always' | 'reject'
-              directory,
-            });
-            // If the SDK call misses (404/405 — scope mismatch or older serve),
-            // retry via the HTTP proxy with ?directory= query — mirrors the V1
-            // handler's resilience and the question:reply cwd propagation path.
-            if (r.status === 404 || r.status === 405) {
-              const encodedPermId = encodeURIComponent(String(msg.permissionId || ''));
-              const q = ocpDirectoryQuery(msg.cwd);
-              const base = ocpBaseUrlForSession(msg.sessionId);
-              r = await ocpProxyFirstSupported('POST', [
-                `/permission/${encodedPermId}/reply${q}`,
-                `/permission/${encodedPermId}/respond${q}`,
-                `/permission/${encodedPermId}${q}`,
-              ], { reply: msg.response, response: msg.response }, 15000, base);
-            }
-            send({ type: 'permission:reply:result', id, status: r.status, data: r.data });
-          } catch (err) {
-            send({ type: 'permission:reply:result', id, ok: false, error: err?.message });
           }
           break;
         }
@@ -8051,23 +8345,6 @@ function handleOpencodeV2Ws(ws) {
             send({ type: 'question:list:result', id, status: r.status, data: r.data });
           } catch (err) {
             send({ type: 'question:list:result', id, ok: false, error: err?.message });
-          }
-          break;
-        }
-        case 'question:reply': {
-          try {
-            const requestID = String(msg.requestId || msg.requestID || '');
-            const body = { answers: Array.isArray(msg.answers) ? msg.answers : [] };
-            const encodedRequestID = encodeURIComponent(requestID);
-            const q = ocpDirectoryQuery(msg.cwd);
-            const base = ocpBaseUrlForSession(msg.sessionId);
-            const r = await ocpProxyFirstSupported('POST', [
-              `/question/${encodedRequestID}/reply${q}`,
-              `/question/${encodedRequestID}${q}`,
-            ], body, 10000, base);
-            send({ type: 'question:reply:result', id, status: r.status, data: r.data });
-          } catch (err) {
-            send({ type: 'question:reply:result', id, ok: false, error: err?.message });
           }
           break;
         }
@@ -8104,371 +8381,6 @@ function handleOpencodeV2Ws(ws) {
   });
 }
 
-// ── Always-on session lifecycle tracker (independent of OCP_VERBOSE) ──
-//
-// Tracks which WS connection owns which OpenCode session, plan-mode usage, and
-// in-flight sends so multi-session debugging produces a readable timeline
-// without needing OCP_VERBOSE=1 (the firehose). Compact one-line entries.
-let _ocpClientSeq = 0;                          // unique id per WS connection
-const _ocpSessionOwners = new Map();            // sessionId → { clients:Set<connId>, planMode:bool, lastSendAt:number }
-const _ocpSessionLogEnabled = process.env.OCP_SESSION_LOG !== '0'; // default ON; set OCP_SESSION_LOG=0 to silence
-
-// Per-session SSE activity tracker — mirrors the client-side heartbeat so
-// stalls are visible from server logs alone. Captures last-event timestamp,
-// type, count, and longest inter-event gap for each session.
-const _ocpSessionActivity = new Map();          // sessionId → { lastEventAt, lastEventName, eventCount, longestGap, sendBeganAt, lastSilenceWarnAt, silenceWarnCount, autoAbortFired }
-const OCP_SILENCE_WARN_MS = Number(process.env.OCP_SILENCE_WARN_MS) || 30000;
-// Server-side auto-abort. OFF by default — the client-side ocp-plan tiered
-// watchdog (silence8 → soft60 → hard180 → kill480) already gives the user
-// a "Wait longer / Cancel" prompt at 60s, and the message:send POST has a
-// 30-minute timeout for real hangs. Some non-streaming models (deepseek
-// v4-pro in plan mode, Kimi K2.6) emit zero SSE events for 60-180s before
-// returning the full response in one shot via POST — auto-abort killed
-// those legitimate turns mid-flight. Opt back in with OCP_AUTO_ABORT=1.
-const OCP_GAP_RECOVERY_MS = Number(process.env.OCP_GAP_RECOVERY_MS) || 10000;
-const OCP_AUTO_ABORT_MS = Number(process.env.OCP_AUTO_ABORT_MS) || 600000; // 10 min — generous for plan-mode w/ non-streaming models
-const OCP_AUTO_ABORT_ENABLED = process.env.OCP_AUTO_ABORT === '1'; // off by default
-const OCP_NOOP_EVENTS = new Set(['heartbeat', 'ping', 'keepalive', 'message']);
-let _ocpSilenceWatchdog = null;
-
-function _ocpSessionLog(tag, fields = {}) {
-  if (!_ocpSessionLogEnabled) return;
-  const parts = [];
-  for (const k of Object.keys(fields)) {
-    const v = fields[k];
-    if (v === undefined || v === null) continue;
-    parts.push(`${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`);
-  }
-  console.log(`[ocp-session] ${tag}${parts.length ? ' ' + parts.join(' ') : ''}`);
-}
-
-// ── OCP trace ingest + jsonl writer + WS broadcast ──
-//
-// Receives client trace batches from neural-interface/public/shared/ocp/ocp-trace.js,
-// appends each event to data/ocp-trace.jsonl (rotating at 50MB), and live-broadcasts
-// to all /ws/ocp-trace clients (the in-panel viewer drawer).
-const _OCP_TRACE_DIR = resolve(DATA_HOME, 'data');
-const _OCP_TRACE_PATH = resolve(_OCP_TRACE_DIR, 'ocp-trace.jsonl');
-const _OCP_TRACE_MAX_BYTES = 50 * 1024 * 1024; // rotate at 50MB
-const _ocpTraceWsClients = new Set();
-
-function _ocpTraceRotateIfNeeded() {
-  try {
-    if (!existsSync(_OCP_TRACE_PATH)) return;
-    const st = statSync(_OCP_TRACE_PATH);
-    if (st.size < _OCP_TRACE_MAX_BYTES) return;
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const rotated = resolve(_OCP_TRACE_DIR, `ocp-trace.${stamp}.jsonl`);
-    renameSync(_OCP_TRACE_PATH, rotated);
-  } catch (err) {
-    console.warn('[ocp-trace] rotate failed:', err?.message || err);
-  }
-}
-
-function _ocpTraceAppend(events) {
-  if (!Array.isArray(events) || !events.length) return;
-  try {
-    if (!existsSync(_OCP_TRACE_DIR)) mkdirSync(_OCP_TRACE_DIR, { recursive: true });
-    _ocpTraceRotateIfNeeded();
-    const lines = events.map((e) => JSON.stringify({ ...e, _serverT: Date.now() })).join('\n') + '\n';
-    appendFileSync(_OCP_TRACE_PATH, lines, 'utf8');
-  } catch (err) {
-    console.warn('[ocp-trace] append failed:', err?.message || err);
-  }
-}
-
-function _ocpTraceBroadcast(events) {
-  if (_ocpTraceWsClients.size === 0) return;
-  const payload = JSON.stringify({ type: 'trace:batch', events });
-  for (const ws of _ocpTraceWsClients) {
-    try { if (ws.readyState === 1) ws.send(payload); } catch {}
-  }
-}
-
-// Server-originated trace events go through this — used so SSE broadcast and
-// question:reply / permission:respond paths participate in the same stream.
-function ocpTraceEmit(tag, fields = {}) {
-  const entry = {
-    seq: ++_ocpTraceSeq,
-    t: Date.now(),
-    tag: String(tag || ''),
-    source: 'server',
-    ...fields,
-  };
-  if (OCP_VERBOSE) {
-    const parts = [];
-    for (const k of Object.keys(fields)) {
-      const v = fields[k];
-      if (v === undefined || v === null) continue;
-      parts.push(`${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`);
-    }
-    console.log(`[ocp-trace] ${tag}${parts.length ? ' ' + parts.join(' ') : ''}`);
-  }
-  _ocpTraceAppend([entry]);
-  _ocpTraceBroadcast([entry]);
-}
-
-function handleOcpTraceWs(ws) {
-  _ocpTraceWsClients.add(ws);
-  try { ws.send(JSON.stringify({ type: 'trace:hello', t: Date.now(), clients: _ocpTraceWsClients.size })); } catch {}
-  ws.on('message', (raw) => {
-    let msg;
-    try { msg = JSON.parse(raw.toString()); } catch { return; }
-    if (msg?.type === 'snapshot:request') {
-      const tail = Math.min(2000, Math.max(50, Number(msg.tail) || 500));
-      try {
-        const lines = _ocpTraceTail(tail);
-        ws.send(JSON.stringify({ type: 'snapshot:result', events: lines }));
-      } catch {}
-    }
-  });
-  ws.on('close', () => _ocpTraceWsClients.delete(ws));
-  ws.on('error', () => _ocpTraceWsClients.delete(ws));
-}
-
-function _ocpTraceTail(n) {
-  if (!existsSync(_OCP_TRACE_PATH)) return [];
-  try {
-    const buf = readFileSync(_OCP_TRACE_PATH, 'utf8');
-    const lines = buf.split('\n').filter(Boolean);
-    return lines.slice(-n).map((l) => {
-      try { return JSON.parse(l); } catch { return null; }
-    }).filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-
-// HTTP endpoints — kept tight, JSON-only.
-app.post('/api/ocp/trace/ingest', express.json({ limit: '5mb' }), (req, res) => {
-  const events = Array.isArray(req.body?.events) ? req.body.events : [];
-  if (!events.length) return res.json({ ok: true, count: 0 });
-  // Stamp source=client and forward.
-  const stamped = events.map((e) => ({ ...e, source: e.source || 'client' }));
-  _ocpTraceAppend(stamped);
-  _ocpTraceBroadcast(stamped);
-  res.json({ ok: true, count: stamped.length });
-});
-
-app.get('/api/ocp/trace/snapshot', (req, res) => {
-  const tail = Math.min(5000, Math.max(50, Number(req.query.tail) || 500));
-  res.json({ ok: true, events: _ocpTraceTail(tail) });
-});
-
-app.post('/api/ocp/trace/clear', (req, res) => {
-  try {
-    if (existsSync(_OCP_TRACE_PATH)) unlinkSync(_OCP_TRACE_PATH);
-    res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err?.message || String(err) });
-  }
-});
-
-function _ocpGetActivity(sid) {
-  let entry = _ocpSessionActivity.get(sid);
-  if (!entry) {
-    entry = {
-      lastEventAt: 0,
-      lastEventName: '',
-      eventCount: 0,
-      longestGap: 0,
-      sendBeganAt: 0,
-      lastSilenceWarnAt: 0,
-      silenceWarnCount: 0,
-      autoAbortFired: false,
-    };
-    _ocpSessionActivity.set(sid, entry);
-  }
-  return entry;
-}
-
-function _ocpTrackSseEvent(sid, eventType) {
-  if (!sid) return;
-  if (OCP_NOOP_EVENTS.has(eventType)) return; // heartbeats/keepalives don't reset stall counters
-  const now = Date.now();
-  const entry = _ocpGetActivity(sid);
-  const prevAt = entry.lastEventAt;
-  if (prevAt) {
-    const gap = now - prevAt;
-    if (gap > entry.longestGap) entry.longestGap = gap;
-    if (entry.sendBeganAt && gap >= OCP_GAP_RECOVERY_MS) {
-      _ocpSessionLog('sse.gap.recovered', {
-        sid,
-        gap_ms: gap,
-        prev: entry.lastEventName || 'none',
-        evt: eventType,
-        count: entry.eventCount + 1,
-      });
-    }
-  }
-  entry.lastEventAt = now;
-  entry.lastEventName = eventType || entry.lastEventName;
-  entry.eventCount += 1;
-  entry.lastSilenceWarnAt = 0;
-  entry.silenceWarnCount = 0;
-}
-
-async function _ocpFireAutoAbort(sid, entry) {
-  if (entry.autoAbortFired) return;
-  entry.autoAbortFired = true;
-  const silenceMs = Date.now() - entry.lastEventAt;
-  _ocpSessionLog('sse.auto-abort', {
-    sid,
-    silent_ms: silenceMs,
-    last_evt: entry.lastEventName || 'none',
-    events: entry.eventCount,
-    since_send_ms: Date.now() - entry.sendBeganAt,
-  });
-  try {
-    await opencodeClient.session.abort({ sessionID: sid });
-  } catch (err) {
-    _ocpSessionLog('sse.auto-abort.error', { sid, error: err?.message || String(err) });
-  }
-  // Notify clients with a synthetic error so the UI's existing error-path takes over.
-  broadcastToOpencodeClients({
-    type: 'event',
-    eventType: 'session.error',
-    event: {
-      sessionID: sid,
-      reason: 'auto-abort',
-      message: `Stalled — no model events for ${Math.round(silenceMs / 1000)}s. Auto-aborted.`,
-      silent_ms: silenceMs,
-    },
-  });
-  _ocpMarkSendEnd(sid, 'auto-abort');
-}
-
-function _ocpMarkSendStart(sid) {
-  if (!sid) return;
-  const entry = _ocpGetActivity(sid);
-  entry.sendBeganAt = Date.now();
-  entry.lastEventAt = entry.sendBeganAt;
-  entry.eventCount = 0;
-  entry.longestGap = 0;
-  entry.lastSilenceWarnAt = 0;
-  entry.silenceWarnCount = 0;
-  entry.autoAbortFired = false;
-  entry.lastEventName = '';
-}
-
-function _ocpMarkSendEnd(sid, reason) {
-  if (!sid) return;
-  const entry = _ocpSessionActivity.get(sid);
-  if (!entry || !entry.sendBeganAt) return;
-  const totalMs = Date.now() - entry.sendBeganAt;
-  _ocpSessionLog('sse.summary', {
-    sid,
-    reason: reason || 'idle',
-    total_ms: totalMs,
-    events: entry.eventCount,
-    longest_gap_ms: entry.longestGap,
-    last_evt: entry.lastEventName || 'none',
-  });
-  entry.sendBeganAt = 0;
-}
-
-function _ocpStartSilenceWatchdog() {
-  if (_ocpSilenceWatchdog) return;
-  _ocpSilenceWatchdog = setInterval(() => {
-    const now = Date.now();
-    for (const [sid, entry] of _ocpSessionActivity) {
-      if (!entry.sendBeganAt) continue;
-      if (entry.autoAbortFired) continue;
-      const silence = now - entry.lastEventAt;
-      if (silence < OCP_SILENCE_WARN_MS) continue;
-      if ((now - entry.lastSilenceWarnAt) >= OCP_SILENCE_WARN_MS) {
-        entry.silenceWarnCount = (entry.silenceWarnCount || 0) + 1;
-        _ocpSessionLog('sse.silent', {
-          sid,
-          silent_ms: silence,
-          last_evt: entry.lastEventName || 'none',
-          events: entry.eventCount,
-          since_send_ms: now - entry.sendBeganAt,
-          warn: entry.silenceWarnCount,
-        });
-        entry.lastSilenceWarnAt = now;
-      }
-      if (OCP_AUTO_ABORT_ENABLED && silence >= OCP_AUTO_ABORT_MS) {
-        _ocpFireAutoAbort(sid, entry).catch(() => {});
-      }
-    }
-    // Prune _ocpSessionOwners entries with no live clients and no recent
-    // activity — over a long workday this map otherwise grows monotonically
-    // and every watchdog tick iterates the dead entries.
-    for (const [sid, owner] of _ocpSessionOwners) {
-      if (owner?.clients?.size > 0) continue;
-      const activity = _ocpSessionActivity.get(sid);
-      const last = activity?.lastEventAt || owner?.lastSendAt || 0;
-      if (!last || (now - last) > 30 * 60 * 1000) {
-        _ocpSessionOwners.delete(sid);
-        _ocpSessionActivity.delete(sid);
-      }
-    }
-  }, 5000);
-  if (typeof _ocpSilenceWatchdog.unref === 'function') _ocpSilenceWatchdog.unref();
-}
-
-function _ocpStopSilenceWatchdog() {
-  if (_ocpSilenceWatchdog) {
-    clearInterval(_ocpSilenceWatchdog);
-    _ocpSilenceWatchdog = null;
-  }
-}
-
-function _ocpAttachSession(connId, sessionId, { planMode = null } = {}) {
-  if (!sessionId) return;
-  let entry = _ocpSessionOwners.get(sessionId);
-  if (!entry) {
-    entry = { clients: new Set(), planMode: false, lastSendAt: 0 };
-    _ocpSessionOwners.set(sessionId, entry);
-  }
-  // Conflict: a session already owned by another live client is now being used
-  // by a second client. This is the canonical "multi-session breakage" signal.
-  for (const otherId of entry.clients) {
-    if (otherId !== connId) {
-      _ocpSessionLog('session.conflict', { sid: sessionId, owners: [...entry.clients, connId].join(',') });
-    }
-  }
-  entry.clients.add(connId);
-  if (planMode === true) entry.planMode = true;
-  if (planMode === false && entry.planMode && entry.clients.size === 1) entry.planMode = false;
-}
-
-function _ocpDetachSession(connId, sessionId) {
-  if (!sessionId) return;
-  const entry = _ocpSessionOwners.get(sessionId);
-  if (!entry) return;
-  entry.clients.delete(connId);
-  if (entry.clients.size === 0) _ocpSessionOwners.delete(sessionId);
-}
-
-function _ocpSummarizeSendBody(body) {
-  // Surface plan-mode + tool restrictions + part shape without dumping content.
-  if (!body || typeof body !== 'object') return {};
-  const parts = Array.isArray(body.parts) ? body.parts : [];
-  let textParts = 0, fileParts = 0, otherParts = 0, textChars = 0;
-  for (const p of parts) {
-    if (!p) continue;
-    if (p.type === 'text') { textParts += 1; textChars += String(p.text || '').length; }
-    else if (p.type === 'file') fileParts += 1;
-    else otherParts += 1;
-  }
-  const tools = body.tools && typeof body.tools === 'object'
-    ? Object.keys(body.tools).filter(k => body.tools[k] === false).join(',') || undefined
-    : undefined;
-  return {
-    mode: body.mode || undefined,
-    agent: body.agent || undefined,
-    model: body.model && (body.model.modelID || body.model.id) ? `${body.model.providerID || ''}/${body.model.modelID || body.model.id}` : undefined,
-    parts: parts.length || undefined,
-    textParts: textParts || undefined,
-    textChars: textChars || undefined,
-    fileParts: fileParts || undefined,
-    otherParts: otherParts || undefined,
-    toolsDisabled: tools,
-  };
-}
-
 async function checkOpencodeHealth() {
   try {
     const resp = await fetch(`${_ocpBaseUrl()}/global/health`, { signal: AbortSignal.timeout(3000) });
@@ -8479,26 +8391,6 @@ async function checkOpencodeHealth() {
     }
   } catch {}
   return false;
-}
-
-// Stop any loop associated with an OpenCode session. Called from message:abort
-// so clicking Stop in the sidepanel kills the loop driver, not just the current turn.
-function _abortLoopForOcpSession(ocpSessionId) {
-  try {
-    if (!existsSync(LOOP_DIR)) return;
-    const targetFile = resolve(LOOP_DIR, `${ocpSessionId}.json`);
-    if (!existsSync(targetFile)) return;
-    const data = JSON.parse(readFileSync(targetFile, 'utf-8'));
-    if (!data.active && !data.pending) return;
-    if (data.terminalSessionId && terminalSessions.has(data.terminalSessionId)) {
-      const session = terminalSessions.get(data.terminalSessionId);
-      try { session.pty.kill(); } catch {}
-    }
-    try { unlinkSync(targetFile); } catch {}
-    console.log(`[ocp-session] message.abort — stopped loop for OCP session ${ocpSessionId} (terminal ${data.terminalSessionId})`);
-  } catch {
-    // Non-critical: abort should still succeed even if loop cleanup fails
-  }
 }
 
 async function reconcileOpencodeServerIfStale() {
@@ -8531,11 +8423,11 @@ async function prewarmOpencodeMcpServers() {
   _ocpMcpPrewarmedAt = _ocpLastBootAt || Date.now();
   try {
     const tStart = Date.now();
-    const status = await opencodeClient.mcp.status();
+    const status = await opencodeV2Client.mcp.status();
     const names = Object.keys(status?.data || {});
     if (!names.length) return;
     const results = await Promise.allSettled(
-      names.map((name) => opencodeClient.mcp.connect({ name })),
+      names.map((name) => opencodeV2Client.mcp.connect({ name })),
     );
     const ok = results.filter((r) => r.status === 'fulfilled').length;
     console.log(`[opencode] MCP prewarm: ${ok}/${names.length} connected (${Date.now() - tStart}ms) — ${names.join(', ')}`);
@@ -8563,12 +8455,10 @@ async function ensureOpencodeServer({ allowDuringHistoryClear = false } = {}) {
     _ocpStarting = false;
     _ocpBootReconcileTried = true;
     _ocpLastBootAt = Date.now();
-    installOpencodeClientListener();
+    // One event stream on this serve: the v2 client's. MCP prewarm runs on
+    // the v2 client too.
     installOpencodeV2Listener();
-    _ocpStartSilenceWatchdog();
-    await opencodeClient.connect({ port: _ocpPort });
     await opencodeV2Client.connect({ port: _ocpPort });
-    broadcastToOpencodeClients({ type: 'server:status', status: 'ready', version: _ocpVersion, port: _ocpPort, managed: false });
     broadcastToOpencodeV2Clients({ type: 'server:status', status: 'ready', version: _ocpVersion, port: _ocpPort, managed: false });
     console.log(`[opencode] External server detected on port ${_ocpPort} (v${_ocpVersion || '?'})`);
     prewarmOpencodeMcpServers();
@@ -8596,10 +8486,7 @@ async function ensureOpencodeServer({ allowDuringHistoryClear = false } = {}) {
       _ocpProc = null;
       _ocpReady = false;
       clearOpencodeManagedPid();
-      opencodeClient.disconnect().catch(() => {});
       opencodeV2Client.disconnect().catch(() => {});
-      _ocpStopSilenceWatchdog();
-      broadcastToOpencodeClients({ type: 'server:status', status: 'offline', port: _ocpPort });
       broadcastToOpencodeV2Clients({ type: 'server:status', status: 'offline', port: _ocpPort });
     });
   } catch (err) {
@@ -8617,12 +8504,8 @@ async function ensureOpencodeServer({ allowDuringHistoryClear = false } = {}) {
       _ocpBootReconcileTried = true;
       _ocpLastBootAt = Date.now();
       writeOpencodeManagedPid(listPortListenerPids(_ocpPort)[0] || _ocpProc?.pid);
-      installOpencodeClientListener();
       installOpencodeV2Listener();
-      _ocpStartSilenceWatchdog();
-      await opencodeClient.connect({ port: _ocpPort });
       await opencodeV2Client.connect({ port: _ocpPort });
-      broadcastToOpencodeClients({ type: 'server:status', status: 'ready', version: _ocpVersion, port: _ocpPort, managed: true });
       broadcastToOpencodeV2Clients({ type: 'server:status', status: 'ready', version: _ocpVersion, port: _ocpPort, managed: true });
       console.log(`[opencode] Server ready on port ${_ocpPort} (v${_ocpVersion || '?'})`);
       prewarmOpencodeMcpServers();
@@ -8637,9 +8520,7 @@ async function ensureOpencodeServer({ allowDuringHistoryClear = false } = {}) {
 }
 
 function stopOpencodeServer({ stopManagedOllama = true } = {}) {
-  opencodeClient.disconnect().catch(() => {});
   opencodeV2Client.disconnect().catch(() => {});
-  _ocpStopSilenceWatchdog();
   const managedPid = readOpencodeManagedPid();
   const procPid = _ocpProc?.pid || null;
   const isWin = process.platform === 'win32';
@@ -8676,8 +8557,6 @@ function stopOpencodeServer({ stopManagedOllama = true } = {}) {
   clearOpencodeManagedPid();
   _ocpReady = false;
   _ocpStarting = false;
-  _ocpSessionActivity.clear();
-  broadcastToOpencodeClients({ type: 'server:status', status: 'offline', port: _ocpPort });
   broadcastToOpencodeV2Clients({ type: 'server:status', status: 'offline', port: _ocpPort });
   // Stop Ollama if we configured it this session
   if (stopManagedOllama) {
@@ -8696,8 +8575,6 @@ async function takeoverOpencodeServer() {
   }
   // External server — terminate the actual port listener so we can take over with
   // a managed process that will boot from the updated auth/config files.
-  await opencodeClient.disconnect().catch(() => {});
-  _ocpStopSilenceWatchdog();
   _ocpReady = false;
   _ocpStarting = false;
   try {
@@ -8727,7 +8604,7 @@ async function takeoverOpencodeServer() {
   return ensureOpencodeServer();
 }
 
-// ── OpenCode DB fallback (read direct sqlite when SDK messages payload is sparse) ──
+// ── OpenCode DB (direct reads of OpenCode's own sqlite) ──
 
 let _ocpDb = null;
 let _ocpDbPath = null;
@@ -8753,139 +8630,6 @@ function getOpencodeDb() {
     try { _ocpDb.exec('PRAGMA busy_timeout = 1000'); } catch {}
   }
   return _ocpDb;
-}
-
-function parseOpencodeJson(value) {
-  if (!value || typeof value !== 'string') return (value && typeof value === 'object') ? value : null;
-  try {
-    return JSON.parse(value);
-  } catch {
-    return null;
-  }
-}
-
-function opencodeMessagesNeedFallback(payload) {
-  const messages = Array.isArray(payload) ? payload : (Array.isArray(payload?.messages) ? payload.messages : null);
-  if (!messages?.length) return true;
-  return messages.every((msg) => {
-    const parsed = parseOpencodeJson(msg?.data);
-    const hasRenderableContent = msg?.content != null
-      || msg?.text != null
-      || (Array.isArray(msg?.parts) && msg.parts.length > 0)
-      || parsed?.content != null
-      || parsed?.text != null
-      || (Array.isArray(parsed?.parts) && parsed.parts.length > 0);
-    return !hasRenderableContent;
-  });
-}
-
-function loadOpencodeMessagesFallback(sessionId) {
-  if (!sessionId) return null;
-  const db = getOpencodeDb();
-  if (!db) return null;
-  const _t0 = _ocpNow();
-  try {
-    const rows = db.prepare(`
-      SELECT
-        m.id AS message_id,
-        m.session_id AS session_id,
-        m.time_created AS message_created,
-        m.time_updated AS message_updated,
-        m.data AS message_data,
-        p.id AS part_id,
-        p.time_created AS part_created,
-        p.time_updated AS part_updated,
-        p.data AS part_data
-      FROM message m
-      LEFT JOIN part p ON p.message_id = m.id
-      WHERE m.session_id = ?
-      ORDER BY m.time_created ASC, p.time_created ASC
-    `).all(sessionId);
-
-    if (!rows.length) return [];
-
-    const messages = [];
-    const byId = new Map();
-    for (const row of rows) {
-      let message = byId.get(row.message_id);
-      if (!message) {
-        const payload = parseOpencodeJson(row.message_data) || {};
-        message = {
-          id: row.message_id,
-          sessionId: row.session_id,
-          timeCreated: row.message_created,
-          timeUpdated: row.message_updated,
-          ...payload,
-          role: payload.role || null,
-          parts: [],
-          content: payload.content ?? payload.parts ?? payload.text ?? null,
-        };
-        byId.set(row.message_id, message);
-        messages.push(message);
-      }
-
-      if (row.part_id) {
-        const partPayload = parseOpencodeJson(row.part_data) || {};
-        message.parts.push({
-          id: row.part_id,
-          timeCreated: row.part_created,
-          timeUpdated: row.part_updated,
-          ...partPayload,
-        });
-      }
-    }
-
-    for (const message of messages) {
-      if (message.parts.length > 0) {
-        message.content = message.parts;
-      }
-    }
-
-    ocpTrace('db:messages-fallback', { sid: sessionId, rows: rows.length, messages: messages.length, ms: _ocpMs(_t0) });
-    return messages;
-  } catch (err) {
-    ocpTrace('db:messages-fallback-err', { sid: sessionId, ms: _ocpMs(_t0), msg: err.message });
-    console.warn('[opencode] Failed to read message fallback from SQLite:', err.message);
-    return null;
-  }
-}
-
-function enrichOpencodeSessions(payload) {
-  const sessions = Array.isArray(payload) ? payload : (Array.isArray(payload?.sessions) ? payload.sessions : null);
-  if (!sessions?.length) return payload;
-
-  const db = getOpencodeDb();
-  if (!db) return payload;
-
-  const _t0 = _ocpNow();
-  try {
-    const sessionIds = sessions.map((session) => session?.id || session?.sessionID).filter(Boolean);
-    if (!sessionIds.length) return payload;
-
-    const placeholders = sessionIds.map(() => '?').join(', ');
-    const rows = db.prepare(`
-      SELECT session_id, COUNT(*) AS message_count
-      FROM message
-      WHERE session_id IN (${placeholders})
-      GROUP BY session_id
-    `).all(...sessionIds);
-    const counts = new Map(rows.map((row) => [row.session_id, row.message_count]));
-
-    const enriched = sessions.map((session) => {
-      const sid = session?.id || session?.sessionID;
-      return {
-        ...session,
-        messageCount: counts.get(sid) || 0,
-      };
-    });
-
-    ocpTrace('db:enrich-sessions', { sessions: sessions.length, ids: sessionIds.length, ms: _ocpMs(_t0) });
-    return Array.isArray(payload) ? enriched : { ...payload, sessions: enriched };
-  } catch (err) {
-    ocpTrace('db:enrich-sessions-err', { ms: _ocpMs(_t0), msg: err.message });
-    console.warn('[opencode] Failed to enrich sessions with message counts:', err.message);
-    return payload;
-  }
 }
 
 // ── Proxy helper: forward REST calls to opencode serve ──
@@ -8926,683 +8670,11 @@ function ocpDirectoryQuery(cwd) {
   return directory ? `?directory=${encodeURIComponent(directory)}` : '';
 }
 
-async function ocpProxyFirstSupported(method, paths, body = null, timeoutMs = 30000, baseUrl = _ocpBaseUrl()) {
-  let last = null;
-  for (const path of paths) {
-    const r = await ocpProxy(method, path, body, timeoutMs, baseUrl);
-    last = r;
-    if (r.status !== 404 && r.status !== 405) return r;
-  }
-  return last || { status: 404, data: { error: 'No supported OpenCode endpoint found' } };
-}
-
-// ── WebSocket handler: /ws/opencode-skin ──
-
-function handleOpencodeWs(ws) {
-  _ocpWsClients.add(ws);
-  cancelOllamaStop(); // client reconnected — cancel any pending shutdown
-  let wsAlive = true;
-  const _sendAbortControllers = new Map(); // sessionId → AbortController for in-flight message:send
-  const pendingGreetingSessions = new Map(); // sessionId → cwd (fire-once greeting injection)
-  // Per-connection identity + owned-sessions set so we can attribute lifecycle
-  // events to a specific browser tab and detect cross-client session conflicts.
-  const connId = ++_ocpClientSeq;
-  const ownedSessions = new Set();
-  _ocpSessionLog('client.connect', { conn: connId, total: _ocpWsClients.size });
-
-  const pingInterval = setInterval(() => {
-    if (!wsAlive) { ws.terminate(); return; }
-    wsAlive = false;
-    ws.ping();
-  }, 30000);
-  ws.on('pong', () => { wsAlive = true; });
-
-  function sendToClient(data) {
-    if (ws.readyState === 1) {
-      const payload = JSON.stringify(data);
-      if (OCP_VERBOSE) {
-        ocpTrace('ws:out', {
-          type: data?.type, id: data?.id, status: data?.status,
-          bytes: _ocpByteLen(payload), clients: _ocpWsClients.size,
-        });
-      }
-      ws.send(payload);
-    }
-  }
-
-  ws.on('message', async (raw) => {
-    const _wsRecvAt = _ocpNow();
-    let msg;
-    try { msg = JSON.parse(raw); } catch { return; }
-    const { type, id } = msg;
-    ocpTrace('ws:in', {
-      type, id, sid: msg.sessionId, bytes: _ocpByteLen(raw),
-      hasBody: !!msg.body, hasContent: typeof msg.content === 'string',
-    });
-
-    if (_ocpHistoryClearInProgress && OPENCODE_HISTORY_WRITE_TYPES.has(type)) {
-      sendToClient({ type: `${type}:result`, id, status: 409, error: 'OpenCode history is being cleared' });
-      return;
-    }
-
-    try {
-      switch (type) {
-        case 'init': {
-          const ready = await ensureOpencodeServer();
-          sendToClient({ type: 'init:result', ready, version: _ocpVersion, port: _ocpPort, managed: !!_ocpProc });
-          break;
-        }
-        case 'session:list': {
-          // Query the OpenCode SQLite DB directly. The OpenCode HTTP /session
-          // endpoint only returns sessions whose directory matches the serve
-          // cwd (PACKAGE_ROOT = SynaBun), so it filters out sessions for
-          // every other registered project. Reading the DB mirrors how the
-          // navbar Resume dropdown sources sessions in /api/opencode/sessions
-          // and is required for the sidepanel project switcher to surface
-          // sessions outside SynaBun (e.g. CriticalPixel, EllaCred).
-          const db = getOpencodeDb();
-          if (db) {
-            try {
-              const rows = db.prepare(`
-                SELECT s.id, s.title, s.directory, s.slug, s.project_id,
-                       s.time_created, s.time_updated,
-                       (SELECT COUNT(*) FROM message m WHERE m.session_id = s.id) AS message_count
-                FROM session s
-                WHERE s.time_archived IS NULL
-                ORDER BY s.time_updated DESC
-              `).all();
-              const sessions = rows.map((row) => ({
-                id: row.id,
-                title: row.title || '',
-                slug: row.slug || '',
-                directory: row.directory || '',
-                projectID: row.project_id || '',
-                messageCount: row.message_count || 0,
-                time: {
-                  created: row.time_created ? Math.floor(new Date(row.time_created).getTime()) : 0,
-                  updated: row.time_updated ? Math.floor(new Date(row.time_updated).getTime()) : 0,
-                },
-              }));
-              sendToClient({ type: 'session:list:result', id, status: 200, data: sessions });
-              break;
-            } catch (err) {
-              ocpTrace('session:list:db-err', { msg: err?.message });
-              // fall through to HTTP proxy below
-            }
-          }
-          let r;
-          try {
-            r = await opencodeClient.session.list({});
-          } catch (err) {
-            r = { status: err?.status || 500, data: null, error: err?.message };
-          }
-          sendToClient({ type: 'session:list:result', id, status: r.status, data: enrichOpencodeSessions(r.data) });
-          break;
-        }
-        case 'session:create': {
-          const input = (msg.body && typeof msg.body === 'object') ? msg.body : {};
-          const body = {};
-          if (input.title) body.title = input.title;
-          if (input.parentID || input.parentId) body.parentID = input.parentID || input.parentId;
-          // OpenCode binds each session to a working directory. Forward the
-          // requested cwd via the SDK's `directory` parameter so tools resolve
-          // at the project root, not at the OpenCode serve cwd.
-          //
-          // NOTE: we previously tried passing `agent` + `model` in the body to
-          // bind plan-mode at session create time. OpenCode server v1.14.41
-          // rejected the request (panel showed "Could not create OpenCode
-          // session"), so those fields are NOT supported by this server
-          // version. Agent/model go in per-prompt body — see message:send.
-          console.log('[ocp-session-debug] session:create incoming', {
-            connId, requestedCwd: msg.cwd || '(none)', bodyKeys: Object.keys(body),
-          });
-          let r;
-          try {
-            r = await opencodeClient.session.create({ directory: msg.cwd || undefined, ...body });
-          } catch (err) {
-            console.warn('[ocp-session-debug] session.create threw', { connId, status: err?.status, msg: err?.message });
-            r = { status: err?.status || 500, data: { error: err?.message } };
-          }
-          const newSid = r?.data?.id || r?.data?.sessionID || r?.data?.info?.id || null;
-          const responseDir = r?.data?.directory || r?.data?.info?.directory || null;
-          console.log('[ocp-session-debug] session:create result', {
-            connId, status: r.status, newSid,
-            responseDir,
-            requestedCwd: msg.cwd || '(none)',
-            directoryMatchesRequest: msg.cwd ? (responseDir === msg.cwd) : null,
-          });
-          if (newSid) {
-            pendingGreetingSessions.set(newSid, msg.cwd || PACKAGE_ROOT);
-            ownedSessions.add(newSid);
-            _ocpAttachSession(connId, newSid);
-            _ocpSessionLog('session.create', {
-              conn: connId, sid: newSid,
-              cwd: msg.cwd || undefined,
-              dir: responseDir || undefined,
-              parent: body.parentID || undefined,
-              status: r.status,
-            });
-          } else if (r.status >= 400) {
-            _ocpSessionLog('session.create.fail', { conn: connId, status: r.status });
-          }
-          sendToClient({ type: 'session:create:result', id, ...r });
-          break;
-        }
-        case 'session:get': {
-          let r;
-          try { r = await opencodeClient.session.get({ sessionID: msg.sessionId }); }
-          catch (err) { r = { status: err?.status || 500, data: { error: err?.message } }; }
-          sendToClient({ type: 'session:get:result', id, ...r });
-          break;
-        }
-        case 'session:update': {
-          let r;
-          try { r = await opencodeClient.session.update({ sessionID: msg.sessionId, ...(msg.body || {}) }); }
-          catch (err) { r = { status: err?.status || 500, data: { error: err?.message } }; }
-          sendToClient({ type: 'session:update:result', id, ...r });
-          break;
-        }
-        case 'session:delete': {
-          pendingGreetingSessions.delete(msg.sessionId);
-          let r;
-          try { r = await opencodeClient.session.delete({ sessionID: msg.sessionId }); }
-          catch (err) { r = { status: err?.status || 500, data: { error: err?.message } }; }
-          ownedSessions.delete(msg.sessionId);
-          _ocpDetachSession(connId, msg.sessionId);
-          _ocpSessionLog('session.delete', { conn: connId, sid: msg.sessionId, status: r.status });
-          sendToClient({ type: 'session:delete:result', id, ...r });
-          break;
-        }
-        case 'message:send': {
-          // OpenCode's message endpoint is synchronous — blocks until the LLM finishes.
-          // Use an AbortController so message:abort can cancel this fetch immediately.
-          const ac = new AbortController();
-          const sid = msg.sessionId;
-          _sendAbortControllers.set(sid, ac);
-          const tid = _ocpTraceId();
-          const tStart = _ocpNow();
-          ocpTrace('send:begin', { tid, id, sid, dispatchMs: _ocpMs(_wsRecvAt) });
-          // Always-on session log: surface plan/build/chat mode + part shape so
-          // we can correlate "message sent" → "session.idle" timelines per tab.
-          if (sid) {
-            const planMode = msg.body?.mode === 'plan' ? true : (msg.body?.mode ? false : null);
-            ownedSessions.add(sid);
-            _ocpAttachSession(connId, sid, { planMode });
-            const summary = _ocpSummarizeSendBody(msg.body || {});
-            const owners = _ocpSessionOwners.get(sid);
-            if (owners) owners.lastSendAt = Date.now();
-            _ocpSessionLog('send.begin', { conn: connId, sid, tid, ...summary });
-            _ocpMarkSendStart(sid);
-            // Periodic health while the SDK call is in flight: prints relay
-            // total + listener count + WS client count every 10s. If relay
-            // count stays at 0 across multiple ticks, the OpenCode SSE stream
-            // is the layer that's silent (not our broadcast pipeline).
-            const _hbStart = _ocpRelayCount;
-            const _hbTimer = setInterval(() => {
-              const elapsedSec = Math.round((Date.now() - (owners?.lastSendAt || Date.now())) / 1000);
-              console.log(`[ocp-health] sid=${sid} tid=${tid} elapsedSec=${elapsedSec} relayCount=${_ocpRelayCount} relayDelta=${_ocpRelayCount - _hbStart} clients=${_ocpWsClients.size}`);
-            }, 10000);
-            _ocpHealthTimers.set(tid, _hbTimer);
-          }
-          // ── Slash command → skill injection ──
-          try {
-            const parts = Array.isArray(msg.body?.parts) ? msg.body.parts : null;
-            if (parts) {
-              const idx = parts.findIndex(p => p && p.type === 'text' && typeof p.text === 'string' && p.text.trim().startsWith('/'));
-              if (idx >= 0) {
-                const injected = maybeInjectSkillPrompt(parts[idx].text);
-                if (injected.skill) {
-                  console.log('[ocp] Skill injection: /' + injected.command, 'dir:', injected.skill.dir);
-                  ocpTrace('send:skill-inject', { tid, cmd: injected.command, dir: injected.skill.dir, promptBytes: _ocpByteLen(injected.prompt) });
-                  parts[idx] = { ...parts[idx], text: injected.prompt };
-                }
-              }
-            } else if (typeof msg.content === 'string' && msg.content.trim().startsWith('/')) {
-              const injected = maybeInjectSkillPrompt(msg.content);
-              if (injected.skill) {
-                console.log('[ocp] Skill injection: /' + injected.command, 'dir:', injected.skill.dir);
-                ocpTrace('send:skill-inject', { tid, cmd: injected.command, dir: injected.skill.dir, promptBytes: _ocpByteLen(injected.prompt) });
-                msg.content = injected.prompt;
-              }
-            }
-          } catch (err) {
-            console.warn('[ocp] Skill injection failed:', err.message);
-            ocpTrace('send:skill-err', { tid, msg: err.message });
-          }
-          // ── OpenCode plan-mode prompt-prefix injection ──
-          // Now handled via the SDK's `system` field in lib/opencode-client.js
-          // (when agent === 'plan'). The previous implementation mutated
-          // parts[0].text in-place, which leaked the entire wall of plan-mode
-          // rules into the user's visible message bubble (and into OpenCode's
-          // stored message history) — making subsequent `messages:list` reloads
-          // re-render the rules as if the user had typed them. Worse, some
-          // models (deepseek v4-pro) saw the giant prefix as the prompt and
-          // hung. Plan-mode anchoring is preserved via system-channel only.
-          // ── OpenCode greeting injection (fire-once per fresh session) ──
-          if (pendingGreetingSessions.has(sid)) {
-            try {
-              const greetingEnabled = loadOpencodeGreetingConfig().enabled === true;
-              const parts = Array.isArray(msg.body?.parts) ? msg.body.parts : null;
-              const firstTextIdx = parts ? parts.findIndex(p => p && p.type === 'text' && typeof p.text === 'string') : -1;
-              const firstText = firstTextIdx >= 0
-                ? parts[firstTextIdx].text
-                : (typeof msg.content === 'string' ? msg.content : '');
-              const startsWithSlash = String(firstText || '').trim().startsWith('/');
-              if (greetingEnabled && !startsWithSlash && firstText) {
-                const storedCwd = pendingGreetingSessions.get(sid) || msg.cwd || PACKAGE_ROOT;
-                const wrapped = buildOpencodeGreetingUserPrompt({ cwd: storedCwd, userPrompt: firstText });
-                if (wrapped) {
-                  if (firstTextIdx >= 0) {
-                    parts[firstTextIdx] = { ...parts[firstTextIdx], text: wrapped };
-                  } else if (typeof msg.content === 'string') {
-                    msg.content = wrapped;
-                  }
-                  ocpTrace('send:greeting-inject', { tid, sid, bytes: _ocpByteLen(wrapped) });
-                }
-              }
-            } catch (err) {
-              console.warn('[ocp] Greeting injection failed:', err.message);
-              ocpTrace('send:greeting-err', { tid, msg: err.message });
-            } finally {
-              pendingGreetingSessions.delete(sid); // fire-once regardless of outcome
-            }
-          }
-          try {
-            // OpenCode tools resolve at the directory passed via the SDK's
-            // `directory` parameter (per-message), NOT at `session.directory`.
-            // Forward the panel-supplied cwd here so Read/Bash/Edit/Write run
-            // at the user-selected project root instead of the OpenCode serve cwd.
-            const body = msg.body || (typeof msg.content === 'string' ? { parts: [{ type: 'text', text: msg.content }] } : {});
-            ocpTrace('send:fetch-start', { tid, sid, dir: msg.cwd || undefined, reqBytes: _ocpByteLen(body) });
-            // Unified trace: record the plan-mode system-injection so the viewer
-            // shows "did the OPENCODE_PLAN_MODE_INSTRUCTION ship?" inline.
-            const _agent = body?.agent || msg.body?.agent || '';
-            const _planModeInjected = _agent === 'plan';
-            ocpTraceEmit('send:dispatch', {
-              tid, sid, agent: _agent || undefined,
-              model: body?.model?.modelID || body?.model || undefined,
-              planSystemInjected: _planModeInjected,
-              dir: msg.cwd || undefined,
-              reqBytes: _ocpByteLen(body),
-            });
-            console.log('[ocp-session-debug] message:send', { sid, cwd: msg.cwd || '(none)' });
-            const tFetchStart = _ocpNow();
-            // Strip fields the SDK doesn't accept (like our internal `mode`/`content`).
-            const { mode: _mode, content: _content, ...sdkBody } = body;
-            // Visible breadcrumb of the EXACT SDK call shape so silent hangs
-            // are diagnosable from the server log without verbose tracing.
-            console.log('[ocp-session-debug] session.prompt input', {
-              sid, agent: sdkBody.agent || null,
-              model: sdkBody.model || null,
-              partsCount: Array.isArray(sdkBody.parts) ? sdkBody.parts.length : null,
-              hasSystem: typeof sdkBody.system === 'string' && sdkBody.system.length > 0,
-              hasTools: !!sdkBody.tools,
-              directory: msg.cwd || undefined,
-            });
-            // ── promptAsync for plan mode (CLI parity) ──
-            // The legacy blocking `prompt()` (POST /session/{id}/message) hangs
-            // on `opencode-go/kimi-k2.6 + agent='plan'` (0 SSE events for 100s+).
-            // The OpenCode CLI uses `promptAsync` (POST /session/{id}/prompt_async)
-            // which queues the prompt for the agent loop and returns immediately,
-            // streaming output via SSE events. SAME body shape as legacy `prompt`,
-            // just a different URL. Match CLI behavior on plan mode.
-            //
-            // Note: we tried the truly-V2 `/api/session/{sid}/prompt` endpoint
-            // first, but OpenCode v1.14.41 server returns 400 on it (probably
-            // not implemented at that server version). promptAsync is the
-            // CLI-correct choice for v1.14.41.
-            //
-            // Overrides:
-            //   OCP_FORCE_LEGACY_PROMPT=1 → never use async
-            //   OCP_USE_ASYNC_PROMPT=1   → always use async (build/chat too)
-            const _forceLegacy = process.env.OCP_FORCE_LEGACY_PROMPT === '1';
-            const _useAsync = !_forceLegacy && (
-              process.env.OCP_USE_ASYNC_PROMPT === '1'
-              || sdkBody.agent === 'plan'
-            );
-            let r;
-            if (_useAsync) {
-              // session.create on v1.14.41 doesn't accept agent/model so we
-              // can't bind them at session level. Pass them per-prompt to
-              // promptAsync. The earlier hypothesis "stripping these makes
-              // kimi-k2.6 plan agent run" was wrong — server rejected
-              // session.create and we got "Could not create OpenCode session".
-              console.log('[ocp-session-debug] async prompt route', {
-                sid, agent: sdkBody.agent, model: sdkBody.model,
-                partsCount: Array.isArray(sdkBody.parts) ? sdkBody.parts.length : 0,
-              });
-              r = await opencodeClient.session.promptAsync({
-                sessionID: sid,
-                directory: msg.cwd || undefined,
-                signal: ac.signal,
-                ...sdkBody,
-              });
-            } else {
-              r = await opencodeClient.session.prompt({
-                sessionID: sid,
-                directory: msg.cwd || undefined,
-                signal: ac.signal,
-                ...sdkBody,
-              });
-            }
-            console.log('[ocp-session-debug] session.prompt returned', { sid, status: r?.status, ms: _ocpMs(tFetchStart), via: _useAsync ? 'async' : 'legacy' });
-            _ocpClearHealthTimer(tid);
-            const tBody = _ocpMs(tFetchStart);
-            const respBytes = _ocpByteLen(r.data);
-            ocpTrace('send:fetch-done', { tid, sid, status: r.status, bodyMs: tBody, respBytes });
-            sendToClient({ type: 'message:send:result', id, status: r.status, data: r.data });
-            ocpTrace('send:end', { tid, sid, status: r.status, totalMs: _ocpMs(tStart) });
-            _ocpSessionLog('send.end', { conn: connId, sid, tid, status: r.status, ms: _ocpMs(tStart), respBytes });
-          } catch (err) {
-            _ocpClearHealthTimer(tid);
-            if (err.name === 'AbortError' || ac.signal.aborted) {
-              ocpTrace('send:abort', { tid, sid, totalMs: _ocpMs(tStart) });
-              _ocpSessionLog('send.abort', { conn: connId, sid, tid, ms: _ocpMs(tStart) });
-              if (sid) _ocpMarkSendEnd(sid, 'abort');
-              sendToClient({ type: 'message:send:result', id, status: 499, data: { error: 'Aborted' } });
-            } else {
-              console.warn('[ocp-session-debug] session.prompt threw', { sid, tid, err: err?.name, msg: err?.message, status: err?.status, ms: _ocpMs(tStart) });
-              ocpTrace('send:err', { tid, sid, err: err.name, msg: err.message, totalMs: _ocpMs(tStart) });
-              _ocpSessionLog('send.error', { conn: connId, sid, tid, err: err.name, ms: _ocpMs(tStart) });
-              const status = err.status || 500;
-              sendToClient({ type: 'message:send:result', id, status, data: { error: err.message } });
-            }
-          } finally {
-            _sendAbortControllers.delete(sid);
-          }
-          break;
-        }
-        case 'message:abort': {
-          // Cancel the in-flight message:send fetch for this session
-          const sendAc = _sendAbortControllers.get(msg.sessionId);
-          if (sendAc) { try { sendAc.abort(); } catch {} }
-          let r;
-          try {
-            r = await opencodeClient.session.abort({ sessionID: msg.sessionId });
-          } catch (err) {
-            r = { status: err?.status || 0, ok: false, error: err?.message || String(err) };
-          }
-          _ocpSessionLog('message.abort', { conn: connId, sid: msg.sessionId, status: r?.status });
-          // Stop any associated loop driver so the agent doesn't just start another iteration
-          _abortLoopForOcpSession(msg.sessionId);
-          // Always ack so the client never hangs waiting for this reply.
-          sendToClient({ type: 'message:abort:result', id, ...(r || { ok: true }) });
-          break;
-        }
-        case 'question:reply': {
-          const requestID = String(msg.requestID || '');
-          const body = msg.body || { answers: [] };
-          const answers = Array.isArray(body.answers) ? body.answers : [];
-          ocpTraceEmit('q:reply:recv', { conn: connId, reqId: requestID, answersCount: answers.length });
-          const tStart = _ocpNow();
-          let r;
-          let viaPath = 'sdk';
-          try {
-            r = await opencodeClient.question.reply({ requestID, answers });
-          } catch (err) {
-            if (err?.status && err.status !== 404 && err.status !== 405) {
-              r = { status: err.status || 500, data: { error: err.message || String(err) } };
-              viaPath = 'sdk-error';
-            } else {
-              viaPath = 'proxy';
-              const encodedRequestID = encodeURIComponent(requestID);
-              r = await ocpProxyFirstSupported('POST', [
-                `/question/${encodedRequestID}/reply`,
-                `/question/${encodedRequestID}`,
-              ], body);
-            }
-          }
-          ocpTraceEmit('q:reply:done', { conn: connId, reqId: requestID, status: r?.status, via: viaPath, ms: _ocpMs(tStart) });
-          sendToClient({ type: 'question:reply:result', id, ...r });
-          break;
-        }
-        case 'question:reject': {
-          const requestID = String(msg.requestID || '');
-          let r;
-          try {
-            r = await opencodeClient.question.reject({ requestID });
-          } catch (err) {
-            if (err?.status && err.status !== 404 && err.status !== 405) {
-              r = { status: err.status || 500, data: { error: err.message || String(err) } };
-            } else {
-              const encodedRequestID = encodeURIComponent(requestID);
-              r = await ocpProxyFirstSupported('POST', [
-                `/question/${encodedRequestID}/reject`,
-                `/question/${encodedRequestID}`,
-              ]);
-            }
-          }
-          sendToClient({ type: 'question:reject:result', id, ...r });
-          break;
-        }
-        case 'permission:respond': {
-          const sid = msg.sessionId || msg.sessionID;
-          const permId = msg.permissionID || msg.permissionId || msg.requestID;
-          const response = ['once', 'always', 'reject'].includes(String(msg.response || ''))
-            ? String(msg.response)
-            : 'once';
-          const body = { response, reply: response };
-          if (typeof msg.remember === 'boolean') body.remember = msg.remember;
-          let r;
-          try {
-            r = await opencodeClient.permission.reply({ requestID: String(permId || ''), reply: response });
-          } catch (err) {
-            try {
-              r = await opencodeClient.permission.respond({
-                sessionID: String(sid || ''),
-                permissionID: String(permId || ''),
-                response,
-              });
-            } catch (err2) {
-              const status = err2?.status || err?.status || 0;
-              if (status && status !== 404 && status !== 405) {
-                r = { status: status || 500, data: { error: err2?.message || err?.message || String(err2 || err) } };
-              } else {
-                const encodedPermId = encodeURIComponent(String(permId || ''));
-                const encodedSid = encodeURIComponent(String(sid || ''));
-                r = await ocpProxyFirstSupported('POST', [
-                  `/permission/${encodedPermId}/reply`,
-                  `/permission/${encodedPermId}/respond`,
-                  `/permission/${encodedPermId}`,
-                  `/session/${encodedSid}/permissions/${encodedPermId}`,
-                ], body);
-              }
-            }
-          }
-          ocpTraceEmit('perm:respond:done', { conn: connId, sid, permId, response, status: r?.status });
-          sendToClient({ type: 'permission:respond:result', id, ...r });
-          break;
-        }
-        case 'question:list': {
-          const tStart = _ocpNow();
-          let r;
-          try { r = await opencodeClient.question.list({}); }
-          catch (err) { r = { status: err?.status || 500, data: { error: err?.message } }; }
-          const count = Array.isArray(r?.data) ? r.data.length
-            : (Array.isArray(r?.data?.questions) ? r.data.questions.length
-            : (Array.isArray(r?.data?.data) ? r.data.data.length : 0));
-          ocpTraceEmit('q:list:done', { conn: connId, status: r?.status, count, ms: _ocpMs(tStart) });
-          sendToClient({ type: 'question:list:result', id, ...r });
-          break;
-        }
-        case 'session:revert': {
-          let r;
-          try { r = await opencodeClient.session.revert({ sessionID: msg.sessionId }); }
-          catch (err) { r = { status: err?.status || 500, data: { error: err?.message } }; }
-          sendToClient({ type: 'session:revert:result', id, ...r });
-          break;
-        }
-        case 'session:unrevert': {
-          let r;
-          try { r = await opencodeClient.session.unrevert({ sessionID: msg.sessionId }); }
-          catch (err) { r = { status: err?.status || 500, data: { error: err?.message } }; }
-          sendToClient({ type: 'session:unrevert:result', id, ...r });
-          break;
-        }
-        case 'session:summarize': {
-          let r;
-          try { r = await opencodeClient.session.summarize({ sessionID: msg.sessionId }); }
-          catch (err) { r = { status: err?.status || 500, data: { error: err?.message } }; }
-          sendToClient({ type: 'session:summarize:result', id, ...r });
-          break;
-        }
-        case 'session:share': {
-          let r;
-          try { r = await opencodeClient.session.share({ sessionID: msg.sessionId }); }
-          catch (err) { r = { status: err?.status || 500, data: { error: err?.message } }; }
-          sendToClient({ type: 'session:share:result', id, ...r });
-          break;
-        }
-        case 'messages:list': {
-          let r;
-          try { r = await opencodeClient.session.messages({ sessionID: msg.sessionId }); }
-          catch (err) { r = { status: err?.status || 500, data: { error: err?.message } }; }
-          if (r.status < 400 && opencodeMessagesNeedFallback(r.data)) {
-            const fallback = loadOpencodeMessagesFallback(msg.sessionId);
-            if (fallback?.length) {
-              if (Array.isArray(r.data)) {
-                sendToClient({ type: 'messages:list:result', id, status: r.status, data: fallback, source: 'opencode-db-fallback' });
-              } else {
-                sendToClient({
-                  type: 'messages:list:result',
-                  id,
-                  status: r.status,
-                  data: { ...(r.data || {}), messages: fallback },
-                  source: 'opencode-db-fallback',
-                });
-              }
-              break;
-            }
-          }
-          sendToClient({ type: 'messages:list:result', id, ...r });
-          break;
-        }
-        case 'config:read': {
-          let r;
-          try { r = await opencodeClient.config.get({}); }
-          catch (err) { r = { status: err?.status || 500, data: { error: err?.message } }; }
-          sendToClient({ type: 'config:read:result', id, ...r });
-          break;
-        }
-        case 'config:write': {
-          let r;
-          try { r = await opencodeClient.config.update({ config: msg.body || {} }); }
-          catch (err) { r = { status: err?.status || 500, data: { error: err?.message } }; }
-          sendToClient({ type: 'config:write:result', id, ...r });
-          break;
-        }
-        case 'providers:list': {
-          await reconcileAuthIfStale();
-          let r;
-          try { r = await opencodeClient.provider.list({}); }
-          catch (err) { r = { status: err?.status || 500, data: { error: err?.message } }; }
-          sendToClient({ type: 'providers:list:result', id, ...r });
-          break;
-        }
-        case 'providers:full': {
-          await reconcileAuthIfStale();
-          let r;
-          try { r = await opencodeClient.provider.list({}); }
-          catch (err) { r = { status: err?.status || 500, data: { error: err?.message } }; }
-          sendToClient({ type: 'providers:full:result', id, ...r });
-          break;
-        }
-        case 'providers:auth': {
-          let r;
-          try { r = await opencodeClient.provider.auth({}); }
-          catch (err) { r = { status: err?.status || 500, data: { error: err?.message } }; }
-          sendToClient({ type: 'providers:auth:result', id, ...r });
-          break;
-        }
-        case 'auth:set': {
-          // Auth.set isn't surfaced on the wrapper (rarely-used + low payoff);
-          // fall back to ocpProxy for now.
-          const r = await ocpProxy('PUT', `/auth/${msg.providerId}`, msg.body || {});
-          sendToClient({ type: 'auth:set:result', id, ...r });
-          break;
-        }
-        case 'oauth:authorize': {
-          // Provider.oauth.* isn't surfaced on the wrapper; ocpProxy fallback.
-          const r = await ocpProxy('POST', `/provider/${msg.providerId}/oauth/authorize`);
-          sendToClient({ type: 'oauth:authorize:result', id, ...r });
-          break;
-        }
-        case 'oauth:callback': {
-          // Provider.oauth.* isn't surfaced on the wrapper; ocpProxy fallback.
-          const r = await ocpProxy('POST', `/provider/${msg.providerId}/oauth/callback`, msg.body || {});
-          sendToClient({ type: 'oauth:callback:result', id, ...r });
-          break;
-        }
-        case 'agents:list': {
-          let r;
-          try { r = await opencodeClient.app.agents({}); }
-          catch (err) { r = { status: err?.status || 500, data: { error: err?.message } }; }
-          sendToClient({ type: 'agents:list:result', id, ...r });
-          break;
-        }
-        case 'config:providers': {
-          let r;
-          try { r = await opencodeClient.config.providers({}); }
-          catch (err) { r = { status: err?.status || 500, data: { error: err?.message } }; }
-          sendToClient({ type: 'config:providers:result', id, ...r });
-          break;
-        }
-        case 'mcp:list': {
-          const r = await ocpProxy('GET', '/mcp');
-          sendToClient({ type: 'mcp:list:result', id, ...r });
-          break;
-        }
-        case 'mcp:add': {
-          const r = await ocpProxy('POST', '/mcp', msg.body || {});
-          sendToClient({ type: 'mcp:add:result', id, ...r });
-          break;
-        }
-        case 'tools:list': {
-          const r = await ocpProxy('GET', '/experimental/tool/ids');
-          sendToClient({ type: 'tools:list:result', id, ...r });
-          break;
-        }
-        default:
-          sendToClient({ type: 'error', id, message: `Unknown message type: ${type}` });
-      }
-    } catch (err) {
-      sendToClient({ type: 'error', id, message: err.message });
-    }
-  });
-
-  ws.on('close', () => {
-    clearInterval(pingInterval);
-    _ocpWsClients.delete(ws);
-    // Abort any in-flight message:send fetches for this connection
-    for (const ac of _sendAbortControllers.values()) { try { ac.abort(); } catch {} }
-    _sendAbortControllers.clear();
-    for (const sid of ownedSessions) _ocpDetachSession(connId, sid);
-    _ocpSessionLog('client.disconnect', {
-      conn: connId,
-      sessions: ownedSessions.size || undefined,
-      total: _ocpWsClients.size,
-    });
-    ownedSessions.clear();
-    if (_ocpWsClients.size === 0) scheduleOllamaStop();
-  });
-
-  ws.on('error', () => {
-    clearInterval(pingInterval);
-    _ocpWsClients.delete(ws);
-    for (const sid of ownedSessions) _ocpDetachSession(connId, sid);
-    _ocpSessionLog('client.error', { conn: connId, total: _ocpWsClients.size });
-    ownedSessions.clear();
-    if (_ocpWsClients.size === 0) scheduleOllamaStop();
-  });
-}
-
 // ── Ollama local model endpoints ──
 
 const OLLAMA_BASE = 'http://localhost:11434';
 let _ollamaUserRemoved = false; // tracks if user explicitly removed config this session
 let _ollamaManagedByUs = false; // true if we auto-configured Ollama this session
-let _ollamaGraceTimer = null;
-const OLLAMA_GRACE_MS = 30_000; // 30s grace before killing — handles reconnects/refreshes
 
 function stopOllama() {
   if (!_ollamaManagedByUs) return;
@@ -9615,22 +8687,6 @@ function stopOllama() {
     console.log('[ollama] Stopped Ollama process');
     _ollamaManagedByUs = false;
   } catch {}
-}
-
-function scheduleOllamaStop() {
-  if (!_ollamaManagedByUs) return;
-  if (_ollamaGraceTimer) clearTimeout(_ollamaGraceTimer);
-  _ollamaGraceTimer = setTimeout(() => {
-    _ollamaGraceTimer = null;
-    if (_ocpWsClients.size === 0) {
-      console.log('[ollama] No OpenCode clients for 30s — stopping Ollama');
-      stopOllama();
-    }
-  }, OLLAMA_GRACE_MS);
-}
-
-function cancelOllamaStop() {
-  if (_ollamaGraceTimer) { clearTimeout(_ollamaGraceTimer); _ollamaGraceTimer = null; }
 }
 
 app.get('/api/ollama/status', async (req, res) => {
@@ -9717,7 +8773,7 @@ app.post('/api/ollama/configure', async (req, res) => {
         try {
           console.log('[ollama] Restarting OpenCode to load Ollama provider…');
           await takeoverOpencodeServer();
-          broadcastToOpencodeClients({ type: 'providers:changed' });
+          broadcastToOpencodeV2Clients({ type: 'providers:changed' });
           console.log('[ollama] OpenCode restart complete');
         } catch (err) {
           console.error('[ollama] OpenCode restart failed:', err.message);
@@ -9751,7 +8807,7 @@ app.delete('/api/ollama/configure', async (req, res) => {
       setTimeout(async () => {
         try {
           await takeoverOpencodeServer();
-          broadcastToOpencodeClients({ type: 'providers:changed' });
+          broadcastToOpencodeV2Clients({ type: 'providers:changed' });
         } catch (err) {
           console.error('[ollama] OpenCode restart after removal failed:', err.message);
         }
@@ -9848,12 +8904,10 @@ function clearPersistedOpenCodeUiHistory() {
 
 function getOpenCodeHistoryBlockers() {
   const activeTurns = _ocpActiveSessionTurns.size;
-  const legacyActiveTurns = [..._ocpSessionActivity.values()]
-    .filter((entry) => Number(entry?.sendBeganAt) > 0).length;
   const startingTurns = _ocpSessionServeStarts.size;
   const activeAutomations = (_nativeLoopRuntime?.list?.({ activeOnly: true }) || [])
     .filter((run) => run.provider === 'opencode').length;
-  return { activeTurns, legacyActiveTurns, startingTurns, activeAutomations };
+  return { activeTurns, startingTurns, activeAutomations };
 }
 
 async function opencodePortIsAlive(port) {
@@ -10000,8 +9054,6 @@ app.delete('/api/opencode/history', async (req, res) => {
     _ocpSessionProfiles.clear();
     _ocpSessionServeStarts.clear();
     _ocpActiveSessionTurns.clear();
-    _ocpSessionActivity.clear();
-    _ocpSessionOwners.clear();
 
     let restarted = false;
     if (wasRunning) {
@@ -10017,7 +9069,6 @@ app.delete('/api/opencode/history', async (req, res) => {
 
     const event = { type: 'opencode:history-cleared', requestId, restarted };
     broadcastSync(event);
-    broadcastToOpencodeClients({ type: 'history:cleared', restarted });
     broadcastToOpencodeV2Clients({ type: 'history:cleared', restarted });
     console.log(`[opencode] Cleared ${result.sessionsDeleted} sessions and ${result.partsDeleted} parts`);
     return res.json({ ok: true, restarted, result });
@@ -10045,8 +9096,6 @@ app.get('/api/opencode/status', async (req, res) => {
       running = await ensureOpencodeServer();
     } else if (!running && _ocpReady) {
       _ocpReady = false;
-      opencodeClient.disconnect().catch(() => {});
-      _ocpStopSilenceWatchdog();
     }
     res.json({ ok: true, running, port: _ocpPort, version: _ocpVersion, managed: !!_ocpProc });
   } catch (err) {
@@ -10182,6 +9231,9 @@ app.post('/api/opencode-v2/serve/stop', (req, res) => {
   }
 });
 
+// Models disabled in Settings → OpenCode (GET / PUT, broadcasts opencode:hidden-models-changed)
+app.use('/api/opencode/hidden-models', createOpencodeHiddenModelsRouter({ store: opencodeHiddenModels, isGuestRequest, broadcastSync }));
+
 // Full provider data including connected[] array and auth methods
 app.get('/api/opencode/providers/full', async (req, res) => {
   try {
@@ -10229,7 +9281,7 @@ app.put('/api/opencode/auth/:providerId', async (req, res) => {
       try {
         console.log('[opencode] Restarting to apply new credentials…');
         await takeoverOpencodeServer();
-        broadcastToOpencodeClients({ type: 'providers:changed' });
+        broadcastToOpencodeV2Clients({ type: 'providers:changed' });
         console.log('[opencode] Restart complete after credential update');
       } catch (err) {
         console.error('[opencode] Restart after auth update failed:', err.message);
@@ -10258,7 +9310,7 @@ app.delete('/api/opencode/auth/:providerId', async (req, res) => {
       try {
         console.log('[opencode] Restarting after credential removal…');
         await takeoverOpencodeServer();
-        broadcastToOpencodeClients({ type: 'providers:changed' });
+        broadcastToOpencodeV2Clients({ type: 'providers:changed' });
         console.log('[opencode] Restart complete after credential removal');
       } catch (err) {
         console.error('[opencode] Restart after auth removal failed:', err.message);
@@ -10355,11 +9407,18 @@ app.post('/api/opencode/mcp', async (req, res) => {
     // Force-allow the 7 SynaBun memory tools so CLI sessions skip prompts.
     injectOpenCodeMemoryPerms();
     if (_ocpReady) {
-      try { await ocpProxy('POST', '/mcp', { name, config: { type: 'stdio', ...mcpConfig } }); } catch (e) {
+      try {
+        const registered = await ocpProxy('POST', '/mcp', { name, config: buildOpencodeRuntimeMcpConfig(mcpConfig) });
+        if (registered.status >= 400) {
+          console.warn(`[opencode] Runtime register rejected (config persisted): HTTP ${registered.status}`);
+        }
+      } catch (e) {
         console.warn(`[opencode] Runtime register failed (config persisted): ${e.message}`);
       }
     }
-    res.json({ ok: true, message: 'SynaBun MCP registered. Restart OpenCode to connect.' });
+    const response = { ok: true, message: 'SynaBun MCP registered. Restart OpenCode to connect.' };
+    if (name === 'SynaBun') response.rules = syncRulesWithMcp('opencode', 'install', req.body);
+    res.json(response);
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -10383,7 +9442,9 @@ app.delete('/api/opencode/mcp', async (req, res) => {
         return res.status(500).json({ ok: false, error: `Config rewrite failed: ${e.message}` });
       }
     }
-    res.json({ ok: true, message: 'SynaBun MCP removed from OpenCode config.json.' });
+    const response = { ok: true, message: 'SynaBun MCP removed from OpenCode config.json.' };
+    if (name === 'SynaBun') response.rules = syncRulesWithMcp('opencode', 'remove');
+    res.json(response);
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -10419,37 +9480,15 @@ app.post('/api/opencode/config/reveal', (req, res) => {
   }
 });
 
-// ── Orphan process registry ──
-// When a WebSocket closes (page refresh), we don't kill the process immediately.
-// Instead we "orphan" it: buffer events for up to 30s, allowing the reconnecting
-// client to reattach via a `reattach` message with the same windowId.
-const _orphanedProcs = new Map(); // windowId:sessionId → { proc, state, buffer, killTimer, sendToClient, ... }
-function _orphanKey(wid, sid) { return sid ? `${wid}:${sid}` : wid; }
-const ORPHAN_GRACE_MS = 30 * 60 * 1000; // 30 minutes — survive sleep, network hiccups, tab throttling
-
-// Periodic sweep of orphaned procs whose process has died (system reboot,
-// kill -9, crash) but whose killTimer never fired and whose entry was never
-// reattached. Without this, _orphanedProcs grows unbounded across long
-// uptimes and each entry retains its proc/buffer closures.
-setInterval(() => {
-  for (const [key, orphan] of _orphanedProcs) {
-    const p = orphan?.proc;
-    if (!p || p.killed || p.exitCode !== null) {
-      try { clearTimeout(orphan.killTimer); } catch {}
-      _orphanedProcs.delete(key);
-    }
-  }
-}, 60_000).unref?.();
-
-// ── Claude Agent SDK bridge (engine: sdk) ──
-// The SDK engine runs one long-lived interactive session per tab with real
-// pre-execution permissions (canUseTool), live streaming, subagent visibility,
-// native plan approval and rewind. The legacy per-turn spawn engine below is
-// kept one release as a kill-switch: CLAUDE_SKIN_ENGINE=legacy (env wins) or
-// cli-config.json → { "claude-skin": { "engine": "legacy" } }.
+// ── Claude Agent SDK bridge ──
+// The sidepanel's only engine: one long-lived interactive session per tab with
+// real pre-execution permissions (canUseTool), live streaming, subagent
+// visibility, native plan approval and rewind. A bridge that fails to load is a
+// visible error on the socket (lib/claude-skin-connect.js).
 let _claudeBridge = null;
 let _claudeBridgeError = null;
-(async () => {
+// Settles when the import below finished, either way; connections wait on it.
+const _claudeBridgeReady = (async () => {
   try {
     _claudeBridge = await import('./lib/claude-agent-bridge.js');
     _claudeBridge.configureClaudeBridge({
@@ -10476,8 +9515,8 @@ let _claudeBridgeError = null;
         }
       },
       // Live token streaming. Default OFF on Windows until pipe-backpressure
-      // burn-in (the legacy zero-pipe design exists because of #771-class
-      // deadlocks); override via cli-config { "claude-skin": { "partials": true } }.
+      // burn-in (#771-class deadlocks); override via cli-config
+      // { "claude-skin": { "partials": true } }.
       get includePartialMessages() {
         const cfg = _readClaudeSkinConfig();
         if (typeof cfg.partials === 'boolean') return cfg.partials;
@@ -10491,6 +9530,32 @@ let _claudeBridgeError = null;
       // cannot be launched or repaired, fall back to the user's installed CLI.
       // Lazy so the (memoized) resolution happens on demand, not at boot.
       getClaudeBin: () => getClaudeBin(),
+      // The installed CLI when it is newer than the bundled one, else null — the
+      // model picker lists the installed CLI's models, so sessions must run it.
+      alignedClaudeBin: () => alignedClaudeExecutable(getClaudeBin()),
+      // Sidepanel tabs can run under another Claude account (its own config
+      // directory). The default account adds nothing to the environment.
+      claudeAccountEnv: (accountId) => _panelClaudeAccounts().envFor(accountId),
+      // This server has the session routes (rename, tag, fork, delete, subagent
+      // transcripts): the panel offers those actions only when told so.
+      sessionOps: true,
+      // …and DELETE /api/claude-code/permission-rules (remove a rule from a settings file).
+      permissionRulesEdit: true,
+      // …and GET /api/claude-code/settings/resolved (the settings in effect).
+      settingsView: true,
+      // Those settings routes take `account`: a tab under a named Claude account
+      // sees and edits that account's user settings, never the default one's.
+      accountSettings: true,
+      // …and GET /api/claude-code/bypass-policy (is Bypass turned off, and by what).
+      bypassPolicy: true,
+      // Where a tab's debug log is written when its session settings ask for one.
+      debugDir: resolve(DATA_HOME, 'logs', 'claude-debug'),
+      // A conversation rewind resumes at the entry the prompt follows in the
+      // transcript ('' = it is the first entry, null = not found).
+      transcriptParentOf: async ({ sessionId, uuid, cwd, accountId }) => {
+        const chain = await claudeTranscriptChain({ sessionId, project: cwd || '', accountId: accountId || '' });
+        return chain ? chain.parentOf(uuid) : null;
+      },
     });
     const shutdown = () => { try { _claudeBridge.shutdownAllBridges(); } catch {} };
     process.on('exit', shutdown);
@@ -10498,10 +9563,38 @@ let _claudeBridgeError = null;
     process.on('SIGTERM', shutdown);
     console.log(`[claude-sdk] bridge ready (sdk ${_claudeBridge.SDK_VERSION})`);
   } catch (err) {
-    _claudeBridgeError = err.message;
-    console.warn('[claude-sdk] bridge unavailable → legacy engine:', err.message);
+    _claudeBridgeError = `the Claude Agent SDK bridge failed to load (${err.message})`;
+    console.warn('[claude-sdk] bridge unavailable, sidepanel connections will be refused:', err.message);
   }
 })();
+
+// The Claude accounts registry, as the sidepanel reads it (the Assistant keeps
+// its own instance over the same file; both only read here).
+let _panelClaudeAccountsInstance = null;
+function _panelClaudeAccounts() {
+  if (!_panelClaudeAccountsInstance) _panelClaudeAccountsInstance = createPanelClaudeAccounts({ dataHome: DATA_HOME, homeDir: getHomePath() });
+  return _panelClaudeAccountsInstance;
+}
+
+// The config directory of the Claude account a sidepanel request names: '' for
+// the default account. An account that is no longer set up is an error (404,
+// `account_unavailable`), never the default account's folder in its place.
+function panelAccountHome(value) {
+  const wanted = typeof value === 'string' ? value : '';
+  if (!wanted || wanted === 'default') return '';
+  let home = null;
+  try { home = _panelClaudeAccounts().homeFor(wanted); } catch { home = null; }
+  if (!home) throw Object.assign(new Error('That Claude account is no longer set up in SynaBun.'), { status: 404, code: 'account_unavailable' });
+  return home;
+}
+
+// GET /api/claude/accounts — the accounts a sidepanel tab can run under. Emails
+// are personal data: not for invite guests.
+app.get('/api/claude/accounts', (req, res) => {
+  if (isGuestRequest(req)) return res.status(403).json({ ok: false, error: 'Admin only' });
+  try { res.json({ ok: true, accounts: _panelClaudeAccounts().listForClient() }); }
+  catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
 
 function _readClaudeSkinConfig() {
   try {
@@ -10510,1033 +9603,13 @@ function _readClaudeSkinConfig() {
   } catch { return {}; }
 }
 
-function resolveClaudeSkinEngine() {
-  const envEngine = (process.env.CLAUDE_SKIN_ENGINE || '').toLowerCase();
-  if (envEngine === 'legacy' || envEngine === 'sdk') return envEngine;
-  const cfgEngine = (_readClaudeSkinConfig().engine || '').toLowerCase();
-  if (cfgEngine === 'legacy' || cfgEngine === 'sdk') return cfgEngine;
-  return 'sdk';
-}
-
 function handleClaudeSkinWebSocket(ws) {
-  const engine = resolveClaudeSkinEngine();
-  if (engine === 'sdk' && _claudeBridge) {
-    try { _claudeBridge.createClaudeBridge(ws); return; }
-    catch (err) { console.warn('[claude-sdk] bridge create failed, falling back to legacy:', err.message); }
-  } else if (engine === 'sdk' && !_claudeBridge) {
-    console.warn('[claude-sdk] engine=sdk requested but bridge unavailable — using legacy.', _claudeBridgeError || '');
-  }
-  try { ws.send(JSON.stringify({ type: 'engine', engine: 'legacy' })); } catch {}
-  handleClaudeSkinWebSocketLegacy(ws);
-}
-
-function handleClaudeSkinWebSocketLegacy(ws) {
-  const SKIN_DEBUG = process.env.CLAUDE_SKIN_DEBUG === '1';
-  let activeProc = null;
-  let procSessionId = null;
-  let procModel = null;
-  let procCwd = null;
-  let procEffort = null;
-  let lastPrompt = null;     // last prompt text — used for auto-retry on session-not-found
-  let inTurn = false;        // true while CLI is processing a user message
-  let lastEventTime = Date.now(); // shared with stall detector
-  const approvedTools = new Set(); // tools the user has approved — persists across respawns
-  let mcpAllowedTools = new Set(); // MCP tools in permissions.allow — refreshed each spawn
-  let lastPermissionDenials = null; // cached for retry after approval
-  let awaitingPermission = false; // true when permission card shown, suppresses 'done' from close handler
-  const permCardToolNames = new Map(); // requestId → toolName, for proactive permission cards
-  const lastCostBySession = new Map(); // sessionId → last cumulative cost (total_cost_usd is cumulative)
-  let wsWindowId = null; // set by first query message — used for lock cleanup on close
-  let _orphanBuffer = null; // when non-null, sendToClient buffers here instead of sending over WS
-  let prevTurnTokens = 0; // total input tokens from last turn — used to detect auto-compact (>50% drop)
-  let _suppressedCount = 0; // events dropped after an exitPlan/ask kill — logged as a running count
-
-  // Verbose trace for plan-mode lifecycle. Prefixed with [plan-trace] for easy grep.
-  // Emits a single structured line per decision point so we can reconstruct the full
-  // AskUserQuestion → ExitPlanMode → PLAN COMPLETE timeline from logs alone.
-  function planTrace(stage, data = {}) {
-    const parts = [`[plan-trace] ${stage}`];
-    for (const [k, v] of Object.entries(data)) {
-      let s;
-      if (v == null) s = 'null';
-      else if (typeof v === 'string') s = v.length > 120 ? `${v.slice(0, 117)}...` : v;
-      else if (Array.isArray(v)) s = `[${v.join(',')}]`;
-      else if (typeof v === 'object') { try { s = JSON.stringify(v); } catch { s = '[obj]'; } }
-      else s = String(v);
-      parts.push(`${k}=${s}`);
-    }
-    console.log(parts.join(' '));
-  }
-
-  // Builds the respawn prompt after an AskUserQuestion is answered. Preserves per-question
-  // Q→A mapping so Claude knows which answer maps to which question, and re-injects the
-  // plan-mode prefix when the previous turn was in plan mode — otherwise Claude jumps
-  // straight to ExitPlanMode without integrating the answers.
-  function buildAskAnswerPrompt(questions, answers, wasPlanMode) {
-    const answerObj = (answers && typeof answers === 'object') ? answers : {};
-    const answerKeys = Object.keys(answerObj);
-    const readAnswer = (v) => {
-      if (v == null) return '';
-      if (Array.isArray(v?.answers)) return v.answers.join(', ');
-      if (typeof v === 'string') return v;
-      if (typeof v === 'object') return JSON.stringify(v);
-      return String(v);
-    };
-
-    const pairs = [];
-    const qArr = Array.isArray(questions) ? questions : [];
-    qArr.forEach((q, i) => {
-      const qText = (q && (q.question || q.text || q.header)) || `Question ${i + 1}`;
-      const candidates = [q?.question, q?.text, q?.header, q?.id, String(i), answerKeys[i]].filter(Boolean);
-      let a = '';
-      for (const key of candidates) {
-        if (Object.prototype.hasOwnProperty.call(answerObj, key)) {
-          a = readAnswer(answerObj[key]);
-          if (a) break;
-        }
-      }
-      pairs.push(`- Q: ${qText}\n  A: ${a || '(no answer provided)'}`);
-    });
-    if (pairs.length === 0) {
-      for (const k of answerKeys) pairs.push(`- Q: ${k}\n  A: ${readAnswer(answerObj[k]) || '(no answer provided)'}`);
-    }
-    const mappingText = pairs.length ? pairs.join('\n') : '(no answers captured — continue with best judgement)';
-
-    if (wasPlanMode) {
-      return [
-        '[PLAN MODE — think step by step, refine the plan, do NOT make code changes.]',
-        '',
-        'CRITICAL — You are still in plan mode. When you need further clarification:',
-        '1. Call ToolSearch with query "select:AskUserQuestion" to load the tool schema',
-        '2. Use AskUserQuestion to present options (2-4 choices per question, max 4 questions)',
-        '3. NEVER write questions as plain text',
-        '4. Only call ExitPlanMode AFTER the plan fully reflects the user\'s answers',
-        '',
-        'The user just answered your previous AskUserQuestion. Integrate these answers into the plan:',
-        '',
-        mappingText,
-        '',
-        'Do NOT call ExitPlanMode yet. First update the plan so it accurately incorporates the answers above. If anything is still unclear, ask follow-up AskUserQuestion(s). Only call ExitPlanMode once the plan is complete and reflects the user\'s selections.',
-        '',
-        'STRICT ORDERING — ExitPlanMode MUST be your FINAL action in the turn:',
-        '- Do ALL research (Grep, Read, Glob, etc.) BEFORE calling ExitPlanMode',
-        '- Write the complete refined plan as a text block BEFORE calling ExitPlanMode',
-        '- Never emit any text, tool call, or follow-up work AFTER ExitPlanMode — anything after will be dropped and the user will only see the PLAN COMPLETE approval card',
-        '- If you realise mid-response that you need to revise, do NOT call ExitPlanMode at all this turn; continue researching and writing, and call ExitPlanMode only when the plan is truly done',
-      ].join('\n');
-    }
-
-    return [
-      'The user answered your AskUserQuestion:',
-      '',
-      mappingText,
-      '',
-      'Continue based on their selection.',
-    ].join('\n');
-  }
-
-  // Ping/pong keepalive — detect silent TCP death from macOS sleep, network switches, idle timeouts
-  let _wsAlive = true;
-  ws.on('pong', () => { _wsAlive = true; });
-  const _pingInterval = setInterval(() => {
-    if (!_wsAlive) { ws.terminate(); clearInterval(_pingInterval); return; }
-    _wsAlive = false;
-    if (ws.readyState === 1) ws.ping();
-  }, 30_000);
-
-  // Strip env vars that interfere with nested claude execution
-  const cleanEnv = Object.fromEntries(
-    Object.entries(process.env).filter(([k]) =>
-      k !== 'CLAUDECODE' &&
-      !k.startsWith('VSCODE_') &&
-      k !== 'TERM_PROGRAM' &&
-      k !== 'TERM_PROGRAM_VERSION'
-    )
-  );
-  if (opts.extraEnv?.OPENCODE_CONFIG_CONTENT) delete cleanEnv.CLAUDECODE;
-
-  // ── Auto-compact early detection via pending-compact file watcher ──
-  // Pre-compact hook writes data/pending-compact/{sessionId}.json BEFORE compaction.
-  // Watch for new files and send compact_started event to UI immediately.
-  const _pendingCompactDir = resolve(DATA_HOME, 'data', 'pending-compact');
-  let _compactWatcher = null;
-  const _seenCompactFiles = new Set();
-  try {
-    mkdirSync(_pendingCompactDir, { recursive: true });
-    // Seed with existing files so we only react to NEW ones
-    try { readdirSync(_pendingCompactDir).forEach(f => _seenCompactFiles.add(f)); } catch {}
-    _compactWatcher = fsWatch(_pendingCompactDir, (eventType, filename) => {
-      if (!filename || !filename.endsWith('.json') || _seenCompactFiles.has(filename)) return;
-      _seenCompactFiles.add(filename);
-      if (!activeProc || !inTurn) return;
-      console.log(`[claude-skin] Pre-compact hook detected: ${filename}`);
-      if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'event', event: { type: 'system', subtype: 'compact_started', message: 'Auto-compacting context\u2026' } }));
-    });
-  } catch (e) {
-    console.log('[claude-skin] Could not watch pending-compact dir:', e.message);
-  }
-
-  function killProc() {
-    if (!activeProc) return;
-    try { activeProc.kill(); } catch {}
-    activeProc = null;
-    awaitingPermission = false;
-    lastPermissionDenials = null;
-  }
-
-  function validateWorkDir(cwd) {
-    if (!cwd) return null;
-    // Reject Windows-style paths on POSIX (e.g., "J:\Sites\Apps\Synabun")
-    if (process.platform !== 'win32' && /^[A-Za-z]:[\\\/]/.test(cwd)) {
-      console.log('[claude-skin] Rejected Windows path on POSIX:', cwd);
-      return null;
-    }
-    // Reject POSIX-style paths on Windows (e.g., "/Users/foo/bar")
-    if (process.platform === 'win32' && cwd.startsWith('/')) {
-      console.log('[claude-skin] Rejected POSIX path on Windows:', cwd);
-      return null;
-    }
-    // Reject non-existent directories
-    if (!existsSync(cwd)) {
-      console.log('[claude-skin] Rejected non-existent cwd:', cwd);
-      return null;
-    }
-    return cwd;
-  }
-
-  function spawnProc(sessionId, model, cwd, effort, prompt) {
-    killProc();
-    // Always reset permission state — killProc() skips this when activeProc is already null
-    // (e.g. process exited naturally while awaitingPermission was true for AskUserQuestion)
-    awaitingPermission = false;
-    lastPermissionDenials = null;
-    let exitPlanKilled = false;
-    _suppressedCount = 0;
-    // Read current MCP permissions so we can show proactive cards for non-allowed MCP tools
-    const _globalSettings = readClaudeSettings(getGlobalClaudeSettingsPath()) || {};
-    mcpAllowedTools = new Set(
-      (_globalSettings.permissions?.allow || []).filter(t => t.startsWith('mcp__'))
-    );
-    const workDir = validateWorkDir(cwd) || PACKAGE_ROOT;
-    const args = [
-      '--print',
-      '--output-format', 'stream-json',
-      '--verbose',
-      '--permission-mode', 'default',
-      // ============================================================
-      // NO --input-format stream-json: suppresses result events with open stdin.
-      // NO --include-partial-messages: each partial includes FULL cumulative
-      //   content → 50MB+ through pipe on long turns → backpressure stalls CLI.
-      //   Live text rendering uses stream_event deltas instead (small payloads).
-      // ============================================================
-    ];
-    // Always pre-approve built-in tools so Claude doesn't preemptively report them as
-    // blocked. Without this, --allowedTools acts as a strict whitelist and any tool NOT
-    // in the list gets denied — causing Claude to say "agents are blocked" without even
-    // attempting the call (no permission card flow triggered).
-    // NOTE: Do NOT add AskUserQuestion — --allowedTools causes the CLI to EXECUTE it
-    // (hanging on stdin in --print mode) instead of DENYING it (which triggers the
-    // permission_denial → control_request → ask card flow we actually want).
-    const ALWAYS_ALLOWED_TOOLS = ['Agent', 'Read', 'Glob', 'Grep', 'ToolSearch', 'Edit', 'Write', 'MultiEdit', 'Bash', 'TodoRead', 'TodoWrite'];
-    const allAllowed = new Set([...ALWAYS_ALLOWED_TOOLS, ...approvedTools]);
-    args.push('--allowedTools', [...allAllowed].join(','));
-    // Allow access to parent directory so the model can reach sibling projects
-    // Skip for filesystem roots (J:\, /) — adding an entire drive/root hangs the CLI
-    const parentDir = dirname(workDir);
-    if (parentDir && parentDir !== workDir && dirname(parentDir) !== parentDir) {
-      args.push('--add-dir', parentDir);
-    }
-    if (sessionId) args.push('--resume', sessionId);
-    if (model) args.push('--model', model);
-    if (effort && CLAUDE_EFFORT_LEVELS.includes(effort)) args.push('--effort', effort);
-    planTrace('spawn', {
-      planMode: typeof prompt === 'string' && /\[PLAN MODE/i.test(prompt),
-      resume: sessionId || 'none',
-      model: model || 'default',
-      effort: effort || 'default',
-      approvedTools: approvedTools.size > 0 ? [...approvedTools] : 'none',
-      promptLen: (prompt || '').length,
-      promptHead: (prompt || '').split('\n')[0] || '',
-    });
-    let claudeBin = getClaudeBin();
-    // On Windows, .js files can't be executed directly by CreateProcessW.
-    // Prepend the Node.js binary so the CLI actually runs.
-    if (process.platform === 'win32' && /\.js$/i.test(claudeBin)) {
-      args.unshift(claudeBin);
-      claudeBin = process.execPath;
-    }
-    // On Windows, .cmd/.bat batch files REQUIRE shell:true (cmd.exe /c) to execute.
-    // Without it, spawn() fires ENOENT because CreateProcessW can't run batch scripts directly.
-    const useShell = !claudeBin.includes(sep)
-      || (process.platform === 'win32' && /\.(cmd|bat)$/i.test(claudeBin));
-    console.log('[claude-skin] Spawning:', claudeBin, args.join(' '), 'cwd:', workDir);
-
-    // ── Zero-pipe spawn: temp files for stdin AND stdout ──
-    // Windows named pipes deadlock when CLI writes faster than Node.js reads.
-    // Even with only stdout as a pipe, the 4-64KB buffer fills during large
-    // assistant events → CLI blocks on write → Node waits for data → deadlock.
-    // (issues: anthropics/claude-code#771, #25629, nodejs/node#29238)
-    //
-    // Fix: ALL stdio goes through temp files. No pipes at all.
-    // - stdin: prompt written to file, fd passed to spawn
-    // - stdout: fd opened for writing, passed to spawn; polled every 50ms
-    // - stderr: inherited to server terminal (TTY, never blocks)
-    const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    let promptTmpFile = null;
-    let stdinFd = null;
-    if (prompt) {
-      promptTmpFile = join(os.tmpdir(), `claude-skin-${runId}-in.txt`);
-      writeFileSync(promptTmpFile, prompt, 'utf-8');
-      stdinFd = openSync(promptTmpFile, 'r');
-    }
-    const stdoutTmpFile = join(os.tmpdir(), `claude-skin-${runId}-out.jsonl`);
-    writeFileSync(stdoutTmpFile, '', 'utf-8');
-    const stdoutFd = openSync(stdoutTmpFile, 'w');
-
-    const proc = spawn(claudeBin, args, {
-      cwd: workDir,
-      env: { ...cleanEnv, ENABLE_TOOL_SEARCH: 'true' },
-      stdio: [stdinFd !== null ? stdinFd : 'inherit', stdoutFd, 'inherit'],
-      shell: useShell,
-    });
-
-    // Close parent copies of write fds (child has its own via dup2)
-    if (stdinFd !== null) { try { closeSync(stdinFd); } catch {} }
-    try { closeSync(stdoutFd); } catch {}
-    // Open a persistent read fd for polling (fstatSync on fd → real-time FCB size,
-    // unlike statSync on path which reads lazily-updated NTFS directory entries)
-    const readFd = openSync(stdoutTmpFile, 'r');
-    activeProc = proc;
-    procSessionId = sessionId;
-    procModel = model;
-    procCwd = cwd;
-    procEffort = effort;
-    console.log('[claude-skin] Process spawned, pid:', proc.pid);
-
-    let buf = '';
-    lastEventTime = Date.now();
-    inTurn = false;
-    let eventCount = 0;
-    let lastLoggedType = '';
-    let bootComplete = false; // flips true on first non-system event (model responding)
-
-    function sendToClient(data) {
-      // If orphaned, buffer events for replay on reattach
-      if (_orphanBuffer) { _orphanBuffer.push(data); return; }
-      // Backpressure (mirrors the SDK engine): a slow client must not grow an
-      // unbounded server-side WS buffer. Drop only high-volume stream_event
-      // deltas — complete assistant/result events still carry final content.
-      if (data?.type === 'event' && data.event?.type === 'stream_event'
-          && ws.bufferedAmount > 1024 * 1024) return;
-      if (ws.readyState === 1) ws.send(JSON.stringify(data));
-    }
-
-    // Stall detector — auto-retry when no stdout events for a while during an active turn.
-    // Effort-based timeout: extended thinking with max effort can take 5+ minutes.
-    // Killing during thinking causes a kill-restart loop that never lets the model finish.
-    // Boot phase: CLI needs time to load MCP servers + run hooks before model responds.
-    // During boot, only enforce a generous 120s timeout to catch truly hung processes.
-    const STALL_WARN_SEC = 30;
-    const STALL_KILL_SEC = effort === 'max' ? 300 : effort === 'high' ? 120 : 45;
-    const BOOT_TIMEOUT_SEC = 120;
-    const MAX_RETRIES = 2;
-    let stallRetries = 0;
-    console.log(`[claude-skin] Stall timeout: ${STALL_KILL_SEC}s (effort: ${effort || 'default'})`);
-    const stallCheck = setInterval(() => {
-      if (activeProc !== proc) { clearInterval(stallCheck); return; }
-      if (!inTurn) return;
-      const silentSec = Math.round((Date.now() - lastEventTime) / 1000);
-      // During boot (MCP init, hooks), suppress stall warnings and use generous timeout
-      if (!bootComplete) {
-        if (silentSec >= BOOT_TIMEOUT_SEC && !proc.killed) {
-          console.log(`[claude-skin] ✗ BOOT TIMEOUT — ${silentSec}s without model response, MCP servers or hooks may be hanging`);
-          killProc();
-          sendToClient({ type: 'error', message: `Session failed to start within ${BOOT_TIMEOUT_SEC}s. MCP servers or hooks may be hanging.` });
-          sendToClient({ type: 'done', code: -1 });
-        }
-        return;
-      }
-      if (silentSec >= STALL_WARN_SEC) {
-        // Diagnostic: check actual file size vs what we've read
-        let fileSize = 0;
-        try { fileSize = fstatSync(readFd).size; } catch {}
-        const unread = fileSize - tailOffset;
-        console.log(`[claude-skin] ⚠ STALL: no events for ${silentSec}s | fileSize=${fileSize} tailOffset=${tailOffset} unread=${unread}b | events=${eventCount} | last=${lastLoggedType} | pid=${proc.pid} killed=${proc.killed} exitCode=${proc.exitCode}`);
-        if (unread > 0) {
-          console.log(`[claude-skin] ℹ File has ${unread}b unread data — CLI is writing, polling may be stale`);
-        }
-      }
-      if (silentSec >= STALL_KILL_SEC && !proc.killed) {
-        if (stallRetries < MAX_RETRIES) {
-          stallRetries++;
-          console.log(`[claude-skin] ⚡ STALL RETRY ${stallRetries}/${MAX_RETRIES} — respawning with --resume`);
-          killProc();
-          sendToClient({ type: 'event', event: { type: 'system', subtype: 'retry', message: `Stream stalled — retrying (${stallRetries}/${MAX_RETRIES})...` } });
-          const sid = procSessionId;
-          spawnProc(sid, procModel, procCwd, procEffort, 'The previous turn was interrupted by an API stream drop. Please continue from where you left off.');
-          inTurn = true;
-          lastEventTime = Date.now();
-        } else {
-          console.log(`[claude-skin] ✗ STALL TIMEOUT — max retries exhausted`);
-          killProc();
-          sendToClient({ type: 'error', message: `Session stalled after ${MAX_RETRIES} retries. The API stream keeps dropping. Try a simpler message or switch to a faster model.` });
-          sendToClient({ type: 'done', code: -1 });
-        }
-      }
-    }, 15000);
-
-    // ── Process stdout events from a line of JSON ──
-    function processEvent(trimmed) {
-      if (exitPlanKilled) {
-        _suppressedCount++;
-        if (_suppressedCount === 1 || _suppressedCount % 10 === 0) {
-          planTrace('event-suppressed-post-kill', { count: _suppressedCount, preview: trimmed.slice(0, 80) });
-        }
-        return;
-      }
-      try {
-        const event = JSON.parse(trimmed);
-        eventCount++;
-        // Mark boot complete once model starts responding (not system/init events)
-        if (!bootComplete && event.type !== 'system') {
-          bootComplete = true;
-          console.log(`[claude-skin] Boot complete — first model event: ${event.type}`);
-        }
-        // Track session_id from init event
-        if (event.type === 'system' && event.subtype === 'init' && event.session_id) {
-          procSessionId = event.session_id;
-          console.log('[claude-skin] procSessionId updated from init:', procSessionId);
-        }
-        // Log non-stream events (gated behind CLAUDE_SKIN_DEBUG to avoid blocking event loop)
-        if (event.type !== 'stream_event') {
-          lastLoggedType = event.type + (event.subtype ? '/' + event.subtype : '');
-          if (SKIN_DEBUG) {
-            const contentArr = Array.isArray(event.message?.content) ? event.message.content : [];
-            const toolNames = contentArr.filter(b => b.type === 'tool_use').map(b => b.name).join(',');
-            if (toolNames) lastLoggedType += ':' + toolNames;
-            console.log(`[claude-skin] Event #${eventCount}: ${lastLoggedType}`);
-          }
-        }
-        // Track session_id + cost from result events
-        if (event.type === 'result') {
-          inTurn = false;
-          // Log error details for error_during_execution results
-          if (event.subtype === 'error_during_execution' || event.subtype === 'error') {
-            const errMsg = (event.errors && event.errors[0]) || event.error || event.result || 'unknown';
-            console.log(`[claude-skin] ✗ CLI error: ${errMsg}`);
-            // Auto-retry without --resume if session was deleted
-            if (typeof errMsg === 'string' && errMsg.includes('No conversation found')) {
-              console.log('[claude-skin] Session not found — retrying as new conversation');
-              procSessionId = null;
-              sendToClient({ type: 'event', event: { type: 'system', subtype: 'session_reset', message: 'Previous session was deleted. Starting fresh conversation.' } });
-              // Re-spawn without --resume, reusing the last prompt from the temp file
-              killProc();
-              spawnProc(null, procModel, procCwd, procEffort, lastPrompt);
-              return;
-            }
-          }
-          if (event.session_id) procSessionId = event.session_id;
-          if (typeof event.total_cost_usd === 'number' && event.total_cost_usd > 0) {
-            const sid = event.session_id || procSessionId;
-            const prev = lastCostBySession.get(sid) || 0;
-            const delta = event.total_cost_usd - prev;
-            lastCostBySession.set(sid, event.total_cost_usd);
-            if (delta > 0) { try { addCost(delta, sid); } catch {} }
-          }
-          // NOTE: result.usage is CUMULATIVE across all API calls in this CLI process.
-          // Auto-compact detection moved to assistant events where usage is per-turn.
-          // Force-kill if process doesn't exit within 5s after result
-          // (known Claude CLI issue #25629: process hangs with open stdout after completion)
-          setTimeout(() => {
-            if (proc.exitCode === null && !proc.killed && activeProc === proc) {
-              console.log('[claude-skin] Force-killing process after result (hung exit)');
-              try { proc.kill(); } catch {}
-            }
-          }, 5000);
-          // ── Permission denial → permission card ──
-          const denials = event.permission_denials;
-          if (denials?.length > 0) {
-            lastPermissionDenials = denials;
-            awaitingPermission = true;
-            for (const denial of denials) {
-              const requestId = `perm-${denial.tool_use_id}`;
-              // Skip if proactive control_request was already sent for this tool
-              if (permCardToolNames.has(requestId)) {
-                console.log(`[claude-skin] ▶ Skipping duplicate permission card for ${denial.tool_name} (proactive already sent)`);
-                continue;
-              }
-              const input = denial.tool_input || {};
-              console.log(`[claude-skin] ▶ Permission denied for ${denial.tool_name} → sending permission card ${requestId}`);
-              permCardToolNames.set(requestId, denial.tool_name);
-              sendToClient({
-                type: 'control_request',
-                request_id: requestId,
-                request: { tool_name: denial.tool_name, subtype: 'can_use_tool', input },
-              });
-            }
-            return; // Don't send 'done' yet — wait for user response
-          }
-        }
-        // ── Auto-compact detection via per-turn token count drop ──
-        // assistant events carry per-turn (non-cumulative) usage — the correct source.
-        // Detect >50% drop between turns and inject a synthetic compact_boundary event.
-        if (event.type === 'assistant' && event.message?.usage) {
-          const u = event.message.usage;
-          const currTotal = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
-          if (currTotal > 0) {
-            if (prevTurnTokens > 0 && currTotal < prevTurnTokens * 0.5) {
-              console.log(`[claude-skin] Auto-compact detected: ${prevTurnTokens} → ${currTotal} tokens (${Math.round((1 - currTotal / prevTurnTokens) * 100)}% drop)`);
-              sendToClient({ type: 'event', event: { type: 'system', subtype: 'compact_detected', message: `Context auto-compacted (${Math.round(prevTurnTokens / 1000)}K → ${Math.round(currTotal / 1000)}K)` } });
-            }
-            prevTurnTokens = currTotal;
-          }
-        }
-        // ── Proactive permission card ──
-        if (event.type === 'assistant') {
-          const GATED_TOOLS = ['Edit', 'Write', 'MultiEdit', 'Bash'];
-          const toolUses = (event.message?.content || []).filter(b => b.type === 'tool_use');
-          // AskUserQuestion: kill process to prevent Claude from continuing in the same turn.
-          // --print mode does NOT pause on AskUserQuestion — the CLI keeps emitting tool_use
-          // blocks (Write, Bash, ExitPlanMode) because it never receives a control_response
-          // over stdin. Without this hard-stop, Claude builds the plan and fires ExitPlanMode
-          // while the question card is still pending, producing a premature PLAN COMPLETE.
-          // Must run BEFORE the ExitPlanMode check so that if both tools appear in the same
-          // message, the question wins and trimming drops the ExitPlanMode block too.
-          const askIdx = (event.message?.content || []).findIndex(b => b?.type === 'tool_use' && b?.name === 'AskUserQuestion');
-          if (askIdx >= 0) {
-            const askTool = event.message.content[askIdx];
-            const content = event.message.content;
-            const trailingBlocks = content.slice(askIdx + 1);
-            const trailingTypes = trailingBlocks.map(b => b?.type === 'tool_use' ? `tool_use:${b.name}` : (b?.type || 'unknown'));
-            const qCount = Array.isArray(askTool.input?.questions) ? askTool.input.questions.length : 0;
-            planTrace('ask-detected', {
-              questionCount: qCount,
-              contentBlocks: content.length,
-              trailingCount: trailingBlocks.length,
-              trailingTypes,
-              toolId: askTool.id,
-              containsExitPlan: trailingTypes.some(t => t === 'tool_use:ExitPlanMode'),
-            });
-            console.log('[claude-skin] ▶ AskUserQuestion detected — killing process to await user answer');
-            if (askIdx < content.length - 1) {
-              event.message.content = content.slice(0, askIdx + 1);
-              console.log(`[claude-skin] ▶ Trimmed ${content.length - askIdx - 1} block(s) after AskUserQuestion`);
-            }
-            sendToClient({ type: 'event', event });
-            const requestId = `perm-${askTool.id}`;
-            permCardToolNames.set(requestId, 'AskUserQuestion');
-            sendToClient({
-              type: 'control_request',
-              request_id: requestId,
-              request: { tool_name: 'AskUserQuestion', subtype: 'can_use_tool', input: askTool.input || {} },
-            });
-            awaitingPermission = true;
-            exitPlanKilled = true;
-            killProc();
-            sendToClient({ type: 'done', code: 0 });
-            return;
-          }
-          // ExitPlanMode: kill process to prevent implementation before user approval.
-          // --print mode auto-approves plans, so Claude continues with Edit/Read in the same
-          // turn. Kill the process here so the client can show the plan card and wait for user.
-          if (toolUses.some(t => t.name === 'ExitPlanMode')) {
-            console.log('[claude-skin] ▶ ExitPlanMode detected — killing process to await user approval');
-            // Trim any content blocks that appear AFTER ExitPlanMode in the same message.
-            // Claude sometimes emits follow-up text/tool_use blocks after ExitPlanMode
-            // (e.g. "let me rewrite the plan..." + Grep calls), which never execute since
-            // we kill the process — leaving ghost tool cards below PLAN COMPLETE. Drop
-            // them at the protocol boundary so the UI renders: plan text → ExitPlanMode → PLAN COMPLETE.
-            const content = event.message?.content;
-            let planFilePath = null;
-            let planFileName = null;
-            if (Array.isArray(content)) {
-              const exitIdx = content.findIndex(b => b?.type === 'tool_use' && b?.name === 'ExitPlanMode');
-              const precedingTypes = content.slice(0, exitIdx).map(b => b?.type === 'tool_use' ? `tool_use:${b.name}` : (b?.type || 'unknown'));
-              const trailingTypes = content.slice(exitIdx + 1).map(b => b?.type === 'tool_use' ? `tool_use:${b.name}` : (b?.type || 'unknown'));
-              const planTextBlock = content.slice(0, exitIdx).find(b => b?.type === 'text');
-              const exitBlock = content[exitIdx];
-              const inputPlan = (exitBlock?.input?.plan || '').trim();
-              const planText = (planTextBlock?.text || '').trim();
-              planTrace('exit-detected', {
-                contentBlocks: content.length,
-                exitIdx,
-                precedingTypes,
-                trailingCount: trailingTypes.length,
-                trailingTypes,
-                planLen: planText.length,
-                inputPlanLen: inputPlan.length,
-              });
-              if (exitIdx >= 0 && exitIdx < content.length - 1) {
-                event.message.content = content.slice(0, exitIdx + 1);
-                console.log(`[claude-skin] ▶ Trimmed ${content.length - exitIdx - 1} block(s) after ExitPlanMode`);
-              }
-              // Server-side plan authoring — runs BEFORE killProc() since the kill
-              // prevents PostToolUse from firing and post-plan.mjs from authoring the file.
-              // Prefer ExitPlanMode.input.plan; fall back to the prose text block before it
-              // (the SynaBun plan-mode prefix instructs Claude to write the plan as prose).
-              const planBody = inputPlan || planText;
-              if (planBody) {
-                try {
-                  const result = writePlanFile(planBody, { cwd: workDir, projectPath: workDir });
-                  if (result.ok) {
-                    planFilePath = result.path;
-                    planFileName = result.name;
-                    console.log(`[claude-skin] ▶ Plan authored: ${result.path}${result.idempotent ? ' (idempotent)' : ''}`);
-                  } else {
-                    console.log(`[claude-skin] ▶ Plan author skipped: ${result.error}`);
-                  }
-                } catch (err) {
-                  console.log(`[claude-skin] ▶ Plan author error: ${err.message}`);
-                }
-              }
-            }
-            // Tell the client about the plan file BEFORE the assistant event so the eager
-            // capture in renderAssistant sees tab.planFilePath already set and skips its
-            // (now redundant) /api/create-plan POST.
-            if (planFilePath) {
-              sendToClient({ type: 'event', event: { type: 'system', subtype: 'plan_file_written', path: planFilePath, name: planFileName } });
-            }
-            sendToClient({ type: 'event', event });
-            exitPlanKilled = true;
-            killProc();
-            sendToClient({ type: 'done', code: 0 });
-            return;
-          }
-          for (const tool of toolUses) {
-            if (GATED_TOOLS.includes(tool.name) && !approvedTools.has(tool.name)) {
-              const requestId = `perm-${tool.id}`;
-              const input = tool.input || {};
-              permCardToolNames.set(requestId, tool.name);
-              console.log(`[claude-skin] ▶ PROACTIVE permission card for ${tool.name}: ${input.file_path || input.command || ''}`);
-              sendToClient({
-                type: 'control_request',
-                request_id: requestId,
-                request: { tool_name: tool.name, subtype: 'can_use_tool', input },
-              });
-            }
-            // MCP tools: proactive card when not session-approved and not in permissions.allow
-            // --print mode silently denies MCP tools without emitting permission_denials,
-            // so we must intercept tool_use blocks and prompt the user ourselves.
-            if (tool.name.startsWith('mcp__') && !approvedTools.has(tool.name) && !mcpAllowedTools.has(tool.name)) {
-              const requestId = `perm-${tool.id}`;
-              const input = tool.input || {};
-              permCardToolNames.set(requestId, tool.name);
-              console.log(`[claude-skin] ▶ PROACTIVE MCP permission card for ${tool.name}`);
-              sendToClient({
-                type: 'control_request',
-                request_id: requestId,
-                request: { tool_name: tool.name, subtype: 'can_use_tool', input },
-              });
-              awaitingPermission = true;
-            }
-          }
-        }
-        // Forward all events to client
-        sendToClient({ type: 'event', event });
-      } catch (e) { console.log('[claude-skin] JSON parse error:', e.message, 'line:', trimmed.substring(0, 120)); }
-    }
-
-    // ── Poll stdout temp file instead of using pipe ──
-    // No pipes = no deadlock. CLI writes to file (never blocks), we poll it.
-    // Adaptive self-rescheduling timer: 16ms while data flows, backing off ×2
-    // to 250ms when idle — with N sessions the fixed 60Hz sync fstat/read pair
-    // stalled the shared event loop continuously. Reads are async; the stop
-    // flag is re-checked after every await so the final sync flush in
-    // proc.on('close') can never double-process bytes.
-    let tailOffset = 0;
-    let _readBuf = Buffer.alloc(65536); // 64KB reusable buffer — avoids per-poll allocation + GC pressure
-    const TAIL_MIN_MS = 16, TAIL_MAX_MS = 250;
-    let _tailDelay = TAIL_MIN_MS;
-    let _tailTimer = null;
-    let _tailStopped = false;
-    const stopTailPoll = () => {
-      _tailStopped = true;
-      if (_tailTimer) { clearTimeout(_tailTimer); _tailTimer = null; }
-    };
-    const tailPollTick = async () => {
-      _tailTimer = null;
-      if (_tailStopped) return;
-      if (activeProc !== proc) { stopTailPoll(); return; }
-      let gotData = false;
-      try {
-        const size = (await fstatAsync(readFd)).size;
-        if (!_tailStopped && activeProc === proc && size > tailOffset) {
-          const needed = size - tailOffset;
-          if (needed > _readBuf.length) _readBuf = Buffer.alloc(Math.max(needed, _readBuf.length * 2));
-          const { bytesRead } = await readFdAsync(readFd, _readBuf, 0, needed, tailOffset);
-          if (!_tailStopped && activeProc === proc && bytesRead > 0) {
-            gotData = true;
-            tailOffset += bytesRead;
-            lastEventTime = Date.now();
-            buf += _readBuf.toString('utf-8', 0, bytesRead);
-            const lines = buf.split('\n');
-            buf = lines.pop();
-            for (const line of lines) {
-              const trimmed = line.trim();
-              if (!trimmed) continue;
-              processEvent(trimmed);
-            }
-          }
-        }
-      } catch {}
-      if (_tailStopped || activeProc !== proc) return;
-      _tailDelay = gotData ? TAIL_MIN_MS : Math.min(TAIL_MAX_MS, _tailDelay * 2);
-      _tailTimer = setTimeout(tailPollTick, _tailDelay);
-    };
-    _tailTimer = setTimeout(tailPollTick, TAIL_MIN_MS);
-
-    proc.on('close', (code) => {
-      clearInterval(stallCheck);
-      stopTailPoll();
-      const isStale = activeProc !== proc;
-      if (!isStale) {
-        // Final flush — read any remaining data from stdout file (only for active process)
-        try {
-          const size = fstatSync(readFd).size;
-          if (size > tailOffset) {
-            const needed = size - tailOffset;
-            if (needed > _readBuf.length) _readBuf = Buffer.alloc(needed);
-            const bytesRead = readSync(readFd, _readBuf, 0, needed, tailOffset);
-            buf += _readBuf.toString('utf-8', 0, bytesRead);
-            const lines = buf.split('\n');
-            buf = lines.pop();
-            for (const line of lines) {
-              const trimmed = line.trim();
-              if (!trimmed) continue;
-              processEvent(trimmed);
-            }
-          }
-        } catch {}
-      }
-      // Always clean up temp files
-      try { closeSync(readFd); } catch {}
-      if (promptTmpFile) { try { unlinkSync(promptTmpFile); } catch {} }
-      try { unlinkSync(stdoutTmpFile); } catch {}
-      console.log(`[claude-skin] Process closed, code: ${code}, events: ${eventCount}, buf: ${buf.length}b, stale: ${isStale}, awaitingPermission: ${awaitingPermission}`);
-      planTrace('proc-closed', {
-        code,
-        events: eventCount,
-        stale: isStale,
-        awaitingPermission,
-        exitPlanKilled,
-        suppressedAfterKill: _suppressedCount,
-      });
-      if (isStale) return;
-      // Process any remaining partial line in buf
-      if (buf.trim()) {
-        console.log(`[claude-skin] Flushing final buf (${buf.length}b): ${buf.substring(0, 200)}`);
-        processEvent(buf.trim());
-      }
-      // Don't send 'done' if we're showing a permission card — the user hasn't responded yet.
-      // 'done' will be sent after the user allows (via respawn+retry) or denies.
-      if (!awaitingPermission) {
-        sendToClient({ type: 'done', code });
-      }
-      activeProc = null;
-      // Clean up orphan entry if process exits naturally while orphaned —
-      // prevents the 30-min killTimer from firing on a dead process
-      if (wsWindowId && procSessionId) {
-        const okey = _orphanKey(wsWindowId, procSessionId);
-        const orphan = _orphanedProcs.get(okey);
-        if (orphan) {
-          clearTimeout(orphan.killTimer);
-          _orphanedProcs.delete(okey);
-        }
-      }
-    });
-
-    proc.on('error', (err) => {
-      clearInterval(stallCheck);
-      stopTailPoll();
-      try { closeSync(readFd); } catch {}
-      console.log('[claude-skin] Process error:', err.message);
-      if (activeProc !== proc) return;
-      const userMsg = err.code === 'ENOENT'
-        ? 'Claude CLI not found. Install it with: npm install -g @anthropic-ai/claude-code'
-        : err.message;
-      sendToClient({ type: 'error', message: userMsg });
-      sendToClient({ type: 'done', code: -1 });
-      activeProc = null;
-    });
-
-    return proc;
-  }
-
-  ws.on('message', (raw) => {
-    try {
-      const msg = JSON.parse(raw.toString());
-
-      if (msg.type === 'query') {
-        let { prompt, cwd, sessionId, model, effort, images, windowId } = msg;
-        if (windowId) wsWindowId = windowId;
-        // Normalize composite "modelId:contextWindow" → CLI-ready id.
-        // Windows >200K map to the `[1m]` beta suffix required by Claude Code.
-        // Defensive: newer clients already send the suffix directly.
-        if (model && model.includes(':')) model = toCliModelName(model);
-        if (!prompt && !images?.length) return ws.send(JSON.stringify({ type: 'error', message: 'No prompt provided' }));
-
-        // ── Session lock: prevent two windows from using the same session ──
-        if (sessionId && wsWindowId) {
-          const lockResult = _acquireSessionLock(sessionId, wsWindowId, null);
-          if (!lockResult.ok) {
-            ws.send(JSON.stringify({ type: 'error', message: `Session locked by another window` }));
-            return;
-          }
-        }
-
-        // ── Slash command → skill injection ──
-        if (prompt && prompt.startsWith('/')) {
-          const injected = maybeInjectSkillPrompt(prompt);
-          if (injected.command === 'clear' && !injected.skill) return; // client-only command
-          if (injected.skill) {
-            console.log('[claude-skin] Skill injection: /' + injected.command, 'dir:', injected.skill.dir);
-            prompt = injected.prompt;
-          }
-        }
-
-        // Seed lastCostBySession from persisted data to prevent double-counting on reconnect
-        if (sessionId && !lastCostBySession.has(sessionId)) {
-          const stored = getSessionCost(sessionId);
-          if (stored > 0) lastCostBySession.set(sessionId, stored);
-        }
-
-        // ── Image attachments → temp files + prompt injection ──
-        // Claude Code CLI (--print, text stdin) can't receive multimodal content directly.
-        // Save images to temp files and prepend paths so Claude uses the Read tool to view them.
-        if (images?.length) {
-          const imgPaths = [];
-          for (let i = 0; i < images.length; i++) {
-            const img = images[i];
-            if (!img.base64) continue;
-            const ext = (img.mediaType === 'image/png') ? 'png'
-              : (img.mediaType === 'image/webp') ? 'webp'
-              : (img.mediaType === 'image/gif') ? 'gif' : 'jpg';
-            const tmpPath = join(IMAGES_DIR, `synabun-img-${Date.now()}-${i}.${ext}`);
-            try {
-              writeFileSync(tmpPath, Buffer.from(img.base64, 'base64'));
-              imgPaths.push(tmpPath);
-            } catch (err) {
-              console.warn(`[claude-skin] Failed to save image ${i}:`, err.message);
-            }
-          }
-          if (imgPaths.length) {
-            const imgBlock = imgPaths.length === 1
-              ? `The user attached an image. Use the Read tool to view it:\n${imgPaths[0]}\n\n`
-              : `The user attached ${imgPaths.length} images. Use the Read tool to view them:\n${imgPaths.join('\n')}\n\n`;
-            prompt = imgBlock + (prompt || '');
-            console.log(`[claude-skin] Saved ${imgPaths.length} image(s) to temp files`);
-          }
-        }
-
-        // Each message = fresh process. Without --input-format stream-json,
-        // the CLI reads text from stdin (temp file), processes one turn, emits result, and exits.
-        // Session continuity via --resume sessionId.
-        console.log('[claude-skin] Sending prompt, length:', prompt.length);
-        lastPrompt = prompt;
-        spawnProc(sessionId || null, model || null, cwd || null, effort || null, prompt);
-        inTurn = true;
-        lastEventTime = Date.now();
-      }
-
-      if (msg.type === 'control_response') {
-        const rid = msg.request_id || msg.response?.request_id;
-        const innerResponse = msg.response?.response || msg.response;
-        const behavior = innerResponse?.behavior || msg.response?.behavior;
-
-        // ── Permission card response (proactive or from permission_denials) ──
-        if (rid && rid.startsWith('perm-')) {
-          // Extract tool name from proactive card map, cached denials, or response
-          const toolName = permCardToolNames.get(rid) || lastPermissionDenials?.find(d => `perm-${d.tool_use_id}` === rid)?.tool_name || 'unknown';
-          permCardToolNames.delete(rid);
-          console.log(`[claude-skin] ▶ Permission response for ${toolName}: ${behavior}`);
-
-          if (behavior === 'allow') {
-            // ── AskUserQuestion: extract user's answer and respawn with it ──
-            if (toolName === 'AskUserQuestion') {
-              const answers = innerResponse?.updatedInput?.answers || msg.response?.updatedInput?.answers;
-              const questions = innerResponse?.updatedInput?.questions || msg.response?.updatedInput?.questions;
-              const wasPlanMode = typeof lastPrompt === 'string' && /\[PLAN MODE/.test(lastPrompt);
-              const answerPrompt = buildAskAnswerPrompt(questions, answers, wasPlanMode);
-              planTrace('ask-answered', {
-                wasPlanMode,
-                questionCount: Array.isArray(questions) ? questions.length : 0,
-                answerCount: answers && typeof answers === 'object' ? Object.keys(answers).length : 0,
-                answerPromptLen: answerPrompt.length,
-                answerPromptHead: answerPrompt.split('\n').find(l => l.trim()) || '',
-                resume: procSessionId || 'none',
-              });
-              console.log(`[claude-skin] ▶ AskUserQuestion answered (planMode=${wasPlanMode}):`, answerPrompt.slice(0, 200));
-              const sid = procSessionId;
-              spawnProc(sid, procModel, procCwd, procEffort, answerPrompt);
-              // Preserve the plan-mode-aware prompt as the new "last prompt" so further
-              // respawns (AskUserQuestion chains) keep re-injecting the plan prefix.
-              lastPrompt = answerPrompt;
-              inTurn = true;
-              lastEventTime = Date.now();
-              lastPermissionDenials = null;
-              awaitingPermission = false;
-              return;
-            }
-            // Add tool to approved set
-            approvedTools.add(toolName);
-            // Check "always" flag
-            if (innerResponse?.always || msg.response?.always) {
-              console.log(`[claude-skin] ▶ Always-allow: ${toolName}`);
-            }
-            planTrace('tool-approved', {
-              tool: toolName,
-              approvedTools: [...approvedTools],
-              planMode: typeof lastPrompt === 'string' && /\[PLAN MODE/i.test(lastPrompt),
-            });
-            // Respawn with updated --allowedTools and retry
-            console.log(`[claude-skin] ▶ Respawning with approved tools: ${[...approvedTools].join(', ')}`);
-            const sid = procSessionId;
-            const retryPrompt = `Permission granted for ${toolName}. Please retry your previous action.`;
-            spawnProc(sid, procModel, procCwd, procEffort, retryPrompt);
-            inTurn = true;
-            lastEventTime = Date.now();
-          } else {
-            // User denied — kill the process to prevent further permission spam,
-            // then send done to client so the UI resets cleanly.
-            console.log(`[claude-skin] ✗ Permission denied for ${toolName} by user — killing process`);
-            killProc();
-            if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'done', code: 0 }));
-          }
-          lastPermissionDenials = null;
-          awaitingPermission = false;
-          return;
-        }
-
-        // No stream-json input — control_responses are handled via respawn flows above
-        console.log('[claude-skin] Unhandled control_response:', rid);
-      }
-
-      if (msg.type === 'tool_result') {
-        // AskUserQuestion answer — process already exited (text input mode).
-        // Respawn with --resume to continue the session with the user's answer.
-        const answer = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
-        console.log('[claude-skin] Tool result (AskUserQuestion) → respawn with answer:', answer.slice(0, 200));
-        const sid = procSessionId;
-        const wasPlanMode = typeof lastPrompt === 'string' && /\[PLAN MODE/.test(lastPrompt);
-        // Tool-result path has no structured questions/answers — wrap the raw answer so
-        // buildAskAnswerPrompt still re-injects the plan-mode prefix when applicable.
-        const answerPrompt = buildAskAnswerPrompt(
-          [{ question: 'Previous AskUserQuestion' }],
-          { 'Previous AskUserQuestion': answer },
-          wasPlanMode,
-        );
-        spawnProc(sid, procModel, procCwd, procEffort, answerPrompt);
-        lastPrompt = answerPrompt;
-        inTurn = true;
-        lastEventTime = Date.now();
-      }
-
-      if (msg.type === 'compact') {
-        // Compact via respawn with /compact as the prompt
-        const sid = procSessionId;
-        console.log('[claude-skin] Compact requested, spawning with /compact');
-        if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'event', event: { type: 'system', subtype: 'compact_started', message: 'Compacting context...' } }));
-        spawnProc(sid, procModel, procCwd, procEffort, '/compact');
-        inTurn = true;
-        lastEventTime = Date.now();
-      }
-
-      if (msg.type === 'abort') {
-        killProc();
-        if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'aborted' }));
-      }
-
-      if (msg.type === 'heartbeat') {
-        if (msg.windowId) wsWindowId = msg.windowId;
-        if (msg.sessionId && wsWindowId) _heartbeatLock(msg.sessionId, wsWindowId);
-      }
-    } catch { /* ignore malformed */ }
-  });
-
-  // ── Reattach: reconnecting client reclaims orphaned process ──
-  ws.on('message', function _reattachHandler(raw) {
-    try {
-      const msg = JSON.parse(raw.toString());
-      if (msg.type !== 'reattach') return;
-      const wid = msg.windowId;
-      if (!wid) return;
-      wsWindowId = wid;
-      const okey = _orphanKey(wid, msg.sessionId);
-      const orphan = _orphanedProcs.get(okey);
-      if (!orphan || !orphan.proc || orphan.proc.killed || orphan.proc.exitCode !== null) {
-        // No live orphan — tell client nothing to reattach
-        ws.send(JSON.stringify({ type: 'reattach_result', ok: false }));
-        if (orphan) { clearTimeout(orphan.killTimer); _orphanedProcs.delete(okey); }
-        return;
-      }
-      // Reclaim the orphaned process
-      clearTimeout(orphan.killTimer);
-      activeProc = orphan.proc;
-      procSessionId = orphan.sessionId;
-      procModel = orphan.model;
-      procCwd = orphan.cwd;
-      procEffort = orphan.effort;
-      inTurn = orphan.inTurn;
-      lastEventTime = orphan.lastEventTime;
-      awaitingPermission = orphan.awaitingPermission;
-      lastPrompt = orphan.lastPrompt;
-      // Restore approved tools
-      for (const t of orphan.approvedTools) approvedTools.add(t);
-      // Swap the orphan's sendToClient to use our new WS
-      orphan.swapWs(ws);
-      console.log(`[claude-skin] ♻ Reattached orphan for window ${wid}, pid ${activeProc.pid}, buffered ${orphan.buffer.length} events`);
-      // Replay buffered events
-      for (const evt of orphan.buffer) {
-        if (ws.readyState === 1) ws.send(JSON.stringify(evt));
-      }
-      _orphanedProcs.delete(okey);
-      ws.send(JSON.stringify({ type: 'reattach_result', ok: true, sessionId: procSessionId, running: inTurn || awaitingPermission }));
-    } catch {}
-  });
-
-  ws.on('close', () => {
-    clearInterval(_pingInterval);
-    // If there's a running process AND we know the windowId, orphan it instead of killing
-    if (activeProc && !activeProc.killed && activeProc.exitCode === null && wsWindowId) {
-      console.log(`[claude-skin] 🔌 WS closed — orphaning process pid ${activeProc.pid} for window ${wsWindowId} (${ORPHAN_GRACE_MS / 1000}s grace)`);
-      _orphanBuffer = []; // switch sendToClient to buffer mode
-      const orphan = {
-        proc: activeProc,
-        sessionId: procSessionId,
-        model: procModel,
-        cwd: procCwd,
-        effort: procEffort,
-        inTurn,
-        lastEventTime,
-        awaitingPermission,
-        lastPrompt,
-        approvedTools: new Set(approvedTools),
-        buffer: _orphanBuffer,
-        // swapWs: called by reattach to point sendToClient at the new WS
-        swapWs(newWs) {
-          ws = newWs;
-          _orphanBuffer = null; // stop buffering, send directly
-        },
-        // Kill the process from within the old closure so activeProc guard works
-        kill() { killProc(); },
-        killTimer: setTimeout(() => {
-          console.log(`[claude-skin] ⏱ Orphan grace expired for window ${wsWindowId} — killing pid ${orphan.proc?.pid}`);
-          orphan.kill();
-          _orphanedProcs.delete(_orphanKey(wsWindowId, procSessionId));
-        }, ORPHAN_GRACE_MS),
-      };
-      _orphanedProcs.set(_orphanKey(wsWindowId, procSessionId), orphan);
-      // Keep activeProc set — polling and stall detector use `activeProc === proc` guard.
-      // The old closure keeps running and buffering events until reattach or grace expiry.
-      // DON'T release session locks — client is refreshing, not leaving
-      return;
-    }
-    killProc();
-    // Release all session locks held by this window
-    if (wsWindowId) _releaseAllLocks(wsWindowId);
-    // Clean up compact file watcher
-    if (_compactWatcher) { try { _compactWatcher.close(); } catch {} _compactWatcher = null; }
-  });
+  connectClaudeSkin(ws, {
+    bridgeReady: _claudeBridgeReady,
+    getBridge: () => _claudeBridge,
+    getBridgeError: () => _claudeBridgeError,
+    log: (...args) => console.warn('[claude-sdk]', ...args),
+  }).catch((err) => console.warn('[claude-sdk] connection setup failed:', err?.message || err));
 }
 
 // Ask the installed CLI which models this account can run. Falls back to a small
@@ -11544,9 +9617,10 @@ function handleClaudeSkinWebSocketLegacy(ws) {
 async function getClaudeModelsForClient(force = false) {
   try {
     const bin = getClaudeBin();
-    // Sidepanel sessions run the SDK's bundled CLI, not this one. When the two
-    // versions disagree the labels below describe a different model table than
-    // the session will use — warn rather than let it pass silently.
+    // Sidepanel sessions and native loops default to the SDK's bundled CLI, not
+    // this one. The comparison is cached per binary (a spawn only when the CLI
+    // changes); it warns about a skew and, when this CLI is the newer one, makes
+    // sessions run it instead — see alignedClaudeExecutable().
     checkClaudeCliSkew(bin).catch(() => {});
     const result = await discoverClaudeModels(bin, { force, cwd: PACKAGE_ROOT });
     if (result?.models?.length) return result;
@@ -11710,33 +9784,18 @@ function toCliModelName(model) {
   return Number.isFinite(cw) && cw > 200000 ? `${id}[1m]` : id;
 }
 
-const MODEL_PRICING = {
-  // $/MTok — [input, output, cache_write_5m, cache_read].
-  // Derived from published list prices: cache_write_5m = 1.25x input, cache_read = 0.1x input.
-  // Fable 5.1 is tier_10_50_cache_read_0_25 — same in/out as Fable 5, cheaper cache reads.
-  'claude-fable-5-1':           [10, 50, 12.50, 0.25],
-  'claude-fable-5':             [10, 50, 12.50, 1.00],
-  'claude-opus-5':              [5, 25, 6.25, 0.50],
-  'claude-opus-4-8':            [5, 25, 6.25, 0.50],
-  'claude-opus-4-7':            [5, 25, 6.25, 0.50],
-  'claude-opus-4-6':            [5, 25, 6.25, 0.50],
-  // intro pricing thru 2026-08-31; standard is [3, 15, 3.75, 0.30]
-  'claude-sonnet-5':            [2, 10, 2.50, 0.20],
-  'claude-sonnet-4-6':          [3, 15, 3.75, 0.30],  // kept: historical sessions + safe fallback
-  'claude-haiku-4-5-20251001':  [1, 5, 1.25, 0.10],
-  'claude-haiku-4-5':           [1, 5, 1.25, 0.10],  // bare alias used by the runtime model list
-  // Fallbacks for older model IDs
-  'claude-sonnet-4-5-20250514': [3, 15, 3.75, 0.30],
-  'claude-3-5-sonnet-20241022': [3, 15, 3.75, 0.30],
-  'claude-3-5-haiku-20241022':  [0.80, 4, 1.00, 0.08],
-};
+// $/MTok — [input, output, cache_write_5m, cache_read], derived from the one list-price table
+// (lib/assistant-pricing.js: checked against the providers' pricing pages; the Assistant's
+// catalog and usage ledger read the same table).
+const MODEL_PRICING = claudeLegacyPricing();
 
 function calcMessageCost(model, usage) {
-  // JSONL strips the `[1m]` suffix before persisting, but result.modelUsage
-  // keys include it. Strip defensively so pricing lookup works either way.
-  const baseId = typeof model === 'string' ? model.replace(/\[1m\]$/, '') : model;
-  const pricing = MODEL_PRICING[baseId] || MODEL_PRICING['claude-sonnet-4-6']; // safe fallback
-  const [pIn, pOut, pCacheW, pCacheR] = pricing;
+  // JSONL strips the `[1m]` suffix before persisting, but result.modelUsage keys include it;
+  // the table lookup takes either. A 1-hour cache write (usage.cache_creation) is priced at
+  // its own rate. An unknown model falls back to Sonnet 4.6 rates.
+  const priced = claudeUsageCostUsd(model, usage);
+  if (priced !== null) return Math.round(priced * 1e6) / 1e6;
+  const [pIn, pOut, pCacheW, pCacheR] = MODEL_PRICING['claude-sonnet-4-6']; // safe fallback
   const input = (usage.input_tokens || 0) / 1e6 * pIn;
   const output = (usage.output_tokens || 0) / 1e6 * pOut;
   const cacheWrite = (usage.cache_creation_input_tokens || 0) / 1e6 * pCacheW;
@@ -11870,8 +9929,9 @@ setTimeout(async () => {
   } catch (err) { console.error('[cost-tracker] Scan error:', err.message); }
 }, 3000);
 
-// Sweep crash-leftover claude-skin temp files (normal close unlinks them;
-// crashes leak them into tmpdir forever).
+// Sweep the temp files of the retired per-turn engine (it wrote each turn's
+// prompt and output to tmpdir, and a crash leaked them). Nothing creates them
+// any more: this only clears what an earlier version left behind.
 setTimeout(async () => {
   try {
     const dir = os.tmpdir();
@@ -12079,7 +10139,43 @@ function loadWhiteboard() {
   }
   if (!Array.isArray(_whiteboardCache.elements)) _whiteboardCache.elements = [];
   if (!_whiteboardCache.nextZIndex) _whiteboardCache.nextZIndex = 1;
+  // One-time geometry normalisation of older boards: estimated sizes for
+  // text/list cards, 160x100 for size-less shapes, section defaults.
+  if (normalizeWhiteboardElements(_whiteboardCache.elements)) {
+    console.log('[whiteboard] normalized element geometry (estimated sizes / defaults)');
+    saveWhiteboard(_whiteboardCache);
+  }
   return _whiteboardCache;
+}
+
+/** Fill defaults / estimated sizes on every element lacking them (never touches
+ *  browser-measured text/list sizes). Returns true when anything changed. */
+function normalizeWhiteboardElements(elements) {
+  let changed = false;
+  for (const el of elements) {
+    if (!el || typeof el !== 'object') continue;
+    const reasons = wbEnsureElementGeometry(el);
+    if (reasons.some(r => r !== 'image:no-size')) changed = true;
+  }
+  return changed;
+}
+
+/** Client snapshots may omit sizes the server already holds as measured —
+ *  carry them over by id so a full-board sync never regresses geometry truth. */
+function mergeMeasuredSizes(incoming, current) {
+  if (!Array.isArray(incoming) || !Array.isArray(current)) return;
+  const byId = new Map(current.map(e => [e.id, e]));
+  for (const el of incoming) {
+    if (!el || (el.type !== 'text' && el.type !== 'list')) continue;
+    if (el.width > 0 && el.height > 0) continue;
+    const prev = byId.get(el.id);
+    if (prev && prev.measured && prev.width > 0 && prev.height > 0) {
+      el.width = prev.width;
+      el.height = prev.height;
+      el.measured = true;
+      delete el.estimated;
+    }
+  }
 }
 
 function saveWhiteboard(data) {
@@ -12900,58 +10996,297 @@ app.get('/api/youtube/oauth/callback', async (req, res) => {
 // WHITEBOARD API — Claude MCP integration
 // ═══════════════════════════════════════════
 
-// Layout engine for whiteboard auto-positioning
-function applyWhiteboardLayout(elements, layout, vp) {
+// The geometry engine (size estimation, anchor math, clamping, pct conversion)
+// is shared with the MCP tools: mcp-server/src/services/whiteboard-geometry.ts,
+// imported here from dist. Keep the two consumers on the same math.
+
+const WB_PUBLIC_ROOT = join(__dirname, 'public');
+const WB_GAMES_ROOT = join(__dirname, 'games');
+const WB_ELEMENT_TYPES = new Set(['text', 'list', 'shape', 'arrow', 'pen', 'image', 'section']);
+// Keys an update may touch. id/type/zIndex/measured/estimated/dataUrlBytes are server-owned.
+const WB_UPDATABLE_KEYS = new Set([
+  'x', 'y', 'width', 'height', 'content', 'items', 'ordered', 'fontSize', 'color', 'bold', 'italic',
+  'shape', 'points', 'startAnchor', 'endAnchor', 'rotation', 'strokeWidth', 'sectionType', 'label',
+  'dataUrl', 'pathD',
+]);
+
+function wbNewId() {
+  return 'wb-' + Date.now() + '-' + randomBytes(2).toString('hex').slice(0, 3);
+}
+
+// Layout engine for whiteboard auto-positioning. `frame` is the rect to lay
+// out inside (usable viewport or a parent section box); sizes are already
+// filled by ensureElementGeometry so the fallbacks only hit arrows/pen.
+function applyWhiteboardLayout(elements, layout, frame) {
   const gap = 40;
   const pad = 60;
-  const xOff = vp.xOffset || 0;
-  const yOff = vp.yOffset || 0;
   const n = elements.length;
   if (!n) return;
+  const w = (el) => el.width || 200;
+  const h = (el) => el.height || 100;
 
-  if (layout === 'center') {
-    const totalH = elements.reduce((s, el) => s + (el.height || 100), 0) + gap * (n - 1);
-    let y = yOff + (vp.height - totalH) / 2;
+  if (layout === 'center' || layout === 'column') {
+    const totalH = elements.reduce((s, el) => s + h(el), 0) + gap * (n - 1);
+    let y = frame.y + (frame.height - totalH) / 2;
     for (const el of elements) {
-      el.x = Math.round(xOff + (vp.width - (el.width || 200)) / 2);
+      el.x = Math.round(frame.x + (frame.width - w(el)) / 2);
       el.y = Math.round(y);
-      y += (el.height || 100) + gap;
+      y += h(el) + gap;
     }
   } else if (layout === 'row') {
-    const totalW = elements.reduce((s, el) => s + (el.width || 200), 0) + gap * (n - 1);
-    let x = xOff + (vp.width - totalW) / 2;
+    const totalW = elements.reduce((s, el) => s + w(el), 0) + gap * (n - 1);
+    let x = frame.x + (frame.width - totalW) / 2;
     for (const el of elements) {
       el.x = Math.round(x);
-      el.y = Math.round(yOff + (vp.height - (el.height || 100)) / 2);
-      x += (el.width || 200) + gap;
-    }
-  } else if (layout === 'column') {
-    const totalH = elements.reduce((s, el) => s + (el.height || 100), 0) + gap * (n - 1);
-    let y = yOff + (vp.height - totalH) / 2;
-    for (const el of elements) {
-      el.x = Math.round(xOff + (vp.width - (el.width || 200)) / 2);
-      el.y = Math.round(y);
-      y += (el.height || 100) + gap;
+      el.y = Math.round(frame.y + (frame.height - h(el)) / 2);
+      x += w(el) + gap;
     }
   } else if (layout === 'grid') {
     const cols = n <= 2 ? 2 : n <= 6 ? 3 : 4;
     const rows = Math.ceil(n / cols);
-    const cellW = (vp.width - pad * 2 - gap * (cols - 1)) / cols;
-    const cellH = (vp.height - pad * 2 - gap * (rows - 1)) / rows;
+    const cellW = (frame.width - pad * 2 - gap * (cols - 1)) / cols;
+    const cellH = (frame.height - pad * 2 - gap * (rows - 1)) / rows;
     elements.forEach((el, i) => {
       const col = i % cols;
       const row = Math.floor(i / cols);
-      el.x = Math.round(xOff + pad + col * (cellW + gap) + (cellW - (el.width || 200)) / 2);
-      el.y = Math.round(yOff + pad + row * (cellH + gap) + (cellH - (el.height || 100)) / 2);
+      el.x = Math.round(frame.x + pad + col * (cellW + gap) + (cellW - w(el)) / 2);
+      el.y = Math.round(frame.y + pad + row * (cellH + gap) + (cellH - h(el)) / 2);
     });
   }
 }
 
-// GET /api/whiteboard — Read current whiteboard state from its dedicated store
+/** Resolve an image `url` to a base64 dataUrl. Only files inside public/
+ *  (or games/ for "/games/…") are served — no path traversal. */
+function wbResolveImageUrl(el, reasons) {
+  if (typeof el.url !== 'string' || !el.url) return;
+  const rel = el.url.replace(/^\/+/, '');
+  const isGame = rel.startsWith('games/');
+  const filePath = isGame ? join(__dirname, rel) : join(WB_PUBLIC_ROOT, rel);
+  if (!pathIsInside(filePath, isGame ? WB_GAMES_ROOT : WB_PUBLIC_ROOT)) { reasons.push('image:outside-static-root'); return; }
+  if (!existsSync(filePath)) { reasons.push('image:not-found'); return; }
+  try {
+    const buf = readFileSync(filePath);
+    const ext = extname(filePath).toLowerCase();
+    const mime = ext === '.svg' ? 'image/svg+xml'
+      : ext === '.png' ? 'image/png'
+      : ext === '.webp' ? 'image/webp'
+      : ext === '.gif' ? 'image/gif'
+      : 'image/jpeg';
+    el.dataUrl = `data:${mime};base64,${buf.toString('base64')}`;
+  } catch {
+    reasons.push('image:not-found');
+  }
+}
+
+/** Placement frame for `parent` (a section id): its box, or an error code. */
+function wbSectionFrame(parentId, lookup) {
+  const parent = lookup(parentId);
+  if (!parent) return { error: 'parent:not-found' };
+  if (parent.type !== 'section') return { error: 'parent:not-a-section' };
+  const frame = wbElementBox(parent, lookup);
+  if (!frame) return { error: 'parent:not-found' };
+  return { frame, parent };
+}
+
+/** Translate px coordinates given relative to a parent section into canvas px. */
+function wbOffsetByFrame(target, frame) {
+  if (Number.isFinite(target.x)) target.x += frame.x;
+  if (Number.isFinite(target.y)) target.y += frame.y;
+  if (Array.isArray(target.points)) {
+    target.points = target.points.map(p => [(Number(p[0]) || 0) + frame.x, (Number(p[1]) || 0) + frame.y]);
+  }
+}
+
+/** Keep an element inside `frame`: boxes by their real size, arrows/pen by
+ *  translating the whole polyline (anchored endpoints are left to the anchor). */
+function wbClampElement(el, frame, reasons, lookup) {
+  if (el.type === 'arrow' || el.type === 'pen') {
+    if (!Array.isArray(el.points) || el.points.length < 2) return;
+    const skip = [];
+    if (el.type === 'arrow' && el.startAnchor) skip.push(0);
+    if (el.type === 'arrow' && el.endAnchor) skip.push(el.points.length - 1);
+    const { points, dx, dy } = wbClampPointsToRect(el.points, frame, skip);
+    if (dx || dy) {
+      el.points = points;
+      if (el.type === 'pen') {
+        if (Number.isFinite(el.x)) el.x += dx;
+        if (Number.isFinite(el.y)) el.y += dy;
+        delete el.pathD;   // derived from points — the client recomputes it
+      }
+      reasons.push('clamp:points');
+    }
+    return;
+  }
+  if (!Number.isFinite(el.x) || !Number.isFinite(el.y)) return;
+  const box = wbElementBox(el, lookup);
+  if (!box) return;
+  const c = wbClampBoxToRect(box, frame);
+  if (c.reasons.length) {
+    el.x = c.x;
+    el.y = c.y;
+    reasons.push(...c.reasons);
+  }
+}
+
+/** Final geometry summary echoed to callers (what actually landed). */
+function wbGeometrySummary(el, lookup) {
+  const box = wbElementBox(el, lookup);
+  const out = { id: el.id, type: el.type, zIndex: el.zIndex };
+  if (box) {
+    out.x = Math.round(box.x);
+    out.y = Math.round(box.y);
+    out.width = Math.round(box.width);
+    out.height = Math.round(box.height);
+  }
+  if (el.estimated) out.estimated = true;
+  if (el.type === 'arrow' || el.type === 'pen') out.points = el.points;
+  return out;
+}
+
+/** Drop anchors that do not resolve to an existing non-arrow element. */
+function wbValidateAnchors(el, lookup, reasons, touched) {
+  if (el.type !== 'arrow') return;
+  for (const key of ['startAnchor', 'endAnchor']) {
+    if (el[key] == null) continue;
+    const target = lookup(String(el[key]));
+    if (!target || target.type === 'arrow' || target.id === el.id) {
+      reasons.push(`anchor:${key === 'startAnchor' ? 'start' : 'end'}-dropped`);
+      el[key] = null;
+      if (touched) touched.add(key);
+    }
+  }
+}
+
+/**
+ * Apply update/remove ops to the live board. Shared by PUT /elements/:id,
+ * DELETE /elements/:id and POST /elements/batch so all three validate, clamp,
+ * re-estimate and cascade identically. Returns per-op results plus the ops to
+ * broadcast (final values, so old and new clients converge on the same state).
+ */
+function applyWhiteboardOps(wb, ops, { coordMode } = {}) {
+  const viewport = getWhiteboardViewport();
+  const usable = wbUsableRect(viewport);
+  const lookup = (id) => wb.elements.find(e => e.id === id);
+  const results = [];
+  const broadcastOps = [];
+
+  for (const op of ops) {
+    if (!op || typeof op !== 'object') { results.push({ op: undefined, id: undefined, ok: false, error: 'op:invalid' }); continue; }
+    const id = op.id != null ? String(op.id) : '';
+
+    if (op.op === 'update') {
+      const el = lookup(id);
+      if (!el) { results.push({ op: 'update', id, ok: false, error: 'not found' }); continue; }
+      const reasons = [];
+      const updates = (op.updates && typeof op.updates === 'object') ? op.updates : {};
+
+      let frame = usable;
+      if (op.parent != null) {
+        const r = wbSectionFrame(String(op.parent), lookup);
+        if (r.error) { results.push({ op: 'update', id, ok: false, error: `${r.error} "${op.parent}"` }); continue; }
+        frame = r.frame;
+        reasons.push(`parent:${r.parent.id}`);
+      }
+
+      // Whitelisted patch; text/list are auto-sized so their sizes are never caller-set
+      const patch = {};
+      for (const [key, value] of Object.entries(updates)) {
+        if (WB_UPDATABLE_KEYS.has(key)) patch[key] = value;
+      }
+      if (el.type === 'text' || el.type === 'list') { delete patch.width; delete patch.height; }
+      if (coordMode === 'pct') { wbConvertPctInPlace(patch, frame, { pointsToo: true }); reasons.push('pct'); }
+      else if (op.parent != null) wbOffsetByFrame(patch, frame);   // px relative to the parent section
+      if (patch.points !== undefined) {
+        if (!Array.isArray(patch.points) || patch.points.length < 2) { results.push({ op: 'update', id, ok: false, error: 'points:min-2' }); continue; }
+        patch.points = patch.points.map(p => [Number(p[0]) || 0, Number(p[1]) || 0]);
+        if (el.type === 'pen') delete el.pathD;
+      }
+
+      const touched = new Set(Object.keys(patch));
+      const sizeInputsChanged = ['content', 'items', 'fontSize'].some(k => k in patch);
+      Object.assign(el, patch);
+      wbValidateAnchors(el, lookup, reasons, touched);
+
+      let reEstimated = false;
+      if ((el.type === 'text' || el.type === 'list') && sizeInputsChanged) {
+        reasons.push(...wbEnsureElementGeometry(el, { force: true }));
+        reEstimated = true;
+        for (const k of ['width', 'height', 'estimated']) touched.add(k);
+      } else {
+        const filled = wbEnsureElementGeometry(el);
+        if (filled.length) {
+          reasons.push(...filled);
+          for (const k of ['width', 'height', 'color', 'label', 'sectionType']) if (el[k] !== undefined) touched.add(k);
+        }
+      }
+
+      const before = { x: el.x, y: el.y, points: el.points };
+      wbClampElement(el, frame, reasons, lookup);
+      if (el.x !== before.x) touched.add('x');
+      if (el.y !== before.y) touched.add('y');
+      if (el.points !== before.points) { touched.add('points'); if (el.type === 'pen') { touched.add('x'); touched.add('y'); } }
+
+      const updatesOut = {};
+      for (const k of touched) updatesOut[k] = el[k] === undefined ? null : el[k];
+      if (reEstimated) updatesOut.measured = false;   // tell the browser to re-measure this card
+      broadcastOps.push({ op: 'update', id, updates: updatesOut });
+      results.push({ op: 'update', id, ok: true, element: wbGeometrySummary(el, lookup), adjusted: reasons, warnings: [] });
+      continue;
+    }
+
+    if (op.op === 'remove') {
+      const idx = wb.elements.findIndex(e => e.id === id);
+      if (idx < 0) { results.push({ op: 'remove', id, ok: false, error: 'not found' }); continue; }
+      const removed = wb.elements[idx];
+      const center = wbElementCenter(removed, lookup) || { x: removed.x || 0, y: removed.y || 0 };
+      wb.elements.splice(idx, 1);
+      // Detach arrows anchored to it and park their endpoint on its centre
+      // (parity with the client's deleteElement).
+      const cascade = [];
+      for (const a of wb.elements) {
+        if (a.type !== 'arrow' || !Array.isArray(a.points) || a.points.length < 2) continue;
+        const upd = {};
+        let hit = false;
+        if (a.startAnchor === id) { a.points[0] = [center.x, center.y]; a.startAnchor = null; upd.startAnchor = null; hit = true; }
+        if (a.endAnchor === id) { a.points[a.points.length - 1] = [center.x, center.y]; a.endAnchor = null; upd.endAnchor = null; hit = true; }
+        if (hit) {
+          upd.points = a.points;
+          cascade.push({ id: a.id, updates: upd });
+          broadcastOps.push({ op: 'update', id: a.id, updates: upd });
+        }
+      }
+      broadcastOps.push({ op: 'remove', id });
+      results.push({ op: 'remove', id, ok: true, type: removed.type, cascade });
+      continue;
+    }
+
+    results.push({ op: op.op, id, ok: false, error: 'op:invalid' });
+  }
+
+  return { results, broadcastOps };
+}
+
+// GET /api/whiteboard — Read current whiteboard state from its dedicated store.
+// ?images=0 replaces image dataUrls with their byte size (MCP reads never need
+// the base64 payload).
 app.get('/api/whiteboard', (req, res) => {
   try {
     const wb = loadWhiteboard();
-    res.json({ ok: true, elements: wb.elements, nextZIndex: wb.nextZIndex || 1, viewport: whiteboardViewport });
+    const stripImages = req.query.images === '0' || req.query.images === 'false';
+    const elements = stripImages
+      ? wb.elements.map(el => {
+          if (el.type !== 'image' || typeof el.dataUrl !== 'string') return el;
+          const { dataUrl, ...rest } = el;
+          return { ...rest, dataUrlBytes: Buffer.byteLength(dataUrl, 'utf8') };
+        })
+      : wb.elements;
+    res.json({
+      ok: true,
+      elements,
+      nextZIndex: wb.nextZIndex || 1,
+      viewport: getWhiteboardViewport(),
+      connection: getWhiteboardConnection(),
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -12963,6 +11298,9 @@ app.put('/api/whiteboard', (req, res) => {
   try {
     const { elements, nextZIndex } = req.body || {};
     if (!Array.isArray(elements)) return res.status(400).json({ error: 'elements must be an array' });
+    const current = loadWhiteboard();
+    mergeMeasuredSizes(elements, current.elements);
+    normalizeWhiteboardElements(elements);
     saveWhiteboard({ elements, nextZIndex: nextZIndex || 1 });
     res.json({ ok: true });
   } catch (err) {
@@ -12970,158 +11308,159 @@ app.put('/api/whiteboard', (req, res) => {
   }
 });
 
-// POST /api/whiteboard/elements — Add one or more elements
+// POST /api/whiteboard/elements — Add one or more elements.
+// Pipeline per element: validate type → image url → defaults + size estimate
+// (BEFORE layout/pct/clamp so real sizes drive them) → parent frame → pct →
+// layout (per frame group) → anchor validation → clamp → id → zIndex.
+// The response echoes the FINAL geometry with every adjustment named.
 app.post('/api/whiteboard/elements', (req, res) => {
   try {
-    const { elements, coordMode, layout } = req.body;
+    const { elements, coordMode, layout } = req.body || {};
     if (!Array.isArray(elements) || elements.length === 0) {
       return res.status(400).json({ error: 'elements must be a non-empty array' });
     }
-
-    // Auto-layout or percentage coordinate conversion
-    if (layout && whiteboardViewport) {
-      applyWhiteboardLayout(elements, layout, whiteboardViewport);
-    } else if (coordMode === 'pct' && whiteboardViewport) {
-      const xOff = whiteboardViewport.xOffset || 0;
-      const yOff = whiteboardViewport.yOffset || 0;
-      for (const el of elements) {
-        if (el.x != null) el.x = Math.round(xOff + (el.x / 100) * whiteboardViewport.width);
-        if (el.y != null) el.y = Math.round(yOff + (el.y / 100) * whiteboardViewport.height);
-        if (el.width != null) el.width = Math.round((el.width / 100) * whiteboardViewport.width);
-        if (el.height != null) el.height = Math.round((el.height / 100) * whiteboardViewport.height);
-      }
-    }
+    if (elements.length > 100) return res.status(400).json({ error: 'at most 100 elements per call' });
 
     const wb = loadWhiteboard();
+    const viewport = getWhiteboardViewport();
+    const usable = wbUsableRect(viewport);
+    const staged = [];   // { el, reasons, frame, frameKey, requestedId }
+    const errors = [];
+    const lookupAll = (id) => wb.elements.find(e => e.id === id) || staged.find(s => s.el.id === id)?.el;
 
-    const added = [];
-    for (const el of elements) {
-      // Resolve image URL to base64 dataUrl (for MCP image type)
-      if (el.type === 'image' && el.url && !el.dataUrl) {
-        try {
-          const filePath = join(__dirname, el.url.replace(/^\//, ''));
-          if (existsSync(filePath)) {
-            const buf = readFileSync(filePath);
-            const ext = extname(filePath).toLowerCase();
-            const mime = ext === '.svg' ? 'image/svg+xml' : ext === '.png' ? 'image/png' : 'image/jpeg';
-            el.dataUrl = `data:${mime};base64,${buf.toString('base64')}`;
-          }
-        } catch { /* ignore — element will just have no dataUrl */ }
+    elements.forEach((raw, index) => {
+      if (!raw || typeof raw !== 'object' || !WB_ELEMENT_TYPES.has(raw.type)) {
+        errors.push({ index, type: raw?.type, error: 'type:invalid' });
+        return;
       }
-      // Apply section defaults when not specified
-      if (el.type === 'section' && el.sectionType) {
-        const SEC_DEFAULTS = {
-          navbar: { w: 960, h: 56, color: '#64748b', label: 'Navbar' },
-          hero: { w: 960, h: 340, color: '#6366f1', label: 'Hero' },
-          sidebar: { w: 260, h: 400, color: '#475569', label: 'Sidebar' },
-          content: { w: 640, h: 360, color: '#737373', label: 'Content' },
-          footer: { w: 960, h: 100, color: '#6b7280', label: 'Footer' },
-          card: { w: 260, h: 180, color: '#14b8a6', label: 'Card' },
-          form: { w: 380, h: 280, color: '#f59e0b', label: 'Form' },
-          'image-placeholder': { w: 280, h: 180, color: '#a855f7', label: 'Image' },
-          button: { w: 140, h: 42, color: '#22c55e', label: 'Button' },
-          'text-block': { w: 380, h: 90, color: '#e2e8f0', label: 'Text Block' },
-          grid: { w: 640, h: 320, color: '#06b6d4', label: 'Grid' },
-          modal: { w: 440, h: 300, color: '#f43f5e', label: 'Modal' },
-        };
-        const def = SEC_DEFAULTS[el.sectionType];
-        if (def) {
-          if (!el.width) el.width = def.w;
-          if (!el.height) el.height = def.h;
-          if (!el.color) el.color = def.color;
-          if (!el.label) el.label = def.label;
-        }
+      const el = { ...raw };
+      const reasons = [];
+      const parentId = el.parent;
+      delete el.parent;
+      delete el.coordMode;
+
+      if (el.type === 'image' && el.url && !el.dataUrl) wbResolveImageUrl(el, reasons);
+      if (el.type === 'image' && !(el.width > 0 && el.height > 0)) reasons.push('image:no-size');
+      reasons.push(...wbEnsureElementGeometry(el).filter(r => r !== 'image:no-size'));
+
+      let frame = usable;
+      let frameKey = 'viewport';
+      if (parentId != null && parentId !== '') {
+        const r = wbSectionFrame(String(parentId), lookupAll);
+        if (r.error) { errors.push({ index, type: el.type, error: `${r.error} "${parentId}"` }); return; }
+        frame = r.frame;
+        frameKey = r.parent.id;
+        reasons.push(`parent:${r.parent.id}`);
       }
-      // Clamp elements to stay within the usable viewport
-      if (whiteboardViewport && el.x != null && el.y != null) {
-        const vpW = whiteboardViewport.width;
-        const vpH = whiteboardViewport.height;
-        const xOff = whiteboardViewport.xOffset || 0;
-        const yOff = whiteboardViewport.yOffset || 0;
-        const elW = el.width || 0;
-        const elH = el.height || 0;
-        // Don't let elements overflow right/bottom edges
-        if (el.x + elW > vpW + xOff) el.x = Math.max(xOff, vpW + xOff - elW);
-        if (el.y + elH > vpH + yOff) el.y = Math.max(yOff, vpH + yOff - elH);
-        // Don't let elements go under toolbar or above navbar
-        if (el.x < xOff) el.x = xOff;
-        if (el.y < yOff) el.y = yOff;
+      if (coordMode === 'pct') { wbConvertPctInPlace(el, frame, { pointsToo: true }); reasons.push('pct'); }
+      else if (frameKey !== 'viewport') wbOffsetByFrame(el, frame);   // px relative to the parent section
+
+      if (el.type === 'arrow' || el.type === 'pen') {
+        if (!Array.isArray(el.points) || el.points.length < 2) { errors.push({ index, type: el.type, error: 'points:min-2' }); return; }
+        el.points = el.points.map(p => [Number(p[0]) || 0, Number(p[1]) || 0]);
       }
-      if (!el.id) el.id = 'wb-' + Date.now() + '-' + randomBytes(2).toString('hex').slice(0, 3);
-      el.zIndex = wb.nextZIndex++;
-      wb.elements.push(el);
-      added.push(el);
+      wbValidateAnchors(el, lookupAll, reasons, null);
+
+      let requestedId;
+      if (el.id != null && el.id !== '') {
+        el.id = String(el.id);
+        if (lookupAll(el.id)) { requestedId = el.id; el.id = wbNewId(); reasons.push('id:regenerated'); }
+      } else {
+        el.id = wbNewId();
+      }
+      staged.push({ el, reasons, frame, frameKey, requestedId });
+    });
+
+    // Layout per frame group, with real sizes (defaults already applied)
+    if (layout && staged.length) {
+      const groups = new Map();
+      for (const s of staged) {
+        if (!groups.has(s.frameKey)) groups.set(s.frameKey, []);
+        groups.get(s.frameKey).push(s);
+      }
+      for (const group of groups.values()) {
+        applyWhiteboardLayout(group.map(s => s.el), layout, group[0].frame);
+        for (const s of group) s.reasons.push(`layout:${layout}`);
+      }
     }
 
-    saveWhiteboard(wb);
-    broadcastToWhiteboard({ type: 'add', elements: added });
+    const added = [];
+    for (const s of staged) {
+      wbClampElement(s.el, s.frame, s.reasons, lookupAll);
+      s.el.zIndex = wb.nextZIndex++;
+      wb.elements.push(s.el);
+      const summary = wbGeometrySummary(s.el, lookupAll);
+      if (s.requestedId) summary.requestedId = s.requestedId;
+      summary.adjusted = s.reasons;
+      summary.warnings = [];
+      added.push(summary);
+    }
 
-    res.json({ ok: true, added: added.map(e => ({ id: e.id, type: e.type, zIndex: e.zIndex })) });
+    if (!added.length) return res.status(400).json({ error: 'No elements could be added', errors });
+
+    saveWhiteboard(wb);
+    broadcastToWhiteboard({ type: 'add', elements: staged.map(s => s.el) });
+
+    res.json({ ok: true, viewport, connection: getWhiteboardConnection(), added, errors });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// PUT /api/whiteboard/elements/:id — Update an element
+// POST /api/whiteboard/elements/batch — Several update/remove ops atomically:
+// one save, one broadcast, per-op results (a missing id fails only that op).
+app.post('/api/whiteboard/elements/batch', (req, res) => {
+  try {
+    const { ops, coordMode } = req.body || {};
+    if (!Array.isArray(ops) || ops.length === 0) return res.status(400).json({ error: 'ops must be a non-empty array' });
+    if (ops.length > 200) return res.status(400).json({ error: 'at most 200 ops per call' });
+    const wb = loadWhiteboard();
+    const { results, broadcastOps } = applyWhiteboardOps(wb, ops, { coordMode });
+    if (broadcastOps.length) {
+      saveWhiteboard(wb);
+      broadcastWhiteboardOps(broadcastOps);
+    }
+    res.json({ ok: true, viewport: getWhiteboardViewport(), connection: getWhiteboardConnection(), results, broadcast: { ops: broadcastOps.length } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/whiteboard/elements/:id — Update an element (same engine as batch)
 app.put('/api/whiteboard/elements/:id', (req, res) => {
   try {
     const { id } = req.params;
-    const { updates, coordMode } = req.body.updates ? req.body : { updates: req.body, coordMode: req.body.coordMode };
-
-    // Percentage coordinate conversion for updates
-    if (coordMode === 'pct' && whiteboardViewport) {
-      const xOff = whiteboardViewport.xOffset || 0;
-      const yOff = whiteboardViewport.yOffset || 0;
-      if (updates.x != null) updates.x = Math.round(xOff + (updates.x / 100) * whiteboardViewport.width);
-      if (updates.y != null) updates.y = Math.round(yOff + (updates.y / 100) * whiteboardViewport.height);
-      if (updates.width != null) updates.width = Math.round((updates.width / 100) * whiteboardViewport.width);
-      if (updates.height != null) updates.height = Math.round((updates.height / 100) * whiteboardViewport.height);
-    }
-
+    const body = req.body || {};
+    const { updates, coordMode, parent } = body.updates
+      ? body
+      : { updates: body, coordMode: body.coordMode, parent: body.parent };
     const wb = loadWhiteboard();
-    if (!wb.elements.length) return res.status(404).json({ error: 'Whiteboard is empty' });
-
-    const idx = wb.elements.findIndex(e => e.id === id);
-    if (idx === -1) return res.status(404).json({ error: `Element ${id} not found` });
-
-    const el = wb.elements[idx];
-    for (const [key, value] of Object.entries(updates)) {
-      if (key === 'id' || key === 'type' || key === 'coordMode') continue;
-      el[key] = value;
+    const { results, broadcastOps } = applyWhiteboardOps(wb, [{ op: 'update', id, updates, parent }], { coordMode });
+    const r = results[0];
+    if (!r.ok) {
+      if (r.error === 'not found') return res.status(404).json({ error: `Element ${id} not found` });
+      return res.status(400).json({ error: r.error });
     }
-
     saveWhiteboard(wb);
-    broadcastToWhiteboard({ type: 'update', id, updates });
-
-    res.json({ ok: true, element: el });
+    broadcastWhiteboardOps(broadcastOps);
+    res.json({ ok: true, element: wb.elements.find(e => e.id === id), geometry: r.element, adjusted: r.adjusted, warnings: r.warnings });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// DELETE /api/whiteboard/elements/:id — Remove an element
+// DELETE /api/whiteboard/elements/:id — Remove an element (arrows anchored to
+// it are detached and parked on its centre; reported as `cascade`)
 app.delete('/api/whiteboard/elements/:id', (req, res) => {
   try {
     const { id } = req.params;
     const wb = loadWhiteboard();
-    if (!wb.elements.length) return res.status(404).json({ error: 'Whiteboard is empty' });
-
-    const idx = wb.elements.findIndex(e => e.id === id);
-    if (idx === -1) return res.status(404).json({ error: `Element ${id} not found` });
-
-    const removed = wb.elements.splice(idx, 1)[0];
-
-    // Detach arrows anchored to this element
-    for (const a of wb.elements) {
-      if (a.type !== 'arrow') continue;
-      if (a.startAnchor === id) a.startAnchor = null;
-      if (a.endAnchor === id) a.endAnchor = null;
-    }
-
+    const { results, broadcastOps } = applyWhiteboardOps(wb, [{ op: 'remove', id }]);
+    const r = results[0];
+    if (!r.ok) return res.status(404).json({ error: `Element ${id} not found` });
     saveWhiteboard(wb);
-    broadcastToWhiteboard({ type: 'remove', id });
-
-    res.json({ ok: true, removed: { id: removed.id, type: removed.type } });
+    broadcastWhiteboardOps(broadcastOps);
+    res.json({ ok: true, removed: { id, type: r.type }, cascade: r.cascade });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -13139,25 +11478,49 @@ app.post('/api/whiteboard/clear', (req, res) => {
   }
 });
 
-// GET /api/whiteboard/screenshot — Request screenshot from connected browser
+// GET /api/whiteboard/screenshot — Ask the primary (focus-active) browser
+// window for a re-render. ?crop=usable crops to the usable viewport. The
+// response carries the coordinate mapping so callers can turn image pixels
+// back into canvas coordinates.
 app.get('/api/whiteboard/screenshot', async (req, res) => {
-  if (whiteboardClients.size === 0) {
+  const target = getPrimaryWhiteboardClient();
+  const anyOpen = target || [...whiteboardClients].some(c => c.readyState === 1);
+  if (!anyOpen) {
     return res.status(503).json({ error: 'No browser connected to whiteboard. Open the Neural Interface and enter Focus mode.' });
   }
 
   const requestId = randomBytes(8).toString('hex');
+  const crop = req.query.crop === 'usable' ? 'usable' : 'full';
   try {
-    const data = await new Promise((resolve, reject) => {
+    const msg = await new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         whiteboardPendingScreenshots.delete(requestId);
-        reject(new Error('Screenshot timed out after 10s'));
-      }, 10000);
+        reject(new Error('Screenshot timed out after 12s'));
+      }, 12000);
 
       whiteboardPendingScreenshots.set(requestId, { resolve, reject, timer });
-      broadcastToWhiteboard({ type: 'screenshot:request', requestId });
+      const payload = { type: 'screenshot:request', requestId, crop };
+      if (target) target.send(JSON.stringify(payload));
+      else broadcastToWhiteboard(payload);
     });
 
-    res.json({ ok: true, data }); // data is base64 JPEG
+    const from = msg.from || {};
+    const vp = from.viewport || getWhiteboardViewport();
+    const hasMeta = Number.isFinite(msg.width) && Number.isFinite(msg.height);
+    res.json({
+      ok: true,
+      data: msg.data, // base64 JPEG
+      width: hasMeta ? msg.width : vp.width + (vp.xOffset || 0),
+      height: hasMeta ? msg.height : vp.height + (vp.yOffset || 0),
+      scale: hasMeta && Number.isFinite(msg.scale) ? msg.scale : 1,
+      xOffset: Number.isFinite(msg.xOffset) ? msg.xOffset : (vp.xOffset || 0),
+      yOffset: Number.isFinite(msg.yOffset) ? msg.yOffset : (vp.yOffset || 0),
+      crop: msg.crop || 'full',
+      viewport: vp,
+      clientId: from.clientId || null,
+      elements: loadWhiteboard().elements.length,
+      metadataSource: hasMeta ? 'client' : 'derived',
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -13165,232 +11528,18 @@ app.get('/api/whiteboard/screenshot', async (req, res) => {
 
 
 // ══════════════════════════════════════════════════
-// STYLE GUIDE — per-project visual identity + DESIGN.md
+// STYLE GUIDE — per-project brand and design system
 // ══════════════════════════════════════════════════
 
-const STYLE_GUIDES_DIR = resolve(DATA_HOME, 'data', 'style-guides');
-const STYLE_GUIDES_ASSETS_DIR = resolve(STYLE_GUIDES_DIR, 'assets');
-
-function ensureStyleGuidesDirs() {
-  if (!existsSync(STYLE_GUIDES_DIR)) mkdirSync(STYLE_GUIDES_DIR, { recursive: true });
-  if (!existsSync(STYLE_GUIDES_ASSETS_DIR)) mkdirSync(STYLE_GUIDES_ASSETS_DIR, { recursive: true });
-}
-
-function styleGuideHash(projectPath) {
-  return createHash('sha1').update(resolve(projectPath)).digest('hex').slice(0, 16);
-}
-
-function styleGuideJsonPath(projectPath) {
-  return resolve(STYLE_GUIDES_DIR, styleGuideHash(projectPath) + '.json');
-}
-
-function styleGuideAssetsDir(projectPath) {
-  return resolve(STYLE_GUIDES_ASSETS_DIR, styleGuideHash(projectPath));
-}
-
-function resolveRegisteredProject(projectPath) {
-  if (!projectPath) return null;
-  const normalized = resolve(projectPath);
-  const registered = loadHookProjects();
-  return registered.find(p => resolve(p.path) === normalized) || null;
-}
-
-function loadStyleGuide(projectPath) {
-  const file = styleGuideJsonPath(projectPath);
-  if (!existsSync(file)) return defaultStyleGuide(resolve(projectPath));
-  try {
-    const parsed = JSON.parse(readFileSync(file, 'utf-8'));
-    parsed.projectPath = resolve(projectPath);
-    return parsed;
-  } catch {
-    return defaultStyleGuide(resolve(projectPath));
-  }
-}
-
-function writeStyleGuideArtifacts(projectPath, config) {
-  ensureStyleGuidesDirs();
-  config.projectPath = resolve(projectPath);
-  config.updatedAt = new Date().toISOString();
-
-  // 1. Write per-project JSON
-  writeFileSync(styleGuideJsonPath(projectPath), JSON.stringify(config, null, 2) + '\n', 'utf-8');
-
-  // 2. Regenerate DESIGN.md in the project root
-  const designPath = resolve(projectPath, 'DESIGN.md');
-  writeFileSync(designPath, renderDesignMd(config), 'utf-8');
-
-  // 3. Mirror logo files into <projectRoot>/.synabun/style-guide/
-  const variants = Array.isArray(config.logo?.variants) ? config.logo.variants : [];
-  if (variants.length > 0) {
-    const projectLogoDir = resolve(projectPath, STYLE_GUIDE_LOGO_DIR);
-    if (!existsSync(projectLogoDir)) mkdirSync(projectLogoDir, { recursive: true });
-    const srcDir = styleGuideAssetsDir(projectPath);
-    for (const v of variants) {
-      if (!v.file) continue;
-      const src = resolve(srcDir, v.file);
-      const dst = resolve(projectLogoDir, v.file);
-      if (existsSync(src)) {
-        try { copyFileSync(src, dst); }
-        catch (err) { console.error('[style-guide] logo mirror failed:', err.message); }
-      }
-    }
-  }
-
-  return { jsonPath: styleGuideJsonPath(projectPath), designPath };
-}
-
-// GET /api/style-guide?projectPath=... — Load config + rendered preview
-app.get('/api/style-guide', (req, res) => {
-  try {
-    const projectPath = req.query.projectPath;
-    if (!projectPath) return res.status(400).json({ error: 'Missing projectPath' });
-    const project = resolveRegisteredProject(projectPath);
-    if (!project) return res.status(403).json({ error: 'Project not registered' });
-
-    const config = loadStyleGuide(project.path);
-    res.json({
-      ok: true,
-      config,
-      designMd: renderDesignMd(config),
-      hasDesignFile: existsSync(resolve(project.path, 'DESIGN.md')),
-      assetsHash: styleGuideHash(project.path),
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+// /api/style-guide/* — the guide, DESIGN.md and the token files it writes, imports,
+// presets, history and agent proposals. The logic is lib/style-guide/ (docs/style-guide.md);
+// the routes are its api.js. A path inside a registered project resolves to that project.
+const styleGuideStore = createStyleGuideStore({
+  dataHome: DATA_HOME,
+  projects: () => loadHookProjects(),
+  log: (tag, message) => console.warn(`[${tag}] ${message}`),
 });
-
-// PUT /api/style-guide — Save config (writes JSON + DESIGN.md)
-app.put('/api/style-guide', (req, res) => {
-  try {
-    const { projectPath, config } = req.body || {};
-    if (!projectPath || !config) return res.status(400).json({ error: 'Missing projectPath or config' });
-    const project = resolveRegisteredProject(projectPath);
-    if (!project) return res.status(403).json({ error: 'Project not registered' });
-
-    const { designPath } = writeStyleGuideArtifacts(project.path, config);
-    const fresh = loadStyleGuide(project.path);
-    res.json({
-      ok: true,
-      config: fresh,
-      designMd: renderDesignMd(fresh),
-      designPath,
-      assetsHash: styleGuideHash(project.path),
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// GET /api/style-guide/preview-md?projectPath=... — Rendered DESIGN.md without writing
-app.get('/api/style-guide/preview-md', (req, res) => {
-  try {
-    const projectPath = req.query.projectPath;
-    if (!projectPath) return res.status(400).json({ error: 'Missing projectPath' });
-    const project = resolveRegisteredProject(projectPath);
-    if (!project) return res.status(403).json({ error: 'Project not registered' });
-
-    const config = loadStyleGuide(project.path);
-    res.type('text/markdown').send(renderDesignMd(config));
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// POST /api/style-guide/logo?projectPath=...&variantId=...&name=...&bg=... — Upload a logo image
-app.post('/api/style-guide/logo',
-  express.raw({ type: ['image/png', 'image/svg+xml', 'image/jpeg', 'image/webp'], limit: '4mb' }),
-  (req, res) => {
-    try {
-      const { projectPath, variantId, name, bg } = req.query;
-      if (!projectPath) return res.status(400).json({ error: 'Missing projectPath' });
-      if (!req.body || req.body.length === 0) return res.status(400).json({ error: 'No image data received' });
-      const project = resolveRegisteredProject(projectPath);
-      if (!project) return res.status(403).json({ error: 'Project not registered' });
-
-      ensureStyleGuidesDirs();
-      const dir = styleGuideAssetsDir(project.path);
-      if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-
-      const contentType = req.headers['content-type'] || 'image/png';
-      const extMap = { 'image/png': '.png', 'image/svg+xml': '.svg', 'image/jpeg': '.jpg', 'image/webp': '.webp' };
-      const ext = extMap[contentType] || '.png';
-      const id = variantId || ('logo-' + Date.now().toString(36) + randomBytes(2).toString('hex'));
-      const filename = id + ext;
-      writeFileSync(resolve(dir, filename), req.body);
-
-      const config = loadStyleGuide(project.path);
-      if (!config.logo) config.logo = { variants: [], iconLibrary: 'lucide', imageryNotes: '' };
-      if (!Array.isArray(config.logo.variants)) config.logo.variants = [];
-
-      // Replace existing variant with same id, otherwise append
-      const idx = config.logo.variants.findIndex(v => v.id === id);
-      const variant = {
-        id,
-        name: name || (idx >= 0 ? config.logo.variants[idx].name : 'Variant'),
-        bg: bg || (idx >= 0 ? config.logo.variants[idx].bg : 'primary'),
-        file: filename,
-      };
-      if (idx >= 0) {
-        // Remove stale file if extension changed
-        const oldFile = config.logo.variants[idx].file;
-        if (oldFile && oldFile !== filename) {
-          try { unlinkSync(resolve(dir, oldFile)); } catch { /* ignore */ }
-        }
-        config.logo.variants[idx] = variant;
-      } else {
-        config.logo.variants.push(variant);
-      }
-
-      writeStyleGuideArtifacts(project.path, config);
-      res.json({ ok: true, variant, config });
-    } catch (err) {
-      res.status(500).json({ error: err.message });
-    }
-  }
-);
-
-// DELETE /api/style-guide/logo/:variantId?projectPath=... — Remove a logo variant
-app.delete('/api/style-guide/logo/:variantId', (req, res) => {
-  try {
-    const { variantId } = req.params;
-    const projectPath = req.query.projectPath;
-    if (!projectPath) return res.status(400).json({ error: 'Missing projectPath' });
-    const project = resolveRegisteredProject(projectPath);
-    if (!project) return res.status(403).json({ error: 'Project not registered' });
-
-    const config = loadStyleGuide(project.path);
-    const variants = Array.isArray(config.logo?.variants) ? config.logo.variants : [];
-    const idx = variants.findIndex(v => v.id === variantId);
-    if (idx === -1) return res.status(404).json({ error: 'Variant not found' });
-
-    const removed = variants.splice(idx, 1)[0];
-    if (removed.file) {
-      try { unlinkSync(resolve(styleGuideAssetsDir(project.path), removed.file)); } catch { /* ignore */ }
-      try { unlinkSync(resolve(project.path, STYLE_GUIDE_LOGO_DIR, removed.file)); } catch { /* ignore */ }
-    }
-    config.logo.variants = variants;
-    writeStyleGuideArtifacts(project.path, config);
-    res.json({ ok: true, config });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// GET /api/style-guide/assets/:hash/:file — Serve an uploaded logo file
-app.get('/api/style-guide/assets/:hash/:file', (req, res) => {
-  try {
-    const { hash, file } = req.params;
-    if (!/^[a-f0-9]{16}$/.test(hash)) return res.status(400).json({ error: 'Bad hash' });
-    if (/[\\/]/.test(file) || file.includes('..')) return res.status(400).json({ error: 'Bad filename' });
-    const full = resolve(STYLE_GUIDES_ASSETS_DIR, hash, file);
-    if (!full.startsWith(STYLE_GUIDES_ASSETS_DIR + sep)) return res.status(403).json({ error: 'Forbidden' });
-    if (!existsSync(full)) return res.status(404).json({ error: 'Not found' });
-    res.sendFile(full);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+registerStyleGuideRoutes(app, { store: styleGuideStore, log: (tag, message) => console.error(`[${tag}] ${message}`) });
 
 
 // ══════════════════════════════════════════════════
@@ -13456,10 +11605,11 @@ app.post('/api/games/tictactoe/start', (req, res) => {
     // Fresh whiteboard for the board — persisted to its own store, not ui-state.
     const wb = { elements: [], nextZIndex: 1 };
 
-    // Calculate centered board position
-    const vp = whiteboardViewport || { width: 1920, height: 937 };
-    const boardX = Math.round((vp.width - TTT_BOARD_SIZE) / 2);
-    const boardY = Math.round((vp.height - TTT_BOARD_SIZE) / 2);
+    // Calculate centered board position (inside the usable viewport, past the
+    // tool rail / navbar offsets)
+    const vp = getWhiteboardViewport();
+    const boardX = Math.round((vp.xOffset || 0) + (vp.width - TTT_BOARD_SIZE) / 2);
+    const boardY = Math.round((vp.yOffset || 0) + (vp.height - TTT_BOARD_SIZE) / 2);
 
     // Build board elements
     const elements = [];
@@ -14106,6 +12256,57 @@ const LOOP_DIR = resolve(LOOP_DATA_DIR, 'loop');
 const LOOP_TEMPLATES_PATTERN = /^loop-templates.*\.json$/;
 const LOOP_SCHEDULES_PATTERN = /^loop-schedules.*\.json$/;
 
+function unknownAutomationContextMode(mode) {
+  return mode != null && mode !== '' && !['default', 'extended', '1m'].includes(mode);
+}
+
+async function codexAutomationModels(codexHome) {
+  const home = codexHome || CODEX_DEFAULT_HOME;
+  const cached = _codexModelListCache.get(home);
+  if (cached?.models.length && Date.now() - cached.at < CODEX_MODEL_LIST_CACHE_MS) return cached.models;
+  const models = mergeCodexModelContextCapabilities(
+    await queryCodexAppServerModels(home), readCodexRuntimeModelCatalog(home),
+  );
+  _codexModelListCache.set(home, { at: Date.now(), models });
+  return models;
+}
+
+async function resolveAutomationLaunchChoice(profile, model, contextMode, codexHome) {
+  const selection = normalizeAutomationSelection(profile, model, contextMode);
+  const mode = selection.contextMode || 'default';
+  if (profile === 'codex' && /[:\[\]]/.test(selection.model || '')) {
+    throw new Error(`Invalid Codex model ID: ${selection.model}. Choose a model from this account's list.`);
+  }
+  if (profile === 'claude-code' && /\[(?:extended|1m)\]$/i.test(selection.model || '')) {
+    throw new Error(`Invalid Claude model ID: ${selection.model}. Choose Context separately.`);
+  }
+  if (!validAutomationContextMode(profile, mode)) {
+    throw new Error(`Context ${mode} is unavailable for ${profile}.`);
+  }
+  if (mode !== 'default' && !selection.model) {
+    throw new Error(`Choose a model before selecting ${mode} context.`);
+  }
+  if (profile === 'codex' && mode === 'extended') {
+    let models;
+    try { models = await codexAutomationModels(codexHome); }
+    catch (error) { throw new Error(`Could not verify Codex extended context: ${error.message}`); }
+    const result = resolveCodexExtendedContext({ models, selectedModel: selection.model, contextMode: 'extended' });
+    if (!result.applied) {
+      throw new Error(`Extended context is unavailable for ${selection.model} on this Codex account (${result.reason}).`);
+    }
+    return { ...selection, contextMode: mode, modelContextWindow: result.requestedContextWindow };
+  }
+  if (profile === 'claude-code' && mode === '1m') {
+    const { source, models } = await getClaudeModelsForClient();
+    const variant = `${selection.model}[1m]`;
+    const base = models.find((entry) => entry?.id === selection.model);
+    if (source === 'fallback' || !(models.some((entry) => entry?.id === variant) || claudeAutomationSupportsOneMillion(base))) {
+      throw new Error(`1M context is unavailable for ${selection.model} in the installed Claude CLI.`);
+    }
+  }
+  return { ...selection, contextMode: mode, modelContextWindow: null };
+}
+
 function isLoopRuntimeAlive(loopState) {
   if (!loopState) return false;
   const runId = loopState.runId || loopState.terminalSessionId;
@@ -14184,7 +12385,10 @@ function readLoopTemplateFiles() {
 }
 
 function readLoopTemplates() {
-  return mergeLoopItemsById(readLoopTemplateFiles(), 'templates');
+  return mergeLoopItemsById(readLoopTemplateFiles(), 'templates').map((template) => {
+    normalizeAutomationRecord(template);
+    return template;
+  });
 }
 
 function templateStoragePathForName(name) {
@@ -14288,9 +12492,13 @@ app.get('/api/loop/templates', (req, res) => {
 
 // POST /api/loop/templates — create a template
 app.post('/api/loop/templates', (req, res) => {
-  const { name, description, task, context, iterations, maxMinutes, icon, category, usesBrowser, profile, model, effort, mcpProfile, folderId, codexAccountId } = req.body;
+  const { name, description, task, context, iterations, maxMinutes, icon, category, usesBrowser, profile, model, contextMode, effort, mcpProfile, folderId, codexAccountId } = req.body;
   if (!name?.trim() || !task?.trim()) {
     return res.status(400).json({ error: 'name and task are required' });
+  }
+  const selection = normalizeAutomationSelection(profile || 'claude-code', model, contextMode);
+  if (!validAutomationContextMode(profile || 'claude-code', selection.contextMode)) {
+    return res.status(400).json({ error: `Invalid context mode: ${selection.contextMode}` });
   }
   const templates = readLoopTemplates();
   const id = randomBytes(12).toString('hex');
@@ -14306,7 +12514,8 @@ app.post('/api/loop/templates', (req, res) => {
     icon: icon || '\u{1F504}',
     category: category || 'custom',
     profile: profile || null,
-    model: model || null,
+    model: selection.model,
+    contextMode: selection.contextMode || null,
     effort: effort || null,
     mcpProfile: mcpProfile || null,
     codexAccountId: codexAccountId || null,
@@ -14340,6 +12549,12 @@ app.post('/api/loop/templates/import', (req, res) => {
   const toImport = incoming || (single ? [single] : null);
   if (!toImport || !Array.isArray(toImport)) {
     return res.status(400).json({ error: 'Invalid import format: expected templates array or template object' });
+  }
+  for (const item of toImport) {
+    const selection = normalizeAutomationSelection(item?.profile || 'claude-code', item?.model, item?.contextMode);
+    if (!validAutomationContextMode(item?.profile || 'claude-code', selection.contextMode)) {
+      return res.status(400).json({ error: `Invalid context mode: ${selection.contextMode}` });
+    }
   }
 
   // Merge incoming folders first (match by name) so we can remap template folderIds.
@@ -14379,6 +12594,7 @@ app.post('/api/loop/templates/import', (req, res) => {
   let updated = 0;
   for (const t of toImport) {
     if (!t.name?.trim() || !t.task?.trim()) continue;
+    const selection = normalizeAutomationSelection(t.profile || 'claude-code', t.model, t.contextMode);
     const existingIdx = existing.findIndex(e => e.name === t.name);
     const template = {
       id: t.id || randomBytes(12).toString('hex'),
@@ -14392,7 +12608,8 @@ app.post('/api/loop/templates/import', (req, res) => {
       icon: t.icon || '\u{1F504}',
       category: t.category || 'custom',
       profile: t.profile || null,
-      model: t.model || null,
+      model: selection.model,
+      contextMode: selection.contextMode || null,
       effort: t.effort || null,
       mcpProfile: t.mcpProfile || null,
       folderId: folderIdMap.get(t.folderId) || t.folderId || null,
@@ -14417,7 +12634,12 @@ app.put('/api/loop/templates/:id', (req, res) => {
   const templates = readLoopTemplates();
   const idx = templates.findIndex(t => t.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Template not found' });
-  const { name, description, task, context, iterations, maxMinutes, icon, category, usesBrowser, profile, model, effort, mcpProfile, folderId, codexAccountId } = req.body;
+  const { name, description, task, context, iterations, maxMinutes, icon, category, usesBrowser, profile, model, contextMode, effort, mcpProfile, folderId, codexAccountId } = req.body;
+  const effectiveProfile = profile !== undefined ? (profile || 'claude-code') : (templates[idx].profile || 'claude-code');
+  const selection = normalizeAutomationSelection(effectiveProfile, model !== undefined ? model : templates[idx].model, contextMode !== undefined ? contextMode : templates[idx].contextMode);
+  if (!validAutomationContextMode(effectiveProfile, selection.contextMode)) {
+    return res.status(400).json({ error: `Invalid context mode: ${selection.contextMode}` });
+  }
   if (name !== undefined) templates[idx].name = name.trim();
   if (description !== undefined) templates[idx].description = description.trim();
   if (task !== undefined) templates[idx].task = task.trim();
@@ -14428,7 +12650,8 @@ app.put('/api/loop/templates/:id', (req, res) => {
   if (category !== undefined) templates[idx].category = category;
   if (usesBrowser !== undefined) templates[idx].usesBrowser = !!usesBrowser;
   if (profile !== undefined) templates[idx].profile = profile || null;
-  if (model !== undefined) templates[idx].model = model || null;
+  if (model !== undefined) templates[idx].model = selection.model;
+  if (contextMode !== undefined || model !== undefined) templates[idx].contextMode = selection.contextMode;
   if (effort !== undefined) templates[idx].effort = effort || null;
   if (mcpProfile !== undefined) templates[idx].mcpProfile = mcpProfile || null;
   if (codexAccountId !== undefined) templates[idx].codexAccountId = codexAccountId || null;
@@ -14795,7 +13018,7 @@ app.post('/api/sidepanel-runs/:runId/release', (req, res) => {
 app.post('/api/loop/launch', async (req, res) => {
   let pendingNativeBrowserCleanup = null;
   try {
-    const { task: rawTask, context, iterations, maxMinutes, usesBrowser, cwd, profile, model, effort, mcpProfile, codexAccountId, browserSessionId: requestedBrowserSessionId, sidepanelWindowId, sidepanelClaimToken } = req.body;
+    const { task: rawTask, context, iterations, maxMinutes, usesBrowser, cwd, profile, model: requestedModel, contextMode: requestedContextMode, effort, mcpProfile, codexAccountId, browserSessionId: requestedBrowserSessionId, sidepanelWindowId, sidepanelClaimToken } = req.body;
     if (!rawTask?.trim()) return res.status(400).json({ error: 'task is required' });
     // Resolve Facebook deal-link tokens against current fresh-release deals before the task is
     // stored, so the post links a real game page (/games/<slug>) — never the /deals listing.
@@ -14821,6 +13044,14 @@ app.post('/api/loop/launch', async (req, res) => {
     if (cliProfile === 'codex' && !codexAccount) {
       return res.status(400).json({ error: `Codex account not found: ${codexAccountId || 'default'}` });
     }
+    let launchChoice;
+    try {
+      launchChoice = await resolveAutomationLaunchChoice(
+        cliProfile, requestedModel, requestedContextMode, codexAccount?.home || CODEX_DEFAULT_HOME,
+      );
+    } catch (error) { return res.status(400).json({ error: error.message }); }
+    const model = launchChoice.model;
+    const contextMode = launchChoice.contextMode;
 
     // Log incoming launch request (terminalSessionId not yet generated — log to console only,
     // file logging starts after we mint the id below)
@@ -14899,6 +13130,8 @@ app.post('/api/loop/launch', async (req, res) => {
       browserTabId: browserTabId || null,
       profile: cliProfile,
       model: model || null,
+      contextMode,
+      modelContextWindow: launchChoice.modelContextWindow,
       effort: effort || null,
       mcpProfile: cliMcpProfile,
       codexAccountId: codexAccount?.id || null,
@@ -15322,6 +13555,8 @@ function loadScheduleStore() {
   for (const file of files) {
     if (file.path === LOOP_SCHEDULES_PATH) store.groups = file.groups;
   }
+  for (const group of store.groups) normalizeAutomationRecord(group);
+  for (const schedule of store.schedules) normalizeAutomationRecord(schedule);
   return store;
 }
 
@@ -15420,7 +13655,7 @@ function validateScheduleGroupId(groupId) {
 }
 
 function applyScheduleLaunchOverrides(schedule, source) {
-  const fields = ['profile', 'model', 'effort', 'mcpProfile', 'codexAccountId'];
+  const fields = ['profile', 'model', 'contextMode', 'effort', 'mcpProfile', 'codexAccountId'];
   for (const field of fields) {
     if (source[field] !== undefined) {
       if (source[field] === null || source[field] === '') delete schedule[field];
@@ -15431,6 +13666,7 @@ function applyScheduleLaunchOverrides(schedule, source) {
     if (source.usesBrowser === null) delete schedule.usesBrowser;
     else schedule.usesBrowser = !!source.usesBrowser;
   }
+  normalizeAutomationRecord(schedule);
 }
 
 function boundedScheduleNumber(value, fallback, min, max) {
@@ -15675,9 +13911,11 @@ async function launchScheduledLoop(schedule) {
     }
 
     const group = schedule.groupId ? loadScheduleGroups().find(g => g.id === schedule.groupId) : null;
-    const cliProfile    = schedule.profile    || group?.profile    || template.profile    || 'claude-code';
+    const launchOverrides = resolveAutomationOverrides(schedule, group, template);
+    const cliProfile = launchOverrides.profile;
     scheduledLaunchProfile = cliProfile;
-    const cliModel      = schedule.model      || group?.model      || template.model      || null;
+    const requestedModel = launchOverrides.model;
+    const requestedContextMode = launchOverrides.contextMode;
     const cliEffort     = schedule.effort     || group?.effort     || template.effort     || null;
     const nativeRuntime = isNativeLoopProfile(cliProfile);
     const configuredMcpProfile = schedule.mcpProfile || group?.mcpProfile || template.mcpProfile || null;
@@ -15687,11 +13925,16 @@ async function launchScheduledLoop(schedule) {
     if (cliMcpProfile && !isValidMcpProfileValue(cliMcpProfile)) {
       throw new Error(`Invalid MCP profile: ${cliMcpProfile}`);
     }
-    const cliCodexAccountId = schedule.codexAccountId || group?.codexAccountId || template.codexAccountId || 'default';
+    const cliCodexAccountId = launchOverrides.codexAccountId;
     const codexAccount = cliProfile === 'codex' ? findCodexAccount(cliCodexAccountId) : null;
     if (cliProfile === 'codex' && !codexAccount) {
       throw new Error(`Codex account not found: ${cliCodexAccountId}`);
     }
+    const launchChoice = await resolveAutomationLaunchChoice(
+      cliProfile, requestedModel, requestedContextMode, codexAccount?.home || CODEX_DEFAULT_HOME,
+    );
+    const cliModel = launchChoice.model;
+    const cliContextMode = launchChoice.contextMode;
     const scheduledUsesBrowser = schedule.usesBrowser !== undefined
       ? !!schedule.usesBrowser
       : group?.usesBrowser !== undefined
@@ -15765,8 +14008,8 @@ async function launchScheduledLoop(schedule) {
     // (accounts that blocked us). Deterministic and shared across all X schedules
     // for this account (the prior per-template memory recall was model-discretion
     // and namespaced, so the same post/author got hit by multiple schedules — a
-    // shadow-ban driver). Detection covers both @Crit_Pix (cp_* ids) and @SynabunAI
-    // (template.platform). Read-only; never blocks launch.
+    // shadow-ban driver). Detection covers templates by platform or MCP profile, plus
+    // legacy cp_* template ids. Read-only; never blocks launch.
     const isXAutomation = template.platform === 'twitter' || cliMcpProfile === 'twitter' || /^cp_/.test(schedule.templateId || '');
     if (isXAutomation) {
       try {
@@ -15822,6 +14065,50 @@ async function launchScheduledLoop(schedule) {
       }
     }
 
+    // Facebook lanes: every Facebook schedule group posts through one Page, one
+    // profile and one browser, so they share one per-day action budget.
+    // Same deterministic idea as X: counts from the ledger (memories + fb_post_log),
+    // ceilings from the ramp tier in code. This block is what replaced the old
+    // "no Page post in the previous 20 hours" rule, under which one automatic share
+    // could hold back every other lane. Read-only; never blocks launch.
+    // Every FB template carries mcpProfile "facebook".
+    // Lanes whose template name matches the pattern below always post. They are
+    // exempt from the shared FB budget block, and their templates carry no SHARED
+    // BUDGET text, so nothing in such a run stops for budget reasons.
+    const isFbDealsLane = /Facebook Deals/i.test(template.name || '');
+    const isFbAutomation = !isFbDealsLane && (
+      template.platform === 'facebook'
+      || (configuredMcpProfile && normalizeMcpProfileName(configuredMcpProfile) === 'facebook')
+      || /^(cpfb_|fbdeals_)/.test(schedule.templateId || ''));
+    if (isFbAutomation) {
+      try {
+        const tz = schedule.timezone || 'America/Sao_Paulo';
+        const nowLocal = getNowInTimezone(tz);
+        const msIntoDay = ((nowLocal.getHours() * 60 + nowLocal.getMinutes()) * 60 + nowLocal.getSeconds()) * 1000 + nowLocal.getMilliseconds();
+        const spent = getFbActionBudget({ sinceIso: new Date(Date.now() - msIntoDay).toISOString() });
+        const { tier, caps, source: tierSource } = getFbEngagementTier();
+        if (spent.error) {
+          loopLog(terminalSessionId, 'launch:budget', 'FB action budget read failed (continuing)', { err: spent.error });
+        } else {
+          const line = FB_ACTION_TYPES.map(t => `${t} ${spent[t]}/${caps[t]}`).join(' | ');
+          const exhausted = FB_ACTION_TYPES.filter(t => spent[t] >= caps[t]);
+          const budgetBlock = [
+            `=== TODAY'S FACEBOOK ACTION BUDGET (${tz} day so far) ===`,
+            line,
+            `Tier: ${tier}${tierSource === 'default' ? ' (no caps memory found — defaulted to the most conservative tier)' : ''}`,
+            exhausted.length
+              ? `CLOSED for the rest of today: ${exhausted.join(', ')}. Do NOT perform these, and do NOT substitute another action type to compensate.`
+              : null,
+            'These counters are authoritative and shared across every Facebook schedule. page_post counts the Page\'s own posts, group_post counts group submissions (visible or pending) from the fb_groups ledger, comment/invite/join count Page-identity actions. Stop the run when your own per-run cap or any ceiling above is reached, whichever comes first.',
+          ].filter(Boolean).join('\n');
+          context = context ? `${context}\n\n${budgetBlock}` : budgetBlock;
+          loopLog(terminalSessionId, 'launch:budget', 'injected FB action budget', { tier, tierSource, spent: spent.total, exhausted });
+        }
+      } catch (err) {
+        loopLog(terminalSessionId, 'launch:budget', 'FB budget injection failed (continuing)', { err: err.message });
+      }
+    }
+
     const pendingId = nativeRuntime ? terminalSessionId : 'pending-' + randomBytes(8).toString('hex');
     scheduledLaunchPendingId = pendingId;
     const loopState = {
@@ -15841,6 +14128,8 @@ async function launchScheduledLoop(schedule) {
       browserTabId: scheduledBrowserTabId || null,
       profile: cliProfile,
       model: cliModel,
+      contextMode: cliContextMode,
+      modelContextWindow: launchChoice.modelContextWindow,
       effort: cliEffort || null,
       mcpProfile: cliMcpProfile || null,
       codexAccountId: codexAccount?.id || null,
@@ -16445,6 +14734,7 @@ function stopScheduleEvaluator() {
 }
 
 // Boot: start schedule evaluator
+migrateAutomationContextFiles(LOOP_DATA_DIR);
 startScheduleEvaluator();
 
 // ── Quick Timer (standalone, no schedule needed) ──
@@ -16468,6 +14758,7 @@ function launchQuickTimer(timerId, templateId, context) {
     dayThemes: {},
     profile: timerData.profile || undefined,
     model: timerData.model || undefined,
+    contextMode: timerData.contextMode || undefined,
     effort: timerData.effort || undefined,
     mcpProfile: timerData.mcpProfile || undefined,
     codexAccountId: timerData.codexAccountId || undefined,
@@ -16484,9 +14775,9 @@ function launchQuickTimer(timerId, templateId, context) {
 }
 
 // POST /api/quick-timer — fire a template after N minutes (standalone, no schedule)
-app.post('/api/quick-timer', (req, res) => {
+app.post('/api/quick-timer', async (req, res) => {
   try {
-    const { templateId, minutes, context, profile, model, effort, mcpProfile, usesBrowser, codexAccountId } = req.body;
+    const { templateId, minutes, context, profile, model, contextMode, effort, mcpProfile, usesBrowser, codexAccountId } = req.body;
     const mins = Number(minutes);
     if (!templateId?.trim()) return res.status(400).json({ error: 'templateId is required' });
     if (!mins || mins < 1 || mins > 1440) return res.status(400).json({ error: 'minutes must be 1–1440' });
@@ -16498,7 +14789,10 @@ app.post('/api/quick-timer', (req, res) => {
     const timerId = randomBytes(8).toString('hex');
     const firesAt = new Date(Date.now() + mins * 60_000).toISOString();
     const timerProfile = profile || 'claude-code';
-    const timerModel = model || null;
+    const selection = normalizeAutomationSelection(timerProfile, model, contextMode);
+    if (!validAutomationContextMode(timerProfile, selection.contextMode)) return res.status(400).json({ error: `Invalid context mode: ${selection.contextMode}` });
+    const timerModel = selection.model;
+    const timerContextMode = selection.contextMode || 'default';
     const timerEffort = effort || null;
     const timerMcpProfile = timerProfile !== 'claude-code'
       ? normalizeMcpProfileName(mcpProfile || readActiveMcpProfile())
@@ -16507,6 +14801,10 @@ app.post('/api/quick-timer', (req, res) => {
       return res.status(400).json({ error: `Invalid MCP profile: ${timerMcpProfile}` });
     }
     const timerCodexAccountId = timerProfile === 'codex' ? (codexAccountId || 'default') : null;
+    const timerCodexAccount = timerProfile === 'codex' ? findCodexAccount(timerCodexAccountId) : null;
+    if (timerProfile === 'codex' && !timerCodexAccount) return res.status(400).json({ error: `Codex account not found: ${timerCodexAccountId}` });
+    try { await resolveAutomationLaunchChoice(timerProfile, timerModel, timerContextMode, timerCodexAccount?.home); }
+    catch (error) { return res.status(400).json({ error: error.message }); }
     const timerUsesBrowser = usesBrowser !== undefined ? !!usesBrowser : !!template.usesBrowser;
 
     const timeoutId = setTimeout(() => {
@@ -16514,10 +14812,10 @@ app.post('/api/quick-timer', (req, res) => {
       _quickTimers.delete(timerId);
     }, mins * 60_000);
 
-    _quickTimers.set(timerId, { timeoutId, templateId, templateName: template.name, firesAt, minutes: mins, profile: timerProfile, model: timerModel, effort: timerEffort, mcpProfile: timerMcpProfile, codexAccountId: timerCodexAccountId, usesBrowser: timerUsesBrowser, createdAt: new Date().toISOString() });
+    _quickTimers.set(timerId, { timeoutId, templateId, templateName: template.name, firesAt, minutes: mins, profile: timerProfile, model: timerModel, contextMode: timerContextMode, effort: timerEffort, mcpProfile: timerMcpProfile, codexAccountId: timerCodexAccountId, usesBrowser: timerUsesBrowser, createdAt: new Date().toISOString() });
     console.log(`[quick-timer] Set: "${template.name}" fires in ${mins}m at ${firesAt} (${timerProfile}/${timerModel || 'default'}${timerEffort ? '/' + timerEffort : ''}${timerMcpProfile ? '/mcp:' + timerMcpProfile : ''})`);
-    broadcastSync({ type: 'quick-timer:set', timerId, templateName: template.name, firesAt, minutes: mins, profile: timerProfile, model: timerModel, effort: timerEffort, mcpProfile: timerMcpProfile, usesBrowser: timerUsesBrowser });
-    res.json({ ok: true, timerId, templateName: template.name, firesAt, minutes: mins, profile: timerProfile, model: timerModel, effort: timerEffort, mcpProfile: timerMcpProfile, usesBrowser: timerUsesBrowser });
+    broadcastSync({ type: 'quick-timer:set', timerId, templateName: template.name, firesAt, minutes: mins, profile: timerProfile, model: timerModel, contextMode: timerContextMode, effort: timerEffort, mcpProfile: timerMcpProfile, usesBrowser: timerUsesBrowser });
+    res.json({ ok: true, timerId, templateName: template.name, firesAt, minutes: mins, profile: timerProfile, model: timerModel, contextMode: timerContextMode, effort: timerEffort, mcpProfile: timerMcpProfile, usesBrowser: timerUsesBrowser });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -16527,7 +14825,7 @@ app.post('/api/quick-timer', (req, res) => {
 app.get('/api/quick-timers', (_req, res) => {
   const timers = [];
   for (const [id, t] of _quickTimers) {
-    timers.push({ id, templateId: t.templateId, templateName: t.templateName, firesAt: t.firesAt, minutes: t.minutes, profile: t.profile, model: t.model, effort: t.effort, mcpProfile: t.mcpProfile, usesBrowser: t.usesBrowser, createdAt: t.createdAt });
+    timers.push({ id, templateId: t.templateId, templateName: t.templateName, firesAt: t.firesAt, minutes: t.minutes, profile: t.profile, model: t.model, contextMode: t.contextMode, effort: t.effort, mcpProfile: t.mcpProfile, usesBrowser: t.usesBrowser, createdAt: t.createdAt });
   }
   res.json(timers);
 });
@@ -16544,10 +14842,10 @@ app.delete('/api/quick-timers/:id', (req, res) => {
 });
 
 // POST /api/quick-timer/now — fire a template immediately (same pipeline as scheduled, for debugging)
-app.post('/api/quick-timer/now', (req, res) => {
+app.post('/api/quick-timer/now', async (req, res) => {
   try {
     const {
-      templateId, profile, model, effort, mcpProfile, usesBrowser, codexAccountId,
+      templateId, profile, model, contextMode, effort, mcpProfile, usesBrowser, codexAccountId,
       sidepanelWindowId, sidepanelClaimToken,
     } = req.body;
     if (!templateId?.trim()) return res.status(400).json({ error: 'templateId is required' });
@@ -16557,7 +14855,10 @@ app.post('/api/quick-timer/now', (req, res) => {
     if (!template) return res.status(400).json({ error: 'Template not found' });
 
     const timerProfile = profile || 'claude-code';
-    const timerModel = model || null;
+    const selection = normalizeAutomationSelection(timerProfile, model, contextMode);
+    if (!validAutomationContextMode(timerProfile, selection.contextMode)) return res.status(400).json({ error: `Invalid context mode: ${selection.contextMode}` });
+    const timerModel = selection.model;
+    const timerContextMode = selection.contextMode || 'default';
     const timerEffort = effort || null;
     const timerMcpProfile = timerProfile !== 'claude-code'
       ? normalizeMcpProfileName(mcpProfile || readActiveMcpProfile())
@@ -16566,6 +14867,10 @@ app.post('/api/quick-timer/now', (req, res) => {
       return res.status(400).json({ error: `Invalid MCP profile: ${timerMcpProfile}` });
     }
     const timerCodexAccountId = timerProfile === 'codex' ? (codexAccountId || 'default') : null;
+    const timerCodexAccount = timerProfile === 'codex' ? findCodexAccount(timerCodexAccountId) : null;
+    if (timerProfile === 'codex' && !timerCodexAccount) return res.status(400).json({ error: `Codex account not found: ${timerCodexAccountId}` });
+    try { await resolveAutomationLaunchChoice(timerProfile, timerModel, timerContextMode, timerCodexAccount?.home); }
+    catch (error) { return res.status(400).json({ error: error.message }); }
     const timerUsesBrowser = usesBrowser !== undefined ? !!usesBrowser : !!template.usesBrowser;
 
     const fakeSchedule = {
@@ -16576,6 +14881,7 @@ app.post('/api/quick-timer/now', (req, res) => {
       dayThemes: {},
       profile: timerProfile,
       model: timerModel,
+      contextMode: timerContextMode,
       effort: timerEffort,
       mcpProfile: timerMcpProfile,
       codexAccountId: timerCodexAccountId || undefined,
@@ -16591,8 +14897,8 @@ app.post('/api/quick-timer/now', (req, res) => {
     _scheduleQueue.push(fakeSchedule);
     processScheduleQueue();
 
-    broadcastSync({ type: 'quick-timer:fired-now', templateName: template.name, profile: timerProfile, model: timerModel, effort: timerEffort, mcpProfile: timerMcpProfile });
-    res.json({ ok: true, templateName: template.name, profile: timerProfile, model: timerModel, effort: timerEffort, mcpProfile: timerMcpProfile, usesBrowser: timerUsesBrowser });
+    broadcastSync({ type: 'quick-timer:fired-now', templateName: template.name, profile: timerProfile, model: timerModel, contextMode: timerContextMode, effort: timerEffort, mcpProfile: timerMcpProfile });
+    res.json({ ok: true, templateName: template.name, profile: timerProfile, model: timerModel, contextMode: timerContextMode, effort: timerEffort, mcpProfile: timerMcpProfile, usesBrowser: timerUsesBrowser });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -16606,7 +14912,8 @@ app.get('/api/schedule-groups', (_req, res) => {
 
 app.post('/api/schedule-groups', (req, res) => {
   try {
-    const { name, color, icon, collapsed, mutualExclusion, profile, model, effort, mcpProfile, usesBrowser, codexAccountId } = req.body || {};
+    const { name, color, icon, collapsed, mutualExclusion, profile, model, contextMode, effort, mcpProfile, usesBrowser, codexAccountId } = req.body || {};
+    if (unknownAutomationContextMode(contextMode)) return res.status(400).json({ error: `Invalid context mode: ${contextMode}` });
     if (!name?.trim()) return res.status(400).json({ error: 'name is required' });
 
     const groups = loadScheduleGroups();
@@ -16621,7 +14928,7 @@ app.post('/api/schedule-groups', (req, res) => {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
-    applyScheduleLaunchOverrides(group, { profile, model, effort, mcpProfile, usesBrowser, codexAccountId });
+    applyScheduleLaunchOverrides(group, { profile, model, contextMode, effort, mcpProfile, usesBrowser, codexAccountId });
     groups.push(group);
     saveScheduleGroups(groups);
     broadcastSync({ type: 'schedule-group:created', group });
@@ -16638,7 +14945,8 @@ app.put('/api/schedule-groups/:id', (req, res) => {
     const idx = groups.findIndex(g => g.id === req.params.id);
     if (idx === -1) return res.status(404).json({ error: 'Group not found' });
 
-    const { name, color, icon, collapsed, order, mutualExclusion, profile, model, effort, mcpProfile, usesBrowser, codexAccountId } = req.body || {};
+    const { name, color, icon, collapsed, order, mutualExclusion, profile, model, contextMode, effort, mcpProfile, usesBrowser, codexAccountId } = req.body || {};
+    if (unknownAutomationContextMode(contextMode)) return res.status(400).json({ error: `Invalid context mode: ${contextMode}` });
     if (name !== undefined) {
       if (!name.trim()) return res.status(400).json({ error: 'name is required' });
       groups[idx].name = name.trim();
@@ -16653,12 +14961,13 @@ app.put('/api/schedule-groups/:id', (req, res) => {
     const prevGroupLaunch = {
       profile: groups[idx].profile,
       model: groups[idx].model,
+      contextMode: groups[idx].contextMode,
       effort: groups[idx].effort,
       mcpProfile: groups[idx].mcpProfile,
       usesBrowser: groups[idx].usesBrowser,
       codexAccountId: groups[idx].codexAccountId,
     };
-    applyScheduleLaunchOverrides(groups[idx], { profile, model, effort, mcpProfile, usesBrowser, codexAccountId });
+    applyScheduleLaunchOverrides(groups[idx], { profile, model, contextMode, effort, mcpProfile, usesBrowser, codexAccountId });
     groups[idx].updatedAt = new Date().toISOString();
 
     // Write-through: a launch override deliberately CHANGED in the group window is
@@ -16672,7 +14981,7 @@ app.put('/api/schedule-groups/:id', (req, res) => {
     const normLaunch = (v) => (v === '' || v === undefined ? null : v);
     const propagation = {};
     for (const [field, value] of [
-      ['profile', profile], ['model', model], ['effort', effort],
+      ['profile', profile], ['model', model], ['contextMode', contextMode], ['effort', effort],
       ['mcpProfile', mcpProfile], ['usesBrowser', usesBrowser], ['codexAccountId', codexAccountId],
     ]) {
       if (value === undefined) continue; // field absent from this request
@@ -16883,7 +15192,8 @@ app.get('/api/schedules/timers', (_req, res) => {
 // POST /api/schedules — create a new schedule
 app.post('/api/schedules', (req, res) => {
   try {
-    const { name, templateId, cron, timezone, enabled, dayThemes, overrides, groupId, profile, model, effort, mcpProfile, usesBrowser, codexAccountId } = req.body;
+    const { name, templateId, cron, timezone, enabled, dayThemes, overrides, groupId, profile, model, contextMode, effort, mcpProfile, usesBrowser, codexAccountId } = req.body;
+    if (unknownAutomationContextMode(contextMode)) return res.status(400).json({ error: `Invalid context mode: ${contextMode}` });
     if (!name?.trim()) return res.status(400).json({ error: 'name is required' });
     if (!templateId?.trim()) return res.status(400).json({ error: 'templateId is required' });
     if (!cron?.trim()) return res.status(400).json({ error: 'cron is required' });
@@ -16912,7 +15222,7 @@ app.post('/api/schedules', (req, res) => {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
-    applyScheduleLaunchOverrides(schedule, { profile, model, effort, mcpProfile, usesBrowser, codexAccountId });
+    applyScheduleLaunchOverrides(schedule, { profile, model, contextMode, effort, mcpProfile, usesBrowser, codexAccountId });
 
     const schedules = loadSchedules();
     schedules.push(schedule);
@@ -16940,7 +15250,8 @@ app.put('/api/schedules/:id', (req, res) => {
     const idx = schedules.findIndex(s => s.id === req.params.id);
     if (idx === -1) return res.status(404).json({ error: 'Schedule not found' });
 
-    const { name, templateId, cron, timezone, enabled, dayThemes, overrides, groupId, profile, model, effort, mcpProfile, usesBrowser, codexAccountId } = req.body;
+    const { name, templateId, cron, timezone, enabled, dayThemes, overrides, groupId, profile, model, contextMode, effort, mcpProfile, usesBrowser, codexAccountId } = req.body;
+    if (unknownAutomationContextMode(contextMode)) return res.status(400).json({ error: `Invalid context mode: ${contextMode}` });
     if (name !== undefined) schedules[idx].name = name.trim();
     if (templateId !== undefined) {
       const templates = readLoopTemplates();
@@ -16960,7 +15271,7 @@ app.put('/api/schedules/:id', (req, res) => {
       if (normalizedGroupId === false) return res.status(400).json({ error: 'Group not found' });
       schedules[idx].groupId = normalizedGroupId;
     }
-    applyScheduleLaunchOverrides(schedules[idx], { profile, model, effort, mcpProfile, usesBrowser, codexAccountId });
+    applyScheduleLaunchOverrides(schedules[idx], { profile, model, contextMode, effort, mcpProfile, usesBrowser, codexAccountId });
 
     schedules[idx].updatedAt = new Date().toISOString();
     schedules[idx].nextRun = getNextCronRun(schedules[idx].cron, schedules[idx].timezone);
@@ -17249,19 +15560,19 @@ async function launchAgentController(opts) {
   const mcpConfig = buildAgentMcpConfig(withSynabun, browserSessionId, browserTabId, agentTerminalId);
   const agentCwd = cwd || PACKAGE_ROOT;
 
-  // Build default system prompt for agents — overrides CLAUDE.md boot sequence
+  // Build default system prompt for agents — overrides the boot sequence in the agent's instructions
   // so the agent goes straight to the task instead of greeting/recalling
   const defaultAgentPrompt = withSynabun
     ? [
         'You are an autonomous agent executing a task. CRITICAL RULES:',
         '',
         '## Boot',
-        '1. SKIP all CLAUDE.md boot sequences — no greeting, no recall, no communication style lookup. Go straight to the task.',
+        '1. SKIP every boot sequence in your instructions (CLAUDE.md, rules files) — no greeting, no recall, no communication style lookup. Go straight to the task.',
         '2. DO NOT output pleasantries, status summaries, or explanatory text. Execute using tools immediately.',
         '',
         '## Tools',
         '3. Your SynaBun MCP tools are deferred. On your FIRST response, batch-fetch ALL schemas in ONE ToolSearch call:',
-        '   ToolSearch("select:browser_navigate,browser_click,browser_type,browser_fill,browser_snapshot,browser_scroll,browser_screenshot,browser_press,browser_select,browser_hover,browser_evaluate,browser_wait,browser_content,browser_extract_tweets,browser_extract_ig_feed,browser_extract_ig_profile,browser_extract_ig_post,browser_extract_ig_reels,browser_extract_ig_search,browser_extract_li_feed,browser_extract_li_profile,browser_extract_li_post,browser_extract_tiktok_videos,browser_extract_tiktok_search,browser_extract_tiktok_profile,browser_extract_fb_posts,browser_go_back,browser_go_forward,browser_reload,browser_session,browser_upload,bluesky_session,bluesky_timeline,bluesky_author_feed,bluesky_thread,bluesky_profile,bluesky_search_posts,bluesky_search_actors,bluesky_notifications,bluesky_graph,bluesky_likes,bluesky_feed,bluesky_post,bluesky_action,bluesky_resolve,bluesky_dm,remember,recall,reflect,forget,restore,memories,category,sync")',
+        '   ToolSearch("select:browser_navigate,browser_click,browser_type,browser_fill,browser_snapshot,browser_scroll,browser_screenshot,browser_console,browser_press,browser_select,browser_hover,browser_evaluate,browser_wait,browser_content,browser_extract_tweets,browser_extract_ig_feed,browser_extract_ig_profile,browser_extract_ig_post,browser_extract_ig_reels,browser_extract_ig_search,browser_extract_li_feed,browser_extract_li_profile,browser_extract_li_post,browser_extract_tiktok_videos,browser_extract_tiktok_search,browser_extract_tiktok_profile,browser_extract_fb_posts,browser_go_back,browser_go_forward,browser_reload,browser_session,browser_upload,bluesky_session,bluesky_timeline,bluesky_author_feed,bluesky_thread,bluesky_profile,bluesky_search_posts,bluesky_search_actors,bluesky_notifications,bluesky_graph,bluesky_likes,bluesky_feed,bluesky_post,bluesky_action,bluesky_resolve,bluesky_dm,remember,recall,reflect,forget,restore,memories,category,sync")',
         '   Then IMMEDIATELY call your first actual tool in the SAME response. A text-only response terminates the session.',
         '4. EVERY response MUST contain at least one tool_use call. Text-only responses terminate --print mode and waste the iteration.',
         '5. Chain multiple tool calls in a single response when they are independent (e.g., ToolSearch + browser_navigate).',
@@ -17341,6 +15652,8 @@ async function launchAgentController(opts) {
 
   // Run in background — don't block the API response
   (async () => {
+    // When this launch started: the loop prompt says how much of maxMinutes is left.
+    const startTime = Date.now();
     // Mark the initial browser session as agent-owned (prevents grace timer / context-close from killing it).
     // A Set, not a scalar: concurrent agents in the shared persistent browser
     // must not overwrite each other's ownership (premature grace-reap).
@@ -17531,7 +15844,27 @@ async function launchAgentController(opts) {
 
     console.log(`[agent] ${agentId} finished: status=${agent.status}, iterations=${agent.currentIteration}/${iterations}`);
     broadcastSync({ type: 'agent:status', agentId, status: agent.status, exitCode: agent.exitCode });
-  })();
+  })().catch(async (err) => {
+    // A failure in the background run ends this launch, not the server (an
+    // unhandled rejection exits the process): it is logged, the agent's tab is
+    // released as at a normal end, and the agent is reported failed.
+    const message = err?.message || String(err);
+    console.error(`[agent] ${agentId} failed in iteration ${agent.currentIteration}/${iterations}: ${message}`);
+    try {
+      if (agent._usesBrowser && agent.browserSessionId) {
+        browserSessions.get(agent.browserSessionId)?._agentOwnedSet?.delete(agentId);
+        await releaseSharedBrowserTab(agent.browserSessionId, agent._agentTerminalId).catch(() => {});
+        agent.browserSessionId = null;
+        agent.browserTabId = null;
+      }
+    } catch {}
+    agent.error = message;
+    agent.endedAt = new Date().toISOString();
+    agent.exitCode = -1;
+    agent.status = 'failed';
+    agent.process = null;
+    try { broadcastSync({ type: 'agent:status', agentId, status: agent.status, exitCode: agent.exitCode }); } catch {}
+  });
 
   return agent;
 }
@@ -17540,11 +15873,14 @@ async function launchAgentController(opts) {
 app.post('/api/agents/launch', async (req, res) => {
   try {
     const {
-      task, model, effort, cwd, allowedTools, addDirs, systemPrompt, maxTurns,
+      task, model, contextMode, effort, cwd, allowedTools, addDirs, systemPrompt, maxTurns,
       withSynabun, browserProfile,
       mode, iterations, maxMinutes, context,
     } = req.body;
     if (!task?.trim()) return res.status(400).json({ error: 'task is required' });
+    let launchChoice;
+    try { launchChoice = await resolveAutomationLaunchChoice('claude-code', model, contextMode); }
+    catch (error) { return res.status(400).json({ error: error.message }); }
 
     // Pre-acquire a DEDICATED TAB in the one shared browser when SynaBun is enabled.
     // Under a persistent profile only one Chromium can run, so agents must share it —
@@ -17573,7 +15909,9 @@ app.post('/api/agents/launch', async (req, res) => {
     const effectiveMaxTurns = maxTurns || (browserSessionId ? 200 : 100);
 
     const agent = await launchAgentController({
-      task: task.trim(), model, effort, cwd, allowedTools, addDirs, systemPrompt,
+      task: task.trim(), model: launchChoice.contextMode === '1m' && launchChoice.model
+        ? `${launchChoice.model}[1m]` : launchChoice.model,
+      effort, cwd, allowedTools, addDirs, systemPrompt,
       maxTurns: effectiveMaxTurns,
       withSynabun: !!withSynabun,
       agentId,
@@ -17734,11 +16072,11 @@ let _synabunUpdateCache = {
   installedChannel: 'stable',    // 'stable' | 'prerelease'
   npmLatestStable: null,         // dist-tags.latest
   npmLatestBeta: null,           // dist-tags.beta (or null if absent)
-  npmLatestTag: null,            // dist-tag selected for install
+  npmLatestTag: null,            // dist-tag of npmLatest (informational; the install is pinned to a version)
   npmLatest: null,               // chosen target for installed channel
   gitLatest: null,               // tag_name from GitHub release matching channel
   gitLatestRaw: null,            // original GitHub tag, preserving leading v
-  latest: null,                  // newer of (npmLatest, gitLatest) — legacy field
+  latest: null,                  // newer of (npmLatest, gitLatest): the target shown and installed
   npmUpdateAvailable: false,
   gitUpdateAvailable: false,
   updateAvailable: false,        // npmUpdateAvailable || gitUpdateAvailable
@@ -17798,42 +16136,9 @@ function detectSynabunInstallSource() {
   return { kind: 'local' };
 }
 
-function buildSynabunInstallPlan({ current, installedChannel, latest, updateAvailable }) {
-  if (!updateAvailable) return null;
-
-  const installSource = detectSynabunInstallSource();
-  if (installSource.kind !== 'npm-global') {
-    const clonedHint = installSource.kind === 'github-clone'
-      ? 'This SynaBun install is a GitHub checkout. Open the repository to pull or reinstall from the correct source.'
-      : 'This SynaBun install was not detected as npm. Open the repository for the correct update path.';
-    return {
-      source: 'github',
-      installSource: installSource.kind,
-      canAutoUpdate: false,
-      current,
-      target: latest,
-      channel: installedChannel,
-      displayCommand: SYNABUN_GITHUB_REPO_URL,
-      openUrl: SYNABUN_GITHUB_REPO_URL,
-      manualCommand: installSource.kind === 'github-clone' ? 'git pull --ff-only' : null,
-      manualHint: clonedHint,
-      remote: installSource.remote,
-    };
-  }
-
-  const installSpec = 'synabun@latest';
-  return {
-    source: 'npm',
-    installSource: installSource.kind,
-    canAutoUpdate: true,
-    current,
-    target: latest,
-    channel: installedChannel,
-    installSpec,
-    displayCommand: 'npm i -g synabun@latest',
-    npmTag: 'latest',
-  };
-}
+// The selection (which version is the target) and the install plan (what
+// click-to-update runs: an exact pinned version, never a dist-tag) are pure and
+// live in lib/synabun-update-plan.js.
 
 async function checkSynabunUpdate() {
   let current = _synabunUpdateCache.current;
@@ -17842,11 +16147,10 @@ async function checkSynabunUpdate() {
     current = pkg.version;
   } catch { /* keep prior current if package.json read fails */ }
 
-  const curParsed = parseSemver(current);
-  // Numeric-only suffix (`2026.4.26-1`) is a post-release iteration, not a
-  // prerelease — keep those on the stable channel. Only true alpha/beta/rc
-  // suffixes flip the channel.
-  const installedChannel = (curParsed?.pre && curParsed.iter == null) ? 'prerelease' : 'stable';
+  // Any suffix on a semver-era version is a prerelease (`2.0.0-1`,
+  // `2.0.0-beta.1`). Only the old date-style iterations (`2026.4.26-1`) were
+  // stable releases with a suffix.
+  const installedChannel = synabunReleaseChannel(current);
 
   const fetchJsonWithTimeout = async (url, ms = 5000) => {
     const controller = new AbortController();
@@ -17878,112 +16182,37 @@ async function checkSynabunUpdate() {
     fetchJsonWithTimeout(githubUrl),
   ]);
 
-  let npmLatestStable = null, npmLatestBeta = null, npmLatestBetaTag = null, npmLatestTag = null;
-  let gitLatest = null, gitLatestRaw = null;
-  let npmError = null, gitError = null;
+  const npmError = npmRes.status === 'fulfilled' ? null : (npmRes.reason?.message || 'npm fetch failed');
+  const gitError = gitRes.status === 'fulfilled' ? null : (gitRes.reason?.message || 'github fetch failed');
 
-  if (npmRes.status === 'fulfilled') {
-    const tags = npmRes.value?.['dist-tags'] || {};
-    npmLatestStable = tags.latest || null;
-    for (const tagName of ['beta', 'next', 'rc', 'alpha']) {
-      if (tags[tagName]) {
-        npmLatestBeta = tags[tagName];
-        npmLatestBetaTag = tagName;
-        break;
-      }
-    }
-  } else {
-    npmError = npmRes.reason?.message || 'npm fetch failed';
-  }
-
-  if (gitRes.status === 'fulfilled') {
-    if (Array.isArray(gitRes.value)) {
-      // /releases — pick newest non-draft entry whose tag parses as semver.
-      // For stable channel users we'd skip prereleases, but this branch only
-      // runs for prerelease users (per githubUrl above), so include both.
-      let best = null;
-      for (const r of gitRes.value) {
-        if (r?.draft) continue;
-        const tag = r?.tag_name || r?.name || '';
-        const parsed = parseSemver(tag);
-        if (!parsed) continue;
-        if (!best || compareSemver(parsed, best.parsed) > 0) {
-          best = { tag, parsed };
-        }
-      }
-      gitLatestRaw = best?.tag || null;
-      gitLatest = gitLatestRaw ? gitLatestRaw.replace(/^v\.?/, '') : null;
-    } else {
-      // /releases/latest — single object
-      const tag = gitRes.value?.tag_name || gitRes.value?.name || '';
-      gitLatestRaw = tag || null;
-      gitLatest = tag ? tag.replace(/^v\.?/, '') : null;
-    }
-  } else {
-    gitError = gitRes.reason?.message || 'github fetch failed';
-  }
-
-  // Channel-aware npm target:
-  //  - prerelease user: pick whichever of (stable, beta) is newest. Either
-  //    is genuinely "newer than current"; surfacing stable when on beta is
-  //    intentional (some users manually flip back to stable).
-  //  - stable user: only stable. Beta on a stable install would look like
-  //    a downgrade ("2026.4.26 → 2026.4.26-beta.3" via semver = older).
-  let npmLatest = null;
-  if (installedChannel === 'prerelease') {
-    if (npmLatestStable && npmLatestBeta) {
-      if (compareSemver(npmLatestBeta, npmLatestStable) > 0) {
-        npmLatest = npmLatestBeta;
-        npmLatestTag = npmLatestBetaTag;
-      } else {
-        npmLatest = npmLatestStable;
-        npmLatestTag = 'latest';
-      }
-    } else {
-      npmLatest = npmLatestStable || npmLatestBeta;
-      npmLatestTag = npmLatestStable ? 'latest' : npmLatestBetaTag;
-    }
-  } else {
-    npmLatest = npmLatestStable;
-    npmLatestTag = npmLatest ? 'latest' : null;
-  }
-
-  const npmUpdateAvailable = !!(npmLatest && semverNewer(current, npmLatest));
-  const gitUpdateAvailable = !!(gitLatest && semverNewer(current, gitLatest));
-  const updateAvailable = npmUpdateAvailable || gitUpdateAvailable;
-
-  // Newer of the two (npm vs github) for legacy "latest" display.
-  let latest = null;
-  if (npmLatest && gitLatest) {
-    latest = compareSemver(npmLatest, gitLatest) >= 0 ? npmLatest : gitLatest;
-  } else {
-    latest = npmLatest || gitLatest;
-  }
-
-  let source = null;
-  if (npmUpdateAvailable && gitUpdateAvailable) source = 'both';
-  else if (npmUpdateAvailable)                   source = 'npm';
-  else if (gitUpdateAvailable)                   source = 'github';
-
-  const installPlan = buildSynabunInstallPlan({
+  const found = selectSynabunUpdate({
     current,
-    installedChannel,
-    latest,
-    updateAvailable,
+    npmDocument: npmRes.status === 'fulfilled' ? npmRes.value : null,
+    githubReleases: gitRes.status === 'fulfilled' ? gitRes.value : null,
+  });
+  const { latest, updateAvailable, source } = found;
+
+  // The plan installs exactly `latest`: pinned when npm has that version, a
+  // manual update when it exists only as a GitHub release.
+  const installPlan = buildSynabunInstallPlan({
+    ...found,
+    current,
+    installSource: updateAvailable ? detectSynabunInstallSource() : null,
+    repoUrl: SYNABUN_GITHUB_REPO_URL,
   });
 
   _synabunUpdateCache = {
     current,
-    installedChannel,
-    npmLatestStable,
-    npmLatestBeta,
-    npmLatestTag,
-    npmLatest,
-    gitLatest,
-    gitLatestRaw,
+    installedChannel: found.installedChannel,
+    npmLatestStable: found.npmLatestStable,
+    npmLatestBeta: found.npmLatestBeta,
+    npmLatestTag: found.npmLatestTag,
+    npmLatest: found.npmLatest,
+    gitLatest: found.gitLatest,
+    gitLatestRaw: found.gitLatestRaw,
     latest,
-    npmUpdateAvailable,
-    gitUpdateAvailable,
+    npmUpdateAvailable: found.npmUpdateAvailable,
+    gitUpdateAvailable: found.gitUpdateAvailable,
     updateAvailable,
     source,
     installPlan,
@@ -18033,7 +16262,7 @@ let _toolVersionCache = { checkedAt: null, tools: {} };
 
 // Backwards-compat helper — returns a "MAJOR.MINOR.PATCH" string (no pre).
 // Kept because legacy callers expect a string for display purposes only.
-// Comparison logic must use parseSemver/compareSemver below to handle
+// Comparison logic must use semverNewer (lib/synabun-version.js) to handle
 // prerelease/iteration suffixes correctly.
 function parseVersion(raw) {
   // Keep any prerelease/iteration suffix. Truncating it made a user on
@@ -18046,91 +16275,8 @@ function parseVersion(raw) {
   return m ? `${m[1]}.${m[2]}.${m[3]}${m[4] || ''}` : null;
 }
 
-// Structured semver parse — handles calver bumps and prerelease tags:
-//   "2026.4.26"          -> { major:2026, minor:4, patch:26, pre:null,    iter:null }
-//   "2026.4.20-2"        -> { major:2026, minor:4, patch:20, pre:"2",     iter:2    }
-//   "2026.4.26-beta.3"   -> { major:2026, minor:4, patch:26, pre:"beta.3", iter:null }
-//   "v1.2.3-rc.1"        -> { major:1, minor:2, patch:3, pre:"rc.1", iter:null }
-//
-// `iter` is set when the suffix is purely numeric (SynaBun's calver iteration
-// scheme: `2026.4.26-1` is the FIRST patch published after `2026.4.26`).
-// Strict semver §9 treats any prerelease suffix as PRE-release (lower than no
-// suffix). SynaBun publishes calver iterations as `latest` on npm, so we need
-// to treat numeric-only suffixes as POST-release iterations instead.
-function parseSemver(raw) {
-  if (raw == null) return null;
-  const s = String(raw).trim().replace(/^v\.?/, '');
-  const m = s.match(/^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?/);
-  if (!m) return null;
-  const pre = m[4] || null;
-  const iter = pre && /^\d+$/.test(pre) ? Number(pre) : null;
-  return {
-    major: +m[1],
-    minor: +m[2],
-    patch: +m[3],
-    pre,
-    iter,
-  };
-}
-
-// Precedence (mix of semver §11 + SynaBun calver-iteration convention):
-//   1.0.0-alpha < 1.0.0-alpha.1 < 1.0.0-beta < 1.0.0-beta.2 < 1.0.0 < 1.0.0-1 < 1.0.0-2
-// Numeric-only suffix = post-release iteration (NEWER than no-suffix release).
-// Mixed/alpha suffix  = prerelease (OLDER than no-suffix release, per semver).
-// Returns negative if a<b, positive if a>b, 0 if equal. Accepts strings or
-// parsed objects.
-function compareSemver(a, b) {
-  const pa = (a && typeof a === 'object' && 'major' in a) ? a : parseSemver(a);
-  const pb = (b && typeof b === 'object' && 'major' in b) ? b : parseSemver(b);
-  if (!pa && !pb) return 0;
-  if (!pa) return -1;
-  if (!pb) return 1;
-  if (pa.major !== pb.major) return pa.major - pb.major;
-  if (pa.minor !== pb.minor) return pa.minor - pb.minor;
-  if (pa.patch !== pb.patch) return pa.patch - pb.patch;
-  // Equal x.y.z. Order from oldest → newest:
-  //   alpha-prerelease  <  no-suffix release  <  numeric iteration
-  if (!pa.pre && !pb.pre) return 0;
-  // Numeric iterations are POST-release: always newer than no-suffix and
-  // newer than alpha prereleases.
-  if (pa.iter != null && pb.iter == null) return  1;
-  if (pa.iter == null && pb.iter != null) return -1;
-  if (pa.iter != null && pb.iter != null) return pa.iter - pb.iter;
-  // Neither side is a numeric iteration. Standard semver §11: no-suffix is
-  // greater than alpha prerelease.
-  if (!pa.pre &&  pb.pre) return  1;
-  if ( pa.pre && !pb.pre) return -1;
-  // Both have alpha-flavoured prerelease — compare identifiers per semver §11.4.
-  const ia = pa.pre.split('.');
-  const ib = pb.pre.split('.');
-  const len = Math.max(ia.length, ib.length);
-  for (let i = 0; i < len; i++) {
-    if (i >= ia.length) return -1; // shorter set has lower precedence
-    if (i >= ib.length) return  1;
-    const xa = ia[i], xb = ib[i];
-    const na = /^\d+$/.test(xa), nb = /^\d+$/.test(xb);
-    if (na && nb) {
-      const da = +xa, db = +xb;
-      if (da !== db) return da - db;
-    } else if (na && !nb) {
-      return -1; // numeric < alphanumeric
-    } else if (!na && nb) {
-      return  1;
-    } else {
-      if (xa !== xb) return xa < xb ? -1 : 1;
-    }
-  }
-  return 0;
-}
-
-function semverNewer(a, b) {
-  // True iff b is strictly newer than a. Falls back to false if either side
-  // can't be parsed — same defensive contract as the prior implementation.
-  if (a == null || b == null) return false;
-  const pa = parseSemver(a), pb = parseSemver(b);
-  if (!pa || !pb) return false;
-  return compareSemver(pa, pb) < 0;
-}
+// parseSemver / compareSemver / semverNewer live in lib/synabun-version.js, with
+// the rules that order SynaBun's own date-style and semver-era releases.
 
 function resolveBinPath(cmd, env) {
   try {
@@ -18440,47 +16586,54 @@ app.get('/api/system/backup', async (req, res) => {
   }
 });
 
+// Restore uploads stream to disk: a data home can pass the old 1 GB body cap,
+// and a ZIP over 2 GiB cannot be read into a Buffer at all.
+const RESTORE_STAGING_DIR = resolve(DATA_HOME, 'backups', 'restore-staging');
+
 // POST /api/system/restore/preview — Read manifest from uploaded ZIP without applying
-app.post('/api/system/restore/preview',
-  express.raw({ type: ['application/zip', 'application/x-zip-compressed', 'application/octet-stream'], limit: '1gb' }),
-  async (req, res) => {
+app.post('/api/system/restore/preview', async (req, res) => {
+  let upload = null;
+  let zip = null;
   try {
-    if (!req.body || req.body.length === 0) {
+    upload = await saveRestoreUpload(req, RESTORE_STAGING_DIR);
+    if (upload.sizeBytes === 0) {
       return res.status(400).json({ error: 'No data received' });
     }
-    const zip = new AdmZip(req.body);
-    const manifestEntry = zip.getEntries().find(e => e.entryName.endsWith('/manifest.json'));
-    if (!manifestEntry) {
+    zip = await openZipArchive(upload.path);
+    const found = await readBackupManifest(zip);
+    if (!found) {
       return res.status(400).json({ error: 'Invalid backup: manifest.json not found' });
     }
-    const manifest = JSON.parse(manifestEntry.getData().toString('utf-8'));
-    res.json({ ok: true, manifest });
+    res.json({ ok: true, manifest: found.manifest });
   } catch (err) {
     console.error('POST /api/system/restore/preview error:', err.message);
-    res.status(500).json({ error: err.message });
+    if (!res.headersSent) res.status(500).json({ error: err.message });
+  } finally {
+    await zip?.close().catch(() => {});
+    removeRestoreUpload(upload);
   }
 });
 
 // POST /api/system/restore — Apply a full system backup from uploaded ZIP
-app.post('/api/system/restore',
-  express.raw({ type: ['application/zip', 'application/x-zip-compressed', 'application/octet-stream'], limit: '1gb' }),
-  async (req, res) => {
+app.post('/api/system/restore', async (req, res) => {
+  let upload = null;
+  let zip = null;
   try {
-    if (!req.body || req.body.length === 0) {
+    upload = await saveRestoreUpload(req, RESTORE_STAGING_DIR);
+    if (upload.sizeBytes === 0) {
       return res.status(400).json({ error: 'No backup data received' });
     }
 
     const mode = req.query.mode || 'full';
 
-    const zip = new AdmZip(req.body);
-    const entries = zip.getEntries();
+    zip = await openZipArchive(upload.path);
 
     // Find and validate manifest
-    const manifestEntry = entries.find(e => e.entryName.endsWith('/manifest.json'));
-    if (!manifestEntry) {
+    const found = await readBackupManifest(zip);
+    if (!found) {
       return res.status(400).json({ error: 'Invalid backup: manifest.json not found' });
     }
-    const manifest = JSON.parse(manifestEntry.getData().toString('utf-8'));
+    const { manifest, prefix } = found;
     if (![1, 2, 3].includes(manifest.version)) {
       return res.status(400).json({ error: `Unsupported backup version: ${manifest.version}` });
     }
@@ -18488,23 +16641,35 @@ app.post('/api/system/restore',
     // v3 archives are published only after checksum verification. Recheck on
     // restore so a damaged or edited snapshot cannot partially replace state.
     if (manifest.version >= 3) {
-      for (const [archivePath, expected] of Object.entries(manifest.checksums || {})) {
-        const entry = entries.find(item => item.entryName === `${manifestEntry.entryName.replace('/manifest.json', '')}/${archivePath}`);
-        if (!entry) return res.status(400).json({ error: `Invalid backup: ${archivePath} is missing` });
-        const actual = 'sha256:' + createHash('sha256').update(entry.getData()).digest('hex');
-        if (actual !== expected) return res.status(400).json({ error: `Invalid backup: checksum mismatch for ${archivePath}` });
-      }
+      try { await verifyBackupChecksums(zip, { prefix, manifest, label: 'Invalid backup' }); }
+      catch (error) { return res.status(400).json({ error: error.message }); }
     }
 
-    const prefix = manifestEntry.entryName.replace('/manifest.json', '');
+    const entryAt = rel => zip.getEntry(`${prefix}/${rel}`);
     const results = { files: [], snapshots: [], errors: [] };
 
     // Restore config files
     if (mode === 'full' || mode === 'config-only') {
+      // Every target must stay inside its root. Plan all writes first so a
+      // crafted entry (../../) rejects the archive before anything is written.
+      const home = process.env.USERPROFILE || process.env.HOME || '';
+      const { writes, unsafe } = planRestoreWrites(zip, prefix, {
+        data: resolve(DATA_HOME, 'data'),
+        mcpData: CATEGORIES_DATA_DIR,
+        globalSkills: getGlobalSkillsDir(),
+        globalAgents: getGlobalAgentsDir(),
+        bundledSkills: SKILLS_SOURCE_DIR,
+        skins: join(__dirname, 'skins'),
+        claudeSettings: home ? join(home, '.claude', 'settings.json') : null,
+      });
+      if (unsafe.length) {
+        return res.status(400).json({ error: `Invalid backup: unsafe path ${unsafe[0]}` });
+      }
+
       // .env
-      const envEntry = entries.find(e => e.entryName === `${prefix}/env.bak`);
+      const envEntry = entryAt('env.bak');
       if (envEntry) {
-        writeFileSync(ENV_PATH, envEntry.getData());
+        await extractZipEntry(zip, envEntry, ENV_PATH);
         results.files.push('.env');
       }
 
@@ -18518,71 +16683,11 @@ app.post('/api/system/restore',
       // Per-user MCP data (~/.synabun/mcp-data by default)
       mkdirSync(CATEGORIES_DATA_DIR, { recursive: true });
 
-      for (const entry of entries) {
-        if (entry.isDirectory) continue;
-        const rel = entry.entryName.replace(`${prefix}/`, '');
-
-        if (rel.startsWith('data/') && rel !== 'data/') {
-          const target = resolve(DATA_HOME, rel);
-          const dir = dirname(target);
-          mkdirSync(dir, { recursive: true });
-          writeFileSync(target, entry.getData());
-          results.files.push(rel);
-        }
-
-        if (rel.startsWith('mcp-data/') && rel !== 'mcp-data/') {
-          const filename = rel.replace('mcp-data/', '');
-          const target = resolve(CATEGORIES_DATA_DIR, filename);
-          mkdirSync(dirname(target), { recursive: true });
-          writeFileSync(target, entry.getData());
-          results.files.push(rel);
-        }
-
-        // Global skills → ~/.claude/skills/
-        if (rel.startsWith('global-skills/') && rel !== 'global-skills/') {
-          const subPath = rel.replace('global-skills/', '');
-          const target = join(getGlobalSkillsDir(), subPath);
-          mkdirSync(dirname(target), { recursive: true });
-          writeFileSync(target, entry.getData());
-          results.files.push(rel);
-        }
-
-        // Global agents → ~/.claude/agents/
-        if (rel.startsWith('global-agents/') && rel !== 'global-agents/') {
-          const subPath = rel.replace('global-agents/', '');
-          const target = join(getGlobalAgentsDir(), subPath);
-          mkdirSync(dirname(target), { recursive: true });
-          writeFileSync(target, entry.getData());
-          results.files.push(rel);
-        }
-
-        // Bundled SynaBun skills → PACKAGE_ROOT/skills/
-        if (rel.startsWith('bundled-skills/') && rel !== 'bundled-skills/') {
-          const subPath = rel.replace('bundled-skills/', '');
-          const target = resolve(SKILLS_SOURCE_DIR, subPath);
-          mkdirSync(dirname(target), { recursive: true });
-          writeFileSync(target, entry.getData());
-          results.files.push(rel);
-        }
-
-        // Installed skins → neural-interface/skins/
-        if (rel.startsWith('skins/') && rel !== 'skins/') {
-          const target = join(__dirname, rel);
-          mkdirSync(dirname(target), { recursive: true });
-          writeFileSync(target, entry.getData());
-          results.files.push(rel);
-        }
-
-        // Global Claude Code settings → ~/.claude/settings.json
-        if (rel === 'claude-settings.json') {
-          const home = process.env.USERPROFILE || process.env.HOME || '';
-          if (home) {
-            const target = join(home, '.claude', 'settings.json');
-            mkdirSync(dirname(target), { recursive: true });
-            writeFileSync(target, entry.getData());
-            results.files.push(rel);
-          }
-        }
+      // data/, mcp-data/, global skills/agents (~/.claude), bundled skills,
+      // installed skins and ~/.claude/settings.json.
+      for (const { entry, rel, target } of writes) {
+        await extractZipEntry(zip, entry, target);
+        results.files.push(rel);
       }
     }
 
@@ -18604,7 +16709,7 @@ app.post('/api/system/restore',
 
     // Restore SQLite database
     if (mode === 'full' || mode === 'snapshots-only') {
-      const dbEntry = entries.find(e => e.entryName === `${prefix}/database/memory.db`);
+      const dbEntry = entryAt('database/memory.db');
       if (dbEntry) {
         try {
           // Close existing database connection before replacing
@@ -18618,7 +16723,7 @@ app.post('/api/system/restore',
           process.env['SQLITE_DB_PATH'] = dbPath;
           const dbDir = dirname(dbPath);
           mkdirSync(dbDir, { recursive: true });
-          writeFileSync(dbPath, dbEntry.getData());
+          await extractZipEntry(zip, dbEntry, dbPath);
           // Remove WAL/SHM files if they exist
           try { if (existsSync(dbPath + '-wal')) unlinkSync(dbPath + '-wal'); } catch {}
           try { if (existsSync(dbPath + '-shm')) unlinkSync(dbPath + '-shm'); } catch {}
@@ -18652,6 +16757,9 @@ app.post('/api/system/restore',
   } catch (err) {
     console.error('POST /api/system/restore error:', err.message);
     if (!res.headersSent) res.status(500).json({ error: err.message });
+  } finally {
+    await zip?.close().catch(() => {});
+    removeRestoreUpload(upload);
   }
 });
 
@@ -18787,12 +16895,8 @@ function startAutoBackupScheduler() {
   stopAutoBackupScheduler();
   const cfg = loadAutoBackupConfig();
   if (!cfg.enabled || !cfg.folderPath || !cfg.intervalMinutes) return;
-  const intervalMs = cfg.intervalMinutes * 60 * 1000;
-  const baseline = cfg.lastBackupError
-    ? new Date(cfg.lastAttemptAt || 0).getTime()
-    : new Date(cfg.lastVerifiedBackup || 0).getTime();
-  const effectiveBaseline = Math.max(Number.isFinite(baseline) ? baseline : 0, _autoBackupLastAttemptMs);
-  const nextDue = effectiveBaseline > 0 ? effectiveBaseline + intervalMs : Date.now();
+  // Shared with getBackupHealth so the Settings "next due" matches the timer.
+  const nextDue = nextBackupDueMs(cfg, { lastAttemptMs: _autoBackupLastAttemptMs });
   const delay = Math.max(0, Math.min(2_147_000_000, nextDue - Date.now()));
   _autoBackupTimer = setTimeout(async () => {
     try { await runAutoBackup(); }
@@ -19050,7 +17154,10 @@ function cleanupMatchingRootPlan(cwd, content) {
   try {
     const rootPlan = resolve(cwd, 'PLAN.md');
     if (!validateProjectPath(rootPlan) || !existsSync(rootPlan) || !statSync(rootPlan).isFile()) return false;
-    const existing = readFileSync(rootPlan, 'utf-8').replace(/\r\n/g, '\n').trim();
+    // PLAN.md arrived with the project's repository: it is read as a regular
+    // file really inside the folder, and no more of it than a plan can be
+    // (lib/confined-fs.js). Anything else is not this plan, and stays.
+    const existing = readConfinedFile(resolve(cwd), rootPlan, { maxBytes: 2 * 1024 * 1024, encoding: 'utf-8' }).replace(/\r\n/g, '\n').trim();
     const next = content.replace(/\r\n/g, '\n').trim();
     if (!existing || existing !== next) return false;
     unlinkSync(rootPlan);
@@ -19518,7 +17625,17 @@ app.get('/api/morelogin/status', async (req, res) => {
   try {
     const status = await moreLogin.getMoreLoginStatus(_moreLoginOpts());
     const cfg = loadBrowserConfig();
-    res.json({ ok: true, ...status, isDefault: cfg.connectMode === 'morelogin', defaultEnvId: cfg.moreloginEnvId || null });
+    res.json({
+      ok: true,
+      ...status,
+      isDefault: cfg.connectMode === 'morelogin',
+      defaultEnvId: cfg.moreloginEnvId || null,
+      // MoreLogin's local API does not expose its website blacklist/whitelist, so
+      // report the blocks we actually observed instead of the config we can't read.
+      blockedNavigations: moreLoginBlockStats.count,
+      lastBlockedUrl: moreLoginBlockStats.lastUrl,
+      lastBlockedAt: moreLoginBlockStats.lastAt,
+    });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -19977,32 +18094,6 @@ app.post('/api/setup/write-mcp-json', (req, res) => {
   }
 });
 
-// POST /api/setup/write-instructions — Append memory instructions to markdown file
-app.post('/api/setup/write-instructions', (req, res) => {
-  try {
-    const { targetDir, fileName, content } = req.body;
-    if (!targetDir || !fileName || !content) {
-      return res.status(400).json({ error: 'targetDir, fileName, and content required' });
-    }
-
-    const targetPath = resolve(targetDir, fileName);
-    let existing = '';
-    try { existing = readFileSync(targetPath, 'utf-8'); } catch {}
-
-    // Check if memory instructions already exist
-    if (existing.includes('## Persistent Memory System') || existing.includes('## Memory MCP')) {
-      return res.json({ ok: true, path: targetPath, skipped: true, message: 'Memory instructions already present' });
-    }
-
-    const separator = existing.length > 0 ? '\n\n---\n\n' : '';
-    writeFileSync(targetPath, existing + separator + content + '\n', 'utf-8');
-    res.json({ ok: true, path: targetPath, skipped: false });
-  } catch (err) {
-    console.error('POST /api/setup/write-instructions error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
 // POST /api/setup/complete — Mark setup as done & reload runtime config
 app.post('/api/setup/complete', (req, res) => {
   try {
@@ -20020,22 +18111,6 @@ app.post('/api/setup/complete', (req, res) => {
 // ═══════════════════════════════════════════
 // Claude Code Hook Integration
 // ═══════════════════════════════════════════
-
-// All SynaBun hooks managed together
-const HOOK_SCRIPTS = [
-  { event: 'SessionStart',      script: 'session-start.mjs', timeout: 5 },
-  { event: 'UserPromptSubmit',  script: 'prompt-submit.mjs', timeout: 3 },
-  { event: 'PreCompact',        script: 'pre-compact.mjs',   timeout: 10 },
-  { event: 'Stop',              script: 'stop.mjs',          timeout: 3 },
-  { event: 'PreToolUse',        script: 'pre-websearch.mjs', timeout: 3, matcher: '^WebSearch$|^WebFetch$' },
-  // `_+` covers both host prefixes: mcp__SynaBun__remember (Claude Code) and
-  // SynaBun_remember (OpenCode). reflect MUST be here — it stores work too, and
-  // omitting it left post-remember.mjs's reflect handling as unreachable code.
-  { event: 'PostToolUse',       script: 'post-remember.mjs', timeout: 3, matcher: '^Edit$|^Write$|^NotebookEdit$|Syna[Bb]un_+(remember|reflect)' },
-  { event: 'PostToolUse',       script: 'post-plan.mjs',     timeout: 15, matcher: '^(Enter|Exit)PlanMode$' },
-  { event: 'SubagentStart',     script: 'subagent-start.mjs', timeout: 3 },
-  { event: 'SubagentStop',      script: 'subagent-stop.mjs',  timeout: 3 },
-];
 
 function getClaudeSettingsPath(projectPath) {
   return join(projectPath, '.claude', 'settings.json');
@@ -20089,38 +18164,6 @@ function writeClaudeSettings(filePath, data) {
   }
 }
 
-function hookCommandString(scriptName, targetProjectPath) {
-  // When installing hooks into SynaBun's own project directory, use relative paths
-  // so the settings.json is cross-platform (works on macOS, Windows, Linux).
-  // For global settings or other projects, absolute paths are required because
-  // the hooks live in SynaBun's directory, not the target project.
-  if (targetProjectPath && resolve(targetProjectPath) === resolve(PACKAGE_ROOT)) {
-    const relPath = join('hooks', 'claude-code', scriptName).replace(/\\/g, '/');
-    return `node ${relPath}`;
-  }
-  const scriptPath = resolve(PACKAGE_ROOT, 'hooks', 'claude-code', scriptName).replace(/\\/g, '/');
-  return `node "${scriptPath}"`;
-}
-
-// True if a hook command points at SynaBun's hooks/claude-code/<scriptName>,
-// regardless of the absolute prefix, OS drive letter, or slash direction.
-// Unlike an exact match against THIS machine's path forms, this also recognizes
-// stale cross-platform entries — e.g. a Windows
-//   node "J:/Sites/Apps/Synabun/hooks/claude-code/stop.mjs"
-// left behind in a settings.json that is now opened on macOS/Linux. Such an
-// entry is not an absolute path on the new OS, so Claude Code resolves it
-// relative to the project cwd and the hook crashes with MODULE_NOT_FOUND on
-// every event. Matching by script-path suffix lets the install/dedup sweeps
-// collapse it to one canonical entry instead of leaving it to crash.
-function isSynaBunHookCommand(command, scriptName) {
-  if (typeof command !== 'string') return false;
-  let c = command.trim();
-  if (!c.startsWith('node ')) return false;
-  c = c.slice(5).trim().replace(/^"+|"+$/g, '').replace(/\\/g, '/');
-  return c === `hooks/claude-code/${scriptName}`
-    || c.endsWith(`/hooks/claude-code/${scriptName}`);
-}
-
 function isHookInstalled(settings, targetProjectPath) {
   // Installed if at least the SessionStart hook is present
   if (!settings?.hooks?.SessionStart) return false;
@@ -20132,12 +18175,12 @@ function isHookInstalled(settings, targetProjectPath) {
 
 function isSpecificHookInstalled(settings, hookEvent, targetProjectPath) {
   if (!settings?.hooks?.[hookEvent]) return false;
-  const defs = HOOK_SCRIPTS.filter(d => d.event === hookEvent);
+  const defs = hookDefinitionsForEvent(hookEvent);
   if (defs.length === 0) return false;
   // All scripts for this event must be installed
   return defs.every(def => {
     const cmd = hookCommandString(def.script, targetProjectPath);
-    return settings.hooks[hookEvent].some(entry =>
+    return (settings.hooks[def.event] || []).some(entry =>
       entry.hooks?.some(h => h.command === cmd)
     );
   });
@@ -20178,6 +18221,7 @@ const SYNABUN_TOOL_PERMISSIONS = [
   'mcp__SynaBun__browser_snapshot',
   'mcp__SynaBun__browser_content',
   'mcp__SynaBun__browser_screenshot',
+  'mcp__SynaBun__browser_console',
   'mcp__SynaBun__browser_session',
   'mcp__SynaBun__browser_go_back',
   'mcp__SynaBun__browser_go_forward',
@@ -20342,6 +18386,7 @@ const SYNABUN_TOOL_CATEGORIES = [
       { key: 'mcp__SynaBun__browser_snapshot', label: 'Read page structure', desc: 'Get the page layout and elements' },
       { key: 'mcp__SynaBun__browser_content', label: 'Read page text', desc: 'Get the visible text content' },
       { key: 'mcp__SynaBun__browser_screenshot', label: 'Take screenshot', desc: 'Capture what the page looks like' },
+      { key: 'mcp__SynaBun__browser_console', label: 'Read console', desc: 'See the page\'s console messages and errors' },
       { key: 'mcp__SynaBun__browser_session', label: 'Manage sessions', desc: 'Open, close, or switch browser windows' },
       { key: 'mcp__SynaBun__browser_go_back', label: 'Go back', desc: 'Navigate to the previous page' },
       { key: 'mcp__SynaBun__browser_go_forward', label: 'Go forward', desc: 'Navigate to the next page' },
@@ -20618,9 +18663,10 @@ function addHookToSettings(settings, onlyEvent, targetProjectPath) {
 
   // Enforce SynaBun env defaults and tool permissions alongside hooks
   ensureSynaBunEnv(settings);
+  ensureHookRoot(settings, targetProjectPath);
   ensureSynaBunPermissions(settings);
 
-  const defs = onlyEvent ? HOOK_SCRIPTS.filter(d => d.event === onlyEvent) : HOOK_SCRIPTS;
+  const defs = hookDefinitionsForEvent(onlyEvent);
   for (const def of defs) {
     if (!settings.hooks[def.event]) settings.hooks[def.event] = [];
     const cmd = hookCommandString(def.script, targetProjectPath);
@@ -20630,9 +18676,10 @@ function addHookToSettings(settings, onlyEvent, targetProjectPath) {
     // macOS) — then add exactly one canonical entry for this machine. This both
     // dedups the legacy relative+absolute duplication and repairs broken paths
     // that would otherwise crash the CLI with MODULE_NOT_FOUND on every event.
-    settings.hooks[def.event] = settings.hooks[def.event].filter(entry =>
-      !entry.hooks?.some(h => isSynaBunHookCommand(h.command, def.script))
-    );
+    settings.hooks[def.event] = settings.hooks[def.event].flatMap(entry => {
+      const hooks = (entry.hooks || []).filter(h => !isSynaBunHookCommand(h.command, def.script));
+      return hooks.length ? [{ ...entry, hooks }] : [];
+    });
     settings.hooks[def.event].push({
       matcher: def.matcher || '',
       hooks: [{ type: 'command', command: cmd, timeout: def.timeout }],
@@ -20641,59 +18688,7 @@ function addHookToSettings(settings, onlyEvent, targetProjectPath) {
   return settings;
 }
 
-// Walk every settings.json (global + registered projects) and dedup hook
-// entries that point at the same script in different command-string forms.
-// Runs once at server startup to repair existing damage from the legacy
-// duplication bug. Returns { files, removed, repaired, matchers } counters.
-//
-// Also repairs MATCHER DRIFT: an entry whose command is already canonical but
-// whose matcher no longer equals HOOK_SCRIPTS' value is rewritten. Without this
-// the sweep compared only command strings, so a matcher change never reached
-// already-installed settings.json files and silently disabled part of a hook.
-// SynaBun-owned matchers are not user-editable state — addHookToSettings()
-// already rewrites them on every install/toggle — and the blast radius is
-// limited to commands resolving to hooks/claude-code/<script>.
-// Normalize one settings object in place. Top-level (not a closure) so tests can
-// extract and exercise the shipped implementation directly.
-// Returns true when `settings` was modified; accumulates counters into `stats`.
-function sweepSettingsHooks(settings, targetProjectPath, stats) {
-  if (!settings?.hooks) return false;
-  let changed = false;
-  for (const def of HOOK_SCRIPTS) {
-    const arr = settings.hooks[def.event];
-    if (!Array.isArray(arr) || arr.length === 0) continue;
-    const cmd = hookCommandString(def.script, targetProjectPath);
-    // Gather every entry pointing at this hook script in ANY command-string
-    // form (relative, absolute, or a stale cross-OS path), then rebuild with
-    // exactly one canonical entry. Catches Windows "J:/..." paths that an
-    // exact-variant match can't see and that crash the CLI on macOS/Linux.
-    const matching = [];
-    const rest = arr.filter(entry => {
-      if (entry.hooks?.some(h => isSynaBunHookCommand(h.command, def.script))) {
-        matching.push(entry);
-        return false;
-      }
-      return true;
-    });
-    if (matching.length === 0) continue;
-    const wantMatcher = def.matcher || '';
-    const canonical = matching.find(e => e.hooks?.some(h => h.command === cmd));
-    const matcherOk = !!canonical && (canonical.matcher || '') === wantMatcher;
-    // Compare the matcher too, not just the command — a stale matcher on an
-    // otherwise-canonical entry is exactly the drift this repairs.
-    if (matching.length === 1 && canonical && matcherOk) continue; // already canonical
-    stats.removed += matching.length - 1;
-    if (!canonical) stats.repaired += 1;
-    else if (!matcherOk) stats.matchers += 1;
-    settings.hooks[def.event] = [
-      ...rest,
-      { matcher: wantMatcher, hooks: [{ type: 'command', command: cmd, timeout: def.timeout }] },
-    ];
-    changed = true;
-  }
-  return changed;
-}
-
+// Canonicalize across settings scopes, preserving unrelated handlers.
 function dedupeAllSettingsHooks() {
   const stats = { files: 0, removed: 0, repaired: 0, matchers: 0 };
   const sweep = (settings, targetProjectPath) => sweepSettingsHooks(settings, targetProjectPath, stats);
@@ -20709,11 +18704,13 @@ function dedupeAllSettingsHooks() {
     const projects = loadHookProjects();
     for (const p of projects) {
       try {
-        const projPath = getClaudeSettingsPath(p.path);
-        const projSettings = readClaudeSettings(projPath);
-        if (projSettings && sweep(projSettings, p.path)) {
-          writeClaudeSettings(projPath, projSettings);
-          stats.files++;
+        for (const name of ['settings.json', 'settings.local.json']) {
+          const projPath = join(p.path, '.claude', name);
+          const projSettings = readClaudeSettings(projPath);
+          if (projSettings && sweep(projSettings, p.path)) {
+            writeClaudeSettings(projPath, projSettings);
+            stats.files++;
+          }
         }
       } catch { /* skip */ }
     }
@@ -20723,19 +18720,16 @@ function dedupeAllSettingsHooks() {
 
 function removeHookFromSettings(settings, onlyEvent, targetProjectPath) {
   if (!settings?.hooks) return settings;
-
-  const defs = onlyEvent ? HOOK_SCRIPTS.filter(d => d.event === onlyEvent) : HOOK_SCRIPTS;
+  const defs = hookDefinitionsForEvent(onlyEvent);
   for (const def of defs) {
     if (!settings.hooks[def.event]) continue;
-    const cmd = hookCommandString(def.script, targetProjectPath);
-    // Also match absolute-path variants so we can clean up old installs
-    const absCmd = hookCommandString(def.script);
-    settings.hooks[def.event] = settings.hooks[def.event].filter(entry =>
-      !entry.hooks?.some(h => h.command === cmd || h.command === absCmd)
-    );
-    if (settings.hooks[def.event].length === 0) delete settings.hooks[def.event];
+    settings.hooks[def.event] = settings.hooks[def.event].flatMap(entry => {
+      const hooks = (entry.hooks || []).filter(h => !isSynaBunHookCommand(h.command, def.script));
+      return hooks.length ? [{ ...entry, hooks }] : [];
+    });
+    if (!settings.hooks[def.event].length) delete settings.hooks[def.event];
   }
-  if (Object.keys(settings.hooks).length === 0) delete settings.hooks;
+  if (!Object.keys(settings.hooks).length) delete settings.hooks;
   return settings;
 }
 
@@ -21443,6 +19437,34 @@ async function getCodexSessionsResponse({ targetProject, limit, offset, search, 
 // GET /api/claude-code/sessions — browse past Claude Code sessions across registered projects
 app.get('/api/claude-code/sessions', async (req, res) => {
   try {
+    // A tab under a named Claude account keeps its transcripts in that account's
+    // own config directory. The list below and its caches (keyed by the project
+    // folder's name, which every account shares) are the default account's. For
+    // a named account the route answers the one thing the panel asks it: which
+    // registered project holds this session (`search` is its id), looked up in
+    // that account's catalogue. An account that is no longer set up is an
+    // error, never the default account's list in its place.
+    const wantedAccount = typeof req.query.account === 'string' ? req.query.account : '';
+    if (wantedAccount && wantedAccount !== 'default') {
+      if (isGuestRequest(req)) return res.status(403).json({ error: 'Admin only' });
+      try {
+        const accountHome = panelAccountHome(wantedAccount);
+        const sessionId = String(req.query.search || '').trim();
+        const registered = loadHookProjects().filter(p => p?.path);
+        const owners = new Set(sessionProjects({ sessionId, projects: registered, projectsDir: join(accountHome, 'projects'), pathToKey: pathToClaudeKey }));
+        const only = typeof req.query.project === 'string' && req.query.project ? resolve(req.query.project) : '';
+        const row = { sessionId, firstPrompt: '', messageCount: 0, created: null, modified: null, gitBranch: null, isSidechain: false, deleted: false, title: '', tag: '' };
+        return res.json({
+          account: wantedAccount,
+          projects: registered.filter(p => !only || resolve(p.path) === only).map(p => ({
+            path: p.path, label: p.label || basename(p.path), total: owners.has(p.path) ? 1 : 0, sessions: owners.has(p.path) ? [{ ...row }] : [],
+          })),
+        });
+      } catch (err) {
+        return res.status(err?.status || 500).json({ error: err.message, ...(err?.code ? { code: err.code } : {}) });
+      }
+    }
+
     // Force full re-scan when refresh requested — nuke both in-memory and persistent cache
     if (req.query.refresh === 'true') {
       _sessionCacheMap.clear();
@@ -21455,11 +19477,13 @@ app.get('/api/claude-code/sessions', async (req, res) => {
     }
 
     const forceRefresh = req.query.refresh === 'true';
+    if (forceRefresh) claudeSessionOverlay.invalidate();
     const projects = loadHookProjects();
     const targetProject = req.query.project;
     const limit = Math.min(parseInt(req.query.limit) || 30, 100);
     const offset = parseInt(req.query.offset) || 0;
     const search = (req.query.search || '').toLowerCase().trim();
+    const tagFilter = typeof req.query.tag === 'string' ? req.query.tag.trim().slice(0, 60) : '';
 
     const homeDir = process.env.USERPROFILE || process.env.HOME;
     const claudeProjectsDir = join(homeDir, '.claude', 'projects');
@@ -21490,14 +19514,14 @@ app.get('/api/claude-code/sessions', async (req, res) => {
       entries = entries.filter(e => !e.isSidechain);
       entries.sort((a, b) => new Date(b.modified) - new Date(a.modified));
 
-      // Apply text filter if search provided
-      if (search) {
-        entries = entries.filter(e =>
-          (e.firstPrompt || '').toLowerCase().includes(search) ||
-          (e.gitBranch || '').toLowerCase().includes(search) ||
-          (e.sessionId || '').toLowerCase().includes(search)
-        );
-      }
+      // What the CLI itself keeps per session (a title set with /rename or in the
+      // terminal, the summary, the tag), laid over this list. Cached and never
+      // fatal: without it the list is what it was. See lib/claude-session-list.js.
+      const meta = await claudeSessionOverlay.forProject(proj.path);
+      entries = overlaySessions(entries, meta);
+
+      // Apply the text and tag filters (the title and the tag are searchable too)
+      if (search || tagFilter) entries = entries.filter(e => matchesSessionFilter(e, { search, tag: tagFilter }));
 
       const total = entries.length;
       const paginated = entries.slice(offset, offset + limit);
@@ -21515,6 +19539,8 @@ app.get('/api/claude-code/sessions', async (req, res) => {
           gitBranch: e.gitBranch || null,
           isSidechain: e.isSidechain || false,
           deleted: e._deleted || false,
+          title: e.title || '',
+          tag: e.tag || '',
         })),
       });
     }
@@ -21819,6 +19845,110 @@ app.get('/api/session-search', async (req, res) => {
   }
 });
 
+// --- Session management through the Agent SDK (sidepanel: rename, tag, fork, delete, subagent transcripts) ---
+// The SDK writes where the CLI reads, so a title set here shows in `claude --resume`.
+// Guests are refused every non-GET request by the global guard above.
+// The chain of one transcript (uuid → the entry it follows). Fork "up to here"
+// and a conversation rewind take their target from it, not from what the page
+// happens to have rendered: a turn can end on a tool-result carrier or an
+// attachment the panel shows no row for. Null when the transcript is not found.
+async function claudeTranscriptChain({ sessionId, project = '', accountId = '' } = {}) {
+  let accountHome = null;
+  if (accountId && accountId !== 'default') {
+    try { accountHome = _panelClaudeAccounts().homeFor(accountId); } catch { accountHome = null; }
+    if (!accountHome) return null;
+  }
+  const homeDir = process.env.USERPROFILE || process.env.HOME || '';
+  let found = null;
+  try {
+    found = findSessionTranscript({
+      sessionId, project, projects: loadHookProjects(),
+      projectsDir: join(accountHome || join(homeDir, '.claude'), 'projects'), pathToKey: pathToClaudeKey,
+    });
+  } catch { found = null; }
+  if (!found) return null;
+  const chain = createChainIndex();
+  // Read from the canonical path that was checked, opened without following a link.
+  let transcript;
+  try { transcript = openConfinedStream(found.realFolder, found.realPath, { encoding: 'utf-8' }); } catch { return null; }
+  for await (const line of jsonlLines(transcript)) {
+    if (!line.trim()) continue;
+    try { chain.add(JSON.parse(line)); } catch {}
+  }
+  return chain;
+}
+
+// What SynaBun keeps about a session besides its transcript goes with it
+// (lib/claude-session-cleanup.js): a failing step is logged, never thrown.
+const claudeSessionCleanup = createSessionCleanup({
+  log: (message) => console.warn(message),
+  steps: {
+    // The per-session cost row; the month totals stay (the money was spent).
+    cost: (sessionId) => { const data = loadCostData(); if (dropSessionCost(data, sessionId)) saveCostData(data); },
+    // Indexed chunks and the list / search cache rows in memory.db. Memories stay.
+    chunks: (sessionId) => deleteSessionRows(getDb(), sessionId, 'claude-code'),
+    // The session menu's own metadata cache would keep listing it as "deleted".
+    listCache: (sessionId) => {
+      const claudeProjectsDir = join(process.env.USERPROFILE || process.env.HOME || '', '.claude', 'projects');
+      for (const proj of loadHookProjects()) {
+        if (!proj?.path) continue;
+        const key = pathToClaudeKey(proj.path);
+        for (const k of new Set([key.replace(/^([A-Z])/, (m) => m.toLowerCase()), key])) {
+          const projDir = join(claudeProjectsDir, k);
+          if (!_sessionCacheMap.has(projDir) && !existsSync(getSessionCachePath(projDir))) continue;
+          const cache = loadSessionCache(projDir);
+          if (cache.delete(sessionId)) saveSessionCache(projDir, cache);
+        }
+      }
+    },
+    // The panel's rendered transcript snapshot.
+    snapshot: (sessionId) => blobDelete('claude-snapshots', sessionId),
+  },
+});
+const claudeSessionOps = createSessionOps({
+  projects: () => loadHookProjects(),
+  afterDelete: (sessionId) => claudeSessionCleanup(sessionId),
+  // "Fork from here": the copy ends on the last entry of the turn being kept,
+  // the one the prompt follows. That can be a tool-result carrier or the
+  // structured_output attachment of an end-turn tool (the turn's real output):
+  // any line a fork can end on, not only a prompt or a reply.
+  parentOf: async (sessionId, uuid, project) => {
+    const chain = await claudeTranscriptChain({ sessionId, project });
+    return chain ? chain.parentOf(uuid, { forkable: true }) : null;
+  },
+  // A session a tab is using (a live Query, or a fresh lock) is not deleted under it.
+  isBusy: (sessionId) => {
+    const lock = _sessionLocks.get(sessionId);
+    if (lock && Date.now() - lock.lastHeartbeat <= SESSION_LOCK_STALE_MS) return 'This session is open in a tab. Close the tab first.';
+    try { if (_claudeBridge?.isSessionLive?.(sessionId)) return 'This session is still running. Close its tab first.'; } catch {}
+    return '';
+  },
+});
+// The CLI's own per-session metadata (title, summary, tag) for the session menu.
+const claudeSessionOverlay = createSessionListOverlay({
+  listSessions: async (opts) => (await import('@anthropic-ai/claude-agent-sdk')).listSessions(opts),
+  log: (message) => console.warn(message),
+});
+const claudeSessionRoute = (run) => async (req, res) => {
+  try {
+    const out = await run(req);
+    // A rename, a tag, a fork or a delete changes what the list says.
+    if (req.method !== 'GET') claudeSessionOverlay.invalidate();
+    res.json(out);
+  }
+  catch (err) { res.status(err?.status || 500).json({ ok: false, error: err?.message || String(err) }); }
+};
+app.post('/api/claude-code/sessions/:sessionId/title', express.json(), claudeSessionRoute(req => claudeSessionOps.rename(req.params.sessionId, req.body?.title, req.body?.project)));
+app.put('/api/claude-code/sessions/:sessionId/tag', express.json(), claudeSessionRoute(req => claudeSessionOps.tag(req.params.sessionId, req.body?.tag, req.body?.project)));
+app.post('/api/claude-code/sessions/:sessionId/fork', express.json(), claudeSessionRoute(req => claudeSessionOps.fork(req.params.sessionId, { upToMessageId: req.body?.upToMessageId, beforeMessageId: req.body?.beforeMessageId, title: req.body?.title, project: req.body?.project })));
+app.delete('/api/claude-code/sessions/:sessionId', express.json(), claudeSessionRoute((req) => {
+  // Irreversible: the panel asks first, and says so here.
+  if (req.body?.confirm !== true) { const e = new Error('Deleting a session needs confirm: true'); e.status = 400; throw e; }
+  return claudeSessionOps.remove(req.params.sessionId, req.body?.project);
+}));
+app.get('/api/claude-code/sessions/:sessionId/subagents', claudeSessionRoute(req => claudeSessionOps.subagents(req.params.sessionId, req.query.project)));
+app.get('/api/claude-code/sessions/:sessionId/subagents/:agentId/messages', claudeSessionRoute(req => claudeSessionOps.subagentMessages(req.params.sessionId, req.params.agentId, req.query.project)));
+
 // --- Session Messages (read JSONL for panel history) ---
 
 app.get('/api/claude-code/sessions/:sessionId/messages', async (req, res) => {
@@ -21829,100 +19959,69 @@ app.get('/api/claude-code/sessions/:sessionId/messages', async (req, res) => {
 
     // Find the JSONL file for this session
     const homeDir = process.env.USERPROFILE || process.env.HOME;
-    const claudeProjectsDir = join(homeDir, '.claude', 'projects');
-    const projects = loadHookProjects();
-
-    let filePath = null;
-
-    // Search in the specified project first, then all projects
-    const searchOrder = project
-      ? [projects.find(p => resolve(p.path) === resolve(project)), ...projects].filter(Boolean)
-      : projects;
-
-    for (const proj of searchOrder) {
-      if (filePath) break;
-      const projKeyLower = pathToClaudeKey(proj.path).replace(/^([A-Z])/, m => m.toLowerCase());
-      const projKeyUpper = pathToClaudeKey(proj.path);
-
-      for (const key of [projKeyLower, projKeyUpper]) {
-        const candidate = join(claudeProjectsDir, key, `${sessionId}.jsonl`);
-        if (existsSync(candidate)) { filePath = candidate; break; }
-      }
+    // A tab running under another Claude account keeps its transcripts in that
+    // account's own config directory. An account that is no longer set up is an
+    // error: reading the default account's folder instead would show another
+    // identity's conversation under this tab's name.
+    let accountHome = null;
+    const wantedAccount = typeof req.query.account === 'string' ? req.query.account : '';
+    if (wantedAccount && wantedAccount !== 'default') {
+      if (isGuestRequest(req)) return res.status(403).json({ error: 'Admin only' });
+      try { accountHome = _panelClaudeAccounts().homeFor(wantedAccount); } catch { accountHome = null; }
+      if (!accountHome) return res.status(404).json({ error: 'That Claude account is no longer set up in SynaBun.', code: 'account_unavailable', messages: [] });
     }
+    const claudeProjectsDir = join(accountHome || join(homeDir, '.claude'), 'projects');
 
-    if (!filePath) return res.json({ messages: [] });
+    // The id must be a UUID, only the transcript folders of registered projects
+    // are searched (the tab's project first), and the file found must really be
+    // inside its folder (lib/path-confine.js).
+    const found = findSessionTranscript({
+      sessionId,
+      project: typeof project === 'string' ? project : '',
+      projects: loadHookProjects(),
+      projectsDir: claudeProjectsDir,
+      pathToKey: pathToClaudeKey,
+    });
+    // No transcript where it was looked for. A named project is the only place
+    // looked in, so this is said as what it is ("not found in this project"),
+    // never as an empty conversation: the panel tells the two apart.
+    if (!found) {
+      const missing = transcriptNotFound(typeof project === 'string' ? project : '');
+      return res.status(missing.status).json(missing.body);
+    }
 
     // Stream line-by-line — session JSONLs reach tens of MB and this endpoint
     // fires on every session open; a whole-file readFileSync stalled the loop.
-    const rl = createReadlineInterface({ input: createReadStream(filePath, { encoding: 'utf-8' }), crlfDelay: Infinity });
-    const messages = [];
-    let lastUsage = null;
-    let lastModel = null;
-    let turns = 0;
-
+    // Split on "\n" only: readline also breaks at U+2028 / U+2029, which are legal
+    // inside a JSON string, and the halves of such a line were silently dropped.
+    // Read from the canonical path that was checked, opened without following a link.
+    const rl = jsonlLines(openConfinedStream(found.realFolder, found.realPath, { encoding: 'utf-8' }));
+    // Rows per transcript line: prompts (with their uuid), assistant text, thinking
+    // and tool calls, tool results with their typed output (they live inside user
+    // lines), compaction markers. The collector also follows the parentUuid chain,
+    // so the branches a conversation rewind abandoned are left out: what is shown
+    // is what the resumed model has. See lib/claude-history.js.
+    const collector = createHistoryCollector();
     for await (const line of rl) {
       if (!line.trim()) continue;
-      try {
-        const obj = JSON.parse(line);
-        if (obj.type === 'user') {
-          const content = obj.message?.content;
-          const text = typeof content === 'string' ? content
-            : Array.isArray(content) ? content.filter(b => b.type === 'text').map(b => b.text).join('\n')
-            : '';
-          if (text) { messages.push({ role: 'user', text: text.slice(0, 64000) }); turns++; }
-        } else if (obj.type === 'assistant') {
-          const content = obj.message?.content;
-          const textBlocks = Array.isArray(content)
-            ? content.filter(b => b.type === 'text').map(b => b.text)
-            : [];
-          const thinkingBlocks = Array.isArray(content)
-            ? content.filter(b => b.type === 'thinking').map(b => b.thinking || b.text || '').filter(Boolean)
-            : [];
-          const toolUseBlocks = Array.isArray(content)
-            ? content.filter(b => b.type === 'tool_use').map(b => ({
-                id: b.id,
-                name: b.name,
-                input: b.input,
-              }))
-            : [];
-          const text = textBlocks.join('\n');
-          const thinking = thinkingBlocks.join('\n\n');
-          if (text || toolUseBlocks.length || thinking) {
-            messages.push({
-              role: 'assistant',
-              text: text.slice(0, 64000) || undefined,
-              thinking: thinking.slice(0, 32000) || undefined,
-              tools: toolUseBlocks.length ? toolUseBlocks : undefined,
-            });
-          }
-          // Track latest usage and model from assistant messages
-          if (obj.message?.usage) lastUsage = obj.message.usage;
-          if (obj.message?.model) lastModel = obj.message.model;
-        } else if (obj.type === 'result') {
-          // NOTE: result.usage is CUMULATIVE — do NOT use it for context gauge.
-          // assistant.message.usage has correct per-turn values.
-        } else if (obj.type === 'tool_result' || obj.type === 'tool') {
-          // Extract tool results for pairing with tool_use cards in history
-          const content = obj.message?.content || obj.content;
-          const toolUseId = obj.tool_use_id || obj.message?.tool_use_id;
-          if (toolUseId) {
-            let resultText = '';
-            if (Array.isArray(content)) resultText = content.map(b => b.text || '').join('\n');
-            else if (typeof content === 'string') resultText = content;
-            messages.push({
-              role: 'tool_result',
-              toolUseId,
-              text: resultText.slice(0, 32000) || undefined,
-              isError: obj.is_error || obj.message?.is_error || false,
-            });
-          }
-        }
-      } catch {}
+      try { collector.add(JSON.parse(line)); } catch {}
     }
 
-    // Return last N messages + usage summary
-    const sliced = messages.slice(-limit);
-    const result = { messages: sliced, total: messages.length, turns };
+    // `?tool=<tool_use_id>`: just that call's result (a restored snapshot holds
+    // only the clipped text of a long result and asks for the rest).
+    if (typeof req.query.tool === 'string' && req.query.tool) {
+      const row = collector.toolResult(req.query.tool);
+      return res.json({ messages: row ? [row] : [] });
+    }
+
+    // The last N rows, or the N rows before `before` ("load earlier"), plus the
+    // usage summary. `start` is the index of the first row returned; a page is
+    // never cut between a tool call and its result.
+    const page = collector.finish({ limit, before: req.query.before ?? null });
+    const lastUsage = page.usage;
+    // `leaf`: the last prompt or reply of the active branch. The panel's cached
+    // transcript is current only when it ends on the same entry.
+    const result = { messages: page.messages, total: page.total, start: page.start, visible: page.visible, turns: page.turns, leaf: page.leaf };
     if (lastUsage) {
       result.usage = {
         input_tokens: lastUsage.input_tokens || 0,
@@ -21931,15 +20030,16 @@ app.get('/api/claude-code/sessions/:sessionId/messages', async (req, res) => {
         cache_creation_input_tokens: lastUsage.cache_creation_input_tokens || 0,
       };
     }
-    // Do NOT infer contextWindow from lastModel: JSONL strips the `[1m]`
-    // beta suffix, so a session run with 1M context is indistinguishable
-    // from a 200K session based on the stored model id alone. The client
-    // falls back to the dropdown's current selection; the gauge is then
-    // re-anchored to the real value the next time CLI emits a result
-    // event (which carries modelUsage.contextWindow).
+    // No contextWindow: assistant entries store the bare model id, and the
+    // transcript's cost-state keeps the `[1m]` marker but no window sizes and can
+    // list both variants of one model (a 1M main loop with 200K subagents). The
+    // client uses the session snapshot's window or the selected model's until the
+    // next result event reports the real one (modelUsage.contextWindow).
     res.json(result);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    // A refused id (not a UUID) is the caller's error, not the server's.
+    const status = err instanceof PathConfineError ? err.status : 500;
+    res.status(status).json({ error: err.message, messages: [] });
   }
 });
 
@@ -22347,6 +20447,91 @@ app.get('/api/claude-code/tool-permissions', (req, res) => {
   }
 });
 
+// GET /api/claude-code/permission-rules — the allow / deny / ask rules in the
+// user's and a registered project's Claude Code settings (sidepanel /permissions).
+// `account`: the tab's Claude account. Its user rules are read from its own
+// config directory (a file it may share with the default account: `shared`).
+app.get('/api/claude-code/permission-rules', (req, res) => {
+  try {
+    const requested = typeof req.query.project === 'string' ? req.query.project : '';
+    // Only a registered project's settings are read: never an arbitrary path.
+    const project = requested && loadHookProjects().some(p => resolve(p.path) === resolve(requested)) ? resolve(requested) : '';
+    const accountHome = panelAccountHome(req.query.account);
+    if (accountHome && isGuestRequest(req)) return res.status(403).json({ error: 'Admin only' });
+    res.json({ ok: true, rules: readPermissionRules({ home: process.env.USERPROFILE || process.env.HOME, accountHome, project }) });
+  } catch (err) {
+    res.status(err?.status || 500).json({ error: err.message, ...(err?.code ? { code: err.code } : {}) });
+  }
+});
+
+// The SDK resolves the settings of the account this server runs under. For a
+// tab under a named account that answer is right only when the account reads the
+// same user settings (the shared link, or neither has a file). Otherwise the
+// route refuses: the default account's settings are never shown as another's.
+const ACCOUNT_SETTINGS_UNRESOLVABLE = "This tab runs under a Claude account with its own settings file. The settings in effect can only be worked out for the default account; /permissions lists this account's rules.";
+function accountSharesUserSettings(accountHome) {
+  const home = process.env.USERPROFILE || process.env.HOME || '';
+  const file = userSettingsFile({ home, accountHome });
+  return file.shared || (!existsSync(file.path) && !existsSync(userSettingsFile({ home }).path));
+}
+
+// GET /api/claude-code/settings/resolved — the Claude Code settings in effect for a
+// registered project (or the user's own, without one) and the file each key comes
+// from (sidepanel /settings). The SDK's resolveSettings() runs the CLI's merge
+// without starting a process; values that can hold a secret are never returned
+// (lib/claude-settings-view.js). Admin only, like every /api/claude-code route.
+app.get('/api/claude-code/settings/resolved', async (req, res) => {
+  try {
+    const requested = typeof req.query.project === 'string' ? req.query.project : '';
+    const project = requested && loadHookProjects().some(p => resolve(p.path) === resolve(requested)) ? resolve(requested) : '';
+    const accountHome = panelAccountHome(req.query.account);
+    if (accountHome && !accountSharesUserSettings(accountHome)) return res.status(409).json({ ok: false, code: 'account_settings_unresolvable', error: ACCOUNT_SETTINGS_UNRESOLVABLE });
+    const sdk = await import('@anthropic-ai/claude-agent-sdk');
+    if (typeof sdk.resolveSettings !== 'function') return res.status(501).json({ ok: false, error: 'This Claude Agent SDK version cannot resolve settings.' });
+    const view = slimResolvedSettings(await sdk.resolveSettings(project ? { cwd: project } : { settingSources: ['user'] }));
+    res.json({ ok: true, project, ...(accountHome ? { sharedUserSettings: true } : {}), ...view });
+  } catch (err) {
+    res.status(err?.status || 500).json({ ok: false, error: err.message, ...(err?.code ? { code: err.code } : {}) });
+  }
+});
+
+// GET /api/claude-code/bypass-policy — whether a sidepanel tab of a registered
+// project (or of none), under the tab's Claude account, can be put in Bypass.
+// The user's settings or a managed policy can turn the mode off
+// (permissions.disableBypassPermissionsMode), and Claude Code refuses it as root.
+// The panel shows the option as unavailable with the reason; Claude Code is what
+// enforces it (lib/claude-bypass-policy.js). Admin only, like every
+// /api/claude-code route.
+app.get('/api/claude-code/bypass-policy', async (req, res) => {
+  try {
+    const requested = typeof req.query.project === 'string' ? req.query.project : '';
+    const project = requested && loadHookProjects().some(p => resolve(p.path) === resolve(requested)) ? resolve(requested) : '';
+    const accountHome = panelAccountHome(req.query.account);
+    const sdk = await import('@anthropic-ai/claude-agent-sdk');
+    const policy = await resolveBypassPolicy({ resolveSettings: sdk.resolveSettings, project, home: process.env.USERPROFILE || process.env.HOME, accountHome });
+    res.json({ ok: true, project, ...policy });
+  } catch (err) {
+    res.status(err?.status || 500).json({ ok: false, error: err.message, ...(err?.code ? { code: err.code } : {}) });
+  }
+});
+
+// DELETE /api/claude-code/permission-rules — take one rule out of one list of one
+// settings file (sidepanel /permissions → Remove). Body: { scope, list, rule, project }.
+// Guests never get here (the non-GET guard above); the project must be registered.
+app.delete('/api/claude-code/permission-rules', express.json(), (req, res) => {
+  try {
+    const { scope, list, rule } = req.body || {};
+    const requested = typeof req.body?.project === 'string' ? req.body.project : '';
+    const project = requested && loadHookProjects().some(p => resolve(p.path) === resolve(requested)) ? resolve(requested) : '';
+    // The user scope of a tab under a named account is that account's file.
+    const accountHome = panelAccountHome(req.body?.account);
+    const result = removePermissionRule({ home: process.env.USERPROFILE || process.env.HOME, accountHome, project, scope, list, rule });
+    res.json({ ok: true, removed: result.removed });
+  } catch (err) {
+    res.status(err?.status || 500).json({ ok: false, error: err.message, ...(err?.code ? { code: err.code } : {}) });
+  }
+});
+
 // PUT /api/claude-code/tool-permissions — toggle individual tool or category group
 app.put('/api/claude-code/tool-permissions', (req, res) => {
   try {
@@ -22722,38 +20907,9 @@ function loadOpencodeGreetingConfig() {
   }
 }
 
-// Plan-mode prompt-prefix injected into every OpenCode plan-mode turn. OpenCode
-// has no native plan-mode system prompt — the SDK only exposes `body.mode` for
-// agent selection. Without explicit instructions models like Kimi K2.6 write
-// clarification questions as prose, which the sidepanel cannot render as an
-// interactive card. The pressing-STOP recovery path then surfaces a PLAN
-// COMPLETE for the half-finished plan. Anchoring the rules here forces the
-// model to use the `question` tool and stop after a final plan.
-const OPENCODE_PLAN_MODE_INSTRUCTION = `[PLAN MODE] Read-only research and planning. Do NOT make code changes.
-
-CRITICAL — When you have clarifying questions for the user:
-1. You MUST call the \`question\` tool to ask. The user only sees interactive question cards in the sidepanel — they CANNOT see questions you write as plain text.
-2. Do NOT write questions as prose in your reply (e.g. "Before I proceed, a couple of quick questions: …").
-3. After calling \`question\`, stop and wait for the user's answer before continuing the plan.
-4. When the plan is ready and questions are resolved, write the final plan as a structured Markdown response and stop. Do NOT continue into implementation — the sidepanel will present approval options (Continue with implementation / Continue planning / Compact context / Edit plan).
-
-EXAMPLE — calling the question tool (use this shape verbatim, just substitute your own content):
-question({
-  questions: [
-    {
-      question: "Which database engine should we use?",
-      header: "DB engine",
-      options: [
-        { label: "PostgreSQL", description: "Mature SQL, good for complex queries" },
-        { label: "SQLite", description: "Single-file, zero-config, lower throughput" }
-      ],
-      multiSelect: false
-    }
-  ]
-})
-
-If you find yourself writing "let me ask a few questions" or "Question 1:" or "Before I proceed:", STOP and call the \`question\` tool instead.`;
-
+// No caller since the legacy OpenCode socket handler was removed: the v2 panel
+// sends the prompt as typed. Kept because Settings → Automations → Greetings
+// still edits this config; wiring it into the v2 send path is the owner's decision.
 function buildOpencodeGreetingUserPrompt({ cwd = PACKAGE_ROOT, userPrompt = '' } = {}) {
   const config = loadOpencodeGreetingConfig();
   if (config.enabled !== true) return '';
@@ -22952,133 +21108,44 @@ app.put('/api/opencode-panel/greeting/config/:project', (req, res) => {
   }
 });
 
-// GET /api/claude-code/ruleset — Return the SynaBun CLAUDE.md memory ruleset for copy/paste
-// Supports ?format=claude (default) | cursor | generic | gemini | codex | coexistence
-app.get('/api/claude-code/ruleset', (req, res) => {
-  try {
-    const templatePath = resolve(__dirname, 'templates', 'CLAUDE-template.md');
-    const sourcePath = templatePath;
-    if (!existsSync(sourcePath)) {
-      return res.status(404).json({ error: 'CLAUDE.md template not found' });
-    }
-    const content = readFileSync(sourcePath, 'utf-8');
-    const format = (req.query.format || 'claude').toLowerCase();
-
-    // Section markers in CLAUDE.md
-    const MARKERS = {
-      claude:       { start: '## Memory Ruleset', end: '## Condensed Rulesets' },
-      cursor:       { start: '### Cursor',  end: '### Generic' },
-      generic:      { start: '### Generic', end: '### Gemini' },
-      gemini:       { start: '### Gemini',  end: '### Codex' },
-      codex:        { start: '### Codex',   end: '\n---' },
-      coexistence:  { start: '## Coexistence with Other Tools', end: '## Condensed Rulesets' },
-    };
-
-    const marker = MARKERS[format];
-    if (!marker) {
-      return res.status(400).json({ error: `Invalid format: ${format}. Use claude, cursor, generic, gemini, codex, or coexistence.` });
-    }
-
-    const startIdx = content.indexOf(marker.start);
-    if (startIdx === -1) {
-      return res.status(404).json({ error: `Section "${marker.start}" not found in CLAUDE.md` });
-    }
-
-    // Extract content between start marker and end marker (or EOF)
-    const contentAfterStart = marker.start === '\n---'
-      ? content.indexOf(marker.end, startIdx)
-      : content.indexOf(marker.end, startIdx + marker.start.length);
-    const ruleset = contentAfterStart !== -1
-      ? content.substring(startIdx, contentAfterStart).trim()
-      : content.substring(startIdx).trim();
-
-    // Strip the section header line — leave only the content below it
-    let output;
-    if (format === 'claude') {
-      output = ruleset;
-    } else if (format === 'coexistence') {
-      // Remove the ## heading, keep the body
-      output = ruleset.replace(/^## Coexistence with Other Tools\s*\n?/, '').replace(/\n?---\s*$/, '').trim();
-    } else {
-      // Remove the marker heading line, return just the content
-      output = ruleset.replace(/^### (Cursor|Generic|Gemini|Codex)\s*\n?/, '').replace(/^```\s*\n?/, '').replace(/\n?```\s*$/, '').trim();
-    }
-
-    res.json({ ok: true, ruleset: output, format });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+// ── SynaBun rules (lib/rulesets/) ──
+// One rendered ruleset per host, installed where each tool loads it for every
+// project and kept current by reconcile() at boot. The installer only ever
+// touches the user's home through the same directories the MCP toggles use.
+const rulesetInstaller = createRulesetInstaller({
+  home: getHomePath() || os.homedir(),
+  dataHome: DATA_HOME,
+  projects: () => loadHookProjects(),
+  env: process.env,
+  opencodeConfigPath: () => getOpencodeConfigPath(),
+  log: (tag, message) => console.warn(`[${tag}] ${message}`),
 });
 
-// GET /api/claude-code/ruleset/versions — Per-format fingerprint for the
-// Notifications drawer. Manifest entry (templates/ruleset-versions.json) wins;
-// if absent, fall back to a SHA-1 of the section text. Cached by mtime so the
-// disk read happens at most once per change.
-const _RULESET_FORMATS = ['claude', 'codex', 'cursor', 'generic', 'gemini'];
-const _RULESET_MARKERS = {
-  claude:  { start: '## Memory Ruleset', end: '## Condensed Rulesets' },
-  cursor:  { start: '### Cursor',        end: '### Generic' },
-  generic: { start: '### Generic',       end: '### Gemini' },
-  gemini:  { start: '### Gemini',        end: '### Codex' },
-  codex:   { start: '### Codex',         end: '\n---' },
-};
-let _rulesetVersionsCache = { mtime: 0, payload: null };
-
-app.get('/api/claude-code/ruleset/versions', (req, res) => {
+// Rules follow the MCP connection: connecting a tool installs its rules (the
+// toggle is the consent, `rules: false` in the body skips it) and disconnecting
+// removes them. A rules failure is reported in the response, never thrown: the
+// MCP toggle itself already succeeded.
+function syncRulesWithMcp(host, action, body) {
   try {
-    const templatePath = resolve(__dirname, 'templates', 'CLAUDE-template.md');
-    const manifestPath = resolve(__dirname, 'templates', 'ruleset-versions.json');
-    if (!existsSync(templatePath)) {
-      return res.status(404).json({ error: 'CLAUDE.md template not found' });
+    if (action === 'install') {
+      if (body?.rules === false) return { ok: true, skipped: true };
+      return rulesetInstaller.install(host);
     }
-
-    const tplStat = statSync(templatePath);
-    const manStat = existsSync(manifestPath) ? statSync(manifestPath) : null;
-    const mtime = Math.max(tplStat.mtimeMs || 0, manStat?.mtimeMs || 0);
-    if (_rulesetVersionsCache.payload && _rulesetVersionsCache.mtime === mtime) {
-      return res.json(_rulesetVersionsCache.payload);
-    }
-
-    const tpl = readFileSync(templatePath, 'utf-8');
-    let manifest = null;
-    if (manStat) {
-      try { manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')); } catch { manifest = null; }
-    }
-
-    const formats = {};
-    for (const fmt of _RULESET_FORMATS) {
-      const marker = _RULESET_MARKERS[fmt];
-      const startIdx = marker ? tpl.indexOf(marker.start) : -1;
-      let sectionText = '';
-      if (startIdx !== -1) {
-        const endIdx = tpl.indexOf(marker.end, startIdx + marker.start.length);
-        sectionText = (endIdx !== -1 ? tpl.substring(startIdx, endIdx) : tpl.substring(startIdx)).trim();
-      }
-      const hash = createHash('sha1').update(sectionText).digest('hex').slice(0, 16);
-      const entry = manifest?.rulesets?.[fmt];
-      if (entry?.version) {
-        formats[fmt] = {
-          fingerprint: 'v:' + entry.version,
-          version: entry.version,
-          summary: entry.summary || '',
-          updatedAt: entry.updatedAt || '',
-          source: 'manifest',
-        };
-      } else {
-        formats[fmt] = {
-          fingerprint: 'h:' + hash,
-          source: 'hash',
-        };
-      }
-    }
-
-    const payload = { ok: true, formats };
-    _rulesetVersionsCache = { mtime, payload };
-    res.json(payload);
+    return rulesetInstaller.remove(host);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.warn(`[rulesets] ${action} ${host} failed: ${err.message}`);
+    return { ok: false, error: err.message };
   }
-});
+}
+
+// GET/POST/DELETE /api/setup/rules/* — status, install, remove, settings.
+registerRulesetRoutes(app, { installer: rulesetInstaller });
+
+// GET /api/claude-code/ruleset?format= and /ruleset/versions — the read-only
+// endpoints the onboarding wizard, Settings and the Updates drawer call. Same
+// response shapes as before, answered by the renderer (format `generic` is the
+// OpenCode text; `claude` no longer carries the coexistence snippet).
+registerLegacyRulesetRoutes(app);
 
 // GET /api/claude-code/mcp — Check if SynaBun MCP is registered in Claude
 app.get('/api/claude-code/mcp', (req, res) => {
@@ -23117,7 +21184,7 @@ app.post('/api/claude-code/mcp', (req, res) => {
     const permResult = injectClaudeMemoryPerms();
     console.log(`[memory-perms] Claude memory tools injected (${permResult.scope}): ${permResult.paths.join(', ')}`);
 
-    res.json({ ok: true, message: 'SynaBun MCP registered (HTTP). Restart Claude Code to connect.' });
+    res.json({ ok: true, message: 'SynaBun MCP registered (HTTP). Restart Claude Code to connect.', rules: syncRulesWithMcp('claude', 'install', req.body) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -23128,14 +21195,14 @@ app.delete('/api/claude-code/mcp', (req, res) => {
   try {
     const home = process.env.USERPROFILE || process.env.HOME || '';
     const claudeJsonPath = join(home, '.claude.json');
-    if (!existsSync(claudeJsonPath)) return res.json({ ok: true });
+    if (!existsSync(claudeJsonPath)) return res.json({ ok: true, rules: syncRulesWithMcp('claude', 'remove') });
     const data = JSON.parse(readFileSync(claudeJsonPath, 'utf-8'));
     if (data.mcpServers && data.mcpServers.SynaBun) {
       delete data.mcpServers.SynaBun;
       if (Object.keys(data.mcpServers).length === 0) delete data.mcpServers;
       writeFileSync(claudeJsonPath, JSON.stringify(data, null, 2), 'utf-8');
     }
-    res.json({ ok: true, message: 'SynaBun MCP removed from Claude.' });
+    res.json({ ok: true, message: 'SynaBun MCP removed from Claude.', rules: syncRulesWithMcp('claude', 'remove') });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -23317,7 +21384,7 @@ app.post('/api/setup/gemini/mcp', (req, res) => {
       env: { DOTENV_PATH: envPath, SYNABUN_DATA_HOME: DATA_HOME, MEMORY_DATA_DIR: resolve(DATA_HOME, 'mcp-data') },
     });
     writeFileSync(settingsPath, JSON.stringify(data, null, 2) + '\n', 'utf-8');
-    res.json({ ok: true, message: 'SynaBun MCP registered in Gemini CLI. Restart Gemini to connect.' });
+    res.json({ ok: true, message: 'SynaBun MCP registered in Gemini CLI. Restart Gemini to connect.', rules: syncRulesWithMcp('gemini', 'install', req.body) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -23326,14 +21393,14 @@ app.post('/api/setup/gemini/mcp', (req, res) => {
 app.delete('/api/setup/gemini/mcp', (req, res) => {
   try {
     const settingsPath = join(getHomePath(), '.gemini', 'settings.json');
-    if (!existsSync(settingsPath)) return res.json({ ok: true });
+    if (!existsSync(settingsPath)) return res.json({ ok: true, rules: syncRulesWithMcp('gemini', 'remove') });
     const data = JSON.parse(readFileSync(settingsPath, 'utf-8'));
     if (data.mcpServers && data.mcpServers.SynaBun) {
       delete data.mcpServers.SynaBun;
       if (Object.keys(data.mcpServers).length === 0) delete data.mcpServers;
       writeFileSync(settingsPath, JSON.stringify(data, null, 2) + '\n', 'utf-8');
     }
-    res.json({ ok: true, message: 'SynaBun MCP removed from Gemini CLI.' });
+    res.json({ ok: true, message: 'SynaBun MCP removed from Gemini CLI.', rules: syncRulesWithMcp('gemini', 'remove') });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -23361,7 +21428,7 @@ app.post('/api/setup/codex/mcp', (req, res) => {
     const health = upsertCodexMcpConfig(configPath, buildCodexMcpDefinition());
     // Force-allow the 7 SynaBun memory tools so CLI sessions skip prompts.
     injectCodexMemoryPerms();
-    res.json({ ok: true, ...health, message: 'SynaBun MCP registered in Codex CLI. Restart Codex to connect.' });
+    res.json({ ok: true, ...health, message: 'SynaBun MCP registered in Codex CLI. Restart Codex to connect.', rules: syncRulesWithMcp('codex', 'install', req.body) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -23370,9 +21437,9 @@ app.post('/api/setup/codex/mcp', (req, res) => {
 app.delete('/api/setup/codex/mcp', (req, res) => {
   try {
     const configPath = join(getHomePath(), '.codex', 'config.toml');
-    if (!existsSync(configPath)) return res.json({ ok: true });
+    if (!existsSync(configPath)) return res.json({ ok: true, rules: syncRulesWithMcp('codex', 'remove') });
     const health = removeCodexMcpConfig(configPath);
-    res.json({ ok: true, ...health, message: 'SynaBun MCP removed from Codex CLI.' });
+    res.json({ ok: true, ...health, message: 'SynaBun MCP removed from Codex CLI.', rules: syncRulesWithMcp('codex', 'remove') });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -23417,7 +21484,11 @@ app.get('/api/setup/status', (req, res) => {
       }
     } catch {}
 
-    res.json({ ok: true, claude, gemini, codex, opencode, paths: { mcpIndexPath, envPath } });
+    // Where each tool's SynaBun rules stand (lib/rulesets/installer.js).
+    let rules = null;
+    try { rules = rulesetInstaller.status(); } catch (err) { rules = { ok: false, error: err.message }; }
+
+    res.json({ ok: true, claude, gemini, codex, opencode, rules, paths: { mcpIndexPath, envPath } });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -23506,6 +21577,7 @@ function buildCliSkillPrompt(skillName, target) {
 }
 
 function installSkillToTarget(target, skillName) {
+  if (!isPlainName(skillName)) throw new Error('Not a skill name.');
   const sourceDir = join(SKILLS_SOURCE_DIR, skillName);
   const sourceFile = join(sourceDir, 'SKILL.md');
   if (!existsSync(sourceFile)) throw new Error(`Skill "${skillName}" not found in skills/.`);
@@ -23533,6 +21605,7 @@ function installSkillToTarget(target, skillName) {
 }
 
 function uninstallSkillFromTarget(target, skillName) {
+  if (!isPlainName(skillName)) throw new Error('Not a skill name.');
   if (target === 'claude') {
     const targetDir = join(getGlobalSkillsDir(), skillName);
     if (existsSync(targetDir)) rmSync(targetDir, { recursive: true, force: true });
@@ -23736,7 +21809,10 @@ app.get('/api/claude-code/plugin-commands', (req, res) => {
     if (!existsSync(cacheRoot)) return res.json({ ok: true, commands: [] });
     const readDesc = (filePath) => {
       try {
-        const txt = readFileSync(filePath, 'utf-8');
+        // A plugin's files came from its repository: read as a regular file that
+        // is really in its commands folder, bounded, never a FIFO or a device
+        // (lib/confined-fs.js). One that is refused is listed without a description.
+        const txt = readConfinedFile(dirname(filePath), filePath, { maxBytes: 1024 * 1024, encoding: 'utf-8' });
         const toml = txt.match(/^\s*description\s*=\s*"((?:[^"\\]|\\.)*)"/m);
         if (toml) return toml[1].replace(/\\"/g, '"');
         const fm = txt.match(/^---\s*\n([\s\S]*?)\n---/);
@@ -23787,14 +21863,8 @@ app.post('/api/sidepanel/kill-session', async (req, res) => {
     let killed = false;
 
     if (provider === 'claude') {
-      const okey = _orphanKey(windowId || '', sessionId || '');
-      const orphan = _orphanedProcs.get(okey);
-      if (orphan) {
-        clearTimeout(orphan.killTimer);
-        try { orphan.kill(); } catch {}
-        _orphanedProcs.delete(okey);
-        killed = true;
-      }
+      // The session lives inside the SDK bridge.
+      try { if (_claudeBridge?.killSession?.(windowId, sessionId)) killed = true; } catch {}
       if (sessionId) _releaseSessionLock(sessionId);
     } else if (provider === 'codex') {
       const okey = _codexOrphanKey(windowId || '', sessionId || '');
@@ -23876,30 +21946,61 @@ function decodeArtifactId(encoded) {
  *  Skills use directory IDs (skill:C:\...\ads) → need SKILL.md appended.
  *  Commands/agents already point to the .md file. */
 function resolveArtifactFile(decodedId) {
-  const [type, ...rest] = decodedId.split(':');
-  const rawPath = rest.join(':');
-  if (type === 'skill') {
-    return { type, dirPath: rawPath, filePath: join(rawPath, 'SKILL.md') };
+  // The id carries a path the browser sent back: it is honoured only inside the
+  // folders the library lists (lib/path-confine.js throws otherwise).
+  return confineArtifact(decodedId, artifactRoots());
+}
+
+/** The folders a Skills Studio artifact may live in, per type. */
+function artifactRoots() {
+  const home = process.env.USERPROFILE || process.env.HOME || '';
+  // Links are resolved before anything is read or written (lib/path-confine.js).
+  // A skill folder linked into the user's own skills folder is theirs (`links`);
+  // a project's folders came with its repository and must really be inside it
+  // (`anchor`), so a link a repository ships cannot lead out of the project.
+  const roots = {
+    skill: [{ dir: getGlobalSkillsDir(), links: true }, SKILLS_SOURCE_DIR],
+    command: [join(home, '.claude', 'commands')],
+    agent: [getGlobalAgentsDir()],
+  };
+  let projects = [];
+  try { projects = loadHookProjects(); } catch { projects = []; }
+  for (const proj of projects) {
+    if (!proj?.path) continue;
+    roots.skill.push({ dir: join(proj.path, '.claude', 'skills'), anchor: proj.path });
+    roots.command.push({ dir: join(proj.path, '.claude', 'commands'), anchor: proj.path });
+    roots.agent.push({ dir: join(proj.path, '.claude', 'agents'), anchor: proj.path });
   }
-  return { type, dirPath: dirname(rawPath), filePath: rawPath };
+  return roots;
+}
+
+/** A refused path is the caller's error (400 / 403), anything else the server's. */
+const skillsStudioStatus = (err) => (err instanceof PathConfineError ? err.status : 500);
+
+/** A project path the browser sent for a create / import: it must be a registered project. */
+function isRegisteredProjectPath(projectPath) {
+  if (typeof projectPath !== 'string' || !projectPath) return false;
+  try { return loadHookProjects().some(p => p?.path && resolve(p.path) === resolve(projectPath)); } catch { return false; }
 }
 
 const ICON_EXTENSIONS = ['.png', '.svg', '.jpg', '.jpeg', '.webp'];
 
 /** Find the icon file for an artifact, if one exists. */
 function resolveArtifactIcon(decodedId) {
-  const { type, dirPath, filePath } = resolveArtifactFile(decodedId);
+  const artifact = resolveArtifactFile(decodedId);
+  const { type, dirPath, filePath } = artifact;
+  // An icon that is a link out of the artifact's folder is not served.
   if (type === 'skill') {
     for (const ext of ICON_EXTENSIONS) {
       const p = join(dirPath, `icon${ext}`);
-      if (existsSync(p)) return p;
+      if (existsSync(p) && staysInside(artifact, p)) return p;
     }
   } else {
     const name = basename(filePath, '.md');
     const dir = dirname(filePath);
     for (const ext of ICON_EXTENSIONS) {
       const p = join(dir, `${name}.icon${ext}`);
-      if (existsSync(p)) return p;
+      if (existsSync(p) && staysInside(artifact, p)) return p;
     }
   }
   return null;
@@ -23968,30 +22069,55 @@ function getFrontmatterBody(content) {
 }
 
 /** Build a recursive file tree for a directory */
-function buildSubFileTree(dir, basePath) {
-  if (!existsSync(dir)) return [];
-  const entries = readdirSync(dir, { withFileTypes: true });
-  const tree = [];
-  for (const entry of entries) {
-    if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
-    const fullPath = join(dir, entry.name);
-    const relPath = basePath ? `${basePath}/${entry.name}` : entry.name;
-    if (isDirEntry(entry)) {
-      tree.push({ name: entry.name, path: relPath, type: 'dir', children: buildSubFileTree(fullPath, relPath) });
-    } else {
-      const stat = statSync(fullPath);
-      tree.push({ name: entry.name, path: relPath, type: 'file', size: stat.size });
-    }
-  }
-  return tree.sort((a, b) => {
-    if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
-    return a.name.localeCompare(b.name);
-  });
+// The files of one skill, for the editor's tree. The walk is lib/confined-fs.js:
+// a link that leads out of the skill (or nowhere) is neither listed nor walked,
+// a link cycle inside it is walked once, special files (a FIFO, a device) are
+// left out, and depth and entry count are bounded.
+function artifactFileTree(artifact) {
+  const plain = (nodes) => nodes.map(n => (n.type === 'dir'
+    ? { name: n.name, path: n.path, type: 'dir', children: plain(n.children || []) }
+    : { name: n.name, path: n.path, type: 'file', size: n.size }));
+  return plain(listConfined(artifact.realBase, artifact.realBase, { skip: (name) => name.startsWith('.') || name === 'node_modules' }).entries);
+}
+
+// SKILL.md and command / agent files are text a person wrote; an icon is a
+// small image; an export is one JSON document held in memory. All bounded.
+const ARTIFACT_MD_MAX_BYTES = 2 * 1024 * 1024;
+const ICON_MAX_BYTES = 4 * 1024 * 1024;
+const EXPORT_MAX_BYTES = 64 * 1024 * 1024;
+
+/** The text of an artifact's own file: a regular file really inside its folder, bounded. Null when it cannot be read. */
+function readArtifactHead(artifact) {
+  try { return readConfinedFile(artifact.realBase, artifact.filePath, { maxBytes: ARTIFACT_MD_MAX_BYTES, encoding: 'utf-8' }); }
+  catch { return null; }
+}
+
+/** What a bundle holds for one file, as the bytes or text to write. */
+function importedFileData(content) {
+  return content && typeof content === 'object' && content.base64 ? Buffer.from(String(content.base64), 'base64') : String(content ?? '');
+}
+
+/** Do two of these paths name one file? Compared as a volume that ignores case and Unicode form would (macOS, Windows). */
+function namesOneFileTwice(paths) {
+  return new Set(paths.map(p => String(p).normalize('NFC').toLowerCase())).size !== paths.length;
+}
+
+/** The refusal for an import that would replace files: which ones, and that nothing was written. */
+function importCollisionText(label, name, existing) {
+  const shown = existing.slice(0, 20).join(', ') + (existing.length > 20 ? `, and ${existing.length - 20} more` : '');
+  return `${label} "${name}" was not imported: ${existing.length === 1 ? 'a file it would replace already exists' : `${existing.length} files it would replace already exist`} (${shown}). Nothing was written.`;
 }
 
 /** Discover all Claude Code artifacts from all known locations */
 function discoverAllArtifacts() {
   const artifacts = [];
+  // An artifact is listed only when the routes below would open it, and that is
+  // decided before anything of it is read: its SKILL.md (or command / agent
+  // file) can be a link a repository shipped, to a file outside its folder, a
+  // FIFO or a device. One that is refused, or cannot be read as a regular file,
+  // is skipped; the others are still listed.
+  const roots = artifactRoots();
+  const openArtifact = (id) => { try { return confineArtifact(id, roots); } catch { return null; } };
 
   // 1. Global skills (~/.claude/skills/)
   const globalSkillsDir = getGlobalSkillsDir();
@@ -24000,9 +22126,12 @@ function discoverAllArtifacts() {
       if (!isDirEntry(entry)) continue;
       const skillFile = join(globalSkillsDir, entry.name, 'SKILL.md');
       if (!existsSync(skillFile)) continue;
-      const content = readFileSync(skillFile, 'utf-8');
-      const frontmatter = parseFullFrontmatter(content);
       const dir = join(globalSkillsDir, entry.name);
+      const artifact = openArtifact(`skill:${dir}`);
+      if (!artifact) continue;
+      const content = readArtifactHead(artifact);
+      if (content === null) continue;
+      const frontmatter = parseFullFrontmatter(content);
       // Check if this was installed from bundled
       const bundledSource = join(SKILLS_SOURCE_DIR, entry.name, 'SKILL.md');
       const isBundledInstall = existsSync(bundledSource);
@@ -24017,7 +22146,7 @@ function discoverAllArtifacts() {
         description: frontmatter.description || '',
         frontmatter,
         hasIcon: ICON_EXTENSIONS.some(ext => existsSync(join(dir, `icon${ext}`))),
-        subFiles: buildSubFileTree(dir, '').filter(f => f.name !== 'SKILL.md' && !f.name.match(/^icon\.(png|svg|jpe?g|webp)$/i)),
+        subFiles: artifactFileTree(artifact).filter(f => f.name !== 'SKILL.md' && !f.name.match(/^icon\.(png|svg|jpe?g|webp)$/i)),
         bundledSource: isBundledInstall ? bundledSource : null,
         installed: isBundledInstall ? true : undefined,
       });
@@ -24030,7 +22159,10 @@ function discoverAllArtifacts() {
     for (const entry of readdirSync(globalAgentsDir, { withFileTypes: true })) {
       if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
       const filePath = join(globalAgentsDir, entry.name);
-      const content = readFileSync(filePath, 'utf-8');
+      const artifact = openArtifact(`agent:${filePath}`);
+      if (!artifact) continue;
+      const content = readArtifactHead(artifact);
+      if (content === null) continue;
       const frontmatter = parseFullFrontmatter(content);
       artifacts.push({
         id: `agent:${filePath}`,
@@ -24060,7 +22192,10 @@ function discoverAllArtifacts() {
       for (const entry of readdirSync(cmdDir, { withFileTypes: true })) {
         if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
         const filePath = join(cmdDir, entry.name);
-        const content = readFileSync(filePath, 'utf-8');
+        const artifact = openArtifact(`command:${filePath}`);
+        if (!artifact) continue;
+        const content = readArtifactHead(artifact);
+        if (content === null) continue;
         const frontmatter = parseFullFrontmatter(content);
         artifacts.push({
           id: `command:${filePath}`,
@@ -24086,7 +22221,10 @@ function discoverAllArtifacts() {
       for (const entry of readdirSync(agentDir, { withFileTypes: true })) {
         if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
         const filePath = join(agentDir, entry.name);
-        const content = readFileSync(filePath, 'utf-8');
+        const artifact = openArtifact(`agent:${filePath}`);
+        if (!artifact) continue;
+        const content = readArtifactHead(artifact);
+        if (content === null) continue;
         const frontmatter = parseFullFrontmatter(content);
         artifacts.push({
           id: `agent:${filePath}`,
@@ -24113,9 +22251,12 @@ function discoverAllArtifacts() {
         if (!isDirEntry(entry)) continue;
         const skillFile = join(projSkillsDir, entry.name, 'SKILL.md');
         if (!existsSync(skillFile)) continue;
-        const content = readFileSync(skillFile, 'utf-8');
-        const frontmatter = parseFullFrontmatter(content);
         const dir = join(projSkillsDir, entry.name);
+        const artifact = openArtifact(`skill:${dir}`);
+        if (!artifact) continue;
+        const content = readArtifactHead(artifact);
+        if (content === null) continue;
+        const frontmatter = parseFullFrontmatter(content);
         artifacts.push({
           id: `skill:${dir}`,
           type: 'skill',
@@ -24129,7 +22270,7 @@ function discoverAllArtifacts() {
           description: frontmatter.description || '',
           frontmatter,
           hasIcon: ICON_EXTENSIONS.some(ext => existsSync(join(dir, `icon${ext}`))),
-          subFiles: buildSubFileTree(dir, '').filter(f => f.name !== 'SKILL.md' && !f.name.match(/^icon\.(png|svg|jpe?g|webp)$/i)),
+          subFiles: artifactFileTree(artifact).filter(f => f.name !== 'SKILL.md' && !f.name.match(/^icon\.(png|svg|jpe?g|webp)$/i)),
         });
       }
     }
@@ -24144,9 +22285,12 @@ function discoverAllArtifacts() {
       // Skip if already discovered as a global install
       const installedPath = join(globalSkillsDir, entry.name, 'SKILL.md');
       if (existsSync(installedPath)) continue; // already in global skills
-      const content = readFileSync(skillFile, 'utf-8');
-      const frontmatter = parseFullFrontmatter(content);
       const dir = join(SKILLS_SOURCE_DIR, entry.name);
+      const artifact = openArtifact(`skill:${dir}`);
+      if (!artifact) continue;
+      const content = readArtifactHead(artifact);
+      if (content === null) continue;
+      const frontmatter = parseFullFrontmatter(content);
       artifacts.push({
         id: `skill:${dir}`,
         type: 'skill',
@@ -24159,7 +22303,7 @@ function discoverAllArtifacts() {
         frontmatter,
         installed: false,
         hasIcon: ICON_EXTENSIONS.some(ext => existsSync(join(dir, `icon${ext}`))),
-        subFiles: buildSubFileTree(dir, '').filter(f => f.name !== 'SKILL.md' && !f.name.match(/^icon\.(png|svg|jpe?g|webp)$/i)),
+        subFiles: artifactFileTree(artifact).filter(f => f.name !== 'SKILL.md' && !f.name.match(/^icon\.(png|svg|jpe?g|webp)$/i)),
       });
     }
   }
@@ -24182,19 +22326,20 @@ app.get('/api/skills-studio/library', (req, res) => {
 app.get('/api/skills-studio/artifact/:id', (req, res) => {
   try {
     const id = decodeArtifactId(req.params.id);
-    const { type, dirPath, filePath } = resolveArtifactFile(id);
+    const artifact = resolveArtifactFile(id);
+    const { type, filePath } = artifact;
     if (!existsSync(filePath)) return res.status(404).json({ error: 'Artifact not found.' });
-    const content = readFileSync(filePath, 'utf-8');
+    const content = readConfinedFile(artifact.realBase, filePath, { maxBytes: ARTIFACT_MD_MAX_BYTES, encoding: 'utf-8' });
     const frontmatter = parseFullFrontmatter(content);
     const body = getFrontmatterBody(content);
     // For skills (directory-based), include sub-file tree
     let subFiles = [];
     if (type === 'skill') {
-      subFiles = buildSubFileTree(dirPath, '').filter(f => f.name !== 'SKILL.md');
+      subFiles = artifactFileTree(artifact).filter(f => f.name !== 'SKILL.md');
     }
     res.json({ ok: true, frontmatter, body, rawContent: content, subFiles });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(skillsStudioStatus(err)).json({ error: err.message });
   }
 });
 
@@ -24202,19 +22347,17 @@ app.get('/api/skills-studio/artifact/:id', (req, res) => {
 app.get('/api/skills-studio/artifact/:id/file', (req, res) => {
   try {
     const id = decodeArtifactId(req.params.id);
-    const { dirPath: dir } = resolveArtifactFile(id);
+    const artifact = resolveArtifactFile(id);
     const subPath = req.query.path;
     if (!subPath) return res.status(400).json({ error: 'path query param required.' });
-    const fullPath = join(dir, subPath);
-    // Security: ensure the path doesn't escape the directory
-    if (!resolve(fullPath).startsWith(resolve(dir))) {
-      return res.status(403).json({ error: 'Path traversal not allowed.' });
-    }
+    // Security: the path must stay in the artifact's folder, as written and
+    // after links are resolved (throws 403 otherwise).
+    const fullPath = confineSubPath(artifact, subPath);
     if (!existsSync(fullPath)) return res.status(404).json({ error: 'File not found.' });
-    const content = readFileSync(fullPath, 'utf-8');
+    const content = readConfinedFile(artifact.realBase, fullPath, { encoding: 'utf-8' });
     res.json({ ok: true, content, path: subPath });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(skillsStudioStatus(err)).json({ error: err.message });
   }
 });
 
@@ -24228,9 +22371,9 @@ app.get('/api/skills-studio/artifact/:id/icon', (req, res) => {
     const mimeMap = { '.png': 'image/png', '.svg': 'image/svg+xml', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp' };
     res.setHeader('Content-Type', mimeMap[ext] || 'application/octet-stream');
     res.setHeader('Cache-Control', 'no-cache');
-    res.send(readFileSync(iconPath));
+    res.send(readConfinedFile(resolveArtifactFile(id).realBase, iconPath, { maxBytes: ICON_MAX_BYTES }));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(skillsStudioStatus(err)).json({ error: err.message });
   }
 });
 
@@ -24240,25 +22383,24 @@ app.post('/api/skills-studio/artifact/:id/icon',
   (req, res) => {
     try {
       const id = decodeArtifactId(req.params.id);
-      const { type, dirPath, filePath } = resolveArtifactFile(id);
+      const artifact = resolveArtifactFile(id);
+      const { type, dirPath, filePath } = artifact;
       if (!existsSync(filePath)) return res.status(404).json({ error: 'Artifact not found.' });
       if (!req.body || req.body.length === 0) return res.status(400).json({ error: 'No image data received.' });
       const contentType = req.headers['content-type'] || 'image/png';
       const extMap = { 'image/png': '.png', 'image/svg+xml': '.svg', 'image/jpeg': '.jpg', 'image/webp': '.webp' };
       const ext = extMap[contentType] || '.png';
-      // Remove any existing icon files first
-      if (type === 'skill') {
-        for (const e of ICON_EXTENSIONS) { const old = join(dirPath, `icon${e}`); if (existsSync(old)) unlinkSync(old); }
-        writeFileSync(join(dirPath, `icon${ext}`), req.body);
-      } else {
-        const name = basename(filePath, '.md');
-        const dir = dirname(filePath);
-        for (const e of ICON_EXTENSIONS) { const old = join(dir, `${name}.icon${e}`); if (existsSync(old)) unlinkSync(old); }
-        writeFileSync(join(dir, `${name}.icon${ext}`), req.body);
-      }
+      const iconDir = type === 'skill' ? dirPath : dirname(filePath);
+      const iconStem = type === 'skill' ? 'icon' : `${basename(filePath, '.md')}.icon`;
+      // Remove any existing icon files first (a link is removed, never followed)
+      for (const e of ICON_EXTENSIONS) { try { removeConfinedEntry(artifact.realBase, join(iconDir, `${iconStem}${e}`)); } catch {} }
+      // The icon is written only where it really lands in the artifact's folder.
+      const iconFile = join(iconDir, `${iconStem}${ext}`);
+      if (!staysInside(artifact, iconFile)) return res.status(403).json({ error: 'That path leaves the artifact through a link.' });
+      writeConfinedFile(artifact.realBase, iconFile, req.body);
       res.json({ ok: true, hasIcon: true });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(skillsStudioStatus(err)).json({ error: err.message });
     }
   }
 );
@@ -24267,18 +22409,19 @@ app.post('/api/skills-studio/artifact/:id/icon',
 app.delete('/api/skills-studio/artifact/:id/icon', (req, res) => {
   try {
     const id = decodeArtifactId(req.params.id);
-    const { type, dirPath, filePath } = resolveArtifactFile(id);
+    const artifact = resolveArtifactFile(id);
+    const { type, dirPath, filePath } = artifact;
     if (!existsSync(filePath)) return res.status(404).json({ error: 'Artifact not found.' });
     if (type === 'skill') {
-      for (const ext of ICON_EXTENSIONS) { const p = join(dirPath, `icon${ext}`); if (existsSync(p)) unlinkSync(p); }
+      for (const ext of ICON_EXTENSIONS) removeConfinedEntry(artifact.realBase, join(dirPath, `icon${ext}`));
     } else {
       const name = basename(filePath, '.md');
       const dir = dirname(filePath);
-      for (const ext of ICON_EXTENSIONS) { const p = join(dir, `${name}.icon${ext}`); if (existsSync(p)) unlinkSync(p); }
+      for (const ext of ICON_EXTENSIONS) removeConfinedEntry(artifact.realBase, join(dir, `${name}.icon${ext}`));
     }
     res.json({ ok: true, hasIcon: false });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(skillsStudioStatus(err)).json({ error: err.message });
   }
 });
 
@@ -24286,14 +22429,15 @@ app.delete('/api/skills-studio/artifact/:id/icon', (req, res) => {
 app.put('/api/skills-studio/artifact/:id', (req, res) => {
   try {
     const id = decodeArtifactId(req.params.id);
-    const { filePath } = resolveArtifactFile(id);
+    const artifact = resolveArtifactFile(id);
+    const { filePath } = artifact;
     if (!existsSync(filePath)) return res.status(404).json({ error: 'Artifact not found.' });
     const { rawContent } = req.body;
     if (typeof rawContent !== 'string') return res.status(400).json({ error: 'rawContent is required.' });
-    writeFileSync(filePath, rawContent, 'utf-8');
+    writeConfinedFile(artifact.realBase, filePath, rawContent);
     res.json({ ok: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(skillsStudioStatus(err)).json({ error: err.message });
   }
 });
 
@@ -24301,19 +22445,14 @@ app.put('/api/skills-studio/artifact/:id', (req, res) => {
 app.put('/api/skills-studio/artifact/:id/file', (req, res) => {
   try {
     const id = decodeArtifactId(req.params.id);
-    const { dirPath: dir } = resolveArtifactFile(id);
+    const artifact = resolveArtifactFile(id);
     const { path: subPath, content } = req.body;
     if (!subPath || typeof content !== 'string') return res.status(400).json({ error: 'path and content required.' });
-    const fullPath = join(dir, subPath);
-    if (!resolve(fullPath).startsWith(resolve(dir))) {
-      return res.status(403).json({ error: 'Path traversal not allowed.' });
-    }
-    const parentDir = dirname(fullPath);
-    if (!existsSync(parentDir)) mkdirSync(parentDir, { recursive: true });
-    writeFileSync(fullPath, content, 'utf-8');
+    const fullPath = confineSubPath(artifact, subPath);
+    writeConfinedFile(artifact.realBase, fullPath, content);
     res.json({ ok: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(skillsStudioStatus(err)).json({ error: err.message });
   }
 });
 
@@ -24321,24 +22460,19 @@ app.put('/api/skills-studio/artifact/:id/file', (req, res) => {
 app.post('/api/skills-studio/artifact/:id/file', (req, res) => {
   try {
     const id = decodeArtifactId(req.params.id);
-    const { dirPath: dir } = resolveArtifactFile(id);
+    const artifact = resolveArtifactFile(id);
     const { path: subPath, content, isDir } = req.body;
     if (!subPath) return res.status(400).json({ error: 'path required.' });
-    const fullPath = join(dir, subPath);
-    if (!resolve(fullPath).startsWith(resolve(dir))) {
-      return res.status(403).json({ error: 'Path traversal not allowed.' });
-    }
+    const fullPath = confineSubPath(artifact, subPath);
     if (existsSync(fullPath)) return res.status(409).json({ error: 'File already exists.' });
     if (isDir) {
-      mkdirSync(fullPath, { recursive: true });
+      makeConfinedDir(artifact.realBase, fullPath);
     } else {
-      const parentDir = dirname(fullPath);
-      if (!existsSync(parentDir)) mkdirSync(parentDir, { recursive: true });
-      writeFileSync(fullPath, content || '', 'utf-8');
+      writeConfinedFile(artifact.realBase, fullPath, content || '', { exclusive: true });
     }
     res.json({ ok: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(skillsStudioStatus(err)).json({ error: err.message });
   }
 });
 
@@ -24346,23 +22480,15 @@ app.post('/api/skills-studio/artifact/:id/file', (req, res) => {
 app.delete('/api/skills-studio/artifact/:id/file', (req, res) => {
   try {
     const id = decodeArtifactId(req.params.id);
-    const { dirPath: dir } = resolveArtifactFile(id);
+    const artifact = resolveArtifactFile(id);
     const { path: subPath } = req.body;
     if (!subPath) return res.status(400).json({ error: 'path required.' });
-    const fullPath = join(dir, subPath);
-    if (!resolve(fullPath).startsWith(resolve(dir))) {
-      return res.status(403).json({ error: 'Path traversal not allowed.' });
-    }
-    if (!existsSync(fullPath)) return res.status(404).json({ error: 'File not found.' });
-    const stat = statSync(fullPath);
-    if (stat.isDirectory()) {
-      rmSync(fullPath, { recursive: true, force: true });
-    } else {
-      unlinkSync(fullPath);
-    }
+    const fullPath = confineSubPath(artifact, subPath);
+    // The entry that is named is removed: a link is unlinked, never followed.
+    if (!removeConfinedEntry(artifact.realBase, fullPath)) return res.status(404).json({ error: 'File not found.' });
     res.json({ ok: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(skillsStudioStatus(err)).json({ error: err.message });
   }
 });
 
@@ -24376,38 +22502,27 @@ app.post('/api/skills-studio/create', (req, res) => {
     if (!/^[a-z][a-z0-9-]*$/.test(name) && !/^[a-z][a-z0-9-.]*$/.test(name)) {
       return res.status(400).json({ error: 'Name must be lowercase, start with a letter, and use only letters, digits, hyphens, and dots.' });
     }
+    if (scope === 'project' && projectPath && !isRegisteredProjectPath(projectPath)) return res.status(400).json({ error: 'Not a registered project.' });
     const home = process.env.USERPROFILE || process.env.HOME || '';
-    let targetPath;
-    if (type === 'skill') {
-      const baseDir = scope === 'global' ? join(home, '.claude', 'skills', name)
-        : scope === 'project' && projectPath ? join(projectPath, '.claude', 'skills', name)
-        : null;
-      if (!baseDir) return res.status(400).json({ error: 'Invalid scope or missing projectPath.' });
-      if (!existsSync(baseDir)) mkdirSync(baseDir, { recursive: true });
-      targetPath = join(baseDir, 'SKILL.md');
-    } else if (type === 'command') {
-      const baseDir = scope === 'project' && projectPath ? join(projectPath, '.claude', 'commands')
-        : scope === 'global' ? join(home, '.claude', 'commands')
-        : null;
-      if (!baseDir) return res.status(400).json({ error: 'Invalid scope or missing projectPath.' });
-      if (!existsSync(baseDir)) mkdirSync(baseDir, { recursive: true });
-      targetPath = join(baseDir, `${name}.md`);
-    } else if (type === 'agent') {
-      const baseDir = scope === 'global' ? join(home, '.claude', 'agents')
-        : scope === 'project' && projectPath ? join(projectPath, '.claude', 'agents')
-        : null;
-      if (!baseDir) return res.status(400).json({ error: 'Invalid scope or missing projectPath.' });
-      if (!existsSync(baseDir)) mkdirSync(baseDir, { recursive: true });
-      targetPath = join(baseDir, `${name}.md`);
-    } else {
-      return res.status(400).json({ error: 'type must be skill, command, or agent.' });
-    }
+    const folder = { skill: 'skills', command: 'commands', agent: 'agents' }[type];
+    if (!folder) return res.status(400).json({ error: 'type must be skill, command, or agent.' });
+    const scopeDir = scope === 'global' ? join(home, '.claude')
+      : scope === 'project' && projectPath ? join(projectPath, '.claude')
+      : null;
+    if (!scopeDir) return res.status(400).json({ error: 'Invalid scope or missing projectPath.' });
+    const root = { dir: join(scopeDir, folder), anchor: scope === 'project' ? projectPath : '' };
+    const baseDir = type === 'skill' ? join(root.dir, name) : root.dir;
+    const targetPath = type === 'skill' ? join(baseDir, 'SKILL.md') : join(baseDir, `${name}.md`);
+    // Before any folder is made: the file must really land in that folder (a
+    // linked `.claude/skills` in a project would otherwise write outside it).
+    confineToRoot(root, targetPath);
     if (existsSync(targetPath)) return res.status(409).json({ error: `Artifact "${name}" already exists at that location.` });
-    writeFileSync(targetPath, rawContent, 'utf-8');
+    // Its folders are made on the canonical path and the file is created exclusively.
+    writeConfinedFile(root.dir, targetPath, String(rawContent), { exclusive: true });
     const id = type === 'skill' ? `skill:${targetPath}` : `${type}:${targetPath}`;
     res.json({ ok: true, id: encodeArtifactId(id), filePath: targetPath });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(skillsStudioStatus(err)).json({ error: err.message });
   }
 });
 
@@ -24415,21 +22530,22 @@ app.post('/api/skills-studio/create', (req, res) => {
 app.delete('/api/skills-studio/artifact/:id', (req, res) => {
   try {
     const id = decodeArtifactId(req.params.id);
-    const { type, dirPath, filePath } = resolveArtifactFile(id);
+    const artifact = resolveArtifactFile(id);
+    const { type, dirPath, filePath } = artifact;
     if (!existsSync(filePath)) return res.status(404).json({ error: 'Artifact not found.' });
     if (type === 'skill') {
-      // Delete entire skill directory
-      rmSync(dirPath, { recursive: true, force: true });
+      // Delete entire skill directory (a skill folder that is a link: the link goes, not what it points to)
+      removeConfinedEntry(null, dirPath);
     } else {
       // Also remove sibling icon file if exists
       const name = basename(filePath, '.md');
       const dir = dirname(filePath);
-      for (const ext of ICON_EXTENSIONS) { const p = join(dir, `${name}.icon${ext}`); if (existsSync(p)) unlinkSync(p); }
-      unlinkSync(filePath);
+      for (const ext of ICON_EXTENSIONS) removeConfinedEntry(artifact.realBase, join(dir, `${name}.icon${ext}`));
+      removeConfinedEntry(artifact.realBase, filePath);
     }
     res.json({ ok: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(skillsStudioStatus(err)).json({ error: err.message });
   }
 });
 
@@ -24465,10 +22581,12 @@ app.post('/api/skills-studio/install', (req, res) => {
   try {
     const { dirName } = req.body;
     if (!dirName) return res.status(400).json({ error: 'dirName is required.' });
+    if (!isPlainName(dirName)) return res.status(400).json({ error: 'dirName must be a folder name.' });
     const sourceDir = join(SKILLS_SOURCE_DIR, dirName);
     if (!existsSync(join(sourceDir, 'SKILL.md'))) return res.status(404).json({ error: `Bundled skill "${dirName}" not found.` });
     const targetDir = join(getGlobalSkillsDir(), dirName);
-    if (existsSync(targetDir)) rmSync(targetDir, { recursive: true, force: true });
+    // What is there is replaced as an entry: a link is removed, never followed.
+    removeConfinedEntry(null, targetDir);
     cpSync(sourceDir, targetDir, { recursive: true });
     res.json({ ok: true });
   } catch (err) {
@@ -24481,9 +22599,9 @@ app.delete('/api/skills-studio/install', (req, res) => {
   try {
     const { dirName } = req.body;
     if (!dirName) return res.status(400).json({ error: 'dirName is required.' });
+    if (!isPlainName(dirName)) return res.status(400).json({ error: 'dirName must be a folder name.' });
     const targetDir = join(getGlobalSkillsDir(), dirName);
-    if (!existsSync(targetDir)) return res.json({ ok: true });
-    rmSync(targetDir, { recursive: true, force: true });
+    removeConfinedEntry(null, targetDir);
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -24494,30 +22612,30 @@ app.delete('/api/skills-studio/install', (req, res) => {
 app.get('/api/skills-studio/export/:id', (req, res) => {
   try {
     const id = decodeArtifactId(req.params.id);
-    const { type, dirPath, filePath } = resolveArtifactFile(id);
+    const artifact = resolveArtifactFile(id);
+    const { type, dirPath, filePath } = artifact;
     if (!existsSync(filePath)) return res.status(404).json({ error: 'Artifact not found.' });
 
     if (type === 'skill') {
       // Export entire directory as a simple JSON bundle (portable, no ZIP dep needed)
       const name = basename(dirPath);
       const files = {};
-      function collectFiles(d, prefix) {
-        for (const entry of readdirSync(d, { withFileTypes: true })) {
-          if (entry.name.startsWith('.')) continue;
-          const full = join(d, entry.name);
-          const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
-          if (isDirEntry(entry)) {
-            collectFiles(full, rel);
-          } else {
-            if (full.match(/\.(png|jpe?g|webp)$/i)) {
-              files[rel] = { base64: readFileSync(full).toString('base64') };
-            } else {
-              files[rel] = readFileSync(full, 'utf-8');
-            }
-          }
+      // The bundle holds the skill's own files only: a link that leads out is
+      // not exported, a link cycle is walked once, special files are left out,
+      // and the walk and the bundle are bounded (lib/confined-fs.js).
+      const listing = listConfined(artifact.realBase, artifact.realBase, { skip: (name) => name.startsWith('.') });
+      if (listing.truncated) return res.status(413).json({ error: 'This skill has too many files to export as one bundle.' });
+      let exportedBytes = 0;
+      const collect = (nodes) => {
+        for (const node of nodes) {
+          if (node.type === 'dir') { collect(node.children || []); continue; }
+          const data = readConfinedFile(artifact.realBase, node.real);
+          exportedBytes += data.length;
+          if (exportedBytes > EXPORT_MAX_BYTES) throw new PathConfineError(413, 'This skill is too large to export as one bundle.');
+          files[node.path] = /\.(png|jpe?g|webp)$/i.test(node.path) ? { base64: data.toString('base64') } : data.toString('utf-8');
         }
-      }
-      collectFiles(dirPath, '');
+      };
+      collect(listing.entries);
       const bundle = { format: 'synabun-skill-bundle', version: 1, type: 'skill', name, files };
       res.setHeader('Content-Type', 'application/json');
       res.setHeader('Content-Disposition', `attachment; filename="${name}.skill.json"`);
@@ -24525,15 +22643,16 @@ app.get('/api/skills-studio/export/:id', (req, res) => {
     } else {
       // Single file: export as .md
       const name = basename(filePath, '.md');
-      const content = readFileSync(filePath, 'utf-8');
+      const content = readConfinedFile(artifact.realBase, filePath, { maxBytes: ARTIFACT_MD_MAX_BYTES, encoding: 'utf-8' });
       const bundleFiles = { [`${name}.md`]: content };
       // Include sibling icon file if present
       const dir = dirname(filePath);
       for (const ext of ICON_EXTENSIONS) {
         const iconPath = join(dir, `${name}.icon${ext}`);
-        if (existsSync(iconPath)) {
+        if (existsSync(iconPath) && staysInside(artifact, iconPath)) {
           const iconKey = `${name}.icon${ext}`;
-          bundleFiles[iconKey] = ext === '.svg' ? readFileSync(iconPath, 'utf-8') : { base64: readFileSync(iconPath).toString('base64') };
+          const icon = readConfinedFile(artifact.realBase, iconPath, { maxBytes: ICON_MAX_BYTES });
+          bundleFiles[iconKey] = ext === '.svg' ? icon.toString('utf-8') : { base64: icon.toString('base64') };
           break;
         }
       }
@@ -24543,7 +22662,7 @@ app.get('/api/skills-studio/export/:id', (req, res) => {
       res.send(JSON.stringify(bundle, null, 2));
     }
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(skillsStudioStatus(err)).json({ error: err.message });
   }
 });
 
@@ -24556,63 +22675,65 @@ app.post('/api/skills-studio/import', (req, res) => {
     }
     const { type, name, files } = bundle;
     if (!type || !name || !files) return res.status(400).json({ error: 'Bundle missing required fields.' });
+    // The bundle is a file someone handed over: its name and the paths inside it
+    // must stay in the folder being written.
+    if (!isPlainName(name)) return res.status(400).json({ error: 'Bundle name must be a plain name.' });
+    if (typeof files !== 'object' || Array.isArray(files)) return res.status(400).json({ error: 'Bundle files must be an object.' });
     const home = process.env.USERPROFILE || process.env.HOME || '';
     const effectiveScope = scope || 'global';
+    if (effectiveScope === 'project' && projectPath && !isRegisteredProjectPath(projectPath)) return res.status(400).json({ error: 'Not a registered project.' });
     let targetDir;
+    // Where the bundle is written must really be the folder it names: a link
+    // (the folder itself in a project, or a file already there) is not followed.
+    const inProject = effectiveScope === 'project' && projectPath;
+    const importFolder = { skill: 'skills', command: 'commands', agent: 'agents' }[type];
+    if (!importFolder) return res.status(400).json({ error: 'Unknown artifact type.' });
+    const importRoot = { dir: join(inProject ? projectPath : home, '.claude', importFolder), anchor: inProject ? projectPath : '' };
+    if (type === 'skill') confineToRoot(importRoot, join(importRoot.dir, name));
+    else for (const rel of Object.keys(files)) { if (isPlainName(rel)) confineToRoot(importRoot, join(importRoot.dir, rel)); }
     if (type === 'skill') {
       targetDir = effectiveScope === 'project' && projectPath
         ? join(projectPath, '.claude', 'skills', name)
         : join(home, '.claude', 'skills', name);
       if (existsSync(targetDir)) return res.status(409).json({ error: `Skill "${name}" already exists. Delete it first.` });
-      mkdirSync(targetDir, { recursive: true });
+      if (Object.keys(files).some(rel => !isInside(targetDir, join(targetDir, rel)))) return res.status(400).json({ error: 'Bundle contains a path outside the skill folder.' });
+      // Two names for one file: the second write would replace the first.
+      if (namesOneFileTwice(Object.keys(files).map(rel => join(targetDir, rel)))) return res.status(400).json({ error: 'Bundle names the same file twice.' });
+      // The folder is made where the check said, and every file is written
+      // inside it on the canonical path, never through a link. The skill is
+      // new, so every file is created: one that is somehow there is not replaced.
+      const skillDir = makeConfinedDir(importRoot.dir, targetDir);
       for (const [rel, content] of Object.entries(files)) {
         const fullPath = join(targetDir, rel);
-        const dir = dirname(fullPath);
-        if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-        if (typeof content === 'object' && content.base64) {
-          writeFileSync(fullPath, Buffer.from(content.base64, 'base64'));
-        } else {
-          writeFileSync(fullPath, content, 'utf-8');
-        }
+        if (!isInside(targetDir, fullPath)) continue;
+        writeConfinedFile(skillDir, fullPath, importedFileData(content), { exclusive: true });
       }
-    } else if (type === 'command') {
-      targetDir = effectiveScope === 'project' && projectPath
-        ? join(projectPath, '.claude', 'commands')
-        : join(home, '.claude', 'commands');
-      if (!existsSync(targetDir)) mkdirSync(targetDir, { recursive: true });
-      const targetFile = join(targetDir, `${name}.md`);
-      if (existsSync(targetFile)) return res.status(409).json({ error: `Command "${name}" already exists.` });
-      // Write main .md file + any sibling icon files
-      for (const [rel, content] of Object.entries(files)) {
-        const fullPath = join(targetDir, rel);
-        if (typeof content === 'object' && content.base64) {
-          writeFileSync(fullPath, Buffer.from(content.base64, 'base64'));
-        } else {
-          writeFileSync(fullPath, content, 'utf-8');
-        }
+    } else if (type === 'command' || type === 'agent') {
+      targetDir = importRoot.dir;
+      // What the bundle brings: the main .md file and any sibling icon files
+      // (plain names in the folder). A command or an agent is a file among the
+      // user's other ones, so a bundle can name a file that is already there:
+      // its own, or a sibling's. Nothing that exists is replaced unless the
+      // request confirms it (`overwrite: true`, sent by the import dialog after
+      // it asked). The refusal names the files, and nothing of the bundle is written.
+      const incoming = Object.entries(files).filter(([rel]) => isPlainName(rel) && isInside(targetDir, join(targetDir, rel)));
+      // Two names for one file: the second write would replace the first, or fail half way.
+      if (namesOneFileTwice(incoming.map(([rel]) => rel))) return res.status(400).json({ error: 'Bundle names the same file twice.' });
+      const overwrite = req.body.overwrite === true;
+      const existing = incoming.map(([rel]) => rel).filter(rel => existsSync(join(targetDir, rel)));
+      if (existing.length && !overwrite) {
+        return res.status(409).json({ error: importCollisionText(type === 'command' ? 'Command' : 'Agent', name, existing), code: 'import_exists', existing: existing.slice(0, 200) });
       }
-    } else if (type === 'agent') {
-      targetDir = effectiveScope === 'project' && projectPath
-        ? join(projectPath, '.claude', 'agents')
-        : join(home, '.claude', 'agents');
-      if (!existsSync(targetDir)) mkdirSync(targetDir, { recursive: true });
-      const targetFile = join(targetDir, `${name}.md`);
-      if (existsSync(targetFile)) return res.status(409).json({ error: `Agent "${name}" already exists.` });
-      // Write main .md file + any sibling icon files
-      for (const [rel, content] of Object.entries(files)) {
-        const fullPath = join(targetDir, rel);
-        if (typeof content === 'object' && content.base64) {
-          writeFileSync(fullPath, Buffer.from(content.base64, 'base64'));
-        } else {
-          writeFileSync(fullPath, content, 'utf-8');
-        }
+      // Created exclusively unless confirmed: a file that appeared since the check is not replaced either.
+      for (const [rel, content] of incoming) {
+        writeConfinedFile(importRoot.dir, join(targetDir, rel), importedFileData(content), { exclusive: !overwrite });
       }
     } else {
       return res.status(400).json({ error: 'Unknown artifact type.' });
     }
     res.json({ ok: true, name, type });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(skillsStudioStatus(err)).json({ error: err.message });
   }
 });
 
@@ -25937,6 +24058,11 @@ app.delete('/api/invite/sessions', (req, res) => {
 
 // Save custom proxy config
 app.put('/api/invite/proxy', (req, res) => {
+  // The proxy URL joins the names the WebSocket Origin check trusts (publicWebOrigins):
+  // a DNS-rebound page (Host: attacker.example) must not be able to add its own.
+  if (!isAllowedHost(req.headers.host, { allowedHosts: publicWebOrigins })) {
+    return res.status(403).json({ ok: false, code: 'BAD_HOST', error: 'Open SynaBun at localhost, an IP address or this computer\'s name to change the invite proxy.' });
+  }
   const { useProxy, proxyUrl } = req.body || {};
   const config = {
     useProxy: !!useProxy,
@@ -26139,76 +24265,40 @@ try {
 // TERMINAL — PTY Session Manager
 // ═══════════════════════════════════════════
 
-const terminalSessions = new Map(); // sessionId → { pty, clients, profile, cwd, createdAt, outputBytes, vterm, graceTimer }
+// sessionId → { pty (pty-host proxy: write/resize/kill/pid/cols/rows), clients: { size },
+//               profile, cwd, createdAt, graceTimer, claudeSessionId, _loopDriverBuffer?, _linkCaptureCallback? }
+const terminalSessions = new Map();
 
 const IS_WIN = process.platform === 'win32';
 const DEFAULT_SHELL = IS_WIN ? (process.env.COMSPEC || 'cmd.exe') : (process.env.SHELL || '/bin/bash');
-const TERMINAL_GRACE_PERIOD_MS = 30 * 60 * 1000; // 30 min before orphaned PTY is killed
-const TERMINAL_SNAPSHOT_SCROLLBACK_ROWS = 1000;
+const TERMINAL_GRACE_PERIOD_MS = 30 * 60 * 1000; // 30 min before orphaned PTY is killed (enforced in the pty-host)
 
-// WS backpressure: a client whose socket buffer exceeds HIGH stops receiving
-// terminal output; once it drains below LOW it gets a reset snapshot instead
-// of the (dropped) backlog. Watermarks are estimates — tune with a throttled
-// LAN client if resyncs fire too eagerly.
-const TERMINAL_WS_HIGH_WATER = 1024 * 1024;  // 1MB
-const TERMINAL_WS_LOW_WATER = 128 * 1024;    // 128KB
-const TERMINAL_WS_DRAIN_FALLBACK_MS = 1000;  // safety net when 'drain' never fires
+// Dedicated terminal process (lib/pty-host): owns every PTY, its output
+// coalescing, flow control, reconnect snapshots and every /ws/terminal socket,
+// so memory tools, hooks, Playwright and schedulers on this event loop can no
+// longer delay keystroke echo or CLI output. The rest of this file talks to
+// sessions through a node-pty-shaped proxy. SYNABUN_PTY_HOST=inproc runs the
+// same core inside this process (kill switch / fallback).
+const terminalHost = createPtyHostManager({
+  config: { imagesDir: IMAGES_DIR, graceMs: TERMINAL_GRACE_PERIOD_MS },
+});
+terminalHost.start();
 
-// Memoized snapshot render — keyed on the vterm write generation, so N
-// simultaneously-draining clients (or a drain racing a reconnect restore)
-// share ONE O(scrollback × cols) render instead of each paying for their own.
-function getTerminalSnapshot(session) {
-  const vterm = session?.vterm;
-  if (!vterm) return { ansi: '', plain: '' };
-  const gen = vterm.writeGen;
-  const cached = session._snapshotCache;
-  if (cached && cached.gen === gen) return cached;
-  const snap = {
-    gen,
-    ansi: terminalSnapshotToAnsi(session),
-    plain: terminalSnapshotToText(session),
-  };
-  session._snapshotCache = snap;
-  return snap;
-}
+// Event-loop health (main + pty-host) — see lib/event-loop-monitor.js.
+const _mainLoopMonitor = createEventLoopMonitor();
 
-function _termResyncIfDrained(session, ws) {
-  if (ws.readyState !== 1) { _termClearLagState(ws); return; }
-  if (ws.bufferedAmount > TERMINAL_WS_LOW_WATER) return;
-  _termClearLagState(ws);
-  ws._termLagging = false;
-  // Drained: bring vterm current, then resync the screen from a snapshot.
-  // reset:true makes the client clear + reset before applying it (same path
-  // as a reconnect restore).
-  try {
-    session._flushOutput?.();
-    const snap = getTerminalSnapshot(session);
-    ws.send(JSON.stringify({ type: 'snapshot', data: snap.ansi, plain: snap.plain, reset: true }));
-  } catch {}
-}
+app.get('/api/diagnostics/ping', (req, res) => {
+  res.type('text/plain').send('ok');
+});
 
-function _termClearLagState(ws) {
-  if (ws._termLagTimer) { clearInterval(ws._termLagTimer); ws._termLagTimer = null; }
-  if (ws._termDrainHandler && ws._socket) {
-    try { ws._socket.off('drain', ws._termDrainHandler); } catch {}
-  }
-  ws._termDrainHandler = null;
-}
-
-function _termMarkLagging(session, ws) {
-  if (ws._termLagging) return;
-  ws._termLagging = true;
-  // Event-driven: resync the moment the kernel socket buffer drains, instead
-  // of polling every 200ms. ws._socket is the underlying net.Socket (semi-
-  // internal but stable in the ws library) — the interval below is the
-  // fallback for when it's unavailable or 'drain' never fires.
-  const onDrain = () => _termResyncIfDrained(session, ws);
-  if (ws._socket?.on) {
-    ws._termDrainHandler = onDrain;
-    ws._socket.on('drain', onDrain);
-  }
-  ws._termLagTimer = setInterval(onDrain, TERMINAL_WS_DRAIN_FALLBACK_MS);
-}
+app.get('/api/diagnostics/event-loop', async (req, res) => {
+  const reset = req.query.reset === '1' || req.query.reset === 'true';
+  const main = _mainLoopMonitor.snapshot({ reset });
+  let ptyHost;
+  try { ptyHost = await terminalHost.stats({ reset }); }
+  catch (err) { ptyHost = { error: err.message, mode: terminalHost.mode, restarts: terminalHost.restarts }; }
+  res.json({ ok: true, main, ptyHost });
+});
 
 // ── CLI Config (custom CLI paths for terminal profiles) ──
 
@@ -26221,11 +24311,18 @@ const CLI_DEFAULTS = {
   'opencode':    { command: 'opencode' },
 };
 
+// Parsed cli-config.json keyed by mtime — every terminal spawn resolves its
+// profile through here, so skip the read + parse when the file is unchanged.
+let _cliConfigCache = null; // { mtimeMs, raw }
+
 function loadCliConfig() {
   try {
-    if (!existsSync(CLI_CONFIG_PATH)) return { ...CLI_DEFAULTS };
-    const raw = JSON.parse(readFileSync(CLI_CONFIG_PATH, 'utf-8'));
-    return { ...CLI_DEFAULTS, ...raw };
+    if (!existsSync(CLI_CONFIG_PATH)) { _cliConfigCache = null; return { ...CLI_DEFAULTS }; }
+    const mtimeMs = statSync(CLI_CONFIG_PATH).mtimeMs;
+    if (!_cliConfigCache || _cliConfigCache.mtimeMs !== mtimeMs) {
+      _cliConfigCache = { mtimeMs, raw: JSON.parse(readFileSync(CLI_CONFIG_PATH, 'utf-8')) };
+    }
+    return { ...CLI_DEFAULTS, ...structuredClone(_cliConfigCache.raw) };
   } catch { return { ...CLI_DEFAULTS }; }
 }
 
@@ -26233,6 +24330,7 @@ function saveCliConfig(config) {
   const dir = dirname(CLI_CONFIG_PATH);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   writeFileSync(CLI_CONFIG_PATH, JSON.stringify(config, null, 2), 'utf-8');
+  _cliConfigCache = null;
   // Clear cached binaries so getClaudeBin()/getCodexBin() re-resolve with the
   // new config. Codex was previously left stale, so a corrected Codex path in
   // Settings did nothing until the server was restarted.
@@ -26241,7 +24339,8 @@ function saveCliConfig(config) {
   _nativeCodexBinPath = null;
 }
 
-const SHELL_PROFILE = { shell: DEFAULT_SHELL, args: [], env: {} };
+// Interactive shell tabs start as login shells, like Terminal.app / iTerm2.
+const SHELL_PROFILE = { shell: DEFAULT_SHELL, args: interactiveShellArgs(), env: {} };
 
 /**
  * Build terminal profile config dynamically from cli-config.json.
@@ -26305,7 +24404,7 @@ function getTerminalProfile(profileId, opts = {}) {
 
   // Loop-only: bypass permission prompts for unattended Claude Code loops.
   // The loop runs in a PTY with no human to answer prompts, so accessing
-  // sibling projects (e.g. CriticalPixel) or running Bash/Write would stall.
+  // sibling projects or running Bash/Write would stall.
   // Scoped to opts.loopBypass so interactive terminal sessions still prompt.
   if (opts.loopBypass && profileId === 'claude-code') {
     cmd = `${cmd} --dangerously-skip-permissions`;
@@ -26325,24 +24424,26 @@ function getTerminalProfile(profileId, opts = {}) {
 
   return {
     shell: DEFAULT_SHELL,
-    args: IS_WIN ? ['/k', cmd] : ['-c', `${cmd}; exec $SHELL`],
+    // CLI runs under a login shell (same PATH/profile as a native terminal),
+    // then drops into an interactive login shell when it exits.
+    args: cliWrapperArgs(DEFAULT_SHELL, cmd),
     env: { FORCE_COLOR: '1', TERM: 'xterm-256color' },
   };
 }
 
 function createTerminalSession(profile, cols, rows, cwd, opts = {}) {
-  if (!pty) throw new Error('Terminal not available: node-pty failed to load. Run: cd neural-interface && npm run postinstall');
+  if (terminalHost.ready && !terminalHost.ptyAvailable) {
+    throw new Error('Terminal not available: node-pty failed to load. Run: cd neural-interface && npm run postinstall');
+  }
   const sessionId = opts.sessionId || randomBytes(16).toString('hex');
   const profileCfg = getTerminalProfile(profile, opts);
   const initialCols = cols || 120;
   const initialRows = rows || 30;
 
-  // Strip VSCode env vars so spawned CLIs (e.g. claude) don't think they're inside VSCode
-  const cleanEnv = Object.fromEntries(
-    Object.entries(process.env).filter(([k]) =>
-      !k.startsWith('VSCODE_') && k !== 'TERM_PROGRAM' && k !== 'TERM_PROGRAM_VERSION'
-    )
-  );
+  // Native-terminal environment: SynaBun's own TERM_PROGRAM identity,
+  // truecolor, a UTF-8 locale, and none of the launching terminal's or IDE's
+  // session variables (VS Code, tmux, iTerm2, a parent Claude Code session…).
+  const env = buildTerminalEnv({ profileEnv: profileCfg.env, extraEnv: opts.extraEnv });
 
   const isLoopOwned = !!(opts.extraEnv && opts.extraEnv.SYNABUN_TERMINAL_SESSION === sessionId);
   if (isLoopOwned) {
@@ -26354,25 +24455,14 @@ function createTerminalSession(profile, cols, rows, cwd, opts = {}) {
     });
   }
 
-  const ptyProcess = pty.spawn(profileCfg.shell, profileCfg.args, {
-    name: 'xterm-256color',
-    cols: initialCols,
-    rows: initialRows,
-    cwd: cwd || process.env.USERPROFILE || process.env.HOME || process.cwd(),
-    env: { ...cleanEnv, ...profileCfg.env, ...(opts.extraEnv || {}) },
-    useConpty: IS_WIN,
-  });
-
-  if (isLoopOwned) {
-    loopLog(sessionId, 'pty:spawned', 'pty spawned', { pid: ptyProcess.pid });
-  }
-
   const session = {
-    pty: ptyProcess, clients: new Set(), profile, cwd,
+    // node-pty-shaped proxy into the pty-host: write/resize/kill, pid once
+    // spawned, cols/rows as last applied by the host.
+    pty: terminalHost.createProxy(sessionId, { cols: initialCols, rows: initialRows }),
+    clients: { size: 0 },  // live browser clients, reported by the pty-host
+    profile, cwd,
     createdAt: Date.now(),
-    outputBytes: 0,        // monotonic output counter (reconnects snapshot from vterm, no raw ring needed)
-    vterm: new VTermBuffer(initialCols, initialRows, TERMINAL_SNAPSHOT_SCROLLBACK_ROWS + initialRows),
-    graceTimer: null,      // setTimeout handle for orphan cleanup
+    graceTimer: null,
     claudeSessionId: opts.resume || null,  // known Claude session ID (from resume or detect)
   };
   terminalSessions.set(sessionId, session);
@@ -26387,55 +24477,28 @@ function createTerminalSession(profile, cols, rows, cwd, opts = {}) {
     }, 5000);
   }
 
-  // ── Output coalescing — send-first hot path ──
-  // PTY onData fires per chunk (can be many times per ms). Batching per
-  // event-loop tick sends one larger frame instead of many small ones. The
-  // flush ships bytes to clients FIRST (binary frame, no JSON), then runs all
-  // secondary consumers (vterm snapshot model, link capture, loop driver,
-  // boot logging) — none of them sit between a PTY byte and the wire.
-  let _outputCoalesceBuf = '';
-  let _outputCoalesceScheduled = false;
-
-  // Loop boot signature: log first ~500 bytes of PTY output (only for loop-owned sessions)
+  // ── Output tap ──
+  // The browser path never crosses this process. Only sessions with a
+  // server-side consumer (loop-owned PTYs, loop drivers, live terminal links)
+  // have their output forwarded here, batched by the host.
   let _loopBootCaptured = false;
   let _loopBootBuf = '';
 
-  const _flushCoalesced = () => {
-    _outputCoalesceScheduled = false;
-    if (!_outputCoalesceBuf) return;
-    const coalesced = _outputCoalesceBuf;
-    _outputCoalesceBuf = '';
-    session.outputBytes += coalesced.length;
-
-    // 1) Ship to clients first — binary frame = raw PTY bytes, zero JSON cost.
-    //    Backpressure: a client whose socket buffer exceeds the high-water mark
-    //    stops receiving output and is resynced from a snapshot once drained.
-    const payload = Buffer.from(coalesced, 'utf8');
-    session.clients.forEach(ws => {
-      if (ws.readyState !== 1 || ws._termLagging) return;
-      if (ws.bufferedAmount > TERMINAL_WS_HIGH_WATER) {
-        _termMarkLagging(session, ws);
-        return;
-      }
-      ws.send(payload);
-    });
-
-    // 2) Secondary consumers — off the latency-critical path.
-    try { session.vterm?.write(coalesced); } catch {}
-
+  const onTap = (data) => {
     if (session._linkCaptureCallback) {
-      session._linkCaptureCallback(coalesced);
+      session._linkCaptureCallback(data);
     }
 
     if (session._loopDriverBuffer !== undefined) {
-      session._loopDriverBuffer += coalesced;
+      session._loopDriverBuffer += data;
       if (session._loopDriverBuffer.length > 16384) {
         session._loopDriverBuffer = session._loopDriverBuffer.slice(-8192);
       }
     }
 
+    // Loop boot signature: log first ~500 bytes of PTY output (only for loop-owned sessions)
     if (isLoopOwned && !_loopBootCaptured) {
-      _loopBootBuf += coalesced;
+      _loopBootBuf += data;
       if (_loopBootBuf.length >= 500) {
         _loopBootCaptured = true;
         loopLog(sessionId, 'pty:boot-output', 'first 500 bytes of pty output captured', {
@@ -26445,32 +24508,17 @@ function createTerminalSession(profile, cols, rows, cwd, opts = {}) {
         _loopBootBuf = '';
       }
     }
+
+    // Nobody left to consume the tap → stop the host from forwarding output.
+    if (!isLoopOwned && !session._linkCaptureCallback && session._loopDriverBuffer === undefined) {
+      terminalHost.setTap(sessionId, false);
+    }
   };
-  // Exposed so exit/connect/resize/resync paths can force vterm up to date
-  session._flushOutput = _flushCoalesced;
 
-  const OUTPUT_BURST_CAP = 64 * 1024; // flush early when this much buffered in one tick
-  ptyProcess.onData((data) => {
-    _outputCoalesceBuf += data;
-
-    // Burst cap: if a huge chunk arrives in one tick, flush synchronously so a
-    // multi-MB buffer doesn't pile up and stall the client write loop.
-    if (_outputCoalesceBuf.length >= OUTPUT_BURST_CAP) {
-      _flushCoalesced();
-      return;
-    }
-
-    // Schedule flush for end of current event-loop tick
-    if (!_outputCoalesceScheduled) {
-      _outputCoalesceScheduled = true;
-      setImmediate(_flushCoalesced);
-    }
-  });
-
-  ptyProcess.onExit(({ exitCode }) => {
-    // Flush pending output FIRST so the final bytes precede the exit message
-    // (fixes the exit-outruns-output race on fast-exiting commands)
-    try { session._flushOutput?.(); } catch {}
+  const onExit = ({ exitCode }) => {
+    // The host already delivered the final output (to clients and the tap)
+    // before reporting the exit.
+    session.pty.exited = true;
 
     // Clear grace timer if set
     if (session.graceTimer) { clearTimeout(session.graceTimer); session.graceTimer = null; }
@@ -26520,16 +24568,13 @@ function createTerminalSession(profile, cols, rows, cwd, opts = {}) {
       cleanupExecLoopArtifacts(session);
     }
 
-    const msg = JSON.stringify({ type: 'exit', exitCode });
-    session.clients.forEach(ws => {
-      if (ws.readyState === 1) ws.send(msg);
-    });
     // Clean up loop driver interval
     if (session._loopDriverInterval) {
       clearInterval(session._loopDriverInterval);
       session._loopDriverInterval = null;
     }
-    // Clean up temp files from image paste
+    // Temp files created on this side (drops/pastes over the terminal socket
+    // are owned and cleaned by the pty-host)
     if (session.tempFiles) {
       session.tempFiles.forEach(f => { try { unlinkSync(f); } catch {} });
     }
@@ -26545,63 +24590,32 @@ function createTerminalSession(profile, cols, rows, cwd, opts = {}) {
     // A loop terminal just exited — drop the keep-awake assertion if nothing else
     // (loop or enabled schedule) still needs it.
     if (session._loopTerminalSessionId) reconcileKeepAwake();
+  };
+
+  terminalHost.spawn({
+    id: sessionId,
+    file: profileCfg.shell,
+    args: profileCfg.args,
+    cwd: cwd || process.env.USERPROFILE || process.env.HOME || process.cwd(),
+    env,
+    cols: initialCols,
+    rows: initialRows,
+    name: 'xterm-256color',
+    tap: isLoopOwned,
+    loopOwned: isLoopOwned,
+    profile,
+  }, {
+    onSpawned: ({ pid }) => {
+      session.pty.pid = pid;
+      if (isLoopOwned) loopLog(sessionId, 'pty:spawned', 'pty spawned', { pid });
+    },
+    onTap,
+    onResized: ({ cols: c, rows: r }) => { session.pty.cols = c; session.pty.rows = r; },
+    onClients: ({ total }) => { session.clients.size = total; },
+    onExit,
   });
 
   return sessionId;
-}
-
-function terminalSnapshotToAnsi(session) {
-  const vterm = session?.vterm;
-  if (!vterm) return '';
-
-  const cols = Math.max(1, vterm.cols || session?.pty?.cols || 120);
-  const rows = Math.max(1, vterm.rows || session?.pty?.rows || 30);
-  const parts = ['\x1b[0m'];
-
-  if (vterm.useAltBuffer) {
-    parts.push('\x1b[?1049h');
-  } else {
-    parts.push('\x1b[?1049l');
-    const sbLen = vterm.scrollbackLength || 0;
-    const start = Math.max(0, sbLen - TERMINAL_SNAPSHOT_SCROLLBACK_ROWS);
-    const chars = new Array(cols);
-    for (let r = start; r < sbLen; r++) {
-      const row = vterm.getScrollbackRow(r);
-      if (!row) continue;
-      for (let c = 0; c < cols; c++) chars[c] = row[c]?.char || ' ';
-      parts.push(chars.join('').replace(/\s+$/g, ''), '\r\n');
-    }
-  }
-
-  // Clear only the visible viewport. In normal-buffer mode this preserves the
-  // scrollback rows emitted above while rebuilding the current screen from the
-  // server-side terminal model instead of replaying an arbitrary ANSI tail.
-  parts.push('\x1b[2J\x1b[H');
-  const screenChars = new Array(cols);
-  for (let r = 0; r < rows; r++) {
-    const row = vterm.getRow(r);
-    if (!row) continue;
-    for (let c = 0; c < cols; c++) screenChars[c] = row[c]?.char || ' ';
-    parts.push(`\x1b[${r + 1};1H`, screenChars.join('').replace(/\s+$/g, ''));
-  }
-
-  parts.push(
-    '\x1b[0m',
-    vterm.cursorVisible ? '\x1b[?25h' : '\x1b[?25l',
-    `\x1b[${Math.min(rows, Math.max(1, vterm.cursorY + 1))};${Math.min(cols, Math.max(1, vterm.cursorX + 1))}H`,
-  );
-
-  return parts.join('');
-}
-
-function terminalSnapshotToText(session) {
-  const vterm = session?.vterm;
-  if (!vterm) return '';
-  const sb = vterm.scrollbackLength || 0;
-  const totalRows = sb + (vterm.rows || 0);
-  if (totalRows <= 0) return '';
-  const startRow = vterm.useAltBuffer ? sb : Math.max(0, totalRows - TERMINAL_SNAPSHOT_SCROLLBACK_ROWS - (vterm.rows || 0));
-  return vterm.getText(startRow, 0, totalRows - 1, Math.max(0, (vterm.cols || 1) - 1));
 }
 
 // ── Loop Driver — sends /clear + next iteration prompt between loop iterations ──
@@ -26703,6 +24717,8 @@ function attachLoopDriver(terminalSessionId) {
   session._loopDriverBuffer = '';
   session._loopDriverStartedAt = Date.now();
   session._loopTerminalSessionId = terminalSessionId;
+  // The pty-host forwards output to this process only for tapped sessions.
+  terminalHost.setTap(terminalSessionId, true);
   session._pendingClaimed = false;
   session._pendingClaimedAt = null;
   reconcileKeepAwake(); // a live loop terminal must keep the machine awake (clamshell)
@@ -26989,8 +25005,8 @@ const EXEC_BOOT_SENTINEL = 'SYNABUN_EXEC_BOOT_READY';
  * (256-byte chunks at 30ms intervals corrupt multi-KB single-quoted strings).
  * The temp file is written once and reused across all iterations.
  */
-// Resolve {{GAME_URL[:CCY]}} / {{DEAL_CONTEXT}} tokens against a freshly-picked CriticalPixel
-// fresh-release game, so Facebook deal posts link the actual GAME PAGE (/games/<slug>?currency=X)
+// Resolve {{GAME_URL[:CCY]}} / {{DEAL_CONTEXT}} tokens against a freshly-picked fresh-release
+// game from the deals site below, so deal posts link the actual GAME PAGE (/games/<slug>?currency=X)
 // instead of the /deals listing. No-op unless the task carries a DEAL SOURCE directive or a
 // {{GAME_URL token, so the ~30 non-deal templates are untouched. Resolved ONCE at launch and
 // baked into loopState.task, so BOTH the exec driver (prepareExecTaskFile) and the claude-code
@@ -27210,6 +25226,10 @@ _nativeLoopRuntime = new NativeLoopRuntime({
   stateDir: LOOP_DIR,
   ledgerPath: resolve(LOOP_DATA_DIR, 'native-loop-runs.json'),
   buildPrompt: (state, iteration) => buildLoopTaskPrompt(state, iteration),
+  // Surface loop-goal: after each iteration but the last, ask whether the task
+  // is already complete (judged from the iteration's own reply, plus the journal
+  // when `loop update` kept one) and end early. Null = keep going.
+  judgeGoal: createLoopGoalJudge({ judgeLoopGoal, surfaceConfig: typesafeSurfaceConfig }),
   log: (runId, tag, message, meta) => loopLog(runId, tag, message, meta),
   onEvent: (message) => {
     // OpenCode already streams from its isolated serve into the V2 panel. Claude
@@ -27224,13 +25244,18 @@ _nativeLoopRuntime = new NativeLoopRuntime({
       const config = _readClaudeSkinConfig();
       return createClaudeNativeLoopAdapter({
         ...state,
-        model: state.model && state.model.includes(':') ? toCliModelName(state.model) : state.model,
+        model: state.contextMode === '1m' && state.model
+          ? `${state.model}[1m]`
+          : state.model && state.model.includes(':') ? toCliModelName(state.model) : state.model,
         mcpUrl: `http://localhost:${PORT}/mcp`,
         sdkExecutable: config.sdkExecutable || undefined,
         // Fallback if the SDK's bundled native binary is unusable — unattended
         // loops cannot surface a permission error to anyone, so they need the
         // same escape hatch the sidepanel has.
         claudeBin: getClaudeBin(),
+        // Run the installed CLI instead when it is newer than the bundled one, so
+        // the loop's model resolves the way the picker it was chosen from named it.
+        alignedClaudeBin: alignedClaudeExecutable(getClaudeBin()),
         includePartialMessages: typeof config.partials === 'boolean'
           ? config.partials
           : process.platform !== 'win32',
@@ -27257,6 +25282,9 @@ _nativeLoopRuntime = new NativeLoopRuntime({
         state.browserTabId,
         state.mcpProfile,
         state.model,
+        { SYNABUN_DESKTOP_GRANT: typeof state.desktopGrantProvider === 'function' ? state.desktopGrantProvider() : null },
+        // Assistant task runs: the browser policy plugin (loops and schedules unchanged).
+        { browserPolicy: state.runMode === 'task', cwd: state.cwd || null },
       );
       const entry = await ensureIsolatedServe(state.runId, {
         xdgRoot,
@@ -27288,14 +25316,359 @@ _nativeLoopRuntime = new NativeLoopRuntime({
   },
 });
 
+// ── Main assistant: brains + orchestration (lib/assistant-*.js) ──
+// Everything lives in lib/; this block only wires dependencies and mounts the
+// router + WebSocket handler. Failure here degrades to "assistant unavailable"
+// without affecting the rest of the server.
+(async () => {
+  try {
+    const [
+      { createAssistantDispatcher }, { createAssistantRuntime }, { createAssistantApi }, { createUsageLedger },
+      { createClaudeAccounts }, { createAssistantMemory }, { hookRecall },
+      claudeBridgeModule, { detectProject: assistantDetectProject }, { getDb: assistantGetDb },
+      { handleRemember: assistantHandleRemember }, assistantCategories,
+      { createAssistantCatalog }, { createAssistantConfigStore }, { createAssistantRouter, TASK_CLASS_META },
+    ] = await Promise.all([
+      import('./lib/assistant-dispatch.js'), import('./lib/assistant-runtime.js'), import('./lib/assistant-api.js'), import('./lib/assistant-usage.js'),
+      import('./lib/claude-accounts.js'), import('./lib/assistant-memory.js'), import('./lib/memory-api.js'),
+      import('./lib/claude-agent-bridge.js'), import('../mcp-server/dist/config.js'), import('../mcp-server/dist/services/sqlite.js'),
+      import('../mcp-server/dist/tools/remember.js'), import('../mcp-server/dist/services/categories.js'),
+      import('./lib/assistant-catalog.js'), import('./lib/assistant-config.js'), import('./lib/assistant-router.js'),
+    ]);
+    const { budgetLimits, createModelPricing } = await import('./lib/assistant-budget.js');
+    const { createAssistantClarifier } = await import('./lib/assistant-clarify.js');
+    const { createAttachmentStore } = await import('./lib/assistant-attachments.js');
+    const assistantConfigPath = resolve(LOOP_DATA_DIR, 'assistant-config.json');
+    const assistantLog = (tag, message, meta) => { try { loopLog(null, `assistant:${tag}`, typeof message === 'string' ? message : JSON.stringify(message), meta); } catch {} };
+    // One store for assistant-config.json: routing knobs re-read on change.
+    const assistantConfigStore = createAssistantConfigStore({ path: assistantConfigPath, log: (tag, message) => assistantLog(tag, message) });
+    const assistantConfig = assistantConfigStore.read();
+    const claudeAccounts = createClaudeAccounts({ dataHome: DATA_HOME, homeDir: getHomePath(), log: (tag, message) => assistantLog(tag, message) });
+    const memoryStoredForRun = (runId) => {
+      try { return !!assistantGetDb().prepare('SELECT 1 FROM memory_metadata WHERE source_ref = ? LIMIT 1').get(String(runId)); } catch { return false; }
+    };
+    // The run's memory for agent_status / memory_due: a live (untrashed) memory
+    // whose source_ref is the run id — the worker's, the brain's or the auto one.
+    // Trash is checked per hit by primary key (a join costs ~40 ms on this table).
+    const findMemoryForRun = (runId) => {
+      try {
+        const db = assistantGetDb();
+        const live = db.prepare('SELECT 1 FROM memories WHERE id = ? AND trashed_at IS NULL');
+        for (const row of db.prepare('SELECT memory_id FROM memory_metadata WHERE source_ref = ?').all(String(runId))) {
+          if (live.get(row.memory_id)) return row.memory_id;
+        }
+        return null;
+      } catch { return null; }
+    };
+    const ensureCategoryFn = (name, description, parent) => {
+      if (assistantCategories.categoryExists(name)) return;
+      if (parent && !assistantCategories.categoryExists(parent)) {
+        assistantCategories.addCategory(parent, 'Automation outcomes: dispatched agent runs, workflows, and scheduled work results.', undefined, undefined, true);
+      }
+      assistantCategories.addCategory(name, description, parent);
+    };
+    // Jev in the Assistant (docs/judgments.md): prompt-urgency for the per-turn
+    // recall gate, worker-outcome / worker-claim for dispatched runs. Its own
+    // try/catch: a stale mcp-server/dist leaves the Assistant working without Jev.
+    let assistantJev = null;
+    try {
+      const [{ judgePrompt }, { judgeWorkerOutcome }, typesafeClient, typesafeKnobs, { createAssistantJev }] = await Promise.all([
+        import('../mcp-server/dist/services/memory-judgments.js'), import('../mcp-server/dist/services/assistant-judgments.js'),
+        import('../mcp-server/dist/services/typesafe.js'), import('../mcp-server/dist/services/typesafe-config.js'),
+        import('./lib/assistant-jev.js'),
+      ]);
+      assistantJev = createAssistantJev({
+        judgePrompt, judgeWorkerOutcome,
+        surfaceConfig: typesafeKnobs.surfaceConfig,
+        enabled: typesafeClient.typesafeEnabled,
+        retryAfterMs: typesafeClient.typesafeRetryAfterMs,
+        annotate: typesafeKnobs.annotateTypeSafeLog,
+      });
+    } catch (err) {
+      console.warn('[assistant] Jev judgments unavailable (run npm run mcp:build):', err.message);
+      assistantJev = null;
+    }
+    const assistantMemory = createAssistantMemory({
+      hookRecall, rememberFn: assistantHandleRemember, memoryStoredForRun, findMemoryForRun, ensureCategoryFn,
+      detectProject: assistantDetectProject, config: assistantConfig.memory || {}, log: (tag, message) => assistantLog(tag, message),
+      judge: assistantJev,
+    });
+    // Jev tokens of a task (lib/assistant-judgments.js): a synchronous indexed read of the live
+    // database's judgment log, so a closed task's first (and frozen) answer is the real one.
+    const { createJudgmentReader, judgmentDbPath } = await import('./lib/assistant-judgments.js');
+    const judgments = createJudgmentReader({
+      dbPath: () => judgmentDbPath({ getDb: assistantGetDb, defaultPath: getDbPath() }),
+      runInfo: (runId) => _assistantDispatcher?.get?.(runId) || null,
+      // Jev's own rates (a knob in typesafe_config, read live): its tokens in dollars.
+      rates: () => { const cfg = typesafeConfig(); return { input: cfg.costPerMillionInput, output: cfg.costPerMillionOutput }; },
+      log: assistantLog,
+    });
+    const assistantUsage = createUsageLedger({ dataDir: resolve(DATA_HOME, 'data'), log: assistantLog, judgments });
+    const catalogFetch = async (path) => {
+      try {
+        const response = await fetch(`http://127.0.0.1:${PORT}${path}`, { signal: AbortSignal.timeout(4000) });
+        return response.ok ? await response.json() : null;
+      } catch { return null; }
+    };
+    // Models the user hid, every provider (Assistant → Models). OpenCode's list
+    // is Settings → OpenCode's store, so both screens edit the same list.
+    const { createHiddenModels, createAssistantHiddenModelsRouter } = await import('./lib/assistant-hidden-models.js');
+    const assistantHiddenModels = createHiddenModels({
+      file: resolve(DATA_HOME, 'data', 'assistant-hidden-models.json'),
+      opencodeStore: opencodeHiddenModels,
+      log: (tag, message) => assistantLog(tag, message),
+    });
+    // List prices: one table (lib/assistant-pricing.js) for the catalog and the ledger; a Codex
+    // model the table lacks is priced from OpenCode's models.dev cache.
+    const assistantPricing = createModelPricing();
+    // Model catalog (tier · price · vision) for routing, the persona and agent_catalog.
+    const assistantCatalog = createAssistantCatalog({
+      fetchJson: catalogFetch,
+      codexPrice: (model) => assistantPricing.codexPrice(model),
+      listAccounts: () => ({ codex: listCodexAccountsForClient(), 'claude-code': claudeAccounts.listForClient() }),
+      readFilter: () => assistantConfigStore.routing().catalogFilter || {},
+      readHidden: () => assistantHiddenModels.all(),
+      log: (tag, message) => assistantLog(tag, message),
+    });
+    _assistantCatalog = assistantCatalog;
+    // A Models toggle or a Settings → OpenCode checkbox reaches routing on the next call.
+    assistantHiddenModels.onChange(() => assistantCatalog.invalidate());
+    app.use('/api/assistant/hidden-models', createAssistantHiddenModelsRouter({
+      hiddenModels: assistantHiddenModels, catalog: assistantCatalog, opencodeStore: opencodeHiddenModels, isGuestRequest, broadcastSync,
+    }));
+    const buildCatalog = (opts = {}) => assistantCatalog.get(opts);
+    // Clarification: a materially ambiguous request gets 1-3 questions before it
+    // is routed; the user's words and answers become the brief every worker of
+    // that request receives. Knobs: assistant-config.json `clarify` (read live).
+    const assistantClarifier = createAssistantClarifier({
+      getSession: (id) => _assistantRuntime?.clarifySession?.(id) || null,
+      settings: () => {
+        const raw = assistantConfigStore.read().clarify || {};
+        return { ...raw, waitSeconds: raw.waitSeconds ?? assistantConfigStore.routing().waitSeconds };
+      },
+      sinks: {
+        sendCard: (sessionId, packet) => _assistantRuntime?.routerSend?.(sessionId, packet),
+        cancelCard: (sessionId, requestId, reason) => _assistantRuntime?.routerSend?.(sessionId, { type: 'control_cancelled', request_id: requestId, reason }),
+        event: (sessionId, phase, brief) => _assistantRuntime?.clarifyEvent?.(sessionId, phase, brief),
+        mailbox: (sessionId, item) => _assistantRuntime?.routerMailbox?.(sessionId, item),
+        gate: (sessionId, result) => _assistantRuntime?.clarifyGate?.(sessionId, result),
+      },
+      log: (tag, message) => assistantLog(tag, message),
+    });
+    // DeepSeek-Harness-style routing: the brain proposes, the router enforces the
+    // session's route mode. Sinks reach the runtime/dispatcher lazily.
+    const assistantRouter = createAssistantRouter({
+      catalog: assistantCatalog,
+      configStore: assistantConfigStore,
+      getSession: (id) => _assistantRuntime?.routerSession?.(id) || null,
+      sinks: {
+        sendCard: (sessionId, packet) => _assistantRuntime?.routerSend?.(sessionId, packet),
+        cancelCard: (sessionId, requestId, reason) => _assistantRuntime?.routerSend?.(sessionId, { type: 'control_cancelled', request_id: requestId, reason }),
+        routeEvent: (sessionId, phase, route) => _assistantRuntime?.routerEvent?.(sessionId, phase, route),
+        mailbox: (sessionId, item) => _assistantRuntime?.routerMailbox?.(sessionId, item),
+        continueDirect: (sessionId, payload) => _assistantRuntime?.routerContinue?.(sessionId, payload),
+        // `meta.taskClass` rides along: a "chat" route must hold the gate (assistant-route-gate.js).
+        routed: (sessionId, result, meta) => _assistantRuntime?.routerRouted?.(sessionId, result, meta),
+        routeFailed: (sessionId, error) => _assistantRuntime?.routerRouteFailed?.(sessionId, error),
+        // A route card that said the Mac will be controlled was approved (a WhatsApp session at Ask): the runtime decides whether that yes is the turn's computer approval.
+        computerApproved: (sessionId, payload) => _assistantRuntime?.routerComputerApproved?.(sessionId, payload),
+        startHeld: (runId, target, meta) => _assistantDispatcher?.resolveRoute?.(runId, { target, ...meta }),
+        // Asked before a card's pick is approved: a held run that would refuse it keeps the card open.
+        checkHeld: (runId, target) => _assistantDispatcher?.heldRouteRefusal?.(runId, target) || null,
+        declineHeld: (runId, reason) => _assistantDispatcher?.declineRoute?.(runId, { reason }),
+      },
+      log: (tag, message) => assistantLog(tag, message),
+      clarifier: assistantClarifier,
+    });
+    // Computer use (macOS): native helper + desktop service. Degrades to
+    // "unavailable" on its own without affecting the rest of the assistant.
+    let assistantDesktop = null;
+    try {
+      const [
+        { createDesktopConfigStore }, { createDesktopService }, { createDesktopApi }, { createAuditLog },
+        desktopBuild, { createDesktopHelperManager }, browserRisk,
+      ] = await Promise.all([
+        import('./lib/desktop/config.js'), import('./lib/desktop/service.js'), import('./lib/desktop/api.js'), import('./lib/desktop/audit.js'),
+        import('./lib/desktop/build.js'), import('./lib/desktop/manager.js'), import('../mcp-server/dist/services/browser-risk.js'),
+      ]);
+      const resolveDesktopBinary = () => desktopBuild.resolveHelperBinary({ dataHome: DATA_HOME, compile: false });
+      const desktopLog = (message, level) => assistantLog('desktop', level && level !== 'info' ? `[${level}] ${message}` : message);
+      const desktopManager = process.platform === 'darwin'
+        ? createDesktopHelperManager({ resolveBinary: resolveDesktopBinary, log: desktopLog })
+        : null;
+      // computer_ax intent + press by intent (docs/computer-use.md): the compiled
+      // desktop rules and the press gate. A stale mcp-server/dist leaves computer
+      // use working without them (an intent answers UNSUPPORTED).
+      const [desktopRisk, desktopAssistGate] = await Promise.all([
+        import('../mcp-server/dist/services/desktop-risk.js').catch(() => null),
+        import('../mcp-server/dist/services/desktop-assist-gate.js').catch(() => null),
+      ]);
+      if (!desktopRisk || !desktopAssistGate) console.warn('[assistant] computer_ax intent unavailable (run npm run mcp:build and restart)');
+      // Permission, not intent (like browserAutoHealAllowed): may one press by
+      // intent happen right now? Read fresh, because a settings change or a new
+      // bench from another process must count on the very next press. Any
+      // failure reads as "no". TypeSafe is never called from here.
+      const desktopPressAllowed = () => {
+        try {
+          if (!desktopAssistGate?.desktopPressGate || !typesafeEnabled()) return false;
+          invalidateTypeSafeConfig();
+          return desktopAssistGate.desktopPressGate(typesafeConfig()).mode === 'press';
+        } catch { return false; }
+      };
+      assistantDesktop = createDesktopService({
+        manager: desktopManager,
+        build: {
+          detectToolchain: () => desktopBuild.detectToolchain(),
+          compileHelper: (opts = {}) => desktopBuild.compileHelper({ dataHome: DATA_HOME, log: desktopLog, ...opts }),
+          installToolchain: () => desktopBuild.installToolchain(),
+          resolveBinary: resolveDesktopBinary,
+        },
+        configStore: createDesktopConfigStore({ get: getKvConfig, set: setKvConfig, log: (tag, message) => assistantLog(tag, message) }),
+        audit: createAuditLog({ dir: resolve(DATA_HOME, 'data', 'desktop', 'audit') }),
+        riskLexicon: { lexiconClass: browserRisk.lexiconClass, addressesAgent: browserRisk.addressesAgent },
+        desktopRisk: desktopRisk && desktopAssistGate ? desktopRisk : null,
+        pressGate: desktopPressAllowed,
+        broadcastSync,
+        dataHome: DATA_HOME,
+        log: (tag, message) => assistantLog(tag, message),
+      });
+      app.use('/api/desktop', createDesktopApi({ desktop: assistantDesktop, isGuestRequest, log: (tag, message) => assistantLog(tag, message) }));
+    } catch (err) {
+      console.warn('[assistant] computer use unavailable:', err.message);
+      assistantDesktop = null;
+    }
+    _assistantDispatcher = createAssistantDispatcher({
+      getRuntime: () => _nativeLoopRuntime,
+      dataDir: LOOP_DATA_DIR,
+      loopDir: LOOP_DIR,
+      broadcastSync: (message) => { broadcastSync(message); try { _assistantRuntime?.observeBroadcast?.(message); } catch {} },
+      log: (runId, tag, message, meta) => { try { loopLog(runId, tag, message, meta); } catch {} },
+      PACKAGE_ROOT,
+      findCodexAccount, getCodexAccount, CODEX_DEFAULT_HOME, claudeAccounts,
+      isValidMcpProfileValue, normalizeMcpProfileName, readActiveMcpProfile,
+      acquireLoopBrowserAndTab, releaseSharedBrowserTab, reconcileKeepAwake,
+      memory: assistantMemory, detectProject: assistantDetectProject,
+      // Limits and budget caps are read live from assistant-config.json (the Budget tab): no restart.
+      limits: {},
+      readLimits: () => ({ ...(assistantConfigStore.read().limits || {}), ...budgetLimits(assistantConfigStore.budget()) }),
+      brainSpend: (sessionId) => _assistantRuntime?.brainSpend?.(sessionId) || 0,
+      currentTask: (sessionId) => _assistantRuntime?.currentTask?.(sessionId) || null,
+      pricing: assistantPricing,
+      usage: assistantUsage,
+      router: assistantRouter, catalog: assistantCatalog, desktop: assistantDesktop,
+      judge: assistantJev,
+      clarifier: assistantClarifier,
+    });
+    _assistantRuntime = createAssistantRuntime({
+      dispatcher: _assistantDispatcher,
+      phoneAuthority: _phoneAuthority.verify, // the verifier only
+      claudeAccounts,
+      ClaudeSession: claudeBridgeModule.ClaudeSession,
+      sdkVersion: claudeBridgeModule.SDK_VERSION,
+      handleCodexSkinWebSocket, ensureIsolatedServe, stopIsolatedServe, setupOpencodeSidepanelConfig,
+      broadcastSync,
+      dataDir: LOOP_DATA_DIR,
+      memory: assistantMemory,
+      buildCatalog,
+      detectProject: assistantDetectProject,
+      PACKAGE_ROOT,
+      config: assistantConfig,
+      log: (tag, message) => assistantLog(tag, message),
+      router: assistantRouter, catalog: assistantCatalog, configStore: assistantConfigStore, desktop: assistantDesktop,
+      // The OpenCode plugin and the Codex hook ask the route gate over loopback.
+      gateUrl: `http://127.0.0.1:${PORT}/api/assistant/route-gate/check`,
+      codexBin: () => getCodexBin(),
+      pricing: assistantPricing,
+      usage: assistantUsage,
+      clarifier: assistantClarifier,
+    });
+    assistantDesktop?.attach?.({ runtime: _assistantRuntime, dispatcher: _assistantDispatcher });
+    // Warm the catalog so brain capabilities (vision, tier) are known on first attach,
+    // then repair saved routes whose effort their model does not run (idempotent;
+    // a provider whose list is not available yet is retried a few times).
+    const repairRouteEfforts = async (attempt = 0) => {
+      const { repairPreferenceEfforts } = await import('./lib/effort-levels.js');
+      const cat = await assistantCatalog.full({ force: attempt > 0 });
+      const { fixes, unverified } = repairPreferenceEfforts(assistantConfigStore.routing().preferences, cat);
+      for (const fix of fixes) {
+        assistantConfigStore.setPreference(fix.key, fix.target, { by: fix.target.by || 'user' });
+        assistantLog('routing:effort-repaired', `${fix.key}: ${fix.target.provider}/${fix.target.model || 'default'} ${fix.from} → ${fix.to || 'auto'}`);
+      }
+      if (fixes.length) broadcastSync({ type: 'assistant:routing-changed', version: assistantConfigStore.version() });
+      if (unverified && attempt < 3) setTimeout(() => { repairRouteEfforts(attempt + 1).catch(() => {}); }, 60_000).unref?.();
+    };
+    repairRouteEfforts().catch(() => {});
+    const codexAccounts = {
+      listForClient: listCodexAccountsForClient,
+      rename: (id, label) => {
+        const data = loadCodexAccounts();
+        const acct = data.accounts.find((a) => a.id === id);
+        if (!acct) throw Object.assign(new Error('Unknown Codex account'), { code: 'ACCOUNT_NOT_FOUND', status: 404 });
+        const next = String(label || '').trim().slice(0, 60);
+        if (next) acct.label = next;
+        saveCodexAccounts(data);
+        return acct;
+      },
+      remove: (id, { inUse = () => null } = {}) => {
+        if (id === 'default') throw Object.assign(new Error('The Default account cannot be removed'), { code: 'DEFAULT_ACCOUNT', status: 409 });
+        const data = loadCodexAccounts();
+        const idx = data.accounts.findIndex((a) => a.id === id);
+        if (idx === -1) throw Object.assign(new Error('Unknown Codex account'), { code: 'ACCOUNT_NOT_FOUND', status: 404 });
+        const reason = inUse(id);
+        if (reason) throw Object.assign(new Error(reason), { code: 'ACCOUNT_IN_USE', status: 409 });
+        const [removed] = data.accounts.splice(idx, 1);
+        saveCodexAccounts(data);
+        try {
+          if (removed.home && removed.home !== CODEX_DEFAULT_HOME && removed.home.startsWith(CODEX_ACCOUNTS_ROOT)) rmSync(removed.home, { recursive: true, force: true });
+        } catch (e) { console.warn('[codex-accounts] Failed to delete home:', e.message); }
+        return { removed: id };
+      },
+    };
+    const createLoginTerminal = async ({ env = {}, cwd = null, profile = 'claude-code' } = {}) => {
+      const terminalSessionId = createTerminalSession(profile, 120, 30, cwd || getHomePath(), { extraEnv: env });
+      broadcastSync({ type: 'terminal:session-created', sessionId: terminalSessionId, profile });
+      return { terminalSessionId, profile };
+    };
+    app.use('/api/assistant', createAssistantApi({
+      dispatcher: _assistantDispatcher, runtime: _assistantRuntime, claudeAccounts, codexAccounts, buildCatalog, createLoginTerminal,
+      broadcastSync, isGuestRequest, log: (tag, message) => assistantLog(tag, message),
+      assistantRouter, catalog: assistantCatalog, configStore: assistantConfigStore, taskClasses: TASK_CLASS_META,
+      pricing: assistantPricing,
+      usage: assistantUsage,
+      clarifier: assistantClarifier,
+      // Composer uploads (the paperclip's non-inline files), next to data/images.
+      attachments: createAttachmentStore({ root: resolve(DATA_HOME, 'data', 'attachments') }),
+    }));
+    const shutdownAssistant = () => {
+      try { assistantRouter.shutdown(); } catch {}
+      try { assistantClarifier.shutdown(); } catch {}
+      try { assistantDesktop?.shutdown?.(); } catch {}
+      try { _assistantRuntime?.shutdown?.(); } catch {}
+      try { _assistantDispatcher?.shutdown?.(); } catch {}
+      // Usage rows whose append failed get their last try (synchronous: an 'exit' handler runs it too).
+      try { assistantUsage.flush(); } catch {}
+    };
+    process.on('exit', shutdownAssistant);
+    process.on('SIGINT', shutdownAssistant);
+    process.on('SIGTERM', shutdownAssistant);
+    console.log('[assistant] runtime ready');
+  } catch (err) {
+    console.warn('[assistant] unavailable:', err.message);
+  }
+  // WhatsApp Link: after the runtime and dispatcher exist (its own guard; see startWhatsAppLink).
+  await startWhatsAppLink();
+})();
+
 /**
  * Build a per-loop XDG_CONFIG_HOME with an opencode config.json whose MCP env
  * block is augmented with this loop's SYNABUN_BROWSER_SESSION/TAB pins.
  * OpenCode's `opencode run` reads MCP server env verbatim from config.json; the
  * pins set on the PTY don't propagate to the MCP child, so we have to bake them
  * into the config file. Returns the XDG_CONFIG_HOME root (parent of opencode/).
+ * `browserPolicy` (Assistant task runs): SynaBun's browser policy as a plugin
+ * (lib/assistant-brains/opencode-browser-policy.js), `cwd` the run's project.
  */
-function setupOpencodeLoopConfig(terminalSessionId, browserSessionId, browserTabId, mcpProfile = null, model = null) {
+function setupOpencodeLoopConfig(terminalSessionId, browserSessionId, browserTabId, mcpProfile = null, model = null, extraMcpEnv = {}, { browserPolicy = false, cwd = null } = {}) {
   const xdgRoot = resolve(DATA_HOME, 'data', 'loop-configs', `opencode-${terminalSessionId}`);
   const targetDir = resolve(xdgRoot, 'opencode');
   if (!existsSync(targetDir)) mkdirSync(targetDir, { recursive: true });
@@ -27318,6 +25691,8 @@ function setupOpencodeLoopConfig(terminalSessionId, browserSessionId, browserTab
   };
   if (browserSessionId) pinOverrides.SYNABUN_BROWSER_SESSION = browserSessionId;
   if (browserTabId) pinOverrides.SYNABUN_BROWSER_TAB = browserTabId;
+  // Assistant task runs: e.g. SYNABUN_DESKTOP_GRANT for computer-use workers.
+  for (const [key, value] of Object.entries(extraMcpEnv || {})) if (value) pinOverrides[key] = String(value);
   baseCfg.mcp.SynaBun = buildManagedOpenCodeSynabunEntry(existingEntry, {
     command: ['node', mcpIndexPath],
     defaults: {
@@ -27329,6 +25704,7 @@ function setupOpencodeLoopConfig(terminalSessionId, browserSessionId, browserTab
     clearEnv: [
       ...(!browserSessionId ? ['SYNABUN_BROWSER_SESSION'] : []),
       ...(!browserTabId ? ['SYNABUN_BROWSER_TAB'] : []),
+      ...(!extraMcpEnv?.SYNABUN_DESKTOP_GRANT ? ['SYNABUN_DESKTOP_GRANT'] : []),
       'CLAUDECODE',
     ],
   });
@@ -27336,7 +25712,7 @@ function setupOpencodeLoopConfig(terminalSessionId, browserSessionId, browserTab
   // so the loop must not stall on permission gates. The CLI's
   // --dangerously-skip-permissions does NOT cover the `external_directory`
   // gate (a separate permission rule), which auto-REJECTS in non-interactive
-  // `run` mode — e.g. reading a sibling project like /Apps/CriticalPixel.
+  // `run` mode — e.g. reading a sibling project outside the serve directory.
   // Set it (plus edit/bash/webfetch) to "allow" here. Preserves any existing
   // tools/question allow-list from the user's config.
   baseCfg.permission = {
@@ -27347,6 +25723,8 @@ function setupOpencodeLoopConfig(terminalSessionId, browserSessionId, browserTab
     external_directory: 'allow',
   };
   ensureOpenCodeCoreMcpPermissions(baseCfg);
+  // The plugin refuses what the permissions above allow (webfetch, a browser from bash) before it runs.
+  if (browserPolicy) withOpenCodeBrowserPolicy(baseCfg, { cwd });
   // OpenCode's generic provider request timeout defaults to five minutes. Long
   // cloud-model turns in an unattended loop need a larger but still finite cap.
   const providerId = String(model || '').split('/')[0];
@@ -27464,10 +25842,7 @@ function cleanupStaleLoopConfigs(maxAgeMs = 6 * 60 * 60 * 1000) {
 }
 
 function toCodexReasoningEffort(effort) {
-  const value = String(effort || '').trim().toLowerCase();
-  if (!value || value === 'off') return null;
-  if (value === 'max') return 'xhigh';
-  return ['minimal', 'low', 'medium', 'high', 'xhigh'].includes(value) ? value : null;
+  return codexReasoningEffort(effort) || null;
 }
 
 function buildExecMcpEnvOverrides(loopState) {
@@ -27590,6 +25965,8 @@ function attachExecLoopDriver(terminalSessionId) {
   session._loopDriverBuffer = '';
   session._loopDriverStartedAt = Date.now();
   session._loopTerminalSessionId = terminalSessionId;
+  // The pty-host forwards output to this process only for tapped sessions.
+  terminalHost.setTap(terminalSessionId, true);
   reconcileKeepAwake(); // a live loop terminal must keep the machine awake (clamshell)
   session._execDriverState = 'booting';
   session._execBootSent = false;
@@ -28238,7 +26615,7 @@ app.get('/api/terminal/sessions', (req, res) => {
   res.json({ sessions });
 });
 
-app.post('/api/terminal/sessions', (req, res) => {
+app.post('/api/terminal/sessions', async (req, res) => {
   const { profile = 'shell', cols = 120, rows = 30, cwd, resume, model, codexAccountId } = req.body;
   if (codexAccountId && profile !== 'codex') {
     return res.status(400).json({ error: 'Codex account selection is only valid for Codex terminals' });
@@ -28250,31 +26627,35 @@ app.post('/api/terminal/sessions', (req, res) => {
   const codexExtraEnv = codexAccount
     ? { CODEX_HOME: codexAccount.home || getCodexAccountHome(codexAccount.id) }
     : undefined;
+  let sessionId;
   try {
-    const sessionId = createTerminalSession(profile, cols, rows, cwd, { resume, model, extraEnv: codexExtraEnv });
-    broadcastSync({ type: 'terminal:session-created', sessionId, profile });
-    if (profile === 'claude-code') setTimeout(saveSessionSnapshot, 2000); // update resume snapshot
-    res.json({ sessionId, profile, codexAccountId: profile === 'codex' ? (codexAccountId || 'default') : null });
+    sessionId = createTerminalSession(profile, cols, rows, cwd, { resume, model, extraEnv: codexExtraEnv });
+    // The PTY is spawned by the terminal host; answer only once it exists so a
+    // spawn failure still surfaces here (the host already retried a
+    // spawn-helper missing its execute bit). A crashed host rejects at once;
+    // the timeout only covers a host that is alive but unresponsive.
+    let spawnTimer;
+    try {
+      await Promise.race([
+        terminalHost.whenSpawned(sessionId),
+        new Promise((_, reject) => { spawnTimer = setTimeout(() => reject(new Error('Terminal host did not respond')), 15000); }),
+      ]);
+    } catch (err) {
+      try { terminalSessions.get(sessionId)?.pty.kill(); } catch {}
+      throw err;
+    } finally {
+      clearTimeout(spawnTimer);
+    }
   } catch (err) {
     let msg = err.message;
     if (process.platform !== 'win32' && (msg.includes('posix_spawn') || msg.includes('EACCES'))) {
-      // Attempt auto-fix: chmod spawn-helper and retry once
-      try {
-        const ptyBase = resolve(__dirname, 'node_modules', 'node-pty');
-        const sh = resolve(ptyBase, 'prebuilds', `${process.platform}-${process.arch}`, 'spawn-helper');
-        if (existsSync(sh)) {
-          chmodSync(sh, 0o755);
-          console.log(`[pty] Auto-fixed spawn-helper permissions, retrying...`);
-          const sessionId = createTerminalSession(profile, cols, rows, cwd, { resume, model, extraEnv: codexExtraEnv });
-          broadcastSync({ type: 'terminal:session-created', sessionId, profile });
-          if (profile === 'claude-code') setTimeout(saveSessionSnapshot, 2000);
-          return res.json({ sessionId, profile, codexAccountId: profile === 'codex' ? (codexAccountId || 'default') : null });
-        }
-      } catch {}
       msg = `Terminal failed: spawn-helper lacks execute permission. Try: chmod +x neural-interface/node_modules/node-pty/prebuilds/${process.platform}-${process.arch}/spawn-helper`;
     }
-    res.status(500).json({ error: msg });
+    return res.status(500).json({ error: msg });
   }
+  broadcastSync({ type: 'terminal:session-created', sessionId, profile });
+  if (profile === 'claude-code') setTimeout(saveSessionSnapshot, 2000); // update resume snapshot
+  res.json({ sessionId, profile, codexAccountId: profile === 'codex' ? (codexAccountId || 'default') : null });
 });
 
 app.delete('/api/terminal/sessions/:id', (req, res) => {
@@ -29497,6 +27878,9 @@ function injectIntoLivePty(linkId, sessionId, message) {
     if (!terminalLinks.has(linkId)) return;
     if (link._captureSessionId !== sessionId) return;
 
+    // Output reaches this process only while tapped; the tap switches itself
+    // off once no consumer (link capture / loop driver) is left.
+    terminalHost.setTap(sessionId, true);
     session._linkCaptureCallback = (data) => {
       link._captureBuffer += data;
 
@@ -29944,6 +28328,26 @@ setInterval(() => {
   }
 }, 60_000).unref?.();
 
+// ── Default-browser policy for automation sessions ──
+// While MoreLogin is the default browser, every loop / schedule / dispatched run
+// must drive the default MoreLogin profile, localhost pages included.
+function moreLoginDefaultEnvId(cfg) {
+  return cfg?.moreloginEnvId || (cfg?.morelogin && cfg.morelogin.defaultEnvId) || null;
+}
+
+function sessionServesMoreLoginDefault(session, cfg) {
+  if (!session || session._profileMode !== 'morelogin') return false;
+  const envId = moreLoginDefaultEnvId(cfg);
+  return !envId || String(session._mlEnvId || '') === String(envId);
+}
+
+function describeBrowserSessionForLog(session) {
+  return {
+    profileMode: session?._profileMode || null,
+    envId: session?._mlEnvId || null,
+  };
+}
+
 async function findReusableBrowserSession(opts = {}) {
   const { excludeAgentOwned = true, excludeLoopOwned = true } = opts;
   const cfg = loadBrowserConfig();
@@ -29952,7 +28356,6 @@ async function findReusableBrowserSession(opts = {}) {
   // Use the same applicability test as session creation to avoid infinite re-spawn.
   const wantAttach = isAttachConfigActive(cfg);
   const wantMoreLogin = cfg.connectMode === 'morelogin';
-  const wantEnvId = cfg.moreloginEnvId || (cfg.morelogin && cfg.morelogin.defaultEnvId) || null;
   let selectedPath = cfg.userDataDir || '';
   if (selectedPath && !selectedPath.startsWith('/') && !(/^[A-Z]:/i.test(selectedPath))) {
     selectedPath = resolve(DATA_HOME, selectedPath);
@@ -29973,10 +28376,9 @@ async function findReusableBrowserSession(opts = {}) {
     }
     // MoreLogin sessions are keyed by env id (not a userDataDir). When either the
     // active config OR this session is MoreLogin-backed, both must be — and the env
-    // id must line up — otherwise they aren't interchangeable.
+    // id must line up exactly — otherwise they aren't interchangeable.
     if (wantMoreLogin || session._profileMode === 'morelogin') {
-      if (!wantMoreLogin || session._profileMode !== 'morelogin') continue;
-      if (wantEnvId && session._mlEnvId && String(wantEnvId) !== String(session._mlEnvId)) continue;
+      if (!wantMoreLogin || !sessionServesMoreLoginDefault(session, cfg)) continue;
     } else {
       if (wantAttach && session._profileMode !== 'cdp') continue;
       if (!wantAttach && session._profileMode === 'cdp') continue;
@@ -30040,10 +28442,20 @@ async function acquireSharedBrowserTab({ requestedBrowserSessionId = null, owner
     let browserTabId = null;
     const ownerProp = ownerType === 'interactive' ? '_interactiveOwned' : '_loopOwned';
 
-    // Strategy 0: best-effort pin to the caller-provided browser session.
+    // Strategy 0: best-effort pin to the caller-provided browser session — only when
+    // it is a browser this caller may run in. While MoreLogin is the default, that is
+    // the default MoreLogin profile.
+    const policyCfg = loadBrowserConfig();
+    const moreLoginDefault = policyCfg.connectMode === 'morelogin';
     if (requestedBrowserSessionId) {
       const requested = browserSessions.get(requestedBrowserSessionId);
-      if (requested) {
+      const unfit = requested && moreLoginDefault && !sessionServesMoreLoginDefault(requested, policyCfg);
+      if (unfit) {
+        loopLog(ownerKey, logTag, 'strategy 0 skipped: requested browser is not the default browser profile', {
+          requestedBrowserSessionId, ...describeBrowserSessionForLog(requested),
+          wantMoreLoginEnvId: moreLoginDefault ? moreLoginDefaultEnvId(policyCfg) : null,
+        });
+      } else if (requested) {
         try {
           await requested.page.evaluate('1');
           browserSessionId = requestedBrowserSessionId;
@@ -30074,6 +28486,9 @@ async function acquireSharedBrowserTab({ requestedBrowserSessionId = null, owner
     }
 
     // Strategy 2: no shared browser exists — create one using the selected profile.
+    // createBrowserSession is strict: with MoreLogin as the default it either attaches
+    // to MoreLogin (auto-launching the app) or throws — never a Chrome fallback.
+    let createError = null;
     if (!browserSessionId) {
       try {
         const result = await createBrowserSession({ url: 'about:blank' });
@@ -30087,12 +28502,31 @@ async function acquireSharedBrowserTab({ requestedBrowserSessionId = null, owner
           profileMode: result.profileMode, profileSource: result.profileSource,
         });
       } catch (err) {
+        createError = err.message;
         loopLog(ownerKey, logTag, 'strategy 2 FAILED: createBrowserSession threw', { err: err.message, stack: err.stack?.slice(0, 600) });
       }
     }
 
     if (!browserSessionId) {
-      return { error: 'Could not start the shared browser session. Open Browser Settings and verify the selected profile can launch.' };
+      // Carry the real reason (e.g. "MoreLogin connect failed: … unreachable") into the
+      // run's log, lastRunResult and the schedule:failed toast.
+      return {
+        error: createError
+          ? `Could not start the shared browser session: ${createError}`
+          : 'Could not start the shared browser session. Open Browser Settings and verify the selected profile can launch.',
+      };
+    }
+
+    // Invariant: never hand an automation a browser other than the default MoreLogin
+    // profile while MoreLogin is the default (strategies 0–2 already enforce it).
+    const chosenSession = browserSessions.get(browserSessionId);
+    if (moreLoginDefault && chosenSession && !sessionServesMoreLoginDefault(chosenSession, policyCfg)) {
+      loopLog(ownerKey, logTag, 'ABORT: acquired session is not the default MoreLogin profile', {
+        browserSessionId, ...describeBrowserSessionForLog(chosenSession),
+      });
+      return {
+        error: `Refusing browser session ${browserSessionId} (${chosenSession._profileMode || 'unknown'} mode): MoreLogin env ${moreLoginDefaultEnvId(policyCfg) || '(default)'} is the default browser, and automations never fall back to another browser.`,
+      };
     }
 
     // Mark owned immediately (before the tab-creation await) so a concurrent launch
@@ -30184,7 +28618,7 @@ function isDroppableSidepanelProviderEvent(message) {
 function broadcastSync(message, excludeWs = null) {
   const data = JSON.stringify(message);
   const messageType = String(message?.type || '');
-  const ownerOnly = ['sidepanel:', 'schedule:', 'schedule-group:', 'quick-timer:']
+  const ownerOnly = ['sidepanel:', 'schedule:', 'schedule-group:', 'quick-timer:', 'assistant:', 'whatsapp:']
     .some((prefix) => messageType.startsWith(prefix));
   const dropUnderBackpressure = isDroppableSidepanelProviderEvent(message);
   let sent = 0;
@@ -30253,9 +28687,46 @@ function handleSyncWebSocket(ws, req) {
 }
 
 // ── Whiteboard WebSocket clients (Claude MCP integration) ──
+// Each socket carries `_wbClient` = { clientId, viewport, focusActive, visible,
+// lastSeen, protocol, isGuest }. The viewport used for MCP coordinate math and
+// the window asked for screenshots is the PRIMARY client: owner before guest,
+// focus-active + visible first, most recently active last. With no browser
+// connected the built-in default applies and GET /api/whiteboard says so.
 const whiteboardClients = new Set(); // Set<WebSocket>
 const whiteboardPendingScreenshots = new Map(); // requestId → { resolve, reject, timer }
-let whiteboardViewport = { width: 1920, height: 937 }; // updated by browser on WS connect + resize
+
+function getPrimaryWhiteboardClient() {
+  let best = null;
+  let bestScore = -1;
+  for (const ws of whiteboardClients) {
+    if (ws.readyState !== 1) continue;
+    const c = ws._wbClient;
+    if (!c || !c.viewport) continue;
+    const score = (c.isGuest ? 0 : 4) + (c.focusActive && c.visible !== false ? 2 : 0) + (c.visible !== false ? 1 : 0);
+    if (score > bestScore || (score === bestScore && c.lastSeen > (best._wbClient.lastSeen || 0))) {
+      best = ws;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
+function getWhiteboardViewport() {
+  const primary = getPrimaryWhiteboardClient();
+  return primary ? { ...primary._wbClient.viewport } : { ...WB_DEFAULT_VIEWPORT };
+}
+
+function getWhiteboardConnection() {
+  const primary = getPrimaryWhiteboardClient();
+  let clients = 0;
+  for (const ws of whiteboardClients) if (ws.readyState === 1) clients++;
+  return {
+    clients,
+    focusActive: !!(primary && primary._wbClient.focusActive),
+    primaryClientId: primary ? primary._wbClient.clientId : null,
+    source: primary ? 'browser' : 'default',
+  };
+}
 
 function broadcastToWhiteboard(message, excludeWs = null) {
   const data = JSON.stringify(message);
@@ -30264,21 +28735,88 @@ function broadcastToWhiteboard(message, excludeWs = null) {
   }
 }
 
+/** Send a list of {op:'update'|'remove'|'add'} ops: protocol-2 clients (they
+ *  sent a clientId) get ONE `batch` message (one undo step, one render); older
+ *  client JS gets the legacy per-op messages. */
+function broadcastWhiteboardOps(ops, excludeWs = null) {
+  if (!ops.length) return;
+  const batch = JSON.stringify({ type: 'batch', ops });
+  for (const client of whiteboardClients) {
+    if (client === excludeWs || client.readyState !== 1) continue;
+    if (client._wbClient?.protocol >= 2) { client.send(batch); continue; }
+    for (const op of ops) {
+      if (op.op === 'update') client.send(JSON.stringify({ type: 'update', id: op.id, updates: op.updates }));
+      else if (op.op === 'remove') client.send(JSON.stringify({ type: 'remove', id: op.id }));
+      else if (op.op === 'add' && op.element) client.send(JSON.stringify({ type: 'add', elements: [op.element] }));
+    }
+  }
+}
+
 // ── Browser config ──
 
 const BROWSER_CONFIG_PATH = resolve(DATA_HOME, 'data', 'browser-config.json');
 
+// The text of the last config read or written successfully. A read that fails (a
+// torn file, a parse error, an I/O error) returns it instead of {}: an empty config
+// would silently switch MoreLogin mode off for whatever asked. Kept as text so every
+// caller still gets its own object to mutate.
+let _lastGoodBrowserConfigText = null;
+let _browserConfigWarnedAt = 0;
+// Marks the {} returned for a browser-config.json that exists but was never read
+// well (no last good text either): it is not "unconfigured", so session creation
+// refuses it (browserConfigUnreadable) instead of starting Chrome where MoreLogin
+// may be set up. A missing file still means the defaults.
+const BROWSER_CONFIG_UNREADABLE = Symbol('browserConfigUnreadable');
+
 function loadBrowserConfig() {
   try {
     if (!existsSync(BROWSER_CONFIG_PATH)) return {};
-    return JSON.parse(readFileSync(BROWSER_CONFIG_PATH, 'utf-8'));
-  } catch { return {}; }
+    const text = readFileSync(BROWSER_CONFIG_PATH, 'utf-8');
+    const config = JSON.parse(text);
+    if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error('not a JSON object');
+    _lastGoodBrowserConfigText = text;
+    _browserConfigWarnedAt = 0;
+    return config;
+  } catch (err) {
+    // Once per failure streak, then at most once a minute while it lasts.
+    if (Date.now() - _browserConfigWarnedAt > 60_000) {
+      _browserConfigWarnedAt = Date.now();
+      console.warn(`[browser] ${BROWSER_CONFIG_PATH} is unreadable (${err.message}); ${_lastGoodBrowserConfigText ? 'using the last good browser settings' : 'no browser session starts until it is fixed in Settings → Browser'}`);
+    }
+    if (_lastGoodBrowserConfigText) return JSON.parse(_lastGoodBrowserConfigText);
+    const unreadable = {};
+    Object.defineProperty(unreadable, BROWSER_CONFIG_UNREADABLE, { value: err.message || String(err) });
+    return unreadable;
+  }
 }
 
+/** Why the browser settings could not be read at all (a config from loadBrowserConfig), else null. */
+function browserConfigUnreadable(cfg) {
+  return (cfg && cfg[BROWSER_CONFIG_UNREADABLE]) || null;
+}
+
+// The default browser as one string (connect mode and MoreLogin env). Every
+// /api/browser response carries it (X-Synabun-Browser-Default) and MCP processes
+// key their route caches on it, so a change of browser settings drops them.
+function browserDefaultSignature(cfg = loadBrowserConfig()) {
+  if (browserConfigUnreadable(cfg)) return 'unreadable';
+  return cfg.connectMode === 'morelogin' ? `morelogin:${moreLoginDefaultEnvId(cfg) || ''}` : `other:${cfg.connectMode || 'mirror'}`;
+}
+
+// Atomic: a reader never sees a half-written file (temp file + rename).
 function saveBrowserConfig(config) {
   const dir = dirname(BROWSER_CONFIG_PATH);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(BROWSER_CONFIG_PATH, JSON.stringify(config, null, 2), 'utf-8');
+  const text = JSON.stringify(config, null, 2);
+  const tmpPath = `${BROWSER_CONFIG_PATH}.tmp-${process.pid}-${randomBytes(4).toString('hex')}`;
+  try {
+    writeFileSync(tmpPath, text, 'utf-8');
+    renameSync(tmpPath, BROWSER_CONFIG_PATH);
+  } catch (err) {
+    try { if (existsSync(tmpPath)) unlinkSync(tmpPath); } catch {}
+    throw err;
+  }
+  _lastGoodBrowserConfigText = text;
 }
 
 /**
@@ -31094,6 +29632,31 @@ async function moneyGuardLabel(target, session) {
   return null;
 }
 
+// ── Safe auto-heal: permission, not intent ──
+// One retry click on a plain navigation link, and only while a recorded
+// browser-target benchmark vouches for the configuration that is running.
+// `browserAssist.autoHealEnabled` is what the operator wants; this is whether
+// it may happen right now, read fresh because a settings change or a new bench
+// from another process must take effect on the very next click. Any failure
+// reads as "no". TypeSafe is never called from here: this only reads config.
+function browserAutoHealAllowed() {
+  try {
+    if (!typesafeEnabled()) return false;
+    invalidateTypeSafeConfig();
+    return autoHealGate(typesafeConfig()).mode === 'auto-heal';
+  } catch { return false; }
+}
+
+// The money guard's view of a heal target, from the facts the collector read:
+// a session that lifted the guard can never heal, and neither can anything the
+// guard's own vocabulary or URL list would block. Returns a static code or null.
+function autoHealServerVeto(session, facts) {
+  if (!moneyGuardActive(session)) return 'paid_surfaces_session';
+  if (facts?.hrefRaw && MONEY_URL_RE.test(facts.hrefRaw)) return 'money_url';
+  if (MONEY_TEXT_RE.test(Object.values(facts?.names || {}).join(' '))) return 'money_label';
+  return null;
+}
+
 // Abort every ad/boost/billing request in a context so no charge can land even if a
 // click or evaluate() slips a boost through. Scoped to MONEY_NET_RE (not '**/*') to
 // keep request overhead off normal traffic. Idempotent per context.
@@ -31110,6 +29673,68 @@ async function installMoneyGuardRoute(ctx) {
   }
 }
 
+// ── MoreLogin blocks ───────────────────────────────────────────────────────────
+// MoreLogin redirects a navigation it refuses to its stop page, which otherwise
+// looks like a normal page load. Two settings cause it:
+//   • a profile's Port scan protection: a local port (localhost, 127.0.0.1) loads
+//     only when it is listed under Edit profile → Advanced settings → Port scan
+//     protection (allowed ports, read when the profile starts). Every other local
+//     port lands on black_whiteList_stop_page_v2.html?blockedUrl=<url>.
+//   • an account-level website blacklist/whitelist, enforced by the bundled
+//     SBBackground extension (chrome.webRequest.onBeforeRequest, main and sub frames).
+// Localhost pages open in MoreLogin like any other page; the block is reported,
+// never worked around.
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]', '0.0.0.0']);
+function isLoopbackUrl(url) {
+  if (typeof url !== 'string' || !url) return false;
+  try {
+    const host = new URL(url).hostname.replace(/^\[|\]$/g, '').toLowerCase();
+    return LOOPBACK_HOSTS.has(host) || host.endsWith('.localhost') || /^127\./.test(host);
+  } catch { return false; }
+}
+
+// The page MoreLogin redirects a blocked navigation to: the remote stop page (v1
+// for the website policy, _v2 for port scan protection) and the extension's local
+// gate page.
+const MORELOGIN_BLOCK_RE = /^https?:\/\/getip\.morelogin\.com\/black_whiteList_stop_page(?:_v\d+)?\.html|^chrome-extension:\/\/[a-p]+\/url-blocking\.html/i;
+
+// Observed-block telemetry. MoreLogin's local API does not expose the website-limit
+// config, so the UI reports what we actually saw rather than what is configured.
+const moreLoginBlockStats = { count: 0, lastUrl: null, lastAt: null };
+
+// The URL the stop page names (?blockedUrl=…), else the one the caller asked for.
+function moreLoginBlockedUrl(requestedUrl, landedUrl) {
+  try {
+    const named = new URL(landedUrl).searchParams.get('blockedUrl');
+    if (named && /^https?:$/.test(new URL(named).protocol)) return named;
+  } catch {}
+  return requestedUrl;
+}
+
+// Returns an actionable message when `landedUrl` is MoreLogin's stop page and the
+// caller did not ask for it — i.e. MoreLogin silently swallowed the navigation.
+// Returns null when nothing was blocked.
+function moreLoginBlockError(session, requestedUrl, landedUrl) {
+  if (session?._profileMode !== 'morelogin') return null;
+  if (!MORELOGIN_BLOCK_RE.test(landedUrl || '')) return null;
+  if (MORELOGIN_BLOCK_RE.test(requestedUrl || '')) return null;
+  const blockedUrl = moreLoginBlockedUrl(requestedUrl, landedUrl);
+  moreLoginBlockStats.count += 1;
+  moreLoginBlockStats.lastUrl = blockedUrl;
+  moreLoginBlockStats.lastAt = new Date().toISOString();
+  console.warn(`[morelogin] blocked ${blockedUrl} → ${landedUrl}`);
+  if (isLoopbackUrl(blockedUrl)) {
+    const { port, protocol } = new URL(blockedUrl);
+    const shown = port || (protocol === 'https:' ? '443' : '80');
+    return `MoreLogin blocked localhost:${shown}. Most likely the profile's Port scan protection: add ${shown} to its Advanced settings → Port scan protection allowed ports in MoreLogin. `
+      + `If a URL Access Restriction in MoreLogin's Security Center blocks localhost, remove localhost from that block policy. Then restart the profile.`;
+  }
+  return `MoreLogin blocked this navigation to ${blockedUrl}. Its website blacklist/whitelist `
+    + `(MoreLogin → Settings → security/permissions, or your team super-admin's policy) does not allow `
+    + `that host, so the tab was redirected to MoreLogin's stop page. Add the host to the whitelist, or `
+    + `disable the website limit for env ${session._mlEnvId}.`;
+}
+
 /**
  * Launch a browser session. Returns sessionId + CDP WebSocket URL.
  * Merges saved browser-config.json with per-session overrides, clones
@@ -31118,6 +29743,9 @@ async function installMoneyGuardRoute(ctx) {
 async function createBrowserSession(options = {}) {
   const sessionId = randomBytes(16).toString('hex');
   const savedCfg = loadBrowserConfig();
+  // Settings that exist but cannot be read are not "no settings": never fall back to Chrome.
+  const unreadableCfg = browserConfigUnreadable(savedCfg);
+  if (unreadableCfg) throw new Error(`browser-config.json is unreadable; fix it in Settings → Browser (${unreadableCfg})`);
   // Resolve browser selector → channel (when no explicit channel is set)
   if (!savedCfg.channel && savedCfg.browser && savedCfg.browser !== 'auto' && savedCfg.browser !== 'custom') {
     savedCfg.channel = savedCfg.browser; // chrome, msedge, chromium
@@ -31381,6 +30009,9 @@ async function createBrowserSession(options = {}) {
   let _mlEnvId = null;
   let _mlDebugPort = null;
   let _moreLoginConnected = false;
+  // Localhost opens in MoreLogin like any other URL. A port missing from the
+  // profile's Port scan protection list lands on the stop page, which the start
+  // navigation below reports (moreLoginBlockError).
   const _wantMoreLogin = options.connectMode === 'morelogin'
     || !!options.moreloginEnvId
     || savedCfg.connectMode === 'morelogin';
@@ -31701,9 +30332,13 @@ async function createBrowserSession(options = {}) {
     await cdpStealth.detach().catch(() => {});
   }
 
+  // browser_console reads what this tab logs from its first page on.
+  attachConsoleBuffer(page);
+
   // Navigate to initial URL or blank
   const startUrl = options.url || 'about:blank';
-  await page.goto(startUrl).catch((err) => {
+  const launchAborted = options.browserRequest && (options.browserRequest.signal.aborted || Date.now() >= options.browserRequest.deadline);
+  if (!launchAborted) await page.goto(startUrl).catch((err) => {
     console.warn('Initial navigation warning:', err.message);
   });
 
@@ -31765,6 +30400,7 @@ async function createBrowserSession(options = {}) {
   // Wire page events for a tab (reusable for new tabs)
   function wireTabPageEvents(tabId, tabPage) {
     const isRegisteredPage = () => session.tabs.get(tabId)?.page === tabPage;
+    attachConsoleBuffer(tabPage); // no-op when the tab's creator attached it already
 
     tabPage.on('framenavigated', async (frame) => {
       if (frame === tabPage.mainFrame()) {
@@ -31896,6 +30532,9 @@ async function createBrowserSession(options = {}) {
     wsEndpoint: (_isPersistent || _profileMode === 'cdp' || _profileMode === 'morelogin') ? null : (browser.wsEndpoint?.() || null),
     profileMode: _profileMode || 'clean',
     profileSource: _profileSourceName || null,
+    // A start URL MoreLogin refused (a localhost port missing from Port scan
+    // protection, say): the session exists, parked on the stop page.
+    moreLoginBlocked: moreLoginBlockError(session, startUrl, page.url()),
   };
 }
 
@@ -32007,6 +30646,7 @@ async function createSessionTab(session, sessionId, url = 'about:blank') {
   const activeEntry = session.tabs?.get(session.activeTabId);
   const shouldAdoptAsActive = !activeEntry || activeEntry.page?.isClosed?.();
   const page = await session.context.newPage();
+  attachConsoleBuffer(page);
   if (url && url !== 'about:blank') {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
   }
@@ -32316,6 +30956,7 @@ async function destroyBrowserSession(sessionId) {
   // Remove from Map immediately to prevent races (new sessions seeing zombie entries)
   browserSessions.delete(sessionId);
   clearAiSnapshotCache(sessionId);
+  engagementScheduler.clear(sessionId);
 
   const savedCfg = loadBrowserConfig();
   if (savedCfg.persistStorage !== false && session.context && !session._chromeProcess && !session._isPersistent && session._profileMode !== 'cdp' && session._profileMode !== 'morelogin') {
@@ -32413,11 +31054,17 @@ function trackRoute(session, identityKey, tabId, source) {
 function getTargetPage(session, req) {
   const terminalId = (req.get && req.get('X-Synabun-Terminal')) || req.headers?.['x-synabun-terminal'] || null;
 
-  // 1. Explicit tabId always wins (the healthy pinned path).
+  // 1. An explicit tab must still belong to this caller. Manual UI requests
+  // carry no terminal header and may intentionally inspect any tab.
   const tabId = req.body?.tabId || req.query?.tabId;
   if (tabId) {
     const tab = session.tabs?.get(tabId);
     if (!tab) return null;
+    if (terminalId) {
+      const owned = session._tabOwners?.get(terminalId);
+      const claimedByOther = [...(session._tabOwners || [])].some(([owner, id]) => id === tabId && owner !== terminalId);
+      if ((owned && owned !== tabId) || claimedByOther) return null;
+    }
     trackRoute(session, terminalId, tabId, 'explicit-tab');
     return { page: tab.page, cdpSession: tab.cdpSession, tabId };
   }
@@ -32503,7 +31150,34 @@ async function getBrowserActionState(session, routed, compact) {
 
 // ── Browser REST endpoints ──
 
+app.use('/api/browser', browserRequestMiddleware);
+app.use('/api/browser', (req, res, next) => { res.setHeader('X-Synabun-Browser-Default', browserDefaultSignature()); next(); });
+// Agents act on the default browser only. MCP callers (browser tools, platform
+// tools, batches) send X-Synabun-Terminal; the Neural Interface's own UI does not.
+// While MoreLogin is the default, an agent's request on a session of managed
+// Chrome or of another MoreLogin env is refused before anything runs (any page
+// action, a new tab, CDP). Closing it, or listing its tabs, stays allowed.
+app.use('/api/browser/sessions/:id', (req, res, next) => {
+  if (!req.get('X-Synabun-Terminal') || req.method === 'DELETE' || (req.method === 'GET' && req.path === '/tabs')) return next();
+  const session = browserSessions.get(req.params.id);
+  if (!session) return next();
+  const cfg = loadBrowserConfig();
+  if (cfg.connectMode !== 'morelogin' || sessionServesMoreLoginDefault(session, cfg)) return next();
+  const envId = moreLoginDefaultEnvId(cfg);
+  res.status(409).json({
+    error: `Session ${req.params.id} is not the default browser (${session._profileMode || 'unknown'} mode${session._mlEnvId ? `, MoreLogin env ${session._mlEnvId}` : ''}; the default is MoreLogin${envId ? ` env ${envId}` : ''}), so SynaBun's browser tools do not act on it. Leave sessionId out: browser_navigate opens the page in the default browser.`,
+    code: 'NOT_DEFAULT_BROWSER',
+  });
+});
+// Read-only semantic context for the browser judgments (the judgments themselves run in the MCP layer).
+app.use('/api/browser', createBrowserAssistRouter({ browserSessions, getTargetPage, normalizeSelector }));
+
 app.get('/api/browser/sessions', (req, res) => {
+  // The server decides which sessions may carry normal-page work: with MoreLogin as
+  // the default, only a MoreLogin session on the default env does (MCP callers
+  // require servesDefault). Every session serves the default in other setups.
+  const policyCfg = loadBrowserConfig();
+  const moreLoginDefault = policyCfg.connectMode === 'morelogin';
   const sessions = [...browserSessions.entries()].map(([id, s]) => ({
     id,
     url: s.currentUrl,
@@ -32513,6 +31187,8 @@ app.get('/api/browser/sessions', (req, res) => {
     persistent: !!s._isPersistent,
     profileMode: s._profileMode || 'clean',
     profileSource: s._profileSourceName || null,
+    moreloginEnvId: s._mlEnvId || null,
+    servesDefault: moreLoginDefault ? sessionServesMoreLoginDefault(s, policyCfg) : true,
     wsEndpoint: s._isPersistent ? null : (s.browser.wsEndpoint?.() || null),
     activeTabId: s.activeTabId || null,
     loopOwned: (s._loopOwned?.size || 0) > 0,
@@ -32535,7 +31211,12 @@ app.get('/api/browser/sessions', (req, res) => {
       active: tid === s.activeTabId,
     })) : [],
   }));
-  res.json({ sessions });
+  res.json({
+    sessions,
+    defaultBrowser: moreLoginDefault
+      ? { connectMode: 'morelogin', moreloginEnvId: moreLoginDefaultEnvId(policyCfg) }
+      : { connectMode: policyCfg.connectMode || null },
+  });
 });
 
 app.post('/api/browser/sessions', async (req, res) => {
@@ -32569,7 +31250,10 @@ app.post('/api/browser/sessions', async (req, res) => {
       }
     }
     broadcastSync({ type: 'browser:session-created', sessionId: result.sessionId, url: url || 'about:blank', profileMode: result.profileMode, profileSource: result.profileSource });
-    res.json({ sessionId: result.sessionId, url: url || 'about:blank', wsEndpoint: result.wsEndpoint, profileMode: result.profileMode, profileSource: result.profileSource });
+    res.json({
+      sessionId: result.sessionId, url: url || 'about:blank', wsEndpoint: result.wsEndpoint, profileMode: result.profileMode, profileSource: result.profileSource,
+      ...(result.moreLoginBlocked && { moreLoginBlocked: true, notice: result.moreLoginBlocked }),
+    });
   } catch (err) {
     console.error('Browser session create error:', err.message);
     res.status(500).json({ error: err.message });
@@ -32675,9 +31359,8 @@ app.delete('/api/browser/sessions/:id/tabs/:tabId', async (req, res) => {
 // session._loopOwned. Interactive MCP callers (_interactiveOwned) and the NI web UI
 // (no header) are never delayed, so manual browsing stays instant.
 // Set SYNABUN_HUMAN_PACING=0 to disable globally.
-const _loopPaceState = new Map(); // sessionId → { lastWriteAt }
+const engagementScheduler = createEngagementScheduler();
 const _paceRand = (min, max) => min + Math.floor(Math.random() * (max - min + 1));
-const _paceSleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 function _paceTerminalId(req) {
   return (req.get && req.get('X-Synabun-Terminal')) || req.headers?.['x-synabun-terminal'] || null;
@@ -32687,35 +31370,19 @@ function isLoopPaced(session, req) {
   const tid = _paceTerminalId(req);
   return !!(tid && session?._loopOwned?.has(tid));
 }
-// Pre-action "think" pause before every loop-owned interaction (not read-only calls).
-async function humanThink(session, req) {
-  if (!isLoopPaced(session, req)) return;
-  await _paceSleep(_paceRand(250, 1100));
+async function humanThink(session, req, nonWriting = false) {
+  assertBrowserRequestActive(req);
+  if (!isLoopPaced(session, req) || (nonWriting && browserV2Enabled())) return;
+  await measureBrowserPhase('intentionalPacing', () => cancellableBrowserDelay(_paceRand(250, 1100), req));
 }
-// Per-char typing delay for loop tabs (sequential paths only; insert mode stays
-// instant to preserve Draft.js reliability). undefined → no delay for non-loop callers.
 function loopTypeDelay(session, req) {
   return isLoopPaced(session, req) ? _paceRand(35, 95) : undefined;
 }
-// Engagement/publish selectors X throttles & shadow-bans on (publish, like, repost,
-// follow). Deliberately excludes the bare reply icon (opens the composer, not a write).
-const _ENGAGE_WRITE_RE = /tweetButton|data-testid=["']?(like|retweet|unretweet)\b|-follow\b|:has-text\(["'](Follow|Seguir|Segui|Folgen|Suivre)["']\)/i;
-// Enforce a randomized minimum gap between consecutive engagement writes per session
-// — a hard backstop on posting rate even when the prompt over-asks.
-async function rateLimitEngagement(session, req, selector) {
-  if (!isLoopPaced(session, req)) return;
-  if (!selector || !_ENGAGE_WRITE_RE.test(selector)) return;
-  const key = req.params.id;
-  const st = _loopPaceState.get(key) || { lastWriteAt: 0 };
-  const minGap = _paceRand(30000, 90000);
-  const waited = Date.now() - st.lastWriteAt;
-  if (st.lastWriteAt && waited < minGap) {
-    const remain = minGap - waited;
-    loopLog(_paceTerminalId(req), 'browser:pace', `rate-limiting engagement write ${Math.round(remain / 1000)}s`, { selector: String(selector).slice(0, 80) });
-    await _paceSleep(remain);
-  }
-  st.lastWriteAt = Date.now();
-  _loopPaceState.set(key, st);
+// The write-selector test lives in lib/browser-execution.js (isEngagementWriteSelector) so the
+// auto-heal path refuses on exactly what this queue would hold.
+async function rateLimitEngagement(session, req, selector, execute) {
+  if (!isLoopPaced(session, req) || !isEngagementWriteSelector(selector)) return execute();
+  return engagementScheduler.run(req.params.id, req, execute);
 }
 
 // ── X/Twitter compose-state probe + publish gate ──
@@ -32808,15 +31475,16 @@ async function getXComposeState(page) {
 // Publish hard-gate for loop-owned tabs: block a tweetButton/tweetButtonInline click that
 // would publish a broken post — a status URL in the body with no quoted-tweet card rendered
 // (the documented "quote misfires into a bare reply" failure), or an empty/stale composer.
-// Fails OPEN on any probe error so it can never wedge a legitimate post. SYNABUN_X_GATE=0
-// disables it. Interactive/manual tabs are never gated (same scoping as the rate-limiter).
+// A probe error blocks the click (inspect, then retry); no composer found lets it through.
+// SYNABUN_X_GATE=0 disables it. Interactive/manual tabs are never gated (same scoping as
+// the rate-limiter). xGateBypassRefusal() below closes the two paths around this gate.
 const _X_STATUS_URL_RE = /https?:\/\/(?:x|twitter)\.com\/[^\s]+\/status\/\d+/i;
 async function xPublishGate(session, req, routed, rawSelector) {
   if (process.env.SYNABUN_X_GATE === '0') return null;
   if (!isLoopPaced(session, req)) return null;
   if (!rawSelector || !/tweetButton/.test(rawSelector)) return null;
   let st;
-  try { st = await getXComposeState(routed.page); } catch { return null; }
+  try { st = await runBrowserRequest(req, () => getXComposeState(routed.page)); } catch { return { error: 'Cannot verify composer state; inspect before publishing.', quoteGuard: true }; }
   if (!st || !st.composerOpen) return null;
   const body = (st.composerText || '').trim();
   if (_X_STATUS_URL_RE.test(body) && st.quoteCard && st.quoteCard.type !== 'quote') {
@@ -32828,6 +31496,24 @@ async function xPublishGate(session, req, routed, rawSelector) {
     return { error: 'Publish blocked: the composer is empty (nothing typed, or a stale/cleared draft). Type your content first; if old text / a "Save draft?" prompt is stuck, discard it and reopen a fresh composer.', quoteGuard: true, composeState: st };
   }
   return null;
+}
+
+// Publishing on X must go through a tweetButton click so xPublishGate and the write
+// queue see it. On loop-owned tabs, refuse the two ways around that: a Cmd/Ctrl+Enter
+// press in the composer, and a browser_evaluate script that clicks a write control.
+function xGateBypassRefusal(session, req, routed, kind, payload) {
+  if (process.env.SYNABUN_X_GATE === '0' || !isLoopPaced(session, req)) return null;
+  let url = '';
+  try { url = routed.page.url(); } catch { return null; }
+  const hit = kind === 'press' ? isXShortcutPublish(payload, url) : isXScriptedWrite(payload, url);
+  if (!hit) return null;
+  loopLog(_paceTerminalId(req), 'browser:x-gate', `refused ${kind === 'press' ? 'keyboard-shortcut publish' : 'scripted write click'}`, {});
+  return {
+    error: kind === 'press'
+      ? 'Publish blocked: keyboard-shortcut publishing is disabled on automation tabs. Call browser_x_compose_state, then browser_click its submitButton.selector.'
+      : 'Blocked: browser_evaluate may not click X publish, like, repost or follow controls on automation tabs. Use browser_click on the control (after browser_x_compose_state for posts).',
+    quoteGuard: true,
+  };
 }
 
 /**
@@ -32859,12 +31545,13 @@ app.post('/api/browser/sessions/:id/paid-surfaces', async (req, res) => {
 app.post('/api/browser/sessions/:id/navigate', async (req, res) => {
   const session = browserSessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'Session not found' });
-  const routed = getTargetPage(session, req);
-  if (!routed) return res.status(404).json({ error: `Tab ${req.body?.tabId} not found in session` });
   const { url, returnSnapshot, snapshot, compact } = req.body;
   if (moneyGuardActive(session) && typeof url === 'string' && MONEY_URL_RE.test(url)) {
     return res.status(400).json({ error: `Blocked navigation to a paid Facebook ads/boost/billing surface (${url.slice(0, 80)}). ${MONEY_GUARD_MSG}`, moneyGuard: true });
   }
+
+  const routed = getTargetPage(session, req);
+  if (!routed) return res.status(404).json({ error: `Tab ${req.body?.tabId} not found in session` });
   const circuit = activeBrowserNavigationCircuit(session, routed.tabId, url);
   if (circuit) {
     return res.status(409).json({
@@ -32874,10 +31561,15 @@ app.post('/api/browser/sessions/:id/navigate', async (req, res) => {
     });
   }
   try {
-    await humanThink(session, req);
-    await routed.page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+    await humanThink(session, req, true);
+    markBrowserActionStarted(req);
+    const response = await measureBrowserPhase('action', () => routed.page.goto(url, { waitUntil: 'domcontentloaded', timeout: browserActionTimeout(req, 15000) }));
+    let httpStatus = null;
+    try { httpStatus = response ? response.status() : null; } catch { httpStatus = null; }
     clearBrowserNavigationWedge(session, routed.tabId, url);
     const state = await getBrowserActionState(session, routed, compact);
+    const blocked = moreLoginBlockError(session, url, state.url);
+    if (blocked) return res.status(502).json({ error: blocked, moreLoginBlocked: true, landedUrl: state.url });
     const body = { ok: true, url: state.url, title: state.title };
     if (snapshot && snapshot !== 'none') {
       await settleAfterAction(routed.page);
@@ -32885,7 +31577,7 @@ app.post('/api/browser/sessions/:id/navigate', async (req, res) => {
         mode: 'ai',
         diff: snapshot === 'diff',
         maxChars: req.body.snapshotMaxChars || 12000,
-        aiCacheKey: aiSnapshotKey(req.params.id, routed),
+        ...snapshotRequestOptions(req, res, req.params.id, routed),
       }).catch(err => ({ snapshotText: null, snapshotError: err.message }));
       Object.assign(body, snap);
     } else if (returnSnapshot) {
@@ -32893,9 +31585,19 @@ app.post('/api/browser/sessions/:id/navigate', async (req, res) => {
         scopeSel: returnSnapshot.selector ? normalizeSelector(returnSnapshot.selector) : null,
         mode: returnSnapshot.mode,
         viewport: returnSnapshot.viewport,
-        aiCacheKey: aiSnapshotKey(req.params.id, routed),
+        ...snapshotRequestOptions(req, res, req.params.id, routed),
       }).catch(err => ({ snapshot: null, snapshotError: err.message }));
       Object.assign(body, snap);
+    }
+    // Bounded, value-free context for the page-state judgment, in the same round
+    // trip. A plain DOM scan (never a snapshot, which would replace the refs just
+    // delivered), time-boxed, and its failure never fails the navigation.
+    if (req.body.semanticContext === true && req.get('X-Synabun-Batch') !== '1') {
+      try {
+        if (!(snapshot && snapshot !== 'none')) await settleAfterAction(routed.page);
+        body.semanticContext = await runBrowserRequest(req, () => measureBrowserPhase('semanticContext',
+          () => collectSemanticContext(routed.page, { purpose: 'navigation', httpStatus })), 1500);
+      } catch { body.semanticContextError = 'unavailable'; }
     }
     res.json(body);
   } catch (err) {
@@ -32915,8 +31617,12 @@ app.post('/api/browser/sessions/:id/back', async (req, res) => {
   const routed = getTargetPage(session, req);
   if (!routed) return res.status(404).json({ error: `Tab ${req.body?.tabId} not found in session` });
   try {
+    const beforeUrl = routed.page.url();
+    markBrowserActionStarted(req);
     await routed.page.goBack({ timeout: 10000 });
     const state = await getBrowserActionState(session, routed, req.body?.compact);
+    const blocked = moreLoginBlockError(session, beforeUrl, state.url);
+    if (blocked) return res.json({ ok: false, error: blocked, moreLoginBlocked: true, url: state.url });
     res.json({ ok: true, url: state.url, title: state.title });
   } catch (err) {
     const recovery = await recoverBrowserRouteFailure(session, req.params.id, routed, req, 'goBack', err);
@@ -32935,8 +31641,12 @@ app.post('/api/browser/sessions/:id/forward', async (req, res) => {
   const routed = getTargetPage(session, req);
   if (!routed) return res.status(404).json({ error: `Tab ${req.body?.tabId} not found in session` });
   try {
+    const beforeUrl = routed.page.url();
+    markBrowserActionStarted(req);
     await routed.page.goForward({ timeout: 10000 });
     const state = await getBrowserActionState(session, routed, req.body?.compact);
+    const blocked = moreLoginBlockError(session, beforeUrl, state.url);
+    if (blocked) return res.json({ ok: false, error: blocked, moreLoginBlocked: true, url: state.url });
     res.json({ ok: true, url: state.url, title: state.title });
   } catch (err) {
     const recovery = await recoverBrowserRouteFailure(session, req.params.id, routed, req, 'goForward', err);
@@ -32955,6 +31665,7 @@ app.post('/api/browser/sessions/:id/reload', async (req, res) => {
   const routed = getTargetPage(session, req);
   if (!routed) return res.status(404).json({ error: `Tab ${req.body?.tabId} not found in session` });
   try {
+    markBrowserActionStarted(req);
     await routed.page.reload({ timeout: 15000 });
     const state = await getBrowserActionState(session, routed, req.body?.compact);
     res.json({ ok: true, url: state.url, title: state.title });
@@ -33034,95 +31745,29 @@ function normalizeSelector(sel) {
 // dismissed first. So split on blank lines and, between paragraphs, press Escape (close any
 // typeahead) then Enter (real line break); a final Escape clears any lingering popup so a
 // following Post click is clean. `typeOne` runs one paragraph as a real keystroke run.
-async function typeParagraphs(page, typeOne, text) {
+async function typeParagraphs(page, typeOne, text, req) {
   const paragraphs = String(text ?? '')
     .split(/\n{2,}/)
     .map(p => p.replace(/\s*\n\s*/g, ' ').trim())
     .filter(Boolean);
   for (let i = 0; i < paragraphs.length; i++) {
     if (i > 0) {
+      assertBrowserRequestActive(req);
       await page.keyboard.press('Escape');
+      assertBrowserRequestActive(req);
       await page.keyboard.press('Enter');
     }
+    assertBrowserRequestActive(req);
     await typeOne(paragraphs[i]);
   }
+  assertBrowserRequestActive(req);
   await page.keyboard.press('Escape');
 }
 
-// Compute visible interactive elements with stable selector hints.
-// opts: { limit=15, viewportOnly=true }
-async function getInteractiveHints(page, opts = {}) {
-  const limit = opts.limit ?? 15;
-  const viewportOnly = opts.viewportOnly !== false;
-  try {
-    return await page.evaluate(({ limit, viewportOnly }) => {
-      function cssEscape(s) {
-        if (window.CSS && CSS.escape) return CSS.escape(s);
-        return String(s).replace(/["\\]/g, '\\$&');
-      }
-      function isUniqueCss(sel) {
-        try { return document.querySelectorAll(sel).length === 1; } catch { return false; }
-      }
-      function stableSelector(el) {
-        const testid = el.getAttribute('data-testid');
-        if (testid) return `[data-testid="${cssEscape(testid)}"]`;
-        const e2e = el.getAttribute('data-e2e');
-        if (e2e) return `[data-e2e="${cssEscape(e2e)}"]`;
-        const tt = el.getAttribute('data-tt');
-        if (tt) return `[data-tt="${cssEscape(tt)}"]`;
-        if (el.id && !/^(ember|ext-|react-|__)/.test(el.id)) {
-          const sel = `#${cssEscape(el.id)}`;
-          if (isUniqueCss(sel)) return sel;
-        }
-        const aria = el.getAttribute('aria-label');
-        if (aria && aria.length <= 80) return `[aria-label="${cssEscape(aria)}"]`;
-        const role = el.getAttribute('role') || ({ BUTTON: 'button', A: 'link', INPUT: 'textbox', TEXTAREA: 'textbox' })[el.tagName];
-        const name = (el.innerText || '').trim().slice(0, 60);
-        if (role && name) return `role=${role}[name="${name.replace(/"/g, '\\"')}"]`;
-        const tag = el.tagName.toLowerCase();
-        if (name && name.length <= 40) return `${tag}:has-text("${name.replace(/"/g, '\\"')}")`;
-        return tag;
-      }
-      const els = document.querySelectorAll(
-        'button, [role="button"], [role="textbox"], [role="link"], [role="checkbox"], [role="tab"], ' +
-        'a[href], input, textarea, select, [role="combobox"], [role="menuitem"], ' +
-        '[contenteditable="true"], [tabindex="0"]'
-      );
-      const visible = Array.from(els).filter(el => {
-        const r = el.getBoundingClientRect();
-        if (r.width === 0 || r.height === 0) return false;
-        if (viewportOnly && (r.top >= window.innerHeight || r.bottom <= 0)) return false;
-        return true;
-      });
-      const picks = visible.slice(0, limit);
-      const selCounts = new Map();
-      return picks.map(el => {
-        const role = el.getAttribute('role') || el.tagName.toLowerCase();
-        const text = (el.innerText || '').trim().substring(0, 60);
-        const ariaLabel = el.getAttribute('aria-label') || '';
-        const placeholder = el.getAttribute('placeholder') || el.getAttribute('aria-placeholder') || '';
-        const selector = stableSelector(el);
-        let nth;
-        try {
-          const matches = document.querySelectorAll(selector);
-          if (matches.length > 1) {
-            const seen = selCounts.get(selector) || 0;
-            nth = seen;
-            selCounts.set(selector, seen + 1);
-          }
-        } catch { /* ignore */ }
-        const rect = el.getBoundingClientRect();
-        return {
-          role, text, ariaLabel, placeholder, selector,
-          ...(nth !== undefined ? { nth } : {}),
-          rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height },
-        };
-      });
-    }, { limit, viewportOnly });
-  } catch (_) {
-    return [];
-  }
-}
+// Compute visible interactive elements with stable selector hints: getInteractiveHints now
+// lives in lib/browser-semantic-context.js, so selector-failure hints and the semantic
+// collector share one definition of visibility and candidate metadata.
+// (tests/browser-execution.test.mjs slices up to the first line of this comment.)
 
 // Rank hints by fuzzy relevance to an attempted selector's text/aria fragments.
 function rankHintsAgainst(hints, attemptedSelector) {
@@ -33149,92 +31794,94 @@ function rankHintsAgainst(hints, attemptedSelector) {
 // For count>1 errors: enumerate up to `limit` of the matching elements with
 // stable selector + context so the caller can pick the right one without blind nthMatch.
 async function describeMatches(page, selector, limit = 10) {
-  try {
-    return await page.evaluate(({ selector, limit }) => {
-      function cssEscape(s) {
-        if (window.CSS && CSS.escape) return CSS.escape(s);
-        return String(s).replace(/["\\]/g, '\\$&');
-      }
-      function stableSelector(el) {
-        const testid = el.getAttribute('data-testid');
-        if (testid) return `[data-testid="${cssEscape(testid)}"]`;
-        const e2e = el.getAttribute('data-e2e');
-        if (e2e) return `[data-e2e="${cssEscape(e2e)}"]`;
-        const aria = el.getAttribute('aria-label');
-        if (aria && aria.length <= 80) return `[aria-label="${cssEscape(aria)}"]`;
-        const role = el.getAttribute('role') || ({ BUTTON: 'button', A: 'link' })[el.tagName];
-        const name = (el.innerText || '').trim().slice(0, 60);
-        if (role && name) return `role=${role}[name="${name.replace(/"/g, '\\"')}"]`;
-        return el.tagName.toLowerCase();
-      }
-      let els = [];
-      try { els = Array.from(document.querySelectorAll(selector)); } catch { return []; }
-      return els.slice(0, limit).map((el, i) => {
-        const role = el.getAttribute('role') || el.tagName.toLowerCase();
-        const text = (el.innerText || '').trim().substring(0, 60);
-        const ariaLabel = el.getAttribute('aria-label') || '';
-        const placeholder = el.getAttribute('placeholder') || '';
-        return { role, text, ariaLabel, placeholder, selector: stableSelector(el), nth: i };
-      });
-    }, { selector, limit });
-  } catch {
-    return [];
-  }
+  return describeLocatorMatches(page, selector, limit);
 }
 
-async function healWithTextHint(page, textHint) {
-  if (!textHint || typeof textHint !== 'string') return null;
-  const esc = textHint.replace(/"/g, '\\"');
-  const candidates = [
-    `role=button[name="${esc}"]`,
-    `role=link[name="${esc}"]`,
-    `role=textbox[name="${esc}"]`,
-    `[aria-label="${esc}"]`,
-    `text="${esc}"`,
-    `:has-text("${esc}")`,
-  ];
-  for (const sel of candidates) {
-    try {
-      const count = await page.locator(sel).count();
-      if (count === 1) return sel;
-    } catch { /* try next */ }
-  }
-  return null;
+async function healWithTextHint(page, textHint, selector) {
+  return healLocatorByText(page, selector, textHint);
+}
+
+// What the caller was aiming at, for lexical pre-ranking of assist candidates: the
+// explicit hint plus any quoted fragment of the selector. Ranking only — never an intent.
+function assistNeedle(selector, textHint) {
+  const quoted = String(selector || '').match(/["']([^"']{2,80})["']/);
+  return [typeof textHint === 'string' ? textHint : '', quoted ? quoted[1] : ''].filter(Boolean).join(' ').slice(0, 160);
+}
+
+// Callers opt in with `assist: true`. Never inside a batch: a batch is a known sequence,
+// and an advisory payload must not change what one of its steps returns.
+function assistRequested(req) {
+  return req.body?.assist === true && req.get?.('X-Synabun-Batch') !== '1';
 }
 
 // Shared locator resolver for click/fill/type/hover/select.
 // Returns { target, healed, error }. When `error` is set, it's a ready-to-send 400 body.
-async function resolveInteractLocator(page, selector, nthMatch, textHint) {
+// With assistOpts.enabled a resolution failure also carries `assist`: classified,
+// value-free candidates the MCP layer may put to the browser-target judgment, stamped
+// with the kind of failure so nothing downstream has to infer it from flags.
+// `assistPrivate` (selectors + fingerprints of the healable ones) rides beside the body
+// for the click route to mint a heal context from; it is never serialized.
+async function resolveInteractLocator(page, selector, nthMatch, textHint, assistOpts) {
+  const failed = async (kind, body) => {
+    if (!assistOpts?.enabled) return { error: body };
+    try {
+      const built = await buildAssist(page, { kind, needle: assistNeedle(selector, textHint), hints: kind === 'ambiguous' ? null : body.hints });
+      // An ambiguous selector is advice-only: several elements matched, so nothing here is "the" target.
+      if (kind === 'ambiguous') for (const candidate of built.assist.candidates) candidate.healable = false;
+      return { error: { ...body, assist: built.assist }, assistPrivate: kind === 'ambiguous' ? null : { entries: built.entries, docKey: built.docKey } };
+    } catch { return { error: body }; }
+  };
   let loc, count;
   try {
     loc = page.locator(selector);
     count = await loc.count();
   } catch (err) {
     const hints = rankHintsAgainst(await getInteractiveHints(page, { limit: 10 }), selector);
-    return { error: { error: `Selector parse failed: ${err.message}`, hints, hintsLabel: 'Try one of these selectors' } };
+    return failed('parse_failed', { error: `Selector parse failed: ${err.message}`, hints, hintsLabel: 'Try one of these selectors' });
   }
 
   if (count === 0) {
     if (textHint) {
-      const healed = await healWithTextHint(page, textHint);
-      if (healed) return { target: page.locator(healed), healed: true };
+      const healed = await healWithTextHint(page, textHint, selector);
+      if (healed) return { target: healed, healed: true };
     }
     const hints = rankHintsAgainst(await getInteractiveHints(page, { limit: 10 }), selector);
-    return { error: { error: `No elements match selector: ${selector}`, hints, hintsLabel: 'Try one of these selectors' } };
+    return failed('no_match', { error: `No elements match selector: ${selector}`, hints, hintsLabel: 'Try one of these selectors' });
   }
 
   if (count > 1 && nthMatch === undefined) {
     const matches = await describeMatches(page, selector, 10);
-    return { error: {
+    return failed('ambiguous', {
       error: `Selector matches ${count} elements (must be unique). Pass nthMatch or use a more specific selector.`,
       hints: matches,
       hintsLabel: `Matched elements (pass nthMatch 0..${Math.min(count, 10) - 1} or switch to one of these selectors)`,
-    }};
+    });
   }
 
-  const target = (count > 1 && nthMatch !== undefined) ? loc.nth(nthMatch) : loc;
+  if (!validNthMatch(count, nthMatch)) return { error: { error: `nthMatch ${nthMatch} is outside ${count} matched elements.` } };
+  const target = nthMatch !== undefined ? loc.nth(nthMatch) : loc;
   return { target, healed: false };
 }
+
+// ── Safe auto-heal: one retry of a click this server confirmed never started ──
+// The request names a candidate inside a context minted here after a resolution
+// failure; selector and fingerprint come from that context, never from the caller.
+// A context is spent by the first attempt to use it, valid or not, so "once" and
+// "only after a confirmed failure" are facts this process holds. Returns the entry
+// or a static rejection code; a refusal never carries hints or a new context.
+function openAutoHeal(req, routed) {
+  const body = req.body || {};
+  const a = body.autoHeal;
+  if (!a || typeof a !== 'object' || typeof a.contextId !== 'string' || typeof a.candidateId !== 'string') return { reject: 'malformed' };
+  const caller = req.get?.('X-Synabun-Terminal') || req.headers?.['x-synabun-terminal'] || 'ui';
+  const spent = assistContexts.consume({ contextId: a.contextId, candidateId: a.candidateId, sessionId: req.params.id, tabId: routed.tabId, caller });
+  if (body.selector || body.ref || body.textHint || body.nthMatch !== undefined) return { reject: 'mixed_target' };
+  if (req.get?.('X-Synabun-Batch') === '1') return { reject: 'batch' };
+  if (!browserAutoHealAllowed()) return { reject: 'locked' };
+  if (spent.error) return { reject: spent.error };
+  return { entry: spent.entry, docKey: spent.docKey };
+}
+const refuseHeal = reason => ({ error: `Auto-heal refused (${reason}); nothing was clicked.`, autoHealRejected: reason });
 
 app.post('/api/browser/sessions/:id/click', async (req, res) => {
   const session = browserSessions.get(req.params.id);
@@ -33242,29 +31889,83 @@ app.post('/api/browser/sessions/:id/click', async (req, res) => {
   const routed = getTargetPage(session, req);
   if (!routed) return res.status(404).json({ error: `Tab ${req.body?.tabId} not found in session` });
   const { selector: rawSelector, ref, timeout, nthMatch, textHint, returnSnapshot, snapshot, compact } = req.body;
-  if (!rawSelector && !ref) return res.status(400).json({ error: 'selector or ref required' });
-  const selector = rawSelector ? normalizeSelector(rawSelector) : null;
+  let heal = null;
+  if (req.body.autoHeal !== undefined) {
+    heal = openAutoHeal(req, routed);
+    if (heal.reject) return res.status(400).json(refuseHeal(heal.reject));
+  }
+  if (!heal && !rawSelector && !ref) return res.status(400).json({ error: 'selector or ref required' });
+  const selector = heal ? heal.entry.selector : rawSelector ? normalizeSelector(rawSelector) : null;
+  let targetIdentity;
   try {
-    await humanThink(session, req);
-    const xGate = await xPublishGate(session, req, routed, rawSelector);
-    if (xGate) return res.status(400).json(xGate);
-    await rateLimitEngagement(session, req, rawSelector);
     const resolved = ref
       ? await resolveRefLocator(routed.page, ref)
-      : await resolveInteractLocator(routed.page, selector, nthMatch, textHint);
-    if (resolved.error) return res.status(400).json(resolved.error);
-    const moneyHit = await moneyGuardLabel(resolved.target, session);
+      : await resolveInteractLocator(routed.page, selector, heal ? undefined : nthMatch, heal ? undefined : textHint, { enabled: !heal && assistRequested(req) });
+    if (resolved.error) {
+      // A heal must resolve to exactly one element; anything else is a refusal, not a new hint list.
+      if (heal) return res.status(400).json(refuseHeal('unresolved'));
+      if (resolved.assistPrivate && browserAutoHealAllowed()) {
+        const caller = req.get?.('X-Synabun-Terminal') || req.headers?.['x-synabun-terminal'] || 'ui';
+        const contextId = assistContexts.mint({ sessionId: req.params.id, tabId: routed.tabId, caller, docKey: resolved.assistPrivate.docKey, entries: resolved.assistPrivate.entries });
+        if (contextId) resolved.error.assist.contextId = contextId;
+      }
+      return res.status(400).json(resolved.error);
+    }
+    const moneyHit = await runBrowserRequest(req, () => moneyGuardLabel(resolved.target, session));
     if (moneyHit) return res.status(400).json({ error: `Blocked click on a paid Boost/Ads/payment control ("${moneyHit}"). ${MONEY_GUARD_MSG}`, moneyGuard: true });
-    await resolved.target.click({ timeout: timeout || 5000 });
+    if (!ref) targetIdentity = await runBrowserRequest(req, () => captureTargetIdentity(resolved.target, browserActionTimeout(req)));
+    if (heal) {
+      // Recomputed here from the element itself: the MCP layer's view of risk is never trusted.
+      const seen = await runBrowserRequest(req, () => describeTargetFacts(targetIdentity.handle, routed.page.url(), browserActionTimeout(req, 3000)));
+      const veto = seen.docKey !== heal.docKey ? 'document_changed'
+        : seen.risk !== 'navigation' ? 'risk_changed'
+        : seen.fingerprint !== heal.entry.fingerprint ? 'fingerprint_changed'
+        : autoHealServerVeto(session, seen.facts);
+      if (veto) return res.status(400).json(refuseHeal(veto));
+    }
+    const semanticSelector = await runBrowserRequest(req, () => engagementTargetSelector(resolved.target));
+    // Refused on either signal, so a heal never enters the 30-90 s engagement queue.
+    if (heal && (semanticSelector || isEngagementWriteSelector(selector))) return res.status(400).json(refuseHeal('engagement_target'));
+    const guardedSelector = semanticSelector || (heal ? selector : rawSelector);
+    const beforeUrl = routed.page.url();
+    const gate = await rateLimitEngagement(session, req, guardedSelector, async () => {
+      await humanThink(session, req, !semanticSelector);
+      assertBrowserRequestActive(req);
+      if (targetIdentity && !await runBrowserRequest(req, () => matchesTargetIdentity(resolved.target, targetIdentity, browserActionTimeout(req)))) {
+        return { error: 'Click target was replaced or changed its item while waiting; inspect before retrying.', staleTarget: true };
+      }
+      const xGate = await xPublishGate(session, req, routed, guardedSelector);
+      if (xGate) return xGate;
+      const semanticNow = await runBrowserRequest(req, () => engagementTargetSelector(resolved.target));
+      if (semanticNow !== semanticSelector) return { error: 'Click target changed while waiting; inspect before retrying.', staleRef: true };
+      const moneyHitNow = await runBrowserRequest(req, () => moneyGuardLabel(resolved.target, session));
+      if (moneyHitNow) return { error: 'Click target became a paid control while waiting.', moneyGuard: true };
+      if (heal) {
+        // Last look, on the handle that is about to be clicked: still plain navigation, same
+        // fingerprint, visible, unobstructed, unique by name, no unsaved input on the page.
+        // Nothing may be awaited between this and markBrowserActionStarted.
+        const reason = await runBrowserRequest(req, () => verifyHealTarget(targetIdentity.handle, heal.entry, { pageUrl: routed.page.url(), docKey: heal.docKey, timeout: browserActionTimeout(req, 3000) }));
+        if (reason) return refuseHeal(reason);
+      }
+      const actionTimeout = browserActionTimeout(req, timeout || 5000);
+      markBrowserActionStarted(req);
+      await measureBrowserPhase('action', () => (targetIdentity?.handle || resolved.target).click({ timeout: actionTimeout }));
+      return null;
+    });
+    if (gate) return res.status(400).json(gate);
     const state = await getBrowserActionState(session, routed, compact);
-    const body = { ok: true, url: state.url, title: state.title, ...(resolved.healed ? { healed: true } : {}) };
+    // A click that follows a link MoreLogin's website policy forbids silently lands
+    // on its stop page — surface that instead of reporting a successful click.
+    const blocked = moreLoginBlockError(session, beforeUrl, state.url);
+    if (blocked) return res.status(502).json({ error: blocked, moreLoginBlocked: true, landedUrl: state.url });
+    const body = { ok: true, url: state.url, title: state.title, ...(resolved.healed ? { healed: true } : {}), ...(heal ? { autoHealed: true } : {}) };
     if (snapshot && snapshot !== 'none') {
       await settleAfterAction(routed.page);
       const snap = await buildSnapshotResponse(routed.page, {
         mode: 'ai',
         diff: snapshot === 'diff',
-        maxChars: req.body.snapshotMaxChars || 12000,
-        aiCacheKey: aiSnapshotKey(req.params.id, routed),
+        maxChars: req.body.snapshotMaxChars || 6000,
+        ...snapshotRequestOptions(req, res, req.params.id, routed),
       }).catch(err => ({ snapshotText: null, snapshotError: err.message }));
       Object.assign(body, snap);
       const st = await getBrowserActionState(session, routed, compact);
@@ -33274,15 +31975,19 @@ app.post('/api/browser/sessions/:id/click', async (req, res) => {
         scopeSel: returnSnapshot.selector ? normalizeSelector(returnSnapshot.selector) : null,
         mode: returnSnapshot.mode,
         viewport: returnSnapshot.viewport,
-        aiCacheKey: aiSnapshotKey(req.params.id, routed),
+        ...snapshotRequestOptions(req, res, req.params.id, routed),
       }).catch(err => ({ snapshot: null, snapshotError: err.message }));
       Object.assign(body, snap);
     }
     res.json(body);
   } catch (err) {
+    // A failed heal carries no hints and mints nothing: it must not be able to start another.
+    if (heal) return res.status(400).json(refuseHeal('exception'));
     if (ref) return res.status(400).json({ error: err.message, staleRef: true });
     const hints = rankHintsAgainst(await getInteractiveHints(routed.page, { limit: 10 }), selector);
     res.status(400).json({ error: err.message, hints, hintsLabel: 'Possibly usable elements' });
+  } finally {
+    await targetIdentity?.handle.dispose().catch(() => {});
   }
 });
 
@@ -33296,11 +32001,12 @@ app.post('/api/browser/sessions/:id/fill', async (req, res) => {
   try {
     const resolved = ref
       ? await resolveRefLocator(routed.page, ref)
-      : await resolveInteractLocator(routed.page, normalizeSelector(rawFillSel), nthMatch, textHint);
+      : await resolveInteractLocator(routed.page, normalizeSelector(rawFillSel), nthMatch, textHint, { enabled: assistRequested(req) });
     if (resolved.error) return res.status(400).json(resolved.error);
     const moneyHitFill = await moneyGuardLabel(resolved.target, session);
     if (moneyHitFill) return res.status(400).json({ error: `Blocked fill of a paid Boost/Ads/payment field ("${moneyHitFill}"). ${MONEY_GUARD_MSG}`, moneyGuard: true });
-    await resolved.target.fill(value ?? '', { timeout: timeout || 5000 });
+    markBrowserActionStarted(req);
+    await measureBrowserPhase('action', () => resolved.target.fill(value ?? '', { timeout: browserActionTimeout(req, timeout || 5000) }));
     const state = await getBrowserActionState(session, routed, compact);
     res.json({ ok: true, url: state.url, title: state.title, ...(resolved.healed ? { healed: true } : {}) });
   } catch (err) {
@@ -33321,24 +32027,28 @@ app.post('/api/browser/sessions/:id/type', async (req, res) => {
     if (rawTypeSel || ref) {
       const resolved = ref
         ? await resolveRefLocator(routed.page, ref)
-        : await resolveInteractLocator(routed.page, normalizeSelector(rawTypeSel), nthMatch, textHint);
+        : await resolveInteractLocator(routed.page, normalizeSelector(rawTypeSel), nthMatch, textHint, { enabled: assistRequested(req) });
       if (resolved.error) return res.status(400).json(resolved.error);
       const moneyHitType = await moneyGuardLabel(resolved.target, session);
       if (moneyHitType) return res.status(400).json({ error: `Blocked typing into a paid Boost/Ads/payment field ("${moneyHitType}"). ${MONEY_GUARD_MSG}`, moneyGuard: true });
       healed = resolved.healed;
+      markBrowserActionStarted(req);
       if (mode === 'paragraphs') {
-        await resolved.target.focus({ timeout: timeout || 5000 });
-        await typeParagraphs(routed.page, p => resolved.target.pressSequentially(p, { timeout: timeout || 5000 }), text);
+        await resolved.target.focus({ timeout: browserActionTimeout(req, timeout || 5000) });
+        await typeParagraphs(routed.page, p => resolved.target.pressSequentially(p, { timeout: browserActionTimeout(req, timeout || 5000) }), text, req);
       } else if (mode === 'insert') {
-        await resolved.target.focus({ timeout: timeout || 5000 });
+        await resolved.target.focus({ timeout: browserActionTimeout(req, timeout || 5000) });
+        assertBrowserRequestActive(req);
         await routed.page.keyboard.insertText(text ?? '');
       } else {
-        await resolved.target.pressSequentially(text ?? '', { timeout: timeout || 5000, delay: typeDelay });
+        await resolved.target.pressSequentially(text ?? '', { timeout: browserActionTimeout(req, timeout || 5000), delay: typeDelay });
       }
     } else {
+      markBrowserActionStarted(req);
       if (mode === 'paragraphs') {
-        await typeParagraphs(routed.page, p => routed.page.keyboard.type(p), text);
+        await typeParagraphs(routed.page, p => routed.page.keyboard.type(p), text, req);
       } else if (mode === 'insert') {
+        assertBrowserRequestActive(req);
         await routed.page.keyboard.insertText(text ?? '');
       } else {
         await routed.page.keyboard.type(text ?? '', { delay: typeDelay });
@@ -33361,9 +32071,10 @@ app.post('/api/browser/sessions/:id/hover', async (req, res) => {
   try {
     const resolved = ref
       ? await resolveRefLocator(routed.page, ref)
-      : await resolveInteractLocator(routed.page, normalizeSelector(rawHoverSel), nthMatch, textHint);
+      : await resolveInteractLocator(routed.page, normalizeSelector(rawHoverSel), nthMatch, textHint, { enabled: assistRequested(req) });
     if (resolved.error) return res.status(400).json(resolved.error);
-    await resolved.target.hover({ timeout: timeout || 5000 });
+    markBrowserActionStarted(req);
+    await resolved.target.hover({ timeout: browserActionTimeout(req, timeout || 5000) });
     const state = await getBrowserActionState(session, routed, compact);
     res.json({ ok: true, url: state.url, title: state.title, ...(resolved.healed ? { healed: true } : {}) });
   } catch (err) {
@@ -33381,11 +32092,12 @@ app.post('/api/browser/sessions/:id/select', async (req, res) => {
   try {
     const resolved = ref
       ? await resolveRefLocator(routed.page, ref)
-      : await resolveInteractLocator(routed.page, normalizeSelector(rawSelSel), nthMatch, textHint);
+      : await resolveInteractLocator(routed.page, normalizeSelector(rawSelSel), nthMatch, textHint, { enabled: assistRequested(req) });
     if (resolved.error) return res.status(400).json(resolved.error);
     const moneyHitSel = await moneyGuardLabel(resolved.target, session);
     if (moneyHitSel) return res.status(400).json({ error: `Blocked select on a paid Boost/Ads/payment control ("${moneyHitSel}"). ${MONEY_GUARD_MSG}`, moneyGuard: true });
-    await resolved.target.selectOption(value ?? '', { timeout: timeout || 5000 });
+    markBrowserActionStarted(req);
+    await resolved.target.selectOption(value ?? '', { timeout: browserActionTimeout(req, timeout || 5000) });
     const state = await getBrowserActionState(session, routed, compact);
     res.json({ ok: true, url: state.url, title: state.title, ...(resolved.healed ? { healed: true } : {}) });
   } catch (err) {
@@ -33400,8 +32112,11 @@ app.post('/api/browser/sessions/:id/press', async (req, res) => {
   if (!routed) return res.status(404).json({ error: `Tab ${req.body?.tabId} not found in session` });
   const { key, compact } = req.body;
   if (!key) return res.status(400).json({ error: 'key required' });
+  const xRefusal = xGateBypassRefusal(session, req, routed, 'press', key);
+  if (xRefusal) return res.status(409).json(xRefusal);
   try {
     await humanThink(session, req);
+    markBrowserActionStarted(req);
     await routed.page.keyboard.press(key);
     const state = await getBrowserActionState(session, routed, compact);
     res.json({ ok: true, url: state.url, title: state.title });
@@ -33417,7 +32132,10 @@ app.post('/api/browser/sessions/:id/evaluate', async (req, res) => {
   if (!routed) return res.status(404).json({ error: `Tab ${req.body?.tabId} not found in session` });
   const { script } = req.body;
   if (!script) return res.status(400).json({ error: 'script required' });
+  const xRefusal = xGateBypassRefusal(session, req, routed, 'evaluate', script);
+  if (xRefusal) return res.status(409).json(xRefusal);
   try {
+    markBrowserActionStarted(req);
     const result = await withBrowserOperationDeadline(
       routed.page.evaluate(script),
       BROWSER_EVALUATE_DEADLINE_MS,
@@ -33529,12 +32247,12 @@ app.post('/api/browser/sessions/:id/snapshot', async (req, res) => {
   if (!session) return res.status(404).json({ error: 'Session not found' });
   const routed = getTargetPage(session, req);
   if (!routed) return res.status(404).json({ error: `Tab ${req.body?.tabId} not found in session` });
-  const { selector: rawSel, mode, viewport, depth, diff, force, maxChars } = req.body || {};
+  const { selector: rawSel, mode, viewport, depth, diff, force, maxChars, baselineId, includeFullText } = req.body || {};
   const scopeSel = rawSel ? normalizeSelector(rawSel) : null;
   try {
     const payload = await buildSnapshotResponse(routed.page, {
-      scopeSel, mode, viewport, depth, diff, force, maxChars,
-      aiCacheKey: aiSnapshotKey(req.params.id, routed),
+      scopeSel, mode, viewport, depth, diff, force, maxChars, baselineId, includeFullText: includeFullText === true,
+      ...snapshotRequestOptions(req, res, req.params.id, routed),
     });
     const state = await syncPageState(session, routed);
     res.json({ ok: true, url: state.url, title: state.title, ...payload });
@@ -33544,46 +32262,30 @@ app.post('/api/browser/sessions/:id/snapshot', async (req, res) => {
 });
 
 // ── AI ref-based snapshots ──
-// Playwright's ariaSnapshot({mode:'ai'}) returns compact YAML with [ref=eN] element
-// references; actions resolve them via the aria-ref=eN selector engine. A ref is valid
-// until the next AI snapshot or navigation of that tab. The cache holds the last AI
-// snapshot text per tab so repeat snapshots dedupe and post-action snapshots can diff.
-const aiSnapshotCache = new Map(); // `${sessionId}:${tabId||'main'}` -> { text, url }
+// Playwright keeps refs stable for unchanged elements in the latest captured scope.
+// Caller, document, scope and budget must all match before reusing an observation.
+const aiSnapshots = createAiSnapshotStore({ enabled: browserV2Enabled, measure: measureBrowserPhase });
+// Single-use heal contexts minted by the click route after a confirmed pre-action failure.
+const assistContexts = createAssistContextStore();
 
-function aiSnapshotKey(sessionId, routed) {
-  return `${sessionId}:${routed?.tabId || 'main'}`;
+function aiSnapshotKey(sessionId, routed, req) {
+  const caller = req.get?.('X-Synabun-Terminal') || req.headers?.['x-synabun-terminal'] || 'ui';
+  return `${sessionId}:${routed?.tabId || 'main'}:${caller}`;
+}
+
+function snapshotRequestOptions(req, res, sessionId, routed) {
+  return {
+    aiCacheKey: aiSnapshotKey(sessionId, routed, req),
+    baselineId: req.body?.snapshotBaselineId || req.body?.baselineId,
+    assertActive: () => assertBrowserRequestActive(req),
+    onDelivered: commit => res.once('finish', () => {
+      if (res.statusCode < 400 && !req.aborted) commit();
+    }),
+  };
 }
 
 function clearAiSnapshotCache(sessionId, tabId) {
-  if (tabId) { aiSnapshotCache.delete(`${sessionId}:${tabId}`); return; }
-  for (const k of aiSnapshotCache.keys()) {
-    if (k.startsWith(`${sessionId}:`)) aiSnapshotCache.delete(k);
-  }
-}
-
-async function captureAiSnapshot(page, { scopeSel = null, depth } = {}) {
-  const loc = page.locator(scopeSel || 'body');
-  const opts = { mode: 'ai', timeout: 8000 };
-  if (Number.isInteger(depth) && depth > 0) opts.depth = depth;
-  const text = await loc.ariaSnapshot(opts);
-  // [cursor=pointer] is pure noise for a model and appears on hundreds of nodes on
-  // feed pages (~10%+ of snapshot chars). Refs and structure are untouched.
-  return text.replace(/ \[cursor=pointer\]/g, '');
-}
-
-// Line-based common-prefix/suffix trim diff. Cheap and good enough: page updates are
-// usually localized, and when they aren't the full snapshot is returned instead.
-function diffSnapshotText(prev, next) {
-  if (prev === next) return { unchanged: true };
-  const a = prev.split('\n');
-  const b = next.split('\n');
-  let p = 0;
-  while (p < a.length && p < b.length && a[p] === b[p]) p++;
-  let s = 0;
-  while (s < a.length - p && s < b.length - p && a[a.length - 1 - s] === b[b.length - 1 - s]) s++;
-  const changed = b.slice(p, b.length - s).join('\n');
-  if (changed.length > next.length * 0.7) return { full: next };
-  return { diff: changed, prefixLines: p, suffixLines: s };
+  aiSnapshots.clear(sessionId, tabId);
 }
 
 // Resolve an element ref minted by the latest AI snapshot of this tab.
@@ -33604,13 +32306,7 @@ async function resolveRefLocator(page, ref) {
 // Bounded settle before post-action snapshots: let handlers fire / navigation start,
 // wait for DOM if a navigation did start, then flush a paint.
 async function settleAfterAction(page, cap = 800) {
-  const start = Date.now();
-  try { await page.waitForTimeout(120); } catch {}
-  const remaining = cap - (Date.now() - start);
-  if (remaining > 50) {
-    await page.waitForLoadState('domcontentloaded', { timeout: remaining }).catch(() => {});
-  }
-  await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))).catch(() => {});
+  return measureBrowserPhase('readiness', () => settleBrowserPage(page, { cap, v2: browserV2Enabled() }));
 }
 
 // Build snapshot payload shared between the snapshot endpoints and the combined
@@ -33620,49 +32316,7 @@ async function buildSnapshotResponse(page, opts = {}) {
 
   // mode=ai: compact YAML with [ref=eN] element references (token-efficient default).
   if (mode === 'ai') {
-    const key = opts.aiCacheKey || null;
-    const prev = key ? aiSnapshotCache.get(key) : null;
-    // Diff captures reuse the cached depth so consecutive snapshots stay comparable.
-    let depth = opts.depth || (opts.diff && prev?.depth ? prev.depth : undefined);
-    let text;
-    try {
-      text = await captureAiSnapshot(page, { scopeSel, depth });
-      // Adaptive depth: feed pages can exceed any char budget at full depth. A complete
-      // shallower tree beats a deep one chopped mid-line, and refs stay valid because
-      // the LAST capture is what mints them.
-      const budget = opts.maxChars && opts.maxChars > 0 ? opts.maxChars : 30000;
-      const diffing = opts.diff && prev && prev.text; // a diff against a baseline stays at the baseline's depth
-      if (!opts.depth && !diffing && text.length > budget) {
-        for (const d of [16, 12, 9]) {
-          text = await captureAiSnapshot(page, { scopeSel, depth: d });
-          depth = d;
-          if (text.length <= budget) break;
-        }
-      }
-    } catch (err) {
-      return { snapshotText: null, snapshotError: err.message, mode };
-    }
-    if (key) aiSnapshotCache.set(key, { text, url: page.url(), depth });
-    const depthInfo = depth && !opts.depth ? { aiDepth: depth } : {};
-    if (prev && prev.text === text && !opts.force) {
-      return { snapshotText: null, unchanged: true, mode, ...depthInfo };
-    }
-    if (opts.diff && prev && prev.text) {
-      const d = diffSnapshotText(prev.text, text);
-      if (d.unchanged) return { snapshotText: null, unchanged: true, mode, ...depthInfo };
-      if (d.diff !== undefined) {
-        return {
-          snapshotText: d.diff,
-          snapshotIsDiff: true,
-          diffPrefixLines: d.prefixLines,
-          diffSuffixLines: d.suffixLines,
-          mode,
-          ...depthInfo,
-        };
-      }
-      return { snapshotText: d.full, mode, ...depthInfo };
-    }
-    return { snapshotText: text, mode, ...depthInfo };
+    return aiSnapshots.build(page, opts);
   }
 
   // mode=interactive: skip the tree entirely — return a flat list of interactive elements.
@@ -33784,6 +32438,38 @@ app.post('/api/browser/sessions/:id/wait', async (req, res) => {
   }
 });
 
+app.post('/api/browser/sessions/:id/extract', async (req, res) => {
+  if (!browserV2Enabled()) return res.status(409).json({ error: 'Server-side extraction is disabled by SYNABUN_BROWSER_V2=0. Remove the override to restore the default browser engine.', actionStarted: false });
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found', actionStarted: false });
+  const routed = getTargetPage(session, req);
+  if (!routed) return res.status(404).json({ error: `Tab ${req.body?.tabId} not found in session`, actionStarted: false });
+  const { script, ...opts } = req.body;
+  if (typeof script !== 'string' || !script.trim()) return res.status(400).json({ error: 'script required', actionStarted: false });
+  for (const name of ['scrolls', 'minItems', 'maxItems', 'maxChars', 'timeoutMs', 'settleMs']) {
+    if (opts[name] !== undefined && (!Number.isInteger(opts[name]) || opts[name] < (name === 'scrolls' ? 0 : name === 'maxChars' ? 2 : 1))) {
+      return res.status(400).json({ error: `${name} must be a ${name === 'scrolls' ? 'nonnegative' : 'positive'} integer`, actionStarted: false });
+    }
+  }
+  for (const name of ['fields', 'dedupeKeys']) {
+    if (opts[name] !== undefined && (!Array.isArray(opts[name]) || opts[name].some(key => typeof key !== 'string' || !key))) {
+      return res.status(400).json({ error: `${name} must be an array of nonempty strings`, actionStarted: false });
+    }
+  }
+  try {
+    assertBrowserRequestActive(req);
+    markBrowserActionStarted(req);
+    const result = await runBrowserExtraction(routed.page, script, opts, {
+      signal: req.browserRequest?.signal,
+      deadline: req.browserRequest?.deadline,
+      measure: measureBrowserPhase,
+    });
+    res.json({ ok: !result.error, url: routed.page.url(), ...result });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/api/browser/sessions/:id/content', async (req, res) => {
   const session = browserSessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'Session not found' });
@@ -33792,7 +32478,13 @@ app.get('/api/browser/sessions/:id/content', async (req, res) => {
   try {
     const state = await syncPageState(session, routed);
     let text = '';
-    try { text = await routed.page.innerText('body'); } catch { text = ''; }
+    if (req.query?.selector) {
+      const target = routed.page.locator(String(req.query.selector));
+      if (await target.count() !== 1) return res.status(400).json({ error: 'Content selector must match exactly one element.' });
+      text = await target.innerText({ timeout: 5000 });
+    } else {
+      try { text = await routed.page.innerText('body'); } catch { text = ''; }
+    }
     const totalChars = text.length;
     const offset = Math.max(0, parseInt(req.query?.offset, 10) || 0);
     const maxChars = Math.max(1, parseInt(req.query?.maxChars, 10) || 50000);
@@ -33801,7 +32493,7 @@ app.get('/api/browser/sessions/:id/content', async (req, res) => {
       const more = totalChars > offset + maxChars;
       text = slice + (more ? `\n... (truncated — ${totalChars} chars total, pass offset=${offset + maxChars} to continue)` : '');
     }
-    res.json({ ok: true, url: state.url, title: state.title, text, totalChars });
+    res.json({ ok: true, url: state.url, title: state.title, text, totalChars, ...(req.query?.selector ? { selector: req.query.selector } : {}) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -33828,7 +32520,9 @@ app.get('/api/browser/sessions/:id/markdown', async (req, res) => {
 
     // Extract main content HTML — strip nav, header, footer, sidebar, ads
     let html = '';
-    try {
+    if (req.query?.selector || browserV2Enabled()) {
+      html = await readBrowserContentHtml(routed.page, req.query?.selector ? String(req.query.selector) : undefined);
+    } else try {
       html = await routed.page.evaluate(() => {
         // Remove noise elements before extraction
         const removeSelectors = [
@@ -33865,7 +32559,7 @@ app.get('/api/browser/sessions/:id/markdown', async (req, res) => {
       markdown = slice + (more ? `\n\n... (truncated — ${totalChars} chars total, pass offset=${offset + maxChars} to continue)` : '');
     }
 
-    res.json({ ok: true, url: state.url, title: state.title, markdown, tokens: estimatedTokens, totalChars });
+    res.json({ ok: true, url: state.url, title: state.title, markdown, tokens: estimatedTokens, totalChars, ...(req.query?.selector ? { selector: req.query.selector } : {}) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -33924,41 +32618,88 @@ app.post('/api/fetch-markdown', async (req, res) => {
   }
 });
 
+// GET …/screenshot-base64 — what browser_screenshot shows, plus breakpoint sizes
+// (width / height), full page and saving to a file (lib/browser-screenshot.js).
+// A tab whose own viewport could not be confirmed back after an emulated size
+// (viewportRestored: false) is closed, so no page — a MoreLogin profile's above
+// all — keeps a size, DPR or mobile flag it never had; the result says so.
+const SCREENSHOT_TAB_CLOSED = 'SynaBun could not confirm the tab was back at its own viewport size after the capture, so it closed the tab; the next browser call opens a fresh one.';
+async function retireScreenshotTab(session, sessionId, routed) {
+  console.warn(`[browser] closing tab ${routed.tabId} of session ${sessionId}: its viewport was not confirmed restored after a screenshot`);
+  const close = session.tabs?.size > 1 ? closeSessionTab(session, sessionId, routed.tabId) : routed.page.close();
+  await Promise.race([Promise.resolve(close).catch(() => {}), new Promise((done) => setTimeout(done, 3000))]);
+}
 app.get('/api/browser/sessions/:id/screenshot-base64', async (req, res) => {
   const session = browserSessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'Session not found' });
   const routed = getTargetPage(session, req);
   if (!routed) return res.status(404).json({ error: `Tab ${req.query?.tabId} not found in session` });
+  let options;
   try {
-    const quality = Math.min(100, Math.max(10, parseInt(req.query?.quality, 10) || 60));
-    const maxWidth = Math.max(0, parseInt(req.query?.maxWidth, 10) || 1024);
-    let data = null;
-    // Persistent/managed profiles run with viewport:null (real window sizing) — derive
-    // the live window size so downscaling still applies.
-    let vp = routed.page.viewportSize();
-    if (!vp) {
-      vp = await routed.page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight })).catch(() => null);
-    }
-    // Downscale via CDP when the viewport is wider than maxWidth — image tokens scale
-    // with pixel area, so a 1280→1024 downscale + q60 cuts payload roughly in half.
-    if (routed.cdpSession && vp && maxWidth > 0 && vp.width > maxWidth) {
-      try {
-        const shot = await routed.cdpSession.send('Page.captureScreenshot', {
-          format: 'jpeg',
-          quality,
-          clip: { x: 0, y: 0, width: vp.width, height: vp.height, scale: maxWidth / vp.width },
-        });
-        data = shot.data; // already base64
-      } catch { data = null; }
-    }
-    if (!data) {
-      const buf = await routed.page.screenshot({ type: 'jpeg', quality });
-      data = buf.toString('base64');
-    }
-    const state = await syncPageState(session, routed);
-    res.json({ ok: true, url: state.url, title: state.title, data });
+    options = parseScreenshotOptions(req.query);
+    const refusal = options.path ? screenshotPathRefusal(options.path, { dataHome: DATA_HOME }) : null;
+    if (refusal) return res.status(400).json({ error: refusal });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    return res.status(err.status || 400).json({ error: err.message });
+  }
+  let tabClosed = false;
+  try {
+    const shot = await captureScreenshot(routed.page, options, { runBounded: (work) => runBrowserRequest(req, work, 60_000) });
+    const state = await syncPageState(session, routed);
+    if (shot.viewportRestored === false) {
+      await retireScreenshotTab(session, req.params.id, routed);
+      tabClosed = true;
+    }
+    let savedPath = null;
+    if (shot.fileData) {
+      const target = options.path
+        ? resolve(options.path)
+        : defaultScreenshotPath({ dataHome: DATA_HOME, pageUrl: state.url, width: shot.width, height: shot.height, format: options.fileFormat });
+      // Checked again as it is written: the capture may have taken a minute.
+      savedPath = writeScreenshotFile(target, Buffer.from(shot.fileData, 'base64'), { dataHome: DATA_HOME });
+    }
+    res.json({
+      ok: true, url: state.url, title: state.title,
+      data: shot.data, mime: shot.mime,
+      width: shot.width, height: shot.height, imageWidth: shot.imageWidth, imageHeight: shot.imageHeight,
+      fullPage: shot.fullPage,
+      ...(shot.truncated && { truncated: true }),
+      ...(shot.emulated && { viewport: shot.emulated }),
+      ...(savedPath && { savedPath, format: options.fileFormat }),
+      ...(tabClosed && { tabClosed: true, notice: SCREENSHOT_TAB_CLOSED }),
+    });
+  } catch (err) {
+    if (err?.viewportRestored === false && !tabClosed) {
+      await retireScreenshotTab(session, req.params.id, routed);
+      tabClosed = true;
+    }
+    res.status(err.status || 500).json({ error: tabClosed ? `${err.message}. ${SCREENSHOT_TAB_CLOSED}` : err.message, ...(tabClosed && { tabClosed: true }) });
+  }
+});
+
+// GET …/console — the tab's buffered console messages and page errors
+// (lib/browser-console.js). Query: level (all|error|warning|info|log, each with
+// the more severe ones), since (ISO or epoch ms), limit, clear.
+app.get('/api/browser/sessions/:id/console', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  const routed = getTargetPage(session, req);
+  if (!routed) return res.status(404).json({ error: `Tab ${req.query?.tabId} not found in session` });
+  const since = parseConsoleSince(req.query?.since);
+  if (Number.isNaN(since)) return res.status(400).json({ error: 'since must be an ISO timestamp or epoch milliseconds' });
+  try {
+    const read = readConsoleBuffer(routed.page, {
+      level: String(req.query?.level || 'all').toLowerCase(),
+      since,
+      limit: req.query?.limit,
+      clear: ['1', 'true', 'yes'].includes(String(req.query?.clear || '').toLowerCase()),
+    });
+    // A page registered before buffering existed: start now, so the next read has entries.
+    if (!read.attached) attachConsoleBuffer(routed.page);
+    const state = await syncPageState(session, routed);
+    res.json({ ok: true, url: state.url, title: state.title, ...read });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
   }
 });
 
@@ -33971,7 +32712,8 @@ app.post('/api/browser/sessions/:id/scroll', async (req, res) => {
   const deltaX = direction === 'right' ? distance : direction === 'left' ? -distance : 0;
   const deltaY = direction === 'down' ? distance : direction === 'up' ? -distance : 0;
   try {
-    await humanThink(session, req);
+    await humanThink(session, req, true);
+    markBrowserActionStarted(req);
     if (ref) {
       const resolved = await resolveRefLocator(routed.page, ref);
       if (resolved.error) return res.status(400).json(resolved.error);
@@ -33983,7 +32725,8 @@ app.post('/api/browser/sessions/:id/scroll', async (req, res) => {
     } else {
       await routed.page.evaluate(({ dx, dy }) => window.scrollBy(dx, dy), { dx: deltaX, dy: deltaY });
     }
-    await routed.page.waitForTimeout(300);
+    if (browserV2Enabled()) await settleAfterAction(routed.page);
+    else await cancellableBrowserDelay(300, req);
     const state = await getBrowserActionState(session, routed, compact);
     const body = { ok: true, url: state.url, title: state.title };
     if (snapshot && snapshot !== 'none') {
@@ -33991,7 +32734,7 @@ app.post('/api/browser/sessions/:id/scroll', async (req, res) => {
         mode: 'ai',
         diff: snapshot === 'diff',
         maxChars: req.body.snapshotMaxChars || 12000,
-        aiCacheKey: aiSnapshotKey(req.params.id, routed),
+        ...snapshotRequestOptions(req, res, req.params.id, routed),
       }).catch(err => ({ snapshotText: null, snapshotError: err.message }));
       Object.assign(body, snap);
     } else if (returnSnapshot) {
@@ -33999,7 +32742,7 @@ app.post('/api/browser/sessions/:id/scroll', async (req, res) => {
         scopeSel: returnSnapshot.selector ? normalizeSelector(returnSnapshot.selector) : null,
         mode: returnSnapshot.mode,
         viewport: returnSnapshot.viewport,
-        aiCacheKey: aiSnapshotKey(req.params.id, routed),
+        ...snapshotRequestOptions(req, res, req.params.id, routed),
       }).catch(err => ({ snapshot: null, snapshotError: err.message }));
       Object.assign(body, snap);
     }
@@ -34028,16 +32771,22 @@ app.post('/api/browser/sessions/:id/upload', async (req, res) => {
       const loc = routed.page.locator(selector);
       const count = await loc.count().catch(() => -1);
       if (count === 0) {
-        const hints = await getInteractiveHints(routed.page);
-        return res.status(400).json({ error: `No elements match selector: ${selector}`, hints });
+        const hints = await getInteractiveHints(routed.page, { allowTransparent: true });
+        const body = { error: `No elements match selector: ${selector}`, hints };
+        if (assistRequested(req)) {
+          // Advice only: a file control is never healed. The visible "add photo" button that reveals the input is what gets ranked.
+          try { body.assist = (await buildAssist(routed.page, { kind: 'no_match', needle: assistNeedle(selector, req.body?.textHint), hints })).assist; } catch { /* hints alone */ }
+        }
+        return res.status(400).json(body);
       }
       if (count > 1 && nthMatch === undefined) {
         return res.status(400).json({ error: `Selector matches ${count} elements (must be unique). Use a more specific selector or pass nthMatch (0-indexed). Matched: ${selector}` });
       }
       target = (count > 1 && nthMatch !== undefined) ? loc.nth(nthMatch) : loc;
     }
-    await target.setInputFiles(filePaths);
-    await routed.page.waitForTimeout(500);
+    markBrowserActionStarted(req);
+    await target.setInputFiles(filePaths, { timeout: browserActionTimeout(req, 10000) });
+    if (!browserV2Enabled()) await cancellableBrowserDelay(500, req);
     const state = await getBrowserActionState(session, routed, compact);
     res.json({ ok: true, url: state.url, title: state.title });
   } catch (err) {
@@ -34068,7 +32817,8 @@ app.get('/api/browser/config', (req, res) => {
   try { attachSeeded = existsSync(getAttachProfileRoot()); } catch {}
   let moreloginInstalled = false;
   try { moreloginInstalled = moreLogin.isMoreLoginInstalled().installed; } catch {}
-  res.json({ config, detectedPath: detected, chromeRunning, attachSeeded, moreloginInstalled });
+  const unreadable = browserConfigUnreadable(config);
+  res.json({ config, detectedPath: detected, chromeRunning, attachSeeded, moreloginInstalled, ...(unreadable && { configError: `browser-config.json is unreadable (${unreadable}); saving these settings replaces it` }) });
 });
 
 app.put('/api/browser/config', (req, res) => {
@@ -34079,6 +32829,11 @@ app.put('/api/browser/config', (req, res) => {
     if (body.attachSeed !== undefined) body.attachSeed = body.attachSeed === 'fresh' ? 'fresh' : 'real';
     if (body.moreloginEnvId !== undefined && body.moreloginEnvId !== null && body.moreloginEnvId !== '') body.moreloginEnvId = String(body.moreloginEnvId);
     saveBrowserConfig(body);
+    // The in-process MCP drops its cached browser routes now; MCP processes of their
+    // own do on their next /api/browser response (X-Synabun-Browser-Default).
+    import(pathToFileURL(resolve(PACKAGE_ROOT, 'mcp-server', 'dist', 'services', 'neural-interface.js')).href)
+      .then((mcp) => mcp.noteBrowserDefault?.(browserDefaultSignature(body)))
+      .catch(() => {});
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -34107,7 +32862,13 @@ app.get('/api/browser/morelogin-envs', async (req, res) => {
     const probe = await moreLogin.probeMoreLoginApi({ savedCfg: cfg, port });
     if (!probe.running) return res.json({ ok: true, installed: true, running: false, port, envs: [], error: probe.error || null });
     const envs = await moreLogin.listProfiles({ savedCfg: cfg, port });
-    res.json({ ok: true, installed: true, running: true, port, envs });
+    res.json({
+      ok: true, installed: true, running: true, port, envs,
+      // Observed website-policy blocks — MoreLogin's local API never exposes the
+      // blacklist/whitelist itself, so the picker reports what actually happened.
+      blockedNavigations: moreLoginBlockStats.count,
+      lastBlockedUrl: moreLoginBlockStats.lastUrl,
+    });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -34216,6 +32977,14 @@ const httpServer = app.listen(PORT, async () => {
 
   // SQLite indexes are created in schema — no runtime index creation needed
 
+  // Gated: an idle tick reads one kv row + one index probe instead of the
+  // ~9-query maintenanceStatus() and a BEGIN IMMEDIATE (see lib/memory-timers.js).
+  startGatedMemoryMaintenance();
+  // The TypeSafe judge backfill runs only here: one runner per store, never in
+  // the stdio MCP servers. It is inert until the Judgments tab starts it.
+  startJudgeBackfill();
+  startMemoryCapture();
+
   // Warm the embedding model + vector caches in the background so the first
   // recall/search doesn't pay the 2-5s Transformers.js model load or the
   // initial vector-matrix build.
@@ -34244,26 +33013,47 @@ const httpServer = app.listen(PORT, async () => {
   // opencode-<sid> node_modules that never got their per-loop cleanup.
   setTimeout(() => { try { cleanupStaleLoopConfigs(); } catch {} }, 1500);
 
+  // Compare the installed Claude CLI with the one the Agent SDK bundles now, so
+  // the first sidepanel session or native loop after boot already knows whether
+  // to run the installed CLI (it does when that one is newer — see
+  // alignedClaudeExecutable in lib/claude-model-catalog.js).
+  setTimeout(() => { checkClaudeCliSkew(getClaudeBin()).catch(() => {}); }, 1000);
+
   // Warm the session_cache + session_fts tables so the hybrid search has data
-  // on first keystroke. Runs async — does not block server boot.
+  // on first keystroke. Each pass is synchronous and holds the main thread, so
+  // they run one per tick (requests are answered in between), and each only
+  // re-reads sessions that changed since the last start.
   setTimeout(() => {
-    Promise.resolve().then(() => {
-      try {
-        const claude = rebuildClaudeCache();
-        if (claude.updated > 0) console.log(`  Session cache (claude): indexed ${claude.updated}/${claude.sessions}`);
-      } catch (err) { console.warn('  Session cache (claude) error:', err.message); }
-      try {
-        const codex = rebuildCodexCache({
-          accounts: loadCodexAccounts().accounts,
-          projects: loadHookProjects(),
-        });
-        if (codex.updated > 0) console.log(`  Session cache (codex): indexed ${codex.updated}/${codex.sessions}`);
-      } catch (err) { console.warn('  Session cache (codex) error:', err.message); }
-      try {
-        const oc = rebuildOpencodeCache({ getOpencodeDb });
-        if (oc.updated > 0) console.log(`  Session cache (opencode): indexed ${oc.updated}/${oc.sessions}`);
-      } catch (err) { console.warn('  Session cache (opencode) error:', err.message); }
-    });
+    const passes = [
+      () => {
+        try {
+          const claude = rebuildClaudeCache();
+          if (claude.updated > 0) console.log(`  Session cache (claude): indexed ${claude.updated}/${claude.sessions}`);
+        } catch (err) { console.warn('  Session cache (claude) error:', err.message); }
+      },
+      () => {
+        try {
+          const codex = rebuildCodexCache({
+            accounts: loadCodexAccounts().accounts,
+            projects: loadHookProjects(),
+          });
+          if (codex.updated > 0) console.log(`  Session cache (codex): indexed ${codex.updated}/${codex.sessions}`);
+        } catch (err) { console.warn('  Session cache (codex) error:', err.message); }
+      },
+      () => {
+        try {
+          const oc = rebuildOpencodeCache({ getOpencodeDb });
+          if (oc.updated > 0) console.log(`  Session cache (opencode): indexed ${oc.updated}/${oc.sessions}`);
+        } catch (err) { console.warn('  Session cache (opencode) error:', err.message); }
+      },
+    ];
+    const next = () => {
+      const pass = passes.shift();
+      if (!pass) return;
+      pass();
+      setImmediate(next);
+    };
+    next();
   }, 2000);
 
   // Auto-sync OpenClaw bridge if enabled
@@ -34293,6 +33083,21 @@ const httpServer = app.listen(PORT, async () => {
     }
   } catch (err) {
     console.warn('  Hook dedup warning:', err.message);
+  }
+
+  // Keep the installed SynaBun rules current: an untouched copy of an older
+  // ruleset is rewritten (unless the user switched that off), an edited copy is
+  // left alone, a deleted one counts as an opt-out. Never installs for a tool
+  // the user was not asked about. A failure here must not stop the boot. This
+  // is the listen callback and reconcile() is synchronous file checks; its one
+  // wait is for the rules lock another SynaBun process on this data home may
+  // hold (2 s at most: then the installer logs one line and this boot skips it).
+  try {
+    const rules = rulesetInstaller.reconcile();
+    if (rules.updated.length) console.log(`  Rules:     updated to ${rules.notice?.to || 'the current version'} for ${rules.updated.join(', ')}`);
+    if (rules.optedOut.length) console.log(`  Rules:     no longer managed for ${rules.optedOut.join(', ')} (the installed copy was removed)`);
+  } catch (err) {
+    console.warn('  Rules reconcile warning:', err.message);
   }
 
   // Clean up orphaned loop state files from previous server runs.
@@ -34356,10 +33161,33 @@ const httpServer = app.listen(PORT, async () => {
 // zlib adds per-frame CPU + latency on the terminal hot path.
 const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
 
+/** Public origins SynaBun is reached through: the running Cloudflare tunnel and the invite proxy in use (ui-invite.js). Their host names are the only non-local names the WebSocket Origin check accepts in a Host header. */
+function publicWebOrigins() {
+  const origins = [];
+  if (tunnelUrl) origins.push(tunnelUrl);
+  const proxy = loadInviteProxy();
+  if (proxy?.useProxy && proxy.proxyUrl) origins.push(proxy.proxyUrl);
+  return origins;
+}
+
 httpServer.on('upgrade', (req, socket, head) => {
   // Block tunnel traffic from WebSocket upgrades, except cookie-authenticated invite sessions
   if (req.headers['cf-connecting-ip'] && !isValidInviteSession(req)) {
     socket.destroy();
+    return;
+  }
+
+  // Cross-site WebSocket hijacking and DNS rebinding: CORS does not cover
+  // WebSockets, so any page open in the user's browser could connect to /ws/*
+  // (terminals, the Assistant, sync). A browser's Origin must be a loopback
+  // origin on PORT, the tunnel / invite proxy origin, or this server as the
+  // request reached it, and that last one only when the Host is one of our own
+  // names (loopback, an IP literal, this machine, the tunnel / invite proxy
+  // host): a rebound page's Host and Origin agree too, on the attacker's name.
+  // Clients that send no Origin are not browsers and pass. Every /ws/* path,
+  // before the terminal handoff to the pty-host. See lib/http-guards.js.
+  if (!isAllowedWebSocketOrigin(req, { port: PORT, allowedOrigins: publicWebOrigins })) {
+    refuseUpgrade(socket, 403);
     return;
   }
 
@@ -34370,14 +33198,24 @@ httpServer.on('upgrade', (req, socket, head) => {
   if (guest) {
     if (url.pathname.startsWith('/ws/terminal/') && !invitePermissions.terminal) { socket.destroy(); return; }
     if (url.pathname.startsWith('/ws/browser/') && !invitePermissions.browser) { socket.destroy(); return; }
-    if (['/ws/claude-skin', '/ws/codex-skin', '/ws/opencode-v2'].includes(url.pathname)) {
+    if (['/ws/claude-skin', '/ws/codex-skin', '/ws/opencode-v2'].includes(url.pathname) || url.pathname.startsWith('/ws/assistant/')) {
       socket.destroy();
       return;
     }
     // Whiteboard + sync always allowed (read-only viewing; sync needed for permission delivery)
   }
 
-  if (url.pathname.startsWith('/ws/terminal/') || url.pathname.startsWith('/ws/browser/') || url.pathname === '/ws/whiteboard' || url.pathname === '/ws/cards' || url.pathname === '/ws/sync' || url.pathname === '/ws/claude-skin' || url.pathname === '/ws/codex-skin' || url.pathname === '/ws/opencode-v2' || url.pathname === '/ws/ocp-trace' || url.pathname === '/ws/sessions') {
+  // Terminal sockets belong to the pty-host: hand the raw socket over (after
+  // the auth checks above) so this event loop never touches terminal bytes.
+  // The host answers unknown ids with {type:'error', message:'Session not found'}.
+  if (url.pathname.startsWith('/ws/terminal/')) {
+    let sessionId = url.pathname.slice('/ws/terminal/'.length);
+    try { sessionId = decodeURIComponent(sessionId); } catch {}
+    terminalHost.handoffUpgrade(req, socket, head, sessionId);
+    return;
+  }
+
+  if (url.pathname.startsWith('/ws/browser/') || url.pathname.startsWith('/ws/assistant/') || url.pathname === '/ws/whiteboard' || url.pathname === '/ws/cards' || url.pathname === '/ws/sync' || url.pathname === '/ws/claude-skin' || url.pathname === '/ws/codex-skin' || url.pathname === '/ws/opencode-v2' || url.pathname === '/ws/sessions') {
     wss.handleUpgrade(req, socket, head, (ws) => {
       wss.emit('connection', ws, req);
     });
@@ -34397,7 +33235,7 @@ wss.on('connection', (ws, req) => {
 
   // ── Route: Whiteboard (Claude MCP integration) ──
   if (url.pathname === '/ws/whiteboard') {
-    handleWhiteboardWebSocket(ws);
+    handleWhiteboardWebSocket(ws, req);
     return;
   }
 
@@ -34425,6 +33263,13 @@ wss.on('connection', (ws, req) => {
     return;
   }
 
+  // ── Route: Main assistant (bottom CLI region) ──
+  if (url.pathname.startsWith('/ws/assistant/')) {
+    if (_assistantRuntime) _assistantRuntime.handleWebSocket(ws, url).catch((err) => { try { ws.close(1011, err?.message || 'assistant error'); } catch {} });
+    else { try { ws.close(1011, 'assistant unavailable'); } catch {} }
+    return;
+  }
+
   // ── Route: Codex Skin chat ──
   if (url.pathname === '/ws/codex-skin') {
     handleCodexSkinWebSocket(ws);
@@ -34437,159 +33282,80 @@ wss.on('connection', (ws, req) => {
     return;
   }
 
-  // ── Route: OpenCode trace stream (live ocp-trace.jsonl tail) ──
-  if (url.pathname === '/ws/ocp-trace') {
-    handleOcpTraceWs(ws);
-    return;
-  }
-
-  // ── Route: Terminal session ──
-  const sessionId = url.pathname.replace('/ws/terminal/', '');
-  const session = terminalSessions.get(sessionId);
-
-  if (!session) {
-    ws.send(JSON.stringify({ type: 'error', message: 'Session not found' }));
-    ws.close();
-    return;
-  }
-
-  // Flush pending PTY output BEFORE adding this client: the flush broadcasts
-  // to session.clients, so adding first would ship this client a mid-stream
-  // binary fragment whose bytes are then duplicated inside the snapshot below
-  // (visible as doubled TUI banners on connect-while-streaming).
-  try { session._flushOutput?.(); } catch {}
-  session.clients.add(ws);
-
-  // Cancel grace timer — a client reconnected
-  if (session.graceTimer) { clearTimeout(session.graceTimer); session.graceTimer = null; }
-
-  // Restore reconnecting clients from the server-side terminal model instead
-  // of replaying a truncated raw ANSI tail. Raw tail replay can start inside an
-  // alternate-screen frame, OSC string, or partial cursor sequence, corrupting
-  // xterm state for long-running TUIs. reset:true makes the client clear+reset
-  // before applying — snapshot delivery is idempotent no matter what frames
-  // preceded it (same contract as the lag-resync path).
-  if (session.outputBytes > 0) {
-    const snap = getTerminalSnapshot(session);
-    if (snap.ansi) {
-      ws.send(JSON.stringify({ type: 'snapshot', data: snap.ansi, plain: snap.plain, reset: true }));
-    }
-  }
-
-  ws.on('message', (raw) => {
-    try {
-      const msg = JSON.parse(raw.toString());
-      if (msg.type === 'input') {
-        session.pty.write(msg.data);
-      } else if (msg.type === 'resize') {
-        // Leading-edge throttle per session: an isolated resize (dragend, snap,
-        // initial fit) applies with ZERO added latency; bursts (drag frames,
-        // DPI changes) coalesce to ≤20 SIGWINCH/s via a 50ms trailing timer.
-        session._lastResize = { cols: msg.cols, rows: msg.rows };
-        if (session._resizeTimer) {
-          // A resize is already pending — it will pick up the latest values.
-          return;
-        }
-        const apply = () => {
-          session._resizeTimer = null;
-          const r = session._lastResize;
-          if (!r || !session.pty) return;
-          // Skip no-op resizes (cols/rows unchanged from what we last applied)
-          if (session._appliedResize &&
-              session._appliedResize.cols === r.cols &&
-              session._appliedResize.rows === r.rows) return;
-          session._appliedResize = { cols: r.cols, rows: r.rows };
-          session._lastResizeAppliedAt = Date.now();
-          // Parse pending output under the OLD geometry before changing it
-          try { session._flushOutput?.(); } catch {}
-          try { session.vterm?.resize(r.cols, r.rows); } catch {}
-          try { session.pty.resize(r.cols, r.rows); } catch {}
-        };
-        if (!session._lastResizeAppliedAt || Date.now() - session._lastResizeAppliedAt >= 50) {
-          apply();
-        } else {
-          session._resizeTimer = setTimeout(apply, 50);
-        }
-      } else if (msg.type === 'image_paste' && msg.data) {
-        // Save pasted image to temp file
-        const ext = (msg.mimeType === 'image/jpeg') ? 'jpg' : 'png';
-        const tmpPath = join(IMAGES_DIR, `synabun-paste-${sessionId}-${Date.now()}.${ext}`);
-        try {
-          writeFileSync(tmpPath, Buffer.from(msg.data, 'base64'));
-          if (!session.tempFiles) session.tempFiles = [];
-          session.tempFiles.push(tmpPath);
-          // Send path back to client (client decides whether to insert into PTY)
-          ws.send(JSON.stringify({ type: 'image_saved', path: tmpPath }));
-        } catch (err) {
-          ws.send(JSON.stringify({ type: 'error', message: `Image paste failed: ${err.message}` }));
-        }
-      } else if (msg.type === 'image_drop' && msg.data) {
-        // Save whiteboard image drag-drop to temp file, write path into PTY
-        const ext = (msg.mimeType === 'image/jpeg') ? 'jpg' : 'png';
-        const tmpPath = join(IMAGES_DIR, `synabun-wbimg-${sessionId}-${Date.now()}.${ext}`);
-        try {
-          writeFileSync(tmpPath, Buffer.from(msg.data, 'base64'));
-          if (!session.tempFiles) session.tempFiles = [];
-          session.tempFiles.push(tmpPath);
-          ws.send(JSON.stringify({ type: 'image_dropped', path: tmpPath }));
-        } catch (err) {
-          ws.send(JSON.stringify({ type: 'error', message: `Image drop failed: ${err.message}` }));
-        }
-      } else if (msg.type === 'memory_drop' && msg.content) {
-        // Save memory as .md temp file so CLI can pick it up as a file reference
-        const slug = (msg.title || 'memory').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40);
-        const tmpPath = join(IMAGES_DIR, `synabun-${slug}-${Date.now()}.md`);
-        try {
-          writeFileSync(tmpPath, msg.content, 'utf-8');
-          if (!session.tempFiles) session.tempFiles = [];
-          session.tempFiles.push(tmpPath);
-          ws.send(JSON.stringify({ type: 'memory_saved', path: tmpPath }));
-        } catch (err) {
-          ws.send(JSON.stringify({ type: 'error', message: `Memory drop failed: ${err.message}` }));
-        }
-      }
-    } catch { /* ignore malformed messages */ }
-  });
-
-  ws.on('close', () => {
-    session.clients.delete(ws);
-    _termClearLagState(ws);
-    // Start grace timer when no clients remain — PTY stays alive for reconnection
-    if (session.clients.size === 0 && terminalSessions.has(sessionId)) {
-      session.graceTimer = setTimeout(() => {
-        if (session.clients.size === 0 && terminalSessions.has(sessionId)) {
-          if (session._resizeTimer) { clearTimeout(session._resizeTimer); session._resizeTimer = null; }
-          try { session.pty.kill(); } catch {}
-          if (session.tempFiles) session.tempFiles.forEach(f => { try { unlinkSync(f); } catch {} });
-          terminalSessions.delete(sessionId);
-        }
-      }, TERMINAL_GRACE_PERIOD_MS);
-    }
-  });
+  // ── Terminal sessions ── are handed off to the pty-host in the upgrade
+  // handler (lib/pty-host); nothing else should reach this point.
+  try { ws.close(1008, 'Unsupported WebSocket path'); } catch {}
 });
 
 // ═══════════════════════════════════════════
 // WHITEBOARD — WebSocket Handler (Claude MCP ↔ Browser)
 // ═══════════════════════════════════════════
 
-function handleWhiteboardWebSocket(ws) {
+function handleWhiteboardWebSocket(ws, req) {
   whiteboardClients.add(ws);
+  ws._isGuest = !!(req && isGuestRequest(req));
+  ws._wbClient = {
+    clientId: 'ws-' + randomBytes(3).toString('hex'),
+    viewport: null,
+    focusActive: false,
+    visible: true,
+    lastSeen: Date.now(),
+    protocol: 1,          // 2 once the client sends a clientId (understands `batch`)
+    isGuest: ws._isGuest,
+  };
   console.log(`[ws-whiteboard] Client connected (total: ${whiteboardClients.size})`);
 
   // Send init with current element count
   try {
     const wb = loadWhiteboard();
-    const count = wb.elements.length;
-    ws.send(JSON.stringify({ type: 'init', elementCount: count }));
+    ws.send(JSON.stringify({ type: 'init', elementCount: wb.elements.length, protocol: 2, clientId: ws._wbClient.clientId }));
   } catch { /* ignore */ }
+
+  const guestBlocked = () => ws._isGuest && !invitePermissions.whiteboard;
 
   ws.on('message', (raw) => {
     try {
       const msg = JSON.parse(raw.toString());
+      const c = ws._wbClient;
+      c.lastSeen = Date.now();
 
       if (msg.type === 'viewport') {
-        whiteboardViewport = { width: msg.width, height: msg.height, yOffset: msg.yOffset || 0, xOffset: msg.xOffset || 0 };
-        console.log(`[ws-whiteboard] Viewport: ${msg.width}x${msg.height} (xOffset: ${msg.xOffset || 0}, yOffset: ${msg.yOffset || 0})`);
+        const w = Number(msg.width), h = Number(msg.height);
+        if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
+          c.viewport = {
+            width: Math.round(w),
+            height: Math.round(h),
+            xOffset: Math.round(Number(msg.xOffset) || 0),
+            yOffset: Math.round(Number(msg.yOffset) || 0),
+          };
+        }
+        if (typeof msg.clientId === 'string' && msg.clientId) { c.clientId = msg.clientId.slice(0, 64); c.protocol = 2; }
+        c.focusActive = !!msg.focusActive;
+        c.visible = msg.visible !== false;
+        const v = c.viewport;
+        console.log(`[ws-whiteboard] Viewport ${c.clientId}: ${v ? `${v.width}x${v.height} (xOffset: ${v.xOffset}, yOffset: ${v.yOffset})` : 'invalid'} focus=${c.focusActive} visible=${c.visible}`);
+      }
+
+      // Browser-measured sizes of auto-sized text/list cards → geometry truth.
+      // Merged into the store only; never re-broadcast (each window measures itself).
+      if (msg.type === 'geometry' && Array.isArray(msg.items)) {
+        if (guestBlocked()) return;
+        const wb = loadWhiteboard();
+        const byId = new Map(wb.elements.map(e => [e.id, e]));
+        let changed = false;
+        for (const item of msg.items.slice(0, 500)) {
+          const el = item && byId.get(String(item.id));
+          if (!el || (el.type !== 'text' && el.type !== 'list')) continue;
+          const w = Number(item.width), h = Number(item.height);
+          if (!(w >= 1 && w <= 20000 && h >= 1 && h <= 20000)) continue;
+          if (el.measured && el.width === w && el.height === h) continue;
+          el.width = w;
+          el.height = h;
+          el.measured = true;
+          delete el.estimated;
+          changed = true;
+        }
+        if (changed) saveWhiteboard(wb);
       }
 
       if (msg.type === 'screenshot:response' && msg.requestId) {
@@ -34597,7 +33363,16 @@ function handleWhiteboardWebSocket(ws) {
         if (pending) {
           clearTimeout(pending.timer);
           whiteboardPendingScreenshots.delete(msg.requestId);
-          pending.resolve(msg.data);
+          pending.resolve({
+            data: msg.data,
+            width: msg.width,
+            height: msg.height,
+            scale: msg.scale,
+            xOffset: msg.xOffset,
+            yOffset: msg.yOffset,
+            crop: msg.crop,
+            from: { clientId: c.clientId, viewport: c.viewport },
+          });
         }
       }
 
@@ -34624,8 +33399,15 @@ function handleWhiteboardWebSocket(ws) {
 
       // Client pushes full state sync after local mutation — save and relay to other clients
       if (msg.type === 'state:sync' && msg.snapshot) {
-        saveWhiteboard(msg.snapshot);
-        broadcastToWhiteboard({ type: 'state:full', snapshot: msg.snapshot }, ws);
+        if (guestBlocked()) return;
+        const snapshot = msg.snapshot;
+        if (!Array.isArray(snapshot.elements)) return;
+        const current = loadWhiteboard();
+        mergeMeasuredSizes(snapshot.elements, current.elements);
+        normalizeWhiteboardElements(snapshot.elements);
+        const next = { elements: snapshot.elements, nextZIndex: snapshot.nextZIndex || 1 };
+        saveWhiteboard(next);
+        broadcastToWhiteboard({ type: 'state:full', snapshot: next }, ws);
       }
     } catch { /* ignore malformed */ }
   });
@@ -35152,12 +33934,15 @@ process.on('SIGTERM', async () => {
 process.on('exit', () => {
   try { setKeepAwake(false); } catch {}
   try { restoreSleepSync(); } catch {}
+  try { terminalHost.killNow(); } catch {}
+  try { _whatsapp?.killNow(); } catch {}
   try { stopOpencodeServer(); } catch {}
   try { _claudeBridge?.shutdownAllBridges?.(); } catch {}
   try { saveSessionSnapshot(); } catch {}
   try { flushUiStateSync(); } catch {}
   try { flushWhiteboardSync(); } catch {}
   try { flushCostDataSync(); } catch {}
+  try { memoryMap.flushSync(); } catch {}
   if (_preserveExitCode) return;
   try { process.kill(process.pid, 'SIGKILL'); } catch {}
 });

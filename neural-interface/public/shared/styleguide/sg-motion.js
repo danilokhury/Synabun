@@ -1,0 +1,5 @@
+import { t, label, el, card, row, grid, text, number, select, toggle, textarea, listEditor, mapEditor, aliasPicker, colorField, button, watch } from './sg-kit.js';
+export function render(host, s) {
+    const previews = new Map();
+    host.append(card('timing', mapEditor(s, 'motion.durations', { unit: 'ms' }), mapEditor(s, 'motion.easings', { numeric: false, render: key => { const track = el('div', 'sg-motion-track'), dot = el('span', 'sg-motion-dot'); track.append(dot); previews.set(key, dot); return row(track, button(t('styleguide.previewMotion'), () => { dot.getAnimations().forEach(a => a.cancel()); dot.animate([{ transform: 'translateX(0)' }, { transform: 'translateX(100px)' }], { duration: s.config.motion.reducedMotion === 'respect' && window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : (s.config.motion.durations.normal || 250), easing: s.get(`motion.easings.${key}`), iterations: 2, direction: 'alternate' }); })); } })), card('reduced', select(s, 'motion.reducedMotion', ['respect', 'ignore']), listEditor(s, 'motion.principles')));
+}

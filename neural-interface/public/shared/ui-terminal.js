@@ -16,13 +16,93 @@ import { getWhiteboardElementById } from './ui-whiteboard.js';
 import { createFrameRenderer } from './utils.js';
 import { notify, NOTIF_TYPE } from './ui-notifications.js';
 import { getProviderMeta } from './provider-icons.js';
-import { initRendererManager, acquireRenderer, releaseRenderer, disposeRenderer, hasWebgl, noteFocus } from './term-renderer.js';
+import { initRendererManager, acquireRenderer, disposeRenderer, hasWebgl, noteFocus, adoptRenderer, rendererState, rendererStats } from './term-renderer.js';
+import { mountAssistant } from './assistant/asst-panel.js';
+import { getAssistantSession } from './assistant/asst-api.js';
+import { brainLabel, normalizeBrain, readStoredBrain } from './assistant/asst-state.js';
+import { initAssistant, registerAssistantHost, openAssistant, assistantOwnerOf, fetchLiveAssistantSessions, isAssistantSessionLive } from './ui-assistant.js';
 
 const $ = (id) => document.getElementById(id);
 const CLI_PROFILES = new Set(['claude-code', 'codex', 'gemini', 'opencode']);
 const NOTIF_TRACKED_CLI_PROFILES = new Set(['claude-code', 'codex', 'gemini', 'opencode']);
 const CLI_PROFILES_NEED_PROFILER = new Set(['codex', 'gemini']); // Claude Code has tool search — no profiler needed
 const CLI_PROFILES_NEED_RECALL = new Set(['claude-code', 'codex', 'gemini', 'opencode']);
+
+// ── Platform ──
+// macOS gets Terminal.app keys (Cmd shortcuts, Option word-jumps, Ctrl keys
+// straight to the PTY). Windows/Linux keep the long-standing key behavior.
+const IS_MAC = (() => {
+  try {
+    return /Mac|iP(hone|ad|od)/.test(navigator.platform || '') ||
+      /^macOS$/i.test(navigator.userAgentData?.platform || '');
+  } catch { return false; }
+})();
+const IS_WIN = (() => {
+  try {
+    return /Win/.test(navigator.platform || '') ||
+      /^Windows$/i.test(navigator.userAgentData?.platform || '');
+  } catch { return false; }
+})();
+
+// ── Terminal typography (Terminal.app "Clear Dark": SF Mono 12, line spacing 1.0) ──
+const TERM_FONT_MIN = 9;
+const TERM_FONT_MAX = 24;
+const TERM_FONT_DEFAULT = IS_MAC ? 12 : 13;
+
+function _clampTermFontSize(n) {
+  return Math.max(TERM_FONT_MIN, Math.min(TERM_FONT_MAX, Math.round(n)));
+}
+
+function _termFontSize() {
+  const v = parseInt(storage.getItem(KEYS.TERMINAL_FONT_SIZE), 10);
+  return Number.isFinite(v) ? _clampTermFontSize(v) : TERM_FONT_DEFAULT;
+}
+
+let _termFontFamily = null;
+/**
+ * Resolve the terminal font stack once. On macOS the system monospace
+ * (SF Mono) is only reachable as `ui-monospace`, and a canvas can silently
+ * fall back to a proportional default when it doesn't resolve it. xterm 6
+ * measures cells with OffscreenCanvas.measureText while the WebGL atlas draws
+ * glyphs on a DOM canvas, so BOTH contexts must resolve it or cells and glyphs
+ * disagree — otherwise use Menlo.
+ */
+function _resolveTermFont() {
+  if (_termFontFamily) return _termFontFamily;
+  if (IS_WIN) return (_termFontFamily = "'Cascadia Mono', Consolas, monospace");
+  if (!IS_MAC) return (_termFontFamily = 'monospace');
+  const probe = 'mmmmmmmmmmlli1WW@@__--..';
+  const resolves = (ctx) => {
+    if (!ctx) return false;
+    const width = (font) => { ctx.font = font; return ctx.measureText(probe).width; };
+    return width('12px serif') !== width('12px ui-monospace, serif') &&
+      width('12px sans-serif') !== width('12px ui-monospace, sans-serif');
+  };
+  let dom = false;
+  let off = false;
+  try { dom = resolves(document.createElement('canvas').getContext('2d')); } catch {}
+  try {
+    off = typeof OffscreenCanvas === 'function'
+      ? resolves(new OffscreenCanvas(1, 1).getContext('2d'))
+      : dom; // no OffscreenCanvas → xterm measures on the DOM instead
+  } catch {}
+  return (_termFontFamily = (dom && off) ? 'ui-monospace, Menlo, monospace' : 'Menlo, monospace');
+}
+
+// First family of the stack is a system font → nothing to download or wait for.
+const SYSTEM_MONO_FONTS = /^(ui-monospace|monospace|menlo|monaco|sf mono|consolas|cascadia (mono|code)|courier( new)?|dejavu sans mono|liberation mono)$/i;
+
+/** Web fonts only: load the exact faces xterm draws (regular + bold), raced
+ *  against 1.5 s. System fonts return immediately. */
+function _ensureTermFont(fontFamily, fontSize) {
+  const first = String(fontFamily || '').split(',')[0].trim().replace(/^['"]|['"]$/g, '');
+  if (!first || SYSTEM_MONO_FONTS.test(first) || !document.fonts?.load) return null;
+  const face = `${fontSize}px ${fontFamily}`;
+  return Promise.race([
+    Promise.all([document.fonts.load(face), document.fonts.load(`bold ${face}`)]).catch(() => {}),
+    new Promise(r => setTimeout(r, 1500)),
+  ]);
+}
 
 /** Cross-browser clipboard write with fallback for non-secure contexts. */
 function _clipCopy(text) {
@@ -68,8 +148,10 @@ const SVG_SHELL = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" st
 const SVG_GIT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>';
 
 const SVG_BROWSER = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>';
+const SVG_ASSISTANT = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="8" y="5.5" width="11" height="5" rx="2.5" transform="rotate(-12 13.5 8)"/><rect x="4.5" y="12.5" width="11" height="5" rx="2.5" transform="rotate(-12 10 15)"/></svg>';
 
 const PROFILES = [
+  { id: 'assistant',   label: 'Assistant',   svg: SVG_ASSISTANT, color: '#FFD23C' }, // non-PTY: hosts assistant/asst-panel.js
   { id: 'claude-code', label: 'Claude Code', svg: SVG_CLAUDE,  color: '#D4A27F' },
   { id: 'codex',       label: 'Codex CLI',   svg: SVG_OPENAI,  color: '#74c7a5' },
   { id: 'gemini',      label: 'Gemini CLI',  svg: SVG_GEMINI,    color: '#669DF6' },
@@ -87,6 +169,10 @@ const XTERM_THEME = {
   cursorAccent: '#0a0a0c',
   selectionBackground: 'rgba(110,181,255,0.3)',
   selectionForeground: '#ffffff',
+  // xterm 6 draws its own scrollbar; styles.css shapes the slider into a 6 px pill
+  scrollbarSliderBackground: 'rgba(255,255,255,0.22)',
+  scrollbarSliderHoverBackground: 'rgba(255,255,255,0.32)',
+  scrollbarSliderActiveBackground: 'rgba(255,255,255,0.42)',
   black: '#1a1a1c',
   red: '#ff5252',
   green: '#6dd58c',
@@ -146,8 +232,16 @@ const FLOAT_COLORS = [
   { id: 'warm',      h: 20,  s: 15 },
   { id: 'none',      h: 0,   s: 0  },
 ];
-let _floatZCounter = 10000;    // z-index counter for floating tab focus-to-front
+// z-order bands: floats + the docked panel stack in [Z_BASE, Z_PINNED);
+// pinned floats live in [Z_PINNED, Z_PINNED + 1000) so they are never covered.
+const Z_BASE = 10000;
+const Z_PINNED = 11000;
+let _floatZCounter = Z_BASE;   // z-index counter for floating tab focus-to-front
+let _pinnedZCounter = Z_PINNED;
 let _peekDock = null;          // bottom peek dock element (shown when panel hidden)
+let _panelGen = 0;             // show/hide generation — a stale hide never parks a reopened panel
+let _lastFocusedTermId = null; // last terminal that received focus (focusin)
+let _focusRestoreId = null;    // terminal to refocus when the app becomes visible again
 let _closingIds = new Set();   // session IDs currently being closed (prevents re-entry)
 let _opening = false;          // true while openSession/openBrowserSession is in progress
 let _openingAt = 0;            // timestamp when _opening was set true (auto-reset after 15s)
@@ -210,6 +304,9 @@ function _notifyStatusChange(sessionId, newStatus) {
   if (newStatus === CLI_STATUS.DONE && _lastNotified.get(sessionId) === NOTIF_TYPE.DONE) return;
 
   const session = _sessions.find(s => s.id === sessionId);
+  // Assistant tabs notify from their own panel (done/ask only while hidden) —
+  // skip the PTY heuristics so the user is not pinged twice.
+  if (session?._isAssistant) return;
   const providerMeta = getProviderMeta(session?.profile || 'claude-code');
   const label = session?.label || providerMeta.label;
 
@@ -372,6 +469,8 @@ function _updateSessionBadges(sessionId, status) {
   }
 }
 
+const CLI_STATUS_SETTLE_MS = 600;
+
 function _scheduleCliStatusCheck(sessionId) {
   const tracked = _cliSessionStatus.get(sessionId);
   if (!tracked) return;
@@ -386,9 +485,23 @@ function _scheduleCliStatusCheck(sessionId) {
     _updateSessionBadges(sessionId, CLI_STATUS.WORKING);
   }
 
-  // Debounced buffer analysis after output settles
-  if (tracked.timer) clearTimeout(tracked.timer);
-  tracked.timer = setTimeout(() => {
+  // Debounced buffer analysis 600 ms after output settles. Armed once and
+  // re-armed for the remaining quiet time when it fires early — this runs on
+  // every PTY frame, so no clearTimeout/setTimeout pair per frame.
+  if (!tracked.timer) {
+    tracked.timer = setTimeout(() => _cliStatusSettled(sessionId, tracked), CLI_STATUS_SETTLE_MS);
+  }
+}
+
+function _cliStatusSettled(sessionId, tracked) {
+  tracked.timer = null;
+  if (_cliSessionStatus.get(sessionId) !== tracked) return; // untracked / re-tracked meanwhile
+  const quiet = Date.now() - tracked.lastOutput;
+  if (quiet < CLI_STATUS_SETTLE_MS) {
+    tracked.timer = setTimeout(() => _cliStatusSettled(sessionId, tracked), CLI_STATUS_SETTLE_MS - quiet);
+    return;
+  }
+  {
     const session = _sessions.find(s => s.id === sessionId);
     if (!session) return;
     let st = _detectSessionStatus(session);
@@ -414,7 +527,7 @@ function _scheduleCliStatusCheck(sessionId) {
         _updateSessionBadges(sessionId, st2);
       }, delay);
     }
-  }, 600);
+  }
 }
 
 // One shared safety-sweep for all tracked CLI sessions. Status changes are
@@ -434,6 +547,7 @@ function _ensureCliPoller() {
     for (const [sessionId, tracked] of _cliSessionStatus) {
       const session = _sessions.find(s => s.id === sessionId);
       if (!session || tracked.status === CLI_STATUS.DONE) continue;
+      if (session._isAssistant) continue; // status is pushed by the panel (setSessionStatusBadge), no buffer to scan
       // Sessions with recent output already have a pending debounced check
       if (Date.now() - tracked.lastOutput > 2000) {
         let newStatus = _detectSessionStatus(session);
@@ -464,6 +578,22 @@ function _untrackCliSession(sessionId) {
   _prevStatus.delete(sessionId);
   _lastNotified.delete(sessionId);
   _badgeCache.delete(sessionId);
+}
+
+/**
+ * Push a status onto a tracked session's badge (tab, float header, minimized
+ * pill). Used by non-PTY tabs (assistant) whose status comes from the panel
+ * instead of buffer scanning. status: 'idle' | 'working' | 'action' | 'done'.
+ */
+export function setSessionStatusBadge(sessionId, status) {
+  const tracked = _cliSessionStatus.get(sessionId);
+  if (!tracked) return false;
+  const next = Object.values(CLI_STATUS).includes(status) ? status : CLI_STATUS.IDLE;
+  if (tracked.status === next) return true;
+  tracked.status = next;
+  tracked.lastOutput = Date.now();
+  _updateSessionBadges(sessionId, next);
+  return true;
 }
 
 /** Returns badge HTML for a session if it's a tracked CLI, or empty string */
@@ -641,6 +771,25 @@ const _fitPending = new Map();        // sessionId → rAF handle
 const _resizeTimers = new Map();      // sessionId → debounce timer for PTY resize
 let _draggingResize = false;          // true during edge-drag resize
 const DRAG_RESIZE_DEBOUNCE_MS = 80;   // ms between PTY resizes during drag
+let _ptyResizeHoldUntil = 0;          // performance.now() deadline of a PTY-resize hold
+let _ptyResizeHoldTimer = null;
+
+/**
+ * Fit visually but keep PTY resizes back for `ms` (a CSS width transition such
+ * as the file-tree toggle would otherwise SIGWINCH the CLI every frame), then
+ * send each visible terminal's final size once.
+ */
+function _holdPtyResize(ms = 300) {
+  _ptyResizeHoldUntil = Math.max(_ptyResizeHoldUntil, performance.now() + ms);
+  if (_ptyResizeHoldTimer) clearTimeout(_ptyResizeHoldTimer);
+  _ptyResizeHoldTimer = setTimeout(() => {
+    _ptyResizeHoldTimer = null;
+    _ptyResizeHoldUntil = 0;
+    for (const s of _sessions) {
+      if (s.term && !s.dead && !s._isBrowser && !s._gitOutput && _isSessionVisible(s)) _sendResize(s);
+    }
+  }, Math.max(0, _ptyResizeHoldUntil - performance.now()));
+}
 
 // Touch → mouse coordinate helper for drag/resize
 function _touchXY(e) {
@@ -685,6 +834,9 @@ function _scheduleFit(session, _retries) {
       if (!cols || !rows || cols < 2 || rows < 2) return; // post-fit sanity check
 
       if (session.ws?.readyState !== WebSocket.OPEN) return;
+      // PTY-resize hold (file-tree toggle transition): the hold's release sends
+      // the final size once.
+      if (_ptyResizeHoldUntil && performance.now() < _ptyResizeHoldUntil) return;
 
       // Snap-to-cell: only notify PTY when we cross a cell boundary.
       // Sub-cell pixel changes during drag are swallowed here, so TUIs
@@ -745,50 +897,95 @@ function _sendResize(session) {
   } catch {}
 }
 
-const TERMINAL_WRITE_CHUNK = 64 * 1024;
+// ── Terminal writer + flow-control acks ──
+// xterm batches writes itself (12 ms parse slices per task, and the first
+// write after user input is parsed immediately), so every frame goes straight
+// to term.write — no JS-side queue and no timer hop per frame, which is what
+// used to make keystroke echo wait behind a backlog and balloon while Safari
+// throttled timers in the background. The parse callback only counts
+// BINARY-frame bytes xterm has parsed: the pty-host pauses the PTY while a
+// visible client has > 256 KB unacked and resumes below 64 KB. Snapshots,
+// JSON and string writes are never counted.
+const ACK_BYTES = 32768;       // ack as soon as this much has been parsed
+const ACK_SETTLE_MS = 100;     // one-shot flush of the remainder
+const ECHO_SAMPLES = 200;      // keystroke → echo-parsed ring size
 
-function _createTerminalWriter(term) {
-  const queue = []; // string | Uint8Array
-  let writing = false;
+/**
+ * @param {import('xterm').Terminal} term
+ * @param {() => WebSocket|null|undefined} getWs  resolves the session's CURRENT socket
+ * @param {() => void} [onParsed]  after each parsed binary frame (echo meter)
+ */
+function _createTerminalWriter(term, getWs, onParsed) {
   let disposed = false;
+  let epoch = 0;          // bumped by reset(): callbacks of frames written earlier are ignored
+  let parsed = 0;         // binary bytes parsed since the last ack
+  let pending = 0;        // binary bytes handed to xterm, not yet parsed
+  let settleTimer = null;
 
-  const pump = () => {
-    if (disposed || writing || !queue.length) return;
-    let chunk = queue.shift();
-    if (chunk.length > TERMINAL_WRITE_CHUNK) {
-      if (typeof chunk === 'string') {
-        queue.unshift(chunk.slice(TERMINAL_WRITE_CHUNK));
-        chunk = chunk.slice(0, TERMINAL_WRITE_CHUNK);
-      } else {
-        // Binary frame: back the split off any UTF-8 continuation bytes so a
-        // multi-byte sequence is never bisected (≤3-byte walk; xterm's decoder
-        // is stateful across writes but split-clean chunks keep it simple).
-        let split = TERMINAL_WRITE_CHUNK;
-        let guard = 0;
-        while (guard++ < 3 && split > 0 && (chunk[split] & 0xC0) === 0x80) split--;
-        queue.unshift(chunk.subarray(split)); // zero-copy views
-        chunk = chunk.subarray(0, split);
-      }
+  const flush = () => {
+    if (settleTimer) { clearTimeout(settleTimer); settleTimer = null; }
+    if (!parsed) return;
+    const ws = getWs?.();
+    if (ws?.readyState === WebSocket.OPEN) {
+      try { ws.send(JSON.stringify({ type: 'ack', bytes: parsed })); } catch {}
     }
-    writing = true;
+    parsed = 0; // a closed socket's count is void — the next hello starts from zero
+  };
+
+  const write = (data, ackBytes = 0) => {
+    if (disposed || data == null || data.length === 0) return;
+    if (!(ackBytes > 0)) {
+      try { term.write(data); } catch {}
+      return;
+    }
+    const myEpoch = epoch;
+    pending += ackBytes;
     try {
-      term.write(chunk, () => {
-        writing = false;
-        queueMicrotask(pump);
+      term.write(data, () => {
+        if (disposed || myEpoch !== epoch) return;
+        pending -= ackBytes;
+        parsed += ackBytes;
+        if (onParsed) onParsed();
+        if (parsed >= ACK_BYTES) flush();
+        else if (!settleTimer) settleTimer = setTimeout(flush, ACK_SETTLE_MS);
       });
     } catch {
-      writing = false;
+      pending -= ackBytes;
     }
   };
-
-  const write = (data) => {
-    if (disposed || data == null || data === '' || data.length === 0) return;
-    queue.push(typeof data === 'string' || data instanceof Uint8Array ? data : String(data));
-    pump();
+  /** New connection or reset snapshot: both sides zero their counters. */
+  write.reset = () => {
+    epoch++;
+    parsed = 0;
+    pending = 0;
+    if (settleTimer) { clearTimeout(settleTimer); settleTimer = null; }
   };
-  write.clear = () => { queue.length = 0; writing = false; };
-  write.dispose = () => { disposed = true; queue.length = 0; };
+  write.clear = write.reset; // legacy name
+  write.dispose = () => { write.reset(); disposed = true; };
+  write.stats = () => ({ unparsedBytes: pending, unackedBytes: parsed });
   return write;
+}
+
+/** Keystroke → echo-parsed latency: time from the first input after an echo
+ *  to the next parsed binary frame (the echo), kept in a small ring. */
+function _createEchoMeter() {
+  const m = { keyT: 0, samples: [], next: 0 };
+  m.key = () => { if (!m.keyT) m.keyT = performance.now(); };
+  m.parsed = () => {
+    if (!m.keyT) return;
+    const dt = performance.now() - m.keyT;
+    m.keyT = 0;
+    if (m.samples.length < ECHO_SAMPLES) m.samples.push(dt);
+    else { m.samples[m.next] = dt; m.next = (m.next + 1) % ECHO_SAMPLES; }
+  };
+  return m;
+}
+
+function _percentile(values, p) {
+  if (!values?.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const i = Math.min(sorted.length - 1, Math.max(0, Math.ceil(p * sorted.length) - 1));
+  return Math.round(sorted[i] * 100) / 100;
 }
 
 // ── Shared terminal factory + session wiring ──
@@ -801,22 +998,61 @@ function _createTerminalWriter(term) {
 // sessions keep their 4-frame drag fit stride to compensate (see _scheduleFit).
 const SCROLLBACK = 5000;
 
+// ── Links ──
+// http(s) only, opened without an opener. macOS: Cmd+click (a plain click
+// belongs to selection and TUI mouse modes), with a hover hint; elsewhere a
+// plain click as before. Also the OSC 8 linkHandler, replacing xterm's
+// confirm() prompt.
+const LINK_HINT = '⌘-click to open link';
+
+function _activateLink(e, uri) {
+  if (!/^https?:\/\//i.test(String(uri || ''))) return;
+  if (IS_MAC && !e?.metaKey) return;
+  try { e?.preventDefault?.(); } catch {}
+  window.open(uri, '_blank', 'noopener,noreferrer');
+}
+
+function _linkHover(e) {
+  if (!IS_MAC) return;
+  const el = e?.target?.closest?.('.xterm');
+  if (el) el.title = LINK_HINT;
+}
+
+function _linkLeave(e) {
+  const el = e?.target?.closest?.('.xterm');
+  if (el && el.title === LINK_HINT) el.removeAttribute('title');
+}
+
+const TERM_LINK_HANDLER = {
+  activate: (e, text) => _activateLink(e, text),
+  hover: (e) => _linkHover(e),
+  leave: (e) => _linkLeave(e),
+  allowNonHttpProtocols: false,
+};
+
 function XTERM_OPTIONS(overrides) {
   return {
     theme: XTERM_THEME,
-    fontFamily: "'JetBrains Mono', 'Fira Code', 'SF Mono', monospace",
-    fontSize: 13,
-    lineHeight: 1.3,
-    cursorBlink: true,
-    cursorStyle: 'bar',
-    cursorInactiveStyle: 'outline',
+    // Terminal.app metrics: system monospace, line spacing 1.0, steady block
+    fontFamily: _resolveTermFont(),
+    fontSize: _termFontSize(),
+    lineHeight: 1,
     letterSpacing: 0,
+    cursorBlink: false,
+    cursorStyle: 'block',
+    cursorInactiveStyle: 'outline',
+    // Option+click selects even while a TUI has mouse reporting on; right-click
+    // no longer selects a word (copy-on-select would clobber the clipboard)
+    macOptionClickForcesSelection: true,
+    rightClickSelectsWord: false,
+    linkHandler: TERM_LINK_HANDLER,
     scrollback: SCROLLBACK,
     smoothScrollDuration: 0,
     scrollOnUserInput: true,
     allowProposedApi: true,
     rescaleOverlappingGlyphs: true,
     drawBoldTextInBrightColors: false,
+    // No overviewRuler: it adds a canvas that is redrawn on every render.
     ...overrides,
   };
 }
@@ -825,20 +1061,16 @@ function _buildTerm(overrides) {
   const term = new _Terminal(XTERM_OPTIONS(overrides));
   const fitAddon = new _FitAddon();
   term.loadAddon(fitAddon);
-  term.loadAddon(new _WebLinksAddon());
+  term.loadAddon(new _WebLinksAddon(_activateLink, { hover: _linkHover, leave: _linkLeave }));
   return { term, fitAddon };
 }
 
 async function _openTermInViewport(term, viewport) {
-  // Wait for fonts before opening — xterm measures char cell width on open().
-  // If JetBrains Mono hasn't loaded yet, measurements use fallback monospace
-  // and TUI layouts (box-drawing, spinners) are permanently misaligned.
-  // Timeout race: if font loading stalls, open anyway rather than never.
-  if (document.fonts?.ready) {
-    await Promise.race([document.fonts.ready, new Promise(r => setTimeout(r, 1500))]);
-  }
+  // xterm measures the cell on open(). The system monospace stack needs no
+  // wait; a web font gets its exact faces loaded first (raced against 1.5 s).
+  const fontWait = _ensureTermFont(term.options.fontFamily, term.options.fontSize);
+  if (fontWait) await fontWait;
   term.open(viewport);
-  const writeTerminal = _createTerminalWriter(term);
   const xtermTextarea = viewport.querySelector('.xterm-helper-textarea');
   const searchAddon = new _SearchAddon();
   term.loadAddon(searchAddon);
@@ -846,25 +1078,194 @@ async function _openTermInViewport(term, viewport) {
     term.loadAddon(new _Unicode11Addon());
     term.unicode.activeVersion = '11';
   }
-  return { writeTerminal, xtermTextarea, searchAddon };
+  return { xtermTextarea, searchAddon };
 }
 
-function _wireTermSession({ sessionId, profile, term, viewport, writeTerminal, xtermTextarea, ws }) {
+// ── macOS key map (Terminal.app) ──
+const MAC_KEY_BYTES = {
+  'line-start': '\x01', // Cmd+←   → Ctrl-A
+  'line-end': '\x05',   // Cmd+→   → Ctrl-E
+  'kill-line': '\x15',  // Cmd+⌫   → Ctrl-U
+  'word-left': '\x1bb', // Opt+←   → Esc-b
+  'word-right': '\x1bf', // Opt+→  → Esc-f
+};
+
+/** Mapped macOS combo → action id, or null. Font keys match e.code so
+ *  Cmd+Shift+= (Cmd++) and the numpad work regardless of layout. */
+function _macKeyAction(e) {
+  const key = typeof e.key === 'string' ? e.key : '';
+  const code = e.code || '';
+  if (e.metaKey && !e.ctrlKey && !e.altKey) {
+    if (code === 'Equal' || code === 'NumpadAdd') return 'font-bigger';
+    if (code === 'Minus' || code === 'NumpadSubtract') return 'font-smaller';
+    if (!e.shiftKey && (code === 'Digit0' || code === 'Numpad0')) return 'font-reset';
+    const lower = key.toLowerCase();
+    if (lower === 'g') return e.shiftKey ? 'find-prev' : 'find-next';
+    if (e.shiftKey) return null;
+    if (lower === 'k') return 'clear';
+    if (lower === 'f') return 'find';
+    if (key === 'ArrowLeft') return 'line-start';
+    if (key === 'ArrowRight') return 'line-end';
+    if (key === 'Backspace') return 'kill-line';
+    return null;
+  }
+  if (e.altKey && !e.metaKey && !e.ctrlKey && !e.shiftKey) {
+    if (key === 'ArrowLeft') return 'word-left';
+    if (key === 'ArrowRight') return 'word-right';
+  }
+  return null;
+}
+
+function _runMacKeyAction(action, sessionId, term, profile) {
+  const bytes = MAC_KEY_BYTES[action];
+  // term.input fires onData (→ PTY), scrolls to the prompt, clears the
+  // selection and takes xterm's parse-immediately echo path.
+  if (bytes) { term.input(bytes, true); return; }
+  const sess = _sessions.find(s => s.id === sessionId);
+  switch (action) {
+    case 'clear':
+      // Cmd+K: clear screen + scrollback on the normal buffer. Full-screen
+      // TUIs (alternate buffer) are left alone. Claude Code & co. draw in the
+      // normal buffer, so they also get Ctrl-L to redraw themselves.
+      if (term.buffer.active.type !== 'normal') return;
+      term.clear();
+      if (CLI_PROFILES.has(profile)) term.input('\x0c', true);
+      return;
+    case 'find': _openTermSearch(sess); return;
+    case 'find-next': _termSearchStep(sess, false); return;
+    case 'find-prev': _termSearchStep(sess, true); return;
+    case 'font-bigger': _setTermFontSize(_termFontSize() + 1); return;
+    case 'font-smaller': _setTermFontSize(_termFontSize() - 1); return;
+    case 'font-reset': _setTermFontSize(TERM_FONT_DEFAULT); return;
+  }
+}
+
+/** Open (or focus) the search bar for a session — docked bar or float bar. */
+function _openTermSearch(sess) {
+  if (!sess) return;
+  const tabState = _detachedTabs.get(sess.id);
+  if (tabState) {
+    const input = tabState.el.querySelector('.float-search-bar .float-search-input');
+    if (input) { input.focus(); input.select(); }
+    else toggleFloatSearchBar(sess);
+    return;
+  }
+  toggleSearchBar(true);
+}
+
+/** Cmd+G / Shift+Cmd+G: next / previous match for the current query. */
+function _termSearchStep(sess, backwards) {
+  if (!sess?.searchAddon) return;
+  const tabState = _detachedTabs.get(sess.id);
+  const query = tabState
+    ? (tabState.el.querySelector('.float-search-input')?.value || '')
+    : (_searchBarVisible ? ($('term-search-input')?.value || '') : '');
+  if (!query) { _openTermSearch(sess); return; }
+  if (backwards) sess.searchAddon.findPrevious(query);
+  else sess.searchAddon.findNext(query);
+}
+
+/** Cmd+= / Cmd+− / Cmd+0: every terminal, persisted, refit (→ PTY resize). */
+function _setTermFontSize(size) {
+  const next = _clampTermFontSize(size);
+  storage.setItem(KEYS.TERMINAL_FONT_SIZE, String(next));
+  for (const s of _sessions) {
+    if (!s.term || s._isBrowser || s._isAssistant) continue;
+    if (s.term.options.fontSize === next) continue;
+    try { s.term.options.fontSize = next; } catch {}
+    _scheduleFit(s);
+  }
+  showTermToast(`Font size ${next}`);
+}
+
+// ── Program titles (OSC 0/2) + display labels ──
+// A user rename wins, then the title the program set, then the base label.
+// The OSC title is not persisted (the program re-sets it); syncResumeLabel
+// only ever sees user renames.
+function _cleanOscTitle(title) {
+  return String(title || '').replace(/[\u0000-\u001f\u007f-\u009f]/g, '').trim().slice(0, 80);
+}
+
+function _displayLabel(s) {
+  if (!s) return '';
+  if (s._userRenamed) return s.label || '';
+  return s._oscTitle || s.label || '';
+}
+
+/** Update every node that shows this session's label, in place. */
+function _refreshSessionLabel(s) {
+  if (!s) return;
+  const text = _displayLabel(s);
+  const tabText = text + (s.dead ? ' (exited)' : '');
+  for (const el of document.querySelectorAll(`.term-tab[data-session-id="${CSS.escape(s.id)}"] .term-tab-label`)) {
+    if (el.textContent !== tabText) el.textContent = tabText;
+  }
+  const tabState = _detachedTabs.get(s.id);
+  if (tabState) {
+    const titleEl = tabState.el?.querySelector('.term-float-tab-title');
+    if (titleEl && titleEl.contentEditable !== 'true' && titleEl.textContent !== text) titleEl.textContent = text;
+    const pillLabel = tabState.pill?.querySelector('.term-minimized-pill-label');
+    if (pillLabel && pillLabel.textContent !== text) pillLabel.textContent = text;
+  }
+  if (_peekDock?.classList.contains('visible')) renderPeekDock();
+}
+
+// ── Bell ──
+function _applyBell(s) {
+  const on = !!s?._bell;
+  for (const el of document.querySelectorAll(`.term-tab[data-session-id="${CSS.escape(s.id)}"]`)) {
+    el.classList.toggle('has-bell', on);
+  }
+  const tabState = _detachedTabs.get(s.id);
+  tabState?.el?.querySelector('.term-float-tab-header')?.classList.toggle('has-bell', on);
+  tabState?.pill?.classList.toggle('has-bell', on);
+}
+
+function _clearBell(s) {
+  if (!s?._bell) return;
+  s._bell = false;
+  _applyBell(s);
+}
+
+function _wireTermSession({ sessionId, profile, term, viewport, xtermTextarea, ws, echo }) {
   // Resolve the CURRENT WebSocket for this session — after _reconnectTerminalWs
   // swaps session.ws, handlers wired at creation must not hold the dead one.
   const liveWs = () => (_sessions.find(x => x.id === sessionId)?.ws || ws);
 
   // ── Keyboard shortcuts ──
   term.attachCustomKeyEventHandler((e) => {
-    // Shift+Enter → insert literal newline (multi-line command editing)
-    // Sends Ctrl-V (\x16) + LF (\n) — readline inserts LF literally instead of executing
+    // IME composition (CJK input, dead keys): the browser owns these keys
+    if (IS_MAC && (e.isComposing || e.keyCode === 229)) return true;
+
+    // Shift+Enter → literal newline (multi-line editing), every platform.
+    // CLI profiles take a bare LF (their \x16 means "paste image"); the shell
+    // gets Ctrl-V + LF so readline inserts the LF instead of executing.
     if (e.shiftKey && e.key === 'Enter') {
-      const w = liveWs();
-      if (e.type === 'keydown' && w?.readyState === WebSocket.OPEN) {
-        w.send(JSON.stringify({ type: 'input', data: '\x16\n' }));
+      if (e.type === 'keydown') {
+        e.preventDefault();
+        term.input(CLI_PROFILES.has(profile) ? '\n' : '\x16\n', true);
       }
       return false;
     }
+
+    if (IS_MAC) {
+      const action = _macKeyAction(e);
+      if (action) {
+        // Act on keydown, but claim every event type of the combo. Returning
+        // false only keeps xterm away — it does not stop the browser (Cmd+F
+        // find bar, Cmd+= zoom, Cmd+K), so prevent the default explicitly.
+        if (e.type === 'keydown') {
+          e.preventDefault();
+          _runMacKeyAction(action, sessionId, term, profile);
+        }
+        return false;
+      }
+      // Ctrl+C / Ctrl+V / Ctrl+F reach the PTY as \x03 / \x16 / \x06, as in
+      // Terminal.app (copy/paste are Cmd+C / Cmd+V there).
+      return true;
+    }
+
+    // ── Windows / Linux ──
     // Ctrl+C → copy if text selected, otherwise pass through as SIGINT
     if (e.ctrlKey && !e.shiftKey && (e.key === 'c' || e.key === 'C')) {
       const sel = term.getSelection();
@@ -950,6 +1351,7 @@ function _wireTermSession({ sessionId, profile, term, viewport, writeTerminal, x
   term.onData((data) => {
     const w = liveWs();
     if (w?.readyState === WebSocket.OPEN) {
+      echo?.key();
       w.send(JSON.stringify({ type: 'input', data }));
     }
   });
@@ -961,15 +1363,50 @@ function _wireTermSession({ sessionId, profile, term, viewport, writeTerminal, x
   });
   ro.observe(viewport);
 
-  // Renderer LRU: focusing a terminal marks it most-recently-used
+  // Renderer LRU: focusing a terminal marks it most-recently-used. Also the
+  // return-to-app focus target, and focusing clears the bell.
   viewport.addEventListener('focusin', () => {
     const s = _sessions.find(s => s.id === sessionId);
-    if (s) noteFocus(s);
+    if (!s) return;
+    noteFocus(s);
+    _lastFocusedTermId = sessionId;
+    _clearBell(s);
   });
 
-  // Wire right-click context menu + memory drag-drop
-  initContextMenu(viewport, term, ws);
-  initMemoryDrop(viewport, ws, term);
+  // Program-set title (OSC 0/2), throttled to one DOM update per 500 ms
+  let titleTimer = null;
+  let pendingTitle = '';
+  term.onTitleChange((title) => {
+    pendingTitle = title;
+    if (titleTimer) return;
+    titleTimer = setTimeout(() => {
+      titleTimer = null;
+      const s = _sessions.find(x => x.id === sessionId);
+      if (!s || s.dead) return;
+      const clean = _cleanOscTitle(pendingTitle) || null;
+      if (clean === (s._oscTitle || null)) return;
+      s._oscTitle = clean;
+      _refreshSessionLabel(s);
+    }, 500);
+  });
+
+  // Bell → a dot on the tab / float header / pill of an unfocused or hidden
+  // terminal (at most once per second). Cleared on focus or when shown.
+  term.onBell(() => {
+    const s = _sessions.find(x => x.id === sessionId);
+    if (!s || s.dead) return;
+    const now = Date.now();
+    if (now - (s._bellAt || 0) < 1000) return;
+    s._bellAt = now;
+    const focused = document.hasFocus() && !!s.viewport?.contains(document.activeElement);
+    if (focused && _isSessionVisible(s)) return;
+    s._bell = true;
+    _applyBell(s);
+  });
+
+  // Wire right-click context menu + memory drag-drop (socket resolved at use)
+  initContextMenu(viewport, term, liveWs);
+  initMemoryDrop(viewport, liveWs, term);
 
   return { ro };
 }
@@ -1003,19 +1440,25 @@ function _handleTermWsEvent(e, ctx) {
   if (_closingIds.has(sessionId)) return;
 
   // Binary frame = raw PTY bytes (the hot path — no JSON, no string copy).
-  // xterm parses UTF-8 from Uint8Array natively; a per-session streaming
-  // TextDecoder produces the text used by replay buffers / status / watchers.
+  // xterm parses UTF-8 from Uint8Array natively and the writer acks the parsed
+  // bytes. Text is only decoded while someone reads it: an output watcher
+  // (_sendOnceReady) or the replay window after creation/reconnect.
   if (e.data instanceof ArrayBuffer) {
     const sess = _sessions.find(s => s.id === sessionId);
     const writeTerminal = sess?._terminalWriter || ctx.writeTerminal;
     const bytes = new Uint8Array(e.data);
-    if (writeTerminal) writeTerminal(bytes);
+    if (writeTerminal) writeTerminal(bytes, bytes.length);
     else (sess?.term || ctx.term)?.write(bytes);
     if (NOTIF_TRACKED_CLI_PROFILES.has(profile)) _scheduleCliStatusCheck(sessionId);
     if (sess) {
-      const text = (sess._wsDecoder ||= new TextDecoder('utf-8')).decode(bytes, { stream: true });
-      _accumReplay(sess, text);
-      _notifyOutputWatchers(sess, text);
+      if (sess._outputWatchers?.size || Date.now() < (sess._replayUntil || 0)) {
+        const text = (sess._wsDecoder ||= new TextDecoder('utf-8')).decode(bytes, { stream: true });
+        _accumReplay(sess, text);
+        _notifyOutputWatchers(sess, text);
+      } else if (sess._wsDecoder || sess._replayBuf) {
+        sess._wsDecoder = null;
+        sess._replayBuf = '';
+      }
     }
     return;
   }
@@ -1032,19 +1475,30 @@ function _handleTermWsEvent(e, ctx) {
       const wantsReset = (msg.type === 'replay' || msg.type === 'snapshot') &&
                          (msg.reset || sess?._needsReplayReset);
       if (wantsReset) {
-        // Server restored state via a synthetic snapshot — clear stale queued
-        // writes so the snapshot becomes the new canonical screen.
+        // The snapshot becomes the new canonical screen. Reset IN-BAND:
+        // term.reset() would not clear xterm's pending write queue, so frames
+        // written before the snapshot would still be parsed on top of it. RIS
+        // (ESC c) is queued behind them instead, and the writer's epoch bump
+        // means their parse callbacks are never acked (the host zeroed its
+        // counter when it sent the snapshot).
         if (sess) sess._needsReplayReset = false;
-        try { writeTerminal?.clear?.(); term?.reset(); } catch {}
+        try {
+          writeTerminal?.reset?.();
+          if (writeTerminal) writeTerminal('\x1bc');
+          else term?.write('\x1bc');
+        } catch {}
         if (sess) {
           sess._replayBuf = msg.plain || '';
-          sess._wsDecoder = new TextDecoder('utf-8'); // drop partial-codepoint state
+          sess._wsDecoder = null; // drop partial-codepoint state
         }
       } else {
         _accumReplay(sess, text);
       }
-      if (writeTerminal) writeTerminal(msg.data);
-      else term?.write(msg.data);
+      if (msg.data) {
+        // Snapshot/JSON writes are never acked (ackBytes 0)
+        if (writeTerminal) writeTerminal(msg.data);
+        else term?.write(msg.data);
+      }
       if (NOTIF_TRACKED_CLI_PROFILES.has(profile)) _scheduleCliStatusCheck(sessionId);
       _notifyOutputWatchers(sess, text);
     }
@@ -1073,10 +1527,55 @@ function _handleTermWsEvent(e, ctx) {
   } catch {}
 }
 
+// ── Socket open (all three terminal WS paths) ──
+// Protocol order on every open: hello (flow-control opt-in) → visibility when
+// hidden → exactly one resize at valid dimensions. The host answers every
+// (re)connect with a reset snapshot first; the writer is reset here so no
+// parse callback of the previous connection is ever acked.
+function _onTermWsOpen(sessionId, ws, fallback = null) {
+  const s = _sessions.find(x => x.id === sessionId) || fallback;
+  const send = (msg) => { try { ws.send(JSON.stringify(msg)); } catch {} };
+  try { (s?._terminalWriter || fallback?._terminalWriter)?.reset?.(); } catch {}
+  send({ type: 'hello', flow: 1 });
+  if (document.hidden) send({ type: 'visibility', visible: false });
+  const term = s?.term;
+  if (!term) return;
+  // Hidden container (restore, parked dock) → no resize now; _scheduleFit
+  // sends the real size once the viewport is shown. Garbage dimensions
+  // (cols=1) would make the CLI render into the buffer permanently garbled.
+  try {
+    const dims = s.fitAddon?.proposeDimensions();
+    if (!dims || !(dims.cols >= 2) || !(dims.rows >= 2) ||
+        !Number.isFinite(dims.cols) || !Number.isFinite(dims.rows)) return;
+    s.fitAddon.fit();
+  } catch { return; }
+  const cols = term.cols;
+  const rows = term.rows;
+  if (!(cols >= 2) || !(rows >= 2)) return;
+  send({ type: 'resize', cols, rows });
+  s._lastSentResize = { cols, rows };
+}
+
+/** A terminal just became visible (tab switch, dock shown, restore, detach):
+ *  refit, and repaint once on the next frame — a non-preserved WebGL drawing
+ *  buffer can come back blank after a display toggle. Clears the bell. */
+function _onSessionShown(s) {
+  if (!s || s.dead || !s.term || s._isBrowser || s._isAssistant) return;
+  const t0 = performance.now();
+  _scheduleFit(s);
+  requestAnimationFrame(() => {
+    if (s.dead || !s.term) return;
+    try { s.term.refresh(0, Math.max(0, s.term.rows - 1)); } catch {}
+    s._lastShowMs = Math.round((performance.now() - t0) * 100) / 100;
+  });
+  _clearBell(s);
+}
+
 // ── Renderer visibility sync ──
 // INVARIANT: hidden terminals MUST keep parsing — _detectSessionStatus reads
-// term.buffer.active and _replayBuf/_sendOnceReady need the stream. Only the
-// GPU context is released here; never pause writes.
+// term.buffer.active and _replayBuf/_sendOnceReady need the stream. Renderers
+// stay warm while hidden (term-renderer evicts hidden holders first when the
+// WebGL budget is full); only rendering pauses, never writes.
 
 function _isSessionVisible(s) {
   if (!s || s.dead || s._isBrowser || s._gitOutput || !s.term) return false;
@@ -1088,12 +1587,52 @@ function _isSessionVisible(s) {
   return !!_panel && !_panel.classList.contains('hidden'); // docked panel
 }
 
+/** Acquire GPU renderers for visible terminals. Never releases on hide:
+ *  a context rebuild (shader compile on WebKit, atlas, fit, refresh) on every
+ *  show was the cost of switching tabs and returning to the app. */
 function _syncRenderers() {
   for (const s of _sessions) {
-    if (s._isBrowser || s._gitOutput || !s.term) continue;
+    if (s._isBrowser || s._gitOutput || !s.term || s.dead) continue;
     if (_isSessionVisible(s)) acquireRenderer(s);
-    else releaseRenderer(s);
   }
+}
+
+// ── Stacking (z-order bands) ──
+/** Raise a float (or the docked panel) to the top of the normal band. */
+function _raise(el) {
+  if (!el) return;
+  if (_floatZCounter >= Z_PINNED - 2) _compactZ();
+  el.style.zIndex = String(++_floatZCounter);
+}
+
+/** Raise a pinned float to the top of the pinned band. */
+function _raisePinned(el) {
+  if (!el) return;
+  if (_pinnedZCounter >= Z_PINNED + 998) _compactPinnedZ();
+  el.style.zIndex = String(++_pinnedZCounter);
+}
+
+function _compactZ() {
+  const items = [];
+  if (_panel) items.push(_panel);
+  for (const [sid, dt] of _detachedTabs) {
+    const s = _sessions.find(x => x.id === sid);
+    if (dt.el && !s?.pinned) items.push(dt.el);
+  }
+  items.sort((a, b) => (parseInt(a.style.zIndex, 10) || 0) - (parseInt(b.style.zIndex, 10) || 0));
+  _floatZCounter = Z_BASE;
+  for (const el of items) el.style.zIndex = String(++_floatZCounter);
+}
+
+function _compactPinnedZ() {
+  const items = [];
+  for (const [sid, dt] of _detachedTabs) {
+    const s = _sessions.find(x => x.id === sid);
+    if (dt.el && s?.pinned) items.push(dt.el);
+  }
+  items.sort((a, b) => (parseInt(a.style.zIndex, 10) || 0) - (parseInt(b.style.zIndex, 10) || 0));
+  _pinnedZCounter = Z_PINNED;
+  for (const el of items) el.style.zIndex = String(++_pinnedZCounter);
 }
 
 
@@ -1113,6 +1652,8 @@ function saveSessionRegistry() {
       userRenamed: s._userRenamed || false,
       claudeSessionId: s._claudeSessionId || prev?.claudeSessionId || null,
       floatColor: s._floatColor || null,
+      assistantSessionId: s._isAssistant ? s.id : (prev?.assistantSessionId || null),
+      brain: s._isAssistant ? (s._brain || prev?.brain || null) : null,
     });
   }
   storage.setItem(KEYS.TERMINAL_SESSIONS, JSON.stringify([...seen.values()]));
@@ -1139,7 +1680,7 @@ function _pushSession(session) {
     _sessions.push(session);
   }
   // Attach touch toolbar for terminal sessions on touch devices
-  if (!session._isBrowser && session.viewport) _createTouchToolbar(session);
+  if (!session._isBrowser && !session._isAssistant && session.viewport) _createTouchToolbar(session);
 }
 
 function clearSessionRegistry() {
@@ -1243,6 +1784,10 @@ async function openSessionWithPicker(profile) {
     const perm = profile === 'browser' ? 'browser' : 'terminal';
     if (!hasPermission(perm)) return;
   }
+  if (profile === 'assistant') {
+    openAssistant({ host: 'terminal' });
+    return;
+  }
   if (profile === 'browser') {
     openBrowserSession();
     return;
@@ -1337,7 +1882,9 @@ function ensurePanel() {
 
   const panel = document.createElement('div');
   panel.id = 'terminal-panel';
-  panel.className = 'hidden';
+  // Starts closed AND parked (display:none): docked terminals restored into a
+  // closed dock must not render until it opens (showPanel unparks).
+  panel.className = 'hidden parked';
   panel.innerHTML = html;
   document.body.appendChild(panel);
   _panel = panel;
@@ -1360,9 +1907,9 @@ function ensurePanel() {
     flyout.appendChild(item);
   });
 
-  // Click on docked panel → bring above any floating TUI windows
+  // Click on docked panel → bring above any (non-pinned) floating TUI windows
   panel.addEventListener('mousedown', () => {
-    panel.style.zIndex = ++_floatZCounter;
+    _raise(panel);
   });
 
   // Wire resize handle (docked only — panel detach removed, only tabs float)
@@ -1408,7 +1955,7 @@ function ensurePanel() {
     const detachBtn = e.target.closest('.term-tab-detach');
     if (detachBtn) {
       const idx = parseInt(detachBtn.dataset.idx, 10);
-      detachTab(idx);
+      detachTab(idx, { focus: true });
       return;
     }
     const dockBtn = e.target.closest('.term-tab-dock');
@@ -1426,6 +1973,7 @@ function ensurePanel() {
       if (session && _detachedTabs.has(session.id)) {
         bringTabToFront(session.id);
         if (session._isBrowser) session._browserCanvas?.focus();
+        else if (session._isAssistant) session._assistant?.focus();
         else session.term?.focus();
         return;
       }
@@ -1449,20 +1997,25 @@ function ensurePanel() {
     const input = document.createElement('input');
     input.type = 'text';
     input.className = 'term-tab-rename';
-    input.value = session.label;
+    // Start from what the tab shows (a program-set title, if any)
+    const shown = _displayLabel(session);
+    input.value = shown;
     input.style.width = Math.max(rect.width, 60) + 'px';
 
     label.replaceWith(input);
     input.focus();
     input.select();
 
+    // An untouched program title is not a rename (it must keep following the program)
+    const showsOscTitle = !!session._oscTitle && !session._userRenamed;
     const commit = () => {
       const val = input.value.trim();
-      if (val) { session.label = val; session._userRenamed = true; }
+      if (val && !(showsOscTitle && val === shown)) { session.label = val; session._userRenamed = true; }
       renderTabBar();
       saveSessionRegistry();
       saveTerminalLayout();
       syncResumeLabel(session);
+      _syncAssistantLabel(session);
       // Retry detection if Claude session ID not yet known
       if (!session._claudeSessionId && CLI_PROFILES.has(session.profile)) {
         detectClaudeSession(session.id).then(r => {
@@ -1477,7 +2030,7 @@ function ensurePanel() {
     input.addEventListener('blur', commit);
     input.addEventListener('keydown', (ev) => {
       if (ev.key === 'Enter') { ev.preventDefault(); input.blur(); }
-      if (ev.key === 'Escape') { input.value = session.label; input.blur(); }
+      if (ev.key === 'Escape') { input.value = shown; input.blur(); }
     });
   });
 
@@ -1494,7 +2047,25 @@ function ensurePanel() {
   });
   tabBar.addEventListener('drop', (e) => {
     const session = _sessions[_activeIdx];
-    if (!session || session.dead || session.ws.readyState !== WebSocket.OPEN) return;
+    if (!session || session.dead) return;
+
+    // Assistant tabs have no PTY socket — drops become composer attachments.
+    if (session._isAssistant) {
+      const memoryId = e.dataTransfer.getData('application/x-synabun-memory');
+      const wbImageId = e.dataTransfer.getData('application/x-synabun-wb-image');
+      if (memoryId) {
+        e.preventDefault();
+        const node = state.allNodes?.find(n => n.id === memoryId);
+        if (node) session._assistant?.attachMemory(node);
+      } else if (wbImageId) {
+        e.preventDefault();
+        const el = getWhiteboardElementById(wbImageId);
+        if (el?.type === 'image' && el.dataUrl) session._assistant?.attachImageDataUrl(el.dataUrl, 'whiteboard');
+      }
+      session._assistant?.focus();
+      return;
+    }
+    if (!session.ws || session.ws.readyState !== WebSocket.OPEN) return;
 
     const memoryId = e.dataTransfer.getData('application/x-synabun-memory');
     if (memoryId) {
@@ -1626,9 +2197,19 @@ function showPanel() {
   }
 
   // Bring docked panel above any floating TUI windows
-  _panel.style.zIndex = ++_floatZCounter;
+  _raise(_panel);
 
-  // Remove hidden class to trigger morph-open transition
+  // A newer show/hide supersedes any pending park from hidePanel()
+  const gen = ++_panelGen;
+  const wasParked = _panel.classList.contains('parked');
+
+  // Unpark (display:none → laid out) BEFORE removing .hidden, with a forced
+  // reflow in between, so the open transition runs from the hidden state and
+  // the terminals have real dimensions immediately.
+  if (wasParked) {
+    _panel.classList.remove('parked');
+    void _panel.offsetHeight;
+  }
   _panel.classList.remove('hidden');
 
   storage.setItem(KEYS.TERMINAL_OPEN, '1');
@@ -1637,9 +2218,19 @@ function showPanel() {
   const toggle = $('menu-terminal-toggle');
   if (toggle) toggle.classList.add('active');
 
-  // Refit terminals after morph transition completes (500ms)
-  setTimeout(() => { _sessions.forEach(s => _scheduleFit(s)); _syncRenderers(); }, 520);
+  // Layout is final now (transforms don't change it), so fit and renderer
+  // sync happen on the next frame instead of after the morph transition.
+  requestAnimationFrame(() => {
+    if (gen !== _panelGen || !_panel || _panel.classList.contains('hidden')) return;
+    for (const s of _sessions) {
+      if (_detachedTabs.has(s.id) || s.dead || !s.term || s._isBrowser) continue;
+      if (_isSessionVisible(s)) _onSessionShown(s);
+    }
+    _syncRenderers();
+  });
 }
+
+const PANEL_PARK_FALLBACK_MS = 400;
 
 function hidePanel() {
   if (!_panel || _panelPinned) return;
@@ -1653,11 +2244,29 @@ function hidePanel() {
   const toggle = $('menu-terminal-toggle');
   if (toggle) toggle.classList.remove('active');
 
-  // Release GPU contexts held by now-hidden docked terminals
-  _syncRenderers();
-
-  // Show peek dock after morph-close completes (only for docked mode)
-  if (!_detached) setTimeout(() => showPeekDock(), 520);
+  // Renderers stay warm (no release). Once the close transition ends, park
+  // the panel (display:none) so xterm's IntersectionObserver pauses rendering
+  // for the docked terminals, then show the peek dock. The generation token
+  // drops a stale park if the panel was reopened meanwhile.
+  const gen = ++_panelGen;
+  const panel = _panel;
+  let parked = false;
+  const park = () => {
+    if (parked) return;
+    parked = true;
+    panel.removeEventListener('transitionend', onEnd);
+    clearTimeout(fallback);
+    if (gen !== _panelGen || !panel.classList.contains('hidden')) return;
+    panel.classList.add('parked');
+    if (!_detached) showPeekDock();
+  };
+  const onEnd = (e) => {
+    if (e.target !== panel) return;
+    if (e.propertyName !== 'transform' && e.propertyName !== 'visibility') return;
+    park();
+  };
+  panel.addEventListener('transitionend', onEnd);
+  const fallback = setTimeout(park, PANEL_PARK_FALLBACK_MS);
 }
 
 function togglePanel() {
@@ -1985,12 +2594,16 @@ function initResizeHandle() {
   let startY, startH;
   let resizeRaf = 0;
   let pendingHeight = 0;
+  let graphLayers = [];
 
+  // During the drag only the graph layers follow the dock height (a :root
+  // custom property change restyles the whole document every frame); the
+  // final height is committed to :root on mouseup.
   const applyHeight = () => {
     resizeRaf = 0;
     if (!_panel) return;
     _panel.style.height = pendingHeight + 'px';
-    document.documentElement.style.setProperty('--terminal-height', pendingHeight + 'px');
+    for (const el of graphLayers) el.style.setProperty('--terminal-height', pendingHeight + 'px');
   };
   const scheduleHeight = (height) => {
     pendingHeight = height;
@@ -2012,6 +2625,7 @@ function initResizeHandle() {
     handle.classList.add('active');
     _draggingResize = true;
     document.body.classList.add('ui-interacting');
+    graphLayers = [$('graph-container'), $('static-bg')].filter(Boolean);
 
     const onMove = (e) => {
       const dy = startY - e.clientY;
@@ -2028,6 +2642,10 @@ function initResizeHandle() {
       _draggingResize = false;
       document.body.classList.remove('ui-interacting');
       const h = parseInt(_panel.style.height, 10);
+      // Commit the settled height to :root, then drop the per-layer overrides
+      document.documentElement.style.setProperty('--terminal-height', h + 'px');
+      for (const el of graphLayers) el.style.removeProperty('--terminal-height');
+      graphLayers = [];
       storage.setItem(KEYS.TERMINAL_HEIGHT, String(h));
       // Send final resize to PTY at settled dimensions
       _sessions.forEach(s => _sendResize(s));
@@ -2040,9 +2658,59 @@ function initResizeHandle() {
 
 // ── Session lifecycle ──
 
+// Text of a session's output is decoded (for _sendOnceReady's replay buffer)
+// only this long after creation/reconnect, or while an output watcher exists.
+const REPLAY_WINDOW_MS = 20000;
+let _preRendererSeq = 0;
+
+/** Resolve once no openSession/openBrowserSession is in flight, so a caller
+ *  queues behind it instead of being dropped by the _opening guard. Waiters
+ *  are released first-in first-out, one per turn, so two launches requested
+ *  together both open. Callers must call openSession right after this
+ *  resolves (it sets _opening synchronously). */
+const _openWaiters = [];
+let _openPumpTimer = null;
+
+function _whenOpenIdle(maxWaitMs = 30000) {
+  return new Promise((resolve) => {
+    _openWaiters.push({ resolve, deadline: Date.now() + maxWaitMs });
+    if (!_openPumpTimer) _pumpOpenWaiters();
+  });
+}
+
+function _pumpOpenWaiters() {
+  _openPumpTimer = null;
+  const head = _openWaiters[0];
+  if (!head) return;
+  if (_opening && Date.now() < head.deadline) {
+    _openPumpTimer = setTimeout(_pumpOpenWaiters, 50);
+    return;
+  }
+  _openWaiters.shift();
+  head.resolve();
+  // The released caller starts its open in a microtask. Always yield a turn
+  // before releasing anyone else (a waiter queued in this same task included),
+  // so the next check sees _opening already set by that open.
+  _openPumpTimer = setTimeout(_pumpOpenWaiters, 0);
+}
+
+/**
+ * Open a terminal tab on a fresh PTY (or an existing one via existingSessionId).
+ * Returns the session, or null when dropped because another open is in flight.
+ * options: { label, pinned, userRenamed, claudeSessionId, floatColor,
+ *            floating: open straight into a focused float (no dock),
+ *            createOpts: extra POST /api/terminal/sessions fields (resume, model, …) }
+ */
 async function openSession(profile, cwd, existingSessionId, options = {}) {
-  if (_opening) return;
+  if (_opening) return null;
   _opening = true;
+  const floating = options.floating === true;
+  let sessionId = existingSessionId || null;
+  let term = null;
+  let viewport = null;
+  let staging = null;
+  let pre = null;
+  let pushed = false;
   try {
   await loadXterm();
   ensurePanel();
@@ -2052,29 +2720,51 @@ async function openSession(profile, cwd, existingSessionId, options = {}) {
   // re-render their splash banner and trips zsh's PROMPT_EOL_MARK (visible
   // floating %). For existing sessions (resume/detach) the PTY is already
   // alive, so we use the id immediately.
-  let sessionId = existingSessionId || null;
   if (sessionId) _pendingSessionIds.add(sessionId);
 
   // Create xterm instance (shared factory — keep openSession/reconnectSession identical)
-  const { term, fitAddon } = _buildTerm();
+  const built = _buildTerm();
+  term = built.term;
+  const fitAddon = built.fitAddon;
 
   // Create viewport element (sessionId attached after spawn)
-  const viewport = document.createElement('div');
+  viewport = document.createElement('div');
   viewport.className = 'term-viewport';
 
   // Route viewport to correct pane (or container root). Pane assignment is
   // recorded after the sessionId is known.
   let _targetPane = null;
-  if (_splitMode) {
-    _targetPane = _focusedPane;
-    const paneBody = _panel?.querySelector(`.term-pane[data-pane="${_targetPane}"] .term-pane-body`);
-    if (paneBody) paneBody.appendChild(viewport);
-    else $('term-container').appendChild(viewport);
+  let floatRect = null;
+  if (floating) {
+    // Float launch: build the terminal inside an invisible staging float with
+    // the real float classes at the default float rect, so it measures (and
+    // the PTY spawns) at the exact grid of the window it will live in — no
+    // startup resize, no dock flash.
+    floatRect = _defaultFloatRect({ profile });
+    staging = _createStagingFloat(floatRect);
+    staging.wrap.appendChild(viewport);
   } else {
-    $('term-container').appendChild(viewport);
+    // Slide the dock up first: a parked (display:none) dock has nothing to
+    // measure, and the user sees the panel immediately.
+    showPanel();
+    if (_splitMode) {
+      _targetPane = _focusedPane;
+      const paneBody = _panel?.querySelector(`.term-pane[data-pane="${_targetPane}"] .term-pane-body`);
+      if (paneBody) paneBody.appendChild(viewport);
+      else $('term-container').appendChild(viewport);
+    } else {
+      $('term-container').appendChild(viewport);
+    }
   }
 
-  const { writeTerminal, xtermTextarea, searchAddon } = await _openTermInViewport(term, viewport);
+  const { xtermTextarea, searchAddon } = await _openTermInViewport(term, viewport);
+
+  // Warm the GPU renderer BEFORE measuring: WebGL floors the cell width to
+  // device pixels while the DOM renderer does not, so a grid measured on the
+  // DOM renderer would SIGWINCH the CLI the moment WebGL attached. Re-keyed to
+  // the real session id by adoptRenderer() below.
+  pre = { id: `pending-${++_preRendererSeq}`, term, fitAddon, viewport, ws: null };
+  acquireRenderer(pre);
 
   // Snap xterm to its real cell grid before spawning the PTY. Spawning at
   // measured cols/rows means zsh prints its first prompt at column 0 with
@@ -2091,8 +2781,9 @@ async function openSession(profile, cwd, existingSessionId, options = {}) {
   } catch {}
 
   if (!sessionId) {
-    const created = await createTerminalSession(profile, _initCols, _initRows, cwd);
-    sessionId = created.sessionId;
+    const created = await createTerminalSession(profile, _initCols, _initRows, cwd, options.createOpts || {});
+    sessionId = created?.sessionId || null;
+    if (!sessionId) throw new Error('Terminal session could not be created');
     _pendingSessionIds.add(sessionId);
   }
   viewport.dataset.sessionId = sessionId;
@@ -2103,26 +2794,12 @@ async function openSession(profile, cwd, existingSessionId, options = {}) {
   const ws = new WebSocket(`${proto}//${location.host}/ws/terminal/${sessionId}`);
   ws.binaryType = 'arraybuffer';
 
-  // One clean fit+refresh on next frame after all addons have loaded. Locks in
-  // correct cell metrics so frame 1 doesn't paint with a stale measurement
-  // from font-swap or addon ordering.
-  requestAnimationFrame(() => { try { fitAddon.fit(); term.refresh(0, term.rows - 1); } catch {} });
+  const echo = _createEchoMeter();
+  const writeTerminal = _createTerminalWriter(term, () => (_sessions.find(x => x.id === sessionId)?.ws || ws), echo.parsed);
 
-  ws.onopen = () => {
-    // Correct PTY from default 120×30 to actual container size.
-    // Guard: if the viewport is in a hidden/zero-height container (e.g. launchDetached
-    // creates the session in the hidden docked panel before detaching), skip the fit.
-    // The correct resize will happen when _scheduleFit runs after the viewport moves
-    // to a visible container. Sending garbage dimensions (cols=1) here would cause
-    // the CLI to render garbled output into the buffer permanently.
-    const dims = fitAddon.proposeDimensions();
-    if (dims && dims.cols >= 2 && dims.rows >= 2 &&
-        Number.isFinite(dims.cols) && Number.isFinite(dims.rows)) {
-      fitAddon.fit();
-      ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
-    }
-    // else: PTY stays at safe 120×30 default until _scheduleFit sends the real size
-  };
+  // hello → (visibility) → one resize. Spawned at the measured grid, so the
+  // resize is a no-op for the host unless the layout moved meanwhile.
+  ws.onopen = () => _onTermWsOpen(sessionId, ws);
 
   if (NOTIF_TRACKED_CLI_PROFILES.has(profile)) _trackCliSession(sessionId);
 
@@ -2135,7 +2812,7 @@ async function openSession(profile, cwd, existingSessionId, options = {}) {
   };
 
   // Keyboard, paste, copy-on-select, input forwarding, ResizeObserver, menus
-  const { ro } = _wireTermSession({ sessionId, profile, term, viewport, writeTerminal, xtermTextarea, ws });
+  const { ro } = _wireTermSession({ sessionId, profile, term, viewport, xtermTextarea, ws, echo });
 
   // Register session
   const profileDef = PROFILES.find(p => p.id === profile);
@@ -2147,6 +2824,8 @@ async function openSession(profile, cwd, existingSessionId, options = {}) {
     label: options.label || (cwdLabel ? `${profileDef?.label || profile} · ${cwdLabel}` : (profileDef?.label || profile)),
     term, fitAddon, searchAddon, ws, viewport, ro,
     _terminalWriter: writeTerminal,
+    _echo: echo,
+    _replayUntil: Date.now() + REPLAY_WINDOW_MS,
     dead: false,
     pinned: !!options.pinned,
     _userRenamed: !!options.label || !!options.userRenamed,
@@ -2158,16 +2837,24 @@ async function openSession(profile, cwd, existingSessionId, options = {}) {
     _lastSentResize: { cols: _initCols, rows: _initRows },
   };
   _pushSession(session);
+  pushed = true;
+  adoptRenderer(pre, session);
+  pre = null;
   _pendingSessionIds.delete(sessionId);
-  _activeIdx = _sessions.indexOf(session);
+  const idx = _sessions.indexOf(session);
 
-  // Slide panel up so user sees the session immediately
-  ensurePanel();
-  showPanel();
-  if (_splitMode) renderSplitTabBars();
-  renderTabBar();
-  switchToSession(_activeIdx);
-  _syncRenderers(); // switchToSession early-returns for the already-active idx
+  if (floating) {
+    // Same rect as the staging float → same grid → no resize reaches the PTY
+    detachTab(idx, { rect: floatRect, focus: true, staging: staging.win });
+    staging = null;
+  } else {
+    if (_splitMode) renderSplitTabBars();
+    renderTabBar();
+    // Full switch (never the already-active early return): the previous
+    // docked viewport must be hidden, not left rendering underneath.
+    switchToSession(idx, { force: true });
+  }
+  _syncRenderers();
   saveSessionRegistry();
 
   // Auto-detect Claude session UUID for fresh CLI sessions (enables resume label sync)
@@ -2186,6 +2873,19 @@ async function openSession(profile, cwd, existingSessionId, options = {}) {
       } catch {}
     }, 4000);
   }
+  return session;
+  } catch (err) {
+    // Spawn failed (or the terminal could not be built): leave nothing behind.
+    if (!pushed) {
+      if (pre) { try { disposeRenderer(pre); } catch {} }
+      try { term?.dispose(); } catch {}
+      viewport?.remove();
+      if (sessionId) _pendingSessionIds.delete(sessionId);
+      // The dock slid up for this tab — don't leave it open and empty
+      if (!floating && _panel && !_sessions.some(s => !_detachedTabs.has(s.id))) hidePanel();
+    }
+    staging?.win?.remove();
+    throw err;
   } finally { _opening = false; }
 }
 
@@ -2702,6 +3402,207 @@ async function reconnectBrowserSession(sessionId, liveData, saved) {
   _resetBrowserIdleTimer(session);
 }
 
+// ═══════════════════════════════════════════
+// ASSISTANT TAB — non-PTY profile hosting assistant/asst-panel.js
+// ═══════════════════════════════════════════
+// The viewport hosts the assistant panel; `session.term` and `session.ws`
+// stay null and `session._assistant` is the controller returned by
+// mountAssistant(). Every branch point that assumes a PTY/xterm checks
+// `_isAssistant` (mirrors the `_isBrowser` pattern above).
+// The same component also runs in the Assistant sidepanel. What both hosts
+// share (create/resume, one session in one host, last used, guest gate, the
+// assistant:* events and keybinds) lives in ui-assistant.js; this file only
+// supplies the terminal adapter (_terminalAssistantHost below).
+
+function _findAssistantSession(sessionId) {
+  return _sessions.find(s => s._isAssistant && !s.dead && (!sessionId || s.id === sessionId)) || null;
+}
+
+function _isAssistantVisible(session) {
+  if (!session || session.dead) return false;
+  if (document.visibilityState !== 'visible') return false;
+  const ts = _detachedTabs.get(session.id);
+  if (ts) return !ts.minimized;
+  if (!_panel || _panel.classList.contains('hidden')) return false;
+  const idx = _sessions.indexOf(session);
+  if (_splitMode) return _activePaneIdx.includes(idx);
+  return idx === _activeIdx;
+}
+
+function _focusAssistantTab(session) {
+  if (!session || session.dead) return;
+  const ts = _detachedTabs.get(session.id);
+  if (ts) {
+    if (ts.minimized) restoreTab(session.id);
+    bringTabToFront(session.id);
+  } else {
+    if (!_panel || _panel.classList.contains('hidden')) showPanel();
+    const idx = _sessions.indexOf(session);
+    if (idx >= 0) switchToSession(idx);
+  }
+  requestAnimationFrame(() => session._assistant?.focus());
+}
+
+function _updateAssistantBrainChip(session) {
+  const chip = _detachedTabs.get(session?.id)?.el?.querySelector('.term-float-brain-chip');
+  if (!chip) return;
+  const label = session._brain ? brainLabel(session._brain) : '';
+  chip.textContent = label;
+  chip.title = label;
+  chip.hidden = !label;
+}
+
+/** After a tab/float rename, push the new label into the panel (marks it user-renamed). */
+function _syncAssistantLabel(session) {
+  if (!session?._isAssistant || !session._assistant) return;
+  if (session._assistant.getTitle() !== session.label) session._assistant.setTitle(session.label);
+}
+
+/**
+ * Build the viewport + session literal for an assistant session and mount the
+ * panel. Used by the terminal adapter's mount (fresh/resumed, via
+ * ui-assistant.js) and by reconnectAssistantSession (boot / workspace restore).
+ */
+function _mountAssistantSession(sessionId, { meta = null, saved = null, brain = null, label = '', floating = false, prompt = '', reattach = false } = {}) {
+  ensurePanel();
+  const existing = _sessions.find(s => s.id === sessionId);
+  if (existing) { if (!_restoringLayout) _focusAssistantTab(existing); return existing; }
+
+  const resolvedBrain = normalizeBrain(brain || meta?.brain || saved?.brain || readStoredBrain(storage));
+  const viewport = document.createElement('div');
+  viewport.className = 'term-viewport assistant-viewport';
+  viewport.dataset.sessionId = sessionId;
+  $('term-container').appendChild(viewport);
+  if (_restoringLayout) viewport.style.display = 'none';
+
+  const profileDef = PROFILES.find(p => p.id === 'assistant');
+  const session = {
+    id: sessionId,
+    profile: 'assistant',
+    cwd: resolvedBrain.project || null,
+    label: label || saved?.label || meta?.title || profileDef?.label || 'Assistant',
+    term: null, fitAddon: null, searchAddon: null,
+    ws: null,               // no PTY socket — the panel owns /ws/assistant/:id
+    viewport, ro: null, renderer: null,
+    dead: false,
+    pinned: saved?.pinned || false,
+    _userRenamed: saved?.userRenamed || !!label,
+    _floatColor: saved?.floatColor || null,
+    _isAssistant: true,     // flag for tab-type-specific logic
+    _assistant: null,       // controller (set right after mount)
+    _brain: resolvedBrain,
+  };
+  _pushSession(session);
+  _activeIdx = _sessions.indexOf(session);
+  _trackCliSession(sessionId); // status badge (idle/working/action/done) driven by the panel
+
+  const live = () => _sessions.find(s => s.id === sessionId) || session;
+  const host = {
+    id: 'terminal',        // New/History from this tab open in the terminal too
+    notifySource: 'cli',   // Settings → Notifications "CLI Terminal" source
+    setLabel(text) {
+      const s = live();
+      const next = String(text || '').trim();
+      if (!next || s._userRenamed || s.label === next) return;
+      s.label = next;
+      renderTabBar();
+      const titleEl = _detachedTabs.get(sessionId)?.el?.querySelector('.term-float-tab-title');
+      if (titleEl && titleEl.contentEditable !== 'true') titleEl.textContent = next;
+      saveSessionRegistry();
+    },
+    setStatus(status) { setSessionStatusBadge(sessionId, status); },
+    setBrain(b) {
+      const s = live();
+      s._brain = normalizeBrain(b);
+      s.cwd = s._brain.project || null;
+      _updateAssistantBrainChip(s);
+      saveSessionRegistry();
+    },
+    isVisible() { return _isAssistantVisible(live()); },
+    focusTab() { _focusAssistantTab(live()); },
+    requestClose() { const idx = _sessions.findIndex(s => s.id === sessionId); if (idx >= 0) closeSession(idx); },
+    requestDetach() { const idx = _sessions.findIndex(s => s.id === sessionId); if (idx >= 0 && !_detachedTabs.has(sessionId)) detachTab(idx); },
+  };
+  session._assistant = mountAssistant(viewport, { sessionId, brain: resolvedBrain, host, session: meta, label: session.label, reattach });
+  if (session._userRenamed && session.label) session._assistant.setTitle(session.label);
+
+  renderTabBar();
+  if (_restoringLayout) {
+    if (_panel.classList.contains('hidden')) showPeekDock();
+  } else if (floating) {
+    detachTab(_activeIdx);
+  } else {
+    if (_panel.classList.contains('hidden')) showPanel();
+    // Force the full switch path (viewport toggling) even though _activeIdx already points here.
+    const idx = _activeIdx;
+    _activeIdx = -1;
+    switchToSession(idx);
+  }
+  saveSessionRegistry();
+  if (prompt) setTimeout(() => { if (!session.dead) session._assistant?.send(prompt); }, 50);
+  return session;
+}
+
+/** The sidepanel holds this session → the terminal leaves it alone (one session, one host). */
+function _assistantOwnedElsewhere(sessionId) {
+  const owner = assistantOwnerOf(sessionId);
+  return !!owner && owner !== 'terminal';
+}
+
+/** Reconnect a saved assistant tab (registry / workspace) to its live server session. */
+async function reconnectAssistantSession(sessionId, live, saved) {
+  if (_assistantOwnedElsewhere(sessionId)) return null;
+  let meta = live || null;
+  if (!meta) {
+    try { const data = await getAssistantSession(sessionId); meta = data?.session || data; } catch { meta = null; }
+    if (!isAssistantSessionLive(meta)) return null;
+    if (_assistantOwnedElsewhere(sessionId)) return null;
+  }
+  return _mountAssistantSession(sessionId, {
+    meta,
+    saved,
+    brain: saved?.brain || meta?.brain || null,
+    label: saved?.userRenamed ? (saved.label || '') : '',
+    floating: false,
+    reattach: true,
+  });
+}
+
+/** Ctrl+a on a terminal-held session: hide it if visible, else bring it up. */
+function _toggleAssistantTab(sessionId) {
+  const open = (sessionId && _findAssistantSession(sessionId)) || _findAssistantSession(null);
+  if (!open) return;
+  if (_isAssistantVisible(open)) {
+    if (_detachedTabs.has(open.id)) minimizeTab(open.id);
+    else hidePanel();
+    return;
+  }
+  _focusAssistantTab(open);
+}
+
+/** The terminal's adapter for ui-assistant.js (see assistant/asst-hosts.js for the contract). */
+const _terminalAssistantHost = {
+  id: 'terminal',
+  has: (sessionId) => !!sessionId && !!_findAssistantSession(sessionId),
+  sessions: () => _sessions.filter(s => s._isAssistant && !s.dead).map(s => s.id),
+  focus(sessionId, { prompt = '' } = {}) {
+    const session = _findAssistantSession(sessionId);
+    if (!session) return;
+    _focusAssistantTab(session);
+    if (prompt) session._assistant?.send(prompt);
+  },
+  mount: ({ sessionId, meta, brain, label, floating, prompt, reattach }) =>
+    _mountAssistantSession(sessionId, { meta, brain, label, floating, prompt, reattach }),
+  close(sessionId, { closeServer = true } = {}) {
+    const idx = _sessions.findIndex(s => s._isAssistant && s.id === sessionId);
+    if (idx < 0) return;
+    if (!closeServer) _sessions[idx]._skipServerDelete = true;
+    closeSession(idx);
+  },
+  toggle: (sessionId) => _toggleAssistantTab(sessionId),
+  toast(text) { ensurePanel(); showTermToast(text); },
+};
+
 /** Reconnect to an existing server-side PTY session (no new PTY created) */
 async function reconnectSession(sessionId, profile, options = {}) {
   await loadXterm();
@@ -2715,27 +3616,20 @@ async function reconnectSession(sessionId, profile, options = {}) {
   $('term-container').appendChild(viewport);
   if (_restoringLayout) viewport.style.display = 'none';
 
-  const { writeTerminal, xtermTextarea, searchAddon } = await _openTermInViewport(term, viewport);
+  const { xtermTextarea, searchAddon } = await _openTermInViewport(term, viewport);
 
-  // Connect WebSocket to EXISTING session — server replays buffered output
+  // Connect WebSocket to EXISTING session — the host answers with a reset
+  // snapshot of the live screen (colors and modes included)
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(`${proto}//${location.host}/ws/terminal/${sessionId}`);
   ws.binaryType = 'arraybuffer';
 
-  // Resumed sessions get the same post-open fit+refresh as fresh sessions —
-  // fixes measurement desync when xterm rehydrates a long scrollback on reconnect.
-  requestAnimationFrame(() => { try { fitAddon.fit(); term.refresh(0, term.rows - 1); } catch {} });
+  const echo = _createEchoMeter();
+  const writeTerminal = _createTerminalWriter(term, () => (_sessions.find(x => x.id === sessionId)?.ws || ws), echo.parsed);
 
-  ws.onopen = () => {
-    // Same guard as openSession: skip fit if viewport is in a hidden container.
-    // The correct resize will come from _scheduleFit when the viewport is visible.
-    const dims = fitAddon.proposeDimensions();
-    if (dims && dims.cols >= 2 && dims.rows >= 2 &&
-        Number.isFinite(dims.cols) && Number.isFinite(dims.rows)) {
-      fitAddon.fit();
-      ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
-    }
-  };
+  // hello → (visibility) → one resize. A hidden viewport (layout restore)
+  // skips the resize; _scheduleFit sends the real size once it is shown.
+  ws.onopen = () => _onTermWsOpen(sessionId, ws);
 
   // Resumed CLI sessions get status badges too (was missing — badges died after refresh)
   if (NOTIF_TRACKED_CLI_PROFILES.has(profile)) _trackCliSession(sessionId);
@@ -2749,7 +3643,7 @@ async function reconnectSession(sessionId, profile, options = {}) {
   };
 
   // Keyboard, paste, copy-on-select, input forwarding, ResizeObserver, menus
-  const { ro } = _wireTermSession({ sessionId, profile, term, viewport, writeTerminal, xtermTextarea, ws });
+  const { ro } = _wireTermSession({ sessionId, profile, term, viewport, xtermTextarea, ws, echo });
 
   const profileDef = PROFILES.find(p => p.id === profile);
   const session = {
@@ -2759,6 +3653,8 @@ async function reconnectSession(sessionId, profile, options = {}) {
     label: options.label || (profileDef?.label || profile),
     term, fitAddon, searchAddon, ws, viewport, ro,
     _terminalWriter: writeTerminal,
+    _echo: echo,
+    _replayUntil: Date.now() + REPLAY_WINDOW_MS,
     dead: false,
     pinned: options.pinned || false,
     _userRenamed: options.userRenamed || false,
@@ -2767,18 +3663,26 @@ async function reconnectSession(sessionId, profile, options = {}) {
     _fitInProgress: false,
   };
   _pushSession(session);
-  _activeIdx = _sessions.indexOf(session);
+  const idx = _sessions.indexOf(session);
 
   ensurePanel();
   if (_panel.classList.contains('hidden')) {
     showPeekDock();
   }
   renderTabBar();
-  if (!_restoringLayout) { switchToSession(_activeIdx); _syncRenderers(); }
+  // Restores activate the first docked tab afterwards; otherwise do a full
+  // switch so the previously active viewport is hidden.
+  if (!_restoringLayout) { switchToSession(idx, { force: true }); _syncRenderers(); }
   saveSessionRegistry();
+  return session;
 }
 
-function switchToSession(idx) {
+/**
+ * Show the docked tab at `idx`. `force` runs the full viewport swap even when
+ * idx is already active (new/restored tabs, un-split) — the plain call keeps
+ * the early return that stops a missed close-× click from re-rendering.
+ */
+function switchToSession(idx, opts = {}) {
   if (idx < 0 || idx >= _sessions.length) return;
 
   // In split mode, delegate to pane-aware switching
@@ -2793,20 +3697,22 @@ function switchToSession(idx) {
   // Already active — just ensure focus, skip viewport swap + tab-bar rerender.
   // Prevents the missed-close-×-switches-same-tab-then-rerenders feedback loop
   // that makes follow-up clicks on the close/detach icons land on stale DOM.
-  if (idx === _activeIdx) {
+  if (idx === _activeIdx && !opts.force) {
     const s = _sessions[idx];
     if (s && !_detachedTabs.has(s.id)) {
       if (s._isBrowser) s._browserCanvas?.focus();
+      else if (s._isAssistant) s._assistant?.focus();
       else s.term?.focus();
     }
     return;
   }
 
+  const changed = idx !== _activeIdx;
   _activeIdx = idx;
 
   // Close docked file tree on tab switch
   const sidebar = $('term-file-sidebar');
-  if (sidebar?.classList.contains('open')) {
+  if (changed && sidebar?.classList.contains('open')) {
     sidebar.classList.remove('open');
     sidebar.innerHTML = '';
   }
@@ -2820,11 +3726,15 @@ function switchToSession(idx) {
         if (s._isBrowser) {
           // Focus canvas for keyboard input
           s._browserCanvas?.focus();
+        } else if (s._isAssistant) {
+          s._assistant?.onShown();
         } else {
-          _scheduleFit(s);
-          s.term.focus();
+          _onSessionShown(s);
+          s.term?.focus();
         }
       });
+    } else if (s._isAssistant) {
+      s._assistant?.onHidden();
     }
   });
 
@@ -2875,6 +3785,12 @@ async function closeSession(idx) {
   const _teardown = () => {
     if (session.ro) session.ro.disconnect();
     if (session._frameRenderer) session._frameRenderer.destroy();
+    // Assistant: tear down the panel (closes /ws/assistant, unsubscribes) and
+    // POST /api/assistant/sessions/:id/close unless another client ended it.
+    if (session._isAssistant) {
+      try { session._assistant?.destroy({ closeServer: !session._skipServerDelete }); } catch {}
+      session._assistant = null;
+    }
     if (session.ws) session.ws.close();
     if (session._terminalWriter) session._terminalWriter.dispose();
     disposeRenderer(session);
@@ -2887,7 +3803,9 @@ async function closeSession(idx) {
     }
     if (session.viewport) session.viewport.remove();
     // Kill server-side session (fire-and-forget; one frame later is fine).
-    if (session._isBrowser) {
+    if (session._isAssistant) {
+      // handled by controller.destroy({ closeServer }) above
+    } else if (session._isBrowser) {
       if (!session._skipServerDelete) deleteBrowserSession(session.id).catch(() => {});
     } else if (!session._gitOutput) {
       deleteTerminalSession(session.id).catch(() => {});
@@ -2917,7 +3835,7 @@ async function closeSession(idx) {
       // After unsplit, fix active index for remaining sessions
       if (_sessions.length > 0) {
         const anyDocked = _sessions.findIndex(s => !_detachedTabs.has(s.id));
-        if (anyDocked >= 0) switchToSession(anyDocked);
+        if (anyDocked >= 0) switchToSession(anyDocked, { force: true });
       }
       renderTabBar();
       saveSessionRegistry();
@@ -2956,13 +3874,15 @@ async function closeSession(idx) {
     _activeIdx = -1;
     hidePanel();
   } else {
-    _activeIdx = Math.min(currentIdx, _sessions.length - 1);
-    const nextDocked = _sessions.findIndex((s, i) => i >= _activeIdx && !_detachedTabs.has(s.id));
+    // The array shifted: the next docked tab may sit at the old active index,
+    // so force the swap (its viewport is still display:none).
+    const from = Math.min(currentIdx, _sessions.length - 1);
+    const nextDocked = _sessions.findIndex((s, i) => i >= from && !_detachedTabs.has(s.id));
     if (nextDocked >= 0) {
-      switchToSession(nextDocked);
+      switchToSession(nextDocked, { force: true });
     } else {
       const anyDocked = _sessions.findIndex(s => !_detachedTabs.has(s.id));
-      if (anyDocked >= 0) switchToSession(anyDocked);
+      if (anyDocked >= 0) switchToSession(anyDocked, { force: true });
       else _activeIdx = -1;
     }
   }
@@ -2987,7 +3907,8 @@ export function disconnectAllSessions() {
   for (const session of _sessions) {
     session.dead = true;
     if (session.ro) session.ro.disconnect();
-    session.ws.close();
+    if (session._isAssistant) { try { session._assistant?.destroy(); } catch {} session._assistant = null; }
+    session.ws?.close();
     if (session._terminalWriter) session._terminalWriter.dispose();
     disposeRenderer(session);
     if (session.term) session.term.dispose();
@@ -3047,18 +3968,14 @@ function _reconnectTerminalWs(session, attempt = 0) {
   ws.onopen = () => {
     session._reconnecting = false;
     session.ws = ws;
-    // Server restores reconnects with a terminal-state snapshot. Clear any
-    // stale queued writes so the snapshot becomes the new canonical screen.
+    // Server restores reconnects with a terminal-state snapshot. Treat it as a
+    // reset even without the flag so it becomes the new canonical screen.
     session._needsReplayReset = true;
     session._replayBuf = '';
-    session._wsDecoder = new TextDecoder('utf-8'); // fresh stream — drop partial-codepoint state
-    if (session.term) {
-      const dims = session.fitAddon?.proposeDimensions();
-      if (dims?.cols >= 2 && dims?.rows >= 2) {
-        session.fitAddon.fit();
-        ws.send(JSON.stringify({ type: 'resize', cols: session.term.cols, rows: session.term.rows }));
-      }
-    }
+    session._wsDecoder = null; // fresh stream — drop partial-codepoint state
+    session._replayUntil = Date.now() + REPLAY_WINDOW_MS;
+    // hello → (visibility) → one resize; also resets the writer's ack epoch
+    _onTermWsOpen(session.id, ws, session);
   };
 
   const _wsCtx = { sessionId: session.id, profile: session.profile, term: session.term, writeTerminal: session._terminalWriter, ws };
@@ -3205,7 +4122,9 @@ function ensureContextMenu() {
   return menu;
 }
 
-function initContextMenu(viewport, term, ws) {
+/** @param {() => WebSocket|null} getWs  resolves the session's CURRENT socket at use
+ *  time — a reconnect swaps session.ws after these handlers are wired. */
+function initContextMenu(viewport, term, getWs) {
   viewport.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     const menu = ensureContextMenu();
@@ -3250,6 +4169,7 @@ function initContextMenu(viewport, term, ws) {
                   const reader = new FileReader();
                   reader.onload = () => {
                     const base64 = reader.result.split(',')[1];
+                    const ws = getWs?.();
                     if (ws && ws.readyState === WebSocket.OPEN) {
                       ws.send(JSON.stringify({ type: 'image_paste', data: base64, mimeType: imgType }));
                     }
@@ -3387,7 +4307,8 @@ function showTermToast(message) {
 
 const SYNABUN_DRAG_TYPES = ['application/x-synabun-memory', 'application/x-synabun-wb-image'];
 
-function initMemoryDrop(viewport, ws, term) {
+/** @param {() => WebSocket|null} getWs  resolves the session's CURRENT socket at drop time */
+function initMemoryDrop(viewport, getWs, term) {
   viewport.addEventListener('dragover', (e) => {
     if (!SYNABUN_DRAG_TYPES.some(t => e.dataTransfer.types.includes(t))) return;
     e.preventDefault();
@@ -3405,12 +4326,14 @@ function initMemoryDrop(viewport, ws, term) {
   viewport.addEventListener('drop', (e) => {
     viewport.classList.remove('term-drop-active');
 
+    const ws = getWs?.();
+
     // Memory drop
     const memoryId = e.dataTransfer.getData('application/x-synabun-memory');
     if (memoryId) {
       e.preventDefault();
       const node = state.allNodes?.find(n => n.id === memoryId);
-      if (!node || ws.readyState !== WebSocket.OPEN) return;
+      if (!node || ws?.readyState !== WebSocket.OPEN) return;
       sendMemoryDrop(node, ws);
       term.focus();
       return;
@@ -3420,7 +4343,7 @@ function initMemoryDrop(viewport, ws, term) {
     const wbImageId = e.dataTransfer.getData('application/x-synabun-wb-image');
     if (wbImageId) {
       e.preventDefault();
-      if (ws.readyState !== WebSocket.OPEN) return;
+      if (ws?.readyState !== WebSocket.OPEN) return;
       sendWhiteboardImageDrop(wbImageId, ws);
       term.focus();
       return;
@@ -3504,8 +4427,9 @@ function bringTabToFront(sessionId) {
   const tabState = _detachedTabs.get(sessionId);
   if (!tabState) return;
   const session = _sessions.find(s => s.id === sessionId);
-  // Pinned tabs stay at 10002
+  // Pinned tabs stack among themselves in the pinned band (always above floats)
   if (session?.pinned) {
+    _raisePinned(tabState.el);
     // Focus the terminal for keyboard input — skip if already focused (preserves selection)
     if (session.term && !session._isBrowser) {
       const ta = session.viewport?.querySelector('.xterm-helper-textarea');
@@ -3517,14 +4441,17 @@ function bringTabToFront(sessionId) {
     if (session?._isBrowser) _applyBrowserFocusThrottle(sessionId);
     return;
   }
-  _floatZCounter++;
-  tabState.el.style.zIndex = _floatZCounter;
+  _raise(tabState.el);
   // Focus the terminal for immediate keyboard input — skip if already focused (preserves selection)
   if (session?.term && !session._isBrowser) {
     const ta = session.viewport?.querySelector('.xterm-helper-textarea');
     if (document.activeElement !== ta) {
       requestAnimationFrame(() => session.term.focus());
     }
+  }
+  // Assistant: focus the composer unless focus is already inside the panel (pickers, inputs)
+  if (session?._isAssistant && !session.viewport?.contains(document.activeElement)) {
+    requestAnimationFrame(() => session._assistant?.focus());
   }
   // Throttle non-focused browser screencasts, resume focused one
   if (session?._isBrowser) _applyBrowserFocusThrottle(sessionId);
@@ -3736,7 +4663,57 @@ export function tileFloatingTerminals() {
   });
 }
 
-function detachTab(idx) {
+/** Default float geometry: centered in the usable area (between the left
+ *  sidebars and the right sidepanel, so the margins match), cascading 30 px
+ *  per float already open. `kind` = { profile, _isAssistant }. */
+function _defaultFloatRect(kind = {}) {
+  const offset = _detachedTabs.size * 30;
+  const isBrowser = kind.profile === 'browser';
+  const isAssistant = !!kind._isAssistant || kind.profile === 'assistant';
+  const cs = getComputedStyle(document.documentElement);
+  const leftEdge = (parseFloat(cs.getPropertyValue('--explorer-width')) || 0)
+                 + (parseFloat(cs.getPropertyValue('--file-explorer-width')) || 0);
+  const rightEdge = window.innerWidth - getRightPanelReservedWidth(cs);
+  const usableW = Math.max(0, rightEdge - leftEdge);
+  // Assistant floats default to 780×560 (chat + agents dock need more room than a TUI)
+  const w = Math.round(Math.min(isBrowser ? 960 : (isAssistant ? 780 : 700), usableW * (isBrowser ? 0.65 : (isAssistant ? 0.6 : 0.5))));
+  const h = Math.round(Math.min(isBrowser ? 640 : (isAssistant ? 560 : 420), window.innerHeight * (isBrowser ? 0.6 : (isAssistant ? 0.7 : 0.5))));
+  return {
+    left: Math.round(leftEdge + (usableW - w) / 2 + offset),
+    top: Math.round(Math.max(48, (window.innerHeight - h) / 2 + offset)),
+    width: w,
+    height: h,
+  };
+}
+
+/** An invisible float with the real float classes and structure, laid out at
+ *  `rect`: a terminal opened inside it measures exactly the grid it will have
+ *  once detachTab() moves it into the real float at the same rect. */
+function _createStagingFloat(rect) {
+  const win = document.createElement('div');
+  win.className = 'term-float-tab term-float-staging';
+  win.setAttribute('aria-hidden', 'true');
+  win.innerHTML = '<div class="term-float-tab-header"></div>'
+    + '<div class="term-float-tab-body"><div class="term-file-sidebar"></div>'
+    + '<div class="term-float-viewport-wrap"></div></div>';
+  win.style.left = rect.left + 'px';
+  win.style.top = rect.top + 'px';
+  win.style.width = rect.width + 'px';
+  win.style.height = rect.height + 'px';
+  win.style.visibility = 'hidden';
+  win.style.pointerEvents = 'none';
+  document.body.appendChild(win);
+  return { win, wrap: win.querySelector('.term-float-viewport-wrap') };
+}
+
+/**
+ * Move a tab into a floating window.
+ * opts: { rect: explicit geometry (default: _defaultFloatRect),
+ *         focus: raise + focus the new float,
+ *         staging: a _createStagingFloat() element to discard once the
+ *                  viewport has moved (floating launch) }
+ */
+function detachTab(idx, opts = {}) {
   const session = _sessions[idx];
   if (!session || _detachedTabs.has(session.id)) return;
 
@@ -3749,10 +4726,10 @@ function detachTab(idx) {
   const prof = PROFILES.find(p => p.id === session.profile);
 
   win.innerHTML = `
-    <div class="term-float-tab-header">
+    <div class="term-float-tab-header${session._bell ? ' has-bell' : ''}">
       <span class="term-float-tab-icon">${prof?.svg || SVG_SHELL}</span>
       <button class="term-float-color-strip" data-tooltip="Change color"></button>
-      <span class="term-float-tab-title">${session.label}</span>${_cliBadgeHtml(session.id)}
+      <span class="term-float-tab-title">${_escHtml(_displayLabel(session))}</span>${session._isAssistant ? '<span class="term-float-brain-chip" data-tooltip="Brain" hidden></span>' : ''}${_cliBadgeHtml(session.id)}
       ${CLI_PROFILES_NEED_PROFILER.has(session.profile) ? `<div class="term-float-profile-dd" data-tooltip="Tool profile">
         <button class="term-float-profile-btn"><span class="term-float-profile-label">...</span><span class="term-float-profile-arrow">&#x25BE;</span></button>
         <div class="term-float-profile-menu"></div>
@@ -3800,21 +4777,15 @@ function detachTab(idx) {
 
   // Default position: centered in usable area (between left sidebars and right sidepanel)
   // so left margin matches right margin, offset from center based on how many are already detached
-  const offset = _detachedTabs.size * 30;
-  const isBrowser = session.profile === 'browser';
-  const cs = getComputedStyle(document.documentElement);
-  const leftEdge = (parseFloat(cs.getPropertyValue('--explorer-width')) || 0)
-                 + (parseFloat(cs.getPropertyValue('--file-explorer-width')) || 0);
-  const rightEdge = window.innerWidth - getRightPanelReservedWidth(cs);
-  const usableW = Math.max(0, rightEdge - leftEdge);
-  const w = Math.min(isBrowser ? 960 : 700, usableW * (isBrowser ? 0.65 : 0.5));
-  const h = Math.min(isBrowser ? 640 : 420, window.innerHeight * (isBrowser ? 0.6 : 0.5));
-  win.style.left = (leftEdge + (usableW - w) / 2 + offset) + 'px';
-  win.style.top = Math.max(48, (window.innerHeight - h) / 2 + offset) + 'px';
-  win.style.width = w + 'px';
-  win.style.height = h + 'px';
+  const isAssistant = !!session._isAssistant;
+  const rect = opts.rect || _defaultFloatRect(session);
+  win.style.left = rect.left + 'px';
+  win.style.top = rect.top + 'px';
+  win.style.width = rect.width + 'px';
+  win.style.height = rect.height + 'px';
 
   document.body.appendChild(win);
+  _raise(win); // a new float opens above the floats already open
 
   // Move viewport into a wrapper div that provides position:relative context.
   // This lets .term-viewport use position:absolute;inset:0 for deterministic sizing,
@@ -3825,6 +4796,7 @@ function detachTab(idx) {
   body.appendChild(wrap);
   wrap.appendChild(session.viewport);
   session.viewport.style.display = '';
+  if (opts.staging) opts.staging.remove();
 
   // Apply saved color or assign random
   if (!session._floatColor) {
@@ -3869,12 +4841,15 @@ function detachTab(idx) {
     setTimeout(() => document.addEventListener('mousedown', close), 0);
   });
 
-  // Wire file tree toggle
-  win.querySelector('.files-btn').addEventListener('click', (e) => {
+  // Wire file tree toggle (hidden for assistant tabs — no PTY cwd to browse)
+  const filesBtn = win.querySelector('.files-btn');
+  if (isAssistant) filesBtn.style.display = 'none';
+  filesBtn.addEventListener('click', (e) => {
     e.stopPropagation();
     const sidebar = win.querySelector('.term-file-sidebar');
     toggleFileTree(sidebar, session);
   });
+  if (isAssistant) _updateAssistantBrainChip(session);
 
   // Wire dock-back button
   win.querySelector('.dock-btn').addEventListener('click', (e) => { e.stopPropagation(); attachTab(session.id); });
@@ -3916,11 +4891,9 @@ function detachTab(idx) {
     live.pinned = !live.pinned;
     win.classList.toggle('pinned', live.pinned);
     pinBtnEl.setAttribute('data-tooltip', live.pinned ? 'Unpin' : 'Pin on top');
-    if (live.pinned) {
-      win.style.zIndex = '10002';
-    } else {
-      win.style.zIndex = '';
-    }
+    // Pinned floats live in their own band above every normal float
+    if (live.pinned) _raisePinned(win);
+    else _raise(win);
     saveSessionRegistry();
   });
 
@@ -3937,16 +4910,20 @@ function detachTab(idx) {
     const sel = window.getSelection();
     sel.removeAllRanges();
     sel.addRange(range);
+    // An untouched program title is not a rename (it must keep following the program)
+    const liveAtStart = _sessions.find(s => s.id === session.id) || session;
+    const shownOscTitle = (!!liveAtStart._oscTitle && !liveAtStart._userRenamed) ? _displayLabel(liveAtStart) : null;
     const commit = () => {
       titleEl.contentEditable = 'false';
       titleEl.classList.remove('editing');
       const val = titleEl.textContent.trim();
+      if (val && val === shownOscTitle) return;
       if (val) {
         // Re-find session from _sessions to avoid stale closure after reconnection
         const live = _sessions.find(s => s.id === session.id) || session;
         live.label = val; live._userRenamed = true;
         if (live !== session) { session.label = val; session._userRenamed = true; }
-        renderTabBar(); saveSessionRegistry(); saveTerminalLayout(); syncResumeLabel(live);
+        renderTabBar(); saveSessionRegistry(); saveTerminalLayout(); syncResumeLabel(live); _syncAssistantLabel(live);
         // Retry detection if Claude session ID not yet known
         if (!live._claudeSessionId && CLI_PROFILES.has(live.profile)) {
           detectClaudeSession(live.id).then(r => {
@@ -3958,12 +4935,12 @@ function detachTab(idx) {
           }).catch(() => {});
         }
       }
-      else { titleEl.textContent = session.label; }
+      else { titleEl.textContent = _displayLabel(_sessions.find(s => s.id === session.id) || session); }
     };
     titleEl.addEventListener('blur', commit, { once: true });
     titleEl.addEventListener('keydown', (ev) => {
       if (ev.key === 'Enter') { ev.preventDefault(); titleEl.blur(); }
-      if (ev.key === 'Escape') { titleEl.textContent = session.label; titleEl.blur(); }
+      if (ev.key === 'Escape') { titleEl.textContent = _displayLabel(_sessions.find(s => s.id === session.id) || session); titleEl.blur(); }
     });
   });
 
@@ -3993,9 +4970,10 @@ function detachTab(idx) {
   _detachedTabs.set(session.id, tabState);
 
   // Ctrl+C fallback for floating window — covers cases where xterm textarea loses focus
-  // (ESC for the same case is handled by the global window-capture listener in initTerminal())
+  // (ESC for the same case is handled by the global window-capture listener in initTerminal()).
+  // Not on macOS: there Ctrl+C is always SIGINT and copy is Cmd+C.
   win.addEventListener('keydown', (e) => {
-    if (e.ctrlKey && !e.shiftKey && (e.key === 'c' || e.key === 'C')) {
+    if (!IS_MAC && e.ctrlKey && !e.shiftKey && (e.key === 'c' || e.key === 'C')) {
       const sel = session.term?.getSelection();
       if (sel) {
         _clipCopy(sel);
@@ -4037,9 +5015,11 @@ function detachTab(idx) {
   saveTerminalLayout();
   _syncRenderers();
 
-  // Refit terminal in new container — double-rAF so browser completes layout
-  // of the newly-appended floating window before measuring dimensions
-  requestAnimationFrame(() => requestAnimationFrame(() => _scheduleFit(session)));
+  // Refit in the new container once the float is laid out (double rAF via
+  // _scheduleFit), repaint once, clear the bell. A float opened from a
+  // staging float has the same grid, so this fit sends no resize.
+  requestAnimationFrame(() => _onSessionShown(session));
+  if (opts.focus) bringTabToFront(session.id);
 }
 
 function attachTab(sessionId) {
@@ -4069,15 +5049,15 @@ function attachTab(sessionId) {
   // Show panel if hidden
   if (_panel?.classList.contains('hidden')) showPanel();
 
-  // Switch to this tab
+  // Switch to this tab (full swap — _activeIdx may already point at it)
   const idx = _sessions.indexOf(session);
-  if (idx >= 0) switchToSession(idx);
+  if (idx >= 0) switchToSession(idx, { force: true });
 
   renderTabBar();
   saveTerminalLayout();
   _syncRenderers();
   _updateSnappedEdges(); // neighbors may no longer be snapped
-  requestAnimationFrame(() => _scheduleFit(session));
+  requestAnimationFrame(() => _onSessionShown(session));
 }
 
 // ── Minimize / Restore floating tabs ──
@@ -4103,11 +5083,11 @@ function minimizeTab(sessionId) {
   if (!tray) { tabState.el.style.display = 'none'; _syncRenderers(); return; }
   const prof = PROFILES.find(p => p.id === session.profile);
   const pill = document.createElement('div');
-  pill.className = 'term-minimized-pill';
+  pill.className = 'term-minimized-pill' + (session._bell ? ' has-bell' : '');
   pill.setAttribute('data-session-id', sessionId);
   pill.innerHTML = `
     <span class="term-minimized-pill-icon">${prof?.svg || SVG_SHELL}</span>
-    <span class="term-minimized-pill-label">${session.label}</span>
+    <span class="term-minimized-pill-label">${_escHtml(_displayLabel(session))}</span>
     <button class="term-minimized-pill-close" data-tooltip="Close">&times;</button>
   `;
   pill.querySelector('.term-minimized-pill-close').addEventListener('click', (e) => {
@@ -4142,6 +5122,8 @@ function minimizeTab(sessionId) {
   el.style.transition = 'none';
   el.style.transformOrigin = 'center center';
   el.style.overflow = 'hidden';
+  // Own compositor layer only while the genie animation runs
+  el.classList.add('float-animating');
 
   requestAnimationFrame(() => {
     el.style.transition = 'transform 0.35s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease';
@@ -4155,6 +5137,7 @@ function minimizeTab(sessionId) {
     el.style.transition = '';
     el.style.transform = '';
     el.style.opacity = '';
+    el.classList.remove('float-animating');
     pill.style.opacity = '';
     pill.style.animation = 'pill-pop-in 0.2s ease-out';
   };
@@ -4211,6 +5194,7 @@ function restoreTab(sessionId) {
   }
 
   // Genie restore animation — expand from pill position
+  el.classList.add('float-animating');
   el.style.transition = 'none';
   el.style.transformOrigin = 'center center';
   el.style.transform = `translate(${startDX}px, ${startDY}px) scale(0.05)`;
@@ -4231,9 +5215,10 @@ function restoreTab(sessionId) {
     el.style.transition = '';
     el.style.transform = '';
     el.style.opacity = '';
-    // Refit terminal after animation
+    el.classList.remove('float-animating');
+    // Refit + repaint after animation (the WebGL buffer may be blank after display:none)
     const session = _sessions.find(s => s.id === sessionId);
-    if (session) requestAnimationFrame(() => _scheduleFit(session));
+    if (session) requestAnimationFrame(() => _onSessionShown(session));
   };
   el.addEventListener('transitionend', onEnd, { once: true });
   setTimeout(() => {
@@ -4551,7 +5536,7 @@ function renderPeekDock() {
     const active = i === _activeIdx;
     return `<span class="peek-tab${active ? ' active' : ''}">
       <span class="peek-tab-icon">${prof?.svg || SVG_SHELL}</span>
-      <span class="peek-tab-label">${s.label}</span>
+      <span class="peek-tab-label">${_escHtml(_displayLabel(s))}</span>
     </span>`;
   }).join('');
 
@@ -4592,9 +5577,9 @@ function renderTabBar() {
     const active = i === _activeIdx;
     const dead = s.dead;
     const isLinked = state.linkedSessionIds.has(s.id);
-    return `<button class="term-tab${active ? ' active' : ''}${dead ? ' dead' : ''}" data-idx="${i}" data-profile="${s.profile}" data-session-id="${s.id}">
+    return `<button class="term-tab${active ? ' active' : ''}${dead ? ' dead' : ''}${s._bell ? ' has-bell' : ''}" data-idx="${i}" data-profile="${s.profile}" data-session-id="${s.id}">
       <span class="term-tab-icon">${s._gitOutput ? SVG_GIT : (prof?.svg || SVG_SHELL)}</span>
-      <span class="term-tab-label">${s.label}${dead ? ' (exited)' : ''}</span>${_cliBadgeHtml(s.id)}
+      <span class="term-tab-label">${_escHtml(_displayLabel(s))}${dead ? ' (exited)' : ''}</span>${_cliBadgeHtml(s.id)}
       ${isLinked ? '<span class="term-tab-link-badge" title="Linked"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></span>' : ''}
       ${!dead && !s._gitOutput ? `<span class="term-tab-detach" data-idx="${i}" data-tooltip="Detach tab"><svg viewBox="0 0 24 24"><path d="M15 3h6v6"/><path d="M21 3l-7 7"/><rect x="3" y="11" width="10" height="10" rx="1"/></svg></span>` : ''}
       <span class="term-tab-close" data-idx="${i}">&times;</span>
@@ -4607,7 +5592,8 @@ function renderTabBar() {
       const session = _sessions.find(s => s.id === sessionId);
       if (session) {
         const pillLabel = tabState.pill.querySelector('.term-minimized-pill-label');
-        if (pillLabel && pillLabel.textContent !== session.label) pillLabel.textContent = session.label;
+        const text = _displayLabel(session);
+        if (pillLabel && pillLabel.textContent !== text) pillLabel.textContent = text;
       }
     }
   }
@@ -4720,6 +5706,13 @@ function _escHtml(s) {
 // ── Public API ──
 
 export async function initTerminal() {
+  // ── Assistant host ──
+  // Shared assistant events + keybinds (idempotent; initNavbar calls it too),
+  // then this host's adapter — before the first await, so boot restores and
+  // resume requests always find the terminal host.
+  initAssistant();
+  registerAssistantHost(_terminalAssistantHost);
+
   // ── Global ESC handler (window capture phase) ──
   // Forwards a single ESC byte to the active terminal's PTY so TUIs like the
   // OpenCode/Claude/Codex CLIs can abort an in-flight task. Capture phase
@@ -4742,6 +5735,18 @@ export async function initTerminal() {
       } else if (_panel && _panel.contains(target)) {
         session = _sessions[_activeIdx];
       }
+    }
+    // Assistant tab: ESC aborts the running turn (no PTY to send \x1b to).
+    // Idle → leave the event alone so pickers/menus can close themselves.
+    // Inside the assistant itself the component decides (route cards and menus
+    // take Esc first; its root handler aborts) — same in the sidepanel host.
+    if (session?._isAssistant) {
+      if (session.viewport?.contains(target)) return;
+      if (!session._assistant?.isRunning()) return;
+      session._assistant.abort();
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      return;
     }
     if (!session?.ws || session.ws.readyState !== WebSocket.OPEN) return;
 
@@ -4804,12 +5809,23 @@ export async function initTerminal() {
     }, 150);
   });
 
-  // ── Visibility change — reconnect WSes + re-focus after screen sleep/wake ──
+  // ── Visibility change — flow control, warm renderers, one focus target ──
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) {
-      // Tab hidden: release all terminal GPU contexts (DOM renderer takes over;
-      // parsing continues — see _syncRenderers invariant)
-      _syncRenderers();
+    const visible = !document.hidden;
+    // Tell the host: a hidden client never pauses the PTY, and one that fell
+    // too far behind gets a single reset snapshot when it is visible again.
+    for (const s of _sessions) {
+      if (s.dead || s._isBrowser || s._isAssistant || !s.term) continue;
+      if (s.ws?.readyState === WebSocket.OPEN) {
+        try { s.ws.send(JSON.stringify({ type: 'visibility', visible })); } catch {}
+      }
+    }
+    if (!visible) {
+      // Remember the one terminal to refocus on return. Renderers stay warm
+      // (no release) and parsing continues — see _syncRenderers invariant.
+      const ae = document.activeElement;
+      const focusedId = ae?.closest?.('.term-viewport')?.dataset?.sessionId || null;
+      _focusRestoreId = focusedId || ((!ae || ae === document.body) ? _lastFocusedTermId : null);
       // Drop all browser screencasts to ~2fps server-side so the
       // server stops decoding/sending frames nobody can see
       for (const s of _sessions) {
@@ -4821,7 +5837,7 @@ export async function initTerminal() {
       }
       return;
     }
-    // Tab visible again: re-acquire GPU contexts for visible terminals
+    // Visible again: acquire only (contexts lost while hidden come back here)
     _syncRenderers();
     // Restore screencast rates: last-focused browser window back to full rate,
     // others stay throttled
@@ -4830,28 +5846,28 @@ export async function initTerminal() {
       _applyBrowserFocusThrottle(active?._isBrowser ? active.id : _lastFocusedBrowserId);
     }
     // Reconnect any dropped terminal WebSockets (PTYs survive 30min on server)
+    // (assistant tabs reconnect their own /ws/assistant socket in asst-ws.js)
     for (const s of _sessions) {
-      if (s.dead || s._isBrowser) continue;
+      if (s.dead || s._isBrowser || s._isAssistant) continue;
       if (!s.ws || s.ws.readyState !== WebSocket.OPEN) {
         _reconnectTerminalWs(s);
       }
     }
-    // Re-focus active terminal after screen wake
-    const session = _sessions[_activeIdx];
-    if (session && !session.dead) {
+    // Non-PTY active tab keeps its wake behavior (canvas focus / panel onShown)
+    if (active && !active.dead && (active._isBrowser || active._isAssistant)) {
       requestAnimationFrame(() => {
-        if (session._isBrowser) {
-          session._browserCanvas?.focus();
-        } else if (session.term) {
-          session.term.focus();
-        }
+        if (active._isBrowser) active._browserCanvas?.focus();
+        else active._assistant?.onShown();
       });
     }
-    // Also re-focus any floating windows
-    for (const [id] of _detachedTabs) {
-      const s = _sessions.find(s => s.id === id);
-      if (!s || s.dead) continue;
-      s.term?.focus();
+    // Refocus only the terminal that had focus when the app was hidden, and
+    // only if it is still visible — never every float in turn.
+    const target = _focusRestoreId ? _sessions.find(s => s.id === _focusRestoreId) : null;
+    _focusRestoreId = null;
+    if (target && !target.dead && target.term && _isSessionVisible(target)) {
+      requestAnimationFrame(() => {
+        if (!target.dead && _isSessionVisible(target)) target.term.focus();
+      });
     }
   });
 
@@ -4871,27 +5887,30 @@ export async function initTerminal() {
     try {
       const cwd = data?.cwd || (CLI_PROFILES.has(profile) ? await pickProject(profile) : null);
       if (cwd === undefined) return; // picker cancelled
-      showPanel();
-      await openSession(profile, cwd);
-      const idx = _sessions.length - 1;
-      if (idx >= 0) _sendOnceReady(_sessions[idx], command, false);
+      await _whenOpenIdle();
+      const session = await openSession(profile, cwd);
+      if (session) _sendOnceReady(session, command, false);
     } catch (err) {
       console.error('[terminal:open-with-command] failed', err);
     }
   });
 
+  // Resume spawns at the measured grid of its tab (no 120×30 + SIGWINCH);
+  // staggered "Resume All" launches queue behind each other instead of
+  // being dropped by the _opening guard.
   on('terminal:open-resume', async (data) => {
     const { profile, cwd, resume, label, accountId } = data || {};
     if (!profile || !resume) return;
     if (isGuest() && !hasPermission('terminal')) return;
     try {
-      const { sessionId } = await createTerminalSession(profile, 120, 30, cwd, {
-        resume,
-        codexAccountId: profile === 'codex' ? accountId : undefined,
-      });
-      await openSession(profile, cwd, sessionId, {
+      await _whenOpenIdle();
+      await openSession(profile, cwd, null, {
         label: label || '',
         claudeSessionId: resume,
+        createOpts: {
+          resume,
+          codexAccountId: profile === 'codex' ? accountId : undefined,
+        },
       });
     } catch (err) {
       console.error('[resume] Failed to launch resume session:', err);
@@ -4909,9 +5928,21 @@ export async function initTerminal() {
 
   on('terminal:close', () => hidePanel());
 
-  on('terminal:launch-floating', (data) => {
+  // Open a CLI straight into a focused float, spawned at the float's grid.
+  // data: { profile, cwd?, createOpts?, initialMessage?, autoSubmit?, onDone?(err, session) }
+  // A supplied `cwd` (even null = home) skips the project picker.
+  on('terminal:launch-floating', async (data) => {
     const profile = data?.profile || 'shell';
-    launchDetached(profile, data?.initialMessage, data?.autoSubmit);
+    const onDone = typeof data?.onDone === 'function' ? data.onDone : null;
+    try {
+      const opts = { createOpts: data?.createOpts };
+      if (data && Object.prototype.hasOwnProperty.call(data, 'cwd')) opts.cwd = data.cwd ?? null;
+      const session = await launchDetached(profile, data?.initialMessage, data?.autoSubmit, opts);
+      if (onDone) onDone(session ? null : new Error('Terminal launch was cancelled'), session || null);
+    } catch (err) {
+      console.error('[terminal:launch-floating] failed', err);
+      if (onDone) onDone(err, null);
+    }
   });
 
   // Block sync:terminal:created from auto-creating sessions that will be
@@ -4948,6 +5979,10 @@ export async function initTerminal() {
     if (_sessions.find(s => s.id === data.sessionId)) return;
     await reconnectBrowserSession(data.sessionId, { url: data.url || '', title: data.title || '' }, null);
   });
+
+  // Assistant events (assistant:open/new/resume/toggle/show, session-ended) and
+  // the launch-assistant / toggle-assistant keybinds live in ui-assistant.js;
+  // this host is reached through _terminalAssistantHost.
 
   // Register CLI launch keybind actions (open as detached floating tab)
   registerAction('launch-claude',   () => launchDetached('claude-code'));
@@ -5080,7 +6115,10 @@ export async function initTerminal() {
     } catch {}
     const liveBrowserMap = _streamDisabled ? new Map() : new Map(liveBrowserSessions.map(s => [s.id, s]));
 
-    const liveIds = new Set([...liveMap.keys(), ...liveBrowserMap.keys()]);
+    // Fetch live assistant sessions (only when the registry has assistant tabs)
+    const liveAssistantMap = registry.some(r => r.profile === 'assistant') ? await fetchLiveAssistantSessions() : new Map();
+
+    const liveIds = new Set([...liveMap.keys(), ...liveBrowserMap.keys(), ...liveAssistantMap.keys()]);
 
     // Reconnect to sessions that are still alive on server
     const toReconnect = registry.filter(r => liveIds.has(r.id));
@@ -5089,7 +6127,11 @@ export async function initTerminal() {
       // which would overwrite saved layout with default sizes
       _restoringLayout = true;
       for (const saved of toReconnect) {
-        if (saved.profile === 'browser' && liveBrowserMap.has(saved.id)) {
+        if (saved.profile === 'assistant' && liveAssistantMap.has(saved.id)) {
+          // Reconnect assistant tab in registry order so applyTerminalLayout can re-float it
+          try { await reconnectAssistantSession(saved.id, liveAssistantMap.get(saved.id), saved); }
+          catch (err) { console.warn('[assistant] reconnect failed:', saved.id, err); }
+        } else if (saved.profile === 'browser' && liveBrowserMap.has(saved.id)) {
           // Reconnect browser session — re-create client-side viewport
           await reconnectBrowserSession(saved.id, liveBrowserMap.get(saved.id), saved);
         } else if (CLI_PROFILES.has(saved.profile)) {
@@ -5129,9 +6171,10 @@ export async function initTerminal() {
         if (s.viewport) s.viewport.style.display = '';
       }
 
-      // Activate first docked session, or hide panel if all are floating
+      // Activate first docked session (full swap — every viewport was just
+      // unhidden), or hide panel if all are floating
       const firstDocked = _sessions.findIndex(s => !_detachedTabs.has(s.id));
-      if (firstDocked >= 0) switchToSession(firstDocked);
+      if (firstDocked >= 0) switchToSession(firstDocked, { force: true });
       else if (_panel && !_panel.classList.contains('hidden')) hidePanel();
 
       // Acquire GPU renderers for whatever ended up visible (floats included)
@@ -5170,6 +6213,13 @@ export async function initTerminal() {
     let session = null;
     const activeIdx = _activePaneIdx[0] >= 0 ? _activePaneIdx[0] : _activePaneIdx[1];
     if (activeIdx >= 0) session = _sessions[activeIdx];
+    // Active assistant tab → attach the image to its composer instead of a PTY drop
+    const activeAssistant = (session?._isAssistant && !session.dead) ? session : ((_sessions[_activeIdx]?._isAssistant && !_sessions[_activeIdx].dead) ? _sessions[_activeIdx] : null);
+    if (activeAssistant) {
+      activeAssistant._assistant?.attachImageDataUrl(dataUrl, 'whiteboard');
+      showTermToast('Image attached to assistant');
+      return;
+    }
     if (!session?.ws || session.ws.readyState !== WebSocket.OPEN) {
       // Fallback: find any session with an open WebSocket
       session = _sessions.find(s => s.ws && s.ws.readyState === WebSocket.OPEN) || null;
@@ -5187,20 +6237,98 @@ export function openTerminalPanel(profile) {
   emit('terminal:open', { profile });
 }
 
-/** Open a CLI session and immediately detach it as a floating window */
-async function launchDetached(profile, initialMessage, autoSubmit) {
-  const cwd = await pickProject(profile);
-  if (cwd === undefined) return; // cancelled
-  if (CLI_PROFILES.has(profile)) await openSession(profile, cwd);
-  else await openSession(profile, cwd);
-  // Detach the session we just created (it's always the last one)
-  const idx = _sessions.length - 1;
-  if (idx >= 0) detachTab(idx);
+// ── Diagnostics (no UI) ──
+// window.__synabunTermStats(): keystroke → echo-parsed latency, bytes handed
+// to xterm but not yet parsed, flow-control acks pending, renderer state and
+// the cost of the last show (refit + repaint), per terminal.
+function _termStats() {
+  return _sessions.filter(s => s.term && !s._gitOutput).map(s => {
+    const samples = s._echo?.samples || [];
+    const writer = s._terminalWriter?.stats?.() || {};
+    const r = rendererState(s);
+    return {
+      id: s.id,
+      profile: s.profile,
+      label: _displayLabel(s),
+      visible: _isSessionVisible(s),
+      echoP50Ms: _percentile(samples, 0.5),
+      echoP95Ms: _percentile(samples, 0.95),
+      echoSamples: samples.length,
+      unparsedBytes: writer.unparsedBytes ?? 0,
+      unackedBytes: writer.unackedBytes ?? 0,
+      renderer: r.renderer,
+      webglLossCount: r.lossCount,
+      webglCooldown: r.cooldown,
+      webglLostWhileHidden: r.lostWhileHidden,
+      lastShowMs: s._lastShowMs ?? null,
+      cols: s.term.cols,
+      rows: s.term.rows,
+    };
+  });
+}
 
-  // Send initial message once the CLI is ready
-  if (initialMessage && idx >= 0) {
-    _sendOnceReady(_sessions[idx], initialMessage, autoSubmit);
+if (typeof window !== 'undefined') {
+  window.__synabunTermStats = () => ({
+    sessions: _termStats(),
+    renderer: rendererStats(),
+    fontFamily: _resolveTermFont(),
+    fontSize: _termFontSize(),
+  });
+}
+
+/** Read-only snapshot of terminal state for browser tests. `term(id)` hands
+ *  back the live xterm instance so a test can observe it. */
+export function __terminalTestHooks() {
+  return {
+    sessions: _sessions.map(s => ({
+      id: s.id,
+      profile: s.profile,
+      label: s.label,
+      displayLabel: _displayLabel(s),
+      oscTitle: s._oscTitle || null,
+      dead: !!s.dead,
+      detached: _detachedTabs.has(s.id),
+      visible: _isSessionVisible(s),
+      bell: !!s._bell,
+      hasWebgl: hasWebgl(s),
+      viewportDisplay: s.viewport ? s.viewport.style.display : null,
+      cols: s.term?.cols ?? null,
+      rows: s.term?.rows ?? null,
+      options: s.term ? {
+        fontFamily: s.term.options.fontFamily,
+        fontSize: s.term.options.fontSize,
+        lineHeight: s.term.options.lineHeight,
+        letterSpacing: s.term.options.letterSpacing,
+        cursorStyle: s.term.options.cursorStyle,
+        cursorBlink: s.term.options.cursorBlink,
+      } : null,
+    })),
+    activeIdx: _activeIdx,
+    detachedTabs: [..._detachedTabs.keys()],
+    resolvedFont: _resolveTermFont(),
+    fontSize: _termFontSize(),
+    isMac: IS_MAC,
+    term: (id) => _sessions.find(s => s.id === id)?.term || null,
+    socket: (id) => _sessions.find(s => s.id === id)?.ws || null,
+    stats: () => (typeof window !== 'undefined' ? window.__synabunTermStats?.() : null),
+  };
+}
+
+/** Open a CLI session straight into a focused floating window. It is built
+ *  and spawned at the float's grid (staging float), so the CLI never gets a
+ *  startup resize and the dock never flashes. opts: { cwd (skips the picker
+ *  when present, null = home), createOpts }. Returns the session or null. */
+async function launchDetached(profile, initialMessage, autoSubmit, opts = {}) {
+  let cwd = opts.cwd;
+  if (cwd === undefined) {
+    cwd = await pickProject(profile);
+    if (cwd === undefined) return null; // cancelled
   }
+  await _whenOpenIdle();
+  const session = await openSession(profile, cwd, null, { floating: true, createOpts: opts.createOpts });
+  // Send initial message once the CLI is ready
+  if (session && initialMessage) _sendOnceReady(session, initialMessage, autoSubmit);
+  return session;
 }
 
 /** Open a shell session and run a command (used by Command Runner panel).
@@ -5208,13 +6336,14 @@ async function launchDetached(profile, initialMessage, autoSubmit) {
  *  and sends the command once the shell prompt is detected. */
 async function runCommandInNewTab({ command, cwd, label }) {
   if (!command) return;
-  await openSession('shell', cwd || null);
-  const idx = _sessions.length - 1;
-  if (idx >= 0 && label) {
-    _sessions[idx].label = label;
+  await _whenOpenIdle();
+  const session = await openSession('shell', cwd || null);
+  if (!session) return;
+  if (label) {
+    session.label = label;
     renderTabBar();
   }
-  if (idx >= 0) _sendOnceReady(_sessions[idx], command, false);
+  _sendOnceReady(session, command, false);
   showPanel();
 }
 
@@ -5437,6 +6566,8 @@ export function getTerminalSnapshot() {
       isDetached: _detachedTabs.has(s.id),
       userRenamed: s._userRenamed || false,
       claudeSessionId: s._claudeSessionId || null,
+      assistantSessionId: s._isAssistant ? s.id : null,
+      brain: s._isAssistant ? (s._brain || null) : null,
     })),
     // Split pane state
     splitMode: _splitMode,
@@ -5514,7 +6645,7 @@ function applyTerminalLayout(snap) {
         if (dt.pinned) {
           session.pinned = true;
           tabState.el.classList.add('pinned');
-          tabState.el.style.zIndex = '10002';
+          _raisePinned(tabState.el);
           const closeEl = tabState.el.querySelector('.close-btn');
           if (closeEl) closeEl.style.display = 'none';
           const pinEl = tabState.el.querySelector('.pin-btn');
@@ -5532,7 +6663,7 @@ function applyTerminalLayout(snap) {
             session._userRenamed = dt.userRenamed || false;
           }
           const titleEl = tabState.el.querySelector('.term-float-tab-title');
-          if (titleEl) titleEl.textContent = session.label;
+          if (titleEl) titleEl.textContent = _displayLabel(session);
         }
 
         if (dt.minimized) {
@@ -5596,12 +6727,22 @@ export async function restoreTerminalSnapshot(snap) {
     } catch {}
     const liveMap = new Map(liveSessions.map(s => [s.id, s]));
     const liveIds = new Set(liveMap.keys());
+    const liveAssistantMap = snap.sessions.some(s => s.profile === 'assistant') ? await fetchLiveAssistantSessions() : new Map();
 
     // Disconnect current sessions without killing server PTY
     disconnectAllSessions();
 
     // Reconnect to each saved session that's still alive on server
+    _restoringLayout = true;
+    try {
     for (const saved of snap.sessions) {
+      if (saved.profile === 'assistant') {
+        if (liveAssistantMap.has(saved.id)) {
+          try { await reconnectAssistantSession(saved.id, liveAssistantMap.get(saved.id), saved); }
+          catch (err) { console.warn('[assistant] workspace reconnect failed:', saved.id, err); }
+        }
+        continue;
+      }
       if (liveIds.has(saved.id)) {
         const live = liveMap.get(saved.id);
         const opts = { label: saved.label, pinned: saved.pinned, cwd: live?.cwd || null, userRenamed: saved.userRenamed, claudeSessionId: saved.claudeSessionId };
@@ -5612,10 +6753,17 @@ export async function restoreTerminalSnapshot(snap) {
         }
       }
     }
+    } finally { _restoringLayout = false; }
+    // Unhide viewports that reconnect hid while restoring
+    for (const s of _sessions) { if (s.viewport) s.viewport.style.display = ''; }
   }
 
   // Apply layout (detach/dock, positions, pin state)
   applyTerminalLayout(snap);
+  // Activate the first docked session so viewports are toggled consistently
+  const firstDocked = _sessions.findIndex(s => !_detachedTabs.has(s.id));
+  if (firstDocked >= 0 && !_splitMode) switchToSession(firstDocked, { force: true });
+  _syncRenderers();
 }
 
 // ══════════════════════════════════════════
@@ -5638,6 +6786,10 @@ function toggleDockedFileTree() {
 /** Toggle file tree visibility and load contents */
 async function toggleFileTree(sidebar, session) {
   if (!sidebar) return;
+
+  // The sidebar animates its width (0.2 s): fit visually every frame but send
+  // the PTY one final size, not a SIGWINCH per frame.
+  _holdPtyResize(260);
 
   const isOpen = sidebar.classList.contains('open');
   if (isOpen) {
@@ -6303,8 +7455,11 @@ function initSidebarResize(sidebar, session) {
     flushWidth();
     sidebar.classList.remove('resizing');
     document.body.classList.remove('ui-interacting');
-    // Refit terminal to account for new sidebar width
-    refitActiveSession(session);
+    _draggingResize = false;
+    // Final size to the PTY at the settled sidebar width (clears the drag debounce)
+    const live = _sessions.find(s => s.id === session?.id) || session;
+    if (live?.term) _sendResize(live);
+    else refitActiveSession(session);
   };
 
   handle.addEventListener('mousedown', (e) => {
@@ -6315,6 +7470,9 @@ function initSidebarResize(sidebar, session) {
     pendingWidth = startW;
     sidebar.classList.add('resizing');
     document.body.classList.add('ui-interacting');
+    // The viewport's ResizeObserver refits every frame; the PTY resize is
+    // debounced while dragging (see _scheduleFit)
+    _draggingResize = true;
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
   });
@@ -6486,8 +7644,13 @@ function initSplitDivider() {
     containerRect = null;
     divider.classList.remove('dragging');
     document.body.classList.remove('ui-interacting');
+    _draggingResize = false;
     storage.setItem(KEYS.TERMINAL_SPLIT_RATIO, String(_splitRatio));
-    refitAllDockedSessions();
+    // Final size to each docked PTY (clears the drag debounce)
+    for (const s of _sessions) {
+      if (_detachedTabs.has(s.id) || s.dead || s._isBrowser || !s.term) continue;
+      _sendResize(s);
+    }
   };
 
   divider.addEventListener('mousedown', (e) => {
@@ -6495,6 +7658,8 @@ function initSplitDivider() {
     e.stopPropagation();
     divider.classList.add('dragging');
     document.body.classList.add('ui-interacting');
+    // Refit visually per frame; PTY resizes are debounced while dragging
+    _draggingResize = true;
     containerRect = container.getBoundingClientRect();
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
@@ -6519,8 +7684,10 @@ function switchToSessionInPane(idx, pane) {
   requestAnimationFrame(() => {
     if (session._isBrowser) {
       session._browserCanvas?.focus();
+    } else if (session._isAssistant) {
+      session._assistant?.onShown();
     } else {
-      _scheduleFit(session);
+      _onSessionShown(session);
       session.term?.focus();
     }
   });
@@ -6543,10 +7710,10 @@ function renderSplitTabBars() {
       const prof = PROFILES.find(p => p.id === s.profile);
       const active = i === _activePaneIdx[pane];
       const dead = s.dead;
-      return `<button class="term-tab${active ? ' active' : ''}${dead ? ' dead' : ''}"
+      return `<button class="term-tab${active ? ' active' : ''}${dead ? ' dead' : ''}${s._bell ? ' has-bell' : ''}"
         data-idx="${i}" data-pane="${pane}" draggable="true" data-profile="${s.profile}" data-session-id="${s.id}">
         <span class="term-tab-icon">${s._gitOutput ? SVG_GIT : (prof?.svg || SVG_SHELL)}</span>
-        <span class="term-tab-label">${s.label}${dead ? ' (exited)' : ''}</span>${_cliBadgeHtml(s.id)}
+        <span class="term-tab-label">${_escHtml(_displayLabel(s))}${dead ? ' (exited)' : ''}</span>${_cliBadgeHtml(s.id)}
         <span class="term-tab-close" data-idx="${i}">&times;</span>
       </button>`;
     }).join('');
@@ -6666,15 +7833,17 @@ function activateSplit() {
 
   // Auto-spawn shell in right pane — always a shell, not a clone of the current profile
   _focusedPane = 1;
-  openSession('shell').then(() => {
-    const newIdx = _sessions.length - 1;
+  openSession('shell').then((session) => {
+    if (!session) return; // dropped: another open was in flight
+    const newIdx = _sessions.indexOf(session);
+    if (newIdx < 0) return;
     _activePaneIdx[1] = newIdx;
     updatePaneFocusRing();
     renderSplitTabBars();
     switchToSessionInPane(newIdx, 1);
     // Refit all after layout settles
     requestAnimationFrame(() => requestAnimationFrame(() => refitAllDockedSessions()));
-  });
+  }).catch(err => console.error('[terminal] split shell failed:', err));
 }
 
 function deactivateSplit() {
@@ -6702,5 +7871,7 @@ function deactivateSplit() {
   if (mainBar) mainBar.style.display = '';
 
   renderTabBar();
-  switchToSession(_activeIdx);
+  // Full swap: both panes' active viewports were visible and _activeIdx
+  // already points at the kept one
+  switchToSession(_activeIdx, { force: true });
 }

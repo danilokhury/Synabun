@@ -13,7 +13,10 @@
  * 2. Finds the most recently modified plan file in data/plans/YYYY-MM-DD/
  * 3. Auto-creates a child category under "plans" for the project if needed
  * 4. Generates a local embedding and stores the plan in SQLite
- * 5. Returns additionalContext confirming storage + plan file path
+ * 5. Meanwhile asks the Neural Interface (kind `plan-conflict`) whether the
+ *    plan contradicts stored project decisions — advisory only, never blocks
+ * 6. Returns additionalContext confirming storage + plan file path, plus the
+ *    advisory line when conflicts came back
  *
  * Input (stdin JSON):
  *   { session_id, tool_name, tool_input, tool_response, cwd }
@@ -24,11 +27,11 @@
  */
 
 import { readFileSync, writeFileSync, appendFileSync, readdirSync, statSync, existsSync, mkdirSync, renameSync, unlinkSync } from 'node:fs';
-import { DatabaseSync } from 'node:sqlite';
 import { dirname, join, basename } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { randomUUID } from 'node:crypto';
-import { detectProject, getMcpCategoriesPath, MCP_DATA_DIR, DATA_DIR } from './shared.mjs';
+import { createHash } from 'node:crypto';
+import { withStateLock, writeJsonAtomic, planMemoryKey } from './state.mjs';
+import { detectProject, getMcpCategoriesPath, MCP_DATA_DIR, DATA_DIR, readStdin, hookBudget, hookJudge, clipForJudge, isTemporaryChat } from './shared.mjs';
 
 // Cross-platform safety: catch uncaught errors and output valid hook JSON
 process.on('uncaughtException', () => { try { process.stdout.write('{}'); } catch {} process.exit(0); });
@@ -66,79 +69,47 @@ const MIGRATION_MARKER = join(PLANS_DIR, '.migrated');
 // Dedup tracker — records which plan files have already been stored
 const STORED_PLANS_PATH = join(DATA_DIR, 'stored-plans.json');
 
-// SQLite database path
-const DB_PATH = process.env.SQLITE_DB_PATH || join(MCP_DATA_DIR, 'memory.db');
+// ─── Plan check against stored decisions (advisory) ───
 
-// ─── Stdin ───
+const budget = hookBudget(15000);
+let conflictCheck = null;
 
-function readStdin() {
-  return new Promise((resolve) => {
-    if (process.stdin.isTTY) return resolve('{}');
-    let data = '';
-    process.stdin.setEncoding('utf8');
-    process.stdin.on('data', (chunk) => { data += chunk; });
-    process.stdin.on('end', () => resolve(data));
-    setTimeout(() => resolve(data || '{}'), 3000);
+// Always resolves; [] when unavailable (SYNABUN_TYPESAFE=off, old server, timeout).
+async function planConflicts(plan, { project, sessionId, cwd, excludeIds }) {
+  const text = plan.length > 16000 ? clipForJudge(plan, 16000, 12000) : plan;
+  const answer = await hookJudge('plan-conflict', {
+    text, project, exclude_ids: excludeIds, session_id: sessionId || undefined, cwd: cwd || undefined,
+  }, { timeoutMs: Math.min(5000, budget.callTimeout(1000)) });
+  return Array.isArray(answer?.conflicts)
+    ? answer.conflicts.filter((c) => c && typeof c.id === 'string' && c.id).slice(0, 3)
+    : [];
+}
+
+function formatPlanConflicts(conflicts) {
+  if (!Array.isArray(conflicts) || !conflicts.length) return '';
+  const items = conflicts.map((c) => {
+    const p = Number(c.probability);
+    const meta = [
+      c.probability !== undefined && c.probability !== null && Number.isFinite(p) ? `p=${p.toFixed(2)}` : '',
+      typeof c.category === 'string' ? c.category : '',
+      typeof c.created_at === 'string' ? c.created_at.slice(0, 10) : '',
+    ].filter(Boolean).join(', ');
+    const excerpt = String(c.excerpt ?? '').replace(/\s+/g, ' ').trim().slice(0, 160).replace(/"/g, "'");
+    return `[${c.id}]${meta ? ` (${meta})` : ''}${excerpt ? ` "${excerpt}"` : ''}`;
   });
+  return `SynaBun [Jev] plan check (advisory): this plan may contradict stored decisions — ${items.join('; ')}. Confirm with the user or state why the decision changed before implementing.`;
 }
 
-// ─── Local embedding generation ───
-
-async function generateEmbedding(text) {
-  const PACKAGE_ROOT = join(__dirname, '..', '..');
-  const embPath = join(PACKAGE_ROOT, 'mcp-server', 'dist', 'services', 'local-embeddings.js');
-  if (!existsSync(embPath)) {
-    throw new Error('MCP server not built. Run: cd mcp-server && npm run build');
-  }
-  const { generateEmbedding: embed } = await import(pathToFileURL(embPath).href);
-  return embed(text);
-}
-
-// ─── Vector encoding ───
-
-function encodeVector(vector) {
-  const f32 = new Float32Array(vector);
-  return new Uint8Array(f32.buffer);
-}
-
-// ─── Database storage ───
-
-function storeInSQLite(id, vector, payload) {
-  const db = new DatabaseSync(DB_PATH);
-  db.exec('PRAGMA journal_mode = WAL');
-  db.exec('PRAGMA busy_timeout = 5000');
-
-  try {
-    db.prepare(`
-      INSERT OR REPLACE INTO memories
-        (id, vector, content, category, subcategory, project, tags, importance, source,
-         created_at, updated_at, accessed_at, access_count, related_files,
-         related_memory_ids, file_checksums, trashed_at, source_session_chunks)
-      VALUES
-        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      id,
-      encodeVector(vector),
-      payload.content,
-      payload.category,
-      payload.subcategory || null,
-      payload.project,
-      JSON.stringify(payload.tags || []),
-      payload.importance || 5,
-      payload.source || 'auto-saved',
-      payload.created_at,
-      payload.updated_at,
-      payload.accessed_at,
-      payload.access_count || 0,
-      null, // related_files
-      null, // related_memory_ids
-      null, // file_checksums
-      null, // trashed_at
-      null, // source_session_chunks
-    );
-  } finally {
-    db.close();
-  }
+// The same transactional writer as the MCP remember tool owns plan writes.
+async function storePlan(payload, options) {
+  const modulePath = join(__dirname, '../../mcp-server/dist/services/memory-writer.js');
+  const { writeMemory } = await import(pathToFileURL(modulePath).href);
+  const { getDb } = await import(pathToFileURL(join(__dirname, '../../mcp-server/dist/services/sqlite.js')).href);
+  const { closeDatabase } = await import(pathToFileURL(join(__dirname, '../../mcp-server/dist/services/sqlite.js')).href);
+  const { closeEmbeddings } = await import(pathToFileURL(join(__dirname, '../../mcp-server/dist/services/local-embeddings.js')).href);
+  withStateLock(() => getDb()); // Serialize cold schema/WAL initialization too.
+  try { return await writeMemory(payload, options); }
+  finally { await closeEmbeddings(); closeDatabase(); }
 }
 
 // ─── Dedup tracker ───
@@ -150,13 +121,17 @@ function loadStoredPlans() {
   } catch { return {}; }
 }
 
-function markPlanStored(fileName, memoryId) {
-  const stored = loadStoredPlans();
-  stored[fileName] = { memoryId, storedAt: new Date().toISOString() };
-  try {
-    if (!existsSync(dirname(STORED_PLANS_PATH))) mkdirSync(dirname(STORED_PLANS_PATH), { recursive: true });
-    writeFileSync(STORED_PLANS_PATH, JSON.stringify(stored, null, 2), 'utf-8');
-  } catch { /* best-effort */ }
+// `key` is the content-addressed plan identity (the one stop.mjs recomputes and
+// looks up); `fileNames` are convenience aliases — our own copy's basename plus
+// Claude Code's, when ExitPlanMode told us about it.
+function markPlanStored(fileNames, memoryId, contentHash, key, project, sourcePath) {
+  withStateLock(() => {
+    const stored = loadStoredPlans();
+    const receipt = { memoryId, contentHash, project, sourcePath, storedAt: new Date().toISOString() };
+    for (const name of new Set(fileNames.filter(Boolean))) stored[name] = receipt;
+    stored[key] = receipt;
+    writeJsonAtomic(STORED_PLANS_PATH, stored);
+  });
 }
 
 // ─── Date folder helpers ───
@@ -343,7 +318,7 @@ function findPlanByContent(toolResponse) {
   const fnameMatch = toolResponse.match(/([a-z][a-z0-9-]+\.md)/);
   if (fnameMatch) {
     const matched = files.find((f) => f.name === fnameMatch[1]);
-    if (matched && !stored[matched.name]) return { ...matched, method: 'filename' };
+    if (matched) return { ...matched, method: 'filename' };
   }
 
   // Strategy 2: Content matching — compare response text against each unstored plan file
@@ -352,7 +327,6 @@ function findPlanByContent(toolResponse) {
     const responseFirstLine = responseTrimmed.split('\n').find((l) => l.trim())?.trim() || '';
 
     for (const file of files) {
-      if (stored[file.name]) continue;
       try {
         const content = readFileSync(file.path, 'utf-8').trim();
         if (content === responseTrimmed) return { ...file, method: 'exact-content' };
@@ -420,18 +394,6 @@ function ensureProjectCategory(project) {
   }
 }
 
-// ─── Neural Interface cache invalidation ───
-
-async function invalidateNeuralInterface() {
-  try {
-    const niUrl = process.env.SYNABUN_NI_URL || 'http://localhost:3344';
-    await fetch(`${niUrl}/api/memories?invalidate=true`, {
-      method: 'GET',
-      signal: AbortSignal.timeout(2000),
-    });
-  } catch { /* fire-and-forget */ }
-}
-
 // ─── Root PLAN.md cleanup ───
 
 /**
@@ -460,6 +422,10 @@ async function main() {
     input = JSON.parse(raw);
   } catch { /* proceed */ }
 
+  // A temporary chat (see isTemporaryChat): its plan is not stored as a file or
+  // a memory, and it is not told where SynaBun keeps plans.
+  if (isTemporaryChat()) { process.stdout.write(JSON.stringify({})); return; }
+
   const toolName = input.tool_name || '';
 
   debugLog(`Hook invoked — tool_name: "${toolName}", session: ${input.session_id || 'unknown'}, cwd: ${input.cwd || 'unknown'}`);
@@ -479,7 +445,7 @@ async function main() {
   }
 
   // Run one-time migration of legacy flat plans before discovery
-  try { migrateFlatPlans(); } catch (err) {
+  try { withStateLock(() => migrateFlatPlans()); } catch (err) {
     debugLog(`Migration error (non-fatal): ${err.message}`);
   }
 
@@ -500,6 +466,20 @@ async function main() {
     if (typeof obj === 'object' && typeof obj.plan === 'string') return obj.plan;
     return '';
   }
+  // Same tolerance for planFilePath: the old guard required tool_input to be an
+  // object, so a JSON-string payload silently dropped the path.
+  function readPlanFilePath(obj) {
+    if (!obj) return '';
+    if (typeof obj === 'string') {
+      try {
+        const parsed = JSON.parse(obj);
+        if (parsed && typeof parsed.planFilePath === 'string') return parsed.planFilePath;
+      } catch { /* not JSON — fall through */ }
+      return '';
+    }
+    if (typeof obj === 'object' && typeof obj.planFilePath === 'string') return obj.planFilePath;
+    return '';
+  }
   const authoritativePlan =
     readPlanField(input.tool_input) ||
     readPlanField(input.tool_response);
@@ -513,22 +493,15 @@ async function main() {
 
   let planFile = null;
 
-  // Happy path: ExitPlanMode hands us the authoritative plan AND its file path.
-  // Identify the plan by basename(planFilePath) — the exact key stop.mjs's
-  // fallback uses — so the two hooks never disagree on dedup (prevents
-  // double-store / failed suppression) and we never mtime-guess across sessions.
+  // Happy path: ExitPlanMode hands us the authoritative plan AND its file path,
+  // so we mirror it under that basename instead of mtime-guessing across
+  // sessions. Dedup no longer rides on the filename — planMemoryKey hashes the
+  // plan text — but recording the path still lets stop.mjs's basename alias and
+  // the source_ref point at the file the user actually approved.
   const planFilePathInput =
-    (input.tool_input && typeof input.tool_input === 'object' && typeof input.tool_input.planFilePath === 'string')
-      ? input.tool_input.planFilePath
-      : '';
+    readPlanFilePath(input.tool_input) || readPlanFilePath(input.tool_response);
   if (planFilePathInput && authoritativePlan) {
     const base = basename(planFilePathInput);
-    const stored = loadStoredPlans();
-    if (stored[base]) {
-      debugLog(`ExitPlanMode: ${base} already stored — skipping`);
-      emitContext(`SynaBun: Plan already stored (${base}).`);
-      return;
-    }
     try {
       const todayDir = getTodayPlanDir();
       mkdirSync(todayDir, { recursive: true });
@@ -587,7 +560,7 @@ async function main() {
     return;
   }
 
-  const planContent = readFileSync(planFile.path, 'utf-8');
+  const planContent = authoritativePlan || readFileSync(planFile.path, 'utf-8');
   if (!planContent.trim()) {
     process.stdout.write(JSON.stringify({}));
     return;
@@ -597,43 +570,44 @@ async function main() {
   const planTitle = extractPlanTitle(planContent);
 
   // Ensure child category exists under "plans"
-  const categoryName = ensureProjectCategory(project);
+  const categoryName = withStateLock(() => ensureProjectCategory(project));
 
-  // Generate local embedding (Transformers.js, no API key needed)
-  const embedding = await generateEmbedding(planContent);
-
-  // Store in SQLite
-  const id = randomUUID();
   const now = new Date().toISOString();
-
-  storeInSQLite(id, embedding, {
-    content: planContent,
-    category: categoryName,
-    project,
-    importance: 7,
-    tags: ['plan', 'implementation', project],
-    source: 'auto-saved',
-    subcategory: 'plan',
-    created_at: now,
-    updated_at: now,
-    accessed_at: now,
-    access_count: 0,
+  const originalPath = planFilePathInput || planFile.path;
+  // Identity is the plan text, not the path — stop.mjs recomputes this exact key
+  // from the transcript's ExitPlanMode payload and finds our receipt.
+  const planKey = planMemoryKey(project, planContent);
+  const storedPlans = loadStoredPlans();
+  const previous = storedPlans[planKey] || storedPlans[planFile.name];
+  // In parallel with the write (which loads the embedding model): the plan
+  // check needs the network, the write needs the CPU.
+  conflictCheck = planConflicts(planContent, {
+    project, sessionId: input.session_id, cwd: input.cwd || '',
+    excludeIds: previous?.memoryId ? [previous.memoryId] : [],
   });
-
-  // Mark this plan as stored (dedup for future ExitPlanMode calls)
-  markPlanStored(planFile.name, id);
-
-  // Invalidate Neural Interface cache (fire-and-forget)
-  invalidateNeuralInterface();
+  const result = await storePlan({
+    content: planContent, category: categoryName, project, importance: 7,
+    tags: ['plan', 'implementation', project], source: 'auto-saved', subcategory: 'plan',
+    created_at: now, updated_at: now, accessed_at: now, access_count: 0,
+  }, {
+    idempotencyKey: planKey,
+    sourceRef: originalPath, kind: 'decision', existingId: previous?.memoryId,
+  });
+  const id = result.id;
+  markPlanStored([planFile.name, planFilePathInput && basename(planFilePathInput)],
+    id, createHash('sha256').update(planContent).digest('hex'), planKey, project, originalPath);
 
   // Confirm storage — include full plan file path for future NI edit wiring
   const shortTitle = planTitle.length > 60 ? planTitle.slice(0, 60) + '...' : planTitle;
   const matchInfo = planFile.method || 'unknown';
   debugLog(`Stored plan: ${planFile.path} [${matchInfo}] → memory ${id} (project: ${project})`);
-  emitContext(`SynaBun: Plan stored in memory [${id}] — "${shortTitle}" (category: ${categoryName}, project: ${project}). Plan file: ${planFile.path} [matched: ${matchInfo}]`);
+  const advisory = formatPlanConflicts(await conflictCheck);
+  emitContext(`SynaBun: Plan stored in memory [${id}] — "${shortTitle}" (category: ${categoryName}, project: ${project}). Plan file: ${planFile.path} [matched: ${matchInfo}]${advisory ? `\n\n${advisory}` : ''}`);
 }
 
-main().catch((err) => {
+main().catch(async (err) => {
   // On error, still output valid JSON so Claude Code doesn't break
-  emitContext(`SynaBun: Plan storage failed — ${err.message}. The plan file is still saved at ${PLANS_DIR}.`);
+  let advisory = '';
+  try { advisory = conflictCheck ? formatPlanConflicts(await conflictCheck) : ''; } catch { /* advisory only */ }
+  emitContext(`SynaBun: Plan storage failed — ${err.message}. The plan file is still saved at ${PLANS_DIR}.${advisory ? `\n\n${advisory}` : ''}`);
 });

@@ -5,6 +5,9 @@
 // as { providerID, modelID } so api.send() can pass it through to OpenCode.
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { fetchProvidersFull } from './ocp-v2-providers.js';
+import { modelRowMeta } from './ocp-v2-status-logic.js';
+import { openProviderSettings } from './ocp-v2-settings-link.js';
 import { getDefaultStore } from './ocp-v2-state.js';
 
 let _currentStore = getDefaultStore();
@@ -137,7 +140,7 @@ async function ensureLoaded() {
   const generation = _loadGeneration;
   _loadInflight = (async () => {
     try {
-      const res = await fetch('/api/opencode/providers/full').then((r) => r.json());
+      const res = await fetchProvidersFull();
       if (generation !== _loadGeneration) return;
       if (res?.ok === false) throw new Error(res.error || 'provider metadata unavailable');
       const data = res?.data || {};
@@ -269,6 +272,7 @@ function paintMenu(searchTerm) {
     empty.style.cssText = 'opacity:0.5;cursor:default;justify-content:center';
     empty.textContent = _loaded ? 'No connected providers' : 'Loading…';
     _menu.appendChild(empty);
+    if (_loaded) _menu.appendChild(connectProviderOption());
     return;
   }
 
@@ -305,6 +309,7 @@ function paintMenu(searchTerm) {
     empty.style.cssText = 'opacity:0.5;cursor:default;justify-content:center';
     empty.textContent = 'No models available';
     _menu.appendChild(empty);
+    _menu.appendChild(connectProviderOption());
     return;
   }
 
@@ -560,6 +565,19 @@ function paintMenu(searchTerm) {
   }
 }
 
+// The way out of an empty picker: provider sign-in lives in Settings.
+function connectProviderOption() {
+  const opt = document.createElement('div');
+  opt.className = 'ocpv2-dd-option';
+  opt.style.justifyContent = 'center';
+  opt.textContent = 'Connect a provider…';
+  opt.addEventListener('click', () => {
+    closeMenu();
+    openProviderSettings();
+  });
+  return opt;
+}
+
 function makeOption(provId, entry, currentFull, favorites) {
   const fullId = `${provId}/${entry.id}`;
   const badges = capBadgesHtml(entry._obj);
@@ -571,9 +589,14 @@ function makeOption(provId, entry, currentFull, favorites) {
   opt.dataset.fullId = fullId;
   opt.dataset.providerId = provId;
   if (entry._obj?.capabilities) opt.dataset.caps = JSON.stringify(entry._obj.capabilities);
+  // Status (alpha / beta / deprecated) and the catalog's list price per
+  // million tokens, input / output. Meta and caps cells are always emitted so
+  // every row maps onto the same 4-column grid (name | meta | caps | star).
+  const meta = modelRowMeta(entry._obj);
   opt.innerHTML =
     `<span class="ocpv2-dd-model-name">${escHtml(entry.id)}</span>`
-    + (badges ? `<span class="ocpv2-dd-caps">${badges}</span>` : '');
+    + `<span class="ocpv2-dd-model-meta">${meta.status ? `<span class="ocpv2-dd-model-status">${escHtml(meta.status)}</span>` : ''}${escHtml(meta.price)}</span>`
+    + `<span class="ocpv2-dd-caps">${badges}</span>`;
 
   const star = document.createElement('button');
   star.className = 'ocpv2-dd-star' + (isFav ? ' active' : '');

@@ -6,7 +6,8 @@ import {
 
 /**
  * Register the SynaBun Style Guide MCP tool on the given server instance.
- * Single tool with action-based dispatch: get | list.
+ * Single tool with action-based dispatch:
+ * get | summary | tokens | contrast | propose | proposals | export | list.
  */
 export function registerStyleGuideTools(server: McpServer) {
   return [

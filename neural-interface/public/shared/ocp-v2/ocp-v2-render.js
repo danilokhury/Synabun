@@ -1,20 +1,46 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // OpenCode V2 — Renderer
-// Pure render functions. Subscribes to state changes and rebuilds the
-// messages container. Handles the full set of CLI part types:
-//   text, reasoning, tool, file, step-start, step-finish, permission, error.
-// Minimal Markdown (paragraphs / fences / inline code / **bold** / *italic* /
-// lists / links) — no external deps, no syntax highlighting in step 1.
+// Subscribes to state changes and reconciles the messages container. Handles
+// every SDK part type (text, reasoning, tool, file, subtask, agent, retry,
+// compaction, patch; step and snapshot markers are hidden), per-message
+// errors, the retry banner, permission and question cards.
+// What to show is decided in ocp-v2-render-logic.js (no DOM, unit-tested);
+// this file builds the nodes. Markdown goes through `marked` and then the
+// shared allowlist sanitizer before it reaches innerHTML.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { getDefaultStore } from './ocp-v2-state.js';
-import { api } from './ocp-v2-ws.js';
+import { api, supports, isDescendantSession, isKnownDescendantSession, onEvent } from './ocp-v2-ws.js';
+import {
+  permissionCardView, ALWAYS_ALLOW_SCOPE, replyToPermission, FOREIGN_REQUEST_MESSAGE,
+  transcriptQuestionCard, answerQuestion, skipQuestion,
+} from './ocp-v2-approvals.js';
+import { captureBinding } from './ocp-v2-binding.js';
+import { requestsVisibleIn } from './ocp-v2-rehydrate.js';
+import { replyFailed, replyError } from './ocp-v2-caps.js';
 import { handlePostPlanAction } from './ocp-v2-plan.js';
-import { TOOL_ICONS } from '../ocp/ocp-icons.js';
+import { TOOL_ICONS } from './ocp-v2-icons.js';
+import { renderToolCard } from './ocp-v2-tools.js';
+import { messageMetaText } from './ocp-v2-tools-logic.js';
 import { createStickyScrollController } from '../ui-scroll-follow.js';
+import { sanitizeHtmlString } from '../assistant/asst-sanitize.js';
+import { openProviderSettings } from './ocp-v2-settings-link.js';
+import {
+  visibleParts, partSignature, messageErrorView, retryBannerView, retryPartText,
+  compactionLabel, inlinePartText, reasoningPreview, createCardDrafts,
+} from './ocp-v2-render-logic.js';
+import {
+  visibleMessageOrder, revertBannerView, messageText, messageActionsFor, deleteMessageConfirmText,
+} from './ocp-v2-sessions-logic.js';
+import {
+  revertToMessage, restoreReverted, retryFromMessage, forkSession, deleteMessage,
+} from './ocp-v2-session-actions.js';
 
 const _expandedReasoningIds = new Set();
 const _activeRenderers = new Set();
+// The callbacks each panel passed to mountRenderer, for part renderers that
+// only get the store.
+const _rendererOpts = new WeakMap();
 
 // ── Markdown via marked (matches the V1 ocp panel) ──────────────────────────
 let _marked = null;
@@ -41,13 +67,23 @@ ensureMarked();
 
 // Each mountRenderer call creates an independent renderer instance bound to
 // its own container + store. Multiple panels can render simultaneously.
-export function mountRenderer(containerEl, store = getDefaultStore()) {
+// opts (all optional; a sub-agent panel passes none and gets Copy only):
+//   onOpenSession(session)   show a session this panel just created (fork)
+//   onComposeText(text, { files, resources, resourceList })   put a prompt back into the compose box (undo)
+//   onSendText(text, { files })      send a prompt with its own file parts (retry); resolves true when sent
+//   onOpenChild(sessionId)   show the sub-agent session of a task card
+//   confirm({ key, text, confirmLabel })   ask in the panel before something is
+//                            destroyed; resolves true only after the second
+//                            click (ocp-v2-confirm-logic.js). Without it a
+//                            message is not deleted.
+export function mountRenderer(containerEl, store = getDefaultStore(), opts = {}) {
+  _rendererOpts.set(store, opts);
   let _container = containerEl;
   let _renderScheduled = false;
   const scrollController = createStickyScrollController(_container);
 
   const doRender = () => {
-    render(_container, store);
+    render(_container, store, opts);
     scrollController?.scrollToBottom();
   };
   const scheduleRender = () => {
@@ -59,7 +95,12 @@ export function mountRenderer(containerEl, store = getDefaultStore()) {
     });
   };
 
-  const unsubscribe = store.subscribe(() => scheduleRender());
+  const unsubscribe = store.subscribe((event, state) => {
+    // The server listed this session's open permission requests: a reason
+    // typed for one that is no longer among them has no card to come back to.
+    if (event?.type === 'permission:set' && event.listed) settlePermissionReasons(state);
+    scheduleRender();
+  });
 
   const instance = {
     render: doRender,
@@ -82,39 +123,11 @@ export function unmountRenderer() {
   for (const r of _activeRenderers) { try { r.unmount(); } catch {} }
 }
 
-// Per-part signature — captures all visible state so reconcile() can detect
-// when an existing DOM node is still up to date and avoid rebuilding it.
-function _partSig(part) {
-  if (!part) return '';
-  const t = part.type || '';
-  if (t === 'text' || t === 'reasoning') {
-    const text = String(part.text || '');
-    const tail = text.length > 80 ? text.slice(-80) : text;
-    return `${t}:${text.length}:${tail}:${part?.time?.end ? '1' : '0'}`;
-  }
-  if (t === 'tool') {
-    const state = part.state || {};
-    const status = state.status || part.status || '';
-    const input = state.input ?? part.input;
-    const output = state.output ?? part.output;
-    const error = state.error ?? part.error;
-    const inp = input ? JSON.stringify(input).length : 0;
-    const out = output == null
-      ? 0
-      : typeof output === 'string'
-        ? output.length
-        : JSON.stringify(output).length;
-    return `tool:${status}:${part.tool || part.name || ''}:${inp}:${out}:${error ? 'e' : ''}`;
-  }
-  if (t === 'file') {
-    return `file:${part.url || part.path || ''}:${String(part.text || '').length}`;
-  }
-  return `${t}:${part.id || ''}`;
-}
+const _partSig = partSignature;
 
 function _msgSig(msg) {
   let sig = `m:${msg.role || 'assistant'}`;
-  for (const part of msg.parts.values()) sig += '|' + _partSig(part);
+  for (const part of visibleParts(msg)) sig += '|' + _partSig(part);
   return sig;
 }
 
@@ -181,62 +194,134 @@ function _buildEmpty() {
   return empty;
 }
 
-function render(_container, store) {
+function render(_container, store, opts = {}) {
   if (!_container) return;
   const s = store.getState();
+  const actionContext = {
+    supports,
+    canOpenSessions: typeof opts.onOpenSession === 'function',
+    canCompose: typeof opts.onComposeText === 'function' && typeof opts.onSendText === 'function',
+  };
+  const revertBanner = revertBannerView(s.sessionInfo, s.messageOrder);
 
-  const hasInteractiveCards = !!s.pendingPermission || (s.pendingQuestions && s.pendingQuestions.length > 0) || !!s.showPostPlanActions;
-  if (s.messageOrder.length === 0 && !hasInteractiveCards) {
+  // A card is drawn only for a request of the session on screen or of one of
+  // its sub-agents: whatever else is in the queue is not this panel's to answer.
+  const permissions = requestsVisibleIn(
+    s.pendingPermissions?.length ? s.pendingPermissions : (s.pendingPermission ? [s.pendingPermission] : []),
+    s.sessionId, isKnownDescendantSession,
+  );
+  const questions = requestsVisibleIn(s.pendingQuestions, s.sessionId, isKnownDescendantSession);
+  const retry = retryBannerView(s.sessionStatus);
+  const hasInteractiveCards = permissions.length > 0 || questions.length > 0 || !!s.showPostPlanActions;
+  if (s.messageOrder.length === 0 && !hasInteractiveCards && !s.errors.length && !retry && !revertBanner) {
     _reconcile(_container, [{ key: '__empty__', sig: 'empty', build: _buildEmpty }]);
     return;
   }
 
   const desired = [];
 
-  s.errors.forEach((err, i) => {
-    desired.push({
-      key: `err:${i}`,
-      sig: `err:${String(err?.message || err || '')}`,
-      build: () => renderErrorBanner(err),
-    });
-  });
-
   let prevAssistantId = null;
-  for (const messageId of s.messageOrder) {
+  // What was undone (session.revert) stays out of sight until it is restored.
+  for (const messageId of visibleMessageOrder(s.messageOrder, s.sessionInfo?.revert)) {
     const msg = s.messages.get(messageId);
     if (!msg) continue;
+    const parts = visibleParts(msg);
     if ((msg.role || 'assistant') === 'user') {
+      // A user message made only of text OpenCode wrote itself (a shell run,
+      // a compaction marker's context) has nothing of the user's to show.
+      if (!parts.length) continue;
+      prevAssistantId = null;
+      // The marker OpenCode leaves where it compacted is a divider, not
+      // something the user said.
+      if (parts.every((part) => part.type === 'compaction')) {
+        desired.push({
+          key: `u:${msg.id}`,
+          sig: `compaction|${_partSig(parts[0])}`,
+          build: () => renderStepMarker(compactionLabel(parts[0])),
+        });
+        continue;
+      }
+      const userActions = messageActionsFor(msg, s, actionContext);
       desired.push({
         key: `u:${msg.id}`,
-        sig: _msgSig(msg),
-        build: () => renderMessage(msg, store),
+        sig: `${_msgSig(msg)}|${userActions.join(',')}`,
+        build: () => renderMessage(msg, store, userActions, opts),
       });
-      prevAssistantId = null;
     } else {
-      const parts = Array.from(msg.parts.values()).sort((a, b) => {
-        const ai = a.index ?? Number.POSITIVE_INFINITY;
-        const bi = b.index ?? Number.POSITIVE_INFINITY;
-        return ai - bi;
-      });
       for (const part of parts) {
-        if (part.type === 'step-start' || part.type === 'step-finish') continue;
         const isContinuation = prevAssistantId === msg.id;
         const partKey = part.id || `${part.type}:${part.index ?? ''}`;
         desired.push({
           key: `a:${msg.id}:${partKey}`,
-          sig: `${isContinuation ? 'c' : 'h'}|${_partSig(part)}`,
+          sig: `${isContinuation ? 'c' : 'h'}|${msg.info?.summary ? 's' : ''}|${_partSig(part)}`,
           build: () => renderAssistantPartBubble(msg, part, isContinuation, store),
         });
         prevAssistantId = msg.id;
       }
+      // Under a finished assistant message: what OpenCode says it ran on and
+      // cost, then the actions.
+      const done = !!msg.info?.time?.completed;
+      const assistantActions = parts.length && done ? messageActionsFor(msg, s, actionContext) : [];
+      const meta = parts.length && done ? messageMetaText(msg.info) : '';
+      if (assistantActions.length || meta) {
+        desired.push({
+          key: `a:${msg.id}:actions`,
+          sig: `act:${assistantActions.join(',')}|${meta}`,
+          build: () => renderAssistantActions(msg, store, assistantActions, opts, meta),
+        });
+      }
+      const errorView = messageErrorView(msg.info);
+      if (errorView) {
+        desired.push({
+          key: `a:${msg.id}:error`,
+          sig: `e:${errorView.kind}:${errorView.text}`,
+          build: () => renderMessageError(msg, errorView, store),
+        });
+      }
     }
   }
 
-  if (s.pendingPermission) {
-    const p = s.pendingPermission;
+  if (revertBanner) {
+    desired.push({
+      key: 'revert',
+      sig: `revert:${revertBanner.text}:${revertBanner.hasFileChanges ? 'f' : ''}:${s.running ? 'r' : ''}`,
+      build: () => renderRevertBanner(revertBanner, store),
+    });
+  }
+
+  // What /help shows: a card of the panel's own, under the transcript.
+  if (s.helpCard) {
+    desired.push({
+      key: 'help',
+      sig: `help:${JSON.stringify(s.helpCard)}`,
+      build: () => renderHelpCard(s.helpCard, store),
+    });
+  }
+
+  // Errors sit at the end of the transcript, where the reader is, and each
+  // one can be dismissed.
+  for (const err of s.errors) {
+    desired.push({
+      key: `err:${err.id || err.at}`,
+      sig: `err:${String(err?.message || err || '')}`,
+      build: () => renderErrorBanner(err, store),
+    });
+  }
+
+  if (retry) {
+    desired.push({
+      key: 'retry',
+      sig: `retry:${retry.title}:${retry.message}:${retry.nextAt}:${retry.actionLink}`,
+      build: () => renderRetryBanner(retry),
+    });
+  }
+
+  // Every pending request gets its own card, oldest first: a second request
+  // (a parallel sub-agent, a second tool) no longer replaces the first.
+  for (const p of permissions) {
     desired.push({
       key: `perm:${p.id || p.requestId || 'pending'}`,
-      sig: `perm:${p.id || ''}:${p.state || ''}`,
+      sig: `perm:${p.id || ''}:${p.sessionID || ''}:${p.state || ''}:${p._auto ? 'auto' : ''}:${supports('feature:permission-reply-message') ? 'r' : ''}${supports('permission:saved:list') ? 's' : ''}`,
       build: () => renderPermissionCard(p, store),
     });
   }
@@ -253,7 +338,7 @@ function render(_container, store) {
     });
   }
 
-  for (const q of (s.pendingQuestions || [])) {
+  for (const q of questions) {
     desired.push({
       key: `q:${q.id || q.requestId || ''}`,
       sig: `q:${q.id || ''}:${(q.questions?.length || 0)}:${q.answered ? '1' : '0'}`,
@@ -262,6 +347,58 @@ function render(_container, store) {
   }
 
   _reconcile(_container, desired);
+}
+
+// The /help card (helpCardView): the plan card's frame around what the
+// composer can do. Built from data with textContent; nothing of it is a
+// message, and Close takes it away.
+function renderHelpCard(view, store) {
+  const wrap = document.createElement('div');
+  wrap.className = 'ocpv2-post-plan-card ocpv2-help-card';
+  const head = document.createElement('div');
+  head.className = 'ocpv2-post-plan-header';
+  head.textContent = view.title || 'Help';
+  wrap.appendChild(head);
+  if (view.note) {
+    const note = document.createElement('div');
+    note.className = 'ocpv2-post-plan-note';
+    note.textContent = view.note;
+    wrap.appendChild(note);
+  }
+  for (const section of Array.isArray(view.sections) ? view.sections : []) {
+    const title = document.createElement('div');
+    title.className = 'ocpv2-session-menu-note';
+    title.textContent = section.title || '';
+    wrap.appendChild(title);
+    for (const row of section.rows || []) {
+      const line = document.createElement('div');
+      line.className = 'ocpv2-help-row';
+      const name = document.createElement('code');
+      name.className = 'ocpv2-help-name';
+      name.textContent = row.name || '';
+      const text = document.createElement('span');
+      text.className = 'ocpv2-help-text';
+      text.textContent = row.text || '';
+      line.append(name, text);
+      if (row.source) {
+        const source = document.createElement('span');
+        source.className = 'ocpv2-session-item-meta';
+        source.textContent = row.source;
+        line.appendChild(source);
+      }
+      wrap.appendChild(line);
+    }
+  }
+  const actions = document.createElement('div');
+  actions.className = 'ocpv2-post-plan-actions';
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'ocpv2-post-plan-btn';
+  close.textContent = 'Close';
+  close.addEventListener('click', () => store.setHelpCard?.(null));
+  actions.appendChild(close);
+  wrap.appendChild(actions);
+  return wrap;
 }
 
 function renderPostPlanCard(s, store) {
@@ -305,8 +442,10 @@ function renderPostPlanCard(s, store) {
     btn.textContent = label;
     btn.disabled = !!disabled;
     btn.addEventListener('click', () => {
+      // The plan card is this binding's: so is what its action reports.
+      const at = captureBinding(store);
       handlePostPlanAction(action, store).catch((err) => {
-        store.pushError({ message: err?.message || 'Plan action failed' });
+        if (at.isCurrent()) store.pushError({ message: err?.message || 'Plan action failed' });
       });
     });
     actions.appendChild(btn);
@@ -322,7 +461,7 @@ function renderPostPlanCard(s, store) {
 
 // ── Per-message render ───────────────────────────────────────────────────────
 
-function renderMessage(msg, store) {
+function renderMessage(msg, store, actions = [], opts = {}) {
   const wrap = document.createElement('div');
   wrap.className = `ocpv2-msg ocpv2-msg-${msg.role || 'assistant'}`;
   wrap.dataset.messageId = msg.id;
@@ -332,17 +471,135 @@ function renderMessage(msg, store) {
   role.textContent = msg.role === 'user' ? 'You' : 'OpenCode';
   wrap.appendChild(role);
 
-  // Sort parts by their `index` if present, else insertion order from the Map
-  const parts = Array.from(msg.parts.values()).sort((a, b) => {
-    const ai = a.index ?? Number.POSITIVE_INFINITY;
-    const bi = b.index ?? Number.POSITIVE_INFINITY;
-    return ai - bi;
-  });
-  for (const part of parts) {
+  for (const part of visibleParts(msg)) {
     const el = renderPart(part, store);
     if (el) wrap.appendChild(el);
   }
+  const bar = renderMessageActions(msg, store, actions, opts);
+  if (bar) wrap.appendChild(bar);
   return wrap;
+}
+
+// ── Message actions (copy / undo / fork / delete / retry) ───────────────────
+
+const ACTION_LABELS = {
+  copy: 'Copy',
+  undo: 'Undo to here',
+  fork: 'Fork from here',
+  delete: 'Delete',
+  retry: 'Retry',
+};
+
+function renderMessageActions(msg, store, actions, opts) {
+  if (!actions || !actions.length) return null;
+  const bar = document.createElement('div');
+  bar.className = 'ocpv2-msg-actions';
+  for (const action of actions) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'ocpv2-msg-action';
+    btn.dataset.action = action;
+    btn.textContent = ACTION_LABELS[action] || action;
+    btn.addEventListener('click', async (event) => {
+      event.stopPropagation();
+      btn.disabled = true;
+      // A failure is reported in the session the action was clicked in.
+      const at = captureBinding(store);
+      try { await runMessageAction(action, msg, store, opts, btn); }
+      catch (err) { if (at.isCurrent()) store.pushError({ message: err?.message || `${ACTION_LABELS[action] || action} failed` }); }
+      finally { btn.disabled = false; }
+    });
+    bar.appendChild(btn);
+  }
+  return bar;
+}
+
+// The actions of an assistant message hang under its last bubble.
+function renderAssistantActions(msg, store, actions, opts, meta = '') {
+  const wrap = document.createElement('div');
+  wrap.className = 'ocpv2-msg ocpv2-msg-assistant ocpv2-msg-continuation ocpv2-msg-actions-row';
+  wrap.dataset.messageId = msg.id;
+  if (meta) {
+    const line = document.createElement('div');
+    line.className = 'ocpv2-msg-meta';
+    line.textContent = meta;
+    line.setAttribute('data-tooltip', 'Model, agent, tokens and cost as reported by OpenCode');
+    wrap.appendChild(line);
+  }
+  const bar = renderMessageActions(msg, store, actions, opts);
+  if (bar) wrap.appendChild(bar);
+  return wrap;
+}
+
+async function copyText(text, btn, done = 'Copied') {
+  await navigator.clipboard.writeText(text);
+  if (!btn) return;
+  const label = btn.textContent;
+  btn.textContent = done;
+  setTimeout(() => { if (btn.isConnected) btn.textContent = label; }, 1200);
+}
+
+async function runMessageAction(action, msg, store, opts, btn) {
+  // `moved`: the panel went to another session while the action was out. Its
+  // result is dropped: no banner, no prompt in the composer, nothing sent.
+  const report = (result, fallback) => {
+    if (result && result.ok === false && !result.cancelled && !result.moved) store.pushError({ message: result.error || fallback });
+    return result;
+  };
+  switch (action) {
+    case 'copy':
+      await copyText(messageText(msg), btn);
+      return;
+    case 'undo': {
+      const result = report(await revertToMessage(store, api, msg.id), 'Undo failed');
+      if (result?.ok && (result.text || result.files?.length)) {
+        opts.onComposeText?.(result.text, { files: result.files, resources: result.resources, resourceList: result.resourceList });
+      }
+      return;
+    }
+    case 'retry':
+      report(await retryFromMessage(store, api, msg.id, (text, extra) => opts.onSendText(text, extra)), 'Retry failed');
+      return;
+    case 'fork': {
+      // The click is a navigation (opts.onNavigate hands out its intent): the
+      // fork takes the panel only while it is still the user's latest choice.
+      const nav = opts.onNavigate?.();
+      const result = report(await forkSession(store, api, msg.id), 'Fork failed');
+      // A fork made while the user moved on is kept as a tab, not put on screen.
+      if (result?.ok) await opts.onOpenSession?.(result.session, { activate: !result.moved, nav });
+      return;
+    }
+    case 'delete': {
+      // Two steps, both in the panel: this click only asks, naming the
+      // message. A panel that cannot ask deletes nothing.
+      const agreed = typeof opts.confirm === 'function' && (await opts.confirm({
+        key: `message-delete:${msg.id}`, text: deleteMessageConfirmText(msg), confirmLabel: 'Delete message',
+      })) === true;
+      if (!agreed) return;
+      report(await deleteMessage(store, api, msg.id), 'Delete failed');
+      return;
+    }
+    default:
+  }
+}
+
+// What session.revert undid, with the way back.
+function renderRevertBanner(view, store) {
+  const el = document.createElement('div');
+  el.className = 'ocpv2-retry-banner ocpv2-revert-banner';
+  const text = document.createElement('span');
+  text.className = 'ocpv2-retry-message';
+  text.textContent = view.hasFileChanges ? `${view.text} File changes of those turns were rolled back too.` : view.text;
+  el.appendChild(text);
+  if (supports('session:unrevert')) {
+    const restore = inlineAction('Restore', async () => {
+      const result = await restoreReverted(store, api);
+      if (!result.ok && !result.moved) store.pushError({ message: result.error || 'Restore failed' });
+    }, store);
+    restore.disabled = !!store.getState().running;
+    el.appendChild(restore);
+  }
+  return el;
 }
 
 // One assistant bubble per part — each tool use / text / reasoning row reads
@@ -363,7 +620,8 @@ function renderAssistantPartBubble(msg, part, isContinuation, store) {
   if (!isContinuation) {
     const role = document.createElement('div');
     role.className = 'ocpv2-msg-role';
-    role.textContent = 'OpenCode';
+    // The assistant message that follows a compaction is its summary.
+    role.textContent = msg.info?.summary ? 'OpenCode · summary' : 'OpenCode';
     wrap.appendChild(role);
   }
 
@@ -379,6 +637,11 @@ function renderPart(part, store) {
     case 'file':         return renderFilePart(part);
     case 'step-start':   return renderStepMarker('Step start');
     case 'step-finish':  return renderStepMarker('Step finish');
+    case 'compaction':   return renderStepMarker(compactionLabel(part));
+    case 'retry':        return renderNotePart(retryPartText(part), 'ocpv2-part-note-warn');
+    case 'subtask':
+    case 'agent':
+    case 'patch':        return renderNotePart(inlinePartText(part));
     default:             return renderUnknownPart(part);
   }
 }
@@ -389,7 +652,25 @@ function renderTextPart(part) {
   const el = document.createElement('div');
   el.className = 'ocpv2-part ocpv2-part-text';
   el.innerHTML = renderMarkdown(part.text || '');
+  decorateCodeBlocks(el);
   return el;
+}
+
+// A Copy button on every fenced block.
+function decorateCodeBlocks(root) {
+  for (const pre of root.querySelectorAll('pre')) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'ocpv2-code-copy';
+    btn.textContent = 'Copy';
+    btn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      const code = pre.querySelector('code');
+      copyText((code || pre).textContent || '', btn).catch(() => {});
+    });
+    pre.classList.add('ocpv2-code-block');
+    pre.appendChild(btn);
+  }
 }
 
 function renderReasoningPart(part) {
@@ -411,7 +692,17 @@ function renderReasoningPart(part) {
     row.appendChild(dot);
     row.appendChild(label);
     row.appendChild(ellipsis);
-    return row;
+    // Reasoning streams in as deltas: show where the model's thinking is now.
+    const preview = reasoningPreview(part.text);
+    if (!preview) return row;
+    const live = document.createElement('div');
+    live.className = 'ocpv2-part ocpv2-thinking-live';
+    live.appendChild(row);
+    const text = document.createElement('div');
+    text.className = 'ocpv2-thinking-preview';
+    text.textContent = preview;
+    live.appendChild(text);
+    return live;
   }
   const wrap = document.createElement('details');
   wrap.className = 'ocpv2-part ocpv2-part-reasoning';
@@ -467,7 +758,7 @@ const SYNABUN_LABELS = {
   forget: 'Forget', restore: 'Restore', memories: 'Memories', sync: 'Sync',
   category: 'Category', loop: 'Loop', git: 'Git', tictactoe: 'TicTacToe',
   image_staged: 'Images', profile: 'Profile',
-  browser_navigate: 'Browser · Navigate', browser_screenshot: 'Browser · Screenshot',
+  browser_navigate: 'Browser · Navigate', browser_screenshot: 'Browser · Screenshot', browser_console: 'Browser · Console',
   browser_snapshot: 'Browser · Snapshot', browser_content: 'Browser · Content',
   browser_click: 'Browser · Click', browser_type: 'Browser · Type',
   browser_fill: 'Browser · Fill', browser_hover: 'Browser · Hover',
@@ -739,12 +1030,15 @@ function renderToolPart(part, store) {
       stub.textContent = 'Awaiting your answer…';
       return stub;
     }
-    const synthetic = {
-      id: partCallId || `tool-${part.messageID || 'q'}`,
-      sessionID: part.sessionID || store.getState().sessionId,
-      questions,
-      _viaToolPart: true,
-    };
+    // The card belongs to the session the part is in. A part of any other
+    // session (however it reached this store) gets no card to answer from.
+    const synthetic = transcriptQuestionCard(store, part, questions);
+    if (!synthetic) {
+      const stub = document.createElement('div');
+      stub.className = 'ocpv2-part ocpv2-part-question-stub';
+      stub.textContent = 'Awaiting your answer…';
+      return stub;
+    }
     if (isQuestionSubmitted(synthetic.id)) {
       const done = document.createElement('div');
       done.className = 'ocpv2-part ocpv2-part-question-stub';
@@ -758,44 +1052,16 @@ function renderToolPart(part, store) {
     return renderSynaBunToolPart(part, toolName, stateStatus);
   }
 
-  const wrap = document.createElement('div');
-  wrap.className = 'ocpv2-part ocpv2-part-tool';
-
-  const head = document.createElement('div');
-  head.className = 'ocpv2-tool-head';
-  const name = document.createElement('span');
-  name.className = 'ocpv2-tool-name';
-  name.textContent = toolName || 'tool';
-  head.appendChild(name);
-
-  const status = document.createElement('span');
-  status.className = `ocpv2-tool-status ocpv2-tool-${stateStatus}`;
-  status.textContent = stateStatus;
-  head.appendChild(status);
-  wrap.appendChild(head);
-
-  // Input
-  const input = part.state?.input ?? part.input;
-  if (input !== undefined) {
-    const inp = document.createElement('div');
-    inp.className = 'ocpv2-tool-input';
-    inp.textContent = formatJson(input);
-    wrap.appendChild(inp);
-  }
-
-  // Output / error
-  const output = part.state?.output ?? part.output;
-  const error = part.state?.error ?? part.error;
-  if (error) {
-    const errEl = document.createElement('div');
-    errEl.className = 'ocpv2-tool-output ocpv2-tool-output-error';
-    errEl.textContent = typeof error === 'string' ? error : formatJson(error);
-    wrap.appendChild(errEl);
-  } else if (output !== undefined && output !== null) {
-    appendToolOutput(wrap, output);
-  }
-
-  return wrap;
+  // Everything else: a collapsible card (ocp-v2-tools.js).
+  return renderToolCard(part, {
+    contentBlocks: (output) => {
+      if (!parseMcpContentBlocks(output)) return null;
+      const holder = document.createElement('div');
+      appendToolOutput(holder, output);
+      return holder;
+    },
+    onOpenChild: _rendererOpts.get(store)?.onOpenChild || null,
+  });
 }
 
 function renderFilePart(part) {
@@ -830,19 +1096,113 @@ function renderStepMarker(label) {
   return el;
 }
 
+// A part type this panel has no dedicated view for yet.
 function renderUnknownPart(part) {
+  return renderNotePart(`[${part.type || 'unknown'} part]`);
+}
+
+// One muted line: subtask / agent / patch markers, retries.
+function renderNotePart(text, extraClass = '') {
+  if (!text) return null;
   const el = document.createElement('div');
-  el.className = 'ocpv2-part ocpv2-part-text';
-  el.style.opacity = '0.55';
-  el.style.fontFamily = 'ui-monospace, SFMono-Regular, monospace';
-  el.style.fontSize = '11px';
-  el.textContent = `[${part.type || 'unknown'} part]`;
+  el.className = `ocpv2-part ocpv2-part-note ${extraClass}`.trim();
+  el.textContent = text;
+  return el;
+}
+
+// The error an assistant message ended with (AssistantMessage.error).
+function renderMessageError(msg, view, store) {
+  const wrap = document.createElement('div');
+  wrap.className = `ocpv2-msg ocpv2-msg-assistant ocpv2-msg-continuation ocpv2-msg-error ocpv2-msg-error-${view.kind}`;
+  wrap.dataset.messageId = msg.id;
+  const row = document.createElement('div');
+  row.className = view.kind === 'aborted' ? 'ocpv2-part ocpv2-part-note' : 'ocpv2-part ocpv2-message-error';
+  const text = document.createElement('span');
+  text.className = 'ocpv2-message-error-text';
+  text.textContent = view.text;
+  row.appendChild(text);
+  if (view.action === 'compact') {
+    row.appendChild(inlineAction('Compact context', async () => {
+      const at = captureBinding(store);
+      if (!at.sessionId) return;
+      const res = await api.compact({
+        sessionId: at.sessionId, cwd: at.cwd || undefined, mcpProfile: at.mcpProfile || undefined, model: at.model || undefined,
+      });
+      if (at.isCurrent() && (res?.error || res?.ok === false)) store.pushError({ message: res?.error || 'Compact failed' });
+    }, store));
+  } else if (view.action === 'settings') {
+    row.appendChild(inlineAction('Open Settings', () => openProviderSettings(), store));
+  }
+  wrap.appendChild(row);
+  return wrap;
+}
+
+function inlineAction(label, onClick, store) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'ocpv2-inline-action';
+  btn.textContent = label;
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    const at = store ? captureBinding(store) : null;
+    try { await onClick(); }
+    catch (err) { if (!at || at.isCurrent()) store?.pushError?.({ message: err?.message || `${label} failed` }); }
+    finally { btn.disabled = false; }
+  });
+  return btn;
+}
+
+// OpenCode is waiting to retry a failed provider call (session.status retry).
+function renderRetryBanner(view) {
+  const el = document.createElement('div');
+  el.className = 'ocpv2-retry-banner';
+  const title = document.createElement('span');
+  title.className = 'ocpv2-retry-title';
+  title.textContent = view.nextAt
+    ? `${view.title} · next try ${new Date(view.nextAt).toLocaleTimeString()}`
+    : view.title;
+  el.appendChild(title);
+  if (view.message) {
+    const msg = document.createElement('span');
+    msg.className = 'ocpv2-retry-message';
+    msg.textContent = view.message;
+    el.appendChild(msg);
+  }
+  if (view.actionLink) {
+    const link = document.createElement('a');
+    link.className = 'ocpv2-inline-action';
+    link.href = view.actionLink;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = view.actionLabel || 'Open';
+    el.appendChild(link);
+  }
   return el;
 }
 
 // ── Permission card ──────────────────────────────────────────────────────────
 
+// What the user typed into "Reject with a reason", by request id (like the
+// question card's selections below): kept for as long as that request is
+// open, and never dropped to make room. It goes when the request does: this
+// card's own reply, an answer from anywhere else (`permission.replied`
+// reaches every page, whatever session is on screen), the session being
+// deleted, or the server's list of open requests no longer naming it.
+const _permissionReasons = createCardDrafts();
+const permissionKeyOf = (perm) => String(perm?.id || perm?.requestID || perm?.permissionID || '');
+onEvent((eventType, ev) => {
+  if (eventType === 'permission.replied') _permissionReasons.clear(permissionKeyOf(ev));
+  else if (eventType === 'session.deleted') _permissionReasons.forgetSession(ev?.info?.id || ev?.sessionID || ev?.sessionId);
+});
+function settlePermissionReasons(state) {
+  if (!state?.sessionId) return;
+  _permissionReasons.settle(state.sessionId, (state.pendingPermissions || []).map(permissionKeyOf));
+}
+
 function renderPermissionCard(perm, store) {
+  const reasonKey = permissionKeyOf(perm);
+  // The session the request belongs to (a sub-agent's own, when it is one).
+  const reasonOwner = String(perm?.sessionID || perm?.sessionId || store.getState().sessionId || '');
   // OpenCode Permission.Request schema mirrors V1: { id, sessionID, permission, patterns[], metadata, tool?:{messageID,callID} }
   // `perm.permission` may be the type STRING (e.g. "bash") OR a nested object.
   const inner = (perm.permission && typeof perm.permission === 'object') ? perm.permission : perm;
@@ -854,6 +1214,12 @@ function renderPermissionCard(perm, store) {
   const callID = inner.tool?.callID || inner.tool?.callId || perm.tool?.callID || perm.tool?.callId || '';
 
   const info = describePermission(permType, patterns, metadata, callID, store);
+  const view = permissionCardView(perm, { sessionId: store.getState().sessionId });
+
+  // Auto-accept is answering this one: a line, not a card.
+  if (view.auto) {
+    return renderNotePart(`Auto-accepting: ${info.kind}${info.target ? ` · ${_truncate(info.target, 120)}` : ''}`);
+  }
 
   const wrap = document.createElement('div');
   wrap.className = 'ocpv2-permission';
@@ -875,6 +1241,12 @@ function renderPermissionCard(perm, store) {
   headText.appendChild(actionEl);
   head.appendChild(icon);
   head.appendChild(headText);
+  if (view.fromSubagent) {
+    const origin = document.createElement('span');
+    origin.className = 'ocpv2-permission-origin';
+    origin.textContent = 'Sub-agent';
+    head.appendChild(origin);
+  }
   wrap.appendChild(head);
 
   const body = document.createElement('div');
@@ -925,10 +1297,11 @@ function renderPermissionCard(perm, store) {
   // Lock optimistically, but un-grey on a genuine failure so the card stays
   // clickable for a retry instead of freezing the turn forever. On success the
   // SSE permission.replied event clears pendingPermission and removes the card.
-  const respond = async (response) => {
+  const respond = async (response, message) => {
     lock();
-    const ok = await safeReply(perm, response, store);
+    const ok = await safeReply(perm, response, store, message);
     if (!ok) unlock();
+    else _permissionReasons.clear(reasonKey);
   };
 
   const allowOnce = button('Allow once', 'ocpv2-perm-allow', () => respond('once'));
@@ -938,6 +1311,54 @@ function renderPermissionCard(perm, store) {
   actions.appendChild(allowAlways);
   actions.appendChild(reject);
   body.appendChild(actions);
+
+  // What "Always allow" will stop asking about.
+  if (view.always.length) {
+    const always = document.createElement('div');
+    always.className = 'ocpv2-permission-always';
+    always.appendChild(document.createTextNode('Always allow covers '));
+    view.always.forEach((pattern, i) => {
+      if (i) always.appendChild(document.createTextNode(', '));
+      const code = document.createElement('code');
+      code.textContent = pattern;
+      always.appendChild(code);
+    });
+    // How long it lasts: OpenCode keeps the answer in the running serve, not in a saved list.
+    always.appendChild(document.createTextNode(` ${ALWAYS_ALLOW_SCOPE}.`));
+    body.appendChild(always);
+  }
+
+  const more = document.createElement('div');
+  more.className = 'ocpv2-permission-more';
+
+  // Reject and tell the model why (the reason reaches it as the tool error).
+  if (supports('feature:permission-reply-message')) {
+    const reasonRow = document.createElement('div');
+    reasonRow.className = 'ocpv2-permission-reason';
+    reasonRow.hidden = true;
+    const reasonInput = document.createElement('input');
+    reasonInput.type = 'text';
+    reasonInput.className = 'ocpv2-permission-reason-input';
+    reasonInput.placeholder = 'What should it do instead?';
+    reasonInput.maxLength = 2000;
+    // A reason that was being typed comes back with the card (the card is
+    // rebuilt on every state event and when the panel returns to the session).
+    const typedReason = _permissionReasons.get(reasonKey);
+    if (typedReason) { reasonInput.value = typedReason; reasonRow.hidden = false; }
+    reasonInput.addEventListener('input', () => _permissionReasons.set(reasonKey, reasonInput.value, { sessionId: reasonOwner }));
+    const sendReason = button('Reject', 'ocpv2-perm-reject', () => respond('reject', reasonInput.value));
+    reasonInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') { event.preventDefault(); respond('reject', reasonInput.value); }
+    });
+    reasonRow.appendChild(reasonInput);
+    reasonRow.appendChild(sendReason);
+    more.appendChild(linkButton('Reject with a reason', () => {
+      reasonRow.hidden = !reasonRow.hidden;
+      if (!reasonRow.hidden) reasonInput.focus();
+    }));
+    body.appendChild(more);
+    body.appendChild(reasonRow);
+  }
 
   wrap.appendChild(body);
   return wrap;
@@ -1260,14 +1681,20 @@ function renderQuestionCard(req, store) {
   reject.addEventListener('click', async () => {
     wrap.classList.add('ocpv2-question-locked');
     try {
-      if (req._viaToolPart) {
-        // No QuestionRequest exists server-side — abort the in-flight turn so
-        // the user can take over.
-        await api.abort(req.sessionID || store.getState().sessionId);
-      } else {
-        await api.questionReject({ requestId: req.id, sessionId: req.sessionID || store.getState().sessionId });
+      // A queued request is rejected; a transcript card has no request
+      // server-side, so the turn waiting on it is stopped. Either way only by
+      // the panel whose session tree the card belongs to (skipQuestion).
+      const result = await skipQuestion(store, api, req, { isDescendant: isDescendantSession });
+      // Another session's question: not this panel's to skip.
+      if (result.foreign) store.pushError({ message: FOREIGN_REQUEST_MESSAGE });
+      // The server refused: the question is still open. The card is usable
+      // again and keeps what was picked or typed in it.
+      else if (result.ok === false && !result.moved) {
+        store.pushError({ message: result.error || 'Question skip failed' });
+        wrap.classList.remove('ocpv2-question-locked');
+        return;
       }
-      clearQuestionSelection(req.id);
+      if (!result.moved) clearQuestionSelection(req.id);
     } catch (err) {
       console.warn('[ocp-v2-render] question reject failed', err);
     }
@@ -1284,57 +1711,40 @@ async function submitAnswers(requestOrId, sectionAnswers, store, instantQIdx, in
     if (sa.custom) return [sa.custom];
     return Array.from(sa.selected);
   });
-  const req = (typeof requestOrId === 'object' && requestOrId !== null) ? requestOrId : null;
-  const requestId = req ? req.id : requestOrId;
+  // A bare id is looked up in the queue: only a request this store holds can
+  // be checked for ownership, and nothing else is answered.
+  const requestId = (typeof requestOrId === 'object' && requestOrId !== null) ? requestOrId.id : requestOrId;
+  const req = (typeof requestOrId === 'object' && requestOrId !== null)
+    ? requestOrId
+    : (store.getState().pendingQuestions || []).find((q) => String(q?.id || '') === String(requestId || '')) || null;
   const card = document.querySelector(`.ocpv2-question[data-request-id="${CSS.escape(String(requestId || ''))}"]`);
   if (card) card.classList.add('ocpv2-question-locked');
   markQuestionRequestSubmitting(req);
   markQuestionSubmitting(requestId);
-  try {
-    const replyRequestId = await resolveQuestionReplyRequestId(req, requestId, store);
-    if (req?._viaToolPart && !replyRequestId) {
-      throw new Error('OpenCode did not expose a pending question request for this card. Answer was not queued.');
-    }
-    const replyResp = await api.questionReply({ requestId: replyRequestId, answers, cwd: getQuestionDirectory(store), sessionId: store.getState().sessionId });
-    assertWsOk(replyResp, 'Question reply');
-    markQuestionSubmitted(replyRequestId);
+  // Ownership, the request id of a transcript card and the reply itself are
+  // decided in ocp-v2-approvals.js (answerQuestion): every card, whatever
+  // built it, is checked against the binding the click happened on, again
+  // after the pending list was read and again right before the reply.
+  let result;
+  try { result = await answerQuestion(store, api, req, answers, { isDescendant: isDescendantSession }); }
+  catch (err) { result = { ok: false, error: err?.message || 'Question reply failed', raw: err }; }
+  if (result.ok) {
+    markQuestionSubmitted(result.replyRequestId);
     markQuestionRequestSubmitted(req);
     markQuestionSubmitted(requestId);
-    store.removePendingQuestion(replyRequestId);
-    store.removePendingQuestion(requestId);
     clearQuestionRequestSubmitting(req);
     clearQuestionSubmitting(requestId);
     clearQuestionSelection(requestId);
-  } catch (err) {
-    console.warn('[ocp-v2-render] question reply failed', err);
-    clearQuestionRequestSubmitting(req);
-    clearQuestionSubmitting(requestId);
-    if (card) card.classList.remove('ocpv2-question-locked');
-    store.pushError({ message: err?.message || 'Question reply failed', raw: err });
+    return;
   }
-}
-
-async function resolveQuestionReplyRequestId(req, fallbackRequestId, store) {
-  if (!req?._viaToolPart) return fallbackRequestId;
-  const s = store.getState();
-  const listResp = await api.questionList({ cwd: getQuestionDirectory(store), sessionId: s.sessionId });
-  assertWsOk(listResp, 'Question list');
-  const list = normalizeQuestionListResponse(listResp);
-  const partCallId = String(req.id || '');
-  const match = list.find((q) => {
-    if (!q) return false;
-    const qSessionId = q.sessionID || q.sessionId || q.session?.id || '';
-    if (qSessionId && s.sessionId && qSessionId !== s.sessionId) return false;
-    const qCallId = q.tool?.callID || q.tool?.callId || q.tool?.id || '';
-    return partCallId && qCallId ? qCallId === partCallId : true;
-  });
-  if (match?.id) return match.id;
-  console.warn('[ocp-v2-render] question request lookup missed; refusing queued prompt fallback', {
-    sessionId: s.sessionId,
-    partCallId,
-    listCount: list.length,
-  });
-  return null;
+  clearQuestionRequestSubmitting(req);
+  clearQuestionSubmitting(requestId);
+  if (card) card.classList.remove('ocpv2-question-locked');
+  // The panel is on another session by now: its transcript gets no banner
+  // about a question that is not its own.
+  if (result.moved) return;
+  console.warn('[ocp-v2-render] question reply failed', result.error);
+  store.pushError({ message: result.error || 'Question reply failed', raw: result.raw });
 }
 
 function getQuestionDirectory(store) {
@@ -1342,52 +1752,29 @@ function getQuestionDirectory(store) {
   return s.cwd || s.sessionInfo?.directory || s.sessionInfo?.info?.directory || undefined;
 }
 
-function assertWsOk(resp, label) {
-  if (!resp) throw new Error(`${label} failed: empty response`);
-  if (resp.ok === false) throw new Error(`${label} failed: ${formatErrorDetail(resp.error || 'request rejected')}`);
-  if (resp.status && resp.status >= 400) {
-    const detail = formatErrorDetail(resp.error || resp.data?.error || resp.data?.message || `HTTP ${resp.status}`);
-    throw new Error(`${label} failed: ${detail}`);
-  }
-  if (resp.error) throw new Error(`${label} failed: ${formatErrorDetail(resp.error)}`);
-  return resp;
+// The click on a permission card. replyToPermission re-checks that the request
+// belongs to this panel's session tree before anything is sent.
+async function safeReply(perm, response, store, message) {
+  const result = await replyToPermission(store, api, perm, response, {
+    cwd: getQuestionDirectory(store),
+    message,
+    isDescendant: isDescendantSession,
+  });
+  if (result.ok) return true;
+  if (result.foreign) store.pushError({ message: FOREIGN_REQUEST_MESSAGE });
+  // `moved`: the panel was rebound while the click was being checked. The card
+  // that was clicked is gone with its binding; nothing was sent.
+  else if (!result.moved) console.warn('[ocp-v2-render] permission reply failed', result.error || '');
+  return false;
 }
 
-function formatErrorDetail(value) {
-  if (value == null) return 'request rejected';
-  if (typeof value === 'string') return value;
-  if (value instanceof Error) return value.message || String(value);
-  try { return JSON.stringify(value); } catch { return String(value); }
-}
-
-function normalizeQuestionListResponse(resp) {
-  const data = resp?.data ?? resp;
-  if (Array.isArray(data)) return data;
-  if (Array.isArray(data?.questions)) return data.questions;
-  if (Array.isArray(data?.data)) return data.data;
-  return [];
-}
-
-async function safeReply(perm, response, store) {
-  try {
-    const res = await api.permissionReply({
-      sessionId: perm.sessionID || perm.sessionId || store.getState().sessionId,
-      permissionId: perm.id || perm.permissionID,
-      response,
-      cwd: getQuestionDirectory(store),
-    });
-    // The WS round-trip resolves even on a server-side failure (ok:false or an
-    // HTTP >= 400 status). Treat those as failures so the caller can re-enable
-    // the card rather than leaving it greyed on a no-op reply.
-    if (res && (res.ok === false || (typeof res.status === 'number' && res.status >= 400))) {
-      console.warn('[ocp-v2-render] permission reply rejected', res);
-      return false;
-    }
-    return true;
-  } catch (e) {
-    console.warn('[ocp-v2-render] permission reply failed', e);
-    return false;
-  }
+function linkButton(label, onClick) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'ocpv2-permission-link';
+  b.textContent = label;
+  b.addEventListener('click', onClick);
+  return b;
 }
 
 function button(label, extraClass, onClick) {
@@ -1400,10 +1787,35 @@ function button(label, extraClass, onClick) {
 
 // ── Error banner ─────────────────────────────────────────────────────────────
 
-function renderErrorBanner(err) {
+function renderErrorBanner(err, store) {
   const el = document.createElement('div');
   el.className = 'ocpv2-error-banner';
-  el.textContent = err.message || 'Error';
+  const text = document.createElement('span');
+  text.className = 'ocpv2-error-banner-text';
+  text.textContent = err.message || 'Error';
+  el.appendChild(text);
+  // A notice that keeps something for the user (a prompt whose session is
+  // gone) says what can be done with it: `actions` is `[{ label, run(err) }]`.
+  // It goes when one of them is chosen, not through an unnamed ×.
+  const actions = (Array.isArray(err.actions) ? err.actions : []).filter((action) => action?.label && typeof action.run === 'function');
+  for (const action of actions) {
+    const act = document.createElement('button');
+    act.type = 'button';
+    act.className = 'ocpv2-inline-action';
+    act.textContent = action.label;
+    act.addEventListener('click', () => action.run(err));
+    el.appendChild(act);
+  }
+  if (err.id && store?.dismissError && !actions.length) {
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'ocpv2-error-banner-dismiss';
+    close.setAttribute('aria-label', 'Dismiss');
+    close.setAttribute('data-tooltip', 'Dismiss');
+    close.textContent = '×';
+    close.addEventListener('click', () => store.dismissError(err.id));
+    el.appendChild(close);
+  }
   return el;
 }
 
@@ -1418,8 +1830,8 @@ function formatJson(v) {
 }
 
 // Markdown rendering. If marked is loaded → full GFM (tables, strikethrough,
-// blockquotes, headings, hr, lists, code, links). If still loading → escaped
-// text with <br>, and we re-render once marked finishes.
+// blockquotes, headings, hr, lists, code, links), sanitized. If still loading
+// → escaped text with <br>, and we re-render once marked finishes.
 // LRU-ish memoization for renderMarkdown. Each render() pass re-builds every
 // part bubble; without this, marked.parse() runs once per part per state
 // change — dominant CPU cost on long transcripts.
@@ -1432,7 +1844,9 @@ function renderMarkdown(src) {
   if (cached !== undefined) return cached;
   let html;
   if (_marked) {
-    try { html = _marked.parse(text); } catch { html = escapeHtml(text).replace(/\n/g, '<br>'); }
+    // marked passes raw HTML in the source straight through, and the source is
+    // model and tool output: only allowlisted markup may reach innerHTML.
+    try { html = sanitizeHtmlString(_marked.parse(text)); } catch { html = escapeHtml(text).replace(/\n/g, '<br>'); }
   } else {
     html = escapeHtml(text).replace(/\n/g, '<br>');
   }

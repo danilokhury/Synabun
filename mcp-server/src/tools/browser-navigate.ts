@@ -3,6 +3,7 @@ import * as ni from '../services/neural-interface.js';
 import { text } from './response.js';
 import { formatInlineSnapshot, formatAiSnapshotBody } from './browser-observe.js';
 import { autosnapshotEnabled } from './browser-interact.js';
+import * as assist from '../services/browser-assist.js';
 
 const tabIdField = z.string().optional().describe('Target a specific tab within the session. Auto-resolved from environment if omitted.');
 
@@ -51,21 +52,26 @@ function platformHint(url: unknown): string {
 export const browserNavigateSchema = {
   url: z.string().describe('The URL to navigate to.'),
   snapshot: z.enum(['full', 'diff', 'none']).optional().describe('Inline AI snapshot of the new page (default "full", with [ref=eN] refs for actions). "none" = terse response.'),
+  intent: z.string().max(300).optional().describe('What you expect this page to let you do or show (e.g. "read my open invoices"). Adds a "goal satisfied" estimate to the page assessment. Advisory only.'),
   returnSnapshot: returnSnapshotField,
   sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session or creates a new one.'),
   tabId: tabIdField,
 };
 
 export const browserNavigateDescription =
-  'Navigate the browser to a URL (auto-creates a session if needed). By default the response includes an AI snapshot of the new page with [ref=eN] element refs — act on them directly with browser_click/fill/type, no separate snapshot call needed.';
+  'Navigate the browser to a URL (auto-creates a session if needed). By default the response includes an AI snapshot of the new page with [ref=eN] element refs — act on them directly with browser_click/fill/type, no separate snapshot call needed. ' +
+  'A "Jev assessment:" line may follow (usable, loading, authentication_required, verification_required, consent_blocker, error, empty): it is advice about the page, never an action. On a sign-in or verification wall, stop and hand over to a human.';
 
 export async function handleBrowserNavigate(args: {
   url: string;
   snapshot?: 'full' | 'diff' | 'none';
+  intent?: string;
   returnSnapshot?: { mode?: 'full' | 'interactive' | 'landmarks'; selector?: string; viewport?: boolean; maxChars?: number; format?: 'text' | 'json' };
   sessionId?: string;
   tabId?: string;
 }) {
+  // Every URL, localhost included, opens in the default browser (MoreLogin when
+  // it is the default): an explicit session that is not it is dropped.
   const resolved = await ni.resolveSession(args.sessionId, { url: args.url }, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
@@ -76,11 +82,17 @@ export async function handleBrowserNavigate(args: {
   } : undefined;
   // New page → full AI snapshot by default (diff vs the previous page is meaningless).
   const snapshot = args.snapshot ?? (rs || !autosnapshotEnabled() ? undefined : 'full');
-  const result = await ni.navigate(resolved.sessionId, args.url, resolved.tabId, rs, snapshot);
+  // The page-state context comes back in this same round trip; the judgment itself runs here, never in the Neural Interface.
+  const assess = assist.assistAvailable('browser-page-state');
+  const result = await ni.navigate(resolved.sessionId, args.url, resolved.tabId, rs, snapshot, undefined, { semanticContext: assess });
   if (result.error) return text(`Navigation failed: ${result.error}`);
 
   let msg = formatBrowserLocation(result, 'Navigated');
+  if (typeof result.notice === 'string') msg += `\nnote: ${result.notice}`;
   msg += platformHint(result.url);
+  // Advice about the page that loaded. Bounded by the surface timeout, and empty when Jev is off,
+  // rate-limited, unsure, or the page is an unremarkable "usable" in compact mode.
+  if (assess) msg += await assist.assessNavigation(result, args.intent);
   if (snapshot && snapshot !== 'none') {
     msg += `\n\n--- Snapshot ---\n${formatAiSnapshotBody(result, NAVIGATE_SNAPSHOT_MAX_CHARS)}`;
   } else if (args.returnSnapshot) {

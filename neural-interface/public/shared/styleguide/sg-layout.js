@@ -1,0 +1,4 @@
+import { t, label, el, card, row, grid, text, number, select, toggle, textarea, listEditor, mapEditor, aliasPicker, colorField, button, watch } from './sg-kit.js';
+export function render(host, s) {
+    host.append(card('spacing', number(s, 'layout.spacing.base', 'px', { min: 1, max: 64 }), mapEditor(s, 'layout.spacing.scale', { unit: 'px' })), card('grid', grid(number(s, 'layout.container.maxWidth', 'px', { min: 200, max: 10000 }), number(s, 'layout.container.padding', 'px', { min: 0, max: 400 }), number(s, 'layout.grid.columns', '', { min: 1, max: 24, step: 1 }), number(s, 'layout.grid.gutter', 'px', { min: 0, max: 400 }))), card('breakpoints', el('h4', '', label('breakpoints')), mapEditor(s, 'layout.breakpoints', { unit: 'px' }), el('h4', '', label('zIndex')), mapEditor(s, 'layout.zIndex')), card('principles', listEditor(s, 'layout.principles'), listEditor(s, 'responsive.notes', label('responsive'))));
+}

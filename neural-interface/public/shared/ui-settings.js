@@ -1,10 +1,20 @@
+import { mountMemoryMaintenance } from './ui-memory-maintenance.js';
+import { buildJudgmentsTab, wireJudgmentsTab } from './ui-judgments.js';
+import { buildWhatsAppTab, wireWhatsAppTab } from './ui-whatsapp.js';
+import { SETTINGS_GROUPS, SETTINGS_PAGES, DEFAULT_SETTINGS_PAGE, pageKeys, getSettingsPage, resolveSettingsTarget, homeOfControl } from './settings/settings-ia.js';
+import * as kit from './settings/settings-kit.js';
+import { initI18n, isReady as i18nReady, SUPPORTED_LOCALES, LOCALE_NAMES, SYSTEM_LOCALE, getLocale, getLocaleChoice, setLocaleChoice, getSystemLocale, englishTranslator, loadEnglishTranslator } from './i18n.js';
+import { wireSettingsShell, wireSettingsSearch, collectSearchRows, revealSettingsTarget, followSettingsTarget, onSettingsTakeover, applyStoredSections, storeSectionState } from './settings/settings-shell.js';
+import { buildSettingsSearchIndex } from './settings/settings-search.js';
 // ═══════════════════════════════════════════
 // UI-SETTINGS — Settings modal with shared tabs + variant tab injection
 // ═══════════════════════════════════════════
 //
 // The most complex shared UI module. Builds a floating settings panel with
-// 6 shared tabs (General, Setup, Terminal, Database, Recall, Projects, Automations, Interface)
-// plus any variant-registered tabs (e.g. Graphics) injected via the registry.
+// eleven task pages in five groups (./settings/settings-ia.js). A page is a
+// title, a one-line purpose and section cards (./settings/settings-kit.js);
+// each builder below owns one pane of a page. Variant-registered tabs (the 2D
+// Graphics tab) join the Appearance page. Old tab ids still open the right page.
 
 import { state, emit, on } from './state.js';
 import { getSettingsTabs } from './registry.js';
@@ -12,11 +22,14 @@ import { escapeHtml } from './utils.js';
 import { storage } from './storage.js';
 import { KEYS } from './constants.js';
 import { registerAction } from './ui-keybinds.js';
-import { createTerminalSession } from './api.js';
 import { CLI_PROFILES, ensureModelsForProfile, getModelsForProfile } from './agent-runtime-options.js';
+import { getHiddenModels as getOcpHiddenModels, hydrateHiddenModels, saveHiddenModels as saveOcpHiddenModels } from './ocp-hidden-models.js';
 import { buildExplorePrompt } from './ui-tutorial-steps.js';
 import { FI, FI_MAP, getFileIcon } from './ui-file-explorer.js';
 import { getNotifSettings, playTestSound, sendTestBanner, SOUND_PRESETS } from './ui-notifications.js';
+import {
+  fetchRulesStatus, fetchRulesTextWithFallback, installRules, removeRules, installAllRules, setRulesAutoUpdate, removeLegacyRules,
+} from './api.js';
 
 // ── SVG icon constants ──
 
@@ -31,6 +44,7 @@ const TAB_ICONS = {
   collections: '<svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4.03 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/></svg>',
   projects: '<svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>',
   memory: '<svg viewBox="0 0 24 24"><path d="M12 2a7 7 0 0 0-7 7c0 2.38 1.19 4.47 3 5.74V17a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-2.26c1.81-1.27 3-3.36 3-5.74a7 7 0 0 0-7-7z"/><line x1="9" y1="21" x2="15" y2="21"/><line x1="10" y1="24" x2="14" y2="24"/></svg>',
+  judgments: '<svg viewBox="0 0 24 24"><line x1="12" y1="3" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="4" y1="7" x2="20" y2="7"/><path d="M4 7l-2.5 7h5z"/><path d="M20 7l-2.5 7h5z"/></svg>',
   interface: '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="9" y1="9" x2="21" y2="9"/></svg>',
   graphics: '<svg viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>',
   icons: '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>',
@@ -44,6 +58,7 @@ const TAB_ICONS = {
   permissions: '<svg viewBox="0 0 24 24"><path d="M12 2a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2h-1V7a5 5 0 0 0-5-5zm-3 8V7a3 3 0 1 1 6 0v3z"/></svg>',
   opencode: '<svg viewBox="0 0 24 24"><rect x="3" y="2" width="18" height="20" rx="2"/><rect x="7" y="7" width="10" height="10" rx="1"/></svg>',
   discord: '<svg viewBox="0 0 24 24"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.095 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.095 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg>',
+  whatsapp: '<svg viewBox="0 0 24 24"><path d="M3.5 20.5l1.3-3.9A8.5 8.5 0 1 1 8 19.6z"/><path d="M9.5 8.5c.4 2.6 2.9 5.2 5.5 5.6l1-1.2 1.6.8c-.3 1-1.1 1.6-2.1 1.5-2.9-.3-5.8-3.2-6.1-6.1-.1-1 .5-1.8 1.5-2.1l.8 1.6z"/></svg>',
   morelogin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M12 11.5a1 1 0 0 0-1 1c0 1.8-.3 3.6-1.2 5.2"/><path d="M7.8 14.5a8 8 0 0 0-.6 4.3"/><path d="M12 7.5a4.5 4.5 0 0 1 4.5 4.5c0 .6 0 1.2-.1 1.8"/><path d="M5 9.2a7 7 0 0 1 11-1.9"/><path d="M15 13a3 3 0 0 1-3 3"/></svg>',
 };
 
@@ -259,34 +274,6 @@ export function restoreInterfaceConfig() {
   });
 }
 
-// ── Shared tab order (variant tabs injected by order) ──
-
-const SHARED_TAB_IDS = ['server', 'setup', 'terminal', 'opencode', 'notifications', 'browser', 'mcp', 'collections', 'memory', 'projects', 'hooks', 'skills', 'discord', 'youtube', 'permissions', 'social', 'skins', 'interface', 'icons'];
-
-// ── Tab descriptor map ──
-const TAB_META = {
-  server:      { label: 'General',     desc: 'API keys & status',       group: 'System' },
-  setup:       { label: 'Setup',       desc: 'Claude, Gemini, Codex',   group: 'System' },
-  terminal:    { label: 'Terminal',    desc: 'CLI executables',          group: 'System' },
-  opencode:    { label: 'OpenCode',   desc: 'Server & providers',       group: 'System' },
-  notifications: { label: 'Notifications', desc: 'Alerts & sounds',    group: 'System' },
-  browser:     { label: 'Browser',    desc: 'Playwright config',       group: 'System' },
-  mcp:         { label: 'MCP',        desc: 'Servers & profiles',      group: 'System' },
-  collections: { label: 'Database',    desc: 'SQLite storage',          group: 'Data' },
-  memory:      { label: 'Recall',      desc: 'Token budget & sync',     group: 'Data' },
-  projects:    { label: 'Projects',    desc: 'Workspace configs',       group: 'Data' },
-  hooks:       { label: 'Automations', desc: 'Integrations & bridges',  group: 'Connections' },
-  skills:      { label: 'Skills',      desc: 'Slash commands',          group: 'Connections' },
-  discord:     { label: 'Discord',     desc: 'Bot & server config',     group: 'Connections' },
-  morelogin:   { label: 'MoreLogin',   desc: 'Anti-detect browser',     group: 'Connections' },
-  youtube:     { label: 'YouTube',     desc: 'Trailer automation & API', group: 'Connections' },
-  permissions: { label: 'Permissions', desc: 'Tool access control',    group: 'Connections' },
-  social:      { label: 'Social Media', desc: 'Platform automations',   group: 'Connections' },
-  skins:       { label: 'Skins',       desc: 'Community themes',        group: 'Appearance' },
-  interface:   { label: 'Interface',   desc: 'Theme & appearance',      group: 'Appearance' },
-  icons:       { label: 'Icons',       desc: 'File type icons',         group: 'Appearance' },
-};
-
 // ═══════════════════════════════════════════
 // SKIN LOADING — stylesheet injection + boot restore
 // ═══════════════════════════════════════════
@@ -347,6 +334,7 @@ on('sync:skin:changed', (msg) => {
 
 function buildSkinsTab(skins = [], activeSkin = 'default') {
   const activeMeta = skins.find(s => s.id === activeSkin) || { name: activeSkin };
+  const sk = (key, params) => kit.te(`settings.redesign.skins.${key}`, params);
 
   let cardsHtml = '';
   for (const s of skins) {
@@ -355,9 +343,9 @@ function buildSkinsTab(skins = [], activeSkin = 'default') {
       ? `<div class="skin-preview" style="background-image:url(/skins/${escapeHtml(s.id)}/${escapeHtml(s.preview)})"></div>`
       : `<div class="skin-preview-fallback">${escapeHtml(s.name)}</div>`;
 
-    const badgeHtml = isActive ? `<span class="skin-active-badge">Active</span>` : '';
-    const removeBtn = s.builtin ? '' : `<button class="skin-remove" data-skin-id="${escapeHtml(s.id)}">Remove</button>`;
-    const activateBtn = isActive ? '' : `<button class="skin-activate" data-skin-id="${escapeHtml(s.id)}">Activate</button>`;
+    const badgeHtml = isActive ? `<span class="skin-active-badge">${sk('active')}</span>` : '';
+    const removeBtn = s.builtin ? '' : `<button type="button" class="skin-remove" data-skin-id="${escapeHtml(s.id)}" ${kit.inv('SKN005')} title="${kit.H('SKN005')}">${kit.L('SKN005')}</button>`;
+    const activateBtn = isActive ? '' : `<button type="button" class="skin-activate" data-skin-id="${escapeHtml(s.id)}" ${kit.inv('SKN004')} title="${kit.H('SKN004')}">${kit.L('SKN004')}</button>`;
 
     cardsHtml += `
       <div class="skin-card${isActive ? ' active' : ''}" data-skin-id="${escapeHtml(s.id)}">
@@ -365,7 +353,7 @@ function buildSkinsTab(skins = [], activeSkin = 'default') {
         ${badgeHtml}
         <div class="skin-info">
           <span class="skin-name">${escapeHtml(s.name)}</span>
-          <span class="skin-author">${s.author ? 'by ' + escapeHtml(s.author) : ''}</span>
+          <span class="skin-author">${s.author ? sk('by', { author: s.author }) : ''}</span>
         </div>
         <div class="skin-actions">
           ${activateBtn}
@@ -374,21 +362,25 @@ function buildSkinsTab(skins = [], activeSkin = 'default') {
       </div>`;
   }
 
-  return `<div class="settings-tab-body" data-tab="skins">
-    <div class="skin-active-strip">
-      <span class="skin-active-dot"></span>
-      <span class="skin-active-name">${escapeHtml(activeMeta.name)}</span>
-      <span style="color:var(--t-muted)">active</span>
-    </div>
-    <div class="skin-grid" id="skin-grid">
+  return `<div class="stg-pane" data-stg-pane="skins">
+    ${kit.card({
+      id: 'stg-sec-themes', section: 'appearance.themes',
+      status: `<span class="skin-active-strip" ${kit.inv('SKN003')}>
+        <span class="skin-active-dot"></span>
+        <span class="skin-active-name">${escapeHtml(activeMeta.name)}</span>
+        <span>${sk('activeWord')}</span>
+      </span>`,
+      body: `
+    <div class="skin-grid" id="skin-grid" role="group" aria-label="${kit.L('SKN003')}">
       ${cardsHtml}
     </div>
     <div class="skin-upload-area">
-      <button class="skin-upload-btn" id="skin-upload-btn">Install from ZIP</button>
-      <input type="file" id="skin-file-input" accept=".zip" style="display:none">
-      <span class="skin-upload-msg" id="skin-upload-msg"></span>
+      <button type="button" class="skin-upload-btn" id="skin-upload-btn" ${kit.inv('SKN001')} aria-describedby="skin-upload-btn-help">${kit.L('SKN001')}</button>
+      <input type="file" id="skin-file-input" ${kit.inv('SKN002')} accept=".zip" style="display:none" aria-label="${kit.L('SKN002')}">
+      <span class="skin-upload-msg" id="skin-upload-msg" role="status" aria-live="polite"></span>
     </div>
-    <div class="skin-hint">Create a skin: folder with skin.json + skin.css, package as ZIP.</div>
+    ${kit.help('SKN001', { forId: 'skin-upload-btn' })}`,
+    })}
   </div>`;
 }
 
@@ -397,11 +389,11 @@ async function refreshSkinsTab(panel) {
   try {
     const resp = await fetch('/api/skins').then(r => r.json());
     if (!resp.ok) return;
-    const tabBody = panel.querySelector('.settings-tab-body[data-tab="skins"]');
+    const tabBody = kit.paneOf(panel, 'skins');
     if (!tabBody) return;
     const tmp = document.createElement('div');
     tmp.innerHTML = buildSkinsTab(resp.skins, resp.active);
-    const newBody = tmp.querySelector('.settings-tab-body[data-tab="skins"]');
+    const newBody = kit.paneOf(tmp, 'skins');
     tabBody.innerHTML = newBody.innerHTML;
     wireSkinsTab(panel, resp.skins, resp.active);
   } catch {}
@@ -429,7 +421,7 @@ function wireSkinsTab(overlay, skins, activeSkin) {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
       const id = btn.dataset.skinId;
-      if (!confirm(`Remove skin "${id}"?`)) return;
+      if (!confirm(kit.tx('settings.redesign.skins.removeSkin', { id: id }))) return;
       try {
         const resp = await fetch(`/api/skins/${id}`, { method: 'DELETE' }).then(r => r.json());
         if (resp.ok) {
@@ -452,7 +444,7 @@ function wireSkinsTab(overlay, skins, activeSkin) {
       const file = fileInput.files[0];
       if (!file) return;
       fileInput.value = '';
-      uploadMsg.textContent = 'Installing...';
+      uploadMsg.textContent = kit.tx('settings.redesign.skins.installing');
       uploadMsg.className = 'skin-upload-msg';
       try {
         const buf = await file.arrayBuffer();
@@ -462,15 +454,15 @@ function wireSkinsTab(overlay, skins, activeSkin) {
           body: buf,
         }).then(r => r.json());
         if (resp.ok) {
-          uploadMsg.textContent = `Installed "${resp.skin.name}"`;
+          uploadMsg.textContent = kit.tx('settings.redesign.skins.installed', { name: resp.skin.name });
           uploadMsg.className = 'skin-upload-msg success';
           refreshSkinsTab(overlay);
         } else {
-          uploadMsg.textContent = resp.error || 'Upload failed';
+          uploadMsg.textContent = resp.error || kit.tx('settings.redesign.skins.uploadFailed');
           uploadMsg.className = 'skin-upload-msg error';
         }
       } catch (err) {
-        uploadMsg.textContent = err.message || 'Upload failed';
+        uploadMsg.textContent = err.message || kit.tx('settings.redesign.skins.uploadFailed');
         uploadMsg.className = 'skin-upload-msg error';
       }
       setTimeout(() => { if (uploadMsg) uploadMsg.textContent = ''; }, 5000);
@@ -482,1119 +474,880 @@ function wireSkinsTab(overlay, skins, activeSkin) {
 // TAB HTML BUILDERS
 // ═══════════════════════════════════════════
 
-function buildNavHTML(variantTabs, statusMap = {}) {
+// ── Pages ──
+// The page list, their sections and every old-tab alias live in ./settings/settings-ia.js.
+
+function buildNavHTML(activeId) {
   let html = '';
-  let lastGroup = '';
-
-  // Shared tabs — grouped with section headers
-  for (const id of SHARED_TAB_IDS) {
-    const meta = TAB_META[id] || { label: id, desc: '', group: '' };
-
-    // Insert group header when group changes
-    if (meta.group && meta.group !== lastGroup) {
-      if (lastGroup) html += `<div class="settings-nav-sep"></div>\n`;
-      html += `<div class="stg-nav-group-label">${meta.group}</div>\n`;
-      lastGroup = meta.group;
+  for (const group of SETTINGS_GROUPS) {
+    const pages = SETTINGS_PAGES.filter(p => p.group === group.id);
+    if (!pages.length) continue;
+    if (html) html += `<div class="settings-nav-sep"></div>\n`;
+    html += `<div class="stg-nav-group-label">${kit.te(group.labelKey)}</div>\n`;
+    for (const page of pages) {
+      const keys = pageKeys(page);
+      const active = page.id === activeId;
+      html += `<button type="button" class="settings-nav-item${active ? ' active' : ''}" data-tab="${page.id}"${active ? ' aria-current="page"' : ''}>
+      <span class="stg-nav-icon">${TAB_ICONS[page.icon] || ''}</span>
+      <span class="stg-nav-text">
+        <span class="stg-nav-label">${kit.te(keys.navLabel)}<span class="stg-nav-status-text stg-sr"></span></span>
+        <span class="stg-nav-desc">${kit.te(keys.navHelp)}</span>
+      </span>
+    </button>\n`;
     }
-
-    const statusAttr = statusMap[id] ? ` data-status="${statusMap[id]}"` : '';
-    html += `<button class="settings-nav-item${id === 'server' ? ' active' : ''}" data-tab="${id}"${statusAttr}>
-      <span class="stg-nav-icon">${TAB_ICONS[id] || ''}</span>
-      <span class="stg-nav-text">
-        <span class="stg-nav-label">${meta.label}</span>
-        <span class="stg-nav-desc">${meta.desc}</span>
-      </span>
-    </button>\n`;
-  }
-
-  // Separator + variant-registered tabs under "Appearance" group
-  if (variantTabs.length) {
-    html += `<div class="settings-nav-sep"></div>\n`;
-  }
-  for (const tab of variantTabs) {
-    const icon = TAB_ICONS[tab.id] || (tab.icon.startsWith('<') ? tab.icon : `<span style="font-size:14px">${tab.icon}</span>`);
-    html += `<button class="settings-nav-item" data-tab="${tab.id}">
-      <span class="stg-nav-icon">${icon}</span>
-      <span class="stg-nav-text">
-        <span class="stg-nav-label">${tab.label}</span>
-        <span class="stg-nav-desc"></span>
-      </span>
-    </button>\n`;
   }
   return html;
 }
 
-function buildServerTab(settings) {
-  const dbSizeMB = settings.dbSizeBytes ? (settings.dbSizeBytes / 1024 / 1024).toFixed(1) : '0';
-  return `
-      <div class="settings-tab-body active" data-tab="server">
+/** The nav rail's stand-in on a narrow panel: one labelled select that lists every page. */
+function buildPagePickerHTML(activeId) {
+  const groups = SETTINGS_GROUPS.map(group => {
+    const options = SETTINGS_PAGES.filter(p => p.group === group.id).map(page => {
+      const keys = pageKeys(page);
+      return `<option value="${page.id}"${page.id === activeId ? ' selected' : ''}>${kit.te(keys.navLabel)} — ${kit.te(keys.navHelp)}</option>`;
+    }).join('');
+    return options ? `<optgroup label="${kit.te(group.labelKey)}">${options}</optgroup>` : '';
+  }).join('');
+  return `<div class="stg-page-picker">
+        <label for="stg-page-select">${kit.te('settings.redesign.common.allPages')}</label>
+        <select id="stg-page-select">${groups}</select>
+      </div>`;
+}
 
-        <!-- ═══ Storage ═══ -->
-        <div class="stg-section">
-          <div class="gfx-group-title">Storage</div>
-          <div class="settings-status">
-            <span class="settings-status-dot ${settings.storage === 'sqlite' ? 'connected' : 'disconnected'}"></span>
-            Storage: ${settings.storage === 'sqlite' ? 'SQLite' : settings.storage || 'Unknown'}
-          </div>
-          <div class="settings-field">
-            <label>Database Path</label>
-            <div class="settings-key-row">
-              <input type="text" id="stg-db-path" value="${escapeHtml(settings.dbPath || '')}" autocomplete="off" spellcheck="false">
-              <button class="stg-action-btn compact" id="stg-db-browse-btn">Browse</button>
-              <button class="stg-action-btn compact" id="stg-db-move-btn">Move</button>
-            </div>
-            <div id="stg-db-browser" style="display:none;margin:4px 0 8px;border:1px solid var(--s-medium);border-radius:6px;background:var(--s-darker);max-height:220px;overflow-y:auto"></div>
-            <div class="settings-hint" id="stg-db-hint">${settings.dbExists ? `File exists (${dbSizeMB} MB)` : 'Database not found'}</div>
-            <div id="stg-db-move-status" class="stg-inline-status" style="display:none;margin-top:8px;align-items:center;gap:8px"></div>
-            <div id="stg-db-move-cleanup" class="stg-callout stg-callout-success" style="display:none;margin-top:8px;padding:10px 12px;background:rgba(109,213,140,0.08);border:1px solid rgba(109,213,140,0.2);border-radius:8px;">
-              <div class="stg-callout-title">Move successful!</div>
-              <div class="stg-callout-copy">Old database files remain at the previous location.</div>
-              <div id="stg-db-mcp-notice" class="stg-callout-note">Note: Restart the MCP server for the change to take effect.</div>
-              <div class="stg-action-row">
-                <button class="stg-action-btn" id="stg-db-delete-old">Delete Old Files</button>
-                <button class="stg-action-btn" id="stg-db-keep-old">Keep Them</button>
-              </div>
-            </div>
-          </div>
-          <div class="settings-field">
-            <label>Embedding</label>
-            <div class="settings-key-row">
-              <input type="text" value="${settings.embedding === 'local' ? 'Local' : settings.embedding || 'unknown'} — ${settings.embeddingModel || 'n/a'} (${settings.embeddingDims || '?'}d)" readonly autocomplete="off" spellcheck="false">
-            </div>
-            <div class="settings-hint">Embeddings are computed locally, no API key required</div>
-          </div>
+/** The search field above the page list, and the results list that takes the list's place while it holds a query. */
+function buildSearchHTML() {
+  return `<div class="stg-search" role="search">
+          <svg class="stg-search-glyph" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.75"/><path d="m10.5 10.5 3.25 3.25"/></svg>
+          <input type="text" class="stg-search-input" id="stg-search-input" role="combobox" aria-expanded="false" aria-controls="stg-search-list" aria-autocomplete="list" aria-label="${kit.te('settings.redesign.search.label')}" placeholder="${kit.te('settings.redesign.search.placeholder')}" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="search">
+          <button type="button" class="stg-search-clear" id="stg-search-clear" aria-label="${kit.te('settings.redesign.search.clear')}" hidden><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m5.25 5.25 5.5 5.5m0-5.5-5.5 5.5"/></svg></button>
         </div>
+        <div class="stg-search-results" id="stg-search-results" hidden>
+          <div class="stg-search-list" id="stg-search-list" role="listbox" aria-label="${kit.te('settings.redesign.search.results')}"></div>
+          <div class="stg-search-note" id="stg-search-note" hidden></div>
+        </div>
+        <div class="stg-sr" id="stg-search-status" role="status" aria-live="polite"></div>`;
+}
 
-        <!-- ═══ System Backup & Restore ═══ -->
-        <div class="stg-section">
-          <div class="gfx-group-title">System Backup & Restore</div>
-          <div class="settings-hint">
-            Create a full backup of all SynaBun data including .env config, data files,
-            category definitions, and memory database.
+// What search reads from the panel beside its index (settings-search.js): the labelled rows of the panes that draw
+// themselves, and the names of what the panes load (projects, providers, tools, tool profiles and servers, skills,
+// browser profiles, themes, the linked WhatsApp account). Labels and names only: a source names label elements and
+// the shell reads their text, never a value; `help` is given only where it is the app's own copy. `named` rows may
+// sit inside an inventory control (a list it tags).
+const SEARCH_ROW_SOURCES = [
+  { selector: '.settings-field > label, .stg-field > label, .stg-toggle-label, .recall-control-label, .cc-integration-label, .wa-phone > label', row: '.settings-field, .stg-field, .stg-toggle-field, .recall-control-header, .cc-integration-item, .wa-phone' },
+  { selector: '.wa-toggle-row strong, .wa-radio strong, .wa-mode-head strong', row: '.wa-toggle-row, .wa-radio, .wa-mode-card, .wa-level-card', help: 'small, .wa-mode-body' },
+  { selector: '.stg-subhead, .ocp-danger-title, .stg-mcp-form-label' },
+  { selector: '.stg-card-body .stg-card-title', row: '.stg-card' },
+  { selector: '.recall-profile-name, .gfx-preset-name', row: '[role="radio"], button', named: true },
+  { selector: '[data-stg-pane="judgments"] button, [data-stg-pane="whatsapp"] button', caption: true },
+  { selector: '#jv-surfaces-body td:nth-child(2) > div:first-child', row: 'tr', help: '.settings-hint', named: true },
+  { selector: '#cc-project-list .cc-panel-title', row: '.cc-panel', named: true },
+  { selector: '.stg-provider-name', row: '.stg-provider-card', named: true },
+  { selector: '.stg-tool-name', row: '.stg-tool-row', named: true },
+  { selector: '.stg-mx-profile-name, .stg-mx-grp-name, .stg-mx-ext-name', row: '.stg-mx-ext-row, tr', named: true },
+  { selector: '.cc-skill-name', row: '.cc-skill-row', help: '.cc-skill-desc', named: true },
+  { selector: '.bc-profile-name', row: '.bc-profile-item', named: true },
+  { selector: '#ml-profile-list > div > span:first-child', row: '#ml-profile-list > div', named: true },
+  { selector: '.skin-name', row: '.skin-card', named: true },
+  { selector: '#wa-sub', row: '.wa-header', named: true },
+];
+// Never read: lists of the user's own content (memories, messages, logs). A pane opts a container out with data-stg-search="off".
+const SEARCH_OFF = '[data-stg-search="off"], #jv-sessions-list, #jv-log-list, #jv-misfiled-list, #jv-supersessions-list, #jv-triage-list, #jv-bench-result, #jv-test-result, #wa-activity-list, #memory-maintenance details, #sync-results';
+
+/** A variant-registered tab (the 2D Graphics tab) becomes one collapsed card on the page that hosts variant panes. */
+function buildVariantPane(tab) {
+  const known = tab.id === 'graphics';
+  return `<div class="stg-pane" data-stg-pane="${tab.id}">${kit.card({
+    id: known ? 'stg-sec-2d-graph' : `stg-sec-variant-${tab.id}`,
+    section: known ? 'appearance.d2_graph' : `variant.${tab.id}`,
+    title: known ? undefined : kit.esc(tab.label),
+    purpose: known ? undefined : '',
+    collapsible: true, collapsed: true, advanced: true,
+    body: tab.build(),
+  })}</div>`;
+}
+
+/** Every page: heading, then the panes its builders own, in the order settings-ia.js lists them. */
+function buildPagesHTML(panes, variantTabs, activeId) {
+  return SETTINGS_PAGES.map(page => {
+    let body = '';
+    for (const pane of page.panes) {
+      if (panes[pane.id] == null) continue;
+      if (pane.titleKey) body += `<h3 class="stg-pane-title" id="stg-pane-title-${pane.id}">${kit.te(pane.titleKey)}</h3>\n`;
+      body += panes[pane.id];
+    }
+    if (page.variantPanes) for (const tab of variantTabs) body += buildVariantPane(tab);
+    return `<div class="settings-tab-body stg-page${page.id === activeId ? ' active' : ''}" data-tab="${page.id}">${kit.pageHead(page.key)}${body}</div>`;
+  }).join('\n');
+}
+
+function buildServerTab(settings, connections = []) {
+  const conn = connections[0] || {};
+  const dbSizeMB = settings.dbSizeBytes ? (settings.dbSizeBytes / 1024 / 1024).toFixed(1) : '0';
+  const sqlite = settings.storage === 'sqlite';
+  const memoryCount = conn.points || 0;
+  const modelKind = settings.embedding === 'local'
+    ? kit.tx('settings.redesign.server.modelLocal')
+    : (settings.embedding || kit.tx('settings.redesign.server.modelUnknown'));
+  const modelValue = kit.tx('settings.redesign.server.modelValue', {
+    kind: modelKind,
+    model: settings.embeddingModel || kit.tx('settings.redesign.server.modelNone'),
+    dims: settings.embeddingDims || '?',
+  });
+  const intervalOptions = [30, 60, 180, 360].map(value => ({ value, label: kit.te(`settings.redesign.server.every.${value}`) }));
+  const buttonIcon = (shapes) => `<svg viewBox="0 0 24 24" aria-hidden="true">${shapes}</svg>`;
+
+  return `
+      <div class="stg-pane" data-stg-pane="server">
+
+        ${kit.card({
+          id: 'stg-sec-database', section: 'memory_backups.database',
+          status: `<span class="stg-pill" id="stg-db-status" ${kit.inv('GEN015')} data-state="${sqlite ? 'ok' : 'err'}">${kit.te(sqlite ? 'settings.redesign.server.dbReady' : 'settings.redesign.server.dbUnavailable')}</span>`,
+          body: `
+          <div class="stg-field" ${kit.inv('GEN001')}>
+            <label for="stg-db-path">${kit.L('GEN001')}</label>
+            <div class="settings-key-row">
+              <input type="text" id="stg-db-path" value="${escapeHtml(settings.dbPath || '')}" autocomplete="off" spellcheck="false" aria-describedby="stg-db-path-help stg-db-hint">
+              <button type="button" class="stg-action-btn compact" id="stg-db-browse-btn" ${kit.inv('GEN002')} title="${kit.H('GEN002')}">${kit.L('GEN002')}</button>
+              <button type="button" class="stg-action-btn compact" id="stg-db-move-btn" ${kit.inv('GEN003')} title="${kit.H('GEN003')}">${kit.L('GEN003')}</button>
+            </div>
+            ${kit.help('GEN001', { forId: 'stg-db-path' })}
+            <div id="stg-db-browser" role="region" aria-label="${kit.L('GEN002')}" style="display:none;margin:4px 0 8px;border:1px solid var(--s-medium);border-radius:6px;background:var(--s-darker);max-height:220px;overflow-y:auto"></div>
+            <div class="stg-help" id="stg-db-hint" ${kit.inv('GEN016')} aria-live="polite">${settings.dbExists ? kit.te('settings.redesign.server.fileFound', { size: dbSizeMB }) : kit.te('settings.redesign.server.fileMissing')}</div>
+            <div id="stg-db-move-status" class="stg-inline-status" role="status" style="display:none;margin-top:8px;align-items:center;gap:8px"></div>
+            <div id="stg-db-move-cleanup" class="stg-callout stg-callout-success" role="status" style="display:none;margin-top:8px;padding:10px 12px;background:rgba(109,213,140,0.08);border:1px solid rgba(109,213,140,0.2);border-radius:8px;">
+              <div class="stg-callout-title">${kit.te('settings.redesign.server.moveDoneTitle')}</div>
+              <div class="stg-callout-copy">${kit.te('settings.redesign.server.moveDoneCopy')}</div>
+              <div class="stg-callout-copy" id="stg-db-old-path"></div>
+              <div id="stg-db-mcp-notice" class="stg-callout-note">${kit.te('settings.redesign.server.moveRestartNote')}</div>
+              <div class="stg-action-row">
+                <button type="button" class="stg-action-btn" id="stg-db-delete-old" ${kit.inv('GEN004')} aria-describedby="stg-db-delete-old-help">${kit.L('GEN004')}</button>
+                <button type="button" class="stg-action-btn" id="stg-db-keep-old" ${kit.inv('GEN005')} aria-describedby="stg-db-keep-old-help">${kit.L('GEN005')}</button>
+              </div>
+              <div class="stg-help" id="stg-db-delete-old-help">${kit.H('GEN004')}</div>
+              <div class="stg-help" id="stg-db-keep-old-help">${kit.H('GEN005')}</div>
+            </div>
           </div>
-          <div class="stg-action-row">
-            <button class="stg-action-btn" id="sys-backup-btn">
-              <svg viewBox="0 0 24 24">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                <polyline points="7 10 12 15 17 10"/>
-                <line x1="12" y1="15" x2="12" y2="3"/>
-              </svg>
-              Download Full Backup
-            </button>
-            <button class="stg-action-btn" id="sys-restore-btn">
-              <svg viewBox="0 0 24 24">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                <polyline points="17 8 12 3 7 8"/>
-                <line x1="12" y1="3" x2="12" y2="15"/>
-              </svg>
-              Restore from Backup
-            </button>
-            <input type="file" id="sys-restore-file" accept=".zip" style="display:none">
+          ${kit.field('GEN006', `
+            <div class="settings-key-row">
+              <input type="text" id="stg-embedding-model" ${kit.inv('GEN017')} value="${kit.esc(modelValue)}" readonly autocomplete="off" spellcheck="false" aria-describedby="stg-embedding-model-help">
+            </div>`, { forId: 'stg-embedding-model' })}
+          ${kit.subhead(kit.te('settings.redesign.server.summary'))}
+          <div class="conn-list" id="conn-list" ${kit.inv('DB003')} role="group" aria-label="${kit.L('DB003')}" aria-describedby="conn-list-help">
+            <div class="conn-item active">
+              <div class="conn-item-dot"></div>
+              <div class="conn-item-info">
+                <div class="conn-item-name">${kit.te('settings.redesign.server.localDb')}</div>
+                <div class="conn-item-meta">${escapeHtml(settings.dbPath || 'memories.db')}</div>
+              </div>
+              <span class="conn-item-count">${kit.te(memoryCount === 1 ? 'settings.redesign.server.memories.one' : 'settings.redesign.server.memories.other', { count: memoryCount })}</span>
+            </div>
           </div>
-          <div id="sys-backup-status" class="stg-inline-status" style="display:none;margin-top:10px;align-items:center;gap:8px">
+          <div class="db-stats-row">
+            <div class="db-stat">
+              <span class="db-stat-label">${kit.te('settings.redesign.server.statStorage')}</span>
+              <span class="db-stat-value">${kit.te('settings.redesign.server.sqlite')}</span>
+            </div>
+            <div class="db-stat">
+              <span class="db-stat-label">${kit.te('settings.redesign.server.statSize')}</span>
+              <span class="db-stat-value">${kit.te('settings.redesign.server.sizeMb', { size: dbSizeMB })}</span>
+            </div>
+          </div>
+          ${kit.help('DB003', { forId: 'conn-list' })}`,
+        })}
+
+        ${kit.card({
+          id: 'stg-sec-backups', section: 'memory_backups.backups',
+          status: kit.pill('', { id: 'auto-backup-pill', state: 'off' }),
+          body: `
+          ${kit.subhead(kit.te('settings.redesign.server.fullBackup'))}
+          <div class="stg-field" ${kit.inv('GEN007')}>
+            <div class="stg-action-row">
+              <button type="button" class="stg-action-btn" id="sys-backup-btn" aria-describedby="sys-backup-btn-help">
+                ${buttonIcon('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>')}
+                ${kit.L('GEN007')}
+              </button>
+            </div>
+            ${kit.help('GEN007', { forId: 'sys-backup-btn' })}
+          </div>
+          <div class="stg-field" ${kit.inv('GEN008')}>
+            <div class="stg-action-row">
+              <button type="button" class="stg-action-btn" id="sys-restore-btn" aria-describedby="sys-restore-btn-help">
+                ${buttonIcon('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>')}
+                ${kit.L('GEN008')}
+              </button>
+              <input type="file" id="sys-restore-file" ${kit.inv('GEN009')} accept=".zip" style="display:none" aria-label="${kit.L('GEN009')}" title="${kit.H('GEN009')}">
+            </div>
+            ${kit.help('GEN008', { forId: 'sys-restore-btn' })}
+          </div>
+          <div id="sys-backup-status" class="stg-inline-status" role="status" style="display:none;margin-top:10px;align-items:center;gap:8px">
             <div class="wiz-status-dot spin" id="sys-backup-dot"></div>
             <span id="sys-backup-text"></span>
           </div>
-        </div>
 
-        <!-- ═══ Auto Backup ═══ -->
-        <div class="stg-section">
-          <div class="gfx-group-title">Auto Backup</div>
-          <div class="settings-hint">
-            Automatically create verified, versioned backups. Keeps 24 hours of snapshots, 30 daily copies, and 12 weekly copies (10 GB cap).
-          </div>
-
-          <div class="stg-toggle-row">
-            <label>
-              <input type="checkbox" id="auto-backup-toggle">
-              <span>Enable auto backup</span>
-            </label>
-          </div>
-
+          ${kit.subhead(kit.te('settings.redesign.server.autoBackup'))}
+          ${kit.toggleField('GEN010', kit.switchInput('auto-backup-toggle'), { forId: 'auto-backup-toggle' })}
           <div id="auto-backup-options" style="display:none">
-            <div class="stg-inline-field">
-              <label>Frequency</label>
-              <input type="hidden" id="auto-backup-interval" value="360">
-              <div class="cc-dropdown stg-dropdown" data-for="auto-backup-interval">
-                <button class="cc-dropdown-trigger" type="button">
-                  <span class="cc-dropdown-value">Every 6 hours</span>
-                  <svg class="cc-dropdown-arrow" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
-                </button>
-                <div class="cc-dropdown-menu">
-                  <div class="cc-dropdown-item" data-value="30">Every 30 minutes</div>
-                  <div class="cc-dropdown-item" data-value="60">Every hour</div>
-                  <div class="cc-dropdown-item" data-value="180">Every 3 hours</div>
-                  <div class="cc-dropdown-item active" data-value="360">Every 6 hours</div>
-                </div>
-              </div>
-            </div>
-
-            <div class="stg-inline-field">
-              <label>Backup Folder</label>
+            ${kit.field('GEN011', kit.dropdown('auto-backup-interval', intervalOptions, { value: 360, label: kit.L('GEN011') }))}
+            ${kit.field('GEN012', `
               <div class="stg-input-row">
-                <input type="text" id="auto-backup-folder" placeholder="Select a folder..." readonly autocomplete="off" spellcheck="false">
-                <button class="stg-action-btn compact" id="auto-backup-browse">Browse</button>
+                <input type="text" id="auto-backup-folder" placeholder="${kit.te('settings.redesign.server.folderPlaceholder')}" readonly autocomplete="off" spellcheck="false" aria-describedby="auto-backup-folder-help">
+                <button type="button" class="stg-action-btn compact" id="auto-backup-browse" ${kit.inv('GEN013')} title="${kit.H('GEN013')}">${kit.L('GEN013')}</button>
+              </div>`, { forId: 'auto-backup-folder' })}
+            <div class="stg-field" ${kit.inv('GEN014')}>
+              <div class="stg-action-row">
+                <button type="button" class="stg-action-btn" id="auto-backup-now" aria-describedby="auto-backup-now-help">
+                  ${buttonIcon('<polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>')}
+                  ${kit.L('GEN014')}
+                </button>
               </div>
+              ${kit.help('GEN014', { forId: 'auto-backup-now' })}
             </div>
-
-            <div class="stg-action-row">
-              <button class="stg-action-btn" id="auto-backup-now">
-                <svg viewBox="0 0 24 24">
-                  <polyline points="23 4 23 10 17 10"/>
-                  <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
-                </svg>
-                Backup Now
-              </button>
-            </div>
-
-            <div id="auto-backup-info" class="stg-info"></div>
-          </div>
-        </div>
+            <div id="auto-backup-info" class="stg-help" ${kit.inv('GEN018')} role="status" aria-live="polite"></div>
+            ${kit.help('GEN018', { forId: 'auto-backup-info' })}
+          </div>`,
+        })}
 
       </div>`;
 }
 
 function buildBrowserTab() {
+  const b = (key) => kit.te(`settings.redesign.browser.${key}`);
+  const SEARCH = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>';
+  const REFRESH = '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>';
+  const FOLDER = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>';
+
+  // The app's custom select, wired by the browser pane itself (.bc-dropdown). `name` picks the option labels.
+  const dd = (invId, id, name, values, { disabled = false, style = '', attrs = '' } = {}) => kit.dropdown(id,
+    values.map(value => ({ value, label: b(`opt.${name}.${value || 'auto'}`) })),
+    { classes: 'bc-dropdown', label: kit.L(invId), disabled, attrs: `${kit.inv(invId)}${style ? ` style="${style}"` : ''}${attrs ? ` ${attrs}` : ''}` });
+  const text = (id, { ph = '', type = 'text', attrs = '' } = {}) =>
+    `<input type="${type}" class="browser-cfg-input" id="${id}"${ph ? ` placeholder="${ph}"` : ''} spellcheck="false" autocomplete="off" aria-describedby="${id}-help"${attrs ? ` ${attrs}` : ''}>`;
+  const field = (invId, id, o = {}) => kit.field(invId, text(id, o), { forId: id, attrs: o.row || '' });
+  // A number inside a group of related values: its own name for assistive tech, the group's label and help on screen.
+  const num = (invId, id, value, attrs, cls = ' browser-cfg-input-sm') =>
+    `<input type="number" class="browser-cfg-input${cls}" id="${id}" value="${value}" ${attrs} ${kit.inv(invId)} aria-label="${kit.L(invId)}" title="${kit.L(invId)}">`;
+  const numField = (invId, id, value, attrs) => kit.field(invId,
+    `<input type="number" class="browser-cfg-input" id="${id}" value="${value}" ${attrs} aria-describedby="${id}-help">`, { forId: id });
+  const tog = (invId, id, on = false) => kit.toggleField(invId,
+    `<button type="button" class="cc-toggle${on ? ' on' : ''}" id="${id}" aria-labelledby="${id}-label" aria-describedby="${id}-help"></button>`, { forId: id });
+  const group = (key, inner, attrs = '') => `
+          <div class="stg-field"${attrs ? ` ${attrs}` : ''}>
+            <label id="bc-g-${key}-label">${b(`group.${key}.label`)}</label>
+            <div class="bc-inline-group" role="group" aria-labelledby="bc-g-${key}-label" aria-describedby="bc-g-${key}-help">${inner}</div>
+            <div class="stg-help" id="bc-g-${key}-help">${b(`group.${key}.help`)}</div>
+          </div>`;
+  const X = '<span class="bc-x" aria-hidden="true">&times;</span>';
+  const unit = (invId) => `<span class="bc-unit">${kit.L(invId)}</span>`;
+  const PERMISSIONS = [
+    ['BRW050', 'geolocation'], ['BRW051', 'midi'], ['BRW052', 'midi-sysex'], ['BRW053', 'notifications'], ['BRW054', 'camera'],
+    ['BRW055', 'microphone'], ['BRW056', 'background-sync'], ['BRW057', 'ambient-light-sensor'], ['BRW058', 'accelerometer'],
+    ['BRW059', 'gyroscope'], ['BRW060', 'magnetometer'], ['BRW061', 'clipboard-read'], ['BRW062', 'clipboard-write'],
+    ['BRW063', 'payment-handler'], ['BRW064', 'storage-access'],
+  ];
+
   return `
-      <div class="settings-tab-body" data-tab="browser">
-        <div id="setup-browser">
+      <div class="stg-pane" data-stg-pane="browser">
 
-            <!-- ════ QUICK SETUP (always visible, no collapsible) ════ -->
-            <div class="bc-card" id="bcg-executable">
-              <div class="bc-card-row">
-                <label class="bc-lbl">Chrome Path</label>
-                <div class="browser-cfg-input-row">
-                  <input type="text" class="browser-cfg-input" id="bc-executablePath" placeholder="Auto-detect" spellcheck="false" autocomplete="off">
-                  <button class="cli-detect-btn" id="bc-detect-executable" data-tooltip="Detect Chrome path">
-                    <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-                    Detect
-                  </button>
-                </div>
-                <div class="browser-cfg-hint" id="bc-detected-path"></div>
-              </div>
-              <div class="bc-card-row">
-                <label class="bc-lbl">Browser</label>
-                <div class="bc-inline-group">
-                  <input type="hidden" id="bc-browser" value="auto">
-                  <div class="cc-dropdown bc-dropdown" data-for="bc-browser" id="bc-browser-dropdown">
-                    <button class="cc-dropdown-trigger" type="button">
-                      <span class="cc-dropdown-value">Auto-detect</span>
-                      <svg class="cc-dropdown-arrow" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
-                    </button>
-                    <div class="cc-dropdown-menu">
-                      <div class="cc-dropdown-item active" data-value="auto">Auto-detect</div>
-                      <div class="cc-dropdown-item" data-value="chrome">Google Chrome</div>
-                      <div class="cc-dropdown-item" data-value="msedge">Microsoft Edge</div>
-                      <div class="cc-dropdown-item" data-value="chromium">Chromium</div>
-                      <div class="cc-dropdown-item" data-value="morelogin">MoreLogin (anti-detect)</div>
-                      <div class="cc-dropdown-item" data-value="custom">Custom path</div>
-                    </div>
-                  </div>
-                  <input type="hidden" id="bc-channel" value="">
-                </div>
-              </div>
-              <div class="bc-card-row">
-                <label class="bc-lbl">Viewport</label>
-                <div class="bc-inline-group">
-                  <input type="number" class="browser-cfg-input browser-cfg-input-sm" id="bc-viewportWidth" value="1280" min="320" max="7680" step="1" data-tooltip="Width">
-                  <span class="bc-x">&times;</span>
-                  <input type="number" class="browser-cfg-input browser-cfg-input-sm" id="bc-viewportHeight" value="800" min="200" max="4320" step="1" data-tooltip="Height">
-                  <span class="bc-sep"></span>
-                  <input type="number" class="browser-cfg-input" id="bc-deviceScaleFactor" value="1" min="0.5" max="5" step="0.25" style="width:52px;flex:none" data-tooltip="DPR">
-                  <span class="bc-unit">DPR</span>
-                </div>
-              </div>
-              <div class="bc-card-row">
-                <label class="bc-lbl">Stream</label>
-                <div class="bc-inline-group">
-                  <button class="cc-toggle" id="bc-screencastEnabled"></button>
-                  <span class="bc-hint-inline">Live browser preview in Neural Interface</span>
-                </div>
-              </div>
-              <div class="bc-card-row">
-                <label class="bc-lbl">Screencast</label>
-                <div class="bc-inline-group">
-                  <input type="hidden" id="bc-screencastFormat" value="jpeg">
-                  <div class="cc-dropdown bc-dropdown" data-for="bc-screencastFormat" style="width:72px;flex:none">
-                    <button class="cc-dropdown-trigger" type="button">
-                      <span class="cc-dropdown-value">JPEG</span>
-                      <svg class="cc-dropdown-arrow" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
-                    </button>
-                    <div class="cc-dropdown-menu">
-                      <div class="cc-dropdown-item active" data-value="jpeg">JPEG</div>
-                      <div class="cc-dropdown-item" data-value="png">PNG</div>
-                    </div>
-                  </div>
-                  <input type="range" class="browser-cfg-range" id="bc-screencastQuality" value="60" min="10" max="100" step="5" style="flex:1;min-width:60px">
-                  <span class="browser-cfg-range-val" id="bc-screencastQuality-val">60%</span>
-                </div>
-              </div>
+        ${kit.card({
+          id: 'setup-browser', section: 'browser.browser_choice',
+          body: `
+          ${kit.field('BRW003', `<div class="bc-inline-group">${dd('BRW003', 'bc-browser', 'browser', ['auto', 'chrome', 'msedge', 'chromium', 'morelogin', 'custom'], { attrs: 'id="bc-browser-dropdown"' })}<input type="hidden" id="bc-channel" value=""></div>`)}
+          <div class="stg-field bc-card-row" id="bcg-executable" ${kit.inv('BRW001')}>
+            <label for="bc-executablePath">${kit.L('BRW001')}</label>
+            <div class="browser-cfg-input-row">
+              ${text('bc-executablePath', { ph: b('ph.autoDetect') })}
+              <button type="button" class="cli-detect-btn" id="bc-detect-executable" ${kit.inv('BRW002')} title="${kit.H('BRW002')}">${SEARCH}${kit.L('BRW002')}</button>
             </div>
+            <div class="stg-help" id="bc-executablePath-help">${kit.H('BRW001')}</div>
+            <div class="browser-cfg-hint" id="bc-detected-path" ${kit.inv('BRW084')} role="status" aria-live="polite"></div>
+          </div>
+          ${group('pageSize', `
+              ${num('BRW004', 'bc-viewportWidth', 1280, 'min="320" max="7680" step="1"')}${X}
+              ${num('BRW005', 'bc-viewportHeight', 800, 'min="200" max="4320" step="1"')}`)}
+          ${numField('BRW006', 'bc-deviceScaleFactor', 1, 'min="0.5" max="5" step="0.25" style="width:80px"')}
+          ${tog('BRW007', 'bc-screencastEnabled')}
+          ${kit.advanced(`
+            ${kit.field('BRW008', dd('BRW008', 'bc-screencastFormat', 'format', ['jpeg', 'png'], { style: 'width:110px;flex:none' }))}
+            ${kit.field('BRW009', `
+              <div class="bc-inline-group">
+                <input type="range" class="browser-cfg-range" id="bc-screencastQuality" value="60" min="10" max="100" step="5" style="flex:1;min-width:60px" aria-describedby="bc-screencastQuality-help">
+                <span class="browser-cfg-range-val" id="bc-screencastQuality-val">60%</span>
+              </div>`, { forId: 'bc-screencastQuality' })}`, { labelKey: 'settings.redesign.browser.previewOptions' })}`,
+        })}
 
-            <!-- ════ PROFILE ════ -->
-            <div class="bc-card bc-card-accent">
-              <div class="bc-card-header">Profile &amp; Storage</div>
-              <input type="hidden" id="bc-userDataDir" value="">
-              <div class="bc-card-row">
-                <label class="bc-lbl">Chrome Profile</label>
-                <div class="browser-cfg-input-row" style="flex:1">
-                  <button class="cli-detect-btn" id="bc-detect-profiles" data-tooltip="Scan for Chrome profiles" style="order:2">
-                    <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-                    Scan
-                  </button>
-                </div>
-              </div>
-              <div class="bc-profile-list" id="bc-profile-list">
-                <div class="bc-profile-item selected" data-profile-value="">
-                  <span class="bc-profile-radio"></span>
-                  <span class="bc-profile-name">Clean Sandbox</span>
-                  <span class="bc-profile-hint">No persistent profile</span>
-                </div>
-                <div class="bc-profile-item" data-profile-value="__synabun__">
-                  <span class="bc-profile-radio"></span>
-                  <span class="bc-profile-name">SynaBun Profile</span>
-                  <span class="bc-profile-hint">Managed</span>
-                </div>
-              </div>
-              <div id="bc-chrome-running-warn" class="stg-callout stg-callout-warn" style="display:none;margin:4px 0 2px;padding:4px 8px;border-radius:4px;background:rgba(255,180,0,0.12);color:#e0a800"></div>
-              <div class="bc-card-row" style="margin-top:6px">
-                <label class="bc-lbl">Connection</label>
-                <div class="bc-inline-group">
-                  <input type="hidden" id="bc-connectMode" value="mirror">
-                  <div class="cc-dropdown bc-dropdown" data-for="bc-connectMode" style="flex:1">
-                    <button class="cc-dropdown-trigger" type="button">
-                      <span class="cc-dropdown-value">Mirror copy (isolated)</span>
-                      <svg class="cc-dropdown-arrow" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
-                    </button>
-                    <div class="cc-dropdown-menu">
-                      <div class="cc-dropdown-item active" data-value="mirror">Mirror copy (isolated)</div>
-                      <div class="cc-dropdown-item" data-value="attach">Attach to real Chrome</div>
-                      <div class="cc-dropdown-item" data-value="morelogin">MoreLogin (anti-detect)</div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-              <div class="bc-card-row" id="bc-attachSeed-row" style="display:none">
-                <label class="bc-lbl">Seed Profile</label>
-                <div class="bc-inline-group">
-                  <input type="hidden" id="bc-attachSeed" value="real">
-                  <div class="cc-dropdown bc-dropdown" data-for="bc-attachSeed" style="flex:1">
-                    <button class="cc-dropdown-trigger" type="button">
-                      <span class="cc-dropdown-value">From my real profile</span>
-                      <svg class="cc-dropdown-arrow" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
-                    </button>
-                    <div class="cc-dropdown-menu">
-                      <div class="cc-dropdown-item active" data-value="real">From my real profile</div>
-                      <div class="cc-dropdown-item" data-value="fresh">Fresh (empty)</div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-              <div class="bc-card-row" id="bc-morelogin-row" style="display:none">
-                <label class="bc-lbl">MoreLogin Profile</label>
-                <div class="browser-cfg-input-row" style="flex:1">
-                  <select class="browser-cfg-input" id="bc-morelogin-env-id" style="flex:1"></select>
-                  <button class="cli-detect-btn" id="bc-morelogin-refresh" data-tooltip="Refresh MoreLogin profiles" style="order:2">
-                    <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-                    Refresh
-                  </button>
-                </div>
-              </div>
-              <div class="bc-card-row" id="bc-morelogin-status-row" style="display:none">
-                <label class="bc-lbl"></label>
-                <span class="bc-hint-inline" id="bc-morelogin-status-text" style="flex:1;font-size:11px;color:var(--t-secondary)"></span>
-              </div>
-              <div class="bc-card-row" style="margin-top:6px">
-                <label class="bc-lbl">Path</label>
-                <div class="browser-cfg-input-row" style="flex:1">
-                  <input type="text" class="browser-cfg-input" id="bc-custom-profile-path" placeholder="Profile folder path (or pick from list above)" spellcheck="false" autocomplete="off" style="flex:1">
-                  <button class="cli-detect-btn" id="bc-browse-folder" data-tooltip="Browse for folder" style="order:2">
-                    <svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
-                    Browse
-                  </button>
-                </div>
-              <div id="bc-browse-browser" style="display:none;margin:4px 0 4px;border:1px solid var(--s-medium);border-radius:6px;background:var(--s-darker);max-height:220px;overflow-y:auto"></div>
-              </div>
-              <div class="bc-card-row">
-                <label class="bc-lbl">Persist State</label>
-                <div class="bc-inline-group">
-                  <button class="cc-toggle" id="bc-persistStorage"></button>
-                  <span class="bc-hint-inline">Save cookies &amp; localStorage between sessions</span>
-                </div>
-              </div>
-              <div class="bc-card-row" id="bc-storagePath-row">
-                <label class="bc-lbl">Storage File</label>
-                <input type="text" class="browser-cfg-input" id="bc-storageStatePath" placeholder="data/browser-storage.json" spellcheck="false" disabled>
-              </div>
-              <div class="bc-card-row">
-                <label class="bc-lbl">Clear on Start</label>
-                <div class="bc-inline-group">
-                  <button class="cc-toggle" id="bc-clearStorageOnStart"></button>
-                </div>
-              </div>
+        ${kit.card({
+          id: 'bcg-profiles', section: 'browser.browser_profiles',
+          body: `
+          <input type="hidden" id="bc-userDataDir" value="">
+          ${kit.field('BRW011', dd('BRW011', 'bc-connectMode', 'connect', ['mirror', 'attach', 'morelogin']))}
+          ${kit.field('BRW012', dd('BRW012', 'bc-attachSeed', 'seed', ['real', 'fresh']), { attrs: 'id="bc-attachSeed-row" style="display:none"' })}
+          <div class="stg-field bc-card-row" id="bc-morelogin-row" ${kit.inv('BRW013')} style="display:none">
+            <label for="bc-morelogin-env-id">${kit.L('BRW013')}</label>
+            <div class="browser-cfg-input-row">
+              <select class="browser-cfg-input" id="bc-morelogin-env-id" style="flex:1" aria-describedby="bc-morelogin-env-id-help"></select>
+              <button type="button" class="cli-detect-btn" id="bc-morelogin-refresh" ${kit.inv('BRW014')} title="${kit.H('BRW014')}">${REFRESH}${kit.L('BRW014')}</button>
             </div>
-
-            <!-- ════ IDENTITY & STEALTH ════ -->
-            <div class="browser-cfg-group" id="bcg-identity">
-              <div class="browser-cfg-group-title" data-collapsible-sub>
-                <svg class="browser-cfg-chevron" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
-                Identity &amp; Stealth
-              </div>
-              <div class="browser-cfg-group-body">
-                <div class="bc-card-row">
-                  <label class="bc-lbl">Stealth Fingerprint</label>
-                  <div class="bc-inline-group">
-                    <button class="cc-toggle on" id="bc-stealthFingerprint"></button>
-                    <span class="bc-hint-inline">webdriver=false, fake plugins, language cloning</span>
-                  </div>
-                </div>
-                <div class="bc-card-row">
-                  <label class="bc-lbl">User Agent</label>
-                  <input type="text" class="browser-cfg-input" id="bc-userAgent" placeholder="Auto-clone from real browser" spellcheck="false">
-                </div>
-                <div class="bc-card-row">
-                  <label class="bc-lbl">Locale</label>
-                  <div class="bc-inline-group">
-                    <input type="text" class="browser-cfg-input" id="bc-acceptLanguage" placeholder="en-US,en;q=0.9" spellcheck="false" style="flex:1">
-                    <input type="text" class="browser-cfg-input" id="bc-locale" placeholder="en-US" spellcheck="false" style="width:80px;flex:none">
-                    <input type="text" class="browser-cfg-input" id="bc-timezoneId" placeholder="America/New_York" spellcheck="false" style="flex:1">
-                  </div>
-                </div>
-                <div class="bc-card-row">
-                  <label class="bc-lbl">Extra Headers</label>
-                  <textarea class="browser-cfg-textarea" id="bc-extraHTTPHeaders" rows="2" placeholder='{"X-Custom": "value"}' spellcheck="false"></textarea>
-                </div>
-              </div>
+            <div class="stg-help" id="bc-morelogin-env-id-help">${kit.H('BRW013')}</div>
+          </div>
+          <div class="stg-field" id="bc-morelogin-status-row" style="display:none">
+            <span class="bc-hint-inline stg-help" id="bc-morelogin-status-text" role="status" aria-live="polite"></span>
+          </div>
+          <div class="stg-field bc-card-row" ${kit.inv('BRW083')}>
+            <label id="bc-profile-list-label">${kit.L('BRW083')}</label>
+            <div class="browser-cfg-input-row">
+              <button type="button" class="cli-detect-btn" id="bc-detect-profiles" ${kit.inv('BRW010')} title="${kit.H('BRW010')}">${SEARCH}${kit.L('BRW010')}</button>
             </div>
-
-            <!-- ════ DISPLAY ════ -->
-            <div class="browser-cfg-group" id="bcg-viewport">
-              <div class="browser-cfg-group-title" data-collapsible-sub>
-                <svg class="browser-cfg-chevron" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
-                Display &amp; Emulation
-              </div>
-              <div class="browser-cfg-group-body">
-                <div class="bc-card-row">
-                  <label class="bc-lbl">Screen Size</label>
-                  <div class="bc-inline-group">
-                    <input type="number" class="browser-cfg-input browser-cfg-input-sm" id="bc-screenWidth" value="1920" min="320" max="7680" step="1">
-                    <span class="bc-x">&times;</span>
-                    <input type="number" class="browser-cfg-input browser-cfg-input-sm" id="bc-screenHeight" value="1080" min="200" max="4320" step="1">
-                  </div>
-                </div>
-                <div class="bc-card-row">
-                  <label class="bc-lbl">Emulation</label>
-                  <div class="bc-inline-group">
-                    <button class="cc-toggle" id="bc-isMobile"></button>
-                    <span class="bc-hint-inline">Mobile</span>
-                    <span class="bc-sep"></span>
-                    <button class="cc-toggle" id="bc-hasTouch"></button>
-                    <span class="bc-hint-inline">Touch</span>
-                  </div>
-                </div>
-                <div class="bc-card-row">
-                  <label class="bc-lbl">Appearance</label>
-                  <div class="bc-inline-group">
-                    <input type="hidden" id="bc-colorScheme" value="">
-                    <div class="cc-dropdown bc-dropdown" data-for="bc-colorScheme">
-                      <button class="cc-dropdown-trigger" type="button">
-                        <span class="cc-dropdown-value">Color: auto</span>
-                        <svg class="cc-dropdown-arrow" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
-                      </button>
-                      <div class="cc-dropdown-menu">
-                        <div class="cc-dropdown-item active" data-value="">Color: auto</div>
-                        <div class="cc-dropdown-item" data-value="light">Light</div>
-                        <div class="cc-dropdown-item" data-value="dark">Dark</div>
-                        <div class="cc-dropdown-item" data-value="no-preference">No pref</div>
-                      </div>
-                    </div>
-                    <input type="hidden" id="bc-reducedMotion" value="">
-                    <div class="cc-dropdown bc-dropdown" data-for="bc-reducedMotion">
-                      <button class="cc-dropdown-trigger" type="button">
-                        <span class="cc-dropdown-value">Motion: auto</span>
-                        <svg class="cc-dropdown-arrow" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
-                      </button>
-                      <div class="cc-dropdown-menu">
-                        <div class="cc-dropdown-item active" data-value="">Motion: auto</div>
-                        <div class="cc-dropdown-item" data-value="reduce">Reduce</div>
-                        <div class="cc-dropdown-item" data-value="no-preference">No pref</div>
-                      </div>
-                    </div>
-                    <input type="hidden" id="bc-forcedColors" value="">
-                    <div class="cc-dropdown bc-dropdown" data-for="bc-forcedColors">
-                      <button class="cc-dropdown-trigger" type="button">
-                        <span class="cc-dropdown-value">Colors: auto</span>
-                        <svg class="cc-dropdown-arrow" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
-                      </button>
-                      <div class="cc-dropdown-menu">
-                        <div class="cc-dropdown-item active" data-value="">Colors: auto</div>
-                        <div class="cc-dropdown-item" data-value="active">Forced</div>
-                        <div class="cc-dropdown-item" data-value="none">None</div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
+            <div class="stg-help" id="bc-profile-list-help">${kit.H('BRW083')}</div>
+          </div>
+          <div class="bc-profile-list" id="bc-profile-list" role="group" aria-labelledby="bc-profile-list-label" aria-describedby="bc-profile-list-help">
+            <div class="bc-profile-item selected" data-profile-value="">
+              <span class="bc-profile-radio"></span>
+              <span class="bc-profile-name">${b('cleanSandbox')}</span>
+              <span class="bc-profile-hint">${b('noPersistentProfile')}</span>
             </div>
-
-            <!-- ════ ADVANCED ════ -->
-            <div class="browser-cfg-group" id="bcg-advanced">
-              <div class="browser-cfg-group-title" data-collapsible-sub>
-                <svg class="browser-cfg-chevron" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
-                Advanced
-              </div>
-              <div class="browser-cfg-group-body">
-                <!-- Timeouts & Launch -->
-                <div class="bc-adv-section">Timeouts &amp; Launch</div>
-                <div class="bc-card-row">
-                  <label class="bc-lbl">Timeouts</label>
-                  <div class="bc-inline-group">
-                    <input type="number" class="browser-cfg-input" id="bc-timeout" value="30000" min="0" max="300000" step="1000" style="width:80px;flex:none">
-                    <span class="bc-unit">action</span>
-                    <input type="number" class="browser-cfg-input" id="bc-navigationTimeout" value="30000" min="0" max="300000" step="1000" style="width:80px;flex:none">
-                    <span class="bc-unit">nav</span>
-                    <input type="number" class="browser-cfg-input" id="bc-slowMo" value="0" min="0" max="10000" step="50" style="width:64px;flex:none">
-                    <span class="bc-unit">slow</span>
-                  </div>
-                </div>
-                <div class="bc-card-row">
-                  <label class="bc-lbl">Extra Args</label>
-                  <input type="text" class="browser-cfg-input" id="bc-extraArgs" placeholder="--flag1 --flag2=value" spellcheck="false">
-                </div>
-
-                <!-- Screencast (advanced) -->
-                <div class="bc-adv-section">Screencast</div>
-                <div class="bc-card-row">
-                  <label class="bc-lbl">Resolution</label>
-                  <div class="bc-inline-group">
-                    <input type="number" class="browser-cfg-input browser-cfg-input-sm" id="bc-screencastMaxWidth" value="1280" min="320" max="3840" step="1">
-                    <span class="bc-x">&times;</span>
-                    <input type="number" class="browser-cfg-input browser-cfg-input-sm" id="bc-screencastMaxHeight" value="800" min="200" max="2160" step="1">
-                    <span class="bc-sep"></span>
-                    <span class="bc-unit">every</span>
-                    <input type="number" class="browser-cfg-input" id="bc-screencastEveryNthFrame" value="1" min="1" max="30" step="1" style="width:44px;flex:none">
-                    <span class="bc-unit">frame</span>
-                  </div>
-                </div>
-
-                <!-- Security -->
-                <div class="bc-adv-section">Security</div>
-                <div class="bc-card-row">
-                  <label class="bc-lbl">Flags</label>
-                  <div class="bc-inline-group bc-toggle-row">
-                    <div class="bc-toggle-item"><button class="cc-toggle on" id="bc-javaScriptEnabled"></button><span>JS</span></div>
-                    <div class="bc-toggle-item"><button class="cc-toggle" id="bc-ignoreHTTPSErrors"></button><span>Skip HTTPS</span></div>
-                    <div class="bc-toggle-item"><button class="cc-toggle" id="bc-bypassCSP"></button><span>Bypass CSP</span></div>
-                    <div class="bc-toggle-item"><button class="cc-toggle on" id="bc-acceptDownloads"></button><span>Downloads</span></div>
-                    <div class="bc-toggle-item"><button class="cc-toggle on" id="bc-strictSelectors"></button><span>Strict</span></div>
-                  </div>
-                </div>
-                <div class="bc-card-row">
-                  <label class="bc-lbl">Workers</label>
-                  <input type="hidden" id="bc-serviceWorkers" value="allow">
-                  <div class="cc-dropdown bc-dropdown" data-for="bc-serviceWorkers">
-                    <button class="cc-dropdown-trigger" type="button">
-                      <span class="cc-dropdown-value">Allow</span>
-                      <svg class="cc-dropdown-arrow" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
-                    </button>
-                    <div class="cc-dropdown-menu">
-                      <div class="cc-dropdown-item active" data-value="allow">Allow</div>
-                      <div class="cc-dropdown-item" data-value="block">Block</div>
-                    </div>
-                  </div>
-                </div>
-
-                <!-- Geolocation -->
-                <div class="bc-adv-section">Geolocation</div>
-                <div class="bc-card-row">
-                  <label class="bc-lbl">Override</label>
-                  <div class="bc-inline-group">
-                    <button class="cc-toggle" id="bc-geoEnabled"></button>
-                    <input type="number" class="browser-cfg-input" id="bc-geoLatitude" value="0" min="-90" max="90" step="0.0001" disabled style="width:80px;flex:none" placeholder="lat">
-                    <input type="number" class="browser-cfg-input" id="bc-geoLongitude" value="0" min="-180" max="180" step="0.0001" disabled style="width:80px;flex:none" placeholder="lng">
-                    <input type="number" class="browser-cfg-input" id="bc-geoAccuracy" value="100" min="0" max="100000" step="1" disabled style="width:64px;flex:none" placeholder="acc">
-                  </div>
-                </div>
-
-                <!-- Permissions -->
-                <div class="bc-adv-section">Permissions</div>
-                <div class="browser-cfg-checkbox-grid">
-                  <label class="browser-cfg-checkbox"><input type="checkbox" id="bc-perm-geolocation"> Geolocation</label>
-                  <label class="browser-cfg-checkbox"><input type="checkbox" id="bc-perm-midi"> MIDI</label>
-                  <label class="browser-cfg-checkbox"><input type="checkbox" id="bc-perm-midi-sysex"> MIDI SysEx</label>
-                  <label class="browser-cfg-checkbox"><input type="checkbox" id="bc-perm-notifications"> Notifications</label>
-                  <label class="browser-cfg-checkbox"><input type="checkbox" id="bc-perm-camera"> Camera</label>
-                  <label class="browser-cfg-checkbox"><input type="checkbox" id="bc-perm-microphone"> Microphone</label>
-                  <label class="browser-cfg-checkbox"><input type="checkbox" id="bc-perm-background-sync"> Bg Sync</label>
-                  <label class="browser-cfg-checkbox"><input type="checkbox" id="bc-perm-ambient-light-sensor"> Light</label>
-                  <label class="browser-cfg-checkbox"><input type="checkbox" id="bc-perm-accelerometer"> Accel</label>
-                  <label class="browser-cfg-checkbox"><input type="checkbox" id="bc-perm-gyroscope"> Gyro</label>
-                  <label class="browser-cfg-checkbox"><input type="checkbox" id="bc-perm-magnetometer"> Magnet</label>
-                  <label class="browser-cfg-checkbox"><input type="checkbox" id="bc-perm-clipboard-read"> Clipboard R</label>
-                  <label class="browser-cfg-checkbox"><input type="checkbox" id="bc-perm-clipboard-write"> Clipboard W</label>
-                  <label class="browser-cfg-checkbox"><input type="checkbox" id="bc-perm-payment-handler"> Payment</label>
-                  <label class="browser-cfg-checkbox"><input type="checkbox" id="bc-perm-storage-access"> Storage</label>
-                </div>
-
-                <!-- Network & Proxy -->
-                <div class="bc-adv-section">Network &amp; Proxy</div>
-                <div class="bc-card-row">
-                  <label class="bc-lbl">Offline</label>
-                  <div class="bc-inline-group">
-                    <button class="cc-toggle" id="bc-offline"></button>
-                  </div>
-                </div>
-                <div class="bc-card-row">
-                  <label class="bc-lbl">Proxy</label>
-                  <div class="bc-inline-group">
-                    <input type="text" class="browser-cfg-input" id="bc-proxyServer" placeholder="http://host:port" spellcheck="false" style="flex:2">
-                    <input type="text" class="browser-cfg-input" id="bc-proxyBypass" placeholder="bypass" spellcheck="false" style="flex:1">
-                  </div>
-                </div>
-                <div class="bc-card-row">
-                  <label class="bc-lbl">Proxy Auth</label>
-                  <div class="bc-inline-group">
-                    <input type="text" class="browser-cfg-input" id="bc-proxyUsername" placeholder="user" spellcheck="false" autocomplete="off">
-                    <input type="password" class="browser-cfg-input" id="bc-proxyPassword" placeholder="pass" autocomplete="off">
-                  </div>
-                </div>
-                <div class="bc-card-row">
-                  <label class="bc-lbl">HTTP Auth</label>
-                  <div class="bc-inline-group">
-                    <input type="text" class="browser-cfg-input" id="bc-httpCredUser" placeholder="user" spellcheck="false" autocomplete="off">
-                    <input type="password" class="browser-cfg-input" id="bc-httpCredPass" placeholder="pass" autocomplete="off">
-                  </div>
-                </div>
-
-                <!-- Recording -->
-                <div class="bc-adv-section">Recording</div>
-                <div class="bc-card-row">
-                  <label class="bc-lbl">Video</label>
-                  <div class="bc-inline-group">
-                    <button class="cc-toggle" id="bc-recordVideo"></button>
-                    <input type="text" class="browser-cfg-input" id="bc-recordVideoDir" placeholder="data/videos" spellcheck="false" disabled style="flex:1">
-                    <input type="number" class="browser-cfg-input" id="bc-recordVideoWidth" value="1280" min="320" max="3840" step="1" disabled style="width:64px;flex:none">
-                    <span class="bc-x">&times;</span>
-                    <input type="number" class="browser-cfg-input" id="bc-recordVideoHeight" value="720" min="200" max="2160" step="1" disabled style="width:64px;flex:none">
-                  </div>
-                </div>
-                <div class="bc-card-row">
-                  <label class="bc-lbl">HAR</label>
-                  <div class="bc-inline-group">
-                    <button class="cc-toggle" id="bc-recordHar"></button>
-                    <input type="text" class="browser-cfg-input" id="bc-recordHarPath" placeholder="data/network.har" spellcheck="false" disabled style="flex:1">
-                  </div>
-                </div>
-                <div id="bc-recordHar-fields">
-                  <div class="bc-card-row">
-                    <label class="bc-lbl"></label>
-                    <div class="bc-inline-group">
-                      <input type="hidden" id="bc-recordHarContent" value="embed" disabled>
-                      <div class="cc-dropdown bc-dropdown disabled" data-for="bc-recordHarContent">
-                        <button class="cc-dropdown-trigger" type="button" disabled>
-                          <span class="cc-dropdown-value">Content: Embed</span>
-                          <svg class="cc-dropdown-arrow" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
-                        </button>
-                        <div class="cc-dropdown-menu">
-                          <div class="cc-dropdown-item active" data-value="embed">Content: Embed</div>
-                          <div class="cc-dropdown-item" data-value="attach">Attach</div>
-                          <div class="cc-dropdown-item" data-value="omit">Omit</div>
-                        </div>
-                      </div>
-                      <input type="hidden" id="bc-recordHarMode" value="full" disabled>
-                      <div class="cc-dropdown bc-dropdown disabled" data-for="bc-recordHarMode">
-                        <button class="cc-dropdown-trigger" type="button" disabled>
-                          <span class="cc-dropdown-value">Mode: Full</span>
-                          <svg class="cc-dropdown-arrow" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
-                        </button>
-                        <div class="cc-dropdown-menu">
-                          <div class="cc-dropdown-item active" data-value="full">Mode: Full</div>
-                          <div class="cc-dropdown-item" data-value="minimal">Minimal</div>
-                        </div>
-                      </div>
-                      <input type="text" class="browser-cfg-input" id="bc-recordHarUrlFilter" placeholder="URL filter glob" spellcheck="false" disabled style="flex:1">
-                    </div>
-                  </div>
-                </div>
-              </div>
+            <div class="bc-profile-item" data-profile-value="__synabun__">
+              <span class="bc-profile-radio"></span>
+              <span class="bc-profile-name">${b('synabunProfile')}</span>
+              <span class="bc-profile-hint">${b('managed')}</span>
             </div>
-
-            <!-- ════ ACTIONS ════ -->
-            <div class="bc-actions">
-              <button class="bc-action-btn bc-action-save" id="bc-save-all">Save</button>
-              <button class="bc-action-btn bc-action-reset" id="bc-reset-all">Reset</button>
+          </div>
+          <div id="bc-chrome-running-warn" class="stg-callout stg-callout-warn" role="status" style="display:none;margin:4px 0 2px;padding:4px 8px;border-radius:4px;background:rgba(255,180,0,0.12);color:#e0a800"></div>
+          <div class="stg-field bc-card-row" ${kit.inv('BRW015')} style="margin-top:12px">
+            <label for="bc-custom-profile-path">${kit.L('BRW015')}</label>
+            <div class="browser-cfg-input-row">
+              ${text('bc-custom-profile-path', { ph: b('ph.profileFolder'), attrs: 'style="flex:1"' })}
+              <button type="button" class="cli-detect-btn" id="bc-browse-folder" ${kit.inv('BRW016')} title="${kit.H('BRW016')}">${FOLDER}${kit.L('BRW016')}</button>
             </div>
-            <div class="bc-status-row"><span class="browser-cfg-hint" id="bc-save-status"></span></div>
+            <div class="stg-help" id="bc-custom-profile-path-help">${kit.H('BRW015')}</div>
+            <div id="bc-browse-browser" role="region" aria-label="${kit.L('BRW016')}" style="display:none;margin:4px 0 4px;border:1px solid var(--s-medium);border-radius:6px;background:var(--s-darker);max-height:220px;overflow-y:auto"></div>
+          </div>
 
+          ${kit.subhead(b('sub.signins'))}
+          ${tog('BRW017', 'bc-persistStorage')}
+          ${field('BRW018', 'bc-storageStatePath', { ph: 'data/browser-storage.json', attrs: 'disabled', row: 'id="bc-storagePath-row" style="margin-top:12px"' })}
+          ${tog('BRW019', 'bc-clearStorageOnStart')}
+
+          ${kit.subhead(b('sub.privacy'))}
+          ${tog('BRW020', 'bc-stealthFingerprint', true)}`,
+        })}
+
+        ${kit.card({
+          id: 'bcg-identity', section: 'browser.identity_privacy', collapsible: true, collapsed: true, advanced: true,
+          body: `
+          ${field('BRW021', 'bc-userAgent', { ph: b('ph.userAgent') })}
+          ${field('BRW022', 'bc-acceptLanguage', { ph: 'en-US,en;q=0.9' })}
+          ${field('BRW023', 'bc-locale', { ph: 'en-US', attrs: 'style="max-width:160px"' })}
+          ${field('BRW024', 'bc-timezoneId', { ph: 'America/New_York' })}
+          ${kit.field('BRW025', `<textarea class="browser-cfg-textarea" id="bc-extraHTTPHeaders" rows="2" placeholder='{"X-Custom": "value"}' spellcheck="false" aria-describedby="bc-extraHTTPHeaders-help"></textarea>`, { forId: 'bc-extraHTTPHeaders' })}`,
+        })}
+
+        ${kit.card({
+          id: 'bcg-viewport', section: 'browser.display', collapsible: true, collapsed: true, advanced: true,
+          body: `
+          ${group('screenSize', `
+              ${num('BRW026', 'bc-screenWidth', 1920, 'min="320" max="7680" step="1"')}${X}
+              ${num('BRW027', 'bc-screenHeight', 1080, 'min="200" max="4320" step="1"')}`)}
+          ${tog('BRW028', 'bc-isMobile')}
+          ${tog('BRW029', 'bc-hasTouch')}
+          ${kit.field('BRW030', dd('BRW030', 'bc-colorScheme', 'scheme', ['', 'light', 'dark', 'no-preference']), { attrs: 'style="margin-top:12px"' })}
+          ${kit.field('BRW031', dd('BRW031', 'bc-reducedMotion', 'motion', ['', 'reduce', 'no-preference']))}
+          ${kit.field('BRW032', dd('BRW032', 'bc-forcedColors', 'forced', ['', 'active', 'none']))}`,
+        })}
+
+        ${kit.card({
+          id: 'bcg-advanced', section: 'browser.advanced_browser_behavior', collapsible: true, collapsed: true, advanced: true,
+          body: `
+          ${kit.subhead(b('sub.timing'))}
+          ${numField('BRW033', 'bc-timeout', 30000, 'min="0" max="300000" step="1000" style="width:120px"')}
+          ${numField('BRW034', 'bc-navigationTimeout', 30000, 'min="0" max="300000" step="1000" style="width:120px"')}
+          ${numField('BRW035', 'bc-slowMo', 0, 'min="0" max="10000" step="50" style="width:120px"')}
+          ${field('BRW036', 'bc-extraArgs', { ph: '--flag1 --flag2=value' })}
+
+          ${kit.subhead(b('sub.preview'))}
+          ${group('previewSize', `
+              ${num('BRW037', 'bc-screencastMaxWidth', 1280, 'min="320" max="3840" step="1"')}${X}
+              ${num('BRW038', 'bc-screencastMaxHeight', 800, 'min="200" max="2160" step="1"')}`)}
+          ${numField('BRW039', 'bc-screencastEveryNthFrame', 1, 'min="1" max="30" step="1" style="width:80px"')}
+
+          ${kit.subhead(b('sub.security'))}
+          ${tog('BRW040', 'bc-javaScriptEnabled', true)}
+          ${tog('BRW041', 'bc-ignoreHTTPSErrors')}
+          ${tog('BRW042', 'bc-bypassCSP')}
+          ${tog('BRW043', 'bc-acceptDownloads', true)}
+          ${tog('BRW044', 'bc-strictSelectors', true)}
+          ${kit.field('BRW045', dd('BRW045', 'bc-serviceWorkers', 'workers', ['allow', 'block']), { attrs: 'style="margin-top:12px"' })}
+
+          ${kit.subhead(b('sub.location'))}
+          ${tog('BRW046', 'bc-geoEnabled')}
+          ${group('coordinates', `
+              ${num('BRW047', 'bc-geoLatitude', 0, 'min="-90" max="90" step="0.0001" disabled style="width:96px;max-width:none"', '')}${unit('BRW047')}
+              ${num('BRW048', 'bc-geoLongitude', 0, 'min="-180" max="180" step="0.0001" disabled style="width:96px;max-width:none"', '')}${unit('BRW048')}
+              ${num('BRW049', 'bc-geoAccuracy', 100, 'min="0" max="100000" step="1" disabled style="width:80px"', '')}${unit('BRW049')}`, 'style="margin-top:12px"')}
+
+          ${kit.subhead(b('sub.permissions'))}
+          <div class="stg-help" id="bc-perm-help" style="margin:0 0 8px">${b('permissionsHelp')}</div>
+          <div class="browser-cfg-checkbox-grid" role="group" aria-describedby="bc-perm-help">
+            ${PERMISSIONS.map(([invId, name]) => `<label class="browser-cfg-checkbox" ${kit.inv(invId)}><input type="checkbox" id="bc-perm-${name}"> ${kit.L(invId)}</label>`).join('\n            ')}
+          </div>
+
+          ${kit.subhead(b('sub.network'))}
+          ${tog('BRW065', 'bc-offline')}
+          ${field('BRW066', 'bc-proxyServer', { ph: 'http://host:port', row: 'style="margin-top:12px"' })}
+          ${field('BRW067', 'bc-proxyBypass', { ph: 'localhost, *.internal' })}
+          ${field('BRW068', 'bc-proxyUsername')}
+          ${field('BRW069', 'bc-proxyPassword', { type: 'password' })}
+          ${field('BRW070', 'bc-httpCredUser')}
+          ${field('BRW071', 'bc-httpCredPass', { type: 'password' })}
+
+          ${kit.subhead(b('sub.recording'))}
+          ${tog('BRW072', 'bc-recordVideo')}
+          ${field('BRW073', 'bc-recordVideoDir', { ph: 'data/videos', attrs: 'disabled', row: 'style="margin-top:12px"' })}
+          ${group('videoSize', `
+              ${num('BRW074', 'bc-recordVideoWidth', 1280, 'min="320" max="3840" step="1" disabled')}${X}
+              ${num('BRW075', 'bc-recordVideoHeight', 720, 'min="200" max="2160" step="1" disabled')}`)}
+          ${tog('BRW076', 'bc-recordHar')}
+          ${field('BRW077', 'bc-recordHarPath', { ph: 'data/network.har', attrs: 'disabled', row: 'style="margin-top:12px"' })}
+          <div id="bc-recordHar-fields">
+            ${kit.field('BRW078', dd('BRW078', 'bc-recordHarContent', 'harContent', ['embed', 'attach', 'omit'], { disabled: true }))}
+            ${kit.field('BRW079', dd('BRW079', 'bc-recordHarMode', 'harMode', ['full', 'minimal'], { disabled: true }))}
+            ${field('BRW080', 'bc-recordHarUrlFilter', { ph: '**/api/**', attrs: 'disabled' })}
+          </div>`,
+        })}
+
+        <div class="stg-pane-actions" role="group" aria-label="${b('saveBar')}">
+          <div class="bc-actions">
+            <button type="button" class="bc-action-btn bc-action-save" id="bc-save-all" ${kit.inv('BRW081')} aria-describedby="bc-save-all-help">${kit.L('BRW081')}</button>
+            <button type="button" class="bc-action-btn bc-action-reset" id="bc-reset-all" ${kit.inv('BRW082')} title="${kit.H('BRW082')}">${kit.L('BRW082')}</button>
+          </div>
+          <div class="bc-status-row"><span class="browser-cfg-hint" id="bc-save-status" ${kit.inv('BRW085')} role="status" aria-live="polite"></span></div>
+          <div class="stg-help" id="bc-save-all-help">${kit.H('BRW081')}</div>
         </div>
+
       </div>`;
 }
 
 function buildSetupTab(setupStatus) {
-  const claudeConnected = setupStatus.claude?.connected || false;
-  const geminiConnected = setupStatus.gemini?.connected || false;
-  const codexConnected = setupStatus.codex?.connected || false;
-  const opencodeConnected = setupStatus.opencode?.connected || false;
+  // One row per assistant. The wiring finds everything by id: setup-<id>-mcp-{row,status,toggle},
+  // setup-<id>-cli-copy, setup-<id>-config-{preview,copy}, setup-<id>-rules-{row,path,badge,message,
+  // primary,remove,view,copy,text}, and the header badge (#setup-<id> .gfx-group-title .setup-status-badge).
+  const providers = [
+    { id: 'claude',   name: 'Claude',   icon: ANTHROPIC_ICON, file: '~/.claude.json',                 ids: { toggle: 'SET004', cli: 'SET005',                      primary: 'SET006', remove: 'SET007', view: 'SET008', copy: 'SET009' } },
+    { id: 'gemini',   name: 'Gemini',   icon: GEMINI_ICON,    file: '~/.gemini/settings.json',        ids: { toggle: 'SET010',                    config: 'SET011', primary: 'SET012', remove: 'SET013', view: 'SET014', copy: 'SET015' } },
+    { id: 'codex',    name: 'Codex',    icon: OPENAI_ICON,    file: '~/.codex/config.toml',           ids: { toggle: 'SET016', cli: 'SET017', config: 'SET018', primary: 'SET019', remove: 'SET020', view: 'SET021', copy: 'SET022' } },
+    { id: 'opencode', name: 'OpenCode', icon: OPENCODE_ICON,  file: '~/.config/opencode/config.json', ids: { toggle: 'SET023',                    config: 'SET024', primary: 'SET025', remove: 'SET026', view: 'SET027', copy: 'SET028' } },
+  ].map((p) => ({ ...p, on: setupStatus[p.id]?.connected || false }));
 
-  const statusBadge = (on) => `<span class="setup-status-badge ${on ? 'active' : 'inactive'}">${on ? 'Connected' : 'Off'}</span>`;
+  const copyLabel = (invId) => `${COPY_ICON} ${kit.L(invId)}`;
+
+  // The wiring rewrites this badge's class and text when a tool is connected or disconnected.
+  const statusBadge = (on) => `<span class="setup-status-badge ${on ? 'active' : 'inactive'}" ${kit.inv('SET034')}>${kit.te(on ? 'settings.redesign.common.connected' : 'settings.redesign.common.off')}</span>`;
+
+  // A switch row that keeps its own markup: the wiring toggles `.enabled` on the row, `.on` on the
+  // button and writes the registered file (or "Not connected") into the status line.
+  const mcpRow = (p) => `
+            <div class="stg-toggle-field stg-setup-toggle${p.on ? ' enabled' : ''}" id="setup-${p.id}-mcp-row" ${kit.inv(p.ids.toggle)}>
+              <div class="stg-toggle-text">
+                <div class="stg-toggle-label" id="setup-${p.id}-mcp-toggle-label">${kit.L(p.ids.toggle)}</div>
+                <div class="stg-help" id="setup-${p.id}-mcp-toggle-help">${kit.H(p.ids.toggle)}</div>
+                <div class="stg-help stg-setup-status" id="setup-${p.id}-mcp-status">${p.on ? kit.te('settings.redesign.setup.registeredIn', { file: p.file }) : kit.te('settings.redesign.setup.notConnected')}</div>
+              </div>
+              <div class="stg-toggle-control">
+                <button type="button" class="cc-toggle${p.on ? ' on' : ''}" id="setup-${p.id}-mcp-toggle" aria-labelledby="setup-${p.id}-mcp-toggle-label" aria-describedby="setup-${p.id}-mcp-toggle-help setup-${p.id}-mcp-status"></button>
+              </div>
+            </div>`;
+
+  // The manual route: a terminal command and/or the config text, each with its copy button.
+  const byHand = (p) => {
+    const cli = p.ids.cli ? `
+            <div class="stg-setup-actions stg-help-line">
+              ${kit.help(p.ids.cli, { forId: `setup-${p.id}-cli-copy` })}
+              <button type="button" class="cc-copy-btn stg-text-btn" id="setup-${p.id}-cli-copy" ${kit.inv(p.ids.cli)} aria-describedby="setup-${p.id}-cli-copy-help">${copyLabel(p.ids.cli)}</button>
+            </div>` : '';
+    const config = p.ids.config ? `
+            <div class="stg-help">${kit.th('settings.redesign.setup.byHandFile', { file: `<code class="stg-code">${escapeHtml(p.file)}</code>` })}</div>
+            <div class="cc-ruleset-preview" id="setup-${p.id}-config-preview" ${kit.inv('SET035')} role="region" tabindex="0" aria-label="${kit.te('settings.redesign.setup.previewConfig', { name: p.name })}" style="max-height:120px;margin-top:6px">${kit.te('settings.redesign.setup.loading')}</div>
+            <div class="stg-setup-actions stg-help-line">
+              ${kit.help(p.ids.config, { forId: `setup-${p.id}-config-copy` })}
+              <button type="button" class="cc-copy-btn stg-text-btn" id="setup-${p.id}-config-copy" ${kit.inv(p.ids.config)} aria-describedby="setup-${p.id}-config-copy-help">${copyLabel(p.ids.config)}</button>
+            </div>` : '';
+    return `${kit.subhead(kit.te('settings.redesign.setup.byHand'))}${cli}${config}`;
+  };
+
+  // SynaBun's rules for one assistant: state badge, path, the action the state calls for, then
+  // Remove / View / Copy. Filled in by wireRulesControls().
+  const rulesBlock = (p) => `
+            ${kit.subhead(kit.te('settings.redesign.setup.rulesFor', { name: p.name }), { id: `setup-${p.id}-rules-title` })}
+            <div id="setup-${p.id}-rules" role="group" aria-labelledby="setup-${p.id}-rules-title">
+              <div class="cc-integration-item" id="setup-${p.id}-rules-row" ${kit.inv('SET034')}>
+                <div class="cc-integration-info">
+                  <div class="cc-integration-label">${kit.te('settings.redesign.setup.rulesFile')}</div>
+                  <div class="cc-integration-path" id="setup-${p.id}-rules-path">${kit.te('settings.redesign.common.checking')}</div>
+                </div>
+                <span class="setup-status-badge inactive" id="setup-${p.id}-rules-badge">…</span>
+              </div>
+              <div class="stg-help" id="setup-${p.id}-rules-message" style="display:none"></div>
+              <div class="stg-setup-actions" role="group" aria-label="${kit.te('settings.redesign.setup.rulesActions', { name: p.name })}">
+                <button type="button" class="cc-copy-btn" id="setup-${p.id}-rules-primary" ${kit.inv(p.ids.primary)} title="${kit.H(p.ids.primary)}" style="display:none">${kit.L(p.ids.primary)}</button>
+                <button type="button" class="cc-copy-btn stg-text-btn stg-text-btn-danger" id="setup-${p.id}-rules-remove" ${kit.inv(p.ids.remove)} title="${kit.H(p.ids.remove)}" style="display:none">${kit.L(p.ids.remove)}</button>
+                <button type="button" class="cc-copy-btn stg-text-btn" id="setup-${p.id}-rules-view" ${kit.inv(p.ids.view)} title="${kit.H(p.ids.view)}" aria-expanded="false" aria-controls="setup-${p.id}-rules-text">${kit.L(p.ids.view)}</button>
+                <button type="button" class="cc-copy-btn stg-text-btn" id="setup-${p.id}-rules-copy" ${kit.inv(p.ids.copy)} title="${kit.H(p.ids.copy)}">${copyLabel(p.ids.copy)}</button>
+              </div>
+              <div class="cc-ruleset-preview" id="setup-${p.id}-rules-text" ${kit.inv('SET035')} role="region" tabindex="0" aria-label="${kit.te('settings.redesign.setup.previewRules', { name: p.name })}" style="display:none;margin-top:6px"></div>
+            </div>`;
+
+  // Text you paste yourself (Cursor's User Rules, the coexistence snippet): View and Copy only.
+  const copyOnlyBlock = (id, name, ids, previewKey) => `
+            <div class="stg-setup-actions" role="group" aria-label="${kit.te('settings.redesign.setup.rulesActions', { name })}">
+              <button type="button" class="cc-copy-btn stg-text-btn" id="setup-${id}-rules-view" ${kit.inv(ids.view)} title="${kit.H(ids.view)}" aria-expanded="false" aria-controls="setup-${id}-rules-text">${kit.L(ids.view)}</button>
+              <button type="button" class="cc-copy-btn stg-text-btn" id="setup-${id}-rules-copy" ${kit.inv(ids.copy)} title="${kit.H(ids.copy)}">${copyLabel(ids.copy)}</button>
+            </div>
+            <div class="cc-ruleset-preview" id="setup-${id}-rules-text" ${kit.inv('SET035')} role="region" tabindex="0" aria-label="${kit.te(previewKey, { name })}" style="display:none;margin-top:6px"></div>`;
+
+  const providerCard = (p) => kit.card({
+    id: `setup-${p.id}`, level: 'h4', collapsible: true, collapsed: true,
+    title: `${p.icon}<span>${p.name}</span>`,
+    purpose: '',
+    status: statusBadge(p.on),
+    body: `${mcpRow(p)}${byHand(p)}${rulesBlock(p)}`,
+  });
+
+  const rulesToggle = `
+            <div class="stg-toggle-field stg-setup-toggle" id="setup-rules-autoupdate-row" ${kit.inv('SET001')}>
+              <div class="stg-toggle-text">
+                <div class="stg-toggle-label" id="setup-rules-autoupdate-label">${kit.L('SET001')}</div>
+                <div class="stg-help" id="setup-rules-autoupdate-help">${kit.H('SET001')}</div>
+              </div>
+              <div class="stg-toggle-control">
+                <button type="button" class="cc-toggle" id="setup-rules-autoupdate" aria-labelledby="setup-rules-autoupdate-label" aria-describedby="setup-rules-autoupdate-help"></button>
+              </div>
+            </div>`;
+
+  const cursorIcon = '<svg viewBox="0 0 24 24" aria-hidden="true" style="width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2"><path d="M5 3l14 8-6 2-2 6z"/></svg>';
+  const coexistIcon = '<svg viewBox="0 0 24 24" aria-hidden="true" style="width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4-4v-2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>';
 
   return `
-      <div class="settings-tab-body" data-tab="setup">
+      <div class="stg-pane" data-stg-pane="setup">
 
-        <!-- CLAUDE (Anthropic) -->
-        <div class="iface-section collapsed" data-collapsible id="setup-claude">
-          <div class="gfx-group-title">
-            <span style="display:flex;align-items:center;gap:8px">
-              ${CHEVRON_ICON}
-              ${ANTHROPIC_ICON}
-              <span>Claude</span>
-              ${statusBadge(claudeConnected)}
-            </span>
-          </div>
-          <div class="cc-section-body">
-            <div class="cc-integration-item${claudeConnected ? ' enabled' : ''}" id="setup-claude-mcp-row">
-              <div class="cc-integration-info">
-                <div class="cc-integration-label">SynaBun MCP</div>
-                <div class="cc-integration-path" id="setup-claude-mcp-status">${claudeConnected ? 'Registered in ~/.claude.json' : 'Not connected'}</div>
-              </div>
-              <button class="cc-toggle${claudeConnected ? ' on' : ''}" id="setup-claude-mcp-toggle"></button>
+        ${kit.card({
+          id: 'stg-sec-assistants', section: 'ai_connections.your_assistants',
+          body: providers.map(providerCard).join(''),
+        })}
+
+        ${kit.card({
+          id: 'setup-rules', section: 'ai_connections.synabun_rules',
+          status: '<span class="stg-pill" id="setup-rules-version" data-state="off" style="display:none"></span>',
+          body: `
+            <p class="stg-help">${kit.te('settings.redesign.setup.rulesIntro')}</p>
+            ${rulesToggle}
+            <div class="stg-setup-actions stg-help-line">
+              <div class="stg-help" id="setup-rules-install-all-help">${kit.H('SET002')}</div>
+              <button type="button" class="cc-copy-btn stg-push-btn" id="setup-rules-install-all" ${kit.inv('SET002')} aria-describedby="setup-rules-install-all-help">${kit.L('SET002')}</button>
             </div>
-            <button class="cc-copy-btn" id="setup-claude-cli-copy" style="margin-top:4px">${COPY_ICON} Copy CLI Command</button>
+            <div class="stg-help" id="setup-rules-message" style="display:none"></div>
+            <div id="setup-rules-legacy" ${kit.inv('SET033')} style="display:none;margin-top:12px"></div>`,
+        })}
 
-            <div style="margin-top:12px">
-              <div class="cc-greeting-label" style="margin-bottom:4px">CLAUDE.md Ruleset</div>
-              <div class="cc-ruleset-preview" id="setup-claude-ruleset-preview">Loading...</div>
-              <button class="cc-copy-btn" id="setup-claude-ruleset-copy" style="margin-top:4px">${COPY_ICON} Copy Ruleset</button>
-              <div class="setup-hint">Paste into your project's <code>CLAUDE.md</code></div>
-            </div>
-          </div>
-        </div>
-
-        <!-- GEMINI (Google) -->
-        <div class="iface-section collapsed" data-collapsible id="setup-gemini">
-          <div class="gfx-group-title">
-            <span style="display:flex;align-items:center;gap:8px">
-              ${CHEVRON_ICON}
-              ${GEMINI_ICON}
-              <span>Gemini</span>
-              ${statusBadge(geminiConnected)}
-            </span>
-          </div>
-          <div class="cc-section-body">
-            <div class="cc-integration-item${geminiConnected ? ' enabled' : ''}" id="setup-gemini-mcp-row">
-              <div class="cc-integration-info">
-                <div class="cc-integration-label">SynaBun MCP</div>
-                <div class="cc-integration-path" id="setup-gemini-mcp-status">${geminiConnected ? 'Registered in ~/.gemini/settings.json' : 'Not connected'}</div>
-              </div>
-              <button class="cc-toggle${geminiConnected ? ' on' : ''}" id="setup-gemini-mcp-toggle"></button>
-            </div>
-
-            <div style="margin-top:12px">
-              <div class="cc-greeting-label" style="margin-bottom:4px">Manual Config <span style="color:var(--t-faint)">(~/.gemini/settings.json)</span></div>
-              <div class="cc-ruleset-preview" id="setup-gemini-config-preview" style="max-height:120px">Loading...</div>
-              <button class="cc-copy-btn" id="setup-gemini-config-copy" style="margin-top:4px">${COPY_ICON} Copy JSON Config</button>
-            </div>
-
-            <div style="margin-top:12px">
-              <div class="cc-greeting-label" style="margin-bottom:4px">GEMINI.md Ruleset</div>
-              <div class="cc-ruleset-preview" id="setup-gemini-ruleset-preview">Loading...</div>
-              <button class="cc-copy-btn" id="setup-gemini-ruleset-copy" style="margin-top:4px">${COPY_ICON} Copy Ruleset</button>
-              <div class="setup-hint">Paste into your project's <code>GEMINI.md</code></div>
-            </div>
-          </div>
-        </div>
-
-        <!-- CODEX (OpenAI) -->
-        <div class="iface-section collapsed" data-collapsible id="setup-codex">
-          <div class="gfx-group-title">
-            <span style="display:flex;align-items:center;gap:8px">
-              ${CHEVRON_ICON}
-              ${OPENAI_ICON}
-              <span>Codex</span>
-              ${statusBadge(codexConnected)}
-            </span>
-          </div>
-          <div class="cc-section-body">
-            <div class="cc-integration-item${codexConnected ? ' enabled' : ''}" id="setup-codex-mcp-row">
-              <div class="cc-integration-info">
-                <div class="cc-integration-label">SynaBun MCP</div>
-                <div class="cc-integration-path" id="setup-codex-mcp-status">${codexConnected ? 'Registered in ~/.codex/config.toml' : 'Not connected'}</div>
-              </div>
-              <button class="cc-toggle${codexConnected ? ' on' : ''}" id="setup-codex-mcp-toggle"></button>
-            </div>
-            <button class="cc-copy-btn" id="setup-codex-cli-copy" style="margin-top:4px">${COPY_ICON} Copy CLI Command</button>
-
-            <div style="margin-top:12px">
-              <div class="cc-greeting-label" style="margin-bottom:4px">Manual Config <span style="color:var(--t-faint)">(~/.codex/config.toml)</span></div>
-              <div class="cc-ruleset-preview" id="setup-codex-config-preview" style="max-height:120px">Loading...</div>
-              <button class="cc-copy-btn" id="setup-codex-config-copy" style="margin-top:4px">${COPY_ICON} Copy TOML Config</button>
-            </div>
-
-            <div style="margin-top:12px">
-              <div class="cc-greeting-label" style="margin-bottom:4px">AGENTS.md Ruleset</div>
-              <div class="cc-ruleset-preview" id="setup-codex-ruleset-preview">Loading...</div>
-              <button class="cc-copy-btn" id="setup-codex-ruleset-copy" style="margin-top:4px">${COPY_ICON} Copy Ruleset</button>
-              <div class="setup-hint">Paste into your project's <code>AGENTS.md</code></div>
-            </div>
-          </div>
-        </div>
-
-        <!-- OPENCODE -->
-        <div class="iface-section collapsed" data-collapsible id="setup-opencode">
-          <div class="gfx-group-title">
-            <span style="display:flex;align-items:center;gap:8px">
-              ${CHEVRON_ICON}
-              ${OPENCODE_ICON}
-              <span>OpenCode</span>
-              ${statusBadge(opencodeConnected)}
-            </span>
-          </div>
-          <div class="cc-section-body">
-            <div class="cc-integration-item${opencodeConnected ? ' enabled' : ''}" id="setup-opencode-mcp-row">
-              <div class="cc-integration-info">
-                <div class="cc-integration-label">SynaBun MCP</div>
-                <div class="cc-integration-path" id="setup-opencode-mcp-status">${opencodeConnected ? 'Registered in ~/.config/opencode/config.json' : 'Not connected'}</div>
-              </div>
-              <button class="cc-toggle${opencodeConnected ? ' on' : ''}" id="setup-opencode-mcp-toggle"></button>
-            </div>
-
-            <div style="margin-top:12px">
-              <div class="cc-greeting-label" style="margin-bottom:4px">Manual Config <span style="color:var(--t-faint)">(~/.config/opencode/config.json)</span></div>
-              <div class="cc-ruleset-preview" id="setup-opencode-config-preview" style="max-height:120px">Loading...</div>
-              <button class="cc-copy-btn" id="setup-opencode-config-copy" style="margin-top:4px">${COPY_ICON} Copy JSON Config</button>
-            </div>
-
-            <div style="margin-top:12px">
-              <div class="cc-greeting-label" style="margin-bottom:4px">AGENTS.md Ruleset</div>
-              <div class="cc-ruleset-preview" id="setup-opencode-ruleset-preview">Loading...</div>
-              <button class="cc-copy-btn" id="setup-opencode-ruleset-copy" style="margin-top:4px">${COPY_ICON} Copy Ruleset</button>
-              <div class="setup-hint">Paste into your project's <code>AGENTS.md</code></div>
-            </div>
-          </div>
-        </div>
-
-        <!-- COEXISTENCE RULES -->
-        <div class="iface-section collapsed" data-collapsible id="setup-coexistence">
-          <div class="gfx-group-title">
-            <span style="display:flex;align-items:center;gap:8px">
-              ${CHEVRON_ICON}
-              <svg viewBox="0 0 24 24" style="width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4-4v-2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
-              <span>Multi-Tool Coexistence</span>
-            </span>
-          </div>
-          <div class="cc-section-body">
-            <div class="setup-hint" style="margin-bottom:8px">When running SynaBun alongside other AI memory tools (CogniLayer, mem0, etc.), paste these rules into your project's instructions file to prevent tool confusion.</div>
-            <div class="cc-ruleset-preview" id="setup-coexistence-ruleset-preview">Loading...</div>
-            <button class="cc-copy-btn" id="setup-coexistence-ruleset-copy" style="margin-top:4px">${COPY_ICON} Copy Coexistence Rules</button>
-            <div class="setup-hint">Paste into your project's <code>CLAUDE.md</code>, <code>GEMINI.md</code>, <code>AGENTS.md</code>, or <code>.cursorrules</code></div>
-          </div>
-        </div>
+        ${kit.card({
+          id: 'stg-sec-manual-setup', section: 'ai_connections.manual_setup',
+          body: `${kit.card({
+            id: 'setup-cursor', level: 'h4', collapsible: true, collapsed: true,
+            title: `${cursorIcon}<span>Cursor</span>`,
+            purpose: '',
+            status: kit.pill(kit.te('settings.redesign.setup.copyOnly'), { state: 'off' }),
+            body: `<p class="stg-help">${kit.te('settings.redesign.setup.cursorHelp')}</p>${copyOnlyBlock('cursor', 'Cursor', { view: 'SET029', copy: 'SET030' }, 'settings.redesign.setup.previewRules')}`,
+          })}${kit.card({
+            id: 'setup-coexistence', level: 'h4', collapsible: true, collapsed: true,
+            title: `${coexistIcon}<span>${kit.te('settings.redesign.setup.coexistTitle')}</span>`,
+            purpose: '',
+            body: `<p class="stg-help">${kit.te('settings.redesign.setup.coexistHelp')}</p>${copyOnlyBlock('coexistence', kit.tx('settings.redesign.setup.coexistName'), { view: 'SET031', copy: 'SET032' }, 'settings.redesign.setup.previewSnippet')}`,
+          })}`,
+        })}
 
       </div>`;
 }
 
 function buildTerminalTab(cliConfig) {
-  const chevron = CHEVRON_ICON;
+  // `inv` is the input's inventory id. The wiring reads #cli-path-<id>, writes #cli-status-<id>,
+  // and finds the buttons by .cli-detect-btn[data-cli-detect] and #cli-paths-save.
   const cliProfiles = [
-    { id: 'claude-code', label: 'Claude Code', icon: ANTHROPIC_ICON, color: '#D4A27F', default: 'claude' },
-    { id: 'codex',       label: 'Codex CLI',   icon: OPENAI_ICON,   color: '#74c7a5', default: 'codex' },
-    { id: 'gemini',      label: 'Gemini CLI',  icon: GEMINI_ICON,   color: '#669DF6', default: 'gemini' },
-    { id: 'opencode',    label: 'OpenCode',    icon: OPENCODE_ICON, color: '#E8E0DC', default: 'opencode' },
+    { id: 'claude-code', name: 'Claude Code', icon: ANTHROPIC_ICON, color: '#D4A27F', default: 'claude',   inv: 'CLI001' },
+    { id: 'codex',       name: 'Codex',       icon: OPENAI_ICON,    color: '#74c7a5', default: 'codex',    inv: 'CLI003' },
+    { id: 'gemini',      name: 'Gemini',      icon: GEMINI_ICON,    color: '#669DF6', default: 'gemini',   inv: 'CLI004' },
+    { id: 'opencode',    name: 'OpenCode',    icon: OPENCODE_ICON,  color: '#E8E0DC', default: 'opencode', inv: 'CLI005' },
   ];
 
-  return `
-      <div class="settings-tab-body" data-tab="terminal">
-
-        <!-- CLI EXECUTABLE PATHS -->
-        <div class="stg-section" id="cc-cli-paths">
-          <div class="gfx-group-title">CLI Executable Paths</div>
-          <div class="settings-hint">
-            Configure the command used to launch each CLI from the terminal.
-            Use a bare name for PATH lookup, a full path for custom installs, or prefix with <code class="stg-code">wsl</code> for WSL.
-          </div>
-          ${cliProfiles.map(p => {
-            const current = (cliConfig && cliConfig[p.id]?.command) || p.default;
-            const isDefault = current === p.default;
-            return `
-            <div class="cli-path-row" data-cli-profile="${p.id}">
+  const pathRow = (p) => {
+    const current = (cliConfig && cliConfig[p.id]?.command) || p.default;
+    const isDefault = current === p.default;
+    return `
+            <div class="cli-path-row" data-cli-profile="${p.id}" ${kit.inv(p.inv)}>
               <div class="cli-path-icon" style="color:${p.color}">${p.icon}</div>
               <div class="cli-path-field">
-                <label class="cli-path-label">${p.label}</label>
+                <label class="cli-path-label" for="cli-path-${p.id}">${kit.L(p.inv)}</label>
                 <div class="cli-path-input-row">
                   <input type="text" class="cli-path-input"
                          id="cli-path-${p.id}"
                          value="${escapeHtml(current)}"
                          placeholder="${p.default}"
-                         spellcheck="false" autocomplete="off">
-                  <button class="cli-detect-btn" data-cli-detect="${p.id}" data-tooltip="Auto-detect path">
-                    <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-                    Detect
+                         spellcheck="false" autocomplete="off"
+                         aria-describedby="cli-path-${p.id}-help">
+                  <button type="button" class="cli-detect-btn" data-cli-detect="${p.id}" ${kit.inv('CLI002')} data-tooltip="${kit.te('settings.redesign.terminal.detectTip')}" aria-label="${kit.te('settings.redesign.terminal.detectFor', { name: p.name })}" aria-describedby="cli-paths-detect-help">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                    ${kit.L('CLI002')}
                   </button>
+                  <span class="cli-path-status${isDefault ? '' : ' custom'}" id="cli-status-${p.id}" ${kit.inv('CLI007')}>${kit.te(isDefault ? 'settings.redesign.terminal.cliStatus.default' : 'settings.redesign.terminal.cliStatus.custom')}</span>
                 </div>
+                <div class="stg-help" id="cli-path-${p.id}-help">${kit.H(p.inv)}</div>
               </div>
             </div>`;
-          }).join('')}
-          <button class="stg-action-btn stg-save-btn" id="cli-paths-save">
-            Save CLI Paths
-          </button>
-        </div>
+  };
 
-        <!-- EXAMPLES -->
-        <div class="stg-section">
-          <div class="gfx-group-title">Examples</div>
+  const examples = [
+    { code: 'claude',                       key: 'exDefault' },
+    { code: 'C:\\Users\\me\\.npm\\claude',  key: 'exWindows' },
+    { code: '/opt/homebrew/bin/claude',     key: 'exUnix' },
+    { code: 'wsl claude',                   key: 'exWsl' },
+    { code: 'wsl -d Ubuntu gemini',         key: 'exWslDistro' },
+  ];
+
+  return `
+      <div class="stg-pane" data-stg-pane="terminal">
+
+        ${kit.card({
+          id: 'cc-cli-paths', section: 'ai_connections.executable_paths',
+          body: `
+          <p class="stg-help">${kit.th('settings.redesign.terminal.pathsIntro', { code: '<code class="stg-code">wsl</code>' })}</p>
+          ${kit.help('CLI002', { forId: 'cli-paths-detect' })}
+          ${cliProfiles.map(pathRow).join('')}
+          <button type="button" class="stg-action-btn stg-save-btn" id="cli-paths-save" ${kit.inv('CLI006')} aria-describedby="cli-paths-save-help">
+            ${kit.L('CLI006')}
+          </button>
+          ${kit.help('CLI006', { forId: 'cli-paths-save' })}
+
+          ${kit.subhead(kit.te('settings.redesign.terminal.examples'))}
           <div class="stg-examples">
+            ${examples.map((e) => `
             <div class="stg-example-row">
-              <code class="stg-code">claude</code>
-              <span>Default — uses system PATH</span>
-            </div>
-            <div class="stg-example-row">
-              <code class="stg-code">C:\\Users\\me\\.npm\\claude</code>
-              <span>Custom Windows path</span>
-            </div>
-            <div class="stg-example-row">
-              <code class="stg-code">/opt/homebrew/bin/claude</code>
-              <span>Custom Unix path</span>
-            </div>
-            <div class="stg-example-row">
-              <code class="stg-code">wsl claude</code>
-              <span>Run via WSL on Windows</span>
-            </div>
-            <div class="stg-example-row">
-              <code class="stg-code">wsl -d Ubuntu gemini</code>
-              <span>Specific WSL distro</span>
-            </div>
-          </div>
-        </div>
+              <code class="stg-code">${escapeHtml(e.code)}</code>
+              <span>${kit.te(`settings.redesign.terminal.${e.key}`)}</span>
+            </div>`).join('')}
+          </div>`,
+        })}
 
       </div>`;
 }
 
 function buildMcpTab() {
+  const m = (key) => kit.te(`settings.redesign.mcp.${key}`);
+  const product = (key) => kit.te(`settings.redesign.product.${key}`);
+  const input = (id, { ph = '', type = 'text', attrs = '' } = {}) =>
+    `<input type="${type}" class="stg-input stg-input-sm" id="${id}"${ph ? ` placeholder="${ph}"` : ''} autocomplete="off" spellcheck="false" aria-describedby="${id}-help"${attrs ? ` ${attrs}` : ''}>`;
+  const tab = (cls, attr, value, label, active) =>
+    `<button type="button" class="${cls}${active ? ' active' : ''}" ${attr}="${value}" role="tab" data-stg-selected="active" aria-selected="${active ? 'true' : 'false'}">${label}</button>`;
+  const platform = (key, checked) => `<label class="stg-mcp-platform-check" data-platform="${key}"><input type="checkbox"${checked ? ' checked' : ''}> ${product(key)}</label>`;
+
   return `
-      <div class="settings-tab-body" data-tab="mcp">
-        <div class="stg-mcp-page-tabs" role="tablist">
-          <button type="button" class="stg-mcp-page-tab active" data-pane="profiles">Profiles</button>
-          <button type="button" class="stg-mcp-page-tab" data-pane="installed">Installed</button>
+      <div class="stg-pane" data-stg-pane="mcp">
+        <div class="stg-mcp-page-tabs" role="tablist" aria-label="${kit.L('MCP001')}" ${kit.inv('MCP001')}>
+          ${tab('stg-mcp-page-tab', 'data-pane', 'profiles', m('tab.profiles'), true)}
+          ${tab('stg-mcp-page-tab', 'data-pane', 'installed', m('tab.installed'), false)}
         </div>
-        <div class="stg-mcp-pane" data-pane="profiles">
-          <div class="stg-section">
-            <div class="gfx-group-title">MCP Profiles</div>
+
+        <div class="stg-mcp-pane" data-pane="profiles" data-stg-reveal='.stg-mcp-page-tab[data-pane="profiles"]'>
+          ${kit.card({
+            id: 'stg-sec-tool-profiles', section: 'connected_tools.tool_profiles',
+            body: `
             <div class="stg-mcp-intro">
-              <div class="settings-hint">Toggle tool groups per profile. Click a profile name to activate it.</div>
+              <div class="stg-help" style="margin-top:0">${m('profilesHelp')}</div>
               <div class="stg-mcp-note">
-                <strong>Tool-enabled modes only.</strong>
-                <span>Profiles reduce token usage and response times by loading only the tools each workflow needs.</span>
+                <strong>${m('noteTitle')}</strong>
+                <span>${m('noteBody')}</span>
               </div>
             </div>
-            <div id="stg-mcp-matrix-wrap" class="stg-mcp-matrix-wrap stg-mcp-block">
-              <div class="stg-mcp-matrix-empty">Loading…</div>
+            <div id="stg-mcp-matrix-wrap" class="stg-mcp-matrix-wrap stg-mcp-block" ${kit.inv('MCP022')} role="group" aria-label="${kit.L('MCP022')}">
+              <div class="stg-mcp-matrix-empty">${m('loading')}</div>
             </div>
-            <div id="stg-mcp-always-on" class="stg-mcp-subsection"></div>
+            <div id="stg-mcp-always-on" class="stg-mcp-subsection" ${kit.inv('MCP024')}></div>
             <div class="stg-mcp-subsection stg-mcp-servers-section">
               <div class="stg-mcp-section-head">
-                <div class="stg-mcp-section-header">External Servers</div>
-                <div class="settings-hint">Assign custom MCP servers per profile without expanding the tool-group matrix.</div>
+                <div class="stg-mcp-section-header">${m('externalServers')}</div>
+                <div class="stg-help" style="margin-top:0">${m('externalServersHelp')}</div>
               </div>
               <div id="stg-mcp-ext-servers" class="stg-mcp-servers-list"></div>
-            </div>
-          </div>
+            </div>`,
+          })}
         </div>
-        <div class="stg-mcp-pane" data-pane="installed" style="display:none">
-          <div class="stg-section">
-            <div class="gfx-group-title">Installed MCPs</div>
-            <div class="settings-hint">Every third-party MCP server registered with Claude Code, OpenCode, Codex, Gemini, or SynaBun — plus installed Claude Code plugins. SynaBun's built-in tool groups are not shown.</div>
-            <div id="stg-mcp-installed-all" class="stg-mcp-servers-list"></div>
-            <div class="stg-mcp-section-header" style="margin-top:16px">Claude Code Plugins</div>
-            <div class="settings-hint">Plugins installed from GitHub repos that ship a .claude-plugin/ manifest. Symlinked into ~/.claude/plugins/.</div>
+
+        <div class="stg-mcp-pane" data-pane="installed" data-stg-reveal='.stg-mcp-page-tab[data-pane="installed"]' style="display:none">
+          ${kit.card({
+            id: 'stg-sec-added-servers', section: 'connected_tools.added_servers',
+            body: `
+            <div class="stg-help" style="margin-top:0">${m('installedHelp')}</div>
+            <div id="stg-mcp-installed-all" class="stg-mcp-servers-list" ${kit.inv('MCP026')}></div>
+            ${kit.subhead(m('plugins'))}
+            <div class="stg-help" style="margin-top:0">${m('pluginsHelp')}</div>
             <div id="stg-mcp-ext-plugins" class="stg-mcp-servers-list"></div>
-            <button class="stg-action-btn compact stg-mcp-add-server-btn" id="stg-mcp-add-server">+ Install from GitHub</button>
-            <div class="stg-mcp-add-form" id="stg-mcp-add-form" style="display:none" data-transport="stdio" data-source="paste">
-              <div class="stg-mcp-source-tabs" id="stg-mcp-source-tabs" role="tablist">
-                <button type="button" class="stg-mcp-source-tab active" data-source="github">From GitHub</button>
-                <button type="button" class="stg-mcp-source-tab" data-source="paste">From JSON / Command</button>
+            <button type="button" class="stg-action-btn compact stg-mcp-add-server-btn" id="stg-mcp-add-server" ${kit.inv('MCP006')} title="${kit.H('MCP006')}">${kit.L('MCP006')}</button>
+
+            <div class="stg-mcp-add-form" id="stg-mcp-add-form" style="display:none" data-transport="stdio" data-source="paste" data-stg-reveal="#stg-mcp-add-server">
+              <div class="stg-mcp-source-tabs" id="stg-mcp-source-tabs" role="tablist" aria-label="${kit.L('MCP007')}" ${kit.inv('MCP007')}>
+                ${tab('stg-mcp-source-tab', 'data-source', 'github', m('source.github'), true)}
+                ${tab('stg-mcp-source-tab', 'data-source', 'paste', m('source.paste'), false)}
               </div>
-              <div class="stg-mcp-source-panel" data-panel="github">
-                <div class="stg-mcp-form-label">GitHub repository</div>
-                <div class="stg-mcp-gh-row">
-                  <input type="text" class="stg-input stg-input-sm stg-mcp-gh-url" id="stg-mcp-gh-url" placeholder="github.com/owner/repo  or  https://github.com/owner/repo">
-                  <button type="button" class="stg-action-btn compact" id="stg-mcp-gh-install">Install</button>
+              <div class="stg-mcp-source-panel" data-panel="github" data-stg-reveal='.stg-mcp-source-tab[data-source="github"]'>
+                <div class="stg-field" ${kit.inv('MCP008')}>
+                  <label for="stg-mcp-gh-url">${kit.L('MCP008')}</label>
+                  <div class="stg-mcp-gh-row">
+                    <input type="text" class="stg-input stg-input-sm stg-mcp-gh-url" id="stg-mcp-gh-url" placeholder="github.com/owner/repo" autocomplete="off" spellcheck="false" aria-describedby="stg-mcp-gh-url-help">
+                    <button type="button" class="stg-action-btn compact" id="stg-mcp-gh-install" ${kit.inv('MCP009')} title="${kit.H('MCP009')}">${kit.L('MCP009')}</button>
+                  </div>
+                  ${kit.help('MCP008', { forId: 'stg-mcp-gh-url' })}
                 </div>
-                <label class="stg-mcp-gh-optrun"><input type="checkbox" id="stg-mcp-gh-runinstall" checked> Run install + build after clone (runs package scripts — only install repos you trust)</label>
+                <label class="stg-mcp-gh-optrun" ${kit.inv('MCP010')}><input type="checkbox" id="stg-mcp-gh-runinstall" checked aria-describedby="stg-mcp-gh-runinstall-help"> ${kit.L('MCP010')}</label>
+                ${kit.help('MCP010', { forId: 'stg-mcp-gh-runinstall' })}
                 <div class="stg-mcp-gh-progress" id="stg-mcp-gh-progress" style="display:none">
-                  <div class="stg-mcp-gh-status" id="stg-mcp-gh-status"></div>
+                  <div class="stg-mcp-gh-status" id="stg-mcp-gh-status" role="status" aria-live="polite"></div>
                   <pre class="stg-mcp-gh-log" id="stg-mcp-gh-log"></pre>
                 </div>
               </div>
-              <div class="stg-mcp-source-panel" data-panel="paste" style="display:none">
-                <div class="stg-mcp-form-label">Paste config JSON or command</div>
-                <textarea class="stg-mcp-paste-zone" id="stg-mcp-paste" rows="3" placeholder='{ "mcpServers": { "name": { "command": "npx", "args": ["-y", "pkg"] } } }  or  npx -y @scope/server /path'></textarea>
+              <div class="stg-mcp-source-panel" data-panel="paste" style="display:none" data-stg-reveal='.stg-mcp-source-tab[data-source="paste"]'>
+                ${kit.field('MCP011', `<textarea class="stg-mcp-paste-zone" id="stg-mcp-paste" rows="3" placeholder='{ "mcpServers": { "name": { "command": "npx", "args": ["-y", "pkg"] } } }' spellcheck="false" aria-describedby="stg-mcp-paste-help"></textarea>`, { forId: 'stg-mcp-paste' })}
               </div>
               <div class="stg-mcp-form-grid" style="margin-top:10px">
-                <div class="stg-inline-field">
-                  <label>Name</label>
-                  <input type="text" class="stg-input stg-input-sm" id="stg-mcp-srv-name" placeholder="my-server">
-                </div>
-                <div class="stg-inline-field">
-                  <label>Type</label>
-                  <select class="stg-input stg-input-sm" id="stg-mcp-srv-type">
-                    <option value="stdio">stdio</option>
-                    <option value="sse">sse</option>
-                    <option value="http">http</option>
-                  </select>
-                </div>
-                <div class="stg-inline-field stg-mcp-field-wide stg-mcp-field-stdio">
-                  <label>Command</label>
-                  <input type="text" class="stg-input stg-input-sm" id="stg-mcp-srv-cmd" placeholder="node">
-                </div>
-                <div class="stg-inline-field stg-mcp-field-wide stg-mcp-field-stdio">
-                  <label>Args</label>
-                  <div class="stg-mcp-arg-chips" id="stg-mcp-arg-chips">
-                    <input type="text" class="stg-mcp-arg-input" id="stg-mcp-arg-input" placeholder="Add arg + Enter">
-                  </div>
-                </div>
-                <div class="stg-inline-field stg-mcp-field-wide stg-mcp-field-url">
-                  <label>URL</label>
-                  <input type="text" class="stg-input stg-input-sm" id="stg-mcp-srv-url" placeholder="https://…">
-                </div>
+                ${kit.field('MCP012', input('stg-mcp-srv-name', { ph: m('ph.name') }), { forId: 'stg-mcp-srv-name' })}
+                ${kit.field('MCP013', `
+                  <select class="stg-input stg-input-sm" id="stg-mcp-srv-type" aria-describedby="stg-mcp-srv-type-help">
+                    <option value="stdio">${m('type.stdio')}</option>
+                    <option value="sse">${m('type.sse')}</option>
+                    <option value="http">${m('type.http')}</option>
+                  </select>`, { forId: 'stg-mcp-srv-type' })}
+                ${kit.field('MCP014', input('stg-mcp-srv-cmd', { ph: 'node' }), { forId: 'stg-mcp-srv-cmd', className: 'stg-mcp-field-wide stg-mcp-field-stdio', attrs: 'data-stg-shown-by="#stg-mcp-srv-type"' })}
+                ${kit.field('MCP015', `
+                  <div class="stg-mcp-arg-chips" id="stg-mcp-arg-chips" ${kit.inv('MCP027')}>
+                    <input type="text" class="stg-mcp-arg-input" id="stg-mcp-arg-input" placeholder="${m('ph.arg')}" autocomplete="off" spellcheck="false" aria-describedby="stg-mcp-arg-input-help">
+                  </div>`, { forId: 'stg-mcp-arg-input', className: 'stg-mcp-field-wide stg-mcp-field-stdio', attrs: 'data-stg-shown-by="#stg-mcp-srv-type"' })}
+                ${kit.field('MCP016', input('stg-mcp-srv-url', { ph: 'https://…' }), { forId: 'stg-mcp-srv-url', className: 'stg-mcp-field-wide stg-mcp-field-url', attrs: 'data-stg-shown-by="#stg-mcp-srv-type"' })}
               </div>
-              <div class="stg-mcp-field-remote">
-                <div class="stg-mcp-form-label">Headers</div>
+              <div class="stg-mcp-field-remote" data-stg-shown-by="#stg-mcp-srv-type">
+                <div class="stg-mcp-form-label" title="${m('headersHelp')}">${m('headers')}</div>
                 <div class="stg-mcp-env-rows" id="stg-mcp-hdr-rows"></div>
-                <div class="stg-mcp-env-add" id="stg-mcp-hdr-add">+ Add header</div>
-                <div class="stg-mcp-form-label">OAuth (optional)</div>
+                <div class="stg-mcp-env-add" id="stg-mcp-hdr-add" role="button" tabindex="0">${m('addHeader')}</div>
+                <div class="stg-mcp-form-label">${m('oauth')}</div>
                 <div class="stg-mcp-form-grid">
-                  <div class="stg-inline-field">
-                    <label>Client ID</label>
-                    <input type="text" class="stg-input stg-input-sm" id="stg-mcp-oauth-client-id" placeholder="provider app ID">
-                  </div>
-                  <div class="stg-inline-field">
-                    <label>Callback Port</label>
-                    <input type="number" class="stg-input stg-input-sm" id="stg-mcp-oauth-port" placeholder="33418" min="1" max="65535">
-                  </div>
+                  ${kit.field('MCP017', input('stg-mcp-oauth-client-id'), { forId: 'stg-mcp-oauth-client-id' })}
+                  ${kit.field('MCP018', input('stg-mcp-oauth-port', { type: 'number', ph: '33418', attrs: 'min="1" max="65535"' }), { forId: 'stg-mcp-oauth-port' })}
                 </div>
               </div>
-              <div class="stg-mcp-form-label">Environment Variables</div>
+              <div class="stg-mcp-form-label" title="${m('envHelp')}">${m('env')}</div>
               <div class="stg-mcp-env-rows" id="stg-mcp-env-rows"></div>
-              <div class="stg-mcp-env-add" id="stg-mcp-env-add">+ Add variable</div>
-              <div class="stg-mcp-form-label">Register with</div>
-              <div class="stg-mcp-platform-checks" id="stg-mcp-platforms">
-                <label class="stg-mcp-platform-check" data-platform="claudeCode"><input type="checkbox" checked> Claude Code</label>
-                <label class="stg-mcp-platform-check" data-platform="opencode"><input type="checkbox" checked> OpenCode</label>
-                <label class="stg-mcp-platform-check" data-platform="codex"><input type="checkbox" checked> Codex</label>
-                <label class="stg-mcp-platform-check" data-platform="gemini"><input type="checkbox"> Gemini</label>
+              <div class="stg-mcp-env-add" id="stg-mcp-env-add" role="button" tabindex="0">${m('addVariable')}</div>
+              <div class="stg-mcp-form-label" id="stg-mcp-platforms-label" title="${kit.H('MCP019')}">${kit.L('MCP019')}</div>
+              <div class="stg-mcp-platform-checks" id="stg-mcp-platforms" role="group" aria-labelledby="stg-mcp-platforms-label" ${kit.inv('MCP019')}>
+                ${platform('claudeCode', true)}
+                ${platform('opencode', true)}
+                ${platform('codex', true)}
+                ${platform('gemini', false)}
               </div>
               <div class="stg-action-row stg-mcp-form-actions" style="margin-top:10px">
-                <button class="stg-action-btn compact" id="stg-mcp-srv-save">Save</button>
-                <button class="stg-action-btn compact" id="stg-mcp-srv-cancel">Cancel</button>
-                <span id="stg-mcp-sync-feedback" style="margin-left:8px"></span>
+                <button type="button" class="stg-action-btn compact" id="stg-mcp-srv-save" ${kit.inv('MCP020')} title="${kit.H('MCP020')}">${kit.L('MCP020')}</button>
+                <button type="button" class="stg-action-btn compact" id="stg-mcp-srv-cancel" ${kit.inv('MCP021')} title="${kit.H('MCP021')}">${kit.L('MCP021')}</button>
+                <span id="stg-mcp-sync-feedback" role="status" aria-live="polite" style="margin-left:8px"></span>
               </div>
-            </div>
-          </div>
+            </div>`,
+          })}
         </div>
       </div>`;
 }
 
 function buildOpencodeTab() {
+  const check = (invId, id) => kit.toggleField(invId, kit.switchInput(id, { checked: true }), { forId: id });
   return `
-      <div class="settings-tab-body" data-tab="opencode">
+      <div class="stg-pane" data-stg-pane="opencode">
 
-        <!-- SERVER STATUS BAR -->
-        <div class="ocp-server-bar">
-          <span class="ocp-server-bar-left">
-            <span id="stg-ocp-dot" class="ocp-status-dot" data-state="dim"></span>
-            <span class="ocp-server-bar-label">Server</span>
-            <input type="number" class="ocp-port-input" id="stg-ocp-port" value="4096" min="1024" max="65535" title="Port">
-            <span id="stg-ocp-status" class="ocp-server-bar-status"></span>
-          </span>
-          <span class="ocp-server-bar-right">
-            <button class="ocp-srv-btn" id="stg-ocp-start" title="Start server">Start</button>
-            <button class="ocp-srv-btn ocp-srv-btn-stop" id="stg-ocp-stop" title="Stop server">Stop</button>
-            <button class="ocp-srv-btn ocp-srv-btn-icon" id="stg-ocp-refresh" title="Refresh status">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
-            </button>
-          </span>
-        </div>
+        ${kit.card({
+          id: 'stg-sec-opencode-service', section: 'ai_connections.opencode_service_providers', className: 'ocp-service-card',
+          status: `<span id="stg-ocp-dot" class="ocp-status-dot" data-state="dim"></span><span id="stg-ocp-status" class="ocp-server-bar-status"></span>`,
+          body: `
+          <div class="ocp-group">
+            ${kit.field('OCP001', `<span class="ocp-server-bar-right">
+              <input type="number" class="ocp-port-input" id="stg-ocp-port" value="4096" min="1024" max="65535" aria-describedby="stg-ocp-port-help">
+              <button type="button" class="ocp-srv-btn" id="stg-ocp-start" ${kit.inv('OCP002')} title="${kit.H('OCP002')}">${kit.L('OCP002')}</button>
+              <button type="button" class="ocp-srv-btn ocp-srv-btn-stop" id="stg-ocp-stop" ${kit.inv('OCP003')} title="${kit.H('OCP003')}">${kit.L('OCP003')}</button>
+              <button type="button" class="ocp-srv-btn ocp-srv-btn-icon" id="stg-ocp-refresh" ${kit.inv('OCP004')} title="${kit.H('OCP004')}" aria-label="${kit.L('OCP004')}">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
+              </button>
+            </span>`, { forId: 'stg-ocp-port', className: 'ocp-server-bar' })}
+          </div>
 
-        <!-- PROVIDERS -->
-        <div class="stg-section">
-          <div class="gfx-group-title">Providers</div>
-          <div class="ocp-provider-toolbar">
+          <div class="ocp-group-head">
+            ${kit.subhead(kit.L('OCP022'))}
+            <div class="stg-help">${kit.H('OCP022')}</div>
+          </div>
+          <div class="ocp-provider-toolbar" ${kit.inv('OCP005')}>
             <input
-              type="text"
+              type="search"
               class="ocp-filter-input"
               id="stg-ocp-provider-filter"
-              placeholder="Search providers…"
+              placeholder="${kit.te('settings.redesign.opencode.searchPlaceholder')}"
+              aria-label="${kit.L('OCP005')}"
+              title="${kit.H('OCP005')}"
               autocomplete="off"
               spellcheck="false"
             >
-            <div id="stg-ocp-provider-cap-filters" class="ocp-cap-bar"></div>
+            <div id="stg-ocp-provider-cap-filters" class="ocp-cap-bar" role="group" aria-label="${kit.L('OCP021')}" title="${kit.H('OCP021')}" ${kit.inv('OCP021')}></div>
           </div>
-          <div id="stg-ocp-providers" class="stg-list" style="min-height:32px">
-            <div class="settings-hint" style="opacity:0.4">Start the server to see providers</div>
+          <div id="stg-ocp-providers" class="stg-list ocp-group" ${kit.inv('OCP022')}>
+            <div class="stg-help">${kit.te('settings.redesign.opencode.startHint')}</div>
           </div>
-        </div>
+          <div class="ocp-group">
+          ${kit.advanced(`
+          <div class="ocp-config-footer" ${kit.inv('OCP019')}>
+            <span class="ocp-config-path">${kit.th('settings.redesign.opencode.configPath', { path: '<code class="stg-code">~/.config/opencode/config.json</code>' })}</span>
+            <button type="button" class="ocp-config-link" id="stg-ocp-open-config" aria-describedby="stg-ocp-open-config-help">${kit.L('OCP019')}</button>
+          </div>
+          ${kit.help('OCP019', { forId: 'stg-ocp-open-config' })}`)}
+          </div>`,
+        })}
 
-        <!-- COMPACTION -->
-        <div class="stg-section">
-          <div class="gfx-group-title">Compaction</div>
-          <div class="ocp-compact-group" style="border:none;margin:0;padding:0">
-            <label class="ocp-check-label">
-              <input type="checkbox" id="stg-ocp-compact-auto" checked>
-              <span>Auto-compact when context is full</span>
-            </label>
-            <label class="ocp-check-label">
-              <input type="checkbox" id="stg-ocp-compact-prune" checked>
-              <span>Prune old tool outputs</span>
-            </label>
-            <div class="ocp-reserved-row">
-              <input type="number" class="ocp-reserved-input" id="stg-ocp-compact-reserved" value="10000" min="1000" max="50000" step="1000">
-              <span class="ocp-reserved-hint">reserved tokens</span>
-            </div>
+        ${kit.card({
+          id: 'stg-sec-opencode-behavior', section: 'ai_connections.opencode_behavior',
+          collapsible: true, collapsed: true, advanced: true, className: 'ocp-footnote-card',
+          body: `
+          <div class="ocp-compact-group ocp-rows">
+            ${check('OCP013', 'stg-ocp-compact-auto')}
+            ${check('OCP014', 'stg-ocp-compact-prune')}
+            ${kit.field('OCP015', `<input type="number" class="ocp-reserved-input" id="stg-ocp-compact-reserved" value="10000" min="1000" max="50000" step="1000" aria-describedby="stg-ocp-compact-reserved-help">`, { forId: 'stg-ocp-compact-reserved' })}
+            ${kit.toggleField('OCP016', `<button type="button" class="cc-toggle on" id="stg-ocp-snapshot-toggle" aria-labelledby="stg-ocp-snapshot-toggle-label" aria-describedby="stg-ocp-snapshot-toggle-help"></button>`, { forId: 'stg-ocp-snapshot-toggle', className: 'ocp-snapshot-row' })}
           </div>
-        </div>
+          <p class="ocp-footnote">${kit.te('settings.redesign.opencode.snapshotDetail')}</p>`,
+        })}
 
-        <!-- SNAPSHOTS -->
-        <div class="stg-section">
-          <div class="gfx-group-title">Snapshots</div>
-          <div class="ocp-snapshot-row" style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px">
-            <div style="flex:1;min-width:0">
-              <div style="font-weight:600;font-size:13px;margin-bottom:4px">File snapshots (undo &amp; revert)</div>
-              <div class="settings-hint" style="opacity:0.7;line-height:1.55">
-                OpenCode saves a hidden git snapshot of your project on every session so you can <strong>undo or revert</strong> the file changes the agent makes. Leave it on for that safety net. Turn it <strong>off</strong> if it eats disk &mdash; projects with large or binary files (browser caches, build output, big <code class="stg-code">.git</code>) can balloon the snapshot store to tens of GB. With snapshots off, in-session undo/revert won't restore files; your own git history is unaffected. Applies to new OpenCode sessions.
+        ${kit.card({
+          id: 'stg-sec-opencode-tools', section: 'ai_connections.opencode_tool_access',
+          collapsible: true, collapsed: true, advanced: true,
+          body: `
+          <div id="stg-ocp-tools" style="min-height:20px" ${kit.inv('OCP017')}>
+            <div class="stg-help">${kit.te('settings.redesign.opencode.loadingTools')}</div>
+          </div>`,
+        })}
+
+        ${kit.card({
+          id: 'stg-sec-opencode-history', section: 'ai_connections.opencode_history',
+          collapsible: true, collapsed: true, advanced: true, className: 'ocp-danger-section ocp-footnote-card',
+          body: `
+          <div class="ocp-rows">
+            <div class="ocp-danger-row">
+              <div class="ocp-danger-copy">
+                <div class="ocp-danger-title" id="stg-ocp-history-label">${kit.te('settings.redesign.opencode.storedConversations')}</div>
+                <div class="stg-help">${kit.H('OCP023')}</div>
               </div>
+              <span class="ocp-danger-meta" id="stg-ocp-history-meta" ${kit.inv('OCP023')}>${kit.te('settings.redesign.opencode.checkingHistory')}</span>
+              <button type="button" class="ocp-history-clear-btn" id="stg-ocp-clear-history" ${kit.inv('OCP018')} aria-describedby="stg-ocp-clear-history-help" disabled>${kit.L('OCP018')}</button>
             </div>
-            <button class="cc-toggle on" id="stg-ocp-snapshot-toggle" title="Toggle file snapshots"></button>
           </div>
-        </div>
-
-        <!-- TOOL PERMISSIONS -->
-        <div class="stg-section">
-          <div class="gfx-group-title">Tool Permissions</div>
-          <div id="stg-ocp-tools" style="min-height:20px">
-            <div class="settings-hint" style="opacity:0.4">Loading tools…</div>
-          </div>
-        </div>
-
-        <!-- DANGER ZONE -->
-        <div class="stg-section ocp-danger-section">
-          <div class="gfx-group-title">Danger zone</div>
-          <div class="ocp-danger-row">
-            <div class="ocp-danger-copy">
-              <div class="ocp-danger-title">Clear all OpenCode history</div>
-              <div class="settings-hint ocp-danger-description">
-                Permanently remove every OpenCode conversation, message, tool output, todo, share, snapshot, diff, and SynaBun Resume/search cache. Provider credentials, OpenCode configuration, project files, and your git history are kept.
-              </div>
-              <div class="ocp-danger-meta" id="stg-ocp-history-meta">Checking history…</div>
-            </div>
-            <button class="ocp-history-clear-btn" id="stg-ocp-clear-history" disabled>Clear all history…</button>
-          </div>
-        </div>
-
-        <!-- CONFIG FOOTER -->
-        <div class="ocp-config-footer">
-          Config: <code class="stg-code">~/.config/opencode/config.json</code>
-          <button class="ocp-config-link" id="stg-ocp-open-config">Edit</button>
-        </div>
+          <p class="ocp-footnote ocp-danger-description" id="stg-ocp-clear-history-help">${kit.H('OCP018')}</p>`,
+        })}
 
       </div>`;
 }
@@ -1606,280 +1359,146 @@ function buildNotificationsTab() {
   const toastDur = parseInt(storage.getItem(KEYS.NOTIF_TOAST_DURATION) || '5', 10);
   const toastPos = storage.getItem(KEYS.NOTIF_TOAST_POSITION) || 'bottom-center';
   const permState = typeof Notification !== 'undefined' ? Notification.permission : 'unsupported';
-  const permLabel = { granted: 'Granted', denied: 'Blocked', default: 'Not yet requested', unsupported: 'Not supported' }[permState] || permState;
+  const permLabel = kit.te(`settings.redesign.notifications.perm.${['granted', 'denied', 'default'].includes(permState) ? permState : 'unsupported'}`);
   const permColor = { granted: 'var(--accent-green, #4ade80)', denied: 'var(--accent-red, #f87171)', default: 'var(--s-light, #888)' }[permState] || 'var(--s-light)';
 
-  const presetItems = ['beep', 'chime', 'ping', 'subtle'].map(p =>
-    `<div class="cc-dropdown-item${soundType === p ? ' active' : ''}" data-value="${p}">${p.charAt(0).toUpperCase() + p.slice(1)}</div>`
-  ).join('');
-  const presetLabel = (soundType || 'beep').charAt(0).toUpperCase() + (soundType || 'beep').slice(1);
+  const soundOptions = ['beep', 'chime', 'ping', 'subtle'].map(value => ({ value, label: kit.te(`settings.redesign.notifications.sound.${value}`) }));
+  const durationOptions = [3, 5, 10].map(value => ({ value, label: kit.te('settings.redesign.notifications.seconds', { count: value }) }));
+  const positionOptions = ['top-right', 'top-left', 'top-center', 'bottom-right', 'bottom-left', 'bottom-center']
+    .map(value => ({ value, label: kit.te(`settings.redesign.notifications.position.${value}`) }));
 
-  const durationItems = [3, 5, 10].map(d =>
-    `<div class="cc-dropdown-item${toastDur === d ? ' active' : ''}" data-value="${d}">${d}s</div>`
-  ).join('');
-  const durationLabel = `${toastDur}s`;
-
-  const positionEntries = [
-    ['top-right', 'Top Right'], ['top-left', 'Top Left'], ['top-center', 'Top Center'],
-    ['bottom-right', 'Bottom Right'], ['bottom-left', 'Bottom Left'], ['bottom-center', 'Bottom Center'],
-  ];
-  const positionItems = positionEntries.map(([val, label]) =>
-    `<div class="cc-dropdown-item${toastPos === val ? ' active' : ''}" data-value="${val}">${label}</div>`
-  ).join('');
-  const positionLabel = (positionEntries.find(([v]) => v === toastPos) || positionEntries[0])[1];
+  const check = (invId, id, on) => kit.toggleField(invId, kit.switchInput(id, { checked: !!on }), { forId: id });
+  const testButton = (invId, type) => `<button type="button" class="stg-action-btn compact" data-notif-test="${type}" ${kit.inv(invId)} title="${kit.H(invId)}">${kit.L(invId)}</button>`;
 
   return `
-      <div class="settings-tab-body" data-tab="notifications">
+      <div class="stg-pane" data-stg-pane="notifications">
 
-        <!-- MASTER TOGGLE -->
-        <div class="stg-section">
-          <div class="gfx-group-title">Notifications</div>
-          <div class="settings-hint">
-            Get alerted when a task finishes, needs your attention, or encounters an error.
-          </div>
-          <div class="stg-toggle-row">
-            <label>
-              <input type="checkbox" id="notif-master-toggle" ${s.enabled ? 'checked' : ''}>
-              <span>Enable notifications</span>
-            </label>
-          </div>
-        </div>
-
-        <!-- OS PERMISSION -->
-        <div class="stg-section">
-          <div class="gfx-group-title">System Permission</div>
-          <div class="settings-hint">
-            Browser notification permission is required for OS banners.
-          </div>
-          <div class="stg-status-row" style="display:flex;align-items:center;gap:10px;margin-top:4px;flex-wrap:wrap">
-            <span class="stg-status-dot" id="notif-perm-dot" style="width:8px;height:8px;border-radius:50%;background:${permColor};flex-shrink:0"></span>
-            <span id="notif-perm-label" style="font-size:13px;color:var(--s-lighter)">${permLabel}</span>
-            <button class="stg-action-btn compact" id="notif-request-perm" style="${permState === 'default' ? '' : 'display:none'}">Request Permission</button>
-            <button class="stg-action-btn compact" id="notif-recheck-perm" title="Re-check permission status" style="${permState === 'denied' ? '' : 'display:none'}">Re-check</button>
-          </div>
-          <div id="notif-perm-hint" class="settings-hint" style="margin-top:6px;${permState === 'denied' ? '' : 'display:none'}">
-            Site notifications are blocked in your browser. Click the lock/site-info icon in the address bar &rarr; Notifications &rarr; Allow (or reset). Then click Re-check.
-          </div>
-        </div>
-
-        <!-- SOURCES -->
-        <div class="stg-section" id="notif-sources-section">
-          <div class="gfx-group-title">Sources</div>
-          <div class="settings-hint">
-            Choose which session types fire notifications.
-          </div>
-          <div class="stg-toggle-row">
-            <label>
-              <input type="checkbox" id="notif-source-cli" ${s.sourceCli ? 'checked' : ''}>
-              <span>CLI Terminal</span>
-            </label>
-          </div>
-          <div class="stg-toggle-row">
-            <label>
-              <input type="checkbox" id="notif-source-panel" ${s.sourcePanel ? 'checked' : ''}>
-              <span>Side Panel</span>
-            </label>
-          </div>
-        </div>
-
-        <!-- TRIGGERS -->
-        <div class="stg-section" id="notif-triggers-section">
-          <div class="gfx-group-title">Triggers</div>
-          <div class="settings-hint">
-            Choose which events fire notifications.
-          </div>
-          <div class="stg-toggle-row">
-            <label>
-              <input type="checkbox" id="notif-trigger-done" ${s.triggerDone ? 'checked' : ''}>
-              <span>Task Complete</span>
-            </label>
-          </div>
-          <div class="stg-toggle-row">
-            <label>
-              <input type="checkbox" id="notif-trigger-action" ${s.triggerAction ? 'checked' : ''}>
-              <span>Action Required (permission prompts)</span>
-            </label>
-          </div>
-          <div class="stg-toggle-row">
-            <label>
-              <input type="checkbox" id="notif-trigger-ask" ${s.triggerAsk ? 'checked' : ''}>
-              <span>User Question (AskUserQuestion)</span>
-            </label>
-          </div>
-          <div class="stg-toggle-row">
-            <label>
-              <input type="checkbox" id="notif-trigger-error" ${s.triggerError ? 'checked' : ''}>
-              <span>Session Error / Timeout</span>
-            </label>
-          </div>
-        </div>
-
-        <!-- SOUND -->
-        <div class="stg-section" id="notif-sound-section">
-          <div class="gfx-group-title">Sound</div>
-          <div class="stg-toggle-row">
-            <label>
-              <input type="checkbox" id="notif-sound-toggle" ${s.sound ? 'checked' : ''}>
-              <span>Play sound on status change</span>
-            </label>
-          </div>
-          <div style="margin-top:8px;display:flex;align-items:center;gap:12px">
-            <label style="font-size:13px;color:var(--s-lighter);min-width:50px">Volume</label>
-            <input type="range" id="notif-volume" min="0" max="100" value="${volume}" style="flex:1">
-            <span id="notif-volume-label" style="font-size:12px;color:var(--s-light);min-width:32px;text-align:right">${volume}%</span>
-          </div>
-          <div style="margin-top:8px;display:flex;align-items:center;gap:12px">
-            <label style="font-size:13px;color:var(--s-lighter);min-width:50px">Preset</label>
-            <input type="hidden" id="notif-sound-type" value="${soundType}">
-            <div class="cc-dropdown stg-dropdown stg-dropdown-inline" data-for="notif-sound-type">
-              <button class="cc-dropdown-trigger" type="button">
-                <span class="cc-dropdown-value">${presetLabel}</span>
-                <svg class="cc-dropdown-arrow" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
-              </button>
-              <div class="cc-dropdown-menu">${presetItems}</div>
+        ${kit.card({
+          id: 'stg-sec-alerts', section: 'notifications.alerts',
+          status: `<span class="stg-status-dot" id="notif-perm-dot" style="width:8px;height:8px;border-radius:50%;background:${permColor};flex-shrink:0"></span>
+            <span id="notif-perm-label">${permLabel}</span>`,
+          body: `
+          ${check('NOT001', 'notif-master-toggle', s.enabled)}
+          <div class="stg-field" style="margin-top:14px">
+            <label>${kit.te('settings.redesign.notifications.permTitle')}</label>
+            <div class="stg-help" style="margin-top:0">${kit.te('settings.redesign.notifications.permHelp')}</div>
+            <div class="stg-action-row" style="margin-top:8px">
+              <button type="button" class="stg-action-btn compact" id="notif-request-perm" ${kit.inv('NOT002')} title="${kit.H('NOT002')}" style="${permState === 'default' ? '' : 'display:none'}">${kit.L('NOT002')}</button>
+              <button type="button" class="stg-action-btn compact" id="notif-recheck-perm" ${kit.inv('NOT003')} title="${kit.H('NOT003')}" style="${permState === 'denied' ? '' : 'display:none'}">${kit.L('NOT003')}</button>
             </div>
-          </div>
-          <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
-            <button class="stg-action-btn compact" data-notif-test="action">Test Action</button>
-            <button class="stg-action-btn compact" data-notif-test="done">Test Done</button>
-            <button class="stg-action-btn compact" data-notif-test="ask">Test Ask</button>
-            <button class="stg-action-btn compact" data-notif-test="error">Test Error</button>
-          </div>
-        </div>
+            <div id="notif-perm-hint" class="stg-help" style="${permState === 'denied' ? '' : 'display:none'}">${kit.te('settings.redesign.notifications.permBlocked')}</div>
+          </div>`,
+        })}
 
-        <!-- IN-APP TOAST -->
-        <div class="stg-section" id="notif-toast-section">
-          <div class="gfx-group-title">In-App Toast</div>
-          <div class="settings-hint">
-            Show a floating toast card inside the app when events fire.
+        ${kit.card({
+          id: 'stg-sec-when', section: 'notifications.when_to_alert',
+          body: `
+          <div id="notif-sources-section">
+            ${kit.subhead(kit.te('settings.redesign.notifications.sources'))}
+            ${check('NOT004', 'notif-source-cli', s.sourceCli)}
+            ${check('NOT005', 'notif-source-panel', s.sourcePanel)}
           </div>
-          <div class="stg-toggle-row">
-            <label>
-              <input type="checkbox" id="notif-toast-toggle" ${s.toast ? 'checked' : ''}>
-              <span>Show in-app toasts</span>
-            </label>
-          </div>
-          <div style="margin-top:8px;display:flex;align-items:center;gap:12px">
-            <label style="font-size:13px;color:var(--s-lighter);min-width:80px">Position</label>
-            <input type="hidden" id="notif-toast-position" value="${toastPos}">
-            <div class="cc-dropdown stg-dropdown stg-dropdown-inline" data-for="notif-toast-position">
-              <button class="cc-dropdown-trigger" type="button">
-                <span class="cc-dropdown-value">${positionLabel}</span>
-                <svg class="cc-dropdown-arrow" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
-              </button>
-              <div class="cc-dropdown-menu">${positionItems}</div>
+          <div id="notif-triggers-section">
+            ${kit.subhead(kit.te('settings.redesign.notifications.events'))}
+            ${check('NOT006', 'notif-trigger-done', s.triggerDone)}
+            ${check('NOT007', 'notif-trigger-action', s.triggerAction)}
+            ${check('NOT008', 'notif-trigger-ask', s.triggerAsk)}
+            ${check('NOT009', 'notif-trigger-error', s.triggerError)}
+          </div>`,
+        })}
+
+        ${kit.card({
+          id: 'stg-sec-sounds', section: 'notifications.sounds',
+          body: `
+          <div id="notif-sound-section">
+            ${check('NOT010', 'notif-sound-toggle', s.sound)}
+            ${kit.field('NOT011', `
+              <div class="stg-input-row" style="align-items:center;gap:12px">
+                <input type="range" id="notif-volume" min="0" max="100" value="${volume}" style="flex:1" aria-describedby="notif-volume-help">
+                <span id="notif-volume-label" style="min-width:36px;text-align:right">${volume}%</span>
+              </div>`, { forId: 'notif-volume', attrs: 'style="margin-top:14px"' })}
+            ${kit.field('NOT012', kit.dropdown('notif-sound-type', soundOptions, { value: soundType, classes: 'stg-dropdown stg-dropdown-inline', label: kit.L('NOT012') }))}
+            <div class="stg-field">
+              <label>${kit.te('settings.redesign.notifications.trySounds')}</label>
+              <div class="stg-action-row">
+                ${testButton('NOT013', 'action')}
+                ${testButton('NOT014', 'done')}
+                ${testButton('NOT015', 'ask')}
+                ${testButton('NOT016', 'error')}
+              </div>
+              <div class="stg-help">${kit.te('settings.redesign.notifications.trySoundsHelp')}</div>
             </div>
-          </div>
-          <div style="margin-top:8px;display:flex;align-items:center;gap:12px">
-            <label style="font-size:13px;color:var(--s-lighter);min-width:80px">Auto-dismiss</label>
-            <input type="hidden" id="notif-toast-duration" value="${toastDur}">
-            <div class="cc-dropdown stg-dropdown stg-dropdown-inline" data-for="notif-toast-duration">
-              <button class="cc-dropdown-trigger" type="button">
-                <span class="cc-dropdown-value">${durationLabel}</span>
-                <svg class="cc-dropdown-arrow" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
-              </button>
-              <div class="cc-dropdown-menu">${durationItems}</div>
-            </div>
-          </div>
-        </div>
+          </div>`,
+        })}
 
-        <!-- BANNERS -->
-        <div class="stg-section" id="notif-banner-section">
-          <div class="gfx-group-title">OS Banners</div>
-          <div class="settings-hint">
-            Show a system notification banner via the OS notification center.
+        ${kit.card({
+          id: 'stg-sec-onscreen', section: 'notifications.on_screen_alerts',
+          body: `
+          <div id="notif-toast-section">
+            ${kit.subhead(kit.te('settings.redesign.notifications.inApp'))}
+            ${check('NOT017', 'notif-toast-toggle', s.toast)}
+            ${kit.field('NOT018', kit.dropdown('notif-toast-position', positionOptions, { value: toastPos, classes: 'stg-dropdown stg-dropdown-inline', label: kit.L('NOT018') }), { attrs: 'style="margin-top:14px"' })}
+            ${kit.field('NOT019', kit.dropdown('notif-toast-duration', durationOptions, { value: toastDur, classes: 'stg-dropdown stg-dropdown-inline', label: kit.L('NOT019') }))}
           </div>
-          <div class="stg-toggle-row">
-            <label>
-              <input type="checkbox" id="notif-banner-toggle" ${s.banner ? 'checked' : ''}>
-              <span>Show OS notification banners</span>
-            </label>
-          </div>
-          <div class="stg-toggle-row">
-            <label>
-              <input type="checkbox" id="notif-banner-focused" ${s.bannerFocused ? 'checked' : ''}>
-              <span>Show even when app is focused</span>
-            </label>
-          </div>
-        </div>
+          <div id="notif-banner-section">
+            ${kit.subhead(kit.te('settings.redesign.notifications.system'))}
+            ${check('NOT020', 'notif-banner-toggle', s.banner)}
+            ${check('NOT021', 'notif-banner-focused', s.bannerFocused)}
+          </div>`,
+        })}
 
-        <!-- TEST -->
-        <div class="stg-section">
-          <div class="gfx-group-title">Test</div>
-          <div class="settings-hint">
-            Fire a full test notification (sound + toast + banner).
+        ${kit.card({
+          id: 'stg-sec-test', section: 'notifications.test_alerts',
+          body: `
+          <div class="stg-action-row">
+            <button type="button" class="stg-action-btn" id="notif-test-btn" ${kit.inv('NOT022')} aria-describedby="notif-test-btn-help">${kit.L('NOT022')}</button>
           </div>
-          <button class="stg-action-btn" id="notif-test-btn">Send Test Notification</button>
-        </div>
+          ${kit.help('NOT022', { forId: 'notif-test-btn' })}`,
+        })}
 
       </div>`;
 }
 
 function buildCollectionsTab(connections, settings) {
-  const conn = connections[0] || {};
-  const dbSizeMB = settings.dbSizeBytes ? (settings.dbSizeBytes / 1024 / 1024).toFixed(1) : '0';
-
-  const mismatchBanner = settings.embeddingMismatch ? `
-        <div style="margin-bottom:12px;padding:10px 12px;background:rgba(255,107,107,0.10);border:1px solid rgba(255,107,107,0.25);border-radius:8px;font-size:12px;color:var(--red);line-height:1.5">
-          Embedding model mismatch detected. Vectors may not match the current model. Run <strong>Reindex</strong> to regenerate all embeddings.
-        </div>` : '';
+  const mismatch = !!settings.embeddingMismatch;
 
   return `
-      <div class="settings-tab-body" data-tab="collections">
-        ${mismatchBanner}
+      <div class="stg-pane" data-stg-pane="collections">
 
-        <div class="stg-section">
-          <div class="gfx-group-title">Memory Database</div>
-          <div class="conn-list" id="conn-list">
-            <div class="conn-item active">
-              <div class="conn-item-dot"></div>
-              <div class="conn-item-info">
-                <div class="conn-item-name">Local SQLite</div>
-                <div class="conn-item-meta">${settings.dbPath || 'memories.db'}</div>
-              </div>
-              <span class="conn-item-count">${conn.points || 0} memories</span>
+        ${kit.card({
+          id: 'stg-sec-search-index', section: 'memory_backups.search_index',
+          status: `<span class="stg-pill" id="reindex-health" ${kit.inv('DB004')} data-state="${mismatch ? 'warn' : 'ok'}">${kit.te(mismatch ? 'settings.redesign.collections.rebuildNeeded' : 'settings.redesign.collections.upToDate')}</span>`,
+          body: `
+          ${mismatch ? `
+          <div class="stg-callout stg-callout-warn" role="alert" style="margin-bottom:12px;padding:10px 12px;background:rgba(251,191,36,0.08);border:1px solid rgba(251,191,36,0.3);border-radius:8px">
+            ${kit.th('settings.redesign.collections.mismatch', { button: `<strong>${kit.L('DB001')}</strong>` })}
+          </div>` : ''}
+          <div class="stg-field" ${kit.inv('DB001')}>
+            <div class="db-reindex-row">
+              <button type="button" class="stg-action-btn db-reindex-btn" id="reindex-btn" aria-describedby="reindex-btn-help">${kit.L('DB001')}</button>
+              <button type="button" class="stg-action-btn db-reindex-btn" id="reindex-cancel-btn" ${kit.inv('DB002')} title="${kit.H('DB002')}" style="display:none">${kit.L('DB002')}</button>
             </div>
-          </div>
-          <div class="db-stats-row">
-            <div class="db-stat">
-              <span class="db-stat-label">Storage</span>
-              <span class="db-stat-value">SQLite</span>
-            </div>
-            <div class="db-stat">
-              <span class="db-stat-label">DB Size</span>
-              <span class="db-stat-value">${dbSizeMB} MB</span>
-            </div>
-          </div>
-        </div>
-
-        <div class="stg-section">
-          <div class="gfx-group-title">Embedding Management</div>
-          <div class="settings-hint">
-            Regenerate all memory and session chunk embeddings using the current model. Use this if you change the embedding model or provider.
-          </div>
-          <div class="db-reindex-row">
-            <button class="stg-action-btn db-reindex-btn" id="reindex-btn">Reindex All Memories</button>
-            <button class="stg-action-btn db-reindex-btn" id="reindex-cancel-btn" style="display:none">Cancel</button>
+            ${kit.help('DB001', { forId: 'reindex-btn' })}
           </div>
           <div id="reindex-status" class="db-reindex-status" style="display:none">
             <div class="db-reindex-header">
               <div class="wiz-status-dot spin" id="reindex-dot"></div>
-              <span id="reindex-text" class="db-reindex-text"></span>
+              <span id="reindex-text" class="db-reindex-text" role="status" aria-live="polite"></span>
             </div>
             <div class="db-reindex-bar-track">
               <div id="reindex-bar" class="db-reindex-bar"></div>
             </div>
             <div id="reindex-summary" class="db-reindex-summary"></div>
           </div>
-          <div class="db-model-footer">Model: ${settings.embeddingModel || 'local'} · ${settings.embeddingDims || '?'}d</div>
-        </div>
+          <div class="db-model-footer">${kit.te('settings.redesign.collections.modelFooter', { model: settings.embeddingModel || kit.tx('settings.redesign.collections.modelLocal'), dims: settings.embeddingDims || '?' })}</div>`,
+        })}
 
       </div>`;
 }
 
 /** Generate tool toggle rows, marking items that are alone in their grid row with span-full */
-function buildToolRows(tools, perms) {
-  // Split tools into segments by group header
+function buildToolRows(tools, perms, invId = 'PER002') {
+  // Split tools into segments by group header. Names and descriptions come from the server's tool list.
   const segments = [];
   let currentGroup = null;
   let currentItems = [];
@@ -1905,7 +1524,7 @@ function buildToolRows(tools, perms) {
                   <div class="cc-integration-label">${t.label}</div>
                   <div class="cc-integration-path">${t.desc}</div>
                 </div>
-                <button class="cc-toggle${isOn ? ' on' : ''}" data-cc-tool="${t.key}"></button>
+                <button type="button" class="cc-toggle${isOn ? ' on' : ''}" data-cc-tool="${t.key}" ${kit.inv(invId)} aria-label="${kit.esc(t.label)}" title="${kit.esc(t.desc)}"></button>
               </div>`;
     });
   }
@@ -1918,143 +1537,150 @@ function buildYoutubeTab(yt) {
   const p = (yt && yt.pipeline) || {};
   const dl = p.download || {};
   const src = p.sources || {};
+  const y = (key) => kit.te(`settings.redesign.youtube.${key}`);
   const esc = (v) => String(v == null ? '' : v).replace(/"/g, '&quot;');
-  const badge = (ok) => `<span style="font-size:10px;padding:2px 7px;border-radius:4px;background:${ok ? 'rgba(80,200,120,0.16)' : 'rgba(255,255,255,0.06)'};color:${ok ? '#6c9' : 'var(--t-dim)'}">${ok ? 'Connected' : 'Not set'}</span>`;
-  const field = (id, label, placeholder, type = 'text') =>
-    `<label style="display:block;font-size:11px;color:var(--t-dim);margin:8px 0 3px">${label}</label>
-     <input id="yt-${id}" type="${type}" placeholder="${esc(placeholder)}" value="${esc(s[id] && String(s[id]).includes('*') ? '' : (s[id] || ''))}" data-mask="${esc(s[id] || '')}" style="width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid var(--b-subtle);border-radius:6px;background:rgba(255,255,255,0.03);color:var(--t-bright);font-size:12px;font-family:'JetBrains Mono',monospace" autocomplete="off" spellcheck="false">`;
+  const badge = (ok) => kit.pill(y(ok ? 'connected' : 'notSet'), { state: ok ? 'ok' : 'off' });
+  // A key field: a saved secret arrives masked and stays in data-mask, so an untouched field keeps the stored value.
+  const key = (invId, id, placeholder, type = 'text') => kit.field(invId, `
+          <div class="settings-key-row">
+            <input id="yt-${id}" type="${type}" placeholder="${esc(placeholder)}" value="${esc(s[id] && String(s[id]).includes('*') ? '' : (s[id] || ''))}" data-mask="${esc(s[id] || '')}" autocomplete="off" spellcheck="false" aria-describedby="yt-${id}-help">
+          </div>`, { forId: `yt-${id}` });
+  const service = (titleKey, ok) => `<h4 class="stg-subhead stg-subhead-status">${y(titleKey)} ${badge(ok)}</h4>`;
 
   return `
-      <div class="settings-tab-body" data-tab="youtube">
-        <div class="cc-tool-permissions-hint" style="font-size:11px;color:var(--t-dim);margin-bottom:14px;padding:0 2px;line-height:1.5">
-          Automate a game-trailer channel. Uploads/publishing run through YouTube Studio in the SynaBun browser (no API quota, no audit private-lock); the YouTube Data API below is used for read-only analytics. Trailers are sourced from <b>IGDB</b> (discovery) + <b>Steam</b> (direct mp4). Secrets are stored in your local <code>.env</code>.
-        </div>
-
-        <div style="margin-bottom:18px">
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
-            <span style="font-size:12px;font-weight:600;color:var(--t-bright)">YouTube Data API (analytics)</span> ${badge(c.youtube)}
+      <div class="stg-pane" data-stg-pane="youtube">
+        ${kit.card({
+          id: 'stg-sec-youtube', section: 'automations.youtube_pipeline',
+          body: `
+          <div ${kit.inv('YT017')}>
+          ${service('apiTitle', c.youtube)}
+          <div class="stg-help" style="margin:0 0 10px">${kit.th('settings.redesign.youtube.apiHelp', { uri: '<code class="stg-code">http://localhost:3344/api/youtube/oauth/callback</code>' })}</div>
+          ${key('YT001', 'YT_OAUTH_CLIENT_ID', 'xxxx.apps.googleusercontent.com')}
+          ${key('YT002', 'YT_OAUTH_CLIENT_SECRET', 'GOCSPX-…', 'password')}
+          ${key('YT003', 'YT_API_KEY', 'AIza…', 'password')}
+          ${key('YT004', 'YT_CHANNEL_ID', 'UC…')}
+          <div class="stg-field" ${kit.inv('YT005')}>
+            <div class="stg-action-row" style="align-items:center">
+              <button type="button" class="stg-action-btn" id="yt-authorize" aria-describedby="yt-authorize-help">${kit.L('YT005')}</button>
+              <span class="stg-help" style="margin:0">${y('signInSaved')} ${badge(c.youtube)}</span>
+            </div>
+            ${kit.help('YT005', { forId: 'yt-authorize' })}
           </div>
-          <div style="font-size:10px;color:var(--t-dim);margin-bottom:6px">OAuth client from a Google Cloud project. Add redirect URI <code>http://localhost:3344/api/youtube/oauth/callback</code>. Uploading via the API is intentionally avoided (unaudited projects lock uploads to private).</div>
-          ${field('YT_OAUTH_CLIENT_ID', 'OAuth Client ID', 'xxxx.apps.googleusercontent.com')}
-          ${field('YT_OAUTH_CLIENT_SECRET', 'OAuth Client Secret', 'GOCSPX-…', 'password')}
-          ${field('YT_API_KEY', 'API Key (optional, public reads)', 'AIza…', 'password')}
-          ${field('YT_CHANNEL_ID', 'Channel ID (optional)', 'UC…')}
-          <div style="display:flex;gap:8px;margin-top:10px;align-items:center">
-            <button class="conn-add-btn" id="yt-authorize" style="margin:0;width:auto;font-size:11px;padding:5px 10px">Authorize YouTube</button>
-            <span style="font-size:10px;color:var(--t-dim)">Refresh token: ${badge(c.youtube)}</span>
-          </div>
-        </div>
 
-        <div style="margin-bottom:18px">
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
-            <span style="font-size:12px;font-weight:600;color:var(--t-bright)">IGDB (discovery)</span> ${badge(c.igdb)}
-          </div>
-          <div style="font-size:10px;color:var(--t-dim);margin-bottom:6px">Twitch developer app credentials (dev.twitch.tv → Register Your Application). Used for game discovery + Steam appid + trailer pointers.</div>
-          ${field('IGDB_CLIENT_ID', 'Twitch Client ID', 'xxxx')}
-          ${field('IGDB_CLIENT_SECRET', 'Twitch Client Secret', 'xxxx', 'password')}
-        </div>
+          ${kit.advanced(`
+            ${service('igdbTitle', c.igdb)}
+            <div class="stg-help" style="margin:0 0 10px">${y('igdbHelp')}</div>
+            ${key('YT006', 'IGDB_CLIENT_ID', 'xxxx')}
+            ${key('YT007', 'IGDB_CLIENT_SECRET', 'xxxx', 'password')}
 
-        <div style="margin-bottom:18px">
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
-            <span style="font-size:12px;font-weight:600;color:var(--t-bright)">Steam</span> ${badge(c.steam)}
-          </div>
-          <div style="font-size:10px;color:var(--t-dim);margin-bottom:6px">Optional — the Storefront appdetails endpoint (direct mp4 trailers) is public. A Web API key is only needed for bulk app-list enumeration.</div>
-          ${field('STEAM_API_KEY', 'Steam Web API Key (optional)', 'xxxx', 'password')}
-        </div>
+            ${service('steamTitle', c.steam)}
+            ${key('YT008', 'STEAM_API_KEY', 'xxxx', 'password')}
 
-        <div style="margin-bottom:18px">
-          <div style="font-size:12px;font-weight:600;color:var(--t-bright);margin-bottom:6px">Pipeline</div>
-          <label style="display:block;font-size:11px;color:var(--t-dim);margin:8px 0 3px">Upload transport</label>
-          <select id="yt-upload-transport" style="width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid var(--b-subtle);border-radius:6px;background:rgba(255,255,255,0.03);color:var(--t-bright);font-size:12px">
-            <option value="browser"${p.uploadTransport !== 'api' ? ' selected' : ''}>Browser (recommended — avoids private-lock)</option>
-            <option value="api"${p.uploadTransport === 'api' ? ' selected' : ''}>API (uploads lock to private until audited)</option>
-          </select>
-          <label style="display:block;font-size:11px;color:var(--t-dim);margin:8px 0 3px">Download quality (yt-dlp -f)</label>
-          <input id="yt-quality" type="text" value="${esc(dl.quality || 'bestvideo[height<=1080]+bestaudio/best[height<=1080]')}" style="width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid var(--b-subtle);border-radius:6px;background:rgba(255,255,255,0.03);color:var(--t-bright);font-size:12px;font-family:'JetBrains Mono',monospace">
-          <label style="display:block;font-size:11px;color:var(--t-dim);margin:8px 0 3px">Output folder</label>
-          <input id="yt-outputDir" type="text" value="${esc(dl.outputDir || '')}" placeholder="(default: data/youtube-downloads)" style="width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid var(--b-subtle);border-radius:6px;background:rgba(255,255,255,0.03);color:var(--t-bright);font-size:12px;font-family:'JetBrains Mono',monospace">
-          <div style="display:flex;gap:14px;margin-top:10px;flex-wrap:wrap">
-            <label style="font-size:11px;color:var(--t-dim);display:flex;align-items:center;gap:5px"><input id="yt-useCookies" type="checkbox"${dl.useCookies ? ' checked' : ''}> Use browser cookies (gated trailers)</label>
-            <label style="font-size:11px;color:var(--t-dim);display:flex;align-items:center;gap:5px">Lookback days <input id="yt-lookbackDays" type="number" value="${esc(src.lookbackDays || 60)}" style="width:60px;padding:3px 6px;border:1px solid var(--b-subtle);border-radius:5px;background:rgba(255,255,255,0.03);color:var(--t-bright)"></label>
-            <label style="font-size:11px;color:var(--t-dim);display:flex;align-items:center;gap:5px">Posts/day <input id="yt-postsPerDay" type="number" value="${esc((p.cadence && p.cadence.postsPerDay) || 1)}" style="width:50px;padding:3px 6px;border:1px solid var(--b-subtle);border-radius:5px;background:rgba(255,255,255,0.03);color:var(--t-bright)"></label>
+            ${kit.subhead(y('pipelineTitle'))}
+            ${kit.field('YT009', `
+              <select id="yt-upload-transport" class="stg-input" aria-describedby="yt-upload-transport-help">
+                <option value="browser"${p.uploadTransport !== 'api' ? ' selected' : ''}>${y('transport.browser')}</option>
+                <option value="api"${p.uploadTransport === 'api' ? ' selected' : ''}>${y('transport.api')}</option>
+              </select>`, { forId: 'yt-upload-transport' })}
+            ${kit.field('YT010', `
+              <div class="settings-key-row">
+                <input id="yt-quality" type="text" value="${esc(dl.quality || 'bestvideo[height<=1080]+bestaudio/best[height<=1080]')}" autocomplete="off" spellcheck="false" aria-describedby="yt-quality-help">
+              </div>`, { forId: 'yt-quality' })}
+            ${kit.field('YT011', `
+              <div class="settings-key-row">
+                <input id="yt-outputDir" type="text" value="${esc(dl.outputDir || '')}" placeholder="data/youtube-downloads" autocomplete="off" spellcheck="false" aria-describedby="yt-outputDir-help">
+              </div>`, { forId: 'yt-outputDir' })}
+            ${kit.toggleField('YT012', kit.switchInput('yt-useCookies', { checked: !!dl.useCookies }), { forId: 'yt-useCookies' })}
+            ${kit.field('YT013', `<input id="yt-lookbackDays" type="number" class="stg-input" value="${esc(src.lookbackDays || 60)}" min="1" style="width:100px" aria-describedby="yt-lookbackDays-help">`, { forId: 'yt-lookbackDays' })}
+            ${kit.field('YT014', `<input id="yt-postsPerDay" type="number" class="stg-input" value="${esc((p.cadence && p.cadence.postsPerDay) || 1)}" min="1" style="width:100px" aria-describedby="yt-postsPerDay-help">`, { forId: 'yt-postsPerDay' })}`,
+            { labelKey: 'settings.redesign.youtube.advanced' })}
           </div>
-        </div>
 
-        <div style="display:flex;gap:8px;align-items:center;border-top:1px solid var(--b-subtle);padding-top:12px">
-          <button class="conn-add-btn" id="yt-save" style="margin:0;width:auto;font-size:12px;padding:6px 14px">Save</button>
-          <button class="cc-copy-btn" id="yt-test" style="width:auto;font-size:11px;padding:6px 10px">Test connections</button>
-          <span id="yt-status" style="font-size:11px;color:var(--t-dim)"></span>
-        </div>
-        <div style="font-size:10px;color:var(--t-dim);margin-top:10px;line-height:1.5">
-          Autopilot: Settings → Automations → run the <b>YouTube Trailer Autopilot</b> loop (sources, downloads, uploads, schedules, dedupes via memory). Re-uploading trailers can draw Content ID claims; keep monetization conservative on unverified titles.
-        </div>
+          <div class="stg-action-row" style="margin-top:14px;align-items:center">
+            <button type="button" class="stg-action-btn" id="yt-save" ${kit.inv('YT015')} title="${kit.H('YT015')}">${kit.L('YT015')}</button>
+            <button type="button" class="stg-action-btn" id="yt-test" ${kit.inv('YT016')} title="${kit.H('YT016')}">${kit.L('YT016')}</button>
+            <span id="yt-status" ${kit.inv('YT018')} role="status" aria-live="polite"></span>
+          </div>
+          <div class="stg-help">${y('autopilot')}</div>`,
+        })}
       </div>`;
 }
 
 function buildSocialTab(toolCategories, toolPermissions) {
   const socialCat = (toolCategories || []).find(c => c.id === 'social');
-  if (!socialCat) return `<div class="settings-tab-body" data-tab="social"><div class="cc-hint" style="padding:20px;color:var(--t-dim)">No social media tools registered.</div></div>`;
-
   const perms = toolPermissions || {};
-  const onCount = socialCat.tools.filter(t => perms[t.key] !== false).length;
-  const allOn = onCount === socialCat.tools.length;
+  const tools = socialCat ? socialCat.tools : [];
+  const onCount = tools.filter(t => perms[t.key] !== false).length;
+  const allOn = !!tools.length && onCount === tools.length;
 
   return `
-      <div class="settings-tab-body" data-tab="social">
-        <div class="cc-tool-category" data-tool-category="social" style="margin:0">
-          <div class="cc-tool-category-header" style="padding-bottom:8px">
-            <span class="cc-tool-category-label" style="font-size:12px">All Platforms</span>
-            <span class="cc-tool-category-count">${onCount}/${socialCat.tools.length}</span>
-            <button class="cc-tool-category-all${allOn ? ' on' : ''}" data-cc-tool-cat="social" title="Toggle all social media tools">${allOn ? 'All' : 'All'}</button>
-          </div>
-          <div class="cc-hook-toggles">${buildToolRows(socialCat.tools, perms)}
-          </div>
-        </div>
+      <div class="stg-pane" data-stg-pane="social">
+        ${kit.card({
+          id: 'stg-sec-social', section: 'automations.social_platform_access',
+          body: !socialCat
+            ? `<div class="stg-help" style="margin-top:0">${kit.te('settings.redesign.social.none')}</div>`
+            : `
+          <div class="cc-tool-category" data-tool-category="social" ${kit.inv('SOC003')} style="margin:0">
+            <div class="cc-tool-category-header" style="padding-bottom:8px">
+              <span class="cc-tool-category-label">${kit.te('settings.redesign.social.allPlatforms')}</span>
+              <span class="cc-tool-category-count">${onCount}/${tools.length}</span>
+              <button type="button" class="cc-tool-category-all${allOn ? ' on' : ''}" data-cc-tool-cat="social" ${kit.inv('SOC001')} title="${kit.H('SOC001')}" data-stg-pressed="on" aria-pressed="${allOn ? 'true' : 'false'}" aria-label="${kit.L('SOC001')}">${kit.te('settings.redesign.permissions.all')}</button>
+            </div>
+            <div class="cc-hook-toggles">${buildToolRows(tools, perms, 'SOC002')}
+            </div>
+          </div>`,
+        })}
       </div>`;
 }
 
 function buildSkillsTab(ccSkills) {
   const skills = ccSkills || [];
-  if (!skills.length) return `<div class="settings-tab-body" data-tab="skills"><div class="cc-hint" style="padding:20px;color:var(--t-dim)">No skills registered.</div></div>`;
-
   const targets = [
-    { id: 'claude', label: 'Claude' },
-    { id: 'codex', label: 'Codex' },
-    { id: 'opencode', label: 'OpenCode' },
+    { id: 'claude', label: kit.te('settings.redesign.product.claude') },
+    { id: 'codex', label: kit.te('settings.redesign.product.codex') },
+    { id: 'opencode', label: kit.te('settings.redesign.product.opencode') },
   ];
-
-  return `
-      <div class="settings-tab-body" data-tab="skills">
-        <div class="cc-tool-permissions-hint" style="font-size:11px;color:var(--t-dim);margin-bottom:12px;padding:0 2px">
-          Slash commands that extend Claude Code, Codex, and OpenCode with specialized capabilities.
-        </div>
-        ${skills.map(skill => {
-          const installed = skill.installedTargets || { claude: !!skill.installed, codex: false, opencode: false };
-          const anyOn = targets.some(t => installed[t.id]);
-          const chips = targets.map(t => `
-              <button class="cc-skill-target${installed[t.id] ? ' on' : ''}"
+  const row = (skill) => {
+    const installed = skill.installedTargets || { claude: !!skill.installed, codex: false, opencode: false };
+    const anyOn = targets.some(t => installed[t.id]);
+    const chips = targets.map(t => `
+              <button type="button" class="cc-skill-target${installed[t.id] ? ' on' : ''}"
                       data-cc-skill="${skill.dirName}"
                       data-cc-target="${t.id}"
                       data-state="${installed[t.id] ? 'on' : 'off'}"
-                      title="Install /${skill.name} for ${t.label}">${t.label}</button>
+                      ${kit.inv('SKL001')} data-stg-pressed="on" aria-pressed="${installed[t.id] ? 'true' : 'false'}"
+                      title="${kit.te('settings.redesign.skills.installFor', { skill: skill.name, assistant: t.label })}">${t.label}</button>
           `).join('');
-          return `
+    return `
           <div class="cc-skill-row${anyOn ? ' installed' : ''}" data-skill-name="${skill.dirName}">
             <div class="cc-skill-info">
               <span class="cc-skill-name">/${skill.name}</span>
               <span class="cc-skill-desc">${skill.description || ''}</span>
             </div>
-            <div class="cc-skill-targets">${chips}</div>
+            <div class="cc-skill-targets" role="group" aria-label="${kit.te('settings.redesign.skills.targets', { skill: skill.name })}">${chips}</div>
           </div>`;
-        }).join('')}
+  };
+
+  return `
+      <div class="stg-pane" data-stg-pane="skills">
+        ${kit.card({
+          id: 'stg-sec-skills', section: 'tool_access.skills',
+          body: skills.length
+            ? `<div ${kit.inv('SKL004')} role="group" aria-label="${kit.L('SKL004')}">${skills.map(row).join('')}</div>
+          ${kit.help('SKL001')}`
+            : `<div class="stg-help" style="margin-top:0">${kit.te('settings.redesign.skills.none')}</div>`,
+        })}
       </div>`;
 }
 
 function buildPermissionsTab(toolCategories, toolPermissions) {
-  const chevron = CHEVRON_ICON;
   const categories = (toolCategories || []).filter(c => c.id !== 'social');
-  if (!categories.length) return `<div class="settings-tab-body" data-tab="permissions"><div class="cc-hint" style="padding:20px;color:var(--t-dim)">No tool categories registered.</div></div>`;
   const perms = toolPermissions || {};
+  // The inventory ids of the "all tools of this group" switches, by group.
+  const ALL_SWITCH = {
+    memory: 'PER001', browser: 'PER003', whiteboard: 'PER004', cards: 'PER005', automation: 'PER006',
+    leonardo: 'PER007', images: 'PER008', gsc: 'PER009', youtube: 'PER010', thirdparty: 'PER011',
+  };
 
   let totalOn = 0, totalAll = 0;
   const catData = categories.map(cat => {
@@ -2063,18 +1689,18 @@ function buildPermissionsTab(toolCategories, toolPermissions) {
     totalAll += cat.tools.length;
     return { ...cat, onCount };
   });
-
-  const allOn = totalOn === totalAll;
+  const allOn = !!totalAll && totalOn === totalAll;
 
   const categoryHTML = catData.map(cat => {
     const catAllOn = cat.onCount === cat.tools.length;
-
+    const invId = ALL_SWITCH[String(cat.id).toLowerCase().replace(/[^a-z]/g, '')];
+    const title = kit.te('settings.redesign.permissions.toggleAll', { name: cat.label });
     return `
             <div class="cc-tool-category" data-tool-category="${cat.id}">
               <div class="cc-tool-category-header">
                 <span class="cc-tool-category-label">${cat.label}</span>
                 <span class="cc-tool-category-count">${cat.onCount}/${cat.tools.length}</span>
-                <button class="cc-tool-category-all${catAllOn ? ' on' : ''}" data-cc-tool-cat="${cat.id}" title="Toggle all ${cat.label} tools">${catAllOn ? 'All' : 'All'}</button>
+                <button type="button" class="cc-tool-category-all${catAllOn ? ' on' : ''}" data-cc-tool-cat="${cat.id}"${invId ? ` ${kit.inv(invId)}` : ''} title="${title}" aria-label="${title}" data-stg-pressed="on" aria-pressed="${catAllOn ? 'true' : 'false'}">${kit.te('settings.redesign.permissions.all')}</button>
               </div>
               <div class="cc-hook-toggles">${buildToolRows(cat.tools, perms)}
               </div>
@@ -2082,31 +1708,27 @@ function buildPermissionsTab(toolCategories, toolPermissions) {
   }).join('');
 
   return `
-      <div class="settings-tab-body" data-tab="permissions">
-        <div class="cc-tool-permissions-hint" style="font-size:11px;color:var(--t-dim);margin-bottom:12px;padding:0 2px">
-          Choose which actions can run automatically without asking you first.
-        </div>
-        <div class="cc-tool-category-header" style="padding-bottom:8px;margin-bottom:4px">
-          <span class="cc-tool-category-label" style="font-size:12px">All Tools</span>
-          <span class="cc-hooks-badge${allOn ? ' all-on' : ''}" id="cc-tools-badge">${totalOn}/${totalAll}</span>
-        </div>
-        ${categoryHTML}
+      <div class="stg-pane" data-stg-pane="permissions">
+        ${kit.card({
+          id: 'stg-sec-tool-permissions', section: 'tool_access.tool_permissions',
+          status: `<span class="cc-hooks-badge${allOn ? ' all-on' : ''}" id="cc-tools-badge" title="${kit.te('settings.redesign.permissions.badge')}">${totalOn}/${totalAll}</span>`,
+          body: categories.length
+            ? `<div ${kit.inv('PER012')} role="group" aria-label="${kit.L('PER012')}">${categoryHTML}</div>`
+            : `<div class="stg-help" style="margin-top:0">${kit.te('settings.redesign.permissions.none')}</div>`,
+        })}
       </div>`;
 }
 
 function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo, openclawBridge, greetingConfig, codexGreetingConfig, opencodeGreetingConfig, toolPermissions, toolCategories) {
   const gh = ccIntegrations.global.hooks || {};
-  const projs = ccIntegrations.projects || [];
   const ssOn = !!gh.SessionStart;
   const psOn = !!gh.UserPromptSubmit;
   const pcOn = !!gh.PreCompact;
   const stOn = !!gh.Stop;
-  const prOn = !!gh.PreToolUse;
+  const prOn = !!gh.PreToolUse && !!gh.PostToolBatch;
   const ptOn = !!gh.PostToolUse;
   const subStartOn = !!gh.SubagentStart;
   const subStopOn = !!gh.SubagentStop;
-  const allOn = ssOn && psOn && pcOn && stOn && prOn && ptOn && subStartOn && subStopOn;
-  const onCount = [ssOn, psOn, pcOn, stOn, prOn, ptOn, subStartOn, subStopOn].filter(Boolean).length;
   const hf = ccIntegrations.hookFeatures || {};
   const cmOn = hf.conversationMemory !== false;
   const grOn = hf.greeting === true;
@@ -2114,25 +1736,21 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
   const ulThreshold = hf.userLearningThreshold || 8;
   const ulMaxNudges = hf.userLearningMaxNudges || 3;
   const srOn = hf.subagentRemember === true;
+  const taskRecallOn = hf.taskRecallGate !== false;
 
+  const h = (key, params) => kit.te(`settings.redesign.hooks.${key}`, params);
   const hookRows = [
-    { key: 'SessionStart', on: ssOn, label: 'Session Startup', desc: 'Load memory and context when a new session begins' },
-    { key: 'UserPromptSubmit', on: psOn, label: 'Message Processing', desc: 'Process each message for memory triggers and rule enforcement' },
-    { key: 'PreCompact', on: pcOn, label: 'Context Preservation', desc: 'Save session data before the context window is compressed' },
-    { key: 'Stop', on: stOn, label: 'Session Indexing', desc: 'Index completed sessions so they can be recalled later' },
-    { key: 'PreToolUse', on: prOn, label: 'Tool Safety Guard', desc: 'Prevent web searches while browser automation is running' },
-    { key: 'PostToolUse', on: ptOn, label: 'Action Tracking', desc: 'Track file changes, enforce rules, and save plans on approval' },
-    { key: 'SubagentStart', on: subStartOn, label: 'Subagent Recall', desc: 'Inject relevant memories when a subagent (Task worker) starts' },
-    { key: 'SubagentStop', on: subStopOn, label: 'Subagent Remember', desc: 'Prompt subagents to save findings before they finish' },
+    { key: 'SessionStart', on: ssOn, inv: 'AUT028' }, { key: 'UserPromptSubmit', on: psOn, inv: 'AUT029' },
+    { key: 'PreCompact', on: pcOn, inv: 'AUT030' }, { key: 'Stop', on: stOn, inv: 'AUT031' },
+    { key: 'PreToolUse', on: prOn, inv: 'AUT032' }, { key: 'PostToolUse', on: ptOn, inv: 'AUT033' },
+    { key: 'SubagentStart', on: subStartOn, inv: 'AUT034' }, { key: 'SubagentStop', on: subStopOn, inv: 'AUT035' },
   ];
+  const onCount = hookRows.filter(r => r.on).length;
+  const allOn = onCount === hookRows.length;
 
   const copyIcon = COPY_ICON;
-  const chevron = CHEVRON_ICON;
-  const anthropicIcon = ANTHROPIC_ICON;
-  const geminiIcon = GEMINI_ICON;
-  const openaiIcon = OPENAI_ICON;
 
-  // Provider badge helper — generates compatibility badges for all AI providers
+  // Which assistants a block works with: one badge per maker, the list in its popup. The names are product names.
   const providerBadge = (compat) => {
     const anthropicItems = [
       { label: 'Claude Code CLI', on: compat.cli !== false },
@@ -2150,52 +1768,36 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
       { label: 'Cursor', on: false },
       { label: 'ChatGPT Web', on: false },
     ];
-    const anthropicOn = anthropicItems.filter(i => i.on).length;
-
-    const buildPopup = (icon, title, items, untested) => {
-      const onCount = items.filter(i => i.on).length;
-      return `<div class="cc-compat-popup">
-        <div class="cc-compat-header">
-          ${icon}
-          <span>${title}</span>
-          <span class="cc-compat-count">${onCount}/${items.length}</span>
-        </div>
-        <div class="cc-compat-grid">
-          ${items.map(i => `<div class="cc-compat-row ${i.on ? 'on' : 'off'}">
-            <span class="cc-compat-dot${untested ? ' untested' : ''}"></span>
-            <span class="cc-compat-name">${i.label}</span>
-            ${i.note ? `<span class="cc-compat-note">${i.note}</span>` : ''}
-          </div>`).join('')}
+    const badge = (provider, icon, titleKey, items, untested) => {
+      const count = items.filter(i => i.on).length;
+      return `<div class="cc-provider-badge" data-provider="${provider}" tabindex="0" role="group" aria-label="${h(titleKey)} ${count}/${items.length}">
+        ${icon}
+        <div class="cc-compat-popup">
+          <div class="cc-compat-header">
+            ${icon}
+            <span>${h(titleKey)}</span>
+            <span class="cc-compat-count">${count}/${items.length}</span>
+          </div>
+          <div class="cc-compat-grid" data-stg-data>
+            ${items.map(i => `<div class="cc-compat-row ${i.on ? 'on' : 'off'}">
+              <span class="cc-compat-dot${untested ? ' untested' : ''}"></span>
+              <span class="cc-compat-name">${i.label}</span>
+              ${i.note ? `<span class="cc-compat-note">${i.note}</span>` : ''}
+            </div>`).join('')}
+          </div>
         </div>
       </div>`;
     };
-
-    return `<div class="cc-provider-badges" onclick="event.stopPropagation()">
-      <div class="cc-provider-badge" data-provider="anthropic" tabindex="0">
-        ${anthropicIcon}
-        ${buildPopup(anthropicIcon, 'Claude Compatibility', anthropicItems, false)}
-      </div>
-      <div class="cc-provider-badge" data-provider="google" tabindex="0">
-        ${geminiIcon}
-        ${buildPopup(geminiIcon, 'Gemini Compatibility', geminiItems, true)}
-      </div>
-      <div class="cc-provider-badge" data-provider="openai" tabindex="0">
-        ${openaiIcon}
-        ${buildPopup(openaiIcon, 'OpenAI Compatibility', openaiItems, true)}
-      </div>
+    return `<div class="cc-provider-badges" data-stg-nostatus onclick="event.stopPropagation()" ${kit.inv('AUT046')}>
+      ${badge('anthropic', ANTHROPIC_ICON, 'compat.claude', anthropicItems, false)}
+      ${badge('google', GEMINI_ICON, 'compat.gemini', geminiItems, true)}
+      ${badge('openai', OPENAI_ICON, 'compat.openai', openaiItems, true)}
     </div>`;
   };
 
-  function buildGreetingSection({
-    title,
-    enabled,
-    config,
-    prefix,
-    bodyId,
-    toggleAttrs,
-    badgeHtml = '',
-    hint = '',
-  }) {
+  // One greeting editor. `ids` are the inventory ids of its controls, in the order below.
+  function buildGreetingSection({ kind, enabled, config, prefix, bodyId, toggleAttrs, ids }) {
+    const [idToggle, idProject, idTemplate, idShowReminders, idLastSession, idAdd, idSave] = ids;
     const gc = config || { defaults: {}, projects: {}, global: {} };
     const greetingProjects = Object.keys(gc.projects || {});
     const firstKey = greetingProjects[0] || 'global';
@@ -2203,471 +1805,408 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
     const firstCfg = firstKey === 'global'
       ? { ...gc.defaults, ...gc.global }
       : { ...gc.defaults, ...(gc.projects[firstKey] || {}) };
+    const projectLabel = (key) => (key === 'global' ? h('greeting.global') : escapeHtml((gc.projects[key] || {}).label || key));
     const buildReminderRow = (reminder) => `
       <div class="cc-greeting-reminder-row">
-        <span class="cc-greeting-drag-handle" title="Drag to reorder">&#8942;&#8942;</span>
-        <input class="cc-greeting-reminder-input label" placeholder="Label" value="${escapeHtml(reminder.label || '')}">
-        <input class="cc-greeting-reminder-input cmd" placeholder="Command" value="${escapeHtml(reminder.command || '')}">
-        <button class="cc-greeting-reminder-remove" title="Remove">&times;</button>
+        <span class="cc-greeting-drag-handle" title="${h('dragToReorder')}">&#8942;&#8942;</span>
+        <input class="cc-greeting-reminder-input label" placeholder="${h('label')}" aria-label="${h('label')}" value="${escapeHtml(reminder.label || '')}">
+        <input class="cc-greeting-reminder-input cmd" placeholder="${h('command')}" aria-label="${h('command')}" value="${escapeHtml(reminder.command || '')}">
+        <button type="button" class="cc-greeting-reminder-remove" title="${h('remove')}" aria-label="${h('remove')}">&times;</button>
       </div>`;
     const remindersHTML = (firstCfg.reminders || []).map(buildReminderRow).join('');
-    return `
-        <div class="iface-section collapsed" data-collapsible id="${prefix}-greeting-config">
-          <div class="gfx-group-title" style="justify-content:space-between">
-            <span style="display:flex;align-items:center;gap:6px">${chevron} ${title}</span>
-            <div style="display:flex;align-items:center;gap:8px">
-              ${badgeHtml}
-              <button class="cc-toggle${enabled ? ' on' : ''}" ${toggleAttrs}></button>
-            </div>
-          </div>
-          <div class="cc-section-body" id="${bodyId}" style="display:${enabled ? 'block' : 'none'}">
-            ${hint ? `<div class="settings-hint" style="margin-bottom:10px">${hint}</div>` : ''}
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
-              <div class="cc-dropdown" id="${prefix}-greeting-project-dropdown">
-                <button class="cc-dropdown-trigger" type="button">
-                  <span class="cc-dropdown-value" id="${prefix}-greeting-project-label">${firstKey === 'global' ? 'Global (Default)' : escapeHtml((gc.projects[firstKey] || {}).label || firstKey)}</span>
-                  <svg class="cc-dropdown-arrow" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+    const variable = (name, id) => `<tr><td><code>{${name}}</code></td><td id="${prefix}-cs-${id}"></td></tr>`;
+
+    return kit.card({
+      id: `${prefix}-greeting-config`, level: 'h4', collapsible: true, collapsed: true,
+      title: h(`greeting.title.${kind}`), purpose: h(`greeting.purpose.${kind}`),
+      status: `<button type="button" class="cc-toggle${enabled ? ' on' : ''}" ${toggleAttrs} ${kit.inv(idToggle)} aria-label="${kit.L(idToggle)}" title="${kit.H(idToggle)}"></button>`,
+      body: `
+          <div id="${bodyId}" style="display:${enabled ? 'block' : 'none'}">
+            <div class="stg-field" ${kit.inv(idProject)}>
+              <label id="${prefix}-greeting-project-caption">${kit.L(idProject)}</label>
+              <div class="cc-dropdown" id="${prefix}-greeting-project-dropdown" role="group" aria-labelledby="${prefix}-greeting-project-caption">
+                <button class="cc-dropdown-trigger" type="button" aria-haspopup="listbox" aria-describedby="${prefix}-greeting-project-help">
+                  <span class="cc-dropdown-value" id="${prefix}-greeting-project-label">${projectLabel(firstKey)}</span>
+                  <svg class="cc-dropdown-arrow" viewBox="0 0 24 24" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
                 </button>
                 <div class="cc-dropdown-menu" id="${prefix}-greeting-project-menu">
-                  ${projectKeys.map((key) => {
-                    const label = key === 'global' ? 'Global (Default)' : (gc.projects[key]?.label || key);
-                    return `<div class="cc-dropdown-item${key === firstKey ? ' active' : ''}" data-value="${key}">${escapeHtml(label)}</div>`;
-                  }).join('')}
+                  ${projectKeys.map((key) => `<div class="cc-dropdown-item${key === firstKey ? ' active' : ''}" data-value="${key}">${projectLabel(key)}</div>`).join('')}
                 </div>
                 <input type="hidden" id="${prefix}-greeting-project" value="${firstKey}">
               </div>
-              <span style="font-size:11px;color:var(--t-faint);margin-left:8px">Per-project or global</span>
+              <div class="stg-help" id="${prefix}-greeting-project-help">${kit.H(idProject)}</div>
             </div>
-            <div class="cc-greeting-field">
-              <label class="cc-greeting-label">Template</label>
-              <textarea class="cc-greeting-textarea" id="${prefix}-greeting-template" placeholder="{time_greeting}! Working on **{project_label}** ({branch} branch). {date}.">${escapeHtml(firstCfg.greetingTemplate || '')}</textarea>
-              <div class="cc-greeting-cheatsheet-toggle" id="${prefix}-greeting-cheatsheet-toggle">
-                <svg viewBox="0 0 24 24" style="width:11px;height:11px;fill:none;stroke:currentColor;stroke-width:2;vertical-align:-1px"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
-                Variable Reference
+            <div class="cc-greeting-field stg-field" ${kit.inv(idTemplate)}>
+              <label class="cc-greeting-label" for="${prefix}-greeting-template">${kit.L(idTemplate)}</label>
+              <textarea class="cc-greeting-textarea" id="${prefix}-greeting-template" placeholder="${h('greeting.templatePlaceholder')}" aria-describedby="${prefix}-greeting-template-help">${escapeHtml(firstCfg.greetingTemplate || '')}</textarea>
+              <div class="stg-help" id="${prefix}-greeting-template-help">${kit.H(idTemplate)}</div>
+              <div class="cc-greeting-cheatsheet-toggle" id="${prefix}-greeting-cheatsheet-toggle" ${kit.inv('AUT047')} role="button" tabindex="0">
+                <svg viewBox="0 0 24 24" aria-hidden="true" style="width:11px;height:11px;fill:none;stroke:currentColor;stroke-width:2;vertical-align:-1px"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+                ${kit.L('AUT047')}
               </div>
               <div class="cc-greeting-cheatsheet" id="${prefix}-greeting-cheatsheet" style="display:none">
                 <table class="cc-cheatsheet-table">
-                  <thead><tr><th>Variable</th><th>Preview</th></tr></thead>
+                  <thead><tr><th>${h('greeting.placeholder')}</th><th>${h('greeting.showsAs')}</th></tr></thead>
                   <tbody>
-                    <tr><td><code>{time_greeting}</code></td><td id="${prefix}-cs-time"></td></tr>
-                    <tr><td><code>{project_label}</code></td><td id="${prefix}-cs-label"></td></tr>
-                    <tr><td><code>{project_name}</code></td><td id="${prefix}-cs-name"></td></tr>
-                    <tr><td><code>{branch}</code></td><td id="${prefix}-cs-branch"></td></tr>
-                    <tr><td><code>{date}</code></td><td id="${prefix}-cs-date"></td></tr>
+                    ${variable('time_greeting', 'time')}
+                    ${variable('project_label', 'label')}
+                    ${variable('project_name', 'name')}
+                    ${variable('branch', 'branch')}
+                    ${variable('date', 'date')}
                   </tbody>
                 </table>
                 <div class="cc-cheatsheet-example">
-                  <div class="cc-greeting-label" style="margin-bottom:3px;font-size:10px">Example output</div>
+                  <div class="cc-greeting-label" style="margin-bottom:3px">${h('greeting.example')}</div>
                   <div class="cc-cheatsheet-preview" id="${prefix}-cs-preview"></div>
                 </div>
               </div>
             </div>
             <div class="cc-greeting-checkboxes">
-              <label class="iface-toggle-row">
-                <input type="checkbox" id="${prefix}-greeting-show-reminders" ${firstCfg.showReminders ? 'checked' : ''}>
-                Show reminders
-              </label>
-              <label class="iface-toggle-row">
-                <input type="checkbox" id="${prefix}-greeting-show-last-session" ${firstCfg.showLastSession ? 'checked' : ''}>
-                Show last session
-              </label>
+              ${kit.toggleField(idShowReminders, kit.switchInput(`${prefix}-greeting-show-reminders`, { checked: !!firstCfg.showReminders }), { forId: `${prefix}-greeting-show-reminders` })}
+              ${kit.toggleField(idLastSession, kit.switchInput(`${prefix}-greeting-show-last-session`, { checked: !!firstCfg.showLastSession }), { forId: `${prefix}-greeting-show-last-session` })}
             </div>
-            <div class="cc-greeting-field">
-              <label class="cc-greeting-label">Reminders</label>
-              <div class="cc-greeting-reminder-list" id="${prefix}-greeting-reminders">${remindersHTML}</div>
-              <button class="conn-add-btn" id="${prefix}-greeting-add-reminder" style="margin-top:6px;font-size:11.5px;padding:5px 10px">
-                <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                Add Reminder
+            <div class="cc-greeting-field stg-field" style="margin-top:12px">
+              <label class="cc-greeting-label" id="${prefix}-greeting-reminders-label">${h('greeting.reminders')}</label>
+              <div class="cc-greeting-reminder-list" id="${prefix}-greeting-reminders" role="group" aria-labelledby="${prefix}-greeting-reminders-label">${remindersHTML}</div>
+              <div class="stg-help">${h('greeting.remindersHelp')}</div>
+              <button type="button" class="conn-add-btn" id="${prefix}-greeting-add-reminder" ${kit.inv(idAdd)} title="${kit.H(idAdd)}" style="margin-top:6px">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                ${kit.L(idAdd)}
               </button>
             </div>
-            <button class="conn-add-btn" id="${prefix}-greeting-save" style="width:100%;margin-top:4px;font-size:12px;padding:7px 10px;border-style:solid;background:rgba(79,195,247,0.08);border-color:rgba(79,195,247,0.25);color:rgba(79,195,247,0.9)">
-              Save Greeting Config
+            <button type="button" class="conn-add-btn stg-save-btn" id="${prefix}-greeting-save" ${kit.inv(idSave)} title="${kit.H(idSave)}" style="width:100%;margin-top:4px;border-style:solid;background:rgba(79,195,247,0.08);border-color:rgba(79,195,247,0.25);color:rgba(79,195,247,0.9)">
+              ${kit.L(idSave)}
             </button>
-          </div>
-        </div>`;
+          </div>`,
+    });
   }
 
+  const feature = (invId, key, on, extra = '') => `
+              <div class="cc-integration-item${on ? ' enabled' : ''}" data-feature="${key}">
+                <div class="cc-integration-info">
+                  <div class="cc-integration-label" id="cc-feature-${key}-label">${kit.L(invId)}</div>
+                  <div class="cc-integration-path" id="cc-feature-${key}-help">${kit.H(invId)}</div>${extra}
+                </div>
+                <button type="button" class="cc-toggle${on ? ' on' : ''}" data-cc-feature="${key}" ${kit.inv(invId)} aria-labelledby="cc-feature-${key}-label" aria-describedby="cc-feature-${key}-help"></button>
+              </div>`;
+
   return `
-      <div class="settings-tab-body" data-tab="hooks">
+      <div class="stg-pane" data-stg-pane="hooks">
 
-        <!-- 1. CLAUDE GREETING -->
-        ${buildGreetingSection({
-          title: 'Claude Code Greeting',
-          enabled: grOn,
-          config: greetingConfig,
-          prefix: 'cc',
-          bodyId: 'cc-greeting-body',
-          toggleAttrs: 'data-cc-feature="greeting"',
-          badgeHtml: '',
+        ${kit.card({
+          id: 'stg-sec-greetings', section: 'automations.greetings',
+          body: `
+          ${buildGreetingSection({ kind: 'cc', enabled: grOn, config: greetingConfig, prefix: 'cc', bodyId: 'cc-greeting-body', toggleAttrs: 'data-cc-feature="greeting"',
+            ids: ['AUT001', 'AUT002', 'AUT003', 'AUT004', 'AUT005', 'AUT009', 'AUT010'] })}
+          ${buildGreetingSection({ kind: 'codex', enabled: codexGreetingConfig?.enabled === true, config: codexGreetingConfig, prefix: 'codex', bodyId: 'codex-greeting-body', toggleAttrs: 'data-codex-greeting-toggle="enabled"',
+            ids: ['AUT011', 'AUT012', 'AUT013', 'AUT014', 'AUT015', 'AUT016', 'AUT017'] })}
+          ${buildGreetingSection({ kind: 'opencode', enabled: opencodeGreetingConfig?.enabled === true, config: opencodeGreetingConfig, prefix: 'opencode', bodyId: 'opencode-greeting-body', toggleAttrs: 'data-opencode-greeting-toggle="enabled"',
+            ids: ['AUT018', 'AUT019', 'AUT020', 'AUT021', 'AUT022', 'AUT026', 'AUT027'] })}`,
         })}
 
-        <!-- 2. CODEX GREETING -->
-        ${buildGreetingSection({
-          title: 'Codex Panel Greeting',
-          enabled: codexGreetingConfig?.enabled === true,
-          config: codexGreetingConfig,
-          prefix: 'codex',
-          bodyId: 'codex-greeting-body',
-          toggleAttrs: 'data-codex-greeting-toggle="enabled"',
-          hint: 'Codex panel only. This configuration is isolated from Claude and stored separately.',
-        })}
-
-        <!-- 3. OPENCODE GREETING -->
-        ${buildGreetingSection({
-          title: 'OpenCode Panel Greeting',
-          enabled: opencodeGreetingConfig?.enabled === true,
-          config: opencodeGreetingConfig,
-          prefix: 'opencode',
-          bodyId: 'opencode-greeting-body',
-          toggleAttrs: 'data-opencode-greeting-toggle="enabled"',
-          hint: 'OpenCode panel only. Isolated from Claude and Codex; stored in opencode-greeting-config.json.',
-        })}
-
-        <!-- 3. HOOKS -->
-        <div class="iface-section collapsed" data-collapsible data-cc-target="global">
-          <div class="gfx-group-title" style="justify-content:space-between">
-            <span style="display:flex;align-items:center;gap:6px">${chevron} Hooks <span class="cc-hooks-badge${allOn ? ' all-on' : ''}" id="cc-hooks-badge">${onCount}/${hookRows.length}</span></span>
-            ${providerBadge({ cli: true, vscode: true, web: false, cowork: false })}
+        ${kit.card({
+          id: 'stg-sec-automation-behavior', section: 'automations.automation_behavior',
+          status: providerBadge({ cli: true, vscode: true, web: false, cowork: false }),
+          body: `
+          <div class="stg-help" style="margin:0 0 10px">${h('claudeOnly')}</div>
+          <div class="cc-hook-toggles">
+            ${feature('AUT036', 'conversationMemory', cmOn)}
+            ${feature('AUT039', 'userLearning', ulOn, `
+                  <div class="cc-ul-threshold" id="cc-ul-threshold" style="display:${ulOn ? 'flex' : 'none'};align-items:center;gap:6px;margin-top:5px;flex-wrap:wrap">
+                    <span class="stg-help" style="margin:0;white-space:nowrap">${h('ul.every')}</span>
+                    <input type="number" class="stg-mini-number" id="cc-ul-threshold-input" min="3" max="30" value="${ulThreshold}" ${kit.inv('AUT037')} aria-label="${kit.L('AUT037')}" title="${kit.H('AUT037')}">
+                    <span class="stg-help" style="margin:0">${h('ul.interactions')}</span>
+                    <span class="stg-help" style="margin:0 0 0 8px;white-space:nowrap">${h('ul.max')}</span>
+                    <input type="number" class="stg-mini-number" id="cc-ul-max-nudges-input" min="1" max="10" value="${ulMaxNudges}" ${kit.inv('AUT038')} aria-label="${kit.L('AUT038')}" title="${kit.H('AUT038')}">
+                    <span class="stg-help" style="margin:0">${h('ul.perSession')}</span>
+                  </div>`)}
+            ${feature('AUT040', 'taskRecallGate', taskRecallOn)}
+            ${feature('AUT041', 'subagentRemember', srOn)}
           </div>
-          <div class="cc-section-body">
-            <div class="cc-hint" style="margin-bottom:8px;font-size:11.5px">Claude Code hooks only &mdash; Codex and OpenCode panels use their own greeting system and do not read these toggles.</div>
+
+          ${kit.card({
+            id: 'stg-sec-hooks', level: 'h4', collapsible: true, collapsed: true, advanced: true, attrs: 'data-cc-target="global"',
+            title: h('hooksTitle'), purpose: h('hooksPurpose'),
+            status: `<span class="cc-hooks-badge${allOn ? ' all-on' : ''}" id="cc-hooks-badge">${onCount}/${hookRows.length}</span>${providerBadge({ cli: true, vscode: true, web: false, cowork: false })}`,
+            body: `
             <div class="cc-hook-toggles">
-              ${hookRows.map(h => `
-              <div class="cc-integration-item${h.on ? ' enabled' : ''}" data-hook="${h.key}">
+              ${hookRows.map(r => `
+              <div class="cc-integration-item${r.on ? ' enabled' : ''}" data-hook="${r.key}">
                 <div class="cc-integration-info">
-                  <div class="cc-integration-label">${h.label}</div>
-                  <div class="cc-integration-path">${h.desc}</div>
+                  <div class="cc-integration-label" id="cc-hook-${r.key}-label">${kit.L(r.inv)}</div>
+                  <div class="cc-integration-path" id="cc-hook-${r.key}-help">${kit.H(r.inv)}</div>
                 </div>
-                <button class="cc-toggle${h.on ? ' on' : ''}" data-cc-hook="${h.key}" data-cc-scope="global"></button>
+                <button type="button" class="cc-toggle${r.on ? ' on' : ''}" data-cc-hook="${r.key}" data-cc-scope="global" ${kit.inv(r.inv)} aria-labelledby="cc-hook-${r.key}-label" aria-describedby="cc-hook-${r.key}-help"></button>
               </div>`).join('')}
-            </div>
-          </div>
-        </div>
+            </div>`,
+          })}`,
+        })}
 
-        <!-- 4. KNOWLEDGE -->
-        <div class="iface-section collapsed" data-collapsible>
-          <div class="gfx-group-title" style="justify-content:space-between">
-            <span style="display:flex;align-items:center;gap:6px">${chevron} Knowledge</span>
-            ${providerBadge({ cli: true, vscode: true, web: false, cowork: false })}
-          </div>
-          <div class="cc-section-body">
-            <div class="cc-hint" style="margin-bottom:8px;font-size:11.5px">Claude Code hooks only &mdash; Codex and OpenCode panels do not use these toggles.</div>
-            <div class="cc-hook-toggles">
-              <div class="cc-integration-item${cmOn ? ' enabled' : ''}" data-feature="conversationMemory">
-                <div class="cc-integration-info">
-                  <div class="cc-integration-label">Conversation Memory</div>
-                  <div class="cc-integration-path">Remember past sessions so context carries over between conversations</div>
-                </div>
-                <button class="cc-toggle${cmOn ? ' on' : ''}" data-cc-feature="conversationMemory"></button>
-              </div>
-              <div class="cc-integration-item${ulOn ? ' enabled' : ''}" data-feature="userLearning">
-                <div class="cc-integration-info">
-                  <div class="cc-integration-label">User Learning</div>
-                  <div class="cc-integration-path">Learn your communication style and preferences over time</div>
-                  <div class="cc-ul-threshold" id="cc-ul-threshold" style="display:${ulOn ? 'flex' : 'none'};align-items:center;gap:6px;margin-top:5px">
-                    <span style="font-size:11px;color:var(--t-dim);white-space:nowrap">Reflect every</span>
-                    <input type="number" id="cc-ul-threshold-input" min="3" max="30" value="${ulThreshold}" style="width:40px;padding:2px 4px;font-size:11px;background:rgba(255,255,255,0.04);border:1px solid var(--b-subtle);border-radius:4px;color:var(--t-bright);text-align:center;font-family:inherit">
-                    <span style="font-size:11px;color:var(--t-dim)">interactions</span>
-                    <span style="font-size:11px;color:var(--t-dim);white-space:nowrap;margin-left:8px">Max</span>
-                    <input type="number" id="cc-ul-max-nudges-input" min="1" max="10" value="${ulMaxNudges}" style="width:34px;padding:2px 4px;font-size:11px;background:rgba(255,255,255,0.04);border:1px solid var(--b-subtle);border-radius:4px;color:var(--t-bright);text-align:center;font-family:inherit">
-                    <span style="font-size:11px;color:var(--t-dim)">per session</span>
-                  </div>
-                </div>
-                <button class="cc-toggle${ulOn ? ' on' : ''}" data-cc-feature="userLearning"></button>
-              </div>
-              <div class="cc-integration-item${srOn ? ' enabled' : ''}" data-feature="subagentRemember">
-                <div class="cc-integration-info">
-                  <div class="cc-integration-label">Subagent Remember</div>
-                  <div class="cc-integration-path">Let subagents (Task workers) save their findings to memory before finishing. Requires the Subagent Remember hook above.</div>
-                </div>
-                <button class="cc-toggle${srOn ? ' on' : ''}" data-cc-feature="subagentRemember"></button>
-              </div>
+        ${kit.card({
+          id: 'stg-sec-online-access', section: 'automations.online_access', collapsible: true, collapsed: true, advanced: true,
+          status: providerBadge({ cli: true, vscode: true, web: true, webNote: h('compat.viaAddress'), cowork: false }),
+          body: `
+          ${kit.subhead(h('tunnel.title'))}
+          <div class="cc-integration-item${tunnelStatus.running ? ' enabled' : ''}" id="cc-tunnel-row" ${kit.inv('AUT048')}>
+            <div class="cc-integration-info">
+              <div class="cc-integration-label" id="cc-tunnel-label">${tunnelStatus.running ? h('running') : tunnelStatus.available ? h('ready') : h('tunnel.notInstalled')}</div>
+              <div class="cc-integration-path" id="cc-tunnel-url">${tunnelStatus.url ? escapeHtml(tunnelStatus.url) : (tunnelStatus.available ? h('exposeMcpToClaudeWebVia') : h('tunnel.install'))}</div>
             </div>
+            ${tunnelStatus.available ? `<button type="button" class="cc-toggle${tunnelStatus.running ? ' on' : ''}" id="cc-tunnel-toggle" ${kit.inv('AUT049')} aria-label="${kit.L('AUT049')}" title="${kit.H('AUT049')}"></button>` : ''}
           </div>
-        </div>
+          ${tunnelStatus.url ? `<button type="button" class="cc-copy-btn" id="cc-tunnel-copy-url" ${kit.inv('AUT050')} title="${kit.H('AUT050')}" style="margin-top:4px">${copyIcon} ${h('copyMcpUrl')}</button>` : ''}
 
-        <!-- 4. EXTERNAL ACCESS -->
-        <div class="iface-section collapsed" data-collapsible>
-          <div class="gfx-group-title" style="justify-content:space-between">
-            <span style="display:flex;align-items:center;gap:6px">${chevron} Go Online</span>
-            ${providerBadge({ cli: true, vscode: true, web: true, webNote: 'via MCP URL', cowork: false })}
-          </div>
-          <div class="cc-section-body">
-            <div class="cc-integration-item${tunnelStatus.running ? ' enabled' : ''}" id="cc-tunnel-row">
+          <div style="margin-top:10px">
+            <div class="cc-integration-item${mcpKeyInfo.hasKey ? ' enabled' : ''}" id="cc-apikey-row">
               <div class="cc-integration-info">
-                <div class="cc-integration-label" id="cc-tunnel-label">${tunnelStatus.running ? 'Running' : tunnelStatus.available ? 'Ready' : 'Not installed'}</div>
-                <div class="cc-integration-path" id="cc-tunnel-url">${tunnelStatus.url || (tunnelStatus.available ? 'Expose MCP via public tunnel' : 'Install cloudflared to enable')}</div>
+                <div class="cc-integration-label">${h('apikey.title')}</div>
+                <div class="cc-integration-path" id="cc-apikey-status">${mcpKeyInfo.hasKey ? escapeHtml(mcpKeyInfo.maskedKey) : h('apikey.none')}</div>
               </div>
-              ${tunnelStatus.available ? '<button class="cc-toggle' + (tunnelStatus.running ? ' on' : '') + '" id="cc-tunnel-toggle"></button>' : ''}
+              <button type="button" class="conn-add-btn" id="cc-apikey-generate" ${kit.inv('AUT042')} title="${kit.H('AUT042')}" style="margin:0;padding:3px 8px;width:auto;border-style:solid;background:rgba(255,255,255,0.03)">${mcpKeyInfo.hasKey ? h('regenerate') : h('generateKey')}</button>
             </div>
-            ${tunnelStatus.url ? `<button class="cc-copy-btn" id="cc-tunnel-copy-url" style="margin-top:4px">${copyIcon} Copy MCP URL</button>` : ''}
-
-            <div style="margin-top:10px">
-              <div class="cc-integration-item${mcpKeyInfo.hasKey ? ' enabled' : ''}" id="cc-apikey-row">
-                <div class="cc-integration-info">
-                  <div class="cc-integration-label">API Key</div>
-                  <div class="cc-integration-path" id="cc-apikey-status">${mcpKeyInfo.hasKey ? mcpKeyInfo.maskedKey : 'No key \u2014 open'}</div>
-                </div>
-                <button class="conn-add-btn" id="cc-apikey-generate" style="margin:0;font-size:11px;padding:3px 8px;width:auto;border-style:solid;background:rgba(255,255,255,0.03)">${mcpKeyInfo.hasKey ? 'Regen' : 'Generate'}</button>
+            <div id="cc-apikey-reveal" style="display:none;margin-top:6px">
+              <div class="stg-key-reveal" id="cc-apikey-value"></div>
+              <div class="stg-help" style="color:var(--stg-warn)">${h('apikey.saveNow')}</div>
+              <div style="margin-top:4px;display:flex;gap:4px">
+                <button type="button" class="cc-copy-btn" id="cc-apikey-copy" ${kit.inv('AUT043')} title="${kit.H('AUT043')}" style="flex:1">${copyIcon} ${h('copyKey')}</button>
+                <button type="button" class="cc-copy-btn" id="cc-apikey-revoke" ${kit.inv('AUT044')} title="${kit.H('AUT044')}" style="width:auto;padding:4px 8px">${kit.L('AUT044')}</button>
               </div>
-              <div id="cc-apikey-reveal" style="display:none;margin-top:6px">
-                <div style="background:rgba(255,255,255,0.04);padding:6px 8px;border-radius:6px;border:1px solid var(--b-subtle);font-family:'JetBrains Mono',monospace;font-size:11px;word-break:break-all;color:var(--t-bright);line-height:1.5" id="cc-apikey-value"></div>
-                <div class="cc-hint" style="margin-top:3px;color:var(--accent-orange);font-size:11px">Save now \u2014 won't show again.</div>
-                <div style="margin-top:4px;display:flex;gap:4px">
-                  <button class="cc-copy-btn" id="cc-apikey-copy" style="flex:1">${copyIcon} Copy</button>
-                  <button class="cc-copy-btn" id="cc-apikey-revoke" style="width:auto;opacity:0.5;padding:4px 8px">Revoke</button>
-                </div>
-              </div>
-              <div class="cc-hint" style="margin-top:4px;font-size:11px"><a href="https://claude.ai/settings/connectors" target="_blank" style="color:var(--accent-blue)">Claude web</a> &rarr; Connectors &rarr; Add MCP</div>
             </div>
+            <div class="stg-help">${kit.th('settings.redesign.hooks.connectorsHint', { link: `<a href="https://claude.ai/settings/connectors" target="_blank" rel="noopener">${h('claudeWeb')}</a>` })}</div>
           </div>
-        </div>
 
-        <!-- 6. BRIDGES -->
-        <div class="iface-section collapsed" data-collapsible id="bridge-openclaw">
-          <div class="gfx-group-title" style="justify-content:space-between">
-            <span style="display:flex;align-items:center;gap:6px">${chevron} Bridges <span class="cc-panel-status ${openclawBridge.enabled ? 'active' : 'inactive'}" style="${openclawBridge.enabled ? 'background:rgba(249,115,22,0.15);color:#f97316' : ''}">${openclawBridge.enabled ? 'Connected' : 'Off'}</span></span>
-            ${providerBadge({ cli: true, vscode: true, web: false, cowork: false })}
-          </div>
-          <div class="cc-section-body">
+          ${kit.card({
+            id: 'bridge-openclaw', level: 'h4', collapsible: true,
+            title: h('bridges.title'), purpose: h('bridges.purpose'),
+            status: `<span class="cc-panel-status ${openclawBridge.enabled ? 'active' : 'inactive'}" style="${openclawBridge.enabled ? 'background:rgba(249,115,22,0.15);color:#f97316' : ''}">${openclawBridge.enabled ? h('connected') : h('off')}</span>${providerBadge({ cli: true, vscode: true, web: false, cowork: false })}`,
+            body: `
             <div class="cc-integration-item${openclawBridge.enabled ? ' enabled' : ''}">
               <div class="cc-integration-info">
-                <div class="cc-integration-label" ${openclawBridge.enabled ? 'style="color:#f97316"' : ''}>OpenClaw</div>
+                <div class="cc-integration-label" ${openclawBridge.enabled ? 'style="color:#f97316"' : ''}>${kit.te('settings.redesign.product.openclaw')}</div>
                 <div class="cc-integration-path" id="bridge-openclaw-meta">${
                   openclawBridge.enabled
-                    ? (openclawBridge.nodeCount || 0) + ' nodes synced' + (openclawBridge.lastSync ? ' \u00b7 ' + new Date(openclawBridge.lastSync).toLocaleTimeString() : '')
-                    : 'Read-only overlay of OpenClaw markdown memories'
+                    ? h('nodesSynced2', { nodes: openclawBridge.nodeCount || 0, nodes2: openclawBridge.lastSync ? ' · ' + new Date(openclawBridge.lastSync).toLocaleTimeString() : '' })
+                    : h('readOnlyOverlayOfOpenclawMarkdown')
                 }</div>
               </div>
             </div>
             <div class="cc-panel-actions" id="bridge-openclaw-actions">${
               openclawBridge.enabled
-                ? `<button class="cc-enable-btn on" id="bridge-openclaw-sync" style="flex:1">
-                    <svg viewBox="0 0 24 24" style="width:12px;height:12px;fill:none;stroke:currentColor;stroke-width:2;vertical-align:-1px;margin-right:4px"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>Sync
+                ? `<button type="button" class="cc-enable-btn on" id="bridge-openclaw-sync" ${kit.inv('AUT051')} title="${kit.H('AUT051')}" style="flex:1">
+                    <svg viewBox="0 0 24 24" aria-hidden="true" style="width:12px;height:12px;fill:none;stroke:currentColor;stroke-width:2;vertical-align:-1px;margin-right:4px"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>${h('sync')}
                   </button>
-                  <button class="cc-disable-btn" id="bridge-openclaw-disconnect">Disconnect</button>`
-                : `<button class="cc-enable-btn" id="bridge-openclaw-connect">Connect</button>`
-            }</div>
-          </div>
-        </div>
+                  <button type="button" class="cc-disable-btn" id="bridge-openclaw-disconnect" ${kit.inv('AUT052')} title="${kit.H('AUT052')}">${h('disconnect')}</button>`
+                : `<button type="button" class="cc-enable-btn" id="bridge-openclaw-connect" ${kit.inv('AUT045')} title="${kit.H('AUT045')}">${h('connect')}</button>`
+            }</div>`,
+          })}`,
+        })}
 
       </div>`;
 }
 
 function buildProjectsTab(ccIntegrations) {
+  const p_ = (key) => kit.te(`settings.redesign.projects.${key}`);
+  const stat = (key, id, cls = '') => `<div class="project-storage-stat${cls}"><span>${p_(`stat.${key}`)}</span><strong id="${id}">—</strong></div>`;
+  const row = (p, i) => {
+    const path = escapeHtml(p.path.replace(/\\/g, '/'));
+    return `
+              <div class="cc-panel${p.installed ? ' enabled' : ''}" data-cc-idx="${i}" data-cc-path="${p.path.replace(/"/g, '&quot;')}">
+                <div class="cc-panel-header" data-cc-collapse role="button" tabindex="0">
+                  <svg class="cc-panel-chevron" viewBox="0 0 24 24" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+                  <span class="cc-panel-title">${escapeHtml(p.label)}</span>
+                  <span class="cc-panel-status ${p.installed ? 'active' : 'inactive'}">${kit.te(p.installed ? 'settings.redesign.hooks.active' : 'settings.redesign.hooks.off')}</span>
+                </div>
+                <div class="cc-panel-body">
+                  <div class="cc-panel-row">
+                    <span class="cc-panel-row-label">${p_('row.path')}</span>
+                    <span class="cc-panel-row-value" title="${path}">${path}</span>
+                  </div>
+                  <div class="cc-panel-actions">
+                    <button type="button" class="cc-explore-btn" data-cc-explore="${i}" ${kit.inv('PRJ007')} title="${kit.H('PRJ007')}" style="background:var(--accent-blue-bg);border:1px solid var(--accent-blue-border);color:var(--accent-blue);padding:5px 12px;border-radius:4px;cursor:pointer;font-size:12px">${kit.L('PRJ007')}</button>
+                    <button type="button" class="cc-trust-btn" data-cc-trust="${i}" ${kit.inv('PRJ008')} title="${kit.H('PRJ008')}" style="background:rgba(255,183,77,0.14);border:1px solid rgba(255,183,77,0.3);color:#ffcc80;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:12px">${kit.L('PRJ008')}</button>
+                    <button type="button" class="cc-enable-btn${p.installed ? ' on' : ''}" data-cc-project-toggle="${i}" ${kit.inv('PRJ009')} title="${kit.H('PRJ009')}" data-stg-pressed="on" aria-pressed="${p.installed ? 'true' : 'false'}">${kit.te(p.installed ? 'settings.redesign.hooks.enabled' : 'settings.redesign.hooks.enable')}</button>
+                    <button type="button" class="cc-remove-panel-btn" data-cc-remove="${i}" ${kit.inv('PRJ010')} title="${kit.H('PRJ010')}">${kit.L('PRJ010')}</button>
+                  </div>
+                </div>
+              </div>`;
+  };
+
   return `
-      <div class="settings-tab-body" data-tab="projects">
-        <section class="stg-section project-storage-section" id="project-storage-manager" aria-labelledby="project-storage-title">
+      <div class="stg-pane" data-stg-pane="projects">
+
+        ${kit.card({
+          id: 'stg-sec-workspaces', section: 'projects.workspaces',
+          attrs: 'aria-describedby="cc-project-list-help"',
+          body: `
+          <div class="stg-help" id="cc-project-list-help" style="margin:0 0 10px"><span id="project-registration-title"></span>${kit.th('settings.redesign.projects.listHelp', { file: '<code class="stg-code">.claude/settings.json</code>' })}</div>
+          <div id="cc-project-list" ${kit.inv('PRJ013')} role="group" aria-label="${kit.L('PRJ013')}">
+            ${ccIntegrations.projects.length === 0
+              ? `<div class="cc-hint" style="text-align:center;padding:14px">${p_('noProjectsRegisteredYet')}</div>`
+              : ccIntegrations.projects.map(row).join('')}
+          </div>
+          <div class="stg-field" ${kit.inv('PRJ011')} style="margin-top:12px">
+            <button type="button" class="conn-add-btn" id="cc-add-project" aria-describedby="cc-add-project-help">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              ${kit.L('PRJ011')}
+            </button>
+            ${kit.help('PRJ011', { forId: 'cc-add-project' })}
+          </div>`,
+        })}
+
+        ${kit.card({
+          id: 'project-storage-manager', section: 'projects.project_storage', className: 'project-storage-section',
+          collapsible: true, collapsed: true, advanced: true,
+          body: `
           <div class="project-storage-heading">
-            <div>
-              <div class="gfx-group-title" id="project-storage-title">Project storage</div>
-              <p class="project-storage-intro">Review rebuildable files across every registered project and shared developer-tool cache. Nothing is removed until you select it and confirm.</p>
-            </div>
-            <button class="project-storage-icon-btn" id="project-storage-refresh" type="button" title="Scan again" aria-label="Scan project storage again">
+            <p class="project-storage-intro" id="project-storage-title">${p_('storageIntro')}</p>
+            <button class="project-storage-icon-btn" id="project-storage-refresh" type="button" ${kit.inv('PRJ001')} title="${kit.H('PRJ001')}" aria-label="${kit.L('PRJ001')}">
               <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
             </button>
           </div>
-          <div class="project-storage-summary" id="project-storage-summary" hidden>
-            <div class="project-storage-stat"><span>Found</span><strong id="project-storage-found">—</strong></div>
-            <div class="project-storage-stat"><span>Reclaimable</span><strong id="project-storage-reclaimable">—</strong></div>
-            <div class="project-storage-stat selected"><span>Selected</span><strong id="project-storage-selected">—</strong></div>
+          <div class="project-storage-summary" id="project-storage-summary" ${kit.inv('PRJ012')} role="group" aria-label="${kit.L('PRJ012')}" hidden>
+            ${stat('found', 'project-storage-found')}
+            ${stat('reclaimable', 'project-storage-reclaimable')}
+            ${stat('selected', 'project-storage-selected', ' selected')}
           </div>
           <div class="project-storage-toolbar" id="project-storage-toolbar" hidden>
-            <button class="project-storage-btn" id="project-storage-select-safe" type="button">Select safe</button>
-            <button class="project-storage-btn" id="project-storage-clear-selection" type="button">Clear selection</button>
+            <button class="project-storage-btn" id="project-storage-select-safe" type="button" ${kit.inv('PRJ002')} title="${kit.H('PRJ002')}">${kit.L('PRJ002')}</button>
+            <button class="project-storage-btn" id="project-storage-clear-selection" type="button" ${kit.inv('PRJ003')} title="${kit.H('PRJ003')}">${kit.L('PRJ003')}</button>
             <span class="project-storage-toolbar-spacer"></span>
-            <button class="project-storage-btn danger" id="project-storage-clear" type="button" disabled>Clear selected</button>
+            <button class="project-storage-btn danger" id="project-storage-clear" type="button" ${kit.inv('PRJ004')} title="${kit.H('PRJ004')}" disabled>${kit.L('PRJ004')}</button>
           </div>
           <div class="project-storage-feedback" id="project-storage-feedback" aria-live="polite"></div>
           <div class="project-storage-results" id="project-storage-results">
-            <div class="project-storage-placeholder">Open Projects to scan registered workspaces and shared developer caches.</div>
+            <div class="project-storage-placeholder">${p_('storagePlaceholder')}</div>
           </div>
           <div class="project-storage-safety-note">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg>
-            Git-tracked files, repository history, symlinks, application runtime files, and active projects are protected automatically.
-          </div>
-        </section>
+            ${p_('safetyNote')}
+          </div>`,
+        })}
 
-        <section class="project-registration-section" aria-labelledby="project-registration-title">
-          <div class="gfx-group-title" id="project-registration-title">Registered projects</div>
-          <div class="cc-hint" style="margin-bottom:10px">Per-project hook installations. Each project gets its own <code style="font-size:12px;background:var(--s-medium);padding:2px 5px;border-radius:4px">.claude/settings.json</code> entry.</div>
-          <div id="cc-project-list">
-            ${ccIntegrations.projects.length === 0
-              ? '<div class="cc-hint" style="text-align:center;padding:14px">No projects registered yet.</div>'
-              : ccIntegrations.projects.map((p, i) => `
-                <div class="cc-panel${p.installed ? ' enabled' : ''}" data-cc-idx="${i}" data-cc-path="${p.path.replace(/"/g, '&quot;')}">
-                  <div class="cc-panel-header" data-cc-collapse>
-                    <svg class="cc-panel-chevron" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
-                    <span class="cc-panel-title">${p.label}</span>
-                    <span class="cc-panel-status ${p.installed ? 'active' : 'inactive'}">${p.installed ? 'Active' : 'Off'}</span>
-                  </div>
-                  <div class="cc-panel-body">
-                    <div class="cc-panel-row">
-                      <span class="cc-panel-row-label">Path</span>
-                      <span class="cc-panel-row-value" title="${p.path.replace(/\\/g, '/').replace(/"/g, '&quot;')}">${p.path.replace(/\\/g, '/')}</span>
-                    </div>
-                    <div class="cc-panel-actions">
-                      <button class="cc-explore-btn" data-cc-explore="${i}" style="background:var(--accent-blue-bg);border:1px solid var(--accent-blue-border);color:var(--accent-blue);padding:5px 12px;border-radius:4px;cursor:pointer;font-size:12px">Learn it</button>
-                      <button class="cc-trust-btn" data-cc-trust="${i}" title="Add this workspace to git safe.directory (fixes 'dubious ownership' errors)" style="background:rgba(255,183,77,0.14);border:1px solid rgba(255,183,77,0.3);color:#ffcc80;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:12px">Trust workspace</button>
-                      <button class="cc-enable-btn${p.installed ? ' on' : ''}" data-cc-project-toggle="${i}">${p.installed ? 'Enabled' : 'Enable'}</button>
-                      <button class="cc-remove-panel-btn" data-cc-remove="${i}">Remove</button>
-                    </div>
-                  </div>
-                </div>
-              `).join('')}
-          </div>
-          <button class="conn-add-btn" id="cc-add-project" style="margin-top:8px">
-            <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-            Add Project
-          </button>
-        </section>
       </div>`;
+}
+
+/** Translated copy for the maintenance list (ui-memory-maintenance.js keeps English defaults for its own test). */
+function memoryMaintenanceStrings() {
+  const m = (key) => kit.tx(`settings.redesign.memory.maint.${key}`);
+  return {
+    requestFailed: m('requestFailed'), loading: m('loading'), running: m('running'), paused: m('paused'), noWork: m('noWork'),
+    pause: m('pause'), resume: m('resume'), refresh: m('refresh'), retry: m('retry'), undo: m('undo'), confirm: m('confirm'),
+    noReview: m('noReview'), jobCount: m('jobCount'),
+    help: {
+      pause: kit.tx('settings.redesign.control.mem012.help'), resume: kit.tx('settings.redesign.control.mem012.help'),
+      refresh: kit.tx('settings.redesign.control.mem013.help'), retry: kit.tx('settings.redesign.control.mem014.help'),
+      undo: kit.tx('settings.redesign.control.mem015.help'), confirm: kit.tx('settings.redesign.control.mem016.help'),
+      details: kit.tx('settings.redesign.control.mem001.help'),
+    },
+    jobStatus: { pending: m('status.pending'), running: m('status.running'), failed: m('status.failed'), complete: m('status.complete') },
+    relationKind: { similar: m('kind.similar'), supersedes: m('kind.supersedes'), verify: m('kind.verify'), possible_conflict: m('kind.possible_conflict'), conflicts_with: m('kind.conflicts_with') },
+  };
 }
 
 function buildMemoryTab() {
+  const m = (key) => kit.te(`settings.redesign.memory.${key}`);
+  const profile = (id, icon, active = false) => `
+              <div class="recall-profile-card${active ? ' active' : ''}" data-recall-profile="${id}" role="radio" tabindex="0" aria-checked="${active ? 'true' : 'false'}" data-stg-checked="active">
+                <div class="recall-profile-icon"><svg viewBox="0 0 24 24" aria-hidden="true">${icon}</svg></div>
+                <div class="recall-profile-name">${m(`profile.${id}.name`)}</div>
+                <div class="recall-profile-desc">${m(`profile.${id}.desc`)}</div>
+              </div>`;
+  const stat = (id, key) => `
+              <div class="recall-impact-stat">
+                <span class="recall-impact-val" id="${id}">&mdash;</span>
+                <span class="recall-impact-label">${m(`impact.${key}`)}</span>
+              </div>`;
+  const range = (invId, id, attrs, value, valueText, extra = '') => `
+              <div class="recall-control-row" ${kit.inv(invId)}>
+                <div class="recall-control-header">
+                  <label class="recall-control-label" for="${id}">${kit.L(invId)}</label>
+                  <span class="recall-control-val" id="${id}-val">${valueText}</span>
+                </div>
+                <input type="range" class="recall-range" id="${id}" ${attrs} value="${value}" aria-describedby="${id}-help">${extra}
+                <div class="recall-control-hint" id="${id}-help">${kit.H(invId)}</div>
+              </div>`;
+  const seg = (value, active = false) => `<button type="button" class="recall-seg-btn${active ? ' active' : ''}" data-val="${value}" data-stg-pressed="active" aria-pressed="${active ? 'true' : 'false'}">${m(`seg.${value}`)}</button>`;
+
   return `
-      <div class="settings-tab-body" data-tab="memory">
+      <div class="stg-pane" data-stg-pane="memory">
 
-        <!-- Recall Profiles -->
-        <div class="iface-section">
-          <div class="gfx-group-title">Recall Profile</div>
-          <div class="settings-hint" style="margin-bottom:10px">Choose how the AI searches your memory. Profiles configure multiple parameters at once.</div>
-          <div class="recall-profiles" id="recall-profiles">
-            <div class="recall-profile-card" data-recall-profile="quick">
-              <div class="recall-profile-icon"><svg viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5l7 7-7 7"/></svg></div>
-              <div class="recall-profile-name">Quick</div>
-              <div class="recall-profile-desc">3 results &middot; important only</div>
+        ${kit.card({
+          id: 'stg-sec-find-memories', section: 'memory_backups.find_memories',
+          body: `
+          <div class="stg-field" ${kit.inv('MEM009')}>
+            <label id="recall-profiles-label">${kit.L('MEM009')}</label>
+            <div class="recall-profiles" id="recall-profiles" role="radiogroup" aria-labelledby="recall-profiles-label" aria-describedby="recall-profiles-help">
+              ${profile('quick', '<path d="M5 12h14"/><path d="M12 5l7 7-7 7"/>')}
+              ${profile('balanced', '<circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/>', true)}
+              ${profile('deep', '<path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/><path d="M12 6c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6-2.69-6-6-6z"/><circle cx="12" cy="12" r="2"/>')}
+              ${profile('custom', '<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>')}
             </div>
-            <div class="recall-profile-card active" data-recall-profile="balanced">
-              <div class="recall-profile-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg></div>
-              <div class="recall-profile-name">Balanced</div>
-              <div class="recall-profile-desc">5 results &middot; standard matching</div>
-            </div>
-            <div class="recall-profile-card" data-recall-profile="deep">
-              <div class="recall-profile-icon"><svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/><path d="M12 6c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6-2.69-6-6-6z"/><circle cx="12" cy="12" r="2"/></svg></div>
-              <div class="recall-profile-name">Deep</div>
-              <div class="recall-profile-desc">10 results &middot; sessions included</div>
-            </div>
-            <div class="recall-profile-card" data-recall-profile="custom">
-              <div class="recall-profile-icon"><svg viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg></div>
-              <div class="recall-profile-name">Custom</div>
-              <div class="recall-profile-desc">Configure each parameter</div>
-            </div>
+            <div class="stg-help" id="recall-profiles-help">${kit.H('MEM009')}</div>
           </div>
-        </div>
 
-        <!-- Impact Indicator -->
-        <div class="recall-impact" id="recall-impact">
-          <div class="recall-impact-stat">
-            <span class="recall-impact-val" id="recall-impact-tokens">&mdash;</span>
-            <span class="recall-impact-label">est. tokens / recall</span>
+          <div class="stg-field" ${kit.inv('MEM010')}>
+            <label id="recall-impact-label">${kit.L('MEM010')}</label>
+            <div class="recall-impact" id="recall-impact" role="group" aria-labelledby="recall-impact-label" aria-describedby="recall-impact-help">
+              ${stat('recall-impact-tokens', 'tokens')}
+              ${stat('recall-impact-reachable', 'reachable')}
+              ${stat('recall-impact-sessions', 'sessions')}
+            </div>
+            <div class="stg-help" id="recall-impact-help">${kit.H('MEM010')}</div>
           </div>
-          <div class="recall-impact-stat">
-            <span class="recall-impact-val" id="recall-impact-reachable">&mdash;</span>
-            <span class="recall-impact-label">memories reachable</span>
-          </div>
-          <div class="recall-impact-stat">
-            <span class="recall-impact-val" id="recall-impact-sessions">&mdash;</span>
-            <span class="recall-impact-label">session context</span>
-          </div>
-        </div>
 
-        <!-- Individual Controls (collapsible, auto-opens on Custom) -->
-        <div class="iface-section collapsed" data-collapsible id="recall-controls">
-          <div class="gfx-group-title" style="justify-content:space-between;cursor:pointer">
-            <span style="display:flex;align-items:center;gap:6px">
-              ${CHEVRON_ICON} Fine-Tune Controls
-            </span>
-            <span class="recall-controls-badge" id="recall-controls-badge" style="font-size:10px;color:var(--t-muted)">using profile defaults</span>
-          </div>
-          <div class="cc-section-body">
-
+          ${kit.card({
+            id: 'recall-controls', level: 'h4', collapsible: true, collapsed: true,
+            title: kit.L('MEM011'), purpose: kit.H('MEM011'), attrs: kit.inv('MEM011'),
+            status: `<span class="recall-controls-badge" id="recall-controls-badge">${m('usingProfileDefaults')}</span>`,
+            body: `
             <div class="recall-control-group">
-              <div class="recall-control-row">
+              ${range('MEM002', 'rc-limit', 'min="1" max="20" step="1"', 5, '5')}
+              ${range('MEM003', 'rc-importance', 'min="0" max="10" step="1"', 0, m('any'), `
+                <div class="recall-control-scale" aria-hidden="true">
+                  <span>${m('any')}</span><span>${m('trivial')}</span><span>${m('normal')}</span><span>${m('significant')}</span><span>${m('critical')}</span>
+                </div>`)}
+              ${range('MEM004', 'rc-score', 'min="10" max="80" step="5"', 30, '0.30')}
+              ${range('MEM005', 'rc-maxchars', 'min="100" max="2100" step="50"', 2100, m('noLimit'))}
+
+              <div class="recall-control-row" ${kit.inv('MEM006')}>
                 <div class="recall-control-header">
-                  <span class="recall-control-label">Results per recall</span>
-                  <span class="recall-control-val" id="rc-limit-val">5</span>
+                  <span class="recall-control-label" id="rc-sessions-label">${kit.L('MEM006')}</span>
                 </div>
-                <input type="range" class="recall-range" id="rc-limit" min="1" max="20" step="1" value="5">
-                <div class="recall-control-hint">How many memories are returned per search</div>
+                <div class="recall-segmented" id="rc-sessions" role="group" aria-labelledby="rc-sessions-label" aria-describedby="rc-sessions-help">
+                  ${seg('never')}${seg('auto', true)}${seg('always')}
+                </div>
+                <div class="recall-control-hint" id="rc-sessions-help">${kit.H('MEM006')}</div>
               </div>
 
-              <div class="recall-control-row">
+              <div class="recall-control-row" ${kit.inv('MEM007')}>
                 <div class="recall-control-header">
-                  <span class="recall-control-label">Minimum importance</span>
-                  <span class="recall-control-val" id="rc-importance-val">Any</span>
+                  <label class="recall-control-label" for="rc-recency">${kit.L('MEM007')}</label>
+                  ${kit.switchInput('rc-recency')}
                 </div>
-                <input type="range" class="recall-range" id="rc-importance" min="0" max="10" step="1" value="0">
-                <div class="recall-control-scale">
-                  <span>Any</span><span>Trivial</span><span>Normal</span><span>Significant</span><span>Critical</span>
-                </div>
+                <div class="recall-control-hint" id="rc-recency-help">${kit.H('MEM007')}</div>
               </div>
+            </div>`,
+          })}`,
+        })}
 
-              <div class="recall-control-row">
-                <div class="recall-control-header">
-                  <span class="recall-control-label">Similarity threshold</span>
-                  <span class="recall-control-val" id="rc-score-val">0.30</span>
-                </div>
-                <input type="range" class="recall-range" id="rc-score" min="10" max="80" step="5" value="30">
-                <div class="recall-control-hint">Higher = stricter matching, fewer but more relevant results</div>
-              </div>
-
-              <div class="recall-control-row">
-                <div class="recall-control-header">
-                  <span class="recall-control-label">Content length</span>
-                  <span class="recall-control-val" id="rc-maxchars-val">No limit</span>
-                </div>
-                <input type="range" class="recall-range" id="rc-maxchars" min="100" max="2100" step="50" value="2100">
-                <div class="recall-control-hint">Max characters per memory in results. Reduces token usage.</div>
-              </div>
-
-              <div class="recall-control-row">
-                <div class="recall-control-header">
-                  <span class="recall-control-label">Session context</span>
-                </div>
-                <div class="recall-segmented" id="rc-sessions">
-                  <button class="recall-seg-btn" data-val="never">Never</button>
-                  <button class="recall-seg-btn active" data-val="auto">Auto</button>
-                  <button class="recall-seg-btn" data-val="always">Always</button>
-                </div>
-                <div class="recall-control-hint">Include past conversation chunks in recall results</div>
-              </div>
-
-              <div class="recall-control-row">
-                <div class="recall-control-header">
-                  <span class="recall-control-label">Recency boost</span>
-                  <label class="recall-toggle">
-                    <input type="checkbox" id="rc-recency">
-                    <span class="recall-toggle-track"></span>
-                  </label>
-                </div>
-                <div class="recall-control-hint">Prioritize recent memories over semantic similarity</div>
-              </div>
-
-            </div>
-          </div>
-        </div>
-
-        <!-- Memory Sync (commented out)
-        <div class="iface-section">
-          <div class="gfx-group-title">Memory Sync</div>
-          <div class="settings-hint" style="margin-bottom:10px">Scan for memories whose related files have changed since they were last stored. Stale memories may contain outdated information about renamed functions, moved files, or changed APIs.</div>
-          <button class="sync-check-btn" id="sync-check-btn">
-            <span class="btn-label">Check for stale memories</span>
-            <span class="spinner"></span>
-          </button>
-          <div class="sync-results" id="sync-results"></div>
-        </div>
-        -->
+        ${kit.card({
+          id: 'stg-sec-maintenance', section: 'memory_backups.maintenance', advanced: true,
+          status: kit.pill('', { id: 'memory-maintenance-pill' }),
+          body: `
+          <div id="memory-maintenance" ${kit.inv('MEM008')} role="group" aria-label="${kit.L('MEM008')}" aria-describedby="memory-maintenance-help"></div>
+          ${kit.help('MEM008', { forId: 'memory-maintenance' })}`,
+        })}
 
       </div>`;
 }
 
-function ifaceSliderRow(key, label, min, max, step, decimals, value) {
+function ifaceSliderRow(invId, key, min, max, step, decimals, value) {
   const display = Number(value).toFixed(decimals);
-  return `<div class="gfx-row">
-    <span class="gfx-label">${label}</span>
-    <input type="range" data-iface-key="${key}" min="${min}" max="${max}" step="${step}" value="${value}">
+  return `<div class="gfx-row" ${kit.inv(invId)}>
+    <label class="gfx-label" for="iface-${key}">${kit.L(invId)}</label>
+    <input type="range" id="iface-${key}" data-iface-key="${key}" min="${min}" max="${max}" step="${step}" value="${value}" title="${kit.H(invId)}">
     <span class="gfx-val" data-iface-val="${key}">${display}</span>
   </div>`;
 }
@@ -2675,91 +2214,82 @@ function ifaceSliderRow(key, label, min, max, step, decimals, value) {
 function buildMoreLoginTab() {
   // Shell only — live data is loaded async by wireMoreLoginTab() so opening
   // Settings never blocks on the MoreLogin probe.
+  const m = (key) => kit.te(`settings.redesign.morelogin.${key}`);
+  const text = (id, { ph = '', type = 'text' } = {}) =>
+    `<input type="${type}" id="${id}" value=""${ph ? ` placeholder="${ph}"` : ''} autocomplete="off" spellcheck="false" aria-describedby="${id}-help">`;
+  const btn = (invId, id) => `<button type="button" class="stg-action-btn compact" id="${id}" ${kit.inv(invId)} title="${kit.H(invId)}">${kit.L(invId)}</button>`;
+
   return `
-    <div class="settings-tab-body" data-tab="morelogin">
-      <div class="settings-status">
-        <span class="settings-status-dot disconnected" id="ml-status-dot"></span>
-        <span id="ml-status-line">Checking MoreLogin…</span>
-      </div>
+    <div class="stg-pane" data-stg-pane="morelogin">
 
-      <div class="iface-section" data-collapsible>
-        <div class="gfx-group-title" style="justify-content:space-between;cursor:pointer">
-          <span style="display:flex;align-items:center;gap:6px">${CHEVRON_ICON} Local API</span>
-          <span id="ml-conn-status" style="font-size:11.5px;color:var(--t-muted)">…</span>
+      ${kit.card({
+        id: 'stg-sec-ml-connection', section: 'connected_tools.morelogin_connection',
+        status: `<span id="ml-conn-status">…</span>`,
+        body: `
+        <div class="settings-status" ${kit.inv('ML015')} role="status" aria-live="polite">
+          <span class="settings-status-dot disconnected" id="ml-status-dot"></span>
+          <span id="ml-status-line">${m('checking')}</span>
         </div>
-        <div class="cc-section-body">
-          <div class="settings-hint" style="margin-bottom:10px">
-            MoreLogin is an anti-detect browser. Install it from <a href="https://www.morelogin.com" target="_blank" style="color:var(--accent)">morelogin.com</a>, open the app, then enable its local API under <strong>Settings → API &amp; MCP</strong>. SynaBun talks to it on localhost — no credentials needed for local use.
+        <div class="stg-help" style="margin:8px 0 12px">${kit.th('settings.redesign.morelogin.intro', {
+          link: '<a href="https://www.morelogin.com" target="_blank" rel="noopener">morelogin.com</a>',
+          path: `<strong>${m('apiPath')}</strong>`,
+        })}</div>
+        ${kit.field('ML001', `
+          <div class="settings-key-row">
+            ${text('ml-port', { ph: '40000' })}
+            ${btn('ML002', 'ml-port-save')}
+          </div>`, { forId: 'ml-port' })}
+        <div class="stg-field" ${kit.inv('ML003')}>
+          <div class="stg-action-row">
+            <button type="button" class="stg-action-btn" id="ml-test-btn" aria-describedby="ml-test-btn-help">${kit.L('ML003')}</button>
           </div>
-          <div class="settings-field">
-            <label>API Port</label>
-            <div class="settings-key-row" style="display:flex;gap:6px">
-              <input type="text" id="ml-port" value="" placeholder="40000" autocomplete="off" spellcheck="false" style="flex:1;font-family:monospace;font-size:12px">
-              <button class="conn-add-btn" id="ml-port-save" style="margin:0;width:auto;flex:0 0 auto;padding:4px 10px">Save</button>
-            </div>
-            <div class="settings-hint">Default 40000. Change only if you set a custom port in MoreLogin.</div>
-          </div>
-          <div style="display:flex;gap:8px;margin-top:8px">
-            <button class="conn-add-btn" id="ml-test-btn" style="margin:0">Test Connection</button>
-          </div>
-          <div id="ml-test-result" style="display:none;margin-top:10px;padding:10px 12px;border-radius:8px;font-size:12px"></div>
-        </div>
-      </div>
+          ${kit.help('ML003', { forId: 'ml-test-btn' })}
+          <div id="ml-test-result" role="status" style="display:none;margin-top:10px;padding:10px 12px;border-radius:8px;font-size:12px"></div>
+        </div>`,
+      })}
 
-      <div class="iface-section" data-collapsible>
-        <div class="gfx-group-title" style="justify-content:space-between;cursor:pointer">
-          <span style="display:flex;align-items:center;gap:6px">${CHEVRON_ICON} Browser Profiles</span>
-          <span id="ml-default-status" style="font-size:11.5px;color:var(--t-muted)"></span>
-        </div>
-        <div class="cc-section-body">
-          <div class="settings-hint" style="margin-bottom:10px">Pick which MoreLogin profile is your <strong>default AI browser</strong>. Once set, all of SynaBun's browser automation runs through it (this mirrors the Browser tab's MoreLogin picker).</div>
-          <div style="display:flex;gap:6px;margin-bottom:8px">
-            <input type="text" id="ml-new-name" placeholder="New profile name (e.g. SynaBun)" autocomplete="off" spellcheck="false" style="flex:1;font-family:monospace;font-size:12px">
-            <button class="conn-add-btn" id="ml-create-btn" style="margin:0;width:auto;flex:0 0 auto;padding:4px 10px">Create</button>
-            <button class="conn-add-btn" id="ml-refresh-btn" style="margin:0;width:auto;flex:0 0 auto;padding:4px 10px">Refresh</button>
-          </div>
-          <div id="ml-profile-list" style="display:flex;flex-direction:column;gap:6px"></div>
-        </div>
-      </div>
+      ${kit.card({
+        id: 'stg-sec-ml-profiles', section: 'connected_tools.morelogin_profiles',
+        status: `<span id="ml-default-status"></span>`,
+        body: `
+        ${kit.field('ML004', `
+          <div class="settings-key-row">
+            ${text('ml-new-name', { ph: m('ph.newName') })}
+            ${btn('ML005', 'ml-create-btn')}
+            ${btn('ML006', 'ml-refresh-btn')}
+          </div>`, { forId: 'ml-new-name' })}
+        <div id="ml-profile-list" ${kit.inv('ML016')} role="group" aria-label="${kit.L('ML016')}" style="display:flex;flex-direction:column;gap:6px"></div>`,
+      })}
 
-      <div class="iface-section collapsed" data-collapsible>
-        <div class="gfx-group-title" style="cursor:pointer">
-          <span style="display:flex;align-items:center;gap:6px">${CHEVRON_ICON} API Credentials (optional)</span>
-        </div>
-        <div class="cc-section-body">
-          <div class="settings-hint" style="margin-bottom:10px">Only needed if MoreLogin enforces signed requests. Find these in MoreLogin → Settings → API &amp; MCP → API.</div>
-          <div class="settings-field">
-            <label>API ID</label>
-            <div class="settings-key-row" style="display:flex;gap:6px">
-              <input type="text" id="ml-api-id" value="" placeholder="API ID" autocomplete="off" spellcheck="false" style="flex:1;font-family:monospace;font-size:12px">
-              <button class="conn-add-btn" id="ml-apiid-save" style="margin:0;width:auto;flex:0 0 auto;padding:4px 10px">Save</button>
-            </div>
-          </div>
-          <div class="settings-field">
-            <label>Secret Key</label>
-            <div class="settings-key-row" style="display:flex;gap:6px">
-              <input type="password" id="ml-secret" value="" placeholder="Secret Key" autocomplete="off" spellcheck="false" style="flex:1;font-family:monospace;font-size:12px">
-              <button class="conn-add-btn" id="ml-secret-eye" style="margin:0;width:auto;flex:0 0 auto;padding:4px 8px" data-tooltip="Show/hide">${eyeClosed}</button>
-              <button class="conn-add-btn" id="ml-secret-save" style="margin:0;width:auto;flex:0 0 auto;padding:4px 10px">Save</button>
-            </div>
-          </div>
-        </div>
-      </div>
+      ${kit.card({
+        id: 'stg-sec-ml-credentials', section: 'connected_tools.morelogin_credentials', collapsible: true, collapsed: true, advanced: true,
+        body: `
+        <div class="stg-help" style="margin:0 0 12px">${m('credentialsHelp')}</div>
+        ${kit.field('ML007', `
+          <div class="settings-key-row">
+            ${text('ml-api-id')}
+            ${btn('ML008', 'ml-apiid-save')}
+          </div>`, { forId: 'ml-api-id' })}
+        ${kit.field('ML009', `
+          <div class="settings-key-row">
+            ${text('ml-secret', { type: 'password' })}
+            <button type="button" class="stg-action-btn compact" id="ml-secret-eye" ${kit.inv('ML010')} aria-label="${kit.L('ML010')}" title="${kit.L('ML010')}">${eyeClosed}</button>
+            ${btn('ML011', 'ml-secret-save')}
+          </div>`, { forId: 'ml-secret' })}`,
+      })}
 
-      <div class="iface-section collapsed" data-collapsible>
-        <div class="gfx-group-title" style="cursor:pointer">
-          <span style="display:flex;align-items:center;gap:6px">${CHEVRON_ICON} MoreLogin's own MCP server</span>
+      ${kit.card({
+        id: 'stg-sec-ml-server', section: 'connected_tools.morelogin_tool_server', collapsible: true, collapsed: true, advanced: true,
+        body: `
+        <div class="stg-help" style="margin:0 0 12px">${m('serverHelp')}</div>
+        ${kit.field('ML012', `<textarea id="ml-mcp-config" class="stg-code-area" placeholder='{ "command": "...", "args": [ ... ] }' spellcheck="false" aria-describedby="ml-mcp-config-help"></textarea>`, { forId: 'ml-mcp-config' })}
+        <div class="stg-action-row">
+          <button type="button" class="stg-action-btn" id="ml-mcp-register" ${kit.inv('ML013')} title="${kit.H('ML013')}">${kit.L('ML013')}</button>
+          <button type="button" class="stg-action-btn" id="ml-mcp-unregister" ${kit.inv('ML014')} title="${kit.H('ML014')}">${kit.L('ML014')}</button>
         </div>
-        <div class="cc-section-body">
-          <div class="settings-hint" style="margin-bottom:10px">SynaBun already exposes native <code>morelogin</code> tools and drives MoreLogin via the Browser tab. Optionally ALSO register MoreLogin's own MCP server: in MoreLogin → Settings → API &amp; MCP → MCP, let it download, copy the config block it shows, and paste it here to add it to your installed agents (Claude / Codex / Gemini / OpenCode).</div>
-          <textarea id="ml-mcp-config" placeholder='{ "command": "...", "args": [ ... ] }' spellcheck="false" style="width:100%;min-height:90px;font-family:monospace;font-size:11.5px;background:var(--s-darker);color:var(--t-primary);border:1px solid var(--s-medium);border-radius:6px;padding:8px;box-sizing:border-box"></textarea>
-          <div style="display:flex;gap:8px;margin-top:8px">
-            <button class="conn-add-btn" id="ml-mcp-register" style="margin:0">Register with my agents</button>
-            <button class="conn-add-btn" id="ml-mcp-unregister" style="margin:0">Remove</button>
-          </div>
-          <div id="ml-mcp-result" style="display:none;margin-top:10px;padding:10px 12px;border-radius:8px;font-size:12px"></div>
-        </div>
-      </div>
+        <div id="ml-mcp-result" role="status" style="display:none;margin-top:10px;padding:10px 12px;border-radius:8px;font-size:12px"></div>`,
+      })}
+
     </div>`;
 }
 
@@ -2769,42 +2299,42 @@ function wireMoreLoginTab(overlay) {
   let _defaultEnvId = null;
   const okBg = 'rgba(76,175,80,0.12)', errBg = 'rgba(244,67,54,0.12)';
 
-  const jget = (u) => fetch(u).then(r => r.json()).catch(() => ({ ok: false, error: 'Network error' }));
-  const jpost = (u, body) => fetch(u, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) }).then(r => r.json()).catch(() => ({ ok: false, error: 'Network error' }));
+  const jget = (u) => fetch(u).then(r => r.json()).catch(() => ({ ok: false, error: kit.tx('settings.redesign.morelogin.networkError') }));
+  const jpost = (u, body) => fetch(u, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) }).then(r => r.json()).catch(() => ({ ok: false, error: kit.tx('settings.redesign.morelogin.networkError') }));
 
   function setStatus(s) {
     const dot = $('ml-status-dot'), line = $('ml-status-line'), conn = $('ml-conn-status');
-    if (!s.installed) { dot.className = 'settings-status-dot disconnected'; line.textContent = 'MoreLogin not installed'; if (conn) conn.textContent = 'not installed'; }
-    else if (!s.running) { dot.className = 'settings-status-dot disconnected'; line.textContent = `Installed · API not running (port ${s.port})`; if (conn) conn.textContent = 'app closed'; }
-    else { dot.className = 'settings-status-dot connected'; line.textContent = `Connected · ${s.profileCount} profile(s) · port ${s.port}`; if (conn) conn.textContent = 'connected'; }
+    if (!s.installed) { dot.className = 'settings-status-dot disconnected'; line.textContent = kit.tx('settings.redesign.morelogin.moreloginNotInstalled'); if (conn) conn.textContent = kit.tx('settings.redesign.morelogin.notInstalled'); }
+    else if (!s.running) { dot.className = 'settings-status-dot disconnected'; line.textContent = kit.tx('settings.redesign.morelogin.installedApiNotRunningPort', { port: s.port }); if (conn) conn.textContent = kit.tx('settings.redesign.morelogin.appClosed'); }
+    else { dot.className = 'settings-status-dot connected'; line.textContent = kit.tx('settings.redesign.morelogin.connectedProfileSPort', { profileCount: s.profileCount, port: s.port }); if (conn) conn.textContent = kit.tx('settings.redesign.morelogin.connected'); }
     _defaultEnvId = s.defaultEnvId || null;
     const ds = $('ml-default-status');
-    if (ds) ds.textContent = (s.isDefault && s.defaultEnvId) ? 'default AI browser set' : 'no default set';
+    if (ds) ds.textContent = (s.isDefault && s.defaultEnvId) ? kit.tx('settings.redesign.morelogin.defaultAiBrowserSet') : kit.tx('settings.redesign.morelogin.noDefaultSet');
   }
 
   function renderProfiles(envs) {
     const list = $('ml-profile-list');
     if (!list) return;
-    if (!envs || !envs.length) { list.innerHTML = '<div class="settings-hint">No profiles — create one above, or one is auto-created on first use.</div>'; return; }
+    if (!envs || !envs.length) { list.innerHTML = '<div class="settings-hint">' + kit.te('settings.redesign.morelogin.noProfilesCreateOneAboveOr') + '</div>'; return; }
     list.innerHTML = envs.map(e => {
       const id = escapeHtml(String(e.id));
       const isDefault = String(e.id) === String(_defaultEnvId);
       return `<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid ${isDefault ? 'var(--accent)' : 'var(--s-medium)'};border-radius:8px;background:var(--s-darker)">
         <span style="flex:1;font-size:12.5px">${escapeHtml(e.name)}${e.status ? ` <span style="color:var(--t-muted);font-size:11px">(${escapeHtml(String(e.status))})</span>` : ''}</span>
-        ${isDefault ? '<span style="font-size:11px;color:var(--accent)">★ default</span>' : `<button class="conn-add-btn ml-use" data-env-id="${id}" style="margin:0;width:auto;padding:3px 8px">Use as default</button>`}
-        <button class="conn-add-btn ml-start" data-env-id="${id}" style="margin:0;width:auto;padding:3px 8px">Start</button>
-        <button class="conn-add-btn ml-stop" data-env-id="${id}" style="margin:0;width:auto;padding:3px 8px">Stop</button>
+        ${isDefault ? '<span style="font-size:11px;color:var(--accent)">' + kit.te('settings.redesign.morelogin.default') + '</span>' : `<button type="button" class="conn-add-btn ml-use" data-env-id="${id}" ${kit.inv('ML019')} title="${kit.H('ML019')}" style="margin:0;width:auto;padding:3px 8px">${kit.L('ML019')}</button>`}
+        <button type="button" class="conn-add-btn ml-start" data-env-id="${id}" ${kit.inv('ML017')} title="${kit.H('ML017')}" style="margin:0;width:auto;padding:3px 8px">${kit.L('ML017')}</button>
+        <button type="button" class="conn-add-btn ml-stop" data-env-id="${id}" ${kit.inv('ML018')} title="${kit.H('ML018')}" style="margin:0;width:auto;padding:3px 8px">${kit.L('ML018')}</button>
       </div>`;
     }).join('');
     list.querySelectorAll('.ml-use').forEach(b => b.addEventListener('click', async () => {
       const r = await jpost('/api/morelogin/use-default', { envId: b.dataset.envId });
-      showCCToast(r.ok ? 'MoreLogin set as default AI browser' : (r.error || 'Failed'));
+      showCCToast(r.ok ? kit.tx('settings.redesign.morelogin.moreloginSetAsDefaultAiBrowser') : (r.error || kit.tx('settings.redesign.morelogin.failed')));
       reload();
     }));
     list.querySelectorAll('.ml-start').forEach(b => b.addEventListener('click', async () => {
-      b.disabled = true; const t = b.textContent; b.textContent = 'Starting…';
+      b.disabled = true; const t = b.textContent; b.textContent = kit.tx('settings.redesign.morelogin.starting');
       const r = await jpost('/api/morelogin/start', { envId: b.dataset.envId });
-      showCCToast(r.ok ? `Started (debug port ${r.debugPort})` : (r.error || 'Start failed'));
+      showCCToast(r.ok ? kit.tx('settings.redesign.morelogin.startedDebugPort', { debugPort: r.debugPort }) : (r.error || kit.tx('settings.redesign.morelogin.startFailed')));
       b.disabled = false; b.textContent = t; reload();
     }));
     list.querySelectorAll('.ml-stop').forEach(b => b.addEventListener('click', async () => {
@@ -2827,37 +2357,37 @@ function wireMoreLoginTab(overlay) {
 
   const saveCfg = (key, value) => fetch('/api/morelogin/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key, value }) });
 
-  $('ml-port-save')?.addEventListener('click', async () => { await saveCfg('port', ($('ml-port').value || '').trim()); showCCToast('Port saved'); reload(); });
-  $('ml-apiid-save')?.addEventListener('click', async () => { await saveCfg('apiId', ($('ml-api-id').value || '').trim()); showCCToast('API ID saved'); });
-  $('ml-secret-save')?.addEventListener('click', async () => { await saveCfg('secret', $('ml-secret').value || ''); showCCToast('Secret saved'); });
+  $('ml-port-save')?.addEventListener('click', async () => { await saveCfg('port', ($('ml-port').value || '').trim()); showCCToast(kit.tx('settings.redesign.morelogin.portSaved')); reload(); });
+  $('ml-apiid-save')?.addEventListener('click', async () => { await saveCfg('apiId', ($('ml-api-id').value || '').trim()); showCCToast(kit.tx('settings.redesign.morelogin.apiIdSaved')); });
+  $('ml-secret-save')?.addEventListener('click', async () => { await saveCfg('secret', $('ml-secret').value || ''); showCCToast(kit.tx('settings.redesign.morelogin.secretSaved')); });
   $('ml-secret-eye')?.addEventListener('click', () => { const i = $('ml-secret'); if (i) i.type = i.type === 'password' ? 'text' : 'password'; });
   $('ml-refresh-btn')?.addEventListener('click', reload);
   $('ml-create-btn')?.addEventListener('click', async () => {
     const name = ($('ml-new-name')?.value || '').trim() || 'SynaBun';
     const r = await jpost('/api/morelogin/profiles', { name });
-    showCCToast(r.ok ? 'Profile created' : (r.error || 'Create failed'));
+    showCCToast(r.ok ? kit.tx('settings.redesign.morelogin.profileCreated') : (r.error || kit.tx('settings.redesign.morelogin.createFailed')));
     if ($('ml-new-name')) $('ml-new-name').value = '';
     reload();
   });
   $('ml-test-btn')?.addEventListener('click', async () => {
     const res = $('ml-test-result');
-    if (res) { res.style.display = 'block'; res.textContent = 'Testing…'; res.style.background = 'var(--s-darker)'; res.style.color = 'var(--t-secondary)'; }
+    if (res) { res.style.display = 'block'; res.textContent = kit.tx('settings.redesign.morelogin.testing'); res.style.background = 'var(--s-darker)'; res.style.color = 'var(--t-secondary)'; }
     const r = await jpost('/api/morelogin/test', {});
-    if (res) { res.textContent = r.ok ? `✓ Reachable on port ${r.port} · ${r.profileCount} profile(s)` : `✗ ${r.error}`; res.style.background = r.ok ? okBg : errBg; res.style.color = r.ok ? '#4caf50' : '#f44336'; }
+    if (res) { res.textContent = r.ok ? kit.tx('settings.redesign.morelogin.reachableOnPortProfileS', { port: r.port, profileCount: r.profileCount }) : `✗ ${r.error}`; res.style.background = r.ok ? okBg : errBg; res.style.color = r.ok ? '#4caf50' : '#f44336'; }
     reload();
   });
   $('ml-mcp-register')?.addEventListener('click', async () => {
     const res = $('ml-mcp-result');
     let cfg = null;
     const raw = ($('ml-mcp-config')?.value || '').trim();
-    if (raw) { try { cfg = JSON.parse(raw); } catch { if (res) { res.style.display = 'block'; res.textContent = 'Invalid JSON config.'; res.style.background = errBg; res.style.color = '#f44336'; } return; } }
+    if (raw) { try { cfg = JSON.parse(raw); } catch { if (res) { res.style.display = 'block'; res.textContent = kit.tx('settings.redesign.morelogin.invalidJsonConfig'); res.style.background = errBg; res.style.color = '#f44336'; } return; } }
     const r = await jpost('/api/morelogin/register-mcp', { config: cfg });
-    if (res) { res.style.display = 'block'; res.textContent = r.ok ? `Registered with: ${(r.targets || []).join(', ') || '(no agent configs found)'}. Restart your agent to load it.` : (r.error || 'Failed'); res.style.background = r.ok ? okBg : errBg; res.style.color = r.ok ? '#4caf50' : '#f44336'; }
+    if (res) { res.style.display = 'block'; res.textContent = r.ok ? kit.tx('settings.redesign.morelogin.registeredWithRestartYourAgentTo', { targets: (r.targets || []).join(', ') || kit.tx('settings.redesign.morelogin.noAgentConfigsFound') }) : (r.error || kit.tx('settings.redesign.morelogin.failed')); res.style.background = r.ok ? okBg : errBg; res.style.color = r.ok ? '#4caf50' : '#f44336'; }
   });
   $('ml-mcp-unregister')?.addEventListener('click', async () => {
     const res = $('ml-mcp-result');
-    const r = await fetch('/api/morelogin/register-mcp', { method: 'DELETE' }).then(x => x.json()).catch(() => ({ ok: false, error: 'Network error' }));
-    if (res) { res.style.display = 'block'; res.textContent = r.ok ? `Removed from: ${(r.targets || []).join(', ') || '(none)'}` : (r.error || 'Failed'); res.style.background = 'var(--s-darker)'; res.style.color = 'var(--t-secondary)'; }
+    const r = await fetch('/api/morelogin/register-mcp', { method: 'DELETE' }).then(x => x.json()).catch(() => ({ ok: false, error: kit.tx('settings.redesign.morelogin.networkError') }));
+    if (res) { res.style.display = 'block'; res.textContent = r.ok ? kit.tx('settings.redesign.morelogin.removedFrom', { targets: (r.targets || []).join(', ') || kit.tx('settings.redesign.morelogin.none') }) : (r.error || kit.tx('settings.redesign.morelogin.failed')); res.style.background = 'var(--s-darker)'; res.style.color = 'var(--t-secondary)'; }
   });
 
   reload();
@@ -2866,260 +2396,211 @@ function wireMoreLoginTab(overlay) {
 function buildDiscordTab(discordConfig) {
   const c = discordConfig || {};
   const hasToken = !!c.botToken;
-  const maskedToken = hasToken ? c.botToken.slice(0, 10) + '...' + c.botToken.slice(-4) : '';
+  const d = (key) => kit.te(`settings.redesign.discord.${key}`);
+  const save = (invId, id) => `<button type="button" class="stg-action-btn compact" id="${id}" ${kit.inv(invId)} title="${kit.H(invId)}">${kit.L(invId)}</button>`;
+  // A default the Discord tools fall back on: saved as soon as the field changes (data-discord-key).
+  const text = (invId, id, key, value) => kit.field(invId, `
+          <div class="settings-key-row">
+            <input type="text" id="${id}" value="${escapeHtml(value || '')}" autocomplete="off" spellcheck="false" data-discord-key="${key}" aria-describedby="${id}-help">
+          </div>`, { forId: id });
+  const number = (invId, id, key, value, attrs, unit) => kit.field(invId, `
+          <div class="settings-key-row" style="display:flex;gap:6px;align-items:center">
+            <input type="number" id="${id}" value="${value}" ${attrs} style="width:80px;text-align:center" data-discord-key="${key}" aria-describedby="${id}-help">
+            <span class="stg-help" style="margin:0">${d(unit)}</span>
+          </div>`, { forId: id });
+  const PERMISSIONS = ['administrator', 'manageServer', 'manageChannels', 'manageRoles', 'manageMessages', 'manageWebhooks', 'kickBan', 'moderate', 'send', 'react', 'history', 'view'];
+  const TOOLS = ['discord_guild', 'discord_channel', 'discord_role', 'discord_message', 'discord_member', 'discord_onboarding', 'discord_webhook', 'discord_thread'];
 
   return `
-    <div class="settings-tab-body" data-tab="discord">
-      <div class="settings-status">
-        <span class="settings-status-dot ${hasToken ? 'connected' : 'disconnected'}"></span>
-        ${hasToken ? 'Token configured' : 'Not configured'}
-      </div>
+    <div class="stg-pane" data-stg-pane="discord">
 
-      <!-- Bot Connection -->
-      <div class="iface-section" data-collapsible>
-        <div class="gfx-group-title" style="justify-content:space-between;cursor:pointer">
-          <span style="display:flex;align-items:center;gap:6px">
-            ${CHEVRON_ICON} Bot Connection
-          </span>
-          <span id="discord-conn-status" style="font-size:11.5px;color:var(--t-muted)">${hasToken ? 'configured' : 'missing'}</span>
-        </div>
-        <div class="cc-section-body">
-          <div class="settings-field">
-            <label>Bot Token</label>
-            <div class="settings-key-row" style="display:flex;gap:6px">
-              <input type="password" id="discord-bot-token" value="${escapeHtml(c.botToken || '')}" placeholder="Paste your Discord bot token" autocomplete="off" spellcheck="false" style="flex:1;font-family:monospace;font-size:12px">
-              <button class="conn-add-btn discord-eye-btn" id="discord-token-eye" style="margin:0;width:auto;flex:0 0 auto;padding:4px 8px" data-tooltip="Show/hide">${eyeClosed}</button>
-              <button class="conn-add-btn" id="discord-token-save" style="margin:0;width:auto;flex:0 0 auto;padding:4px 10px">Save</button>
-            </div>
-            <div class="settings-hint">Create a bot at <a href="https://discord.com/developers/applications" target="_blank" style="color:var(--accent)">discord.com/developers</a>. Enable MESSAGE CONTENT, SERVER MEMBERS, and PRESENCE intents.</div>
+      ${kit.card({
+        id: 'stg-sec-discord-connection', section: 'messages.bot_connection',
+        status: `<span id="discord-conn-status">${d(hasToken ? 'configured' : 'missing')}</span>`,
+        body: `
+        <div class="settings-status" ${kit.inv('DIS016')} role="status"><span class="settings-status-dot ${hasToken ? 'connected' : 'disconnected'}"></span> ${d(hasToken ? 'tokenConfigured' : 'notConfigured')}</div>
+        ${kit.field('DIS001', `
+          <div class="settings-key-row">
+            <input type="password" id="discord-bot-token" value="${escapeHtml(c.botToken || '')}" autocomplete="off" spellcheck="false" aria-describedby="discord-bot-token-help">
+            <button type="button" class="stg-action-btn compact discord-eye-btn" id="discord-token-eye" ${kit.inv('DIS002')} aria-label="${kit.L('DIS002')}" title="${kit.L('DIS002')}">${eyeClosed}</button>
+            ${save('DIS003', 'discord-token-save')}
+          </div>`, { forId: 'discord-bot-token', attrs: 'style="margin-top:12px"',
+          helpHtml: kit.th('settings.redesign.discord.tokenHelp', { link: '<a href="https://discord.com/developers/applications" target="_blank" rel="noopener">discord.com/developers</a>' }) })}
+        ${kit.field('DIS004', `
+          <div class="settings-key-row">
+            <input type="text" id="discord-guild-id" value="${escapeHtml(c.guildId || '')}" autocomplete="off" spellcheck="false" aria-describedby="discord-guild-id-help">
+            ${save('DIS005', 'discord-guild-save')}
+          </div>`, { forId: 'discord-guild-id' })}
+        <div class="stg-field" ${kit.inv('DIS006')}>
+          <div class="stg-action-row">
+            <button type="button" class="stg-action-btn" id="discord-test-btn" aria-describedby="discord-test-btn-help">${kit.L('DIS006')}</button>
           </div>
-          <div class="settings-field">
-            <label>Default Guild ID</label>
-            <div class="settings-key-row" style="display:flex;gap:6px">
-              <input type="text" id="discord-guild-id" value="${escapeHtml(c.guildId || '')}" placeholder="Right-click server > Copy Server ID" autocomplete="off" spellcheck="false" style="flex:1;font-family:monospace;font-size:12px">
-              <button class="conn-add-btn" id="discord-guild-save" style="margin:0;width:auto;flex:0 0 auto;padding:4px 10px">Save</button>
-            </div>
-            <div class="settings-hint">The server Claude Code will manage by default. Enable Developer Mode in Discord to copy IDs.</div>
-          </div>
-          <div style="display:flex;gap:8px;margin-top:8px">
-            <button class="conn-add-btn" id="discord-test-btn" style="margin:0">Test Connection</button>
-          </div>
-          <div id="discord-test-result" style="display:none;margin-top:10px;padding:10px 12px;border-radius:8px;font-size:12px"></div>
-        </div>
-      </div>
+          ${kit.help('DIS006', { forId: 'discord-test-btn' })}
+          <div id="discord-test-result" role="status" style="display:none;margin-top:10px;padding:10px 12px;border-radius:8px;font-size:12px"></div>
+        </div>`,
+      })}
 
-      <!-- Bot Permissions -->
-      <div class="iface-section collapsed" data-collapsible>
-        <div class="gfx-group-title" style="cursor:pointer">
-          <span style="display:flex;align-items:center;gap:6px">
-            ${CHEVRON_ICON} Required Permissions
-          </span>
-        </div>
-        <div class="cc-section-body">
-          <div class="settings-hint" style="margin-bottom:10px">Your bot needs these permissions to fully manage the server. Use the invite link below or add them manually.</div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 16px;font-size:12px;color:var(--t-secondary)">
-            <span>Administrator</span><span style="color:var(--t-muted)">Full access (recommended)</span>
-            <span>Manage Server</span><span style="color:var(--t-muted)">Edit server settings</span>
-            <span>Manage Channels</span><span style="color:var(--t-muted)">Create/edit/delete channels</span>
-            <span>Manage Roles</span><span style="color:var(--t-muted)">Create/edit/assign roles</span>
-            <span>Manage Messages</span><span style="color:var(--t-muted)">Pin, delete messages</span>
-            <span>Manage Webhooks</span><span style="color:var(--t-muted)">Create/manage webhooks</span>
-            <span>Kick/Ban Members</span><span style="color:var(--t-muted)">Moderation actions</span>
-            <span>Moderate Members</span><span style="color:var(--t-muted)">Timeout members</span>
-            <span>Send Messages</span><span style="color:var(--t-muted)">Post in channels</span>
-            <span>Add Reactions</span><span style="color:var(--t-muted)">React to messages</span>
-            <span>Read Message History</span><span style="color:var(--t-muted)">View past messages</span>
-            <span>View Channels</span><span style="color:var(--t-muted)">See all channels</span>
-          </div>
-          <div class="settings-field" style="margin-top:12px">
-            <label>Bot Invite Link</label>
-            <div class="settings-key-row" style="display:flex;gap:6px">
-              <input type="text" id="discord-invite-link" value="" readonly style="flex:1;font-size:11.5px;opacity:0.7;cursor:default" autocomplete="off" spellcheck="false">
-              <button class="conn-add-btn" id="discord-invite-copy" style="margin:0;width:auto;flex:0 0 auto;padding:4px 8px" data-tooltip="Copy">${COPY_ICON}</button>
-            </div>
-            <div class="settings-hint">Permission integer: 8 (Administrator). Change to 1642825033974 for granular permissions.</div>
-          </div>
-        </div>
-      </div>
+      ${kit.card({
+        id: 'stg-sec-discord-server', section: 'messages.server_defaults',
+        body: `
+        ${text('DIS009', 'discord-default-category', 'defaultCategory', c.defaultCategory)}
+        ${text('DIS010', 'discord-welcome-channel', 'welcomeChannel', c.welcomeChannel)}
+        ${text('DIS011', 'discord-rules-channel', 'rulesChannel', c.rulesChannel)}
+        ${text('DIS012', 'discord-log-channel', 'logChannel', c.logChannel)}
+        ${text('DIS013', 'discord-mod-role', 'modRole', c.modRole)}`,
+      })}
 
-      <!-- Server Defaults -->
-      <div class="iface-section collapsed" data-collapsible>
-        <div class="gfx-group-title" style="cursor:pointer">
-          <span style="display:flex;align-items:center;gap:6px">
-            ${CHEVRON_ICON} Server Defaults
-          </span>
-        </div>
-        <div class="cc-section-body">
-          <div class="settings-hint" style="margin-bottom:10px">Default channel and role names used by Discord tools. Leave empty for no default.</div>
-          <div class="settings-field">
-            <label>Default Category</label>
-            <div class="settings-key-row">
-              <input type="text" id="discord-default-category" value="${escapeHtml(c.defaultCategory || '')}" placeholder="e.g. General" autocomplete="off" spellcheck="false" data-discord-key="defaultCategory">
-            </div>
-            <div class="settings-hint">New channels are created under this category by default.</div>
-          </div>
-          <div class="settings-field">
-            <label>Welcome Channel</label>
-            <div class="settings-key-row">
-              <input type="text" id="discord-welcome-channel" value="${escapeHtml(c.welcomeChannel || '')}" placeholder="e.g. welcome" autocomplete="off" spellcheck="false" data-discord-key="welcomeChannel">
-            </div>
-          </div>
-          <div class="settings-field">
-            <label>Rules Channel</label>
-            <div class="settings-key-row">
-              <input type="text" id="discord-rules-channel" value="${escapeHtml(c.rulesChannel || '')}" placeholder="e.g. rules" autocomplete="off" spellcheck="false" data-discord-key="rulesChannel">
-            </div>
-          </div>
-          <div class="settings-field">
-            <label>Log Channel</label>
-            <div class="settings-key-row">
-              <input type="text" id="discord-log-channel" value="${escapeHtml(c.logChannel || '')}" placeholder="e.g. mod-logs" autocomplete="off" spellcheck="false" data-discord-key="logChannel">
-            </div>
-            <div class="settings-hint">Where moderation actions are logged.</div>
-          </div>
-          <div class="settings-field">
-            <label>Moderator Role</label>
-            <div class="settings-key-row">
-              <input type="text" id="discord-mod-role" value="${escapeHtml(c.modRole || '')}" placeholder="e.g. Moderator" autocomplete="off" spellcheck="false" data-discord-key="modRole">
-            </div>
-          </div>
-        </div>
-      </div>
+      ${kit.card({
+        id: 'stg-sec-discord-moderation', section: 'messages.moderation_defaults',
+        body: `
+        ${number('DIS014', 'discord-ban-delete-days', 'banDeleteDays', c.banDeleteDays || '0', 'min="0" max="7"', 'days')}
+        ${number('DIS015', 'discord-timeout-minutes', 'timeoutMinutes', c.timeoutMinutes || '10', 'min="1" max="40320"', 'minutes')}`,
+      })}
 
-      <!-- Moderation Defaults -->
-      <div class="iface-section collapsed" data-collapsible>
-        <div class="gfx-group-title" style="cursor:pointer">
-          <span style="display:flex;align-items:center;gap:6px">
-            ${CHEVRON_ICON} Moderation Defaults
-          </span>
-        </div>
-        <div class="cc-section-body">
-          <div class="settings-field">
-            <label>Ban — Delete Message Days</label>
-            <div class="settings-key-row" style="display:flex;gap:6px;align-items:center">
-              <input type="number" id="discord-ban-delete-days" value="${c.banDeleteDays || '0'}" min="0" max="7" style="width:70px;text-align:center" data-discord-key="banDeleteDays">
-              <span style="font-size:12px;color:var(--t-muted)">days (0-7)</span>
-            </div>
-            <div class="settings-hint">How many days of messages to delete when banning a user.</div>
-          </div>
-          <div class="settings-field">
-            <label>Timeout — Default Duration</label>
-            <div class="settings-key-row" style="display:flex;gap:6px;align-items:center">
-              <input type="number" id="discord-timeout-minutes" value="${c.timeoutMinutes || '10'}" min="1" max="40320" style="width:70px;text-align:center" data-discord-key="timeoutMinutes">
-              <span style="font-size:12px;color:var(--t-muted)">minutes (max 28 days)</span>
-            </div>
-            <div class="settings-hint">Default timeout duration when no duration is specified.</div>
-          </div>
-        </div>
-      </div>
+      ${kit.card({
+        id: 'stg-sec-discord-permissions', section: 'messages.required_permissions', collapsible: true, collapsed: true, advanced: true,
+        body: `
+        <dl class="discord-permissions stg-pairs" ${kit.inv('DIS017')} aria-label="${kit.L('DIS017')}">
+          ${PERMISSIONS.map(p => `<dt>${d(`perm.${p}.name`)}</dt><dd>${d(`perm.${p}.desc`)}</dd>`).join('\n          ')}
+        </dl>
+        ${kit.field('DIS007', `
+          <div class="settings-key-row">
+            <input type="text" id="discord-invite-link" value="" readonly autocomplete="off" spellcheck="false" aria-describedby="discord-invite-link-help">
+            <button type="button" class="stg-action-btn compact" id="discord-invite-copy" ${kit.inv('DIS008')} aria-label="${kit.L('DIS008')}" title="${kit.L('DIS008')}">${COPY_ICON}</button>
+          </div>`, { forId: 'discord-invite-link', attrs: 'style="margin-top:14px"' })}`,
+      })}
 
-      <!-- MCP Tools Reference -->
-      <div class="iface-section collapsed" data-collapsible>
-        <div class="gfx-group-title" style="cursor:pointer">
-          <span style="display:flex;align-items:center;gap:6px">
-            ${CHEVRON_ICON} MCP Tools Reference
-          </span>
-        </div>
-        <div class="cc-section-body">
-          <div style="font-size:12px;color:var(--t-secondary);display:grid;grid-template-columns:auto 1fr;gap:4px 12px">
-            <code style="color:var(--accent)">discord_guild</code><span>Server info, list channels/members/roles, audit log</span>
-            <code style="color:var(--accent)">discord_channel</code><span>Create/edit/delete channels, categories, permissions</span>
-            <code style="color:var(--accent)">discord_role</code><span>Create/edit/delete roles, assign/remove from members</span>
-            <code style="color:var(--accent)">discord_message</code><span>Send/edit/delete/pin/react, bulk delete, list messages</span>
-            <code style="color:var(--accent)">discord_member</code><span>Info, kick, ban, unban, timeout, nickname</span>
-            <code style="color:var(--accent)">discord_onboarding</code><span>Welcome screen, rules, verification, onboarding</span>
-            <code style="color:var(--accent)">discord_webhook</code><span>Create/edit/delete/list/execute webhooks</span>
-            <code style="color:var(--accent)">discord_thread</code><span>Create/archive/lock/delete threads</span>
-          </div>
-          <div class="settings-hint" style="margin-top:10px">All tools use an <code>action</code> parameter. Channel/role/user fields accept names or IDs.</div>
-        </div>
-      </div>
+      ${kit.card({
+        id: 'stg-sec-discord-tools', section: 'messages.mcp_tools_reference', collapsible: true, collapsed: true, advanced: true,
+        body: `
+        <dl class="discord-tool-reference stg-pairs" ${kit.inv('DIS018')} aria-label="${kit.L('DIS018')}">
+          ${TOOLS.map(name => `<dt><code class="stg-code">${name}</code></dt><dd>${d(`tool.${name}`)}</dd>`).join('\n          ')}
+        </dl>
+        <div class="stg-help">${kit.th('settings.redesign.discord.toolsHelp', { action: '<code class="stg-code">action</code>' })}</div>`,
+      })}
+
     </div>`;
+}
+
+// ── Language ──
+// The choice is 'system' or a locale (i18n.js). Applying it reloads the app, so the page the
+// user was on is kept for one reload in sessionStorage and Settings opens there again.
+const SETTINGS_REOPEN_KEY = 'synabun-settings-reopen';
+
+function buildLanguageTab() {
+  const systemName = LOCALE_NAMES[getSystemLocale()];
+  const options = [
+    { value: SYSTEM_LOCALE, label: systemName ? kit.te('settings.redesign.language.systemWith', { name: systemName }) : kit.te('settings.redesign.language.system') },
+    ...SUPPORTED_LOCALES.map((locale) => ({ value: locale, label: kit.esc(LOCALE_NAMES[locale] || locale) })),
+  ];
+  return `<div class="stg-pane" data-stg-pane="language">
+    ${kit.card({
+      id: 'stg-sec-language', section: 'appearance.language',
+      body: kit.field('APP001', kit.dropdown('stg-language', options, { value: getLocaleChoice(), classes: 'stg-dropdown stg-dropdown-inline', label: kit.L('APP001'), attrs: 'aria-describedby="stg-language-help"' }), { forId: 'stg-language' }),
+    })}
+  </div>`;
+}
+
+function wireLanguageTab(overlay) {
+  const input = overlay.querySelector('#stg-language');
+  if (!input) return;
+  input.addEventListener('change', () => {
+    if (input.value === getLocaleChoice()) return;
+    const page = overlay.querySelector('.settings-nav-item.active')?.dataset.tab || 'appearance';
+    try { sessionStorage.setItem(SETTINGS_REOPEN_KEY, page); } catch { /* private mode: the reload lands on the map */ }
+    if (!setLocaleChoice(input.value)) { try { sessionStorage.removeItem(SETTINGS_REOPEN_KEY); } catch {} }
+  });
+}
+
+/** The page to open Settings on after a reload the Language popup asked for; read once. */
+function takeSettingsReopen() {
+  try {
+    const page = sessionStorage.getItem(SETTINGS_REOPEN_KEY);
+    if (page) sessionStorage.removeItem(SETTINGS_REOPEN_KEY);
+    return getSettingsPage(page)?.id || null;
+  } catch { return null; }
 }
 
 function buildInterfaceTab() {
   const cfg = loadIfaceConfig();
+  const u = (key) => kit.te(`settings.redesign.interface.${key}`);
+  const activePreset = detectIfacePreset(cfg);
 
-  // ── Theme preset cards ──
-  const presetCards = Object.entries(IFACE_PRESETS).map(([key, p]) => `
-    <div class="gfx-preset-card${detectIfacePreset(cfg) === key ? ' active' : ''}" data-iface-preset="${key}">
-      <span class="gfx-preset-name">${p.label}</span>
-      <span class="gfx-preset-desc">${p.desc}</span>
+  // ── Ready-made looks (the values live in IFACE_PRESETS) ──
+  const presetCards = Object.keys(IFACE_PRESETS).map(key => `
+    <div class="gfx-preset-card${activePreset === key ? ' active' : ''}" data-iface-preset="${key}" role="radio" tabindex="0" aria-checked="${activePreset === key ? 'true' : 'false'}" data-stg-checked="active">
+      <span class="gfx-preset-name">${u(`preset.${key}.label`)}</span>
+      <span class="gfx-preset-desc">${u(`preset.${key}.desc`)}</span>
     </div>
   `).join('');
 
-  // ── Helper: build a section ──
-  function section(title, ...rows) {
-    return `<div class="iface-section">
-      <div class="gfx-group-title">${title}</div>
-      ${rows.join('')}
-    </div>`;
-  }
-
-  // ── Accent color swatch ──
   const swatchColor = `hsl(${cfg.accentHue}, ${cfg.accentSaturation}%, ${cfg.accentLightness}%)`;
 
   return `
-      <div class="settings-tab-body" data-tab="interface">
+      <div class="stg-pane" data-stg-pane="interface">
 
-        <div class="gfx-presets" id="iface-preset-cards" style="margin-bottom:14px">
-          ${presetCards}
-        </div>
+        ${kit.card({
+          id: 'stg-sec-presets', section: 'appearance.appearance_presets',
+          body: `
+          <div class="gfx-presets" id="iface-preset-cards" ${kit.inv('UI016')} role="radiogroup" aria-label="${kit.L('UI016')}" aria-describedby="iface-preset-cards-help">
+            ${presetCards}
+          </div>
+          ${kit.help('UI016', { forId: 'iface-preset-cards' })}`,
+        })}
 
-        ${section('Panel Scale',
-          `<div class="gfx-row">
-            <span class="gfx-label">Scale</span>
-            <input type="range" data-iface-key="scale" min="0.5" max="1.5" step="0.01" value="${cfg.scale}">
-            <input type="number" id="ui-scale-val" class="gfx-val gfx-val-input" min="50" max="150" step="1" value="${Math.round(cfg.scale * 100)}" title="Type exact % or use arrow keys">
-            <span class="gfx-val" style="pointer-events:none;margin-left:-2px;min-width:auto">%</span>
-          </div>`
-        )}
+        ${kit.card({
+          id: 'stg-sec-size', section: 'appearance.size_style',
+          body: `
+          <div class="gfx-row" ${kit.inv('UI001')}>
+            <label class="gfx-label" for="iface-scale">${kit.L('UI001')}</label>
+            <input type="range" id="iface-scale" data-iface-key="scale" min="0.5" max="1.5" step="0.01" value="${cfg.scale}" aria-describedby="iface-scale-help">
+            <input type="number" id="ui-scale-val" class="gfx-val gfx-val-input" ${kit.inv('UI002')} min="50" max="150" step="1" value="${Math.round(cfg.scale * 100)}" aria-label="${kit.L('UI002')}" title="${kit.H('UI002')}">
+            <span class="gfx-val" style="pointer-events:none;margin-left:-2px;min-width:auto" aria-hidden="true">%</span>
+          </div>
+          ${kit.help('UI001', { forId: 'iface-scale' })}
+          <div class="stg-field iface-reset-wrap" ${kit.inv('UI015')} style="margin-top:14px">
+            <button type="button" class="gfx-reset-btn" id="iface-reset" aria-describedby="iface-reset-help">${kit.L('UI015')}</button>
+            ${kit.help('UI015', { forId: 'iface-reset' })}
+          </div>`,
+        })}
 
-        ${section('Glass & Transparency',
-          ifaceSliderRow('glassOpacity', 'Panel Opacity', 0, 1, 0.01, 2, cfg.glassOpacity),
-          ifaceSliderRow('glassBlur', 'Backdrop Blur', 0, 80, 1, 0, cfg.glassBlur),
-          ifaceSliderRow('glassSaturate', 'Saturation', 0.5, 2.5, 0.1, 1, cfg.glassSaturate),
-          ifaceSliderRow('glassBorderOpacity', 'Border Glow', 0, 0.3, 0.01, 2, cfg.glassBorderOpacity),
-        )}
-
-        <div class="iface-grid">
-          ${section('Shadows',
-            ifaceSliderRow('glassShadowOpacity', 'Intensity', 0, 1, 0.01, 2, cfg.glassShadowOpacity),
-            ifaceSliderRow('glassShadowSpread', 'Spread', 0, 60, 1, 0, cfg.glassShadowSpread),
-          )}
-          ${section('Shape & Type',
-            ifaceSliderRow('glassRadius', 'Corner Radius', 0, 30, 1, 0, cfg.glassRadius),
-            ifaceSliderRow('fontScale', 'Font Scale', 0.7, 1.5, 0.01, 2, cfg.fontScale),
-          )}
-        </div>
-
-        <div class="iface-section">
-          <div class="iface-accent-header">
-            <div class="iface-accent-swatch" id="iface-accent-swatch" style="background:${swatchColor}"></div>
+        ${kit.card({
+          id: 'stg-sec-accent', section: 'appearance.accent_color',
+          body: `
+          <div class="iface-accent-header" ${kit.inv('UI017')}>
+            <div class="iface-accent-swatch" id="iface-accent-swatch" style="background:${swatchColor}" role="img" aria-label="${kit.L('UI017')}"></div>
             <div class="iface-accent-info">
-              <span class="label">Accent Color</span>
+              <span class="label">${u('accent')}</span>
               <span class="value" id="iface-accent-hex">${swatchColor}</span>
             </div>
           </div>
-          ${ifaceSliderRow('accentHue', 'Hue', 0, 360, 1, 0, cfg.accentHue)}
-          ${ifaceSliderRow('accentSaturation', 'Saturation', 0, 100, 1, 0, cfg.accentSaturation)}
-          ${ifaceSliderRow('accentLightness', 'Lightness', 20, 80, 1, 0, cfg.accentLightness)}
-        </div>
+          ${ifaceSliderRow('UI011', 'accentHue', 0, 360, 1, 0, cfg.accentHue)}
+          ${ifaceSliderRow('UI012', 'accentSaturation', 0, 100, 1, 0, cfg.accentSaturation)}
+          ${ifaceSliderRow('UI013', 'accentLightness', 20, 80, 1, 0, cfg.accentLightness)}`,
+        })}
 
-        <div class="iface-section">
-          <div class="gfx-group-title">Visualization</div>
-          <label class="iface-toggle-row">
-            <input type="checkbox" id="iface-viz-toggle" ${cfg.visualizationEnabled !== false ? 'checked' : ''}>
-            <span>Graph visualization</span>
-          </label>
-          <div style="margin-top:4px;opacity:0.5;font-size:11.5px;color:var(--t-secondary);">
-            Press V to toggle Focus Mode. Pauses GPU rendering and shows a calm background.
-          </div>
-        </div>
+        ${kit.card({
+          id: 'stg-sec-visualization', section: 'appearance.visualization',
+          body: kit.toggleField('UI014', kit.switchInput('iface-viz-toggle', { checked: cfg.visualizationEnabled !== false }), { forId: 'iface-viz-toggle' }),
+        })}
 
-        <div class="iface-reset-wrap">
-          <button class="gfx-reset-btn" id="iface-reset">Reset All to Defaults</button>
-        </div>
+        ${kit.card({
+          id: 'stg-sec-visual-tuning', section: 'appearance.advanced_visual_tuning', collapsible: true, collapsed: true, advanced: true,
+          body: `
+          ${kit.subhead(u('sub.glass'))}
+          ${ifaceSliderRow('UI003', 'glassOpacity', 0, 1, 0.01, 2, cfg.glassOpacity)}
+          ${ifaceSliderRow('UI004', 'glassBlur', 0, 80, 1, 0, cfg.glassBlur)}
+          ${ifaceSliderRow('UI005', 'glassSaturate', 0.5, 2.5, 0.1, 1, cfg.glassSaturate)}
+          ${ifaceSliderRow('UI006', 'glassBorderOpacity', 0, 0.3, 0.01, 2, cfg.glassBorderOpacity)}
+          ${kit.subhead(u('sub.shadows'))}
+          ${ifaceSliderRow('UI007', 'glassShadowOpacity', 0, 1, 0.01, 2, cfg.glassShadowOpacity)}
+          ${ifaceSliderRow('UI008', 'glassShadowSpread', 0, 60, 1, 0, cfg.glassShadowSpread)}
+          ${kit.subhead(u('sub.shape'))}
+          ${ifaceSliderRow('UI009', 'glassRadius', 0, 30, 1, 0, cfg.glassRadius)}
+          ${ifaceSliderRow('UI010', 'fontScale', 0.7, 1.5, 0.01, 2, cfg.fontScale)}
+          <div class="stg-help">${u('tuningHelp')}</div>`,
+        })}
+
       </div>`;
 }
 
@@ -3148,6 +2629,13 @@ const SPECIAL_FILENAMES = [
 function buildIconsTab(customIcons = {}) {
   const exts = Object.keys(FI_MAP);
   const hasAny = Object.keys(customIcons.extensions || {}).length > 0 || Object.keys(customIcons.filenames || {}).length > 0;
+  const c = (key, params) => kit.te(`settings.redesign.icons.${key}`, params);
+  // One file type: click (or Enter) to pick a replacement; × restores the original.
+  const card = (type, key, label, preview, hasCustom) => `<div class="icon-card${hasCustom ? ' has-custom' : ''}" data-icon-type="${type}" data-icon-key="${key}" role="button" tabindex="0" aria-label="${c('change', { name: label })}">
+      <div class="icon-card-preview">${preview}</div>
+      <span class="icon-card-label">${label}</span>
+      ${hasCustom ? `<span class="icon-card-badge">${c('custom')}</span><button type="button" class="icon-card-reset" data-reset-type="${type}" data-reset-key="${key}" ${kit.inv('ICO004')} aria-label="${kit.L('ICO004')}" title="${kit.L('ICO004')}">&times;</button>` : ''}
+    </div>`;
 
   let cards = '';
 
@@ -3155,45 +2643,40 @@ function buildIconsTab(customIcons = {}) {
   for (const ext of exts) {
     const info = FI_MAP[ext];
     const custom = customIcons.extensions?.[ext];
-    const hasCustom = !!custom;
-    const preview = hasCustom
-      ? `<img src="/custom-icons/${escapeHtml(custom.path)}?t=${Date.now()}" alt="${ext}">`
+    const preview = custom
+      ? `<img src="/custom-icons/${escapeHtml(custom.path)}?t=${Date.now()}" alt="">`
       : `<span class="fe-icon" style="color:${info.c || 'rgba(255,255,255,0.4)'}"><span style="display:flex;align-items:center;justify-content:center;width:24px;height:24px">${FI[info.i]}</span></span>`;
-
-    cards += `<div class="icon-card${hasCustom ? ' has-custom' : ''}" data-icon-type="ext" data-icon-key="${ext}">
-      <div class="icon-card-preview">${preview}</div>
-      <span class="icon-card-label">.${ext}</span>
-      ${hasCustom ? '<span class="icon-card-badge">Custom</span><button class="icon-card-reset" data-reset-type="ext" data-reset-key="' + ext + '">&times;</button>' : ''}
-    </div>`;
+    cards += card('ext', ext, `.${ext}`, preview, !!custom);
   }
 
   // Special filename cards
   for (const fname of SPECIAL_FILENAMES) {
     const custom = customIcons.filenames?.[fname];
-    const hasCustom = !!custom;
     const fi = getFileIcon(fname);
-    const preview = hasCustom
-      ? `<img src="/custom-icons/${escapeHtml(custom.path)}?t=${Date.now()}" alt="${fname}">`
+    const preview = custom
+      ? `<img src="/custom-icons/${escapeHtml(custom.path)}?t=${Date.now()}" alt="">`
       : fi.img
-        ? `<img src="${fi.img}" alt="${fname}">`
+        ? `<img src="${fi.img}" alt="">`
         : `<span class="fe-icon" style="color:${fi.color || 'rgba(255,255,255,0.4)'}"><span style="display:flex;align-items:center;justify-content:center;width:24px;height:24px">${fi.svg}</span></span>`;
-
-    cards += `<div class="icon-card${hasCustom ? ' has-custom' : ''}" data-icon-type="name" data-icon-key="${fname}">
-      <div class="icon-card-preview">${preview}</div>
-      <span class="icon-card-label">${fname}</span>
-      ${hasCustom ? '<span class="icon-card-badge">Custom</span><button class="icon-card-reset" data-reset-type="name" data-reset-key="' + fname + '">&times;</button>' : ''}
-    </div>`;
+    cards += card('name', fname, fname, preview, !!custom);
   }
 
   return `
-    <div class="settings-tab-body" data-tab="icons">
-      <div class="icon-filter-bar">
-        <input type="text" id="icon-filter-input" placeholder="Filter extensions..." autocomplete="off" spellcheck="false">
-        ${hasAny ? '<button class="conn-add-btn" id="icon-reset-all" style="margin:0;flex:0 0 auto;white-space:nowrap;padding:4px 10px">Reset All</button>' : ''}
+    <div class="stg-pane" data-stg-pane="icons">
+      ${kit.card({
+        id: 'stg-sec-file-icons', section: 'appearance.file_icons',
+        body: `
+      <div class="stg-field" ${kit.inv('ICO001')}>
+        <label for="icon-filter-input">${kit.L('ICO001')}</label>
+        <div class="icon-filter-bar">
+          <input type="text" id="icon-filter-input" placeholder="${c('filterPlaceholder')}" autocomplete="off" spellcheck="false" aria-describedby="icon-filter-input-help">
+          ${hasAny ? `<button type="button" class="stg-action-btn compact" id="icon-reset-all" ${kit.inv('ICO005')} title="${kit.H('ICO005')}" style="flex:0 0 auto;white-space:nowrap">${kit.L('ICO005')}</button>` : ''}
+        </div>
+        ${kit.help('ICO001', { forId: 'icon-filter-input' })}
       </div>
-      <div class="settings-hint" style="margin-bottom:12px">Click any icon to upload a custom replacement. Supports PNG, SVG, JPG, and WebP (max 2 MB).</div>
-      <div class="icon-grid">${cards}</div>
-      <input type="file" id="icon-upload-input" accept=".png,.svg,.jpg,.jpeg,.webp" style="display:none">
+      <div class="icon-grid" ${kit.inv('ICO003')} role="group" aria-label="${kit.L('ICO003')}" data-stg-data>${cards}</div>
+      <input type="file" id="icon-upload-input" ${kit.inv('ICO002')} accept=".png,.svg,.jpg,.jpeg,.webp" style="display:none" aria-label="${kit.L('ICO002')}">`,
+      })}
     </div>`;
 }
 
@@ -3234,10 +2717,10 @@ function wireIconsTab(panel, customIcons) {
           emit('sync:icons:changed');
           refreshIconsTab(panel);
         } else {
-          showCCToast(data.error || 'Upload failed');
+          showCCToast(data.error || kit.tx('settings.redesign.icons.uploadFailed'));
         }
       } catch (err) {
-        showCCToast('Upload failed: ' + err.message);
+        showCCToast(kit.tx('settings.redesign.icons.uploadFailed2', { message: err.message }));
       }
     });
   }
@@ -3268,7 +2751,7 @@ function wireIconsTab(panel, customIcons) {
         if (data.ok) {
           emit('sync:icons:changed');
           refreshIconsTab(panel);
-          showCCToast('All custom icons reset');
+          showCCToast(kit.tx('settings.redesign.icons.allCustomIconsReset'));
         }
       } catch {}
     });
@@ -3290,11 +2773,11 @@ async function refreshIconsTab(panel) {
   try {
     const resp = await fetch('/api/file-icons').then(r => r.json());
     if (!resp.ok) return;
-    const tabBody = panel.querySelector('.settings-tab-body[data-tab="icons"]');
+    const tabBody = kit.paneOf(panel, 'icons');
     if (!tabBody) return;
     const tmp = document.createElement('div');
     tmp.innerHTML = buildIconsTab(resp.custom);
-    const newBody = tmp.querySelector('.settings-tab-body[data-tab="icons"]');
+    const newBody = kit.paneOf(tmp, 'icons');
     if (newBody) {
       tabBody.innerHTML = newBody.innerHTML;
       wireIconsTab(panel, resp.custom);
@@ -3302,45 +2785,240 @@ async function refreshIconsTab(panel) {
   } catch {}
 }
 
-function activateSettingsTab(overlay, tabId = 'server') {
-  const nav = overlay.querySelector(`.settings-nav-item[data-tab="${tabId}"]`);
-  const body = overlay.querySelector(`.settings-tab-body[data-tab="${tabId}"]`);
+function activateSettingsTab(overlay, tabId = DEFAULT_SETTINGS_PAGE, { remember = true } = {}) {
+  // Old tab ids resolve to the page that took them over.
+  const pageId = resolveSettingsTarget({ tab: tabId }).tab;
+  const nav = overlay.querySelector(`.settings-nav-item[data-tab="${pageId}"]`);
+  const body = overlay.querySelector(`.settings-content > .settings-tab-body[data-tab="${pageId}"]`);
   if (!nav || !body) return false;
+  const changed = !body.classList.contains('active');
 
-  overlay.querySelectorAll('.settings-nav-item').forEach(n => n.classList.remove('active'));
-  overlay.querySelectorAll('.settings-tab-body').forEach(b => b.classList.remove('active'));
+  overlay.querySelectorAll('.settings-nav-item').forEach(n => { n.classList.remove('active'); n.removeAttribute('aria-current'); });
+  overlay.querySelectorAll('.settings-content > .settings-tab-body').forEach(b => b.classList.remove('active'));
   nav.classList.add('active');
+  nav.setAttribute('aria-current', 'page');
   body.classList.add('active');
+  const picker = overlay.querySelector('#stg-page-select');
+  if (picker) picker.value = pageId;
+  if (changed) {
+    const content = overlay.querySelector('.settings-content');
+    if (content) content.scrollTop = 0;
+  }
+  if (remember) storage.setItem(KEYS.SETTINGS_LAST_PAGE, pageId);
+  // Panes that load on demand listen for this instead of a nav click.
+  overlay.dispatchEvent(new CustomEvent('stg-page-change', { detail: { page: pageId } }));
   return true;
 }
 
-function applySettingsOpenOptions(overlay, options = {}) {
-  if (!overlay || !options) return;
+/** The element a deep link names: an id in the markup, or a control's inventory id (GEN001 …) in the section that holds it. */
+function findSettingsTarget(overlay, id) {
+  if (!id) return null;
+  let el = null;
+  try { el = overlay.querySelector(`#${CSS.escape(id)}`); } catch {}
+  if (el) return el;
+  const home = homeOfControl(id);
+  if (!home) return null;
+  const all = [...overlay.querySelectorAll(`.settings-content [data-stg-id="${id}"]`)];
+  const section = home.section ? overlay.querySelector(`#${CSS.escape(home.section)}`) : null;
+  // A control that only exists after a click (the Add project form, a theme's buttons) lands on its section.
+  return all.find(node => !section || section.contains(node)) || all[0] || section;
+}
 
-  if (options.tab) activateSettingsTab(overlay, options.tab);
+const SETTINGS_ROW = '.stg-field, .stg-toggle-field, .settings-field, .cc-integration-item, .cc-tool-category-header, .cli-path-field, .cc-skill-row, .ocp-danger-row, .stg-provider-card, .cc-panel, .gfx-row, .recall-control-row, .wa-row, .stg-setup-actions, .stg-action-row, .project-storage-toolbar, .browser-cfg-checkbox, details:not(.stg-advanced)';
 
-  const expand = Array.isArray(options.expand) ? options.expand : (options.expand ? [options.expand] : []);
-  for (const id of expand) {
-    const section = overlay.querySelector(`#${id}`);
-    if (section) section.classList.remove('collapsed');
+/** What a link to `el` scrolls to and lights up: a small control stands for the row it sits in. */
+function settingsTargetRow(el) {
+  if (!el || !el.matches('button, input, select, textarea, a, span, label')) return el;
+  const row = el.closest(SETTINGS_ROW);
+  const card = el.closest('[data-stg-section]');
+  return row && (!card || (card !== row && card.contains(row))) ? row : el;
+}
+
+const SETTINGS_HEADING = '.stg-subhead, .stg-mcp-form-label, .stg-mcp-section-header, summary, legend';
+
+/**
+ * `el`, or what stands in for it while its pane keeps it hidden (a field of a mode the form is not in, the options
+ * of a switch that is off: only a value the user chooses would show it, and a landing changes no value). In order:
+ * the control that switches the mode, when the hidden block names it (data-stg-shown-by); the heading or row just
+ * before it in the nearest thing around it that is on screen, else that thing's first one; the thing itself when it
+ * is small; the header of the card around it. A row or a heading: never a block taller than the scroll area.
+ */
+function shownSettingsTarget(overlay, el) {
+  const shown = (node) => !!node && node.getClientRects().length > 0 && node.getBoundingClientRect().height > 0;
+  if (!el || shown(el)) return el;
+  let box = el;
+  let switcher = null;
+  while (box && box !== overlay && !shown(box) && box.parentElement) {
+    if (!switcher && box.dataset?.stgShownBy) { try { switcher = overlay.querySelector(box.dataset.stgShownBy); } catch {} }
+    box = box.parentElement;
   }
+  if (!box || box === overlay) return el;
+  const switchRow = switcher && settingsTargetRow(switcher);
+  if (shown(switchRow)) return switchRow;
+  const room = overlay.querySelector('.settings-content')?.clientHeight || Infinity;
+  const fits = (node) => shown(node) && node.getBoundingClientRect().height <= room;
+  const inside = [...box.querySelectorAll(`${SETTINGS_HEADING}, ${SETTINGS_ROW}`)].filter(fits);
+  const before = inside.filter(node => node.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING);
+  if (inside.length) return before[before.length - 1] || inside[0];
+  for (let node = box; node && node !== overlay; node = node.parentElement) {
+    if (fits(node)) return node;
+    const head = node.matches('.stg-card') ? node.querySelector(':scope > .stg-card-head') : null;
+    if (fits(head)) return head;
+  }
+  return box;
+}
+
+function flashSettingsTarget(el) {
+  clearTimeout(el._stgFlash);
+  el.classList.remove('settings-focus-target');
+  void el.offsetWidth; // restart the highlight when the same target is asked for again
+  el.classList.add('settings-focus-target');
+  el._stgFlash = setTimeout(() => el.classList.remove('settings-focus-target'), 2600);
+}
+
+/**
+ * Apply `{ tab, expand, highlight, scrollTo }`. Old tab and section ids are
+ * accepted (settings-ia.js resolves them), and `highlight` / `scrollTo` also take
+ * a control's inventory id. `quiet` re-applies only `expand`: the shell calls it
+ * once more after the wiring, so a deep link wins over anything a pane collapsed
+ * while it wired itself. Returns the element the link landed on.
+ */
+function applySettingsOpenOptions(overlay, options = {}, { quiet = false } = {}) {
+  if (!overlay || !options) return null;
+  const target = resolveSettingsTarget(options);
+  const find = (id) => findSettingsTarget(overlay, id);
+
+  if (target.tab && !quiet) activateSettingsTab(overlay, target.tab);
+  // What this link opens, kept for a pane that sets its own disclosure once its data arrives (settingsRevealRequested).
+  if (!quiet) overlay._stgRevealRequested = [...new Set([...target.expand, ...target.highlight, target.scrollTo].filter(Boolean))];
+
+  for (const id of target.expand) {
+    const section = find(id);
+    if (section) revealSettingsTarget(overlay, section);
+  }
+  if (quiet) return null;
 
   overlay.querySelectorAll('.settings-focus-target').forEach(el => {
     el.classList.remove('settings-focus-target');
   });
 
-  const highlight = Array.isArray(options.highlight) ? options.highlight : (options.highlight ? [options.highlight] : []);
-  for (const id of highlight) {
-    const section = overlay.querySelector(`#${id}`);
+  for (const id of target.highlight) {
+    const section = settingsTargetRow(find(id));
     if (!section) continue;
-    section.classList.add('settings-focus-target');
-    setTimeout(() => section.classList.remove('settings-focus-target'), 2600);
+    revealSettingsTarget(overlay, section);
+    flashSettingsTarget(shownSettingsTarget(overlay, section));
   }
 
-  const scrollTarget = options.scrollTo ? overlay.querySelector(`#${options.scrollTo}`) : null;
+  let scrollTarget = (target.scrollTo && settingsTargetRow(find(target.scrollTo))) || (target.pane ? kit.paneOf(overlay, target.pane) : null);
   if (scrollTarget) {
-    setTimeout(() => scrollTarget.scrollIntoView({ block: 'center', behavior: 'smooth' }), 80);
+    revealSettingsTarget(overlay, scrollTarget);
+    scrollTarget = shownSettingsTarget(overlay, scrollTarget);
+    // A link to an old tab lands on the section (or pane) that tab became; whatever opens the page needs no scroll.
+    const page = scrollTarget.closest('.settings-tab-body');
+    const firstPane = page?.querySelector('.stg-pane');
+    const firstCard = page?.querySelector('[data-stg-section]');
+    const atTop = scrollTarget === firstPane || (scrollTarget === firstCard && firstPane?.contains(firstCard) && !firstCard.previousElementSibling);
+    // Lists further up the page load after this scroll and push the target away, so the shell keeps it in place for a while.
+    if (options.scrollTo || !atTop) followSettingsTarget(overlay, scrollTarget, { block: options.scrollTo ? 'center' : 'start' });
   }
+  return scrollTarget;
+}
+
+/** Did the deep link that opened this page ask for `section` (or something inside it) to be open? */
+function settingsRevealRequested(overlay, section) {
+  if (!section) return false;
+  for (const id of overlay._stgRevealRequested || []) {
+    const el = findSettingsTarget(overlay, id);
+    if (el && section.contains(el)) return true;
+  }
+  return false;
+}
+
+let searchHitSeq = 0;
+const RELAND_MS = 5000;
+
+/**
+ * The row a result found in the panel names, as the panel holds it now: the element it was read from, or, once its
+ * pane has redrawn the list, the row with the same name in the same place. The result is updated to it, so a result
+ * the list still shows lands on its row again and not on the section around it.
+ */
+function currentSearchRow(overlay, entry) {
+  if (entry.ref && entry.ref.isConnected) return entry.ref;
+  const again = collectSearchRows(overlay, SEARCH_ROW_SOURCES, SEARCH_OFF)
+    .find(row => row.page === entry.page && row.title === entry.title && (!entry.section || row.section === entry.section));
+  if (!again) return null;
+  entry.ref = again.ref;
+  return again.ref;
+}
+
+/** The row a search result lands on, as the panel holds it now (nothing is opened or scrolled). */
+function locateSearchEntry(overlay, entry) {
+  if (entry.kind === 'row') return currentSearchRow(overlay, entry);
+  return settingsTargetRow(findSettingsTarget(overlay, entry.control || entry.section));
+}
+
+/**
+ * A pane may redraw its list when its page is shown (providers, added servers, profiles), which replaces the
+ * row a result just landed on. For a few seconds the row is looked for again by its name and landed on once more.
+ * It lets go for good as soon as the user scrolls, clicks or types: a redraw after that must not pull the view back.
+ */
+function relandRedrawnRow(overlay, entry, el, focus) {
+  const content = overlay.querySelector('.settings-content');
+  if (!content || !el || typeof MutationObserver !== 'function') return;
+  let offTakeover = () => {};
+  const stop = () => {
+    watcher.disconnect();
+    clearTimeout(timer);
+    offTakeover();
+    overlay.removeEventListener('stg-page-change', stop);
+    overlay.removeEventListener('settings-close', stop);
+    if (overlay._stgRelandStop === stop) overlay._stgRelandStop = null;
+  };
+  const watcher = new MutationObserver(() => {
+    if (el.isConnected) return;
+    if (!currentSearchRow(overlay, entry)) return; // not drawn again yet: the next change is looked at
+    stop();
+    const lostFocus = !document.activeElement || document.activeElement === document.body;
+    landOnSearchEntry(overlay, entry, { focus: focus && lostFocus, watch: false });
+  });
+  const timer = setTimeout(stop, RELAND_MS);
+  watcher.observe(content, { subtree: true, childList: true });
+  offTakeover = onSettingsTakeover(overlay, stop);
+  overlay.addEventListener('stg-page-change', stop);
+  overlay.addEventListener('settings-close', stop);
+  overlay._stgRelandStop = stop;
+}
+
+/**
+ * Show a search result through the deep-link machinery: its page, its section opened without remembering it,
+ * the row in view and lit. `focus` hands the keyboard to what was landed on (a row, a section's header, the
+ * page title), so the setting is one Tab away.
+ */
+function landOnSearchEntry(overlay, entry, { focus = false, watch = true } = {}) {
+  overlay._stgRelandStop?.();
+  const options = { ...entry.target };
+  let rowEl = null;
+  if (entry.kind === 'row') {
+    // A row found in the panel has no id of its own: it gets one when it is chosen. A row its pane has since
+    // redrawn is looked for by its name; only one that is gone lands on its section.
+    rowEl = currentSearchRow(overlay, entry);
+    if (rowEl && !rowEl.id) rowEl.id = `stg-hit-${++searchHitSeq}`;
+    const id = rowEl ? rowEl.id : entry.section;
+    if (id) { options.highlight = [id]; options.scrollTo = id; }
+  }
+  let landed = applySettingsOpenOptions(overlay, options);
+  if (rowEl && watch) relandRedrawnRow(overlay, entry, rowEl, focus);
+  if (entry.kind === 'page') {
+    overlay._stgFollowStop?.();
+    const content = overlay.querySelector('.settings-content');
+    if (content) content.scrollTop = 0;
+    landed = overlay.querySelector('.settings-content > .settings-tab-body.active .stg-page-title');
+  }
+  if (!focus || !landed) return landed;
+  const to = (landed.matches('.stg-acc[data-collapsible]') && landed.querySelector(':scope > .stg-card-head')) || landed;
+  if (!to.matches('a[href], button, input, select, textarea, summary, [tabindex]')) to.setAttribute('tabindex', '-1');
+  try { to.focus({ preventScroll: true }); } catch {}
+  return landed;
 }
 
 // ═══════════════════════════════════════════
@@ -3355,6 +3033,9 @@ export async function openSettingsModal(options = {}) {
     applySettingsOpenOptions(existing, options);
     return;
   }
+
+  // Every label below comes from i18n. The app loads it at boot; a page that did not (a test harness, an embed) gets it here.
+  if (!i18nReady()) await initI18n();
 
   // ── Fetch all data in parallel ──
   let settings = {};
@@ -3375,9 +3056,10 @@ export async function openSettingsModal(options = {}) {
   let skinsData = { skins: [], active: 'default' };
   let customIconsData = { extensions: {}, filenames: {} };
   let youtubeConfig = { secrets: {}, configured: {}, pipeline: {} };
+  let typesafeConfig = null;
 
   try {
-    const [settingsRes, connRes, ccRes, skillsRes, tunnelRes, keyRes, bridgeRes, greetRes, codexGreetRes, opencodeGreetRes, setupRes, cliRes, toolPermsRes, toolCatsRes, discordRes, skinsRes, iconsRes, youtubeRes] = await Promise.allSettled([
+    const [settingsRes, connRes, ccRes, skillsRes, tunnelRes, keyRes, bridgeRes, greetRes, codexGreetRes, opencodeGreetRes, setupRes, cliRes, toolPermsRes, toolCatsRes, discordRes, skinsRes, iconsRes, youtubeRes, typesafeRes] = await Promise.allSettled([
       fetch('/api/settings').then(r => r.json()),
       fetch('/api/connections').then(r => r.json()),
       fetch('/api/claude-code/integrations').then(r => r.json()),
@@ -3396,7 +3078,9 @@ export async function openSettingsModal(options = {}) {
       fetch('/api/skins').then(r => r.json()),
       fetch('/api/file-icons').then(r => r.json()),
       fetch('/api/youtube/config').then(r => r.json()),
+      fetch('/api/typesafe/config').then(r => r.json()),
     ]);
+    if (typesafeRes.status === 'fulfilled' && typesafeRes.value.ok) typesafeConfig = typesafeRes.value;
     if (settingsRes.status === 'fulfilled') settings = settingsRes.value;
     if (connRes.status === 'fulfilled' && connRes.value.connections) connections = connRes.value.connections;
     if (ccRes.status === 'fulfilled' && ccRes.value.ok) ccIntegrations = ccRes.value;
@@ -3421,6 +3105,12 @@ export async function openSettingsModal(options = {}) {
   // ── Gather variant-registered settings tabs ──
   const variantTabs = getSettingsTabs();
 
+  // ── Which page opens: the one asked for, else the last one used, else the first ──
+  const initialPage = getSettingsPage(resolveSettingsTarget(options).tab)?.id
+    || getSettingsPage(storage.getItem(KEYS.SETTINGS_LAST_PAGE))?.id
+    || DEFAULT_SETTINGS_PAGE;
+  const openerEl = document.activeElement;
+
   // ── Panel ──
   const overlay = document.createElement('div');
   overlay.className = 'settings-panel glass resizable';
@@ -3429,12 +3119,6 @@ export async function openSettingsModal(options = {}) {
   // Always open centered at default size
   overlay.style.left = Math.max(20, (window.innerWidth - 900) / 2) + 'px';
   overlay.style.top = Math.max(48, (window.innerHeight - 650) / 2) + 'px';
-
-  // ── Build variant tab bodies ──
-  let variantTabBodies = '';
-  for (const tab of variantTabs) {
-    variantTabBodies += `<div class="settings-tab-body" data-tab="${tab.id}">${tab.build()}</div>\n`;
-  }
 
   // ── Assemble HTML ──
   overlay.innerHTML = `
@@ -3448,43 +3132,49 @@ export async function openSettingsModal(options = {}) {
     <div class="resize-handle resize-handle-br" data-resize="br"></div>
     <div class="settings-panel-header drag-handle" data-drag="settings-panel">
       <div class="stg-header-left">
-        <h3>Settings</h3>
+        <h3 id="stg-title">${kit.te('settings.title')}</h3>
       </div>
-      <button class="backdrop-toggle-btn" id="stg-backdrop-toggle" data-tooltip="Toggle backdrop">
+      <button type="button" class="backdrop-toggle-btn" id="stg-backdrop-toggle" ${kit.inv('SH002')} data-tooltip="${kit.L('SH002')}" aria-label="${kit.L('SH002')}" aria-pressed="false">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
       </button>
-      <button class="settings-panel-close" id="stg-close" data-tooltip="Close">&times;</button>
+      <button type="button" class="settings-panel-close" id="stg-close" ${kit.inv('SH003')} data-tooltip="${kit.L('SH003')}" aria-label="${kit.L('SH003')}">&times;</button>
     </div>
     <div class="settings-panel-body">
-      <nav class="settings-nav">
-        ${buildNavHTML(variantTabs, {
-          server: settings.storage === 'sqlite' ? 'connected' : 'disconnected',
-          setup: (setupStatus.claude?.connected || setupStatus.gemini?.connected || setupStatus.codex?.connected || setupStatus.opencode?.connected) ? 'connected' : 'disconnected',
-          discord: discordConfig.botToken ? 'connected' : 'disconnected',
-        })}
-      </nav>
-      <div class="settings-content">
-        ${buildServerTab(settings)}
-        ${buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo, openclawBridge, greetingConfig, codexGreetingConfig, opencodeGreetingConfig, toolPermissions, toolCategories)}
-        ${buildTerminalTab(cliConfig)}
-        ${buildOpencodeTab()}
-        ${buildNotificationsTab()}
-        ${buildBrowserTab()}
-        ${buildMcpTab()}
-        ${buildSetupTab(setupStatus)}
-        ${buildCollectionsTab(connections, settings)}
-        ${buildProjectsTab(ccIntegrations)}
-        ${buildMemoryTab()}
-        ${buildSkillsTab(ccSkills)}
-        ${buildDiscordTab(discordConfig)}
-        ${buildMoreLoginTab()}
-        ${buildPermissionsTab(toolCategories, toolPermissions)}
-        ${buildSocialTab(toolCategories, toolPermissions)}
-        ${buildYoutubeTab(youtubeConfig)}
-        ${buildSkinsTab(skinsData.skins, skinsData.active)}
-        ${buildInterfaceTab()}
-        ${buildIconsTab(customIconsData)}
-        ${variantTabBodies}
+      <div class="stg-sidebar">
+        ${buildSearchHTML()}
+        <nav class="settings-nav" aria-label="${kit.te('settings.redesign.common.navLabel')}" ${kit.inv('SH005')}>
+          ${buildNavHTML(initialPage)}
+        </nav>
+      </div>
+      <div class="stg-main">
+        ${buildPagePickerHTML(initialPage)}
+        <div class="settings-content">
+          ${buildPagesHTML({
+            server: buildServerTab(settings, connections),
+            hooks: buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo, openclawBridge, greetingConfig, codexGreetingConfig, opencodeGreetingConfig, toolPermissions, toolCategories),
+            terminal: buildTerminalTab(cliConfig),
+            opencode: buildOpencodeTab(),
+            notifications: buildNotificationsTab(),
+            browser: buildBrowserTab(),
+            mcp: buildMcpTab(),
+            setup: buildSetupTab(setupStatus),
+            collections: buildCollectionsTab(connections, settings),
+            projects: buildProjectsTab(ccIntegrations),
+            memory: buildMemoryTab(),
+            judgments: buildJudgmentsTab(),
+            skills: buildSkillsTab(ccSkills),
+            discord: buildDiscordTab(discordConfig),
+            whatsapp: buildWhatsAppTab(),
+            morelogin: buildMoreLoginTab(),
+            permissions: buildPermissionsTab(toolCategories, toolPermissions),
+            social: buildSocialTab(toolCategories, toolPermissions),
+            youtube: buildYoutubeTab(youtubeConfig),
+            language: buildLanguageTab(),
+            skins: buildSkinsTab(skinsData.skins, skinsData.active),
+            interface: buildInterfaceTab(),
+            icons: buildIconsTab(customIconsData),
+          }, variantTabs, initialPage)}
+        </div>
       </div>
     </div>
   `;
@@ -3495,22 +3185,40 @@ export async function openSettingsModal(options = {}) {
   // Backdrop click disabled — close only via ESC or close button
   document.body.appendChild(backdrop);
 
+  // Every section opens the way the user left it (first use: the first section of each page); a deep link opens its own below.
+  applyStoredSections(overlay);
   document.body.appendChild(overlay);
+  overlay.setAttribute('role', 'dialog');
+  overlay.setAttribute('aria-labelledby', 'stg-title');
+
+  // ── Nav status dots (Judgments and WhatsApp update theirs as they wire) ──
+  kit.setNavStatus(overlay, 'server', settings.storage === 'sqlite' ? 'connected' : 'disconnected');
+  kit.setNavStatus(overlay, 'setup', (setupStatus.claude?.connected || setupStatus.gemini?.connected || setupStatus.codex?.connected || setupStatus.opencode?.connected) ? 'connected' : 'disconnected');
+  kit.setNavStatus(overlay, 'discord', discordConfig.botToken ? 'connected' : 'disconnected');
+  kit.setNavStatus(overlay, 'judgments', (typesafeConfig && typesafeConfig.enabled) ? 'connected' : 'disconnected');
 
   // ── Open animation (matches Skills/Automation Studio) ──
   requestAnimationFrame(() => { backdrop.classList.add('open'); overlay.classList.add('open'); });
 
   // ── ESC key to close ──
+  // A query in the search field goes first: Escape empties it and brings the page list back (wireSettingsSearch),
+  // and closes Settings only once the field is empty.
   const onSettingsEsc = (e) => {
-    if (e.key === 'Escape') { close(); document.removeEventListener('keydown', onSettingsEsc); }
+    if (e.key !== 'Escape') return;
+    if (overlay._stgSearchEscape?.()) { e.preventDefault(); return; }
+    close(); document.removeEventListener('keydown', onSettingsEsc);
   };
   document.addEventListener('keydown', onSettingsEsc);
 
   // ── Close helper ──
   const close = () => {
     document.removeEventListener('keydown', onSettingsEsc);
+    // Tabs that poll (Judgments) clear their timers on this event.
+    overlay.dispatchEvent(new CustomEvent('settings-close'));
     backdrop.remove();
     overlay.remove();
+    // Give the keyboard back to whatever opened Settings.
+    if (openerEl && openerEl !== document.body && document.body.contains(openerEl)) { try { openerEl.focus({ preventScroll: true }); } catch {} }
   };
 
   // ── Nav switching ──
@@ -3642,6 +3350,7 @@ export async function openSettingsModal(options = {}) {
     stgBackdropToggle.addEventListener('click', () => {
       backdrop.classList.toggle('backdrop-hidden');
       stgBackdropToggle.classList.toggle('active', backdrop.classList.contains('backdrop-hidden'));
+      stgBackdropToggle.setAttribute('aria-pressed', backdrop.classList.contains('backdrop-hidden') ? 'true' : 'false');
     });
   }
 
@@ -3655,7 +3364,7 @@ export async function openSettingsModal(options = {}) {
 
     async function loadDbDir(dirPath) {
       dbBrowserEl.style.display = 'block';
-      dbBrowserEl.innerHTML = '<div style="padding:10px;color:var(--t-muted);font-size:12px">Loading...</div>';
+      dbBrowserEl.innerHTML = '<div style="padding:10px;color:var(--t-muted);font-size:12px">' + kit.te('settings.redesign.server.loading') + '</div>';
       try {
         const qs = dirPath ? `?path=${encodeURIComponent(dirPath)}` : '';
         const res = await fetch(`/api/browse-directory${qs}`);
@@ -3664,13 +3373,13 @@ export async function openSettingsModal(options = {}) {
 
         let html = '<div style="padding:6px 10px;font-size:11px;color:var(--t-muted);border-bottom:1px solid var(--s-medium);display:flex;align-items:center;justify-content:space-between">'
           + `<span style="font-family:'JetBrains Mono',monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(data.current)}</span>`
-          + '<button id="stg-db-browse-select" style="flex:0 0 auto;padding:3px 10px;background:var(--accent-blue-bg);border:1px solid var(--accent-blue-border);color:var(--accent-blue);border-radius:4px;cursor:pointer;font-size:11px">Select</button>'
+          + '<button id="stg-db-browse-select" style="flex:0 0 auto;padding:3px 10px;background:var(--accent-blue-bg);border:1px solid var(--accent-blue-border);color:var(--accent-blue);border-radius:4px;cursor:pointer;font-size:11px">' + kit.te('settings.redesign.server.select') + '</button>'
           + '</div>';
         html += '<div style="padding:4px 0">';
         if (data.parent) {
           html += `<div class="cc-browse-item" data-path="${escapeHtml(data.parent)}" style="padding:4px 10px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:6px;color:var(--t-muted)">`
             + '<svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2"><polyline points="15 18 9 12 15 6"/></svg>'
-            + '.. (parent)</div>';
+            + '' + kit.te('settings.redesign.server.parent') + '</div>';
         }
         for (const d of data.directories) {
           html += `<div class="cc-browse-item" data-path="${escapeHtml(data.current + '/' + d)}" style="padding:4px 10px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:6px">`
@@ -3678,7 +3387,7 @@ export async function openSettingsModal(options = {}) {
             + escapeHtml(d) + '</div>';
         }
         if (data.directories.length === 0 && !data.parent) {
-          html += '<div style="padding:8px 10px;color:var(--t-muted);font-size:12px">No subdirectories</div>';
+          html += '<div style="padding:8px 10px;color:var(--t-muted);font-size:12px">' + kit.te('settings.redesign.server.noSubdirectories') + '</div>';
         }
         html += '</div>';
         dbBrowserEl.innerHTML = html;
@@ -3694,7 +3403,7 @@ export async function openSettingsModal(options = {}) {
           item.addEventListener('click', () => loadDbDir(item.dataset.path));
         });
       } catch (err) {
-        dbBrowserEl.innerHTML = `<div style="padding:10px;color:var(--accent-dim);font-size:12px">Error: ${escapeHtml(err.message)}</div>`;
+        dbBrowserEl.innerHTML = `<div style="padding:10px;color:var(--accent-dim);font-size:12px">${kit.te('settings.redesign.server.error')} ${escapeHtml(err.message)}</div>`;
       }
     }
 
@@ -3724,7 +3433,7 @@ export async function openSettingsModal(options = {}) {
       const newDir = newPath.endsWith('memory.db') ? newPath.replace(/[/\\]memory\.db$/, '') : newPath;
 
       statusEl.style.display = 'flex';
-      statusEl.innerHTML = '<div class="wiz-status-dot spin" style="display:inline-block"></div> Moving database...';
+      statusEl.innerHTML = '<div class="wiz-status-dot spin" style="display:inline-block"></div> ' + kit.te('settings.redesign.server.movingDatabase') + '';
       moveBtn.disabled = true;
 
       try {
@@ -3737,16 +3446,16 @@ export async function openSettingsModal(options = {}) {
 
         if (data.ok) {
           statusEl.style.display = 'none';
-          if (hintEl) hintEl.textContent = 'Moved successfully';
+          if (hintEl) hintEl.textContent = kit.tx('settings.redesign.server.movedSuccessfully');
           if (pathInput) pathInput.value = data.newDbPath;
           cleanupEl.style.display = 'block';
           cleanupEl.dataset.oldPath = data.oldDbPath;
         } else {
-          statusEl.innerHTML = `<span style="color:var(--red)">Error: ${data.error}</span>`;
+          statusEl.innerHTML = `<span style="color:var(--red)">${kit.te('settings.redesign.server.error')} ${data.error}</span>`;
           moveBtn.disabled = false;
         }
       } catch (err) {
-        statusEl.innerHTML = `<span style="color:var(--red)">Error: ${err.message}</span>`;
+        statusEl.innerHTML = `<span style="color:var(--red)">${kit.te('settings.redesign.server.error')} ${err.message}</span>`;
         moveBtn.disabled = false;
       }
     });
@@ -3759,7 +3468,7 @@ export async function openSettingsModal(options = {}) {
         const oldPath = cleanupEl?.dataset.oldPath;
         if (!oldPath) return;
         deleteOldBtn.disabled = true;
-        deleteOldBtn.textContent = 'Deleting...';
+        deleteOldBtn.textContent = kit.tx('settings.redesign.server.deleting');
         try {
           await fetch('/api/settings/move-db/cleanup', {
             method: 'POST',
@@ -3798,7 +3507,7 @@ export async function openSettingsModal(options = {}) {
         const res = await fetch('/api/settings/reindex', { method: 'POST' });
         const data = await res.json();
         if (!data.ok) {
-          if (textEl) textEl.textContent = `Error: ${data.error}`;
+          if (textEl) textEl.textContent = kit.tx('settings.redesign.collections.error', { error: data.error });
           if (statusEl) statusEl.style.display = 'block';
           return;
         }
@@ -3806,7 +3515,7 @@ export async function openSettingsModal(options = {}) {
         reindexBtn.disabled = true;
         if (reindexCancelBtn) reindexCancelBtn.style.display = '';
         if (statusEl) statusEl.style.display = 'block';
-        if (textEl) textEl.textContent = 'Starting reindex...';
+        if (textEl) textEl.textContent = kit.tx('settings.redesign.collections.startingReindex');
         if (dotEl) dotEl.className = 'wiz-status-dot spin';
 
         _reindexPoll = setInterval(async () => {
@@ -3818,22 +3527,22 @@ export async function openSettingsModal(options = {}) {
               clearInterval(_reindexPoll);
               _reindexPoll = null;
               if (dotEl) dotEl.className = 'wiz-status-dot ' + (sd.cancelled ? 'yellow' : 'green');
-              if (textEl) textEl.textContent = sd.cancelled ? 'Reindex cancelled.' : 'Reindex complete!';
+              if (textEl) textEl.textContent = sd.cancelled ? kit.tx('settings.redesign.collections.reindexCancelled') : kit.tx('settings.redesign.collections.reindexComplete');
               if (barEl) barEl.style.width = sd.cancelled ? barEl.style.width : '100%';
-              if (summaryEl) summaryEl.textContent = `${sd.completed} memories + ${sd.chunks} session chunks processed, ${sd.errors} error${sd.errors !== 1 ? 's' : ''}`;
+              if (summaryEl) summaryEl.textContent = kit.tx('settings.redesign.collections.memoriesSessionChunksProcessedError', { completed: sd.completed, chunks: sd.chunks, errors: sd.errors, errors2: sd.errors !== 1 ? 's' : '' });
               reindexBtn.disabled = false;
               if (reindexCancelBtn) reindexCancelBtn.style.display = 'none';
               return;
             }
 
             const pct = sd.total > 0 ? Math.round((sd.completed / sd.total) * 100) : 0;
-            if (textEl) textEl.textContent = `Processing ${sd.completed} / ${sd.total} memories...`;
+            if (textEl) textEl.textContent = kit.tx('settings.redesign.collections.processingMemories', { completed: sd.completed, total: sd.total });
             if (barEl) barEl.style.width = `${pct}%`;
-            if (summaryEl) summaryEl.textContent = `${sd.chunks} / ${sd.totalChunks} session chunks, ${sd.errors} error${sd.errors !== 1 ? 's' : ''}`;
+            if (summaryEl) summaryEl.textContent = kit.tx(sd.errors === 1 ? 'settings.redesign.collections.sessionChunksProgress.one' : 'settings.redesign.collections.sessionChunksProgress.other', { chunks: sd.chunks, total: sd.totalChunks, errors: sd.errors });
           } catch {}
         }, 800);
       } catch (err) {
-        if (textEl) textEl.textContent = `Error: ${err.message}`;
+        if (textEl) textEl.textContent = kit.tx('settings.redesign.collections.error2', { message: err.message });
         if (statusEl) statusEl.style.display = 'block';
       }
     });
@@ -3843,7 +3552,7 @@ export async function openSettingsModal(options = {}) {
     reindexCancelBtn.addEventListener('click', async () => {
       reindexCancelBtn.disabled = true;
       const textEl = overlay.querySelector('#reindex-text');
-      if (textEl) textEl.textContent = 'Cancelling...';
+      if (textEl) textEl.textContent = kit.tx('settings.redesign.collections.cancelling');
       try {
         await fetch('/api/settings/reindex/cancel', { method: 'POST' });
       } catch {}
@@ -3864,15 +3573,15 @@ export async function openSettingsModal(options = {}) {
 
       backupBtn.disabled = true;
       const origHTML = backupBtn.innerHTML;
-      backupBtn.textContent = 'Creating backup...';
+      backupBtn.textContent = kit.tx('settings.redesign.server.creatingBackup');
       statusEl.style.display = 'flex';
       statusDot.className = 'wiz-status-dot spin';
-      statusText.textContent = 'Collecting files and creating database backup...';
+      statusText.textContent = kit.tx('settings.redesign.server.collectingFilesAndCreatingDatabaseBackup');
 
       try {
         const res = await fetch('/api/system/backup');
         if (!res.ok) {
-          let errMsg = 'Backup failed';
+          let errMsg = kit.tx('settings.redesign.server.backupFailed2');
           try { const body = await res.json(); errMsg = body.error || errMsg; } catch {}
           throw new Error(errMsg);
         }
@@ -3889,10 +3598,10 @@ export async function openSettingsModal(options = {}) {
         URL.revokeObjectURL(url);
 
         statusDot.className = 'wiz-status-dot green';
-        statusText.textContent = `Backup saved: ${filename} (${(blob.size / 1024 / 1024).toFixed(1)} MB)`;
+        statusText.textContent = kit.tx('settings.redesign.server.backupSavedMb', { filename: filename, size: (blob.size / 1024 / 1024).toFixed(1) });
       } catch (err) {
         statusDot.className = 'wiz-status-dot red';
-        statusText.textContent = 'Backup failed: ' + err.message;
+        statusText.textContent = kit.tx('settings.redesign.server.backupFailed', { message: err.message });
       } finally {
         backupBtn.disabled = false;
         backupBtn.innerHTML = origHTML;
@@ -3914,20 +3623,19 @@ export async function openSettingsModal(options = {}) {
 
       statusEl.style.display = 'flex';
       statusDot.className = 'wiz-status-dot spin';
-      statusText.textContent = 'Reading backup file...';
+      statusText.textContent = kit.tx('settings.redesign.server.readingBackupFile');
 
       try {
-        const buffer = await file.arrayBuffer();
-
-        // Preview first
-        statusText.textContent = 'Validating backup...';
+        // Post the File itself: the browser streams it from disk. Reading it
+        // into an ArrayBuffer first held a multi-GB backup in tab memory.
+        statusText.textContent = kit.tx('settings.redesign.server.validatingBackup');
         const previewRes = await fetch('/api/system/restore/preview', {
           method: 'POST',
           headers: { 'Content-Type': 'application/zip' },
-          body: buffer,
+          body: file,
         });
         if (!previewRes.ok) {
-          let errMsg = 'Invalid backup';
+          let errMsg = kit.tx('settings.redesign.server.invalidBackup2');
           try { const body = await previewRes.json(); errMsg = body.error || errMsg; } catch {}
           throw new Error(errMsg);
         }
@@ -3943,23 +3651,22 @@ export async function openSettingsModal(options = {}) {
         confirmOverlay.style.zIndex = '300100';
         confirmOverlay.innerHTML = `
           <div class="tag-delete-modal settings-modal" style="max-width:500px;text-align:left">
-            <h3 style="margin-bottom:4px">Restore Backup</h3>
+            <h3 style="margin-bottom:4px">${kit.te('settings.redesign.server.restoreBackup')}</h3>
             <p style="font-size:11px;color:var(--t-muted);margin-bottom:12px">
-              Created: ${new Date(m.created).toLocaleString()} on ${escapeHtml(m.hostname || 'unknown')}
+              ${kit.th('settings.redesign.server.createdOn', { value: new Date(m.created).toLocaleString() })} ${escapeHtml(m.hostname || kit.tx('settings.redesign.server.unknown'))}
             </p>
             <div style="font-size:12px;margin-bottom:8px">
-              <strong>${fileCount}</strong> config files
-              ${hasDb ? `<br><strong>Database:</strong> memory.db included` : ''}
+              <strong>${fileCount}</strong> ${kit.te('settings.redesign.server.configFiles')}
+              ${hasDb ? `<br><strong>${kit.te('settings.redesign.server.database')}</strong> ${kit.te('settings.redesign.server.memoryDbIncluded')}` : ''}
             </div>
             <p style="font-size:11px;color:var(--accent-dim);margin-bottom:12px">
-              This will overwrite your current .env, data files, and memory database.
-              This action cannot be undone.
+              ${kit.te('settings.redesign.server.thisWillOverwriteYourCurrentEnv')}
             </p>
             <div class="tag-delete-modal-actions">
-              <button class="action-btn action-btn--ghost" id="sys-restore-cancel">Cancel</button>
+              <button class="action-btn action-btn--ghost" id="sys-restore-cancel">${kit.te('settings.redesign.server.cancel')}</button>
               <button class="action-btn action-btn--danger" id="sys-restore-confirm"
                 style="background:var(--accent-blue-bg);border-color:var(--accent-blue-border);color:var(--accent-blue)">
-                Restore
+                ${kit.te('settings.redesign.server.restore')}
               </button>
             </div>
             <div id="sys-restore-progress" style="display:none;margin-top:10px;font-size:12px;align-items:center;gap:8px">
@@ -3980,20 +3687,20 @@ export async function openSettingsModal(options = {}) {
           const progressDot = confirmOverlay.querySelector('#sys-restore-dot');
           const progressText = confirmOverlay.querySelector('#sys-restore-text');
 
-          confirmBtn.textContent = 'Restoring...';
+          confirmBtn.textContent = kit.tx('settings.redesign.server.restoring');
           confirmBtn.disabled = true;
           progressEl.style.display = 'flex';
           progressDot.className = 'wiz-status-dot spin';
-          progressText.textContent = 'Applying backup...';
+          progressText.textContent = kit.tx('settings.redesign.server.applyingBackup');
 
           try {
             const restoreRes = await fetch('/api/system/restore?mode=full', {
               method: 'POST',
               headers: { 'Content-Type': 'application/zip' },
-              body: buffer,
+              body: file,
             });
             if (!restoreRes.ok) {
-              let errMsg = 'Restore failed';
+              let errMsg = kit.tx('settings.redesign.server.restoreFailed');
               try { const body = await restoreRes.json(); errMsg = body.error || errMsg; } catch {}
               throw new Error(errMsg);
             }
@@ -4001,20 +3708,20 @@ export async function openSettingsModal(options = {}) {
             const restoredFileCount = result.results?.files?.length || 0;
 
             progressDot.className = 'wiz-status-dot green';
-            progressText.textContent = `Done! ${restoredFileCount} files restored.`;
-            confirmBtn.textContent = 'Done';
+            progressText.textContent = kit.tx('settings.redesign.server.doneFilesRestored', { restoredFileCount: restoredFileCount });
+            confirmBtn.textContent = kit.tx('settings.redesign.server.done');
 
             setTimeout(() => { confirmOverlay.remove(); location.reload(); }, 2500);
           } catch (err) {
             progressDot.className = 'wiz-status-dot red';
             progressText.textContent = err.message;
-            confirmBtn.textContent = 'Restore';
+            confirmBtn.textContent = kit.tx('settings.redesign.server.restore');
             confirmBtn.disabled = false;
           }
         });
       } catch (err) {
         statusDot.className = 'wiz-status-dot red';
-        statusText.textContent = 'Invalid backup: ' + err.message;
+        statusText.textContent = kit.tx('settings.redesign.server.invalidBackup', { message: err.message });
       }
     });
   }
@@ -4078,6 +3785,7 @@ export async function openSettingsModal(options = {}) {
   }
 
   wireStgDropdowns(overlay);
+  wireLanguageTab(overlay);
 
   // ══════════════════════════════════════
   // Auto Backup handlers
@@ -4096,18 +3804,18 @@ export async function openSettingsModal(options = {}) {
     const parts = [];
     if (cfg.lastBackup) {
       const d = new Date(cfg.lastBackup);
-      parts.push(`Last backup: ${d.toLocaleString()}`);
+      parts.push(kit.tx('settings.redesign.server.lastBackup', { d: d.toLocaleString() }));
       if (cfg.lastBackupSize) parts[0] += ` (${(cfg.lastBackupSize / 1024 / 1024).toFixed(1)} MB)`;
     }
-    if (cfg.lastBackupError) parts.push(`<span style="color:var(--red)">Error: ${cfg.lastBackupError}</span>`);
+    if (cfg.lastBackupError) parts.push(`<span style="color:var(--red)">${kit.te('settings.redesign.server.error')} ${cfg.lastBackupError}</span>`);
     const health = cfg.health;
     if (health?.status && health.status !== 'healthy') {
       const color = health.status === 'disabled' ? 'var(--t-faint)' : 'var(--accent-dim)';
-      parts.push(`<span style="color:${color}">Backup health: ${health.status}${health.reason ? ` — ${health.reason}` : ''}</span>`);
+      parts.push(`<span style="color:${color}">${kit.te('settings.redesign.server.backupHealth')} ${health.status}${health.reason ? ` — ${health.reason}` : ''}</span>`);
     }
-    if (health?.nextDueAt && cfg.enabled) parts.push(`Next due: ${new Date(health.nextDueAt).toLocaleString()}`);
-    if (health?.retainedCount != null) parts.push(`Retained snapshots: ${health.retainedCount}`);
-    if (cfg.folderPath) parts.push(`Saving versioned files to: <span style="opacity:0.7">${cfg.folderPath}/synabun-scheduled-*.zip</span>`);
+    if (health?.nextDueAt && cfg.enabled) parts.push(kit.tx('settings.redesign.server.nextDue', { value: new Date(health.nextDueAt).toLocaleString() }));
+    if (health?.retainedCount != null) parts.push(kit.tx('settings.redesign.server.retainedSnapshots', { retainedCount: health.retainedCount }));
+    if (cfg.folderPath) parts.push(`${kit.te('settings.redesign.server.savingVersionedFilesTo')} <span style="opacity:0.7">${cfg.folderPath}/synabun-scheduled-*.zip</span>`);
     abInfo.innerHTML = parts.join('<br>');
   }
 
@@ -4153,7 +3861,7 @@ export async function openSettingsModal(options = {}) {
         const res = await fetch('/api/browse-folder', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ description: 'Select auto-backup folder' }),
+          body: JSON.stringify({ description: kit.tx('settings.redesign.server.selectAutoBackupFolder') }),
         });
         const data = await res.json();
         if (data.path) {
@@ -4165,20 +3873,20 @@ export async function openSettingsModal(options = {}) {
 
     abNow.addEventListener('click', async () => {
       if (!abFolder.value) {
-        abInfo.innerHTML = '<span style="color:var(--accent-dim)">Select a backup folder first.</span>';
+        abInfo.innerHTML = '<span style="color:var(--accent-dim)">' + kit.te('settings.redesign.server.selectABackupFolderFirst') + '</span>';
         return;
       }
       abNow.disabled = true;
       const origHTML = abNow.innerHTML;
-      abNow.textContent = 'Backing up...';
-      abInfo.innerHTML = '<span style="opacity:0.6">Creating backup...</span>';
+      abNow.textContent = kit.tx('settings.redesign.server.backingUp');
+      abInfo.innerHTML = '<span style="opacity:0.6">' + kit.te('settings.redesign.server.creatingBackup') + '</span>';
       try {
         const res = await fetch('/api/system/auto-backup/trigger', { method: 'POST' });
         const cfg = await res.json();
         if (cfg.error) throw new Error(cfg.error);
         renderAutoBackupInfo(cfg);
       } catch (err) {
-        abInfo.innerHTML = `<span style="color:var(--red)">Failed: ${err.message}</span>`;
+        abInfo.innerHTML = `<span style="color:var(--red)">${kit.te('settings.redesign.server.failed')} ${err.message}</span>`;
       } finally {
         abNow.disabled = false;
         abNow.innerHTML = origHTML;
@@ -4190,13 +3898,25 @@ export async function openSettingsModal(options = {}) {
   // Memory tab: Recall profiles + controls
   // ══════════════════════════════════════
 
+  mountMemoryMaintenance(overlay.querySelector('#memory-maintenance'), {
+    strings: memoryMaintenanceStrings(),
+    onStatus: (data) => {
+      const pill = overlay.querySelector('#memory-maintenance-pill');
+      if (!pill) return;
+      const failed = (data.jobs || []).find(j => j.status === 'failed')?.count || 0;
+      pill.textContent = data.paused ? kit.tx('settings.redesign.memory.maint.pillPaused')
+        : failed ? kit.tx('settings.redesign.memory.maint.pillFailed', { count: failed }) : kit.tx('settings.redesign.memory.maint.pillRunning');
+      pill.dataset.state = data.paused ? 'warn' : failed ? 'err' : 'ok';
+    },
+  });
+
   const RECALL_PROFILES = {
     quick:    { limit: 3,  minImportance: 5, minScore: 0.45, maxChars: 300,  includeSessions: 'never',  recencyBoost: false },
     balanced: { limit: 5,  minImportance: 0, minScore: 0.30, maxChars: 0,    includeSessions: 'auto',   recencyBoost: false },
     deep:     { limit: 10, minImportance: 0, minScore: 0.20, maxChars: 0,    includeSessions: 'always', recencyBoost: false },
   };
 
-  const IMPORTANCE_LABELS = ['Any','','Trivial','','Low','Normal','','Significant','','Critical','Foundational'];
+  const IMPORTANCE_LABELS = [kit.tx('settings.redesign.memory.any'),'',kit.tx('settings.redesign.memory.trivial'),'',kit.tx('settings.redesign.memory.low'),kit.tx('settings.redesign.memory.normal'),'',kit.tx('settings.redesign.memory.significant'),'',kit.tx('settings.redesign.memory.critical'),kit.tx('settings.redesign.memory.foundational')];
 
   // DOM refs
   const rcProfiles = overlay.querySelector('#recall-profiles');
@@ -4220,13 +3940,13 @@ export async function openSettingsModal(options = {}) {
   let _recallImpactData = null; // { rows: [{ importance, cnt, avg_len }] }
 
   function importanceName(val) {
-    if (val === 0) return 'Any';
-    if (val <= 2) return 'Trivial';
-    if (val <= 4) return 'Low';
-    if (val === 5) return 'Normal';
-    if (val <= 7) return 'Significant';
-    if (val <= 9) return 'Critical';
-    return 'Foundational';
+    if (val === 0) return kit.tx('settings.redesign.memory.any');
+    if (val <= 2) return kit.tx('settings.redesign.memory.trivial');
+    if (val <= 4) return kit.tx('settings.redesign.memory.low');
+    if (val === 5) return kit.tx('settings.redesign.memory.normal');
+    if (val <= 7) return kit.tx('settings.redesign.memory.significant');
+    if (val <= 9) return kit.tx('settings.redesign.memory.critical');
+    return kit.tx('settings.redesign.memory.foundational');
   }
 
   function updateControlsFromState(d) {
@@ -4237,7 +3957,7 @@ export async function openSettingsModal(options = {}) {
     rcScore.value = Math.round(d.minScore * 100);
     rcScoreVal.textContent = d.minScore.toFixed(2);
     rcMaxchars.value = d.maxChars === 0 ? 2100 : Math.min(d.maxChars, 2100);
-    rcMaxcharsVal.textContent = d.maxChars === 0 ? 'No limit' : d.maxChars + ' chars';
+    rcMaxcharsVal.textContent = d.maxChars === 0 ? kit.tx('settings.redesign.memory.noLimit') : kit.tx('settings.redesign.memory.chars', { maxChars: d.maxChars });
     rcSessions.querySelectorAll('.recall-seg-btn').forEach(b => {
       b.classList.toggle('active', b.dataset.val === d.includeSessions);
     });
@@ -4256,18 +3976,18 @@ export async function openSettingsModal(options = {}) {
     };
   }
 
-  function setActiveProfile(name) {
+  function setActiveProfile(name, { keepOpen = false } = {}) {
     _recallProfile = name;
     rcProfiles.querySelectorAll('.recall-profile-card').forEach(c => {
       c.classList.toggle('active', c.dataset.recallProfile === name);
     });
-    // Auto-open controls for custom, collapse for presets
+    // Auto-open controls for custom, collapse for presets (unless a deep link asked for them open)
     if (name === 'custom') {
       rcControlsSection.classList.remove('collapsed');
-      rcBadge.textContent = 'custom configuration';
+      rcBadge.textContent = kit.tx('settings.redesign.memory.customConfiguration');
     } else {
-      rcControlsSection.classList.add('collapsed');
-      rcBadge.textContent = 'using profile defaults';
+      if (!keepOpen) rcControlsSection.classList.add('collapsed');
+      rcBadge.textContent = kit.tx('settings.redesign.memory.usingProfileDefaults');
       updateControlsFromState(RECALL_PROFILES[name]);
     }
     updateImpactIndicator();
@@ -4336,8 +4056,8 @@ export async function openSettingsModal(options = {}) {
       rcImpactTokens.textContent = estTokens > 999 ? (estTokens / 1000).toFixed(1) + 'k' : estTokens;
       rcImpactReachable.textContent = reachable;
     }
-    const sessMap = { auto: 'Auto', always: 'On', never: 'Off' };
-    rcImpactSessions.textContent = sessMap[d.includeSessions] || 'Auto';
+    const sessMap = { auto: kit.tx('settings.redesign.memory.auto'), always: kit.tx('settings.redesign.memory.on'), never: kit.tx('settings.redesign.memory.off') };
+    rcImpactSessions.textContent = sessMap[d.includeSessions] || kit.tx('settings.redesign.memory.auto');
   }
 
   // Load impact data + current settings
@@ -4356,8 +4076,9 @@ export async function openSettingsModal(options = {}) {
       const legacy = { ...RECALL_PROFILES.balanced, maxChars: data.recallMaxChars ?? 0 };
       updateControlsFromState(legacy);
     }
-    setActiveProfile(profile);
-  }).catch(() => setActiveProfile('balanced'));
+    // The saved profile arrives after the deep link was applied: a link that opened the controls keeps them open.
+    setActiveProfile(profile, { keepOpen: settingsRevealRequested(overlay, rcControlsSection) });
+  }).catch(() => setActiveProfile('balanced', { keepOpen: settingsRevealRequested(overlay, rcControlsSection) }));
 
   // Profile card clicks + mouse-tracking glow + background icon clone
   rcProfiles.querySelectorAll('.recall-profile-card').forEach(card => {
@@ -4396,7 +4117,7 @@ export async function openSettingsModal(options = {}) {
   wireSlider(rcScore, rcScoreVal, v => (parseInt(v, 10) / 100).toFixed(2));
   wireSlider(rcMaxchars, rcMaxcharsVal, v => {
     const n = parseInt(v, 10);
-    return n >= 2100 ? 'No limit' : n + ' chars';
+    return n >= 2100 ? kit.tx('settings.redesign.memory.noLimit') : kit.tx('settings.redesign.memory.chars', { maxChars: n });
   });
 
   // Segmented button (sessions)
@@ -4430,16 +4151,16 @@ export async function openSettingsModal(options = {}) {
     const syncBtn = container.querySelector('#bridge-openclaw-sync');
     if (!syncBtn) return;
     syncBtn.addEventListener('click', async () => {
-      syncBtn.disabled = true; const origHTML = syncBtn.innerHTML; syncBtn.textContent = 'Syncing\u2026';
+      syncBtn.disabled = true; const origHTML = syncBtn.innerHTML; syncBtn.textContent = kit.tx('settings.redesign.hooks.syncing');
       try {
         const res = await fetch('/api/bridges/openclaw/sync', { method: 'POST' });
         const data = await res.json();
         if (data.ok) {
           const metaEl = container.querySelector('#bridge-openclaw-meta');
-          if (metaEl) metaEl.textContent = (data.nodes || 0) + ' nodes synced \u00b7 ' + new Date().toLocaleTimeString();
+          if (metaEl) metaEl.textContent = kit.tx('settings.redesign.hooks.nodesSynced', { nodes: (data.nodes || 0), value: new Date().toLocaleTimeString() });
           emit('data:reload');
-        } else { alert(data.error || 'Sync failed'); }
-      } catch (err) { alert('Sync failed: ' + err.message); }
+        } else { alert(data.error || kit.tx('settings.redesign.hooks.syncFailed')); }
+      } catch (err) { alert(kit.tx('settings.redesign.hooks.syncFailed2', { message: err.message })); }
       finally { syncBtn.disabled = false; syncBtn.innerHTML = origHTML; }
     });
   }
@@ -4448,7 +4169,7 @@ export async function openSettingsModal(options = {}) {
     const disconnectBtn = container.querySelector('#bridge-openclaw-disconnect');
     if (!disconnectBtn) return;
     disconnectBtn.addEventListener('click', async () => {
-      if (!confirm('Disconnect OpenClaw bridge? Memories will be removed from the graph.')) return;
+      if (!confirm(kit.tx('settings.redesign.hooks.disconnectOpenclawBridgeMemoriesWillBe'))) return;
       try {
         await fetch('/api/bridges/openclaw', { method: 'DELETE' });
         emit('data:reload');
@@ -4457,25 +4178,25 @@ export async function openSettingsModal(options = {}) {
         const titleEl = bridgeEl?.querySelector('.cc-panel-title');
         if (titleEl) titleEl.style.color = '';
         const statusEl = bridgeEl?.querySelector('.cc-panel-status');
-        if (statusEl) { statusEl.textContent = 'Off'; statusEl.className = 'cc-panel-status inactive'; statusEl.style.background = ''; statusEl.style.color = ''; }
+        if (statusEl) { statusEl.textContent = kit.tx('settings.redesign.hooks.off'); statusEl.className = 'cc-panel-status inactive'; statusEl.style.background = ''; statusEl.style.color = ''; }
         const integItem = bridgeEl?.querySelector('.cc-integration-item');
         if (integItem) integItem.classList.remove('enabled');
         const metaEl = container.querySelector('#bridge-openclaw-meta');
-        if (metaEl) metaEl.textContent = 'Read-only overlay of OpenClaw markdown memories';
+        if (metaEl) metaEl.textContent = kit.tx('settings.redesign.hooks.readOnlyOverlayOfOpenclawMarkdown');
         const actionsEl = container.querySelector('#bridge-openclaw-actions');
         if (actionsEl) {
-          actionsEl.innerHTML = `<button class="cc-enable-btn" id="bridge-openclaw-connect">Connect</button>`;
+          actionsEl.innerHTML = `<button type="button" class="cc-enable-btn" id="bridge-openclaw-connect" ${kit.inv('AUT045')}>${kit.te('settings.redesign.hooks.connect')}</button>`;
           const newConnBtn = actionsEl.querySelector('#bridge-openclaw-connect');
           if (newConnBtn) newConnBtn.addEventListener('click', () => { if (closeFn) closeFn(); openSettingsModal(); });
         }
-      } catch (err) { alert('Disconnect failed: ' + err.message); }
+      } catch (err) { alert(kit.tx('settings.redesign.hooks.disconnectFailed', { message: err.message })); }
     });
   }
 
   const ocConnectBtn = overlay.querySelector('#bridge-openclaw-connect');
   if (ocConnectBtn) {
     ocConnectBtn.addEventListener('click', async () => {
-      ocConnectBtn.disabled = true; ocConnectBtn.textContent = 'Connecting\u2026';
+      ocConnectBtn.disabled = true; ocConnectBtn.textContent = kit.tx('settings.redesign.hooks.connecting');
       try {
         const res = await fetch('/api/bridges/openclaw/connect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
         const data = await res.json();
@@ -4486,19 +4207,19 @@ export async function openSettingsModal(options = {}) {
           const titleEl = bridgeEl?.querySelector('.cc-panel-title');
           if (titleEl) titleEl.style.color = '#f97316';
           const statusEl = bridgeEl?.querySelector('.cc-panel-status');
-          if (statusEl) { statusEl.textContent = 'Connected'; statusEl.className = 'cc-panel-status active'; statusEl.style.background = 'rgba(249,115,22,0.15)'; statusEl.style.color = '#f97316'; }
+          if (statusEl) { statusEl.textContent = kit.tx('settings.redesign.hooks.connected'); statusEl.className = 'cc-panel-status active'; statusEl.style.background = 'rgba(249,115,22,0.15)'; statusEl.style.color = '#f97316'; }
           const integItem = bridgeEl?.querySelector('.cc-integration-item');
           if (integItem) integItem.classList.add('enabled');
           const metaEl = overlay.querySelector('#bridge-openclaw-meta');
-          if (metaEl) metaEl.textContent = (data.nodes || 0) + ' nodes synced' + (data.nodes > 0 ? ' \u00b7 ' + new Date().toLocaleTimeString() : '');
+          if (metaEl) metaEl.textContent = kit.tx('settings.redesign.hooks.nodesSynced2', { nodes: (data.nodes || 0), nodes2: (data.nodes > 0 ? ' \u00b7 ' + new Date().toLocaleTimeString() : '') });
           const actionsEl = overlay.querySelector('#bridge-openclaw-actions');
           if (actionsEl) {
-            actionsEl.innerHTML = `<button class="cc-enable-btn on" id="bridge-openclaw-sync" style="flex:1"><svg viewBox="0 0 24 24" style="width:12px;height:12px;fill:none;stroke:currentColor;stroke-width:2;vertical-align:-1px;margin-right:4px"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>Sync</button><button class="cc-disable-btn" id="bridge-openclaw-disconnect">Disconnect</button>`;
+            actionsEl.innerHTML = `<button type="button" class="cc-enable-btn on" id="bridge-openclaw-sync" ${kit.inv('AUT051')} style="flex:1"><svg viewBox="0 0 24 24" style="width:12px;height:12px;fill:none;stroke:currentColor;stroke-width:2;vertical-align:-1px;margin-right:4px"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>${kit.te('settings.redesign.hooks.sync')}</button><button class="cc-disable-btn" id="bridge-openclaw-disconnect">${kit.te('settings.redesign.hooks.disconnect')}</button>`;
             attachBridgeSyncHandler(overlay);
             attachBridgeDisconnectHandler(overlay, close);
           }
-        } else { alert(data.error || 'Failed to connect'); ocConnectBtn.disabled = false; ocConnectBtn.textContent = 'Connect'; }
-      } catch (err) { alert('Failed: ' + err.message); ocConnectBtn.disabled = false; ocConnectBtn.textContent = 'Connect'; }
+        } else { alert(data.error || kit.tx('settings.redesign.hooks.failedToConnect')); ocConnectBtn.disabled = false; ocConnectBtn.textContent = kit.tx('settings.redesign.hooks.connect'); }
+      } catch (err) { alert(kit.tx('settings.redesign.hooks.failed2', { message: err.message })); ocConnectBtn.disabled = false; ocConnectBtn.textContent = kit.tx('settings.redesign.hooks.connect'); }
     });
   }
   attachBridgeSyncHandler(overlay);
@@ -4517,16 +4238,26 @@ export async function openSettingsModal(options = {}) {
     });
   });
 
-  // Collapsible iface-section cards (Automations tab) — click anywhere on the card
+  // Collapsible cards (every section of every page, and the cards inside them that open) — click anywhere outside the body
   overlay.querySelectorAll('.iface-section[data-collapsible]').forEach(section => {
     section.addEventListener('click', (e) => {
-      if (e.target.closest('select, input, button, textarea, a, .cc-section-body')) return;
+      if (e.target.closest('select, input, button, textarea, a')) return;
+      // Its own body is not a handle, and a card nested inside it answers for itself.
+      if (e.target.closest('.iface-section[data-collapsible]') !== section
+        || e.target.closest('.cc-section-body')?.closest('.iface-section[data-collapsible]') === section) return;
       section.classList.toggle('collapsed');
+      storeSectionState(section);
     });
   });
 
   // ── MoreLogin tab handlers (self-loads status/profiles async) ──
   wireMoreLoginTab(overlay);
+
+  // ── Judgments tab (TypeSafe / Jev) — self-loads and polls while active ──
+  wireJudgmentsTab(overlay, { toast: showCCToast, initial: typesafeConfig });
+
+  // ── WhatsApp tab — self-loads its status (never part of the blocking fetch above) ──
+  wireWhatsAppTab(overlay, { toast: showCCToast });
 
   // ── Discord tab handlers ──
   {
@@ -4540,19 +4271,19 @@ export async function openSettingsModal(options = {}) {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ key: 'botToken', value: val }),
-        }).then(r => r.json()).catch(() => ({ error: 'Network error' }));
+        }).then(r => r.json()).catch(() => ({ error: kit.tx('settings.redesign.discord.networkError') }));
         if (res.ok) {
-          showCCToast('Bot token saved');
+          showCCToast(kit.tx('settings.redesign.discord.botTokenSaved'));
           const statusEl = overlay.querySelector('#discord-conn-status');
-          if (statusEl) statusEl.textContent = val ? 'configured' : 'missing';
-          const dot = overlay.querySelector('.settings-tab-body[data-tab="discord"] .settings-status-dot');
+          if (statusEl) statusEl.textContent = val ? kit.tx('settings.redesign.discord.configured') : kit.tx('settings.redesign.discord.missing');
+          const dot = overlay.querySelector('.stg-pane[data-stg-pane="discord"] .settings-status-dot');
           if (dot) { dot.classList.toggle('connected', !!val); dot.classList.toggle('disconnected', !val); }
-          const statusText = overlay.querySelector('.settings-tab-body[data-tab="discord"] .settings-status');
-          if (statusText) statusText.lastChild.textContent = val ? ' Token configured' : ' Not configured';
+          const statusText = overlay.querySelector('.stg-pane[data-stg-pane="discord"] .settings-status');
+          if (statusText) statusText.lastChild.textContent = val ? (" " + kit.tx('settings.redesign.discord.tokenConfigured')) : (" " + kit.tx('settings.redesign.discord.notConfigured'));
           // Update invite link
           updateInviteLink(overlay, val);
         } else {
-          showCCToast(res.error || 'Save failed');
+          showCCToast(res.error || kit.tx('settings.redesign.discord.saveFailed'));
         }
       });
     }
@@ -4578,9 +4309,9 @@ export async function openSettingsModal(options = {}) {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ key: 'guildId', value: val }),
-        }).then(r => r.json()).catch(() => ({ error: 'Network error' }));
-        if (res.ok) showCCToast('Guild ID saved');
-        else showCCToast(res.error || 'Save failed');
+        }).then(r => r.json()).catch(() => ({ error: kit.tx('settings.redesign.discord.networkError') }));
+        if (res.ok) showCCToast(kit.tx('settings.redesign.discord.guildIdSaved'));
+        else showCCToast(res.error || kit.tx('settings.redesign.discord.saveFailed'));
       });
     }
 
@@ -4592,21 +4323,21 @@ export async function openSettingsModal(options = {}) {
         resultEl.style.display = 'block';
         resultEl.style.background = 'rgba(255,255,255,0.05)';
         resultEl.style.border = '1px solid var(--s-medium)';
-        resultEl.textContent = 'Testing connection...';
+        resultEl.textContent = kit.tx('settings.redesign.discord.testingConnection');
 
-        const res = await fetch('/api/discord/test', { method: 'POST' }).then(r => r.json()).catch(() => ({ ok: false, error: 'Network error' }));
+        const res = await fetch('/api/discord/test', { method: 'POST' }).then(r => r.json()).catch(() => ({ ok: false, error: kit.tx('settings.redesign.discord.networkError') }));
         if (res.ok) {
           const bot = res.bot;
           const guilds = bot.guilds.map(g => `${g.name} (${g.id})`).join(', ');
           resultEl.style.background = 'rgba(109,213,140,0.08)';
           resultEl.style.border = '1px solid rgba(109,213,140,0.2)';
-          resultEl.innerHTML = `<div style="color:var(--green);margin-bottom:4px;font-weight:600">Connected!</div>` +
-            `<div>Bot: <strong>${escapeHtml(bot.username)}</strong> (${bot.id})</div>` +
-            `<div>Guilds: ${escapeHtml(guilds) || 'none'}</div>`;
+          resultEl.innerHTML = `<div style="color:var(--green);margin-bottom:4px;font-weight:600">${kit.te('settings.redesign.discord.connected')}</div>` +
+            `<div>${kit.te('settings.redesign.discord.bot')} <strong>${escapeHtml(bot.username)}</strong> (${bot.id})</div>` +
+            `<div>${kit.te('settings.redesign.discord.guilds')} ${escapeHtml(guilds) || kit.te('settings.redesign.discord.none')}</div>`;
         } else {
           resultEl.style.background = 'rgba(255,99,99,0.08)';
           resultEl.style.border = '1px solid rgba(255,99,99,0.2)';
-          resultEl.innerHTML = `<div style="color:var(--red,#ff6b6b)">Failed: ${escapeHtml(res.error || 'Unknown error')}</div>`;
+          resultEl.innerHTML = `<div style="color:var(--red,#ff6b6b)">${kit.te('settings.redesign.discord.failed')} ${escapeHtml(res.error || kit.tx('settings.redesign.discord.unknownError'))}</div>`;
         }
       });
     }
@@ -4615,13 +4346,16 @@ export async function openSettingsModal(options = {}) {
     function updateInviteLink(container, token) {
       const linkInput = container.querySelector('#discord-invite-link');
       if (!linkInput) return;
-      if (!token) { linkInput.value = 'Save a bot token first'; return; }
+      // The field shows a message until there is a link; `data-ready` says which one it holds.
+      delete linkInput.dataset.ready;
+      if (!token) { linkInput.value = kit.tx('settings.redesign.discord.saveABotTokenFirst'); return; }
       // Extract application ID from token (first segment is base64-encoded app ID)
       try {
         const appId = atob(token.split('.')[0]);
         linkInput.value = `https://discord.com/oauth2/authorize?client_id=${appId}&permissions=8&scope=bot`;
+        linkInput.dataset.ready = '1';
       } catch {
-        linkInput.value = 'Could not parse bot token';
+        linkInput.value = kit.tx('settings.redesign.discord.couldNotParseBotToken');
       }
     }
     updateInviteLink(overlay, discordConfig.botToken);
@@ -4631,9 +4365,9 @@ export async function openSettingsModal(options = {}) {
     if (inviteCopy) {
       inviteCopy.addEventListener('click', () => {
         const linkInput = overlay.querySelector('#discord-invite-link');
-        if (linkInput.value && !linkInput.value.startsWith('Save') && !linkInput.value.startsWith('Could')) {
+        if (linkInput.value && linkInput.dataset.ready) {
           navigator.clipboard.writeText(linkInput.value);
-          showCCToast('Invite link copied');
+          showCCToast(kit.tx('settings.redesign.discord.inviteLinkCopied'));
         }
       });
     }
@@ -4651,7 +4385,7 @@ export async function openSettingsModal(options = {}) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ key, value: val }),
           }).catch(() => {});
-          showCCToast('Saved');
+          showCCToast(kit.tx('settings.redesign.discord.saved'));
         }, 800);
       });
     });
@@ -4681,12 +4415,12 @@ export async function openSettingsModal(options = {}) {
           const data = await res.json();
           if (data.ok && data.found && data.path) {
             input.value = data.path;
-            showCCToast(`Found: ${data.path}`);
+            showCCToast(kit.tx('settings.redesign.terminal.found', { path: data.path }));
           } else {
-            showCCToast('CLI not found in PATH');
+            showCCToast(kit.tx('settings.redesign.terminal.cliNotFoundInPath'));
           }
         } catch (err) {
-          showCCToast('Detection failed: ' + err.message);
+          showCCToast(kit.tx('settings.redesign.terminal.detectionFailed', { message: err.message }));
         } finally {
           btn.style.opacity = ''; btn.style.pointerEvents = '';
         }
@@ -4716,16 +4450,16 @@ export async function openSettingsModal(options = {}) {
               const val = input?.value?.trim() || '';
               const isDefault = !val || val === cliDefaults[id];
               if (status) {
-                status.textContent = isDefault ? 'default' : 'custom';
+                status.textContent = isDefault ? kit.tx('settings.redesign.terminal.default') : kit.tx('settings.redesign.terminal.custom');
                 status.className = `cli-path-status${isDefault ? '' : ' custom'}`;
               }
             });
-            showCCToast('CLI paths saved');
+            showCCToast(kit.tx('settings.redesign.terminal.cliPathsSaved'));
           } else {
-            alert(data.error || 'Failed to save');
+            alert(data.error || kit.tx('settings.redesign.terminal.failedToSave'));
           }
         } catch (err) {
-          alert('Failed: ' + err.message);
+          alert(kit.tx('settings.redesign.terminal.failed', { message: err.message }));
         } finally {
           cliSaveBtn.style.opacity = ''; cliSaveBtn.style.pointerEvents = '';
         }
@@ -4824,7 +4558,7 @@ export async function openSettingsModal(options = {}) {
     function refreshNotifPermRow() {
       if (typeof Notification === 'undefined') return;
       const state = Notification.permission;
-      const labels = { granted: 'Granted', denied: 'Blocked', default: 'Not yet requested' };
+      const labels = { granted: kit.tx('settings.redesign.notifications.perm.granted'), denied: kit.tx('settings.redesign.notifications.perm.denied'), default: kit.tx('settings.redesign.notifications.perm.default') };
       const colors = {
         granted: 'var(--accent-green, #4ade80)',
         denied: 'var(--accent-red, #f87171)',
@@ -4870,9 +4604,9 @@ export async function openSettingsModal(options = {}) {
       requestPermBtn.addEventListener('click', async () => {
         const result = await Notification.requestPermission();
         refreshNotifPermRow();
-        showCCToast(result === 'granted'
-          ? 'Notification permission granted'
-          : 'Permission denied — reset site notifications in your browser');
+        showCCToast(kit.tx(result === 'granted'
+          ? 'settings.redesign.notifications.permGrantedToast'
+          : 'settings.redesign.notifications.permDeniedToast'));
       });
     }
 
@@ -4882,9 +4616,9 @@ export async function openSettingsModal(options = {}) {
       recheckBtn.addEventListener('click', () => {
         refreshNotifPermRow();
         const state = typeof Notification !== 'undefined' ? Notification.permission : 'unsupported';
-        if (state === 'granted') showCCToast('Permission granted');
-        else if (state === 'denied') showCCToast('Still blocked — reset the site permission in your browser, then try again');
-        else showCCToast('Status: ' + state);
+        if (state === 'granted') showCCToast(kit.tx('settings.redesign.notifications.permGrantedToast'));
+        else if (state === 'denied') showCCToast(kit.tx('settings.redesign.notifications.permStillBlockedToast'));
+        else showCCToast(kit.tx('settings.redesign.notifications.permStatusToast', { state }));
       });
     }
 
@@ -4893,9 +4627,9 @@ export async function openSettingsModal(options = {}) {
       testBtn.addEventListener('click', () => {
         // Import notify dynamically to avoid circular dep — use the shared module
         import('./ui-notifications.js').then(({ notify, NOTIF_TYPE }) => {
-          notify('panel', NOTIF_TYPE.ACTION, 'Test notification — everything is working!');
+          notify('panel', NOTIF_TYPE.ACTION, kit.tx('settings.redesign.notifications.testNotificationEverythingIsWorking'));
         });
-        showCCToast('Test notification sent');
+        showCCToast(kit.tx('settings.redesign.notifications.testNotificationSent'));
       });
     }
   }
@@ -4917,7 +4651,7 @@ export async function openSettingsModal(options = {}) {
     const allPanels = overlay.querySelectorAll('.cc-panel[data-cc-idx]');
     const activePanels = overlay.querySelectorAll('.cc-panel[data-cc-idx].enabled');
     const countEl = overlay.querySelector('.cc-project-count');
-    if (countEl) countEl.textContent = `${activePanels.length} of ${allPanels.length} active`;
+    if (countEl) countEl.textContent = kit.tx('settings.redesign.hooks.ofActive', { count: activePanels.length, count2: allPanels.length });
   }
 
   async function ccToggleHook(target, projectPath, toggleBtn, panel, hookEvent) {
@@ -4936,9 +4670,9 @@ export async function openSettingsModal(options = {}) {
         const row = toggleBtn.closest('.cc-integration-item');
         if (row) row.classList.toggle('enabled', nowOn);
         if (target === 'global') { updateGlobalHookBadge(); }
-        else { toggleBtn.textContent = nowOn ? 'Enabled' : 'Enable'; if (panel) panel.classList.toggle('enabled'); const badge = panel?.querySelector('.cc-panel-status'); if (badge) { badge.textContent = nowOn ? 'Active' : 'Off'; badge.className = 'cc-panel-status ' + (nowOn ? 'active' : 'inactive'); } updateProjectCount(); }
-      } else { alert(data.error || 'Failed to toggle hook'); }
-    } catch (err) { alert('Failed: ' + err.message); }
+        else { toggleBtn.textContent = nowOn ? kit.tx('settings.redesign.hooks.enabled') : kit.tx('settings.redesign.hooks.enable'); if (panel) panel.classList.toggle('enabled'); const badge = panel?.querySelector('.cc-panel-status'); if (badge) { badge.textContent = nowOn ? kit.tx('settings.redesign.hooks.active') : kit.tx('settings.redesign.hooks.off'); badge.className = 'cc-panel-status ' + (nowOn ? 'active' : 'inactive'); } updateProjectCount(); }
+      } else { alert(data.error || kit.tx('settings.redesign.hooks.failedToToggleHook')); }
+    } catch (err) { alert(kit.tx('settings.redesign.hooks.failed2', { message: err.message })); }
     finally { toggleBtn.style.opacity = ''; toggleBtn.style.pointerEvents = ''; }
   }
 
@@ -4968,8 +4702,8 @@ export async function openSettingsModal(options = {}) {
             if (ulThreshold) ulThreshold.style.display = !isOn ? 'flex' : 'none';
           }
         }
-        else { alert(data.error || 'Failed to toggle feature'); }
-      } catch (err) { alert('Failed: ' + err.message); }
+        else { alert(data.error || kit.tx('settings.redesign.hooks.failedToToggleFeature')); }
+      } catch (err) { alert(kit.tx('settings.redesign.hooks.failed2', { message: err.message })); }
       finally { toggle.style.opacity = ''; toggle.style.pointerEvents = ''; }
     });
   });
@@ -4987,7 +4721,7 @@ export async function openSettingsModal(options = {}) {
         });
         const data = await res.json();
         if (!data.ok) {
-          alert(data.error || 'Failed to toggle Codex greeting');
+          alert(data.error || kit.tx('settings.redesign.hooks.failedToToggleCodexGreeting'));
           return;
         }
         codexGreetingConfig.enabled = !isOn;
@@ -4995,7 +4729,7 @@ export async function openSettingsModal(options = {}) {
         const body = overlay.querySelector('#codex-greeting-body');
         if (body) body.style.display = !isOn ? 'block' : 'none';
       } catch (err) {
-        alert('Failed: ' + err.message);
+        alert(kit.tx('settings.redesign.hooks.failed2', { message: err.message }));
       } finally {
         toggle.style.opacity = '';
         toggle.style.pointerEvents = '';
@@ -5016,7 +4750,7 @@ export async function openSettingsModal(options = {}) {
         });
         const data = await res.json();
         if (!data.ok) {
-          alert(data.error || 'Failed to toggle OpenCode greeting');
+          alert(data.error || kit.tx('settings.redesign.hooks.failedToToggleOpencodeGreeting'));
           return;
         }
         opencodeGreetingConfig.enabled = !isOn;
@@ -5024,7 +4758,7 @@ export async function openSettingsModal(options = {}) {
         const body = overlay.querySelector('#opencode-greeting-body');
         if (body) body.style.display = !isOn ? 'block' : 'none';
       } catch (err) {
-        alert('Failed: ' + err.message);
+        alert(kit.tx('settings.redesign.hooks.failed2', { message: err.message }));
       } finally {
         toggle.style.opacity = '';
         toggle.style.pointerEvents = '';
@@ -5079,8 +4813,8 @@ export async function openSettingsModal(options = {}) {
         const res = await fetch('/api/claude-code/tool-permissions', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tool, enabled: !isOn }) });
         const data = await res.json();
         if (data.ok) applyToolPermissionResult(data.tools);
-        else alert(data.error || 'Failed to toggle tool');
-      } catch (err) { alert('Failed: ' + err.message); }
+        else alert(data.error || kit.tx('settings.redesign.permissions.failedToToggleTool'));
+      } catch (err) { alert(kit.tx('settings.redesign.permissions.failed', { message: err.message })); }
       finally { toggle.style.opacity = ''; toggle.style.pointerEvents = ''; }
     });
   });
@@ -5096,8 +4830,8 @@ export async function openSettingsModal(options = {}) {
         const res = await fetch('/api/claude-code/tool-permissions', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ category, enabled: !isOn }) });
         const data = await res.json();
         if (data.ok) applyToolPermissionResult(data.tools);
-        else alert(data.error || 'Failed to toggle category');
-      } catch (err) { alert('Failed: ' + err.message); }
+        else alert(data.error || kit.tx('settings.redesign.permissions.failedToToggleCategory'));
+      } catch (err) { alert(kit.tx('settings.redesign.permissions.failed', { message: err.message })); }
       finally { btn.style.opacity = ''; btn.style.pointerEvents = ''; }
     });
   });
@@ -5157,10 +4891,10 @@ export async function openSettingsModal(options = {}) {
 
     function reminderRowHTML(reminder) {
       return `<div class="cc-greeting-reminder-row">
-        <span class="cc-greeting-drag-handle" title="Drag to reorder">&#8942;&#8942;</span>
-        <input class="cc-greeting-reminder-input label" placeholder="Label" value="${escapeHtml(reminder.label || '')}">
-        <input class="cc-greeting-reminder-input cmd" placeholder="Command" value="${escapeHtml(reminder.command || '')}">
-        <button class="cc-greeting-reminder-remove" title="Remove">&times;</button>
+        <span class="cc-greeting-drag-handle" title="${kit.te('settings.redesign.hooks.dragToReorder')}">&#8942;&#8942;</span>
+        <input class="cc-greeting-reminder-input label" placeholder="${kit.te('settings.redesign.hooks.label')}" value="${escapeHtml(reminder.label || '')}">
+        <input class="cc-greeting-reminder-input cmd" placeholder="${kit.te('settings.redesign.hooks.command')}" value="${escapeHtml(reminder.command || '')}">
+        <button class="cc-greeting-reminder-remove" title="${kit.te('settings.redesign.hooks.remove')}">&times;</button>
       </div>`;
     }
 
@@ -5276,13 +5010,13 @@ export async function openSettingsModal(options = {}) {
         });
         const data = await res.json();
         if (!data.ok) {
-          alert(data.error || 'Failed to save');
+          alert(data.error || kit.tx('settings.redesign.hooks.failedToSave'));
           return;
         }
         onSave(project, body);
-        showCCToast('Greeting config saved');
+        showCCToast(kit.tx('settings.redesign.hooks.greetingConfigSaved'));
       } catch (err) {
-        alert('Failed: ' + err.message);
+        alert(kit.tx('settings.redesign.hooks.failed2', { message: err.message }));
       } finally {
         gcSave.style.opacity = '';
         gcSave.style.pointerEvents = '';
@@ -5297,7 +5031,7 @@ export async function openSettingsModal(options = {}) {
     if (csToggle && csPanel) {
       const updateCheatsheetPreview = () => {
         const hour = new Date().getHours();
-        const timeGreeting = hour >= 5 && hour < 12 ? 'Good morning' : hour >= 12 && hour < 17 ? 'Good afternoon' : 'Good evening';
+        const timeGreeting = hour >= 5 && hour < 12 ? kit.tx('settings.redesign.hooks.goodMorning') : hour >= 12 && hour < 17 ? kit.tx('settings.redesign.hooks.goodAfternoon') : kit.tx('settings.redesign.hooks.goodEvening');
         const dateStr = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
         const key = gcSelect.value || 'global';
         const gc = configRef() || {};
@@ -5308,7 +5042,7 @@ export async function openSettingsModal(options = {}) {
         overlay.querySelector(`#${prefix}-cs-time`).textContent = timeGreeting;
         overlay.querySelector(`#${prefix}-cs-label`).textContent = label;
         overlay.querySelector(`#${prefix}-cs-name`).textContent = name;
-        overlay.querySelector(`#${prefix}-cs-branch`).textContent = 'dev';
+        overlay.querySelector(`#${prefix}-cs-branch`).textContent = kit.tx('settings.redesign.hooks.dev');
         overlay.querySelector(`#${prefix}-cs-date`).textContent = dateStr;
 
         const tpl = gcTemplate.value || '{time_greeting}! Working on **{project_label}** ({branch} branch). {date}.';
@@ -5403,14 +5137,14 @@ export async function openSettingsModal(options = {}) {
             row.classList.toggle('installed', anyOn);
           }
           const runtime = runtimeLabels[target] || target;
-          showCCToast(isOn ? `Skill uninstalled \u2014 restart ${runtime} to apply` : `Skill installed \u2014 restart ${runtime} to apply`);
-        } else { alert(data.error || 'Failed to toggle skill'); }
-      } catch (err) { alert('Failed: ' + err.message); }
+          showCCToast(isOn ? kit.tx('settings.redesign.hooks.skillUninstalledRestartToApply', { runtime: runtime }) : kit.tx('settings.redesign.hooks.skillInstalledRestartToApply', { runtime: runtime }));
+        } else { alert(data.error || kit.tx('settings.redesign.hooks.failedToToggleSkill')); }
+      } catch (err) { alert(kit.tx('settings.redesign.hooks.failed2', { message: err.message })); }
       finally { chip.style.opacity = ''; chip.style.pointerEvents = ''; }
     });
   });
 
-  // ── Setup tab: per-provider MCP toggles, CLI copy, config copy, rulesets ──
+  // ── Setup tab: per-provider MCP toggles, CLI copy, config copy, SynaBun rules ──
   {
     const checkIcon = '<svg viewBox="0 0 24 24" style="width:12px;height:12px"><polyline points="20 6 9 17 4 12"/></svg>';
     const copyBtnIcon = COPY_ICON;
@@ -5431,11 +5165,18 @@ export async function openSettingsModal(options = {}) {
             const row = overlay.querySelector(`#setup-${provider}-mcp-row`);
             if (row) row.classList.toggle('enabled', nowOn);
             const status = overlay.querySelector(`#setup-${provider}-mcp-status`);
-            if (status) status.textContent = nowOn ? `Registered in ${configLabel}` : 'Not connected';
-            const badge = overlay.querySelector(`#setup-${provider} .setup-status-badge`);
-            if (badge) { badge.className = `setup-status-badge ${nowOn ? 'active' : 'inactive'}`; badge.textContent = nowOn ? 'Connected' : 'Off'; }
-          } else { alert(data.error || 'Failed'); }
-        } catch (err) { alert('Failed: ' + err.message); }
+            if (status) status.textContent = nowOn ? kit.tx('settings.redesign.setup.registeredIn2', { configLabel: configLabel }) : kit.tx('settings.redesign.setup.notConnected');
+            const badge = overlay.querySelector(`#setup-${provider} .gfx-group-title .setup-status-badge`);
+            if (badge) { badge.className = `setup-status-badge ${nowOn ? 'active' : 'inactive'}`; badge.textContent = nowOn ? kit.tx('settings.redesign.setup.connected') : kit.tx('settings.redesign.setup.off'); }
+            // Connecting a tool installs its rules, disconnecting removes them
+            // (the `rules` object in the response). Say what happened.
+            if (data.rules?.ok === false && data.rules.error) showCCToast(data.rules.error, 6000);
+            else if (nowOn && data.rules?.changed && data.rules.path) showCCToast(kit.tx('settings.redesign.setup.rulesInstalled', { path: data.rules.path }));
+            else if (!nowOn && data.rules?.kept?.length) showCCToast(kit.tx('settings.redesign.setup.yourRulesWereLeftInPlace', { reason: data.rules.kept[0].reason === 'listed-in-config' ? '' : (kit.tx('settings.redesign.setup.edited') + " "), path: data.rules.kept[0].path }), 6000);
+            else if (!nowOn && data.rules?.changed) showCCToast(kit.tx('settings.redesign.setup.rulesRemoved'));
+            refreshRules();
+          } else { alert(data.error || kit.tx('settings.redesign.setup.failed')); }
+        } catch (err) { alert(kit.tx('settings.redesign.setup.failed2', { message: err.message })); }
         finally { toggle.style.opacity = ''; toggle.style.pointerEvents = ''; }
       });
     }
@@ -5446,33 +5187,236 @@ export async function openSettingsModal(options = {}) {
       if (!btn) return;
       btn.addEventListener('click', () => {
         const text = getText();
-        if (!text) { alert('Content not available'); return; }
+        if (!text) { alert(kit.tx('settings.redesign.setup.contentNotAvailable')); return; }
         navigator.clipboard.writeText(text);
-        btn.innerHTML = `${checkIcon} Copied!`;
+        btn.innerHTML = kit.th('settings.redesign.setup.copied', { checkIcon: checkIcon });
         setTimeout(() => { btn.innerHTML = `${copyBtnIcon} ${originalLabel}`; }, 2000);
       });
     }
 
-    // Helper: load a ruleset preview
-    function wireRulesetPreview(provider, format) {
-      const preview = overlay.querySelector(`#setup-${provider}-ruleset-preview`);
-      if (!preview) return;
-      let cached = '';
-      fetch(`/api/claude-code/ruleset?format=${format}`).then(r => r.json()).then(data => {
-        if (data.ok && data.ruleset) {
-          cached = data.ruleset;
-          preview.textContent = data.ruleset;
-        } else { preview.textContent = 'Could not load ruleset.'; }
-      }).catch(() => { preview.textContent = 'Failed to load.'; });
+    // ── SynaBun rules ──
+    // One status for the whole tab (GET /api/setup/rules), read again after
+    // every action. `null` means the route is missing or failed, which is what
+    // a server that was not restarted after the update answers: the tab keeps
+    // View and Copy and says what to do, and offers no control that cannot work.
+    const RESTART_HINT = kit.tx('settings.redesign.setup.restartSynabunToFinishThisUpdate');
+    const RULES_HOST_LABELS = { claude: 'Claude Code', codex: 'Codex', opencode: 'OpenCode', gemini: 'Gemini', cursor: 'Cursor', coexistence: 'coexistence' };
+    const RULES_BADGES = {
+      installed: [kit.tx('settings.redesign.setup.installed'), true], newer: [kit.tx('settings.redesign.setup.newer'), true], outdated: [kit.tx('settings.redesign.setup.updateAvailable'), false], modified: [kit.tx('settings.redesign.setup.edited2'), false],
+      conflict: [kit.tx('settings.redesign.setup.conflict'), false], error: [kit.tx('settings.redesign.setup.error'), false], shadowed: [kit.tx('settings.redesign.setup.shadowed'), false],
+      'not-installed': [kit.tx('settings.redesign.setup.notInstalled'), false], manual: [kit.tx('settings.redesign.setup.copyOnly'), false],
+    };
+    let rulesStatus = setupStatus.rules?.ok ? setupStatus.rules : null;
+    // What the last "install for all" wrote and where, shown under that button until the next rules action.
+    let installNote = '';
+    const rulesRenderers = [];
+    const setShown = (el, shown) => { if (el) el.style.display = shown ? '' : 'none'; };
+    const renderRules = () => {
+      for (const render of rulesRenderers) {
+        try { render(); } catch (err) { console.warn('[setup] rules render failed:', err); }
+      }
+    };
+    async function refreshRules() {
+      rulesStatus = await fetchRulesStatus();
+      renderRules();
+      emit('rules:changed', rulesStatus);
+    }
+    // Run one rules action from a button, report it, then re-read the status.
+    async function runRulesAction(btn, action, describe) {
+      installNote = '';
+      btn.style.opacity = '0.4'; btn.style.pointerEvents = 'none';
+      try { showCCToast(describe(await action())); }
+      catch (err) { showCCToast(err?.message || kit.tx('settings.redesign.setup.rulesActionFailed'), 6000); }
+      finally { btn.style.opacity = ''; btn.style.pointerEvents = ''; }
+      await refreshRules();
+    }
 
-      // Wire copy
-      wireCopyBtn(`setup-${provider}-ruleset-copy`, () => cached, 'Copy Ruleset');
+    // Helper: the rules controls of one provider section. `host` is the name
+    // the rules API uses (lib/rulesets). Sections without a primary button
+    // (Cursor, the coexistence snippet) are copy-only.
+    function wireRulesControls(provider, host) {
+      const el = (suffix) => overlay.querySelector(`#setup-${provider}-rules-${suffix}`);
+      const viewBtn = el('view');
+      const copyBtn = el('copy');
+      const textBox = el('text');
+      if (!viewBtn || !copyBtn || !textBox) return;
+      const label = RULES_HOST_LABELS[host] || host;
+
+      let cachedText = '';
+      const loadText = async () => {
+        if (!cachedText) cachedText = await fetchRulesTextWithFallback(host);
+        return cachedText;
+      };
+      viewBtn.addEventListener('click', async () => {
+        if (textBox.style.display !== 'none') { setShown(textBox, false); viewBtn.textContent = kit.tx('settings.redesign.setup.view'); return; }
+        try { textBox.textContent = await loadText(); }
+        catch { textBox.textContent = RESTART_HINT; }
+        setShown(textBox, true);
+        viewBtn.textContent = kit.tx('settings.redesign.setup.hide');
+      });
+      copyBtn.addEventListener('click', async () => {
+        let text;
+        try { text = await loadText(); }
+        catch { showCCToast(kit.tx('settings.redesign.setup.couldNotLoadTheRules', { label: label, RESTART_HINT: RESTART_HINT }), 6000); return; }
+        try {
+          await navigator.clipboard.writeText(text);
+          copyBtn.innerHTML = kit.th('settings.redesign.setup.copied', { checkIcon: checkIcon });
+          setTimeout(() => { copyBtn.innerHTML = kit.th('settings.redesign.setup.copy', { copyBtnIcon: copyBtnIcon }); }, 2000);
+        } catch {
+          // A refused clipboard is the browser's doing; restarting SynaBun would not help.
+          showCCToast(kit.tx('settings.redesign.setup.couldNotCopyTheRulesThe', { label: label }), 6000);
+        }
+      });
+
+      const primary = el('primary');
+      const removeBtn = el('remove');
+      if (!primary || !removeBtn) return;
+      const badge = el('badge');
+      const pathEl = el('path');
+      const message = el('message');
+      const row = el('row');
+
+      rulesRenderers.push(() => {
+        const info = rulesStatus?.hosts?.[host];
+        if (!info) {
+          badge.className = 'setup-status-badge inactive';
+          badge.textContent = kit.tx('settings.redesign.setup.unavailable');
+          pathEl.textContent = RESTART_HINT;
+          row.classList.remove('enabled');
+          setShown(message, false); setShown(primary, false); setShown(removeBtn, false);
+          return;
+        }
+        const [text, good] = RULES_BADGES[info.state] || [info.state || kit.tx('settings.redesign.setup.unknown'), false];
+        badge.className = `setup-status-badge ${good ? 'active' : 'inactive'}`;
+        badge.textContent = text;
+        row.classList.toggle('enabled', good);
+        pathEl.textContent = info.installedVersion ? `${info.path} (v${info.installedVersion})` : (info.path || '');
+        pathEl.title = info.path || '';
+        // The action the state calls for; conflict, error and shadowed only explain themselves.
+        const action = info.detected === false ? '' : ({ 'not-installed': kit.tx('settings.redesign.setup.install'), outdated: kit.tx('settings.redesign.setup.update'), modified: kit.tx('settings.redesign.setup.replace') }[info.state] || '');
+        // A file without SynaBun's markers is the user's own: the server refuses to replace it, so no button.
+        const canAct = !!action && info.replaceable !== false;
+        primary.textContent = canAct ? action : '';
+        setShown(primary, canAct);
+        setShown(removeBtn, ['installed', 'newer', 'outdated', 'modified', 'shadowed'].includes(info.state));
+        // An edited copy is the user's: nothing replaces or removes it without the confirm behind each button.
+        const editedNote = kit.tx('settings.redesign.setup.thisCopyWasEditedSoSynabun');
+        const stateNote = info.detected === false ? kit.tx('settings.redesign.setup.wasNotFoundOnThisMachine', { label: label })
+          : info.state === 'modified' ? (info.replaceable === false ? (info.detail || '') : editedNote)
+          : info.state === 'outdated' ? (rulesStatus.version ? kit.tx('settings.redesign.setup.versionOfTheRulesIsAvailable', { version: rulesStatus.version }) : kit.tx('settings.redesign.setup.aNewerVersionOfTheRules'))
+          : ['conflict', 'error', 'shadowed', 'newer'].includes(info.state) ? (info.error || info.detail || '')
+          : '';
+        // A removal that could not finish left rules behind: say which, until a remove or an install completes.
+        const partial = info.partialRemoval?.error ? kit.tx('settings.redesign.setup.theLastRemovalDidNotFinish', { error: info.partialRemoval.error }) : '';
+        const note = partial && stateNote && !partial.includes(stateNote) ? `${partial} ${stateNote}` : (partial || stateNote);
+        message.textContent = note;
+        setShown(message, !!note);
+      });
+
+      primary.addEventListener('click', () => {
+        const state = rulesStatus?.hosts?.[host]?.state;
+        const force = state === 'modified';
+        if (force && !confirm(kit.tx('settings.redesign.setup.replaceYourEditedRulesWithSynabun', { label: label }))) return;
+        cachedText = '';
+        runRulesAction(primary, () => installRules(host, { force }), (result) => (result.changed
+          ? kit.tx(state === 'not-installed' ? 'settings.redesign.setup.rulesInstalled2' : 'settings.redesign.setup.rulesUpdated2', { label })
+          : kit.tx('settings.redesign.setup.rulesAreAlreadyCurrent', { label: label })));
+      });
+      removeBtn.addEventListener('click', () => {
+        const info = rulesStatus?.hosts?.[host];
+        // An edited copy is removed only on an explicit yes (force). A file without SynaBun's markers is the
+        // user's own and stays whatever is sent, so there is nothing to confirm for it.
+        const edited = info?.state === 'modified' && info.replaceable !== false;
+        // OpenCode: a line in config.json that SynaBun did not add keeps the file on a plain remove (the answer
+        // says so, and the host is then no longer managed). Asked again, the confirm sends force, which takes that line too.
+        const listed = info?.entry === 'user';
+        const force = edited || (listed && info.managed === false);
+        const lineToo = listed ? (" " + kit.tx('settings.redesign.setup.theLineInConfigJsonThat')) : '';
+        if (force && !confirm(kit.tx('settings.redesign.setup.aBackupIsKept', { edited: edited ? kit.tx('settings.redesign.setup.youEditedTheseRulesRemoveThem', { label: label }) : kit.tx('settings.redesign.setup.removeTheseRules', { label: label }), lineToo: lineToo }))) return;
+        runRulesAction(removeBtn, () => removeRules(host, { force }), (result) => (result.kept?.length
+          ? (result.kept[0].reason === 'listed-in-config'
+            ? kit.tx('settings.redesign.setup.rulesWereLeftInPlaceConfig', { label: label })
+            : kit.tx('settings.redesign.setup.yourEditedRulesWereLeftIn', { label: label, path: result.kept[0].path }))
+          : kit.tx('settings.redesign.setup.rulesRemoved2', { label: label })));
+      });
+    }
+
+    // ── Rules: automatic updates, install for all, pasted copies ──
+    {
+      const autoToggle = overlay.querySelector('#setup-rules-autoupdate');
+      const autoRow = overlay.querySelector('#setup-rules-autoupdate-row');
+      const installAllBtn = overlay.querySelector('#setup-rules-install-all');
+      const message = overlay.querySelector('#setup-rules-message');
+      const legacyBox = overlay.querySelector('#setup-rules-legacy');
+      const versionBadge = overlay.querySelector('#setup-rules-version');
+      const hostOf = { claude: 'Claude Code', codex: 'Codex', opencode: 'OpenCode', gemini: 'Gemini' };
+
+      if (autoToggle && installAllBtn && legacyBox) {
+        rulesRenderers.push(() => {
+          const ready = !!rulesStatus;
+          const autoOn = ready && rulesStatus.autoUpdate !== false;
+          autoToggle.classList.toggle('on', autoOn);
+          autoRow?.classList.toggle('enabled', autoOn);
+          autoToggle.style.opacity = ready ? '' : '0.4';
+          autoToggle.style.pointerEvents = ready ? '' : 'none';
+          setShown(installAllBtn.closest('.stg-help-line') || installAllBtn, ready);
+          if (versionBadge) { versionBadge.textContent = ready && rulesStatus.version ? `v${rulesStatus.version}` : ''; setShown(versionBadge, ready && !!rulesStatus.version); }
+          if (message) {
+            const note = ready ? installNote : kit.tx('settings.redesign.setup.untilThenTheRulesCanOnly', { RESTART_HINT: RESTART_HINT });
+            message.textContent = note;
+            setShown(message, !!note);
+          }
+
+          // Copies of an older ruleset someone pasted into an instruction file.
+          const legacy = ready && Array.isArray(rulesStatus.legacy) ? rulesStatus.legacy : [];
+          setShown(legacyBox, legacy.length > 0);
+          legacyBox.innerHTML = legacy.length ? `
+            <div class="cc-greeting-label stg-row-label" style="margin-bottom:4px">${kit.te('settings.redesign.setup.pastedCopies')}</div>
+            <div class="setup-hint" style="margin-bottom:6px">${kit.te('settings.redesign.setup.theseFilesStillHoldAnOlder')}</div>
+            ${legacy.map((entry, index) => `
+            <div class="cc-integration-item">
+              <div class="cc-integration-info">
+                <div class="cc-integration-label">${escapeHtml(String(entry.path || '').split(/[\\/]/).pop() || kit.tx('settings.redesign.setup.file'))} &middot; ${escapeHtml(hostOf[entry.host] || entry.host || '')}</div>
+                <div class="cc-integration-path" title="${escapeHtml(entry.path || '')}">${escapeHtml(entry.path || '')}</div>
+              </div>
+              ${entry.kind === 'exact'
+                ? `<button class="cc-copy-btn stg-text-btn stg-text-btn-danger" data-rules-legacy="${index}" style="width:auto;flex-shrink:0">${kit.te('settings.redesign.setup.removePastedCopy')}</button>`
+                : '<span class="setup-status-badge inactive" title="' + kit.te('settings.redesign.setup.theTextWasChangedAfterIt') + '">' + kit.te('settings.redesign.setup.possibleDuplicate') + '</span>'}
+            </div>`).join('')}` : '';
+          legacyBox.querySelectorAll('[data-rules-legacy]').forEach((btn) => {
+            btn.addEventListener('click', () => {
+              const entry = legacy[Number(btn.dataset.rulesLegacy)];
+              if (!entry) return;
+              if (!confirm(kit.tx('settings.redesign.setup.removeThePastedSynabunRulesFrom', { path: entry.path }))) return;
+              runRulesAction(btn, () => removeLegacyRules(entry.path), (result) => (result.changed ? kit.tx('settings.redesign.setup.pastedCopyRemoved') : kit.tx('settings.redesign.setup.nothingToRemove')));
+            });
+          });
+        });
+
+        autoToggle.addEventListener('click', () => {
+          const next = !autoToggle.classList.contains('on');
+          runRulesAction(autoToggle, () => setRulesAutoUpdate(next), () => (next ? kit.tx('settings.redesign.setup.rulesWillBeKeptUpTo') : kit.tx('settings.redesign.setup.automaticRuleUpdatesAreOff')));
+        });
+        installAllBtn.addEventListener('click', () => {
+          runRulesAction(installAllBtn, () => installAllRules(), (result) => {
+            const rows = Object.entries(result.results || {});
+            if (!rows.length) return kit.tx('settings.redesign.setup.noConnectedToolNeedsRules');
+            // The file each tool reads. The rules are global, so a project's own CLAUDE.md and AGENTS.md stay as they are.
+            const where = rows.filter(([, row]) => row.ok !== false && row.path).map(([host, row]) => `${hostOf[host] || host}: ${row.path}`).join(' · ');
+            if (where) installNote = kit.tx('settings.redesign.setup.rulesInstalledAt', { where: where });
+            const failed = rows.filter(([, row]) => row.ok === false);
+            if (failed.length) return kit.tx('settings.redesign.setup.installedWithFailure', { count: rows.length - failed.length, host: hostOf[failed[0][0]] || failed[0][0], error: failed[0][1].error || failed[0][1].state });
+            const map = rows.map(([host]) => hostOf[host] || host).join(', ');
+            return kit.tx(rows.some(([, row]) => row.changed) ? 'settings.redesign.setup.rulesInstalledFor' : 'settings.redesign.setup.rulesAlreadyCurrentFor', { map: map });
+          });
+        });
+      }
     }
 
     // ── Claude ──
     wireSetupMcpToggle('claude', '/api/claude-code/mcp', '~/.claude.json');
-    wireCopyBtn('setup-claude-cli-copy', () => setupStatus.claude?.cliCommand || ccIntegrations.mcp?.cliCommand || '', 'Copy CLI Command');
-    wireRulesetPreview('claude', 'claude');
+    wireCopyBtn('setup-claude-cli-copy', () => setupStatus.claude?.cliCommand || ccIntegrations.mcp?.cliCommand || '', kit.tx('settings.redesign.setup.copyCliCommand'));
+    wireRulesControls('claude', 'claude');
 
     // ── Gemini ──
     wireSetupMcpToggle('gemini', '/api/setup/gemini/mcp', '~/.gemini/settings.json');
@@ -5488,16 +5432,16 @@ export async function openSettingsModal(options = {}) {
           } else if (data.ok) {
             cachedConfig = JSON.stringify({ mcpServers: { SynaBun: { command: 'node', args: [setupStatus.paths?.mcpIndexPath || '<path-to>/mcp-server/run.mjs'], env: { DOTENV_PATH: setupStatus.paths?.envPath || '<path-to>/synabun/.env' } } } }, null, 2);
             preview.textContent = cachedConfig;
-          } else { preview.textContent = 'Could not load config.'; }
-        }).catch(() => { preview.textContent = 'Failed to load.'; });
+          } else { preview.textContent = kit.tx('settings.redesign.setup.couldNotLoadConfig'); }
+        }).catch(() => { preview.textContent = kit.tx('settings.redesign.setup.failedToLoad'); });
       }
-      wireCopyBtn('setup-gemini-config-copy', () => cachedConfig, 'Copy JSON Config');
+      wireCopyBtn('setup-gemini-config-copy', () => cachedConfig, kit.tx('settings.redesign.setup.copyJsonConfig'));
     }
-    wireRulesetPreview('gemini', 'gemini');
+    wireRulesControls('gemini', 'gemini');
 
     // ── Codex ──
     wireSetupMcpToggle('codex', '/api/setup/codex/mcp', '~/.codex/config.toml');
-    wireCopyBtn('setup-codex-cli-copy', () => setupStatus.codex?.cliCommand || '', 'Copy CLI Command');
+    wireCopyBtn('setup-codex-cli-copy', () => setupStatus.codex?.cliCommand || '', kit.tx('settings.redesign.setup.copyCliCommand'));
     // Config preview
     {
       const preview = overlay.querySelector('#setup-codex-config-preview');
@@ -5513,12 +5457,12 @@ export async function openSettingsModal(options = {}) {
             const dataHome = setupStatus.paths?.dataHome || '<path-to>/synabun';
             cachedConfig = `[mcp_servers.SynaBun]\ncommand = "node"\nargs = ["${mp}"]\nenv = { DOTENV_PATH = "${ep}", SYNABUN_DATA_HOME = "${dataHome}", MEMORY_DATA_DIR = "${dataHome}/mcp-data", SYNABUN_PROFILE = "full", SYNABUN_BROWSER_FAST = "1", SYNABUN_BROWSER_COMPACT = "1", SYNABUN_TOOL_CATALOG_MODE = "deferred" }`;
             preview.textContent = cachedConfig;
-          } else { preview.textContent = 'Could not load config.'; }
-        }).catch(() => { preview.textContent = 'Failed to load.'; });
+          } else { preview.textContent = kit.tx('settings.redesign.setup.couldNotLoadConfig'); }
+        }).catch(() => { preview.textContent = kit.tx('settings.redesign.setup.failedToLoad'); });
       }
-      wireCopyBtn('setup-codex-config-copy', () => cachedConfig, 'Copy TOML Config');
+      wireCopyBtn('setup-codex-config-copy', () => cachedConfig, kit.tx('settings.redesign.setup.copyTomlConfig'));
     }
-    wireRulesetPreview('codex', 'codex');
+    wireRulesControls('codex', 'codex');
 
     // ── OpenCode ──
     wireSetupMcpToggle('opencode', '/api/opencode/mcp', '~/.config/opencode/config.json');
@@ -5545,15 +5489,20 @@ export async function openSettingsModal(options = {}) {
               },
             }, null, 2);
             preview.textContent = cachedConfig;
-          } else { preview.textContent = 'Could not load config.'; }
-        }).catch(() => { preview.textContent = 'Failed to load.'; });
+          } else { preview.textContent = kit.tx('settings.redesign.setup.couldNotLoadConfig'); }
+        }).catch(() => { preview.textContent = kit.tx('settings.redesign.setup.failedToLoad'); });
       }
-      wireCopyBtn('setup-opencode-config-copy', () => cachedConfig, 'Copy JSON Config');
+      wireCopyBtn('setup-opencode-config-copy', () => cachedConfig, kit.tx('settings.redesign.setup.copyJsonConfig'));
     }
-    wireRulesetPreview('opencode', 'generic');
+    wireRulesControls('opencode', 'opencode');
 
-    // ── Coexistence rules ──
-    wireRulesetPreview('coexistence', 'coexistence');
+    // ── Copy-only: Cursor's User Rules and the coexistence snippet ──
+    wireRulesControls('cursor', 'cursor');
+    wireRulesControls('coexistence', 'coexistence');
+
+    // The status came with /api/setup/status when the server has it; otherwise ask once.
+    if (rulesStatus) renderRules();
+    else refreshRules();
   }
 
   // ── Browser config (Browser tab) ──
@@ -5577,7 +5526,7 @@ export async function openSettingsModal(options = {}) {
       streamToggle.addEventListener('click', () => {
         streamToggle.classList.toggle('on');
         if (streamToggle.classList.contains('on')) {
-          alert('Browser stream consumes significant GPU resources and is mostly cosmetic. The automation browser runs headful — you can interact with it directly.');
+          alert(kit.tx('settings.redesign.browser.browserStreamConsumesSignificantGpuResou'));
         }
       });
     }
@@ -5723,15 +5672,15 @@ export async function openSettingsModal(options = {}) {
           const data = await res.json();
           const hint = overlay.querySelector('#bc-detected-path');
           if (data.detectedPath) {
-            if (hint) hint.textContent = `Detected: ${data.detectedPath}`;
+            if (hint) hint.textContent = kit.tx('settings.redesign.browser.detected', { detectedPath: data.detectedPath });
             const inp = overlay.querySelector('#bc-executablePath');
             if (inp && !inp.value.trim()) inp.value = data.detectedPath;
           } else {
-            if (hint) hint.textContent = 'No Chrome/Chromium found — Playwright will use its bundled browser';
+            if (hint) hint.textContent = kit.tx('settings.redesign.browser.noChromeChromiumFoundPlaywrightWill');
           }
         } catch (err) {
           const hint = overlay.querySelector('#bc-detected-path');
-          if (hint) hint.textContent = 'Detection failed: ' + err.message;
+          if (hint) hint.textContent = kit.tx('settings.redesign.browser.detectionFailed', { message: err.message });
         } finally { detectBtn.style.opacity = ''; detectBtn.style.pointerEvents = ''; }
       });
     }
@@ -5812,18 +5761,37 @@ export async function openSettingsModal(options = {}) {
       try {
         const r = await fetch('/api/browser/morelogin-envs');
         const d = await r.json();
-        if (!d || d.ok === false) { sel.innerHTML = '<option value="">— error —</option>'; if (statusEl) statusEl.textContent = (d && d.error) || 'Failed to load MoreLogin profiles.'; return; }
-        if (!d.installed) { sel.innerHTML = '<option value="">— MoreLogin not installed —</option>'; if (statusEl) statusEl.textContent = 'MoreLogin desktop app is not installed.'; return; }
-        if (!d.running) { sel.innerHTML = '<option value="">— start MoreLogin —</option>'; if (statusEl) statusEl.textContent = `MoreLogin not running — open the app (local API port ${d.port}).`; return; }
+        if (!d || d.ok === false) { sel.innerHTML = '<option value="">' + kit.te('settings.redesign.browser.error') + '</option>'; if (statusEl) statusEl.textContent = (d && d.error) || kit.tx('settings.redesign.browser.failedToLoadMoreloginProfiles'); return; }
+        if (!d.installed) { sel.innerHTML = '<option value="">' + kit.te('settings.redesign.browser.moreloginNotInstalled') + '</option>'; if (statusEl) statusEl.textContent = kit.tx('settings.redesign.browser.moreloginDesktopAppIsNotInstalled'); return; }
+        if (!d.running) { sel.innerHTML = '<option value="">' + kit.te('settings.redesign.browser.startMorelogin') + '</option>'; if (statusEl) statusEl.textContent = kit.tx('settings.redesign.browser.moreloginNotRunningOpenTheApp', { port: d.port }); return; }
         const envs = d.envs || [];
-        if (!envs.length) { sel.innerHTML = '<option value="">— no profiles —</option>'; if (statusEl) statusEl.textContent = 'No MoreLogin profiles yet — one is auto-created on first use.'; return; }
+        if (!envs.length) { sel.innerHTML = '<option value="">' + kit.te('settings.redesign.browser.noProfiles') + '</option>'; if (statusEl) statusEl.textContent = kit.tx('settings.redesign.browser.noMoreloginProfilesYetOneIs'); return; }
         const want = _moreloginDesiredEnvId || sel.value || '';
-        sel.innerHTML = envs.map(e => `<option value="${escapeHtml(String(e.id))}">${escapeHtml(e.name)}${e.status ? ` (${escapeHtml(String(e.status))})` : ''}</option>`).join('');
+        // Show each env's proxy — without it there is no way to tell from SynaBun
+        // whether a profile's traffic leaves the machine.
+        const proxyLabel = (p) => {
+          if (!p) return '';
+          const where = [p.host, p.port].filter(Boolean).join(':');
+          return ` · ${[p.type, where, p.country].filter(Boolean).join(' ')}`;
+        };
+        sel.innerHTML = envs.map(e => `<option value="${escapeHtml(String(e.id))}">${escapeHtml(e.name)}${e.status ? ` (${escapeHtml(String(e.status))})` : ''}${escapeHtml(proxyLabel(e.proxy))}</option>`).join('');
         if (want && envs.some(e => String(e.id) === String(want))) sel.value = String(want);
-        if (statusEl) statusEl.textContent = `${envs.length} profile(s) · API port ${d.port}`;
+        if (statusEl) {
+          let msg = kit.tx('settings.redesign.browser.profileSApiPort', { count: envs.length, port: d.port });
+          // MoreLogin silently redirects a navigation it refuses to its stop page: a
+          // localhost port missing from the profile's Port scan protection list, or a
+          // host its website blacklist/whitelist refuses. Surface it; nothing else in
+          // the UI can explain it.
+          if (d.blockedNavigations > 0) {
+            msg += (" " + kit.tx('settings.redesign.browser.moreloginBlockedNavigationS', { blockedNavigations: d.blockedNavigations }));
+            if (d.lastBlockedUrl) msg += kit.tx('settings.redesign.browser.mostRecently', { lastBlockedUrl: String(d.lastBlockedUrl).slice(0, 80) });
+            msg += kit.tx('settings.redesign.browser.aLocalhostPortMustBeIn');
+          }
+          statusEl.textContent = msg;
+        }
       } catch {
-        sel.innerHTML = '<option value="">— error —</option>';
-        if (statusEl) statusEl.textContent = 'Failed to reach MoreLogin.';
+        sel.innerHTML = '<option value="">' + kit.te('settings.redesign.browser.error') + '</option>';
+        if (statusEl) statusEl.textContent = kit.tx('settings.redesign.browser.failedToReachMorelogin');
       }
     }
     // Toggle MoreLogin-backend UI: show the MoreLogin profile picker, hide the
@@ -5924,13 +5892,13 @@ export async function openSettingsModal(options = {}) {
       if (isChrome && connectMode === 'attach') {
         if (attachSeed === 'real') {
           msg = running
-            ? 'Attach + seed: SynaBun will copy this profile once into a dedicated Chrome it controls and open tabs there. Close Chrome ONCE so the copy isn\'t corrupted — then reopen it and keep it open. Your daily Chrome is never killed.'
-            : 'Attach + seed: SynaBun opens a dedicated Chrome window seeded once from this profile (you\'ll be logged in) and opens tabs in it. Your daily Chrome is untouched.';
+            ? kit.tx('settings.redesign.browser.attachSeedSynabunWillCopyThis')
+            : kit.tx('settings.redesign.browser.attachSeedSynabunOpensADedicated');
         } else {
-          msg = 'Attach + fresh: SynaBun opens a dedicated Chrome window with an empty profile — sign in there once. Your daily Chrome is untouched.';
+          msg = kit.tx('settings.redesign.browser.attachFreshSynabunOpensADedicated');
         }
       } else if (isChrome && running) {
-        msg = 'Chrome is running — SynaBun opens an isolated mirrored copy of this profile. The mirror keeps its own cookies/auth and never touches your real Chrome.';
+        msg = kit.tx('settings.redesign.browser.chromeIsRunningSynabunOpensAn');
       }
       if (msg) { warn.textContent = msg; warn.style.display = ''; }
       else { warn.style.display = 'none'; }
@@ -5982,8 +5950,8 @@ export async function openSettingsModal(options = {}) {
       list.insertAdjacentHTML('beforeend', `
         <div class="bc-profile-item" data-profile-value="">
           <span class="bc-profile-radio"></span>
-          <span class="bc-profile-name">Clean Sandbox</span>
-          <span class="bc-profile-hint">No persistent profile</span>
+          <span class="bc-profile-name">${kit.te('settings.redesign.browser.cleanSandbox')}</span>
+          <span class="bc-profile-hint">${kit.te('settings.redesign.browser.noPersistentProfile')}</span>
         </div>
       `);
 
@@ -5991,8 +5959,8 @@ export async function openSettingsModal(options = {}) {
       list.insertAdjacentHTML('beforeend', `
         <div class="bc-profile-item" data-profile-value="__synabun__">
           <span class="bc-profile-radio"></span>
-          <span class="bc-profile-name">SynaBun Profile</span>
-          <span class="bc-profile-hint">Managed</span>
+          <span class="bc-profile-name">${kit.te('settings.redesign.browser.synabunProfile')}</span>
+          <span class="bc-profile-hint">${kit.te('settings.redesign.browser.managed')}</span>
         </div>
       `);
 
@@ -6011,7 +5979,7 @@ export async function openSettingsModal(options = {}) {
             <div class="bc-profile-item" data-profile-value="${p.path.replace(/"/g, '&quot;')}">
               <span class="bc-profile-radio"></span>
               <span class="bc-profile-name">${label}</span>
-              <span class="bc-profile-hint">${p.isDefault ? 'Default' : ''}</span>
+              <span class="bc-profile-hint">${p.isDefault ? kit.te('settings.redesign.browser.default') : ''}</span>
             </div>
           `);
         }
@@ -6097,7 +6065,7 @@ export async function openSettingsModal(options = {}) {
     if (browseBtn && bcBrowserEl) {
       async function loadBcDir(dirPath) {
         bcBrowserEl.style.display = 'block';
-        bcBrowserEl.innerHTML = '<div style="padding:10px;color:var(--t-muted);font-size:12px">Loading...</div>';
+        bcBrowserEl.innerHTML = '<div style="padding:10px;color:var(--t-muted);font-size:12px">' + kit.te('settings.redesign.browser.loading') + '</div>';
         try {
           const qs = dirPath ? `?path=${encodeURIComponent(dirPath)}` : '';
           const res = await fetch(`/api/browse-directory${qs}`);
@@ -6106,13 +6074,13 @@ export async function openSettingsModal(options = {}) {
 
           let html = '<div style="padding:6px 10px;font-size:11px;color:var(--t-muted);border-bottom:1px solid var(--s-medium);display:flex;align-items:center;justify-content:space-between">'
             + `<span style="font-family:'JetBrains Mono',monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(data.current)}</span>`
-            + '<button id="bc-browse-select" style="flex:0 0 auto;padding:3px 10px;background:var(--accent-blue-bg);border:1px solid var(--accent-blue-border);color:var(--accent-blue);border-radius:4px;cursor:pointer;font-size:11px">Select</button>'
+            + '<button id="bc-browse-select" style="flex:0 0 auto;padding:3px 10px;background:var(--accent-blue-bg);border:1px solid var(--accent-blue-border);color:var(--accent-blue);border-radius:4px;cursor:pointer;font-size:11px">' + kit.te('settings.redesign.browser.select') + '</button>'
             + '</div>';
           html += '<div style="padding:4px 0">';
           if (data.parent) {
             html += `<div class="cc-browse-item" data-path="${escapeHtml(data.parent)}" style="padding:4px 10px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:6px;color:var(--t-muted)">`
               + '<svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2"><polyline points="15 18 9 12 15 6"/></svg>'
-              + '.. (parent)</div>';
+              + '' + kit.te('settings.redesign.browser.parent') + '</div>';
           }
           for (const d of data.directories) {
             html += `<div class="cc-browse-item" data-path="${escapeHtml(data.current + '/' + d)}" style="padding:4px 10px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:6px">`
@@ -6120,7 +6088,7 @@ export async function openSettingsModal(options = {}) {
               + escapeHtml(d) + '</div>';
           }
           if (data.directories.length === 0 && !data.parent) {
-            html += '<div style="padding:8px 10px;color:var(--t-muted);font-size:12px">No subdirectories</div>';
+            html += '<div style="padding:8px 10px;color:var(--t-muted);font-size:12px">' + kit.te('settings.redesign.browser.noSubdirectories') + '</div>';
           }
           html += '</div>';
           bcBrowserEl.innerHTML = html;
@@ -6139,7 +6107,7 @@ export async function openSettingsModal(options = {}) {
             item.addEventListener('click', () => loadBcDir(item.dataset.path));
           });
         } catch (err) {
-          bcBrowserEl.innerHTML = `<div style="padding:10px;color:var(--accent-dim);font-size:12px">Error: ${escapeHtml(err.message)}</div>`;
+          bcBrowserEl.innerHTML = `<div style="padding:10px;color:var(--accent-dim);font-size:12px">${kit.te('settings.redesign.browser.error2')} ${escapeHtml(err.message)}</div>`;
         }
       }
 
@@ -6420,7 +6388,7 @@ export async function openSettingsModal(options = {}) {
       if (data.config) { applyBrowserConfig(data.config); syncBcDropdowns(); }
       // Show detected path
       const hint = overlay.querySelector('#bc-detected-path');
-      if (hint && data.detectedPath) hint.textContent = `Detected: ${data.detectedPath}`;
+      if (hint && data.detectedPath) hint.textContent = kit.tx('settings.redesign.browser.detected', { detectedPath: data.detectedPath });
       // Auto-detect Chrome profiles and select current
       await detectAndBuildProfiles();
       if (data.config) matchProfileSelection(data.config.userDataDir || '', _synabunProfile);
@@ -6443,13 +6411,13 @@ export async function openSettingsModal(options = {}) {
           });
           const data = await res.json();
           if (data.ok) {
-            if (status) { status.textContent = 'Configuration saved'; status.style.color = '#4ade80'; }
-            showCCToast('Browser configuration saved');
+            if (status) { status.textContent = kit.tx('settings.redesign.browser.configurationSaved'); status.style.color = '#4ade80'; }
+            showCCToast(kit.tx('settings.redesign.browser.browserConfigurationSaved'));
           } else {
-            if (status) { status.textContent = 'Save failed: ' + (data.error || 'Unknown error'); status.style.color = '#f87171'; }
+            if (status) { status.textContent = kit.tx('settings.redesign.browser.saveFailed', { error: (data.error || kit.tx('settings.redesign.browser.unknownError')) }); status.style.color = '#f87171'; }
           }
         } catch (err) {
-          if (status) { status.textContent = 'Save failed: ' + err.message; status.style.color = '#f87171'; }
+          if (status) { status.textContent = kit.tx('settings.redesign.browser.saveFailed2', { message: err.message }); status.style.color = '#f87171'; }
         } finally {
           saveBtn.style.opacity = ''; saveBtn.style.pointerEvents = '';
           setTimeout(() => { if (status) { status.textContent = ''; } }, 4000);
@@ -6490,7 +6458,7 @@ export async function openSettingsModal(options = {}) {
         // Uncheck all permission checkboxes
         overlay.querySelectorAll('.browser-cfg-checkbox-grid input[type="checkbox"]').forEach(cb => { cb.checked = false; });
         const status = overlay.querySelector('#bc-save-status');
-        if (status) { status.textContent = 'Reset to defaults (not saved yet)'; status.style.color = 'var(--t-faint)'; }
+        if (status) { status.textContent = kit.tx('settings.redesign.browser.resetToDefaultsNotSavedYet'); status.style.color = 'var(--t-faint)'; }
         setTimeout(() => { if (status) status.textContent = ''; }, 3000);
       });
     }
@@ -6510,13 +6478,13 @@ export async function openSettingsModal(options = {}) {
           if (isOn) {
             tunnelToggle.classList.remove('on');
             const row = overlay.querySelector('#cc-tunnel-row'); if (row) row.classList.remove('enabled');
-            const label = overlay.querySelector('#cc-tunnel-label'); if (label) label.textContent = 'Ready';
-            const urlEl = overlay.querySelector('#cc-tunnel-url'); if (urlEl) urlEl.textContent = 'Expose MCP to Claude web via public URL';
+            const label = overlay.querySelector('#cc-tunnel-label'); if (label) label.textContent = kit.tx('settings.redesign.hooks.ready');
+            const urlEl = overlay.querySelector('#cc-tunnel-url'); if (urlEl) urlEl.textContent = kit.tx('settings.redesign.hooks.exposeMcpToClaudeWebVia');
           } else {
             tunnelToggle.classList.add('on');
             const row = overlay.querySelector('#cc-tunnel-row'); if (row) row.classList.add('enabled');
-            const label = overlay.querySelector('#cc-tunnel-label'); if (label) label.textContent = 'Starting...';
-            const urlEl = overlay.querySelector('#cc-tunnel-url'); if (urlEl) urlEl.textContent = 'Waiting for tunnel URL...';
+            const label = overlay.querySelector('#cc-tunnel-label'); if (label) label.textContent = kit.tx('settings.redesign.hooks.starting');
+            const urlEl = overlay.querySelector('#cc-tunnel-url'); if (urlEl) urlEl.textContent = kit.tx('settings.redesign.hooks.waitingForTunnelUrl');
             let attempts = 0;
             const poll = setInterval(async () => {
               attempts++;
@@ -6524,27 +6492,27 @@ export async function openSettingsModal(options = {}) {
                 const sr = await fetch('/api/tunnel/status'); const sd = await sr.json();
                 if (sd.url) {
                   clearInterval(poll);
-                  if (label) label.textContent = 'Running';
+                  if (label) label.textContent = kit.tx('settings.redesign.hooks.running');
                   if (urlEl) urlEl.textContent = sd.url;
                   let copyBtn = overlay.querySelector('#cc-tunnel-copy-url');
                   if (!copyBtn) {
                     const wrapper = document.createElement('div'); wrapper.style.cssText = 'margin-top:6px;display:flex;gap:6px;align-items:center';
-                    wrapper.innerHTML = `<button class="conn-add-btn" id="cc-tunnel-copy-url" style="margin:0;flex:1;font-size:12px;padding:6px 10px"><svg viewBox="0 0 24 24" style="width:12px;height:12px"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy MCP URL</button>`;
+                    wrapper.innerHTML = `<button type="button" class="conn-add-btn" id="cc-tunnel-copy-url" ${kit.inv('AUT050')} style="margin:0;flex:1;font-size:12px;padding:6px 10px"><svg viewBox="0 0 24 24" style="width:12px;height:12px"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> ${kit.te('settings.redesign.hooks.copyMcpUrl')}</button>`;
                     row.parentNode.insertBefore(wrapper, row.nextSibling);
                     copyBtn = wrapper.querySelector('#cc-tunnel-copy-url');
                     copyBtn.addEventListener('click', () => {
                       const tunnelMcpUrl = (urlEl?.textContent || '') + '/mcp';
                       navigator.clipboard.writeText(tunnelMcpUrl);
-                      copyBtn.innerHTML = '<svg viewBox="0 0 24 24" style="width:12px;height:12px"><polyline points="20 6 9 17 4 12"/></svg> Copied!';
-                      setTimeout(() => { copyBtn.innerHTML = '<svg viewBox="0 0 24 24" style="width:12px;height:12px"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy MCP URL'; }, 2000);
+                      copyBtn.innerHTML = '<svg viewBox="0 0 24 24" style="width:12px;height:12px"><polyline points="20 6 9 17 4 12"/></svg> ' + kit.te('settings.redesign.hooks.copied') + '';
+                      setTimeout(() => { copyBtn.innerHTML = '<svg viewBox="0 0 24 24" style="width:12px;height:12px"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> ' + kit.te('settings.redesign.hooks.copyMcpUrl') + ''; }, 2000);
                     });
                   }
-                } else if (attempts >= 30) { clearInterval(poll); if (label) label.textContent = 'Timeout'; if (urlEl) urlEl.textContent = 'Failed to get tunnel URL - check cloudflared'; }
+                } else if (attempts >= 30) { clearInterval(poll); if (label) label.textContent = kit.tx('settings.redesign.hooks.timeout'); if (urlEl) urlEl.textContent = kit.tx('settings.redesign.hooks.failedToGetTunnelUrlCheck'); }
               } catch {}
             }, 1000);
           }
-        } else { alert(data.error || 'Failed'); }
-      } catch (err) { alert('Failed: ' + err.message); }
+        } else { alert(data.error || kit.tx('settings.redesign.hooks.failed')); }
+      } catch (err) { alert(kit.tx('settings.redesign.hooks.failed2', { message: err.message })); }
       finally { tunnelToggle.style.opacity = ''; tunnelToggle.style.pointerEvents = ''; }
     });
   }
@@ -6554,11 +6522,11 @@ export async function openSettingsModal(options = {}) {
   if (tunnelCopy) {
     tunnelCopy.addEventListener('click', () => {
       const urlEl = overlay.querySelector('#cc-tunnel-url'); const baseUrl = urlEl?.textContent || '';
-      if (!baseUrl) { alert('Tunnel URL not available'); return; }
+      if (!baseUrl) { alert(kit.tx('settings.redesign.hooks.tunnelUrlNotAvailable')); return; }
       const tunnelMcpUrl = mcpKeyInfo.key ? baseUrl + '/mcp/' + mcpKeyInfo.key : baseUrl + '/mcp';
       navigator.clipboard.writeText(tunnelMcpUrl);
-      tunnelCopy.innerHTML = '<svg viewBox="0 0 24 24" style="width:12px;height:12px"><polyline points="20 6 9 17 4 12"/></svg> Copied!';
-      setTimeout(() => { tunnelCopy.innerHTML = '<svg viewBox="0 0 24 24" style="width:12px;height:12px"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy MCP URL'; }, 2000);
+      tunnelCopy.innerHTML = '<svg viewBox="0 0 24 24" style="width:12px;height:12px"><polyline points="20 6 9 17 4 12"/></svg> ' + kit.te('settings.redesign.hooks.copied') + '';
+      setTimeout(() => { tunnelCopy.innerHTML = '<svg viewBox="0 0 24 24" style="width:12px;height:12px"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> ' + kit.te('settings.redesign.hooks.copyMcpUrl') + ''; }, 2000);
     });
   }
 
@@ -6598,38 +6566,38 @@ export async function openSettingsModal(options = {}) {
   const ytSave = () => fetch('/api/youtube/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ytGather()) });
   const ytSaveBtn = overlay.querySelector('#yt-save');
   if (ytSaveBtn) ytSaveBtn.addEventListener('click', async () => {
-    ytStatus('Saving…');
-    try { const j = await (await ytSave()).json(); ytStatus(j.ok ? 'Saved.' : ('Error: ' + (j.error || 'failed')), !!j.ok); }
-    catch (e) { ytStatus('Error: ' + e.message, false); }
+    ytStatus(kit.tx('settings.redesign.youtube.saving'));
+    try { const j = await (await ytSave()).json(); ytStatus(j.ok ? kit.tx('settings.redesign.youtube.saved') : kit.tx('settings.redesign.youtube.error', { message: j.error || kit.tx('settings.redesign.youtube.failed') }), !!j.ok); }
+    catch (e) { ytStatus(kit.tx('settings.redesign.youtube.error', { message: e.message }), false); }
   });
   const ytTestBtn = overlay.querySelector('#yt-test');
   if (ytTestBtn) ytTestBtn.addEventListener('click', async () => {
-    ytStatus('Testing…');
+    ytStatus(kit.tx('settings.redesign.youtube.testing'));
     try {
       await ytSave(); // test freshly-typed creds
       const j = await (await fetch('/api/youtube/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target: 'all' }) })).json();
       const res = j.results || {};
       const fmt = (k) => (res[k] ? (res[k].ok ? k + ' ✓' : k + ' ✗') : '');
-      const line = ['igdb', 'steam', 'youtube'].map(fmt).filter(Boolean).join('  ·  ') || 'No result';
+      const line = ['igdb', 'steam', 'youtube'].map(fmt).filter(Boolean).join('  ·  ') || kit.tx('settings.redesign.youtube.noResult');
       ytStatus(line, Object.values(res).every((x) => x && x.ok));
-    } catch (e) { ytStatus('Error: ' + e.message, false); }
+    } catch (e) { ytStatus(kit.tx('settings.redesign.youtube.error', { message: e.message }), false); }
   });
   const ytAuthBtn = overlay.querySelector('#yt-authorize');
   if (ytAuthBtn) ytAuthBtn.addEventListener('click', async () => {
-    ytStatus('Saving credentials…');
+    ytStatus(kit.tx('settings.redesign.youtube.savingCredentials'));
     try {
       await ytSave();
       const j = await (await fetch('/api/youtube/oauth/start')).json();
-      if (j.url) { window.open(j.url, '_blank', 'noopener'); ytStatus('Finish Google sign-in in the new tab; the refresh token saves automatically.'); }
-      else ytStatus('Error: ' + (j.error || 'set the OAuth Client ID first'), false);
-    } catch (e) { ytStatus('Error: ' + e.message, false); }
+      if (j.url) { window.open(j.url, '_blank', 'noopener'); ytStatus(kit.tx('settings.redesign.youtube.finishGoogleSignInInThe')); }
+      else ytStatus(kit.tx('settings.redesign.youtube.error', { message: j.error || kit.tx('settings.redesign.youtube.setTheOauthClientIdFirst') }), false);
+    } catch (e) { ytStatus(kit.tx('settings.redesign.youtube.error', { message: e.message }), false); }
   });
 
   const apikeyGenBtn = overlay.querySelector('#cc-apikey-generate');
   if (apikeyGenBtn) {
     apikeyGenBtn.addEventListener('click', async () => {
       const existing = overlay.querySelector('#cc-apikey-row')?.classList.contains('enabled');
-      if (existing && !confirm('This will revoke the current key and generate a new one. Continue?')) return;
+      if (existing && !confirm(kit.tx('settings.redesign.hooks.thisWillRevokeTheCurrentKey'))) return;
       apikeyGenBtn.style.opacity = '0.4'; apikeyGenBtn.style.pointerEvents = 'none';
       try {
         const res = await fetch('/api/mcp-key', { method: 'POST' }); const data = await res.json();
@@ -6643,9 +6611,9 @@ export async function openSettingsModal(options = {}) {
           if (reveal) reveal.style.display = '';
           if (statusEl) statusEl.textContent = '***' + data.key.slice(-8);
           if (row) row.classList.add('enabled');
-          apikeyGenBtn.textContent = 'Regenerate';
-        } else { alert(data.error || 'Failed to generate key'); }
-      } catch (err) { alert('Failed: ' + err.message); }
+          apikeyGenBtn.textContent = kit.tx('settings.redesign.hooks.regenerate');
+        } else { alert(data.error || kit.tx('settings.redesign.hooks.failedToGenerateKey')); }
+      } catch (err) { alert(kit.tx('settings.redesign.hooks.failed2', { message: err.message })); }
       finally { apikeyGenBtn.style.opacity = ''; apikeyGenBtn.style.pointerEvents = ''; }
     });
   }
@@ -6654,24 +6622,24 @@ export async function openSettingsModal(options = {}) {
     apikeyCopyBtn.addEventListener('click', () => {
       const key = overlay.querySelector('#cc-apikey-value')?.textContent || ''; if (!key) return;
       navigator.clipboard.writeText(key);
-      apikeyCopyBtn.innerHTML = '<svg viewBox="0 0 24 24" style="width:12px;height:12px"><polyline points="20 6 9 17 4 12"/></svg> Copied!';
-      setTimeout(() => { apikeyCopyBtn.innerHTML = '<svg viewBox="0 0 24 24" style="width:12px;height:12px"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy Key'; }, 2000);
+      apikeyCopyBtn.innerHTML = '<svg viewBox="0 0 24 24" style="width:12px;height:12px"><polyline points="20 6 9 17 4 12"/></svg> ' + kit.te('settings.redesign.hooks.copied') + '';
+      setTimeout(() => { apikeyCopyBtn.innerHTML = '<svg viewBox="0 0 24 24" style="width:12px;height:12px"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> ' + kit.te('settings.redesign.hooks.copyKey') + ''; }, 2000);
     });
   }
   const apikeyRevokeBtn = overlay.querySelector('#cc-apikey-revoke');
   if (apikeyRevokeBtn) {
     apikeyRevokeBtn.addEventListener('click', async () => {
-      if (!confirm('Revoke this API key? The MCP endpoint will become open.')) return;
+      if (!confirm(kit.tx('settings.redesign.hooks.revokeThisApiKeyTheMcp'))) return;
       try {
         const res = await fetch('/api/mcp-key', { method: 'DELETE' }); const data = await res.json();
         if (data.ok) {
           mcpKeyInfo = { hasKey: false };
           const reveal = overlay.querySelector('#cc-apikey-reveal'); if (reveal) reveal.style.display = 'none';
-          const statusEl = overlay.querySelector('#cc-apikey-status'); if (statusEl) statusEl.textContent = 'No key configured - tunnel is open';
+          const statusEl = overlay.querySelector('#cc-apikey-status'); if (statusEl) statusEl.textContent = kit.tx('settings.redesign.hooks.noKeyConfiguredTunnelIsOpen');
           const row = overlay.querySelector('#cc-apikey-row'); if (row) row.classList.remove('enabled');
-          const genBtn = overlay.querySelector('#cc-apikey-generate'); if (genBtn) genBtn.textContent = 'Generate Key';
+          const genBtn = overlay.querySelector('#cc-apikey-generate'); if (genBtn) genBtn.textContent = kit.tx('settings.redesign.hooks.generateKey');
         }
-      } catch (err) { alert('Failed: ' + err.message); }
+      } catch (err) { alert(kit.tx('settings.redesign.hooks.failed2', { message: err.message })); }
     });
   }
 
@@ -6717,11 +6685,11 @@ export async function openSettingsModal(options = {}) {
     };
 
     function storageRiskMeta(item) {
-      if (item.blocked) return { cls: 'blocked', label: 'In use', title: item.blockerReason };
-      if (item.protected) return { cls: 'protected', label: 'Protected', title: item.protectionReason };
-      if (item.originalRisk === 'dependency') return { cls: 'dependency', label: 'Optional dependency', title: 'Deleting this may require a later download or install.' };
-      if (item.originalRisk === 'review') return { cls: 'review', label: 'Review', title: 'Inspect and select this item manually.' };
-      return { cls: 'safe', label: 'Safe', title: 'Generated output that can be rebuilt.' };
+      if (item.blocked) return { cls: 'blocked', label: kit.tx('settings.redesign.projects.inUse'), title: item.blockerReason };
+      if (item.protected) return { cls: 'protected', label: kit.tx('settings.redesign.projects.protected'), title: item.protectionReason };
+      if (item.originalRisk === 'dependency') return { cls: 'dependency', label: kit.tx('settings.redesign.projects.optionalDependency'), title: kit.tx('settings.redesign.projects.deletingThisMayRequireALater') };
+      if (item.originalRisk === 'review') return { cls: 'review', label: kit.tx('settings.redesign.projects.review'), title: kit.tx('settings.redesign.projects.inspectAndSelectThisItemManually') };
+      return { cls: 'safe', label: kit.tx('settings.redesign.projects.safe'), title: kit.tx('settings.redesign.projects.generatedOutputThatCanBeRebuilt') };
     }
 
     function syncStorageSelection() {
@@ -6731,7 +6699,7 @@ export async function openSettingsModal(options = {}) {
       if (selectedEl) selectedEl.textContent = `${storageFormatBytes(bytes)} · ${items.length}`;
       if (clearButton) {
         clearButton.disabled = storageLoading || items.length === 0;
-        clearButton.textContent = items.length ? `Clear selected (${items.length})` : 'Clear selected';
+        clearButton.textContent = items.length ? kit.tx('settings.redesign.projects.clearSelected', { count: items.length }) : kit.tx('settings.redesign.projects.clearSelected2');
       }
       if (clearSelectionButton) clearSelectionButton.disabled = storageLoading || items.length === 0;
     }
@@ -6743,7 +6711,7 @@ export async function openSettingsModal(options = {}) {
       const reason = risk.title ? ` title="${storageEsc(risk.title)}"` : '';
       return `
         <label class="project-storage-item${disabled ? ' disabled' : ''}" data-risk="${risk.cls}">
-          <input class="project-storage-checkbox" type="checkbox" data-project-storage-item="${item.id}" ${checked ? 'checked' : ''} ${disabled ? 'disabled' : ''} aria-label="Select ${storageEsc(item.name)} at ${storageEsc(item.displayPath)}">
+          <input class="project-storage-checkbox" type="checkbox" data-project-storage-item="${item.id}" ${kit.inv('PRJ006')} ${checked ? 'checked' : ''} ${disabled ? 'disabled' : ''} aria-label="${kit.th('settings.redesign.projects.selectAt', { storageEsc: storageEsc(item.name) })} ${storageEsc(item.displayPath)}">
           <span class="project-storage-checkmark" aria-hidden="true"></span>
           <span class="project-storage-item-main">
             <span class="project-storage-item-title-row">
@@ -6761,19 +6729,19 @@ export async function openSettingsModal(options = {}) {
     function renderStorageGroup(group, { shared = false } = {}) {
       const items = group.items || [];
       const totalBytes = items.reduce((sum, item) => sum + (Number(item.bytes) || 0), 0);
-      const pathText = shared ? 'Caches shared by projects and developer tools' : group.path;
+      const pathText = shared ? kit.tx('settings.redesign.projects.cachesSharedByProjectsAndDeveloper') : group.path;
       return `
         <details class="project-storage-group" open>
-          <summary>
+          <summary ${kit.inv('PRJ005')}>
             <svg class="project-storage-chevron" viewBox="0 0 24 24" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
             <span class="project-storage-group-main">
-              <span class="project-storage-group-title">${storageEsc(group.label)}${group.active ? '<span class="project-storage-active-badge">In use</span>' : ''}</span>
+              <span class="project-storage-group-title">${storageEsc(group.label)}${group.active ? '<span class="project-storage-active-badge">' + kit.te('settings.redesign.projects.inUse') + '</span>' : ''}</span>
               <span class="project-storage-group-path" title="${storageEsc(pathText)}">${storageEsc(pathText)}</span>
             </span>
             <span class="project-storage-group-total">${storageFormatBytes(totalBytes)} · ${items.length}</span>
           </summary>
           <div class="project-storage-group-items">
-            ${items.length ? items.map(renderStorageItem).join('') : '<div class="project-storage-group-empty">No recognized rebuildable files found.</div>'}
+            ${items.length ? items.map(renderStorageItem).join('') : '<div class="project-storage-group-empty">' + kit.te('settings.redesign.projects.noRecognizedRebuildableFilesFound') + '</div>'}
           </div>
         </details>`;
     }
@@ -6791,15 +6759,15 @@ export async function openSettingsModal(options = {}) {
       const hasAnyItems = (totals.itemCount || 0) > 0;
       const warnings = Array.isArray(storageScan.warnings) ? storageScan.warnings.filter(Boolean) : [];
       storageResults.innerHTML = hasAnyItems ? `
-        ${warnings.length ? `<div class="project-storage-warning"><strong>Scan notes</strong>${warnings.slice(0, 3).map(warning => `<span>${storageEsc(warning)}</span>`).join('')}</div>` : ''}
+        ${warnings.length ? `<div class="project-storage-warning"><strong>${kit.te('settings.redesign.projects.scanNotes')}</strong>${warnings.slice(0, 3).map(warning => `<span>${storageEsc(warning)}</span>`).join('')}</div>` : ''}
         <div class="project-storage-groups">
           ${storageScan.projects.map(group => renderStorageGroup(group)).join('')}
-          ${renderStorageGroup(storageScan.shared || { label: 'Shared developer caches', items: [] }, { shared: true })}
+          ${renderStorageGroup(storageScan.shared || { label: kit.tx('settings.redesign.projects.sharedDeveloperCaches'), items: [] }, { shared: true })}
         </div>` : `
         <div class="project-storage-empty">
           <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
-          <strong>No cleanup candidates found</strong>
-          <span>Registered projects and known shared developer caches are already clear.</span>
+          <strong>${kit.te('settings.redesign.projects.noCleanupCandidatesFound')}</strong>
+          <span>${kit.te('settings.redesign.projects.registeredProjectsAndKnownSharedDevelope')}</span>
         </div>`;
       syncStorageSelection();
     }
@@ -6820,7 +6788,7 @@ export async function openSettingsModal(options = {}) {
         storageResults.innerHTML = `
           <div class="project-storage-loading" role="status">
             <span class="project-storage-spinner" aria-hidden="true"></span>
-            <span><strong>Scanning project storage…</strong><small>Measuring generated files and checking Git protections.</small></span>
+            <span><strong>${kit.te('settings.redesign.projects.scanningProjectStorage')}</strong><small>${kit.te('settings.redesign.projects.measuringGeneratedFilesAndCheckingGit')}</small></span>
           </div>`;
       }
       setStorageFeedback('');
@@ -6828,7 +6796,7 @@ export async function openSettingsModal(options = {}) {
       try {
         const response = await fetch(`/api/settings/project-storage${refresh ? '?refresh=1' : ''}`);
         const data = await response.json().catch(() => ({}));
-        if (!response.ok || !data.ok) throw new Error(data.error || `Storage scan failed (HTTP ${response.status})`);
+        if (!response.ok || !data.ok) throw new Error(data.error || kit.tx('settings.redesign.projects.storageScanFailedHttp', { status: response.status }));
         storageScan = data;
         selectedStorageItems = new Set(allStorageItems().filter(item => item.defaultSelected).map(item => item.id));
         renderProjectStorage();
@@ -6836,12 +6804,12 @@ export async function openSettingsModal(options = {}) {
         if (!storageScan && storageResults) {
           storageResults.innerHTML = `
             <div class="project-storage-error" role="alert">
-              <strong>Storage scan unavailable</strong>
-              <span>${storageEsc(error?.message || 'Could not scan project storage.')}</span>
-              <button class="project-storage-btn" type="button" data-project-storage-retry>Try again</button>
+              <strong>${kit.te('settings.redesign.projects.storageScanUnavailable')}</strong>
+              <span>${storageEsc(error?.message || kit.tx('settings.redesign.projects.couldNotScanProjectStorage'))}</span>
+              <button class="project-storage-btn" type="button" data-project-storage-retry>${kit.te('settings.redesign.projects.tryAgain')}</button>
             </div>`;
         }
-        setStorageFeedback(error?.message || 'Could not scan project storage.', 'error');
+        setStorageFeedback(error?.message || kit.tx('settings.redesign.projects.couldNotScanProjectStorage'), 'error');
       } finally {
         storageLoading = false;
         refreshButton?.classList.remove('loading');
@@ -6870,28 +6838,28 @@ export async function openSettingsModal(options = {}) {
               <svg viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/></svg>
             </span>
             <div>
-              <h2 id="project-storage-modal-title">Clear selected project storage?</h2>
+              <h2 id="project-storage-modal-title">${kit.te('settings.redesign.projects.clearSelectedProjectStorage')}</h2>
               <p>${storageFormatCount(items.length, 'item')} · ${storageFormatBytes(totalBytes)}</p>
             </div>
           </div>
           <div class="project-storage-modal-warning" id="project-storage-modal-description">
             ${requiresTyping
-              ? `<strong>${storageFormatCount(dependencies.length, 'dependency cache')} selected.</strong> These files can be restored, but the affected tools may need to download or install them again.`
+              ? `<strong>${storageFormatCount(dependencies.length, kit.tx('settings.redesign.projects.dependencyCache'))} ${kit.te('settings.redesign.projects.selected')}</strong> ${kit.te('settings.redesign.projects.theseFilesCanBeRestoredBut')}`
               : reviewItems.length
-                ? `<strong>${storageFormatCount(reviewItems.length, 'manually reviewed item')} selected.</strong> These were not selected automatically. Confirm that you no longer need their current contents.`
-                : '<strong>Generated files will be removed.</strong> Builds and caches can be recreated by their tools, but cleanup itself cannot be undone.'}
+                ? `<strong>${storageFormatCount(reviewItems.length, kit.tx('settings.redesign.projects.manuallyReviewedItem'))} ${kit.te('settings.redesign.projects.selected')}</strong> ${kit.te('settings.redesign.projects.theseWereNotSelectedAutomaticallyConfirm')}`
+                : '<strong>' + kit.te('settings.redesign.projects.generatedFilesWillBeRemoved') + '</strong> ' + kit.te('settings.redesign.projects.buildsAndCachesCanBeRecreated') + ''}
           </div>
           <div class="project-storage-modal-list">
             ${items.slice(0, 6).map(item => `<div><span>${storageEsc(item.name)}<small>${storageEsc(item.displayPath)}</small></span><strong>${storageFormatBytes(item.bytes)}</strong></div>`).join('')}
-            ${items.length > 6 ? `<div class="more"><span>And ${items.length - 6} more selected items</span></div>` : ''}
+            ${items.length > 6 ? `<div class="more"><span>${kit.th('settings.redesign.projects.andMoreSelectedItems', { count: items.length - 6 })}</span></div>` : ''}
           </div>
           ${requiresTyping ? `
-            <label class="project-storage-confirm-label" for="project-storage-confirm-input">Type <code>${storageEsc(confirmation)}</code> to continue:</label>
+            <label class="project-storage-confirm-label" for="project-storage-confirm-input">${kit.te('settings.redesign.projects.type')} <code>${storageEsc(confirmation)}</code> ${kit.te('settings.redesign.projects.toContinue')}</label>
             <input class="project-storage-confirm-input" id="project-storage-confirm-input" type="text" autocomplete="off" spellcheck="false">` : ''}
           <div class="project-storage-modal-feedback" id="project-storage-modal-feedback" aria-live="polite"></div>
           <div class="tag-delete-modal-actions">
-            <button class="action-btn action-btn--ghost" id="project-storage-modal-cancel" type="button">Cancel</button>
-            <button class="action-btn action-btn--danger" id="project-storage-modal-confirm" type="button" ${requiresTyping ? 'disabled' : ''}>Clear ${items.length} selected</button>
+            <button class="action-btn action-btn--ghost" id="project-storage-modal-cancel" type="button">${kit.te('settings.redesign.projects.cancel')}</button>
+            <button class="action-btn action-btn--danger" id="project-storage-modal-confirm" type="button" ${requiresTyping ? 'disabled' : ''}>${kit.th('settings.redesign.projects.clearSelected3', { count: items.length })}</button>
           </div>
         </div>`;
       document.body.appendChild(modal);
@@ -6937,9 +6905,9 @@ export async function openSettingsModal(options = {}) {
         cancel.disabled = true;
         confirm.disabled = true;
         if (input) input.disabled = true;
-        confirm.textContent = 'Clearing…';
+        confirm.textContent = kit.tx('settings.redesign.projects.clearing');
         feedback.dataset.state = 'working';
-        feedback.textContent = 'Revalidating the selection and clearing files…';
+        feedback.textContent = kit.tx('settings.redesign.projects.revalidatingTheSelectionAndClearingFiles');
         try {
           const response = await fetch('/api/settings/project-storage/clear', {
             method: 'POST',
@@ -6953,32 +6921,32 @@ export async function openSettingsModal(options = {}) {
           const data = await response.json().catch(() => ({}));
           if (!response.ok) {
             const detail = Array.isArray(data.details) && data.details[0]?.error ? ` ${data.details[0].error}` : '';
-            const error = new Error(`${data.error || `Cleanup failed (HTTP ${response.status})`}${detail}`);
+            const error = new Error(`${data.error || kit.tx('settings.redesign.projects.cleanupFailedHttp', { status: response.status })}${detail}`);
             error.requiresRescan = !!data.requiresRescan || ['SCAN_EXPIRED', 'SCAN_MISMATCH', 'PROJECT_ACTIVE'].includes(data.code);
             throw error;
           }
           const failedNames = (data.results || [])
             .filter(result => result.status === 'failed')
-            .map(result => items.find(item => item.id === result.id)?.name || 'Unknown item');
+            .map(result => items.find(item => item.id === result.id)?.name || kit.tx('settings.redesign.projects.unknownItem'));
           const message = data.failedItemCount
-            ? `Cleared ${storageFormatCount(data.clearedItemCount, 'item')} (${storageFormatBytes(data.bytesCleared)}). Could not clear: ${failedNames.join(', ')}.`
-            : `Cleared ${storageFormatCount(data.clearedItemCount, 'item')} and reclaimed about ${storageFormatBytes(data.bytesCleared)}.`;
+            ? kit.tx('settings.redesign.projects.clearedCouldNotClear', { storageFormatCount: storageFormatCount(data.clearedItemCount, 'item'), storageFormatBytes: storageFormatBytes(data.bytesCleared), failedNames: failedNames.join(', ') })
+            : kit.tx('settings.redesign.projects.clearedAndReclaimedAbout', { storageFormatCount: storageFormatCount(data.clearedItemCount, 'item'), storageFormatBytes: storageFormatBytes(data.bytesCleared) });
           working = false;
           closeModal(true);
           storageScan = null;
           selectedStorageItems.clear();
           await loadProjectStorage(true);
           setStorageFeedback(message, data.failedItemCount ? 'warning' : 'success');
-          showCCToast(data.failedItemCount ? 'Project storage partially cleared' : 'Project storage cleared');
+          showCCToast(data.failedItemCount ? kit.tx('settings.redesign.projects.projectStoragePartiallyCleared') : kit.tx('settings.redesign.projects.projectStorageCleared'));
         } catch (error) {
           working = false;
           cancel.disabled = false;
-          cancel.textContent = 'Close';
-          confirm.textContent = 'Clear selected';
+          cancel.textContent = kit.tx('settings.redesign.projects.close');
+          confirm.textContent = kit.tx('settings.redesign.projects.clearSelected2');
           confirm.disabled = true;
           if (input) input.disabled = true;
           feedback.dataset.state = 'error';
-          feedback.textContent = error?.message || 'Could not clear selected storage.';
+          feedback.textContent = error?.message || kit.tx('settings.redesign.projects.couldNotClearSelectedStorage');
           if (error?.requiresRescan) {
             storageScan = null;
             selectedStorageItems.clear();
@@ -7015,6 +6983,10 @@ export async function openSettingsModal(options = {}) {
     const projectsNav = overlay.querySelector('.settings-nav-item[data-tab="projects"]');
     projectsNav?.addEventListener('click', () => {
       if (!storageScan && !storageLoading) loadProjectStorage();
+    });
+    // A deep link or the page picker shows the page without a nav click.
+    overlay.addEventListener('stg-page-change', (e) => {
+      if (e.detail?.page === 'projects' && !storageScan && !storageLoading) loadProjectStorage();
     });
     if (overlay.querySelector('.settings-tab-body[data-tab="projects"]')?.classList.contains('active')) {
       loadProjectStorage();
@@ -7058,7 +7030,7 @@ export async function openSettingsModal(options = {}) {
 
     function renderModelCards() {
       const models = getExploreModels(selectedCli);
-      if (!models.length) return '<div style="font-size:12px;color:var(--t-muted)">No model selection available</div>';
+      if (!models.length) return '<div style="font-size:12px;color:var(--t-muted)">' + kit.te('settings.redesign.projects.noModelSelectionAvailable') + '</div>';
       if (!models.find(m => m.id === selectedModel)) selectedModel = models[0].id;
       return models.map(m => `
         <div class="explore-model-card" data-model="${m.id}" style="
@@ -7078,19 +7050,19 @@ export async function openSettingsModal(options = {}) {
         <div class="tag-delete-modal settings-modal" style="max-width:520px;padding:24px 28px">
           <h3 style="margin:0 0 20px;font-size:16px;font-weight:600;color:var(--t-primary)">
             <svg viewBox="0 0 24 24" style="width:16px;height:16px;stroke:var(--accent-blue);stroke-width:2;fill:none;vertical-align:-2px;margin-right:6px"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-            Explore: ${escapeHtml(projectLabel)}
+            ${kit.te('settings.redesign.projects.explore')} ${escapeHtml(projectLabel)}
           </h3>
           <div style="margin-bottom:18px">
-            <div style="font-size:12px;color:var(--t-muted);margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px">CLI</div>
+            <div style="font-size:12px;color:var(--t-muted);margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px">${kit.te('settings.redesign.projects.cli')}</div>
             <div id="explore-cli-cards" style="display:flex;gap:8px">${renderCliCards()}</div>
           </div>
           <div style="margin-bottom:22px">
-            <div style="font-size:12px;color:var(--t-muted);margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px">Model</div>
+            <div style="font-size:12px;color:var(--t-muted);margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px">${kit.te('settings.redesign.projects.model')}</div>
             <div id="explore-model-cards" style="display:flex;gap:8px">${renderModelCards()}</div>
           </div>
           <div class="settings-actions" style="margin-top:0;display:flex;justify-content:flex-end;gap:8px">
-            <button class="settings-btn-cancel" id="explore-cancel">Cancel</button>
-            <button class="settings-btn-save" id="explore-begin">Begin Exploration</button>
+            <button class="settings-btn-cancel" id="explore-cancel">${kit.te('settings.redesign.projects.cancel')}</button>
+            <button class="settings-btn-save" id="explore-begin">${kit.te('settings.redesign.projects.beginExploration')}</button>
           </div>
         </div>`;
       wireModalEvents();
@@ -7118,28 +7090,30 @@ export async function openSettingsModal(options = {}) {
       });
       exploreOverlay.querySelector('#explore-cancel').addEventListener('click', closeExplore);
       // Overlay click disabled — close only via ESC or cancel button
-      exploreOverlay.querySelector('#explore-begin').addEventListener('click', async () => {
+      exploreOverlay.querySelector('#explore-begin').addEventListener('click', () => {
         const beginBtn = exploreOverlay.querySelector('#explore-begin');
-        beginBtn.textContent = 'Launching...';
+        beginBtn.textContent = kit.tx('settings.redesign.projects.launching');
         beginBtn.disabled = true;
+        const fail = (err) => {
+          alert(kit.tx('settings.redesign.projects.explorationLaunchFailed', { message: (err?.message || err) }));
+          beginBtn.textContent = kit.tx('settings.redesign.projects.beginExploration');
+          beginBtn.disabled = false;
+        };
         try {
           const slug = projectLabel.toLowerCase().replace(/[^a-z0-9]+/g, '');
           const prompt = buildExplorePrompt(slug);
-          const result = await createTerminalSession(selectedCli, 120, 30, projectPath,
-            selectedModel ? { model: selectedModel } : {});
-          if (result?.sessionId) {
-            emit('terminal:attach-floating', {
-              terminalSessionId: result.sessionId,
-              profile: selectedCli,
-              initialMessage: prompt,
-              autoSubmit: true,
-            });
-          }
-          closeExplore();
+          // The terminal spawns the CLI at its floating window's real grid
+          // (not a hardcoded 120×30 it would then have to resize away from)
+          emit('terminal:launch-floating', {
+            profile: selectedCli,
+            cwd: projectPath,
+            createOpts: selectedModel ? { model: selectedModel } : {},
+            initialMessage: prompt,
+            autoSubmit: true,
+            onDone: (err) => { if (err) fail(err); else closeExplore(); },
+          });
         } catch (err) {
-          alert('Exploration launch failed: ' + err.message);
-          beginBtn.textContent = 'Begin Exploration';
-          beginBtn.disabled = false;
+          fail(err);
         }
       });
     }
@@ -7156,7 +7130,7 @@ export async function openSettingsModal(options = {}) {
       const idx = btn.dataset.ccExplore;
       const panel = overlay.querySelector(`.cc-panel[data-cc-idx="${idx}"]`);
       const projectPath = panel?.dataset.ccPath;
-      const projectLabel = panel?.querySelector('.cc-panel-title')?.textContent || 'Project';
+      const projectLabel = panel?.querySelector('.cc-panel-title')?.textContent || kit.tx('settings.redesign.projects.project');
       if (projectPath) openExploreModal(projectPath, projectLabel);
     });
   });
@@ -7171,7 +7145,7 @@ export async function openSettingsModal(options = {}) {
       if (!projectPath) return;
       const origText = btn.textContent;
       btn.disabled = true;
-      btn.textContent = 'Trusting...';
+      btn.textContent = kit.tx('settings.redesign.projects.trusting');
       try {
         const res = await fetch('/api/terminal/trust-workspace', {
           method: 'POST',
@@ -7180,20 +7154,20 @@ export async function openSettingsModal(options = {}) {
         });
         const data = await res.json();
         if (data.ok) {
-          btn.textContent = '✓ Trusted';
+          btn.textContent = kit.tx('settings.redesign.projects.trusted');
           btn.style.background = 'rgba(109,213,140,0.14)';
           btn.style.borderColor = 'rgba(109,213,140,0.3)';
           btn.style.color = '#a5d6a7';
-          setTimeout(() => { btn.disabled = false; btn.textContent = 'Trust workspace'; btn.style.background = 'rgba(255,183,77,0.14)'; btn.style.borderColor = 'rgba(255,183,77,0.3)'; btn.style.color = '#ffcc80'; }, 2500);
+          setTimeout(() => { btn.disabled = false; btn.textContent = kit.tx('settings.redesign.projects.trustWorkspace'); btn.style.background = 'rgba(255,183,77,0.14)'; btn.style.borderColor = 'rgba(255,183,77,0.3)'; btn.style.color = '#ffcc80'; }, 2500);
         } else {
           btn.disabled = false;
           btn.textContent = origText;
-          alert('Trust failed: ' + (data.error || 'unknown error'));
+          alert(kit.tx('settings.redesign.projects.trustFailed', { error: (data.error || kit.tx('settings.redesign.projects.unknownError')) }));
         }
       } catch (err) {
         btn.disabled = false;
         btn.textContent = origText;
-        alert('Trust failed: ' + err.message);
+        alert(kit.tx('settings.redesign.projects.trustFailed2', { message: err.message }));
       }
     });
   });
@@ -7204,8 +7178,8 @@ export async function openSettingsModal(options = {}) {
       e.stopPropagation();
       const idx = btn.dataset.ccRemove;
       const panel = overlay.querySelector(`.cc-panel[data-cc-idx="${idx}"]`);
-      const label = panel?.querySelector('.cc-panel-title')?.textContent || 'this project';
-      if (!confirm(`Remove "${label}" from tracked projects?\nThis also disables the hook if active.`)) return;
+      const label = panel?.querySelector('.cc-panel-title')?.textContent || kit.tx('settings.redesign.projects.thisProject');
+      if (!confirm(kit.tx('settings.redesign.projects.removeFromTrackedProjectsThisAlso', { label: label }))) return;
       try {
         const projectPath = panel?.dataset.ccPath;
         if (projectPath && panel.classList.contains('enabled')) {
@@ -7214,9 +7188,9 @@ export async function openSettingsModal(options = {}) {
         const res = await fetch(`/api/claude-code/projects/${idx}`, { method: 'DELETE' }); const data = await res.json();
         if (data.ok) {
           panel.style.transition = 'opacity 0.2s, transform 0.2s'; panel.style.opacity = '0'; panel.style.transform = 'translateX(10px)';
-          setTimeout(() => { panel.remove(); updateProjectCount(); if (!overlay.querySelector('.cc-panel[data-cc-idx]')) overlay.querySelector('#cc-project-list').innerHTML = '<div class="cc-hint" style="text-align:center;padding:14px">No projects registered yet.</div>'; }, 200);
-        } else { alert(data.error || 'Failed to remove project'); }
-      } catch (err) { alert('Failed: ' + err.message); }
+          setTimeout(() => { panel.remove(); updateProjectCount(); if (!overlay.querySelector('.cc-panel[data-cc-idx]')) overlay.querySelector('#cc-project-list').innerHTML = '<div class="cc-hint" style="text-align:center;padding:14px">' + kit.te('settings.redesign.projects.noProjectsRegisteredYet') + '</div>'; }, 200);
+        } else { alert(data.error || kit.tx('settings.redesign.projects.failedToRemoveProject')); }
+      } catch (err) { alert(kit.tx('settings.redesign.projects.failed', { message: err.message })); }
     });
   });
 
@@ -7226,19 +7200,19 @@ export async function openSettingsModal(options = {}) {
     addOverlay.className = 'tag-delete-overlay'; addOverlay.style.zIndex = '300100';
     addOverlay.innerHTML = `
       <div class="tag-delete-modal settings-modal" style="max-width:480px">
-        <h3><svg viewBox="0 0 24 24" style="width:16px;height:16px;stroke:var(--accent-blue);stroke-width:2;fill:none"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Add Project</h3>
-        <div class="settings-field"><label>Project Path</label>
+        <h3><svg viewBox="0 0 24 24" style="width:16px;height:16px;stroke:var(--accent-blue);stroke-width:2;fill:none"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>${kit.te('settings.redesign.projects.addProject')}</h3>
+        <div class="settings-field" ${kit.inv('PRJ014')}><label for="cc-proj-path">${kit.L('PRJ014')}</label>
           <div style="display:flex;gap:6px;align-items:center">
             <input type="text" id="cc-proj-path" placeholder="/home/user/myproject" autocomplete="off" spellcheck="false" style="font-family:'JetBrains Mono',monospace;font-size:12px;flex:1">
-            <button id="cc-proj-browse" style="flex:0 0 auto;padding:5px 10px;background:var(--s-medium);border:1px solid var(--s-light);border-radius:4px;color:var(--t-primary);cursor:pointer;font-size:12px;display:flex;align-items:center;gap:4px" title="Browse folders">
+            <button type="button" id="cc-proj-browse" ${kit.inv('PRJ015')} style="flex:0 0 auto;padding:5px 10px;background:var(--s-medium);border:1px solid var(--s-light);border-radius:4px;color:var(--t-primary);cursor:pointer;font-size:12px;display:flex;align-items:center;gap:4px" title="${kit.te('settings.redesign.projects.browseFolders')}">
               <svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-              Browse
+              ${kit.te('settings.redesign.projects.browse')}
             </button>
           </div>
         </div>
-        <div class="settings-field"><label>Label <span style="color:var(--t-muted);font-weight:normal">(optional)</span></label><input type="text" id="cc-proj-label" placeholder="My Project" autocomplete="off" spellcheck="false"></div>
-        <div class="cc-hint">The hook will be added to <code style="font-size:12px;background:var(--s-medium);padding:2px 5px;border-radius:4px">.claude/settings.json</code> inside this directory.</div>
-        <div class="settings-actions" style="margin-top:12px"><button class="settings-btn-cancel" id="cc-proj-cancel">Cancel</button><button class="settings-btn-save" id="cc-proj-save">Add &amp; Enable</button></div>
+        <div class="settings-field" ${kit.inv('PRJ016')}><label for="cc-proj-label">${kit.L('PRJ016')} <span style="color:var(--t-muted);font-weight:normal">${kit.te('settings.redesign.projects.optional')}</span></label><input type="text" id="cc-proj-label" placeholder="${kit.te('settings.redesign.projects.myProject')}" autocomplete="off" spellcheck="false"></div>
+        <div class="cc-hint">${kit.te('settings.redesign.projects.theHookWillBeAddedTo')} <code style="font-size:12px;background:var(--s-medium);padding:2px 5px;border-radius:4px">.claude/settings.json</code> ${kit.te('settings.redesign.projects.insideThisDirectory')}</div>
+        <div class="settings-actions" style="margin-top:12px"><button type="button" class="settings-btn-cancel" id="cc-proj-cancel" ${kit.inv('PRJ018')}>${kit.te('settings.redesign.projects.cancel')}</button><button type="button" class="settings-btn-save" id="cc-proj-save" ${kit.inv('PRJ017')}>${kit.te('settings.redesign.projects.addEnable')}</button></div>
       </div>`;
     document.body.appendChild(addOverlay);
     const closeAdd = () => addOverlay.remove();
@@ -7250,13 +7224,13 @@ export async function openSettingsModal(options = {}) {
 
     browseBtn.addEventListener('click', async () => {
       const origHTML = browseBtn.innerHTML;
-      browseBtn.innerHTML = '<div class="spinner" style="width:12px;height:12px"></div> Opening...';
+      browseBtn.innerHTML = '<div class="spinner" style="width:12px;height:12px"></div> ' + kit.te('settings.redesign.projects.opening') + '';
       browseBtn.disabled = true;
       try {
         const res = await fetch('/api/browse-folder', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ description: 'Select project folder' }),
+          body: JSON.stringify({ description: kit.tx('settings.redesign.projects.selectProjectFolder') }),
         });
         const data = await res.json();
         if (data.path) {
@@ -7275,9 +7249,9 @@ export async function openSettingsModal(options = {}) {
     addOverlay.querySelector('#cc-proj-save').addEventListener('click', async () => {
       const projPath = addOverlay.querySelector('#cc-proj-path').value.trim();
       const label = addOverlay.querySelector('#cc-proj-label').value.trim();
-      if (!projPath) { alert('Project path is required.'); return; }
+      if (!projPath) { alert(kit.tx('settings.redesign.projects.projectPathIsRequired')); return; }
       try {
-        const saveBtn = addOverlay.querySelector('#cc-proj-save'); saveBtn.textContent = 'Adding...'; saveBtn.disabled = true;
+        const saveBtn = addOverlay.querySelector('#cc-proj-save'); saveBtn.textContent = kit.tx('settings.redesign.projects.adding'); saveBtn.disabled = true;
         const res = await fetch('/api/claude-code/integrations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target: 'project', projectPath: projPath, label }) });
         const data = await res.json();
         if (data.ok) {
@@ -7286,8 +7260,8 @@ export async function openSettingsModal(options = {}) {
             const panel = document.getElementById('settings-panel');
             panel?.querySelector('.settings-nav-item[data-tab="projects"]')?.click();
           });
-        } else { alert(data.error || 'Failed to add project'); saveBtn.textContent = 'Add & Enable'; saveBtn.disabled = false; }
-      } catch (err) { alert('Failed: ' + err.message); const saveBtn = addOverlay.querySelector('#cc-proj-save'); saveBtn.textContent = 'Add & Enable'; saveBtn.disabled = false; }
+        } else { alert(data.error || kit.tx('settings.redesign.projects.failedToAddProject')); saveBtn.textContent = kit.tx('settings.redesign.projects.addEnable'); saveBtn.disabled = false; }
+      } catch (err) { alert(kit.tx('settings.redesign.projects.failed', { message: err.message })); const saveBtn = addOverlay.querySelector('#cc-proj-save'); saveBtn.textContent = kit.tx('settings.redesign.projects.addEnable'); saveBtn.disabled = false; }
     });
   });
 
@@ -7350,17 +7324,17 @@ export async function openSettingsModal(options = {}) {
       try {
         const response = await fetch('/api/opencode/history');
         const data = await response.json();
-        if (!response.ok || !data.ok) throw new Error(data.error || 'History status unavailable');
+        if (!response.ok || !data.ok) throw new Error(data.error || kit.tx('settings.redesign.opencode.historyStatusUnavailable'));
         _ocpHistoryStats = data;
         if (data.clearing) {
-          ocpHistoryMetaEl.textContent = 'History wipe in progress…';
+          ocpHistoryMetaEl.textContent = kit.tx('settings.redesign.opencode.historyWipeInProgress');
           return;
         }
         const totalBytes = (Number(data.databaseBytes) || 0) + (Number(data.artifactBytes) || 0);
-        ocpHistoryMetaEl.textContent = `${formatCount(data.sessions, 'session')} · ${formatBytes(totalBytes)} stored`;
+        ocpHistoryMetaEl.textContent = kit.tx('settings.redesign.opencode.stored', { formatCount: formatCount(data.sessions, 'session'), formatBytes: formatBytes(totalBytes) });
         ocpHistoryClearBtn.disabled = false;
       } catch (error) {
-        ocpHistoryMetaEl.textContent = error?.message || 'History status unavailable';
+        ocpHistoryMetaEl.textContent = error?.message || kit.tx('settings.redesign.opencode.historyStatusUnavailable');
       }
     }
 
@@ -7379,22 +7353,22 @@ export async function openSettingsModal(options = {}) {
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 2.9 1.8 17a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 2.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
             </span>
             <div>
-              <h2 class="ocp-history-modal-title" id="ocp-history-modal-title">Permanently clear OpenCode history?</h2>
-              <p class="ocp-history-modal-subtitle">${formatCount(sessionCount, 'session')} · ${formatBytes(totalBytes)} currently stored</p>
+              <h2 class="ocp-history-modal-title" id="ocp-history-modal-title">${kit.te('settings.redesign.opencode.permanentlyClearOpencodeHistory')}</h2>
+              <p class="ocp-history-modal-subtitle">${formatCount(sessionCount, 'session')} ${kit.th('settings.redesign.opencode.currentlyStored', { formatBytes: formatBytes(totalBytes) })}</p>
             </div>
           </div>
-          <div class="ocp-history-warning"><strong>This cannot be undone.</strong> Active conversations or automations must be stopped first; SynaBun will refuse the wipe if any are running. It will then stop OpenCode, erase the history database and related artifacts, compact the database, and restart OpenCode if it was running. A large history can take several minutes.</div>
+          <div class="ocp-history-warning"><strong>${kit.te('settings.redesign.opencode.thisCannotBeUndone')}</strong> ${kit.te('settings.redesign.opencode.activeConversationsOrAutomationsMustBe')}</div>
           <ul class="ocp-history-scope">
-            <li>Deletes conversations, messages, tool output, todos, shares, snapshots, diffs, and rendered transcript caches.</li>
-            <li>Deletes SynaBun's derived OpenCode Resume and search index.</li>
-            <li>Keeps provider credentials, account/config settings, project files, and your git history.</li>
+            <li>${kit.te('settings.redesign.opencode.deletesConversationsMessagesToolOutputTo')}</li>
+            <li>${kit.te('settings.redesign.opencode.deletesSynabunSDerivedOpencodeResume')}</li>
+            <li>${kit.te('settings.redesign.opencode.keepsProviderCredentialsAccountConfigSet')}</li>
           </ul>
-          <label class="ocp-history-confirm-label" for="ocp-history-confirm-input">Type <code>${confirmation}</code> to enable the wipe:</label>
+          <label class="ocp-history-confirm-label" for="ocp-history-confirm-input">${kit.te('settings.redesign.opencode.type')} <code>${confirmation}</code> ${kit.te('settings.redesign.opencode.toEnableTheWipe')}</label>
           <input class="ocp-history-confirm-input" id="ocp-history-confirm-input" type="text" autocomplete="off" spellcheck="false" aria-describedby="ocp-history-feedback">
           <div class="ocp-history-feedback" id="ocp-history-feedback" aria-live="polite"></div>
           <div class="tag-delete-modal-actions">
-            <button class="action-btn action-btn--ghost" id="ocp-history-cancel">Cancel</button>
-            <button class="action-btn action-btn--danger" id="ocp-history-confirm" disabled>Clear history permanently</button>
+            <button class="action-btn action-btn--ghost" id="ocp-history-cancel">${kit.te('settings.redesign.opencode.cancel')}</button>
+            <button class="action-btn action-btn--danger" id="ocp-history-confirm" disabled>${kit.te('settings.redesign.opencode.clearHistoryPermanently')}</button>
           </div>
         </div>`;
       document.body.appendChild(modal);
@@ -7431,9 +7405,9 @@ export async function openSettingsModal(options = {}) {
         input.disabled = true;
         cancelButton.disabled = true;
         confirmButton.disabled = true;
-        confirmButton.textContent = 'Clearing…';
+        confirmButton.textContent = kit.tx('settings.redesign.opencode.clearing');
         feedback.dataset.state = 'working';
-        feedback.textContent = 'Stopping OpenCode and clearing its history. Keep SynaBun open…';
+        feedback.textContent = kit.tx('settings.redesign.opencode.stoppingOpencodeAndClearingItsHistory');
         const requestId = crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
         sessionStorage.setItem('synabun-opencode-history-clear-request', requestId);
         try {
@@ -7443,7 +7417,7 @@ export async function openSettingsModal(options = {}) {
             body: JSON.stringify({ confirmation, requestId }),
           });
           const data = await response.json().catch(() => ({}));
-          if (!response.ok || !data.ok) throw new Error(data.error || `History wipe failed (HTTP ${response.status})`);
+          if (!response.ok || !data.ok) throw new Error(data.error || kit.tx('settings.redesign.opencode.historyWipeFailedHttp', { status: response.status }));
 
           const result = data.result || {};
           const reclaimed = Math.max(0,
@@ -7452,20 +7426,20 @@ export async function openSettingsModal(options = {}) {
           const warnings = Array.isArray(result.warnings) ? result.warnings.filter(Boolean) : [];
           feedback.dataset.state = warnings.length ? 'warning' : 'working';
           feedback.textContent = warnings.length
-            ? `History was cleared. Warning: ${warnings[0]} Reloading SynaBun…`
-            : `Cleared ${formatCount(result.sessionsDeleted, 'session')}${reclaimed ? ` and reclaimed ${formatBytes(reclaimed)}` : ''}. Reloading SynaBun…`;
-          confirmButton.textContent = 'History cleared';
-          showCCToast(warnings.length ? 'OpenCode history cleared with a warning' : 'OpenCode history cleared');
+            ? kit.tx('settings.redesign.opencode.historyWasClearedWarningReloadingSynabun', { value: warnings[0] })
+            : kit.tx('settings.redesign.opencode.clearedReloadingSynabun', { formatCount: formatCount(result.sessionsDeleted, 'session'), reclaimed: reclaimed ? (" " + kit.tx('settings.redesign.opencode.andReclaimed', { formatBytes: formatBytes(reclaimed) })) : '' });
+          confirmButton.textContent = kit.tx('settings.redesign.opencode.historyCleared');
+          showCCToast(warnings.length ? kit.tx('settings.redesign.opencode.opencodeHistoryClearedWithAWarning') : kit.tx('settings.redesign.opencode.opencodeHistoryCleared'));
           setTimeout(() => location.reload(), warnings.length ? 3500 : 1200);
         } catch (error) {
           sessionStorage.removeItem('synabun-opencode-history-clear-request');
           working = false;
           input.disabled = false;
           cancelButton.disabled = false;
-          confirmButton.textContent = 'Clear history permanently';
+          confirmButton.textContent = kit.tx('settings.redesign.opencode.clearHistoryPermanently');
           confirmButton.disabled = input.value !== confirmation;
           feedback.dataset.state = 'error';
-          feedback.textContent = error?.message || 'Could not clear OpenCode history';
+          feedback.textContent = error?.message || kit.tx('settings.redesign.opencode.couldNotClearOpencodeHistory');
           input.focus();
           loadOcpHistoryStats();
         }
@@ -7483,59 +7457,64 @@ export async function openSettingsModal(options = {}) {
         ocpProvidersEl.prepend(existing);
       }
 
-      let dotColor, statusText, statusCls, bodyHtml;
+      let dotColor, statusText, statusCls, bodyHtml, removeHtml = '';
 
       if (_ollamaConfiguring) {
         dotColor = '#facc15';
-        statusText = 'Configuring…';
+        statusText = kit.tx('settings.redesign.opencode.configuring');
         statusCls = 'stg-provider-status-key';
-        bodyHtml = '<div class="stg-provider-note">Writing provider config and restarting OpenCode…</div>';
+        bodyHtml = '<div class="stg-provider-note">' + kit.te('settings.redesign.opencode.writingProviderConfigAndRestartingOpenco') + '</div>';
       } else if (!_ollamaRunning) {
         dotColor = 'rgba(248,113,113,0.7)';
-        statusText = 'Not detected';
+        statusText = kit.tx('settings.redesign.opencode.notDetected');
         statusCls = 'stg-provider-status-disconnected';
-        bodyHtml = '<div class="stg-provider-note">Install from <code class="stg-code">ollama.com</code> or run <code class="stg-code">ollama serve</code></div>';
+        bodyHtml = '<div class="stg-provider-note">' + kit.te('settings.redesign.opencode.installFrom') + ' <code class="stg-code">ollama.com</code> ' + kit.te('settings.redesign.opencode.orRun') + ' <code class="stg-code">ollama serve</code></div>';
       } else if (_ollamaModels.length === 0) {
         dotColor = '#facc15';
-        statusText = `Running${_ollamaVersion ? ' v' + _ollamaVersion : ''}`;
+        statusText = kit.tx('settings.redesign.opencode.runningVersion', { version: _ollamaVersion ? ' v' + _ollamaVersion : '' });
         statusCls = 'stg-provider-status-key';
-        bodyHtml = '<div class="stg-provider-note">No models — run <code class="stg-code">ollama pull &lt;model&gt;</code></div>';
+        bodyHtml = '<div class="stg-provider-note">' + kit.te('settings.redesign.opencode.noModelsRun') + ' <code class="stg-code">ollama pull &lt;model&gt;</code></div>';
       } else if (_ollamaConfigured) {
         dotColor = '#4ade80';
-        statusText = `Running${_ollamaVersion ? ' v' + _ollamaVersion : ''}`;
+        statusText = kit.tx('settings.redesign.opencode.runningVersion', { version: _ollamaVersion ? ' v' + _ollamaVersion : '' });
         statusCls = 'stg-provider-status-connected';
         bodyHtml = `<div class="stg-provider-toolbar">`
-          + `<span class="stg-provider-tag">Auto-configured</span>`
+          + `<span class="stg-provider-tag">${kit.te('settings.redesign.opencode.autoConfigured')}</span>`
           + `<span class="stg-provider-sep">·</span>`
-          + `<span class="stg-provider-submeta">${_ollamaModels.length} model${_ollamaModels.length !== 1 ? 's' : ''}</span>`
-          + `<button class="stg-action-btn compact stg-ollama-remove stg-ocp-remove-btn" style="color:#f87171">Remove</button>`
+          + `<span class="stg-provider-submeta">${_ollamaModels.length} ${kit.te('settings.redesign.opencode.model')}${_ollamaModels.length !== 1 ? 's' : ''}</span>`
           + `</div>`;
+        removeHtml = `<button type="button" class="stg-action-btn compact stg-text-btn stg-text-btn-danger stg-ollama-remove stg-ocp-remove-btn">${kit.te('settings.redesign.opencode.remove')}</button>`;
       } else {
         dotColor = '#facc15';
-        statusText = `Running${_ollamaVersion ? ' v' + _ollamaVersion : ''}`;
+        statusText = kit.tx('settings.redesign.opencode.runningVersion', { version: _ollamaVersion ? ' v' + _ollamaVersion : '' });
         statusCls = 'stg-provider-status-key';
-        bodyHtml = `<div class="stg-provider-note">${_ollamaModels.length} model${_ollamaModels.length !== 1 ? 's' : ''} · Ready to configure…</div>`;
+        bodyHtml = `<div class="stg-provider-note">${_ollamaModels.length} ${kit.th('settings.redesign.opencode.modelReadyToConfigure', { count: _ollamaModels.length !== 1 ? 's' : '' })}</div>`;
       }
 
       existing.innerHTML = `<div class="stg-provider-card" style="--prov-accent:${dotColor}">
           <div class="stg-provider-head">
-            <span class="stg-provider-name">Ollama <span class="stg-provider-subname">(local)</span></span>
-            <span class="stg-provider-status ${statusCls}">${statusText}</span>
+            <div class="stg-provider-ident">
+              <span class="stg-provider-name">Ollama <span class="stg-provider-subname">${kit.te('settings.redesign.opencode.local')}</span></span>
+              ${bodyHtml}
+            </div>
+            <div class="stg-provider-side">
+              <span class="stg-provider-status ${statusCls}">${statusText}</span>
+              ${removeHtml}
+            </div>
           </div>
-          ${bodyHtml}
       </div>`;
 
       // Wire remove button
       existing.querySelector('.stg-ollama-remove')?.addEventListener('click', async () => {
         const btn = existing.querySelector('.stg-ollama-remove');
-        if (btn) { btn.disabled = true; btn.textContent = 'Removing…'; }
+        if (btn) { btn.disabled = true; btn.textContent = kit.tx('settings.redesign.opencode.removing'); }
         try {
           await fetch('/api/ollama/configure', { method: 'DELETE' });
           _ollamaConfigured = false;
           _ollamaConfiguredCount = 0;
           _ollamaUserRemoved = true;
           renderOllamaCard();
-          showCCToast('Ollama provider removed — server restarting…');
+          showCCToast(kit.tx('settings.redesign.opencode.ollamaProviderRemovedServerRestarting'));
           // Poll for server restart then refresh providers
           let polls = 0;
           const pollId = setInterval(async () => {
@@ -7552,9 +7531,9 @@ export async function openSettingsModal(options = {}) {
             } catch {}
           }, 2000);
         } catch (e) {
-          showCCToast('Error: ' + e.message);
+          showCCToast(kit.tx('settings.redesign.opencode.error2', { message: e.message }));
         }
-        if (btn) { btn.disabled = false; btn.textContent = 'Remove'; }
+        if (btn) { btn.disabled = false; btn.textContent = kit.tx('settings.redesign.opencode.remove'); }
       });
     }
 
@@ -7657,32 +7636,34 @@ export async function openSettingsModal(options = {}) {
     }
 
     // ── Hidden models (per-provider model visibility) ──
-    const HIDDEN_MODELS_KEY = 'ocp-hidden-models';
-    function getHiddenModels() {
-      try { return new Set(JSON.parse(localStorage.getItem(HIDDEN_MODELS_KEY) || '[]')); } catch { return new Set(); }
-    }
-    function saveHiddenModels(set) {
-      try { localStorage.setItem(HIDDEN_MODELS_KEY, JSON.stringify([...set])); } catch {}
-    }
+    // Saved on the server (the Assistant routes by it) and mirrored into
+    // localStorage 'ocp-hidden-models' — see ocp-hidden-models.js.
+    const getHiddenModels = getOcpHiddenModels;
+    const saveHiddenModels = saveOcpHiddenModels;
 
     const STG_CAP_BADGES = [
-      { test: c => c?.reasoning,     label: 'Reason', abbr: 'R',  color: '#c084fc', bg: 'rgba(192,132,252,0.10)' },
-      { test: c => c?.toolcall,      label: 'Tools',  abbr: 'T',  color: '#60a5fa', bg: 'rgba(96,165,250,0.10)' },
-      { test: c => c?.input?.image,  label: 'Vision', abbr: 'V',  color: '#4ade80', bg: 'rgba(74,222,128,0.10)' },
-      { test: c => c?.input?.audio,  label: 'Audio',  abbr: 'A',  color: '#fb923c', bg: 'rgba(251,146,60,0.10)' },
-      { test: c => c?.input?.video,  label: 'Video',  abbr: 'Vi', color: '#f87171', bg: 'rgba(248,113,113,0.10)' },
+      { test: c => c?.reasoning,     label: kit.tx('settings.redesign.opencode.reason'), abbr: 'R',  color: '#c084fc', bg: 'rgba(192,132,252,0.10)' },
+      { test: c => c?.toolcall,      label: kit.tx('settings.redesign.opencode.tools'),  abbr: 'T',  color: '#60a5fa', bg: 'rgba(96,165,250,0.10)' },
+      { test: c => c?.input?.image,  label: kit.tx('settings.redesign.opencode.vision'), abbr: 'V',  color: '#4ade80', bg: 'rgba(74,222,128,0.10)' },
+      { test: c => c?.input?.audio,  label: kit.tx('settings.redesign.opencode.audio'),  abbr: 'A',  color: '#fb923c', bg: 'rgba(251,146,60,0.10)' },
+      { test: c => c?.input?.video,  label: kit.tx('settings.redesign.opencode.video'),  abbr: 'Vi', color: '#f87171', bg: 'rgba(248,113,113,0.10)' },
       { test: c => c?.input?.pdf,    label: 'PDF',    abbr: 'P',  color: '#fbbf24', bg: 'rgba(251,191,36,0.10)' },
-      { test: c => c?.output?.image, label: 'ImgGen', abbr: 'I',  color: '#f472b6', bg: 'rgba(244,114,182,0.10)' },
+      { test: c => c?.output?.image, label: kit.tx('settings.redesign.opencode.imggen'), abbr: 'I',  color: '#f472b6', bg: 'rgba(244,114,182,0.10)' },
       { test: c => c?.output?.audio, label: 'TTS',    abbr: 'S',  color: '#2dd4bf', bg: 'rgba(45,212,191,0.10)' },
-      { test: c => c?.attachment,    label: 'Files',  abbr: 'F',  color: '#94a3b8', bg: 'rgba(148,163,184,0.10)' },
+      { test: c => c?.attachment,    label: kit.tx('settings.redesign.opencode.files'),  abbr: 'F',  color: '#94a3b8', bg: 'rgba(148,163,184,0.10)' },
     ];
+
+    /** "3 of 7 models shown": how many of a provider's models SynaBun offers. */
+    function modelsShownLabel(enabled, count) {
+      return kit.tx(count === 1 ? 'settings.redesign.opencode.modelsShown.one' : 'settings.redesign.opencode.modelsShown.other', { enabled, count });
+    }
 
     function stgCapBadgesHtml(modelObj) {
       const caps = modelObj?.capabilities;
       if (!caps) return '';
       return STG_CAP_BADGES
         .filter(b => b.test(caps))
-        .map(b => `<span class="stg-cap" title="${b.label}" style="--cap-c:${b.color}">${b.abbr}</span>`)
+        .map(b => `<span class="stg-cap">${esc(b.label)}</span>`)
         .join('');
     }
 
@@ -7724,7 +7705,7 @@ export async function openSettingsModal(options = {}) {
     }
 
     function humanizeProviderId(id) {
-      if (!id) return 'Unknown';
+      if (!id) return kit.tx('settings.redesign.opencode.unknown');
       if (OCP_PROVIDER_NAME_OVERRIDES[id]) return OCP_PROVIDER_NAME_OVERRIDES[id];
       return String(id)
         .split(/[-_/]+/)
@@ -7770,7 +7751,7 @@ export async function openSettingsModal(options = {}) {
       if (!ocpProvidersEl) return;
       const providerCatalog = buildProviderCardsCatalog();
       if (!providerCatalog.length) {
-        ocpProvidersEl.innerHTML = '<div class="settings-hint" style="opacity:0.4">No providers found</div>';
+        ocpProvidersEl.innerHTML = '<div class="settings-hint" style="opacity:0.4">' + kit.te('settings.redesign.opencode.noProvidersFound') + '</div>';
         return;
       }
 
@@ -7846,39 +7827,41 @@ export async function openSettingsModal(options = {}) {
         const supportsApiAuth = hasApiAuth(id);
         // Track original index so OAuth authorize gets the correct method number
         const oauthMethods = authMethods.map((m, i) => ({ ...m, _idx: i })).filter(m => m.type === 'oauth');
-        const storedStatusText = oauthMethods.length && !supportsApiAuth ? 'Auth saved' : 'Key saved';
+        const storedStatusText = oauthMethods.length && !supportsApiAuth ? kit.tx('settings.redesign.opencode.authSaved') : kit.tx('settings.redesign.opencode.keySaved');
 
         const dotColor = connected ? '#4ade80' : hasStoredKey ? '#facc15' : 'rgba(255,255,255,0.18)';
         const statusCls = connected ? 'stg-provider-status-connected' : hasStoredKey ? 'stg-provider-status-key' : 'stg-provider-status-disconnected';
-        const statusText = connected ? 'Connected' : hasStoredKey ? storedStatusText : 'Not connected';
+        const statusText = connected ? kit.tx('settings.redesign.opencode.connected2') : hasStoredKey ? storedStatusText : kit.tx('settings.redesign.opencode.notConnected');
         const nameCls = connected ? '' : hasStoredKey ? '' : 'style="opacity:0.55"';
 
         // Auth actions
         const envVars = p.env || [];
         const primaryEnv = envVars.length ? envVars[0] : '';
         let authHtml = '';
+        let removeHtml = '';
         if (connected || hasStoredKey) {
           // Connected/stored — show the actions that match the available auth methods
           const btns = [];
           if (supportsApiAuth) {
-            btns.push(`<button class="stg-action-btn compact stg-ocp-apikey-btn" data-provider="${esc(id)}">Change Key</button>`);
+            btns.push(`<button type="button" class="stg-action-btn compact stg-text-btn stg-ocp-apikey-btn" data-provider="${esc(id)}">${kit.te('settings.redesign.opencode.changeKey')}</button>`);
           }
           for (const om of oauthMethods) {
-            const label = om.label || om.name || `Reconnect ${name}`;
-            btns.push(`<button class="stg-action-btn compact stg-ocp-oauth-btn" data-provider="${esc(id)}" data-method="${om._idx}">${esc(label)} →</button>`);
+            const label = om.label || om.name || kit.tx('settings.redesign.opencode.reconnectProvider', { name });
+            btns.push(`<button type="button" class="stg-action-btn compact stg-text-btn stg-ocp-oauth-btn" data-provider="${esc(id)}" data-method="${om._idx}">${esc(label)}</button>`);
           }
-          btns.push(`<button class="stg-action-btn compact stg-ocp-remove-btn" data-provider="${esc(id)}" data-env="${esc(primaryEnv)}" style="color:#f87171">Remove</button>`);
           authHtml = btns.join('');
+          removeHtml = `<button type="button" class="stg-action-btn compact stg-text-btn stg-text-btn-danger stg-ocp-remove-btn" data-provider="${esc(id)}" data-env="${esc(primaryEnv)}">${kit.te('settings.redesign.opencode.removeConfirm')}</button>`;
         } else {
           // Not configured — show only the auth methods this provider actually supports
           const btns = [];
-          const envHint = envVars.length ? ` (${envVars[0]})` : '';
+          // the variable OpenCode reads the key from goes in the tooltip, not on the button
+          const envTitle = envVars.length ? ` title="${kit.te('settings.redesign.opencode.envVarTitle', { env: envVars[0] })}"` : '';
           if (supportsApiAuth || !authMethods.length) {
-            btns.push(`<button class="stg-action-btn compact stg-ocp-apikey-btn" data-provider="${esc(id)}">Enter API Key${esc(envHint)}</button>`);
+            btns.push(`<button type="button" class="stg-action-btn compact stg-ocp-apikey-btn" data-provider="${esc(id)}"${envTitle}>${kit.te('settings.redesign.opencode.enterApiKey')}</button>`);
           }
           for (const om of oauthMethods) {
-            const label = om.label || om.name || `Login with ${name}`;
-            btns.push(`<button class="stg-action-btn compact stg-ocp-oauth-btn" data-provider="${esc(id)}" data-method="${om._idx}">${esc(label)} →</button>`);
+            const label = om.label || om.name || kit.tx('settings.redesign.opencode.loginWith', { name: name });
+            btns.push(`<button type="button" class="stg-action-btn compact stg-ocp-oauth-btn" data-provider="${esc(id)}" data-method="${om._idx}">${esc(label)}</button>`);
           }
           authHtml = btns.join('');
         }
@@ -7886,24 +7869,22 @@ export async function openSettingsModal(options = {}) {
         // API key inline form (hidden via inline style — JS removes it to show)
         const keyFormHtml = `<div class="stg-ocp-key-form" data-provider="${esc(id)}" data-env="${esc(primaryEnv)}" style="display:none">
           <div class="stg-ocp-key-row">
-            <input type="password" class="stg-input stg-input-sm stg-ocp-key-input" placeholder="Paste API key…" style="flex:1">
-            <button class="stg-action-btn compact stg-ocp-key-save">Save</button>
-            <button class="stg-action-btn compact stg-ocp-key-cancel" style="opacity:0.5">✕</button>
+            <input type="password" class="stg-input stg-input-sm stg-ocp-key-input" placeholder="${kit.te('settings.redesign.opencode.pasteApiKey')}" aria-label="${kit.te('settings.redesign.opencode.apiKeyFor', { name: id })}" autocomplete="off" style="flex:1">
+            <button class="stg-action-btn compact stg-ocp-key-save">${kit.te('settings.redesign.opencode.save')}</button>
+            <button type="button" class="stg-action-btn compact stg-ocp-key-cancel" aria-label="${kit.te('settings.redesign.opencode.cancel')}" title="${kit.te('settings.redesign.opencode.cancel')}">✕</button>
           </div>
           <div class="stg-ocp-key-error"></div>
         </div>`;
 
         // OAuth wait indicator (hidden via inline style — JS removes it to show)
         const oauthWaitHtml = `<div class="stg-ocp-oauth-wait" data-provider="${esc(id)}" style="display:none">
-          Waiting for authorization…
+          ${kit.te('settings.redesign.opencode.waitingForAuthorization')}
           <span class="stg-ocp-oauth-code" style="display:none"></span>
         </div>`;
 
         const hiddenSet = getHiddenModels();
         const enabledCount = models.filter(mId => !hiddenSet.has(`${id}/${mId}`)).length;
-        const modelCountLabel = models.length
-          ? `${enabledCount}/${models.length} model${models.length !== 1 ? 's' : ''} enabled`
-          : '';
+        const modelCountLabel = models.length ? modelsShownLabel(enabledCount, models.length) : '';
 
         // Build expandable model list with toggles
         const modelListHtml = models.length ? models.map(mId => {
@@ -7918,24 +7899,28 @@ export async function openSettingsModal(options = {}) {
         }).join('') : '';
 
         const accentColor = connected ? '#4ade80' : hasStoredKey ? '#facc15' : 'rgba(255,255,255,0.06)';
+        const modelCountText = kit.tx(models.length === 1 ? 'settings.redesign.opencode.modelCount.one' : 'settings.redesign.opencode.modelCount.other', { count: models.length });
 
-        return `<div class="stg-provider-card" style="--prov-accent:${accentColor}">
+        return `<div class="stg-provider-card${connected || hasStoredKey ? '' : ' stg-provider-card-off'}" style="--prov-accent:${accentColor}">
           <div class="stg-provider-head">
-            <span class="stg-provider-name" ${nameCls}>${esc(name)}</span>
-            <span class="stg-provider-status ${statusCls}">${statusText}</span>
+            <div class="stg-provider-ident">
+              <span class="stg-provider-name" ${nameCls}>${esc(name)}</span>
+              ${models.length ? `<button type="button" class="stg-model-expand-btn" data-provider="${esc(id)}" aria-expanded="false">
+                <svg class="stg-model-expand-icon" viewBox="0 0 24 24" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+                <span class="stg-model-count-badge">${esc(modelCountLabel)}</span>
+              </button>` : ''}
+            </div>
+            <div class="stg-provider-side">
+              <span class="stg-provider-status ${statusCls}">${statusText}</span>
+              ${removeHtml}
+            </div>
           </div>
-          <div class="stg-provider-toolbar">
-            ${models.length ? `<button class="stg-model-expand-btn" data-provider="${esc(id)}">
-              <span class="stg-model-expand-icon">&#x25B8;</span>
-              <span class="stg-model-count-badge">${enabledCount}<span class="stg-model-count-sep">/</span>${models.length}</span>
-              models
-            </button>` : ''}
-            ${authHtml}
-          </div>
+          ${authHtml ? `<div class="stg-provider-toolbar">${authHtml}</div>` : ''}
           ${models.length ? `<div class="stg-model-list" data-provider="${esc(id)}" style="display:none">
             <div class="stg-model-list-actions">
-              <button class="stg-action-btn compact stg-model-all-btn" data-provider="${esc(id)}">Enable all</button>
-              <button class="stg-action-btn compact stg-model-none-btn" data-provider="${esc(id)}">Disable all</button>
+              <span class="stg-model-list-count">${esc(modelCountText)}</span>
+              <button type="button" class="stg-action-btn compact stg-text-btn stg-model-all-btn" data-provider="${esc(id)}">${kit.te('settings.redesign.opencode.enableAll')}</button>
+              <button type="button" class="stg-action-btn compact stg-text-btn stg-model-none-btn" data-provider="${esc(id)}">${kit.te('settings.redesign.opencode.disableAll')}</button>
             </div>
             ${modelListHtml}
           </div>` : ''}
@@ -7944,14 +7929,14 @@ export async function openSettingsModal(options = {}) {
       }).join('');
 
       const emptyHtml = (providerTerm || hasCapFilter)
-        ? '<div class="settings-hint" style="opacity:0.4">No providers match this filter</div>'
-        : '<div class="settings-hint" style="opacity:0.4">No providers found</div>';
+        ? '<div class="settings-hint" style="opacity:0.4">' + kit.te('settings.redesign.opencode.noProvidersMatchThisFilter') + '</div>'
+        : '<div class="settings-hint" style="opacity:0.4">' + kit.te('settings.redesign.opencode.noProvidersFound') + '</div>';
 
       // "Show all / Show configured" toggle
       if (unconfigured.length) {
         const toggleLabel = _ocpShowAll
-          ? `Show configured only (${configured.length})`
-          : `Show all providers (${unconfigured.length} more)`;
+          ? kit.tx('settings.redesign.opencode.showConfiguredOnly', { count: configured.length })
+          : kit.tx('settings.redesign.opencode.showAllProvidersMore', { count: unconfigured.length });
         ocpProvidersEl.innerHTML = (cardsHtml || emptyHtml) + `<button class="stg-ocp-toggle-all">${toggleLabel}</button>`;
       } else {
         ocpProvidersEl.innerHTML = cardsHtml || emptyHtml;
@@ -8017,7 +8002,7 @@ export async function openSettingsModal(options = {}) {
             const total = allCbs.length;
             const enabled = [...allCbs].filter(c => c.checked).length;
             const badge = card.querySelector('.stg-model-count-badge');
-            if (badge) badge.innerHTML = `${enabled}<span class="stg-model-count-sep">/</span>${total}`;
+            if (badge) badge.textContent = modelsShownLabel(enabled, total);
           }
           document.dispatchEvent(new CustomEvent('ocp-hidden-models-changed'));
         });
@@ -8086,7 +8071,7 @@ export async function openSettingsModal(options = {}) {
           const errEl = form?.querySelector('.stg-ocp-key-error');
           const key = input?.value?.trim();
           if (!key || !provId) return;
-          btn.disabled = true; btn.textContent = 'Saving…';
+          btn.disabled = true; btn.textContent = kit.tx('settings.redesign.opencode.saving');
           try {
             const resp = await fetch(`/api/opencode/auth/${encodeURIComponent(provId)}`, {
               method: 'PUT', headers: { 'Content-Type': 'application/json' },
@@ -8096,7 +8081,7 @@ export async function openSettingsModal(options = {}) {
             if (resp.ok && data.ok !== false) {
               form.style.display = 'none';
               input.value = '';
-              showCCToast(`API key saved for ${provId} — server restarting…`);
+              showCCToast(kit.tx('settings.redesign.opencode.apiKeySavedForServerRestarting', { provId: provId }));
               // Poll until server is back (takeover kills + respawns, ~5-6s)
               let polls = 0;
               const pollId = setInterval(async () => {
@@ -8113,15 +8098,15 @@ export async function openSettingsModal(options = {}) {
                 } catch {}
               }, 2000);
             } else {
-              const msg = data.error || 'Failed to save key';
+              const msg = data.error || kit.tx('settings.redesign.opencode.failedToSaveKey');
               if (errEl) { errEl.textContent = msg; errEl.style.display = ''; }
               showCCToast(msg);
             }
           } catch (e) {
             if (errEl) { errEl.textContent = e.message; errEl.style.display = ''; }
-            showCCToast('Error: ' + e.message);
+            showCCToast(kit.tx('settings.redesign.opencode.error2', { message: e.message }));
           }
-          btn.disabled = false; btn.textContent = 'Save';
+          btn.disabled = false; btn.textContent = kit.tx('settings.redesign.opencode.save');
         });
       });
 
@@ -8137,8 +8122,8 @@ export async function openSettingsModal(options = {}) {
       ocpProvidersEl.querySelectorAll('.stg-ocp-remove-btn').forEach(btn => {
         btn.addEventListener('click', async () => {
           const provId = btn.dataset.provider;
-          if (!confirm(`Remove API key for ${provId}?`)) return;
-          btn.disabled = true; btn.textContent = 'Removing…';
+          if (!confirm(kit.tx('settings.redesign.opencode.removeApiKeyFor', { provId: provId }))) return;
+          btn.disabled = true; btn.textContent = kit.tx('settings.redesign.opencode.removing');
           try {
             const resp = await fetch(`/api/opencode/auth/${encodeURIComponent(provId)}`, {
               method: 'DELETE',
@@ -8146,7 +8131,7 @@ export async function openSettingsModal(options = {}) {
             });
             const data = await resp.json();
             if (resp.ok && data.ok !== false) {
-              showCCToast(`API key removed for ${provId} — server restarting…`);
+              showCCToast(kit.tx('settings.redesign.opencode.apiKeyRemovedForServerRestarting', { provId: provId }));
               // Poll until server is back (takeover kills + respawns, ~5-6s)
               let polls = 0;
               const pollId = setInterval(async () => {
@@ -8163,12 +8148,12 @@ export async function openSettingsModal(options = {}) {
                 } catch {}
               }, 2000);
             } else {
-              showCCToast(data.error || 'Failed to remove key');
+              showCCToast(data.error || kit.tx('settings.redesign.opencode.failedToRemoveKey'));
             }
           } catch (e) {
-            showCCToast('Error: ' + e.message);
+            showCCToast(kit.tx('settings.redesign.opencode.error2', { message: e.message }));
           }
-          btn.disabled = false; btn.textContent = 'Remove';
+          btn.disabled = false; btn.textContent = kit.tx('settings.redesign.opencode.removeConfirm');
         });
       });
 
@@ -8178,7 +8163,7 @@ export async function openSettingsModal(options = {}) {
         btn.addEventListener('click', async () => {
           const provId = btn.dataset.provider;
           const methodIdx = parseInt(btn.dataset.method, 10);
-          btn.disabled = true; btn.textContent = 'Connecting…';
+          btn.disabled = true; btn.textContent = kit.tx('settings.redesign.opencode.connecting');
           const waitEl = ocpProvidersEl.querySelector(`.stg-ocp-oauth-wait[data-provider="${provId}"]`);
           const codeEl = waitEl?.querySelector('.stg-ocp-oauth-code');
           try {
@@ -8206,17 +8191,17 @@ export async function openSettingsModal(options = {}) {
                   if (connected.includes(provId)) {
                     clearInterval(poll);
                     if (waitEl) waitEl.style.display = 'none';
-                    showCCToast(`${provId} connected`);
+                    showCCToast(kit.tx('settings.redesign.opencode.connected', { provId: provId }));
                     await refreshOcpProviders();
                     document.dispatchEvent(new CustomEvent('ocp-providers-changed'));
                   }
                 } catch {}
               }, 2000);
             } else {
-              showCCToast(authData.error || data.error || 'OAuth failed — no authorization URL returned');
+              showCCToast(authData.error || data.error || kit.tx('settings.redesign.opencode.oauthFailedNoAuthorizationUrlReturned'));
             }
           } catch (e) {
-            showCCToast('OAuth error: ' + e.message);
+            showCCToast(kit.tx('settings.redesign.opencode.oauthError', { message: e.message }));
           }
           btn.disabled = false; btn.textContent = origLabel;
         });
@@ -8255,7 +8240,7 @@ export async function openSettingsModal(options = {}) {
         const tools = _ocpConfig.tools || {};
 
         if (!toolIds.length) {
-          ocpToolsEl.innerHTML = '<div class="settings-hint" style="opacity:0.4">No tools available</div>';
+          ocpToolsEl.innerHTML = '<div class="settings-hint" style="opacity:0.4">' + kit.te('settings.redesign.opencode.noToolsAvailable') + '</div>';
           return;
         }
 
@@ -8265,12 +8250,14 @@ export async function openSettingsModal(options = {}) {
           let currentVal = 'allow';
           if (tools[tid] === false) currentVal = 'deny';
           else if (permissions[tid] === 'ask') currentVal = 'ask';
-          return `<span class="stg-tool-name">${esc(tid)}</span>
-            <select class="stg-tool-select stg-ocp-tool-perm" data-tool="${esc(tid)}">
-              <option value="allow"${currentVal === 'allow' ? ' selected' : ''}>allow</option>
-              <option value="ask"${currentVal === 'ask' ? ' selected' : ''}>ask</option>
-              <option value="deny"${currentVal === 'deny' ? ' selected' : ''}>deny</option>
-            </select>`;
+          return `<div class="stg-tool-row">
+            <span class="stg-tool-name">${esc(tid)}</span>
+            <select class="stg-tool-select stg-ocp-tool-perm" data-tool="${esc(tid)}" aria-label="${kit.te('settings.redesign.opencode.permissionFor', { tool: tid })}">
+              <option value="allow"${currentVal === 'allow' ? ' selected' : ''}>${kit.te('settings.redesign.opencode.allow')}</option>
+              <option value="ask"${currentVal === 'ask' ? ' selected' : ''}>${kit.te('settings.redesign.opencode.ask')}</option>
+              <option value="deny"${currentVal === 'deny' ? ' selected' : ''}>${kit.te('settings.redesign.opencode.deny')}</option>
+            </select>
+          </div>`;
         }).join('')}</div>`;
 
         // Wire change events
@@ -8297,7 +8284,7 @@ export async function openSettingsModal(options = {}) {
           });
         });
       } catch {
-        ocpToolsEl.innerHTML = '<div class="settings-hint" style="opacity:0.4">Failed to load tools</div>';
+        ocpToolsEl.innerHTML = '<div class="settings-hint" style="opacity:0.4">' + kit.te('settings.redesign.opencode.failedToLoadTools') + '</div>';
       }
     }
 
@@ -8323,23 +8310,23 @@ export async function openSettingsModal(options = {}) {
       const switchable = Object.entries(tg).filter(([, info]) => !info.alwaysOn);
 
       if (!profEntries.length) {
-        wrap.innerHTML = '<div class="stg-mcp-matrix-empty">No profiles</div>';
+        wrap.innerHTML = '<div class="stg-mcp-matrix-empty">' + kit.te('settings.redesign.mcp.noProfiles') + '</div>';
         return;
       }
 
       // Build table header
-      let thead = '<tr><th class="stg-mx-label-th"><div class="stg-mx-corner-head">Tool Groups</div></th>';
+      let thead = '<tr><th class="stg-mx-label-th"><div class="stg-mx-corner-head">' + kit.te('settings.redesign.mcp.toolGroups') + '</div></th>';
       for (const [name, prof] of profEntries) {
         const isActive = name === active;
         thead += `<th class="stg-mx-profile-th${isActive ? ' active' : ''}" data-profile="${esc(name)}">
           <div class="stg-mx-profile-head" data-profile="${esc(name)}">
             <span class="stg-mx-profile-dot${isActive ? ' on' : ''}"></span>
             <span class="stg-mx-profile-name">${esc(prof.label || name)}</span>
-            ${isActive ? '' : `<button class="stg-mx-profile-del" data-profile="${esc(name)}" title="Delete profile">\u00d7</button>`}
+            ${isActive ? '' : `<button class="stg-mx-profile-del" data-profile="${esc(name)}" title="${kit.te('settings.redesign.mcp.deleteProfile')}">\u00d7</button>`}
           </div>
         </th>`;
       }
-      thead += '<th class="stg-mx-add-th"><button class="stg-mx-add-btn" title="New profile">+</button></th></tr>';
+      thead += '<th class="stg-mx-add-th"><button class="stg-mx-add-btn" title="' + kit.te('settings.redesign.mcp.newProfile') + '">+</button></th></tr>';
 
       // Build table body — switchable groups
       let tbody = '';
@@ -8402,7 +8389,7 @@ export async function openSettingsModal(options = {}) {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ profile: name }),
           });
-          showCCToast(`Profile switched to ${name}`);
+          showCCToast(kit.tx('settings.redesign.mcp.profileSwitchedTo', { name: name }));
           await refreshMcpTab();
         });
       });
@@ -8421,7 +8408,7 @@ export async function openSettingsModal(options = {}) {
       if (addBtn) {
         addBtn.addEventListener('click', () => {
           const th = addBtn.closest('th');
-          th.innerHTML = `<input class="stg-mx-inline-input" type="text" placeholder="name" autofocus>`;
+          th.innerHTML = `<input class="stg-mx-inline-input" type="text" placeholder="${kit.te('settings.redesign.mcp.name')}" autofocus>`;
           const input = th.querySelector('input');
           input.focus();
           const create = async () => {
@@ -8449,7 +8436,7 @@ export async function openSettingsModal(options = {}) {
       const alwaysOn = Object.entries(tg).filter(([, info]) => info.alwaysOn);
       if (!alwaysOn.length) { el.innerHTML = ''; return; }
       el.innerHTML = `
-        <div class="stg-mcp-section-header">Always On</div>
+        <div class="stg-mcp-section-header">${kit.te('settings.redesign.mcp.alwaysOn')}</div>
         <div class="stg-mx-always-on-row">
           ${alwaysOn.map(([, info]) =>
             `<span class="stg-mx-always-chip">${esc(info.label)}<span class="stg-mx-grp-count">${info.tools}</span></span>`
@@ -8464,7 +8451,7 @@ export async function openSettingsModal(options = {}) {
       const profiles = Object.entries(_mcpRegistry.profiles || {});
       const entries = Object.entries(servers).filter(([, info]) => !info.builtin);
       if (!entries.length) {
-        el.innerHTML = '<div class="stg-mcp-empty-note">No external servers configured</div>';
+        el.innerHTML = '<div class="stg-mcp-empty-note">' + kit.te('settings.redesign.mcp.noExternalServersConfigured') + '</div>';
         return;
       }
       el.innerHTML = entries.map(([name, info]) =>
@@ -8476,14 +8463,14 @@ export async function openSettingsModal(options = {}) {
                 <span class="stg-mx-ext-name">${esc(name)}</span>
                 <span class="stg-mx-ext-type">${esc(info.type || '?')}</span>
               </div>
-              <div class="stg-mx-ext-sub">Available to any profile you enable below.</div>
+              <div class="stg-mx-ext-sub">${kit.te('settings.redesign.mcp.availableToAnyProfileYouEnable')}</div>
             </div>
-            <button class="stg-mx-srv-del stg-mx-ext-remove" data-server="${esc(name)}" title="Remove server">\u00d7</button>
+            <button class="stg-mx-srv-del stg-mx-ext-remove" data-server="${esc(name)}" title="${kit.te('settings.redesign.mcp.removeServer')}">\u00d7</button>
           </div>
           <div class="stg-mx-ext-profiles">
             ${profiles.map(([profName, prof]) => {
               const isOn = (prof.servers || []).includes(name);
-              return `<button class="stg-mx-ext-toggle${isOn ? ' on' : ''}" data-profile="${esc(profName)}" data-server="${esc(name)}" title="${isOn ? 'Disable' : 'Enable'} ${esc(name)} for ${esc(prof.label || profName)}">
+              return `<button class="stg-mx-ext-toggle${isOn ? ' on' : ''}" data-profile="${esc(profName)}" data-server="${esc(name)}" title="${isOn ? kit.te('settings.redesign.mcp.disable') : kit.te('settings.redesign.mcp.enable')} ${esc(name)} ${kit.te('settings.redesign.mcp.for')} ${esc(prof.label || profName)}">
                 <span class="stg-mx-ext-toggle-name">${esc(prof.label || profName)}</span>
               </button>`;
             }).join('')}
@@ -8546,7 +8533,7 @@ export async function openSettingsModal(options = {}) {
     });
 
     const CLI_BADGES = {
-      synabun:    { label: 'SB', title: 'SynaBun registry' },
+      synabun:    { label: 'SB', title: kit.tx('settings.redesign.mcp.synabunRegistry') },
       claudeCode: { label: 'CC', title: 'Claude Code (~/.claude.json)' },
       opencode:   { label: 'OC', title: 'OpenCode' },
       codex:      { label: 'CX', title: 'Codex (~/.codex/config.toml)' },
@@ -8556,14 +8543,14 @@ export async function openSettingsModal(options = {}) {
     async function renderInstalledAll() {
       const el = overlay.querySelector('#stg-mcp-installed-all');
       if (!el) return;
-      el.innerHTML = '<div class="stg-mcp-empty-note">Loading…</div>';
+      el.innerHTML = '<div class="stg-mcp-empty-note">' + kit.te('settings.redesign.mcp.loading') + '</div>';
       let servers = [];
       try {
         const r = await fetch('/api/mcp/installed-all').then(r => r.json());
         if (r?.ok) servers = r.servers || [];
       } catch {}
       if (!servers.length) {
-        el.innerHTML = '<div class="stg-mcp-empty-note">No external MCP servers installed</div>';
+        el.innerHTML = '<div class="stg-mcp-empty-note">' + kit.te('settings.redesign.mcp.noExternalMcpServersInstalled') + '</div>';
         return;
       }
       el.innerHTML = servers.map(s => {
@@ -8585,7 +8572,7 @@ export async function openSettingsModal(options = {}) {
               </div>
               <div class="stg-mx-ext-sub">${cmd || '—'}</div>
             </div>
-            <button class="stg-mx-srv-del stg-mx-installed-del" data-server="${esc(s.name)}" data-registered="${regAttr}" title="Uninstall from all CLIs">×</button>
+            <button class="stg-mx-srv-del stg-mx-installed-del" data-server="${esc(s.name)}" data-registered="${regAttr}" title="${kit.te('settings.redesign.mcp.uninstallFromAllClis')}">×</button>
           </div>
         </div>`;
       }).join('');
@@ -8598,7 +8585,7 @@ export async function openSettingsModal(options = {}) {
           if (!name) return;
           const cliList = registered.filter(k => k !== 'synabun');
           const summary = registered.map(k => CLI_BADGES[k]?.label || k).join(', ');
-          if (!confirm(`Remove "${name}" from ${summary}? This unregisters it from each CLI's config.`)) return;
+          if (!confirm(kit.tx('settings.redesign.mcp.removeFromThisUnregistersItFrom', { name: name, summary: summary }))) return;
           btn.disabled = true;
           try {
             if (registered.includes('synabun')) {
@@ -8627,11 +8614,11 @@ export async function openSettingsModal(options = {}) {
         if (r?.ok) plugins = r.plugins || [];
       } catch {}
       if (!plugins.length) {
-        el.innerHTML = '<div class="stg-mcp-empty-note">No plugins installed</div>';
+        el.innerHTML = '<div class="stg-mcp-empty-note">' + kit.te('settings.redesign.mcp.noPluginsInstalled') + '</div>';
         return;
       }
       el.innerHTML = plugins.map(p => {
-        const brokenBadge = p.broken ? '<span class="stg-mx-ext-type" style="color:var(--t-err,#f55)">broken</span>' : '';
+        const brokenBadge = p.broken ? '<span class="stg-mx-ext-type" style="color:var(--t-err,#f55)">' + kit.te('settings.redesign.mcp.broken') + '</span>' : '';
         const sha = p.gitCommitSha && p.gitCommitSha !== 'unknown' ? p.gitCommitSha.slice(0, 7) : '';
         return `<div class="stg-mx-ext-row">
           <div class="stg-mx-ext-main">
@@ -8644,7 +8631,7 @@ export async function openSettingsModal(options = {}) {
               </div>
               <div class="stg-mx-ext-sub">${esc(p.marketplaceName)}${sha ? ' · ' + sha : ''} · ${esc(p.repoPath || '')}</div>
             </div>
-            <button class="stg-mx-srv-del stg-mx-ext-plugin-del" data-marketplace="${esc(p.marketplaceName)}" data-plugin="${esc(p.pluginName)}" title="Uninstall plugin">×</button>
+            <button class="stg-mx-srv-del stg-mx-ext-plugin-del" data-marketplace="${esc(p.marketplaceName)}" data-plugin="${esc(p.pluginName)}" title="${kit.te('settings.redesign.mcp.uninstallPlugin')}">×</button>
           </div>
         </div>`;
       }).join('');
@@ -8855,7 +8842,7 @@ export async function openSettingsModal(options = {}) {
       const sensitive = !!opts.sensitive || (typeof key === 'string' && SENSITIVE_KEY_RE.test(key));
       const valType = sensitive ? 'password' : 'text';
       const keyPlaceholder = opts.keyPlaceholder || 'KEY';
-      row.innerHTML = `<input type="text" class="stg-input stg-input-sm stg-mcp-env-key" placeholder="${esc(keyPlaceholder)}" value="${esc(key || '')}"><input type="${valType}" class="stg-input stg-input-sm stg-mcp-env-val" placeholder="value" value="${esc(val || '')}"><button type="button" class="stg-mcp-env-eye" title="Toggle reveal">\u{1F441}</button><span class="stg-mcp-env-remove">\u00d7</span>`;
+      row.innerHTML = `<input type="text" class="stg-input stg-input-sm stg-mcp-env-key" placeholder="${esc(keyPlaceholder)}" value="${esc(key || '')}"><input type="${valType}" class="stg-input stg-input-sm stg-mcp-env-val" placeholder="${kit.te('settings.redesign.mcp.value')}" value="${esc(val || '')}"><button type="button" class="stg-mcp-env-eye" title="${kit.te('settings.redesign.mcp.toggleReveal')}">\u{1F441}</button><span class="stg-mcp-env-remove">\u00d7</span>`;
       const valInput = row.querySelector('.stg-mcp-env-val');
       row.querySelector('.stg-mcp-env-eye')?.addEventListener('click', () => {
         valInput.type = valInput.type === 'password' ? 'text' : 'password';
@@ -9078,7 +9065,7 @@ export async function openSettingsModal(options = {}) {
       if (!url) return;
       setFormMode('mcp'); // reset so form is in a clean state before classification
       if (ghProgress) ghProgress.style.display = '';
-      if (ghStatus) ghStatus.textContent = 'Cloning repository…';
+      if (ghStatus) ghStatus.textContent = kit.tx('settings.redesign.mcp.cloningRepository');
       if (ghLog) ghLog.textContent = '';
       ghInstallBtn.disabled = true;
       try {
@@ -9089,7 +9076,7 @@ export async function openSettingsModal(options = {}) {
         if (ghLog && Array.isArray(res.log)) ghLog.textContent = res.log.join('\n');
         if (!res.ok) {
           const hintStr = Array.isArray(res.hints) && res.hints.length ? ` (hints: ${res.hints.join(', ')})` : '';
-          if (ghStatus) ghStatus.textContent = `${res.error || 'install failed'}${hintStr}`;
+          if (ghStatus) ghStatus.textContent = `${res.error || kit.tx('settings.redesign.mcp.installFailed')}${hintStr}`;
           return;
         }
         if (res.kind === 'claude-plugin') {
@@ -9097,19 +9084,19 @@ export async function openSettingsModal(options = {}) {
           const p = res.plugin || {};
           const hooks = (p.hooks || []).join(', ') || 'none';
           if (ghStatus) {
-            ghStatus.innerHTML = `Installed Claude Code plugin <b>${esc(p.pluginName || res.name)}</b> @ <b>${esc(p.marketplaceName || '')}</b>. Hooks: ${esc(hooks)}. Symlinked to <code>${esc(p.installPath || '')}</code>.`;
+            ghStatus.innerHTML = `${kit.te('settings.redesign.mcp.installedClaudeCodePlugin')} <b>${esc(p.pluginName || res.name)}</b> @ <b>${esc(p.marketplaceName || '')}</b>${kit.th('settings.redesign.mcp.hooksSymlinkedTo', { hooks: esc(hooks) })} <code>${esc(p.installPath || '')}</code>.`;
           }
           await refreshMcpTab();
           return;
         }
         // MCP (existing behavior)
         setFormMode('mcp');
-        const sourceHint = res.alsoClaudePlugin ? ' (repo also ships a Claude Code plugin — install separately if desired)' : '';
-        const warnLine = res.installWarning ? `\n⚠ ${res.installWarning}` : (res.install?.skipped && res.install?.reason ? `\n⚙ Skipped local deps — ${res.install.reason}` : '');
-        if (ghStatus) ghStatus.textContent = `Detected via ${res.detected?.source || res.detectSource || 'heuristic'} — review below and click Save.${sourceHint}${warnLine}`;
+        const sourceHint = res.alsoClaudePlugin ? (" " + kit.tx('settings.redesign.mcp.repoAlsoShipsAClaudeCode')) : '';
+        const warnLine = res.installWarning ? `\n⚠ ${res.installWarning}` : (res.install?.skipped && res.install?.reason ? ("\n" + kit.tx('settings.redesign.mcp.skippedLocalDeps', { reason: res.install.reason })) : '');
+        if (ghStatus) ghStatus.textContent = kit.tx('settings.redesign.mcp.detectedViaReviewBelowAndClick', { source: res.detected?.source || res.detectSource || kit.tx('settings.redesign.mcp.heuristic'), sourceHint: sourceHint, warnLine: warnLine });
         applyDetected(res.name, res.detected);
       } catch (err) {
-        if (ghStatus) ghStatus.textContent = `Error: ${err.message || err}`;
+        if (ghStatus) ghStatus.textContent = kit.tx('settings.redesign.mcp.error', { message: err.message || err });
       } finally {
         ghInstallBtn.disabled = false;
       }
@@ -9149,7 +9136,7 @@ export async function openSettingsModal(options = {}) {
         if (cb?.checked) platforms.push(label.dataset.platform);
       });
       if (platforms.length && feedbackEl) {
-        feedbackEl.innerHTML = 'Syncing…';
+        feedbackEl.innerHTML = kit.te('settings.redesign.mcp.syncing');
         try {
           const res = await fetch('/api/mcp/sync', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -9162,7 +9149,7 @@ export async function openSettingsModal(options = {}) {
               return `<span class="stg-mcp-sync-result ${cls}">${icon} ${esc(p)}</span>`;
             }).join(' ');
           }
-        } catch { feedbackEl.innerHTML = '<span class="stg-mcp-sync-result err">Sync failed</span>'; }
+        } catch { feedbackEl.innerHTML = '<span class="stg-mcp-sync-result err">' + kit.te('settings.redesign.mcp.syncFailed') + '</span>'; }
       }
 
       // Hide form after brief delay so user sees feedback
@@ -9229,10 +9216,12 @@ export async function openSettingsModal(options = {}) {
     function buildCapPills(container, filterSet, onChange) {
       if (!container) return;
       for (const b of STG_CAP_BADGES) {
-        const pill = document.createElement('span');
+        // a multi-select segmented control: each segment is a toggle button
+        const pill = document.createElement('button');
+        pill.type = 'button';
         pill.className = 'stg-cap-filter';
-        pill.innerHTML = `<span class="stg-cap-filter-letter" style="--cap-c:${b.color}">${b.abbr}</span>${b.label}`;
-        pill.style.setProperty('--cap-c', b.color);
+        pill.textContent = b.label;
+        pill.setAttribute('aria-pressed', 'false');
         pill.addEventListener('click', () => {
           if (filterSet.has(b.label)) {
             filterSet.delete(b.label);
@@ -9241,6 +9230,7 @@ export async function openSettingsModal(options = {}) {
             filterSet.add(b.label);
             pill.classList.add('active');
           }
+          pill.setAttribute('aria-pressed', String(filterSet.has(b.label)));
           onChange();
         });
         container.appendChild(pill);
@@ -9272,7 +9262,7 @@ export async function openSettingsModal(options = {}) {
           const fileResp = await fetch('/api/opencode/config/file');
           const fileData = await fileResp.json();
           if (!fileResp.ok || !fileData?.path) {
-            showCCToast(fileData?.error || revealData?.error || 'Failed to open OpenCode config');
+            showCCToast(fileData?.error || revealData?.error || kit.tx('settings.redesign.opencode.failedToOpenOpencodeConfig'));
             return;
           }
           filePath = fileData.path;
@@ -9281,7 +9271,7 @@ export async function openSettingsModal(options = {}) {
         emit('open-file-editor', { filePath });
       } catch (err) {
         console.error('[settings] Failed to open OpenCode config:', err);
-        showCCToast('Failed to open OpenCode config');
+        showCCToast(kit.tx('settings.redesign.opencode.failedToOpenOpencodeConfig'));
       }
     });
 
@@ -9292,6 +9282,7 @@ export async function openSettingsModal(options = {}) {
           fetch('/api/opencode/providers/full'),
           fetch('/api/opencode/providers/auth'),
           fetch('/api/opencode/auth/stored'),
+          hydrateHiddenModels(),
         ]);
         const provData = await provResp.json();
         const authData = await authResp.json();
@@ -9320,33 +9311,33 @@ export async function openSettingsModal(options = {}) {
 
     // ── Master refresh ──
     async function refreshOcpStatus() {
-      setOcpStatus('Checking…', 'dim');
+      setOcpStatus(kit.tx('settings.redesign.opencode.checking'), 'dim');
       try {
         const resp = await fetch('/api/opencode/status');
         const data = await resp.json();
         if (data.clearingHistory) {
-          setOcpStatus('Clearing history…', 'warn');
+          setOcpStatus(kit.tx('settings.redesign.opencode.clearingHistory'), 'warn');
         } else if (data.running) {
-          setOcpStatus(`Running${data.version ? ' v' + data.version : ''}`, 'ok');
+          setOcpStatus(kit.tx('settings.redesign.opencode.runningVersion', { version: data.version ? ' v' + data.version : '' }), 'ok');
           await Promise.all([
             refreshOcpProviders(),
             loadOcpConfig(),
             renderToolPermissions(),
           ]);
         } else {
-          setOcpStatus('Offline', 'dim');
-          if (ocpProvidersEl) ocpProvidersEl.innerHTML = '<div class="settings-hint" style="opacity:0.4">Start the server to see providers</div>';
-          if (ocpToolsEl) ocpToolsEl.innerHTML = '<div class="settings-hint" style="opacity:0.4">Start the server to load tools</div>';
+          setOcpStatus(kit.tx('settings.redesign.opencode.offline'), 'dim');
+          if (ocpProvidersEl) ocpProvidersEl.innerHTML = '<div class="settings-hint" style="opacity:0.4">' + kit.te('settings.redesign.opencode.startTheServerToSeeProviders') + '</div>';
+          if (ocpToolsEl) ocpToolsEl.innerHTML = '<div class="settings-hint" style="opacity:0.4">' + kit.te('settings.redesign.opencode.startTheServerToLoadTools') + '</div>';
         }
       } catch (err) {
-        setOcpStatus('Error', 'err');
+        setOcpStatus(kit.tx('settings.redesign.opencode.error'), 'err');
       }
     }
 
     // ── Server start/stop/refresh ──
     overlay.querySelector('#stg-ocp-start')?.addEventListener('click', async () => {
       const port = overlay.querySelector('#stg-ocp-port')?.value || 4096;
-      setOcpStatus('Starting…', 'warn');
+      setOcpStatus(kit.tx('settings.redesign.opencode.starting'), 'warn');
       try {
         await fetch('/api/opencode/serve/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ port: Number(port) }) });
       } catch {}
@@ -9385,10 +9376,28 @@ export async function openSettingsModal(options = {}) {
   // ── Variant tabs: call afterRender ──
   for (const vTab of variantTabs) {
     if (typeof vTab.afterRender === 'function') {
-      const tabBody = overlay.querySelector(`.settings-tab-body[data-tab="${vTab.id}"]`);
+      const tabBody = kit.paneOf(overlay, vTab.id);
       if (tabBody) vTab.afterRender(tabBody);
     }
   }
+
+  // ── Shell behaviours: jump lists, keyboard disclosure, page picker ──
+  wireSettingsShell(overlay, { activate: (pageId) => activateSettingsTab(overlay, pageId) });
+  // ── Search: the index is built from the strings of the active locale; what the panes load is read at query time ──
+  // In another locale the English names are searched too (someone who learned the settings in English still finds
+  // them): from the bundle i18n already holds as its fallback, or, when it has none, loaded once as the field is first used.
+  const searchIndex = (en) => buildSettingsSearchIndex({ t: kit.tx, en, variants: variantTabs.map(tab => ({ id: tab.id, label: tab.label })) });
+  const english = getLocale() === 'en' ? null : englishTranslator();
+  wireSettingsSearch(overlay, {
+    index: searchIndex(english),
+    english: getLocale() === 'en' || english ? null : () => loadEnglishTranslator().then(en => (en ? searchIndex(en) : null)),
+    land: (entry, o) => landOnSearchEntry(overlay, entry, o),
+    locate: (entry) => locateSearchEntry(overlay, entry),
+    sources: SEARCH_ROW_SOURCES,
+    off: SEARCH_OFF,
+  });
+  // A deep link's `expand` wins over anything a pane collapsed while it wired itself.
+  applySettingsOpenOptions(overlay, options, { quiet: true });
 }
 
 
@@ -9412,15 +9421,15 @@ export async function checkSyncStatus() {
     if (data.total_stale === 0) {
       results.innerHTML = `
         <div class="sync-summary clean">
-          <strong>All clear</strong> \u2014 checked ${data.total_with_files} memories with related files, none are stale.
+          ${kit.th('settings.redesign.sync.allClear', { strong: `<strong>${kit.te('settings.redesign.sync.allClearWord')}</strong>`, count: data.total_with_files })}
         </div>`;
       return;
     }
 
     let html = `
       <div class="sync-summary">
-        <strong>${data.total_stale}</strong> of ${data.total_with_files} memories are stale
-        <button class="sync-select-all" id="sync-select-all">Deselect all</button>
+        ${kit.th('settings.redesign.sync.staleCount', { stale: `<strong>${data.total_stale}</strong>`, count: data.total_with_files })}
+        <button class="sync-select-all" id="sync-select-all">${kit.te('settings.redesign.sync.deselectAll')}</button>
       </div>`;
 
     for (const mem of data.stale) {
@@ -9434,14 +9443,14 @@ export async function checkSyncStatus() {
           <div class="sync-card-header">
             <div class="sync-card-check"></div>
             <span class="sync-card-category">${mem.category}</span>
-            <span class="sync-card-importance">imp ${mem.importance}</span>
+            <span class="sync-card-importance">${kit.te('settings.redesign.sync.importanceShort', { importance: mem.importance })}</span>
           </div>
           <div class="sync-card-content">${escapeHtml(preview)}</div>
-          <div class="sync-card-files">Changed: ${files}</div>
+          <div class="sync-card-files">${kit.th('settings.redesign.sync.changedFiles', { files })}</div>
         </div>`;
     }
 
-    html += `<button class="sync-copy-btn" id="sync-copy-all">Copy sync prompt (${data.total_stale})</button>`;
+    html += `<button class="sync-copy-btn" id="sync-copy-all">${kit.te('settings.redesign.sync.copyPromptCount', { count: data.total_stale })}</button>`;
     results.innerHTML = html;
 
     results._syncData = data;
@@ -9466,7 +9475,7 @@ export async function checkSyncStatus() {
       updateSyncCopyBtn();
     });
   } catch (err) {
-    results.innerHTML = `<div class="sync-summary" style="color:var(--accent-red)">Error: ${err.message}</div>`;
+    results.innerHTML = `<div class="sync-summary" style="color:var(--accent-red)">${kit.te('settings.redesign.sync.error', { message: err.message })}</div>`;
   } finally {
     btn.classList.remove('loading');
     btn.disabled = false;
@@ -9483,12 +9492,12 @@ function updateSyncCopyBtn() {
   const selected = results.querySelectorAll('.sync-card.selected');
   const count = selected.length;
 
-  btn.textContent = count ? `Copy sync prompt (${count})` : 'Copy sync prompt';
+  btn.textContent = count ? kit.tx('settings.redesign.sync.copyPromptCount', { count }) : kit.tx('settings.redesign.sync.copyPrompt');
   btn.disabled = count === 0;
 
   if (selectAllBtn) {
     const allSelected = selected.length === cards.length;
-    selectAllBtn.textContent = allSelected ? 'Deselect all' : 'Select all';
+    selectAllBtn.textContent = allSelected ? kit.tx('settings.redesign.sync.deselectAll') : kit.tx('settings.redesign.sync.selectAll');
   }
 }
 
@@ -9527,19 +9536,19 @@ function showSyncCopiedModal(count) {
     <div class="tag-delete-modal" style="max-width:380px">
       <div class="tag-delete-modal-title">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
-        Prompt copied
+        ${kit.te('settings.redesign.sync.promptCopied')}
       </div>
       <p style="font-size:var(--fs-sm);color:var(--t-secondary);margin-bottom:6px">
-        ${count} ${count === 1 ? 'memory' : 'memories'} ready to sync.
+        ${kit.te(count === 1 ? 'settings.redesign.sync.readyToSync.one' : 'settings.redesign.sync.readyToSync.other', { count })}
       </p>
       <p style="font-size:var(--fs-sm);color:var(--t-secondary);margin-bottom:6px">
-        Paste this prompt into your preferred model to update the stale memories.
+        ${kit.te('settings.redesign.sync.pasteThisPrompt')}
       </p>
       <p style="font-size:var(--fs-xs);color:var(--t-muted);margin-bottom:18px">
-        The model you choose affects output accuracy \u2014 more capable models produce better rewrites.
+        ${kit.te('settings.redesign.sync.modelAffectsAccuracy')}
       </p>
       <div class="tag-delete-modal-actions">
-        <button class="action-btn action-btn--ghost" id="sync-modal-close">Got it</button>
+        <button class="action-btn action-btn--ghost" id="sync-modal-close">${kit.te('settings.redesign.sync.gotIt')}</button>
       </div>
     </div>
   `;
@@ -9570,6 +9579,10 @@ export function initSettings() {
   if (menubarBtn) menubarBtn.addEventListener('click', () => openSettingsModal());
 
   registerAction('open-settings', openSettingsModal);
+
+  // A language change reloaded the app: open Settings again where the user was, once the rest of the app has started.
+  const reopenPage = takeSettingsReopen();
+  if (reopenPage) setTimeout(() => openSettingsModal({ tab: reopenPage, expand: ['stg-sec-language'] }), 0);
 
   // Expose sync functions for inline onclick attributes (if any remain)
   window.checkSyncStatus = checkSyncStatus;

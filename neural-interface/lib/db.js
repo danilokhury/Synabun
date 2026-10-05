@@ -7,7 +7,12 @@
 import { DatabaseSync } from 'node:sqlite';
 import { resolve, dirname } from 'path';
 import { existsSync, mkdirSync } from 'fs';
-import { VectorCache } from './vector-cache.js';
+import { getDb as sharedDb, closeDatabase, memoryVectors, chunkVectors, searchMemories as sharedSearch, searchSessionChunks as sharedSessionSearch, updatePayload as sharedUpdate, deleteMemory as sharedDelete } from '../../mcp-server/dist/services/sqlite.js';
+import { generateEmbedding, generateEmbeddingBatch, warmupEmbeddings, EMBEDDING_MODEL, EMBEDDING_DIMENSIONS } from '../../mcp-server/dist/services/local-embeddings.js';
+export { memoryVectors, chunkVectors, warmupEmbeddings, EMBEDDING_MODEL };
+export const EMBEDDING_DIMS = EMBEDDING_DIMENSIONS;
+export const getEmbedding = generateEmbedding;
+export const getEmbeddingBatch = generateEmbeddingBatch;
 import { getDataHome } from '../../lib/paths.js';
 
 function getDefaultDbPath() {
@@ -18,58 +23,6 @@ function getDefaultDbPath() {
 let db = null;
 
 // --- Embedding ---
-
-let embeddingPipeline = null;
-let embeddingInitPromise = null;
-export const EMBEDDING_MODEL = 'Xenova/all-MiniLM-L6-v2';
-export const EMBEDDING_DIMS = 384;
-
-async function getEmbeddingPipeline() {
-  if (embeddingPipeline) return embeddingPipeline;
-  if (embeddingInitPromise) return embeddingInitPromise;
-
-  embeddingInitPromise = (async () => {
-    const { pipeline } = await import('@huggingface/transformers');
-    embeddingPipeline = await pipeline('feature-extraction', EMBEDDING_MODEL, {
-      dtype: 'fp32',
-      // Single-threaded ORT: run inference on the calling thread so onnxruntime-node
-      // spawns NO intra/inter-op worker threads. Eliminates the macOS at-exit crash
-      // (ThreadPoolTempl::WorkerLoop threads aborting in the static destructor —
-      // `libc++abi: mutex lock failed`). MiniLM is tiny, so latency is unaffected.
-      session_options: { intraOpNumThreads: 1, interOpNumThreads: 1 },
-    });
-    return embeddingPipeline;
-  })();
-
-  try {
-    return await embeddingInitPromise;
-  } finally {
-    embeddingInitPromise = null;
-  }
-}
-
-export async function getEmbedding(text) {
-  const ext = await getEmbeddingPipeline();
-  const output = await ext(text, { pooling: 'mean', normalize: true });
-  return Array.from(output.data);
-}
-
-export async function getEmbeddingBatch(texts) {
-  if (texts.length === 0) return [];
-  if (texts.length === 1) return [await getEmbedding(texts[0])];
-
-  const ext = await getEmbeddingPipeline();
-  const results = [];
-  for (const text of texts) {
-    const output = await ext(text, { pooling: 'mean', normalize: true });
-    results.push(Array.from(output.data));
-  }
-  return results;
-}
-
-export async function warmupEmbeddings() {
-  await getEmbeddingPipeline();
-}
 
 export function getEmbeddingDims() {
   return EMBEDDING_DIMS;
@@ -93,14 +46,7 @@ export function getDb() {
     const dir = dirname(dbPath);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
-    db = new DatabaseSync(dbPath);
-    db.exec('PRAGMA journal_mode = WAL');
-    db.exec('PRAGMA foreign_keys = ON');
-    db.exec('PRAGMA busy_timeout = 5000');
-
-    // Ensure schema exists (same tables as MCP server)
-    db.exec(SCHEMA_SQL);
-    try { db.exec(FTS_SQL); } catch { /* FTS5 may already exist */ }
+    db = sharedDb();
     try { db.exec(SESSION_CACHE_SQL); } catch { /* session_cache migration */ }
     try {
       const sessionCacheColumns = new Set(
@@ -109,87 +55,9 @@ export function getDb() {
       if (!sessionCacheColumns.has('account_id')) db.exec('ALTER TABLE session_cache ADD COLUMN account_id TEXT');
     } catch { /* additive session_cache migration */ }
     try { db.exec(SESSION_FTS_SQL); } catch { /* FTS5 may already exist */ }
-    try { db.exec(FB_SCHEMA_SQL); } catch { /* fb group directory — created by whichever process opens first */ }
   }
   return db;
 }
-
-const SCHEMA_SQL = `
-CREATE TABLE IF NOT EXISTS memories (
-  id              TEXT PRIMARY KEY,
-  vector          BLOB NOT NULL,
-  content         TEXT NOT NULL,
-  category        TEXT NOT NULL,
-  subcategory     TEXT,
-  project         TEXT NOT NULL,
-  tags            TEXT NOT NULL DEFAULT '[]',
-  importance      INTEGER NOT NULL DEFAULT 5,
-  source          TEXT NOT NULL DEFAULT 'self-discovered',
-  created_at      TEXT NOT NULL,
-  updated_at      TEXT NOT NULL,
-  accessed_at     TEXT NOT NULL,
-  access_count    INTEGER NOT NULL DEFAULT 0,
-  related_files   TEXT,
-  related_memory_ids TEXT,
-  file_checksums  TEXT,
-  trashed_at      TEXT,
-  source_session_chunks TEXT
-);
-
-CREATE TABLE IF NOT EXISTS session_chunks (
-  id              TEXT PRIMARY KEY,
-  vector          BLOB NOT NULL,
-  content         TEXT NOT NULL,
-  summary         TEXT,
-  session_id      TEXT,
-  project         TEXT,
-  git_branch      TEXT,
-  cwd             TEXT,
-  chunk_index     INTEGER DEFAULT 0,
-  start_timestamp TEXT,
-  end_timestamp   TEXT,
-  tools_used      TEXT DEFAULT '[]',
-  files_modified  TEXT DEFAULT '[]',
-  files_read      TEXT DEFAULT '[]',
-  user_messages   TEXT DEFAULT '[]',
-  turn_count      INTEGER DEFAULT 0,
-  related_memory_ids TEXT DEFAULT '[]',
-  dedup_memory_id TEXT,
-  indexed_at      TEXT
-);
-
-CREATE TABLE IF NOT EXISTS categories (
-  name            TEXT PRIMARY KEY,
-  description     TEXT NOT NULL,
-  created_at      TEXT NOT NULL,
-  parent          TEXT,
-  color           TEXT,
-  is_parent       INTEGER DEFAULT 0
-);
-
-CREATE INDEX IF NOT EXISTS idx_mem_category ON memories(category);
-CREATE INDEX IF NOT EXISTS idx_mem_project ON memories(project);
-CREATE INDEX IF NOT EXISTS idx_mem_importance ON memories(importance);
-CREATE INDEX IF NOT EXISTS idx_mem_trashed ON memories(trashed_at);
-CREATE INDEX IF NOT EXISTS idx_mem_created ON memories(created_at);
-CREATE INDEX IF NOT EXISTS idx_mem_source ON memories(source);
-CREATE INDEX IF NOT EXISTS idx_sc_session ON session_chunks(session_id);
-CREATE INDEX IF NOT EXISTS idx_sc_project ON session_chunks(project);
-CREATE INDEX IF NOT EXISTS idx_sc_branch ON session_chunks(git_branch);
-
-CREATE TABLE IF NOT EXISTS kv_config (
-  key   TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-);
-`;
-
-const FTS_SQL = `
-CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
-  content, category, project, tags,
-  content=memories, content_rowid=rowid,
-  tokenize='porter unicode61'
-);
-`;
 
 const SESSION_CACHE_SQL = `
 CREATE TABLE IF NOT EXISTS session_cache (
@@ -216,52 +84,6 @@ CREATE INDEX IF NOT EXISTS idx_session_cache_project
   ON session_cache(project_path);
 `;
 
-// Facebook group directory — mirrors mcp-server/src/services/sqlite.ts FB_SCHEMA_SQL so the
-// Neural Interface can read/render the directory. CREATE IF NOT EXISTS = whichever process
-// opens memory.db first creates the tables; the other is a no-op.
-const FB_SCHEMA_SQL = `
-CREATE TABLE IF NOT EXISTS fb_groups (
-  url            TEXT PRIMARY KEY,
-  name           TEXT NOT NULL DEFAULT '',
-  region         TEXT,
-  country        TEXT,
-  lang           TEXT,
-  currency       TEXT,
-  joined         INTEGER NOT NULL DEFAULT 1,
-  allows_promo   TEXT NOT NULL DEFAULT 'unknown',
-  member_count   INTEGER,
-  pending_since  TEXT,
-  cooldown_until TEXT,
-  last_status    TEXT,
-  last_error     TEXT,
-  notes          TEXT,
-  source         TEXT NOT NULL DEFAULT 'import',
-  added_at       TEXT NOT NULL,
-  updated_at     TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS fb_post_log (
-  id          TEXT PRIMARY KEY,
-  group_url   TEXT NOT NULL,
-  offer_slug  TEXT NOT NULL,
-  currency    TEXT,
-  status      TEXT NOT NULL,
-  post_url    TEXT,
-  session_id  TEXT,
-  posted_at   TEXT NOT NULL,
-  note        TEXT
-);
-
-CREATE INDEX IF NOT EXISTS idx_fbg_region   ON fb_groups(region);
-CREATE INDEX IF NOT EXISTS idx_fbg_joined   ON fb_groups(joined);
-CREATE INDEX IF NOT EXISTS idx_fbg_promo    ON fb_groups(allows_promo);
-CREATE INDEX IF NOT EXISTS idx_fbpl_url     ON fb_post_log(group_url);
-CREATE INDEX IF NOT EXISTS idx_fbpl_offer   ON fb_post_log(offer_slug);
-CREATE INDEX IF NOT EXISTS idx_fbpl_posted  ON fb_post_log(posted_at);
-CREATE UNIQUE INDEX IF NOT EXISTS uq_fbpl_url_offer_day
-  ON fb_post_log(group_url, offer_slug, substr(posted_at,1,10));
-`;
-
 const SESSION_FTS_SQL = `
 CREATE VIRTUAL TABLE IF NOT EXISTS session_fts USING fts5(
   session_id UNINDEXED,
@@ -275,7 +97,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS session_fts USING fts5(
 
 export function closeDb() {
   if (db) {
-    db.close();
+    closeDatabase();
     db = null;
   }
   memoryVectors.invalidate();
@@ -286,18 +108,6 @@ export function closeDb() {
 // Exported so same-connection writers (session-indexer, server.js bridge
 // import) can patch the cache — same-connection writes do NOT bump
 // PRAGMA data_version, so they must update the cache explicitly.
-
-export const memoryVectors = new VectorCache(
-  getDb,
-  'SELECT id, vector FROM memories WHERE trashed_at IS NULL',
-  'SELECT vector FROM memories WHERE id = ? AND trashed_at IS NULL',
-);
-
-export const chunkVectors = new VectorCache(
-  getDb,
-  'SELECT id, vector FROM session_chunks',
-  'SELECT vector FROM session_chunks WHERE id = ?',
-);
 
 // --- X/Twitter engagement ledger (cross-schedule dedup) ---
 
@@ -436,7 +246,7 @@ export function getXActionBudget({ account = null, sinceIso, limit = 500 } = {})
  * Per-day ceilings for each engagement ramp tier, shared by every X lane of an account.
  * The tier is STATE (written by the daily metrics run after it checks the account is
  * clean); the ceilings are CODE, so a model cannot talk itself into a wider budget by
- * rewriting a memory. Tier 1 is the post-shadow-ban starting point.
+ * rewriting a memory. Tier 1 is the most conservative starting point.
  */
 export const X_ENGAGEMENT_TIERS = {
   1: { reply: 12, like: 30, quote: 0, follow: 6, repost: 2 },
@@ -446,8 +256,10 @@ export const X_ENGAGEMENT_TIERS = {
 export const X_DEFAULT_TIER = 1;
 
 /**
- * Read the current engagement ramp tier from the canonical `critpix-x-engagement-caps`
- * memory. Falls back to the most conservative tier whenever the memory is missing,
+ * Read the current engagement ramp tier from the account's canonical
+ * `<program>-x-engagement-caps` memory (for example `acme-x-engagement-caps`; when
+ * several accounts keep one, the acct: tag picks the account).
+ * Falls back to the most conservative tier whenever the memory is missing,
  * unparseable, or names a tier that does not exist — an unreadable ledger must narrow
  * the budget, never widen it.
  *
@@ -461,7 +273,7 @@ export function getXEngagementTier({ account = null } = {}) {
     const db = getDb();
     let sql = `SELECT content FROM memories
          WHERE trashed_at IS NULL
-           AND tags LIKE '%critpix-x-engagement-caps%'`;
+           AND tags LIKE '%-x-engagement-caps"%'`;
     const params = [];
     if (acct) { sql += ` AND (tags LIKE ? OR tags NOT LIKE '%"acct:%')`; params.push(`%"acct:${acct}"%`); }
     sql += ` ORDER BY created_at DESC LIMIT 1`;
@@ -471,6 +283,130 @@ export function getXEngagementTier({ account = null } = {}) {
     const tier = m ? Number(m[1]) : NaN;
     if (!Object.hasOwn(X_ENGAGEMENT_TIERS, tier)) return fallback;
     return { tier, caps: X_ENGAGEMENT_TIERS[tier], source: 'memory' };
+  } catch (err) {
+    return { ...fallback, error: err.message };
+  }
+}
+
+// ── Facebook shared action budget (same contract as the X budget above) ──
+
+export const FB_ACTION_TYPES = ['page_post', 'group_post', 'comment', 'invite', 'join'];
+
+/**
+ * Per-day ceilings for each Facebook ramp tier, shared by every Facebook lane on the
+ * box (every Facebook schedule group posts through the same Page, profile and
+ * browser). The tier is STATE (written by the metrics run after it checks the account
+ * is clean); the ceilings are CODE, so a model cannot talk itself into a wider budget
+ * by rewriting a memory. Tier 1 is the most conservative starting point; page_post is
+ * what replaced the old 20-hour Page cap.
+ */
+export const FB_ENGAGEMENT_TIERS = {
+  1: { page_post: 3, group_post: 12, comment: 8, invite: 20, join: 3 },
+  2: { page_post: 3, group_post: 12, comment: 14, invite: 40, join: 5 },
+  3: { page_post: 4, group_post: 16, comment: 20, invite: 60, join: 8 },
+};
+export const FB_DEFAULT_TIER = 1;
+
+/**
+ * Count the Facebook actions already spent since `sinceIso`, bucketed by type.
+ *
+ * page_post / comment / invite / join come from memories tagged "fb-action" +
+ * "action:<type>" (one memory = one action, unless the row also carries "count:<n>",
+ * which charges n — the invite lane logs one memory per batch). group_post comes from
+ * the fb_post_log ledger (visible-post + pending-approval rows) because every group
+ * lane already ticks `fb_groups mark` after each submission, so that table is the
+ * authoritative count rather than the model's recollection of its own run.
+ *
+ * Never throws (a budget lookup failure must not block a scheduled launch); on error
+ * every counter reads 0 so a broken ledger fails open rather than freezing all lanes.
+ *
+ * @param {{account?:string|null, sinceIso?:string, limit?:number}} opts
+ * @returns {{page_post:number, group_post:number, comment:number, invite:number, join:number, total:number, error?:string}}
+ */
+export function getFbActionBudget({ account = null, sinceIso, limit = 500 } = {}) {
+  const counts = Object.fromEntries(FB_ACTION_TYPES.map(t => [t, 0]));
+  const empty = { ...counts, total: 0 };
+  const acct = account ? String(account).trim().replace(/^@/, '').toLowerCase() : null;
+  try {
+    const db = getDb();
+    const since = sinceIso || new Date(Date.now() - 86400000).toISOString();
+    let sql = `SELECT tags FROM memories
+         WHERE trashed_at IS NULL
+           AND tags LIKE '%"fb-action"%'
+           AND tags NOT LIKE '%action:blocked%'
+           AND created_at >= ?`;
+    const params = [since];
+    if (acct) { sql += ` AND tags LIKE ?`; params.push(`%"acct:${acct}"%`); }
+    sql += ` ORDER BY created_at DESC LIMIT ?`;
+    params.push(limit);
+
+    let total = 0;
+    for (const row of db.prepare(sql).all(...params)) {
+      let tags;
+      try { tags = JSON.parse(row.tags || '[]'); } catch { continue; }
+      if (!Array.isArray(tags)) continue;
+      // One memory logs one action (first recognised action tag wins, so a row that
+      // also mentions a sibling action is not double-charged). A "count:<n>" tag
+      // charges n instead — used by invite batches.
+      let kind = null;
+      let n = 1;
+      for (const t of tags) {
+        if (typeof t !== 'string') continue;
+        if (!kind && t.startsWith('action:')) {
+          const k = t.slice(7).trim().toLowerCase();
+          if (Object.hasOwn(counts, k)) kind = k;
+        } else if (t.startsWith('count:')) {
+          const c = parseInt(t.slice(6), 10);
+          if (Number.isFinite(c) && c > 0) n = Math.min(c, 500);
+        }
+      }
+      if (!kind) continue;
+      counts[kind] += n;
+      total += n;
+    }
+
+    // group_post: the fb_groups posting ledger. Guarded — the table is owned by the
+    // MCP server's schema, so a brand-new database may not have it yet (reads 0).
+    try {
+      const row = db.prepare(
+        `SELECT COUNT(*) AS n FROM fb_post_log
+          WHERE posted_at >= ?
+            AND status IN ('visible-post', 'pending-approval', 'posted', 'pending')`,
+      ).get(since);
+      const n = Number(row?.n || 0);
+      counts.group_post += n;
+      total += n;
+    } catch { /* no ledger table yet */ }
+
+    return { ...counts, total };
+  } catch (err) {
+    return { ...empty, error: err.message };
+  }
+}
+
+/**
+ * Read the current Facebook ramp tier from the newest caps memory (the tag in the
+ * query below). Falls back to the most conservative tier whenever the memory is missing,
+ * unparseable, or names a tier that does not exist — an unreadable ledger must narrow
+ * the budget, never widen it.
+ *
+ * @returns {{tier:number, caps:{page_post:number, group_post:number, comment:number, invite:number, join:number}, source:'memory'|'default', error?:string}}
+ */
+export function getFbEngagementTier() {
+  const fallback = { tier: FB_DEFAULT_TIER, caps: FB_ENGAGEMENT_TIERS[FB_DEFAULT_TIER], source: 'default' };
+  try {
+    const db = getDb();
+    const row = db.prepare(
+      `SELECT content FROM memories
+        WHERE trashed_at IS NULL
+          AND tags LIKE '%critpix-fb-engagement-caps%'
+        ORDER BY created_at DESC LIMIT 1`,
+    ).all()[0];
+    if (!row?.content) return fallback;
+    const m = /\btier\s*[:=]\s*(\d+)/i.exec(row.content);
+    const tier = m ? Number(m[1]) : NaN;
+    if (!Object.hasOwn(FB_ENGAGEMENT_TIERS, tier)) return fallback;
+    return { tier, caps: FB_ENGAGEMENT_TIERS[tier], source: 'memory' };
   } catch (err) {
     return { ...fallback, error: err.message };
   }
@@ -560,34 +496,14 @@ export function searchMemories(vector, limit = 10, { category, project, tags, mi
     return scored.slice(0, limit);
   }
 
-  // Hot path: score against the in-memory matrix, hydrate only the top K
-  let allowedIds;
-  if (clauses.length > 0) {
-    const idRows = d.prepare(
-      `SELECT id FROM memories WHERE trashed_at IS NULL AND ${clauses.join(' AND ')}`
-    ).all(...params);
-    allowedIds = new Set(idRows.map(r => r.id));
-    if (allowedIds.size === 0) return [];
-  }
-
-  const top = memoryVectors.topK(vector, limit, scoreThreshold, allowedIds);
-  if (top.length === 0) return [];
-
-  const placeholders = top.map(() => '?').join(', ');
-  const rows = d.prepare(`
-    SELECT id, vector, content, category, subcategory, project, tags, importance, source,
-           created_at, updated_at, accessed_at, access_count, related_files,
-           related_memory_ids, file_checksums, trashed_at, source_session_chunks
-    FROM memories WHERE id IN (${placeholders})
-  `).all(...top.map(t => t.id));
-
-  const rowById = new Map(rows.map(r => [r.id, r]));
-  return top
-    .filter(t => rowById.has(t.id))
-    .map(t => {
-      const row = rowById.get(t.id);
-      return { ...rowToPayload(row), id: t.id, score: t.score, vector: decodeVector(row.vector) };
-    });
+  const must = [];
+  if (category) must.push({key:'category',match:{value:category}});
+  if (project) must.push({key:'project',match:{value:project}});
+  if (minImportance) must.push({key:'importance',range:{gte:minImportance}});
+  const should = (tags || []).map(tag=>({key:'tags',match:{value:tag}}));
+  return sharedSearch(vector,limit,{must,should},scoreThreshold).map(r=>({
+    id:r.id,score:r.score,...r.payload,vector:decodeVector(d.prepare('SELECT vector FROM memories WHERE id=?').get(r.id).vector),
+  }));
 }
 
 /**
@@ -663,29 +579,7 @@ export function getMemoryWithVector(id) {
 }
 
 export function updateMemoryPayload(id, updates) {
-  const d = getDb();
-  const sets = [];
-  const params = [];
-
-  for (const [key, value] of Object.entries(updates)) {
-    if (key === 'id' || key === 'vector') continue;
-    if (Array.isArray(value) || (typeof value === 'object' && value !== null)) {
-      sets.push(`${key} = ?`);
-      params.push(JSON.stringify(value));
-    } else {
-      sets.push(`${key} = ?`);
-      params.push(value ?? null);
-    }
-  }
-
-  if (sets.length === 0) return;
-  params.push(id);
-  d.prepare(`UPDATE memories SET ${sets.join(', ')} WHERE id = ?`).run(...params);
-
-  if ('trashed_at' in updates) {
-    if (updates.trashed_at) memoryVectors.remove(id);
-    else memoryVectors.setFromDb(id);
-  }
+  return sharedUpdate(id, updates);
 }
 
 export function softDeleteMemory(id) {
@@ -695,9 +589,7 @@ export function softDeleteMemory(id) {
 }
 
 export function hardDeleteMemory(id) {
-  const d = getDb();
-  d.prepare('DELETE FROM memories WHERE id = ?').run(id);
-  memoryVectors.remove(id);
+  return sharedDelete(id);
 }
 
 export function restoreMemory(id) {
@@ -722,7 +614,8 @@ export function getTrashedMemories() {
 export function purgeTrash() {
   const d = getDb();
   const rows = d.prepare('SELECT id FROM memories WHERE trashed_at IS NOT NULL').all();
-  d.prepare('DELETE FROM memories WHERE trashed_at IS NOT NULL').run();
+  d.exec('BEGIN IMMEDIATE');
+  try { for(const row of rows)sharedDelete(row.id);d.exec('COMMIT'); } catch(error){d.exec('ROLLBACK');memoryVectors.invalidate();throw error;}
   return rows.map(r => r.id);
 }
 
@@ -843,30 +736,7 @@ export function countSessionChunks() {
 }
 
 export function searchSessionChunks(vector, limit = 10, { project, scoreThreshold = 0.3 } = {}) {
-  const d = getDb();
-
-  let allowedIds;
-  if (project) {
-    const idRows = d.prepare('SELECT id FROM session_chunks WHERE project = ?').all(project);
-    allowedIds = new Set(idRows.map(r => r.id));
-    if (allowedIds.size === 0) return [];
-  }
-
-  const top = chunkVectors.topK(vector, limit, scoreThreshold, allowedIds);
-  if (top.length === 0) return [];
-
-  const placeholders = top.map(() => '?').join(', ');
-  const rows = d.prepare(`
-    SELECT id, content, summary, session_id, project, git_branch, cwd,
-           chunk_index, start_timestamp, end_timestamp, tools_used, files_modified,
-           files_read, user_messages, turn_count, related_memory_ids, dedup_memory_id, indexed_at
-    FROM session_chunks WHERE id IN (${placeholders})
-  `).all(...top.map(t => t.id));
-
-  const rowById = new Map(rows.map(r => [r.id, r]));
-  return top
-    .filter(t => rowById.has(t.id))
-    .map(t => ({ id: t.id, score: t.score, payload: rowToSessionPayload(rowById.get(t.id)) }));
+  return sharedSessionSearch(vector,limit,project ? {must:[{key:'project',match:{value:project}}]} : undefined,scoreThreshold);
 }
 
 // --- Row conversion helpers ---

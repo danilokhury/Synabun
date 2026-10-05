@@ -1,3 +1,4 @@
+import { initDetachedAgentSessions } from './ui-sidepanel-sessions.js';
 // ═══════════════════════════════════════════
 // SynaBun Neural Interface — Navbar
 // Initializes the 2D/3D view toggle, right-side icon buttons, and menubar action buttons.
@@ -13,6 +14,8 @@ import { startTutorial } from './ui-tutorial.js';
 import { toggleClaudePanel, isClaudePanelOpen } from './ui-claude-panel.js';
 import { toggleCodexPanel, isCodexPanelOpen } from './ui-codex-panel.js';
 import { toggleOpencodePanel, isOpencodePanelOpen } from './ui-opencode-panel-v2.js';
+import { toggleAssistantPanel, isAssistantPanelOpen, initAssistantPanel } from './ui-assistant-panel.js';
+import { initAssistant } from './ui-assistant.js';
 import { toggleSessionMonitor, fetchLoopsForBadge, fetchNotificationsForBadge } from './ui-sessions.js';
 import { toggleImageGallery } from './ui-image-gallery.js';
 import { toggleScheduleQueue } from './ui-schedule-queue.js';
@@ -23,6 +26,7 @@ import { initSidepanelTrayPlaceholders } from './ui-sidepanel-tray.js';
 const $ = (id) => document.getElementById(id);
 
 export function initNavbar() {
+  initDetachedAgentSessions();
   const variant = getVariant() || '3d';
 
   // ── View toggle ──
@@ -46,12 +50,22 @@ export function initNavbar() {
   }
 
   // ── Claude panel toggle (topright workspace toolbar) ──
+  const assistantPanelBtn = $('topright-assistant-panel-btn');
   const claudePanelBtn = $('topright-claude-panel-btn');
   const codexPanelBtn = $('topright-codex-panel-btn');
   const opencodePanelBtn = $('topright-opencode-panel-btn');
   initSidepanelTrayPlaceholders();
+  // The Assistant: shared host wiring (terminal tab + sidepanel), then the
+  // sidepanel host, which restores its saved tabs as tray pills.
+  initAssistant();
+  initAssistantPanel();
 
   const agentPanels = {
+    assistant: {
+      isOpen: isAssistantPanelOpen,
+      toggle: toggleAssistantPanel,
+      button: assistantPanelBtn,
+    },
     claude: {
       isOpen: isClaudePanelOpen,
       toggle: toggleClaudePanel,
@@ -79,25 +93,18 @@ export function initNavbar() {
     const selected = agentPanels[target];
     if (!selected) return;
 
-    if (selected.isOpen()) {
-      await selected.toggle();
-      syncAgentPanelButtons();
-      return;
-    }
-
-    for (const [name, panel] of Object.entries(agentPanels)) {
-      if (name === target || !panel.isOpen()) continue;
-      try {
-        await panel.toggle();
-      } catch (err) {
-        console.warn(`[navbar] Failed to minimize ${name} panel before opening ${target}:`, err);
-      }
-    }
-
     await selected.toggle();
     syncAgentPanelButtons();
   }
 
+  if (assistantPanelBtn) {
+    assistantPanelBtn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      await toggleAgentPanel('assistant');
+    });
+  }
+  registerAction('toggle-assistant-panel', () => toggleAgentPanel('assistant'));
+  on('assistant-panel:visibility', () => syncAgentPanelButtons());
   if (claudePanelBtn) {
     claudePanelBtn.addEventListener('click', async (e) => {
       e.preventDefault();
@@ -255,7 +262,7 @@ export function initNavbar() {
   // ── Tutorial toggle (?) ──
   const tutBtn = $('titlebar-tutorial-btn');
   if (tutBtn) {
-    tutBtn.addEventListener('click', () => startTutorial(true));
+    tutBtn.addEventListener('click', (event) => { event.stopPropagation(); startTutorial(true); });
   }
 
   // ── Fullscreen button ──
@@ -317,20 +324,28 @@ export function initNavbar() {
     document.addEventListener('visibilitychange', () => { if (!document.hidden) updateClock(); });
   }
 
-  // ── Workspace toolbar collapse toggle ──
+  // ── "Hide all toolbars" toggle (workspace toolbar + whiteboard tool rail) ──
+  // Sidepanel buttons and the session-pill tray (#term-minimized-tray) stay visible.
   const collapseBtn = $('topright-collapse-btn');
   const controls = $('topright-controls');
   if (collapseBtn && controls) {
+    const applyToolbarsHidden = (hidden) => {
+      controls.classList.toggle('collapsed', hidden);
+      // Body-level flag reaches #wb-toolbar, which lives outside #topright-controls.
+      document.body.classList.toggle('toolbars-hidden', hidden);
+      collapseBtn.setAttribute('data-tooltip', hidden ? 'Show all toolbars' : 'Hide all toolbars');
+    };
+
     // Restore persisted state
-    const wasCollapsed = localStorage.getItem('synabun-toolbar-collapsed') === '1';
-    if (wasCollapsed) controls.classList.add('collapsed');
+    applyToolbarsHidden(localStorage.getItem('synabun-toolbar-collapsed') === '1');
 
     collapseBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      const isCollapsed = controls.classList.toggle('collapsed');
-      localStorage.setItem('synabun-toolbar-collapsed', isCollapsed ? '1' : '0');
-      // Close any open dropdowns when collapsing
-      if (isCollapsed) emit('panel:close-all-dropdowns');
+      const hidden = !controls.classList.contains('collapsed');
+      applyToolbarsHidden(hidden);
+      localStorage.setItem('synabun-toolbar-collapsed', hidden ? '1' : '0');
+      // Close any open dropdowns when hiding
+      if (hidden) emit('panel:close-all-dropdowns');
     });
 
     registerAction('toggle-toolbar', () => collapseBtn.click());

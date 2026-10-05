@@ -1,10 +1,10 @@
 // ═══════════════════════════════════════════
 // SynaBun — OpenCode V2 Panel (barrel re-export)
-// Clean-slate replacement for ./ui-opencode-panel.js. Keeps the same exported
-// surface (toggleOpencodePanel / isOpencodePanelOpen / openOpencodeWithPrompt
-// / attachPathToOpencode) so shared UI modules bind without further edits.
-// Implementation lives in ./ocp-v2/ — old ./ocp/ files remain on disk but
-// are no longer reachable from the UI.
+// The OpenCode panel's entry point: one stable surface (toggleOpencodePanel /
+// isOpencodePanelOpen / openOpencodeWithPrompt / attachPathToOpencode and the
+// automation attach pair) for the shared UI modules to bind to.
+// Implementation lives in ./ocp-v2/. The earlier panel (./ocp/ and its
+// ./ui-opencode-panel.js barrel) was removed on 2026-10-04.
 // ═══════════════════════════════════════════
 
 export {

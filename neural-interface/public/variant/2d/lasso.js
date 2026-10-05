@@ -47,7 +47,8 @@ export function initLasso(_graphInstance) {
 
 function _onPointerDown(e) {
   if (!e.shiftKey || e.button !== 0) return;
-  if (e.target.closest('#title-bar, #category-sidebar, .detail-card, #minimap, .glass')) return;
+  // #wb-root: Shift+drag on the focus-mode whiteboard is its own marquee selection
+  if (e.target.closest('#title-bar, #category-sidebar, .detail-card, #minimap, .glass, #wb-root')) return;
   _lassoActive = true;
   _lassoStart = { x: e.clientX, y: e.clientY };
   _lassoEnd = { x: e.clientX, y: e.clientY };

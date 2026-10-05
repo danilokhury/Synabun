@@ -3,6 +3,14 @@
 // ═══════════════════════════════════════════
 
 import { storage } from '../storage.js';
+import { restoreMcpAppCards, teardownMcpApps, retireMcpAppNode, stripMcpAppRuntime } from './cdx-mcp-app-host.js';
+import { renderTurnDiff, completeTurnOutputs } from './cdx-render.js';
+import { hydrateOutputControls } from './cdx-output.js';
+import {
+  beginPlanTurn, capturePlanItem, finishPlanTurn, getPlanMarkdown, syncPlanMirrors, recordPlanTurn,
+  migrateLegacyPlan, recoverPlanFromHistory, planBelongsToTab, useMessageAsPlan,
+  validatePlanEdit, acceptPlanEdit,
+} from './cdx-plan.js';
 import { fetchBlobNamespace, putBlob, deleteBlob, flushBlobs } from '../blob-store.js';
 import { state as appState, on as appOn } from '../state.js';
 import { fetchProjects, searchSessions } from '../api.js';
@@ -10,17 +18,27 @@ import {
   getCodexModelName,
   mergeCodexModelOptions,
 } from '../agent-runtime-options.js';
-import { isClaudePanelOpen, toggleClaudePanel } from '../ui-claude-panel.js';
-import { isOpencodePanelOpen, toggleOpencodePanel } from '../ui-opencode-panel-v2.js';
+import { CodexModelCatalog, codexModelAccountKey, codexContextAvailability } from './cdx-model-catalog.js';
 import { nativeLoopWindowId } from '../ui-native-window-id.js';
-import { reserveRightPanelLayout, clearRightPanelLayout } from '../ui-sidepanel-layout.js';
+import { syncSidepanelLayout, focusSidepanel, isHostedSessionFocused } from '../ui-sidepanel-windows.js';
 import { notify, NOTIF_TYPE } from '../ui-notifications.js';
 import { createStickyScrollController } from '../ui-scroll-follow.js';
 import { requestGeneratedSessionTitle } from '../session-title.js';
 import {
+  CODEX_COMMANDS, CODEX_COMMAND_BY_NAME, parseCodexCommand, codexCommandHints,
+  capabilityAvailability, latestCompletedCodexText, configValue, configRestriction,
+  configChanges, SESSION_CONFIG_FIELDS, sessionSettings, flattenNativeCatalog, modelServiceTiers, fastServiceTier,
+} from './cdx-commands.js';
+import {
+  knownCodexCapabilities, storeCodexCapabilities, dropCodexCapabilities, invalidateCodexCapabilities,
+  currentCodexCapabilities, requestWithCodexCapability,
+} from './cdx-capabilities.js';
+import { openCodexCatalog, openCodexReview, openCodexGoal, openCodexFeedback, openCodexDiff, refreshCodexDiff, refreshCodexAttachments, mountCodexAccountSecurity, updateCodexGateway } from './cdx-features.js';
+export { refreshCodexDiff } from './cdx-features.js';
+import {
   STOR, EFFORT_LEVELS, MAX_THREAD_SNAPSHOTS, MAX_THREAD_SNAPSHOT_CHARS,
   CODEX_GREETING_MARKER_START, CODEX_GREETING_MARKER_END, CODEX_PLAN_MODE_PREFIXES,
-  STATUS_TONE, PANEL_OWNER, windowId, STALL_WARN_MS, STALL_KILL_MS,
+  PANEL_OWNER, windowId, STALL_WARN_MS, STALL_KILL_MS,
   forkCodexWindowPersistence,
   OPENAI_ICON, ICON_SPARK, ICON_TERMINAL, ICON_TOOL, ICON_FILES, ICON_PLUS,
   ICON_MINIMIZE, ICON_X, ICON_STOP, ICON_EDIT, ICON_SHIELD, ICON_PLAN, ICON_BRAIN,
@@ -36,9 +54,9 @@ import {
   appendElement, appendSystem, upsertMcpStartupNotice, updateMcpStartupNotice,
   createMessageShell, appendAssistantMarkdownMessage,
   sanitizeCodexUserFacingText, sanitizeStoredTranscriptDom, removePostPlanCards,
-  removePostCompactionCards, renderPostPlanActions, renderPostCompactionActions,
+  removePostCompactionCards, renderPostPlanActions, renderPostCompactionActions, syncPlanEditorActions,
   updatePostPlanTranscriptMeta, postProcessRenderedHtml,
-  createCard, ensureUserState, ensureAssistantState, ensureReasoningState, ensurePlanState,
+  createCard, bindCardHead, setCardExpanded, ensureUserState, ensureAssistantState, ensureReasoningState, ensurePlanState,
   ensureCommandState, ensureToolState, ensureDynamicToolState, ensureFileChangeState,
   ensureCollabAgentState, ensureGenericState, updateItemFromData,
   setCommandInteraction, setGuardianReviewState,
@@ -47,14 +65,16 @@ import {
   renderHistory, countRenderableTranscriptNodes, flattenThreadHistoryItems,
   flushCardBody, extractUserText, openChangelogEditorFlow, summarizeCommandExecution,
   normalizeChoiceLabel, isSynaBunChoicePrompt, isChangelogChoiceSet, restoreChangelogButtons,
-  renderUserMessageContent,
+  renderUserMessageContent, syncMessagePlanActions,
 } from './cdx-render.js';
 import {
   setRequestsContext, handleServerRequest, resolveRequestCard, sendServerRequestReply,
   getRequestCardEntry, rememberRequestCard, createRequestButton,
-  handleServerRequestResponseResult,
+  handleServerRequestResponseResult, heldServerRequests, restoreServerRequests,
 } from './cdx-requests.js';
 import {
+  applyCodexThreadSettings, codexNewTabAutoAccept, codexNotificationItem, codexRateLimitMetadata,
+  codexRevertedHistory, codexRevertNotice,
   CODEX_THREAD_SNAPSHOT_VERSION,
   codexThreadSnapshotHasOwnershipManifest,
   codexTranscriptNodesHaveOwnership,
@@ -66,7 +86,6 @@ import {
   registerOwnedThreadFromItem,
   selectedCodexContextModel,
   selectedModelOption,
-  shouldCompleteCodexPlan,
   verifyCodexExtendedContext,
 } from './cdx-protocol.js';
 
@@ -99,6 +118,9 @@ function itemOwnershipBelongsToBoundThread(item) {
     String(ownership.sessionId || '') !== String(tab.id || '')
     || String(ownership.connectionEpoch || '') !== String(tab.connectionEpoch || '')
   )) reason = 'item_connection_mismatch';
+  else if (ownership.source === 'automation' && String(ownership.runId || '') !== String(tab.automationRunId || '')) {
+    reason = 'item_automation_mismatch';
+  }
   if (!reason) return true;
   if (tab) {
     tab.isolationRejections = tab.isolationRejections || {};
@@ -133,6 +155,7 @@ let _onAutosizeInput = null;
 let _onEmit = null;
 let _onOn = null;
 let _onActiveTabChanged = null;
+let _onContextMenuSync = null;
 
 export function setPanelRef(fn) { _getPanelEl = fn; }
 export function setPanelState({ getVisible, setVisible, toggleCodexPanel }) {
@@ -141,13 +164,14 @@ export function setPanelState({ getVisible, setVisible, toggleCodexPanel }) {
   _toggleCodexPanel = toggleCodexPanel;
 }
 let _loadBranches = () => {};
-export function setCallbacks({ scrollEnd, autosizeInput, emit, on, loadBranches, activeTabChanged }) {
+export function setCallbacks({ scrollEnd, autosizeInput, emit, on, loadBranches, activeTabChanged, contextMenuSync }) {
   _onScrollEnd = scrollEnd;
   _onAutosizeInput = autosizeInput;
   _onEmit = emit;
   _onOn = on;
   if (loadBranches) _loadBranches = loadBranches;
   _onActiveTabChanged = activeTabChanged || null;
+  _onContextMenuSync = contextMenuSync || null;
 }
 
 // Branches only change when the project changes — skip the network refetch on
@@ -224,6 +248,7 @@ export function disconnectTab(tab, { forceRelease = false } = {}) {
 function closeAutomationHistorySocket(tab) {
   const ws = tab?.ws;
   if (!ws) return;
+  withTab(tab, () => sendSocket({ type: 'verification_requests_close' }));
   wsDisconnectTab(tab, { releaseWriter: true });
   tab.ws = null;
   tab.connected = false;
@@ -240,6 +265,8 @@ function closeAutomationHistorySocket(tab) {
 function buildWsCallbacks(tab, options = {}) {
   return {
     onConnecting() {
+      // A new connection is a new capability epoch.
+      dropCodexCapabilities(tab);
       setStatus('Connecting to Codex…', 'working');
     },
 
@@ -255,6 +282,7 @@ function buildWsCallbacks(tab, options = {}) {
         // Try to reattach to an orphaned server-side process
         sendSocket({
           type: 'reattach',
+          userVerification: true,
           windowId: windowId,
           accountId: _accountId || 'default',
           mcpProfile: tab.mcpProfile || null,
@@ -264,6 +292,7 @@ function buildWsCallbacks(tab, options = {}) {
         // Fresh bootstrap
         sendSocket({
           type: 'bootstrap',
+          userVerification: true,
           windowId: windowId,
           threadId: _threadId || null,
           cwd: _project || null,
@@ -287,6 +316,8 @@ function buildWsCallbacks(tab, options = {}) {
         _boundTab.pendingReattach = _pendingReattach;
         _boundTab.ws = null;
       }
+      _modelCatalog.disconnect(tab);
+      syncToolbarState();
       syncInputEnabled();
       syncSessionControls();
       if (options.historyOnly && tab.automationActive) {
@@ -335,10 +366,15 @@ function buildWsCallbacks(tab, options = {}) {
           if (_boundTab) _boundTab.running = true;
           setStatus('Resuming…', 'working');
           resetStallTimer();
+        } else if (msg.running === false && (!msg.threadId || String(msg.threadId) === String(_threadId || ''))) {
+          // A plan can finish while disconnected. The server's idle reply
+          // releases the stale running/query state before history recovery.
+          setRunning(false);
         }
         // After reattach, bootstrap to get latest state
         sendSocket({
           type: 'bootstrap',
+          userVerification: true,
           windowId: windowId,
           threadId: _threadId || null,
           cwd: _project || null,
@@ -348,8 +384,10 @@ function buildWsCallbacks(tab, options = {}) {
         });
       } else {
         // Nothing to reattach — fresh bootstrap
+        setRunning(false);
         sendSocket({
           type: 'bootstrap',
+          userVerification: true,
           windowId: windowId,
           threadId: _threadId || null,
           cwd: _project || null,
@@ -362,6 +400,14 @@ function buildWsCallbacks(tab, options = {}) {
 
     onReady(msg) {
       _bootstrapped = true;
+      if (_boundTab) {
+        // A ready runtime answers for itself: nothing from before it is reused.
+        dropCodexCapabilities(_boundTab);
+        invalidateCodexFeatureCaches(_boundTab);
+        if (msg.capabilities) storeCodexCapabilities(_boundTab, msg.capabilities);
+        if (msg.runtime) _boundTab.codexRuntime = msg.runtime;
+      }
+      restoreMcpAppCards(_messagesEl, { tab: _boundTab, items: _items, request: requestSocketPayloadForTab, draft: setMcpAppDraft });
       if (_boundTab) _boundTab.bootstrapped = true;
       if (msg.mcpProfile && _boundTab) {
         _boundTab.mcpProfile = msg.mcpProfile;
@@ -374,11 +420,13 @@ function buildWsCallbacks(tab, options = {}) {
       if (_boundTab && (!_boundTab.expectedThreadId || _boundTab.expectedThreadId === _threadId)) {
         _boundTab.expectedThreadId = null;
       }
-      setStatus('Ready', 'ready');
+      // A re-attached turn is still at work, or waiting on a request.
+      if (_running) syncWorkStatus();
+      else setStatus('Ready', 'ready');
       syncInputEnabled();
       syncSessionControls();
       renderContextGauge();
-      requestModelList();
+      requestModelList(_boundTab, { force: true });
       refreshCodexAccounts();
       saveTabs();
       startHeartbeat(_tabs);
@@ -388,6 +436,9 @@ function buildWsCallbacks(tab, options = {}) {
     onHistory(msg) {
       if (options.historyOnly
         && (tab._automationHistoryToken !== options.hydrationToken || tab._automationIgnoreHistory)) return;
+      // The bridge replays the requests it still holds before this history,
+      // which rebuilds the transcript: they go back onto it afterwards.
+      const heldRequests = heldServerRequests();
       if (msg.thread) {
         if (_boundTab) {
           _boundTab.expectedThreadId = null;
@@ -398,6 +449,7 @@ function buildWsCallbacks(tab, options = {}) {
         // resolves at page load, long before the codex WS bootstrap completes —
         // and a pre-hydration miss just falls back to the SDK/JSONL rebuild.
         renderHistory(msg.thread, msg.fallbackItems || null);
+        restoreCanonicalPlan(_boundTab, msg.thread);
         applyCodexProviderTitle(getThreadLabel(
           msg.thread,
           _sessionLabel || (msg.thread.id ? 'Saved session' : 'New session'),
@@ -414,6 +466,7 @@ function buildWsCallbacks(tab, options = {}) {
         // No thread — show empty state
         clearTranscript();
       }
+      restoreServerRequests(heldRequests);
       if (options.historyOnly) {
         tab._automationHydrated = true;
         closeAutomationHistorySocket(tab);
@@ -448,8 +501,13 @@ function buildWsCallbacks(tab, options = {}) {
         const pending = _boundTab?.pendingSessionLabel;
         setSessionLabel(pending || getThreadLabel(msg.thread, _sessionLabel || 'New session'));
         if (pending && _boundTab) {
-          _boundTab.pendingSessionLabel = null;
-          requestSocketPayload('thread_rename', { threadId: _threadId, name: pending }).catch(() => {});
+          const namedTab = _boundTab;
+          namedTab.pendingSessionLabel = null;
+          // A thread that has not run a turn may not keep its name: it is sent
+          // once more when the first turn completes (turn/completed).
+          requestSocketPayload('thread_rename', { threadId: _threadId, name: pending }).catch(() => {}).finally(() => {
+            if (!namedTab.closed && namedTab.sessionLabel === pending) namedTab.providerTitleDirty = true;
+          });
         }
         syncSessionControls();
       }
@@ -471,10 +529,16 @@ function buildWsCallbacks(tab, options = {}) {
           _boundTab.expectedThreadId = null;
           _boundTab.expectedThreadRequestId = null;
         }
+        const givenTitle = codexGivenTitle(_boundTab);
         applyCodexProviderTitle(getThreadLabel(
           msg.thread,
           _sessionLabel || (msg.thread.id ? 'Saved session' : 'New session'),
         ));
+        // A thread created by its first prompt has not been told the name it
+        // was given before it existed: send it when the turn completes.
+        if (_boundTab && givenTitle && normalizeSessionLabel(msg.thread.name || '') !== givenTitle) {
+          _boundTab.providerTitleDirty = true;
+        }
         syncSessionControls();
       }
     },
@@ -537,13 +601,22 @@ function buildWsCallbacks(tab, options = {}) {
     },
 
     onModelList(msg) {
-      const models = Array.isArray(msg.models) ? msg.models : [];
       resolveGenericRequest(msg);
-      const normalized = cacheModelListForTab(_boundTab, models);
-      if (isActiveTab(_boundTab)) populateModelDropdown(normalized);
     },
 
     onGenericResponse(msg) {
+      if (msg.type === 'catalogs_changed') {
+        if (msg.catalogs?.includes('models')) refreshModelCatalog(_boundTab);
+        invalidateCodexFeatureCaches(_boundTab);
+        return;
+      }
+      if (_boundTab && msg.type === 'capabilities') {
+        storeCodexCapabilities(_boundTab, msg.capabilities, msg.runtime || {});
+        restoreMcpAppCards(_messagesEl, { tab: _boundTab, items: _items, request: requestSocketPayloadForTab, draft: setMcpAppDraft });
+      }
+      if (msg.type === 'config_data' || msg.type === 'thread_settings_updated' || msg.type?.startsWith('account_')) {
+        invalidateCodexFeatureCaches(_boundTab);
+      }
       if (msg.type === 'server_request_response_result') {
         handleServerRequestResponseResult(msg);
         return;
@@ -568,6 +641,7 @@ function buildWsCallbacks(tab, options = {}) {
         return;
       }
       resolveGenericRequest(msg);
+      if (msg.type === 'thread_rolled_back' && renderRevertedThread(msg.thread)) noteCodexRevert('rendered');
       // Handle config_data, account_info, config_requirements, rate_limits, etc.
       if (msg.type === 'config_data' && msg.config) {
         // Apply config values if needed
@@ -857,7 +931,8 @@ function summarizeBlockingServerRequest(entry) {
 }
 
 function rememberBlockingServerRequest(requestId, method, params = {}) {
-  if (!requestId) return;
+  // Codex numbers its requests from 0: the first one blocks like any other.
+  if (requestId == null) return;
   _blockingServerRequests.set(String(requestId), {
     requestId: String(requestId),
     method,
@@ -872,7 +947,7 @@ function rememberBlockingServerRequest(requestId, method, params = {}) {
 }
 
 function clearBlockingServerRequest(requestId, { flushBuffered = true } = {}) {
-  if (!requestId) return;
+  if (requestId == null) return;
   if (!_blockingServerRequests.delete(String(requestId))) return;
   if (_boundTab) _boundTab.blockingServerRequests = _blockingServerRequests;
   syncWorkStatus();
@@ -883,6 +958,8 @@ function clearBlockingServerRequest(requestId, { flushBuffered = true } = {}) {
 }
 
 function clearAllBlockingServerRequests() {
+  // The turn is over: nothing the bridge held for it is waiting any more.
+  _boundTab?.heldServerRequests?.clear();
   if (!_blockingServerRequests.size && !_bufferedSocketMessages.length) return;
   _blockingServerRequests = new Map();
   _bufferedSocketMessages = [];
@@ -897,6 +974,9 @@ function clearAllBlockingServerRequests() {
 function shouldBufferSocketMessage(kind, payload) {
   if (!hasBlockingServerRequests()) return false;
   if (kind === 'notify' && payload?.method === 'serverRequest/resolved') return false;
+  if (kind === 'error' && payload?.requestId && (_renameRequests.has(payload.requestId)
+    || _sessionListRequest?.requestId === payload.requestId || _threadStartRequest?.requestId === payload.requestId
+    || _pendingQueryRequestId === payload.requestId)) return false;
   return kind === 'notify' || kind === 'error' || kind === 'closed';
 }
 
@@ -923,8 +1003,24 @@ function applySocketError(msg) {
   const text = msg.message || 'Unknown error';
   if (_compacting) setCompactingUI(false);
   if (_pendingQueryRequestId && String(msg.requestId || '') === String(_pendingQueryRequestId)) {
+    if (_boundTab?.planImplementation?.requestId === _pendingQueryRequestId) {
+      const document = _boundTab.planDocument;
+      if (document?.id === _boundTab.planImplementation.planId && document.revision === _boundTab.planImplementation.revision) {
+        document.approvedRevision = null;
+        _boundTab.planMode = true;
+        syncCanonicalPlan(_boundTab);
+        persistPlanDocument(_boundTab).catch((error) => console.warn('[codex-plan] approval recovery:', error));
+      }
+      _boundTab.planImplementation = null;
+    }
+    if (_boundTab?.planTurnActive) {
+      finishPlanTurn(_boundTab, { status: 'failed' });
+      syncCanonicalPlan(_boundTab);
+    }
     _pendingQueryRequestId = null;
     if (_boundTab) _boundTab.pendingQueryRequestId = null;
+    setRunning(false);
+    renderPostPlanActions(_boundTab);
   }
   appendSystem(text, 'error');
   setStatus(text, 'error');
@@ -1159,7 +1255,9 @@ function writeThreadSnapshot(tab, { force = false } = {}) {
       (tab.isolationRejections.snapshot_ownership_mismatch || 0) + 1;
     return;
   }
-  const html = messagesEl.innerHTML || '';
+  const snapshotEl = messagesEl.cloneNode(true);
+  stripMcpAppRuntime(snapshotEl);
+  const html = snapshotEl.innerHTML || '';
   if (!html.trim()) return;
   const ownedItemNodes = snapshotNodes.filter((node) => node.dataset?.itemId);
   const itemCount = normalizeSnapshotItemCount(tab?.transcriptItemCount)
@@ -1258,7 +1356,7 @@ export function pruneTranscriptDom(messagesEl = _messagesEl) {
     const itemId = child.dataset?.itemId || child.querySelector?.('[data-item-id]')?.dataset?.itemId || '';
     if (itemId && activeIds.has(itemId)) continue;
 
-    child.remove();
+    retireMcpAppNode(child, () => child.remove());
     removed++;
     if (itemId) {
       _items.delete(itemId);
@@ -1372,7 +1470,7 @@ function isPlanModePromptText(text) {
 }
 
 function syncPlanHandoffFlags(tab = _boundTab) {
-  if (!tab || !isActiveTab(tab)) return;
+  if (!tab || tab !== _boundTab) return;
   _planTurnActive = !!tab.planTurnActive;
   _planApprovalPending = !!tab.planApprovalPending;
   _lastPlanTurnId = tab.lastPlanTurnId || '';
@@ -1382,6 +1480,7 @@ function setPlanTurnActive(tab = _boundTab, value, turnId = '') {
   if (!tab) return;
   tab.planTurnActive = !!value;
   if (turnId !== undefined) tab.lastPlanTurnId = turnId || '';
+  if (value) recordPlanTurn(tab, turnId);
   syncPlanHandoffFlags(tab);
 }
 
@@ -1392,29 +1491,40 @@ function setPlanApprovalPending(tab = _boundTab, value) {
 }
 
 function shouldHoldForPlanApproval(tab = activeTab()) {
-  return !!(tab?.showPostPlanActions || tab?.planApprovalPending);
+  if (!tab) return false;
+  // Legacy booleans can outlive a failed capture. Only a reviewable document
+  // can require approval; otherwise the composer must remain usable.
+  syncCanonicalPlan(tab);
+  return !!tab.showPostPlanActions;
+}
+
+// The person's own AUTO default: what they last chose with the toggle.
+function storedAutoAccept() {
+  return storage.getItem(STOR.autoAccept) === 'true';
 }
 
 function releaseAutomationForManualUse(tab = _boundTab) {
-  const runId = detachTerminalCodexAutomation(tab);
+  const runId = detachTerminalCodexAutomation(tab, storedAutoAccept());
   if (!runId) return false;
   window.dispatchEvent(new CustomEvent('native-loop:dismissed', { detail: { runId } }));
+  if (isActiveTab(tab)) syncToolbarState();
   saveTabs();
   return true;
 }
 
 function captureCompletedPlanItem(tab = _boundTab, item = null) {
-  if (!tab || tab.automationRunId || !tab.planTurnActive || !item) return '';
-  const itemType = item.type || '';
-  if (itemType !== 'plan' && itemType !== 'agentMessage') return '';
-  const state = item.id ? tab.items?.get?.(item.id) : null;
-  const text = String(state?.buffer || item.text || '').trim();
-  if (text.length <= 80) return '';
-  return capturePlanContent(tab, text);
+  return capturePlanItem(tab, item, { turnId: item?._synabunOwnership?.turnId || tab?.lastPlanTurnId, completed: true });
 }
 
 export function clearPlanHandoffState(tab = _boundTab, { keepFilePath = false } = {}) {
   if (!tab) return;
+  tab.planDocument = null;
+  tab.planCandidate = null;
+  tab.planDraft = null;
+  tab.planRevisions = [];
+  tab.planEditor = null;
+  tab._planPersistedRevision = 0;
+  tab._planPersistedId = null;
   tab.planContent = '';
   tab.editedPlanContent = '';
   tab.planFeedbackDraft = '';
@@ -1423,8 +1533,9 @@ export function clearPlanHandoffState(tab = _boundTab, { keepFilePath = false } 
   tab.planTurnActive = false;
   tab.planApprovalPending = false;
   tab.lastPlanTurnId = '';
+  tab.planRequestId = null;
   if (!keepFilePath) tab.planFilePath = '';
-  if (isActiveTab(tab)) {
+  if (tab === _boundTab) {
     _planContent = '';
     _editedPlanContent = '';
     _showPostPlanActions = false;
@@ -1435,6 +1546,11 @@ export function clearPlanHandoffState(tab = _boundTab, { keepFilePath = false } 
     if (!keepFilePath) _planFilePath = '';
   }
   removePostPlanCards(tab.messagesEl);
+  tab.messagesEl?.querySelectorAll('.cxp-plan-document-msg, .cxp-plan-draft-msg').forEach((node) => node.remove());
+  tab.messagesEl?.querySelectorAll('[data-plan-source-hidden]').forEach((node) => {
+    node.hidden = false;
+    delete node.dataset.planSourceHidden;
+  });
   updatePostPlanTranscriptMeta(tab);
 }
 
@@ -1552,72 +1668,162 @@ function finishContextCompaction({ manual = _manualCompactionPending, defer = _r
 
 export function preparePlanModeTurn(tab = _boundTab) {
   if (!tab) return;
-  clearPlanHandoffState(tab);
+  // Keep the reviewed revision until a complete replacement arrives.
+  tab.planCandidate = null;
   clearPostCompactionState(tab, { updateTranscript: false });
   saveTabs();
 }
 
 export function extractLatestPlanText(tab = _boundTab) {
-  if (!tab) return '';
-  if (tab.editedPlanContent?.trim()) return tab.editedPlanContent.trim();
-  if (tab.planContent?.trim()) return tab.planContent.trim();
-
-  const states = Array.from(tab.items?.values?.() || []);
-  for (let i = states.length - 1; i >= 0; i -= 1) {
-    const state = states[i];
-    if (!state) continue;
-    const text = String(state.buffer || '').trim();
-    if ((state.type === 'plan' || state.type === 'agentMessage') && text.length > 80) return text;
-  }
-
-  const messages = tab.messagesEl?.querySelectorAll('.cxp-msg-assistant .cxp-msg-body') || [];
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    const text = String(messages[i].textContent || '').trim();
-    if (text.length > 80) return text;
-  }
-  return '';
+  return getPlanMarkdown(tab);
 }
 
-export function capturePlanContent(tab = _boundTab, explicitText = '') {
+export function capturePlanContent(tab = _boundTab) {
   if (!tab) return '';
-  const next = String(explicitText || extractLatestPlanText(tab) || '').trim();
-  if (!next) return '';
-  tab.planContent = next;
-  if (isActiveTab(tab)) _planContent = next;
-  return next;
+  syncPlanMirrors(tab);
+  if (tab === _boundTab) _planContent = tab.planContent;
+  return getPlanMarkdown(tab);
+}
+
+function syncCanonicalPlan(tab) {
+  if (!tab) return;
+  syncPlanMirrors(tab);
+  if (tab === _boundTab) {
+    _planContent = tab.planContent;
+    _editedPlanContent = tab.editedPlanContent;
+    _showPostPlanActions = tab.showPostPlanActions;
+    _planApprovalPending = tab.planApprovalPending;
+    _planTurnActive = tab.planTurnActive;
+    _lastPlanTurnId = tab.lastPlanTurnId || '';
+  }
+}
+
+async function planRequest(body) {
+  const response = await fetch('/api/codex/plans', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  const data = await response.json();
+  if (!response.ok || !data.ok) throw Object.assign(new Error(data.error || 'Could not save the plan.'), { status: response.status });
+  return data;
+}
+
+export async function persistPlanDocument(tab = _boundTab) {
+  if (!planBelongsToTab(tab?.planDocument, tab)) return null;
+  const document = structuredClone(tab.planDocument);
+  const prior = tab._planPersistence || Promise.resolve();
+  const pending = prior.catch(() => {}).then(async () => {
+    const data = await planRequest({ document, expectedRevision: tab._planPersistedRevision || 0, expectedPlanId: tab._planPersistedId || null });
+    if (!planBelongsToTab(document, tab)) return data;
+    tab._planPersistedRevision = data.document.revision;
+    tab._planPersistedId = data.document.id;
+    if (tab.planDocument?.revision === document.revision) tab.planFilePath = data.path;
+    if (tab === _boundTab) _planFilePath = tab.planFilePath || '';
+    saveTabs();
+    return data;
+  });
+  tab._planPersistence = pending;
+  return pending;
 }
 
 export async function ensurePlanFile(tab = _boundTab) {
-  if (!tab) return '';
-  if (tab.planFilePath) return tab.planFilePath;
-  if (tab._planFilePromise) return tab._planFilePromise;
-  const planText = capturePlanContent(tab);
-  if (!planText) return '';
+  try { return (await persistPlanDocument(tab))?.path || ''; }
+  catch (error) {
+    if (error.status === 409 && tab?.threadId) await restoreCanonicalPlan(tab, { id: tab.threadId });
+    if (tab && !tab.closed) withTab(tab, () => appendSystem(error.message, 'error'));
+    return '';
+  }
+}
 
-  tab._planFilePromise = fetch('/api/create-plan', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content: planText, cwd: tab.project || _project || '' }),
-  })
-    .then(async (res) => {
-      const result = await res.json().catch(() => ({}));
-      if (!res.ok || !result?.ok || !result.path) {
-        throw new Error(result?.error || 'create-plan failed');
+export async function savePlanEdit(tab, edit) {
+  const validation = validatePlanEdit(tab, edit);
+  if (!validation.ok) return validation;
+  try {
+    await persistPlanDocument(tab);
+    const checked = validatePlanEdit(tab, edit);
+    if (!checked.ok) return checked;
+    const preview = { ...tab, planRevisions: [...(tab.planRevisions || [])] };
+    const accepted = acceptPlanEdit(preview, edit);
+    const data = await planRequest({ document: accepted.document, expectedRevision: edit.revision, expectedPlanId: edit.planId });
+    if (!planBelongsToTab(data.document, tab)) return { ok: false, reason: 'The conversation changed while saving.' };
+    tab.planDocument = data.document;
+    tab.planRevisions = data.history || [];
+    tab._planPersistedRevision = data.document.revision;
+    tab._planPersistedId = data.document.id;
+    tab.planFilePath = data.path;
+    syncCanonicalPlan(tab);
+    saveTabs();
+    return { ok: true, document: data.document, path: data.path };
+  } catch (error) { return { ok: false, reason: error.message }; }
+}
+
+export function adoptMessageAsPlan(tab, item) {
+  if (!useMessageAsPlan(tab, item)) return false;
+  syncCanonicalPlan(tab);
+  withTab(tab, () => renderPostPlanActions(tab));
+  ensurePlanFile(tab);
+  saveTabs();
+  return true;
+}
+
+function markPlanImplementationSubmitted(tab, document) {
+  tab.planImplementation = { requestId: _pendingQueryRequestId, planId: document.id, revision: document.revision };
+}
+
+async function restoreCanonicalPlan(tab, thread) {
+  if (!tab || tab.automationRunId || !thread?.id) return;
+  const accountId = tab.accountId || 'default';
+  const threadId = thread.id;
+  const revision = tab.planDocument?.revision;
+  const operation = tab.planOperationVersion || 0;
+  const nativeTurnId = tab.activeTurnId;
+  const requestId = tab.pendingQueryRequestId;
+  const turns = thread.turns || [];
+  // A terminal history snapshot repairs flags saved by the old request/native
+  // ID bug. Never use it to finish a request that is still running or queued.
+  const authoritative = !tab.running && !requestId && turns.length > 0
+    && turns.every((turn) => !turn.status || ['completed', 'failed', 'interrupted'].includes(turn.status));
+  const stillCurrent = () => !tab.closed && tab.threadId === threadId
+    && (tab.accountId || 'default') === accountId
+    && (tab.planOperationVersion || 0) === operation
+    && tab.activeTurnId === nativeTurnId && tab.pendingQueryRequestId === requestId
+    && tab.planDocument?.revision === revision;
+  const renderRestoredPlan = () => withTab(tab, () => {
+    syncCanonicalPlan(tab);
+    renderPostPlanActions(tab);
+    syncToolbarState();
+    saveTabs();
+  });
+  try {
+    const query = new URLSearchParams({ accountId, threadId });
+    const response = await fetch(`/api/codex/plans?${query}`);
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || 'Could not restore saved plan.');
+    if (!stillCurrent() || (tab.planTurnActive && !authoritative)) return;
+    if (data.document) {
+      if (!planBelongsToTab(tab.planDocument, tab) || tab.planDocument.id !== data.document.id
+        || tab.planDocument.revision <= data.document.revision) {
+        tab.planDocument = data.document;
+        tab.planRevisions = data.history || [];
+        tab.planFilePath = data.path || '';
       }
-      tab.planFilePath = result.path;
-      if (isActiveTab(tab)) _planFilePath = result.path;
-      saveTabs();
-      return result.path;
-    })
-    .catch((err) => {
-      console.warn('[codex-panel] create-plan failed:', err);
-      return '';
-    })
-    .finally(() => {
-      tab._planFilePromise = null;
-    });
-
-  return tab._planFilePromise;
+      tab._planPersistedRevision = data.document.revision;
+      tab._planPersistedId = data.document.id;
+    } else {
+      tab._planPersistedRevision = 0;
+      tab._planPersistedId = null;
+      migrateLegacyPlan(tab);
+    }
+    recoverPlanFromHistory(tab, turns, { authoritative });
+    renderRestoredPlan();
+    if (tab.planDocument && (tab.planDocument.id !== data.document?.id
+      || tab.planDocument.revision !== data.document?.revision)) ensurePlanFile(tab);
+  } catch (error) {
+    if (stillCurrent()) {
+      recoverPlanFromHistory(tab, turns, { authoritative });
+      renderRestoredPlan();
+      withTab(tab, () => appendSystem(error.message, 'error'));
+    }
+  }
 }
 
 // ── Formatting & helpers (lines 1148-1421) ──
@@ -1649,16 +1855,6 @@ export function formatTokenCount(value) {
   if (num >= 1000000) return `${(num / 1000000).toFixed(num % 1000000 === 0 ? 0 : 1)}M`;
   if (num >= 1000) return `${(num / 1000).toFixed(1)}K`;
   return String(num);
-}
-
-function formatExactTokenCount(value) {
-  const num = Number(value) || 0;
-  return Math.round(num).toLocaleString();
-}
-
-function formatContextPercent(usedTokens, contextWindow) {
-  if (!Number.isFinite(usedTokens) || !Number.isFinite(contextWindow) || contextWindow <= 0) return '0.0%';
-  return `${((usedTokens / contextWindow) * 100).toFixed(1)}%`;
 }
 
 function formatContextTrackerState(meta) {
@@ -2106,14 +2302,16 @@ export function commitBoundState() {
   _boundTab.compacting = _compacting;
   _boundTab.pendingReattach = _pendingReattach;
   _boundTab.pendingQueryRequestId = _pendingQueryRequestId;
-  _boundTab.planFilePath = _planFilePath;
-  _boundTab.planContent = _planContent;
-  _boundTab.editedPlanContent = _editedPlanContent;
-  _boundTab.showPostPlanActions = _showPostPlanActions;
-  _boundTab.postPlanHeader = _postPlanHeader;
-  _boundTab.planTurnActive = _planTurnActive;
-  _boundTab.planApprovalPending = _planApprovalPending;
-  _boundTab.lastPlanTurnId = _lastPlanTurnId;
+  // Plan state belongs to the tab. Native notifications and async editor
+  // callbacks update it directly, including while another tab is visible.
+  // Writing the bound snapshot back here resurrected stale request IDs and
+  // hid review controls after a plan had already completed.
+  _planFilePath = _boundTab.planFilePath || '';
+  _planContent = _boundTab.planContent || '';
+  _editedPlanContent = _boundTab.editedPlanContent || '';
+  _showPostPlanActions = !!_boundTab.showPostPlanActions;
+  _postPlanHeader = _boundTab.postPlanHeader || 'PLAN COMPLETE';
+  syncPlanHandoffFlags(_boundTab);
   _boundTab.showPostCompactionPrompt = _showPostCompactionPrompt;
   _boundTab.postCompactionPending = _postCompactionPending;
   _boundTab.postCompactionPromptSource = _postCompactionPromptSource;
@@ -2225,6 +2423,20 @@ function markCodexSessionTitleManual(tab) {
   tab.titleRequestController = null;
   tab.titleRequestId = null;
   tab.titleState = 'manual';
+}
+
+// The user typed this name: a provider preview never replaces it (setThread).
+function markCodexSessionTitleByUser(tab) {
+  markCodexSessionTitleManual(tab);
+  if (tab) tab.titleByUser = true;
+}
+
+// The title this tab holds that its thread must carry: a generated or typed
+// name still waiting for the thread, or the name the user typed.
+function codexGivenTitle(tab) {
+  if (!tab) return '';
+  if (tab.pendingSessionLabel) return normalizeSessionLabel(tab.pendingSessionLabel);
+  return tab.titleByUser && hasCustomSessionLabel(tab) ? normalizeSessionLabel(tab.sessionLabel || '') : '';
 }
 
 function scheduleCodexTitleReassert(tab) {
@@ -2415,10 +2627,9 @@ function createTrayPill(tab) {
   pill.addEventListener('click', async () => {
     const idx = _tabs.indexOf(tab);
     if (idx < 0) return;
-    if (isClaudePanelOpen()) await toggleClaudePanel();
-    if (isOpencodePanelOpen()) { try { await toggleOpencodePanel(); } catch {} }
     if (!_getVisible()) _setVisible(true);
     switchTab(idx);
+    focusSidepanel(PANEL_OWNER);
   });
   pill.querySelector('.term-minimized-pill-close')?.addEventListener('click', (event) => {
     event.stopPropagation();
@@ -2519,7 +2730,7 @@ export function createTab(saved = {}, { autoSwitch = true } = {}) {
   const restoredContextMode = normalizeCodexContextMode(saved.contextMode);
   const inheritedAccountId = saved.accountId ?? activeTab()?.accountId ?? 'default';
   const inheritedEffort = saved.effort ?? activeTab()?.effort ?? (storage.getItem(STOR.effort) || 'off');
-  const inheritedAutoAccept = saved.autoAccept ?? activeTab()?.autoAccept ?? (storage.getItem(STOR.autoAccept) === 'true');
+  const inheritedAutoAccept = codexNewTabAutoAccept(saved, activeTab(), storedAutoAccept());
   const inheritedMcpProfile = saved.mcpProfile ?? null;
   const automationRunId = saved.automationRunId || null;
   const inheritedPlanMode = automationRunId ? false : (saved.planMode ?? activeTab()?.planMode ?? false);
@@ -2556,6 +2767,7 @@ export function createTab(saved = {}, { autoSwitch = true } = {}) {
     titleState: saved.titleState === 'generating'
       ? 'default'
       : (saved.titleState || (threadId || hasExplicitTitle || saved.pendingSessionLabel ? 'manual' : 'default')),
+    titleByUser: !!saved.titleByUser,
     titleRequestId: null,
     titleRequestController: null,
     titleReassertTimer: null,
@@ -2588,6 +2800,13 @@ export function createTab(saved = {}, { autoSwitch = true } = {}) {
     pendingQueryRequestId: null,
     planFilePath: automationRunId ? '' : (saved.planFilePath || ''),
     planContent: automationRunId ? '' : (saved.planContent || ''),
+    planDocument: automationRunId ? null : (saved.planDocument || null),
+    planRevisions: automationRunId ? [] : (saved.planRevisions || []),
+    planDraft: automationRunId ? null : (saved.planDraft || null),
+    planCandidate: automationRunId ? null : (saved.planCandidate || null),
+    planEditor: null,
+    _planPersistedRevision: saved.planPersistedRevision || 0,
+    _planPersistedId: saved.planPersistedId || null,
     editedPlanContent: automationRunId ? '' : (saved.editedPlanContent || ''),
     planFeedbackDraft: automationRunId ? '' : (saved.planFeedbackDraft || ''),
     showPostPlanActions: automationRunId ? false : !!saved.showPostPlanActions,
@@ -2595,6 +2814,8 @@ export function createTab(saved = {}, { autoSwitch = true } = {}) {
     planTurnActive: automationRunId ? false : !!saved.planTurnActive,
     planApprovalPending: automationRunId ? false : !!saved.planApprovalPending,
     lastPlanTurnId: automationRunId ? '' : (saved.lastPlanTurnId || ''),
+    planTurnHistory: automationRunId ? [] : (Array.isArray(saved.planTurnHistory) ? saved.planTurnHistory.slice(-100) : []),
+    planRequestId: automationRunId ? null : (saved.planRequestId || null),
     pendingSessionLabel: saved.pendingSessionLabel || null,  // authoritative name before thread exists; sent via thread_rename once ready
     showPostCompactionPrompt: saved.postCompactionPromptSource === 'manual' && !!saved.showPostCompactionPrompt,
     postCompactionPending: saved.postCompactionPromptSource === 'manual' && !!saved.postCompactionPending,
@@ -2615,6 +2836,7 @@ export function createTab(saved = {}, { autoSwitch = true } = {}) {
     thinkingEl: null,
     thinkTimerInterval: null,
     blockingServerRequests: new Map(),
+    heldServerRequests: new Map(),
     bufferedSocketMessages: [],
     isolationRejections: {},
     ownedThreadIds: new Set(),
@@ -2646,6 +2868,7 @@ export function closeActiveTab() {
 export function closeTab(idx, { detachAutomation = false } = {}) {
   if (idx < 0 || idx >= _tabs.length) return;
   const tab = _tabs[idx];
+  teardownMcpApps(tab, 'Tab closed');
   if (tab.automationRunId && !detachAutomation) {
     window.dispatchEvent(new CustomEvent('native-loop:dismissed', {
       detail: { runId: tab.automationRunId },
@@ -2682,7 +2905,7 @@ export function closeTab(idx, { detachAutomation = false } = {}) {
   }
   tab.scrollController?.destroy();
   tab.scrollController = null;
-  tab.messagesEl?.remove();
+  if (tab.messagesEl) retireMcpAppNode(tab.messagesEl, () => tab.messagesEl.remove());
   tab.pillEl?.remove();
   _tabs.splice(idx, 1);
   if (!_tabs.length) {
@@ -2715,6 +2938,7 @@ export function saveTabs() {
           threadId: tab.threadId || null,
           title: tab.sessionLabel || 'New session',
           titleState: tab.titleState === 'generating' ? 'default' : (tab.titleState || 'default'),
+          titleByUser: !!tab.titleByUser,
           pendingSessionLabel: tab.pendingSessionLabel || null,
           threadTokenUsage: persistedTokenUsage,
           threadTokenUsageReal: !!persistedTokenUsage,
@@ -2732,6 +2956,12 @@ export function saveTabs() {
           planMode: !!tab.planMode,
           planFilePath: tab.planFilePath || '',
           planContent: tab.planContent || '',
+          planDocument: tab.planDocument || null,
+          planRevisions: tab.planRevisions || [],
+          planDraft: tab.planDraft || null,
+          planCandidate: tab.planCandidate || null,
+          planPersistedRevision: tab._planPersistedRevision || 0,
+          planPersistedId: tab._planPersistedId || null,
           editedPlanContent: tab.editedPlanContent || '',
           planFeedbackDraft: tab.planFeedbackDraft || '',
           showPostPlanActions: !!tab.showPostPlanActions,
@@ -2739,6 +2969,8 @@ export function saveTabs() {
           planTurnActive: !!tab.planTurnActive,
           planApprovalPending: !!tab.planApprovalPending,
           lastPlanTurnId: tab.lastPlanTurnId || '',
+          planTurnHistory: tab.planTurnHistory || [],
+          planRequestId: tab.planRequestId || null,
           showPostCompactionPrompt: tab.postCompactionPromptSource === 'manual' && !!tab.showPostCompactionPrompt,
           postCompactionPending: tab.postCompactionPromptSource === 'manual' && !!tab.postCompactionPending,
           postCompactionPromptSource: tab.postCompactionPromptSource === 'manual' ? 'manual' : '',
@@ -2890,7 +3122,8 @@ function startupEmptyText() {
 
 export function clearTranscript(emptyText = freshThreadText()) {
   if (!_messagesEl) return;
-  _messagesEl.innerHTML = `<div class="cxp-empty"><div class="cxp-empty-logo">${OPENAI_ICON}</div><span class="cxp-empty-name">Codex</span><span class="cxp-empty-status"></span></div>`;
+  for (const child of [..._messagesEl.children]) retireMcpAppNode(child, () => child.remove());
+  _messagesEl.insertAdjacentHTML('afterbegin', `<div class="cxp-empty"><div class="cxp-empty-logo">${OPENAI_ICON}</div><span class="cxp-empty-name">Codex</span><span class="cxp-empty-status"></span></div>`);
   document.dispatchEvent(new CustomEvent('cdx-empty-rebuilt'));
   _items.clear();
   _requestCards.clear();
@@ -2938,11 +3171,12 @@ export function renderStoredTranscript(snapshot, emptyText = freshThreadText()) 
   if (!normalized) return false;
 
   clearTranscript(emptyText);
-  _messagesEl.innerHTML = normalized.html;
+  _messagesEl.querySelectorAll(':scope > .cxp-empty').forEach(node => node.remove());
+  _messagesEl.insertAdjacentHTML('beforeend', normalized.html);
   const acceptedItemIds = new Set(normalized.acceptedItemIds);
   const acceptedTurnIds = new Set(normalized.acceptedTurnIds);
   const restoredNodes = [..._messagesEl.children].filter((node) => (
-    !node.classList?.contains('cxp-empty') && !node.classList?.contains('cxp-thinking')
+    !node.dataset?.mcpRetired && !node.classList?.contains('cxp-empty') && !node.classList?.contains('cxp-thinking')
   ));
   const ownershipValid = codexTranscriptNodesHaveOwnership(restoredNodes, {
     threadId: normalized.threadId,
@@ -2959,15 +3193,20 @@ export function renderStoredTranscript(snapshot, emptyText = freshThreadText()) 
   removePostPlanCards(_messagesEl);
   removePostCompactionCards(_messagesEl);
   _messagesEl.querySelectorAll('button,input,select,textarea').forEach((node) => { node.disabled = true; });
+  // Presentation controls remain useful in an idle saved transcript.
+  _messagesEl.querySelectorAll('.cxp-output-control, .cxp-copy-btn').forEach(node => { node.disabled = false; });
+  hydrateOutputControls(_messagesEl);
   // Restore expansion state when present; old snapshots default to collapsed cards.
   _messagesEl.querySelectorAll('.cxp-card').forEach((card) => {
     const expanded = card.dataset.expanded === '1';
-    card.classList.toggle('cxp-collapsed', !expanded);
-    if (!card.querySelector('.cxp-card-chevron')) {
+    setCardExpanded(card, expanded);
+    if ((card.dataset.itemId || card.dataset.requestId) && card.querySelector(':scope > .cxp-card-body') && !card.querySelector('.cxp-card-chevron')) {
       const head = card.querySelector('.cxp-card-head');
       if (head) { const ch = document.createElement('div'); ch.className = 'cxp-card-chevron'; head.appendChild(ch); }
     }
+    bindCardHead(card);
   });
+  restoreMcpAppCards(_messagesEl, { tab: _boundTab, request: requestSocketPayloadForTab, draft: setMcpAppDraft });
   _messagesEl.querySelectorAll('details.cxp-reasoning, details.cxp-fold').forEach((details) => {
     if (details.dataset.expanded === '1') details.open = true;
     else if (details.dataset.expanded === '0') details.open = false;
@@ -2977,6 +3216,7 @@ export function renderStoredTranscript(snapshot, emptyText = freshThreadText()) 
     _boundTab.items = _items;
     _boundTab.requestCards = _requestCards;
   }
+  syncMessagePlanActions(_boundTab);
 
   if (_messagesEl.querySelector('.cxp-empty') && _messagesEl.children.length === 1) showEmpty(emptyText);
   else hideEmpty();
@@ -2990,6 +3230,7 @@ export function renderStoredTranscript(snapshot, emptyText = freshThreadText()) 
 }
 
 export function persistThread(threadId) {
+  if (_boundTab && _boundTab.threadId !== threadId) teardownMcpApps(_boundTab, 'Thread switched');
   _threadId = threadId || null;
   if (_boundTab) _boundTab.threadId = _threadId;
   if (isActiveTab(_boundTab)) syncLegacyState();
@@ -3036,6 +3277,7 @@ export function resetThreadState({ tone = 'ready', preserveStatus = false } = {}
     _boundTab.titleRequestController = null;
     _boundTab.titleRequestId = null;
     _boundTab.titleState = 'default';
+    _boundTab.titleByUser = false;
     _boundTab.pendingSessionLabel = null;
     _boundTab.providerTitleDirty = false;
   }
@@ -3092,7 +3334,13 @@ export function setThread(thread) {
   if (!thread?.id) return;
   persistThread(thread.id);
   _freshThread = false;
-  setSessionLabel(getThreadLabel(thread, 'New session'));
+  // History and a new thread carry the provider's name or, without one, the
+  // first prompt. A name the user gave stays, and is sent to the provider again.
+  if (_boundTab?.titleByUser && hasCustomSessionLabel(_boundTab)) {
+    applyCodexProviderTitle(getThreadLabel(thread, _sessionLabel || 'New session'));
+  } else {
+    setSessionLabel(getThreadLabel(thread, 'New session'));
+  }
   syncSessionControls();
 }
 
@@ -3129,15 +3377,36 @@ export async function ensureProjectsLoaded() {
   return _projectsPromise;
 }
 
-export function requestSocketPayload(type, payload = {}) {
+export function requestSocketPayload(type, payload = {}, { signal, timeoutMs = 0 } = {}) {
   return new Promise((resolve, reject) => {
     const requestId = crypto.randomUUID();
     const packet = { type, requestId, ...payload };
-    if (!_connected || _ws?.readyState !== WebSocket.OPEN) {
+    if (signal?.aborted || !_connected || _ws?.readyState !== WebSocket.OPEN) {
       reject(new Error('Codex is not connected'));
       return;
     }
-    const entry = { requestId, resolve, reject };
+    const requestTab = _boundTab;
+    let timer = null;
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+    };
+    const entry = {
+      requestId,
+      resolve: value => { cleanup(); resolve(value); },
+      reject: error => { cleanup(); reject(error); },
+    };
+    const cancel = message => {
+      withTab(requestTab, () => {
+        if (_sessionListRequest === entry) _sessionListRequest = null;
+        if (_threadStartRequest === entry) _threadStartRequest = null;
+        _renameRequests.delete(requestId);
+        syncPendingRequestRefs();
+        entry.reject(new Error(message));
+        releaseInactiveIdleTab(requestTab);
+      });
+    };
+    const onAbort = () => cancel('Codex request superseded or disconnected');
     if (type === 'thread_list') {
       _sessionListRequest?.reject(new Error('Superseded by a newer thread list request'));
       _sessionListRequest = entry;
@@ -3153,14 +3422,17 @@ export function requestSocketPayload(type, payload = {}) {
       if (type === 'thread_start' && _threadStartRequest?.requestId === requestId) _threadStartRequest = null;
       _renameRequests.delete(requestId);
       syncPendingRequestRefs();
-      reject(new Error('Codex is not connected'));
+      entry.reject(new Error('Codex is not connected'));
+    } else {
+      signal?.addEventListener('abort', onAbort, { once: true });
+      if (timeoutMs > 0) timer = setTimeout(() => cancel('Timed out loading model capabilities. Retry to check again.'), timeoutMs);
     }
   });
 }
 
-function requestSocketPayloadForTab(tab, type, payload = {}) {
+function requestSocketPayloadForTab(tab, type, payload = {}, options = {}) {
   if (!tab || tab.closed) return Promise.reject(new Error('Codex tab is closed'));
-  return withTab(tab, () => requestSocketPayload(type, payload));
+  return withTab(tab, () => requestSocketPayload(type, payload, options));
 }
 
 async function startNewThread(tab = activeTab()) {
@@ -3399,6 +3671,10 @@ function cxpSessRenderItem(thread, tab, menu) {
             return;
           }
           releaseAutomationForManualUse(tab);
+          // Another thread comes with its own name; the one typed for the previous thread stays behind.
+          if (tab.threadId !== threadId) tab.titleByUser = false;
+          // A resumed thread has its title already: the next prompt must not generate one over it.
+          markCodexSessionTitleManual(tab);
           persistThread(threadId);
           _freshThread = false;
           if (_boundTab) {
@@ -3469,7 +3745,7 @@ function cxpSessRenderItem(thread, tab, menu) {
           promptEl.textContent = nextLabel;
           renBtn.style.display = '';
           if (threadId === _threadId) {
-            markCodexSessionTitleManual(tab);
+            markCodexSessionTitleByUser(tab);
             tab.pendingSessionLabel = nextLabel;
             setSessionLabel(nextLabel);
           }
@@ -3544,19 +3820,24 @@ function accountLabelFor(id) {
   return acct ? (acct.label || acct.email || (acct.isDefault ? 'Default' : 'account')) : (id === 'default' ? 'Default' : 'account');
 }
 
-export function syncAccountChip() {
-  const labelEl = panelEl('#cxp-account-label');
-  const btn = panelEl('#cxp-account-btn');
-  if (!labelEl || !btn) return;
-  const tab = activeTab();
+// The tab's account as the Context settings popover names it: the label, and
+// what its value says on hover.
+function accountView(tab) {
   const acctId = tab?.accountId || _accountId || 'default';
   const acct = _codexAccounts.find((a) => a.id === acctId);
-  labelEl.textContent = acct
-    ? (acct.label || acct.email || (acct.isDefault ? 'Default' : 'Account'))
-    : (acctId === 'default' ? 'Default' : 'Account');
-  btn.title = acct?.email
-    ? `Account: ${acct.email}${acct.planType ? ` (${acct.planType})` : ''} — click to switch`
-    : 'Switch ChatGPT account for this tab';
+  return {
+    label: acct
+      ? (acct.label || acct.email || (acct.isDefault ? 'Default' : 'Account'))
+      : (acctId === 'default' ? 'Default' : 'Account'),
+    tip: acct?.email
+      ? `Account: ${acct.email}${acct.planType ? ` (${acct.planType})` : ''} — click to switch`
+      : 'Switch ChatGPT account for this tab',
+  };
+}
+
+// The account is a row of the Context settings popover.
+export function syncAccountChip() {
+  syncContextMenu();
 }
 
 export function refreshCodexAccounts() {
@@ -3580,8 +3861,16 @@ function resetViewForAccountChange(label) {
     _boundTab.titleRequestController = null;
     _boundTab.titleRequestId = null;
     _boundTab.titleState = 'default';
+    _boundTab.titleByUser = false;
     _boundTab.pendingSessionLabel = null;
     _boundTab.providerTitleDirty = false;
+    // Another account is another runtime: ask it what it supports (after this
+    // handler, a request binds its own tab scope).
+    const accountTab = _boundTab;
+    dropCodexCapabilities(accountTab);
+    queueMicrotask(() => {
+      if (!accountTab.closed && accountTab.connected) getCodexCapabilities(accountTab).catch(() => {});
+    });
   }
   setSessionLabel('New session', { persist: false });
   clearTranscript(freshThreadText());
@@ -3602,7 +3891,9 @@ function handleAccountMessage(msg) {
   if (Array.isArray(msg.accounts)) _codexAccounts = msg.accounts;
   if (msg.type === 'account_info' && msg.account) {
     applyAccountReadToCache(msg.accountId || _accountId || 'default', msg.account);
+    if (!msg.error && (!msg.accountId || msg.accountId === _accountId)) refreshModelCatalog(_boundTab);
   }
+  if (msg.type === 'account_logged_out' && !msg.error) refreshModelCatalog(_boundTab);
   if (msg.type === 'account_switched' && msg.account) {
     applyAccountReadToCache(msg.accountId || _accountId || 'default', msg.account);
   }
@@ -3611,9 +3902,7 @@ function handleAccountMessage(msg) {
     if (_boundTab) _boundTab.accountId = msg.accountId;
     saveTabs();
     resetViewForAccountChange(`Switched to ${accountLabelFor(msg.accountId)}`);
-    _modelListCacheByAccount.delete(String(msg.accountId));
-    _modelListRequestByAccount.delete(String(msg.accountId));
-    requestModelList();
+    refreshModelCatalog(_boundTab);
   }
   if (msg.type === 'account_add_started') {
     if (msg.accountId) {
@@ -3994,7 +4283,8 @@ export function renameActiveSession() {
       if (!tab.closed) withTab(tab, () => setSessionLabel(currentLabel, { persist: false }));
       return;
     }
-    markCodexSessionTitleManual(tab);
+    const namedByUser = !!tab.titleByUser;
+    markCodexSessionTitleByUser(tab);
     tab.pendingSessionLabel = nextLabel;
     if (tab.threadId && tab.connected) {
       const threadId = tab.threadId;
@@ -4008,6 +4298,7 @@ export function renameActiveSession() {
       } catch (err) {
         withTab(tab, () => {
           tab.pendingSessionLabel = null;
+          tab.titleByUser = namedByUser;
           setSessionLabel(currentLabel, { persist: false });
           appendSystem(err.message || 'Could not rename Codex thread', 'error');
         });
@@ -4141,7 +4432,7 @@ export function promptNameNewSession() {
     }
 
     if (!nextLabel) return;
-    markCodexSessionTitleManual(t);
+    markCodexSessionTitleByUser(t);
     t.pendingSessionLabel = nextLabel;
     if (t.threadId && t.connected) {
       const rt = t;
@@ -4207,110 +4498,149 @@ export function syncStatusTicker() {
   }
 }
 
-function renderStatusBadges() {
-  const badgesEl = panelEl('#cxp-status-badges');
-  if (!badgesEl) return;
-  badgesEl.replaceChildren();
-  const entries = [..._mcpServers.entries()].sort(([a], [b]) => a.localeCompare(b));
-  for (const [name, entry] of entries) {
-    const badge = document.createElement('span');
-    badge.className = 'cxp-status-badge';
-    badge.dataset.state = entry.status || 'starting';
-    badge.textContent = `${name} ${entry.status || 'starting'}`;
-    badge.title = entry.error ? `${name}: ${entry.error}` : `${name}: ${entry.status || 'starting'}`;
-    badgesEl.appendChild(badge);
-  }
-}
-
 export function setCompactingUI(on) {
   const next = !!on;
   const changed = _compacting !== next;
   _compacting = next;
   if (_boundTab) _boundTab.compacting = _compacting;
-  const gauge = panelEl('#cxp-gauge');
-  const label = panelEl('#cxp-gauge-label');
-  const button = panelEl('#cxp-compact-btn');
-  gauge?.classList.toggle('compacting', _compacting);
-  label?.classList.toggle('compacting', _compacting);
-  if (button) {
-    button.classList.toggle('compacting', _compacting);
-    button.textContent = _compacting ? 'compacting' : 'compact';
+  syncPlanEditorActions(_boundTab);
+  syncContextMenu();
+  if (changed) {
+    syncInputEnabled();
+    syncToolbarState();
   }
-  if (changed) syncInputEnabled();
 }
 
-export function renderContextGauge() {
-  const bar = panelEl('#cxp-contextbar');
-  const fill = panelEl('#cxp-ctx-fill');
-  const label = panelEl('#cxp-gauge-label');
-  if (!bar || !fill || !label) return false;
-
+// The context reading of the bound tab, with no DOM: what the header cog's dot
+// and the Context settings popover show. Codex's thread/tokenUsage/updated is
+// the only source. inputTokens is the context in use and cachedInputTokens is
+// part of it (never added on top); the window is the reported
+// modelContextWindow, never a default.
+function contextGaugeReading() {
   const usage = normalizeThreadTokenUsage(_threadTokenUsage);
   const meta = normalizeContextTrackerMeta(_threadContextMeta);
-  const last = usage?.last || null;
   const contextWindow = usage?.modelContextWindow || null;
   const gaugeUsage = resolveContextGaugeBreakdown(usage, contextWindow);
-  const gaugeBreakdown = gaugeUsage.breakdown;
-  const cachedInput = Number(gaugeBreakdown?.cachedInputTokens) || 0;
-  const cacheCreation = Number(gaugeBreakdown?.cacheCreationInputTokens) || 0;
-  const inputTokens = resolveContextInputTokens(gaugeBreakdown);
-  const usedTokens = inputTokens;
-  const stateLabel = formatContextTrackerState(meta);
-  const pctText = formatContextPercent(usedTokens, contextWindow);
+  return {
+    usedTokens: resolveContextInputTokens(gaugeUsage.breakdown),
+    contextWindow,
+    basis: gaugeUsage.basis,
+    breakdown: gaugeUsage.breakdown,
+    last: usage?.last || null,
+    state: formatContextTrackerState(meta),
+    model: meta.model,
+    updatedAt: meta.updatedAt,
+  };
+}
 
-  if (!contextWindow || usedTokens === 0) {
-    fill.style.width = '0%';
-    fill.style.background = 'rgba(232,224,220,0.18)';
-    label.textContent = meta.source === 'read-only'
-      ? 'ctx pending · read only'
-      : `context pending · ${stateLabel}`;
-    label.title = [
-      `State: ${stateLabel}`,
-      `Source: ${meta.source}`,
-      `Freshness: ${meta.freshness}`,
-      `Gauge basis: ${gaugeUsage.basis === 'last' ? 'last request' : gaugeUsage.basis}`,
-      meta.model ? `Model: ${meta.model}` : '',
-      meta.updatedAt ? `Updated: ${new Date(meta.updatedAt).toLocaleString()}` : '',
-    ].filter(Boolean).join('\n');
-    bar.hidden = false;
-    setCompactingUI(_compacting);
-    return true;
-  }
+/** The reading for the cog's dot; null while the bound tab is not the one on screen. */
+export function contextMenuReading() {
+  return isActiveTab(_boundTab) ? contextGaugeReading() : null;
+}
 
-  const pct = Math.min(100, (usedTokens / contextWindow) * 100);
-  fill.style.width = pct > 0 ? pct + '%' : '0%';
-  fill.style.background = meta.freshness !== 'authoritative'
-    ? 'rgba(232,224,220,0.28)'
-    : pct > 80
-    ? 'rgba(220,80,60,0.45)'
-    : pct > 60
-      ? 'rgba(220,150,50,0.38)'
-      : 'rgba(232,224,220,0.18)';
+// The conversation the popover's read details belong to.
+function contextMenuDetailsKey(tab) {
+  return `${tab.accountId || 'default'}|${tab.threadId || ''}|${tab.connectionEpoch || ''}`;
+}
 
-  label.textContent = `${formatExactTokenCount(usedTokens)} / ${formatExactTokenCount(contextWindow)} · ${pctText}`;
-  label.title = [
-    `${pctText} context window used`,
-    `Source: ${meta.source}`,
-    `Freshness: ${meta.freshness}`,
-    `Gauge basis: ${gaugeUsage.basis === 'last' ? 'last request input' : gaugeUsage.basis === 'total' ? 'cumulative fallback' : 'unknown'}`,
-    meta.model ? `Model: ${meta.model}` : '',
-    meta.updatedAt ? `Updated: ${new Date(meta.updatedAt).toLocaleString()}` : '',
-    `Input:       ${formatExactTokenCount(inputTokens)}`,
-    `Cached read: ${formatExactTokenCount(cachedInput)}`,
-    cacheCreation ? `Cache write: ${formatExactTokenCount(cacheCreation)}` : '',
-    `Output:      ${formatExactTokenCount(gaugeBreakdown?.outputTokens)}`,
-    `Reasoning:   ${formatExactTokenCount(gaugeBreakdown?.reasoningOutputTokens)}`,
-    '',
-    'Last turn',
-    `Input:       ${formatExactTokenCount(resolveContextInputTokens(last))}`,
-    `Cached read: ${formatExactTokenCount(last?.cachedInputTokens)}`,
-    Number(last?.cacheCreationInputTokens) ? `Cache write: ${formatExactTokenCount(last?.cacheCreationInputTokens)}` : '',
-    `Output:      ${formatExactTokenCount(last?.outputTokens)}`,
-    `Reasoning:   ${formatExactTokenCount(last?.reasoningOutputTokens)}`,
-  ].filter(Boolean).join('\n');
-  bar.hidden = false;
-  setCompactingUI(_compacting);
-  return true;
+function mcpToolCount(server) {
+  const tools = server?.tools;
+  if (Array.isArray(tools)) return tools.length;
+  return tools && typeof tools === 'object' ? Object.keys(tools).length : null;
+}
+
+/**
+ * The active tab's plain values for the Context settings popover
+ * (cdx-context-model.js turns them into text). The module state is the bound
+ * tab's: null while that is not the tab on screen.
+ */
+export function contextMenuData() {
+  const tab = activeTab();
+  if (!tab || !isActiveTab(_boundTab)) return null;
+  const details = tab.contextMenuDetails?.key === contextMenuDetailsKey(tab) ? tab.contextMenuDetails : null;
+  return {
+    gauge: contextGaugeReading(),
+    model: tab.model || '',
+    compact: {
+      compacting: _compacting,
+      hasThread: !!_threadId,
+      connected: _connected && _bootstrapped,
+      busy: _running || _startingThread,
+    },
+    mcp: {
+      loaded: !!details?.mcpLoaded,
+      error: details?.mcpError || '',
+      rows: [..._mcpServers.values()].map((server) => ({
+        name: server?.name || '',
+        status: server?.status || 'starting',
+        error: server?.error || '',
+        toolCount: mcpToolCount(server),
+        authRequired: isCodexMcpAuthenticationRequired(server),
+      })),
+    },
+    runtime: tab.codexRuntime || null,
+    threadId: _threadId || '',
+    folder: _project || '',
+    effort: tab.effort || 'off',
+    account: accountView(tab),
+    turns: _messagesEl ? _messagesEl.querySelectorAll('.cxp-msg-user').length : 0,
+    cost: tab.estimatedCost || 0,
+    config: details?.config || null,
+    detailsPending: !details,
+  };
+}
+
+/**
+ * Reads what the popover cannot take from the tab's state: the MCP servers
+ * (they land in _mcpServers through the usual mcp_status path) and the
+ * approval policy and sandbox mode in effect. The tab and the conversation it
+ * is on are taken before the first request: an answer that arrives for another
+ * conversation is dropped.
+ */
+export function refreshContextMenuDetails() {
+  const tab = activeTab();
+  if (!tab || tab.closed || !tab.connected || !tab.bootstrapped) return;
+  const owner = { accountId: tab.accountId, threadId: tab.threadId, connectionEpoch: tab.connectionEpoch };
+  const key = contextMenuDetailsKey(tab);
+  if (tab.contextMenuDetails?.key !== key) tab.contextMenuDetails = { key, mcpLoaded: false, mcpError: '', config: null };
+  const details = tab.contextMenuDetails;
+  const current = () => !tab.closed && tab.contextMenuDetails === details;
+  const done = () => { if (current() && isActiveTab(tab)) syncContextMenu(); };
+  const changed = 'This conversation changed.';
+  requestForCodexOwner(tab, owner, 'mcp_status', {}, changed)
+    .then((msg) => {
+      if (!current()) return;
+      details.mcpLoaded = !msg?.error;
+      details.mcpError = msg?.error || '';
+    })
+    .catch((error) => { if (current()) details.mcpError = error?.message || 'Could not read the MCP servers'; })
+    .finally(done);
+  requestForCodexOwner(tab, owner, 'config_read', { cwd: tab.project || null, threadId: tab.threadId || null }, changed)
+    .then((result) => {
+      if (!current()) return;
+      const { effective } = normalizeConfigResult(result?.config || result || {});
+      const text = (value) => (typeof value === 'string' ? value : '');
+      details.config = {
+        loaded: true,
+        error: '',
+        approvalPolicy: text(effective.approval_policy),
+        sandboxMode: text(effective.sandbox_mode),
+        model: text(effective.model),
+        effort: text(effective.model_reasoning_effort),
+      };
+    })
+    .catch((error) => { if (current()) details.config = { loaded: false, error: error?.message || 'Could not read the Codex configuration' }; })
+    .finally(done);
+}
+
+/** Tells the header cog, and its popover while open, that what they show may have changed. */
+export function syncContextMenu() {
+  _onContextMenuSync?.();
+}
+
+// The gauge is the cog's dot and the popover's bar: both repaint from the reading.
+export function renderContextGauge() {
+  syncContextMenu();
 }
 
 export function updateThreadTokenUsage(tokenUsage, opts = {}) {
@@ -4323,31 +4653,10 @@ export function updateThreadTokenUsage(tokenUsage, opts = {}) {
   saveTabs();
 }
 
+// The panel's status changed. The transcript's thinking line and the tray pill
+// carry the status itself; what is left to repaint here is the context reading.
 export function renderStatusChrome() {
-  if (!isActiveTab(_boundTab)) {
-    syncStatusTicker();
-    return;
-  }
-  const bar = panelEl('#cxp-statusbar');
-  const label = panelEl('#cxp-status');
-  const elapsed = panelEl('#cxp-status-elapsed');
-  const meta = panelEl('#cxp-status-meta');
-  const step = panelEl('#cxp-status-step');
-  if (bar) bar.dataset.tone = STATUS_TONE[_statusTone] || '';
-  if (label) label.textContent = _statusText;
-  const since = _stepStartedAt || _turnStartedAt;
-  if (elapsed) {
-    elapsed.textContent = since && (_running || _startingThread || _threadActiveFlags.length)
-      ? formatElapsed(Date.now() - since)
-      : '';
-  }
-  if (step) {
-    step.textContent = _statusDetail || '';
-    step.hidden = !_statusDetail;
-  }
-  renderStatusBadges();
-  renderContextGauge();
-  if (meta) meta.hidden = !_statusDetail && _mcpServers.size === 0;
+  if (isActiveTab(_boundTab)) renderContextGauge();
   syncStatusTicker();
 }
 
@@ -4431,6 +4740,7 @@ export function setRunning(next, turnId = null) {
   const wasRunning = _running;
   const previousTurnId = _activeTurnId;
   _running = !!next;
+  if (_boundTab) _boundTab.running = _running;
   if (turnId !== null) {
     _activeTurnId = turnId;
     _pendingQueryRequestId = null;
@@ -4462,10 +4772,12 @@ export function setRunning(next, turnId = null) {
     _boundTab.threadActiveFlags = _threadActiveFlags;
   }
   if (_running) { syncWorkStatus(); showThinking(); }
-  else { if (_connected) setStatus('Ready', 'ready'); hideThinking(); }
+  // Automation tabs stream over the sync socket and have no Codex socket of their own.
+  else { if (_connected || _boundTab?.automationRunId) setStatus('Ready', 'ready'); hideThinking(); }
   syncInputEnabled();
   syncToolbarState();
   syncQueueTray();
+  syncPlanEditorActions(_boundTab);
   updateTrayPillRunning();
   renderPills();
   saveTabs();
@@ -4572,7 +4884,6 @@ export function syncInputEnabled() {
   const send = panelEl('#cxp-send');
   const fresh = panelEl('#cxp-new');
   const close = panelEl('#cxp-close');
-  const compact = panelEl('#cxp-compact-btn');
   const tab = activeTab();
   const hasText = !!input?.value.trim();
   const hasImages = !!(tab?.attachedImages?.length);
@@ -4594,29 +4905,15 @@ export function syncInputEnabled() {
     fresh.title = 'New Codex tab';
   }
   if (close) close.disabled = false;
-  if (compact) {
-    compact.disabled = !_connected || !_bootstrapped || !_threadId || _running || _startingThread || _compacting;
-    compact.title = _compacting
-      ? 'Compacting current thread context'
-      : !_threadId
-        ? 'Compaction becomes available after the first Codex turn'
-        : (!_connected || !_bootstrapped)
-          ? 'Connect Codex to compact this thread'
-          : (_running || _startingThread)
-            ? 'Cannot compact while Codex is processing'
-            : 'Compact current thread context';
-  }
+  // Compact is in the Context settings popover, which gives these reasons itself.
+  syncContextMenu();
   syncSessionControls();
 }
 
 // Pass a numeric `knownWidth` during drag-resize to skip the getBoundingClientRect
 // measure (we already know the target width) and avoid a forced reflow every frame.
 export function syncReservedWidth(knownWidth) {
-  if (_getVisible() && _getPanelEl()) {
-    reserveRightPanelLayout(PANEL_OWNER, typeof knownWidth === 'number' ? knownWidth + 20 : _getPanelEl(), 20);
-  } else {
-    clearRightPanelLayout(PANEL_OWNER);
-  }
+  syncSidepanelLayout(PANEL_OWNER, knownWidth);
 }
 
 // ── Dispatch prompt (lines 5925-5965) ──
@@ -4648,7 +4945,8 @@ export function dispatchPrompt(prompt, { tab = activeTab(), images = null, paths
     requestId: crypto.randomUUID(),
     prompt: finalPrompt,
     planMode: sentAsPlanMode,
-    autoAccept: !!tab?.autoAccept,
+    // A finished run's tab is released by this prompt: the turn takes the person's AUTO, not the run's.
+    autoAccept: tab?.automationRunId ? storedAutoAccept() : !!tab?.autoAccept,
     threadId: _threadId || null,
     fresh: _freshThread || !_threadId,
     cwd: _project || null,
@@ -4683,14 +4981,15 @@ export function dispatchPrompt(prompt, { tab = activeTab(), images = null, paths
   // Sending a message re-pins auto-follow even if the user had scrolled up
   if (isActiveTab(tab)) scrollEnd(true);
   if (tab) {
-    tab.planTurnActive = sentAsPlanMode;
+    tab.planOperationVersion = (tab.planOperationVersion || 0) + 1;
+    // The query request and native turn have different IDs. Keep the native
+    // identity empty until turn/started binds it to this request.
+    if (sentAsPlanMode) beginPlanTurn(tab);
+    else { tab.planTurnActive = false; tab.lastPlanTurnId = ''; }
+    tab.planRequestId = sentAsPlanMode ? msg.requestId : null;
     tab.planApprovalPending = false;
-    tab.lastPlanTurnId = msg.requestId;
-    if (isActiveTab(tab)) {
-      _planTurnActive = sentAsPlanMode;
-      _planApprovalPending = false;
-      _lastPlanTurnId = msg.requestId;
-    }
+    tab.showPostPlanActions = false;
+    syncPlanHandoffFlags(tab);
   }
   clearPostCompactionState(tab, { updateTranscript: !_freshThread });
   if (_freshThread) clearTranscript('Starting fresh Codex thread…');
@@ -4859,20 +5158,90 @@ async function refreshMcpAfterAuthentication(tab, name) {
   }
 }
 
+// A rollback reply carries the retained history: render it in place of the
+// transcript that still shows the reverted turns.
+function renderRevertedThread(thread) {
+  const retained = codexRevertedHistory(thread, _threadId);
+  if (!retained) return false;
+  renderHistory(retained.thread, null, { authoritative: true });
+  // Nothing retained: the saved rendering would bring the reverted turns back on a reload.
+  if (retained.empty) invalidateThreadSnapshot(retained.thread.id);
+  restoreCanonicalPlan(_boundTab, retained.thread);
+  setThreadContextMeta({
+    source: _threadTokenUsage ? 'snapshot' : 'unknown',
+    freshness: _threadTokenUsage ? 'last-known' : 'pending',
+    isLiveThread: true,
+    model: activeTab()?.model || _boundTab?.model || '',
+    updatedAt: Date.now(),
+  }, { merge: false });
+  renderContextGauge();
+  return true;
+}
+
+function noteCodexRevert(event) {
+  const step = codexRevertNotice(_boundTab?.revertNotice || '', event);
+  if (_boundTab) _boundTab.revertNotice = step.pending;
+  if (step.show) appendSystem('Conversation history reverted.', 'muted');
+}
+
 // ── Notification handler (lines 7538-7698) ──
 export function handleNotify(method, params) {
+  if (['skills/changed', 'app/list/updated', 'account/updated', 'account/rateLimits/updated', 'config/updated', 'thread/attachment/updated', 'thread/settings/updated', 'account/gatewayOAuth/changed'].includes(method)) {
+    invalidateCodexFeatureCaches(_boundTab);
+  }
+  if (['account/updated', 'config/updated', 'model/list/updated'].includes(method)) refreshModelCatalog(_boundTab);
   if (_running) resetStallTimer();
   if (!_messagesEl && /^item\/(agentMessage|plan|reasoning|commandExecution|fileChange)/.test(method)) {
     console.warn('[cdx-tabs] handleNotify received item delta but _messagesEl is null', { method, boundTab: !!_boundTab, tabMessagesEl: !!_boundTab?.messagesEl });
   }
+  const notificationItem = codexNotificationItem(method, params);
+  if (notificationItem && _boundTab?.threadId) {
+    updateItemFromData({ ...notificationItem, _synabunOwnership: {
+      accountId: _boundTab.accountId || 'default', threadId: params.threadId,
+      turnId: params.turnId || '', sessionId: _boundTab.id,
+      connectionEpoch: _boundTab.connectionEpoch, source: 'live',
+    } });
+  }
   switch (method) {
+    case 'thread/goal/updated':
+    case 'thread/goal/cleared':
+      if (_boundTab) _boundTab.goal = params.goal || null;
+      break;
+    case 'hook/started':
+    case 'hook/completed':
+      break;
+    case 'thread/settings/updated':
+      if (_boundTab) {
+        applyCodexThreadSettings(_boundTab, params, modelListForTab(_boundTab));
+        syncToolbarState(); saveTabs();
+      }
+      break;
+    case 'account/gatewayOAuth/changed':
+      updateCodexGateway(_boundTab, params);
+      break;
+    case 'thread/attachment/updated':
+      refreshCodexAttachments(_boundTab);
+      appendSystem(`Thread attachment ${params.operation || 'updated'}: ${params.attachmentType || 'attachment'} (${params.identityKey || params.attachmentId || ''})`, 'muted');
+      break;
+    case 'item/fileChange/patchUpdated': {
+      const prior = _items.get(params.itemId)?._lastItem || {};
+      updateItemFromData({ ...prior, aggregatedOutput: '', id: params.itemId, type: 'fileChange', changes: params.changes,
+        _synabunOwnership: { accountId: _boundTab?.accountId || 'default', threadId: params.threadId,
+          turnId: params.turnId, sessionId: _boundTab?.id, connectionEpoch: _boundTab?.connectionEpoch, source: 'live' } });
+      break;
+    }
     case 'thread/name/updated':
       if (params.threadId === _threadId) {
         applyCodexProviderTitle(params.threadName || 'Codex');
       }
       break;
     case 'turn/started':
+      if (_boundTab) _boundTab.planImplementation = null;
       _pendingQueryRequestId = null;
+      if (_boundTab?.planTurnActive) {
+        setPlanTurnActive(_boundTab, true, params.turn?.id || _boundTab.lastPlanTurnId);
+        _boundTab.planRequestId = null;
+      }
       _activeItems = new Map();
       _activePlan = [];
       _threadActiveFlags = [];
@@ -4901,39 +5270,36 @@ export function handleNotify(method, params) {
       else if (_compacting) setCompactingUI(false);
       {
         const tab = _boundTab;
-        const wasPlanTurn = shouldCompleteCodexPlan(tab, _planTurnActive);
+        const wasPlanTurn = !!tab?.planTurnActive && !tab?.automationRunId;
         setRunning(false);
+        completeTurnOutputs(params.turn?.id);
+        if (tab?.latestTurnDiff?.turnId === params.turn?.id) renderTurnDiff(params.turn.id, tab.latestTurnDiff.diff);
+        const turnStatus = params.turn?.status || (params.turn?.error ? 'failed' : 'completed');
+        if (wasPlanTurn) {
+          // Reconnects can deliver the terminal turn with its final items
+          // without replaying each item/completed notification.
+          for (const item of params.turn?.items || []) {
+            capturePlanItem(tab, item, { turnId: params.turn?.id, completed: true });
+          }
+          const completedPlan = finishPlanTurn(tab, { turnId: params.turn?.id, status: turnStatus });
+          syncCanonicalPlan(tab);
+          if (completedPlan) {
+            tab.postPlanHeader = 'PLAN COMPLETE';
+            _postPlanHeader = 'PLAN COMPLETE';
+            ensurePlanFile(tab);
+          }
+          renderPostPlanActions(tab);
+          syncToolbarState();
+          saveTabs();
+        }
         if (params.turn?.error?.message) {
-          setPlanTurnActive(_boundTab, false, '');
-          setPlanApprovalPending(_boundTab, false);
           appendSystem(params.turn.error.message, 'error');
           setStatus(params.turn.error.message, 'error');
-          notifyCodexTurnOutcome(NOTIF_TYPE.ERROR, _boundTab, params.turn?.id || _activeTurnId);
-        } else if (wasPlanTurn && tab) {
-          const capturedPlan = capturePlanContent(tab);
-          if (capturedPlan) {
-            tab.planMode = false;
-            tab.showPostPlanActions = true;
-            tab.postPlanHeader = 'PLAN COMPLETE';
-            tab.planApprovalPending = true;
-            tab.planTurnActive = false;
-            _showPostPlanActions = true;
-            _postPlanHeader = 'PLAN COMPLETE';
-            _planApprovalPending = true;
-            _planTurnActive = false;
-            _lastPlanTurnId = '';
-            tab.lastPlanTurnId = '';
-            ensurePlanFile(tab);
-            renderPostPlanActions(tab);
-            syncToolbarState();
-            saveTabs();
-          } else {
-            setPlanTurnActive(tab, false, '');
-            setPlanApprovalPending(tab, false);
-          }
-          notifyCodexTurnOutcome(NOTIF_TYPE.DONE, tab, params.turn?.id || _activeTurnId);
+          notifyCodexTurnOutcome(NOTIF_TYPE.ERROR, tab, params.turn?.id || _activeTurnId);
+        } else if (turnStatus === 'interrupted') {
+          appendSystem('Turn interrupted. Any unfinished plan remains a draft.', 'muted');
         } else {
-          notifyCodexTurnOutcome(NOTIF_TYPE.DONE, _boundTab, params.turn?.id || _activeTurnId);
+          notifyCodexTurnOutcome(NOTIF_TYPE.DONE, tab, params.turn?.id || _activeTurnId);
         }
         if (_boundTab?.postCompactionPending && !_boundTab?.showPostPlanActions) {
           flushPostCompactionPrompt(_boundTab);
@@ -5001,7 +5367,10 @@ export function handleNotify(method, params) {
         completedItem.content = [...imgItems, ...(completedItem.content || [])];
         _boundTab._pendingSendImages = null;
       }
+      if (completedItem) completedItem._synabunCompleted = true;
       updateItemFromData(completedItem);
+      const completedState = completedItem?.id ? _items.get(completedItem.id) : null;
+      if (completedState) completedState.completed = true;
       trackActiveItemCompletion(completedItem);
       captureCompletedPlanItem(_boundTab, completedItem);
       if (completedItem?.type === 'contextCompaction') {
@@ -5013,10 +5382,12 @@ export function handleNotify(method, params) {
     }
     case 'item/agentMessage/delta':
       appendAgentDelta(params.itemId, params.delta);
+      capturePlanItem(_boundTab, { id: params.itemId, type: 'agentMessage', text: _items.get(params.itemId)?.buffer }, { turnId: params.turnId });
       repositionThinking();
       break;
     case 'item/plan/delta':
       appendPlanDelta(params.itemId, params.delta);
+      capturePlanItem(_boundTab, { id: params.itemId, type: 'plan', text: _items.get(params.itemId)?.buffer }, { turnId: params.turnId });
       repositionThinking();
       break;
     case 'item/reasoning/textDelta':
@@ -5052,6 +5423,12 @@ export function handleNotify(method, params) {
       applyTurnPlan(params.plan, params.explanation || '');
       break;
     case 'turn/diff/updated':
+      if (_boundTab) {
+        _boundTab.latestTurnDiff = { turnId: params.turnId, diff: params.diff || '' };
+        renderTurnDiff(params.turnId, params.diff || '');
+        refreshCodexDiff(_boundTab);
+        window.dispatchEvent(new CustomEvent('codex-turn-diff-updated', { detail: { tabId: _boundTab.id, ..._boundTab.latestTurnDiff } }));
+      }
       if (_running && !_activePlan.length && !_activeItems.size) {
         setStatus('Updating diff', 'working');
         setStatusDetail('Aggregating file changes for this turn', _turnStartedAt || Date.now(), 'turn:diff');
@@ -5147,7 +5524,7 @@ export function handleNotify(method, params) {
         : `Windows sandbox setup failed${params?.error ? `: ${params.error}` : ''}`, params?.success ? 'muted' : 'error');
       break;
     case 'serverRequest/resolved':
-      resolveRequestCard(params.requestId);
+      resolveRequestCard(params.requestId, params.status || 'resolved');
       _requestCards.delete(String(params.requestId));
       clearBlockingServerRequest(params.requestId);
       clearCodexRequestNotif(params.requestId, _boundTab);
@@ -5191,6 +5568,23 @@ export function handleNotify(method, params) {
       break;
     case 'model/rerouted':
       appendSystem(params?.message || 'Codex rerouted the model for this turn.', 'working');
+      break;
+    case 'guardianWarning':
+    case 'autoApprovalReview/strictReviewRequired':
+      appendSystem(params.message || params.reason || 'Codex requires a stricter approval review.', 'muted');
+      break;
+    case 'modelProvider/authRecoveryStarted':
+      setStatus('Recovering model provider authentication', 'working');
+      break;
+    case 'modelProvider/authRecoveryCompleted':
+      appendSystem(params.message || 'Model provider authentication recovery completed.', 'muted');
+      break;
+    case 'thread/deleted':
+      if (params.threadId === _threadId) { resetThreadState(); appendSystem('Codex thread deleted', 'muted'); }
+      break;
+    case 'thread/reverted':
+      // The reply to the rollback carries the retained history and re-renders it.
+      noteCodexRevert('notified');
       break;
     case 'thread/closed':
       if (params.threadId && params.threadId === _threadId) {
@@ -5266,7 +5660,7 @@ export function toggleEffortMenu() {
 export function togglePlanMode(tab = activeTab()) {
   if (!tab) return;
   tab.planMode = !tab.planMode;
-  if (tab.planMode) clearPlanHandoffState(tab);
+  // Toggling a mode never discards the existing plan document.
   if (isActiveTab(tab)) syncToolbarState();
   saveTabs();
 }
@@ -5291,7 +5685,7 @@ function formatContextCapacity(value) {
 }
 
 function contextModelForTab(tab = activeTab()) {
-  return selectedCodexContextModel(modelListForTab(tab), tab?.model);
+  return selectedCodexContextModel(_modelCatalog.state(tab).models || [], tab?.model);
 }
 
 function markExtendedContextPending(tab) {
@@ -5345,7 +5739,7 @@ export function toggleContextMode(tab = activeTab()) {
   }
 
   const model = contextModelForTab(tab);
-  if (!model?.supportsExtendedContext) return;
+  if (!contextAvailabilityForTab(tab).supported) return;
   if (!tab.model) {
     tab.model = getCodexModelName(model);
     storage.setItem(STOR.model, tab.model);
@@ -5363,7 +5757,6 @@ export function syncToolbarState() {
   const autoAcceptBtn = panelEl('#cxp-autoaccept-toggle');
   const contextBtn = panelEl('#cxp-context-toggle');
   const modelDd = panelEl('#cxp-model');
-  const costEl = panelEl('#cxp-cost');
   if (effortBtn) {
     const effort = tab?.effort || 'off';
     const options = effortOptionsForTab(tab);
@@ -5388,7 +5781,8 @@ export function syncToolbarState() {
   if (contextBtn) {
     const mode = normalizeCodexContextMode(tab?.contextMode);
     const model = contextModelForTab(tab);
-    const supportsExtended = !!model?.supportsExtendedContext;
+    const availability = contextAvailabilityForTab(tab);
+    const supportsExtended = availability.supported;
     const status = mode === 'extended'
       ? (tab?.extendedContextStatus || 'pending')
       : 'off';
@@ -5397,12 +5791,15 @@ export function syncToolbarState() {
     const actual = formatContextCapacity(tab?.extendedContextActualWindow);
     contextBtn.classList.toggle('active', mode === 'extended');
     contextBtn.dataset.contextStatus = status;
+    contextBtn.dataset.catalogStatus = _modelCatalog.state(tab).status;
     contextBtn.setAttribute('aria-pressed', mode === 'extended' ? 'true' : 'false');
     contextBtn.disabled = !!(tab?.running || tab?.startingThread || tab?.compacting)
       || (mode !== 'extended' && !supportsExtended);
     const label = contextBtn.querySelector('.cxp-btn-label');
     if (label) label.textContent = mode === 'extended' ? 'Extended' : 'Default';
-    if (mode !== 'extended') {
+    if (availability.reason) {
+      contextBtn.title = availability.reason;
+    } else if (mode !== 'extended') {
       contextBtn.title = supportsExtended
         ? `Use extended context (requests up to ${requested}; Codex reports the effective window live)`
         : 'Extended context is not advertised for the selected model and account';
@@ -5415,69 +5812,68 @@ export function syncToolbarState() {
     } else {
       contextBtn.title = `Extended context requested${requested ? ` up to ${requested}` : ''}; it applies on the next thread activation and is verified from live usage`;
     }
+    const retry = panelEl('#cxp-context-retry');
+    if (retry) retry.hidden = !availability.retry;
   }
   if (modelDd) {
     const label = modelDd.querySelector('.cxp-dd-label');
     if (label) label.textContent = tab?.model || 'model...';
   }
-  if (costEl) {
-    const cost = tab?.estimatedCost || 0;
-    costEl.textContent = cost > 0 ? `~$${cost.toFixed(2)}` : '';
-  }
+  // The model, the effort and the estimated cost are rows of the Context settings popover.
+  syncContextMenu();
 }
 
-const _modelListCacheByAccount = new Map();
-const _modelListRequestByAccount = new Map();
-
-function modelListAccountKey(tab = _boundTab || activeTab()) {
-  return String(tab?.accountId || 'default');
-}
+const modelCatalogConnected = tab => !!(tab && !tab.closed && tab.connected && tab.bootstrapped
+  && tab.ws?.readyState === WebSocket.OPEN && !tab.ws.__cxpReleasePending);
+const _modelCatalog = new CodexModelCatalog({
+  isReady: modelCatalogConnected,
+  request: (tab, signal) => requestSocketPayloadForTab(tab, 'model_list', {}, { signal, timeoutMs: 30_000 }),
+  // Socket callbacks may still have uncommitted bound-tab state. Render after
+  // that scope closes so refreshing another tab cannot overwrite it.
+  onChange: account => queueMicrotask(() => refreshModelCatalogViews(account)),
+});
 
 function modelListForTab(tab = _boundTab || activeTab()) {
-  return _modelListCacheByAccount.get(modelListAccountKey(tab)) || [];
+  return _modelCatalog.choices(tab);
 }
 
-function cacheModelListForTab(tab, models) {
-  const normalized = mergeCodexModelList(models);
-  _modelListCacheByAccount.set(modelListAccountKey(tab), normalized);
-  if (tab) {
-    const canReverify = normalizeCodexContextMode(tab.contextMode) === 'extended'
-      && tab.extendedContextVerificationArmed
-      && Number(tab.threadTokenUsage?.modelContextWindow) > 0;
-    if (canReverify) updateExtendedContextVerification(tab, tab.threadTokenUsage);
-    else markExtendedContextPending(tab);
+function contextAvailabilityForTab(tab = activeTab()) {
+  return codexContextAvailability({
+    tab, catalog: _modelCatalog.state(tab), model: contextModelForTab(tab),
+    connected: modelCatalogConnected(tab),
+  });
+}
+
+function refreshModelCatalogViews(account) {
+  for (const tab of _tabs) {
+    if (tab.closed || codexModelAccountKey(tab) !== account) continue;
+    withTab(tab, () => {
+      if (normalizeCodexContextMode(tab.contextMode) === 'extended') {
+        if (tab.extendedContextVerificationArmed && Number(tab.threadTokenUsage?.modelContextWindow) > 0) {
+          updateExtendedContextVerification(tab, tab.threadTokenUsage);
+        } else {
+          const catalog = _modelCatalog.state(tab);
+          tab.extendedContextStatus = catalog.status === 'ready' && !contextModelForTab(tab)?.supportsExtendedContext
+            ? 'unavailable' : 'pending';
+        }
+      }
+      if (isActiveTab(tab)) populateModelDropdown(modelListForTab(tab));
+    });
   }
-  return normalized;
 }
 
 function mergeCodexModelList(models) {
   return mergeCodexModelOptions(models);
 }
 
-export function requestModelList(tab = _boundTab || activeTab()) {
-  const accountKey = modelListAccountKey(tab);
-  const cached = _modelListCacheByAccount.get(accountKey);
-  if (cached) return Promise.resolve(cached);
-  const pending = _modelListRequestByAccount.get(accountKey);
-  if (pending) return pending;
-  const requestPromise = requestSocketPayloadForTab(tab, 'model_list', {})
-    .then((msg) => {
-      const models = cacheModelListForTab(tab, Array.isArray(msg?.models) ? msg.models : []);
-      if (isActiveTab(tab)) populateModelDropdown(models);
-      return models;
-    })
-    .catch(() => {
-      const models = cacheModelListForTab(tab, []);
-      if (isActiveTab(tab)) populateModelDropdown(models);
-      return models;
-    })
-    .finally(() => {
-      if (_modelListRequestByAccount.get(accountKey) === requestPromise) {
-        _modelListRequestByAccount.delete(accountKey);
-      }
-    });
-  _modelListRequestByAccount.set(accountKey, requestPromise);
-  return requestPromise;
+export function requestModelList(tab = _boundTab || activeTab(), options = {}) {
+  return _modelCatalog.request(tab, options);
+}
+
+function refreshModelCatalog(tab) {
+  if (!tab || tab.closed) return;
+  _modelCatalog.invalidate(tab);
+  requestModelList(tab, { force: true });
 }
 
 export function populateModelDropdown(models) {
@@ -5486,6 +5882,16 @@ export function populateModelDropdown(models) {
   const menu = dd.querySelector('.cxp-dd-menu');
   if (!menu) return;
   menu.innerHTML = '';
+  const catalog = _modelCatalog.state(activeTab());
+  if (catalog.status !== 'ready') {
+    const status = document.createElement('div');
+    status.className = 'cxp-model-catalog-status';
+    status.setAttribute('role', 'status');
+    status.textContent = catalog.status === 'error'
+      ? 'Could not load model capabilities. Use Retry to check again.'
+      : modelCatalogConnected(activeTab()) ? 'Loading model capabilities…' : 'Waiting for Codex connection…';
+    menu.appendChild(status);
+  }
   for (const m of models) {
     const name = getCodexModelName(m);
     if (!name) continue;
@@ -5525,7 +5931,7 @@ export function populateModelDropdown(models) {
     menu.appendChild(item);
   }
   const tab = activeTab();
-  if (tab) {
+  if (tab && catalog.status === 'ready') {
     const supported = effortOptionsForTab(tab);
     if (!supported.some((option) => option.id === (tab.effort || 'off'))) tab.effort = 'off';
   }
@@ -5711,6 +6117,12 @@ function consumeComposer(input, tab, { clearAttachments = true, value = '' } = {
   saveTabs();
 }
 
+function setMcpAppDraft(tab, text) {
+  const input = panelEl('#cxp-input');
+  const existing = String(isActiveTab(tab) ? (input?.value ?? tab?.draft ?? '') : (tab?.draft ?? ''));
+  consumeComposer(input, tab, { clearAttachments: false, value: existing ? `${existing}\n\n${text}` : text });
+}
+
 function currentComposerPayload() {
   const input = panelEl('#cxp-input');
   const tab = activeTab();
@@ -5751,6 +6163,10 @@ function normalizeConfigResult(raw) {
       effective[key] = value;
     }
   }
+  for (const [key, origin] of Object.entries(raw?.origins || raw?.config?.origins || {})) {
+    const source = origin?.name || origin?.source;
+    layers[key] = typeof source === 'string' ? source : (source?.type || origin?.version || 'configured');
+  }
   return { effective, layers };
 }
 
@@ -5770,33 +6186,17 @@ function rateLimitLines(rateLimits) {
   const lines = [];
   for (const [bucketId, bucket] of Object.entries(buckets)) {
     if (!bucket) continue;
-    lines.push(`- \`${bucket.limitName || bucketId}\`: ${formatPercentage(bucket.primary?.usedPercent)} used, resets ${formatResetTime(bucket.primary?.resetsAt)}`);
+    lines.push(`- \`${bucket.limitName || bucketId}\`${codexRateLimitMetadata(bucket) ? ` (${codexRateLimitMetadata(bucket)})` : ''}: ${formatPercentage(bucket.primary?.usedPercent)} used, resets ${formatResetTime(bucket.primary?.resetsAt)}`);
   }
   if (!lines.length && rateLimits?.rateLimits) {
-    lines.push(`- \`${rateLimits.rateLimits.limitName || rateLimits.rateLimits.limitId || 'default'}\`: ${formatPercentage(rateLimits.rateLimits.primary?.usedPercent)} used, resets ${formatResetTime(rateLimits.rateLimits.primary?.resetsAt)}`);
+    lines.push(`- \`${rateLimits.rateLimits.limitName || rateLimits.rateLimits.limitId || 'default'}\`${codexRateLimitMetadata(rateLimits.rateLimits) ? ` (${codexRateLimitMetadata(rateLimits.rateLimits)})` : ''}: ${formatPercentage(rateLimits.rateLimits.primary?.usedPercent)} used, resets ${formatResetTime(rateLimits.rateLimits.primary?.resetsAt)}`);
   }
   return lines;
 }
 
 function latestCompletedAssistantText(tab = activeTab()) {
   if (!tab) return '';
-  if (tab.editedPlanContent?.trim()) return tab.editedPlanContent.trim();
-  if (tab.planContent?.trim()) return tab.planContent.trim();
-
-  const states = Array.from(tab.items?.values?.() || []);
-  for (let i = states.length - 1; i >= 0; i -= 1) {
-    const state = states[i];
-    if (!state || (state.type !== 'agentMessage' && state.type !== 'plan')) continue;
-    const text = String(state.buffer || '').trim();
-    if (text) return text;
-  }
-
-  const messages = tab.messagesEl?.querySelectorAll('.cxp-msg-assistant .cxp-msg-body') || [];
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    const text = String(messages[i].textContent || '').trim();
-    if (text) return text;
-  }
-  return '';
+  return latestCompletedCodexText(tab.items) || String(tab.latestCompletedAssistantText || '').trim();
 }
 
 async function copyTextToClipboard(text) {
@@ -5851,13 +6251,19 @@ function formatStatusSnapshotMarkdown(snapshot, tab = activeTab()) {
     `- Context usage: ${inputTokens ? `~${inputTokens.toLocaleString()} input` : 'n/a'}${outputTokens ? `, ${outputTokens.toLocaleString()} output` : ''}`,
     `- Pending approvals/input: \`${runtime.pendingServerRequests ?? 0}\``,
     `- Isolation drops: \`${runtime.isolation?.rejected ?? 0}\` server, \`${clientIsolationDrops}\` client`,
-    `- Runtime: \`${runtime.codexBinSource || 'global'}\`${runtime.sdkInstalled ? ' with local `@openai/codex-sdk` installed' : ''}`,
+    `- CLI: \`${runtime.cliVersion || 'unknown'}\` (${runtime.codexBinSource || 'global'})`,
+    `- Executable: \`${runtime.codexBin || 'not reported'}\``,
+    `- Automation SDK: \`${runtime.sdkVersion || 'not installed'}\``,
+    `- Protocol baseline: \`${runtime.protocolBaseline || 'not reported'}\``,
   ];
   if (account) {
     lines.push(`- Account: \`${account.email || account.name || account.type || 'signed in'}\`${account.planType ? ` (${account.planType})` : ''}`);
   } else {
     lines.push('- Account: signed out');
   }
+  if (snapshot?.memory?.v2Ready != null) lines.push(`- Codex memory: ${snapshot.memory.v2Ready ? 'ready' : 'consolidating'} (${snapshot.memory.v2ConsolidatedThreads} consolidated threads)`);
+  else if (snapshot?.memory?.error) lines.push('- Codex memory: unavailable in this runtime');
+  if (rateLimits.ordinaryUsageAllowed != null) lines.push(`- Ordinary usage: ${rateLimits.ordinaryUsageAllowed ? 'allowed' : 'restricted'}`);
   const rateLines = rateLimitLines(rateLimits);
   if (rateLines.length) lines.push('', '## Rate limits', '', ...rateLines);
   return lines.join('\n');
@@ -5888,82 +6294,39 @@ function formatDebugConfigMarkdown(configResult, requirementsResult = {}) {
   ].join('\n');
 }
 
-function formatMcpMarkdown(servers = []) {
-  if (!servers.length) return 'No MCP servers are configured.';
-  return [
-    '## MCP servers',
-    '',
-    ...servers.map((server) => `- \`${server.name || 'unknown'}\`: \`${server.status || 'unknown'}\`${server.requiresOAuth ? ' (OAuth required)' : ''}${server.error ? ` — ${server.error}` : ''}`),
-  ].join('\n');
-}
-
-function formatAppMarkdown(appsResult = {}) {
-  const apps = Array.isArray(appsResult) ? appsResult : (appsResult?.data || appsResult?.apps || []);
-  if (!apps.length) return 'No apps are available for the current session.';
-  return [
-    '## Apps',
-    '',
-    ...apps.map((app) => `- \`$${app.name || app.id || 'app'}\`${app.enabled === false ? ' (disabled)' : ''}${app.accessible === false ? ' (inaccessible)' : ''}${app.description ? ` — ${app.description}` : ''}`),
-  ].join('\n');
-}
-
-function formatPluginMarkdown(pluginResult = {}) {
-  const marketplaces = Array.isArray(pluginResult) ? pluginResult : (pluginResult?.marketplaces || pluginResult?.data || []);
-  if (!marketplaces.length) return 'No plugin marketplaces were reported.';
-  const lines = ['## Plugins', ''];
-  for (const marketplace of marketplaces) {
-    lines.push(`- \`${marketplace.name || marketplace.path || 'marketplace'}\`${marketplace.error ? ` — ${marketplace.error}` : ''}`);
-    const plugins = marketplace.plugins || marketplace.installedPlugins || [];
-    for (const plugin of plugins) {
-      lines.push(`- \`${marketplace.name || marketplace.path || 'marketplace'}/${plugin.name || plugin.id || 'plugin'}\`${plugin.installed ? ' installed' : ''}${plugin.enabled ? ', enabled' : ''}`);
-    }
-  }
-  return lines.join('\n');
-}
-
-function formatExperimentalMarkdown(featureResult = {}) {
-  const features = Array.isArray(featureResult) ? featureResult : (featureResult?.data || featureResult?.features || []);
-  if (!features.length) return 'No experimental features were reported.';
-  return [
-    '## Experimental features',
-    '',
-    ...features.map((feature) => `- \`${feature.name}\`: \`${feature.enabled ? 'enabled' : 'disabled'}\` (${feature.stage || 'unknown'})${feature.description ? ` — ${feature.description}` : ''}`),
-  ].join('\n');
-}
-
-function formatLoadedThreadsMarkdown(result = {}) {
-  const threads = Array.isArray(result) ? result : (result?.threadIds || result?.threads || result?.data || []);
-  if (!threads.length) return 'No in-memory agent threads are currently loaded.';
-  return [
-    '## Loaded threads',
-    '',
-    ...threads.map((entry) => {
-      if (typeof entry === 'string') return `- \`${entry}\``;
-      return `- \`${entry.threadId || entry.id || 'unknown'}\`${entry.kind ? ` (${entry.kind})` : ''}${entry.cwd ? ` — \`${entry.cwd}\`` : ''}`;
-    }),
-  ].join('\n');
-}
-
-function formatBackgroundProcessesMarkdown(tab = activeTab()) {
-  if (!tab) return 'No active Codex session.';
-  const items = Array.from(tab.items?.values?.() || []).filter((item) => item?.type === 'commandExecution');
-  const active = items.filter((item) => item.status !== 'complete' && item.status !== 'failed');
-  if (!active.length) return 'No background terminals are currently visible in this session.';
-  return [
-    '## Running commands',
-    '',
-    ...active.map((item) => {
-      const lastLine = String(item.aggregatedOutput || '').trim().split('\n').filter(Boolean).slice(-1)[0] || '';
-      return `- \`${item.command || 'command'}\`${lastLine ? ` — ${lastLine}` : ''}`;
-    }),
-  ].join('\n');
-}
-
 function parseSlashCommand(text) {
-  const trimmed = String(text || '').trim();
-  const match = trimmed.match(/^\/([A-Za-z0-9_-]+)(?:\s+([\s\S]*))?$/);
-  if (!match) return null;
-  return { name: match[1].toLowerCase(), args: String(match[2] || '').trim(), raw: trimmed };
+  return parseCodexCommand(text);
+}
+
+// Marks the tab's capabilities stale; they stay readable until the next read
+// replaces them (cdx-capabilities.js).
+export function invalidateCodexFeatureCaches(tab = activeTab()) {
+  invalidateCodexCapabilities(tab);
+  _skillsCache = null;
+  _skillsPromise = null;
+}
+
+const CODEX_CAPABILITY_READ_TIMEOUT_MS = 15000;
+
+// The capabilities current for the tab: re-read when stale, one request for
+// every caller that asks meanwhile.
+function getCodexCapabilities(tab) {
+  return currentCodexCapabilities(tab, () => requestSocketPayloadForTab(tab, 'capabilities_read', {}, {
+    timeoutMs: CODEX_CAPABILITY_READ_TIMEOUT_MS,
+  }).catch((error) => {
+    throw /^Timed out/.test(error?.message || '') ? new Error('Timed out reading what this Codex runtime supports. Try again.') : error;
+  }));
+}
+
+// Capability-gated request for an action opened from `owner`'s conversation.
+function requestForCodexOwner(tab, owner, type, data, changedMessage) {
+  return requestWithCodexCapability({
+    type,
+    capabilities: () => getCodexCapabilities(tab),
+    changed: () => (tab.closed || tab.accountId !== owner.accountId || tab.threadId !== owner.threadId
+      || tab.connectionEpoch !== owner.connectionEpoch ? changedMessage : ''),
+    send: () => requestSocketPayloadForTab(tab, type, data),
+  });
 }
 
 function setModelForTab(tab, model) {
@@ -5997,18 +6360,28 @@ async function handleLocalSlashCommand(payload = currentComposerPayload()) {
   if (!parsed) return false;
   const { input, tab, images, paths, mentions } = payload;
   if (!tab) return true;
-  const localCommands = new Set([
-    'agent', 'apps', 'clean', 'clear', 'compact', 'copy', 'debug-config', 'diff', 'effort',
-    'experimental', 'fast', 'fork', 'init', 'logout', 'mcp', 'mention', 'model',
-    'new', 'permissions', 'personality', 'plan', 'plugins', 'ps', 'queue',
-    'resume', 'review', 'status', 'stop',
-  ]);
-  if (!localCommands.has(parsed.name)) return false;
+  const command = CODEX_COMMAND_BY_NAME.get(parsed.name);
+  if (!command) return false;
 
   const appendMarkdown = (markdown) => appendAssistantMarkdownMessage(tab, markdown);
   const appendStatus = (text, tone = 'muted') => withTab(tab, () => appendSystem(text, tone));
-  const requestForTab = (type, data = {}) => requestSocketPayloadForTab(tab, type, data);
+  const commandOwner = { accountId: tab.accountId, threadId: tab.threadId, connectionEpoch: tab.connectionEpoch };
+  const requestForTab = (type, data = {}) => requestForCodexOwner(tab, commandOwner, type, data,
+    'This conversation changed. Reopen the action in the current conversation.');
   const args = parsed.args;
+  const capabilities = await getCodexCapabilities(tab);
+  const capability = capabilityAvailability(capabilities, command.capability);
+  if (!capability.supported) {
+    appendStatus(`${command.cmd}: ${capability.reason || 'Unavailable in this Codex runtime.'}`, 'error');
+    consumeComposer(input, tab, { clearAttachments: false });
+    return true;
+  }
+  const featureContext = {
+    host: _getPanelEl(), request: requestForTab, tab, capabilities,
+    authenticate: (name) => startMcpOAuthLogin(tab, name),
+    openThread: (threadId) => createTab({ project: tab.project, accountId: tab.accountId, threadId, title: 'Agent thread' }),
+    onChanged: () => invalidateCodexFeatureCaches(tab),
+  };
   const sendInlinePrompt = (nextPrompt, options = {}) => {
     const pendingImages = images.length ? [...images] : null;
     const sent = withTab(tab, () => dispatchPrompt(nextPrompt, {
@@ -6026,9 +6399,55 @@ async function handleLocalSlashCommand(payload = currentComposerPayload()) {
     consumeComposer(input, tab);
     return true;
   };
-  const updateConfig = async (config) => requestForTab('config_write', { config });
+  const updateConfig = async (config) => {
+    const result = await requestForTab('config_write', { config });
+    invalidateCodexFeatureCaches(tab);
+    return result;
+  };
 
   switch (parsed.name) {
+    case 'help':
+      consumeComposer(input, tab, { clearAttachments: false });
+      appendMarkdown(codexCommandHints(capabilities).map((entry) => `- \`${entry.cmd}\`: ${entry.desc}`).join('\n'));
+      break;
+    case 'settings':
+      consumeComposer(input, tab, { clearAttachments: false });
+      await openSettingsPanel();
+      break;
+    case 'feedback':
+      consumeComposer(input, tab, { clearAttachments: false });
+      await openCodexFeedback({ ...featureContext, initialReason: args });
+      break;
+    case 'goal':
+      if (!tab.threadId) { appendStatus('Start a thread before configuring its goal.', 'error'); break; }
+      consumeComposer(input, tab, { clearAttachments: false });
+      await openCodexGoal(featureContext);
+      break;
+    case 'skills':
+    case 'hooks':
+      consumeComposer(input, tab, { clearAttachments: false });
+      await openCodexCatalog({ ...featureContext, kind: parsed.name });
+      break;
+    case 'rename':
+      if (!tab.threadId || !args) { appendStatus('Usage: /rename New thread title', 'error'); break; }
+      await requestForTab('thread_rename', { threadId: tab.threadId, name: args });
+      withTab(tab, () => setSessionLabel(args));
+      consumeComposer(input, tab, { clearAttachments: false });
+      saveTabs();
+      renderPills();
+      break;
+    case 'archive':
+      if (!tab.threadId || tab.running) { appendStatus('Archive an idle, saved thread.', 'error'); break; }
+      await requestForTab('thread_archive', { threadId: tab.threadId });
+      consumeComposer(input, tab, { clearAttachments: false });
+      await startNewThread(tab);
+      break;
+    case 'unarchive':
+      if (!args) { appendStatus('Usage: /unarchive thread-id', 'error'); break; }
+      await requestForTab('thread_unarchive', { threadId: args });
+      consumeComposer(input, tab, { clearAttachments: false });
+      createTab({ project: tab.project, accountId: tab.accountId, threadId: args });
+      break;
     case 'compact':
       if (tab.running || tab.startingThread || tab.compacting) {
         appendStatus('Compaction is unavailable while Codex is busy.', 'error');
@@ -6068,7 +6487,7 @@ async function handleLocalSlashCommand(payload = currentComposerPayload()) {
         const result = await requestForTab('thread_fork', { threadId: tab.threadId });
         const forked = result?.thread;
         if (forked?.id) {
-          createTab({ project: tab.project, threadId: forked.id, title: forked.name || `Fork of ${tab.sessionLabel}` });
+          createTab({ project: tab.project, accountId: tab.accountId, threadId: forked.id, title: forked.name || `Fork of ${tab.sessionLabel}` });
           appendStatus(`Forked current thread into ${forked.id}.`, 'muted');
         }
       }
@@ -6079,8 +6498,7 @@ async function handleLocalSlashCommand(payload = currentComposerPayload()) {
         break;
       }
       consumeComposer(input, tab, { clearAttachments: false });
-      await requestForTab('review_start', { threadId: tab.threadId });
-      appendStatus('Started working tree review.', 'working');
+      await openCodexReview({ ...featureContext, onStarted: () => appendStatus('Started review.', 'working') });
       break;
     case 'status':
       consumeComposer(input, tab, { clearAttachments: false });
@@ -6129,17 +6547,23 @@ async function handleLocalSlashCommand(payload = currentComposerPayload()) {
         const configData = await requestForTab('config_read', {});
         const { effective } = normalizeConfigResult(configData.config);
         const current = String(effective.service_tier || '').toLowerCase();
-        let next = current === 'fast' ? 'flex' : 'fast';
+        const model = selectedModelOption(modelListForTab(tab), tab.model || effective.model);
+        const fastTier = fastServiceTier(model);
+        let next = current === fastTier ? null : fastTier;
         if (args) {
-          if (['on', 'fast'].includes(args.toLowerCase())) next = 'fast';
-          else if (['off', 'flex', 'default'].includes(args.toLowerCase())) next = 'flex';
+          if (['on', 'fast'].includes(args.toLowerCase())) next = fastTier;
+          else if (['off', 'default'].includes(args.toLowerCase())) next = null;
           else if (args.toLowerCase() === 'status') {
             appendMarkdown(`Fast mode is currently \`${current || 'default'}\`.`);
             break;
-          }
+          } else { appendStatus('Usage: /fast on, /fast off or /fast status', 'error'); break; }
         }
-        await updateConfig({ service_tier: next, features: { fast_mode: true } });
-        appendMarkdown(`Fast mode set to \`${next}\`.`);
+        if (!fastTier && !['off', 'default'].includes(args.toLowerCase())) {
+          appendStatus('The active model does not advertise Fast mode support.', 'error');
+          break;
+        }
+        await updateConfig({ service_tier: next });
+        appendMarkdown(`Service tier set to \`${next || 'default'}\`.`);
       }
       break;
     case 'personality':
@@ -6150,7 +6574,11 @@ async function handleLocalSlashCommand(payload = currentComposerPayload()) {
         appendMarkdown(`Current personality: \`${effective.personality || 'pragmatic'}\`. Run \`/personality friendly\` or \`/personality pragmatic\`.`);
         break;
       }
-      await updateConfig({ personality: args, features: { personality: true } });
+      if (!['friendly', 'pragmatic', 'none', 'default'].includes(args.toLowerCase())) {
+        appendStatus('Use /personality friendly, pragmatic, none or default.', 'error');
+        break;
+      }
+      await updateConfig({ personality: args.toLowerCase() === 'default' ? null : args.toLowerCase() });
       appendMarkdown(`Personality set to \`${args}\`.`);
       break;
     case 'model':
@@ -6172,36 +6600,14 @@ async function handleLocalSlashCommand(payload = currentComposerPayload()) {
       if (setEffortForTab(tab, args)) appendMarkdown(`Reasoning effort set to \`${tab.effort || 'off'}\`.`);
       break;
     case 'mcp':
-      consumeComposer(input, tab, { clearAttachments: false });
-      {
-        const result = await requestForTab('mcp_status', {});
-        appendMarkdown(formatMcpMarkdown(result.servers || []));
-      }
-      break;
     case 'apps':
-      consumeComposer(input, tab, { clearAttachments: false });
-      {
-        const result = await requestForTab('app_list', { threadId: tab.threadId || null });
-        appendMarkdown(formatAppMarkdown(result.apps));
-      }
-      break;
+    case 'attachments':
     case 'plugins':
-      consumeComposer(input, tab, { clearAttachments: false });
-      {
-        const result = await requestForTab('plugin_list', {});
-        appendMarkdown(formatPluginMarkdown(result.plugins));
-      }
-      break;
     case 'agent':
-      consumeComposer(input, tab, { clearAttachments: false });
-      {
-        const result = await requestForTab('thread_loaded_list', {});
-        appendMarkdown(formatLoadedThreadsMarkdown(result.threads));
-      }
-      break;
     case 'ps':
+      if (parsed.name === 'ps' && !tab.threadId) { appendStatus('Start a thread to inspect background terminals.', 'error'); break; }
       consumeComposer(input, tab, { clearAttachments: false });
-      appendMarkdown(formatBackgroundProcessesMarkdown(tab));
+      await openCodexCatalog({ ...featureContext, kind: parsed.name });
       break;
     case 'clean':
     case 'stop':
@@ -6210,8 +6616,15 @@ async function handleLocalSlashCommand(payload = currentComposerPayload()) {
         appendStatus('There is no active thread to stop background terminals for.', 'error');
         break;
       }
-      await requestForTab('background_clean', { threadId: tab.threadId });
-      appendMarkdown('Stopped background terminals for the current thread.');
+      if (parsed.name === 'stop' && args) {
+        const supported = capabilityAvailability(capabilities, 'background_terminate');
+        if (!supported.supported) { appendStatus(supported.reason || 'Individual termination is unavailable.', 'error'); break; }
+        await requestForTab('background_terminate', { threadId: tab.threadId, processId: args });
+        appendStatus(`Stopped background terminal ${args}.`);
+      } else {
+        await requestForTab('background_clean', { threadId: tab.threadId });
+        appendStatus('Stopped background terminals for the current thread.');
+      }
       break;
     case 'copy':
       consumeComposer(input, tab, { clearAttachments: false });
@@ -6228,22 +6641,23 @@ async function handleLocalSlashCommand(payload = currentComposerPayload()) {
     case 'experimental':
       consumeComposer(input, tab, { clearAttachments: false });
       {
-        const result = await requestForTab('experimental_features', {});
         if (args) {
           const match = args.match(/^([A-Za-z0-9_.-]+)\s+(on|off)$/i);
           if (match) {
             const [, featureName, enabled] = match;
-            await updateConfig({ features: { [featureName]: enabled.toLowerCase() === 'on' } });
+            await requestForTab('experimental_features_set', { enablement: { [featureName]: enabled.toLowerCase() === 'on' } });
+            invalidateCodexFeatureCaches(tab);
             appendMarkdown(`Experimental feature \`${featureName}\` set to \`${enabled.toLowerCase()}\`.`);
             break;
           }
         }
-        appendMarkdown(formatExperimentalMarkdown(result.features));
+        await openCodexCatalog({ ...featureContext, kind: 'experimental' });
       }
       break;
     case 'logout':
       consumeComposer(input, tab, { clearAttachments: false });
       await requestForTab('account_logout', {});
+      invalidateCodexFeatureCaches(tab);
       appendMarkdown('Logged out of Codex.');
       break;
     case 'diff':
@@ -6253,13 +6667,10 @@ async function handleLocalSlashCommand(payload = currentComposerPayload()) {
         break;
       }
       {
-        const diff = await requestGitDiff(tab.project);
-        const sections = ['## Working tree diff', '', `- Branch: \`${diff.branch || 'unknown'}\``];
-        if (diff.untrackedFiles?.length) sections.push(`- Untracked files: ${diff.untrackedFiles.map((file) => `\`${file}\``).join(', ')}`);
-        if (diff.diff) sections.push('', '```diff', diff.diff, '```');
-        if (diff.stagedDiff) sections.push('', '## Staged diff', '', '```diff', diff.stagedDiff, '```');
-        if (!diff.diff && !diff.stagedDiff && !diff.untrackedFiles?.length) sections.push('', 'Working tree is clean.');
-        appendMarkdown(sections.join('\n'));
+        await openCodexDiff({
+          host: _getPanelEl(), tab, workingTree: () => requestGitDiff(tab.project),
+          openFile: (path) => emit('open-file-editor', { filePath: `${tab.project.replace(/[\\/]+$/, '')}/${path}` }),
+        });
       }
       break;
     case 'plan':
@@ -6330,7 +6741,10 @@ export function sendPrompt() {
         return;
       }
       if (shouldHoldForPlanApproval(tab)) {
-        appendSystem('Choose Continue with implementation, Compact context, or Edit plan before sending another message.', 'working');
+        // Rebuild lost/snapshot-only handlers before holding a message. The
+        // required action must be visible and usable, not just named in text.
+        renderPostPlanActions(tab);
+        tab.messagesEl?.querySelector('.cxp-post-plan-msg')?.scrollIntoView({ block: 'end' });
         return;
       }
       if (tab.planMode) {
@@ -6559,7 +6973,7 @@ export function renderImageStrip() {
 // ── Whiteboard "Send to Panel" — receive image via event bus ──
 appOn('wb:send-to-panel', ({ dataUrl }) => {
   if (!dataUrl) return;
-  if (!_getVisible() && appState.lastActivePanel !== 'codex') return;
+  if (appState.lastActivePanel !== 'codex' || isHostedSessionFocused()) return;
   if (!_getVisible()) _toggleCodexPanel();
   const tab = activeTab();
   if (!tab) return;
@@ -6693,35 +7107,7 @@ export function initVoiceInput() {
 }
 
 // ── Phase 2: Slash command hints ──
-const BUILTIN_SLASH_COMMANDS = [
-  { cmd: '/agent', desc: 'List loaded agent threads' },
-  { cmd: '/apps', desc: 'List available apps' },
-  { cmd: '/compact', desc: 'Compact thread context' },
-  { cmd: '/clear', desc: 'Clear the transcript' },
-  { cmd: '/copy', desc: 'Copy the latest completed output' },
-  { cmd: '/debug-config', desc: 'Show merged config details' },
-  { cmd: '/diff', desc: 'Show the Git diff' },
-  { cmd: '/experimental', desc: 'Inspect experimental features' },
-  { cmd: '/fast', desc: 'Toggle fast mode' },
-  { cmd: '/fork', desc: 'Fork the current thread' },
-  { cmd: '/init', desc: 'Create or update AGENTS.md guidance' },
-  { cmd: '/logout', desc: 'Sign out of Codex' },
-  { cmd: '/mcp', desc: 'List MCP server status' },
-  { cmd: '/mention', desc: 'Add a file path chip' },
-  { cmd: '/model', desc: 'Switch model' },
-  { cmd: '/new', desc: 'Start a fresh conversation' },
-  { cmd: '/permissions', desc: 'Update approvals and sandboxing' },
-  { cmd: '/personality', desc: 'Set the active personality' },
-  { cmd: '/plan', desc: 'Toggle or send a plan-mode prompt' },
-  { cmd: '/plugins', desc: 'List plugin marketplaces' },
-  { cmd: '/ps', desc: 'Inspect running background terminals' },
-  { cmd: '/effort', desc: 'Cycle effort level' },
-  { cmd: '/queue', desc: 'Show queued messages' },
-  { cmd: '/resume', desc: 'Open the session picker' },
-  { cmd: '/review', desc: 'Review the current working tree' },
-  { cmd: '/status', desc: 'Show active session status' },
-  { cmd: '/stop', desc: 'Stop background terminals' },
-];
+const BUILTIN_SLASH_COMMANDS = CODEX_COMMANDS;
 
 let _slashActiveIdx = -1;
 let _fileHintRequest = 0;
@@ -6848,22 +7234,29 @@ function showFileHints(token) {
 }
 
 export async function loadSlashCommands() {
-  if (_skillsCache) return _skillsCache;
+  const tab = activeTab();
+  const owner = `${tab?.accountId || 'default'}:${tab?.project || ''}:${tab?.connectionEpoch || ''}`;
+  if (_skillsCache?.owner === owner) return _skillsCache;
+  let commands = codexCommandHints(knownCodexCapabilities(tab) || {});
   try {
-    const res = await fetch('/api/skills');
-    const data = await res.json();
+    if (!tab) return commands;
+    const capabilities = await getCodexCapabilities(tab);
+    commands = codexCommandHints(capabilities);
+    const data = await requestSocketPayloadForTab(tab, 'skills_list', { cwds: tab.project ? [tab.project] : [] });
     const seen = new Set(BUILTIN_SLASH_COMMANDS.map((entry) => entry.cmd));
-    const skillCommands = (data.skills || [])
+    const skillCommands = flattenNativeCatalog(data, 'skills')
+      .filter((skill) => skill.enabled !== false)
       .map((skill) => ({
         cmd: '/' + String(skill.name || skill.dirName || '').trim(),
         desc: String(skill.description || '').trim(),
       }))
       .filter((skill) => skill.cmd !== '/' && !seen.has(skill.cmd))
       .sort((a, b) => a.cmd.localeCompare(b.cmd));
-    _skillsCache = [...BUILTIN_SLASH_COMMANDS, ...skillCommands];
+    _skillsCache = [...commands, ...skillCommands];
   } catch {
-    _skillsCache = [...BUILTIN_SLASH_COMMANDS];
+    _skillsCache = commands;
   }
+  _skillsCache.owner = owner;
   return _skillsCache;
 }
 
@@ -6882,7 +7275,9 @@ export function showSlashHints(text) {
     return;
   }
   const query = trimmed.toLowerCase();
-  if (!_skillsCache) {
+  const hintTab = activeTab();
+  const hintOwner = `${hintTab?.accountId || 'default'}:${hintTab?.project || ''}:${hintTab?.connectionEpoch || ''}`;
+  if (!_skillsCache || _skillsCache.owner !== hintOwner) {
     hintsEl.hidden = true;
     _slashActiveIdx = -1;
     if (!_skillsPromise) {
@@ -6928,44 +7323,12 @@ export function selectSlashHint(cmd) {
   const input = panelEl('#cxp-input');
   hideComposerHints();
   if (!input) return;
-  switch (cmd) {
-    case '/compact':
-    case '/clear':
-    case '/copy':
-    case '/debug-config':
-    case '/diff':
-    case '/experimental':
-    case '/fast':
-    case '/fork':
-    case '/logout':
-    case '/mcp':
-    case '/new':
-    case '/permissions':
-    case '/plugins':
-    case '/ps':
-    case '/resume':
-    case '/review':
-    case '/status':
-    case '/stop':
-      input.value = cmd;
-      break;
-    case '/model': {
-      const dd = panelEl('#cxp-model');
-      if (dd) dd.classList.toggle('open');
-      input.value = '';
-      break;
-    }
-    case '/plan':
-    case '/mention':
-    case '/apps':
-    case '/agent':
-    case '/init':
-    case '/effort':
-    case '/queue':
-    case '/personality':
-    default:
-      input.value = cmd + ' ';
-      break;
+  const command = CODEX_COMMAND_BY_NAME.get(String(cmd).replace(/^\//, ''));
+  if (command?.name === 'model') {
+    panelEl('#cxp-model')?.classList.toggle('open');
+    input.value = '';
+  } else {
+    input.value = cmd + (command && !command.acceptsArgs ? '' : ' ');
   }
   const tab = activeTab();
   if (tab) tab.draft = input.value;
@@ -7002,12 +7365,14 @@ export function confirmSlashHint() {
 }
 
 // ── Phase 6: Settings panel ──
-export async function openSettingsPanel() {
+export async function openSettingsPanel({ section = '' } = {}) {
 
 // ── Settings panel & compaction (lines 8588-8844) ──
   const settingsTab = activeTab();
   if (!settingsTab) return;
-  const requestForSettings = (type, data = {}) => requestSocketPayloadForTab(settingsTab, type, data);
+  const settingsOwner = { accountId: settingsTab.accountId, threadId: settingsTab.threadId, connectionEpoch: settingsTab.connectionEpoch };
+  const requestForSettings = (type, data = {}) => requestForCodexOwner(settingsTab, settingsOwner, type, data,
+    'This conversation changed. Reopen Settings to continue.');
   const appendSettingsError = (text) => {
     if (!settingsTab.closed) withTab(settingsTab, () => appendSystem(text, 'error'));
   };
@@ -7024,6 +7389,11 @@ export async function openSettingsPanel() {
         <div class="cxp-settings-section">
           <div class="cxp-settings-section-title">Account</div>
           <div class="cxp-settings-loading" id="cxp-settings-account">Loading…</div>
+        </div>
+        <div class="cxp-settings-section">
+          <div class="cxp-settings-section-title">Runtime and features</div>
+          <div class="cxp-settings-loading" id="cxp-settings-runtime">Loading…</div>
+          <div id="cxp-settings-features"></div>
         </div>
         <div class="cxp-settings-section">
           <div class="cxp-settings-section-title">MCP Servers</div>
@@ -7046,16 +7416,50 @@ export async function openSettingsPanel() {
 
   // Fetch data in parallel
   try {
-    const [accountData, mcpData, configData, rateLimitData, permissionData] = await Promise.allSettled([
+    const [accountData, mcpData, configData, rateLimitData, permissionData, requirementsData, capabilityData] = await Promise.allSettled([
       requestForSettings('account_read', {}),
       requestForSettings('mcp_status', {}),
-      requestForSettings('config_read', {}),
+      requestForSettings('config_read', { cwd: settingsTab.project || null, threadId: settingsTab.threadId || null }),
       requestForSettings('rate_limits_read', {}),
       requestForSettings('permission_roots_list', {}),
+      requestForSettings('config_requirements', {}),
+      getCodexCapabilities(settingsTab),
     ]);
     if (settingsTab.closed) {
       overlay.remove();
       return;
+    }
+    const capabilities = capabilityData.status === 'fulfilled' ? capabilityData.value : {};
+    const runtime = settingsTab.codexRuntime || {};
+    const runtimeEl = overlay.querySelector('#cxp-settings-runtime');
+    runtimeEl.className = 'cxp-settings-hint';
+    runtimeEl.textContent = `CLI ${runtime.cliVersion || 'unknown'} · Automation SDK ${runtime.sdkVersion || 'not installed'} · Protocol ${runtime.protocolBaseline || 'unknown'}\n${runtime.codexBin || 'Executable path not reported'}\nAccount: ${runtime.accountId || settingsTab.accountId || 'default'}`;
+    const featureEl = overlay.querySelector('#cxp-settings-features');
+    for (const kind of ['skills', 'mcp', 'apps', 'plugins', 'hooks', 'ps', 'experimental', 'goal', 'feedback']) {
+      const command = CODEX_COMMAND_BY_NAME.get(kind);
+      const available = capabilityAvailability(capabilities, command.capability);
+      const btn = document.createElement('button');
+      btn.className = 'cxp-btn cxp-btn-sm';
+      btn.textContent = `${command.name}${available.experimental ? ' · Experimental' : ''}`;
+      btn.disabled = !available.supported || (['goal', 'ps'].includes(kind) && !settingsTab.threadId);
+      btn.title = !available.supported ? available.reason : command.desc;
+      btn.addEventListener('click', async () => {
+        const context = {
+          host: _getPanelEl(), request: requestForSettings, tab: settingsTab, capabilities,
+          authenticate: (name) => startMcpOAuthLogin(settingsTab, name),
+          onChanged: () => invalidateCodexFeatureCaches(settingsTab),
+        };
+        try {
+          if (kind === 'goal') await openCodexGoal(context);
+          else if (kind === 'feedback') await openCodexFeedback(context);
+          else await openCodexCatalog({ ...context, kind });
+        } catch (error) { appendSettingsError(error.message); }
+      });
+      featureEl.append(btn);
+      if (!available.supported) {
+        const reason = document.createElement('div'); reason.className = 'cxp-settings-hint';
+        reason.textContent = `${command.name}: ${available.reason || 'Unavailable in this runtime'}`; featureEl.append(reason);
+      }
     }
 
     // Account
@@ -7093,6 +7497,7 @@ export async function openSettingsPanel() {
           logoutBtn.disabled = true;
           try {
             await requestForSettings('account_logout', {});
+            invalidateCodexFeatureCaches(settingsTab);
             overlay.remove();
             if (isActiveTab(settingsTab)) openSettingsPanel();
           } catch (err) {
@@ -7126,6 +7531,8 @@ export async function openSettingsPanel() {
         accountEl.append(hint, loginBtn);
       }
     }
+
+    await mountCodexAccountSecurity({ host: accountEl, request: requestForSettings, tab: settingsTab, capabilities });
 
     // MCP Servers
     const mcpEl = overlay.querySelector('#cxp-settings-mcp');
@@ -7269,6 +7676,12 @@ export async function openSettingsPanel() {
     if (configEl) {
       const rawCfg = configData.status === 'fulfilled' ? (configData.value?.config || configData.value || {}) : {};
       const { effective: cfg, layers } = normalizeConfigResult(rawCfg);
+      if (configData.status === 'fulfilled' && configData.value?.sessionOverrides) {
+        settingsTab.sessionConfigOverrides = Object.fromEntries(Object.entries(SESSION_CONFIG_FIELDS)
+          .filter(([, field]) => Object.hasOwn(configData.value.sessionOverrides, field))
+          .map(([key, field]) => [key, configData.value.sessionOverrides[field]]));
+      }
+      const requirements = requirementsData.status === 'fulfilled' ? requirementsData.value : {};
 
       // Get dynamic model list (fall back to hardcoded defaults)
       let models;
@@ -7295,10 +7708,8 @@ export async function openSettingsPanel() {
           { value: 'pragmatic', label: 'Pragmatic' },
           { value: 'friendly', label: 'Friendly' },
         ]},
-        { key: 'service_tier', label: 'Fast Mode', type: 'select', options: [
+        { key: 'service_tier', label: 'Service Tier', type: 'select', options: [
           { value: '', label: '(default)' },
-          { value: 'flex', label: 'Flex / Default' },
-          { value: 'fast', label: 'Fast' },
         ]},
         { key: 'model_reasoning_effort', label: 'Reasoning Effort', type: 'select', options: [
           { value: '', label: '(default)' },
@@ -7307,6 +7718,8 @@ export async function openSettingsPanel() {
           { value: 'medium', label: 'Medium' },
           { value: 'high', label: 'High' },
           { value: 'xhigh', label: 'Extra High' },
+          { value: 'max', label: 'Maximum' },
+          { value: 'ultra', label: 'Ultra' },
         ]},
         { key: 'model_reasoning_summary', label: 'Reasoning Summary', type: 'select', options: [
           { value: '', label: '(default)' },
@@ -7323,15 +7736,38 @@ export async function openSettingsPanel() {
         ]},
         { key: 'model_context_window', label: 'Context Window', type: 'number', placeholder: 'tokens' },
         { key: 'model_auto_compact_token_limit', label: 'Auto-Compact', type: 'number', placeholder: 'token limit' },
-        { key: 'web_search', label: 'Web Search', type: 'checkbox' },
+        { key: 'web_search', label: 'Web Search', type: 'select', options: [
+          { value: '', label: '(default)' },
+          { value: 'disabled', label: 'Disabled' },
+          { value: 'cached', label: 'Cached' },
+          { value: 'indexed', label: 'Indexed' },
+          { value: 'live', label: 'Live' },
+        ] },
         { key: 'features.fast_mode', label: 'Enable Fast Toggle', type: 'checkbox' },
         { key: 'features.personality', label: 'Enable Personality', type: 'checkbox' },
         { key: 'features.apps', label: 'Enable Apps', type: 'checkbox' },
         { key: 'features.unified_exec', label: 'Unified Exec', type: 'checkbox' },
       ];
+      const effortDefinition = fieldDefs.find((def) => def.key === 'model_reasoning_effort');
+      const modelMetadata = selectedModelOption(modelList, cfg.model || settingsTab.model);
+      if (modelMetadata) effortDefinition.options = normalizeReasoningEfforts(modelMetadata).map((option) => ({ value: option.id === 'off' ? '' : option.id, label: option.label || option.id }));
+      fieldDefs.find((def) => def.key === 'service_tier').options.push(...modelServiceTiers(modelMetadata));
       const form = document.createElement('div');
       form.className = 'cxp-config-form';
+      const scopeLabel = document.createElement('label');
+      scopeLabel.className = 'cxp-config-row';
+      scopeLabel.textContent = 'Apply to ';
+      const scope = document.createElement('select');
+      scope.className = 'cxp-config-input';
+      const savedOption = document.createElement('option'); savedOption.value = 'saved'; savedOption.textContent = 'Saved defaults';
+      const sessionOption = document.createElement('option'); sessionOption.value = 'session'; sessionOption.textContent = 'Current thread';
+      sessionOption.disabled = !settingsTab.threadId || !capabilityAvailability(capabilities, 'thread_settings_update').supported;
+      scope.append(savedOption, sessionOption); scopeLabel.append(scope); form.append(scopeLabel);
+      const scopeHint = document.createElement('div'); scopeHint.className = 'cxp-settings-hint';
+      scopeHint.textContent = 'Saved defaults affect future sessions. Current thread settings apply to subsequent turns.';
+      form.append(scopeHint);
       const inputs = {};
+      const restrictions = {};
       for (const def of fieldDefs) {
         const row = document.createElement('div');
         row.className = 'cxp-config-row';
@@ -7339,7 +7775,9 @@ export async function openSettingsPanel() {
         label.className = 'cxp-config-label';
         label.textContent = def.label;
         row.appendChild(label);
-        const val = cfg[def.key];
+        const val = configValue(cfg, def.key);
+        const restriction = configRestriction(requirements, def.key);
+        restrictions[def.key] = restriction;
         if (def.type === 'select') {
           const sel = document.createElement('select');
           sel.className = 'cxp-config-input';
@@ -7348,7 +7786,15 @@ export async function openSettingsPanel() {
             o.value = opt.value;
             o.textContent = opt.label;
             if (String(val ?? '') === opt.value) o.selected = true;
+            if (restriction.allowed && opt.value && !restriction.allowed.some((allowed) => JSON.stringify(allowed) === JSON.stringify(opt.value))) o.disabled = true;
             sel.appendChild(o);
+          }
+          if (val != null && !def.options.some((opt) => opt.value === String(val))) {
+            const unknown = document.createElement('option');
+            unknown.value = typeof val === 'object' ? JSON.stringify(val) : String(val);
+            unknown.textContent = `${unknown.value} (configured)`; unknown.selected = true;
+            sel.appendChild(unknown);
+            sel.dataset.originalValue = JSON.stringify(val);
           }
           row.appendChild(sel);
           inputs[def.key] = sel;
@@ -7356,7 +7802,7 @@ export async function openSettingsPanel() {
           const cb = document.createElement('input');
           cb.type = 'checkbox';
           cb.className = 'cxp-config-checkbox';
-          cb.checked = !!val;
+          cb.checked = typeof restriction.fixed === 'boolean' ? restriction.fixed : !!val;
           row.appendChild(cb);
           inputs[def.key] = cb;
         } else {
@@ -7369,48 +7815,62 @@ export async function openSettingsPanel() {
           inputs[def.key] = inp;
         }
         // Config layer badge
-        if (layers[def.key]) {
+        if (layers[def.key] || restriction.reason) {
           const badge = document.createElement('span');
           badge.className = 'cxp-config-layer';
-          badge.textContent = `(${layers[def.key]})`;
+          badge.textContent = `(${restriction.reason || layers[def.key]})`;
           row.appendChild(badge);
         }
         form.appendChild(row);
       }
       const saveBtn = document.createElement('button');
       saveBtn.className = 'cxp-btn cxp-config-save';
-      saveBtn.textContent = 'Save Configuration';
-      saveBtn.addEventListener('click', async () => {
-        const newCfg = {};
+      const refreshScope = () => {
+        const visibleConfig = scope.value === 'session' ? { ...cfg, ...(settingsTab.sessionConfigOverrides || {}) } : cfg;
         for (const def of fieldDefs) {
-          const el = inputs[def.key];
-          if (def.type === 'checkbox') {
-            newCfg[def.key] = el.checked;
-          } else if (def.type === 'number') {
-            newCfg[def.key] = el.value ? Number(el.value) : null;
-          } else {
-            newCfg[def.key] = el.value || null;
-          }
+          inputs[def.key].disabled = Object.hasOwn(restrictions[def.key], 'fixed') || (scope.value === 'session' && !SESSION_CONFIG_FIELDS[def.key]);
+          const value = configValue(visibleConfig, def.key);
+          if (def.type === 'checkbox') inputs[def.key].checked = typeof restrictions[def.key].fixed === 'boolean' ? restrictions[def.key].fixed : !!value;
+          else inputs[def.key].value = value != null ? (typeof value === 'object' ? JSON.stringify(value) : String(value)) : '';
         }
+        saveBtn.textContent = scope.value === 'session' ? 'Apply to Current Thread' : 'Save Defaults';
+      };
+      scope.addEventListener('change', refreshScope);
+      refreshScope();
+      saveBtn.addEventListener('click', async () => {
         saveBtn.disabled = true;
         saveBtn.textContent = 'Saving…';
         try {
-          await requestForSettings('config_write', { config: newCfg });
+          const currentConfig = scope.value === 'session' ? { ...cfg, ...(settingsTab.sessionConfigOverrides || {}) } : cfg;
+          const newCfg = configChanges(fieldDefs, inputs, currentConfig);
+          if (scope.value === 'session') {
+            if (settingsTab.running) throw new Error('Wait for the active turn to finish before applying thread settings.');
+            await requestForSettings('thread_settings_update', { threadId: settingsTab.threadId, ...sessionSettings(newCfg) });
+            settingsTab.sessionConfigOverrides = { ...(settingsTab.sessionConfigOverrides || {}), ...newCfg };
+            if (Object.hasOwn(newCfg, 'model')) settingsTab.model = newCfg.model;
+            if (Object.hasOwn(newCfg, 'model_reasoning_effort')) settingsTab.effort = newCfg.model_reasoning_effort || 'off';
+            if (Object.hasOwn(newCfg, 'approval_policy')) settingsTab.autoAccept = newCfg.approval_policy === 'never';
+            syncToolbarState(); saveTabs();
+          } else if (Object.keys(newCfg).length) {
+            await requestForSettings('config_write', { config: newCfg });
+            Object.assign(cfg, newCfg);
+          }
+          invalidateCodexFeatureCaches(settingsTab);
           saveBtn.textContent = 'Saved!';
-          _modelListCacheByAccount.clear();
-          _modelListRequestByAccount.clear();
-          requestModelList();
-          setTimeout(() => { saveBtn.textContent = 'Save Configuration'; saveBtn.disabled = false; }, 2000);
+          refreshModelCatalog(settingsTab);
+          setTimeout(() => { refreshScope(); saveBtn.disabled = false; }, 1500);
         } catch (err) {
           saveBtn.textContent = 'Save Failed';
           appendSettingsError(`Config save failed: ${err.message}`);
-          setTimeout(() => { saveBtn.textContent = 'Save Configuration'; saveBtn.disabled = false; }, 2000);
+          setTimeout(() => { refreshScope(); saveBtn.disabled = false; }, 1500);
         }
       });
       form.appendChild(saveBtn);
       configEl.appendChild(form);
     }
-  } catch {}
+    // Opened for one section (the Context settings popover's "Manage"): bring it into view.
+    if (section) overlay.querySelector(`#cxp-settings-${section}`)?.closest('.cxp-settings-section')?.scrollIntoView({ block: 'start' });
+  } catch (error) { appendSettingsError(error.message || 'Could not load Codex settings.'); }
 }
 
 export function startCompaction() {
@@ -7464,6 +7924,9 @@ export function initContextBridge() {
     get threadContextMeta() { return _threadContextMeta; },
     // ── Functions ──
     scrollEnd,
+    requestForTab: requestSocketPayloadForTab,
+    setMcpAppDraft,
+    withRequestTab: withTab,
     sendSocket,
     emit,
     activeTab,
@@ -7471,6 +7934,10 @@ export function initContextBridge() {
     dispatchPrompt,
     capturePlanContent,
     ensurePlanFile,
+    savePlanEdit,
+    persistPlanDocument,
+    adoptMessageAsPlan,
+    markPlanImplementationSubmitted,
     saveTabs,
     hideEmpty,
     showEmpty,
@@ -7509,16 +7976,16 @@ export function initContextBridge() {
     isBlockingServerRequest,
     onBlockingServerRequestStart: rememberBlockingServerRequest,
     onBlockingServerRequestAnswered: (requestId) => clearBlockingServerRequest(requestId),
-    setPostPlanHeader: (v) => { _postPlanHeader = v; },
-    setShowPostPlanActions: (v) => { _showPostPlanActions = v; },
+    setPostPlanHeader: (v) => { _postPlanHeader = v; if (_boundTab) _boundTab.postPlanHeader = v; },
+    setShowPostPlanActions: (v) => { _showPostPlanActions = v; if (_boundTab) _boundTab.showPostPlanActions = !!v; },
     setPlanFeedbackDraft: (v) => { if (_boundTab) _boundTab.planFeedbackDraft = v || ''; },
-    setPlanTurnActive: (v) => { _planTurnActive = !!v; },
-    setPlanApprovalPending: (v) => { _planApprovalPending = !!v; },
-    setLastPlanTurnId: (v) => { _lastPlanTurnId = v || ''; },
+    setPlanTurnActive: (v) => { _planTurnActive = !!v; if (_boundTab) _boundTab.planTurnActive = !!v; },
+    setPlanApprovalPending: (v) => { _planApprovalPending = !!v; if (_boundTab) _boundTab.planApprovalPending = !!v; },
+    setLastPlanTurnId: (v) => { _lastPlanTurnId = v || ''; if (_boundTab) _boundTab.lastPlanTurnId = v || ''; },
     setShowPostCompactionPrompt: (v) => { _showPostCompactionPrompt = !!v; },
     setPostCompactionPending: (v) => { _postCompactionPending = !!v; },
     setPostCompactionPromptSource: (v) => { _postCompactionPromptSource = v === 'manual' ? 'manual' : ''; },
-    setPlanFilePath: (v) => { _planFilePath = v; },
+    setPlanFilePath: (v) => { _planFilePath = v; if (_boundTab) _boundTab.planFilePath = v; },
   };
   setRenderContext(ctx);
   setRequestsContext(ctx);

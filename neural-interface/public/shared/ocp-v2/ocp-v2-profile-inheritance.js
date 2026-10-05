@@ -56,9 +56,23 @@ export function bindOpenCodeChildSessionProfile({
   };
 }
 
-export function inheritChildPanelMcpProfile(childStore, parentStore, childInfo = null) {
-  const parentProfile = parentStore?.getState?.()?.mcpProfile || null;
-  const profile = parentProfile || childInfo?.mcpProfile || null;
+/**
+ * The MCP profile a sub-agent panel starts with: its parent's. The primary
+ * panel's store speaks for the parent only while it is bound to that parent
+ * (`parentSessionId`): after a switch its profile is another session's, and
+ * then the parent's saved choice (`savedProfile(parentSessionId)`) or what the
+ * child session itself carries is used. Without `parentSessionId` the parent
+ * store is trusted as before.
+ */
+export function inheritChildPanelMcpProfile(childStore, parentStore, childInfo = null, { parentSessionId, savedProfile } = {}) {
+  const parentState = parentStore?.getState?.() || null;
+  const parentIsBound = !parentSessionId || parentState?.sessionId === parentSessionId;
+  const parentProfile = parentIsBound ? (parentState?.mcpProfile || null) : null;
+  let saved = null;
+  if (!parentProfile && parentSessionId && typeof savedProfile === 'function') {
+    try { saved = savedProfile(parentSessionId) || null; } catch { saved = null; }
+  }
+  const profile = parentProfile || saved || childInfo?.mcpProfile || null;
   if (profile) childStore?.setMcpProfile?.(profile);
   return profile;
 }
