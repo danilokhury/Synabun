@@ -3,6 +3,7 @@ import { buildJudgmentsTab, wireJudgmentsTab } from './ui-judgments.js';
 import { buildWhatsAppTab, wireWhatsAppTab } from './ui-whatsapp.js';
 import { SETTINGS_GROUPS, SETTINGS_PAGES, DEFAULT_SETTINGS_PAGE, pageKeys, getSettingsPage, resolveSettingsTarget, homeOfControl } from './settings/settings-ia.js';
 import * as kit from './settings/settings-kit.js';
+import { RULES_HOST_LABELS, describeRulesHost, describeRulesInstall, describeRulesInstallAll } from './settings/settings-rules.js';
 import { initI18n, isReady as i18nReady, SUPPORTED_LOCALES, LOCALE_NAMES, SYSTEM_LOCALE, getLocale, getLocaleChoice, setLocaleChoice, getSystemLocale, englishTranslator, loadEnglishTranslator } from './i18n.js';
 import { wireSettingsShell, wireSettingsSearch, collectSearchRows, revealSettingsTarget, followSettingsTarget, onSettingsTakeover, applyStoredSections, storeSectionState } from './settings/settings-shell.js';
 import { buildSettingsSearchIndex } from './settings/settings-search.js';
@@ -44,7 +45,8 @@ const TAB_ICONS = {
   collections: '<svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4.03 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/></svg>',
   projects: '<svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>',
   memory: '<svg viewBox="0 0 24 24"><path d="M12 2a7 7 0 0 0-7 7c0 2.38 1.19 4.47 3 5.74V17a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-2.26c1.81-1.27 3-3.36 3-5.74a7 7 0 0 0-7-7z"/><line x1="9" y1="21" x2="15" y2="21"/><line x1="10" y1="24" x2="14" y2="24"/></svg>',
-  judgments: '<svg viewBox="0 0 24 24"><line x1="12" y1="3" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="4" y1="7" x2="20" y2="7"/><path d="M4 7l-2.5 7h5z"/><path d="M20 7l-2.5 7h5z"/></svg>',
+  // TypeSafe's official mark (traced from their 400px favicon, filled: the nav CSS strokes every other icon)
+  judgments: '<svg viewBox="0 0 24 24"><path style="fill:currentColor;stroke:none" fill-rule="evenodd" d="M11.88 0 3.74 5.35 3.71 14.28 7.47 16.85 7.55 21.12 12.04 24 20.26 18.62 20.29 9.53 16.53 6.96 16.45 2.86 12.2 0.05ZM12.93 2.36 12.8 2.45 12.8 4.55 14.94 5.89 14.95 3.74ZM10.99 2.44 5.24 6.23 5.24 12.35 5.36 12.47 7.47 11.06 7.54 7.02 11.2 4.55 11.2 2.53ZM11.96 5.98 9.75 7.44 11.96 8.93 14.25 7.44ZM9.14 8.96 9.02 9.05 9.02 11.06 11.16 12.45 11.2 10.34ZM14.86 8.96 12.83 10.34 12.76 14.38 9.05 16.85 9.02 19.03 9.14 19.17 14.98 15.33 14.98 9.05ZM16.63 8.96 16.51 9.05 16.51 15.24 16.71 15.53 18.64 16.76 18.76 16.61 18.76 10.42ZM8.18 12.5 5.99 13.96 8.26 15.45 10.5 13.96ZM15.58 16.84 9.85 20.55 9.79 20.74 12.04 22.18 17.91 18.37 17.99 18.2 17.35 17.75 15.98 16.87Z"/></svg>',
   interface: '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="9" y1="9" x2="21" y2="9"/></svg>',
   graphics: '<svg viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>',
   icons: '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>',
@@ -5199,13 +5201,9 @@ export async function openSettingsModal(options = {}) {
     // every action. `null` means the route is missing or failed, which is what
     // a server that was not restarted after the update answers: the tab keeps
     // View and Copy and says what to do, and offers no control that cannot work.
+    // What a state is called, the action it calls for and the sentence next to it come from
+    // settings/settings-rules.js, which the onboarding wizard reads too.
     const RESTART_HINT = kit.tx('settings.redesign.setup.restartSynabunToFinishThisUpdate');
-    const RULES_HOST_LABELS = { claude: 'Claude Code', codex: 'Codex', opencode: 'OpenCode', gemini: 'Gemini', cursor: 'Cursor', coexistence: 'coexistence' };
-    const RULES_BADGES = {
-      installed: [kit.tx('settings.redesign.setup.installed'), true], newer: [kit.tx('settings.redesign.setup.newer'), true], outdated: [kit.tx('settings.redesign.setup.updateAvailable'), false], modified: [kit.tx('settings.redesign.setup.edited2'), false],
-      conflict: [kit.tx('settings.redesign.setup.conflict'), false], error: [kit.tx('settings.redesign.setup.error'), false], shadowed: [kit.tx('settings.redesign.setup.shadowed'), false],
-      'not-installed': [kit.tx('settings.redesign.setup.notInstalled'), false], manual: [kit.tx('settings.redesign.setup.copyOnly'), false],
-    };
     let rulesStatus = setupStatus.rules?.ok ? setupStatus.rules : null;
     // What the last "install for all" wrote and where, shown under that button until the next rules action.
     let installNote = '';
@@ -5277,40 +5275,18 @@ export async function openSettingsModal(options = {}) {
       const row = el('row');
 
       rulesRenderers.push(() => {
-        const info = rulesStatus?.hosts?.[host];
-        if (!info) {
-          badge.className = 'setup-status-badge inactive';
-          badge.textContent = kit.tx('settings.redesign.setup.unavailable');
-          pathEl.textContent = RESTART_HINT;
-          row.classList.remove('enabled');
-          setShown(message, false); setShown(primary, false); setShown(removeBtn, false);
-          return;
-        }
-        const [text, good] = RULES_BADGES[info.state] || [info.state || kit.tx('settings.redesign.setup.unknown'), false];
-        badge.className = `setup-status-badge ${good ? 'active' : 'inactive'}`;
-        badge.textContent = text;
-        row.classList.toggle('enabled', good);
-        pathEl.textContent = info.installedVersion ? `${info.path} (v${info.installedVersion})` : (info.path || '');
-        pathEl.title = info.path || '';
-        // The action the state calls for; conflict, error and shadowed only explain themselves.
-        const action = info.detected === false ? '' : ({ 'not-installed': kit.tx('settings.redesign.setup.install'), outdated: kit.tx('settings.redesign.setup.update'), modified: kit.tx('settings.redesign.setup.replace') }[info.state] || '');
-        // A file without SynaBun's markers is the user's own: the server refuses to replace it, so no button.
-        const canAct = !!action && info.replaceable !== false;
-        primary.textContent = canAct ? action : '';
-        setShown(primary, canAct);
-        setShown(removeBtn, ['installed', 'newer', 'outdated', 'modified', 'shadowed'].includes(info.state));
-        // An edited copy is the user's: nothing replaces or removes it without the confirm behind each button.
-        const editedNote = kit.tx('settings.redesign.setup.thisCopyWasEditedSoSynabun');
-        const stateNote = info.detected === false ? kit.tx('settings.redesign.setup.wasNotFoundOnThisMachine', { label: label })
-          : info.state === 'modified' ? (info.replaceable === false ? (info.detail || '') : editedNote)
-          : info.state === 'outdated' ? (rulesStatus.version ? kit.tx('settings.redesign.setup.versionOfTheRulesIsAvailable', { version: rulesStatus.version }) : kit.tx('settings.redesign.setup.aNewerVersionOfTheRules'))
-          : ['conflict', 'error', 'shadowed', 'newer'].includes(info.state) ? (info.error || info.detail || '')
-          : '';
-        // A removal that could not finish left rules behind: say which, until a remove or an install completes.
-        const partial = info.partialRemoval?.error ? kit.tx('settings.redesign.setup.theLastRemovalDidNotFinish', { error: info.partialRemoval.error }) : '';
-        const note = partial && stateNote && !partial.includes(stateNote) ? `${partial} ${stateNote}` : (partial || stateNote);
-        message.textContent = note;
-        setShown(message, !!note);
+        // No status (the route is missing): "Unavailable", the restart hint as the path, and no action.
+        const view = describeRulesHost(rulesStatus?.hosts?.[host], { label, version: rulesStatus?.version, tx: kit.tx });
+        badge.className = `setup-status-badge ${view.good ? 'active' : 'inactive'}`;
+        badge.textContent = view.badge;
+        row.classList.toggle('enabled', view.good);
+        pathEl.textContent = view.pathText;
+        pathEl.title = view.path;
+        primary.textContent = view.actionLabel;
+        setShown(primary, !!view.action);
+        setShown(removeBtn, view.removable);
+        message.textContent = view.note;
+        setShown(message, !!view.note);
       });
 
       primary.addEventListener('click', () => {
@@ -5318,9 +5294,7 @@ export async function openSettingsModal(options = {}) {
         const force = state === 'modified';
         if (force && !confirm(kit.tx('settings.redesign.setup.replaceYourEditedRulesWithSynabun', { label: label }))) return;
         cachedText = '';
-        runRulesAction(primary, () => installRules(host, { force }), (result) => (result.changed
-          ? kit.tx(state === 'not-installed' ? 'settings.redesign.setup.rulesInstalled2' : 'settings.redesign.setup.rulesUpdated2', { label })
-          : kit.tx('settings.redesign.setup.rulesAreAlreadyCurrent', { label: label })));
+        runRulesAction(primary, () => installRules(host, { force }), (result) => describeRulesInstall(result, state, { label, tx: kit.tx }));
       });
       removeBtn.addEventListener('click', () => {
         const info = rulesStatus?.hosts?.[host];
@@ -5399,15 +5373,10 @@ export async function openSettingsModal(options = {}) {
         });
         installAllBtn.addEventListener('click', () => {
           runRulesAction(installAllBtn, () => installAllRules(), (result) => {
-            const rows = Object.entries(result.results || {});
-            if (!rows.length) return kit.tx('settings.redesign.setup.noConnectedToolNeedsRules');
-            // The file each tool reads. The rules are global, so a project's own CLAUDE.md and AGENTS.md stay as they are.
-            const where = rows.filter(([, row]) => row.ok !== false && row.path).map(([host, row]) => `${hostOf[host] || host}: ${row.path}`).join(' · ');
-            if (where) installNote = kit.tx('settings.redesign.setup.rulesInstalledAt', { where: where });
-            const failed = rows.filter(([, row]) => row.ok === false);
-            if (failed.length) return kit.tx('settings.redesign.setup.installedWithFailure', { count: rows.length - failed.length, host: hostOf[failed[0][0]] || failed[0][0], error: failed[0][1].error || failed[0][1].state });
-            const map = rows.map(([host]) => hostOf[host] || host).join(', ');
-            return kit.tx(rows.some(([, row]) => row.changed) ? 'settings.redesign.setup.rulesInstalledFor' : 'settings.redesign.setup.rulesAlreadyCurrentFor', { map: map });
+            // The sentence for the toast, and under the button the file each tool reads.
+            const report = describeRulesInstallAll(result, { tx: kit.tx });
+            installNote = report.note;
+            return report.message;
           });
         });
       }

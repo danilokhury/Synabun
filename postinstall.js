@@ -9,10 +9,11 @@
  */
 
 import { execSync } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync, chmodSync } from 'node:fs';
+import { existsSync, chmodSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { homedir, platform } from 'node:os';
+import { platform } from 'node:os';
+import { registerStartLauncher } from './lib/start-launcher.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -114,87 +115,16 @@ function buildMcpServer() {
 }
 
 // ── Protocol handler registration ──
+//
+// The synabun:// handler behind the offline page's Start Server button. The
+// same registration runs on every start (setup.js), so this only makes the
+// button work before the first one.
 
 function registerProtocolHandler() {
-  const nodeBin = process.execPath;
-  const setupJs = resolve(__dirname, 'setup.js');
-  const plat = platform();
-
-  if (plat === 'win32') {
-    // Windows — HKCU registry (no admin required)
-    try {
-      const cmd = `"${nodeBin}" "${setupJs}" "%1"`;
-      execSync(`reg add "HKCU\\Software\\Classes\\synabun" /ve /d "URL:SynaBun Protocol" /f`, { stdio: 'pipe' });
-      execSync(`reg add "HKCU\\Software\\Classes\\synabun" /v "URL Protocol" /d "" /f`, { stdio: 'pipe' });
-      execSync(`reg add "HKCU\\Software\\Classes\\synabun\\shell\\open\\command" /ve /d "${cmd}" /f`, { stdio: 'pipe' });
-      ok('Registered synabun:// protocol handler');
-    } catch {
-      warn('Could not register synabun:// protocol handler');
-    }
-  } else if (plat === 'darwin') {
-    // macOS — minimal .app bundle in ~/.synabun/
-    try {
-      const appDir = resolve(homedir(), '.synabun', 'SynaBun.app', 'Contents');
-      const macosDir = resolve(appDir, 'MacOS');
-      mkdirSync(macosDir, { recursive: true });
-
-      writeFileSync(resolve(appDir, 'Info.plist'), [
-        '<?xml version="1.0" encoding="UTF-8"?>',
-        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
-        '<plist version="1.0">',
-        '<dict>',
-        '  <key>CFBundleIdentifier</key><string>ai.synabun.launcher</string>',
-        '  <key>CFBundleName</key><string>SynaBun</string>',
-        '  <key>CFBundleExecutable</key><string>synabun-launcher</string>',
-        '  <key>CFBundleVersion</key><string>1.0</string>',
-        '  <key>CFBundleURLTypes</key>',
-        '  <array><dict>',
-        '    <key>CFBundleURLName</key><string>SynaBun Protocol</string>',
-        '    <key>CFBundleURLSchemes</key><array><string>synabun</string></array>',
-        '  </dict></array>',
-        '</dict>',
-        '</plist>',
-      ].join('\n'));
-
-      const launcherPath = resolve(macosDir, 'synabun-launcher');
-      writeFileSync(launcherPath, `#!/bin/sh\nexec "${nodeBin}" "${setupJs}" "$@"\n`);
-      chmodSync(launcherPath, 0o755);
-
-      // Register with LaunchServices
-      try {
-        execSync(`/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister -R "${resolve(homedir(), '.synabun', 'SynaBun.app')}"`, { stdio: 'pipe' });
-      } catch {
-        try { execSync(`open "${resolve(homedir(), '.synabun', 'SynaBun.app')}"`, { stdio: 'pipe' }); } catch {}
-      }
-
-      ok('Registered synabun:// protocol handler');
-    } catch {
-      warn('Could not register synabun:// protocol handler');
-    }
-  } else {
-    // Linux — .desktop file
-    try {
-      const appsDir = resolve(homedir(), '.local', 'share', 'applications');
-      mkdirSync(appsDir, { recursive: true });
-
-      writeFileSync(resolve(appsDir, 'synabun.desktop'), [
-        '[Desktop Entry]',
-        'Type=Application',
-        'Name=SynaBun',
-        `Exec="${nodeBin}" "${setupJs}" %u`,
-        'MimeType=x-scheme-handler/synabun;',
-        'NoDisplay=true',
-        'Terminal=true',
-        '',
-      ].join('\n'));
-
-      try { execSync('xdg-mime default synabun.desktop x-scheme-handler/synabun', { stdio: 'pipe' }); } catch {}
-
-      ok('Registered synabun:// protocol handler');
-    } catch {
-      warn('Could not register synabun:// protocol handler');
-    }
-  }
+  const result = registerStartLauncher({ packageRoot: __dirname });
+  if (result.state === 'skipped') return;
+  if (result.ok) ok('Registered synabun:// protocol handler');
+  else warn(`Could not register synabun:// protocol handler (${result.errors[0]})`);
 }
 
 // ── Updater shim executable bit ──

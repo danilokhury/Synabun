@@ -8,7 +8,7 @@ import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
   LAUNCHER_STOP_MARKER,
@@ -395,9 +395,12 @@ test('the launcher stops on a failed snapshot and has no override', () => {
 // ── the launcher, run for real ──
 //
 // `node`, `npm` and `npx` on the child's PATH are stand-ins that only log
-// their arguments, so the launcher can never start a server, install a
-// dependency or download a browser: reaching the launch step shows up as a
-// logged `node … neural-interface/server.js`. HOME and the data home are
+// their arguments, so the launcher can never install a dependency or download
+// a browser. The launcher starts the server with its own node binary, which
+// no PATH entry replaces, so a preload stands in there: in the server process
+// it logs the call the same way and exits before server.js is loaded.
+// Reaching the launch step shows up as a logged
+// `node … neural-interface/server.js`. HOME and the data home are
 // temporary directories. Skipped on Windows (the stand-ins are shell scripts)
 // and in a checkout that still holds in-repository user state, which the
 // launcher would first try to migrate.
@@ -417,11 +420,21 @@ function runLauncher(dataHome, extraEnv = {}) {
     writeFileSync(join(bin, name), `#!/bin/sh\nprintf '%s %s supervised=%s\\n' "${name}" "$*" "$SYNABUN_SUPERVISED" >> "$STAND_IN_LOG"\nexit 0\n`, 'utf8');
     chmodSync(join(bin, name), 0o755);
   }
+  const preload = join(dir, 'stand-in-server.mjs');
+  writeFileSync(preload, [
+    "import { appendFileSync } from 'node:fs';",
+    "if (/[\\\\/]neural-interface[\\\\/]server\\.js$/.test(process.argv[1] || '')) {",
+    "  const args = [...process.execArgv, ...process.argv.slice(1)].join(' ');",
+    "  appendFileSync(process.env.STAND_IN_LOG, `node ${args} supervised=${process.env.SYNABUN_SUPERVISED ?? ''}\\n`);",
+    "  process.exit(0);",
+    "}",
+    '',
+  ].join('\n'), 'utf8');
   const result = spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', LAUNCHER], {
     cwd: dir,
     encoding: 'utf8',
     timeout: 120_000,
-    env: { PATH: bin, HOME: home, SYNABUN_DATA_HOME: dataHome, STAND_IN_LOG: log, ...extraEnv },
+    env: { PATH: bin, HOME: home, SYNABUN_DATA_HOME: dataHome, STAND_IN_LOG: log, NODE_OPTIONS: `--import=${pathToFileURL(preload).href}`, ...extraEnv },
   });
   const calls = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : [];
   return {

@@ -58,6 +58,7 @@ export async function render(host, s) {
     const ratio = field(label('preset'), s.config.typography.scale.preset, v => { const found = ratios.find(([key]) => key === v); s.set('typography.scale', { ...s.config.typography.scale, preset: v, ratio: found[1] }); rerender(); }, { type: 'select', options: ratios.map(([id, n]) => [id, `${label(id)} · ${n}`]) });
     const styles = el('div', 'sg-table-wrap');
     styles.tabIndex = 0;
+    styles.setAttribute('role', 'region');
     styles.setAttribute('aria-label', label('style'));
     const table = el('table', 'sg-table sg-type-table'), head = el('tr');
     for (const k of ['id', 'font', 'size', 'mobileSize', 'weight', 'lineHeight', 'letterSpacing', 'transform', 'usage'])

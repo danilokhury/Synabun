@@ -131,6 +131,44 @@
     "stillOffline": "Ainda offline — inicie o servidor e tente novamente",
     "runCommand": "Execute este comando para iniciar o servidor:",
     "copyToClipboard": "Copiar para a área de transferência",
+    "start": {
+      "asked": "Pedimos ao sistema para iniciar o SynaBun. Se o navegador mostrar um aviso, escolha Abrir.",
+      "unconfirmedMac": "Ainda sem notícias do iniciador. Se o navegador estiver pedindo permissão, escolha Abrir: uma janela do Terminal abre em seguida com o servidor.",
+      "unconfirmedWindows": "Ainda sem notícias do iniciador. Se o navegador estiver pedindo permissão, escolha Abrir: uma janela de console abre em seguida com o servidor.",
+      "unconfirmedLinux": "Ainda sem notícias do iniciador. Se o navegador estiver pedindo permissão, escolha Abrir: o servidor inicia em seguida em segundo plano.",
+      "stalled": "Nada respondeu. Se nenhum aviso ou janela apareceu, execute o comando abaixo uma vez: ele também conserta este botão.",
+      "launcherRunning": "O iniciador está em execução.",
+      "terminalOpened": "Uma janela do Terminal foi aberta para o servidor.",
+      "terminalQuiet": "Uma janela do Terminal foi aberta há {seconds} s, mas o servidor não iniciou nela. Veja essa janela.",
+      "processStarted": "O supervisor do servidor foi iniciado.",
+      "checking": "Verificando a instalação.",
+      "dependencies": "Instalando dependências com o npm. A primeira inicialização, ou a primeira depois de uma atualização, leva alguns minutos.",
+      "browser": "Baixando o navegador de automação. Isso acontece uma única vez.",
+      "build": "Compilando o servidor MCP.",
+      "snapshot": "Fazendo backup dos seus dados antes da primeira inicialização desta versão.",
+      "snapshotSized": "Fazendo backup dos seus dados antes da primeira inicialização desta versão: {files} arquivos, {megabytes} MB.",
+      "server": "O processo do servidor está em execução. Aguardando a resposta dele.",
+      "listening": "O servidor está escutando. Conectando.",
+      "answered": "O servidor respondeu ao iniciador. Conectando.",
+      "quiet": "Nada de novo na inicialização há {seconds} s.",
+      "failed": "A inicialização falhou: {reason}",
+      "failedHint": "Execute o comando abaixo para ver a saída completa, ou tente novamente.",
+      "failedLog": "Log do iniciador: {path}",
+      "gaveUp": "O servidor foi iniciado, mas não respondeu. Verifique a janela dele ou execute o comando abaixo.",
+      "online": "O servidor está no ar. Carregando o SynaBun.",
+      "trailLauncher": "Iniciador acionado",
+      "trailTerminal": "Terminal aberto",
+      "trailProcess": "Supervisor iniciado",
+      "trailSupervisor": "Supervisor em execução",
+      "trailServer": "Processo do servidor iniciado",
+      "trailListening": "Servidor escutando",
+      "elapsedLabel": "Tempo desde que Iniciar foi pressionado",
+      "headingStarting": "Iniciando o servidor",
+      "headingReady": "Servidor no ar",
+      "headingFailed": "O servidor não iniciou"
+    },
+    "runCommandOr": "Ou execute este comando:",
+    "runCommandSetup": "Execute este comando uma vez. Ele também configura o botão Iniciar:",
     "serverOffline": "Servidor offline",
     "serverNotRunning": "O servidor do Neural Interface não está em execução",
     "connectionFailed": "Falha na conexão",
@@ -511,7 +549,7 @@
           "help": "Armazenamento, busca e backups"
         },
         "ai_decisions": {
-          "label": "Decisões de IA",
+          "label": "Jev",
           "help": "Avaliações inteligentes e custo"
         },
         "projects": {
@@ -557,7 +595,7 @@
           "purpose": "Veja onde suas memórias ficam, escolha como o SynaBun as encontra e mantenha uma cópia que você possa restaurar."
         },
         "ai_decisions": {
-          "title": "Decisões de IA",
+          "title": "Jev",
           "purpose": "Controle onde as avaliações inteligentes ajudam, o que podem usar e quanto custam."
         },
         "projects": {
@@ -3583,6 +3621,7 @@
       "judgments": {
         "showEveryJudgmentAboutThisMemory": ": mostrar no registro todas as avaliações desta memória",
         "checkingTypesafe": "Verificando TypeSafe…",
+        "learnMoreAtTypesafe": "Saiba mais em",
         "jevTypesafeSystemOneReturnsTyped": "Jev (TypeSafe System One) retorna avaliações tipadas onde o SynaBun antes fazia estimativas com regex ou uma constante de similaridade. A chave fica armazenada em",
         "andNeverLeavesTheServerOnly": "e nunca sai do servidor; apenas seus quatro últimos caracteres chegam a esta página.",
         "apiKey": "Chave de API",

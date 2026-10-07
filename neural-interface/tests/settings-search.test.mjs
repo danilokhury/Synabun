@@ -669,14 +669,14 @@ test('the shell wires it: one search field, a combobox with a listbox, the deep-
   // Secrets and the user's own content are never read: labels only, and the lists of memories, messages and logs are off limits.
   assert.match(search, /const TEXT_SKIP = 'select, textarea, input, button,/);
   for (const off of ['#jv-log-list', '#jv-sessions-list', '#jv-triage-list', '#wa-activity-list', '#memory-maintenance details']) assert.ok(settings.includes(off), `${off} is never read`);
-  // One marked CSS block, after every other settings block; the files that are CRLF stay CRLF.
+  // The search block, then the nav-polish block (sidebar tiles and the field's look), after every other settings block; the files that are CRLF stay CRLF.
   const blocks = [...css.matchAll(/\/\* (>>>|<<<) settings-redesign:([\w-]+) \*\//g)].map((m) => `${m[1]}${m[2]}`);
-  assert.deepEqual(blocks.slice(-2), ['>>>search', '<<<search']);
+  assert.deepEqual(blocks.slice(-4), ['>>>search', '<<<search', '>>>nav-polish', '<<<nav-polish']);
   assert.equal(blocks.filter((b) => b === '>>>search').length, 1);
   const block = css.slice(css.indexOf('/* >>> settings-redesign:search */'), css.indexOf('/* <<< settings-redesign:search */'));
   assert.match(block, /prefers-reduced-motion: reduce/);
   assert.match(block, /@container stg \(max-width: 560px\)/);
-  assert.match(block, /\.stg-search-input \{[^}]*height: 22px/);
+  assert.match(block, /\.stg-search-input \{[^}]*height: 34px/);
   // The block's colours are the panel's --stg-* roles: no app accent, no white fills, no colour baked into an image,
   // no coloured border. The literals left are the page list's own (its fill, white on the accent fill, the white tile glyph).
   const rules = block.replace(/\/\*[\s\S]*?\*\//g, '');

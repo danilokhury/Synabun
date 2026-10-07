@@ -1,4 +1,6 @@
-const CACHE_NAME = 'synabun-offline-v9';
+// Bump when offline.html changes shape: the new worker drops the old cache and
+// stores the page again (v11: the start status and the mascot's states).
+const CACHE_NAME = 'synabun-offline-v11';
 const OFFLINE_URL = '/offline.html';
 
 self.addEventListener('install', (event) => {

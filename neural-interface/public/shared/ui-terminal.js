@@ -16,6 +16,7 @@ import { getWhiteboardElementById } from './ui-whiteboard.js';
 import { createFrameRenderer } from './utils.js';
 import { notify, NOTIF_TYPE } from './ui-notifications.js';
 import { getProviderMeta } from './provider-icons.js';
+import { readinessKind, typeWhenReady } from './term-ready.js';
 import { initRendererManager, acquireRenderer, disposeRenderer, hasWebgl, noteFocus, adoptRenderer, rendererState, rendererStats } from './term-renderer.js';
 import { mountAssistant } from './assistant/asst-panel.js';
 import { getAssistantSession } from './assistant/asst-api.js';
@@ -1424,10 +1425,22 @@ function _accumReplay(sess, text) {
   if (sess._replayBuf.length > 16384) sess._replayBuf = sess._replayBuf.slice(-8192);
 }
 
-function _notifyOutputWatchers(sess, text) {
-  if (!sess?._outputWatchers?.size || !text) return;
+// `replaced`: a snapshot just became the whole screen (connect / reconnect),
+// so `text` is everything there is rather than more of the stream.
+function _notifyOutputWatchers(sess, text, replaced = false) {
+  if (!sess?._outputWatchers?.size) return;
+  if (!text && !replaced) return;
   for (const w of [...sess._outputWatchers]) {
-    try { w(text); } catch {}
+    try { w(text || '', replaced); } catch {}
+  }
+}
+
+// A socket of this session opened (first connect or a reconnect). The wait for
+// readiness in _sendOnceReady starts its clock here, not when it was asked.
+function _notifySocketOpen(sess) {
+  if (!sess?._openWatchers?.size) return;
+  for (const w of [...sess._openWatchers]) {
+    try { w(); } catch {}
   }
 }
 
@@ -1500,7 +1513,7 @@ function _handleTermWsEvent(e, ctx) {
         else term?.write(msg.data);
       }
       if (NOTIF_TRACKED_CLI_PROFILES.has(profile)) _scheduleCliStatusCheck(sessionId);
-      _notifyOutputWatchers(sess, text);
+      _notifyOutputWatchers(sess, text, !!wantsReset);
     }
     if (msg.type === 'exit') {
       if (sess) sess._exitReceived = true;
@@ -1538,6 +1551,7 @@ function _onTermWsOpen(sessionId, ws, fallback = null) {
   try { (s?._terminalWriter || fallback?._terminalWriter)?.reset?.(); } catch {}
   send({ type: 'hello', flow: 1 });
   if (document.hidden) send({ type: 'visibility', visible: false });
+  _notifySocketOpen(s);
   const term = s?.term;
   if (!term) return;
   // Hidden container (restore, parked dock) → no resize now; _scheduleFit
@@ -3381,6 +3395,7 @@ async function reconnectBrowserSession(sessionId, liveData, saved) {
     ws, viewport, ro, renderer: null,
     dead: false, pinned: saved?.pinned || false,
     _userRenamed: saved?.userRenamed || false,
+    _floatColor: saved?.floatColor || null,
     _isBrowser: true, _browserUrl: currentUrl, _browserTitle: liveData?.title || '',
     _browserCanvas: canvas, _browserCtx: ctx, _frameRenderer: frameRenderer, _visibilityHandler,
     _idleTimer: null, _screencastIdlePaused: false,
@@ -4488,11 +4503,27 @@ function _applyFloatColor(win, colorId) {
     win.style.setProperty('--fh', String(c.h));
     win.style.setProperty('--fs', c.s + '%');
   }
-  // Update color strip
+  // Update color strip. Only the color: the `background` shorthand would reset
+  // the stylesheet's background-clip, and the dot would fill its whole hit area.
   const strip = win.querySelector('.term-float-color-strip');
   if (strip) {
-    strip.style.background = c.s === 0 ? 'rgba(255,255,255,0.15)' : `hsl(${c.h}, ${Math.round(c.s * 0.5)}%, 30%)`;
+    strip.style.backgroundColor = c.s === 0 ? 'rgba(255,255,255,0.15)' : `hsl(${c.h}, ${Math.round(c.s * 0.5)}%, 30%)`;
   }
+}
+
+/** Place the palette popup by the color button: above it, or below when there
+ *  is no room, with its first swatch over the dot and inside the viewport. */
+function _placeFloatColorPicker(picker, colorBtn) {
+  const btn = colorBtn.getBoundingClientRect();
+  const box = picker.getBoundingClientRect();
+  const first = picker.firstElementChild?.getBoundingClientRect();
+  const inset = first ? first.left + first.width / 2 - box.left : 0;
+  const margin = 8, gap = 6;
+  const left = btn.left + btn.width / 2 - inset;
+  let top = btn.top - gap - box.height;
+  if (top < margin) top = btn.bottom + gap;
+  picker.style.left = Math.max(margin, Math.min(left, window.innerWidth - box.width - margin)) + 'px';
+  picker.style.top = Math.max(margin, Math.min(top, window.innerHeight - box.height - margin)) + 'px';
 }
 
 function getRightPanelReservedWidth(cs = getComputedStyle(document.documentElement)) {
@@ -4813,19 +4844,18 @@ function detachTab(idx, opts = {}) {
     if (existing) { existing.remove(); return; }
     const picker = document.createElement('div');
     picker.className = 'float-color-picker';
-    // Position above the color strip button
-    const btnRect = colorBtn.getBoundingClientRect();
-    picker.style.left = btnRect.left + 'px';
-    picker.style.bottom = (window.innerHeight - btnRect.top + 6) + 'px';
-    picker.style.top = 'auto';
+    // The session object may have been replaced by _pushSession after a
+    // reconnection — read and write the color on the one in _sessions
+    const live = () => _sessions.find(s => s.id === session.id) || session;
     FLOAT_COLORS.forEach(c => {
       const swatch = document.createElement('button');
       swatch.className = 'float-color-swatch';
-      if (c.id === (session._floatColor || 'blue')) swatch.classList.add('active');
+      if (c.id === (live()._floatColor || 'blue')) swatch.classList.add('active');
       swatch.style.background = c.s === 0 ? 'rgba(255,255,255,0.15)' : `hsl(${c.h}, ${Math.round(c.s * 0.5)}%, 25%)`;
       swatch.addEventListener('click', (ev) => {
         ev.stopPropagation();
         session._floatColor = c.id;
+        live()._floatColor = c.id;
         _applyFloatColor(win, c.id);
         saveSessionRegistry();
         saveTerminalLayout();
@@ -4834,8 +4864,10 @@ function detachTab(idx, opts = {}) {
       picker.appendChild(swatch);
     });
     document.body.appendChild(picker);
-    // Close on outside click
+    _placeFloatColorPicker(picker, colorBtn);
+    // Close on outside click (the dot closes it through the toggle above)
     const close = (ev) => {
+      if (colorBtn.contains(ev.target) && picker.isConnected) return;
       if (!picker.contains(ev.target)) { picker.remove(); document.removeEventListener('mousedown', close); }
     };
     setTimeout(() => document.addEventListener('mousedown', close), 0);
@@ -5722,6 +5754,8 @@ export async function initTerminal() {
   window.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
     const target = e.target;
+    // The command library owns Escape for its dialogs, search and window.
+    if (target?.closest?.('.command-runner-panel')) return;
     let session = null;
     if (target?.classList?.contains?.('xterm-helper-textarea')) {
       const sid = target.closest('.term-viewport')?.dataset?.sessionId;
@@ -6337,8 +6371,19 @@ async function launchDetached(profile, initialMessage, autoSubmit, opts = {}) {
 async function runCommandInNewTab({ command, cwd, label }) {
   if (!command) return;
   await _whenOpenIdle();
-  const session = await openSession('shell', cwd || null);
-  if (!session) return;
+  let session = await openSession('shell', cwd || null);
+  if (!session) {
+    // Another open slipped in between the queue and this call (openSession
+    // returns null instead of stacking): take one more turn rather than
+    // dropping the command without a word.
+    await _whenOpenIdle();
+    session = await openSession('shell', cwd || null);
+  }
+  if (!session) {
+    ensurePanel();
+    showTermToast(`Could not open a terminal for ${label || 'this command'}. Try again`);
+    return;
+  }
   if (label) {
     session.label = label;
     renderTabBar();
@@ -6414,140 +6459,72 @@ async function attachDetached(terminalSessionId, profile, initialMessage, autoSu
   }
 }
 
-/** Send a message to a session once the WebSocket is ready and CLI has booted.
- *  Watches terminal output for the CLI's input prompt (e.g. Claude Code's ">" or ❯)
- *  instead of using a blind timeout — prevents input from being swallowed by the
- *  shell (cmd.exe) before the CLI is ready. Falls back to 15s timeout.
+/** Type a message into a session once it can take it.
+ *  A shell tab (Command Runner) is ready when its line editor is: zsh, bash 5
+ *  and fish announce it (bracketed paste on), every other prompt is read off
+ *  the last line, and a prompt nothing recognises is taken once the output
+ *  goes quiet. A CLI keeps its own reading: watch for its input prompt (">" /
+ *  ❯) and fall back after 15 s, because a CLI swallows what is typed before it
+ *  is up. The rules, and the sequence wait → settle → type, are in term-ready.js.
  *
- *  KEY FIX: Also checks session._replayBuf for output that arrived BEFORE this
- *  function was called (e.g. replay data from reconnectSession's ws.onopen).
- *  Without this, the CLI prompt is missed when the PTY boots faster than the
- *  automation studio's browser-open + launchLoop HTTP round-trip. */
+ *  The wait lives on the session, not on one socket: a socket that fails
+ *  before it opens, or is swapped by a reconnect, changes nothing, and the
+ *  readiness window only starts once a socket of the session is open. Output
+ *  that arrived before this call is read from session._replayBuf, and the
+ *  terminal's own parser state covers a prompt that only came back inside a
+ *  snapshot. Resolves { ok, reason } once the message is typed (or could not be). */
 function _sendOnceReady(session, message, autoSubmit) {
   if (!session?.ws) {
     console.warn('[SynaBun] _sendOnceReady: no session.ws — aborting');
-    return;
+    return Promise.resolve({ ok: false, reason: 'no-socket' });
   }
+  if (!message) return Promise.resolve({ ok: false, reason: 'empty' });
 
-  console.log('[SynaBun] _sendOnceReady: starting, ws.readyState =', session.ws.readyState, ', msg length =', message?.length, ', replayBuf length =', session._replayBuf?.length || 0);
+  const kind = readinessKind(session.profile);
+  const alive = () => !session.dead && !session._exitReceived && _sessions.includes(session);
 
-  // Strip ANSI escape sequences so color codes around prompts don't block matching.
-  // ConPTY on Windows sends private-mode CSI like \x1b[?25h (show cursor) after prompts.
-  // The [\x20-\x3f]* range covers ?, !, >, = (ECMA-48 parameter bytes) plus digits/semicolons.
-  const ANSI_RE = /\x1b\[[\x20-\x3f]*[\x40-\x7e]|\x1b\][^\x07]*\x07|\x1b[()][AB012]/g;
-
-  // Patterns that indicate a CLI is ready for input (matched against ANSI-stripped output)
-  // Claude Code: ">" at start of line or "❯", Codex/Gemini: similar prompts
-  const READY_PATTERNS = [
-    /^>\s*$/m,        // Claude Code prompt: ">" on its own line
-    /\n>\s*$/,        // ">" after newline at end of output
-    />\s*$/,          // ">" at end of buffer (catch partial lines)
-    /\u276F/,         // ❯ (some CLI prompts)
-    /\$ $/,           // Shell prompt fallback
-  ];
-  const MAX_WAIT = 15000;
-  let _outputBuf = '';
-  let _sent = false;
-  let _listener = null;
-  let _fallbackTimer = null;
-
-  function doSend() {
-    if (_sent) return;
-    _sent = true;
-    // Clean up watcher and timer
-    if (_listener) session._outputWatchers?.delete(_listener);
-    if (_fallbackTimer) clearTimeout(_fallbackTimer);
-    console.log('[SynaBun] _sendOnceReady: doSend triggered, ws.readyState =', session.ws?.readyState);
-    // Small delay after detecting ready — let the CLI fully settle
-    setTimeout(() => {
-      if (session.ws?.readyState !== WebSocket.OPEN) {
-        console.warn('[SynaBun] _sendOnceReady: WS not OPEN at send time, readyState =', session.ws?.readyState);
-        return;
+  return typeWhenReady({
+    kind,
+    text: message + '\r',
+    socket: () => session.ws,
+    alive,
+    OPEN: WebSocket.OPEN,
+    // The emulator's own state: true while the shell's line editor is reading.
+    lineEditorActive: () => session.term?.modes?.bracketedPasteMode === true,
+    // What already arrived (replay data lands before an attach calls this).
+    buffered: session._replayBuf || '',
+    subscribe: ({ output, opened, parsed }) => {
+      (session._outputWatchers ||= new Set()).add(output);
+      (session._openWatchers ||= new Set()).add(opened);
+      // Bracketed paste can arrive inside a snapshot's escape data, where the
+      // watcher only sees plain text: ask the parser after each write instead.
+      let onParsed = null;
+      if (kind === 'shell') {
+        try { onParsed = session.term?.onWriteParsed?.(parsed) || null; } catch {}
       }
-      // Chunk the input to avoid ConPTY input buffer overflow on Windows.
-      // Writing 1000+ chars in a single pty.write() can silently drop data.
-      const full = message + '\r';
-      const CHUNK = 256;
-      const DELAY = 30; // ms between chunks
-      console.log('[SynaBun] _sendOnceReady: sending prompt in chunks (' + message.length + ' chars, ' + Math.ceil(full.length / CHUNK) + ' chunks)');
-      for (let i = 0; i < full.length; i += CHUNK) {
-        const chunk = full.slice(i, i + CHUNK);
-        const delay = (i / CHUNK) * DELAY;
-        setTimeout(() => {
-          if (session.ws?.readyState === WebSocket.OPEN) {
-            session.ws.send(JSON.stringify({ type: 'input', data: chunk }));
-          }
-        }, delay);
-      }
-      if (autoSubmit) {
-        // Send a second Enter after all chunks + extra delay to auto-confirm Claude Code's prompt
-        const totalChunkTime = Math.ceil(full.length / CHUNK) * DELAY;
-        setTimeout(() => {
-          if (session.ws?.readyState === WebSocket.OPEN) {
-            console.log('[SynaBun] _sendOnceReady: sending auto-submit Enter');
-            session.ws.send(JSON.stringify({ type: 'input', data: '\r' }));
-          }
-        }, totalChunkTime + 4000);
-      }
-    }, 500);
-  }
-
-  // Check if the CLI prompt already appeared in replay data that arrived
-  // before this function was called (the core race condition fix).
-  function checkReplayBuffer() {
-    if (session._replayBuf) {
-      const clean = session._replayBuf.replace(ANSI_RE, '');
-      if (READY_PATTERNS.some(p => p.test(clean))) {
-        console.log('[SynaBun] _sendOnceReady: ready pattern found in existing replay buffer — sending immediately');
-        doSend();
-        return true;
-      }
+      return () => {
+        session._outputWatchers?.delete(output);
+        session._openWatchers?.delete(opened);
+        try { onParsed?.dispose(); } catch {}
+      };
+    },
+    onReady: (reason, waitedMs) => console.log(`[SynaBun] _sendOnceReady: ${kind} ready (${reason}) after ${waitedMs} ms`),
+  }).then((result) => {
+    if (!result.ok) {
+      console.warn(`[SynaBun] _sendOnceReady: not delivered (${result.reason}, ${result.sent}/${result.chunks} chunks)`);
+      if (alive()) showTermToast('The command did not reach the terminal. Run it again');
+      return result;
     }
-    return false;
-  }
-
-  function onOutput(text) {
-    _outputBuf += text;
-    // Strip ANSI codes before matching — CLI prompts are colorized
-    const clean = _outputBuf.replace(ANSI_RE, '');
-    if (READY_PATTERNS.some(p => p.test(clean))) {
-      console.log('[SynaBun] _sendOnceReady: ready pattern matched in live output');
-      doSend();
+    if (autoSubmit) {
+      // A second Enter confirms Claude Code's prompt once the paste settled
+      setTimeout(() => {
+        if (session.ws?.readyState === WebSocket.OPEN) {
+          session.ws.send(JSON.stringify({ type: 'input', data: '\r' }));
+        }
+      }, 4000);
     }
-  }
-
-  function attach() {
-    // Before watching future output, check what already arrived.
-    // The replay from ws.onopen fires synchronously before this function runs
-    // (reconnectSession awaits, replay lands in ws.onmessage, accumulates
-    // in session._replayBuf). If the CLI prompt is already there, send now.
-    if (checkReplayBuffer()) return;
-
-    console.log('[SynaBun] _sendOnceReady: attach() — adding output watcher (no prompt in replay buffer yet)');
-    // Session-level output watcher (fed by _handleTermWsEvent) — unlike a raw
-    // ws 'message' listener, this survives _reconnectTerminalWs swapping session.ws.
-    _listener = onOutput;
-    (session._outputWatchers ||= new Set()).add(_listener);
-    // Fallback: if no prompt detected within MAX_WAIT, send anyway
-    _fallbackTimer = setTimeout(() => {
-      console.warn('[SynaBun] _sendOnceReady: CLI prompt not detected, sending after timeout');
-      doSend();
-    }, MAX_WAIT);
-  }
-
-  if (session.ws.readyState === WebSocket.OPEN) attach();
-  else {
-    session.ws.addEventListener('open', attach, { once: true });
-    // Safety net: if the WS never opens, force-send after MAX_WAIT to avoid silent failure
-    setTimeout(() => {
-      if (!_sent) {
-        // One last check of the replay buffer before force-sending
-        if (checkReplayBuffer()) return;
-        console.warn('[SynaBun] _sendOnceReady: WS never opened — forcing send attempt');
-        doSend();
-      }
-    }, MAX_WAIT + 2000);
-  }
+    return result;
+  });
 }
 
 /** Snapshot terminal state for workspace save */
@@ -6566,6 +6543,7 @@ export function getTerminalSnapshot() {
       isDetached: _detachedTabs.has(s.id),
       userRenamed: s._userRenamed || false,
       claudeSessionId: s._claudeSessionId || null,
+      floatColor: s._floatColor || null,
       assistantSessionId: s._isAssistant ? s.id : null,
       brain: s._isAssistant ? (s._brain || null) : null,
     })),
@@ -6622,12 +6600,20 @@ function applyTerminalLayout(snap) {
       }
       if (!session) continue;
 
+      // The snapshot's color goes onto the session before detachTab reads it:
+      // a session a workspace restore rebuilt has none and would get a random one
+      const savedColor = FLOAT_COLORS.some(c => c.id === dt.floatColor) ? dt.floatColor : null;
+      if (savedColor) session._floatColor = savedColor;
+
       const idx = _sessions.indexOf(session);
       if (!_detachedTabs.has(session.id)) {
         detachTab(idx);
       }
       const tabState = _detachedTabs.get(session.id);
       if (tabState) {
+        // Already floating (browser tabs detach while reconnecting): recolor it
+        if (savedColor) _applyFloatColor(tabState.el, savedColor);
+
         // Validate saved dimensions — enforce minimums and keep on screen
         const minW = 280, minH = 160;
         const w = Math.max(minW, dt.width || minW);
@@ -6745,7 +6731,7 @@ export async function restoreTerminalSnapshot(snap) {
       }
       if (liveIds.has(saved.id)) {
         const live = liveMap.get(saved.id);
-        const opts = { label: saved.label, pinned: saved.pinned, cwd: live?.cwd || null, userRenamed: saved.userRenamed, claudeSessionId: saved.claudeSessionId };
+        const opts = { label: saved.label, pinned: saved.pinned, cwd: live?.cwd || null, userRenamed: saved.userRenamed, claudeSessionId: saved.claudeSessionId, floatColor: saved.floatColor };
         if (CLI_PROFILES.has(saved.profile)) {
           await reconnectSession(saved.id, saved.profile, opts);
         } else {

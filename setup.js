@@ -44,6 +44,7 @@ import {
   protectFirstLaunchAfterUpdate,
   recordLauncherFailure,
 } from './lib/first-launch-protection.js';
+import { noteSupervisorFailure, openSupervisorRecord, registerStartLauncher } from './lib/start-launcher.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -75,6 +76,14 @@ const DATA_HOME = REQUESTED_DATA_HOME_DIAGNOSTICS.dataHomeInsidePackage
   : REQUESTED_DATA_HOME;
 process.env.SYNABUN_DATA_HOME = DATA_HOME;
 process.env.MEMORY_DATA_DIR = resolve(DATA_HOME, 'mcp-data');
+
+// What this start is doing, written where the Start Server launcher reads it
+// (DATA_HOME/data/supervisor.json): the offline page that asked for the start
+// has no server to ask, and shows these phases instead of a guess. Each phase
+// is noted when it begins. Opened in main(), once the data home is settled.
+let supervisor = null;
+const startPhase = (name, detail) => { try { supervisor?.phase(name, detail); } catch {} };
+const startFailed = (code, message, extra = {}) => { try { supervisor?.fail({ code, message, ...extra }); } catch {} };
 
 // ── Migration: move legacy in-repository state to the platform data home ──
 
@@ -235,6 +244,16 @@ function handleDoctorCommand() {
   console.log('');
 }
 
+// The offline page's Start Server button hands the OS a synabun:// link. Keep
+// the handler pointing at this install: a GitHub checkout never ran the npm
+// postinstall, and node or the package may have moved since it did.
+function ensureStartLauncher() {
+  const result = registerStartLauncher({ packageRoot: PACKAGE_ROOT });
+  if (result.state === 'skipped') return;
+  if (!result.ok) warn(`Could not register the Start Server launcher: ${result.errors[0]}`);
+  else if (result.changed) ok('Start Server launcher registered (synabun://)');
+}
+
 function repairClientConfigs() {
   try {
     const result = auditAndRepairClientConfigs({ dataHome: DATA_HOME, packageRoot: PACKAGE_ROOT, apply: true });
@@ -279,6 +298,7 @@ function installDeps(name, dir, { includeDev = false } = {}) {
   }
 
   info(`Installing ${name} dependencies...`);
+  startPhase('dependencies', { name });
   try {
     const omitFlag = includeDev ? '' : ' --omit=dev';
     execSync(`npm install${omitFlag} --ignore-scripts`, {
@@ -290,6 +310,7 @@ function installDeps(name, dir, { includeDev = false } = {}) {
   } catch (err) {
     fail(`Failed to install ${name} dependencies`);
     console.error(err.stderr?.toString() || err.message);
+    startFailed('DEPENDENCIES_FAILED', `npm could not install the ${name} dependencies`);
     process.exit(1);
   }
 }
@@ -309,6 +330,7 @@ function installPlaywrightChromium() {
   } catch { /* not installed */ }
 
   info('Installing Playwright Chromium (for browser automation)...');
+  startPhase('browser');
   try {
     execSync('npx playwright install chromium', {
       cwd: niDir,
@@ -335,6 +357,7 @@ function buildMcpServer() {
   }
 
   info('Building MCP server from source...');
+  startPhase('build');
   try {
     execSync('npx tsc', {
       cwd: resolve(PACKAGE_ROOT, 'mcp-server'),
@@ -450,7 +473,7 @@ function startServer() {
   const CRASH_LIMIT = 5;
 
   function spawnOnce() {
-    const child = spawn('node', ['--disable-warning=ExperimentalWarning', '--max-old-space-size=6144', serverPath], {
+    const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', '--max-old-space-size=6144', serverPath], {
       cwd: niDir,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: {
@@ -461,17 +484,30 @@ function startServer() {
       },
     });
     currentChild = child;
+    startPhase('server', { pid: child.pid });
+    child.on('error', (error) => {
+      fail(`Could not start the server: ${error.message}`);
+      startFailed('SERVER_SPAWN_FAILED', `the server could not be started: ${error.message}`);
+      process.exit(1);
+    });
 
     let opened = !firstLaunch;
+    let announced = false;
     child.stdout.on('data', (data) => {
       const s = data.toString();
       process.stdout.write(s);
       try { outLog?.write(s); } catch {}
+      // The server prints its address from its listen callback: it is up.
+      if (!announced && s.includes('Server:')) {
+        announced = true;
+        startPhase('listening', { port: Number(s.match(/Server:\s+http:\/\/localhost:(\d+)/)?.[1]) || undefined });
+      }
       if (!opened && s.includes('Server:')) {
         opened = true;
         const port = s.match(/Server:\s+http:\/\/localhost:(\d+)/)?.[1] || '3344';
         const url = `http://localhost:${port}${setupComplete ? '/' : '/onboarding.html'}`;
-        setTimeout(() => openBrowser(url), 1500);
+        // The Start Server button already has a tab waiting for the server.
+        if (process.env.SYNABUN_OPEN_BROWSER !== '0') setTimeout(() => openBrowser(url), 1500);
       }
     });
     child.stderr.on('data', (data) => {
@@ -501,6 +537,7 @@ function startServer() {
         while (restartLog.length && now - restartLog[0] > CRASH_WINDOW_MS) restartLog.shift();
         if (restartLog.length > CRASH_LIMIT) {
           fail(`Server restarted ${restartLog.length} times in ${Math.round(CRASH_WINDOW_MS / 1000)}s — aborting supervisor.`);
+          startFailed('RESTART_LOOP', `the server restarted ${restartLog.length} times in ${Math.round(CRASH_WINDOW_MS / 1000)} s`);
           process.exit(1);
         }
         firstLaunch = false;
@@ -510,6 +547,7 @@ function startServer() {
 
       if (code !== 0 && code !== null) {
         fail(`Server exited with code ${code}`);
+        startFailed('SERVER_EXITED', `the server exited with code ${code}`, { exitCode: code });
         process.exit(code);
       }
       process.exit(0);
@@ -740,32 +778,55 @@ async function main() {
   // Inspect and migrate before creating empty destination directories. A
   // divergent pair stops normal launch without overwriting either root.
   const preflight = preflightDataHome();
-  if (preflight.status === 'conflict') process.exit(2);
+  if (preflight.status === 'conflict') {
+    noteSupervisorFailure(DATA_HOME, {
+      code: 'DATA_HOME_CONFLICT',
+      message: 'SynaBun found different user state in two locations and stopped before changing either. Run "synabun doctor".',
+      exitCode: 2,
+    });
+    process.exit(2);
+  }
 
   // Ensure data directories
   ensureDataDirs(DATA_HOME);
+
+  // From here until this process exits a start is under way: the Start Server
+  // launcher reads this record so a second click never starts a second one,
+  // and passes what it says on to the page that is waiting.
+  supervisor = openSupervisorRecord(DATA_HOME);
+  process.on('exit', supervisor.release);
 
   // Prerequisites
   checkNodeVersion();
   console.log('');
 
   // Dependencies (installed in global package location)
+  // A slow step names itself when it begins (startPhase inside each); between
+  // them the record goes back to 'checking', so it never names a finished one.
   installDeps('Neural Interface', resolve(PACKAGE_ROOT, 'neural-interface'));
   installDeps('MCP Server', resolve(PACKAGE_ROOT, 'mcp-server'), { includeDev: needsBuild() });
+  startPhase('checking');
   console.log('');
 
   // Playwright browser
   installPlaywrightChromium();
+  startPhase('checking');
   console.log('');
 
   // Build
   buildMcpServer();
+  startPhase('checking');
   console.log('');
 
   // A new version never runs on user state that has no verified snapshot. When
   // the snapshot cannot be created the launch stops here, before the server
   // (and any data migration) starts. There is no flag to launch anyway.
-  const protection = await protectFirstLaunchAfterUpdate({ dataHome: DATA_HOME, version, log: { info, ok, warn } });
+  const protection = await protectFirstLaunchAfterUpdate({
+    dataHome: DATA_HOME,
+    version,
+    log: { info, ok, warn },
+    onProgress: (detail) => startPhase('snapshot', { version, ...detail }),
+  });
   if (protection.status === 'failed') {
     const failure = describeSnapshotFailure({ ...protection, dataHome: DATA_HOME, version });
     // Server logging has not begun, and a detached launch (the updater's
@@ -776,13 +837,16 @@ async function main() {
     for (const line of failure.lines) info(line);
     if (logPath) info(`This message is also in: ${logPath}`);
     console.log('');
+    startFailed('SNAPSHOT_FAILED', failure.headline, { exitCode: SNAPSHOT_FAILED_EXIT_CODE });
     process.exit(SNAPSHOT_FAILED_EXIT_CODE);
   }
+  startPhase('checking');
   console.log('');
 
   // Existing registrations can carry checkout-local DOTENV_PATH and data-home
   // overrides. Rewrite only their SynaBun entry after the new MCP build exists.
   repairClientConfigs();
+  ensureStartLauncher();
   console.log('');
 
   // State
@@ -800,5 +864,6 @@ async function main() {
 main().catch(error => {
   fail(error.message);
   recordLauncherFailure({ dataHome: DATA_HOME, exitCode: 1, headline: `SynaBun did not start: ${error.message}` });
+  startFailed('SETUP_FAILED', error.message);
   process.exit(1);
 });

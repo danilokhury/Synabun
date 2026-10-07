@@ -446,6 +446,8 @@ export function injectAssistantStyles() {
     .asst-working-face { display: inline-flex; flex-shrink: 0; color: var(--asst-text); line-height: 0; }
     .asst-working-face:empty { display: none; }
     .asst-working-face svg { display: block; width: 56px; height: 28px; }
+    /* The hero's hand-off (asst-render.js settleHero): the face flies in from the empty state, over the prompt. */
+    .asst-working.is-flip .asst-working-face { position: relative; z-index: 3; }
 
     /* ── Tool rows ──────────────────────────────────────────────────── */
     .asst-tool { min-width: 0; font-size: 12.5px; }
@@ -1575,8 +1577,8 @@ export function injectAssistantStyles() {
 
     /* ── Empty state character (shared/synabun-mascot.js, the onboarding eyes) ──
        The rig moves by itself (idle, blinks, the cursor); nothing floats it.
-       After a send it is parked where it stood (.asst-hero-dock, positioned
-       by asst-render.js) until the first stage of the turn takes it over. */
+       A send hands it over to the "Thinking" row at once; with no such row it
+       fades out where it stood (.asst-hero-dock, positioned by asst-render.js). */
     .asst-empty-mascot { display: flex; justify-content: center; margin-bottom: 2px; color: var(--asst-text); pointer-events: none; user-select: none; }
     :is(.asst-empty-mascot, .asst-hero-dock) svg { display: block; }
     .asst-hero-dock { position: absolute; z-index: 4; display: flex; align-items: center; justify-content: center; color: var(--asst-text); pointer-events: none; user-select: none; }

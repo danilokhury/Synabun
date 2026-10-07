@@ -136,6 +136,44 @@
     "stillOffline": "Still offline \u2014 start the server and try again",
     "runCommand": "Run this command to start the server:",
     "copyToClipboard": "Copy to clipboard",
+    "start": {
+      "asked": "Asked your system to start SynaBun. If your browser shows a prompt, choose Open.",
+      "unconfirmedMac": "No word from the launcher yet. If your browser is asking for permission, choose Open: a Terminal window then opens with the server.",
+      "unconfirmedWindows": "No word from the launcher yet. If your browser is asking for permission, choose Open: a console window then opens with the server.",
+      "unconfirmedLinux": "No word from the launcher yet. If your browser is asking for permission, choose Open: the server then starts in the background.",
+      "stalled": "Nothing has answered. If no prompt or window appeared, run the command below once: it also repairs this button.",
+      "launcherRunning": "The launcher is running.",
+      "terminalOpened": "A Terminal window was opened for the server.",
+      "terminalQuiet": "A Terminal window was opened {seconds} s ago, but the server has not started in it. Look at that window.",
+      "processStarted": "The server's supervisor was started.",
+      "checking": "Checking the install.",
+      "dependencies": "Installing dependencies with npm. A first start, or the first after an update, takes a few minutes.",
+      "browser": "Downloading the automation browser. This happens once.",
+      "build": "Building the MCP server.",
+      "snapshot": "Backing up your data before the first start of this version.",
+      "snapshotSized": "Backing up your data before the first start of this version: {files} files, {megabytes} MB.",
+      "server": "The server process is running. Waiting for it to answer.",
+      "listening": "The server is listening. Connecting.",
+      "answered": "The server answered the launcher. Connecting.",
+      "quiet": "Nothing new from the start for {seconds} s.",
+      "failed": "The start failed: {reason}",
+      "failedHint": "Run the command below to see the full output, or try again.",
+      "failedLog": "Launcher log: {path}",
+      "gaveUp": "The server was started but has not answered. Check its window, or run the command below.",
+      "online": "The server is up. Loading SynaBun.",
+      "trailLauncher": "Launcher started",
+      "trailTerminal": "Terminal opened",
+      "trailProcess": "Supervisor started",
+      "trailSupervisor": "Supervisor running",
+      "trailServer": "Server process started",
+      "trailListening": "Server listening",
+      "elapsedLabel": "Time since Start was pressed",
+      "headingStarting": "Starting the server",
+      "headingReady": "Server is up",
+      "headingFailed": "The server did not start"
+    },
+    "runCommandOr": "Or run this command:",
+    "runCommandSetup": "Run this command once. It also sets up the Start button:",
     "serverOffline": "Server Offline",
     "serverNotRunning": "The Neural Interface server is not running",
     "connectionFailed": "Connection Failed",
@@ -525,7 +563,7 @@
           "help": "Storage, search, backups"
         },
         "ai_decisions": {
-          "label": "AI decisions",
+          "label": "Jev",
           "help": "Smart judgments and cost"
         },
         "projects": {
@@ -571,7 +609,7 @@
           "purpose": "See where your memories live, choose how SynaBun finds them, and keep a copy you can restore."
         },
         "ai_decisions": {
-          "title": "AI decisions",
+          "title": "Jev",
           "purpose": "Control where smart judgments help, what they may use, and how much they cost."
         },
         "projects": {
@@ -3597,6 +3635,7 @@
       "judgments": {
         "showEveryJudgmentAboutThisMemory": ": show every judgment about this memory in the log",
         "checkingTypesafe": "Checking TypeSafe…",
+        "learnMoreAtTypesafe": "Learn more at",
         "jevTypesafeSystemOneReturnsTyped": "Jev (TypeSafe System One) returns typed judgments where SynaBun used to guess with a regex or a similarity constant. The key is stored in",
         "andNeverLeavesTheServerOnly": "and never leaves the server; only its last four characters reach this page.",
         "apiKey": "API key",

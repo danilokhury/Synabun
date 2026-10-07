@@ -28,7 +28,14 @@
     position: relative;
   }
 
-  /* --- Mascot --- */
+  /* --- Mascot ---
+     One character, six states (data-state on .mascot-wrap), each tied to what
+     the page knows: asleep (nothing asked), waking (asked, nothing confirmed),
+     working (the launcher reports a start), ready (the server answers),
+     failed (the launcher reports why), stalled (nobody answered). The pill
+     eyes and the mouth are the app's mascot (shared/synabun-mascot.js): same
+     280x140 geometry, same poses, drawn here in CSS because this page can
+     load nothing. */
   .mascot-wrap {
     display: inline-block;
     position: relative;
@@ -41,7 +48,87 @@
     50% { transform: translateY(-5px); }
   }
 
-  /* --- Floating Z's --- */
+  .mascot-wrap .eye {
+    fill: rgba(255,255,255,0.45);
+    transform-box: fill-box;
+    transform-origin: center;
+    transform: translateY(9px) scaleY(0.1);
+    transition: transform 0.25s cubic-bezier(0.2, 0, 0, 1), fill 0.25s;
+  }
+
+  .mascot-wrap .mouth {
+    fill: none;
+    stroke: rgba(255,255,255,0.15);
+    stroke-width: 2.5;
+    stroke-linecap: round;
+    opacity: 0;
+    transition: opacity 0.25s;
+  }
+
+  .mascot-wrap .mouth-calm { opacity: 1; }
+
+  /* waking: half-open eyes that look from side to side, waiting on someone else */
+  .mascot-wrap[data-state="waking"] { animation: none; }
+  .mascot-wrap[data-state="waking"] .eye {
+    fill: rgba(255,255,255,0.7);
+    transform: scaleY(0.46);
+    animation: glance 2.6s ease-in-out infinite;
+  }
+
+  @keyframes glance {
+    0%, 12%   { transform: translateX(0) scaleY(0.46); }
+    28%, 44%  { transform: translateX(-9px) scaleY(0.46); }
+    60%, 76%  { transform: translateX(9px) scaleY(0.46); }
+    90%, 100% { transform: translateX(0) scaleY(0.46); }
+  }
+
+  /* working: eyes wide open, taking turns: something is really running */
+  .mascot-wrap[data-state="working"] { animation: none; }
+  .mascot-wrap[data-state="working"] .eye {
+    fill: rgba(255,255,255,0.85);
+    transform: scaleY(1);
+    animation: work 1.1s ease-in-out infinite;
+  }
+  .mascot-wrap[data-state="working"] .eye-r { animation-delay: 0.18s; }
+
+  @keyframes work {
+    0%, 100% { transform: translateY(0) scaleY(1); }
+    35%      { transform: translateY(-7px) scaleY(1.04); }
+    60%      { transform: translateY(2px) scaleY(0.92); }
+  }
+
+  /* ready: happy eyes, a wider smile, one hop */
+  .mascot-wrap[data-state="ready"] { animation: hop 0.5s cubic-bezier(0.2, 0, 0, 1) 1; }
+  .mascot-wrap[data-state="ready"] .eye { fill: rgba(80,220,120,0.8); transform: translateY(-4px) scaleY(0.3); }
+  .mascot-wrap[data-state="ready"] .eye-l { transform: translateY(-4px) rotate(-8deg) scaleY(0.3); }
+  .mascot-wrap[data-state="ready"] .eye-r { transform: translateY(-4px) rotate(8deg) scaleY(0.3); }
+  .mascot-wrap[data-state="ready"] .mouth-calm { opacity: 0; }
+  .mascot-wrap[data-state="ready"] .mouth-happy { opacity: 1; stroke: rgba(80,220,120,0.5); }
+
+  @keyframes hop {
+    0%, 100% { transform: translateY(0); }
+    45%      { transform: translateY(-10px); }
+  }
+
+  /* failed: a wince and a short shake, then still */
+  .mascot-wrap[data-state="failed"] { animation: shake 0.4s ease-in-out 1; }
+  .mascot-wrap[data-state="failed"] .eye { fill: rgba(255,255,255,0.6); }
+  .mascot-wrap[data-state="failed"] .eye-l { transform: translateY(2px) rotate(12deg) scaleY(0.78); }
+  .mascot-wrap[data-state="failed"] .eye-r { transform: translateY(2px) rotate(-12deg) scaleY(0.74); }
+  .mascot-wrap[data-state="failed"] .mouth-calm { opacity: 0; }
+  .mascot-wrap[data-state="failed"] .mouth-sad { opacity: 1; stroke: rgba(255,255,255,0.3); }
+
+  @keyframes shake {
+    0%, 100% { transform: translateX(0); }
+    25%      { transform: translateX(-5px); }
+    75%      { transform: translateX(5px); }
+  }
+
+  /* stalled: awake but dimmed, waiting for the person */
+  .mascot-wrap[data-state="stalled"] { animation: none; }
+  .mascot-wrap[data-state="stalled"] .eye { fill: rgba(255,255,255,0.35); transform: translateY(5px) scaleY(0.44); }
+
+  /* --- Floating Z's (asleep only) --- */
   .zzz {
     position: absolute;
     top: -4px;
@@ -50,7 +137,10 @@
     font-weight: 700;
     color: rgba(110,200,255,0.45);
     pointer-events: none;
+    transition: opacity 0.25s;
   }
+
+  .mascot-wrap:not([data-state="asleep"]) .zzz { opacity: 0; }
 
   .zzz span {
     position: absolute;
@@ -85,6 +175,129 @@
     margin-bottom: 28px;
   }
 
+  /* --- Start Server --- */
+  .start {
+    margin-bottom: 28px;
+  }
+
+  .start[hidden] { display: none; }
+
+  .start-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 24px;
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 8px;
+    color: rgba(255,255,255,0.7);
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+  }
+
+  .start-btn:hover {
+    background: rgba(255,255,255,0.12);
+    border-color: rgba(255,255,255,0.25);
+    color: rgba(255,255,255,0.9);
+  }
+
+  .start-btn:focus-visible {
+    outline: 2px solid rgba(110,200,255,0.6);
+    outline-offset: 2px;
+  }
+
+  .start-btn:disabled {
+    opacity: 0.4;
+    cursor: wait;
+  }
+
+  .start-btn svg {
+    width: 14px;
+    height: 14px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  /* What is happening, in order of how sure the page is: the sentence (the
+     live region), the page's own clock, a quieter second sentence, then the
+     steps the launcher reported with the time each one happened. */
+  .start-status {
+    min-height: 18px;
+    margin-top: 14px;
+    font-size: 13px;
+    line-height: 1.45;
+    color: rgba(255,255,255,0.7);
+  }
+
+  .start-elapsed {
+    min-height: 16px;
+    margin-top: 4px;
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+    font-size: 11.5px;
+    font-variant-numeric: tabular-nums;
+    color: rgba(110,200,255,0.6);
+  }
+
+  .start-hint {
+    margin-top: 4px;
+    font-size: 11px;
+    line-height: 1.45;
+    color: rgba(255,255,255,0.35);
+  }
+
+  .start-hint:empty, .start-elapsed:empty { display: none; }
+
+  .start-trail {
+    list-style: none;
+    margin: 12px auto 0;
+    max-width: 260px;
+    font-size: 11px;
+    line-height: 1.7;
+    color: rgba(255,255,255,0.35);
+  }
+
+  .start-trail:empty { display: none; }
+
+  .start-trail li {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .start-trail .at {
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+    font-variant-numeric: tabular-nums;
+    color: rgba(255,255,255,0.55);
+  }
+
+  .start-log {
+    margin-top: 10px;
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+    font-size: 10.5px;
+    line-height: 1.5;
+    color: rgba(255,255,255,0.35);
+    overflow-wrap: anywhere;
+    user-select: all;
+  }
+
+  .start-log[hidden] { display: none; }
+
+  .manual-note {
+    margin: 2px 0 14px;
+    font-size: 11px;
+    line-height: 1.45;
+    color: rgba(255,255,255,0.35);
+  }
+
+  .manual-note[hidden] { display: none; }
+
   /* --- Command labels --- */
   .cmd-label {
     font-size: 10px;
@@ -115,7 +328,10 @@
     font-size: 11.5px;
     color: rgba(255,255,255,0.55);
     line-height: 1.5;
-    word-break: break-all;
+    /* Break between words first, inside a long path only when it has to;
+       and no ligatures: "--prefix" must read as two hyphens. */
+    overflow-wrap: anywhere;
+    font-variant-ligatures: none;
     user-select: all;
   }
 
@@ -213,6 +429,19 @@
     90%  { opacity: 1; }
     100% { transform: translateY(-10vh) translateX(30px); opacity: 0; }
   }
+
+  /* Reduced motion: every state keeps its own still face (the eyes and mouth
+     above), the words and the clock; nothing moves. */
+  @media (prefers-reduced-motion: reduce) {
+    .mascot-wrap, .mascot-wrap .eye, .zzz span, .retry-dot, .particles span {
+      animation: none !important;
+    }
+    .mascot-wrap .eye, .mascot-wrap .mouth, .zzz, .start-btn, .copy-btn {
+      transition: none !important;
+    }
+    .zzz span:nth-child(2) { opacity: 0.5; }
+    .particles { display: none; }
+  }
 </style>
 </head>
 <body>
@@ -221,38 +450,42 @@
 <div class="particles" id="particles"></div>
 
 <div class="card">
-  <!-- Sleeping mascot -->
-  <div class="mascot-wrap">
-    <svg viewBox="0 0 280 140" width="180" height="90" style="overflow:visible">
-      <!-- Left eye — closed -->
-      <rect x="80" y="57" width="38" height="6" rx="3" fill="rgba(255,255,255,0.45)"/>
-      <!-- Right eye — closed -->
-      <rect x="162" y="57" width="38" height="6" rx="3" fill="rgba(255,255,255,0.45)"/>
-      <!-- Peaceful smile -->
-      <path d="M118,90 Q140,100 162,90" fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="2.5" stroke-linecap="round"/>
+  <!-- The mascot: asleep until a start is asked for (data-state follows the bridge) -->
+  <div class="mascot-wrap" id="mascot" data-state="asleep">
+    <svg viewBox="0 0 280 140" width="180" height="90" style="overflow:visible" aria-hidden="true" focusable="false">
+      <rect class="eye eye-l" x="80" y="24" width="38" height="72" rx="19"/>
+      <rect class="eye eye-r" x="162" y="24" width="38" height="72" rx="19"/>
+      <path class="mouth mouth-calm" d="M118,116 Q140,128 162,116"/>
+      <path class="mouth mouth-happy" d="M111,112 Q140,138 169,112"/>
+      <path class="mouth mouth-sad" d="M123,124 Q140,114 157,124"/>
     </svg>
-    <div class="zzz">
+    <div class="zzz" aria-hidden="true">
       <span>z</span>
       <span>z</span>
       <span>z</span>
     </div>
   </div>
 
-  <div class="heading">Server is sleeping</div>
-  <div class="subtext">The Neural Interface server isn't running.</div>
+  <div class="heading" id="heading">Server is sleeping</div>
+  <div class="subtext" id="subtext">The Neural Interface server isn't running.</div>
 
-  <div>
-    <div class="cmd-label">npm install</div>
-    <div class="cmd-block">
-      <div class="cmd-text" id="cmdText"><span>synabun</span></div>
-      <button class="copy-btn" id="copyBtn">Copy</button>
-    </div>
-    <div class="cmd-or" id="cmdOr" style="display:none">or</div>
-    <div class="cmd-label" id="cmdFallbackLabel" style="display:none">git / local install</div>
-    <div class="cmd-block" id="cmdFallback" style="display:none">
-      <div class="cmd-text" id="cmdFallbackText"></div>
-      <button class="copy-btn" id="copyFallbackBtn">Copy</button>
-    </div>
+  <div class="start" id="start" hidden>
+    <button class="start-btn" id="startBtn" type="button">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+      <span id="startLabel">Start Server</span>
+    </button>
+    <!-- Announced when the sentence changes; the ticking clock below is not part of it. -->
+    <div class="start-status" id="startStatus" role="status" aria-live="polite" aria-atomic="true"></div>
+    <div class="start-elapsed" id="startElapsed" role="timer" aria-live="off"></div>
+    <div class="start-hint" id="startHint"></div>
+    <ul class="start-trail" id="startTrail" aria-label="What the launcher reported"></ul>
+    <div class="start-log" id="startLog" hidden></div>
+  </div>
+
+  <div id="manual">
+    <div class="cmd-label" id="manualLabel">Start it from a terminal</div>
+    <div id="manualList"></div>
+    <div class="manual-note" id="manualNote" hidden>Starting it this way once also sets up the Start button.</div>
   </div>
 
   <div class="retry" id="retry">
@@ -261,31 +494,28 @@
   </div>
 </div>
 
+<!-- Filled in by the server when it serves this page (lib/offline-page.js):
+     where SynaBun is installed, and the Start Server bridge shared with the app. -->
+<script>/*__SYNABUN_OFFLINE_FACTS__*/</script>
+<script>/*__SYNABUN_START_BRIDGE__*/</script>
 <script>
-  // --- Platform detection ---
-  const ua = navigator.userAgent;
-  const isWin = /Win/.test(navigator.platform) || /Windows/.test(ua);
-  const isMac = /Mac/.test(navigator.platform);
-  // Linux = everything else
+  const $ = (id) => document.getElementById(id);
+  const stored = (key) => { try { return localStorage.getItem(key); } catch { return null; } };
 
-  const projectDir = localStorage.getItem('synabun-project-dir');
+  // What the server said about this install the last time it answered.
+  const facts = window.__SYNABUN_OFFLINE__ || {};
+  const projectDir = stored('synabun-project-dir') || facts.projectDir || '';
+  const install = stored('synabun-install-kind') || facts.install || '';
+  const launcher = stored('synabun-start-launcher') || facts.launcher || '';
+  const hasBridge = typeof createStartBridge === 'function';
+  const windows = hasBridge ? isWindowsPlatform(navigator) : /Win/.test(navigator.platform);
+  const mac = hasBridge ? isMacPlatform(navigator) : /Mac/.test(navigator.platform);
 
-  // --- Manual command fallback ---
-  if (projectDir) {
-    const sep = isWin ? ' & ' : ' ; ';
-    const fallbackCmd = `cd "${projectDir}"${sep}npm start`;
-    const cmdOr = document.getElementById('cmdOr');
-    const cmdFallback = document.getElementById('cmdFallback');
-    const cmdFallbackText = document.getElementById('cmdFallbackText');
-    cmdOr.style.display = '';
-    cmdFallback.style.display = '';
-    const cmdFallbackLabel = document.getElementById('cmdFallbackLabel');
-    if (cmdFallbackLabel) cmdFallbackLabel.style.display = '';
-    cmdFallbackText.innerHTML = `<span>cd</span> "${projectDir}"${sep}<span>npm</span> start`;
-    document.getElementById('copyFallbackBtn').addEventListener('click', function() { copyToClipboard(fallbackCmd, this); });
-  }
+  // --- Commands to type instead ---
+  const commands = hasBridge
+    ? manualStartCommands({ projectDir, install, windows })
+    : [{ id: 'npm', command: 'synabun' }].concat(projectDir ? [{ id: 'git', command: 'npm --prefix "' + projectDir + '" start' }] : []);
 
-  // --- Copy helper ---
   function copyToClipboard(text, btn) {
     navigator.clipboard.writeText(text).catch(() => {
       const ta = document.createElement('textarea');
@@ -302,23 +532,127 @@
     setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 1500);
   }
 
-  document.getElementById('copyBtn').addEventListener('click', function() { copyToClipboard('synabun', this); });
+  const list = $('manualList');
+  commands.forEach((entry, i) => {
+    if (i > 0) {
+      const or = document.createElement('div');
+      or.className = 'cmd-or';
+      or.textContent = 'or';
+      list.appendChild(or);
+    }
+    const block = document.createElement('div');
+    block.className = 'cmd-block';
+    const text = document.createElement('div');
+    text.className = 'cmd-text';
+    const space = entry.command.indexOf(' ');
+    const word = document.createElement('span');
+    word.textContent = space < 0 ? entry.command : entry.command.slice(0, space);
+    text.appendChild(word);
+    if (space >= 0) text.appendChild(document.createTextNode(entry.command.slice(space)));
+    const copy = document.createElement('button');
+    copy.className = 'copy-btn';
+    copy.type = 'button';
+    copy.textContent = 'Copy';
+    copy.addEventListener('click', () => copyToClipboard(entry.command, copy));
+    block.append(text, copy);
+    list.appendChild(block);
+  });
 
-  // --- Auto-retry ---
-  const retry = document.getElementById('retry');
-  const retryText = document.getElementById('retryText');
+  // --- Start Server + reconnect ---
+  const retry = $('retry');
+  const retryText = $('retryText');
 
-  const interval = setInterval(async () => {
+  async function serverAnswers() {
     try {
       const res = await fetch('/', { method: 'HEAD', cache: 'no-store' });
-      if (res.ok) {
-        clearInterval(interval);
-        retry.classList.add('connected');
-        retryText.textContent = 'Server is back! Reconnecting...';
-        setTimeout(() => location.reload(), 600);
-      }
-    } catch {}
-  }, 3000);
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  function reconnect(delay) {
+    retry.classList.add('connected');
+    retryText.textContent = 'Server is back! Reconnecting...';
+    setTimeout(() => location.reload(), delay);
+  }
+
+  if (!hasBridge) {
+    // An older server served this page without the bridge: commands and reconnect only.
+    const interval = setInterval(async () => {
+      if (!(await serverAnswers())) return;
+      clearInterval(interval);
+      reconnect(150);
+    }, 3000);
+  } else {
+    const start = $('start');
+    const startBtn = $('startBtn');
+    const startLabel = $('startLabel');
+    const startStatus = $('startStatus');
+    const usable = startButtonUsable(launcher);
+    // Known not to be registered: no dead button, the command and why it matters.
+    start.hidden = !usable;
+    $('manualNote').hidden = usable;
+    if (usable) $('manualLabel').textContent = 'Or start it from a terminal';
+
+    const platform = windows ? 'windows' : mac ? 'mac' : 'linux';
+    const say = (line) => (line ? formatStartText(START_COPY[line.key], line.params) : '');
+    const headings = {
+      asleep: ['Server is sleeping', "The Neural Interface server isn't running."],
+      waking: [START_COPY.headingStarting, "The Neural Interface server isn't running yet."],
+      working: [START_COPY.headingStarting, "The Neural Interface server isn't running yet."],
+      ready: [START_COPY.headingReady, 'Loading SynaBun.'],
+      failed: [START_COPY.headingFailed, "The Neural Interface server isn't running."],
+      stalled: ['Server is sleeping', "The Neural Interface server isn't running."],
+    };
+    const labels = { start: 'Start Server', starting: 'Starting...', retry: 'Try again' };
+
+    // The launcher's own report, when this page can reach it (see start-bridge.js).
+    const beaconAt = startBeaconTarget(window.location);
+
+    function render(snap) {
+      const view = startStatusView(snap, { platform });
+      $('mascot').setAttribute('data-state', view.mascot);
+      $('heading').textContent = headings[view.mascot][0];
+      $('subtext').textContent = headings[view.mascot][1];
+      startBtn.disabled = view.busy || view.state === 'online';
+      startLabel.textContent = labels[view.button];
+      // The live region is written only when its sentence changes.
+      const line = say(view.headline);
+      if (startStatus.textContent !== line) startStatus.textContent = line;
+      $('startElapsed').textContent = view.elapsed;
+      $('startElapsed').setAttribute('aria-label', view.elapsed ? START_COPY.elapsedLabel + ': ' + view.elapsed : '');
+      $('startHint').textContent = say(view.hint);
+      $('startTrail').replaceChildren(...view.trail.map((row) => {
+        const item = document.createElement('li');
+        const what = document.createElement('span');
+        what.textContent = START_COPY[row.key];
+        const when = document.createElement('span');
+        when.className = 'at';
+        when.textContent = row.time;
+        item.append(what, when);
+        return item;
+      }));
+      const log = view.error && view.error.log ? formatStartText(START_COPY.failedLog, { path: view.error.log }) : '';
+      $('startLog').textContent = log;
+      $('startLog').hidden = !log;
+      retryText.textContent = view.state === 'online' ? retryText.textContent
+        : view.busy ? 'Waiting for the server...' : 'Checking for server...';
+    }
+
+    const bridge = createStartBridge({
+      probe: serverAnswers,
+      launch: () => openStartLink({ document, location: window.location, userAgent: navigator.userAgent }),
+      beacon: beaconAt ? () => fetchStartBeacon(beaconAt) : null,
+      port: beaconAt ? beaconAt.port : 0,
+      onUpdate: render,
+      onState(state) {
+        if (state === 'online') reconnect(START_LIMITS.reloadDelayMs);
+      },
+    });
+    startBtn.addEventListener('click', () => bridge.start());
+    bridge.watch();
+  }
 
   // --- Ambient particles ---
   const container = document.getElementById('particles');

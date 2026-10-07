@@ -4,6 +4,34 @@ import {
   mcpResultText, codexControlResponse, codexControlRequestFromServerRequest, codexToolResultFromItem,
   opencodeControlResponse, opencodeControlRequestFromEvent, createOpenCodeEnvelopeTranslator, createCodexEnvelopeTranslator,
 } from '../lib/assistant-envelope.js';
+import { buildControlResponse, normalizeControlRequest } from '../public/shared/assistant/asst-control.js';
+import { validateCodexServerResponse } from '../lib/codex-compat-rpc.js';
+
+test('Codex command approvals preserve advertised policy objects through the UI and Assistant bridge', () => {
+  const method = 'item/commandExecution/requestApproval';
+  for (const decision of [
+    { acceptWithExecpolicyAmendment: { execpolicy_amendment: ['node', '--test', 'tests/command-runner-launch.browser.mjs'] } },
+    { applyNetworkPolicyAmendment: { network_policy_amendment: { host: 'example.com', action: 'allow' } } },
+  ]) {
+    const params = { command: 'node --test', availableDecisions: ['accept', decision, 'decline', 'cancel'] };
+    const pending = { type: 'control_request', ...codexControlRequestFromServerRequest({ requestId: 12, method, params }) };
+    const uiReply = buildControlResponse(normalizeControlRequest(pending), { behavior: 'allow', always: true });
+    const reply = codexControlResponse(pending, uiReply);
+    assert.deepEqual(reply.result, { decision }, 'retain the full policy response, including the advertised scope');
+    assert.deepEqual(validateCodexServerResponse(method, params, reply.result), { decision });
+  }
+});
+
+test('Codex approval validation still rejects changed policy scopes after the Assistant bridge', () => {
+  const method = 'item/commandExecution/requestApproval';
+  const decision = { acceptWithExecpolicyAmendment: { execpolicy_amendment: ['node', '--test', 'tests/command-runner-launch.browser.mjs'] } };
+  const params = { availableDecisions: ['accept', decision, 'decline'] };
+  const pending = { type: 'control_request', ...codexControlRequestFromServerRequest({ requestId: 13, method, params }) };
+  const changed = { acceptWithExecpolicyAmendment: { execpolicy_amendment: ['node'] } };
+  const reply = codexControlResponse(pending, { behavior: 'allow', decision: 'acceptWithExecpolicyAmendment', result: { decision: changed } });
+  assert.deepEqual(reply.result.decision, changed, 'explicit replies must reach the validator unchanged');
+  assert.throws(() => validateCodexServerResponse(method, params, reply.result), /not advertised/);
+});
 
 test('Codex translator consumes resolved bridge requests without creating pending approvals', () => {
   const packets = [];

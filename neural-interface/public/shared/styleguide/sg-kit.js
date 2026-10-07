@@ -11,7 +11,9 @@ export const grid = (...children) => { const n = el('div', 'sg-grid'); n.append(
 export function card(key, ...children) {
     const n = el('section', 'sg-card');
     n.dataset.card = key;
-    n.append(el('h3', '', t(`styleguide.cards.${key}.title`)), el('p', 'sg-purpose', t(`styleguide.cards.${key}.purpose`)), ...children);
+    const body = el('div', 'sg-card-body');
+    body.append(...children);
+    n.append(el('h3', '', t(`styleguide.cards.${key}.title`)), el('p', 'sg-purpose', t(`styleguide.cards.${key}.purpose`)), body);
     return n;
 }
 export function button(text, handler, cls = '') {
@@ -223,6 +225,7 @@ export function colorField(s, path, name, onValue, { eyedropper = true } = {}) {
 export function diffView(diff = []) {
     const host = el('div', 'sg-table-wrap');
     host.tabIndex = 0;
+    host.setAttribute('role', 'region');
     host.setAttribute('aria-label', t('styleguide.previewDiff'));
     if (!diff.length) {
         host.append(el('p', 'sg-hint', t('styleguide.noDiff')));

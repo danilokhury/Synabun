@@ -111,7 +111,7 @@ export function buildJudgmentsTab() {
       </div>
 
       ${section({ id: 'jv-sec-connection', title: kit.tx('settings.redesign.judgments.connection'), badgeId: 'jv-key-source-badge', body: `
-        <div class="settings-hint" style="margin-bottom:10px">${kit.te('settings.redesign.judgments.jevTypesafeSystemOneReturnsTyped')} <code>~/.synabun/.env</code> ${kit.te('settings.redesign.judgments.andNeverLeavesTheServerOnly')}</div>
+        <div class="settings-hint" style="margin-bottom:10px">${kit.te('settings.redesign.judgments.jevTypesafeSystemOneReturnsTyped')} <code>~/.synabun/.env</code> ${kit.te('settings.redesign.judgments.andNeverLeavesTheServerOnly')} ${kit.te('settings.redesign.judgments.learnMoreAtTypesafe')} <a href="https://typesafe.ai" target="_blank" rel="noopener noreferrer">typesafe.ai</a>.</div>
         <div class="settings-field">
           <label for="jv-api-key">${kit.te('settings.redesign.judgments.apiKey')}</label>
           <div class="settings-key-row" style="display:flex;gap:6px">

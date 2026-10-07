@@ -83,7 +83,7 @@ export function initMenubar() {
     const dropdown = document.querySelector('.menubar-item.open .menubar-dropdown');
     if (!dropdown) return;
 
-    const allItems = [...dropdown.querySelectorAll('.menu-item:not(.disabled)')];
+    const allItems = [...dropdown.querySelectorAll('.menu-item:not(.disabled):not([hidden])')];
     if (allItems.length === 0) return;
 
     const focused = dropdown.querySelector('.menu-item.focused');

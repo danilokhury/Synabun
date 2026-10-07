@@ -25,6 +25,8 @@ SynaBun 2.0 adds a central Assistant that plans work and hands it to Claude Code
 - **Recall before subagents** — In Claude Code, a Task or Agent dispatch now starts from a shared memory brief (5 memories, 1,200 tokens), so workers begin with the paths, earlier fixes and constraints the session already knows. On by default.
 - **Claude accounts** — Several Claude accounts can be signed in side by side and chosen per session, the way Codex accounts already could.
 - **A new workspace tour** — The **?** button opens a hand-drawn tour of memory and the map, the whiteboard, coding tools, browser and automations, and the Assistant. It resumes where you left off, in English and Brazilian Portuguese.
+- **Start Server button** — When the server is down, the offline page and the app's Server Offline overlay show a **Start Server** button. It works on macOS, Windows and Linux, for npm and GitHub installs, starts one server however often it is clicked, and the page reconnects by itself when the server answers. While a start runs, the page names each step the launcher reports (installing dependencies, the browser download, the build, the pre-update backup, the server starting) next to a clock of whole seconds; a failed start shows its reason, the log's path and **Try again**. The command under the button is one line that works in cmd.exe, PowerShell and POSIX shells. A page opened through a tunnel, an invite link or a LAN address shows the clock and general status only.
+- **Command Runner as a searchable library** — Saved commands can be searched by name, command, group or directory, filtered by group, and sorted by saved order or most recently run. Commands on a local workspace stay runnable without an internet connection.
 
 ## 🛠 Fixed
 
@@ -42,12 +44,18 @@ SynaBun 2.0 adds a central Assistant that plans work and hands it to Claude Code
 - **Two ways around the X publish gate** — On loop tabs, `Cmd+Enter` and a scripted click on the post button skipped the publish gate and the write queue. Both are refused.
 - **BlueSky schedules stopped on an expired token** — The token is renewed in place, and every automation runs in the default MoreLogin profile.
 - **Session pills vanished when the toolbar collapsed** — They stay visible.
+- **Saved commands started about 15 seconds late** — The Command Runner waited for a prompt it could recognise, and the default macOS zsh prompt (`%`) was not on its list, so the command was typed by a 15-second fallback. A shell tab now gets the command as soon as its prompt is ready, and the terminal says so when a command could not be delivered. Claude Code, Codex, Gemini and OpenCode tabs keep their timing.
+- **The Settings save bar drifted into the middle of the page** — On a page with a save bar (Settings → Browser) the bar stays on the bottom edge of its column whether sections are open or closed, and its buttons stack in a narrow panel instead of being cut off.
+- **The Assistant mascot covered your message after a send** — The character now moves at once into the Thinking row under the message.
+- **Codex approvals with a policy choice** — When an approval offers a policy change (for example allowing a command from now on), the Assistant sends back exactly the choice Codex offered instead of only its label.
 
 ## ⚙️ Changed
 
 - **Plain semantic versioning** — 2.0.0 replaces the date-style versions on npm and on GitHub. The update check treats every date-style release as older than any 2.x release.
 - **The Assistant and its workers look at pages only through the SynaBun browser** — Public pages and `localhost` alike; ad-hoc Playwright, Puppeteer or headless browsers started from a shell are refused outside a project's own test suite.
 - **Hide all toolbars** — The top-right chevron now hides every toolbar, with a rebindable shortcut.
+- **Onboarding installs the rules** — Step 6 of the setup wizard is **Install SynaBun Rules**: **Install for all**, or **Install**, **Update** or **Replace** per tool, with the file each tool reads. Copying by hand remains only where SynaBun cannot write (Cursor's User Rules and the optional coexistence snippet), under **Manual setup**.
+- **Style Guide panel** — The header has a close button and wraps in a narrow panel, and each section is labelled for screen readers.
 - **Dependencies** — `@anthropic-ai/claude-agent-sdk` 0.3.258 → 0.3.288, `@openai/codex-sdk` 0.121 → 0.160, `@opencode-ai/sdk` 1.14 → 1.18.34 (pinned); `@xterm/headless` and `@xterm/addon-serialize` are new.
 - **Removed** — The legacy OpenCode sidepanel, the standalone Claude chat page, the 3D graphics presets, and `CLAUDE-template.md` (replaced by the installed rulesets).
 

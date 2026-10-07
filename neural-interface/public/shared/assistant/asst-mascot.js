@@ -2,9 +2,10 @@
 // SynaBun Assistant — the panel's mascot director
 // ═══════════════════════════════════════════
 // The renderer (asst-render.js) owns the rigs and says which one is on screen:
-// the hero (the empty state's character, parked after a send until the first
-// stage takes it over) or the live rack's stage. This module dresses that one
-// in the panel's own state, above the pose the renderer gives it:
+// the hero (the empty state's character; a send hands it over to the
+// "Thinking" row's at once), the live rack's stage or the "Thinking" row's.
+// This module dresses that one in the panel's own state, above the pose the
+// renderer gives it:
 //
 //   offline         the socket dropped (the Reconnecting banner); one startle on reconnect
 //   blocked         a card waits on you: eyes on it, two pulses, then still
@@ -14,12 +15,13 @@
 //   sleep           the hero only, after 90 s with no input while nothing runs;
 //                   the rig wakes itself on a pointer move or a key
 //
-// Anything else is the renderer's pose: the hero idles (thinks once parked),
-// the stage acts out its call. A pose the director sets is held: the renderer
-// leaves it alone until the director lets go and asks it to restore its own.
-// Only one panel animates its rigs: the visible one used last (typing, focus,
-// a new stage). Pure logic: the clock, timers and page input come in through
-// `env`, so node:test drives it with fakes (tests/assistant-mascot.test.mjs).
+// Anything else is the renderer's pose: the hero idles, the "Thinking" row's
+// character thinks, the stage acts out its call. A pose the director sets is
+// held: the renderer leaves it alone until the director lets go and asks it
+// to restore its own. Only one panel animates its rigs: the visible one used
+// last (typing, focus, a new stage). Pure logic: the clock, timers and page
+// input come in through `env`, so node:test drives it with fakes
+// (tests/assistant-mascot.test.mjs).
 
 export const MASCOT_TIMING = Object.freeze({
   watchEveryMs: 120,
@@ -254,7 +256,7 @@ export function createMascotDirector({ getTarget = () => null, caret = () => nul
     type,
     /** Blur, or the draft went away. */
     stopTyping,
-    /** A prompt went out: the watch hands over at once (the renderer parks the hero thinking). */
+    /** A prompt went out: the watch hands over at once (the renderer gives the hero to the "Thinking" row). */
     sent() { touch(); stopTyping(); },
     /** A card waits on the user (`rectOf()` → its box), or none (null). */
     setBlocked(rectOf) {

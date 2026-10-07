@@ -98,9 +98,6 @@ export const RACK_CSS = `
   }
   .asst-rack-face { grid-area: face; align-self: center; color: var(--rk-text); line-height: 0; }
   .asst-rack-face svg { display: block; width: 72px; height: 36px; }
-  /* The hero's hand-off (asst-render.js flipIntoStage): the face flies in from outside the stage. */
-  .asst-rack.is-flip > .asst-rack-stage { overflow: visible; }
-  .asst-rack.is-flip .asst-rack-face { position: relative; z-index: 3; }
   .asst-rack-caption {
     grid-area: caption;
     align-self: end;

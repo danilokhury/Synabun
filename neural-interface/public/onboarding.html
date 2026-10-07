@@ -539,7 +539,7 @@
   .mcp-other-section.open .mcp-other-chevron { transform: rotate(180deg); }
   .mcp-other-body { padding: 0 14px 12px; }
 
-  /* ── Rules (Step 5 option, Step 6 list): one row per connected tool ── */
+  /* ── Rules (Step 5 option, Step 6 installer) ── */
   .rules-option {
     display: flex;
     align-items: center;
@@ -550,12 +550,37 @@
     cursor: pointer;
     user-select: none;
   }
+  /* A step whose height follows what the installer reports: on a short window it scrolls (its parts keep their
+     height instead of being squeezed) rather than being cut off. */
+  .step[data-step="6"] { max-height: calc(90vh - 58px); }
+  .step[data-step="6"] > * { flex-shrink: 0; }
+  .step[data-step="6"] .subtitle { margin-bottom: 16px; }
+  /* The step's one primary action: what it does, then the button. */
+  .rules-install-all {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 12px 14px;
+    margin-bottom: 12px;
+    border: 1px solid var(--accent-border);
+    border-radius: var(--r-card);
+    background: var(--accent-bg);
+  }
+  .rules-install-all .ria-text { flex: 1 1 0; min-width: 0; font-size: 12px; color: var(--t-primary); line-height: 1.5; }
+  .rules-install-all .action-btn { flex-shrink: 0; padding: 9px 18px; font-size: 12px; white-space: nowrap; }
+  /* What the installer answered, and where the rules live. */
+  .rules-result { margin-bottom: 12px; font-size: 12px; color: var(--t-primary); line-height: 1.5; overflow-wrap: anywhere; }
+  .rules-result.ok .rr-message::before { content: '\2713'; margin-right: 8px; color: var(--green); }
+  .rules-result.fail .rr-message { color: var(--red); }
+  .rules-result .rr-where { margin-top: 4px; font-size: 11px; color: var(--t-muted); }
   .rules-list {
     display: flex;
     flex-direction: column;
     gap: 8px;
     margin-bottom: 12px;
   }
+  .rules-list:empty { display: none; }
+  .rules-list .mcp-toggle-row.has-note { align-items: flex-start; }
   .rules-list .mtr-state {
     margin-left: 6px;
     font-size: 10px;
@@ -563,8 +588,9 @@
     color: var(--t-muted);
   }
   .rules-list .mtr-state.ok { color: var(--green); }
+  .rules-list .mtr-note { margin-top: 4px; font-size: 11px; color: var(--t-secondary); line-height: 1.45; overflow-wrap: anywhere; }
   .rules-actions { display: flex; gap: 6px; flex-shrink: 0; }
-  .rules-actions button {
+  .rules-actions button, .rules-note button {
     padding: 5px 10px;
     border-radius: 8px;
     border: 1px solid var(--b-light);
@@ -576,11 +602,16 @@
     white-space: nowrap;
     transition: all var(--ease);
   }
-  .rules-actions button:hover { background: var(--s-medium); color: var(--t-bright); border-color: var(--b-hover); }
-  .rules-actions button:disabled { opacity: 0.4; cursor: default; }
+  .rules-actions button:hover, .rules-note button:hover { background: var(--s-medium); color: var(--t-bright); border-color: var(--b-hover); }
+  .rules-actions button.primary { border-color: var(--accent-border); background: var(--s-active); color: var(--t-bright); font-weight: 600; }
+  .rules-actions button:disabled, .rules-note button:disabled { opacity: 0.4; cursor: default; }
   .rules-note { font-size: 11px; color: var(--t-muted); margin-bottom: 12px; line-height: 1.5; }
+  .rules-note button { margin-left: 8px; }
+  /* Under the installer: the text SynaBun cannot install, to paste by hand. */
+  .rules-manual-label { margin: 4px 0 8px; font-size: 10px; color: var(--t-muted); text-transform: uppercase; letter-spacing: 0.5px; }
   .rules-extra { margin-top: 8px; }
   #rulesViewCode, #rulesCursorCode, #rulesCoexistCode { max-height: 160px; }
+  #rulesViewCode { margin-bottom: 12px; }
 
   /* ── Dependency List ── */
   .dep-list {
@@ -1188,14 +1219,14 @@
         <span class="mascot-toast" id="mascotToast"></span>
       </div>
       <h2>AI Tool Integration</h2>
-      <p class="subtitle">Toggle on the AI coding tools you use. SynaBun registers itself with each one automatically.</p>
+      <p class="subtitle">Toggle on the AI coding tools you use. SynaBun registers itself with each one and installs its rules automatically.</p>
       <div class="mcp-toggle-list" id="mcpToggleList"></div>
       <label class="rules-option" for="rulesInstallOpt">
         <span class="key-backup-checkbox-wrap">
           <input type="checkbox" id="rulesInstallOpt" checked>
           <span class="key-backup-checkmark"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></span>
         </span>
-        <span>Install SynaBun's rules for this tool</span>
+        <span>Install SynaBun's rules with each tool I connect</span>
       </label>
       <div class="mcp-other-section" id="mcpOtherSection">
         <div class="mcp-other-header" id="mcpOtherHeader">
@@ -1213,27 +1244,31 @@
       </div>
     </div>
 
-    <!-- Step 6: SynaBun rules -->
+    <!-- Step 6: Install SynaBun rules. The installer leads; the copy boxes at the bottom are only for what it cannot write. -->
     <div class="step right" data-step="6">
-      <div style="position:relative;display:flex;justify-content:center;align-items:center;">
-        <div class="step-eyes"></div>
-        <span class="mascot-toast" id="rulesToast"></span>
+      <div class="step-eyes"></div>
+      <h2>Install SynaBun Rules</h2>
+      <p class="subtitle">SynaBun installs its rules where each connected tool loads them for every project, and keeps them up to date. There is nothing to paste.</p>
+      <div class="rules-note" id="rulesNote" role="status" style="display:none;"></div>
+      <div class="rules-install-all" id="rulesInstallAll" style="display:none;">
+        <div class="ria-text" id="rulesInstallAllHelp"></div>
+        <button type="button" class="action-btn" id="rulesInstallAllBtn" aria-describedby="rulesInstallAllHelp"></button>
       </div>
-      <h2>SynaBun Rules</h2>
-      <p class="subtitle">SynaBun puts its rules where each tool loads them for every project, and keeps them up to date. There is nothing to paste.</p>
-      <div class="rules-note" id="rulesNote" style="display:none;"></div>
+      <div class="rules-result" id="rulesResult" role="status" style="display:none;">
+        <div class="rr-message" id="rulesResultMessage"></div>
+        <div class="rr-where" id="rulesResultWhere"></div>
+      </div>
       <div class="rules-list" id="rulesList"></div>
-      <div class="code-copy-wrap" id="rulesViewWrap" style="display:none;margin-bottom:12px;">
-        <div class="instructions-preview" id="rulesViewCode"></div>
-        <span class="code-copy-label">copy</span>
-      </div>
+      <div class="instructions-preview" id="rulesViewCode" role="region" tabindex="0" style="display:none;"></div>
+      <div class="rules-note" id="rulesIdle" style="display:none;"></div>
+      <div class="rules-manual-label">Manual setup</div>
       <div class="mcp-other-section" id="rulesCursorSection">
         <div class="mcp-other-header" id="rulesCursorHeader">
-          <span>Cursor (copy and paste)</span>
+          <span>Cursor (its rules are pasted by hand)</span>
           <svg class="mcp-other-chevron" viewBox="0 0 24 24" width="14" height="14"><polyline points="6 9 12 15 18 9" fill="none" stroke="currentColor" stroke-width="2"/></svg>
         </div>
         <div class="mcp-other-body" id="rulesCursorBody" style="display:none;">
-          <div style="font-size:12px;color:var(--t-secondary);margin-bottom:6px;">Cursor keeps User Rules inside the app. Paste this into Cursor Settings &rarr; Rules:</div>
+          <div id="rulesCursorHelp" style="font-size:12px;color:var(--t-secondary);margin-bottom:6px;">Cursor keeps its User Rules inside the app, so SynaBun cannot install them. Copy the rules and paste them into Cursor Settings &rarr; Rules.</div>
           <div class="code-copy-wrap" id="rulesCursorWrap">
             <div class="instructions-preview" id="rulesCursorCode"></div>
             <span class="code-copy-label">copy</span>
@@ -1246,7 +1281,7 @@
           <svg class="mcp-other-chevron" viewBox="0 0 24 24" width="14" height="14"><polyline points="6 9 12 15 18 9" fill="none" stroke="currentColor" stroke-width="2"/></svg>
         </div>
         <div class="mcp-other-body" id="rulesCoexistBody" style="display:none;">
-          <div style="font-size:12px;color:var(--t-secondary);margin-bottom:6px;">Copy this, name the other tool in it, and paste it into your instructions file. SynaBun never installs it.</div>
+          <div id="rulesCoexistHelp" style="font-size:12px;color:var(--t-secondary);margin-bottom:6px;">Copy this, name the other tool in it, and paste it into your instructions file. SynaBun never installs it.</div>
           <div class="code-copy-wrap" id="rulesCoexistWrap">
             <div class="instructions-preview" id="rulesCoexistCode"></div>
             <span class="code-copy-label">copy</span>
@@ -1261,7 +1296,7 @@
       <h2 style="text-align:center;margin-bottom:12px;">Setup Complete!</h2>
       <ul class="checklist" id="checklist"></ul>
       <div id="restartNotice" style="margin:16px 0 0;padding:12px 14px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.10);border-radius:var(--r-card);font-size:12px;color:var(--t-primary);line-height:1.5;">
-        <span style="color:var(--t-bright);font-weight:600;">Restart required</span> — Relaunch <span id="restartToolName" style="color:var(--t-bright);font-weight:500;"></span> for the MCP changes to be picked up.
+        <span style="color:var(--t-bright);font-weight:600;">Restart required</span> — Relaunch <span id="restartToolName" style="color:var(--t-bright);font-weight:500;"></span> for the MCP changes and SynaBun's rules to be picked up.
       </div>
       <div style="text-align:center;margin-top:16px;">
         <button class="action-btn" id="launchBtn" style="font-size:15px;padding:12px 32px;">Launch Neural Interface</button>
@@ -1371,12 +1406,21 @@
 
 <script type="module">
 
+// The rules step is the installer of Settings → AI connections: the same client calls and the same reading
+// of the status (see STEP 6). Both modules are import-free, so the wizard still loads nothing of the app.
+import { fetchRulesStatus, fetchRulesTextWithFallback, installRules, installAllRules } from './shared/api.js';
+import {
+  describeRulesHost, describeRulesInstall, describeRulesInstallAll, describeRulesInPlace, rulesInstallPlan, catalogueTranslator,
+} from './shared/settings/settings-rules.js';
+
 // ═══════════════════════════════════════════
 // STATE
 // ═══════════════════════════════════════════
 
 const TOTAL_STEPS = 8;
 let currentStep = 0;
+// Step 6: a connected tool still has no rules. Leaving the step then is a skip, and the Next button says so.
+let rulesPending = false;
 
 const wizardState = {
   collectionName: 'claude_memory',
@@ -1479,7 +1523,8 @@ function updateNav() {
   $prevBtn.disabled = currentStep === 0;
 
   const labels = ['Begin', 'Next', 'Next', 'Next', 'Next', 'Next', 'Next', 'Finish'];
-  $nextBtn.textContent = (labels[currentStep] || 'Next') + ' \u2192';
+  const label = currentStep === 6 && rulesPending ? 'Skip' : (labels[currentStep] || 'Next');
+  $nextBtn.textContent = label + ' \u2192';
 
   if (currentStep === TOTAL_STEPS - 1) {
     $nextBtn.style.display = 'none';
@@ -2576,156 +2621,207 @@ document.getElementById('mcpCodeWrap').addEventListener('click', () => {
 });
 
 // ═══════════════════════════════════════════
-// STEP 6: SynaBun rules
+// STEP 6: Install SynaBun rules
 // ═══════════════════════════════════════════
-// One row per connected tool with where its rules are and what state they are
-// in (GET /api/setup/rules), plus copy boxes for Cursor and the coexistence
-// snippet. Nothing here has to be clicked to continue.
+// The installer, as Settings → AI connections → SynaBun rules shows it: one
+// button that installs the rules for every connected tool, then one row per
+// tool with where its rules live, what state they are in (GET /api/setup/rules)
+// and the action that state calls for, and under them what the installer
+// answered. The calls are the shared client's (shared/api.js). What a state is
+// called, which action it gets and every sentence about it come from
+// shared/settings/settings-rules.js and the Settings strings (i18n/en.json), so
+// the two surfaces cannot drift apart. Nothing is pasted in this step: the two
+// boxes under "Manual setup" hold what SynaBun cannot install (Cursor's User
+// Rules, the coexistence snippet). Nothing here has to be clicked to continue.
 
 const RESTART_HINT = 'Restart SynaBun to finish this update.';
-const RULES_STATE_TEXT = {
-  installed: 'Installed', newer: 'Installed by a newer SynaBun', outdated: 'Update available', modified: 'Edited', conflict: 'Conflict',
-  error: 'Error', shadowed: 'Shadowed', 'not-installed': 'Not installed',
-};
-const RULES_PRIMARY = { 'not-installed': 'Install', outdated: 'Update', modified: 'Replace' };
+const RULES_SETTINGS_PATH = 'Settings → AI connections → SynaBun rules';
 let rulesStatus = null;       // null: the route is missing or failed
+let rulesTx = null;           // the Settings strings; null until they are loaded
+let rulesReport = null;       // what the last install answered: { message, note, ok }
+let rulesBusy = false;        // an install is on its way: every button of the step waits
+let rulesViewHost = '';       // the tool whose rules text is open under the list
 const rulesTextCache = {};
 
-async function loadRulesStatus() {
+// The wizard's names for the tools (the ones Step 5 shows), for every sentence that names one.
+const RULES_TOOL_NAMES = Object.fromEntries(TOOLS.map(t => [t.id, t.name]));
+const ruleToolNames = (hosts) => hosts.map(host => RULES_TOOL_NAMES[host] || host).join(', ');
+
+// The words of this step are the Settings ones. One request; a failed one is tried again on the next visit.
+async function loadRulesStrings() {
+  if (rulesTx) return rulesTx;
   try {
-    const res = await fetch('/api/setup/rules');
-    if (!res.ok) return null;
-    const data = await res.json();
-    return data && data.ok ? data : null;
-  } catch { return null; }
+    const res = await fetch('/i18n/en.json');
+    if (res.ok) rulesTx = catalogueTranslator(await res.json());
+  } catch { /* the step says so and offers to try again */ }
+  return rulesTx;
 }
 
 // The rendered text for a host, from the rules route or the older read-only endpoint.
 async function loadRulesText(host) {
-  if (rulesTextCache[host]) return rulesTextCache[host];
-  let text = '';
-  try {
-    const res = await fetch(`/api/setup/rules/${host}/text`);
-    if (res.ok) text = (await res.json()).text || '';
-  } catch { /* try the older endpoint */ }
-  if (!text) {
-    const format = host === 'opencode' ? 'generic' : host;
-    const res = await fetch(`/api/claude-code/ruleset?format=${format}`);
-    const data = res.ok ? await res.json() : {};
-    text = data.ruleset || '';
-  }
-  if (!text) throw new Error('Rules text not available');
-  rulesTextCache[host] = text;
-  return text;
-}
-
-function showRulesToast(msg, duration = 2600) {
-  const toast = document.getElementById('rulesToast');
-  if (!toast) return;
-  toast.textContent = msg;
-  toast.classList.add('show');
-  clearTimeout(toast._timer);
-  toast._timer = setTimeout(() => toast.classList.remove('show'), duration);
+  if (!rulesTextCache[host]) rulesTextCache[host] = await fetchRulesTextWithFallback(host);
+  return rulesTextCache[host];
 }
 
 function enabledRuleTools() {
   return wizardState.enabledTools.map(id => TOOLS.find(t => t.id === id)).filter(Boolean);
 }
 
-function renderRulesList() {
-  const $list = document.getElementById('rulesList');
-  const $note = document.getElementById('rulesNote');
-  const tools = enabledRuleTools();
+function renderRulesStep() {
+  const el = (id) => document.getElementById(id);
+  const tx = rulesTx;
+  const plan = rulesInstallPlan(rulesStatus);
+  const ready = !!tx && !!rulesStatus;
+
+  // What stands in the way, if anything: the step's own text, the installer, or no connected tool.
+  const note = !tx ? 'This step could not load its text. Check that SynaBun is running, then try again.'
+    : !rulesStatus ? `The rules installer did not answer. ${RESTART_HINT} The rules can also be installed later in ${RULES_SETTINGS_PATH}.`
+    : !plan.connected.length ? 'No tool is connected yet. Connect one in the previous step and its rules are installed with it.'
+    : '';
+  const $note = el('rulesNote');
+  $note.textContent = note;
+  if (note && !ready) {
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.textContent = 'Try again';
+    retry.disabled = rulesBusy;
+    retry.addEventListener('click', () => onRulesetStep());
+    $note.appendChild(retry);
+  }
+  $note.style.display = note ? '' : 'none';
+
+  // The primary action, while a connected tool still has rules to install or update.
+  rulesPending = ready && plan.pending.length > 0;
+  el('rulesInstallAll').style.display = rulesPending ? '' : 'none';
+  if (tx) {
+    el('rulesInstallAllHelp').textContent = tx('settings.redesign.control.set002.help');
+    el('rulesInstallAllBtn').textContent = tx('settings.redesign.control.set002.label');
+    el('rulesCursorHelp').textContent = tx('settings.redesign.setup.cursorHelp');
+    el('rulesCoexistHelp').textContent = tx('settings.redesign.setup.coexistHelp');
+  }
+  el('rulesInstallAllBtn').disabled = rulesBusy;
+
+  // The result: what the last install answered, or, with nothing left to install, the rules that are in place
+  // (the toggles of Step 5 installed them) and the file each tool reads.
+  const report = rulesReport || (ready && !rulesPending ? describeRulesInPlace(rulesStatus, { tx, labels: RULES_TOOL_NAMES }) : null);
+  const $result = el('rulesResult');
+  $result.style.display = report ? '' : 'none';
+  if (report) {
+    $result.className = 'rules-result ' + (report.ok === false ? 'fail' : 'ok');
+    el('rulesResultMessage').textContent = report.message;
+    el('rulesResultWhere').textContent = report.note || '';
+    el('rulesResultWhere').style.display = report.note ? '' : 'none';
+  }
+
+  // One row per tool that has rules or is connected. Without a status only the tools connected in Step 5 are known.
+  const $list = el('rulesList');
   $list.innerHTML = '';
-
-  const notes = [];
-  if (!rulesStatus) notes.push(`${RESTART_HINT} Until then the rules can be viewed and copied here.`);
-  if (!tools.length) notes.push('No tool was connected in the previous step. Connect one there, or copy the rules below.');
-  $note.textContent = notes.join(' ');
-  $note.style.display = notes.length ? '' : 'none';
-
-  for (const tool of tools) {
-    const info = rulesStatus && rulesStatus.hosts ? rulesStatus.hosts[tool.id] : null;
-    const state = info ? info.state : '';
-    const good = state === 'installed' || state === 'newer';
-    // A file without SynaBun's markers is the user's own: the server refuses to replace it, so no button.
-    const primary = info && info.detected !== false && info.replaceable !== false ? (RULES_PRIMARY[state] || '') : '';
-    const detail = !info ? RESTART_HINT
-      : info.detected === false ? `${tool.name} was not found on this machine`
-      : ((['conflict', 'error', 'shadowed'].includes(state) || info.replaceable === false) && (info.error || info.detail)) || info.path || '';
-
+  const idle = [];
+  for (const tool of (tx ? (rulesStatus ? TOOLS : enabledRuleTools()) : [])) {
+    const info = rulesStatus?.hosts?.[tool.id];
+    const view = describeRulesHost(info, { label: tool.name, version: rulesStatus?.version, tx });
+    // Rules are for a tool that talks to SynaBun. One that is not connected and has none is only named, under
+    // the list: connecting it in Step 5 installs them.
+    if (view.known && view.state === 'not-installed' && !plan.connected.includes(tool.id)) { idle.push(tool.name); continue; }
     const row = document.createElement('div');
-    row.className = 'mcp-toggle-row' + (good ? ' connected' : '');
+    row.className = 'mcp-toggle-row' + (view.good ? ' connected' : '') + (view.note ? ' has-note' : '');
     row.dataset.host = tool.id;
     row.innerHTML = `
       <div class="mtr-body">
-        <div class="mtr-name">${tool.name}<span class="mtr-state${good ? ' ok' : ''}" data-role="state"></span></div>
+        <div class="mtr-name">${tool.name}<span class="mtr-state${view.good ? ' ok' : ''}" data-role="state"></span></div>
         <div class="mtr-path" data-role="path"></div>
+        <div class="mtr-note" data-role="note" style="display:none"></div>
       </div>
       <div class="rules-actions">
-        ${primary ? `<button type="button" data-role="primary">${primary}</button>` : ''}
-        <button type="button" data-role="view">View</button>
-        <button type="button" data-role="copy">Copy</button>
+        ${view.action ? '<button type="button" class="primary" data-role="primary"></button>' : ''}
+        ${view.known ? '<button type="button" data-role="view"></button>' : ''}
       </div>
     `;
-    row.querySelector('[data-role="state"]').textContent = info ? (RULES_STATE_TEXT[state] || state) : 'Unavailable';
+    row.querySelector('[data-role="state"]').textContent = view.badge;
     const $path = row.querySelector('[data-role="path"]');
-    $path.textContent = detail;
-    $path.title = detail;
-    row.querySelector('[data-role="primary"]')?.addEventListener('click', (e) => installToolRules(tool, state, e.currentTarget));
-    row.querySelector('[data-role="view"]').addEventListener('click', () => viewRules(tool.id, tool.name));
-    row.querySelector('[data-role="copy"]').addEventListener('click', () => copyRules(tool.id, tool.name));
+    $path.textContent = view.pathText;
+    $path.title = view.path;
+    const $rowNote = row.querySelector('[data-role="note"]');
+    $rowNote.textContent = view.note;
+    $rowNote.style.display = view.note ? '' : 'none';
+    const $primary = row.querySelector('[data-role="primary"]');
+    if ($primary) {
+      $primary.textContent = view.actionLabel;
+      $primary.disabled = rulesBusy;
+      $primary.addEventListener('click', () => installToolRules(tool));
+    }
+    const $view = row.querySelector('[data-role="view"]');
+    if ($view) {
+      $view.textContent = tx(rulesViewHost === tool.id ? 'settings.redesign.setup.hide' : 'settings.redesign.setup.view');
+      $view.setAttribute('aria-expanded', String(rulesViewHost === tool.id));
+      $view.setAttribute('aria-controls', 'rulesViewCode');
+      $view.addEventListener('click', () => viewRules(tool));
+    }
     $list.appendChild(row);
   }
+  el('rulesViewCode').style.display = rulesViewHost && $list.querySelector(`[data-host="${rulesViewHost}"] [data-role="view"]`) ? '' : 'none';
+  // The other tools, in one line. With no tool connected at all, the note at the top already says it.
+  const $idle = el('rulesIdle');
+  $idle.textContent = idle.length && plan.connected.length ? `${tx('settings.redesign.setup.notConnected')}: ${idle.join(', ')}. Connecting a tool in the previous step installs its rules.` : '';
+  $idle.style.display = $idle.textContent ? '' : 'none';
+
+  updateNav();
   requestAnimationFrame(() => resizeViewport(currentStep));
 }
 
-async function installToolRules(tool, state, btn) {
-  const force = state === 'modified';
-  if (force && !confirm(`Replace your edited ${tool.name} rules with SynaBun's current version?\n\nYour edited copy is backed up first.`)) return;
-  btn.disabled = true;
+// Run one install, keep what it answered for the result line, then read the status again.
+async function runRulesInstall(work) {
+  if (rulesBusy) return;
+  rulesBusy = true;
+  renderRulesStep();
   try {
-    const res = await fetch(`/api/setup/rules/${tool.id}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ force }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || data.ok === false) showRulesToast(data.error || (res.status === 404 ? RESTART_HINT : `${tool.name} rules were not installed`), 5000);
-    else showRulesToast(`${tool.name} rules installed`);
+    rulesReport = await work();
   } catch (err) {
-    showRulesToast(`Failed: ${err.message}`, 5000);
+    // The server's own sentence (an edited copy, damaged markers, another SynaBun at work). A route that is not
+    // there is the server that was not restarted.
+    const message = err?.message === 'HTTP 404' ? RESTART_HINT : (err?.message || rulesTx('settings.redesign.setup.rulesActionFailed'));
+    rulesReport = { message, note: '', ok: false };
   }
-  rulesStatus = await loadRulesStatus();
-  renderRulesList();
+  rulesStatus = await fetchRulesStatus();
+  rulesBusy = false;
+  renderRulesStep();
 }
 
-async function viewRules(host, name) {
-  const $wrap = document.getElementById('rulesViewWrap');
+// "Install for all": every connected tool, by the installer's own rule. Same call as the button in Settings.
+function installAllToolRules() {
+  runRulesInstall(async () => {
+    const report = describeRulesInstallAll(await installAllRules(), { tx: rulesTx, labels: RULES_TOOL_NAMES });
+    return { message: report.message, note: report.note, ok: report.failed.length === 0 };
+  });
+}
+
+// One tool's Install, Update or Replace. Replace is behind the confirm that says the edited copy is backed up.
+function installToolRules(tool) {
+  const view = describeRulesHost(rulesStatus?.hosts?.[tool.id], { label: tool.name, version: rulesStatus?.version, tx: rulesTx });
+  if (!view.action) return;
+  if (view.force && !confirm(rulesTx('settings.redesign.setup.replaceYourEditedRulesWithSynabun', { label: tool.name }))) return;
+  delete rulesTextCache[tool.id];
+  runRulesInstall(async () => {
+    const result = await installRules(tool.id, { force: view.force });
+    return { message: describeRulesInstall(result, view.state, { label: tool.name, tx: rulesTx }), note: '', ok: true };
+  });
+}
+
+// View shows the exact text a tool receives, under the list; a second press hides it.
+async function viewRules(tool) {
   const $code = document.getElementById('rulesViewCode');
-  if ($wrap.style.display !== 'none' && $wrap.dataset.host === host) {
-    $wrap.style.display = 'none';
+  if (rulesViewHost === tool.id) {
+    rulesViewHost = '';
   } else {
-    try { $code.textContent = await loadRulesText(host); }
-    catch { $code.textContent = `The ${name} rules could not be loaded. ${RESTART_HINT}`; }
-    $wrap.dataset.host = host;
-    $wrap.style.display = '';
+    try { $code.textContent = await loadRulesText(tool.id); }
+    catch { $code.textContent = rulesTx('settings.redesign.setup.couldNotLoadTheRules', { label: tool.name, RESTART_HINT }); }
+    $code.setAttribute('aria-label', rulesTx('settings.redesign.setup.previewRules', { name: tool.name }));
+    rulesViewHost = tool.id;
   }
-  requestAnimationFrame(() => resizeViewport(currentStep));
+  renderRulesStep();
 }
 
-async function copyRules(host, name) {
-  let text;
-  try { text = await loadRulesText(host); }
-  catch { showRulesToast(`Could not load the ${name} rules. ${RESTART_HINT}`, 5000); return; }
-  try {
-    await navigator.clipboard.writeText(text);
-    showRulesToast(`${name} rules copied`);
-  } catch {
-    // A refused clipboard is the browser's doing; restarting SynaBun would not help.
-    showRulesToast('Could not copy: the browser refused access to the clipboard.', 5000);
-  }
-}
+document.getElementById('rulesInstallAllBtn').addEventListener('click', () => installAllToolRules());
 
 // A click-to-copy code box (the pattern of the MCP JSON box in Step 5). The
 // label says "copied!" only once the clipboard took the text; a browser that
@@ -2747,7 +2843,7 @@ function wireRulesCopyBox(wrapId, codeId) {
   });
 }
 
-// A collapsible copy-only section: loads its text the first time it opens.
+// A collapsible copy-only section, for text SynaBun cannot install: loads it the first time it opens.
 function wireRulesExtra(sectionId, headerId, bodyId, wrapId, codeId, host, name) {
   const $section = document.getElementById(sectionId);
   const $body = document.getElementById(bodyId);
@@ -2768,15 +2864,10 @@ function wireRulesExtra(sectionId, headerId, bodyId, wrapId, codeId, host, name)
 wireRulesExtra('rulesCursorSection', 'rulesCursorHeader', 'rulesCursorBody', 'rulesCursorWrap', 'rulesCursorCode', 'cursor', 'Cursor rules');
 wireRulesExtra('rulesCoexistSection', 'rulesCoexistHeader', 'rulesCoexistBody', 'rulesCoexistWrap', 'rulesCoexistCode', 'coexistence', 'coexistence snippet');
 
-document.getElementById('rulesViewWrap').addEventListener('click', () => {
-  const $wrap = document.getElementById('rulesViewWrap');
-  const tool = TOOLS.find(t => t.id === $wrap.dataset.host);
-  if (tool) copyRules(tool.id, tool.name);
-});
-
 async function onRulesetStep() {
-  rulesStatus = await loadRulesStatus();
-  renderRulesList();
+  rulesReport = null;
+  [rulesStatus] = await Promise.all([fetchRulesStatus(), loadRulesStrings()]);
+  renderRulesStep();
   if (currentStep === 6) resizeViewport(6);
 }
 
@@ -2805,18 +2896,23 @@ async function onCompleteStep() {
     } catch { /* non-critical — user can enable via Settings later */ }
   }
 
-  // Rules count as installed when every connected tool has its copy in place.
-  rulesStatus = await loadRulesStatus();
-  const ruleTools = enabledRuleTools();
-  const rulesInstalled = ruleTools.length > 0 && !!rulesStatus
-    && ruleTools.every(t => ['installed', 'newer', 'shadowed'].includes(rulesStatus.hosts?.[t.id]?.state));
+  // Rules count as installed when every connected tool has its copy in place. When they are not, the item says
+  // for which tools and where the installer is from now on.
+  rulesStatus = await fetchRulesStatus();
+  const rulesPlan = rulesInstallPlan(rulesStatus);
+  const rulesMissing = rulesPlan.connected.filter(host => !rulesPlan.inPlace.includes(host));
+  const rulesInstalled = rulesPlan.connected.length > 0 && rulesMissing.length === 0;
+  const rulesLabel = rulesInstalled ? 'Rules installed'
+    : !rulesStatus ? `Rules not installed: the installer did not answer (${RULES_SETTINGS_PATH})`
+    : !rulesPlan.connected.length ? 'Rules not installed: no tool is connected'
+    : `Rules not installed for ${ruleToolNames(rulesMissing)} (${RULES_SETTINGS_PATH})`;
 
   const items = [
     { label: 'Memory name set', done: !!wizardState.collectionName },
     { label: 'Dependencies installed & MCP built', done: wizardState.buildReady },
     { label: 'Projects registered', done: (wizardState.projects || []).length > 0 },
     { label: 'AI tool integration enabled', done: wizardState.enabledTools.length > 0 || wizardState.mcpWritten },
-    { label: 'Rules installed', done: rulesInstalled },
+    { label: rulesLabel, done: rulesInstalled },
   ];
 
   const $list = document.getElementById('checklist');

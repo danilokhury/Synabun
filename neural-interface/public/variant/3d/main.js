@@ -21,7 +21,7 @@ import { initI18n, t } from '../../shared/i18n.js';
 // ── Shared UI modules (side-effect: each registers its own event listeners) ──
 import { initTooltip } from '../../shared/ui-tooltip.js';
 import { initPanelSystem, initPinToggle, clampPanelsToViewport } from '../../shared/ui-panels.js';
-import { initLoading, showLoadingError, hideLoading } from '../../shared/ui-loading.js';
+import { initLoading, showLoadingError, hideLoading, rememberHealth } from '../../shared/ui-loading.js';
 import { initNavbar } from '../../shared/ui-navbar.js';
 import { initMenubar, closeMenubar } from '../../shared/ui-menubar.js';
 import { initSearch } from '../../shared/ui-search.js';
@@ -389,6 +389,7 @@ async function boot() {
     try {
       const healthRes = await fetch('/api/health');
       const health = await healthRes.json();
+      rememberHealth(health);
       if (!health.ok) {
         const messages = {
           db_missing:         [t('loading.health.databaseUnreachable.title'), health.detail || t('loading.health.databaseUnreachable.sub')],

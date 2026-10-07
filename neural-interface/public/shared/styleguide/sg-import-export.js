@@ -20,15 +20,16 @@ export async function render(host, s) {
         return; preview = { ...data, kind }; diff.replaceChildren(diffView(data.diff)); warnings.replaceChildren(...(data.warnings || []).map(w => el('p', '', w))); apply.disabled = false; };
     const gallery = el('div', 'sg-grid');
     host.append(card('import', row(format, strategy), upload, paste, community, el('p', 'sg-hint', t('styleguide.attribution')), row(button(t('styleguide.scan'), () => { kind = 'codebase'; format.querySelector('select').value = kind; invalidate(); return makePreview(); }), button(t('styleguide.previewDiff'), makePreview), apply), warnings, diff));
-    const presetCard = el('section', 'sg-card');
-    presetCard.append(el('h3', '', t('styleguide.presets')), el('p', 'sg-purpose', t('styleguide.presetsHelp')), gallery);
+    const presetCard = el('section', 'sg-card'), presetBody = el('div', 'sg-card-body');
+    presetBody.append(gallery);
+    presetCard.append(el('h3', '', t('styleguide.presets')), el('p', 'sg-purpose', t('styleguide.presetsHelp')), presetBody);
     host.append(presetCard);
     const exports = card('exports', grid(toggle(s, 'exports.designMd'), toggle(s, 'exports.tokensJson'), toggle(s, 'exports.cssVars'), select(s, 'exports.tailwind', ['v4', 'v3', 'none']), select(s, 'exports.darkMode', ['attribute', 'media', 'class']), text(s, 'exports.cssSelector'), text(s, 'exports.outDir')), button(t('styleguide.writeNow'), async () => { await s.flush({ force: !s.meta.saved }); const data = await s.action(path => writeStyleGuideExports(path)); drawWritten(data.written); }), written);
     host.append(exports);
     const copies = row();
     for (const [format, name] of [['design-md', 'DESIGN.md'], ['dtcg', 'tokens.json'], ['css', 'tokens.css'], ['tailwind-v4', 'Tailwind v4'], ['tailwind-v3', 'Tailwind v3'], ['summary', t('styleguide.summary')], ['json', 'JSON']])
         copies.append(button(`${t('styleguide.copy')} · ${name}`, async () => { await s.flush(); await navigator.clipboard.writeText(await fetchStyleGuideExport(s.projectPath, format)); }));
-    exports.append(copies);
+    exports.querySelector('.sg-card-body').append(copies);
     function drawWritten(files) { written.replaceChildren(el('h4', '', t('styleguide.written'))); if (!files?.length)
         written.append(el('p', 'sg-hint', t('styleguide.writeEmpty'))); for (const f of files || [])
         written.append(row(el('code', '', f.path), button(t('styleguide.copy'), () => navigator.clipboard.writeText(f.path)))); }

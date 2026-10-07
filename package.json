@@ -1,6 +1,6 @@
 {
   "name": "synabun",
-  "version": "2.0.0-beta",
+  "version": "2.0.0",
   "description": "Local-first persistent vector memory, MCP tooling, and multi-agent workflows for AI assistants",
   "license": "Apache-2.0",
   "author": "The SynaBun Authors",
@@ -19,6 +19,7 @@
     "postinstall.js",
     "preuninstall.js",
     "updater.mjs",
+    "launcher.mjs",
     "updater.cmd",
     "updater.sh",
     "NOTICE",
@@ -56,6 +57,7 @@
     "hooks/claude-code/task-gate.mjs",
     "skills/",
     "lib/paths.js",
+    "lib/start-launcher.js",
     "lib/paths.d.ts",
     "lib/data-home-migration.js",
     "lib/first-launch-protection.js",

@@ -11,12 +11,12 @@
 // Replay runs the same handleEvent path with { silent: true }: live minus
 // motion, durations from the journal's `at`. Every row is inserted before the
 // "Working…" indicator so it always stays last.
-// The empty state's character (the hero) outlives a send: parked where it
-// stood, thinking, until the first stage of the turn takes it over (the
-// stage's face flies in from the hero's box) or other content arrives (it
-// fades out). mascot() names the character on screen for the panel's
-// director (asst-mascot.js), which may hold its pose; stills are painted SVGs,
-// never rigs.
+// The empty state's character (the hero) outlives a send only for its
+// hand-off: the "Thinking" row's character flies in from the hero's box at
+// once, so nothing sits on the prompt, and with no such row the hero fades
+// out. mascot() names the character on screen for the panel's director
+// (asst-mascot.js), which may hold its pose; stills are painted SVGs, never
+// rigs.
 
 import { assistantEventKey, fmtCost, fmtElapsed, isRemovableRun, isRunIdle, isTerminalRunStatus, modelShortName, providerShortLabel, routeTargetLabel, runTone, summarizeMailbox } from './asst-state.js';
 import { createRouteLine } from './asst-route.js';
@@ -408,8 +408,8 @@ const BURST_MS = 800; // 3+ calls started within this window read "newest ×N"
 const STATUS_GAP_MS = 1500; // screen-reader announcements at most this often
 const FOLD_MS = 180; // narration collapsing into the stage caption
 const COLLAPSE_MS = 260; // the stage folding into the receipt
-const FLIP_MS = 320; // the hero flying into the first stage (--asst-dur-slow)
-const HERO_LEAVE_MS = 140; // a parked hero nobody took over fades out
+const FLIP_MS = 320; // the hero flying into the "Thinking" row (--asst-dur-slow)
+const HERO_LEAVE_MS = 140; // a parked hero the "Thinking" row did not take over fades out
 const MAX_TICKS = 60;
 const NARROW_TICKS = 12;
 const PREVIEW_LINES = 5;
@@ -535,7 +535,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
     return scope;
   }
 
-  /** The empty state goes; `park` (the user sent a prompt) keeps its character on screen, thinking. */
+  /** The empty state goes; `park` (a turn starts) hands its character over to the "Thinking" row. */
   function hideEmpty({ park = false } = {}) {
     if (!emptyEl) return;
     if (!(park && parkHero())) dropHero();
@@ -561,9 +561,11 @@ export function createRenderer(transcriptEl, hooks = {}) {
 
   /**
    * Park the hero where it stands, in an overlay of the transcript's parent,
-   * so it outlives the empty state and thinks until the first stage of the
-   * turn takes it over. Not on replay, under reduced motion or while the UI
-   * is dragged, and not when it is off screen.
+   * so it outlives the empty state for its hand-off. It stays there only
+   * until the rows of this task are in (the prompt, "Thinking"): settleHero()
+   * then gives it to the "Thinking" row, so it is never drawn over the
+   * prompt that took the empty state's place. Not on replay, under reduced
+   * motion or while the UI is dragged, and not when it is off screen.
    */
   function parkHero() {
     const h = hero;
@@ -585,8 +587,31 @@ export function createRenderer(transcriptEl, hooks = {}) {
     h.dock = dock;
     h.parked = true;
     if (!h.held) h.rig.setPose('think');
+    queueMicrotask(() => settleHero(h));
     mascotChanged();
     return true;
+  }
+
+  /**
+   * The parked hero's hand-off, once the task that parked it has put its rows
+   * in: the "Thinking" row's character flies in from the hero's box and the
+   * hero leaves in the same frame. With no such row to take it over (a slash
+   * command's echo, a rack already live) it fades out.
+   */
+  function settleHero(h) {
+    if (hero !== h || !h.parked || h.leaving) return;
+    if (!workingFree()) { dismissHero(); return; }
+    const from = h.el.getBoundingClientRect();
+    dropHero(); // the "Thinking" row wears the character now (syncWorkingFace)
+    const face = workingFace;
+    if (!face?.rig) return;
+    const row = working;
+    row.classList.add('is-flip');
+    const anim = flipFrom(face.el, from);
+    const done = () => row.classList.remove('is-flip');
+    if (!anim) { done(); return; }
+    anim.onfinish = done;
+    anim.oncancel = done;
   }
 
   function dropHero() {
@@ -600,20 +625,15 @@ export function createRenderer(transcriptEl, hooks = {}) {
     syncWorkingFace(); // the "Thinking" row may wear the character now
   }
 
-  /** A parked hero no stage took over leaves: it fades out (at once when calm), after `delay` ms. */
-  function dismissHero(delay = 0) {
+  /** A parked hero the "Thinking" row did not take over leaves: it fades out (at once when calm). */
+  function dismissHero() {
     const h = hero;
     if (!h?.parked || h.leaving) return;
     h.leaving = true;
-    const go = () => {
-      if (hero !== h) return;
-      if (calm() || typeof h.dock.animate !== 'function') { dropHero(); return; }
-      const anim = h.dock.animate([{ opacity: 1 }, { opacity: 0 }], { duration: HERO_LEAVE_MS, easing: cssEase('--asst-ease-exit', 'cubic-bezier(.2,0,1,.9)'), fill: 'forwards' });
-      anim.onfinish = () => { if (hero === h) dropHero(); };
-      h.leaveTimer = setTimeout(() => { if (hero === h) dropHero(); }, HERO_LEAVE_MS + 120);
-    };
-    if (delay > 0) h.leaveTimer = setTimeout(go, delay);
-    else go();
+    if (calm() || typeof h.dock.animate !== 'function') { dropHero(); return; }
+    const anim = h.dock.animate([{ opacity: 1 }, { opacity: 0 }], { duration: HERO_LEAVE_MS, easing: cssEase('--asst-ease-exit', 'cubic-bezier(.2,0,1,.9)'), fill: 'forwards' });
+    anim.onfinish = () => { if (hero === h) dropHero(); };
+    h.leaveTimer = setTimeout(() => { if (hero === h) dropHero(); }, HERO_LEAVE_MS + 120);
   }
 
   /**
@@ -633,19 +653,6 @@ export function createRenderer(transcriptEl, hooks = {}) {
       { transform: `translate(${dx}px, ${dy}px) scale(${s})`, opacity: fade ? 0 : 1 },
       { transform: 'none', opacity: 1 },
     ], { duration: FLIP_MS, easing: cssEase('--asst-ease-emphasized', 'cubic-bezier(.4,.14,.3,1)') });
-  }
-
-  /** The hand-off: the first stage's face flies in from the parked hero, which leaves in the same frame. */
-  function flipIntoStage(rack) {
-    const h = hero;
-    const from = h.el.getBoundingClientRect();
-    dropHero();
-    rack.row.classList.add('is-flip');
-    const anim = flipFrom(rack.stage.face, from);
-    const done = () => rack.row.classList.remove('is-flip');
-    if (!anim) { done(); return; }
-    anim.onfinish = done;
-    anim.oncancel = done;
   }
 
   /** Triple-click the character: its eyes part and re-form, once per mount. Silent. */
@@ -709,7 +716,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
     if (scope.container === $msgs && working && working.parentNode === $msgs) $msgs.insertBefore(node, working);
     else scope.container.appendChild(node);
     if (scope === rootScope) prune();
-    // Text, a card, a notice…: the parked hero would sit on it. Only a rack (its stage takes it over) and the prompt keep it.
+    // Text, a card, a notice…: the parked hero would sit on it. The prompt and a rack leave it to settleHero().
     if (hero?.parked && scope === rootScope && !node._rack && !node.classList.contains('msg-user')) dismissHero();
     if (racks.size) syncRacks();
     scrollEnd();
@@ -1495,13 +1502,10 @@ export function createRenderer(transcriptEl, hooks = {}) {
       rack.clearTimer = 0;
       rack.row.classList.add('is-staged');
       if (!rack.rig) {
-        // The parked hero hands over: the stage's character starts in its pose and flies in from its box.
-        const heir = hero?.parked && !hero.leaving && !calm() ? hero : null;
-        try { rack.rig = mascotLib.createMascot(rack.stage.face, { width: 72, height: 36, rangeX: 10, rangeY: 7, active: rigsOn, pose: heir ? heir.rig.pose : 'idle' }); } catch { rack.rig = null; }
+        try { rack.rig = mascotLib.createMascot(rack.stage.face, { width: 72, height: 36, rangeX: 10, rangeY: 7, active: rigsOn, pose: 'idle' }); } catch { rack.rig = null; }
         rack.pose = null;
         rack.target = rack.rig ? stageTarget(rack) : null;
-        if (heir && rack.rig) flipIntoStage(rack);
-        else if (hero?.parked) dropHero();
+        if (hero?.parked) dropHero(); // the stage is the character now: a hero still on its way out goes at once
       }
       mascotChanged();
       return;
@@ -2605,18 +2609,23 @@ export function createRenderer(transcriptEl, hooks = {}) {
 
   // ── The "Thinking" row's character ──
   // The row wears the mascot, thinking, only when no other character is on
-  // screen: no parked hero, no stage (a live rack right above it hides the
-  // row altogether). A rig, so the director can dress it; a painted still
-  // when calm.
+  // screen: no hero, no stage (a live rack right above it hides the row
+  // altogether). A rig, so the director can dress it; a painted still when
+  // calm. A send hands the hero over to it (settleHero).
   function workingCovered() {
     let prev = working?.previousElementSibling || null;
     while (prev && prev.classList.contains('asst-folding')) prev = prev.previousElementSibling;
     return !!prev?._rack?.live;
   }
 
+  /** The row is up and neither a stage nor a live rack stands in for it. */
+  function workingFree() {
+    return !!working?.isConnected && !newestStage() && !workingCovered();
+  }
+
   function syncWorkingFace() {
     const host = working?.querySelector('.asst-working-face');
-    const wanted = !!host && working.isConnected && !hero && !newestStage() && !workingCovered();
+    const wanted = !!host && !hero && workingFree();
     if (!wanted) { dropWorkingFace(); return; }
     if (workingFace && workingFace.still === calm()) return;
     dropWorkingFace();
@@ -2638,6 +2647,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
     if (!face) return;
     workingFace = null;
     try { face.rig?.destroy(); } catch { /* gone */ }
+    working?.classList.remove('is-flip');
     working?.querySelector('.asst-working-face')?.replaceChildren();
     if (face.rig) mascotChanged();
   }
@@ -3131,8 +3141,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
 
   /**
    * The turn ended. `holdMs`: the panel plays a one-shot (success, error) on
-   * the character on screen, so its stage stays up that long before it folds
-   * and a parked hero waits as long before it fades.
+   * the character on screen, so its stage stays up that long before it folds.
    */
   function finishTurn({ holdMs = 0 } = {}) {
     flushStream(rootScope);
@@ -3154,7 +3163,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
       rack.closed = true;
       if (rack.live || tail || rack === stage) renderRack(rack);
     }
-    if (hero?.parked) dismissHero(hold ? holdMs : 0);
+    if (hero?.parked) dismissHero();
   }
 
   /**

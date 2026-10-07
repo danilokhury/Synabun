@@ -6,12 +6,40 @@
 import { fetchHealth, startHealth } from './api.js';
 import { emit } from './state.js';
 import { t } from './i18n.js';
+import {
+  START_STORAGE, createStartBridge, fetchStartBeacon, isMacPlatform, isWindowsPlatform,
+  manualStartCommands, openStartLink, startBeaconTarget, startButtonUsable, startStatusView,
+} from './start-bridge.js';
+// Imported with the app, not when it is needed: once the server is down
+// nothing more can be fetched, and that is exactly when the overlay wants it.
+import { createMascot } from './synabun-mascot.js';
 
 const $ = (id) => document.getElementById(id);
 
 // ── Internal refs (resolved once on init) ──
 let _statusDot = null;
 let _initCallback = null;
+// The server-offline state: watches for the server and owns the Start button.
+let _offlineBridge = null;
+// The title the overlay was given for "offline" (a start replaces it while it runs).
+let _offlineTitle = '';
+// The mascot rig in the overlay, mounted the first time the server is offline.
+let _mascot = null;
+
+// What the mascot does for each thing the page knows about a start
+// (startStatusView's `mascot`), as poses of the shared rig.
+const MASCOT_POSE = {
+  asleep: 'sleep',
+  waking: 'wait',
+  working: 'think',
+  ready: 'success',
+  failed: 'error',
+  stalled: 'offline',
+};
+
+function stored(key) {
+  try { return localStorage.getItem(key); } catch { return null; }
+}
 
 // ═══════════════════════════════════════════
 // PUBLIC API
@@ -38,18 +66,31 @@ export function showLoadingError(title, sub, canStart, serverOffline) {
   const $sub = $('loading-sub');
   if ($text) $text.textContent = title;
   if ($sub) $sub.textContent = sub;
+  if (serverOffline) _offlineTitle = title;
 
+  // Offline, the button asks the OS to start the server (synabun://start); it
+  // is left out only when that launcher is known not to be registered.
+  const offlineStart = !!serverOffline && startButtonUsable(stored(START_STORAGE.launcher));
   const $action = $('loading-action');
-  if (canStart) {
+  const $btn = $('loading-action-btn');
+  if (canStart || offlineStart) {
     if ($action) $action.style.display = 'block';
+    if ($btn) $btn.disabled = false;
     const $label = $('loading-action-label');
-    if ($label) $label.textContent = t('common.start');
+    if ($label) $label.textContent = serverOffline ? t('loading.startServer') : t('common.start');
   } else {
     if ($action) $action.style.display = 'none';
   }
 
-  const $status = $('loading-action-status');
-  if ($status) $status.textContent = '';
+  clearStartStatus();
+
+  if (serverOffline) {
+    const $hint = $('loading-server-cmd-hint');
+    if ($hint) $hint.textContent = offlineStart ? t('loading.runCommandOr') : t('loading.runCommandSetup');
+    watchForServer();
+  } else {
+    stopWatchingForServer();
+  }
 }
 
 /**
@@ -78,6 +119,7 @@ function resetLoadingToConnecting() {
   if (!$overlay) return;
 
   $overlay.classList.remove('error', 'server-offline');
+  stopWatchingForServer();
 
   const $text = $('loading-text');
   const $sub = $('loading-sub');
@@ -88,12 +130,30 @@ function resetLoadingToConnecting() {
   if ($sub) $sub.textContent = t('loading.initializingNeural');
   if ($action) $action.style.display = 'none';
   if ($actionStatus) $actionStatus.textContent = '';
+  clearStartStatus();
   if (_statusDot) _statusDot.classList.remove('error');
 }
 
 // ═══════════════════════════════════════════
 // HEALTH CHECK (called during init)
 // ═══════════════════════════════════════════
+
+/**
+ * Keep what a health answer says about this install for the moment the server
+ * is down and cannot be asked: where it lives, how it was installed, and
+ * whether the Start Server launcher is registered.
+ */
+export function rememberHealth(health) {
+  if (!health) return;
+  try {
+    if (health.projectDir) {
+      localStorage.setItem('synabun-project-dir', health.projectDir);
+    }
+    if (health.install) localStorage.setItem(START_STORAGE.install, health.install);
+    if (health.startLauncher) localStorage.setItem(START_STORAGE.launcher, health.startLauncher);
+  } catch {}
+  if (health.projectDir) updateCmdText(health.projectDir);
+}
 
 /**
  * Run the health check pre-flight. If the database is unhealthy,
@@ -104,9 +164,7 @@ function resetLoadingToConnecting() {
 export async function checkHealth() {
   try {
     const health = await fetchHealth();
-    if (health.projectDir) {
-      localStorage.setItem('synabun-project-dir', health.projectDir);
-    }
+    rememberHealth(health);
     if (!health.ok) {
       const messages = {
         db_missing:         [t('loading.health.databaseUnreachable.title'), health.detail || t('loading.health.databaseUnreachable.sub')],
@@ -132,7 +190,157 @@ export async function checkHealth() {
  */
 function updateCmdText(projectDir) {
   const cmdEl = $('loading-cmd-text');
-  if (cmdEl) cmdEl.textContent = `cd "${projectDir}" ; npm start`;
+  if (!cmdEl) return;
+  const commands = manualStartCommands({
+    projectDir,
+    install: stored(START_STORAGE.install),
+    windows: isWindowsPlatform(navigator),
+  });
+  // One box: the command for this install (the checkout's when it is not known).
+  cmdEl.textContent = commands[commands.length - 1].command;
+}
+
+// ═══════════════════════════════════════════
+// INTERNAL — Server offline: Start Server + reconnect
+// ═══════════════════════════════════════════
+
+function stopWatchingForServer() {
+  if (_offlineBridge) _offlineBridge.stop();
+  _offlineBridge = null;
+  poseMascot('asleep');
+}
+
+/** The lines a start writes under the button, emptied. */
+function clearStartStatus() {
+  for (const id of ['loading-action-status', 'loading-action-elapsed', 'loading-action-hint', 'loading-action-log']) {
+    const el = $(id);
+    if (el) el.textContent = '';
+  }
+  const $trail = $('loading-action-trail');
+  if ($trail) $trail.replaceChildren();
+}
+
+/**
+ * The overlay's mascot as the shared rig, so a start can be acted out. The
+ * markup's own still drawing stays as the fallback when the rig cannot mount.
+ */
+function mountMascot() {
+  if (_mascot) return;
+  const host = $('loading-mascot');
+  if (!host) return;
+  try {
+    const still = host.querySelector('svg');
+    _mascot = createMascot(host, { width: 160, height: 80, pose: 'sleep', active: false });
+    if (still && still !== _mascot.el) still.style.display = 'none';
+  } catch {
+    _mascot = null;
+  }
+}
+
+/** 'asleep' is the still sleeping face (the overlay's own bob and z carry it); every other state plays its pose. */
+function poseMascot(state) {
+  const host = $('loading-mascot');
+  if (host) host.setAttribute('data-state', state);
+  if (!_mascot) return;
+  try {
+    _mascot.setPose(MASCOT_POSE[state] || 'sleep');
+    _mascot.setActive(state !== 'asleep');
+  } catch {}
+}
+
+/**
+ * Draw one snapshot of the start: the sentence (a live region, written only
+ * when it changes), the page's own clock, and the steps the launcher reported
+ * with the time each one happened. Nothing here is estimated.
+ */
+function renderStart(snap) {
+  const platform = isWindowsPlatform(navigator) ? 'windows' : isMacPlatform(navigator) ? 'mac' : 'linux';
+  const view = startStatusView(snap, { platform });
+  const say = (line) => (line ? t(`loading.start.${line.key}`, line.params) : '');
+
+  poseMascot(view.mascot);
+
+  const $text = $('loading-text');
+  if ($text) {
+    const title = view.mascot === 'waking' || view.mascot === 'working' ? t('loading.start.headingStarting')
+      : view.mascot === 'ready' ? t('loading.start.headingReady')
+        : view.mascot === 'failed' ? t('loading.start.headingFailed')
+          : _offlineTitle || t('loading.serverOffline');
+    if ($text.textContent !== title) $text.textContent = title;
+  }
+
+  const btn = $('loading-action-btn');
+  const $label = $('loading-action-label');
+  if (btn) btn.disabled = view.busy || view.state === 'online';
+  if ($label) {
+    $label.textContent = view.button === 'starting' ? t('loading.starting')
+      : view.button === 'retry' ? t('common.retry') : t('loading.startServer');
+  }
+
+  const $status = $('loading-action-status');
+  const line = say(view.headline);
+  if ($status && $status.textContent !== line) $status.textContent = line;
+
+  const $elapsed = $('loading-action-elapsed');
+  if ($elapsed) {
+    $elapsed.textContent = view.elapsed;
+    $elapsed.setAttribute('aria-label', view.elapsed ? `${t('loading.start.elapsedLabel')}: ${view.elapsed}` : '');
+  }
+
+  const $hint = $('loading-action-hint');
+  if ($hint) $hint.textContent = say(view.hint);
+
+  const $trail = $('loading-action-trail');
+  if ($trail) {
+    $trail.replaceChildren(...view.trail.map((row) => {
+      const item = document.createElement('li');
+      const what = document.createElement('span');
+      what.textContent = t(`loading.start.${row.key}`);
+      const when = document.createElement('span');
+      when.className = 'at';
+      when.textContent = row.time;
+      item.append(what, when);
+      return item;
+    }));
+  }
+
+  const $log = $('loading-action-log');
+  if ($log) $log.textContent = view.error?.log ? t('loading.start.failedLog', { path: view.error.log }) : '';
+}
+
+/**
+ * While the overlay says the server is offline: keep asking for it, and let
+ * the Start button hand the OS a synabun://start link. Reconnects by itself
+ * the moment the server answers, however it was started. While a start is
+ * under way it shows what the launcher itself reports (its beacon), never a
+ * guess: see start-bridge.js.
+ */
+function watchForServer() {
+  if (_offlineBridge) return;
+  mountMascot();
+  const beaconAt = startBeaconTarget(window.location);
+  const bridge = createStartBridge({
+    probe: async () => {
+      const health = await fetchHealth();
+      return !!health && health.ok !== false;
+    },
+    launch: () => openStartLink({ document, location: window.location, userAgent: navigator.userAgent }),
+    beacon: beaconAt ? () => fetchStartBeacon(beaconAt) : null,
+    port: beaconAt ? beaconAt.port : 0,
+    onUpdate(snap) {
+      if (_offlineBridge !== bridge) return;
+      renderStart(snap);
+    },
+    onState(state) {
+      if (_offlineBridge !== bridge) return;
+      if (state !== 'online') return;
+      resetLoadingToConnecting();
+      emit('loading:retried');
+      if (_initCallback) _initCallback();
+    },
+  });
+  _offlineBridge = bridge;
+  bridge.watch();
 }
 
 // ═══════════════════════════════════════════
@@ -144,6 +352,9 @@ function updateCmdText(projectDir) {
  * Calls /api/health/start and re-triggers init on success.
  */
 async function handleStartAction() {
+  // Server offline: nothing to call, the OS starts it.
+  if (_offlineBridge) { _offlineBridge.start(); return; }
+
   const btn = $('loading-action-btn');
   const $status = $('loading-action-status');
   const $label = $('loading-action-label');
@@ -165,8 +376,6 @@ async function handleStartAction() {
       if ($label) $label.textContent = t('common.retry');
     }
   } catch (err) {
-    // Server is unreachable — try protocol handler as fallback
-    window.location.href = 'synabun://start';
     if ($status) $status.textContent = t('loading.somethingWrong');
     if (btn) btn.disabled = false;
     if ($label) $label.textContent = t('common.retry');

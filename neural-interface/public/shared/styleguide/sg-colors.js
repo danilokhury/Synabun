@@ -38,6 +38,7 @@ export function render(host, s) {
     host.append(card('palettes', palettes, row(name, add, fromLogo)));
     const semantic = el('div', 'sg-table-wrap');
     semantic.tabIndex = 0;
+    semantic.setAttribute('role', 'region');
     semantic.setAttribute('aria-label', label('semantic'));
     const table = el('table', 'sg-table');
     const head = el('tr');
@@ -86,10 +87,12 @@ export function render(host, s) {
         return box;
     }
     const matrix = el('section', 'sg-card');
-    matrix.append(el('h3', '', t('styleguide.contrast')), el('p', 'sg-purpose', t('styleguide.contrastHelp')));
+    const matrixBody = el('div', 'sg-card-body');
+    matrix.append(el('h3', '', t('styleguide.contrast')), el('p', 'sg-purpose', t('styleguide.contrastHelp')), matrixBody);
     for (const theme of ['light', 'dark']) {
         const wrap = el('div', 'sg-table-wrap');
         wrap.tabIndex = 0;
+        wrap.setAttribute('role', 'region');
         wrap.setAttribute('aria-label', `${t('styleguide.contrast')} · ${t(`styleguide.${theme}`)}`);
         const tab = el('table', 'sg-table sg-contrast-matrix');
         tab.dataset.theme = theme;
@@ -110,7 +113,7 @@ export function render(host, s) {
             tab.append(tr);
         }
         wrap.append(tab);
-        matrix.append(wrap);
+        matrixBody.append(wrap);
     }
     host.append(matrix);
     const update = () => {

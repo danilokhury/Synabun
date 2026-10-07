@@ -158,13 +158,16 @@ export function codexControlResponse(pending, response = {}) {
   // Codex matches a reply by id value and type: 0 and "0" are different requests to it.
   const base = { requestId: native.rpcId ?? pending.request_id, responseToken: randomUUID(), threadId: native.threadId || null, turnId: native.turnId || null, toolCallId: native.toolCallId || null };
   if (method === 'item/commandExecution/requestApproval' || method === 'item/fileChange/requestApproval') {
-    const available = Array.isArray(native.availableDecisions) && native.availableDecisions.length
-      ? native.availableDecisions.map((d) => (typeof d === 'string' ? d : Object.keys(d)[0]))
+    const available = Array.isArray(native.availableDecisions)
+      ? native.availableDecisions
       : ['accept', 'acceptForSession', 'decline', 'cancel'];
-    let decision;
-    if (response.decision && available.includes(response.decision)) decision = response.decision;
-    else if (allow) decision = response.always && available.includes('acceptForSession') ? 'acceptForSession' : 'accept';
-    else decision = response.cancel && available.includes('cancel') ? 'cancel' : 'decline';
+    // The UI puts policy amendment objects in result.decision and only their
+    // label in decision. Preserve the wire value for strict server validation.
+    let decision = response.result?.decision ?? response.decision;
+    if (decision == null) {
+      if (allow) decision = response.always && available.includes('acceptForSession') ? 'acceptForSession' : 'accept';
+      else decision = response.cancel && available.includes('cancel') ? 'cancel' : 'decline';
+    }
     return { ...base, result: { decision } };
   }
   if (method === 'item/permissions/requestApproval') {

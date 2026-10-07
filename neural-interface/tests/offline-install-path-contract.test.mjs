@@ -12,8 +12,8 @@ test('server exposes the package root as the startup project directory', () => {
   const offlineStart = server.indexOf("app.get('/offline.html'");
   const offlineEnd = server.indexOf("app.use('/i18n'", offlineStart);
   const offlineRoute = server.slice(offlineStart, offlineEnd);
-  assert.match(offlineRoute, /JSON\.stringify\(PACKAGE_ROOT\)/);
-  assert.doesNotMatch(offlineRoute, /JSON\.stringify\(DATA_HOME\)/);
+  assert.match(offlineRoute, /projectDir: PACKAGE_ROOT/);
+  assert.doesNotMatch(offlineRoute, /DATA_HOME/);
 
   const onboardingStart = server.indexOf("app.get('/api/setup/onboarding'");
   const onboardingEnd = server.indexOf("app.post('/api/setup/save-config'", onboardingStart);
@@ -34,9 +34,14 @@ test('offline command caches and uses the installation directory', () => {
   const offline = read('neural-interface/public/offline.html');
 
   assert.match(loading, /localStorage\.setItem\('synabun-project-dir', health\.projectDir\)/);
-  assert.match(offline, /localStorage\.getItem\('synabun-project-dir'\)/);
-  assert.match(offline, /const sep = isWin \? ' & ' : ' ; '/);
-  assert.match(offline, /`cd "\$\{projectDir\}"\$\{sep\}npm start`/);
+  assert.match(offline, /stored\('synabun-project-dir'\) \|\| facts\.projectDir/);
+  // One command that reads the same in cmd.exe, PowerShell and every POSIX
+  // shell: no `cd`, no separator (tests/start-bridge.test.mjs covers its quoting).
+  const bridge = read('neural-interface/public/shared/start-bridge.js');
+  assert.match(bridge, /projectDir: 'synabun-project-dir'/);
+  assert.match(bridge, /`npm --prefix \$\{quoteShellPath\(projectDir, windows\)\} start`/);
+  assert.doesNotMatch(offline, /\bcd "/);
+  assert.doesNotMatch(loading, /\bcd "/);
 });
 
 test('onboarding keeps writable data home separate from package root', () => {

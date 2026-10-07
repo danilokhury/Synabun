@@ -46,7 +46,14 @@ export function createPanel({ onClosed, projectPath } = {}) {
     proposalButton.append(badge);
     const closeBtn = button(t('styleguide.close'), () => close());
     closeBtn.id = 'sg-close';
-    header.append(row(title, project, status), row(button(t('styleguide.designMd'), () => show('preview', { source: true })), button(t('styleguide.export'), () => show('import-export')), button(t('styleguide.history'), () => show('history')), proposalButton, closeBtn));
+    closeBtn.classList.add('sg-close');
+    closeBtn.setAttribute('aria-label', t('styleguide.close'));
+    closeBtn.title = t('styleguide.close');
+    closeBtn.textContent = '×';
+    const context = row(title, project, status), actions = row(button(t('styleguide.designMd'), () => show('preview', { source: true })), button(t('styleguide.export'), () => show('import-export')), button(t('styleguide.history'), () => show('history')), proposalButton);
+    context.classList.add('sg-header-context');
+    actions.classList.add('sg-header-actions');
+    header.append(context, actions, closeBtn);
     panel.append(header);
     const shell = el('div', 'sg-shell'), rail = el('nav', 'sg-rail');
     rail.setAttribute('aria-label', t('styleguide.sections'));
@@ -137,6 +144,7 @@ export function createPanel({ onClosed, projectPath } = {}) {
     async function load(path) { if (!path)
         return; try {
         await state.load(path);
+        project.title = state.projectPath;
         storage.setItem('styleguide.lastProject', path);
     }
     catch (e) {

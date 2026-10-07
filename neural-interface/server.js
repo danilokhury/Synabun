@@ -256,8 +256,10 @@ import {
   convertPctInPlace as wbConvertPctInPlace,
 } from '../mcp-server/dist/services/whiteboard-geometry.js';
 import { ensureProjectCategories } from '../hooks/claude-code/shared.mjs';
-import { getDataHome, getDataHomeDiagnostics, pathIsInside } from '../lib/paths.js';
+import { getDataHome, getDataHomeDiagnostics, isGlobalInstall, pathIsInside } from '../lib/paths.js';
 import { launcherLogPath } from '../lib/first-launch-protection.js';
+import { registerStartLauncher, startLauncherState } from '../lib/start-launcher.js';
+import { renderOfflinePage } from './lib/offline-page.js';
 import {
   getDb, closeDb, getDbPath, getEmbedding, getEmbeddingBatch, getEmbeddingDims, warmupEmbeddings,
   encodeVector, decodeVector, cosineSimilarity,
@@ -746,13 +748,28 @@ app.get('/', (req, res, next) => {
   res.redirect('/onboarding.html');
 });
 
-// Serve offline.html dynamically with the real project path injected
+// The Start Server button on the offline page hands the OS a synabun:// link.
+// Whether the handler for it is registered is read once (after the boot-time
+// repair below) and told to the pages, which remember it for when we are down.
+let _startLauncherState = null;
+function getStartLauncherState() {
+  if (_startLauncherState === null) {
+    try { _startLauncherState = startLauncherState({ packageRoot: PACKAGE_ROOT }); } catch { _startLauncherState = 'missing'; }
+  }
+  return _startLauncherState;
+}
+const INSTALL_KIND = isGlobalInstall() ? 'npm' : 'git';
+
+// Serve offline.html with what it needs once we are down: the install path,
+// how it was installed, the launcher's state and the bridge code itself.
 app.get('/offline.html', (req, res) => {
   const html = readFileSync(join(__dirname, 'public', 'offline.html'), 'utf-8');
-  res.type('html').send(html.replace(
-    `const projectDir = localStorage.getItem('synabun-project-dir');`,
-    `const projectDir = localStorage.getItem('synabun-project-dir') || ${JSON.stringify(PACKAGE_ROOT)};`
-  ));
+  let bridgeSource = '';
+  try { bridgeSource = readFileSync(join(__dirname, 'public', 'shared', 'start-bridge.js'), 'utf-8'); } catch {}
+  res.type('html').send(renderOfflinePage(html, {
+    bridgeSource,
+    facts: { projectDir: PACKAGE_ROOT, install: INSTALL_KIND, launcher: getStartLauncherState() },
+  }));
 });
 
 // The standalone Claude chat page was retired (the sidepanel replaced it): its
@@ -22743,7 +22760,7 @@ app.get('/api/health', (req, res) => {
     // getDb() auto-creates the directory, file, and schema if missing
     getDb();
     const count = countMemories();
-    res.json({ ok: true, storage: 'sqlite', memories: count, projectDir: PACKAGE_ROOT });
+    res.json({ ok: true, storage: 'sqlite', memories: count, projectDir: PACKAGE_ROOT, install: INSTALL_KIND, startLauncher: getStartLauncherState() });
   } catch (err) {
     res.json({ ok: false, reason: 'db_error', detail: err.message });
   }
@@ -32964,6 +32981,16 @@ const httpServer = app.listen(PORT, async () => {
   try {
     setKvConfig('embedding_model', EMBEDDING_MODEL);
     setKvConfig('embedding_dims', String(EMBEDDING_DIMS));
+  } catch {}
+
+  // Keep the Start Server launcher (synabun://) pointing at this install even
+  // when the server was started directly rather than through setup.js. Writes
+  // only what differs; skipped for test runs and throwaway data homes.
+  try {
+    const launcher = registerStartLauncher({ packageRoot: PACKAGE_ROOT });
+    _startLauncherState = launcher.state === 'skipped' ? startLauncherState({ packageRoot: PACKAGE_ROOT }) : launcher.state;
+    if (launcher.changed) console.log('[server] Start Server launcher registered (synabun://)');
+    else if (!launcher.ok) console.warn(`[server] Start Server launcher not registered: ${launcher.errors[0]}`);
   } catch {}
 
   // Auto-heal legacy synabun-symlink plugin state and reinstall via CC CLI
