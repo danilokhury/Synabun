@@ -30,7 +30,7 @@ import { CLAUDE_NOT_INSTALLED, resolveClaudeSdkExecutable } from './claude-execu
 import { diagnoseLaunchFailure, isNativeBinaryLaunchFailure } from './native-binary-runtime.js';
 import { normalizePanelSession, startSignature, applyPanelSessionOptions, liveSettingsPatch, normalizeMcpServers, mergeTabMcpServers } from './claude-panel-session.js';
 import { SESSION_REQUESTS, runSessionRequest, slimRewind, slimMcpStatus } from './claude-panel-requests.js';
-import { applyTemporaryOptions, plansDirsOf, planFileOfToolCall, removeTemporaryPlanFiles } from './claude-temporary.js';
+import { applyTemporaryOptions, plansDirsOf, snapshotPlanFiles, planFileOfToolCall, removeTemporaryPlanFiles } from './claude-temporary.js';
 import { rootBypassBlock } from './claude-bypass-policy.js';
 import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
@@ -226,7 +226,7 @@ function log(...args) { console.log('[claude-sdk]', ...args); }
 
 // Panel sessions, a temporary chat (lib/claude-temporary.js): the plan files
 // Claude Code wrote for one that still have to be removed. path → { plansDirs,
-// since, ended, last }. One is removed once the pump of the process that wrote
+// since, before, ended, last }. One is removed once the pump of the process that wrote
 // it has settled (`ended`), and stays owed after that removal, whether it
 // removed the file or found none: the pump settles when the SDK's own cleanup
 // stops waiting for the process, which can be before the process is gone, and
@@ -744,7 +744,10 @@ export class ClaudeSession {
       // (Which of the session's MCP connections is SynaBun's is asked of the live process when a tool of one is called.)
       applyTemporaryOptions(options, { mcpUrl: deps.mcpUrl || '', mcpStatus: () => this.q?.mcpServerStatus?.() });
       this._tempPlansDirs = plansDirsOf(options.env, { cwd: workDir, settings: options.settings });
-      if (!this._tempSince) this._tempSince = Date.now();
+      if (!this._tempSince) {
+        this._tempPlansBefore = snapshotPlanFiles(this._tempPlansDirs);
+        this._tempSince = Date.now();
+      }
     }
     // The executable resolved at the top of this call. The SDK uses
     // pathToClaudeCodeExecutable verbatim with zero validation, so it was vetted
@@ -1079,7 +1082,7 @@ export class ClaudeSession {
   // stay owed and are swept once more when it can no longer be alive.
   _removeTemporaryPlans() {
     if (!this._tempPlans?.size) return;
-    const owed = { plansDirs: this._tempPlansDirs, since: this._tempSince, ended: false, last: false };
+    const owed = { plansDirs: this._tempPlansDirs, since: this._tempSince, before: this._tempPlansBefore, ended: false, last: false };
     for (const path of this._tempPlans) _temporaryPlansOwed.set(path, owed);
     this._tempPlans.clear();
     Promise.resolve(this.pumpPromise).catch(() => {}).then(() => {
@@ -1098,6 +1101,7 @@ export class ClaudeSession {
     this._tempLive = false;
     this._tempOver = false;
     this._tempSince = 0;
+    this._tempPlansBefore = null;
   }
 
   // Whether this message makes, keeps or may not make the conversation a

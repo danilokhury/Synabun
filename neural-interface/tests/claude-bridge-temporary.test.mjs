@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, chmodSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, chmodSync, readFileSync, readdirSync, realpathSync, lstatSync, symlinkSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -468,6 +468,79 @@ test('the plan file Claude Code wrote for it is removed when it ends', async () 
     assert.equal(existsSync(old), true, 'a plan that was there before it started is not touched');
     assert.equal(existsSync(outside), true, 'nothing outside the plans folder is touched');
   } finally { shutdownAllBridges(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('plan cleanup preserves existing files when filesystem time lags the wall clock', async (t) => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cp-temp-clock-')));
+  const plans = join(dir, 'plans');
+  mkdirSync(plans);
+  const old = join(plans, 'existing-plan.md');
+  const renamed = join(plans, 'existing-plan-renamed.md');
+  const mine = join(plans, 'new-plan.md');
+  writeFileSync(old, '# Existing plan');
+  // Filesystem timestamps and Date.now() are different clocks. Keep the lag
+  // deterministic rather than relying on the host filesystem's precision.
+  const actualNow = Date.now.bind(Date);
+  t.mock.method(Date, 'now', () => actualNow() + 1000);
+  const started = Date.now();
+  const { queries } = configure({ claudeAccountEnv: (id) => (id === 'work' ? { CLAUDE_CONFIG_DIR: dir } : null) });
+  const page = connect();
+  try {
+    page.client({ type: 'query', prompt: 'plan it', windowId: 'w-clock', temporary: true, accountId: 'work' });
+    await until(() => queries.length === 1);
+    writeFileSync(mine, '# New plan');
+    writeFileSync(old, '# Existing plan edited during the session');
+    renameSync(old, renamed);
+    assert.ok(lstatSync(mine).birthtimeMs < started, 'a new file really has a timestamp before the application clock');
+    queries[0].emit(init('s-clock'));
+    queries[0].emit({ type: 'assistant', session_id: 's-clock', parent_tool_use_id: null, message: { role: 'assistant', content: [
+      { type: 'tool_use', id: 't-new', name: 'Write', input: { file_path: mine, content: '# New plan' } },
+      { type: 'tool_use', id: 't-old', name: 'Write', input: { file_path: renamed, content: '# Existing plan edited during the session' } },
+    ] } });
+    await until(() => page.of('event').some(m => m.event?.type === 'assistant'));
+    page.close();
+    await until(() => !existsSync(mine));
+    assert.equal(existsSync(renamed), true, 'a file present before the session is preserved even after an edit and rename');
+    assert.equal(readFileSync(renamed, 'utf8'), '# Existing plan edited during the session');
+  } finally { page.close(); shutdownAllBridges(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('plan cleanup handles a missing folder beneath a symlinked ancestor', () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cp-temp-missing-')));
+  try {
+    const config = join(dir, 'config');
+    const alias = join(dir, 'alias');
+    mkdirSync(config);
+    symlinkSync(config, alias, process.platform === 'win32' ? 'junction' : 'dir');
+    const plans = join(alias, 'nested', 'plans');
+    const before = temporary.snapshotPlanFiles([plans]);
+    mkdirSync(plans, { recursive: true });
+    const mine = join(realpathSync(plans), 'new-plan.md');
+    writeFileSync(mine, '# New plan');
+    const result = temporary.removeTemporaryPlanFiles([mine], { plansDirs: [plans], before });
+    assert.deepEqual(result, { removed: [mine], failed: [] });
+    assert.equal(existsSync(mine), false);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('plan cleanup preserves files when the initial folder cannot be read', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cp-temp-unreadable-')));
+  const plans = join(dir, 'plans');
+  mkdirSync(plans);
+  const old = join(plans, 'existing-plan.md');
+  const mine = join(plans, 'new-plan.md');
+  writeFileSync(old, '# Existing plan');
+  try {
+    chmodSync(plans, 0o000);
+    assert.throws(() => readdirSync(plans), { code: 'EACCES' });
+    const before = temporary.snapshotPlanFiles([plans]);
+    chmodSync(plans, 0o755);
+    writeFileSync(mine, '# New plan');
+    const result = temporary.removeTemporaryPlanFiles([old, mine], { plansDirs: [plans], before });
+    assert.deepEqual(result, { removed: [], failed: [] });
+    assert.equal(existsSync(old), true);
+    assert.equal(existsSync(mine), true, 'without the starting contents neither file can be classified as ours');
+  } finally { chmodSync(plans, 0o755); rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('it lives as long as its tab: no idle reap, no restart after a stall', async () => {

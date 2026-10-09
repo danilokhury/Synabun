@@ -7,9 +7,9 @@
 // one sentence the model is told, and the plan files Claude Code writes for it
 // whatever the options say.
 
-import { lstatSync, readFileSync, realpathSync, statSync, unlinkSync } from 'node:fs';
+import { lstatSync, readFileSync, readdirSync, realpathSync, statSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 
 // Set in the environment of a temporary session's process. SynaBun's Claude
 // Code hooks read it (hooks/claude-code/shared.mjs, isTemporaryChat) and store,
@@ -386,6 +386,41 @@ export function plansDirsOf(env, { cwd = '', settings = null } = {}) {
 const real = (p) => { try { return realpathSync(p); } catch { return resolve(p); } };
 const listOf = (dirs) => (Array.isArray(dirs) ? dirs : [dirs]).filter(Boolean);
 
+// Resolve existing ancestors too, when the plans directory does not exist yet.
+function realPlanFolder(dir) {
+  const full = resolve(dir);
+  try { return realpathSync(full); } catch {
+    const parent = dirname(full);
+    return parent === full ? full : join(realPlanFolder(parent), basename(full));
+  }
+}
+
+/**
+ * Files present before the session starts. Filesystem creation timestamps can
+ * lag Date.now(), so they cannot reliably identify a newly created plan.
+ * Device/inode identities also preserve existing files after edits or renames.
+ * Missing folders start empty; unreadable folders remain unclassified.
+ */
+export function snapshotPlanFiles(plansDirs) {
+  const before = { roots: new Set(), files: new Set() };
+  for (const dir of listOf(plansDirs)) {
+    const root = realPlanFolder(dir);
+    try {
+      for (const name of readdirSync(root)) {
+        try { before.files.add(planFileIdentity(lstatSync(join(root, name)))); } catch (err) {
+          if (err?.code !== 'ENOENT' && err?.code !== 'ENOTDIR') throw err;
+        }
+      }
+      before.roots.add(root);
+    } catch (err) {
+      if (err?.code === 'ENOENT') before.roots.add(root);
+    }
+  }
+  return before;
+}
+
+const planFileIdentity = (stat) => `${stat.dev}:${stat.ino}`;
+
 /**
  * The plan file a tool call of the session names, when it is one: a Write or
  * Edit of a Markdown file directly in a plans folder, or the file an
@@ -407,12 +442,13 @@ export function planFileOfToolCall(block, plansDirs) {
  * a plans folder whatever the session's options say (`plansDirectory` only
  * moves it inside the project), so the bridge removes it once the session's
  * process has ended. Only a regular Markdown file that is really in one of the
- * plans folders and was created after the session's process started: a plan
- * that was there before is someone else's.
+ * plans folders and was absent from the pre-session snapshot: a plan that was
+ * there before is someone else's. Callers without a snapshot retain the
+ * timestamp check.
  * @returns {{ removed: string[], failed: string[] }} `failed`: still there
  *   because the removal itself did not work; the caller keeps them and tries again
  */
-export function removeTemporaryPlanFiles(paths, { plansDirs, plansDir, since }) {
+export function removeTemporaryPlanFiles(paths, { plansDirs, plansDir, since, before }) {
   const removed = [];
   const failed = [];
   const roots = new Set();
@@ -422,8 +458,11 @@ export function removeTemporaryPlanFiles(paths, { plansDirs, plansDir, since }) 
       if (extname(path).toLowerCase() !== '.md') continue;
       const stat = lstatSync(path);
       if (!stat.isFile()) continue; // not a link, not a folder
-      if (!roots.has(realpathSync(dirname(path)))) continue;
-      if (!(stat.birthtimeMs >= since)) continue;
+      const parent = realpathSync(dirname(path));
+      if (!roots.has(parent)) continue;
+      if (before) {
+        if (!before.roots.has(parent) || before.files.has(planFileIdentity(stat))) continue;
+      } else if (!(stat.birthtimeMs >= since)) continue;
       unlinkSync(path);
       removed.push(path);
     } catch (err) {
