@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import vm from 'node:vm';
 import { attachConsoleBuffer } from '../lib/browser-console.js';
+import { resolveBrowserLanguage } from '../lib/browser-language.js';
 
 const source = readFileSync(new URL('../server.js', import.meta.url), 'utf8');
 const between = (start, end) => {
@@ -181,6 +182,7 @@ function createSessionHarness({ running = { running: true }, startError, cdpErro
     resolve, createHash,
     randomBytes: () => ({ toString: () => 'session-under-test' }),
     loadBrowserConfig: () => moreLoginConfig(),
+    resolveBrowserLanguage,
     browserConfigUnreadable: () => null,
     findBrowserExecutable: () => '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
     getManagedProfileRoot: () => '/Users/me/.synabun/browser-profiles/synabun',

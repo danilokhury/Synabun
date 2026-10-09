@@ -2,22 +2,19 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 
+import { existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+
 import {
   SDK_PKG,
-  SDK_PLATFORM_PACKAGES,
-  detectMusl,
-  sdkBinaryCandidates,
-  resolveSdkBinary,
   ensureExecutable,
-  claudeRuntime,
-  clearNativeBinaryCache,
   resolveClaudeExecutableOverride,
   vendoredBinaryTargets,
   ensureVendoredExecutables,
   isNativeBinaryLaunchFailure,
   diagnoseLaunchFailure,
-  planRuntimeRecovery,
 } from '../lib/native-binary-runtime.js';
+import * as runtime from '../lib/native-binary-runtime.js';
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
@@ -63,117 +60,29 @@ function chmodThrows(code) {
 const accessOk = () => {};
 const accessThrows = () => { const e = new Error('EACCES'); e.code = 'EACCES'; throw e; };
 
-// ── resolution ──────────────────────────────────────────────────────────────
+// ── nothing embedded ────────────────────────────────────────────────────────
 
-test('darwin and win32 get a single candidate with no fallback', () => {
-  assert.deepEqual(sdkBinaryCandidates({ platform: 'darwin', arch: 'arm64' }),
-    [`${SDK_PKG}-darwin-arm64/claude`]);
-  assert.deepEqual(sdkBinaryCandidates({ platform: 'darwin', arch: 'x64' }),
-    [`${SDK_PKG}-darwin-x64/claude`]);
-  assert.deepEqual(sdkBinaryCandidates({ platform: 'win32', arch: 'x64' }),
-    [`${SDK_PKG}-win32-x64/claude.exe`]);
-  assert.deepEqual(sdkBinaryCandidates({ platform: 'win32', arch: 'arm64' }),
-    [`${SDK_PKG}-win32-arm64/claude.exe`]);
-});
-
-test('only win32 gets the .exe suffix', () => {
-  for (const platform of ['darwin', 'linux', 'android']) {
-    for (const c of sdkBinaryCandidates({ platform, arch: 'x64' })) {
-      assert.ok(c.endsWith('/claude'), `${platform} candidate should be extensionless: ${c}`);
-    }
+test('this module no longer resolves, repairs or falls back to an executable inside the SDK', () => {
+  // Claude Code is the user's own installation (lib/claude-executable.js). The
+  // functions that found and repaired the copy the SDK used to bring are gone,
+  // so nothing can quietly run one again.
+  for (const name of ['claudeRuntime', 'resolveSdkBinary', 'sdkBinaryCandidates', 'planRuntimeRecovery', 'clearNativeBinaryCache', 'SDK_PLATFORM_PACKAGES', 'detectMusl']) {
+    assert.equal(runtime[name], undefined, name);
   }
 });
 
-test('android resolves to the linux-<arch>-android package', () => {
-  assert.deepEqual(sdkBinaryCandidates({ platform: 'android', arch: 'arm64' }),
-    [`${SDK_PKG}-linux-arm64-android/claude`]);
-});
-
-test('linux glibc tries the plain package first, musl tries musl first', () => {
-  assert.deepEqual(sdkBinaryCandidates({ platform: 'linux', arch: 'x64', preferMusl: false }), [
-    `${SDK_PKG}-linux-x64/claude`,
-    `${SDK_PKG}-linux-x64-musl/claude`,
-  ]);
-  assert.deepEqual(sdkBinaryCandidates({ platform: 'linux', arch: 'x64', preferMusl: true }), [
-    `${SDK_PKG}-linux-x64-musl/claude`,
-    `${SDK_PKG}-linux-x64/claude`,
-  ]);
-  assert.deepEqual(sdkBinaryCandidates({ platform: 'linux', arch: 'arm64', preferMusl: true }), [
-    `${SDK_PKG}-linux-arm64-musl/claude`,
-    `${SDK_PKG}-linux-arm64/claude`,
-  ]);
-});
-
-test('detectMusl is linux-only and fails safe to glibc', () => {
-  const muslReport = { getReport: () => ({ header: {} }) };
-  const glibcReport = { getReport: () => ({ header: { glibcVersionRuntime: '2.39' } }) };
-
-  assert.equal(detectMusl({ platform: 'linux', report: muslReport }), true);
-  assert.equal(detectMusl({ platform: 'linux', report: glibcReport }), false);
-
-  // Non-linux never reports musl, whatever the report says.
-  assert.equal(detectMusl({ platform: 'darwin', report: muslReport }), false);
-  assert.equal(detectMusl({ platform: 'win32', report: muslReport }), false);
-
-  // Unreadable report → glibc ordering, matching the SDK. (`null`, not
-  // `undefined` — an undefined argument would fall back to the real
-  // process.report via the default parameter.)
-  assert.equal(detectMusl({ platform: 'linux', report: null }), false);
-  assert.equal(detectMusl({ platform: 'linux', report: {} }), false);
-  assert.equal(detectMusl({ platform: 'linux', report: { getReport: () => { throw new Error('nope'); } } }), false);
-});
-
-test('resolveSdkBinary picks the first candidate that exists', () => {
-  // musl host where only the glibc build is installed → falls through to it.
-  const specs = [`${SDK_PKG}-linux-x64-musl/claude`, `${SDK_PKG}-linux-x64/claude`];
-  const r = resolveSdkBinary({
-    platform: 'linux',
-    arch: 'x64',
-    preferMusl: true,
-    resolve: fakeResolve(specs),
-    exists: fakeExists([`/nm/${SDK_PKG}-linux-x64/claude`]),
-  });
-  assert.equal(r.path, `/nm/${SDK_PKG}-linux-x64/claude`);
-  assert.equal(r.specifier, `${SDK_PKG}-linux-x64/claude`);
-  assert.equal(r.checked.length, 2);
-});
-
-test('resolveSdkBinary skips a candidate whose resolve throws MODULE_NOT_FOUND', () => {
-  const r = resolveSdkBinary({
-    platform: 'linux',
-    arch: 'x64',
-    preferMusl: true,
-    resolve: fakeResolve([`${SDK_PKG}-linux-x64/claude`]), // musl package not installed
-    exists: fakeExists([`/nm/${SDK_PKG}-linux-x64/claude`]),
-  });
-  assert.equal(r.path, `/nm/${SDK_PKG}-linux-x64/claude`);
-  assert.match(r.checked[0].error, /Cannot find module/);
-});
-
-test('resolveSdkBinary returns null with a populated trail when nothing exists', () => {
-  const r = resolveSdkBinary({
-    platform: 'darwin',
-    arch: 'arm64',
-    resolve: fakeResolve([]),
-    exists: fakeExists([]),
-  });
-  assert.equal(r.path, null);
-  assert.equal(r.candidates.length, 1);
-  assert.equal(r.checked.length, 1);
-});
-
-test('our platform package table still matches the installed SDK optionalDependencies', () => {
-  // Drift guard: if the SDK adds or renames a platform target, this fails loudly
-  // rather than letting our resolution silently diverge.
-  const req = createRequire(import.meta.url);
-  let pkg;
-  try {
-    pkg = req(`${SDK_PKG}/package.json`);
-  } catch {
-    const fs = req('node:fs');
-    pkg = JSON.parse(fs.readFileSync(new URL('../node_modules/@anthropic-ai/claude-agent-sdk/package.json', import.meta.url), 'utf-8'));
+test('the installed Agent SDK carries no Claude Code executable, and says so itself', () => {
+  const require = createRequire(import.meta.url);
+  const sdkDir = dirname(require.resolve(SDK_PKG));
+  const scope = dirname(sdkDir);
+  // The SDK names the packages that would hold its executable; none is installed.
+  const sdkPkg = JSON.parse(require('node:fs').readFileSync(join(sdkDir, 'package.json'), 'utf8'));
+  const platformPackages = Object.keys(sdkPkg.optionalDependencies || {});
+  assert.ok(platformPackages.length >= 6, 'the SDK still declares its per-platform packages');
+  for (const name of platformPackages) {
+    assert.equal(existsSync(join(scope, name.split('/')[1])), false, `${name} is installed: SynaBun must not carry Claude Code`);
+    assert.throws(() => require.resolve(`${name}/package.json`), /Cannot find module/, name);
   }
-  assert.deepEqual(Object.keys(pkg.optionalDependencies || {}).sort(), [...SDK_PLATFORM_PACKAGES].sort());
 });
 
 // ── ensureExecutable ────────────────────────────────────────────────────────
@@ -256,7 +165,7 @@ test('windows never chmods and judges launchability by name', () => {
 
 // ── override contract ───────────────────────────────────────────────────────
 
-test('no override means let the SDK resolve for itself', () => {
+test('no override is not an error: the installed Claude Code is used instead', () => {
   const r = resolveClaudeExecutableOverride(null);
   assert.deepEqual(r, { path: null, kind: null, ok: true, reason: null });
   assert.deepEqual(resolveClaudeExecutableOverride('   '), { path: null, kind: null, ok: true, reason: null });
@@ -325,19 +234,19 @@ test('a missing script override is rejected rather than passed through', () => {
 
 function sweepFixture() {
   const tree = {
-    '/app/node_modules/@anthropic-ai': ['claude-agent-sdk', 'claude-agent-sdk-darwin-arm64', 'claude-agent-sdk-linux-x64'],
-    '/app/node_modules/node-pty/prebuilds': ['darwin-arm64', 'darwin-x64', 'linux-arm'],
+    '/app/node_modules/node-pty/prebuilds': ['darwin-arm64', 'darwin-x64', 'linux-arm', 'win32-x64'],
+    // What an install that predates the rule could still hold: never swept.
+    '/app/node_modules/@anthropic-ai': ['claude-agent-sdk', 'claude-agent-sdk-darwin-arm64'],
     '/app/node_modules/@openai': ['codex-darwin-arm64', 'codex-sdk'],
     '/app/node_modules/@openai/codex-darwin-arm64/vendor': ['aarch64-apple-darwin'],
-    '/app/node_modules/@openai/codex-sdk/vendor': [],
   };
   const files = [
-    '/app/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude',
-    '/app/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude',
     '/app/node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper',
     '/app/node_modules/node-pty/prebuilds/darwin-x64/spawn-helper',
     '/app/node_modules/node-pty/prebuilds/linux-arm/spawn-helper',
-    '/app/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex/codex',
+    '/app/node_modules/node-pty/build/Release/spawn-helper',
+    '/app/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude',
+    '/app/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex',
     '/app/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/path/rg',
   ];
   return {
@@ -347,27 +256,38 @@ function sweepFixture() {
   };
 }
 
-test('the sweep enumerates every vendored binary, including dirs a hardcoded list would miss', () => {
+test('the sweep enumerates SynaBun\'s own helpers, including dirs a hardcoded list would miss', () => {
   const { readdir, exists } = sweepFixture();
   const targets = vendoredBinaryTargets({ root: '/app', platform: 'linux', exists, readdir });
   const paths = targets.map((t) => t.path);
 
-  assert.ok(paths.includes('/app/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude'));
-  assert.ok(paths.includes('/app/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude'));
-  assert.ok(paths.includes('/app/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex/codex'));
-  assert.ok(paths.includes('/app/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/path/rg'));
   // The old hardcoded list in rebuild-pty.js knew only darwin-{arm64,x64} and
   // linux-{x64,arm64} — linux-arm would have been skipped.
-  assert.ok(paths.includes('/app/node_modules/node-pty/prebuilds/linux-arm/spawn-helper'));
-  // The SDK wrapper package itself carries no binary.
-  assert.ok(!paths.some((p) => p.includes('claude-agent-sdk/claude')));
+  assert.deepEqual(paths.sort(), [
+    '/app/node_modules/node-pty/build/Release/spawn-helper',
+    '/app/node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper',
+    '/app/node_modules/node-pty/prebuilds/darwin-x64/spawn-helper',
+    '/app/node_modules/node-pty/prebuilds/linux-arm/spawn-helper',
+  ]);
+  assert.ok(targets.every((t) => t.kind === 'pty-spawn-helper'));
+});
+
+test('the sweep never touches an agent tool, even one an older install left behind', () => {
+  const { readdir, exists } = sweepFixture();
+  const chmod = recordChmod();
+  const r = ensureVendoredExecutables({
+    root: '/app', platform: 'darwin', exists, readdir, stat: fakeStat(0o100644), chmod, access: accessOk,
+  });
+  assert.equal(r.checked, 4);
+  for (const call of chmod.calls) assert.doesNotMatch(call.path, /claude|codex|\/rg$/, call.path);
+  assert.equal(chmod.calls.length, 4);
 });
 
 test('the sweep repairs only the binaries that need it', () => {
   const { readdir, exists } = sweepFixture();
   const needsRepair = new Set([
-    '/app/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude',
     '/app/node_modules/node-pty/prebuilds/darwin-x64/spawn-helper',
+    '/app/node_modules/node-pty/build/Release/spawn-helper',
   ]);
   const chmod = recordChmod();
   const r = ensureVendoredExecutables({
@@ -399,7 +319,7 @@ test('the sweep is a no-op on windows but still enumerates', () => {
 
 test('one unrepairable target does not abort the rest of the sweep', () => {
   const { readdir, exists } = sweepFixture();
-  const blocked = '/app/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/path/rg';
+  const blocked = '/app/node_modules/node-pty/prebuilds/linux-arm/spawn-helper';
   const r = ensureVendoredExecutables({
     root: '/app',
     platform: 'linux',
@@ -411,7 +331,7 @@ test('one unrepairable target does not abort the rest of the sweep', () => {
   });
   assert.equal(r.failed.length, 1);
   assert.equal(r.failed[0].path, blocked);
-  assert.ok(r.repaired.length >= 5, 'every other binary is still repaired');
+  assert.equal(r.repaired.length, 3, 'every other binary is still repaired');
 });
 
 test('the sweep tolerates a missing node_modules tree', () => {
@@ -452,138 +372,58 @@ test('session-recovery errors are NOT treated as launch failures', () => {
 });
 
 // ── diagnosis ───────────────────────────────────────────────────────────────
+// What is diagnosed is the user's Claude Code, at the path the SDK was given.
 
-test('a repaired exec bit yields a retryable, non-libc explanation', () => {
-  const dx = diagnoseLaunchFailure({
-    err: new Error('spawn EACCES'),
-    runtime: { path: '/nm/claude', state: 'repaired', mode: 0o100644, repaired: true, repairCommand: 'chmod +x "/nm/claude"' },
-    platform: 'darwin',
-    arch: 'arm64',
-  });
+const libcError = ReferenceError('Claude Code native binary at /home/u/.local/bin/claude exists but failed to launch. This usually means the binary does not match this system\'s libc');
+
+test('no executable, or one that is gone, keeps the panel install phrase', () => {
+  const none = diagnoseLaunchFailure({ err: new Error('Native CLI binary for linux-x64 not found.'), executable: null, platform: 'linux' });
+  assert.equal(none.kind, 'missing');
+  // ui-claude-panel.js shows its install help on this exact phrase.
+  assert.match(none.message, /Claude CLI not found/);
+  assert.match(none.message, /installed separately from SynaBun/);
+
+  const gone = diagnoseLaunchFailure({ err: new Error('spawn ENOENT'), executable: '/home/u/.local/bin/claude', platform: 'linux', stat: statThrows('ENOENT') });
+  assert.equal(gone.kind, 'missing');
+  assert.match(gone.message, /Claude CLI not found at \/home\/u\/\.local\/bin\/claude/);
+  assert.doesNotMatch(gone.message, /bundled|--include=optional|libc/i);
+
+  const folder = diagnoseLaunchFailure({ err: new Error('EACCES'), executable: '/opt/claude', platform: 'darwin', stat: fakeStat(0o40755, { isFile: false }) });
+  assert.equal(folder.kind, 'missing');
+  assert.match(folder.message, /is not a file/);
+});
+
+test('a missing execute bit is a permission problem, with the command that fixes it', () => {
+  const dx = diagnoseLaunchFailure({ err: libcError, executable: '/home/u/my tools/claude', platform: 'darwin', stat: fakeStat(0o100644), access: accessThrows });
   assert.equal(dx.kind, 'exec-bit');
-  assert.equal(dx.canRetryAfterRepair, true);
-  assert.match(dx.message, /permission/i);
-  assert.doesNotMatch(dx.message, /musl/i, 'must not repeat the SDK\'s wrong libc story on macOS');
-  assert.doesNotMatch(dx.message, /glibc/i);
+  assert.equal(dx.repairCommand, 'chmod +x "/home/u/my tools/claude"');
+  assert.match(dx.message, /not a libc mismatch/);
+  assert.match(dx.message, /chmod \+x "\/home\/u\/my tools\/claude"/);
 });
 
-test('an unrepairable exec bit is not retried and suggests sudo', () => {
-  const dx = diagnoseLaunchFailure({
-    err: new Error('spawn EACCES'),
-    runtime: { path: '/nm/claude', state: 'chmod-failed', error: 'EROFS', repairCommand: 'chmod +x "/nm/claude"' },
-    platform: 'linux',
-  });
-  assert.equal(dx.canRetryAfterRepair, false);
-  assert.match(dx.message, /sudo chmod \+x/);
-});
-
-test('a missing binary keeps the panel install-CTA phrase', () => {
-  // ui-claude-panel.js gates its "install Claude" CTA on /Claude CLI not found|ENOENT/i.
-  const dx = diagnoseLaunchFailure({
-    err: new Error('Native CLI binary for linux-x64 not found.'),
-    runtime: { state: 'not-installed' },
-    platform: 'linux',
-    arch: 'x64',
-  });
-  assert.equal(dx.kind, 'missing');
-  assert.match(dx.message, /Claude CLI not found/);
-  assert.match(dx.message, /optional/);
-});
-
-test('an executable-but-failing binary blames Gatekeeper on macOS and libc on Linux', () => {
-  const mac = diagnoseLaunchFailure({
-    err: new Error('spawn EPERM'), runtime: { path: '/nm/claude', state: 'ok' }, platform: 'darwin', arch: 'arm64',
-  });
+test('an executable-but-failing Claude Code blames Gatekeeper on macOS and libc on Linux', () => {
+  const mac = diagnoseLaunchFailure({ err: libcError, executable: '/opt/homebrew/bin/claude', platform: 'darwin', arch: 'arm64', stat: fakeStat(0o100755), access: accessOk });
   assert.equal(mac.kind, 'gatekeeper');
-  assert.match(mac.repairCommand, /xattr -d com\.apple\.quarantine/);
+  assert.match(mac.repairCommand, /^xattr -d com\.apple\.quarantine "\/opt\/homebrew\/bin\/claude"$/);
+  assert.match(mac.message, /arm64/);
 
-  const linux = diagnoseLaunchFailure({
-    err: new Error('spawn ENOEXEC'), runtime: { path: '/nm/claude', state: 'ok' }, platform: 'linux', arch: 'x64',
-  });
+  const linux = diagnoseLaunchFailure({ err: libcError, executable: '/home/u/.local/bin/claude', platform: 'linux', stat: fakeStat(0o100755), access: accessOk });
   assert.equal(linux.kind, 'libc');
-  assert.match(linux.message, /musl|glibc/);
+  assert.match(linux.message, /musl/);
+  assert.match(linux.message, /Reinstall Claude Code/);
 });
 
-test('a windows shim is diagnosed as a shim problem', () => {
-  const dx = diagnoseLaunchFailure({
-    err: new Error('spawn EINVAL'),
-    runtime: { path: 'C:\\npm\\claude.cmd', state: 'windows-bad-name' },
-    platform: 'win32',
-  });
+test('a windows command file is diagnosed as one the SDK cannot start', () => {
+  const dx = diagnoseLaunchFailure({ err: new Error('spawn EINVAL'), executable: 'C:\\Users\\Jane Doe\\AppData\\Roaming\\npm\\claude.cmd', platform: 'win32', stat: fakeStat(0o100666) });
   assert.equal(dx.kind, 'shim');
-  assert.equal(dx.canRetryAfterRepair, false);
+  assert.match(dx.message, /sdkExecutable/);
+  // A real executable that still failed keeps the SDK's own words.
+  const exe = diagnoseLaunchFailure({ err: new Error('spawn UNKNOWN'), executable: 'C:\\Users\\u\\.local\\bin\\claude.exe', platform: 'win32', stat: fakeStat(0o100666) });
+  assert.equal(exe.kind, 'unknown');
+  assert.equal(exe.message, 'spawn UNKNOWN');
 });
 
-// ── recovery planning ───────────────────────────────────────────────────────
-
-test('recovery retries once after a successful repair, then falls back', () => {
-  const runtime = { path: '/nm/claude', state: 'repaired', mode: 0o100644, repairCommand: 'chmod +x "/nm/claude"' };
-
-  const first = planRuntimeRecovery({ err: new Error('EACCES'), runtime, fallbackBin: '/usr/local/bin/claude', platform: 'darwin' });
-  assert.equal(first.action, 'retry');
-
-  const second = planRuntimeRecovery({ err: new Error('EACCES'), runtime, fallbackBin: '/usr/local/bin/claude', alreadyTried: true, platform: 'darwin' });
-  assert.equal(second.action, 'fallback');
-  assert.match(second.message, /Falling back/);
-  assert.match(second.message, /\/usr\/local\/bin\/claude/);
-});
-
-test('recovery falls back immediately when repair cannot help', () => {
-  const r = planRuntimeRecovery({
-    err: new Error('EACCES'),
-    runtime: { path: '/nm/claude', state: 'chmod-failed', repairCommand: 'chmod +x "/nm/claude"' },
-    fallbackBin: '/usr/local/bin/claude',
-    platform: 'linux',
-  });
-  assert.equal(r.action, 'fallback');
-  assert.match(r.message, /sudo chmod \+x/);
-});
-
-test('recovery fails with a diagnosis when there is no fallback', () => {
-  const r = planRuntimeRecovery({
-    err: new Error('EACCES'),
-    runtime: { state: 'not-installed' },
-    fallbackBin: null,
-    platform: 'linux',
-    arch: 'x64',
-  });
-  assert.equal(r.action, 'fail');
-  assert.match(r.message, /Claude CLI not found/);
-});
-
-// ── live runtime (this host) ────────────────────────────────────────────────
-
-test('claudeRuntime resolves and repairs the real installed binary', () => {
-  clearNativeBinaryCache();
-  const rt = claudeRuntime();
-  // On a host where the platform package is installed we expect a launchable
-  // binary; where it is not, we expect a clean not-installed verdict.
-  if (rt.state === 'not-installed') {
-    assert.equal(rt.ok, false);
-    assert.ok(Array.isArray(rt.candidates) && rt.candidates.length > 0);
-  } else {
-    assert.equal(rt.ok, true, `runtime not launchable: ${rt.state} ${rt.reason || ''}`);
-    assert.ok(rt.path.includes('claude-agent-sdk-'));
-  }
-});
-
-test('claudeRuntime memoizes until the cache is cleared', () => {
-  clearNativeBinaryCache();
-  let resolveCalls = 0;
-  const opts = {
-    platform: 'darwin',
-    arch: 'arm64',
-    resolve: (s) => { resolveCalls++; return `/nm/${s}`; },
-    exists: () => true,
-    stat: fakeStat(0o100755),
-    chmod: recordChmod(),
-    access: accessOk,
-  };
-  claudeRuntime(opts);
-  claudeRuntime(opts);
-  assert.equal(resolveCalls, 1, 'second call should be served from cache');
-  clearNativeBinaryCache();
-  claudeRuntime(opts);
-  assert.equal(resolveCalls, 2);
-  clearNativeBinaryCache();
+test('a script is never asked for an execute bit', () => {
+  const dx = diagnoseLaunchFailure({ err: new Error('spawn node ENOENT'), executable: '/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js', platform: 'linux', stat: fakeStat(0o100644), access: accessThrows });
+  assert.equal(dx.kind, 'libc');
 });

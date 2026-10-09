@@ -9,6 +9,7 @@ import { storage } from './storage.js';
 import { KEYS } from './constants.js';
 import { getMenuItems } from './registry.js';
 import { openHelp } from './ui-help.js';
+import { initPwaInstall, isStandalone, requestPwaInstall } from './pwa-install.js';
 import { registerAction } from './ui-keybinds.js';
 import { isGuest, hasPermission } from './ui-sync.js';
 import { sendToPanel } from './ui-claude-panel.js';
@@ -413,16 +414,9 @@ function wireTerminalMenu() {
     'menu-command-runner':   () => emit('command-runner:open'),
     'menu-terminal-link':    () => emit('link:toggle'),
     'menu-terminal-toggle':  () => emit('terminal:toggle'),
-    'menu-install-app':      async () => {
-      if (window._pwaInstallPrompt) {
-        window._pwaInstallPrompt.prompt();
-        const { outcome } = await window._pwaInstallPrompt.userChoice;
-        if (outcome === 'accepted') {
-          window._pwaInstallPrompt = null;
-          const el = $('menu-install-app');
-          if (el) el.style.display = 'none';
-        }
-      }
+    'menu-install-app': async () => {
+      const result = await requestPwaInstall();
+      if (result === 'instructions') location.assign('/install-app.html');
     },
     'menu-restart-server':   async () => {
       try {
@@ -478,23 +472,13 @@ function wireTerminalMenu() {
   registerAction('toggle-terminal', () => emit('terminal:toggle'));
   registerAction('toggle-terminal-alt', () => emit('terminal:toggle'));
 
-  // PWA install prompt — show "Install as App" when the browser supports it
-  window.addEventListener('beforeinstallprompt', (e) => {
-    e.preventDefault();
-    window._pwaInstallPrompt = e;
+  initPwaInstall({ changed: value => {
     const el = $('menu-install-app');
-    if (el) el.style.display = '';
-  });
-  window.addEventListener('appinstalled', () => {
-    window._pwaInstallPrompt = null;
-    const el = $('menu-install-app');
-    if (el) el.style.display = 'none';
-  });
-  // Hide if already running as installed PWA
-  if (window.matchMedia('(display-mode: standalone)').matches || navigator.standalone) {
-    const el = $('menu-install-app');
-    if (el) el.style.display = 'none';
-  }
+    if (el) el.style.display = value === 'installed' ? 'none' : '';
+  } });
+  const installItem = $('menu-install-app');
+  if (installItem && !isStandalone()) installItem.style.display = '';
+
 }
 
 // ── Variant menu items injection ──

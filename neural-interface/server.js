@@ -10,7 +10,7 @@ import { findSessionTranscript, sessionProjects, confineArtifact, confineSubPath
 import { readConfinedFile, writeConfinedFile, makeConfinedDir, removeConfinedEntry, listConfined, openConfinedStream } from './lib/confined-fs.js';
 import { createClaudeAccounts as createPanelClaudeAccounts } from './lib/claude-accounts.js';
 import { claudeLegacyPricing, claudeUsageCostUsd } from './lib/assistant-pricing.js';
-import { HOOK_SCRIPTS, hookDefinitionsForEvent, hookCommandString, isSynaBunHookCommand, sweepSettingsHooks, ensureHookRoot } from '../lib/claude-hooks.js';
+import { HOOK_SCRIPTS, hookDefinitionsForEvent, hookCommandString, hookInstallBlocker, hookInstallPlan, isSynaBunHookCommand, sweepSettingsHooks, ensureHookRoot } from '../lib/claude-hooks.js';
 import { browserV2Enabled, browserRequestMiddleware, assertBrowserRequestActive, browserActionTimeout, markBrowserActionStarted, runBrowserRequest, cancellableBrowserDelay, measureBrowserPhase, createEngagementScheduler, engagementTargetSelector, isEngagementWriteSelector, isXShortcutPublish, isXScriptedWrite } from './lib/browser-execution.js';
 import { describeLocatorMatches, healLocatorByText, validNthMatch, captureTargetIdentity, matchesTargetIdentity } from './lib/browser-targets.js';
 import { getInteractiveHints, collectSemanticContext, buildAssist, describeTargetFacts, verifyHealTarget, createAssistContextStore } from './lib/browser-semantic-context.js';
@@ -22,6 +22,7 @@ import { createMemoryMapService, createMemoryMapApi } from './lib/memory-map-api
 import { createAiSnapshotStore, settleBrowserPage } from './lib/browser-snapshots.js';
 import { runBrowserExtraction, readBrowserContentHtml } from './lib/browser-extraction.js';
 import { attachConsoleBuffer, readConsoleBuffer, parseConsoleSince } from './lib/browser-console.js';
+import { resolveBrowserLanguage, validateBrowserLanguageConfig } from './lib/browser-language.js';
 import { parseScreenshotOptions, captureScreenshot, screenshotPathRefusal, defaultScreenshotPath, writeScreenshotFile } from './lib/browser-screenshot.js';
 import { memoryRevision } from '../mcp-server/dist/services/memory-maintenance.js';
 import { startGatedMemoryMaintenance } from './lib/memory-timers.js';
@@ -155,10 +156,7 @@ import {
   resolveAutomationOverrides,
   validAutomationContextMode,
 } from './public/shared/automation-context.js';
-import {
-  claudeRuntime,
-  ensureVendoredExecutables,
-} from './lib/native-binary-runtime.js';
+import { ensureVendoredExecutables } from './lib/native-binary-runtime.js';
 import {
   buildExecInvocation,
   execWrapperExtension,
@@ -225,10 +223,11 @@ import { generateSessionTitle } from './lib/session-title-generator.js';
 import {
   CLAUDE_EFFORT_LEVELS,
   CLAUDE_FALLBACK_MODELS,
-  alignedClaudeExecutable,
   checkClaudeCliSkew,
   discoverClaudeModels,
+  shellCommand,
 } from './lib/claude-model-catalog.js';
+import { resolveClaudeLauncher, resolveClaudeSdkExecutable } from './lib/claude-executable.js';
 import { getAugmentedPath } from './lib/augmented-path.js';
 import { semverNewer, synabunReleaseChannel } from './lib/synabun-version.js';
 import { selectSynabunUpdate, buildSynabunInstallPlan, refuseStaleUpdateClick } from './lib/synabun-update-plan.js';
@@ -259,6 +258,8 @@ import { ensureProjectCategories } from '../hooks/claude-code/shared.mjs';
 import { getDataHome, getDataHomeDiagnostics, isGlobalInstall, pathIsInside } from '../lib/paths.js';
 import { launcherLogPath } from '../lib/first-launch-protection.js';
 import { registerStartLauncher, startLauncherState } from '../lib/start-launcher.js';
+import { durableEntry, mcpStdioCommand, packagedRuntime } from '../lib/packaged-runtime.js';
+import { pruneExternalTools } from '../lib/external-tools.js';
 import { renderOfflinePage } from './lib/offline-page.js';
 import {
   getDb, closeDb, getDbPath, getEmbedding, getEmbeddingBatch, getEmbeddingDims, warmupEmbeddings,
@@ -297,11 +298,11 @@ const execFileAsync = promisify(execFile);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// Restore execute permissions on every vendored native binary (Claude Agent SDK,
-// Codex, node-pty). npm and cpSync drop the execute bit, and this repo commits
-// node_modules — historically with core.filemode=false, so binaries checked out
-// 0644 and failed to spawn. The Claude sidepanel surfaced that as the SDK's
-// misleading "does not match this system's libc" error.
+// Restore execute permissions on SynaBun's own native helpers (node-pty's
+// spawn-helper). npm and cpSync drop the execute bit, and a checkout with
+// core.filemode=false materializes them 0644, so terminals failed to spawn.
+// The agent tools are not here: Claude Code and Codex are the user's own
+// installations (lib/claude-executable.js, getCodexBin).
 //
 // This sweeps ALL platform directories, not just this host's: a vendored
 // checkout can carry several, and repairing only the current one left e.g.
@@ -758,7 +759,13 @@ function getStartLauncherState() {
   }
   return _startLauncherState;
 }
-const INSTALL_KIND = isGlobalInstall() ? 'npm' : 'git';
+// Set when this server runs inside a packaged application (packaging/): the
+// code is then replaced by installing a newer build, never by npm or git.
+const PACKAGED_RUNTIME = packagedRuntime();
+const INSTALL_KIND = PACKAGED_RUNTIME ? 'app' : isGlobalInstall() ? 'npm' : 'git';
+// What a person types to start a packaged application: its entry executable,
+// when that is a path that will still be there once this run is over.
+const START_ENTRY = durableEntry(PACKAGED_RUNTIME) || '';
 
 // Serve offline.html with what it needs once we are down: the install path,
 // how it was installed, the launcher's state and the bridge code itself.
@@ -768,7 +775,7 @@ app.get('/offline.html', (req, res) => {
   try { bridgeSource = readFileSync(join(__dirname, 'public', 'shared', 'start-bridge.js'), 'utf-8'); } catch {}
   res.type('html').send(renderOfflinePage(html, {
     bridgeSource,
-    facts: { projectDir: PACKAGE_ROOT, install: INSTALL_KIND, launcher: getStartLauncherState() },
+    facts: { projectDir: PACKAGE_ROOT, install: INSTALL_KIND, launcher: getStartLauncherState(), entry: START_ENTRY },
   }));
 });
 
@@ -2445,6 +2452,15 @@ function cancelUpdateHandoff(handoffPath, reason) {
 app.post('/api/system/run-update', async (req, res) => {
   let preparedHandoffPath = null;
   try {
+    // Nothing is ever installed into the resources of a packaged application.
+    if (PACKAGED_RUNTIME) {
+      const openUrl = `${SYNABUN_GITHUB_REPO_URL}/releases`;
+      return res.status(409).json({
+        error: `This copy of SynaBun is a packaged application. It is updated by installing a newer build over it, not from inside the app. Nothing was installed. Releases: ${openUrl}`,
+        packaged: true,
+        openUrl,
+      });
+    }
     // Auto-restart is always on — running the click-to-update flow implies the
     // user wants the new version live without a manual relaunch step.
     const autoRestart = true;
@@ -3224,88 +3240,53 @@ function _heartbeatLock(sessionId, windowId) {
   }
 }
 
-// Cache resolved claude binary path (avoids running `where` every query)
+// Cache resolved claude binary path (avoids a PATH walk on every query)
 let _claudeBinPath = null;
+// A tool that was not found is looked for again after a moment: installing it
+// is what a user does next, and that must not take a restart of SynaBun.
+const MISSING_TOOL_RECHECK_MS = 15_000;
+let _claudeBinMissingAt = 0;
 
+// The Claude Code a terminal would start: the command from cli-config.json
+// (Settings > Terminal), else the first `claude` on the augmented PATH. Always
+// the user's own installation: never a file inside SynaBun, never a command
+// from a node_modules/.bin folder (lib/claude-executable.js).
 function getClaudeBin() {
-  if (_claudeBinPath) return _claudeBinPath;
-  // 0. User-configured path from cli-config.json (set via Settings > Terminal)
-  try {
-    const cfg = loadCliConfig();
-    const userCmd = cfg['claude-code']?.command?.trim();
-    if (userCmd && userCmd !== 'claude') {
-      // Absolute or relative path — verify it exists
-      if (existsSync(userCmd)) {
-        _claudeBinPath = userCmd;
-        return _claudeBinPath;
-      }
-      // Might be a bare command in PATH — try which/where
-      try {
-        const envWithPath = { ...process.env, PATH: getAugmentedPath() };
-        let lookup;
-        if (process.platform === 'win32') {
-          const lines = execSync(`where "${userCmd}"`, { encoding: 'utf-8', env: envWithPath })
-            .split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-          lookup = lines.find(l => /\.(cmd|exe|bat|ps1)$/i.test(l)) || lines[0];
-        } else {
-          lookup = execSync(`which "${userCmd}"`, { encoding: 'utf-8', env: envWithPath }).trim();
-        }
-        if (lookup) { _claudeBinPath = lookup; return _claudeBinPath; }
-      } catch {}
-    }
-  } catch {}
-  // 1. Try bundled @anthropic-ai/claude-code in node_modules/.bin
-  const bundledBase = resolve(__dirname, 'node_modules', '.bin', 'claude');
-  // On Windows npm creates .cmd shims — check for those too
-  const bundledCandidates = process.platform === 'win32'
-    ? [bundledBase + '.cmd', bundledBase + '.ps1', bundledBase]
-    : [bundledBase];
-  for (const bundled of bundledCandidates) {
-    if (!existsSync(bundled)) continue;
-    const st = statSync(bundled);
-    // npm sometimes creates a plain text stub instead of a symlink — resolve through to cli.js
-    if (st.isFile() && st.size < 256) {
-      const target = readFileSync(bundled, 'utf-8').trim();
-      if (target && !target.startsWith('#')) {
-        const resolved = resolve(__dirname, 'node_modules', '.bin', target);
-        if (existsSync(resolved)) {
-          if (process.platform !== 'win32') {
-            try { const rs = statSync(resolved); if (!(rs.mode & 0o111)) chmodSync(resolved, rs.mode | 0o755); } catch {}
-          }
-          _claudeBinPath = resolved;
-          return _claudeBinPath;
-        }
-      }
-    }
-    // Normal symlink or executable — ensure +x
-    if (process.platform !== 'win32' && !(st.mode & 0o111)) {
-      try { chmodSync(bundled, st.mode | 0o755); } catch {}
-    }
-    _claudeBinPath = bundled;
+  if (_claudeBinPath && _claudeBinPath !== 'claude') return _claudeBinPath;
+  if (_claudeBinPath && Date.now() - _claudeBinMissingAt < MISSING_TOOL_RECHECK_MS) return _claudeBinPath;
+  let configured = '';
+  try { configured = loadCliConfig()['claude-code']?.command?.trim() || ''; } catch {}
+  const found = resolveClaudeLauncher({ configured, isInsideSynabun });
+  for (const rejected of found.rejected) {
+    console.warn(`[claude-skin] Ignoring Claude CLI inside the SynaBun install: ${rejected}`);
+  }
+  if (!found.path) {
+    if (!_claudeBinMissingAt) console.warn('[claude-skin] Claude CLI not found. Install: npm install -g @anthropic-ai/claude-code');
+    _claudeBinMissingAt = Date.now();
+    _claudeBinPath = 'claude'; // last resort — will fail at spawn time with a clear error
     return _claudeBinPath;
   }
-  // 2. Fall back to global install via which/where (with augmented PATH)
-  const envWithPath = { ...process.env, PATH: getAugmentedPath() };
-  if (process.platform === 'win32') {
-    try {
-      const lines = execSync('where claude', { encoding: 'utf-8', env: envWithPath })
-        .split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-      // Prefer .cmd/.exe/.bat/.ps1 over the bare extensionless shim (which is a sh script Windows can't spawn)
-      _claudeBinPath = lines.find(l => /\.(cmd|exe|bat|ps1)$/i.test(l)) || lines[0] || null;
-    } catch { _claudeBinPath = null; }
-  } else {
-    try { _claudeBinPath = execSync('which claude', { encoding: 'utf-8', env: envWithPath }).trim(); }
-    catch { _claudeBinPath = null; }
-  }
-  if (!_claudeBinPath) {
-    console.warn('[claude-skin] Claude CLI not found. Install: npm install -g @anthropic-ai/claude-code');
-    _claudeBinPath = 'claude'; // last resort — will fail at spawn time with a clear error
-  }
+  if (_claudeBinMissingAt) console.log(`[claude-skin] Claude CLI found: ${found.path}`);
+  _claudeBinMissingAt = 0;
+  _claudeBinPath = found.path;
   return _claudeBinPath;
+}
+
+// The executable every Agent SDK call is given (pathToClaudeCodeExecutable):
+// the override from cli-config.json ("claude-skin": { "sdkExecutable": "…" }),
+// else the installation above, followed through an npm command file on
+// Windows. `path: null` when no Claude Code is installed; SynaBun carries none.
+function getClaudeSdkExecutable() {
+  return resolveClaudeSdkExecutable({
+    launcher: getClaudeBin(),
+    sdkExecutable: _readClaudeSkinConfig().sdkExecutable || null,
+    isInsideSynabun,
+  });
 }
 
 let _codexBinPath = null;
 let _codexBinSource = 'missing';
+let _codexBinMissingAt = 0;
 let _nativeCodexBinPath = null;
 // The SDK is statically imported at module load; reaching this point is the
 // authoritative capability check. Its package.json is intentionally not an
@@ -3354,10 +3335,11 @@ function resolveWindowsGlobalCodexRuntime() {
 }
 
 function getCodexBin() {
-  if (_codexBinPath) return _codexBinPath;
-  // All Codex surfaces follow the user's trusted global install. Never fall
-  // back to the SDK's bundled platform binary: macOS may quarantine or block
-  // that copied payload, and unattended launches must not try to repair it.
+  // (Not found is looked for again after a moment, like Claude Code above.)
+  if (_codexBinPath && (_codexBinSource !== 'missing' || Date.now() - _codexBinMissingAt < MISSING_TOOL_RECHECK_MS)) return _codexBinPath;
+  // All Codex surfaces follow the user's trusted global install. SynaBun
+  // carries no Codex of its own (lib/external-tools.js): the SDK is always
+  // handed this path, and without one Codex is reported as not installed.
   const globalPath = getAugmentedPath().split(delimiter)
     .filter((entry) => !/[\\/]node_modules[\\/]\.bin[\\/]?$/i.test(entry))
     .join(delimiter);
@@ -3377,14 +3359,17 @@ function getCodexBin() {
     try { _codexBinPath = execSync('which codex', { encoding: 'utf-8', env: envWithPath }).trim(); }
     catch { _codexBinPath = null; }
   }
-  if (_codexBinPath && !isInsideSynabun(_codexBinPath)) {
+  if (_codexBinPath && _codexBinPath !== 'codex' && !isInsideSynabun(_codexBinPath)) {
+    if (_codexBinMissingAt) console.log(`[codex-skin] Codex CLI found: ${_codexBinPath}`);
+    _codexBinMissingAt = 0;
     _codexBinSource = 'global';
     return _codexBinPath;
   }
-  if (_codexBinPath) {
-    console.warn(`[codex-skin] Ignoring Codex CLI inside the SynaBun install: ${_codexBinPath}`);
+  if (!_codexBinMissingAt) {
+    if (_codexBinPath && _codexBinPath !== 'codex') console.warn(`[codex-skin] Ignoring Codex CLI inside the SynaBun install: ${_codexBinPath}`);
+    console.warn('[codex-skin] Codex CLI not found. Install: npm install -g @openai/codex');
   }
-  console.warn('[codex-skin] Codex CLI not found. Install: npm install -g @openai/codex');
+  _codexBinMissingAt = Date.now();
   _codexBinPath = 'codex';
   _codexBinSource = 'missing';
   return _codexBinPath;
@@ -5061,7 +5046,7 @@ CRITICAL — When you need clarification during planning:
     };
     delete env.FORCE_COLOR;
     delete env.CLICOLOR_FORCE;
-    const proc = spawn(codexBin, args, {
+    const proc = spawn(shellCommand(codexBin, useShell, { isFile: existsSync }), args, {
       cwd: PACKAGE_ROOT,
       env,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -7243,7 +7228,8 @@ async function queryCodexAppServerModels(codexHome = CODEX_DEFAULT_HOME) {
   delete env.CLICOLOR_FORCE;
 
   return new Promise((resolve, reject) => {
-    const child = spawn(codexBin, args, {
+    // (A configured command may be a command line; a file with a space in its path is one word.)
+    const child = spawn(shellCommand(codexBin, useShell, { isFile: existsSync }), args, {
       cwd: PACKAGE_ROOT,
       env,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -7282,6 +7268,10 @@ async function queryCodexAppServerModels(codexHome = CODEX_DEFAULT_HOME) {
     child.stderr.setEncoding('utf-8');
     child.stderr.on('data', chunk => { stderrBuf += chunk; });
     child.on('error', fail);
+    // Codex not installed: the shell asked to run it is gone before the first
+    // request is written, and that write fails on the stream (EPIPE). Unhandled,
+    // it ends the whole server.
+    child.stdin.on('error', fail);
     child.on('exit', (code) => {
       if (pending.size) {
         const err = new Error(`Codex app-server exited while listing models (code ${code ?? 'unknown'})`);
@@ -8878,6 +8868,7 @@ app.post('/api/sidepanel/session-title', async (req, res) => {
       input.cwd = cwd;
     }
     const result = await generateSessionTitle(input, {
+      claudeExecutable: getClaudeSdkExecutable,
       execFile: execFileAsync,
       getCodexBin,
       getCodexAccountHome,
@@ -9411,10 +9402,10 @@ app.post('/api/opencode/mcp', async (req, res) => {
     let { name, config: mcpConfig } = req.body || {};
     if (!name) {
       name = 'SynaBun';
-      const { mcpIndexPath, envPath } = getMcpPaths();
+      const { envPath, mcpCommand, mcpArgs } = getMcpPaths();
       mcpConfig = {
-        command: 'node',
-        args: [mcpIndexPath],
+        command: mcpCommand,
+        args: mcpArgs,
         env: { DOTENV_PATH: envPath, SYNABUN_DATA_HOME: DATA_HOME, MEMORY_DATA_DIR: resolve(DATA_HOME, 'mcp-data') },
       };
     }
@@ -9539,17 +9530,12 @@ const _claudeBridgeReady = (async () => {
         if (typeof cfg.partials === 'boolean') return cfg.partials;
         return process.platform !== 'win32';
       },
-      // Optional explicit executable override; bundled SDK CLI is the default.
-      // Accepts a .js entrypoint (launched via node) or a native binary path —
-      // see resolveClaudeExecutableOverride() in lib/native-binary-runtime.js.
-      get sdkExecutable() { return _readClaudeSkinConfig().sdkExecutable || null; },
-      // Last-resort runtime for the bridge: if the SDK's bundled native binary
-      // cannot be launched or repaired, fall back to the user's installed CLI.
-      // Lazy so the (memoized) resolution happens on demand, not at boot.
-      getClaudeBin: () => getClaudeBin(),
-      // The installed CLI when it is newer than the bundled one, else null — the
-      // model picker lists the installed CLI's models, so sessions must run it.
-      alignedClaudeBin: () => alignedClaudeExecutable(getClaudeBin()),
+      // The Claude Code every session runs: the user's own installation, or the
+      // explicit override from cli-config.json ("claude-skin": { "sdkExecutable":
+      // "…" }, a .js entrypoint or a native binary path). SynaBun carries none, so
+      // a session without one is refused with the install hint. Lazy, so the
+      // (memoized) resolution happens on demand, not at boot.
+      claudeExecutable: () => getClaudeSdkExecutable(),
       // Sidepanel tabs can run under another Claude account (its own config
       // directory). The default account adds nothing to the environment.
       claudeAccountEnv: (accountId) => _panelClaudeAccounts().envFor(accountId),
@@ -9634,10 +9620,10 @@ function handleClaudeSkinWebSocket(ws) {
 async function getClaudeModelsForClient(force = false) {
   try {
     const bin = getClaudeBin();
-    // Sidepanel sessions and native loops default to the SDK's bundled CLI, not
-    // this one. The comparison is cached per binary (a spawn only when the CLI
-    // changes); it warns about a skew and, when this CLI is the newer one, makes
-    // sessions run it instead — see alignedClaudeExecutable().
+    // Sidepanel sessions and native loops run this same installation. The Agent
+    // SDK that starts it was built against one Claude Code release; an older
+    // installation is worth one line in the log. Cached per binary (a spawn only
+    // when the CLI changes).
     checkClaudeCliSkew(bin).catch(() => {});
     const result = await discoverClaudeModels(bin, { force, cwd: PACKAGE_ROOT });
     if (result?.models?.length) return result;
@@ -15477,7 +15463,7 @@ function spawnAgentProcess(agent, prompt, extraEnv = {}) {
 
     console.log(`[agent] ${agent.id} spawn: ${claudeBin} ${args.map(a => a.length > 80 ? a.slice(0, 80) + '…' : a).join(' ')}`);
 
-    const child = spawn(claudeBin, args, {
+    const child = spawn(shellCommand(claudeBin, AGENT_IS_WIN), args, {
       cwd: agent.cwd,
       env: { ...cleanEnv, FORCE_COLOR: '0', NO_COLOR: '1', TERM: 'dumb', ...extraEnv },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -16111,6 +16097,7 @@ function isSynabunGitHubRemote(remoteText) {
 }
 
 function detectSynabunInstallSource() {
+  if (PACKAGED_RUNTIME) return { kind: 'packaged-app' };
   const normalizedRoot = PACKAGE_ROOT.replace(/\\/g, '/');
   if (/\/node_modules\/synabun$/i.test(normalizedRoot)) {
     return { kind: 'npm-global' };
@@ -16362,6 +16349,10 @@ const SYNABUN_ROOTS = (() => {
   const roots = new Set();
   try { roots.add(realpathSync(__dirname).replace(/\\/g, '/').toLowerCase()); } catch {}
   try { roots.add(realpathSync(resolve(__dirname, '..')).replace(/\\/g, '/').toLowerCase()); } catch {}
+  // A packaged application: everything it ships, its own Node and npm included.
+  if (PACKAGED_RUNTIME?.resources) {
+    try { roots.add(realpathSync(PACKAGED_RUNTIME.resources).replace(/\\/g, '/').toLowerCase()); } catch {}
+  }
   return [...roots];
 })();
 
@@ -16383,35 +16374,23 @@ function isInsideSynabun(binPath) {
 // to come from. Add new versions here if SynaBun ever ships claude-code again.
 const KNOWN_STALE_CLAUDE_VERSIONS = new Set(['2.1.71', '2.1.89', '2.1.91']);
 
-// Aggressively delete any stale bundled CLI tool packages left over in our
-// own node_modules. Idempotent — runs on every startup. Belt-and-suspenders
-// against `npm install` not auto-pruning packages removed from package.json.
-// Logs every found package (deleted or not) so Windows users can confirm the
-// prune is actually firing on their box.
+// Remove any external tool that ended up in our own node_modules: Claude Code,
+// Codex, OpenCode and Gemini CLI are installed by the user, never by SynaBun,
+// and the agent SDKs are installed without the executables they would carry
+// (the list and the reasons: lib/external-tools.js at the package root).
+// Idempotent, runs on every startup, and touches nothing when there is nothing
+// to remove — a packaged application ships without them and is never written to.
+// Catches what `npm install` leaves behind: packages an older SynaBun depended
+// on, and payloads a regenerated lockfile brought back. Logs each removal so a
+// user can see the prune fire on their machine.
 function pruneBundledCliTools() {
-  // @openai/codex is a live transitive dependency of @openai/codex-sdk, so it
-  // must remain installed even though SynaBun never executes its bundled binary.
-  const stalePkgs = ['@anthropic-ai/claude-code', 'opencode-ai', '@google/gemini-cli'];
   const moduleRoots = [
     join(__dirname, 'node_modules'),
     join(__dirname, '..', 'node_modules'),
   ];
   for (const root of moduleRoots) {
-    for (const pkg of stalePkgs) {
-      const target = join(root, pkg);
-      try {
-        if (existsSync(target)) {
-          rmSync(target, { recursive: true, force: true });
-          console.log(`  Pruned stale bundled CLI: ${target}`);
-        }
-      } catch { /* permission or in-use — ignore */ }
-      // Also remove .bin shims that point at the deleted package
-      const binBase = pkg.split('/').pop().replace(/-cli$|-ai$/, '');
-      for (const ext of ['', '.cmd', '.ps1', '.exe']) {
-        const shim = join(root, '.bin', binBase + ext);
-        try { if (existsSync(shim)) rmSync(shim, { force: true }); } catch {}
-      }
-    }
+    const result = pruneExternalTools(root);
+    for (const item of result.removed) console.log(`  Removed ${item.name} from SynaBun's own node_modules (${item.tool} is installed separately): ${item.path}`);
   }
 }
 
@@ -17945,6 +17924,7 @@ app.get('/api/setup/onboarding', async (req, res) => {
     const setupComplete = vars.SETUP_COMPLETE === 'true';
     const dbExists = existsSync(getDbPath());
     const mcpBuilt = existsSync(resolve(PACKAGE_ROOT, 'mcp-server', 'dist', 'index.js'));
+    const { mcpCommand, mcpArgs } = getMcpPaths();
 
     res.json({
       setupComplete,
@@ -17955,6 +17935,8 @@ app.get('/api/setup/onboarding', async (req, res) => {
       projectDir: PACKAGE_ROOT,
       dataHome: DATA_HOME,
       packageRoot: PACKAGE_ROOT,
+      mcpCommand,
+      mcpArgs,
       dataHomeInsidePackage: DATA_HOME_DIAGNOSTICS.dataHomeInsidePackage,
       recommendedDataHome: DATA_HOME_DIAGNOSTICS.recommendedDataHome,
       dataHomeExplicitOverride: DATA_HOME_DIAGNOSTICS.explicitOverride,
@@ -18089,8 +18071,7 @@ app.post('/api/setup/write-mcp-json', (req, res) => {
     const envPath = resolve(DATA_HOME, '.env').replace(/\\/g, '/');
 
     const mcpEntry = {
-      command: 'node',
-      args: [mcpIndexPath],
+      ...mcpStdioCommand(mcpIndexPath),
       env: { DOTENV_PATH: envPath, SYNABUN_DATA_HOME: DATA_HOME, MEMORY_DATA_DIR: resolve(DATA_HOME, 'mcp-data') },
     };
 
@@ -20169,7 +20150,7 @@ app.get('/api/claude-code/integrations', (req, res) => {
 
     // Auto-sync: ensure all registered projects have globally-enabled hooks
     const globallyEnabled = Object.entries(globalHooks).filter(([, on]) => on).map(([ev]) => ev);
-    for (const p of projects) {
+    for (const p of hookInstallBlocker() ? [] : projects) {
       const projFile = getClaudeSettingsPath(p.path);
       let projSettings;
       try {
@@ -20215,7 +20196,8 @@ app.get('/api/claude-code/integrations', (req, res) => {
 
     const mcpIndexPath = resolve(PACKAGE_ROOT, 'mcp-server', 'run.mjs').replace(/\\/g, '/');
     const envPath = resolve(DATA_HOME, '.env').replace(/\\/g, '/');
-    const cliCommand = `claude mcp add SynaBun node "${mcpIndexPath}" -s user -e "DOTENV_PATH=${envPath}"`;
+    const { command: mcpCommand, args: mcpArgs } = mcpStdioCommand(mcpIndexPath);
+    const cliCommand = claudeMcpAddCommand({ mcpIndexPath, envPath, mcpCommand, mcpArgs });
 
     res.json({
       ok: true,
@@ -20237,7 +20219,11 @@ app.post('/api/claude-code/integrations', (req, res) => {
     const { target, projectPath, label, hook } = req.body;
     // target: 'global' | 'project'
 
+    // Null unless this run has no path of its own to register (lib/claude-hooks.js).
+    const blocker = hookInstallBlocker();
+
     if (target === 'global') {
+      if (blocker) return res.status(409).json({ error: blocker });
       const filePath = getGlobalClaudeSettingsPath();
       let settings = readClaudeSettingsForWrite(filePath);
       settings = addHookToSettings(settings, hook || undefined);
@@ -20263,15 +20249,23 @@ app.post('/api/claude-code/integrations', (req, res) => {
       const normalized = resolve(projectPath);
       if (!existsSync(normalized)) return res.status(400).json({ error: `Directory not found: ${normalized}` });
 
-      const filePath = getClaudeSettingsPath(normalized);
-      let settings = readClaudeSettingsForWrite(filePath);
-      settings = addHookToSettings(settings, hook || undefined, normalized);
-      writeClaudeSettings(filePath, settings);
+      // Adding a project is more than its hooks: a run that cannot write them
+      // still registers it, and refuses only a request that asks for nothing else.
+      const projects = loadHookProjects();
+      const registered = projects.some(p => resolve(p.path) === normalized);
+      const plan = hookInstallPlan({ target, registered, hook });
+      if (plan === 'refuse') return res.status(409).json({ error: blocker });
+
+      if (plan === 'write') {
+        const filePath = getClaudeSettingsPath(normalized);
+        let settings = readClaudeSettingsForWrite(filePath);
+        settings = addHookToSettings(settings, hook || undefined, normalized);
+        writeClaudeSettings(filePath, settings);
+      }
 
       // Save to registered projects list
       const projectLabel = label || basename(normalized);
-      const projects = loadHookProjects();
-      if (!projects.some(p => resolve(p.path) === normalized)) {
+      if (!registered) {
         projects.push({ path: normalized, label: projectLabel });
         saveHookProjects(projects);
       }
@@ -20310,6 +20304,9 @@ app.post('/api/claude-code/integrations', (req, res) => {
         }
       } catch { /* non-critical */ }
 
+      if (plan !== 'write') {
+        return res.json({ ok: true, message: `${basename(normalized)} was added without hooks. ${blocker}`, hooksSkipped: true, dubiousOwnership, trustPath });
+      }
       return res.json({ ok: true, message: `Hook enabled for ${basename(normalized)}.`, dubiousOwnership, trustPath });
     }
 
@@ -21336,7 +21333,18 @@ function syncCodexToolPermissions(allowedKeys) {
 function getMcpPaths() {
   const mcpIndexPath = resolve(PACKAGE_ROOT, 'mcp-server', 'dist', 'preload.js').replace(/\\/g, '/');
   const envPath = resolve(DATA_HOME, '.env').replace(/\\/g, '/');
-  return { mcpIndexPath, envPath };
+  // What a client outside this process runs: `node <preload.js>`, or the
+  // entry executable of a packaged application (`<entry> mcp`).
+  const { command: mcpCommand, args: mcpArgs } = mcpStdioCommand(mcpIndexPath);
+  return { mcpIndexPath, envPath, mcpCommand, mcpArgs };
+}
+
+/** The `claude mcp add` line for the registration getMcpPaths() describes. */
+function claudeMcpAddCommand({ mcpIndexPath, envPath, mcpCommand, mcpArgs }) {
+  // Inside double quotes a POSIX shell still reads \ " $ and `; a Windows path has none of them to escape.
+  const quoted = (value) => (/^[A-Za-z]:[\\/]/.test(value) ? `"${value}"` : `"${String(value).replace(/[\\"$`]/g, '\\$&')}"`);
+  const launch = mcpCommand === 'node' ? `node "${mcpIndexPath}"` : `${quoted(mcpCommand)} ${mcpArgs.join(' ')}`;
+  return `claude mcp add SynaBun ${launch} -s user -e "DOTENV_PATH=${envPath}"`;
 }
 
 function getHomePath() {
@@ -21357,8 +21365,8 @@ function buildCodexMcpEnv() {
 }
 
 function buildCodexMcpDefinition() {
-  const { mcpIndexPath } = getMcpPaths();
-  return { command: 'node', args: [mcpIndexPath], env: buildCodexMcpEnv() };
+  const { mcpCommand, mcpArgs } = getMcpPaths();
+  return { command: mcpCommand, args: mcpArgs, env: buildCodexMcpEnv() };
 }
 
 function buildCodexMcpToml() {
@@ -21391,13 +21399,13 @@ app.post('/api/setup/gemini/mcp', (req, res) => {
   try {
     const dir = join(getHomePath(), '.gemini');
     const settingsPath = join(dir, 'settings.json');
-    const { mcpIndexPath, envPath } = getMcpPaths();
+    const { envPath, mcpCommand, mcpArgs } = getMcpPaths();
     mkdirSync(dir, { recursive: true });
     let data = {};
     try { data = JSON.parse(readFileSync(settingsPath, 'utf-8')); } catch {}
     data = mergeGeminiMcpConfig(data, {
-      command: 'node',
-      args: [mcpIndexPath],
+      command: mcpCommand,
+      args: mcpArgs,
       env: { DOTENV_PATH: envPath, SYNABUN_DATA_HOME: DATA_HOME, MEMORY_DATA_DIR: resolve(DATA_HOME, 'mcp-data') },
     });
     writeFileSync(settingsPath, JSON.stringify(data, null, 2) + '\n', 'utf-8');
@@ -21467,7 +21475,8 @@ app.delete('/api/setup/codex/mcp', (req, res) => {
 app.get('/api/setup/status', (req, res) => {
   try {
     const home = getHomePath();
-    const { mcpIndexPath, envPath } = getMcpPaths();
+    const mcpPaths = getMcpPaths();
+    const { mcpIndexPath, envPath, mcpCommand, mcpArgs } = mcpPaths;
 
     // Claude
     let claude = { connected: false };
@@ -21475,7 +21484,7 @@ app.get('/api/setup/status', (req, res) => {
       const cj = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf-8'));
       claude.connected = !!(cj.mcpServers && cj.mcpServers.SynaBun);
     } catch {}
-    claude.cliCommand = `claude mcp add SynaBun node "${mcpIndexPath}" -s user -e "DOTENV_PATH=${envPath}"`;
+    claude.cliCommand = claudeMcpAddCommand(mcpPaths);
 
     // Gemini
     let gemini = { connected: false };
@@ -21505,7 +21514,7 @@ app.get('/api/setup/status', (req, res) => {
     let rules = null;
     try { rules = rulesetInstaller.status(); } catch (err) { rules = { ok: false, error: err.message }; }
 
-    res.json({ ok: true, claude, gemini, codex, opencode, rules, paths: { mcpIndexPath, envPath } });
+    res.json({ ok: true, claude, gemini, codex, opencode, rules, paths: { mcpIndexPath, envPath, mcpCommand, mcpArgs } });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -22760,7 +22769,7 @@ app.get('/api/health', (req, res) => {
     // getDb() auto-creates the directory, file, and schema if missing
     getDb();
     const count = countMemories();
-    res.json({ ok: true, storage: 'sqlite', memories: count, projectDir: PACKAGE_ROOT, install: INSTALL_KIND, startLauncher: getStartLauncherState() });
+    res.json({ ok: true, storage: 'sqlite', memories: count, projectDir: PACKAGE_ROOT, install: INSTALL_KIND, startLauncher: getStartLauncherState(), entry: START_ENTRY });
   } catch (err) {
     res.json({ ok: false, reason: 'db_error', detail: err.message });
   }
@@ -25265,14 +25274,11 @@ _nativeLoopRuntime = new NativeLoopRuntime({
           ? `${state.model}[1m]`
           : state.model && state.model.includes(':') ? toCliModelName(state.model) : state.model,
         mcpUrl: `http://localhost:${PORT}/mcp`,
-        sdkExecutable: config.sdkExecutable || undefined,
-        // Fallback if the SDK's bundled native binary is unusable — unattended
-        // loops cannot surface a permission error to anyone, so they need the
-        // same escape hatch the sidepanel has.
-        claudeBin: getClaudeBin(),
-        // Run the installed CLI instead when it is newer than the bundled one, so
-        // the loop's model resolves the way the picker it was chosen from named it.
-        alignedClaudeBin: alignedClaudeExecutable(getClaudeBin()),
+        // The user's Claude Code (or the cli-config override): the same
+        // executable the model picker read its list from, so the loop's model
+        // resolves the way it was named there. Without one the run fails at
+        // once with the install hint, before anything is started.
+        claudeExecutable: getClaudeSdkExecutable(),
         includePartialMessages: typeof config.partials === 'boolean'
           ? config.partials
           : process.platform !== 'win32',
@@ -25288,7 +25294,7 @@ _nativeLoopRuntime = new NativeLoopRuntime({
         ...state,
         codexHome: state.codexHome || getCodexAccountHome(state.codexAccountId || 'default'),
         // Native schedules use the same trusted global CLI as the interactive
-        // sidepanel. The SDK-owned platform payload is never repaired or run.
+        // sidepanel; SynaBun carries no Codex for the SDK to find by itself.
         codexPath: getNativeCodexBin(),
       });
     },
@@ -29933,9 +29939,11 @@ async function createBrowserSession(options = {}) {
   // detection on sites like Twitter. Let the automated Chrome use its own default UA.
   const realHeaders = options._realHeaders || {};
   const userAgent = savedCfg.userAgent || undefined; // only override if explicitly configured
-  const cfgAcceptLang = savedCfg.acceptLanguage || null;
-  const acceptLanguage = cfgAcceptLang || realHeaders['accept-language'] || 'en-US,en;q=0.9';
-  const locale = savedCfg.locale || acceptLanguage.split(',')[0].split(';')[0] || 'en-US';
+  const { locale, acceptLanguage, languages, warnings: languageWarnings } =
+    resolveBrowserLanguage(savedCfg, realHeaders['accept-language']);
+  for (const warning of languageWarnings) {
+    console.warn(`[browser] Invalid ${warning.field}; using ${JSON.stringify(warning.value)}`);
+  }
 
   // Build context options from saved config
   const contextOpts = {
@@ -30328,7 +30336,7 @@ async function createBrowserSession(options = {}) {
             ],
           });
           Object.defineProperty(navigator, 'languages', {
-            get: () => ${JSON.stringify(acceptLanguage.split(',').map(l => l.split(';')[0].trim()))},
+            get: () => ${JSON.stringify(languages)},
           });
           const origQuery = window.Permissions.prototype.query;
           window.Permissions.prototype.query = function(params) {
@@ -32841,7 +32849,7 @@ app.get('/api/browser/config', (req, res) => {
 app.put('/api/browser/config', (req, res) => {
   try {
     // Full replacement — the frontend sends the complete config object
-    const body = req.body || {};
+    const body = validateBrowserLanguageConfig(req.body || {});
     if (body.connectMode !== undefined) body.connectMode = ['attach', 'morelogin'].includes(body.connectMode) ? body.connectMode : 'mirror';
     if (body.attachSeed !== undefined) body.attachSeed = body.attachSeed === 'fresh' ? 'fresh' : 'real';
     if (body.moreloginEnvId !== undefined && body.moreloginEnvId !== null && body.moreloginEnvId !== '') body.moreloginEnvId = String(body.moreloginEnvId);
@@ -32853,7 +32861,8 @@ app.put('/api/browser/config', (req, res) => {
       .catch(() => {});
     res.json({ ok: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    const invalidLanguage = err.status === 400 && ['locale', 'acceptLanguage'].includes(err.field);
+    res.status(invalidLanguage ? 400 : 500).json({ error: err.message, ...(invalidLanguage && { field: err.field }) });
   }
 });
 
@@ -33040,10 +33049,9 @@ const httpServer = app.listen(PORT, async () => {
   // opencode-<sid> node_modules that never got their per-loop cleanup.
   setTimeout(() => { try { cleanupStaleLoopConfigs(); } catch {} }, 1500);
 
-  // Compare the installed Claude CLI with the one the Agent SDK bundles now, so
-  // the first sidepanel session or native loop after boot already knows whether
-  // to run the installed CLI (it does when that one is newer — see
-  // alignedClaudeExecutable in lib/claude-model-catalog.js).
+  // Compare the installed Claude CLI with the release the Agent SDK was built
+  // against, once, so an older installation is named in the log before the
+  // first session runs on it (checkClaudeCliSkew in lib/claude-model-catalog.js).
   setTimeout(() => { checkClaudeCliSkew(getClaudeBin()).catch(() => {}); }, 1000);
 
   // Warm the session_cache + session_fts tables so the hybrid search has data
@@ -33157,10 +33165,10 @@ const httpServer = app.listen(PORT, async () => {
   // Check for SynaBun updates (npm + github releases)
   try { await checkSynabunUpdate(); } catch {}
 
-  // Aggressively prune any stale bundled CLI tools left in our node_modules
-  // before the version check runs — defends against `npm install` not auto-
-  // pruning packages that were removed from package.json (recurring source of
-  // phantom-version badges, e.g. v2.1.89 from a stale @anthropic-ai/claude-code).
+  // Prune any external CLI tool left in our node_modules before the version
+  // check runs — defends against `npm install` not auto-pruning packages that
+  // were removed from package.json (recurring source of phantom-version
+  // badges, e.g. v2.1.89 from a stale @anthropic-ai/claude-code).
   try { pruneBundledCliTools(); } catch {}
 
   // Check for CLI tool updates — fire-and-forget so boot isn't serialized

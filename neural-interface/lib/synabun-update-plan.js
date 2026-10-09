@@ -246,6 +246,25 @@ export function buildSynabunInstallPlan({
   const version = formatSynabunVersion(latest);
   const target = version || latest;
 
+  if (kind === 'packaged-app') {
+    // A packaged application carries its own runtime and dependencies: npm and
+    // git never write inside it. A newer build is installed over it instead.
+    const releasesUrl = `${repoUrl}/releases`;
+    return {
+      source: 'github',
+      installSource: kind,
+      canAutoUpdate: false,
+      reason: 'packaged-app',
+      current,
+      target,
+      channel: installedChannel,
+      displayCommand: releasesUrl,
+      openUrl: releasesUrl,
+      manualCommand: null,
+      manualHint: `This copy of SynaBun is a packaged application, so v${target} is installed by replacing it with the newer build, not from inside the app. Nothing was installed. Get the build for your system from the releases page and install it over this one; your data stays where it is.`,
+    };
+  }
+
   if (kind !== 'npm-global') {
     const clonedHint = kind === 'github-clone'
       ? 'This SynaBun install is a GitHub checkout. Open the repository to pull or reinstall from the correct source.'

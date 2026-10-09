@@ -1,6 +1,8 @@
 {
   "name": "SynaBun",
   "short_name": "SynaBun",
+  "id": "/",
+  "scope": "/",
   "start_url": "/",
   "display": "standalone",
   "display_override": ["window-controls-overlay", "standalone"],

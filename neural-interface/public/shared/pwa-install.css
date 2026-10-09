@@ -1,0 +1,12 @@
+/* Scoped first-run route; the application owns all colors, fonts and radii. */
+#pwa-install { display: grid; place-items: center; overflow: auto; padding: 24px; color: var(--t-bright); }
+#pwa-install main { width: min(560px, 100%); padding: 24px; background: var(--s-panel); border: 1px solid var(--b-light); border-radius: var(--r-card); }
+#pwa-install h1 { font-family: var(--ff-heading); font-size: calc(28px * var(--font-scale)); font-weight: 600; line-height: 1.2; margin: 16px 0; }
+#pwa-install p, #pwa-install li { font-size: var(--fs-sm); line-height: 1.5; }
+#pwa-install ol { padding-left: 24px; margin: 16px 0; }
+#pwa-install li + li { margin-top: 8px; }
+#pwa-install .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; margin-top: 24px; }
+#pwa-install button { background: var(--s-active); border: 1px solid var(--b-visible); border-radius: var(--r-small); color: var(--t-bright); font: inherit; padding: 8px 12px; cursor: pointer; }
+#pwa-install button:hover { background: var(--s-hover); }
+#pwa-install a { color: var(--t-bright); font-size: var(--fs-sm); }
+#pwa-install #install-status { color: var(--t-primary); margin-top: 16px; min-height: 1.5em; }

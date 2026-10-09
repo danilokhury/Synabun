@@ -5387,6 +5387,15 @@ export async function openSettingsModal(options = {}) {
     wireCopyBtn('setup-claude-cli-copy', () => setupStatus.claude?.cliCommand || ccIntegrations.mcp?.cliCommand || '', kit.tx('settings.redesign.setup.copyCliCommand'));
     wireRulesControls('claude', 'claude');
 
+    // What an MCP client runs: `node <script>` for an npm or Git install, the
+    // application's own executable for a packaged one. The server says which.
+    const mcpLaunch = () => {
+      const paths = setupStatus.paths || {};
+      return paths.mcpCommand && paths.mcpCommand !== 'node' && Array.isArray(paths.mcpArgs)
+        ? { command: paths.mcpCommand, args: paths.mcpArgs }
+        : { command: 'node', args: [paths.mcpIndexPath || '<path-to>/mcp-server/run.mjs'] };
+    };
+
     // ── Gemini ──
     wireSetupMcpToggle('gemini', '/api/setup/gemini/mcp', '~/.gemini/settings.json');
     // Config preview
@@ -5399,7 +5408,7 @@ export async function openSettingsModal(options = {}) {
             cachedConfig = JSON.stringify(data.config, null, 2);
             preview.textContent = cachedConfig;
           } else if (data.ok) {
-            cachedConfig = JSON.stringify({ mcpServers: { SynaBun: { command: 'node', args: [setupStatus.paths?.mcpIndexPath || '<path-to>/mcp-server/run.mjs'], env: { DOTENV_PATH: setupStatus.paths?.envPath || '<path-to>/synabun/.env' } } } }, null, 2);
+            cachedConfig = JSON.stringify({ mcpServers: { SynaBun: { ...mcpLaunch(), env: { DOTENV_PATH: setupStatus.paths?.envPath || '<path-to>/synabun/.env' } } } }, null, 2);
             preview.textContent = cachedConfig;
           } else { preview.textContent = kit.tx('settings.redesign.setup.couldNotLoadConfig'); }
         }).catch(() => { preview.textContent = kit.tx('settings.redesign.setup.failedToLoad'); });
@@ -5421,10 +5430,11 @@ export async function openSettingsModal(options = {}) {
             cachedConfig = data.toml;
             preview.textContent = cachedConfig;
           } else if (data.ok) {
-            const mp = setupStatus.paths?.mcpIndexPath || '<path-to>/mcp-server/run.mjs';
+            const launch = mcpLaunch();
             const ep = setupStatus.paths?.envPath || '<path-to>/synabun/.env';
             const dataHome = setupStatus.paths?.dataHome || '<path-to>/synabun';
-            cachedConfig = `[mcp_servers.SynaBun]\ncommand = "node"\nargs = ["${mp}"]\nenv = { DOTENV_PATH = "${ep}", SYNABUN_DATA_HOME = "${dataHome}", MEMORY_DATA_DIR = "${dataHome}/mcp-data", SYNABUN_PROFILE = "full", SYNABUN_BROWSER_FAST = "1", SYNABUN_BROWSER_COMPACT = "1", SYNABUN_TOOL_CATALOG_MODE = "deferred" }`;
+            // A JSON string is a TOML basic string: the same quotes and escapes.
+            cachedConfig = `[mcp_servers.SynaBun]\ncommand = ${JSON.stringify(launch.command)}\nargs = [${launch.args.map(arg => JSON.stringify(arg)).join(', ')}]\nenv = { DOTENV_PATH = "${ep}", SYNABUN_DATA_HOME = "${dataHome}", MEMORY_DATA_DIR = "${dataHome}/mcp-data", SYNABUN_PROFILE = "full", SYNABUN_BROWSER_FAST = "1", SYNABUN_BROWSER_COMPACT = "1", SYNABUN_TOOL_CATALOG_MODE = "deferred" }`;
             preview.textContent = cachedConfig;
           } else { preview.textContent = kit.tx('settings.redesign.setup.couldNotLoadConfig'); }
         }).catch(() => { preview.textContent = kit.tx('settings.redesign.setup.failedToLoad'); });
@@ -5440,7 +5450,6 @@ export async function openSettingsModal(options = {}) {
       const preview = overlay.querySelector('#setup-opencode-config-preview');
       let cachedConfig = '';
       if (preview) {
-        const mp = setupStatus.paths?.mcpIndexPath || '<path-to>/mcp-server/run.mjs';
         const ep = setupStatus.paths?.envPath || '<path-to>/synabun/.env';
         fetch('/api/opencode/mcp').then(r => r.json()).then(data => {
           if (data.ok && data.data && Object.keys(data.data).length) {
@@ -5451,8 +5460,7 @@ export async function openSettingsModal(options = {}) {
               mcp: {
                 SynaBun: {
                   type: 'stdio',
-                  command: 'node',
-                  args: [mp],
+                  ...mcpLaunch(),
                   env: { DOTENV_PATH: ep },
                 },
               },

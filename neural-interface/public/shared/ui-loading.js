@@ -151,6 +151,7 @@ export function rememberHealth(health) {
     }
     if (health.install) localStorage.setItem(START_STORAGE.install, health.install);
     if (health.startLauncher) localStorage.setItem(START_STORAGE.launcher, health.startLauncher);
+    if (health.entry) localStorage.setItem(START_STORAGE.entry, health.entry);
   } catch {}
   if (health.projectDir) updateCmdText(health.projectDir);
 }
@@ -194,6 +195,7 @@ function updateCmdText(projectDir) {
   const commands = manualStartCommands({
     projectDir,
     install: stored(START_STORAGE.install),
+    entry: stored(START_STORAGE.entry),
     windows: isWindowsPlatform(navigator),
   });
   // One box: the command for this install (the checkout's when it is not known).

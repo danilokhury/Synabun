@@ -70,6 +70,10 @@ export function extractCodexText(stdout) {
 }
 
 async function generateClaudeTitle(input, deps) {
+  // The user's Claude Code, as every other SDK call (lib/claude-executable.js).
+  // Without one there is no title to ask for: the caller falls back to its own.
+  const executable = typeof deps.claudeExecutable === 'function' ? deps.claudeExecutable() : null;
+  if (!executable?.path && !deps.claudeQuery) throw new Error(executable?.reason || 'Claude CLI not found');
   const abortController = new AbortController();
   const timer = setTimeout(() => abortController.abort(new Error('Session title request timed out')), SESSION_TITLE_TIMEOUT_MS);
   timer.unref?.();
@@ -89,6 +93,7 @@ async function generateClaudeTitle(input, deps) {
         persistSession: false,
         includePartialMessages: false,
         abortController,
+        ...(executable?.path ? { pathToClaudeCodeExecutable: executable.path } : {}),
         env: cleanClaudeEnv(deps.env || process.env),
         canUseTool: async () => ({ behavior: 'deny', message: 'Session title generation cannot use tools.' }),
       },

@@ -46,9 +46,10 @@ const completed = [
   { type: 'turn.completed', usage },
 ];
 
-transportTest('real SDK bundled runtime resolution and older usage payload remain compatible', async (t) => {
-  const bundled = new Codex();
-  assert.match(bundled.exec.executablePath, /vendor/);
+transportTest('the real SDK finds no Codex of its own here, runs the one it is given, and older usage payloads remain compatible', async (t) => {
+  // SynaBun installs the SDK without the Codex CLI it would carry (lib/external-tools.js
+  // at the package root): left to itself the SDK has nothing to start, and says so.
+  assert.throws(() => new Codex(), /Unable to locate Codex CLI binaries/);
   const oldUsage = { input_tokens: 100, cached_input_tokens: 20, output_tokens: 12 };
   const f = fixture(t, [completed[0], { type: 'turn.completed', usage: oldUsage }]);
   const sdk = new Codex({ codexPathOverride: f.cli });

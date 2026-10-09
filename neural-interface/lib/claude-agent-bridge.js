@@ -25,14 +25,9 @@ import { detectProject as memoryProject } from '../../mcp-server/dist/config.js'
 // WS bound, so page-refresh reattach is the same object.
 
 import { query, startup } from '@anthropic-ai/claude-agent-sdk';
-import { CLAUDE_EFFORT_LEVELS, checkClaudeCliSkew, markAlignedClaudeExecutableFailed } from './claude-model-catalog.js';
-import {
-  claudeRuntime,
-  clearNativeBinaryCache,
-  isNativeBinaryLaunchFailure,
-  planRuntimeRecovery,
-  resolveClaudeExecutableOverride,
-} from './native-binary-runtime.js';
+import { CLAUDE_EFFORT_LEVELS } from './claude-model-catalog.js';
+import { CLAUDE_NOT_INSTALLED, resolveClaudeSdkExecutable } from './claude-executable.js';
+import { diagnoseLaunchFailure, isNativeBinaryLaunchFailure } from './native-binary-runtime.js';
 import { normalizePanelSession, startSignature, applyPanelSessionOptions, liveSettingsPatch, normalizeMcpServers, mergeTabMcpServers } from './claude-panel-session.js';
 import { SESSION_REQUESTS, runSessionRequest, slimRewind, slimMcpStatus } from './claude-panel-requests.js';
 import { applyTemporaryOptions, plansDirsOf, planFileOfToolCall, removeTemporaryPlanFiles } from './claude-temporary.js';
@@ -348,15 +343,9 @@ export class ClaudeSession {
     this.lastPrompt = null;
     this.stallRetries = 0;
 
-    // Native-runtime recovery latches. Set here and NOWHERE else — resetting
-    // them on query recreation would turn a permanently broken binary into an
-    // infinite repair/retry loop.
-    this._nativeRepairTried = false;
-    this._fallbackBin = null;
-    // The installed CLI the current Query runs on because it is newer than the
-    // bundled one (see ensureQuery). Per-Query, not a latch: a launch failure is
-    // latched process-wide in claude-model-catalog.js instead.
-    this._alignedBin = null;
+    // The Claude Code executable the current Query was started with (see
+    // ensureQuery): what a launch failure is diagnosed against.
+    this._claudeExecutable = null;
 
     this.pendingPerms = new Map(); // requestId → { toolName, resolve, input, kind, wire }
     this.alwaysAllowed = new Set();
@@ -498,6 +487,31 @@ export class ClaudeSession {
         log(`session create refused: the account "${this.accountId}" is no longer set up`);
         return null;
       }
+    }
+    // Which Claude Code runs this session: the user's own installation, always.
+    // SynaBun carries none (lib/external-tools.js at the package root) and the
+    // SDK is never left to look for one. The host answers (deps.claudeExecutable,
+    // lib/claude-executable.js): an explicit override from cli-config.json
+    // ("claude-skin": { "sdkExecutable": "…" }), else the installed Claude Code.
+    // The model picker lists that same installation's models, so an alias means
+    // in the session what it meant in the picker.
+    //
+    // Nothing installed is an ordinary state: the start is refused with the
+    // sentence the panel shows its install help on, and nothing was started.
+    // The SDK itself is never called without an executable; only a host that
+    // brings its own query factory and no resolver (a test) starts without one.
+    let executable = null;
+    if (typeof deps.claudeExecutable === 'function') {
+      try { executable = deps.claudeExecutable() || null; } catch { executable = null; }
+    } else if (deps.sdkExecutable) {
+      executable = resolveClaudeSdkExecutable({ sdkExecutable: deps.sdkExecutable });
+    }
+    const ownFactory = typeof (warm ? deps.startupFactory : deps.queryFactory) === 'function';
+    if (!executable?.path && (typeof deps.claudeExecutable === 'function' || !ownFactory)) {
+      this._closeWarm();
+      this._startRefused = { code: 'claude_not_installed', message: executable?.reason || CLAUDE_NOT_INSTALLED };
+      log(`session create refused: no Claude Code to run (${executable?.reason || 'not installed'})`);
+      return null;
     }
     if (this._warm) {
       const w = this._warm;
@@ -732,51 +746,20 @@ export class ClaudeSession {
       this._tempPlansDirs = plansDirsOf(options.env, { cwd: workDir, settings: options.settings });
       if (!this._tempSince) this._tempSince = Date.now();
     }
-    // Which Claude binary runs this session, first match wins:
-    //   1. an explicit override — cli-config.json → "claude-skin": { "sdkExecutable": "…" },
-    //      either a .js entrypoint (launched via node) or a native binary path;
-    //   2. the installed CLI we fell back to after the bundled one failed to launch;
-    //   3. the installed CLI when it is newer than the bundled one. The model picker
-    //      lists the installed CLI's models, and an older binary resolves the same
-    //      alias to an older model (alignedClaudeExecutable, claude-model-catalog.js);
-    //   4. the SDK's bundled, version-matched CLI.
-    //
-    // The SDK uses pathToClaudeCodeExecutable verbatim with zero validation, so
-    // everything is vetted here first — notably a bare command name, which would
-    // ENOENT under the SDK's spawn(shell:false).
-    const sdkExec = deps.sdkExecutable;
-    const override = resolveClaudeExecutableOverride(sdkExec);
-    this._alignedBin = null;
-    let runtimeLabel = 'bundled';
-    if (override.path) {
-      options.pathToClaudeCodeExecutable = override.path;
-      runtimeLabel = 'override';
-    } else if (sdkExec) {
-      log('ignoring sdkExecutable override:', override.reason);
-      this.send({ type: 'stderr', text: `Ignoring sdkExecutable override — ${override.reason}` });
+    // The executable resolved at the top of this call. The SDK uses
+    // pathToClaudeCodeExecutable verbatim with zero validation, so it was vetted
+    // there — notably a bare command name, which would ENOENT under the SDK's
+    // spawn(shell:false).
+    let runtimeLabel = 'unset';
+    this._claudeExecutable = null;
+    if (executable?.ignored) {
+      log('ignoring sdkExecutable override:', executable.ignored);
+      this.send({ type: 'stderr', text: `Ignoring sdkExecutable override — ${executable.ignored}` });
     }
-
-    if (!options.pathToClaudeCodeExecutable) {
-      let aligned = null;
-      if (!this._fallbackBin) {
-        try { aligned = deps.alignedClaudeBin?.() || null; } catch { aligned = null; }
-      }
-      if (this._fallbackBin) {
-        // A previous turn proved the bundled binary unusable; stay on the CLI we
-        // already fell back to rather than re-failing every turn.
-        options.pathToClaudeCodeExecutable = this._fallbackBin;
-        runtimeLabel = 'fallback';
-      } else if (aligned) {
-        options.pathToClaudeCodeExecutable = aligned;
-        this._alignedBin = aligned;
-        runtimeLabel = aligned;
-      } else {
-        // Called for its side effect only: this stats the binary the SDK is about
-        // to resolve and restores the execute bit if it is missing. We
-        // deliberately do NOT pass the resolved path on — letting the SDK resolve
-        // for itself keeps us correct even if its resolution logic changes.
-        claudeRuntime();
-      }
+    if (executable?.path) {
+      options.pathToClaudeCodeExecutable = executable.path;
+      this._claudeExecutable = executable.path;
+      runtimeLabel = executable.source === 'override' ? 'override' : executable.path;
     }
 
     if (warm) {
@@ -1256,94 +1239,18 @@ export class ClaudeSession {
   }
 
   /**
-   * The bundled native CLI failed to launch.
+   * The user's Claude Code would not start.
    *
    * The SDK's own message for this always blames a musl/glibc mismatch, which is
-   * only ever right on Linux — on macOS and Windows the real cause is almost
-   * always a missing execute bit (npm does not preserve it for binaries shipped
-   * without a `bin` entry, and this repo commits node_modules).
-   *
-   * Recovery is: re-stat and repair → retry once → fall back to the user's
-   * installed CLI with a visible notice → give up with an accurate diagnosis.
+   * only ever right on Linux — elsewhere the cause is a missing execute bit, a
+   * quarantined download, a build for another processor or a file that is gone.
+   * There is no other runtime to move to (SynaBun carries none), so the turn
+   * ends with what is wrong with that installation and how to fix it.
    */
   _recoverNativeRuntime(err) {
-    const prompt = this.lastPrompt;
-    // The newer installed CLI this session was aligned to would not launch. Latch
-    // it off for the whole process and go back to the bundled runtime, which has
-    // its own repair path below if it fails too.
-    if (this._alignedBin) {
-      const failed = this._alignedBin;
-      this._alignedBin = null;
-      markAlignedClaudeExecutableFailed(failed);
-      log(`aligned CLI failed to launch (${failed}) — using the bundled runtime`);
-      this.sendEvent({
-        type: 'system',
-        subtype: 'runtime_notice',
-        level: 'warn',
-        message: `Your installed Claude CLI (${failed}) failed to launch; using the bundled runtime instead.`,
-      });
-      this._recreateQuery(prompt);
-      return;
-    }
-    // The cached verdict predates the failure; re-stat so a repair performed by
-    // another session (or the boot sweep) is visible.
-    clearNativeBinaryCache();
-    const runtime = claudeRuntime();
-
-    let fallbackBin = this._fallbackBin;
-    if (!fallbackBin) {
-      // getClaudeBin()'s last resort is the bare string 'claude'. The SDK spawns
-      // with shell:false, so a bare name is a guaranteed ENOENT — the override
-      // validator rejects it, leaving fallbackBin null and giving the user a
-      // real diagnosis instead of a second, more confusing failure.
-      const candidate = resolveClaudeExecutableOverride(deps.getClaudeBin?.());
-      if (candidate.ok && candidate.path) fallbackBin = candidate.path;
-    }
-
-    const plan = planRuntimeRecovery({
-      err,
-      runtime,
-      fallbackBin,
-      alreadyTried: this._nativeRepairTried,
-    });
-    log(`native runtime recovery: action=${plan.action} state=${runtime.state} kind=${plan.kind}`);
-
-    if (plan.action === 'retry') {
-      this._nativeRepairTried = true;
-      this.sendEvent({ type: 'system', subtype: 'runtime_notice', level: 'warn', message: plan.message });
-      this._recreateQuery(prompt);
-      return;
-    }
-
-    if (plan.action === 'fallback') {
-      this._fallbackBin = fallbackBin;
-      this.sendEvent({ type: 'system', subtype: 'runtime_notice', level: 'warn', message: plan.message });
-      // Report-only: the fallback CLI may be a different version than the SDK
-      // was built against, and alias ids like "opus[1m]" resolve per-binary — so
-      // a picked model can silently launch as another version.
-      this._announceSkew(fallbackBin);
-      this._recreateQuery(prompt);
-      return;
-    }
-
-    this._finishTurnWithError(plan.message);
-  }
-
-  _announceSkew(bin) {
-    Promise.resolve()
-      .then(() => checkClaudeCliSkew(bin, { log: () => {} }))
-      .then((skew) => {
-        if (!skew?.skewed || this.destroyed) return;
-        this.sendEvent({
-          type: 'system',
-          subtype: 'runtime_notice',
-          level: 'warn',
-          message: `Version skew: your installed Claude CLI is ${skew.discovered}, but the bundled `
-            + `runtime is ${skew.bundled}. Model aliases and effort levels resolve per-binary, so `
-            + 'behaviour may differ until the bundled binary is repaired.',
-        });
-      })
-      .catch(() => {});
+    const dx = diagnoseLaunchFailure({ err, executable: this._claudeExecutable });
+    log(`Claude Code failed to launch: kind=${dx.kind} executable=${this._claudeExecutable || 'unset'}`);
+    this._finishTurnWithError(dx.message);
   }
 
   _pushUserText(text, images, { human = false } = {}) {
@@ -2222,7 +2129,7 @@ export class ClaudeSession {
   // AskUserQuestion answers arrive as updatedInput {questions, answers} from the
   // existing frontend card. The CLI's AskUserQuestion tool reads ONLY the
   // top-level `answers` map, looked up by each question's exact `question` text
-  // (verified against the bundled CLI: missing/empty map → "The user did not
+  // (verified against the CLI itself: missing/empty map → "The user did not
   // answer the questions."). So: keep the original questions, pass the answers
   // map through, and re-key any answer the panel stored under a fallback key
   // (text/header) back onto the question text.

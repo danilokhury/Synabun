@@ -6,7 +6,9 @@ import {
   createOpenCodeNativeLoopAdapter,
   normalizeOpenCodeModel,
 } from '../lib/native-loop-providers.js';
-import { alignedClaudeExecutable, clearClaudeModelCache } from '../lib/claude-model-catalog.js';
+import { Codex } from '@openai/codex-sdk';
+import { query as claudeQuery } from '@anthropic-ai/claude-agent-sdk';
+import { CLAUDE_NOT_INSTALLED, resolveClaudeSdkExecutable } from '../lib/claude-executable.js';
 
 test('Codex adapter keeps one thread and injects exact loop pins', async () => {
   const captured = { ctor: null, thread: null, prompts: [], events: [] };
@@ -335,7 +337,9 @@ test('OpenCode adapter treats HTTP 200 assistant errors as failed turns', async 
   await adapter.dispose();
 });
 
-// ── Claude native binary runtime selection ──────────────────────────────────
+// ── Which Claude Code a loop runs: the user's own ────────────────────────────
+// SynaBun carries no Claude Code. A loop is given the executable the host
+// resolved (lib/claude-executable.js); without one it fails before it starts.
 
 // Minimal query stub: the adapter only needs an async generator with interrupt().
 function stubQueryFactory(capture) {
@@ -351,163 +355,142 @@ function stubQueryFactory(capture) {
   };
 }
 
-test('Claude loop adapter leaves the SDK to resolve when the bundled runtime is healthy', async () => {
+test('Claude loop adapter runs the installed Claude Code the host resolved', async () => {
   const capture = {};
+  // process.execPath stands in for the user's Claude Code: a real, launchable binary.
   const adapter = await createClaudeNativeLoopAdapter({
-    runId: 'run-ok',
+    runId: 'run-installed',
     queryFactory: stubQueryFactory(capture),
-    resolveRuntime: () => ({ ok: true, state: 'ok', path: '/nm/claude' }),
-    claudeBin: '/usr/local/bin/claude',
+    claudeExecutable: resolveClaudeSdkExecutable({ launcher: process.execPath }),
     logWarn: () => {},
-  });
-  await adapter.runTurn('go');
-  assert.equal(capture.options.pathToClaudeCodeExecutable, undefined,
-    'a healthy runtime must not be overridden — the SDK resolves for itself');
-  await adapter.dispose();
-});
-
-test('Claude loop adapter falls back to the installed CLI when the bundled binary is unusable', async () => {
-  const capture = {};
-  const warnings = [];
-  // process.execPath stands in for the user's global CLI: a real, launchable
-  // native binary. The fallback is validated against the filesystem, so a path
-  // that does not exist is correctly refused (see the bare-name test below).
-  const adapter = await createClaudeNativeLoopAdapter({
-    runId: 'run-broken',
-    queryFactory: stubQueryFactory(capture),
-    resolveRuntime: () => ({ ok: false, state: 'chmod-failed', reason: 'read-only install' }),
-    claudeBin: process.execPath,
-    logWarn: (m) => warnings.push(m),
   });
   await adapter.runTurn('go');
   assert.equal(capture.options.pathToClaudeCodeExecutable, process.execPath);
-  assert.match(warnings.join('\n'), /chmod-failed/);
   await adapter.dispose();
 });
 
-test('Claude loop adapter refuses a fallback CLI path that does not exist', async () => {
+test('Claude loop adapter resolves from the installed CLI and the override when the host names only those', async () => {
   const capture = {};
-  const warnings = [];
   const adapter = await createClaudeNativeLoopAdapter({
-    runId: 'run-ghost',
+    runId: 'run-pieces',
     queryFactory: stubQueryFactory(capture),
-    resolveRuntime: () => ({ ok: false, state: 'not-installed', reason: 'nothing installed' }),
-    claudeBin: '/definitely/not/here/claude',
-    logWarn: (m) => warnings.push(m),
-  });
-  await adapter.runTurn('go');
-  assert.equal(capture.options.pathToClaudeCodeExecutable, undefined,
-    'a non-existent fallback must not be handed to the SDK');
-  assert.match(warnings.join('\n'), /no launchable/i);
-  await adapter.dispose();
-});
-
-test('Claude loop adapter refuses a bare command name as a fallback', async () => {
-  // getClaudeBin()'s last resort is the literal string 'claude'; the SDK spawns
-  // with shell:false, so handing that over would ENOENT instead of failing loudly.
-  const capture = {};
-  const warnings = [];
-  const adapter = await createClaudeNativeLoopAdapter({
-    runId: 'run-bare',
-    queryFactory: stubQueryFactory(capture),
-    resolveRuntime: () => ({ ok: false, state: 'not-installed', reason: 'nothing installed' }),
-    claudeBin: 'claude',
-    logWarn: (m) => warnings.push(m),
-  });
-  await adapter.runTurn('go');
-  assert.equal(capture.options.pathToClaudeCodeExecutable, undefined);
-  assert.match(warnings.join('\n'), /no launchable/i);
-  await adapter.dispose();
-});
-
-test('Claude loop adapter honours a valid explicit override without probing the runtime', async () => {
-  const capture = {};
-  let probed = false;
-  const adapter = await createClaudeNativeLoopAdapter({
-    runId: 'run-override',
-    queryFactory: stubQueryFactory(capture),
-    sdkExecutable: new URL('./native-loop-providers.test.mjs', import.meta.url).pathname,
-    resolveRuntime: () => { probed = true; return { ok: true, state: 'ok' }; },
+    claudeBin: process.execPath,
     logWarn: () => {},
   });
   await adapter.runTurn('go');
+  assert.equal(capture.options.pathToClaudeCodeExecutable, process.execPath);
+  await adapter.dispose();
+
+  const script = new URL('./native-loop-providers.test.mjs', import.meta.url).pathname;
+  const second = {};
+  const overridden = await createClaudeNativeLoopAdapter({
+    runId: 'run-override',
+    queryFactory: stubQueryFactory(second),
+    sdkExecutable: script,
+    claudeBin: process.execPath,
+    logWarn: () => {},
+  });
+  await overridden.runTurn('go');
   // The test file itself is a .mjs — a "script" override, accepted on existence
   // alone and launched via node, exactly as the SDK would.
-  assert.ok(capture.options.pathToClaudeCodeExecutable?.endsWith('native-loop-providers.test.mjs'));
-  assert.equal(probed, false, 'an accepted override short-circuits the runtime probe');
-  await adapter.dispose();
+  assert.equal(second.options.pathToClaudeCodeExecutable, script, 'an explicit override outranks the installed CLI');
+  await overridden.dispose();
 });
 
-// ── Alignment: the installed CLI is newer than the bundled one ──
-// The loop's model was picked from the installed CLI's list; the bundled binary
-// would resolve the same alias to an older model.
-
-test('Claude loop adapter runs the aligned installed CLI instead of the bundled one', async () => {
+test('Claude loop adapter passes over a bad override aloud and runs the installed CLI', async () => {
   const capture = {};
-  let probed = false;
+  const warnings = [];
   const adapter = await createClaudeNativeLoopAdapter({
-    runId: 'run-aligned',
+    runId: 'run-bad-override',
     queryFactory: stubQueryFactory(capture),
-    resolveRuntime: () => { probed = true; return { ok: true, state: 'ok' }; },
-    alignedClaudeBin: process.execPath,
-    logWarn: () => {},
+    sdkExecutable: '/definitely/not/here/claude',
+    claudeBin: process.execPath,
+    logWarn: (line) => warnings.push(line),
   });
   await adapter.runTurn('go');
   assert.equal(capture.options.pathToClaudeCodeExecutable, process.execPath);
-  assert.equal(probed, false, 'the bundled runtime is not consulted when the aligned CLI runs');
+  assert.ok(warnings.some(line => /ignoring sdkExecutable override/.test(line)));
   await adapter.dispose();
 });
 
-test('Claude loop adapter keeps the bundled runtime when the aligned CLI is not launchable', async () => {
-  const capture = {};
-  const adapter = await createClaudeNativeLoopAdapter({
-    runId: 'run-aligned-ghost',
-    queryFactory: stubQueryFactory(capture),
-    resolveRuntime: () => ({ ok: true, state: 'ok' }),
-    alignedClaudeBin: '/definitely/not/here/claude',
-    logWarn: () => {},
-  });
-  await adapter.runTurn('go');
-  assert.equal(capture.options.pathToClaudeCodeExecutable, undefined,
-    'a path that cannot launch must never be handed to the SDK');
-  await adapter.dispose();
+test('Claude loop adapter never hands the SDK a path that cannot launch', async () => {
+  // getClaudeBin()'s last resort is the literal string 'claude'; the SDK spawns
+  // with shell:false, so a bare name (or a file that is gone) is refused.
+  for (const claudeBin of ['claude', '/definitely/not/here/claude', null]) {
+    const capture = {};
+    const adapter = await createClaudeNativeLoopAdapter({
+      runId: 'run-ghost',
+      queryFactory: stubQueryFactory(capture),
+      claudeBin,
+      logWarn: () => {},
+    });
+    await adapter.runTurn('go');
+    assert.equal(capture.options.pathToClaudeCodeExecutable, undefined, String(claudeBin));
+    await adapter.dispose();
+  }
 });
 
-test('an explicit sdkExecutable override outranks the aligned CLI', async () => {
-  const capture = {};
-  const adapter = await createClaudeNativeLoopAdapter({
-    runId: 'run-override-vs-aligned',
-    queryFactory: stubQueryFactory(capture),
-    sdkExecutable: new URL('./native-loop-providers.test.mjs', import.meta.url).pathname,
-    alignedClaudeBin: process.execPath,
-    logWarn: () => {},
-  });
-  await adapter.runTurn('go');
-  assert.ok(capture.options.pathToClaudeCodeExecutable?.endsWith('native-loop-providers.test.mjs'));
-  await adapter.dispose();
+test('without Claude Code a loop fails before the Agent SDK is called, with the install phrase', async () => {
+  // The real SDK query: it must never be reached without an executable, or it
+  // would look for one inside its own packages.
+  for (const options of [{ claudeBin: 'claude' }, { claudeExecutable: resolveClaudeSdkExecutable({ launcher: null }) }, {}]) {
+    await assert.rejects(
+      createClaudeNativeLoopAdapter({ runId: 'run-none', queryFactory: claudeQuery, logWarn: () => {}, ...options }),
+      (error) => {
+        assert.equal(error.code, 'CLAUDE_NOT_INSTALLED');
+        assert.equal(error.message, CLAUDE_NOT_INSTALLED);
+        assert.match(error.message, /Claude CLI not found/);
+        return true;
+      },
+    );
+  }
+  // The same with the default factory, which is the real one.
+  await assert.rejects(createClaudeNativeLoopAdapter({ runId: 'run-default', logWarn: () => {} }), { code: 'CLAUDE_NOT_INSTALLED' });
 });
 
-test('an aligned CLI that fails to launch sends later runs back to the bundled runtime', async () => {
-  clearClaudeModelCache();
-  const skew = { skewed: true, installedNewer: true };
-  assert.equal(alignedClaudeExecutable(process.execPath, { skew }), process.execPath);
+test('a Claude Code that fails to launch fails the turn; there is no other runtime to move to', async () => {
+  let started = 0;
   const adapter = await createClaudeNativeLoopAdapter({
-    runId: 'run-aligned-broken',
+    runId: 'run-broken',
     queryFactory: () => {
+      started++;
       const generator = (async function* () {
         throw Object.assign(new Error(`spawn ${process.execPath} ENOENT`), { code: 'ENOENT' });
       })();
       generator.interrupt = async () => {};
       return generator;
     },
-    alignedClaudeBin: process.execPath,
+    claudeBin: process.execPath,
     logWarn: () => {},
   });
   await assert.rejects(adapter.runTurn('go'));
-  assert.equal(alignedClaudeExecutable(process.execPath, { skew }), null,
-    'a launch failure latches the aligned CLI off for this process');
+  assert.equal(started, 1, 'nothing is started a second time');
   await adapter.dispose();
-  clearClaudeModelCache();
+});
+
+// ── Which Codex a loop runs: the user's own ─────────────────────────────────
+
+test('without Codex a loop fails before the Codex SDK is constructed, and with it the SDK is told which one', async () => {
+  // The real SDK class and no path: left to itself it would search its own
+  // packages for a Codex and report a broken install.
+  await assert.rejects(
+    createCodexNativeLoopAdapter({ runId: 'codex-none', cwd: process.cwd(), CodexClass: Codex }),
+    (error) => {
+      assert.equal(error.code, 'CODEX_NOT_INSTALLED');
+      assert.match(error.message, /Codex CLI not found/);
+      assert.match(error.message, /installed separately from SynaBun/);
+      return true;
+    },
+  );
+  await assert.rejects(createCodexNativeLoopAdapter({ runId: 'codex-default', cwd: process.cwd() }), { code: 'CODEX_NOT_INSTALLED' });
+
+  let options = null;
+  class RecordingCodex {
+    constructor(given) { options = given; }
+    startThread() { return { id: null, runStreamed: async () => ({ events: (async function* () {})() }) }; }
+  }
+  await createCodexNativeLoopAdapter({ runId: 'codex-path', cwd: process.cwd(), codexPath: '/opt/homebrew/bin/codex', CodexClass: RecordingCodex });
+  assert.equal(options.codexPathOverride, '/opt/homebrew/bin/codex');
 });
 
 test('Claude adapter resolves each turn with its own charge beside the CLI running total', async () => {

@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Install as App — SynaBun</title>
+  <link rel="icon" href="/favicon-32x32.png">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/manifest.json">
+  <link rel="stylesheet" href="/shared/styles.css">
+  <link rel="stylesheet" href="/shared/pwa-install.css">
+</head>
+<body id="pwa-install">
+  <main aria-labelledby="install-title">
+    <img src="/icon-192.png" width="48" height="48" alt="SynaBun">
+    <h1 id="install-title">Install SynaBun as an app</h1>
+    <p id="install-intro">The server is running in the background. Confirm installation once in your browser to give SynaBun its own app window.</p>
+    <ol>
+      <li id="install-chromium">Chrome or Edge: choose Install as App below, or the browser's Install app menu.</li>
+      <li id="install-safari">Safari on macOS: choose File → Add to Dock. Keep the name SynaBun.</li>
+    </ol>
+    <p id="install-later">After installation, reopen the native SynaBun launcher. It starts or reuses the server and opens your installed PWA. Closing the app window leaves the server running. Use Apps → Stop Server to stop it.</p>
+    <div class="actions">
+      <button id="install-button" type="button">Install as App</button>
+      <a id="install-continue" href="/">Continue to SynaBun</a>
+    </div>
+    <p id="install-status" role="status" aria-live="polite"></p>
+  </main>
+  <script type="module" src="/shared/pwa-install-page.js"></script>
+</body>
+</html>

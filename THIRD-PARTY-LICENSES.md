@@ -129,3 +129,8 @@ information is in [NOTICE](./NOTICE). The
 `@anthropic-ai/claude-agent-sdk` lockfile metadata declares
 `SEE LICENSE IN README.md`; review the dependency's distributed README and
 license materials for its authoritative package-specific terms.
+
+Claude Code, Codex, OpenCode and Gemini CLI are not dependencies of SynaBun and
+are not distributed with it: the user installs them separately, under their
+publishers' terms. The agent SDKs listed above are installed without the
+executables they would otherwise carry (`lib/external-tools.js`).

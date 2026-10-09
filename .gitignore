@@ -54,3 +54,6 @@ coverage/
 
 # Design-run captures and harnesses written by SynaBun workers
 .synabun/design/
+
+# Packaged application builds (packaging/): staging, downloads and artifacts
+/build/

@@ -5653,9 +5653,9 @@ function handleTabEvent(tab, ev) {
     appendStatus(tab, ev.message || 'Retrying…');
     return;
   }
-  // Non-fatal runtime problems (e.g. the bundled Claude binary lost its execute
-  // bit and was repaired, or we fell back to the globally installed CLI). The
-  // session continues — this must not render as a fatal error.
+  // Non-fatal runtime notices (e.g. a session setting that could not be
+  // applied, or where this session's debug log is written). The session
+  // continues — this must not render as a fatal error.
   if (ev.type === 'system' && ev.subtype === 'runtime_notice') {
     if (ev.level === 'error') appendError(tab, ev.message || 'Runtime error');
     else if (ev.level === 'info') appendStatus(tab, ev.message || 'Runtime notice');

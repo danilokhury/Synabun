@@ -7,6 +7,10 @@ the handler for each event even when both project and global hooks are installed
 
 The command resolves a SynaBun checkout from the current project (including
 subdirectories), then falls back to the installer-managed `SYNABUN_HOOK_ROOT`.
+A packaged application registers `"<entry>" claude-hook <script>` instead: its
+entry executable runs the handler with the Node that came with it, and no
+`SYNABUN_HOOK_ROOT` is written. Both forms are recognized by either kind of
+install, so changing from one to the other leaves one handler per hook.
 The tracked template contains no machine-specific root. Server startup repairs
 recognized old commands in global settings and registered projects' settings
 and local settings. Other handlers, including plugins, retain their own behavior.

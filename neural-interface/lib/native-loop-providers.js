@@ -1,8 +1,8 @@
 import { detectProject as memoryProject } from '../../mcp-server/dist/config.js';
 import { Codex } from '@openai/codex-sdk';
 import { query as claudeQuery } from '@anthropic-ai/claude-agent-sdk';
-import { CLAUDE_EFFORT_LEVELS, markAlignedClaudeExecutableFailed } from './claude-model-catalog.js';
-import { claudeRuntime, isNativeBinaryLaunchFailure, resolveClaudeExecutableOverride } from './native-binary-runtime.js';
+import { CLAUDE_EFFORT_LEVELS } from './claude-model-catalog.js';
+import { CLAUDE_NOT_INSTALLED, resolveClaudeSdkExecutable } from './claude-executable.js';
 import { extractOpenCodeText } from './session-title-generator.js';
 import { patchCodexLineSplitting } from './jsonl-lines.js';
 import { dirname } from 'node:path';
@@ -286,6 +286,14 @@ export async function createCodexNativeLoopAdapter(options = {}) {
   if (Object.keys(pins).length) config.mcp_servers = { SynaBun: { env: pins } };
   if (extended) config.model_context_window = Math.floor(Number(modelContextWindow));
   if (browserPolicy) Object.assign(config, browserPolicy.config);
+  // The SDK is always told which Codex to start: the user's own installation.
+  // SynaBun carries none, and left to itself the SDK would look for one inside
+  // its own packages and report that as a broken install.
+  if (!codexPath && CodexClass === Codex) {
+    const error = new Error('Codex CLI not found. Codex is installed separately from SynaBun: install it, then run this again.');
+    error.code = 'CODEX_NOT_INSTALLED';
+    throw error;
+  }
   const codex = new CodexClass({
     ...(codexPath ? { codexPathOverride: codexPath } : {}),
     env,
@@ -406,12 +414,11 @@ export async function createClaudeNativeLoopAdapter(options = {}) {
   const {
     runId, cwd, model, effort, browserSessionId, browserTabId,
     mcpUrl, onIdentity = () => {}, onEvent = () => {}, queryFactory = claudeQuery,
-    sdkExecutable, includePartialMessages = process.platform !== 'win32',
-    // Fallback CLI + runtime probe, injectable for tests.
-    claudeBin = null, resolveRuntime = claudeRuntime, logWarn = console.warn,
-    // Installed CLI to run instead of the bundled one because it is newer — see
-    // alignedClaudeExecutable() in claude-model-catalog.js. null keeps bundled.
-    alignedClaudeBin = null,
+    includePartialMessages = process.platform !== 'win32',
+    // Which Claude Code runs the loop: the answer of resolveClaudeSdkExecutable()
+    // (lib/claude-executable.js), as the host worked it out. A caller without
+    // one names the pieces instead: the cli-config override and the installed CLI.
+    claudeExecutable = null, sdkExecutable = null, claudeBin = null, logWarn = console.warn,
     // Task-mode options (assistant dispatch).
     extraEnv = {}, permissionPolicy: rawPolicy = 'auto', permissionBroker = null,
     capability: rawCapability = 'full', maxBudgetUsd = null, outputSchema = null, runMode = 'loop',
@@ -522,41 +529,22 @@ export async function createClaudeNativeLoopAdapter(options = {}) {
   if (capability === 'read-only') queryOptions.disallowedTools = [...CLAUDE_READ_ONLY_DISALLOWED_TOOLS];
   if (Number(maxBudgetUsd) > 0) queryOptions.maxBudgetUsd = Number(maxBudgetUsd);
   if (outputSchema && typeof outputSchema === 'object') queryOptions.outputFormat = { type: 'json_schema', schema: outputSchema };
-  // The SDK uses pathToClaudeCodeExecutable verbatim with no validation, so vet
-  // the override first (a bare command name would ENOENT under shell:false).
-  // With no override, calling resolveRuntime() also restores the execute bit on
-  // the bundled binary — npm drops it, and this repo commits node_modules.
+  // The loop runs the user's own Claude Code: SynaBun carries none, and the SDK
+  // is never left to look for one. The SDK uses pathToClaudeCodeExecutable
+  // verbatim with no validation, so the path was vetted where it was resolved
+  // (a bare command name would ENOENT under shell:false).
   //
-  // Pre-flight only: unattended loops have no one to prompt, and retries are
-  // owned by native-loop-runtime.js. A bad runtime here means we pick the
-  // fallback CLI up front rather than failing mid-loop.
-  const override = resolveClaudeExecutableOverride(sdkExecutable);
-  // The installed CLI, when it is newer than the bundled one: the loop's model was
-  // picked from that CLI's list, and the bundled binary would resolve the same alias
-  // to an older model. Vetted with the same contract as any override.
-  const aligned = !override.path && alignedClaudeBin
-    ? resolveClaudeExecutableOverride(alignedClaudeBin)
-    : null;
-  const alignedPath = aligned?.ok && aligned.path ? aligned.path : null;
-  if (override.path) {
-    queryOptions.pathToClaudeCodeExecutable = override.path;
-  } else {
-    if (sdkExecutable) logWarn(`[native-loop] ignoring sdkExecutable override — ${override.reason}`);
-    if (alignedPath) {
-      queryOptions.pathToClaudeCodeExecutable = alignedPath;
-    } else {
-      const runtime = resolveRuntime();
-      if (!runtime.ok) {
-        const fallback = resolveClaudeExecutableOverride(claudeBin);
-        if (fallback.ok && fallback.path) {
-          queryOptions.pathToClaudeCodeExecutable = fallback.path;
-          logWarn(`[native-loop] bundled Claude binary unusable (${runtime.state}) — using ${fallback.path}`);
-        } else {
-          logWarn(`[native-loop] bundled Claude binary unusable (${runtime.state}) and no launchable `
-            + `fallback CLI: ${runtime.reason || fallback.reason || 'none configured'}`);
-        }
-      }
-    }
+  // Pre-flight only: an unattended loop has no one to prompt, and retries are
+  // owned by native-loop-runtime.js. Without a Claude Code to start, the run
+  // fails here, with the reason, instead of somewhere inside the first turn.
+  const executable = claudeExecutable || resolveClaudeSdkExecutable({ launcher: claudeBin, sdkExecutable });
+  if (executable.ignored) logWarn(`[native-loop] ignoring sdkExecutable override — ${executable.ignored}`);
+  if (executable.path) {
+    queryOptions.pathToClaudeCodeExecutable = executable.path;
+  } else if (queryFactory === claudeQuery) {
+    const error = new Error(executable.reason || CLAUDE_NOT_INSTALLED);
+    error.code = 'CLAUDE_NOT_INSTALLED';
+    throw error;
   }
 
   const q = queryFactory({ prompt: input, options: queryOptions });
@@ -648,8 +636,6 @@ export async function createClaudeNativeLoopAdapter(options = {}) {
       }
     } catch (error) {
       pumpError = error;
-      // The aligned CLI would not start. Later runs go back to the bundled runtime.
-      if (alignedPath && isNativeBinaryLaunchFailure(error)) markAlignedClaudeExecutableFailed(alignedPath);
     } finally {
       flushDeltas();
       if (alive) {

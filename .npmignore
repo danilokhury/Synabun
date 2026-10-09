@@ -55,3 +55,7 @@ npm-debug.log*
 # Generated packages and coverage
 *.tgz
 coverage/
+
+# Packaged application builds (packaging/): staging, downloads and artifacts
+/build/
+/packaging/

@@ -28,7 +28,8 @@ export function scriptJson(value) {
 }
 
 /**
- * facts: { projectDir, install: 'npm' | 'git', launcher: 'registered' | 'stale' | 'missing' | 'skipped' }
+ * facts: { projectDir, install: 'npm' | 'git' | 'app', launcher: 'registered' | 'stale' | 'missing' | 'skipped',
+ *          entry: a packaged application's entry executable }
  * A template without the slots (an older cached copy, a hand-edited file) is
  * returned as it is: the page then shows the commands and no button.
  */
@@ -42,8 +43,9 @@ export function renderOfflinePage(template, { bridgeSource = '', facts = {} } = 
   if (html.includes(FACTS_SLOT)) {
     html = html.replace(FACTS_SLOT, () => `window.__SYNABUN_OFFLINE__ = ${scriptJson({
       projectDir: facts.projectDir || '',
-      install: facts.install === 'npm' ? 'npm' : 'git',
+      install: ['npm', 'app'].includes(facts.install) ? facts.install : 'git',
       launcher: String(facts.launcher || ''),
+      ...(facts.entry ? { entry: String(facts.entry) } : {}),
     })};`);
   }
   return html;

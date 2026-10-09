@@ -11,7 +11,7 @@ import { resolve } from 'node:path';
 import {
   START_BEACON_PATH, START_COPY, START_LIMITS, START_LINK, START_STORAGE, createStartBridge, fetchStartBeacon,
   formatStartElapsed, formatStartText, isMacPlatform, isWindowsPlatform,
-  manualStartCommands, openStartLink, quoteShellPath, readStartBeacon, startBeaconPort, startBeaconTarget,
+  manualStartCommands, openStartLink, packagedStartCommand, quoteShellPath, readStartBeacon, startBeaconPort, startBeaconTarget,
   startButtonUsable, startLinkMode, startStatusView,
 } from '../public/shared/start-bridge.js';
 import { OFFLINE_SLOTS, moduleToClassicScript, renderOfflinePage, scriptJson } from '../lib/offline-page.js';
@@ -70,6 +70,31 @@ test('one command per install, written to work in any shell', () => {
     // The old `cd "…" & npm start` failed in PowerShell and did not change drive in cmd.exe.
     assert.doesNotMatch(command, /\bcd\b|[;&]/);
   }
+});
+
+test('a packaged application is started through its own executable', () => {
+  const mac = '/Applications/SynaBun.app/Contents/MacOS/SynaBun';
+  // Neither npm nor a checkout: the person has no Node of their own.
+  assert.deepEqual(manualStartCommands({ projectDir: '/Applications/SynaBun.app/Contents/Resources/app', install: 'app', entry: mac, windows: false }),
+    [{ id: 'app', command: `${mac} start` }]);
+  assert.equal(packagedStartCommand(`/Users/José Müller/My Apps/o'brien/SynaBun.app/Contents/MacOS/SynaBun`),
+    `'/Users/José Müller/My Apps/o'\\''brien/SynaBun.app/Contents/MacOS/SynaBun' start`);
+  assert.equal(packagedStartCommand('/home/me/Applications/SynaBun-2.0.0-x86_64.AppImage'), '/home/me/Applications/SynaBun-2.0.0-x86_64.AppImage start');
+
+  // Windows: a plain path reads the same in cmd.exe and PowerShell, as Windows spells it.
+  assert.equal(packagedStartCommand('C:/Users/ana/AppData/Local/Programs/SynaBun/SynaBun.exe'),
+    'C:\\Users\\ana\\AppData\\Local\\Programs\\SynaBun\\SynaBun.exe start');
+  // One that needs quotes: PowerShell does not run a quoted path by itself, cmd.exe has no `&` operator.
+  const spaced = packagedStartCommand('C:\\Users\\Ana Maria\\AppData\\Local\\Programs\\SynaBun\\SynaBun.exe');
+  assert.equal(spaced, 'cmd /c "C:\\Users\\Ana Maria\\AppData\\Local\\Programs\\SynaBun\\SynaBun.exe" start');
+  assert.doesNotMatch(spaced, /^"|[;&]/);
+
+  // The entry counts only for a packaged application, and only when it is known.
+  assert.deepEqual(manualStartCommands({ projectDir: '/srv/synabun', install: 'git', entry: mac, windows: false }),
+    [{ id: 'git', command: 'npm --prefix /srv/synabun start' }]);
+  assert.deepEqual(manualStartCommands({ install: 'npm', entry: mac }), [{ id: 'npm', command: 'synabun' }]);
+  assert.deepEqual(manualStartCommands({ projectDir: '/x', install: 'app', entry: '' }).map(c => c.id), ['npm', 'git']);
+  assert.equal(START_STORAGE.entry, 'synabun-start-entry');
 });
 
 test('a path is one shell argument whatever is in it', () => {
@@ -412,6 +437,20 @@ test('offline page: nothing answers — the button returns with the way out', as
   assert.equal(page.byId('mascot').getAttribute('data-state'), 'stalled');
   assert.equal(page.byId('startElapsed').textContent, '', 'no clock once nothing is under way');
   assert.equal(page.location.reloads, 0);
+});
+
+test('offline page: a packaged application shows its own start command, never npm', () => {
+  const entry = '/Applications/Syna Bun.app/Contents/MacOS/SynaBun';
+  const facts = { projectDir: '/Applications/Syna Bun.app/Contents/Resources/app', install: 'app', launcher: 'registered', entry };
+  const html = renderOfflinePage(OFFLINE_TEMPLATE, { bridgeSource: BRIDGE_SOURCE, facts });
+  assert.ok(html.includes('"install":"app"') && html.includes(`"entry":${JSON.stringify(entry)}`));
+  const page = openOfflinePage({ html, navigator: MAC });
+  assert.deepEqual(page.commands(), [`'${entry}' start`]);
+  // What the last health answer said wins over the cached copy, as for the other facts.
+  const moved = openOfflinePage({ html, navigator: MAC, storage: { 'synabun-start-entry': '/Users/me/Applications/SynaBun.app/Contents/MacOS/SynaBun' } });
+  assert.deepEqual(moved.commands(), ['/Users/me/Applications/SynaBun.app/Contents/MacOS/SynaBun start']);
+  // Any other install kind is still read as a checkout.
+  assert.ok(renderOfflinePage(OFFLINE_TEMPLATE, { bridgeSource: BRIDGE_SOURCE, facts: { install: 'elsewhere' } }).includes('"install":"git"'));
 });
 
 test('offline page: Firefox on Linux uses a hidden frame and says where the server runs', async () => {
@@ -845,7 +884,7 @@ test('both surfaces announce the sentence, not the clock, and stand still when a
 
 test('the cached offline page is replaced: a new cache name, refreshed on every online navigation', () => {
   const sw = read('public/sw.js');
-  assert.match(sw, /const CACHE_NAME = 'synabun-offline-v11';/);
+  assert.match(sw, /const CACHE_NAME = 'synabun-offline-v12';/);
   assert.match(sw, /names\.filter\(\(n\) => n !== CACHE_NAME\)\.map\(\(n\) => caches\.delete\(n\)\)/, 'the old copy goes with the old name');
   assert.match(sw, /cache\.add\(new Request\(OFFLINE_URL, \{ cache: 'reload' \}\)\)/, 'fetched past the HTTP cache');
 });
@@ -858,11 +897,14 @@ test('the server renders the offline page and tells pages what they need for lat
   const route = server.slice(routeStart, server.indexOf("app.get('/claude-chat.html'", routeStart));
   assert.match(route, /renderOfflinePage\(html, \{/);
   assert.match(route, /start-bridge\.js/);
-  assert.match(route, /facts: \{ projectDir: PACKAGE_ROOT, install: INSTALL_KIND, launcher: getStartLauncherState\(\) \}/);
+  assert.match(route, /facts: \{ projectDir: PACKAGE_ROOT, install: INSTALL_KIND, launcher: getStartLauncherState\(\), entry: START_ENTRY \}/);
 
   const healthStart = server.indexOf("app.get('/api/health'");
   const health = server.slice(healthStart, server.indexOf("app.post('/api/health/start'", healthStart));
-  assert.match(health, /install: INSTALL_KIND, startLauncher: getStartLauncherState\(\)/);
+  assert.match(health, /install: INSTALL_KIND, startLauncher: getStartLauncherState\(\), entry: START_ENTRY/);
+  // A packaged application says so, and names the executable a person can start it with.
+  assert.match(server, /const INSTALL_KIND = PACKAGED_RUNTIME \? 'app' : isGlobalInstall\(\) \? 'npm' : 'git';/);
+  assert.match(server, /const START_ENTRY = durableEntry\(PACKAGED_RUNTIME\) \|\| '';/);
 
   assert.ok(OFFLINE_TEMPLATE.includes(`<script>${OFFLINE_SLOTS.facts}</script>`));
   assert.ok(OFFLINE_TEMPLATE.includes(`<script>${OFFLINE_SLOTS.bridge}</script>`));

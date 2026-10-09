@@ -23,8 +23,9 @@ export const START_LINK = 'synabun://start';
 // What the page remembers from the last time the server answered.
 export const START_STORAGE = {
   projectDir: 'synabun-project-dir',
-  install: 'synabun-install-kind',       // 'npm' | 'git'
+  install: 'synabun-install-kind',       // 'npm' | 'git' | 'app' (a packaged application)
   launcher: 'synabun-start-launcher',    // 'registered' | 'stale' | 'missing' | 'skipped'
+  entry: 'synabun-start-entry',          // a packaged application's entry executable
 };
 
 export const START_LIMITS = {
@@ -89,13 +90,30 @@ export function quoteShellPath(path, windows) {
 }
 
 /**
+ * How a packaged application is started by hand: its entry executable with
+ * `start`. A path that needs no quotes reads the same in every shell. One that
+ * does goes through `cmd /c` on Windows, because PowerShell does not run a
+ * quoted path by itself and cmd.exe does not know PowerShell's `&`.
+ */
+export function packagedStartCommand(entry) {
+  const value = String(entry || '');
+  if (/^[A-Za-z]:[\\/]|^\\\\/.test(value)) {
+    const path = value.replace(/\//g, '\\');
+    return /^[A-Za-z0-9_.:\\-]+$/.test(path) ? `${path} start` : `cmd /c "${path}" start`;
+  }
+  return `${quoteShellPath(value, false)} start`;
+}
+
+/**
  * The commands a person can type instead. One line each, no `cd`, no `;` or
  * `&` between commands: `npm --prefix <dir> start` reads the same in cmd.exe,
  * PowerShell, bash, zsh and fish.
- * Returns [{ id: 'npm' | 'git', command }] — the one that matches the install
- * when it is known, both when it is not.
+ * Returns [{ id: 'npm' | 'git' | 'app', command }] — the one that matches the
+ * install when it is known, both npm and git when it is not. A packaged
+ * application (`install: 'app'`) is started through its `entry` executable.
  */
-export function manualStartCommands({ projectDir, install, windows } = {}) {
+export function manualStartCommands({ projectDir, install, windows, entry } = {}) {
+  if (install === 'app' && entry) return [{ id: 'app', command: packagedStartCommand(entry) }];
   const npm = { id: 'npm', command: 'synabun' };
   const git = projectDir ? { id: 'git', command: `npm --prefix ${quoteShellPath(projectDir, windows)} start` } : null;
   if (install === 'npm') return [npm];

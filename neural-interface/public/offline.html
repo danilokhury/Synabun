@@ -507,13 +507,14 @@
   const projectDir = stored('synabun-project-dir') || facts.projectDir || '';
   const install = stored('synabun-install-kind') || facts.install || '';
   const launcher = stored('synabun-start-launcher') || facts.launcher || '';
+  const entry = stored('synabun-start-entry') || facts.entry || '';
   const hasBridge = typeof createStartBridge === 'function';
   const windows = hasBridge ? isWindowsPlatform(navigator) : /Win/.test(navigator.platform);
   const mac = hasBridge ? isMacPlatform(navigator) : /Mac/.test(navigator.platform);
 
   // --- Commands to type instead ---
   const commands = hasBridge
-    ? manualStartCommands({ projectDir, install, windows })
+    ? manualStartCommands({ projectDir, install, windows, entry })
     : [{ id: 'npm', command: 'synabun' }].concat(projectDir ? [{ id: 'git', command: 'npm --prefix "' + projectDir + '" start' }] : []);
 
   function copyToClipboard(text, btn) {

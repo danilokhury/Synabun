@@ -1,0 +1,68 @@
+{
+  "node": {
+    "version": "22.19.0",
+    "baseUrl": "https://nodejs.org/dist/v22.19.0/",
+    "origin": "SHA-256 from the release's own SHASUMS256.txt. The same version CI runs on.",
+    "files": {
+      "node-v22.19.0-darwin-arm64.tar.gz": "c59006db713c770d6ec63ae16cb3edc11f49ee093b5c415d667bb4f436c6526d",
+      "node-v22.19.0-darwin-x64.tar.gz": "3cfed4795cd97277559763c5f56e711852d2cc2420bda1cea30c8aa9ac77ce0c",
+      "node-v22.19.0-linux-x64.tar.gz": "d36e56998220085782c0ca965f9d51b7726335aed2f5fc7321c6c0ad233aa96d",
+      "node-v22.19.0-win-x64.zip": "ea3fad0e67a991d8477d8c01344b56e69c676ccb733f065b22436994b1253f86",
+      "node-v22.19.0-win-x86.zip": "708b8a297a19e9ac433e32ac0fc496755757c5e00bd5a0683917e73cae5fe8ea"
+    }
+  },
+  "tools": {
+    "appimagetool": {
+      "version": "1.9.1",
+      "file": "appimagetool-x86_64.AppImage",
+      "url": "https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage",
+      "sha256": "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0",
+      "origin": "SHA-256 of the release asset as published by GitHub."
+    },
+    "appimage-runtime": {
+      "version": "20251108",
+      "file": "runtime-x86_64",
+      "url": "https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64",
+      "sha256": "2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d",
+      "origin": "SHA-256 of the release asset as published by GitHub."
+    }
+  },
+  "embeddingModel": {
+    "id": "Xenova/all-MiniLM-L6-v2",
+    "origin": "SHA-256 of the files the application's own installer (mcp-server setup:embeddings) downloads.",
+    "files": {
+      "config.json": "7135149f7cffa1a573466c6e4d8423ed73b62fd2332c575bf738a0d033f70df7",
+      "onnx/model.onnx": "759c3cd2b7fe7e93933ad23c4c9181b7396442a2ed746ec7c1d46192c469c46e",
+      "tokenizer_config.json": "9261e7d79b44c8195c1cada2b453e55b00aeb81e907a6664974b4d7776172ab3",
+      "tokenizer.json": "da0e79933b9ed51798a3ae27893d3c5fa4a201126cef75586296df9b4d2c62a0"
+    }
+  },
+  "nativeModules": {
+    "onnxruntime-node": {
+      "1.21.0": {
+        "darwin": [
+          "arm64",
+          "x64"
+        ],
+        "linux": [
+          "arm64",
+          "x64"
+        ],
+        "win32": [
+          "arm64",
+          "x64"
+        ]
+      }
+    },
+    "node-pty": {
+      "1.1.0": {
+        "prebuilds": [
+          "darwin-arm64",
+          "darwin-x64",
+          "win32-arm64",
+          "win32-x64"
+        ]
+      }
+    }
+  }
+}

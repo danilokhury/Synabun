@@ -1430,6 +1430,8 @@ const wizardState = {
   enabledTools: [],    // tool ids toggled on via Step 5 install toggles
   dataHome: '',
   packageRoot: '',
+  mcpCommand: '',
+  mcpArgs: [],
   buildReady: false,
   mcpWritten: false,
   projects: [],
@@ -2586,7 +2588,11 @@ function getGenericMcpJson() {
   const mcpPath = pkgRoot + '/mcp-server/run.mjs';
   const envPath = dataHome + '/.env';
   const env = { DOTENV_PATH: envPath, SYNABUN_DATA_HOME: dataHome, MEMORY_DATA_DIR: dataHome + '/mcp-data' };
-  return JSON.stringify({ mcpServers: { SynaBun: { command: 'node', args: [mcpPath], env } } }, null, 2);
+  // A packaged application is started through its own executable; the server says which.
+  const packaged = wizardState.mcpCommand && wizardState.mcpCommand !== 'node';
+  const command = packaged ? wizardState.mcpCommand : 'node';
+  const args = packaged ? wizardState.mcpArgs : [mcpPath];
+  return JSON.stringify({ mcpServers: { SynaBun: { command, args, env } } }, null, 2);
 }
 
 // "Other providers" collapsible — shows the generic MCP JSON for paste-based setups.
@@ -2948,6 +2954,10 @@ async function init() {
     }
     if (data.packageRoot) {
       wizardState.packageRoot = data.packageRoot;
+    }
+    if (data.mcpCommand && Array.isArray(data.mcpArgs)) {
+      wizardState.mcpCommand = data.mcpCommand;
+      wizardState.mcpArgs = data.mcpArgs;
     }
   } catch {}
 

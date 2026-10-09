@@ -1,0 +1,156 @@
+name: Build applications
+
+# Builds the packaged application for each platform on that platform's own
+# runner and keeps the result as a workflow artifact. Started by hand.
+#
+# It does not create a release, publish anything or upload anywhere else, and
+# it signs only when the signing secrets below exist. An unsigned build says so
+# in its build report.
+
+on:
+  workflow_dispatch:
+    inputs:
+      targets:
+        description: Targets to build, separated by spaces
+        required: false
+        default: macos-arm64 macos-x64 linux-x64 windows-x64
+      embedding_model:
+        description: Include the local embedding model
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-apps-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.19.0
+
+      # The runner of each target comes from the builder's own registry.
+      - name: Choose the targets
+        id: matrix
+        env:
+          REQUESTED: ${{ inputs.targets }}
+        run: |
+          node packaging/build.mjs targets --json > targets.json
+          node -e '
+            const all = JSON.parse(require("node:fs").readFileSync("targets.json", "utf8"));
+            const requested = String(process.env.REQUESTED || "").split(/[\s,]+/).filter(Boolean);
+            const unknown = requested.filter((id) => !all.some((item) => item.target === id));
+            if (unknown.length || !requested.length) {
+              console.error("Unknown or missing targets: " + (unknown.join(", ") || "(none requested)"));
+              process.exit(1);
+            }
+            const include = all.filter((item) => requested.includes(item.target)).map((item) => ({
+              target: item.target,
+              runner: item.runner,
+              node_arch: item.target === "windows-x86" ? "x86" : "",
+            }));
+            require("node:fs").appendFileSync(process.env.GITHUB_OUTPUT, "matrix=" + JSON.stringify({ include }) + "\n");
+          '
+
+      - name: Report every target
+        run: |
+          {
+            echo '### Targets'
+            echo '```'
+            node packaging/build.mjs targets
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: ${{ matrix.target }}
+    needs: plan
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      HAS_MAC_CERTIFICATE: ${{ secrets.SYNABUN_MAC_CERTIFICATE_P12_BASE64 != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.19.0
+          architecture: ${{ matrix.node_arch }}
+
+      # A target that cannot be built stops here, with the reason, before
+      # anything is downloaded. It never produces an artifact.
+      - name: Preflight
+        run: node packaging/build.mjs preflight --target ${{ matrix.target }}
+
+      - name: Builder tests
+        run: npm run test:packaging
+
+      - name: Import the macOS signing certificate
+        if: runner.os == 'macOS' && env.HAS_MAC_CERTIFICATE == 'true'
+        env:
+          CERTIFICATE_P12_BASE64: ${{ secrets.SYNABUN_MAC_CERTIFICATE_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.SYNABUN_MAC_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/synabun-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+          echo "$CERTIFICATE_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/certificate.p12" -P "$CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
+          security list-keychains -d user -s "$KEYCHAIN"
+          rm -f "$RUNNER_TEMP/certificate.p12"
+
+      - name: Build
+        shell: bash
+        env:
+          EMBEDDING_MODEL: ${{ inputs.embedding_model }}
+          SYNABUN_MAC_SIGN_IDENTITY: ${{ secrets.SYNABUN_MAC_SIGN_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          SYNABUN_WIN_SIGN_PFX: ${{ secrets.SYNABUN_WIN_SIGN_PFX }}
+          SYNABUN_WIN_SIGN_PASSWORD: ${{ secrets.SYNABUN_WIN_SIGN_PASSWORD }}
+          SYNABUN_WIN_SIGN_THUMBPRINT: ${{ secrets.SYNABUN_WIN_SIGN_THUMBPRINT }}
+        run: |
+          options=(--target "${{ matrix.target }}" --no-fallback --out dist-apps)
+          # A short staging path keeps Windows under its path-length limit.
+          if [ "$RUNNER_OS" = "Windows" ]; then options+=(--work 'C:\sb' --cache 'C:\sbc'); fi
+          if [ "$EMBEDDING_MODEL" = "false" ]; then options+=(--no-embedding-model); fi
+          node packaging/build.mjs build "${options[@]}"
+
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### ${{ matrix.target }}"
+            if ls dist-apps/*.build-report.json > /dev/null 2>&1; then
+              echo '```json'
+              cat dist-apps/*.build-report.json
+              echo '```'
+            else
+              echo 'No artifact was produced.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SynaBun-${{ matrix.target }}
+          path: dist-apps/
+          if-no-files-found: error
+          retention-days: 14

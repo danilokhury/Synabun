@@ -15,27 +15,30 @@ import { existsSync, cpSync, mkdirSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ensureVendoredExecutables } from '../lib/native-binary-runtime.js';
+import { pruneExternalTools } from '../../lib/external-tools.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const neuralRoot = resolve(__dirname, '..');
 const ptyDir = resolve(neuralRoot, 'node_modules', 'node-pty');
 
-// Step 1a: Restore execute permissions on every vendored native binary.
+// Step 0: Claude Code, Codex, OpenCode and Gemini CLI are installed by the user,
+// never by SynaBun. The lockfile holds none of them; an `npm install` that
+// brought one anyway (a lockfile made again without scripts/strip-external-tools.mjs,
+// a package an older SynaBun depended on) has it removed here, right after the
+// install. See lib/external-tools.js at the package root.
+for (const item of pruneExternalTools(resolve(neuralRoot, 'node_modules')).removed) {
+  console.log(`[rebuild-pty] removed ${item.name}: ${item.tool} is installed separately, not with SynaBun`);
+}
+
+// Step 1a: Restore execute permissions on SynaBun's own native helpers.
 //
 // npm does not preserve the execute bit for files shipped via a package's
-// `files` array with no `bin` entry — which is exactly how the Claude Agent SDK
-// and Codex ship their native payloads. This repo also commits node_modules, so
-// a checkout can materialize them 0644 as well.
+// `files` array with no `bin` entry, and a checkout with core.filemode=false
+// can materialize them 0644 as well.
 //
 // The previous version of this step hardcoded four prebuild directories (naming
-// linux dirs that do not exist here while missing ones that do) and chmod'd
-// node_modules/.bin/claude and @anthropic-ai/claude-code/cli.js — neither of
-// which exists any more, since that package was replaced by
-// @anthropic-ai/claude-agent-sdk. The sweep below enumerates instead.
-//
-// This runs BEFORE the node-pty guard below: the sweep also covers the Claude
-// and Codex binaries, which must be repaired even in an install that has no
-// node-pty at all.
+// linux dirs that do not exist here while missing ones that do). The sweep
+// below enumerates instead.
 function sweepVendoredBinaries(label) {
   const sweep = ensureVendoredExecutables({ root: neuralRoot, log: console.log });
   for (const failure of sweep.failed) {

@@ -45,6 +45,7 @@ import {
   recordLauncherFailure,
 } from './lib/first-launch-protection.js';
 import { noteSupervisorFailure, openSupervisorRecord, registerStartLauncher } from './lib/start-launcher.js';
+import { packagedRuntime } from './lib/packaged-runtime.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -362,6 +363,7 @@ function buildMcpServer() {
     execSync('npx tsc', {
       cwd: resolve(PACKAGE_ROOT, 'mcp-server'),
       stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: !!packagedRuntime(),
       timeout: 120_000,
     });
     ok('MCP server built');
@@ -476,6 +478,7 @@ function startServer() {
     const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', '--max-old-space-size=6144', serverPath], {
       cwd: niDir,
       stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: !!packagedRuntime(),
       env: {
         ...process.env,
         SYNABUN_DATA_HOME: DATA_HOME,
