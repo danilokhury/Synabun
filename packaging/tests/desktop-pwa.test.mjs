@@ -7,7 +7,8 @@ import { tmpdir } from 'node:os';
 import { backgroundCommand, browserPwa, chromiumShortcut, findInstalledPwa, linuxPwa, macPwa,
   matchesPwaUrl, openDesktopPwa, pwaAppId, pwaServerReady, shortcutArgs } from '../../lib/desktop-pwa.js';
 import { runLauncher } from '../../lib/start-launcher.js';
-import { canPromptPwaInstall, initPwaInstall, installGuideMode, isStandalone, offerPwaInstallOnce,
+import { armPwaInstallHandoff, canPromptPwaInstall, initPwaInstall, installGuideMode, installGuideRequested,
+  installGuideUrl, isStandalone, leavePwaInstallHandoff, offerPwaInstallOnce,
   requestPwaInstall } from '../../neural-interface/public/shared/pwa-install.js';
 
 const port = 39876, id = pwaAppId(`http://localhost:${port}/`);
@@ -173,13 +174,79 @@ test('the wizard opens the browser dialog once, from a real click, and never wai
   assert.equal(refused._pwaInstallPrompt, null);
   assert.equal(prompts, 1);
 
-  // The launcher's guide page: first run in Chrome or Edge belongs to the wizard, everything else stays plain.
+  // The launcher's guide page: in Chrome or Edge it leaves for the wizard (first run) or the main UI (setup
+  // done), and shows its button only when asked for or when the setup read did not answer.
   assert.equal(canPromptPwaInstall({ onbeforeinstallprompt: null }), true);
   assert.equal(canPromptPwaInstall({}), false);
   assert.equal(installGuideMode({ standalone: true, canPrompt: true, setupComplete: false }), 'app');
   assert.equal(installGuideMode({ canPrompt: true, setupComplete: false }), 'wizard');
-  assert.equal(installGuideMode({ canPrompt: true, setupComplete: true }), 'button');
+  assert.equal(installGuideMode({ canPrompt: true, setupComplete: false, requested: true }), 'wizard');
+  assert.equal(installGuideMode({ canPrompt: true, setupComplete: true }), 'handoff');
+  assert.equal(installGuideMode({ canPrompt: true, setupComplete: true, requested: true }), 'button');
   assert.equal(installGuideMode({ canPrompt: true }), 'button', 'an unanswered setup read keeps the guide');
   assert.equal(installGuideMode({ setupComplete: false, vendor: 'Apple Computer, Inc.' }), 'safari');
+  assert.equal(installGuideMode({ setupComplete: true, vendor: 'Apple Computer, Inc.' }), 'safari');
   assert.equal(installGuideMode({ setupComplete: false, vendor: '' }), 'other');
+  // Only the Apps menu marks the page as asked for, and only where there is an install event: Safari adds
+  // the page it is on to the Dock, and the launcher matches that URL without a query.
+  assert.equal(installGuideUrl({ onbeforeinstallprompt: null }), '/install-app.html?from=menu');
+  assert.equal(installGuideRequested('?from=menu'), true);
+  assert.equal(installGuideRequested(''), false);
+  assert.equal(matchesPwaUrl(`http://localhost:${port}${installGuideUrl({})}`, port, true), true);
+});
+
+test('the guide hands over to the main UI, which opens the dialog from one press of that page load only', () => {
+  const saved = {};
+  const sessionStorage = { getItem: key => saved[key] ?? null, setItem: (key, value) => { saved[key] = value; },
+    removeItem: key => { delete saved[key]; } };
+  // One page load in the tab: a new window object, the same sessionStorage.
+  const load = () => {
+    const listeners = {};
+    return { listeners, sessionStorage, matchMedia: () => ({ matches: false }),
+      addEventListener: (type, callback, capture) => { if (capture) listeners[type] = callback; },
+      removeEventListener: (type, callback) => { if (listeners[type] === callback) delete listeners[type]; } };
+  };
+  const nav = { userActivation: { isActive: true } }, plain = { target: { closest: () => null } };
+  let prompts = 0;
+  const arrive = win => { win._pwaInstallPrompt = { prompt: () => { prompts++; return new Promise(() => {}); } }; };
+
+  const normal = load();
+  arrive(normal);
+  armPwaInstallHandoff({ win: normal, nav });
+  assert.deepEqual(normal.listeners, {}, 'a normal tab never listens: no stray click opens the dialog');
+
+  assert.equal(leavePwaInstallHandoff({ sessionStorage }), true);
+  const win = load(), item = {};
+  armPwaInstallHandoff({ win, nav, leave: event => event.target === item });
+  assert.deepEqual(Object.keys(win.listeners).sort(), ['click', 'keydown']);
+  const reloaded = load();
+  arrive(reloaded);
+  armPwaInstallHandoff({ win: reloaded, nav });
+  assert.deepEqual(reloaded.listeners, {}, 'the mark is taken once: a reload is not armed');
+
+  win.listeners.click(plain);
+  assert.equal(prompts, 0, 'no event yet: this press does nothing');
+  arrive(win);
+  win.listeners.click({ target: { closest: selector => selector === 'a[href]' ? {} : null } });
+  win.listeners.keydown({ ...plain, key: 'r', metaKey: true });
+  win.listeners.keydown({ ...plain, key: 'F5' });
+  win.listeners.click({ target: item });
+  assert.equal(prompts, 0, 'a link, a shortcut and the menu item keep their press');
+  nav.userActivation.isActive = false;
+  win.listeners.click(plain);
+  assert.equal(prompts, 0, 'a scripted click keeps the event');
+  nav.userActivation.isActive = true;
+  win.listeners.keydown({ ...plain, key: 'a' });
+  assert.equal(prompts, 1); assert.equal(win._pwaInstallPrompt, null, 'spent: the menu item goes to the guide page');
+  assert.deepEqual(win.listeners, {}, 'one dialog: nothing listens after it');
+
+  // Apps > Install as App before any dialog: the menu takes over and the handoff stands down.
+  const other = {}, asked = load();
+  asked.sessionStorage = { getItem: key => other[key] ?? null, setItem: (key, value) => { other[key] = value; },
+    removeItem: key => { delete other[key]; } };
+  leavePwaInstallHandoff(asked);
+  armPwaInstallHandoff({ win: asked, nav })();
+  assert.deepEqual(asked.listeners, {});
+  // No storage to leave the mark in: the guide page keeps its button.
+  assert.equal(leavePwaInstallHandoff({ sessionStorage: { setItem() { throw new Error('denied'); } } }), false);
 });

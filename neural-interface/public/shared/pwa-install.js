@@ -1,4 +1,4 @@
-/** Shared by the Install as App menu, the first-run wizard and the native launcher's guide page. */
+/** Shared by the Install as App menu, the first-run wizard, the native launcher's guide page and the main UI it hands over to. */
 export function isStandalone(win = window, nav = navigator) {
   return win.matchMedia('(display-mode: standalone)').matches
     || win.matchMedia('(display-mode: window-controls-overlay)').matches || !!nav.standalone;
@@ -57,13 +57,71 @@ export function offerPwaInstallOnce({ win = window, nav = navigator } = {}) {
   return true;
 }
 
+const HANDOFF_KEY = 'synabun-pwa-install-handoff';
+
+/**
+ * The guide page's half of the handoff: it leaves a mark for the main UI and goes there instead of asking.
+ * sessionStorage, so the mark is this tab's alone. False when it could not be left: the guide stays then.
+ */
+export function leavePwaInstallHandoff(win = window) {
+  try { win.sessionStorage.setItem(HANDOFF_KEY, '1'); return true; } catch { return false; }
+}
+
+// A press that follows a link, or belongs to a shortcut (reload, new tab, DevTools), would spend the one dialog
+// on a page that is leaving or busy. The next press gets it.
+function keepsItsPress(event) {
+  return !!(event.ctrlKey || event.metaKey || event.altKey) || /^F\d+$/.test(event.key || '')
+    || !!event.target?.closest?.('a[href]');
+}
+
+/**
+ * The main UI's half. It takes the mark, so only the one page load the guide handed over is armed: not a
+ * reload, and never a normal tab. Armed, the first click or key press anywhere opens the browser's dialog
+ * through offerPwaInstallOnce(), in the capture phase because prompt() must run inside the press and the UI
+ * stops many of its events. Without an event yet the next press tries. `leave` names presses to keep out of
+ * it (the menu item that opens the dialog itself). Returns the function that disarms it.
+ */
+export function armPwaInstallHandoff({ win = window, nav = navigator, leave = () => false } = {}) {
+  let marked = false;
+  try {
+    marked = win.sessionStorage.getItem(HANDOFF_KEY) === '1';
+    win.sessionStorage.removeItem(HANDOFF_KEY);
+  } catch {}
+  if (!marked || isStandalone(win, nav) || wasOffered(win)) return () => {};
+  const disarm = () => ['click', 'keydown'].forEach(type => win.removeEventListener(type, press, true));
+  const press = event => {
+    if (keepsItsPress(event) || leave(event)) return;
+    if (offerPwaInstallOnce({ win, nav })) disarm();
+  };
+  ['click', 'keydown'].forEach(type => win.addEventListener(type, press, true));
+  return disarm;
+}
+
+const GUIDE_URL = '/install-app.html';
+
+/**
+ * Where Apps > Install as App goes when the browser has no dialog ready. The mark says the user asked for the
+ * page, so it shows instead of handing over. Safari can add the page it is on to the Dock and the launcher
+ * matches that URL without a query, so only a browser with the install event gets the mark.
+ */
+export function installGuideUrl(win = window) {
+  return canPromptPwaInstall(win) ? `${GUIDE_URL}?from=menu` : GUIDE_URL;
+}
+
+export function installGuideRequested(search = '') {
+  return new URLSearchParams(search).get('from') === 'menu';
+}
+
 /**
  * What the launcher's guide page is, for this browser and this install:
  * 'app' (already the installed app: leave), 'wizard' (first run where the wizard opens the dialog: leave),
- * 'button' (one button that opens the browser's dialog), 'safari' or 'other' (plain instructions).
+ * 'handoff' (setup done and nobody asked for the page: leave, the main UI opens the dialog),
+ * 'button' (one button that opens the browser's dialog: the page was asked for, or the setup read did not
+ * answer), 'safari' or 'other' (plain instructions).
  */
-export function installGuideMode({ standalone = false, canPrompt = false, setupComplete = true, vendor = '' } = {}) {
+export function installGuideMode({ standalone = false, canPrompt = false, setupComplete = null, requested = false, vendor = '' } = {}) {
   if (standalone) return 'app';
-  if (canPrompt) return setupComplete === false ? 'wizard' : 'button';
-  return /apple/i.test(vendor) ? 'safari' : 'other';
+  if (!canPrompt) return /apple/i.test(vendor) ? 'safari' : 'other';
+  if (setupComplete === false) return 'wizard';
+  return setupComplete === true && !requested ? 'handoff' : 'button';
 }

@@ -1,3 +1,16 @@
+# SynaBun v.2.0.4
+
+2.0.4 finishes the change 2.0.3 began for the desktop launcher: in Chrome and Edge, the "Install SynaBun as an app" page no longer stops you when setup is already complete.
+
+## ⚙️ Changed
+
+- **The launcher no longer stops on the install page once setup is complete** — 2.0.3 took the page out of a first run only. A desktop build uses the same data folder as any earlier install, so on a machine that had already been through setup the launcher still opened the page with its **Install as App** button and **Continue to SynaBun** link. In Chrome and Edge the page now hands straight over to SynaBun, and the browser's own install dialog opens once, from the first click or key press there (a later one when the browser had not offered the install yet). Accepted, dismissed or never offered, SynaBun works the same.
+- **Only that one page load opens the dialog** — A reload does not, and SynaBun opened in a normal browser tab never does, so no stray click brings the dialog up. A click on a link, a key pressed with Ctrl, Alt or Cmd held, and a function key are left alone; the next press is used instead. The dialog uses the press it opens from, so when that first press was meant to open a popup, the clipboard or a file picker, that action may need a second press.
+- **Apps → Install as App** — Unchanged while the browser has a dialog ready. Without one it opens the page with its single button, now at `/install-app.html?from=menu`; after the automatic dialog has opened, the menu item leads to that page, and it still disappears once the app is installed.
+- **What stays the same** — A first run: the setup wizard takes over and opens the dialog from **Fresh Install**, **Restore Backup** or **Next**. Safari and Firefox, including the page the menu opens. And when the page cannot read the setup state, it shows its one button as before. The browser decides when an install can be offered; when it offers none, nothing opens and **Apps → Install as App** is the way in.
+
+---
+
 # SynaBun v.2.0.3
 
 2.0.3 lets you set how much testing the Assistant asks of the workers it dispatches, makes `browser_screenshot` answer instead of hanging when the browser cannot produce an image, and takes SynaBun's own "install as an app" question out of the first run. It follows 2.0.0 directly: 2.0.1 and 2.0.2 were not published.

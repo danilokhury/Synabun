@@ -9,7 +9,7 @@ import { storage } from './storage.js';
 import { KEYS } from './constants.js';
 import { getMenuItems } from './registry.js';
 import { openHelp } from './ui-help.js';
-import { initPwaInstall, isStandalone, requestPwaInstall } from './pwa-install.js';
+import { armPwaInstallHandoff, initPwaInstall, installGuideUrl, isStandalone, requestPwaInstall } from './pwa-install.js';
 import { registerAction } from './ui-keybinds.js';
 import { isGuest, hasPermission } from './ui-sync.js';
 import { sendToPanel } from './ui-claude-panel.js';
@@ -369,6 +369,7 @@ function wireAutomationsMenu() {
 // ── Apps Menu (formerly Terminal) ──
 
 function wireTerminalMenu() {
+  let disarmInstallHandoff = () => {};
   const items = {
     'menu-terminal-assistant': () => emit('assistant:open'),
     'menu-terminal-claude':  () => emit('terminal:open', { profile: 'claude-code' }),
@@ -415,8 +416,9 @@ function wireTerminalMenu() {
     'menu-terminal-link':    () => emit('link:toggle'),
     'menu-terminal-toggle':  () => emit('terminal:toggle'),
     'menu-install-app': async () => {
+      disarmInstallHandoff(); // asked for here: this click opens the dialog, no later one does
       const result = await requestPwaInstall();
-      if (result === 'instructions') location.assign('/install-app.html');
+      if (result === 'instructions') location.assign(installGuideUrl());
     },
     'menu-restart-server':   async () => {
       try {
@@ -478,6 +480,9 @@ function wireTerminalMenu() {
   } });
   const installItem = $('menu-install-app');
   if (installItem && !isStandalone()) installItem.style.display = '';
+  // Sent on by the launcher's guide page: the browser's install dialog opens from the first click or key press,
+  // for this one page load. The event it uses is spent, so the menu item goes to the guide page after that.
+  disarmInstallHandoff = armPwaInstallHandoff({ leave: event => !!installItem?.contains(event.target) });
 
 }
 

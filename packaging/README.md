@@ -167,17 +167,25 @@ SynaBun version | doctor | profile | migrate-data | restore-backup
   click that moves the wizard on (a later one when the browser was not ready
   yet); accepted or dismissed, onboarding goes on the same way. In Safari on
   macOS the page is a plain instruction, **File → Add to Dock**, with
-  Continue to SynaBun for onboarding. Once setup is complete the page is one
-  **Install as App** button in Chrome/Edge. Browser confirmation is required
-  once; no browser or PWA is silently installed. Keep the app name **SynaBun**.
-  After installation, reopen the native launcher to use the installed PWA.
+  Continue to SynaBun for onboarding. When setup is already complete (the data
+  home is shared, so a fresh build over an earlier install starts this way),
+  the page hands over to SynaBun itself in Chrome/Edge, and the browser's
+  dialog opens once from the first click or key press there (a later one when
+  the browser was not ready yet). Only that page load is armed: a reload, or
+  SynaBun in a normal browser tab, never opens the dialog. The page with its
+  one **Install as App** button is what **Apps → Install as App** opens when
+  the browser has no dialog ready (`/install-app.html?from=menu`), and what
+  stays when the page cannot read the setup state. Browser confirmation is
+  required once; no browser or PWA is silently installed. Keep the app name
+  **SynaBun**. After installation, reopen the native launcher to use the
+  installed PWA.
 - **Later launches.** The launcher waits for SynaBun's healthy API, then opens
   the matching Safari/Chrome/Edge application bundle on macOS, Chrome/Edge
   Start Menu or Desktop shortcut on Windows, or Chrome/Edge desktop entry on
   Linux. Matching uses the configured loopback port and browser app identity;
   no browser profile database is read. A removed, renamed or unsupported
-  shortcut falls back to the installation guide. Chromium `--app=URL` is never
-  used as a substitute for an installed PWA.
+  shortcut falls back to the first-launch path above. Chromium `--app=URL` is
+  never used as a substitute for an installed PWA.
 - **Backend lifetime.** Closing the PWA does not stop the server. Use
   **Apps → Stop Server** before an update/uninstall or when you want it stopped.
   There is no terminal window to keep open. Logs remain in the user-data

@@ -1,12 +1,15 @@
-import { canPromptPwaInstall, initPwaInstall, installGuideMode, isStandalone, requestPwaInstall } from './pwa-install.js';
+import { canPromptPwaInstall, initPwaInstall, installGuideMode, installGuideRequested, isStandalone,
+  leavePwaInstallHandoff, requestPwaInstall } from './pwa-install.js';
 
-// First run: the wizard opens the browser's dialog from a click the user makes anyway, so a browser that has
-// one never shows this page then. An unanswered read keeps the guide.
+// The wizard (first run) and the main UI (setup done) open the browser's dialog from a press the user makes
+// anyway, so a browser that has one shows this page only when Apps > Install as App asked for it. true, false,
+// or null for a read that did not answer: only an answer sends the user on, null keeps the guide.
 async function setupComplete() {
   try {
     const res = await fetch('/api/setup/onboarding', { signal: AbortSignal.timeout(3000) });
-    return (await res.json()).setupComplete !== false;
-  } catch { return true; }
+    const { setupComplete: done } = res.ok ? await res.json() : {};
+    return typeof done === 'boolean' ? done : null;
+  } catch { return null; }
 }
 
 if (isStandalone()) location.replace('/');
@@ -46,12 +49,14 @@ else {
   // One plain action or one plain instruction, never both: the button only where the browser has a dialog to open.
   const canPrompt = canPromptPwaInstall();
   const show = done => {
-    const mode = installGuideMode({ canPrompt, setupComplete: done, vendor: navigator.vendor });
-    if (mode === 'wizard') return location.replace('/');
+    let mode = installGuideMode({ canPrompt, setupComplete: done, requested: installGuideRequested(location.search), vendor: navigator.vendor });
+    // The main UI opens the dialog only for the mark this leaves: where it cannot be left, the button stays.
+    if (mode === 'handoff' && !leavePwaInstallHandoff()) mode = 'button';
+    if (mode === 'wizard' || mode === 'handoff') return location.replace('/');
     document.getElementById(mode === 'button' ? 'install-chromium' : `install-${mode}`).hidden = false;
     document.getElementById('install-button').hidden = mode !== 'button';
     document.querySelector('main').hidden = false;
   };
   if (canPrompt) setupComplete().then(show);
-  else show(true);
+  else show(null);
 }
