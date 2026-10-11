@@ -453,6 +453,22 @@ export function normalizeRouteMode(value, fallback = null) {
   return ROUTE_MODE_ALIASES[key] || fallback;
 }
 
+// Test density: how much testing SynaBun asks of dispatched workers (server: lib/assistant-test-density.js).
+// `null` means "server default" in a tab's own state; a missing or unknown value reads as the default level.
+export const TEST_DENSITIES = ['none', 'light', 'standard', 'thorough'];
+export const DEFAULT_TEST_DENSITY = 'light';
+
+/** A known level, else `fallback` (the default level; pass null to tell "not set" apart). */
+export function normalizeTestDensity(value, fallback = DEFAULT_TEST_DENSITY) {
+  const key = str(value).toLowerCase();
+  return TEST_DENSITIES.includes(key) ? key : fallback;
+}
+
+/** Bars of the composer's gauge that are filled at a level: none 0 · light 1 · standard 2 · thorough 3. */
+export function testDensityBars(level) {
+  return TEST_DENSITIES.indexOf(normalizeTestDensity(level));
+}
+
 const COMPUTER_ON = new Set(['on', 'true', '1', 'yes', 'enable', 'enabled']);
 const COMPUTER_OFF = new Set(['off', 'false', '0', 'no', 'disable', 'disabled']);
 
@@ -548,6 +564,7 @@ export function createTabState(sessionId, brain, extra = {}) {
     draft: '',
     routeMode: null,     // explicit per-session route mode; null = server default
     computerUse: null,   // explicit per-session computer use; null = server default
+    testDensity: null,   // explicit per-session test density; null = server default
     usageView: null,
     limit: null,         // the provider's usage limit notice (applyLimit); never persisted, the server re-sends it on attach
     ...extra,
@@ -568,12 +585,13 @@ export function serializeTabState(state) {
     costUsd: Number.isFinite(Number(state.costUsd)) ? Number(state.costUsd) : 0,
     routeMode: normalizeRouteMode(state.routeMode, null),
     computerUse: normalizeComputerMode(state.computerUse, null),
+    testDensity: normalizeTestDensity(state.testDensity, null),
     usageView: compactUsageView(state.usageView),
     updatedAt: Date.now(),
   };
 }
 
-/** Tolerant of older payloads: missing routeMode / computerUse read as null (server default). */
+/** Tolerant of older payloads: missing routeMode / computerUse / testDensity read as null (server default). */
 export function deserializeTabState(raw) {
   let data = raw;
   if (typeof raw === 'string') {
@@ -590,6 +608,7 @@ export function deserializeTabState(raw) {
     costUsd: Number.isFinite(Number(data.costUsd)) ? Number(data.costUsd) : 0,
     routeMode: normalizeRouteMode(data.routeMode, null),
     computerUse: normalizeComputerMode(data.computerUse, null),
+    testDensity: normalizeTestDensity(data.testDensity, null),
     usageView: compactUsageView(data.usageView),
   };
 }

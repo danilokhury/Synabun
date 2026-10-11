@@ -10,6 +10,7 @@
 // parses. Pure module: no I/O, no server imports.
 
 import { browserPolicyText } from './browser-tool-policy.js';
+import { testingBlock, testingFollowUpLine } from './assistant-test-density.js';
 
 export const RESULT_HEADING = '## Result';
 /** What a worker without a browser says to get one (the brain dispatches it again with uses_browser). */
@@ -291,7 +292,9 @@ export function briefBlock(brief) {
  *          collectMedia ('image' | 'video' for Image / Video creation runs; 'image' for design),
  *          playbook ({ name, text } for design runs: assistant-playbooks.js),
  *          styleGuide ({ summary, designPath, tokenFiles, proposals } when the project has a saved Style Guide
- *          that lets this class of run in: lib/style-guide/store.js loadStyleGuideForRun) }
+ *          that lets this class of run in: lib/style-guide/store.js loadStyleGuideForRun),
+ *          testDensity (the session's Test density when the dispatcher composes the prompt; the TESTING block,
+ *          for code / complex / quick runs and runs with no class: assistant-test-density.js) }
  */
 export function buildTaskPrompt(state = {}) {
   const task = clean(state.task);
@@ -335,12 +338,18 @@ export function buildTaskPrompt(state = {}) {
   if (brief) lines.push('', brief);
   const context = clean(state.context);
   if (context) lines.push('', 'CONTEXT (from the assistant):', context);
+  // After TASK and CONTEXT, which it overrides: the only place SynaBun tells a worker how much to test.
+  const testing = testingBlock(state.testDensity, state.taskClass);
+  if (testing) lines.push('', testing);
   lines.push('', resultContractText({ requireJson: !!state.outputSchema, media: !!(mediaBlock(state) || designBlock(state)) }));
   return lines.filter((line) => line !== null && line !== undefined).join('\n').replace(/\n{3,}/g, '\n\n');
 }
 
-/** Follow-up turn wrapper (agent_send / user steer) for the same run. */
-export function buildFollowUpPrompt(text, state = {}, { turn = null, maxTurns = null, origin = 'assistant' } = {}) {
+/**
+ * Follow-up turn wrapper (agent_send / user steer) for the same run.
+ * `testDensity`: the level, only when it changed since the run's last TESTING rules.
+ */
+export function buildFollowUpPrompt(text, state = {}, { turn = null, maxTurns = null, origin = 'assistant', testDensity = null } = {}) {
   const project = clean(state.project) || 'global';
   const runId = clean(state.runId) || 'unknown-run';
   const counter = turn && maxTurns ? ` ${turn}/${maxTurns}` : turn ? ` ${turn}` : '';
@@ -349,6 +358,7 @@ export function buildFollowUpPrompt(text, state = {}, { turn = null, maxTurns = 
     `${who}${counter} (same run ${runId}, project "${project}"):`,
     clean(text),
     '',
+    ...(testDensity ? [testingFollowUpLine(testDensity), ''] : []),
     `Apply the same MEMORY and OUTPUT CONTRACT rules; end with the ${RESULT_HEADING} block.`,
   ].join('\n');
 }

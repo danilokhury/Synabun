@@ -7,7 +7,8 @@ import { tmpdir } from 'node:os';
 import { backgroundCommand, browserPwa, chromiumShortcut, findInstalledPwa, linuxPwa, macPwa,
   matchesPwaUrl, openDesktopPwa, pwaAppId, pwaServerReady, shortcutArgs } from '../../lib/desktop-pwa.js';
 import { runLauncher } from '../../lib/start-launcher.js';
-import { initPwaInstall, isStandalone, requestPwaInstall } from '../../neural-interface/public/shared/pwa-install.js';
+import { canPromptPwaInstall, initPwaInstall, installGuideMode, isStandalone, offerPwaInstallOnce,
+  requestPwaInstall } from '../../neural-interface/public/shared/pwa-install.js';
 
 const port = 39876, id = pwaAppId(`http://localhost:${port}/`);
 const args = [`--profile-directory=Profile 1`, `--app-id=${id}`];
@@ -140,4 +141,45 @@ test('one-time install flow waits for a user click and handles rejected single-u
   assert.equal(await requestPwaInstall(win), 'instructions');
   events.appinstalled(); assert.equal(changes.at(-1), 'installed');
   assert.equal(isStandalone({ matchMedia: query => ({ matches: query.includes('window-controls-overlay') }) }, {}), true);
+});
+
+test('the wizard opens the browser dialog once, from a real click, and never waits or asks again', () => {
+  const events = {}, saved = {};
+  const win = { addEventListener: (name, callback) => events[name] = callback, matchMedia: () => ({ matches: false }),
+    sessionStorage: { getItem: key => saved[key] ?? null, setItem: (key, value) => { saved[key] = value; } } };
+  const nav = { userActivation: { isActive: true } };
+  let prompts = 0;
+  // Never settles: a wizard that waited for the answer would hang here.
+  const arrive = () => events.beforeinstallprompt({ preventDefault() {}, prompt: () => { prompts++; return new Promise(() => {}); } });
+  initPwaInstall({ win, nav });
+  assert.equal(offerPwaInstallOnce({ win, nav }), false, 'no event yet: this click does nothing');
+  arrive();
+  assert.equal(offerPwaInstallOnce({ win, nav: { userActivation: { isActive: false } } }), false, 'a scripted click keeps the event');
+  assert.equal(prompts, 0);
+  assert.equal(offerPwaInstallOnce({ win, nav }), true, 'the next click of the user opens it');
+  assert.equal(prompts, 1); assert.equal(win._pwaInstallPrompt, null);
+  arrive();
+  assert.equal(offerPwaInstallOnce({ win, nav }), false, 'dismissed or not, never a second dialog');
+  // A reload of the wizard in the same tab: a new window object, the same sessionStorage.
+  const reloaded = { ...win, _pwaInstallOffered: false, _pwaInstallPrompt: { prompt: () => prompts++ } };
+  assert.equal(offerPwaInstallOnce({ win: reloaded, nav }), false);
+  assert.equal(prompts, 1);
+  // Already the installed app: nothing, even with an event in hand.
+  const app = { matchMedia: () => ({ matches: true }), _pwaInstallPrompt: { prompt: () => prompts++ } };
+  assert.equal(offerPwaInstallOnce({ win: app, nav }), false);
+  // An event the browser refuses is spent, and no storage at all is not an error.
+  const refused = { matchMedia: () => ({ matches: false }), _pwaInstallPrompt: { prompt: () => { throw new Error('InvalidStateError'); } } };
+  assert.equal(offerPwaInstallOnce({ win: refused, nav: {} }), false);
+  assert.equal(refused._pwaInstallPrompt, null);
+  assert.equal(prompts, 1);
+
+  // The launcher's guide page: first run in Chrome or Edge belongs to the wizard, everything else stays plain.
+  assert.equal(canPromptPwaInstall({ onbeforeinstallprompt: null }), true);
+  assert.equal(canPromptPwaInstall({}), false);
+  assert.equal(installGuideMode({ standalone: true, canPrompt: true, setupComplete: false }), 'app');
+  assert.equal(installGuideMode({ canPrompt: true, setupComplete: false }), 'wizard');
+  assert.equal(installGuideMode({ canPrompt: true, setupComplete: true }), 'button');
+  assert.equal(installGuideMode({ canPrompt: true }), 'button', 'an unanswered setup read keeps the guide');
+  assert.equal(installGuideMode({ setupComplete: false, vendor: 'Apple Computer, Inc.' }), 'safari');
+  assert.equal(installGuideMode({ setupComplete: false, vendor: '' }), 'other');
 });

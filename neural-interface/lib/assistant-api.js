@@ -835,6 +835,10 @@ export function createAssistantApi({
     if (req.body && 'computerUse' in req.body && (req.get('x-synabun-terminal') || req.get('x-synabun-desktop-grant'))) {
       return res.status(403).json({ ok: false, code: 'UI_ONLY', error: 'Only the user can switch computer use on or off.' });
     }
+    // Test density is the user's setting too: an agent cannot raise or lower it.
+    if (req.body && 'testDensity' in req.body && (req.get('x-synabun-terminal') || req.get('x-synabun-desktop-grant'))) {
+      return res.status(403).json({ ok: false, code: 'UI_ONLY', error: 'Only the user can change the Test density.' });
+    }
     try {
       const session = await runtime.updateSession(req.params.id, req.body || {});
       if (!session) return res.status(404).json({ ok: false, code: 'SESSION_NOT_FOUND', error: `Unknown assistant session ${req.params.id}` });

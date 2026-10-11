@@ -133,7 +133,7 @@ test('set_route_mode persists on the session and shows in the view', async (t) =
   const { runtime } = harness(t, { router: fakeRouter() });
   const session = await runtime.createSession({ brain: { provider: 'codex' }, cwd: '/tmp' });
   assert.deepEqual(session.routing, { mode: null, effectiveMode: 'ask-unsure', defaultMode: 'ask-unsure', askBelow: 0.75 });
-  assert.deepEqual(session.features, { routing: true, computer: false });
+  assert.deepEqual(session.features, { routing: true, computer: false, testDensity: true });
   const ws = await attach(runtime, session.id);
   ws.emit('message', Buffer.from(JSON.stringify({ type: 'set_route_mode', mode: 'always' })));
   await wait(10);
@@ -143,6 +143,35 @@ test('set_route_mode persists on the session and shows in the view', async (t) =
   await runtime.updateSession(session.id, { routing: { mode: null } });
   assert.equal(runtime.getSession(session.id).routing.mode, null);
   await assert.rejects(runtime.updateSession(session.id, { routing: { mode: 'sometimes' } }), (e) => e.code === 'ROUTE_MODE_INVALID');
+});
+
+test('set_test_density persists on the session, shows in the view and reaches a running brain as one line', async (t) => {
+  const { runtime, log } = harness(t);
+  const session = await runtime.createSession({ brain: { provider: 'codex' }, cwd: '/tmp' });
+  assert.equal(session.testDensity, 'light', 'nothing stored: Light');
+  assert.equal(session.testDensityExplicit, null);
+  const ws = await attach(runtime, session.id);
+  const turns = () => log.filter((row) => row[0] === 'turn').map((row) => row[1]);
+  ws.emit('message', Buffer.from(JSON.stringify({ type: 'query', prompt: 'first' })));
+  await wait(40);
+  assert.deepEqual(turns(), ['first'], 'the brain\'s prompt states the level it starts with: no line');
+  ws.emit('message', Buffer.from(JSON.stringify({ type: 'set_test_density', level: 'none' })));
+  await wait(10);
+  assert.equal(runtime.getSession(session.id).testDensity, 'none');
+  assert.equal(runtime.getSession(session.id).testDensityExplicit, 'none');
+  assert.equal(runtime.testDensityFor(session.id), 'none', 'what the dispatcher reads');
+  assert.ok(ws.sent.some((p) => p.type === 'assistant:session' && p.reason === 'tests' && p.session.testDensity === 'none'));
+  ws.emit('message', Buffer.from(JSON.stringify({ type: 'query', prompt: 'second' })));
+  await wait(40);
+  assert.match(turns()[1], /^\[SynaBun Tests\] Test density: None - [^\n]+\n\nsecond$/);
+  ws.emit('message', Buffer.from(JSON.stringify({ type: 'query', prompt: 'third' })));
+  await wait(40);
+  assert.equal(turns()[2], 'third', 'an unchanged level is not repeated');
+  // An unknown value clears the session's own level: it reads as Light.
+  await runtime.updateSession(session.id, { testDensity: 'everything' });
+  assert.equal(runtime.getSession(session.id).testDensity, 'light');
+  assert.equal(runtime.getSession(session.id).testDensityExplicit, null);
+  assert.equal(runtime.testDensityFor('assistant-unknown'), null);
 });
 
 test('a continuation runs the routed model for one turn, then the next user turn is back on the session model', async (t) => {
@@ -224,7 +253,7 @@ test('computer toggle: grant minted per brain, effective default from the deskto
   const session = await runtime.createSession({ brain: { provider: 'claude-code' }, cwd: '/tmp' });
   assert.equal(session.computerUse, true, 'ON by default once setup is done');
   assert.equal(session.computerUseExplicit, null);
-  assert.deepEqual(session.features, { routing: false, computer: true });
+  assert.deepEqual(session.features, { routing: false, computer: true, testDensity: true });
   const ws = await attach(runtime, session.id);
   ws.emit('message', Buffer.from(JSON.stringify({ type: 'query', prompt: 'hello' })));
   await wait(30);

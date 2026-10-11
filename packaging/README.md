@@ -161,11 +161,16 @@ SynaBun version | doctor | profile | migrate-data | restore-backup
 ```
 
 - **First desktop launch.** If no matching installed PWA is found, the default
-  browser opens `/install-app.html`. Choose **Install as App** (Chrome/Edge), or
-  **File → Add to Dock** in Safari on macOS. Browser confirmation is required
+  browser opens `/install-app.html`. SynaBun asks nothing itself about
+  installing. In Chrome or Edge on a first run that page hands over to
+  onboarding, and the browser's own install dialog opens once, on the first
+  click that moves the wizard on (a later one when the browser was not ready
+  yet); accepted or dismissed, onboarding goes on the same way. In Safari on
+  macOS the page is a plain instruction, **File → Add to Dock**, with
+  Continue to SynaBun for onboarding. Once setup is complete the page is one
+  **Install as App** button in Chrome/Edge. Browser confirmation is required
   once; no browser or PWA is silently installed. Keep the app name **SynaBun**.
-  Continue to SynaBun to complete onboarding. After installation, reopen the
-  native launcher to use the installed PWA.
+  After installation, reopen the native launcher to use the installed PWA.
 - **Later launches.** The launcher waits for SynaBun's healthy API, then opens
   the matching Safari/Chrome/Edge application bundle on macOS, Chrome/Edge
   Start Menu or Desktop shortcut on Windows, or Chrome/Edge desktop entry on

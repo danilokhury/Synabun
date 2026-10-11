@@ -113,7 +113,7 @@ test('one header row in the sidepanel: the toolbar is placed, not rebuilt', () =
   assert.match(componentStyles, /:is\(\.asst-root, \.asst-bar, \.asst-dd-menu, \.asst-modal-overlay, \.asst-lightbox\) \[hidden\]/);
   // Permission mode joined model and effort in the composer (both hosts).
   const picker = shared('assistant/asst-brain-picker.js');
-  assert.match(picker, /const FIELDS = \['model', 'effort', 'variant', 'mode', 'account', 'project', 'mcp'\];/);
+  assert.match(picker, /const FIELDS = \['model', 'effort', 'variant', 'mode', 'tests', 'account', 'project', 'mcp'\];/);
   assert.match(picker, /mode: 'brain'/);
 });
 

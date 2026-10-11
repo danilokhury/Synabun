@@ -7,6 +7,7 @@
 <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
 <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
 <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+<link rel="manifest" href="/manifest.json">
 <style>
   *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -1412,6 +1413,12 @@ import { fetchRulesStatus, fetchRulesTextWithFallback, installRules, installAllR
 import {
   describeRulesHost, describeRulesInstall, describeRulesInstallAll, describeRulesInPlace, rulesInstallPlan, catalogueTranslator,
 } from './shared/settings/settings-rules.js';
+// Install as an app: the wizard has no step for it. The browser's own dialog opens once, from a click that
+// moves the wizard on anyway (the welcome choices, Next), and the wizard never reads the answer. Also import-free.
+import { initPwaInstall, isStandalone, offerPwaInstallOnce } from './shared/pwa-install.js';
+
+// Chrome and Edge hand the page their install event when it can be installed; Safari and Firefox have none.
+if (!isStandalone()) initPwaInstall();
 
 // ═══════════════════════════════════════════
 // STATE
@@ -1538,6 +1545,7 @@ function updateNav() {
 $prevBtn.addEventListener('click', () => goToStep(currentStep - 1));
 $nextBtn.addEventListener('click', () => {
   if (validateStep(currentStep)) {
+    offerPwaInstallOnce(); // first, while the click still counts as the user's: see pwa-install.js
     goToStep(currentStep + 1);
   }
 });
@@ -1821,11 +1829,14 @@ function renderHappyBun() {}
 
   // Fresh Install → proceed to step 1
   document.getElementById('choiceFreshInstall').addEventListener('click', () => {
+    offerPwaInstallOnce();
     goToStep(1);
   });
 
-  // Restore → show restore panel
+  // Restore → show restore panel. A restore never passes Next, so this is its click for the browser's
+  // install dialog; the file picker opens on a later click of its own.
   document.getElementById('choiceRestore').addEventListener('click', () => {
+    offerPwaInstallOnce();
     $choices.style.display = 'none';
     $restorePanel.style.display = 'block';
     requestAnimationFrame(() => {

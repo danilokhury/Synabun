@@ -492,6 +492,43 @@ test('a "done" whose own output does not show it carries the unverified claim; b
   assert.equal(three.dispatcher.get(c.run.runId).lastResult.unverifiedClaim, undefined);
 });
 
+test('Test density: the brief carries the session\'s level, a follow-up names a change, and "Not tested" at None is not a claim to check', async (t) => {
+  let level = 'none';
+  const prompts = [];
+  const judge = fakeJudge(() => ({ claimProbability: 0.95, claimFlagged: true }));
+  const text = (turn, prompt) => {
+    prompts.push(prompt);
+    return turn === 1
+      ? '## Result\nstatus: done\nsummary: Renamed the helper. Not tested.\nchanges:\n- src/a.js — renamed\nfollow_ups:\n- Check the settings page still opens'
+      : '## Result\nstatus: done\nsummary: Renamed it again, all tests pass.\nchanges:\n- src/a.js — renamed\nfollow_ups:\n- none';
+  };
+  const syntaxCheck = { type: 'item.completed', item: { type: 'command_execution', command: 'node --check src/a.js', aggregated_output: '', exit_code: 0, status: 'completed' } };
+  const { root, dispatcher } = makeHarness(t, { judge, adapterBehavior: { text, events: () => [syntaxCheck] }, extra: { testDensity: (sessionId) => (sessionId === 'assistant-1' ? level : null) } });
+  const launched = await dispatcher.dispatch({ provider: 'codex', task: 'Rename the helper', cwd: root }, { assistantSessionId: 'assistant-1' });
+  const runId = launched.run.runId;
+  await waitFor(() => dispatcher.get(runId).state === 'idle');
+  assert.equal(prompts[0].split('TESTING (the user\'s Test density setting: None)').length, 2, 'one TESTING block, at the level stored when the prompt was composed');
+  assert.equal(judge.calls.length, 0, 'done with a block and "Not tested": no question to ask');
+  assert.equal(dispatcher.get(runId).lastResult.unverifiedClaim, undefined);
+  // The user raises the level: the follow-up says so once, and "all tests pass" with no test output is flagged.
+  level = 'standard';
+  dispatcher.sendTurn(runId, 'Rename it once more');
+  await waitFor(() => dispatcher.get(runId).turnCount === 2 && dispatcher.get(runId).state === 'idle');
+  assert.match(prompts[1], /TESTING changed \(the user's Test density setting is now Standard;/);
+  assert.deepEqual(judge.calls[0].ask, { status: false, cause: false, claim: true });
+  assert.deepEqual(dispatcher.get(runId).lastResult.unverifiedClaim, { probability: 0.95, evidence: 'no test/build command ran this turn' });
+  dispatcher.sendTurn(runId, 'And once more');
+  await waitFor(() => dispatcher.get(runId).turnCount === 3 && dispatcher.get(runId).state === 'idle');
+  assert.doesNotMatch(prompts[2], /TESTING/, 'an unchanged level is not repeated');
+  // Without the session's level the brief is Light; a review run gets no TESTING block.
+  const other = await dispatcher.dispatch({ provider: 'codex', task: 'Fix it', cwd: root }, { assistantSessionId: 'assistant-2' });
+  await waitFor(() => dispatcher.get(other.run.runId).state === 'idle');
+  assert.match(prompts.at(-1), /TESTING \(the user's Test density setting: Light\)/);
+  const review = await dispatcher.dispatch({ provider: 'claude-code', task: 'Review the diff', cwd: root, taskClass: 'review' }, { assistantSessionId: 'assistant-1' });
+  await waitFor(() => dispatcher.get(review.run.runId).state === 'idle');
+  assert.doesNotMatch(prompts.at(-1), /TESTING/);
+});
+
 test('a failed run: the "failed" event waits for its cause and carries it, with the matching escalation', async (t) => {
   let release = null;
   const gate = new Promise((resolveGate) => { release = resolveGate; });

@@ -165,12 +165,14 @@ function fakePage(url = 'about:blank', landAt = (next) => next) {
   return page;
 }
 
-function createSessionHarness({ running = { running: true }, startError, cdpError, landAt } = {}) {
+function createSessionHarness({ running = { running: true }, startError, cdpError, landAt, backgroundTabs, background } = {}) {
   const launches = [];
+  // How the session's first tab was opened: 'newPage', or 'background' (openTabsInBackground).
+  const opened = [];
   const browserSessions = new Map();
   const page = fakePage('about:blank', landAt);
   const cdpContext = {
-    newPage: async () => page,
+    newPage: async () => { opened.push('newPage'); return page; },
     newCDPSession: async () => ({ send: async () => ({}), detach: async () => {} }),
     on: () => {},
   };
@@ -181,7 +183,8 @@ function createSessionHarness({ running = { running: true }, startError, cdpErro
     DATA_HOME: '/Users/me/.synabun',
     resolve, createHash,
     randomBytes: () => ({ toString: () => 'session-under-test' }),
-    loadBrowserConfig: () => moreLoginConfig(),
+    loadBrowserConfig: () => ({ ...moreLoginConfig(), ...(backgroundTabs !== undefined && { openTabsInBackground: backgroundTabs }) }),
+    openBackgroundPage: async (browser, target) => { opened.push('background'); return background ? background(browser, target) : page; },
     resolveBrowserLanguage,
     browserConfigUnreadable: () => null,
     findBrowserExecutable: () => '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -211,7 +214,8 @@ function createSessionHarness({ running = { running: true }, startError, cdpErro
   });
   vm.runInContext(between(...MORELOGIN_BLOCKS), context);
   vm.runInContext(between('async function createBrowserSession(', '/**\n * Start CDP screencast'), context);
-  return { context, launches, page, browserSessions };
+  vm.runInContext(between('async function newSessionPage(', 'async function createSessionTab('), context);
+  return { context, launches, page, browserSessions, opened, cdpContext };
 }
 
 test('createBrowserSession fails loudly when MoreLogin cannot be reached after auto-launch — no Chrome launch', async () => {
@@ -241,6 +245,7 @@ test('a localhost start URL opens in MoreLogin — no sidecar, no Chrome launch'
     assert.equal(result.profileSource, `MoreLogin · ${ENV}`);
     assert.equal(result.moreLoginBlocked, null);
     assert.deepEqual(h.launches, ['connectOverCDP'], 'only the MoreLogin attach, never a Chrome launch');
+    assert.deepEqual(h.opened, ['newPage'], 'openTabsInBackground not set: the first tab opens as it always did');
     assert.deepEqual(h.page.gotos, [url]);
     const session = h.browserSessions.get(result.sessionId);
     assert.equal(session._profileMode, 'morelogin');
@@ -255,6 +260,25 @@ test('a localhost port MoreLogin refuses is reported by the session it created',
   const result = await h.context.createBrowserSession({ url: 'http://localhost:3999/' });
   assert.equal(result.profileMode, 'morelogin');
   assert.equal(result.moreLoginBlocked, PORT_MESSAGE('3999'));
+});
+
+test('openTabsInBackground: the first tab of a MoreLogin session opens behind the selected one, only when it is true', async () => {
+  for (const value of [false, 'true', 1, null]) {
+    const off = createSessionHarness({ backgroundTabs: value });
+    await off.context.createBrowserSession({ url: 'about:blank' });
+    assert.deepEqual(off.opened, ['newPage'], `${JSON.stringify(value)}: as before, and the background opener is not asked`);
+  }
+  let asked = null;
+  const on = createSessionHarness({ backgroundTabs: true, background: (browser, target) => { asked = [typeof browser.contexts, target]; return on.page; } });
+  const result = await on.context.createBrowserSession({ url: 'https://bsky.app/' });
+  assert.deepEqual(on.opened, ['background'], 'no context.newPage(): the window is neither restored nor brought forward');
+  assert.deepEqual(asked, ['function', on.cdpContext], 'asked with the attached browser and its context');
+  assert.equal(on.browserSessions.get(result.sessionId).page, on.page);
+  assert.deepEqual(on.page.gotos, ['https://bsky.app/']);
+  // A browser that cannot: a normal tab, and the session still starts.
+  const cannot = createSessionHarness({ backgroundTabs: true, background: () => null });
+  assert.equal((await cannot.context.createBrowserSession({ url: 'about:blank' })).profileMode, 'morelogin');
+  assert.deepEqual(cannot.opened, ['background', 'newPage']);
 });
 
 // ── The stop page and its message ──

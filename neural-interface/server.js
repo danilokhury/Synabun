@@ -24,6 +24,7 @@ import { runBrowserExtraction, readBrowserContentHtml } from './lib/browser-extr
 import { attachConsoleBuffer, readConsoleBuffer, parseConsoleSince } from './lib/browser-console.js';
 import { resolveBrowserLanguage, validateBrowserLanguageConfig } from './lib/browser-language.js';
 import { parseScreenshotOptions, captureScreenshot, screenshotPathRefusal, defaultScreenshotPath, writeScreenshotFile } from './lib/browser-screenshot.js';
+import { openBackgroundPage, selectedTabReading } from './lib/browser-background-tab.js';
 import { memoryRevision } from '../mcp-server/dist/services/memory-maintenance.js';
 import { startGatedMemoryMaintenance } from './lib/memory-timers.js';
 import { createEventLoopMonitor } from './lib/event-loop-monitor.js';
@@ -25581,6 +25582,8 @@ _nativeLoopRuntime = new NativeLoopRuntime({
       router: assistantRouter, catalog: assistantCatalog, desktop: assistantDesktop,
       judge: assistantJev,
       clarifier: assistantClarifier,
+      // The session's Test density, read when a worker's prompt is composed (assistant-test-density.js).
+      testDensity: (sessionId) => _assistantRuntime?.testDensityFor?.(sessionId) ?? null,
     });
     _assistantRuntime = createAssistantRuntime({
       dispatcher: _assistantDispatcher,
@@ -30078,7 +30081,7 @@ async function createBrowserSession(options = {}) {
       const cdpBrowser = await chromium.connectOverCDP(endpoint);
       let cdpContext = cdpBrowser.contexts()[0];
       if (!cdpContext) cdpContext = await cdpBrowser.newContext(contextOpts);
-      const cdpPage = await cdpContext.newPage(); // fresh tab; never hijack an existing one
+      const cdpPage = await newSessionPage({ browser: cdpBrowser, context: cdpContext, _profileMode: 'morelogin' }); // fresh tab; never hijack an existing one
 
       browser = cdpBrowser;
       context = cdpContext;
@@ -30243,7 +30246,7 @@ async function createBrowserSession(options = {}) {
         const cdpBrowser = await chromium.connectOverCDP(endpoint);
         let cdpContext = cdpBrowser.contexts()[0];
         if (!cdpContext) cdpContext = await cdpBrowser.newContext(contextOpts);
-        const cdpPage = await cdpContext.newPage(); // ALWAYS a fresh tab; never hijack a user tab
+        const cdpPage = await newSessionPage({ browser: cdpBrowser, context: cdpContext, _profileMode: 'cdp' }); // ALWAYS a fresh tab; never hijack a user tab
 
         browser = cdpBrowser;
         context = cdpContext;
@@ -30663,6 +30666,30 @@ async function stopScreencast(session) {
 // ── Multi-tab helpers ──
 
 /**
+ * The page of a new tab, for every tab SynaBun opens in a browser the user
+ * shares with the runs (`_profileMode` morelogin or cdp): the first tab of a
+ * session (createBrowserSession, which has no session object yet and passes
+ * browser, context and mode), each further tab (createSessionTab) and the
+ * replacement of a wedged tab (recoverSessionTabPage).
+ *
+ * openTabsInBackground: true in browser-config.json (only that; not set or
+ * anything else, this is context.newPage() exactly as before) opens such a tab
+ * behind the selected one: the window is neither restored nor brought forward,
+ * and the tab is not the selected tab when it opens. It does not cover SynaBun's
+ * own windows (managed, mirror, direct and clean sessions), tabs a page opens
+ * itself, or what selects a tab afterwards (the user, or the selected tab
+ * closing next to it). A browser that cannot gets a normal tab.
+ */
+async function newSessionPage(session, { timeoutMs } = {}) {
+  if (loadBrowserConfig().openTabsInBackground === true && (session._profileMode === 'morelogin' || session._profileMode === 'cdp')) {
+    const page = await openBackgroundPage(session.browser, session.context, timeoutMs ? { timeoutMs } : undefined).catch(() => null);
+    if (page) return page;
+    console.warn('[browser] could not open the tab in the background; opening it as the selected tab');
+  }
+  return session.context.newPage();
+}
+
+/**
  * Create a new tab (page) in an existing browser session.
  * Returns { tabId, url, title }.
  */
@@ -30670,7 +30697,7 @@ async function createSessionTab(session, sessionId, url = 'about:blank') {
   const tabId = randomBytes(4).toString('hex');
   const activeEntry = session.tabs?.get(session.activeTabId);
   const shouldAdoptAsActive = !activeEntry || activeEntry.page?.isClosed?.();
-  const page = await session.context.newPage();
+  const page = await newSessionPage(session);
   attachConsoleBuffer(page);
   if (url && url !== 'about:blank') {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
@@ -30721,7 +30748,8 @@ async function recoverSessionTabPage(session, sessionId, tabId, reason = 'page b
     };
     try {
       replacementPage = await withBrowserOperationDeadline(
-        session.context.newPage(),
+        // A background attempt gets half of the step, so a normal tab still fits after it.
+        newSessionPage(session, { timeoutMs: BROWSER_RECOVERY_STEP_DEADLINE_MS / 2 }),
         BROWSER_RECOVERY_STEP_DEADLINE_MS,
         'Creating replacement browser tab',
         {
@@ -30919,6 +30947,9 @@ async function _switchSessionTab(session, sessionId, tabId) {
 
   // Stop screencast on current tab
   await stopScreencast(session);
+  // The tab may have left the session while that was awaited (closed, retired):
+  // the aliases never take a page that is no longer registered.
+  if (session.tabs.get(tabId) !== tabEntry) throw new Error(`Tab ${tabId} not found`);
 
   // Switch aliases
   session.activeTabId = tabId;
@@ -30929,6 +30960,8 @@ async function _switchSessionTab(session, sessionId, tabId) {
 
   // Start screencast on new tab
   await startScreencast(session);
+  // Gone, or no longer the active tab, while that was awaited: nothing to announce.
+  if (session.tabs.get(tabId) !== tabEntry || session.activeTabId !== tabId) return;
 
   // Notify clients of the switch
   const msg = JSON.stringify({
@@ -30960,15 +30993,36 @@ async function closeSessionTab(session, sessionId, tabId) {
     return;
   }
 
-  // If closing the active tab, switch to another
+  // If closing the active tab, switch to another. The tab picked can itself be
+  // closed while the switch is awaited (two closes in one turn, or during a
+  // screencast stop): the switch then refuses it, because it never aliases a tab
+  // that left the registry, and a tab that is still registered is picked instead.
+  let switchError = null;
   if (session.activeTabId === tabId) {
-    const nextTabId = [...session.tabs.keys()][0];
-    await _switchSessionTab(session, sessionId, nextTabId);
+    for (let picks = 0; picks < 8 && session.activeTabId === tabId && session.tabs.size > 0; picks += 1) {
+      const nextTabId = session.tabs.keys().next().value;
+      const nextEntry = session.tabs.get(nextTabId);
+      try {
+        await _switchSessionTab(session, sessionId, nextTabId);
+      } catch (error) {
+        // Gone meanwhile: pick again. Still registered: the switch itself failed, reported once the page is closed.
+        if (session.tabs.get(nextTabId) === nextEntry) { switchError = error; break; }
+      }
+    }
+    // No tab took over (every other one left meanwhile): no alias stays on the tab that is closing.
+    if (session.activeTabId === tabId) {
+      session.activeTabId = null;
+      session.page = null;
+      session.cdpSession = null;
+      session.currentUrl = 'about:blank';
+      session.title = '';
+    }
   }
 
-  // Close the page
+  // Close the page, whatever the switch did: the tab has left the registry already
   try { await tabEntry.page.close(); } catch {}
   console.log(`[browser] Tab ${tabId} closed in session ${sessionId} (remaining: ${session.tabs.size})`);
+  if (switchError) throw switchError;
 }
 
 /**
@@ -31151,6 +31205,8 @@ function getTargetPage(session, req) {
     console.warn(`[browser] tab-pin-missing:legacy: refusing activeTab on owner-held session (id=${terminalId}, owners=${sessionOwnerCount(session)}) — returning 404 to avoid cross-automation leak`);
     return null;
   }
+  // No active page at all (the last tab closed or was retired): there is nothing to route to.
+  if (!session.page) return null;
   trackRoute(session, terminalId, session.activeTabId, 'legacy');
   return { page: session.page, cdpSession: session.cdpSession, tabId: session.activeTabId };
 }
@@ -32645,14 +32701,128 @@ app.post('/api/fetch-markdown', async (req, res) => {
 
 // GET …/screenshot-base64 — what browser_screenshot shows, plus breakpoint sizes
 // (width / height), full page and saving to a file (lib/browser-screenshot.js).
-// A tab whose own viewport could not be confirmed back after an emulated size
-// (viewportRestored: false) is closed, so no page — a MoreLogin profile's above
-// all — keeps a size, DPR or mobile flag it never had; the result says so.
+// The capture, putting the tab back and the state read after it share one budget,
+// the request deadline: the answer names the phase a capture stopped in and never
+// waits past it. A tab whose own width, height and devicePixelRatio could not be
+// confirmed when the capture answers is retired: out of routing at once, then
+// closed, so no page — a MoreLogin profile's above all — keeps a size, DPR or
+// mobile flag it never had. The result says so, and says "closed" only when the
+// close was confirmed.
 const SCREENSHOT_TAB_CLOSED = 'SynaBun could not confirm the tab was back at its own viewport size after the capture, so it closed the tab; the next browser call opens a fresh one.';
-async function retireScreenshotTab(session, sessionId, routed) {
-  console.warn(`[browser] closing tab ${routed.tabId} of session ${sessionId}: its viewport was not confirmed restored after a screenshot`);
-  const close = session.tabs?.size > 1 ? closeSessionTab(session, sessionId, routed.tabId) : routed.page.close();
-  await Promise.race([Promise.resolve(close).catch(() => {}), new Promise((done) => setTimeout(done, 3000))]);
+const SCREENSHOT_TAB_UNROUTED = 'SynaBun could not confirm the tab was back at its own viewport size after the capture, so it took the tab out of routing; closing it was not confirmed, so it may still be open in the browser window. The next browser call opens a fresh one.';
+// What building and sending the answer may take, out of the request deadline (a quarter of a deadline under four times this).
+const SCREENSHOT_ANSWER_MARGIN_MS = 500;
+// The longest the title read after a capture may take; never past the budget.
+const SCREENSHOT_STATE_READ_MS = 1000;
+
+/**
+ * Take a tab out of routing now, whatever becomes of its page: no later call
+ * reaches it (getTargetPage answers 404, and the caller's next browser call
+ * opens a fresh tab). What the page's close event does for a tab that closed,
+ * done here because that event is ignored for a tab no longer registered. Only
+ * while the tab id still names `page`: a wedged tab replaced meanwhile
+ * (recoverSessionTabPage keeps the id) has a fresh page under it, which stays.
+ *
+ * The registry entry and every alias of the page (session.page, cdpSession,
+ * activeTabId) go in the same tick, before anything is awaited or anyone is
+ * told: the switch to another tab is asynchronous and re-validates its target,
+ * so neither a second retirement in the same turn nor a screencast stop that
+ * hangs can leave the session pointing at a retired page. A client that cannot
+ * be told changes none of this. Announced as `browser:tab-retired`: the tab
+ * left routing; `browser:tab-closed` follows only when the close is confirmed.
+ */
+function unrouteScreenshotTab(session, sessionId, tabId, page) {
+  if (session.tabs?.get(tabId)?.page !== page) return;
+  session.tabs.delete(tabId);
+  const wasActive = session.activeTabId === tabId || session.page === page;
+  if (wasActive) {
+    session.activeTabId = null;
+    session.page = null;
+    session.cdpSession = null;
+    session.currentUrl = 'about:blank';
+    session.title = '';
+  }
+  // What follows only tells others; none of it may undo or skip the above.
+  const quietly = (what, work) => { try { work(); } catch (error) { console.warn(`[browser] retiring tab ${tabId} of session ${sessionId}: ${what} failed: ${error.message}`); } };
+  quietly('clearing its snapshot cache', () => clearAiSnapshotCache(sessionId, tabId));
+  // The session moves on to a tab that is left, also when an earlier retirement in this turn left it without one.
+  if (wasActive || session.activeTabId == null) {
+    const next = session.tabs.keys().next().value;
+    if (next !== undefined) {
+      _switchSessionTab(session, sessionId, next).catch(() => {});
+    } else {
+      session.clients?.forEach((ws) => quietly('telling a client that all tabs closed', () => {
+        if (ws.readyState === 1) {
+          ws.send(JSON.stringify({ type: 'error', message: 'All tabs closed' }));
+          ws.close(1000, 'All tabs closed');
+        }
+      }));
+      quietly('forgetting the clients', () => session.clients?.clear());
+    }
+  }
+  quietly('announcing it', () => broadcastSync({ type: 'browser:tab-retired', sessionId, tabId, remainingTabs: session.tabs.size }));
+}
+/**
+ * Retire a tab after a screenshot: out of routing before anything is awaited,
+ * then closed. `reason` is 'size' (its viewport could not be confirmed restored)
+ * or 'pending' (a capture of it may still be pending for good). The close is
+ * attempted whatever taking it out of routing and telling the clients did.
+ * `closed` settles true only when the page reports itself closed, and only then
+ * is `browser:tab-closed` announced; a close that fails, or never answers,
+ * leaves it false or pending, and the log says which.
+ */
+function retireScreenshotTab(session, sessionId, routed, reason = 'size') {
+  console.warn(`[browser] retiring tab ${routed.tabId} of session ${sessionId}: ${reason === 'pending'
+    ? 'a screenshot of it got no answer and may still be pending (its CDP session was never confirmed detached)'
+    : 'its viewport was not confirmed restored after a screenshot'}`);
+  // A wedged tab replaced meanwhile keeps its id for a fresh page: that tab neither left routing nor closes.
+  const registered = session.tabs?.get(routed.tabId)?.page === routed.page;
+  try {
+    unrouteScreenshotTab(session, sessionId, routed.tabId, routed.page);
+  } catch (error) {
+    console.warn(`[browser] taking retired tab ${routed.tabId} of session ${sessionId} out of routing failed part-way: ${error.message}`);
+  }
+  const closed = (async () => {
+    try {
+      await routed.page.close();
+    } catch (error) {
+      console.warn(`[browser] closing retired tab ${routed.tabId} of session ${sessionId} failed: ${error.message}`);
+    }
+    const confirmed = routed.page.isClosed?.() === true;
+    if (confirmed) {
+      console.log(`[browser] Retired tab ${routed.tabId} closed in session ${sessionId} (remaining: ${session.tabs.size})`);
+      if (registered) try { broadcastSync({ type: 'browser:tab-closed', sessionId, tabId: routed.tabId, remainingTabs: session.tabs.size }); } catch { /* the tab is closed either way */ }
+    } else {
+      console.warn(`[browser] retired tab ${routed.tabId} of session ${sessionId} is out of routing but its close was not confirmed; it may still be open in the browser window`);
+    }
+    return confirmed;
+  })();
+  return { closed };
+}
+/**
+ * One line per capture, success or failure, so what a capture depends on can be
+ * read back later (docs/browser-v2.md, "Reading the screenshot log"): session
+ * and tab, the window state CDP reported (for a failure the one read when it
+ * stopped, with `windowAtStart` when the one read as the capture began was
+ * another), whether the tab was the selected one as far as the server can tell
+ * (selectedTabReading: inferred from the order tabs were opened in, not
+ * measured), the outcome, the phase of a failure and the duration. A run's line
+ * also goes to its own log file.
+ */
+function logScreenshotCapture(req, sessionId, tabId, selected, record) {
+  const caller = (req.get && req.get('X-Synabun-Terminal')) || req.headers?.['x-synabun-terminal'] || null;
+  // The id names the log file: anything but a plain id goes to the console only.
+  const owner = typeof caller === 'string' && /^[\w-]{1,120}$/.test(caller) ? caller : null;
+  loopLog(owner, 'browser:screenshot',
+    `session=${sessionId} tab=${tabId} window=${record.windowState || 'unknown'} selected=${selected.reading} outcome=${record.outcome}${record.phase ? ` phase=${record.phase}` : ''} ms=${record.ms}`,
+    {
+      selectedBasis: selected.basis,
+      ...(record.code && { code: record.code }),
+      ...(record.windowAtStart !== record.windowState && { windowAtStart: record.windowAtStart || 'unknown' }),
+      ...(record.tab !== 'untouched' && { tabAfter: record.tab }),
+      ...(record.tab === 'retired' && { tabClosed: record.tabClosed === true }),
+      ...(record.capturePending && { capturePending: true }),
+    });
 }
 app.get('/api/browser/sessions/:id/screenshot-base64', async (req, res) => {
   const session = browserSessions.get(req.params.id);
@@ -32667,38 +32837,92 @@ app.get('/api/browser/sessions/:id/screenshot-base64', async (req, res) => {
   } catch (err) {
     return res.status(err.status || 400).json({ error: err.message });
   }
-  let tabClosed = false;
+  const started = Date.now();
+  // One budget for the capture, putting the tab back and the state read: the
+  // request deadline, less what sending the answer takes. The capture itself is
+  // given up on earlier (lib), so this route says which phase stopped it; at the
+  // deadline the caller would only see a bare timeout.
+  const requestDeadline = req.browserRequest ? req.browserRequest.deadline : started + 60_000;
+  const answerBy = requestDeadline - Math.min(SCREENSHOT_ANSWER_MARGIN_MS, Math.max(0, requestDeadline - started) / 4);
+  // Read before the capture: what the tab was when it began.
+  const selected = selectedTabReading(routed.page);
+  const known = session.tabs?.get(routed.tabId)?.title || '';
+  let record = null;
+  // The log line is built and written once the answer is with the operating
+  // system (or the client is gone), and guarded: a sink that throws or does not
+  // return costs the line, never the answer, its status or its time.
+  let logged = false;
+  const logCapture = () => {
+    if (logged || !record) return;
+    logged = true;
+    try {
+      logScreenshotCapture(req, req.params.id, routed.tabId, selected, record);
+    } catch (error) {
+      try { console.warn(`[browser] screenshot log line not written: ${error.message}`); } catch { /* nothing left to tell */ }
+    }
+  };
   try {
-    const shot = await captureScreenshot(routed.page, options, { runBounded: (work) => runBrowserRequest(req, work, 60_000) });
-    const state = await syncPageState(session, routed);
-    if (shot.viewportRestored === false) {
-      await retireScreenshotTab(session, req.params.id, routed);
-      tabClosed = true;
+    const shot = await captureScreenshot(routed.page, options, {
+      deadline: answerBy,
+      // Ends the capture early when the request is aborted; the deadline is the lib's.
+      runBounded: (work) => runBrowserRequest(req, work, 120_000),
+      retire: (reason) => retireScreenshotTab(session, req.params.id, routed, reason),
+      onRecord: (entry) => { record = entry; },
+    });
+    const retired = shot.tab === 'retired';
+    // The title read gets what is left of the budget; a retired tab is not asked.
+    const url = routed.page.url();
+    let title = known;
+    if (!retired) {
+      let timer;
+      const read = await Promise.race([
+        routed.page.title().catch(() => ''),
+        new Promise((done) => { timer = setTimeout(() => done(null), Math.max(1, Math.min(SCREENSHOT_STATE_READ_MS, answerBy - Date.now()))); }),
+      ]);
+      clearTimeout(timer);
+      if (read !== null) {
+        title = read;
+        if (routed.tabId === session.activeTabId) { session.currentUrl = url; session.title = title; }
+      }
     }
     let savedPath = null;
     if (shot.fileData) {
       const target = options.path
         ? resolve(options.path)
-        : defaultScreenshotPath({ dataHome: DATA_HOME, pageUrl: state.url, width: shot.width, height: shot.height, format: options.fileFormat });
+        : defaultScreenshotPath({ dataHome: DATA_HOME, pageUrl: url, width: shot.width, height: shot.height, format: options.fileFormat });
       // Checked again as it is written: the capture may have taken a minute.
       savedPath = writeScreenshotFile(target, Buffer.from(shot.fileData, 'base64'), { dataHome: DATA_HOME });
     }
     res.json({
-      ok: true, url: state.url, title: state.title,
+      ok: true, url, title,
       data: shot.data, mime: shot.mime,
       width: shot.width, height: shot.height, imageWidth: shot.imageWidth, imageHeight: shot.imageHeight,
       fullPage: shot.fullPage,
       ...(shot.truncated && { truncated: true }),
       ...(shot.emulated && { viewport: shot.emulated }),
       ...(savedPath && { savedPath, format: options.fileFormat }),
-      ...(tabClosed && { tabClosed: true, notice: SCREENSHOT_TAB_CLOSED }),
+      ...(retired && { tabRetired: true, tabClosed: shot.tabClosed === true, notice: shot.tabClosed === true ? SCREENSHOT_TAB_CLOSED : SCREENSHOT_TAB_UNROUTED }),
     });
   } catch (err) {
-    if (err?.viewportRestored === false && !tabClosed) {
-      await retireScreenshotTab(session, req.params.id, routed);
-      tabClosed = true;
-    }
-    res.status(err.status || 500).json({ error: tabClosed ? `${err.message}. ${SCREENSHOT_TAB_CLOSED}` : err.message, ...(tabClosed && { tabClosed: true }) });
+    // A failure of the capture itself, not of what came after it (the file).
+    const captureFailed = !!record && record.outcome !== 'ok';
+    // What became of the tab is said either way: a capture that worked can have retired it too.
+    const retired = record?.tab === 'retired';
+    const closed = record?.tabClosed === true;
+    const after = retired ? (closed ? SCREENSHOT_TAB_CLOSED : SCREENSHOT_TAB_UNROUTED) : captureFailed && record.tab === 'restored' ? 'The tab is back at its own size.' : '';
+    res.status(err.status || 500).json({
+      error: after ? `${err.message}${/[.!?]$/.test(err.message) ? '' : '.'} ${after}` : err.message,
+      ...(err.code && { code: err.code }),
+      ...(err.phase && { phase: err.phase }),
+      // What the capture depends on, for a caller that reads fields: the window state CDP reported when the
+      // capture stopped (with the one from when it began, when that was another) and the selected-tab reading.
+      ...(captureFailed && { windowState: err.windowState ?? null, ...((err.windowAtStart ?? null) !== (err.windowState ?? null) && { windowAtStart: err.windowAtStart ?? null }), selectedTab: selected.reading }),
+      ...(retired && { tabRetired: true, tabClosed: closed }),
+      ...(err.capturePending && { capturePending: true }),
+    });
+  } finally {
+    if (res.writableFinished || res.destroyed) logCapture();
+    else { res.once('finish', logCapture); res.once('close', logCapture); }
   }
 });
 
@@ -32853,6 +33077,10 @@ app.put('/api/browser/config', (req, res) => {
     if (body.connectMode !== undefined) body.connectMode = ['attach', 'morelogin'].includes(body.connectMode) ? body.connectMode : 'mirror';
     if (body.attachSeed !== undefined) body.attachSeed = body.attachSeed === 'fresh' ? 'fresh' : 'real';
     if (body.moreloginEnvId !== undefined && body.moreloginEnvId !== null && body.moreloginEnvId !== '') body.moreloginEnvId = String(body.moreloginEnvId);
+    // openTabsInBackground is not in the Settings form: a save from the form keeps
+    // it. What it covers is said at newSessionPage, which reads it.
+    const savedBackgroundTabs = loadBrowserConfig().openTabsInBackground;
+    if (body.openTabsInBackground === undefined && typeof savedBackgroundTabs === 'boolean') body.openTabsInBackground = savedBackgroundTabs;
     saveBrowserConfig(body);
     // The in-process MCP drops its cached browser routes now; MCP processes of their
     // own do on their next /api/browser response (X-Synabun-Browser-Default).

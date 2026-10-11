@@ -29,6 +29,7 @@ import { TASK_CLASS_META, classPlaybook, collectedMedia, describeTarget, designF
 import { MAX_MEDIA_BYTES, MAX_RUN_MEDIA_BYTES, copyRunMedia, mediaType, mediaUrl, servableRunMedia } from './assistant-media.js';
 import { loadPlaybook } from './assistant-playbooks.js';
 import { loadStyleGuideForRun } from './style-guide/store.js';
+import { claimCheckWaived, normalizeTestDensity, testingApplies } from './assistant-test-density.js';
 import { normalizeEffort } from './effort-levels.js';
 import { createTurnEvidence, recordProviderEvent, evidenceSnapshot, claimEvidenceLine } from './assistant-evidence.js';
 import { codexUsageCostUsd } from './assistant-budget.js';
@@ -374,6 +375,9 @@ export function createAssistantDispatcher({
   // The project's Style Guide for a run's prompt (lib/style-guide/store.js): (cwd, taskClass) =>
   // { summary, designPath, tokenFiles, proposals } | null. Reads <dataDir>/style-guides.
   loadStyleGuide = (cwd, taskClass) => loadStyleGuideForRun(cwd, taskClass, { dataDir }),
+  // The session's Test density (assistant-test-density.js): (assistantSessionId) => level | null.
+  // Read when a prompt is composed; null or an unknown value is the default level.
+  testDensity = () => null,
 } = {}) {
   if (typeof getRuntime !== 'function') throw new Error('createAssistantDispatcher requires getRuntime()');
   if (!dataDir) throw new Error('createAssistantDispatcher requires dataDir');
@@ -1262,7 +1266,9 @@ export function createAssistantDispatcher({
     const ask = {
       status: noBlock && !entry.outputSchema,
       cause: noBlock || parsed.status === 'blocked',
-      claim: (noBlock || parsed.status === 'done') && evidence.hasEvidence,
+      // At Test density None a "Not tested" result is what the brief asked for, not a claim to check.
+      claim: (noBlock || parsed.status === 'done') && evidence.hasEvidence
+        && !claimCheckWaived({ level: entry.testDensity || null, taskClass: entry.taskClass || null, text, evidence }),
     };
     if (!ask.status && !ask.cause && !ask.claim) return null;
     const judged = await bounded(judge.workerOutcome({
@@ -1403,7 +1409,7 @@ export function createAssistantDispatcher({
         source: 'assistant',
         focus: entry.focus === true,
         title: entry.title,
-        buildPrompt: () => buildTaskPrompt(playbook || styleGuide ? { ...state, ...(playbook ? { playbook } : {}), ...(styleGuide ? { styleGuide } : {}) } : state),
+        buildPrompt: () => buildTaskPrompt({ ...state, ...(playbook ? { playbook } : {}), ...(styleGuide ? { styleGuide } : {}), testDensity: briefTestDensity(entry) }),
         wrapAdapter: (adapter, ctx) => createTaskAdapter(adapter, ctx, liveState, state),
       });
       entry.runtime = { status: descriptor.status };
@@ -1427,6 +1433,27 @@ export function createAssistantDispatcher({
    */
   function styleGuideFor(entry) {
     try { return loadStyleGuide(entry.cwd, entry.taskClass || null) || null; } catch { return null; }
+  }
+  /** The session's Test density right now (the user's setting; the default when it cannot be read). */
+  function testDensityFor(entry) {
+    try { return normalizeTestDensity(testDensity(entry.assistantSessionId || null)); } catch { return normalizeTestDensity(null); }
+  }
+  /**
+   * The level a run's brief carries, read when the prompt is composed and kept on the entry: the
+   * claim check and a later follow-up go by what the worker was told. null for a class with no
+   * TESTING block.
+   */
+  function briefTestDensity(entry) {
+    entry.testDensity = testingApplies(entry.taskClass || null) ? testDensityFor(entry) : null;
+    return entry.testDensity;
+  }
+  /** A follow-up turn names the level only when the user changed it since the run was last told. */
+  function changedTestDensity(entry) {
+    if (!testingApplies(entry.taskClass || null)) return null;
+    const level = testDensityFor(entry);
+    if (level === (entry.testDensity || null)) return null;
+    entry.testDensity = level;
+    return level;
   }
   /**
    * The rules a run of the entry's class follows (assistant-playbooks.js: the user's override
@@ -1688,7 +1715,7 @@ export function createAssistantDispatcher({
             return budgetStop(entry, blocked);
           }
           try {
-            const followPrompt = buildFollowUpPrompt(next.text, state, { turn: liveState.turnCounter + 1, maxTurns: entry.maxTurns, origin: next.origin });
+            const followPrompt = buildFollowUpPrompt(next.text, state, { turn: liveState.turnCounter + 1, maxTurns: entry.maxTurns, origin: next.origin, testDensity: changedTestDensity(entry) });
             await runInnerTurn(followPrompt, meta, { origin: next.origin, label: clip(next.text, 80), followUp: next.text, taskId: next.taskId || entry.taskId || null });
           } catch (error) {
             return handleTurnError(error, liveState, entry, ctx);

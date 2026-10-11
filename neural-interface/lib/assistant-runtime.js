@@ -15,6 +15,7 @@ import { createClaudeBrain } from './assistant-brains/claude.js';
 import { createCodexBrain } from './assistant-brains/codex.js';
 import { createOpenCodeBrain } from './assistant-brains/opencode.js';
 import { buildAssistantPersona, formatMailbox, reconcileRouteItems } from './assistant-persona.js';
+import { normalizeTestDensity, testDensityStamp } from './assistant-test-density.js';
 import { codexUsageCostUsd } from './assistant-budget.js';
 import { CLAUDE_ESTIMATE_SOURCE, createClaudeMeter, createCodexMeter, createOpenCodeMeter, totalTokens, withTotal, zeroTokens } from './assistant-usage.js';
 import { claudeTokensCostUsd } from './assistant-pricing.js';
@@ -747,6 +748,8 @@ export function createAssistantRuntime({
     const effectiveMode = policy ? clampRouteMode(policy, mode || defaultRouteMode(), { now: now() }) : (mode || defaultRouteMode());
     return { mode, effectiveMode, defaultMode: defaultRouteMode(), askBelow };
   }
+  /** The session's Test density: its own value, else the default level (assistant-test-density.js). */
+  function testDensityOf(record) { return normalizeTestDensity(record?.testDensity); }
   function computerSupported() { try { return !!desktop?.isSupported?.(); } catch { return false; } }
   /**
    * Effective computer toggle: explicit per-session value, else the service default (ON after setup).
@@ -840,7 +843,9 @@ export function createAssistantRuntime({
       // A remote session's computer use is not a per-conversation choice: no explicit value, and why it is what it is.
       out.computerUseExplicit = policy ? null : (record.computerUse === true || record.computerUse === false ? record.computerUse : null);
       out.computerRemote = computer ? { state: computer.state, reason: computer.reason, level: computer.level, approved: live.computerTurn?.approved === true } : null;
-      out.features = { routing: !!router, computer: computerSupported() };
+      out.testDensity = testDensityOf(record);
+      out.testDensityExplicit = normalizeTestDensity(record.testDensity, null);
+      out.features = { routing: !!router, computer: computerSupported(), testDensity: true };
       out.budget = sessionMoney(record.id);
       out.remoteLevel = policy ? effectiveLevel(policy, { untrusted: live.turnUntrusted === true, now: now() }) : null;
     }
@@ -1703,6 +1708,8 @@ export function createAssistantRuntime({
     try { if (catalogValue?.models) sheet = selectSheetModels(catalogValue, { brain, preferences: routingCfg.preferences || {}, max: 8 }); } catch {}
     let setupState = null;
     try { setupState = desktop?.setupState?.() || null; } catch {}
+    // This prompt states the level: a "[SynaBun Tests]" line follows only a later change.
+    live.testDensityStamp = testDensityStamp(testDensityOf(live.record));
     return buildAssistantPersona({
       assistantSessionId: live.record.id,
       brain,
@@ -1721,6 +1728,7 @@ export function createAssistantRuntime({
       // A remote session: what remoteComputerUse says for it (a turn with untrusted content is asked either way).
       computer: { available: computerSupported(), enabled: computerEffective(live.record), setupState, remote: computerDecision(live, { untrusted: false }) },
       taskClasses: TASK_CLASS_META,
+      testDensity: testDensityOf(live.record),
       clarify: !!clarifier,
       channel: live.record.channel || live.record.remote?.channel || null,
     });
@@ -2087,6 +2095,16 @@ export function createAssistantRuntime({
           }
         } catch {}
       }
+      // Test density changed since the brain last saw it (the same place, after the router's line).
+      // Its prompt states the level it starts with (personaFor), so only a change is a line.
+      try {
+        const tests = testDensityStamp(testDensityOf(live.record));
+        if (live.testDensityStamp === undefined) live.testDensityStamp = tests;
+        else if (live.testDensityStamp !== tests) {
+          finalText = finalText.endsWith(prompt) ? `${finalText.slice(0, finalText.length - prompt.length)}${tests}\n\n${prompt}` : `${tests}\n\n${finalText}`;
+          live.testDensityStamp = tests;
+        }
+      } catch {}
       // A new request cycle. Open clarify questions make this message the
       // user's reply (assistant-clarify.js); otherwise the last brief retires.
       live.promptCycle += 1;
@@ -2395,6 +2413,10 @@ export function createAssistantRuntime({
     if (mode && !normalized) { const error = new Error(`Unknown route mode ${mode}`); error.code = 'ROUTE_MODE_INVALID'; error.status = 400; throw error; }
     live.record.routing = { ...(live.record.routing || {}), mode: normalized };
   }
+  /** null, '' or an unknown value clears the session's own level: it reads as the default. */
+  function applyTestDensity(live, level) {
+    live.record.testDensity = normalizeTestDensity(level, null);
+  }
   function applyComputerUse(live, enabled) {
     // A remote session's computer use is not a per-conversation choice: the owner's switch and
     // the level decide (remoteComputerUse). A PATCH, the socket and updateSession change nothing.
@@ -2409,6 +2431,7 @@ export function createAssistantRuntime({
     if (patch.title) live.record.title = clip(patch.title, 60);
     if (patch.routing && typeof patch.routing === 'object' && 'mode' in patch.routing) applyRouteMode(live, patch.routing.mode);
     if ('computerUse' in patch) applyComputerUse(live, patch.computerUse);
+    if ('testDensity' in patch) applyTestDensity(live, patch.testDensity);
     if (patch.brain && typeof patch.brain === 'object') {
       // A provider switch that names no model starts from the new provider's
       // default, never from the old provider's model id.
@@ -2814,6 +2837,12 @@ export function createAssistantRuntime({
         broadcast('assistant:session-updated', live);
         sendToSockets(live, { type: 'assistant:session', session: view(live), reason: 'routing' });
         return;
+      case 'set_test_density':
+        applyTestDensity(live, msg.level);
+        touch(live);
+        broadcast('assistant:session-updated', live);
+        sendToSockets(live, { type: 'assistant:session', session: view(live), reason: 'tests' });
+        return;
       case 'set_computer_use':
         applyComputerUse(live, msg.enabled);
         touch(live);
@@ -2885,6 +2914,12 @@ export function createAssistantRuntime({
       default:
         return;
     }
+  }
+
+  /** The dispatcher's reading of a session's Test density (wired in server.js); null for an unknown session. */
+  function testDensityFor(id) {
+    const live = sessions.get(id);
+    return live ? testDensityOf(live.record) : null;
   }
 
   // ── router sinks (wired lazily in server.js; see assistant-router.js) ──────
@@ -3326,7 +3361,7 @@ export function createAssistantRuntime({
     handleWebSocket, listSessions, getSession, createSession, updateSession, closeSession, destroySession,
     resolveTerminal, accountInUse, ownsIsolatedServe, noteDispatch, subscribe, shutdown,
     observeBroadcast: onPermissionBroadcast,
-    routerSession, routerSend, routerEvent, routerMailbox, routerContinue, routerSinks, routerRouted, routerRouteFailed, routerComputerApproved, gateCheck, isPlanning, isPlanReadOnly,
+    testDensityFor, routerSession, routerSend, routerEvent, routerMailbox, routerContinue, routerSinks, routerRouted, routerRouteFailed, routerComputerApproved, gateCheck, isPlanning, isPlanReadOnly,
     clarifySession, clarifyEvent, clarifyGate, clarifySinks,
     getComputerUse, getComputerTurn, supersedeComputerApproval, abortTurn, notifySession,
     brainSpend, brainCapUsd, onBudgetChanged, currentTask, usageView,

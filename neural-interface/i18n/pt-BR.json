@@ -5698,6 +5698,7 @@
       "stopFailed": "Falha ao parar",
       "stopRequested": "Parada solicitada para {id}",
       "routeMode": "Roteamento de modelos: {mode}",
+      "testDensity": "Densidade de testes: {level}",
       "computerOn": "Uso do computador ativado.",
       "computerOff": "Uso do computador desativado.",
       "computerRemote": "Uso do computador nesta conversa do WhatsApp: {why}.",
@@ -5976,6 +5977,21 @@
         "claude-code": "Planejar primeiro; aprovar o plano continua no modo de aprovação abaixo",
         "codex": "Modo de planejamento nativo do Codex (ambiente isolado somente leitura)",
         "opencode": "Agente de planejamento do OpenCode (sem edições de arquivos)"
+      }
+    },
+    "tests": {
+      "title": "Densidade de testes",
+      "levels": {
+        "none": "Nenhuma",
+        "light": "Leve",
+        "standard": "Padrão",
+        "thorough": "Completa"
+      },
+      "desc": {
+        "none": "Sem testes. Só confere se a alteração carrega.",
+        "light": "Executa os testes que cobrem a alteração. Testes novos só quando fazem diferença.",
+        "standard": "Adiciona testes focados e executa a suíte da área uma vez.",
+        "thorough": "Cobertura completa, suíte inteira, verificações ao vivo."
       }
     },
     "accounts": {

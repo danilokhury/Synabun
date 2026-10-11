@@ -42,7 +42,7 @@ import { lastInputAt, onKey, onPointer } from '../synabun-ticker.js';
 import { buildControlResponse, closedControlState, normalizeControlRequest, renderControlCard } from './asst-control.js';
 import { buildPromptText, createComposer } from './asst-composer.js';
 import { buildDispatchSpec, parseSlashCommand, slashHelpMarkdown } from './asst-slash.js';
-import { createBrainPicker } from './asst-brain-picker.js';
+import { createBrainPicker, testDensityLabel } from './asst-brain-picker.js';
 import { createRovingToolbar } from './asst-roving.js';
 import { openAccountsManager } from './asst-accounts.js';
 import { createAgentsDock } from './asst-agents-dock.js';
@@ -53,7 +53,7 @@ import { budgetChipText, budgetTone, openBudgetEditor } from './asst-budget.js';
 import { computerRemoteView, createComputerPanel, createComputerToggle, normalizeComputerRemote, openFrameLightbox, closeFrameLightbox, requestDesktopStop } from './asst-computer.js';
 import {
   applyLimit, applyLimitPacket, applyUsagePacket, brainLabel, createTabState, DEFAULT_ROUTE_MODE, deserializeTabState, fmtCost, fmtRunLine, limitExpiresIn, limitNoticeText, modelShortName,
-  brainModePatch, normalizeBrain, normalizeComputerMode, permissionModeLabel, normalizeRouteMode, providerShortLabel, readStoredBrain, runFromPayload,
+  brainModePatch, normalizeBrain, normalizeComputerMode, permissionModeLabel, normalizeRouteMode, normalizeTestDensity, providerShortLabel, readStoredBrain, runFromPayload,
   serializeTabState, tabStorageKey,
 } from './asst-state.js';
 import {
@@ -135,6 +135,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     providerSessionId: session?.providerSessionId || null,
     routeMode: saved?.routeMode ?? null,
     computerUse: saved?.computerUse ?? null,
+    testDensity: saved?.testDensity ?? null,
     usageView: saved?.usageView || null,
   });
   Object.assign(st, {
@@ -144,7 +145,8 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     engine: '',
     sdkVersion: '',
     routing: null,                                 // server view { mode, effectiveMode, defaultMode, askBelow }
-    features: { routing: null, computer: null },   // null = unknown yet
+    features: { routing: null, computer: null, testDensity: null },   // null = unknown yet
+    testDensityEffective: null,                    // server view: the level in effect
     brainCapabilities: null,
     computerEffective: st.computerUse === true,
     desktopSupported: null,
@@ -490,6 +492,9 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     getMenuAnchor: () => moreBtn,
     // Composer fields open upward, toolbar fields downward.
     menuPlacement: 'auto',
+    // Test density sits right after the permission mode; hidden on a server that does not know it.
+    getTestDensity: () => testDensityView(),
+    onTestDensity: (level) => setTestDensity(level),
   });
 
   const computerToggle = createComputerToggle(barGroups.computer, {
@@ -847,7 +852,10 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     if (meta.features && typeof meta.features === 'object') {
       if (typeof meta.features.routing === 'boolean') st.features.routing = meta.features.routing;
       if (typeof meta.features.computer === 'boolean') st.features.computer = meta.features.computer;
+      if (typeof meta.features.testDensity === 'boolean') st.features.testDensity = meta.features.testDensity;
     }
+    if ('testDensityExplicit' in meta) st.testDensity = normalizeTestDensity(meta.testDensityExplicit, null);
+    if (meta.testDensity) st.testDensityEffective = normalizeTestDensity(meta.testDensity);
     if (typeof meta.computerUse === 'boolean') st.computerEffective = meta.computerUse;
     if ('computerUseExplicit' in meta) st.computerUse = normalizeComputerMode(meta.computerUseExplicit, null);
     // A WhatsApp conversation: what is in effect and why (not a per-conversation switch). null on the desktop.
@@ -872,6 +880,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     if (destroyed) return;
     routeChip.setVisible(routingAvailable());
     routeChip.render();
+    picker.render();
     const showComputer = st.features.computer === true || st.desktopSupported === true;
     computerToggle.set({
       visible: showComputer,
@@ -941,6 +950,31 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     let last = null;
     try { last = normalizeRouteMode(storage.getItem(KEYS.ASSISTANT_ROUTE_MODE), null); } catch { last = null; }
     if (last && last !== st.routing.effectiveMode) setRouteMode(last, { quiet: true });
+  }
+
+  /** The level the composer shows: this session's, else the server's; null while the server does not know the setting. */
+  function testDensityView() {
+    if (st.features.testDensity !== true) return null;
+    return normalizeTestDensity(st.testDensity || st.testDensityEffective);
+  }
+
+  function setTestDensity(level, { quiet = false } = {}) {
+    const next = normalizeTestDensity(level);
+    st.testDensity = next;
+    st.testDensityEffective = next;
+    picker.render();
+    persist();
+    sock.send({ type: 'set_test_density', level: next });
+    try { storage.setItem(KEYS.ASSISTANT_TEST_DENSITY, next); } catch { /* storage unavailable */ }
+    if (!quiet) renderer.appendStatus(tt('assistant.status.testDensity', 'Test density: {level}', { level: testDensityLabel(next, t) }));
+  }
+
+  /** Fresh tabs inherit the last-used test density (like the route mode). */
+  function applyLastUsedTestDensity() {
+    if (saved || st.features.testDensity !== true || st.testDensity != null) return;
+    let last = null;
+    try { last = normalizeTestDensity(storage.getItem(KEYS.ASSISTANT_TEST_DENSITY), null); } catch { last = null; }
+    if (last && last !== testDensityView()) setTestDensity(last, { quiet: true });
   }
 
   /** A WhatsApp conversation's Computer switch says why it is what it is (the status line of the transcript). */
@@ -1774,6 +1808,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     if (destroyed) return;
     probeFeatures();
     applyLastUsedRouteMode();
+    applyLastUsedTestDensity();
     sock.connect();
   });
   fetchUsage();

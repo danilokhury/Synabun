@@ -350,7 +350,7 @@ test('toolbar menus open below; every dropdown has a caret; the account is a fie
   const chip = route.slice(route.indexOf('export function createRouteModeControl'), route.indexOf('function fmtCountdown'));
   assert.doesNotMatch(chip, /placement:\s*'above'/);
   assert.match(chip, /asst-dd-caret/);
-  assert.match(picker, /const FIELDS = \['model', 'effort', 'variant', 'mode', 'account', 'project', 'mcp'\]/);
+  assert.match(picker, /const FIELDS = \['model', 'effort', 'variant', 'mode', 'tests', 'account', 'project', 'mcp'\]/);
   assert.match(picker, /<span class="asst-dd-caret" aria-hidden="true">\$\{ICON_CARET\}<\/span>/);
   assert.match(roving, /export function createRovingToolbar/);
   for (const key of ['ArrowLeft', 'ArrowRight', 'Home', 'End', 'MutationObserver', 'ResizeObserver']) assert.ok(roving.includes(key), key);

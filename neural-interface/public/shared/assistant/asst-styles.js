@@ -1391,6 +1391,8 @@ export function injectAssistantStyles() {
     .asst-dd-item-main { display: flex; flex: 1; flex-direction: column; gap: 1px; min-width: 0; }
     .asst-dd-item-label, .asst-dd-item-desc { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
     .asst-dd-item-desc { color: var(--asst-text-3); font-size: 11px; }
+    /* Test density: each level's description is a sentence, so it wraps instead of truncating. */
+    .asst-tests-menu .asst-dd-item-desc { white-space: normal; }
     .asst-dd-item-tag { flex-shrink: 0; margin-left: auto; color: var(--asst-text-3); font-size: 11px; }
     .asst-dd-kbd { flex-shrink: 0; margin-left: auto; color: var(--asst-text-3); font-family: var(--asst-mono); font-size: 10.5px; }
     .asst-dd-sep { flex-shrink: 0; height: 1px; margin: 4px 6px; background: var(--asst-line); }
@@ -1599,7 +1601,8 @@ export function injectAssistantStyles() {
     /* ── Narrow / short containers (the tab or float window) ──────────
        Toolbar priority, highest first: route mode · Computer · project ·
        MCP. The composer row (attach · model · effort · permission mode ·
-       account) keeps model; account hides ≤720px. A capsule that runs out of
+       test density · account) keeps model; account hides ≤720px, where test
+       density is its gauge alone. A capsule that runs out of
        room drops its label half first and stays a glyph (its words remain in
        aria-label and the tooltip): route mode and Computer ≤960px, the mode
        ≤540px, every composer field but the model ≤440px. Model, history, new
@@ -1620,6 +1623,9 @@ export function injectAssistantStyles() {
     }
     @container asst (max-width: 720px) {
       :is(.asst-dd-mcp, .asst-dd-account, .asst-dd-project, .asst-bar-group[data-group="context"]) { display: none !important; }
+      .asst-composer-brain .asst-dd.asst-dd-tests { display: grid; place-content: center; place-items: center; padding: 0; }
+      .asst-composer-brain .asst-dd.asst-dd-tests > :is(.asst-dd-label, .asst-dd-caret) { display: none; }
+      .asst-composer-brain .asst-dd.asst-dd-tests > .asst-icon:not([hidden]) { margin: 0; padding: 0 var(--cap-glyph-pad); box-shadow: none; }
       .asst-route-keys { display: none; }
     }
     @container asst (max-width: 540px) {
@@ -1649,8 +1655,9 @@ export function injectAssistantStyles() {
       .asst-bar-group[data-group="computer"] { display: none !important; }
       /* The model keeps a readable name (at least 5ch): the composer row wraps instead of truncating it. */
       .asst-dd-model .asst-dd-label { min-width: 5ch; max-width: 14ch; }
-      .asst-composer-actions { flex-wrap: wrap; row-gap: 6px; }
-      .asst-composer-brain { flex-wrap: wrap; row-gap: 6px; }
+      /* A tighter gap keeps attach · model · effort · variant · mode · tests · send on one row at 320px. */
+      .asst-composer-actions { flex-wrap: wrap; gap: 6px 4px; }
+      .asst-composer-brain { flex-wrap: wrap; gap: 6px 4px; }
     }
     @container asst (max-height: 260px) {
       /* the toolbar stays: it carries the controls */

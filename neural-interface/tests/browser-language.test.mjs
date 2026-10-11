@@ -229,6 +229,8 @@ function configHarness({ saveError } = {}) {
   const context = vm.createContext({
     app: { put: (_path, handler) => { put = handler; } },
     validateBrowserLanguageConfig,
+    // The route reads the saved config for the one setting the form does not send (openTabsInBackground).
+    loadBrowserConfig: () => ({}),
     saveBrowserConfig: body => { if (saveError) throw saveError; saves.push(body); },
     PACKAGE_ROOT: '/fixture', resolve,
     // A URL resolution starts cache invalidation; no VM module import is permitted.

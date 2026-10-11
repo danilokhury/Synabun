@@ -97,6 +97,7 @@ export const KEYS = {
   ASSISTANT_DOCK_OPEN:    'neural-assistant-dock-open',
   ASSISTANT_DOCK_SHOW_ALL:'neural-assistant-dock-show-all',
   ASSISTANT_ROUTE_MODE:   'neural-assistant-route-mode', // last-used route mode (always-ask|ask-unsure|never)
+  ASSISTANT_TEST_DENSITY: 'neural-assistant-test-density', // last-used test density (none|light|standard|thorough)
   // Assistant sidepanel — open tabs {v:1, activeIdx, tabs:[{sessionId,label,userRenamed}]}
   ASSISTANT_PANEL_TABS:   'synabun-assistant-panel-tabs',
 };

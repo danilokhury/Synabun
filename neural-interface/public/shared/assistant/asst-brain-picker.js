@@ -39,6 +39,9 @@ import {
   permissionModeLabel,
   PROVIDERS,
   resolveBrainDefaults,
+  TEST_DENSITIES,
+  normalizeTestDensity,
+  testDensityBars,
 } from './asst-state.js';
 
 let _projectsCache = null;
@@ -52,6 +55,25 @@ const ICON_AGENT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" s
 export const ICON_ACCOUNT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>';
 /** Dropdown caret shared by every toolbar dropdown (fields, route mode). */
 export const ICON_CARET = '<svg viewBox="0 0 10 10" aria-hidden="true"><path d="M2.5 3.75 5 6.25l2.5-2.5"/></svg>';
+
+// Test density: three bars centred in the 24 box (x 6–18, y 6–18; 5–19 with the stroke), `filled` of them at full strength.
+function testsIcon(filled) {
+  const bar = (index, d) => `<path d="${d}"${index < filled ? '' : ' opacity=".3"'}/>`;
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${bar(0, 'M6 18v-4')}${bar(1, 'M12 18v-8')}${bar(2, 'M18 18V6')}</svg>`;
+}
+// English copy of the Test density menu (i18n: assistant.tests.levels.* / assistant.tests.desc.*).
+const TEST_DENSITY_COPY = {
+  none: ['None', 'No tests. Only checks that the change loads.'],
+  light: ['Light', 'Runs the tests that cover the change. New tests only when they matter.'],
+  standard: ['Standard', 'Adds focused tests and runs the area\'s suite once.'],
+  thorough: ['Thorough', 'Full coverage, whole suite, live checks.'],
+};
+
+/** "Light" — the level's name (a missing or unknown level is the default one). */
+export function testDensityLabel(level, t) {
+  const id = normalizeTestDensity(level);
+  return tf(t)(`assistant.tests.levels.${id}`, TEST_DENSITY_COPY[id][0]);
+}
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -374,11 +396,12 @@ export async function openModelMenu(anchor, opts = {}) {
 
 // ── Picker ──────────────────────────────────────────────────────────────────
 
-// Creation order is DOM order within a slot: model · effort · variant · mode · account in the composer.
+// Creation order is DOM order within a slot: model · effort · variant · mode · tests · account in the composer.
 // `effort` is the OpenCode agent for OpenCode; `variant` is OpenCode's effort (the model's variants).
-const FIELDS = ['model', 'effort', 'variant', 'mode', 'account', 'project', 'mcp'];
+// `tests` is the session's Test density, not a brain field: it shows only while the host supplies a level.
+const FIELDS = ['model', 'effort', 'variant', 'mode', 'tests', 'account', 'project', 'mcp'];
 // Slot of each field: the composer row (the brain and how it acts) · the toolbar (where it works).
-const FIELD_GROUP = { model: 'brain', effort: 'brain', variant: 'brain', mode: 'brain', account: 'brain', project: 'context', mcp: 'context' };
+const FIELD_GROUP = { model: 'brain', effort: 'brain', variant: 'brain', mode: 'brain', tests: 'brain', account: 'brain', project: 'context', mcp: 'context' };
 
 /**
  * createBrainPicker(host, hooks) — `host` is either one element (all fields in
@@ -386,7 +409,8 @@ const FIELD_GROUP = { model: 'brain', effort: 'brain', variant: 'brain', mode: '
  * hooks: { t, getBrain() → brain, onChange(nextBrain, { requiresSwitch, field }),
  *          onAddAccount(provider), onManageAccounts(provider), onToast(text),
  *          getMenuAnchor() → fallback anchor (the toolbar "⋯"),
- *          menuPlacement: 'below' (default) | 'above' | 'auto' }
+ *          menuPlacement: 'below' (default) | 'above' | 'auto',
+ *          getTestDensity() → level | null (null hides the field), onTestDensity(level) }
  */
 export function createBrainPicker(host, hooks = {}) {
   const t = tf(hooks.t);
@@ -486,6 +510,12 @@ export function createBrainPicker(host, hooks = {}) {
     };
   }
 
+  /** The session's Test density, or null while the host has none to show (a server that does not know it). */
+  function testDensity() {
+    const level = typeof hooks.getTestDensity === 'function' ? hooks.getTestDensity() : null;
+    return level ? normalizeTestDensity(level) : null;
+  }
+
   function setBtn(field, { label, icon, color, hidden, disabled, tooltip, aria }) {
     const btn = buttons[field];
     if (!btn) return;
@@ -520,6 +550,10 @@ export function createBrainPicker(host, hooks = {}) {
     setBtn('account', { label: v.account, icon: ICON_ACCOUNT, hidden: accountChoices < 2, tooltip: `${t('assistant.brain.account', 'Account profile')}: ${v.account}` });
     setBtn('project', { label: v.project, icon: ICON_FOLDER, tooltip: brain.project || t('assistant.brain.projectNoneTip', 'Working project: home directory'), aria: `${t('assistant.brain.project', 'Working project')}: ${brain.project || v.project}` });
     setBtn('mode', { label: v.mode, icon: ICON_SHIELD, tooltip: `${t('assistant.brain.mode', 'Permission mode')}: ${v.mode}` });
+    const tests = testDensity();
+    const testsLabel = tests ? testDensityLabel(tests, hooks.t) : '';
+    setBtn('tests', { label: testsLabel, icon: testsIcon(testDensityBars(tests)), hidden: !tests, tooltip: `${t('assistant.tests.title', 'Test density')}: ${testsLabel}` });
+    if (tests) buttons.tests.dataset.level = tests; else delete buttons.tests.dataset.level;
     setBtn('mcp', { label: v.mcp, icon: ICON_PLUG, tooltip: `${t('assistant.brain.mcp', 'MCP tool profile')}: ${v.mcp}` });
   }
 
@@ -535,6 +569,7 @@ export function createBrainPicker(host, hooks = {}) {
       { field: 'variant', label: t('assistant.brain.variant', 'Model variant'), value: v.variant, icon: ICON_EFFORT, hidden: !v.variantSupported },
       { field: 'project', label: t('assistant.brain.project', 'Working project'), value: brain.project || v.project, icon: ICON_FOLDER, hidden: false },
       { field: 'mode', label: t('assistant.brain.mode', 'Permission mode'), value: v.mode, icon: ICON_SHIELD, hidden: false },
+      { field: 'tests', label: t('assistant.tests.title', 'Test density'), value: testDensity() ? testDensityLabel(testDensity(), hooks.t) : '', icon: testsIcon(testDensityBars(testDensity())), hidden: !testDensity() },
       { field: 'mcp', label: t('assistant.brain.mcp', 'MCP tool profile'), value: v.mcp, icon: ICON_PLUG, hidden: false },
       { field: 'account', label: t('assistant.brain.account', 'Account profile'), value: v.account, icon: ICON_ACCOUNT, hidden: !ACCOUNT_PROVIDERS.has(brain.provider) },
     ];
@@ -598,6 +633,22 @@ export function createBrainPicker(host, hooks = {}) {
           if (target.provider && target.provider !== brain.provider) switchProvider(target.provider, target.model);
           else commit({ model: target.model, effort: brain.effort }, 'model');
         },
+      });
+      return;
+    }
+    // The session's own setting: nothing to load.
+    if (field === 'tests') {
+      const current = testDensity();
+      if (!current) return;
+      openMenu(anchor, {
+        title: t('assistant.tests.title', 'Test density'),
+        items: TEST_DENSITIES.map((id) => ({
+          kind: 'radio', id, label: testDensityLabel(id, hooks.t),
+          desc: t(`assistant.tests.desc.${id}`, TEST_DENSITY_COPY[id][1]),
+          selected: id === current,
+          onSelect: () => { hooks.onTestDensity?.(id); render(); },
+        })),
+        placement, role: 'menu', className: 'asst-tests-menu',
       });
       return;
     }

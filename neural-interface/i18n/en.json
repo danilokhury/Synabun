@@ -5692,6 +5692,7 @@
       "stopFailed": "Stop failed",
       "stopRequested": "Stop requested for {id}",
       "routeMode": "Model routing: {mode}",
+      "testDensity": "Test density: {level}",
       "computerOn": "Computer use is on.",
       "computerOff": "Computer use is off.",
       "computerRemote": "Computer use in this WhatsApp conversation: {why}.",
@@ -5970,6 +5971,21 @@
         "claude-code": "Plan first; approving the plan continues in the approval mode below",
         "codex": "Native Codex plan mode (read-only sandbox)",
         "opencode": "OpenCode plan agent (no file edits)"
+      }
+    },
+    "tests": {
+      "title": "Test density",
+      "levels": {
+        "none": "None",
+        "light": "Light",
+        "standard": "Standard",
+        "thorough": "Thorough"
+      },
+      "desc": {
+        "none": "No tests. Only checks that the change loads.",
+        "light": "Runs the tests that cover the change. New tests only when they matter.",
+        "standard": "Adds focused tests and runs the area's suite once.",
+        "thorough": "Full coverage, whole suite, live checks."
       }
     },
     "accounts": {
