@@ -20,7 +20,7 @@ import { readinessKind, typeWhenReady } from './term-ready.js';
 import { initRendererManager, acquireRenderer, disposeRenderer, hasWebgl, noteFocus, adoptRenderer, rendererState, rendererStats } from './term-renderer.js';
 import { mountAssistant } from './assistant/asst-panel.js';
 import { getAssistantSession } from './assistant/asst-api.js';
-import { brainLabel, normalizeBrain, readStoredBrain } from './assistant/asst-state.js';
+import { brainLabel, normalizeBrain, readStoredBrain, restoredSessionName, sessionNameGivenUp } from './assistant/asst-state.js';
 import { initAssistant, registerAssistantHost, openAssistant, assistantOwnerOf, fetchLiveAssistantSessions, isAssistantSessionLive } from './ui-assistant.js';
 
 const $ = (id) => document.getElementById(id);
@@ -3467,7 +3467,7 @@ function _updateAssistantBrainChip(session) {
   chip.hidden = !label;
 }
 
-/** After a tab/float rename, push the new label into the panel (marks it user-renamed). */
+/** After a tab/float rename, push the new label into the panel (marks it user-renamed; the panel writes it to the session record). */
 function _syncAssistantLabel(session) {
   if (!session?._isAssistant || !session._assistant) return;
   if (session._assistant.getTitle() !== session.label) session._assistant.setTitle(session.label);
@@ -3484,6 +3484,11 @@ function _mountAssistantSession(sessionId, { meta = null, saved = null, brain = 
   if (existing) { if (!_restoringLayout) _focusAssistantTab(existing); return existing; }
 
   const resolvedBrain = normalizeBrain(brain || meta?.brain || saved?.brain || readStoredBrain(storage));
+  // A renamed session comes back under its name: the session record's (a rename made in either
+  // host, the one the Sessions menu lists), else the rename saved with this tab. A record whose
+  // name was given up says so: the label and the renamed flag saved with a tab are stale.
+  const named = restoredSessionName(meta, label);
+  const givenUp = sessionNameGivenUp(meta);
   const viewport = document.createElement('div');
   viewport.className = 'term-viewport assistant-viewport';
   viewport.dataset.sessionId = sessionId;
@@ -3495,13 +3500,13 @@ function _mountAssistantSession(sessionId, { meta = null, saved = null, brain = 
     id: sessionId,
     profile: 'assistant',
     cwd: resolvedBrain.project || null,
-    label: label || saved?.label || meta?.title || profileDef?.label || 'Assistant',
+    label: named || (givenUp ? '' : saved?.label) || meta?.title || profileDef?.label || 'Assistant',
     term: null, fitAddon: null, searchAddon: null,
     ws: null,               // no PTY socket — the panel owns /ws/assistant/:id
     viewport, ro: null, renderer: null,
     dead: false,
     pinned: saved?.pinned || false,
-    _userRenamed: saved?.userRenamed || !!label,
+    _userRenamed: !givenUp && (saved?.userRenamed || !!named),
     _floatColor: saved?.floatColor || null,
     _isAssistant: true,     // flag for tab-type-specific logic
     _assistant: null,       // controller (set right after mount)
@@ -3525,6 +3530,19 @@ function _mountAssistantSession(sessionId, { meta = null, saved = null, brain = 
       if (titleEl && titleEl.contentEditable !== 'true') titleEl.textContent = next;
       saveSessionRegistry();
     },
+    // A rename the panel could not save: the tab and its saved label go back to the record's name.
+    setName(text, renamed) {
+      const s = live();
+      const next = String(text || '').trim();
+      if (!next) return;
+      s.label = next;
+      s._userRenamed = !!renamed;
+      renderTabBar();
+      const titleEl = _detachedTabs.get(sessionId)?.el?.querySelector('.term-float-tab-title');
+      if (titleEl && titleEl.contentEditable !== 'true') titleEl.textContent = next;
+      saveSessionRegistry();
+      saveTerminalLayout();
+    },
     setStatus(status) { setSessionStatusBadge(sessionId, status); },
     setBrain(b) {
       const s = live();
@@ -3539,7 +3557,7 @@ function _mountAssistantSession(sessionId, { meta = null, saved = null, brain = 
     requestDetach() { const idx = _sessions.findIndex(s => s.id === sessionId); if (idx >= 0 && !_detachedTabs.has(sessionId)) detachTab(idx); },
   };
   session._assistant = mountAssistant(viewport, { sessionId, brain: resolvedBrain, host, session: meta, label: session.label, reattach });
-  if (session._userRenamed && session.label) session._assistant.setTitle(session.label);
+  if (session._userRenamed && session.label) session._assistant.setTitle(session.label, { restored: true });
 
   renderTabBar();
   if (_restoringLayout) {

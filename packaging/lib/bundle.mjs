@@ -6,8 +6,9 @@
  *   Linux    SynaBun.AppDir              -> AppImage, or a portable .tar.gz
  *
  * Every bundle has the same inside: the native entry, and next to it the Node
- * runtime, the application, the bootstrap and a manifest that says what this
- * build is (lib/packaged-runtime.js reads it).
+ * runtime, the application, cloudflared (the tunnel program, staged by
+ * stage.mjs), the bootstrap and a manifest that says what this build is
+ * (lib/packaged-runtime.js reads it).
  *
  * Signing is off unless credentials are given in the environment (see
  * packaging/README.md). Nothing here uploads anything.
@@ -57,6 +58,18 @@ function placeRuntime(ctx, destination) {
     symlinkSync('../lib/node_modules/npm/bin/npx-cli.js', join(destination, 'bin', 'npx'));
   }
   if (existsSync(join(from, 'LICENSE'))) copyFileSync(join(from, 'LICENSE'), join(destination, 'LICENSE'));
+}
+
+/**
+ * Move the staged cloudflared (stage.mjs provisionCloudflared) beside the runtime: `<resources>/cloudflared/`,
+ * where the application looks for the copy that came with it (neural-interface/lib/cloudflared/pins.js
+ * bundledCloudflaredPath). Its path there, or null when none was staged: the audit refuses such a bundle.
+ */
+export function placeCloudflared(ctx, resources) {
+  if (!ctx.cloudflared) return null;
+  const folder = join(resources, basename(ctx.cloudflared.folder));
+  renameSync(ctx.cloudflared.folder, folder);
+  return join(folder, ctx.cloudflared.name);
 }
 
 function versionQuad(version) {
@@ -279,6 +292,7 @@ export function assembleBundle(ctx) {
   renameSync(ctx.app, join(resources, 'app'));
   ctx.app = join(resources, 'app');
   placeRuntime(ctx, join(resources, 'runtime'));
+  const cloudflared = placeCloudflared(ctx, resources);
   copyFileSync(join(PACKAGING_ROOT, 'runtime', 'bootstrap.mjs'), join(resources, 'bootstrap.mjs'));
 
   const manifest = {
@@ -291,6 +305,7 @@ export function assembleBundle(ctx) {
     entry: layout.manifestEntry,
     runtime: { node: ctx.runtime.version, bin: layout.runtimeBin },
     embeddingModel: ctx.report.embeddingModel,
+    cloudflared: ctx.report.cloudflared ? { version: ctx.report.cloudflared.version, sha256: ctx.report.cloudflared.binary.sha256 } : null,
     builtAt: builtAt(),
     sourceCommit: ctx.sourceCommit || null,
   };
@@ -324,7 +339,7 @@ export function assembleBundle(ctx) {
     }
   }
 
-  ctx.bundle = { root, entry, resources, layout, manifest };
+  ctx.bundle = { root, entry, resources, layout, manifest, cloudflared };
   note(root);
 }
 
@@ -337,8 +352,10 @@ function signMac(ctx) {
   const entitlements = join(PACKAGING_ROOT, 'macos', 'entitlements.plist');
   const base = ['--force', '--options', 'runtime', '--entitlements', entitlements, ...(identity === '-' ? [] : ['--timestamp']), '--sign', identity];
   // Inside out: every Mach-O file first, the bundle that seals them last.
+  // cloudflared is left as it is: Cloudflare signs it (Developer ID, hardened runtime, a timestamp), and
+  // signing it again would make it another file than the pinned one, which the application then would not run.
   const nested = [...walk(ctx.bundle.root)]
-    .filter(file => !file.link && file.path !== ctx.bundle.entry && nativeFormat(file.path)?.format === 'macho')
+    .filter(file => !file.link && file.path !== ctx.bundle.entry && file.path !== ctx.bundle.cloudflared && nativeFormat(file.path)?.format === 'macho')
     .map(file => file.path)
     .sort((a, b) => b.split('/').length - a.split('/').length);
   for (const file of nested) run('codesign', [...base, file], { capture: true, env: process.env, label: `codesign ${file.slice(ctx.bundle.root.length + 1)}` });

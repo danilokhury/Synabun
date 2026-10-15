@@ -614,7 +614,8 @@
     function render(snap) {
       const view = startStatusView(snap, { platform });
       $('mascot').setAttribute('data-state', view.mascot);
-      $('heading').textContent = headings[view.mascot][0];
+      // A restart read from the supervisor's report names itself (view.heading).
+      $('heading').textContent = view.heading ? START_COPY[view.heading] : headings[view.mascot][0];
       $('subtext').textContent = headings[view.mascot][1];
       startBtn.disabled = view.busy || view.state === 'online';
       startLabel.textContent = labels[view.button];
@@ -622,7 +623,7 @@
       const line = say(view.headline);
       if (startStatus.textContent !== line) startStatus.textContent = line;
       $('startElapsed').textContent = view.elapsed;
-      $('startElapsed').setAttribute('aria-label', view.elapsed ? START_COPY.elapsedLabel + ': ' + view.elapsed : '');
+      $('startElapsed').setAttribute('aria-label', view.elapsed ? START_COPY[view.elapsedLabel] + ': ' + view.elapsed : '');
       $('startHint').textContent = say(view.hint);
       $('startTrail').replaceChildren(...view.trail.map((row) => {
         const item = document.createElement('li');

@@ -31,7 +31,10 @@ import { createEventLoopMonitor } from './lib/event-loop-monitor.js';
 import { createRulesetInstaller } from './lib/rulesets/installer.js';
 import { registerRulesetRoutes, registerLegacyRulesetRoutes } from './lib/rulesets/api.js';
 import { createPtyHostManager } from './lib/pty-host/manager.js';
-import { isAllowedHost, isAllowedWebSocketOrigin, refuseUpgrade } from './lib/http-guards.js';
+import { hostNameOf, isAllowedHost, isAllowedWebSocketOrigin, parseCookies, refuseUpgrade } from './lib/http-guards.js';
+import { createRequestGates, extraHostNames, hostsOf, savedValueOf, startedValueOf } from './lib/request-gate.js';
+import { createGitDiffRouter } from './lib/git-diff-api.js';
+import { gitRead, gitReadSync } from './lib/git-read.js';
 import { createPhoneAuthority } from './lib/remote-policy.js';
 import { buildTerminalEnv, interactiveShellArgs, cliWrapperArgs } from './lib/terminal-env.js';
 import { startJudgeBackfill, stopJudgeBackfill } from '../mcp-server/dist/services/memory-judge-backfill.js';
@@ -173,6 +176,7 @@ import * as moreLogin from './lib/morelogin.js';
 import { createStyleGuideStore } from './lib/style-guide/store.js';
 import { registerStyleGuideRoutes } from './lib/style-guide/api.js';
 import { initBlobStore, blobGetNamespace, blobGet, blobPut, blobDelete, blobClearNamespace, blobPrune, closeBlobStore } from './lib/ui-blob-store.js';
+import { createUiBlobRouter } from './lib/ui-blob-api.js';
 import { memoCache, asyncPool } from './lib/memo-cache.js';
 import {
   buildClaudeMcpEntry,
@@ -226,6 +230,7 @@ import {
   CLAUDE_FALLBACK_MODELS,
   checkClaudeCliSkew,
   discoverClaudeModels,
+  onClaudeModelsChanged,
   shellCommand,
 } from './lib/claude-model-catalog.js';
 import { resolveClaudeLauncher, resolveClaudeSdkExecutable } from './lib/claude-executable.js';
@@ -321,7 +326,12 @@ try {
 // Load only the canonical data-home environment. Importing `dotenv/config`
 // above would first read PACKAGE_ROOT/.env from the server cwd, allowing a
 // stale checkout-local SQLITE_DB_PATH to override the external data home.
+// SYNABUN_ALLOWED_HOSTS is the one value that is not kept from the file: a name taken out of the file would stay
+// allowed until a restart. What the environment itself gives is noted first and put back after the load; the
+// file's own line is read when a request asks (publicWebOrigins).
+const startedAllowedHosts = startedValueOf(process.env);
 dotenvConfig({ path: resolve(getDataHome(), '.env') });
+startedAllowedHosts.restore();
 
 const app = express();
 const SERVER_BOOT_ID = randomUUID();
@@ -329,9 +339,32 @@ let _nativeLoopRuntime = null;
 // Main assistant (bottom CLI region): brains + orchestration. Wired after the
 // native loop runtime exists; see the "Main assistant" block below.
 let _assistantRuntime = null;
+// The greeting engine (lib/greeting/): one greeting for every agent. null until it is built (or when it did not start).
+let _greeting = null;
+let _greetingRouter = null;
+let _greetingError = null;
 let _assistantDispatcher = null;
 // The Assistant's model catalog (lib/assistant-catalog.js): Settings → WhatsApp checks its brain choice against it.
 let _assistantCatalog = null;
+// Who may ask, in front of every route (lib/request-gate.js). A request for the owner's data must name this
+// server: everything under /api and /mcp, the invite sign-in, the rendered offline page and the uploaded icons
+// answer 403 BAD_HOST to any other Host (a page whose name was re-pointed at this machine sends its own); the
+// app's static files stay open, the images uploaded for categories excepted. A request from outside (Cloudflare's
+// tunnel, or anything that arrives under the tunnel's or the invite proxy's name) needs an invite session, and
+// with one it is a guest: `remote`, below. An invite guest is refused on the admin-only routes and on the
+// features the owner has not opened, however the path is spelled: those two checks are mounted after it.
+// Everything the gates read is read when a request arrives, never while this file is still being evaluated.
+const requestGates = createRequestGates({
+  isGuestRequest,
+  permissions: () => invitePermissions,
+  allowedHosts: publicWebOrigins,
+  publicHosts: remoteWebOrigins,
+  hasInviteSession: isValidInviteSession,
+  uploadedImages: isCategoryUpload,
+  mcpKey: () => activeMcpKey,
+  settingsHint: () => ENV_PATH,
+});
+app.use(requestGates.host);
 app.use(express.json({ limit: '25mb' }));
 
 // Clean body-parser error handler: ui-state / whiteboard persist base64 images and can
@@ -347,20 +380,8 @@ app.use((err, req, res, next) => {
   next(err);
 });
 
-// Block tunnel traffic from accessing anything except /mcp and /invite
-// Cloudflared adds CF-Connecting-IP header on proxied requests
-const TUNNEL_ALLOWED = ['/mcp', '/invite'];
-
-// Simple cookie parser (no dependency)
-function parseCookies(cookieHeader) {
-  const cookies = {};
-  if (!cookieHeader) return cookies;
-  cookieHeader.split(';').forEach(part => {
-    const [k, ...v] = part.trim().split('=');
-    if (k) cookies[k.trim()] = decodeURIComponent(v.join('=').trim());
-  });
-  return cookies;
-}
+// Cookies are read with parseCookies (lib/http-guards.js): one that cannot be decoded is kept as it was written,
+// so a cookie another app left on this host name never fails a request.
 
 // Check if request has a valid invite session cookie
 function isValidInviteSession(req) {
@@ -379,16 +400,11 @@ function isValidInviteSession(req) {
   return true;
 }
 
-app.use((req, res, next) => {
-  if (req.headers['cf-connecting-ip']) {
-    // Allow explicitly permitted paths
-    if (TUNNEL_ALLOWED.some(p => req.path.startsWith(p))) return next();
-    // Allow cookie-authenticated invite sessions (full UI access)
-    if (isValidInviteSession(req)) return next();
-    return res.status(403).json({ error: 'Forbidden' });
-  }
-  next();
-});
+// What comes in from outside reaches /mcp and /invite, and with an invite session whatever a guest may reach:
+// 403 Forbidden for the rest (lib/request-gate.js `remote`). From outside is what cloudflared marks with
+// CF-Connecting-IP, and whatever arrives under the tunnel's or the invite proxy's name, with that header or
+// without it: a proxy that does not set it is no way around the invite.
+app.use(requestGates.remote);
 
 // Guest detection — works for both Cloudflare tunnel and custom proxy
 function isGuestRequest(req) {
@@ -397,67 +413,28 @@ function isGuestRequest(req) {
   return !!token && inviteSessions.has(token);
 }
 
-// Admin-only protection — block guests from sensitive endpoints
-const ADMIN_ONLY_PREFIXES = [
-  '/api/settings', '/api/display-settings',
-  '/api/connections', '/api/setup', '/api/system',
-  '/api/invite/key', '/api/invite/sessions', '/api/invite/proxy', '/api/invite/permissions',
-  '/api/claude-code', '/api/mcp-key', '/api/mcp/runtime-profile',
-  '/api/tunnel/start', '/api/tunnel/stop',
-  '/api/bridges', '/api/keybinds',
-  '/api/cli',
-  '/api/file-content',
-  '/api/codex/plans',
-  '/api/sidepanel',
-  '/api/sidepanel-runs',
-  '/api/loop',
-  '/api/schedules',
-  '/api/schedule-groups',
-  '/api/quick-timer',
-  '/api/diagnostics',
-  '/api/desktop',
-  // WhatsApp Link: linking, the owner and the permission level (its router
-  // refuses guests and remote callers on its own too: lib/http-guards.js).
-  '/api/whatsapp',
-  // TypeSafe key/config/backfill, and the hook routes: /hook-recall returns
-  // memory content and /hook-judge spends the host's judgment budget.
-  '/api/typesafe',
-  '/api/hook-',
-  '/api/map/rebuild',
-];
-
-app.use((req, res, next) => {
-  if (isGuestRequest(req) && ADMIN_ONLY_PREFIXES.some(p => req.path.startsWith(p))) {
-    return res.status(403).json({ error: 'Admin only' });
-  }
-  next();
-});
-
-// Feature permission enforcement — block guest mutations for disabled features
-const FEATURE_PERMISSION_MAP = [
-  { prefix: '/api/terminal',      perm: 'terminal' },
-  { prefix: '/api/whiteboard',    perm: 'whiteboard' },
-  { prefix: '/api/memory',        perm: 'memories' },
-  { prefix: '/api/categories',    perm: 'memories' },
-  { prefix: '/api/trash',         perm: 'memories' },
-  { prefix: '/api/skills-studio', perm: 'skills' },
-  { prefix: '/api/browser',       perm: 'browser' },
-  { prefix: '/api/cards',         perm: 'cards' },
-  { prefix: '/api/style-guide',   perm: 'styleGuide' },
-];
-
-app.use((req, res, next) => {
-  if (req.method !== 'GET' && isGuestRequest(req)) {
-    const match = FEATURE_PERMISSION_MAP.find(m => req.path.startsWith(m.prefix));
-    if (match && !invitePermissions[match.perm]) {
-      return res.status(403).json({ error: 'Feature not enabled' });
-    }
-  }
-  next();
-});
+// Admin-only protection (guests never reach the sensitive endpoints) and feature permissions (a guest changes
+// nothing of a feature that is not opened to guests). The two lists, ADMIN_ONLY_PREFIXES and
+// FEATURE_PERMISSION_MAP, and the checks are lib/request-gate.js: they decide on the path as the router will
+// match it (letter case, percent-escapes, a doubled slash, `;` parameters), not on the path as it was written.
+app.use(requestGates.adminOnly);
+app.use(requestGates.features);
 
 import { registerCodexPlanRoutes } from './lib/codex-plan-store.js';
 import { createOpencodeHiddenModelsRouter, createOpencodeHiddenModelsStore } from './lib/opencode-hidden-models.js';
+import { createEditorFilesRouter, EDITOR_BACKUP_CAPABILITIES, EDITOR_BACKUP_NAMESPACE } from './lib/editor-files-api.js';
+import { createEditorGitRouter, EDITOR_GIT_CAPABILITIES } from './lib/editor-git-api.js';
+import { confinedFolder, createFileExplorerRouter, EXPLORER_CAPABILITIES } from './lib/file-explorer-api.js';
+import { folderPickerCommand } from './lib/file-explorer-system.js';
+import { createEditorConfigRouter, createEditorConfigStore, createEndpointKeyStore, EDITOR_CONFIG_CAPABILITIES } from './lib/editor-config.js';
+import {
+  COMPLETION_SYSTEM, EDITOR_COMPLETION_CAPABILITIES, createEditorCompletionRouter, createEditorCompletionService, createUsageStore,
+} from './lib/editor-completion.js';
+import { createOpencodeCompletionEngine } from './lib/editor-completion-opencode.js';
+import { createEndpointCompletionEngine } from './lib/editor-completion-endpoint.js';
+import { ownerRouteGuard } from './lib/http-guards.js';
+import { createCloudflaredManager } from './lib/cloudflared/manager.js';
+import { createQuickTunnel } from './lib/cloudflared/tunnel.js';
 
 const PORT = process.env.NEURAL_PORT || 3344;
 // SQLite database is used directly via lib/db.js
@@ -605,6 +582,16 @@ function saveCategories(categories) {
   } catch (err) {
     console.error('Failed to sync categories to SQLite:', err.message);
   }
+}
+
+// Is this root file ("/logo-<name>.<ext>", lower-case) the image a category recorded as its upload? Uploads are
+// written beside the app's own files (POST /api/categories/:name/logo) and are the owner's: the Host rule
+// (lib/request-gate.js) refuses them to a foreign Host by their name, and asks this for the one name the app
+// ships a file under, which stays open until a category's upload takes it.
+function isCategoryUpload(path) {
+  // (asked for a request under a foreign Host: it reads the store when there is one, and never creates it)
+  if (!existsSync(GLOBAL_CATEGORIES_PATH)) return false;
+  return loadCategories().some((category) => typeof category.logo === 'string' && category.logo.toLowerCase() === path);
 }
 
 // SQLite queries use direct WHERE clauses
@@ -2149,6 +2136,12 @@ async function runGracefulShutdown(reason) {
   // not represented by the terminal or agent registries below.
   try { await _nativeLoopRuntime?.shutdown(reason); } catch (err) { console.warn('  native loop stop err:', err?.message); }
   try { stopAllIsolatedServes(); } catch (err) { console.warn('  isolated opencode stop err:', err?.message); }
+  // The code editor's completion serve, and today's autocomplete counters.
+  try { await editorCompletion.stop(); } catch (err) { console.warn('  editor completion stop err:', err?.message); }
+
+  // The public address: its cloudflared is ended with the server that owns the address (killed when it does not
+  // end by itself; never waited for more than a moment).
+  try { await tunnel.shutdown({ timeoutMs: 1500 }); } catch (err) { console.warn('  tunnel stop err:', err?.message); }
 
   // 1. opencode sidecar — has its own teardown that handles managed PID + ollama.
   try { stopOpencodeServer(); } catch (err) { console.warn('  opencode stop err:', err?.message); }
@@ -2234,10 +2227,20 @@ const RESTART_EXIT_CODE = 75;
 // onnxruntime at-exit abort. See the `process.on('exit')` handler below.
 let _preserveExitCode = false;
 const RESTART_MARKER = resolve(DATA_HOME, 'restart-requested');
+// When this server accepted a restart (0: it has not). From then on
+// /api/health says `restarting`, and a second request starts nothing more.
+let _restartRequestedAt = 0;
 app.post('/api/server/restart', async (req, res) => {
-  console.log('[server] Restart requested.');
   const supervised = process.env.SYNABUN_SUPERVISED === '1';
-  res.json({ ok: true, message: 'Server restarting...', supervised });
+  if (_restartRequestedAt) {
+    return res.json({ ok: true, message: 'Server restarting...', supervised, bootId: SERVER_BOOT_ID, at: _restartRequestedAt, already: true });
+  }
+  console.log('[server] Restart requested.');
+  _restartRequestedAt = Date.now();
+  res.json({ ok: true, message: 'Server restarting...', supervised, bootId: SERVER_BOOT_ID, at: _restartRequestedAt });
+  // Every open window is told before anything is torn down, so each one shows
+  // the restart at once instead of finding its sockets closed (ui-loading.js).
+  try { broadcastSync({ type: 'server:restarting', bootId: SERVER_BOOT_ID, supervised, at: _restartRequestedAt }); } catch {}
 
   // Drop a marker so the supervisor respawns even if our exit code is not 75.
   // Native module teardown (sqlite/playwright/node-pty) can crash with
@@ -2254,6 +2257,9 @@ app.post('/api/server/restart', async (req, res) => {
         const setupPath = resolve(PACKAGE_ROOT, 'setup.js');
         const respawnEnv = { ...process.env };
         delete respawnEnv.SYNABUN_SUPERVISED;
+        // That supervisor reports its start on the start beacon, like the one
+        // that respawns a supervised server: the pages are waiting on it.
+        respawnEnv.SYNABUN_RESTART_REPORT = '1';
         const child = spawn(process.execPath, [setupPath], {
           cwd: PACKAGE_ROOT,
           detached: true,
@@ -3828,7 +3834,6 @@ CRITICAL — When you need clarification during planning:
   const appBoundary = createCodexAppBoundary();
   let supportsUserVerification = false;
   let codexJournalStorageDegraded = false;
-  const pendingGreetingThreads = new Set();
   const _cachedConfig = {}; // effective config from config/read + config/batchWrite
   let codexCapabilities = new CodexCapabilityRegistry();
   let activeTurnAutoAccept = false;
@@ -4234,7 +4239,6 @@ CRITICAL — When you need clarification during planning:
     for (const threadId of targets) {
       subscribedThreadIds.delete(threadId);
       threadOwnerRoots.delete(threadId);
-      pendingGreetingThreads.delete(threadId);
     }
   }
 
@@ -5210,7 +5214,6 @@ CRITICAL — When you need clarification during planning:
             lastTurnLocalImages = [];
           } else if (method === 'thread/closed' && params.threadId) {
             const closedThreadId = String(params.threadId);
-            pendingGreetingThreads.delete(closedThreadId);
             subscribedThreadIds.delete(closedThreadId);
             threadOwnerRoots.delete(closedThreadId);
             if (closedThreadId === String(activeThreadId || '')) {
@@ -5366,7 +5369,6 @@ CRITICAL — When you need clarification during planning:
     const old = child;
     const codexHome = activeCodexHome;
     const ownedThreadIds = ownedWriterThreadIds();
-    const greetingPending = pendingGreetingThreads.has(targetThreadId);
     initialized = false;
     bootPromise = null;
     activeThreadId = null;
@@ -5377,7 +5379,6 @@ CRITICAL — When you need clarification during planning:
     subscribedThreadIds.clear();
     threadOwnerRoots.clear();
     activeTurnAutoAccept = false;
-    pendingGreetingThreads.clear();
     for (const [, entry] of pending) {
       try { clearTimeout(entry.timer); entry.reject(new Error(reason)); } catch {}
     }
@@ -5400,12 +5401,9 @@ CRITICAL — When you need clarification during planning:
       });
       await activatePrimaryThread(resumed.thread?.id || targetThreadId);
       rememberActiveThreadRuntime(runtime);
-      if (greetingPending) pendingGreetingThreads.add(activeThreadId || targetThreadId);
       return resumed;
     } catch (err) {
       // A first-turn restart can fail after the old process has already exited.
-      // Keep the one-time SynaBun greeting eligible for the next activation.
-      if (greetingPending) pendingGreetingThreads.add(targetThreadId);
       throw err;
     }
   }
@@ -5430,7 +5428,6 @@ CRITICAL — When you need clarification during planning:
     subscribedThreadIds.clear();
     threadOwnerRoots.clear();
     activeTurnAutoAccept = false;
-    pendingGreetingThreads.clear();
     for (const [, entry] of pending) {
       try { clearTimeout(entry.timer); entry.reject(new Error('Codex account switched')); } catch {}
     }
@@ -5479,7 +5476,6 @@ CRITICAL — When you need clarification during planning:
     subscribedThreadIds.clear();
     threadOwnerRoots.clear();
     activeTurnAutoAccept = false;
-    pendingGreetingThreads.clear();
     for (const [, entry] of pending) {
       try { clearTimeout(entry.timer); entry.reject(new Error('Codex MCP profile switched')); } catch {}
     }
@@ -5583,7 +5579,6 @@ CRITICAL — When you need clarification during planning:
     const started = await request('thread/start', getDefaultThreadParams(cwd, runtime));
     await activatePrimaryThread(started.thread?.id || null);
     rememberActiveThreadRuntime(runtime);
-    if (activeThreadId) pendingGreetingThreads.add(activeThreadId);
     activeTurnId = null;
     const thread = sanitizeCodexThreadSummary(started.thread || null);
     if (opts.emitThreadEvent !== false) {
@@ -5855,7 +5850,6 @@ CRITICAL — When you need clarification during planning:
     const runtime = await resolveCodexThreadRuntimeOptions(opts);
     const desiredRuntimeFingerprint = codexThreadRuntimeFingerprint(runtime);
     let threadId = opts.fresh ? null : (opts.threadId || activeThreadId);
-    let startedFreshThread = false;
     if (threadId && threadId !== activeThreadId) {
       const resumed = await requestCodexThreadResume(threadId, cwd, runtime);
       await activatePrimaryThread(resumed.thread?.id || threadId);
@@ -5871,7 +5865,6 @@ CRITICAL — When you need clarification during planning:
         runtimeOptions: runtime,
       });
       threadId = startedThread?.id || null;
-      startedFreshThread = true;
     }
     activeTurnAutoAccept = !!opts.autoAccept;
     const originalPrompt = prompt;
@@ -5881,11 +5874,14 @@ CRITICAL — When you need clarification during planning:
     );
     const isPlanModeTurn = !!opts.planMode || isCodexPlanModePrompt(originalPrompt);
     const isSlashCommand = /^\/\w/.test(String(originalPrompt || '').trim());
-    const shouldInjectGreeting = !!threadId && !isSlashCommand && (startedFreshThread || pendingGreetingThreads.has(threadId));
-    const turnPrompt = shouldInjectGreeting
-      ? buildCodexGreetingUserPrompt({ cwd, userPrompt: prompt }) || prompt
+    // The greeting SynaBun showed when this tab opened (lib/greeting/): the panel echoes its id
+    // with the first prompt and the model is told once what was said, between the markers the
+    // transcript strips. Nothing for a slash command (its own flow comes first), nothing when no
+    // greeting was shown, and the model is never asked to greet.
+    const greetingNote = opts.greetingId && _greeting ? _greeting.consumeNote(String(opts.greetingId), { skip: isSlashCommand }) : '';
+    const turnPrompt = greetingNote
+      ? `${CODEX_GREETING_MARKER_START}\n${greetingNote}\n${CODEX_GREETING_MARKER_END}\n\n${prompt}`
       : prompt;
-    if (threadId) pendingGreetingThreads.delete(threadId);
     const input = buildCodexInputItems(turnPrompt, {
       mentions: Array.isArray(opts.mentions) ? opts.mentions : [],
       localImages: Array.isArray(opts.localImages) ? opts.localImages : [],
@@ -6084,8 +6080,6 @@ CRITICAL — When you need clarification during planning:
         for (const [threadId, ownerRoot] of orphan.threadOwnerRoots || []) threadOwnerRoots.set(threadId, ownerRoot);
         nextRequestId = orphan.nextRequestId;
         Object.assign(_cachedConfig, orphan.cachedConfig || {});
-        pendingGreetingThreads.clear();
-        for (const threadId of orphan.pendingGreetingThreads || []) pendingGreetingThreads.add(threadId);
         writerLifecycleState = orphan.writerLifecycleState || writerLifecycleState;
         writerLifecycleState.releaseRequested = false;
         shuttingDown = false;
@@ -6379,9 +6373,15 @@ CRITICAL — When you need clarification during planning:
             prompt = injected.prompt;
           }
         }
+        // A person typed this in the Codex panel (the Assistant's brain, a loop and a run never
+        // say so): the greeting engine keeps when they were last here.
+        if (msg.human === true && _greeting) {
+          try { _greeting.noteActivity({ cwd: msg.cwd || PACKAGE_ROOT, surface: 'codex-panel', words: sanitizeCodexUserFacingText(typeof msg.prompt === 'string' ? msg.prompt : '') }); } catch {}
+        }
         await withCodexWriterOperation('query', () => startTurn(prompt, {
           fresh: !!msg.fresh,
           threadId: msg.threadId || null,
+          greetingId: typeof msg.greetingId === 'string' ? msg.greetingId : null,
           cwd: msg.cwd || PACKAGE_ROOT,
           model: msg.model || null,
           contextMode: msg.contextMode || 'default',
@@ -7158,7 +7158,6 @@ CRITICAL — When you need clarification during planning:
           get subscribedThreadIds() { return new Set(subscribedThreadIds); },
           get threadOwnerRoots() { return new Map(threadOwnerRoots); },
           get nextRequestId() { return nextRequestId; },
-          get pendingGreetingThreads() { return new Set(pendingGreetingThreads); },
           cachedConfig: { ..._cachedConfig },
           get pending() { return new Map(pending); },
           get pendingServerRequests() { return new Map(pendingServerRequests); },
@@ -7338,7 +7337,11 @@ app.get('/api/codex/models', async (req, res) => {
       await queryCodexAppServerModels(codexHome),
       readCodexRuntimeModelCatalog(codexHome),
     );
+    // The Assistant's catalog is built from the default account's list: when that list
+    // changes, its copy is dropped and rebuilt (which tells the open windows).
+    const listChanged = codexHome === CODEX_DEFAULT_HOME && !!cached && JSON.stringify(cached.models) !== JSON.stringify(models);
     _codexModelListCache.set(codexHome, { at: Date.now(), models });
+    if (listChanged) _assistantCatalog?.refresh?.().catch(() => {});
     res.json({ ok: true, source: 'codex-app-server', models });
   } catch (err) {
     res.json({ ok: false, source: 'fallback', error: err.message, models: [] });
@@ -8303,9 +8306,21 @@ function handleOpencodeV2Ws(ws) {
             const promptFn = useAsync
               ? turnClient.session.promptAsync
               : turnClient.session.prompt;
+            // Greeting (lib/greeting/): a prompt the person typed is noted, and the greeting the
+            // panel showed when this session opened is told to the model once, as a part OpenCode
+            // marks synthetic (the transcript does not draw it). Nothing for a slash command.
+            let turnParts = msg.parts;
+            if (_greeting && Array.isArray(msg.parts)) {
+              const typed = msg.parts.find((part) => part?.type === 'text' && typeof part.text === 'string' && !part.synthetic)?.text || '';
+              if (msg.human === true) { try { _greeting.noteActivity({ cwd: msg.cwd || PACKAGE_ROOT, surface: 'opencode-panel', words: typed }); } catch {} }
+              if (typeof msg.greetingId === 'string') {
+                const greetingNote = _greeting.consumeNote(msg.greetingId, { skip: /^\s*\//.test(typed) });
+                if (greetingNote) turnParts = [{ type: 'text', text: greetingNote, synthetic: true }, ...msg.parts];
+              }
+            }
             const r = await promptFn({
               sessionID: sid,
-              parts: msg.parts,
+              parts: turnParts,
               model: msg.model,
               agent,
               variant: msg.variant || undefined,
@@ -9501,6 +9516,10 @@ const _claudeBridgeReady = (async () => {
   try {
     _claudeBridge = await import('./lib/claude-agent-bridge.js');
     _claudeBridge.configureClaudeBridge({
+      // The greeting a panel conversation opened with, as the one note its model gets (lib/greeting/).
+      greetingNote: (id, opts) => _greeting?.consumeNote(id, opts) || '',
+      // A prompt typed in the panel: when the person was last here (a temporary chat is named to nobody).
+      greetingActivity: ({ cwd, words, temporary }) => { if (!temporary) _greeting?.noteActivity({ cwd: cwd || PACKAGE_ROOT, surface: 'claude-panel', words }); },
       addCost,
       getSessionCost,
       acquireSessionLock: _acquireSessionLock,
@@ -10238,7 +10257,7 @@ const FAT_KEY_ROUTES = {
   'synabun-node-positions':                 { ns: 'kv', split: false },
   'synabun-node-positions-2d':              { ns: 'kv', split: false },
 };
-const BLOB_NS_ALLOWLIST = new Set(['claude-snapshots', 'codex-snapshots', 'ocp-snapshots', 'kv']);
+const BLOB_NS_ALLOWLIST = new Set(['claude-snapshots', 'codex-snapshots', 'ocp-snapshots', 'kv', EDITOR_BACKUP_NAMESPACE]);
 
 function routeFatKeyToBlobStore(key, value) {
   const fat = FAT_KEY_ROUTES[key];
@@ -10337,53 +10356,22 @@ app.post('/api/ui-state', (req, res) => {
   }
 });
 
-// ── UI blob store — per-entry storage for fat keys (transcript snapshots,
-// node positions). PUT writes only the changed entry instead of the whole map.
-function _blobNs(req, res) {
-  const ns = req.params.ns;
-  if (!BLOB_NS_ALLOWLIST.has(ns)) { res.status(400).json({ error: `unknown namespace: ${ns}` }); return null; }
-  return ns;
-}
+// The code editor's routes (the files, their committed versions, the preferences, AI autocomplete) and the
+// editor's namespace of the blob store below refuse everybody but the owner by themselves: an invite guest, a
+// Host that is not this server's (DNS rebinding), a write from another site's page. See lib/http-guards.js.
+// The checks in front of the routes (lib/request-gate.js) refuse the same callers; these routes do not rely on them.
+const editorOwnerGuard = ownerRouteGuard({ isGuestRequest, port: PORT, allowedOrigins: publicWebOrigins });
 
-app.get('/api/ui-blobs/:ns', (req, res) => {
-  const ns = _blobNs(req, res);
-  if (!ns) return;
-  try { res.json(blobGetNamespace(ns)); }
-  catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-app.get('/api/ui-blobs/:ns/:id', (req, res) => {
-  const ns = _blobNs(req, res);
-  if (!ns) return;
-  try {
-    const value = blobGet(ns, req.params.id);
-    if (value === null) return res.status(404).json({ error: 'not found' });
-    res.json(value);
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-function _blobPutHandler(req, res) {
-  const ns = _blobNs(req, res);
-  if (!ns) return;
-  try {
-    blobPut(ns, req.params.id, req.body);
-    const maxEntries = parseInt(req.query.maxEntries, 10) || 0;
-    const maxChars = parseInt(req.query.maxChars, 10) || 0;
-    let evicted = [];
-    if (maxEntries || maxChars) evicted = blobPrune(ns, { maxEntries, maxTotalChars: maxChars });
-    res.json({ ok: true, evicted });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-}
-app.put('/api/ui-blobs/:ns/:id', _blobPutHandler);
-// POST alias — sendBeacon can only POST
-app.post('/api/ui-blobs/:ns/:id', _blobPutHandler);
-
-app.delete('/api/ui-blobs/:ns/:id', (req, res) => {
-  const ns = _blobNs(req, res);
-  if (!ns) return;
-  try { blobDelete(ns, req.params.id); res.json({ ok: true }); }
-  catch (err) { res.status(500).json({ error: err.message }); }
-});
+// ── UI blob store — per-entry storage for fat keys (transcript snapshots, node positions, the editor's copies
+// of unsaved buffers). lib/ui-blob-api.js: GET a namespace or an entry, PUT / POST / DELETE one entry. A write
+// sends only the changed entry; of two requests of one page for an entry, the newer one is what stays, in
+// whatever order they arrive; the editor's namespace asks the owner's guard on every route.
+app.use(createUiBlobRouter({
+  namespaces: BLOB_NS_ALLOWLIST,
+  store: { getNamespace: blobGetNamespace, get: blobGet, put: blobPut, delete: blobDelete, prune: blobPrune },
+  ownerNamespace: EDITOR_BACKUP_NAMESPACE,
+  ownerGuard: editorOwnerGuard,
+}));
 
 
 // ═══════════════════════════════════════════
@@ -16105,31 +16093,15 @@ function detectSynabunInstallSource() {
   }
 
   try {
-    const inside = execSync('git rev-parse --is-inside-work-tree', {
-      cwd: PACKAGE_ROOT,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 2000,
-    }).trim();
-    if (inside === 'true') {
-      let remote = '';
-      let remotes = '';
-      try {
-        remote = execSync('git remote get-url origin', {
-          cwd: PACKAGE_ROOT,
-          encoding: 'utf8',
-          stdio: ['ignore', 'pipe', 'ignore'],
-          timeout: 2000,
-        }).trim();
-      } catch {}
-      try {
-        remotes = execSync('git remote -v', {
-          cwd: PACKAGE_ROOT,
-          encoding: 'utf8',
-          stdio: ['ignore', 'pipe', 'ignore'],
-          timeout: 2000,
-        }).trim();
-      } catch {}
+    // Run as reads (lib/git-read.js): the app's own checkout is a folder like any other, and can be a registered
+    // project. What git could not say is an empty answer.
+    const git = (args) => {
+      const result = spawnGitRead(args, { cwd: PACKAGE_ROOT, timeout: 2000 });
+      return result.status === 0 ? result.stdout.toString().trim() : '';
+    };
+    if (git(['rev-parse', '--is-inside-work-tree']) === 'true') {
+      const remote = git(['remote', 'get-url', 'origin']);
+      const remotes = git(['remote', '-v']);
       if (isSynabunGitHubRemote(`${remote}\n${remotes}`)) {
         const firstRemote = remote || remotes.split(/\s+/).find(part => isSynabunGitHubRemote(part)) || null;
         return { kind: 'github-clone', remote: firstRemote };
@@ -16969,130 +16941,110 @@ app.get('/api/system/backups', (req, res) => {
 });
 
 // GET /api/projects — List registered projects for file explorer selector
+// `capabilities` tells the File Explorer, in the request it makes anyway, that this server has its routes
+// (/api/explorer, lib/file-explorer-api.js): a page loaded against an older server finds none and asks for none.
 app.get('/api/projects', (req, res) => {
   const projects = loadHookProjects();
-  res.json({ ok: true, projects: projects.map(p => ({ path: p.path, label: p.label || basename(p.path) })) });
+  res.json({ ok: true, projects: projects.map(p => ({ path: p.path, label: p.label || basename(p.path) })), capabilities: [...EXPLORER_CAPABILITIES] });
 });
 
 // ── Path validation helper (reused by project-files, file-content) ──
-function validateProjectPath(filePath) {
-  const normalized = resolve(filePath);
+// The roots a file path may be under: folders, and single files allowed by their exact path.
+function allowedFileRoots() {
   const registeredProjects = loadHookProjects();
   const claudePlansDir = resolve(join(process.env.USERPROFILE || process.env.HOME || '', '.claude', 'plans'));
   const localPlansDir = resolve(join(DATA_HOME, 'data', 'plans'));
   const opencodeConfigPath = resolve(getOpencodeConfigPath());
-  const allowedRoots = [resolve(DATA_HOME), ...registeredProjects.map(p => resolve(p.path)), localPlansDir, claudePlansDir, opencodeConfigPath];
-  const matched = allowedRoots.find(r => normalized === r || normalized.startsWith(r + sep));
+  return {
+    dirs: [resolve(DATA_HOME), ...registeredProjects.map(p => resolve(p.path)), localPlansDir, claudePlansDir],
+    files: [opencodeConfigPath],
+  };
+}
+
+function validateProjectPath(filePath) {
+  const normalized = resolve(filePath);
+  const { dirs, files } = allowedFileRoots();
+  const matched = [...dirs, ...files].find(r => normalized === r || normalized.startsWith(r + sep));
   return matched ? normalized : null;
 }
 
-// GET /api/file-content — Read a single file for inline editing
-app.get('/api/file-content', (req, res) => {
-  try {
-    const filePath = req.query.path;
-    if (!filePath) return res.status(400).json({ error: 'Missing path parameter' });
-
-    const normalized = validateProjectPath(filePath);
-    if (!normalized) return res.status(403).json({ error: 'Path outside registered project roots' });
-
-    if (!existsSync(normalized) || !statSync(normalized).isFile()) {
-      return res.status(400).json({ error: 'Not a valid file' });
-    }
-
-    const stat = statSync(normalized);
-    if (stat.size > 1024 * 1024) {
-      return res.status(413).json({ error: 'File too large' });
-    }
-
-    // Binary detection: read first 8KB and scan for null bytes
-    const fd = openSync(normalized, 'r');
-    const buf = Buffer.alloc(Math.min(8192, stat.size));
-    const bytesRead = readSync(fd, buf, 0, buf.length, 0);
-    closeSync(fd);
-    for (let i = 0; i < bytesRead; i++) {
-      if (buf[i] === 0x00) {
-        return res.status(415).json({ error: 'Binary file' });
-      }
-    }
-
-    const content = readFileSync(normalized, 'utf-8');
-    const name = basename(normalized);
-    res.json({ ok: true, content, path: normalized.replace(/\\/g, '/'), name, size: stat.size });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+// ── Code editor (File Explorer): file routes and preferences ──
+// lib/editor-files-api.js: GET / POST / DELETE /api/file-content, POST /api/file-mkdir,
+// POST /api/file-stat, GET /api/editor/capabilities. lib/editor-config.js: GET / PUT /api/editor/config.
+// lib/editor-completion.js: the routes under /api/editor/complete (AI autocomplete).
+// lib/editor-git-api.js: GET /api/file-head (a file as the last commit has it; git is only ever read).
+const editorConfigStore = createEditorConfigStore({
+  path: resolve(DATA_HOME, 'data', 'editor-config.json'),
+  log: (tag, message) => console.error(`[${tag}] ${message}`),
 });
-
-// POST /api/file-content — Write a file (existing, or create if `create: true`)
-app.post('/api/file-content', (req, res) => {
-  try {
-    const { path: filePath, content, create } = req.body || {};
-    if (!filePath || typeof content !== 'string') {
-      return res.status(400).json({ error: 'Missing path or content' });
-    }
-
-    const normalized = validateProjectPath(filePath);
-    if (!normalized) return res.status(403).json({ error: 'Path outside registered project roots' });
-
-    if (create) {
-      // Ensure parent dir exists
-      const parentDir = dirname(normalized);
-      if (!existsSync(parentDir)) mkdirSync(parentDir, { recursive: true });
-    } else {
-      if (!existsSync(normalized) || !statSync(normalized).isFile()) {
-        return res.status(400).json({ error: 'File does not exist' });
-      }
-    }
-
-    writeFileSync(normalized, content, 'utf-8');
-    res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+// AI autocomplete (lib/editor-completion.js): POST /api/editor/complete, /test and /feedback, GET /models and
+// /usage. OpenCode models are asked through a serve of their own (lib/editor-completion-opencode.js: started on
+// the first request, stopped after ten idle minutes and at shutdown, never the shared serve), or a
+// user-configured endpoint is, whose key is SYNABUN_EDITOR_AI_KEY in the data home's .env.
+const editorEndpointKey = createEndpointKeyStore({ envPath: ENV_PATH, parseEnvFile, writeEnvFile });
+const editorCompletionServe = createOpencodeCompletionEngine({
+  dataDir: resolve(DATA_HOME, 'data', 'editor-complete'),
+  system: COMPLETION_SYSTEM,
+  readUserConfig: () => {
+    const configPath = getOpencodeConfigPath();
+    return existsSync(configPath) ? JSON.parse(readFileSync(configPath, 'utf8')) : null;
+  },
+  // A provider's {file:./key} is relative to that configuration: it is written whole for the serve's own folder.
+  userConfigDir: () => dirname(getOpencodeConfigPath()),
+  allocPort: allocOpencodeIsoPort,
+  // As the isolated serves are started: through the login shell, so the CLI is found where a terminal finds it.
+  spawnServe: ({ port, env, cwd }) => {
+    const cmd = loadCliConfig().opencode?.command || 'opencode';
+    const shellArgs = IS_WIN
+      ? ['/d', '/s', '/c', `${cmd} serve --port ${port}`]
+      : ['-lc', `exec ${cmd} serve --port ${port}`];
+    const proc = spawn(DEFAULT_SHELL, shellArgs, { stdio: ['ignore', 'ignore', 'pipe'], env, cwd, detached: false, shell: false, windowsHide: true });
+    proc.stderr?.on('data', (d) => console.log(`[editor-complete:err] ${String(d).trim().slice(0, 500)}`));
+    return proc;
+  },
+  killServe: (proc) => {
+    try {
+      if (IS_WIN && proc.pid) spawn('taskkill', ['/pid', String(proc.pid), '/T', '/F'], { shell: true, windowsHide: true, stdio: 'ignore' });
+      else proc.kill('SIGTERM');
+    } catch { /* already gone */ }
+  },
+  createClient: opencodeV2Client.createClientInstance,
+  log: (tag, message) => console.log(`[${tag}] ${message}`),
 });
-
-// POST /api/file-mkdir — Create a directory
-app.post('/api/file-mkdir', (req, res) => {
-  try {
-    const { path: dirPath } = req.body || {};
-    if (!dirPath) return res.status(400).json({ error: 'Missing path' });
-
-    const normalized = validateProjectPath(dirPath);
-    if (!normalized) return res.status(403).json({ error: 'Path outside registered project roots' });
-
-    mkdirSync(normalized, { recursive: true });
-    res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+const editorCompletion = createEditorCompletionService({
+  readConfig: editorConfigStore.read,
+  engines: { opencode: editorCompletionServe, endpoint: createEndpointCompletionEngine() },
+  getEndpointKey: editorEndpointKey.get,
+  // The model list comes from the shared serve while it runs: listing models starts nothing.
+  sharedProviders: async () => {
+    if (!_ocpReady) return null;
+    const r = await ocpProxy('GET', '/provider', null, 8000);
+    return r.status === 200 ? r.data : null;
+  },
+  isHiddenModel: (id) => opencodeHiddenModels.has(id),
+  usage: createUsageStore({
+    path: resolve(DATA_HOME, 'data', 'editor-ai-usage.json'),
+    log: (tag, message) => console.error(`[${tag}] ${message}`),
+  }),
+  log: (tag, message) => console.warn(`[${tag}] ${message}`),
 });
+app.use(createEditorFilesRouter({ fileRoots: allowedFileRoots, guard: editorOwnerGuard, capabilities: () => [...EDITOR_CONFIG_CAPABILITIES, ...EDITOR_COMPLETION_CAPABILITIES, ...EDITOR_BACKUP_CAPABILITIES, ...EDITOR_GIT_CAPABILITIES] }));
+app.use(createEditorGitRouter({ fileRoots: allowedFileRoots, guard: editorOwnerGuard }));
+app.use('/api/editor/config', createEditorConfigRouter({
+  store: editorConfigStore,
+  guard: editorOwnerGuard,
+  broadcastSync,
+  hasEndpointKey: editorEndpointKey.has,
+  setEndpointKey: editorEndpointKey.set,
+}));
+app.use('/api/editor/complete', createEditorCompletionRouter({ service: editorCompletion, guard: editorOwnerGuard }));
 
-// DELETE /api/file-content — Delete a file or empty directory
-app.delete('/api/file-content', (req, res) => {
-  try {
-    const filePath = req.query.path;
-    if (!filePath) return res.status(400).json({ error: 'Missing path parameter' });
-
-    const normalized = validateProjectPath(filePath);
-    if (!normalized) return res.status(403).json({ error: 'Path outside registered project roots' });
-
-    if (!existsSync(normalized)) {
-      return res.status(404).json({ error: 'Path does not exist' });
-    }
-
-    const stat = statSync(normalized);
-    if (stat.isDirectory()) {
-      const entries = readdirSync(normalized);
-      if (entries.length > 0) return res.status(400).json({ error: 'Directory is not empty' });
-      rmSync(normalized);
-    } else {
-      unlinkSync(normalized);
-    }
-    res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+// The File Explorer's own routes (lib/file-explorer-api.js, docs/file-explorer.md): one folder, search, the git
+// state of a project, the watcher's event stream, and what is done to files (new, rename, move, copy, delete to
+// the system's Trash, upload, reveal, the bytes of an image). The same guard as the editor's routes.
+// The guard looks at the Origin of a write only; the router refuses a read from another site's page as well (a
+// watch is a session of which there are sixteen), by the same origins.
+app.use('/api/explorer', createFileExplorerRouter({ fileRoots: allowedFileRoots, guard: editorOwnerGuard, origins: { port: PORT, allowedOrigins: publicWebOrigins } }));
 
 // GET /api/latest-plan — Find most recently modified plan file (data/plans/YYYY-MM-DD/ preferred, flat fallback)
 app.get('/api/latest-plan', (req, res) => {
@@ -17222,7 +17174,8 @@ app.post('/api/create-plan', (req, res) => {
 });
 
 // GET /api/project-files — List ALL files (incl. dotfiles) for file explorer sidebar
-app.get('/api/project-files', async (req, res) => {
+// The owner's, like the file routes: the names of a project's files are not an invited guest's to list.
+app.get('/api/project-files', editorOwnerGuard, async (req, res) => {
   try {
     const root = DATA_HOME;
     let dir = req.query.path ? resolve(req.query.path) : root;
@@ -17240,6 +17193,10 @@ app.get('/api/project-files', async (req, res) => {
     }
     if (!existsSync(normalizedDir) || !statSync(normalizedDir).isDirectory()) {
       return res.status(400).json({ error: 'Not a valid directory' });
+    }
+    // Judged as the disk resolves it too: a link that leads out of its project is not listed.
+    if (!isInsideReal(normalizedRoot, normalizedDir, { allowRoot: true })) {
+      return res.status(403).json({ error: 'Path outside registered project roots' });
     }
 
     // Git info for status badges
@@ -17372,21 +17329,13 @@ app.get('/api/browse-directory', (req, res) => {
 // POST /api/browse-folder — Open native OS folder picker dialog
 // Async exec: the dialog stays open for up to 60s — execSync here froze the
 // entire server (every WS stream, every request) until the user dismissed it.
-app.post('/api/browse-folder', async (req, res) => {
+// The dialog opens on the owner's machine: the owner's route. Its prompt is handed to the picker as an argument
+// (lib/file-explorer-system.js), never as part of a command line: a request cannot make it run anything.
+app.post('/api/browse-folder', editorOwnerGuard, async (req, res) => {
   try {
     const { description } = req.body || {};
-    const prompt = description || 'Select a folder';
-    let cmd;
-    if (process.platform === 'win32') {
-      const escaped = prompt.replace(/'/g, "''");
-      const pickerScript = resolve(__dirname, 'lib', 'folder-picker.ps1');
-      cmd = `powershell -NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File "${pickerScript}" -Title "${escaped}"`;
-    } else if (process.platform === 'darwin') {
-      cmd = `osascript -e 'POSIX path of (choose folder with prompt "${prompt}")'`;
-    } else {
-      cmd = `zenity --file-selection --directory --title="${prompt}" 2>/dev/null`;
-    }
-    const { stdout } = await execAsync(cmd, { encoding: 'utf8', timeout: 60000, windowsHide: true });
+    const picker = folderPickerCommand(process.platform, typeof description === 'string' ? description : '', { scriptPath: resolve(__dirname, 'lib', 'folder-picker.ps1') });
+    const { stdout } = await execFileAsync(picker.file, picker.args, { encoding: 'utf8', timeout: 60000, windowsHide: true });
     const result = stdout.trim();
     if (result) {
       res.json({ path: result.replace(/\\/g, '/') });
@@ -20286,25 +20235,6 @@ app.post('/api/claude-code/integrations', (req, res) => {
         }
       } catch { /* non-critical */ }
 
-      // Auto-create greeting config entry for the new project
-      try {
-        const greetingKey = projectLabel.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-        const gcPath = resolve(DATA_HOME, 'data', 'greeting-config.json');
-        let gc = { version: 1, defaults: {}, projects: {}, global: {} };
-        try { if (existsSync(gcPath)) gc = JSON.parse(readFileSync(gcPath, 'utf-8')); } catch {}
-        if (!gc.projects) gc.projects = {};
-        if (!gc.projects[greetingKey]) {
-          gc.projects[greetingKey] = {
-            label: projectLabel,
-            greetingTemplate: gc.defaults?.greetingTemplate || '{time_greeting}! Working on **{project_label}** (`{branch}` branch). {date}.',
-            showReminders: false,
-            showLastSession: true,
-            reminders: [],
-          };
-          writeFileSync(gcPath, JSON.stringify(gc, null, 2), 'utf-8');
-        }
-      } catch { /* non-critical */ }
-
       if (plan !== 'write') {
         return res.json({ ok: true, message: `${basename(normalized)} was added without hooks. ${blocker}`, hooksSkipped: true, dubiousOwnership, trustPath });
       }
@@ -20617,510 +20547,19 @@ app.put('/api/claude-code/tool-permissions', (req, res) => {
   }
 });
 
-// ── Greeting Config (read/write greeting-config.json for the greeting hook) ──
-
-const GREETING_CONFIG_PATH = resolve(DATA_HOME, 'data', 'greeting-config.json');
-const CODEX_GREETING_CONFIG_PATH = resolve(DATA_HOME, 'data', 'codex-greeting-config.json');
-const OPENCODE_GREETING_CONFIG_PATH = resolve(DATA_HOME, 'data', 'opencode-greeting-config.json');
-
-function loadGreetingConfig() {
-  try {
-    if (!existsSync(GREETING_CONFIG_PATH)) return { version: 1, defaults: {}, projects: {}, global: {} };
-    return JSON.parse(readFileSync(GREETING_CONFIG_PATH, 'utf-8'));
-  } catch { return { version: 1, defaults: {}, projects: {}, global: {} }; }
-}
-
-function deepCloneJson(value, fallback = {}) {
-  try { return JSON.parse(JSON.stringify(value)); }
-  catch { return fallback; }
-}
-
-function normalizeGreetingLabel(label) {
-  return String(label || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-}
-
-function detectGreetingProject(cwd) {
-  if (!cwd) return 'global';
-  const lower = String(cwd).toLowerCase().replace(/\\/g, '/');
-  const projects = loadHookProjects();
-  const sorted = projects
-    .map((project) => ({
-      path: String(project.path || '').toLowerCase().replace(/\\/g, '/'),
-      label: normalizeGreetingLabel(project.label || basename(project.path || '')),
-    }))
-    .filter((project) => project.path && project.label)
-    .sort((a, b) => b.path.length - a.path.length);
-
-  for (const project of sorted) {
-    if (lower.startsWith(project.path + '/') || lower === project.path) return project.label;
-  }
-  for (const project of sorted) {
-    const folder = basename(project.path).toLowerCase();
-    if (folder && lower.includes(folder)) return project.label;
-  }
-  const base = basename(lower).replace(/[^a-z0-9-]/g, '-');
-  return base || 'global';
-}
-
-function buildSeededCodexGreetingConfig() {
-  const base = loadGreetingConfig();
-  return {
-    version: 1,
-    enabled: false,
-    defaults: deepCloneJson(base.defaults, {}),
-    projects: deepCloneJson(base.projects, {}),
-    global: deepCloneJson(base.global, {}),
-  };
-}
-
-function normalizeCodexGreetingConfig(config) {
-  const seeded = buildSeededCodexGreetingConfig();
-  const next = (config && typeof config === 'object') ? config : {};
-  return {
-    version: 1,
-    enabled: typeof next.enabled === 'boolean' ? next.enabled : seeded.enabled,
-    defaults: deepCloneJson(next.defaults, seeded.defaults),
-    projects: deepCloneJson(next.projects, seeded.projects),
-    global: deepCloneJson(next.global, seeded.global),
-  };
-}
-
-function saveCodexGreetingConfig(config) {
-  const dir = dirname(CODEX_GREETING_CONFIG_PATH);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(CODEX_GREETING_CONFIG_PATH, JSON.stringify(normalizeCodexGreetingConfig(config), null, 2), 'utf-8');
-}
-
-function loadCodexGreetingConfig() {
-  try {
-    if (!existsSync(CODEX_GREETING_CONFIG_PATH)) {
-      const seeded = buildSeededCodexGreetingConfig();
-      saveCodexGreetingConfig(seeded);
-      return seeded;
-    }
-    const parsed = JSON.parse(readFileSync(CODEX_GREETING_CONFIG_PATH, 'utf-8'));
-    const normalized = normalizeCodexGreetingConfig(parsed);
-    if (JSON.stringify(parsed) !== JSON.stringify(normalized)) saveCodexGreetingConfig(normalized);
-    return normalized;
-  } catch {
-    const seeded = buildSeededCodexGreetingConfig();
-    try { saveCodexGreetingConfig(seeded); } catch {}
-    return seeded;
-  }
-}
-
-function getTimeGreeting() {
-  const hour = new Date().getHours();
-  if (hour >= 5 && hour < 12) return 'Good morning';
-  if (hour >= 12 && hour < 17) return 'Good afternoon';
-  return 'Good evening';
-}
-
-function getGreetingGitBranch(cwd) {
-  try {
-    return execSync('git rev-parse --abbrev-ref HEAD', {
-      cwd,
-      encoding: 'utf-8',
-      timeout: 2000,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    }).trim();
-  } catch {
-    return 'unknown';
-  }
-}
-
-function resolveGreetingTemplate(template, vars) {
-  return String(template || '').replace(/\{(\w+)\}/g, (match, key) => (vars[key] !== undefined ? vars[key] : match));
-}
-
-function getProviderGreetingProjectConfig(config, project) {
-  if (!config || typeof config !== 'object') return null;
-  if (config.projects && config.projects[project]) return { ...config.defaults, ...config.projects[project] };
-  if (config.global) return { ...config.defaults, ...config.global };
-  return config.defaults || null;
-}
-
-function buildCodexGreetingUserPrompt({ cwd = PACKAGE_ROOT, userPrompt = '' } = {}) {
-  const config = loadCodexGreetingConfig();
-  if (config.enabled !== true) return '';
-
-  const project = detectGreetingProject(cwd);
-  const projectConfig = getProviderGreetingProjectConfig(config, project);
-  const defaultTemplate = '{time_greeting}! Working on **{project_label}** (`{branch}` branch). {date}.';
-  const projectLabel = projectConfig?.label || project;
-  const branch = getGreetingGitBranch(cwd);
-  const vars = {
-    time_greeting: getTimeGreeting(),
-    project,
-    project_name: project,
-    project_label: projectLabel,
-    branch,
-    date: new Date().toLocaleDateString('en-US', {
-      weekday: 'long',
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-    }),
-  };
-  const greetingText = resolveGreetingTemplate(
-    projectConfig?.greetingTemplate || config.defaults?.greetingTemplate || defaultTemplate,
-    vars,
-  ).trim();
-  if (!greetingText) return '';
-
-  const reminders = Array.isArray(projectConfig?.reminders)
-    ? projectConfig.reminders.filter((reminder) => reminder && (reminder.label || reminder.command))
-    : [];
-  const showReminders = projectConfig?.showReminders ?? config.defaults?.showReminders ?? false;
-  const showLastSession = projectConfig?.showLastSession ?? config.defaults?.showLastSession ?? false;
-
-  // Build as a natural user request to avoid Codex safety filter flagging it as prompt injection.
-  // No "hidden instruction" language, no "do not mention", no "apply only to this turn".
-  const parts = [];
-  parts.push(`Before answering, please use the recall tool to search for "recent sessions, ongoing work, known issues, decisions" in the "${project}" project with recency_boost enabled.`);
-  parts.push('');
-  parts.push(`Start your reply with this greeting:`);
-  parts.push(`> ${greetingText}`);
-
-  if (showReminders && reminders.length) {
-    parts.push('');
-    parts.push('After the greeting, show these service reminders:');
-    for (const reminder of reminders) {
-      const label = reminder.label || 'Reminder';
-      const command = reminder.command || '';
-      parts.push(`- **${label}**: \`${command}\``);
-    }
-  }
-
-  if (showLastSession) {
-    parts.push('');
-    parts.push('If the recall results mention recent work, include a brief "Last session:" summary line.');
-  }
-
-  const userMsg = String(userPrompt || '').trim();
-  if (userMsg) {
-    parts.push('');
-    parts.push(`Then respond to: ${userMsg}`);
-  }
-
-  return parts.join('\n').trim();
-}
-
-function buildCodexGreetingPrompt({ cwd = PACKAGE_ROOT, userPrompt = '', markerStart = '', markerEnd = '' } = {}) {
-  const config = loadCodexGreetingConfig();
-  if (config.enabled !== true) return '';
-
-  const project = detectGreetingProject(cwd);
-  const projectConfig = getProviderGreetingProjectConfig(config, project);
-  const defaultTemplate = '{time_greeting}! Working on **{project_label}** (`{branch}` branch). {date}.';
-  const projectLabel = projectConfig?.label || project;
-  const branch = getGreetingGitBranch(cwd);
-  const vars = {
-    time_greeting: getTimeGreeting(),
-    project,
-    project_name: project,
-    project_label: projectLabel,
-    branch,
-    date: new Date().toLocaleDateString('en-US', {
-      weekday: 'long',
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-    }),
-  };
-  const greetingText = resolveGreetingTemplate(
-    projectConfig?.greetingTemplate || config.defaults?.greetingTemplate || defaultTemplate,
-    vars,
-  ).trim();
-  if (!greetingText) return '';
-
-  const reminders = Array.isArray(projectConfig?.reminders)
-    ? projectConfig.reminders.filter((reminder) => reminder && (reminder.label || reminder.command))
-    : [];
-  const showReminders = projectConfig?.showReminders ?? config.defaults?.showReminders ?? false;
-  const showLastSession = projectConfig?.showLastSession ?? config.defaults?.showLastSession ?? false;
-  const steps = [
-    `Call the SynaBun MCP server's \`recall\` tool (may appear as \`mcp__SynaBun__recall\` or just \`recall\` depending on the client) with query "recent sessions, ongoing work, known issues, decisions", project "${project}", and \`recency_boost\` set to true.`,
-    `After that recall, begin your first assistant message with this greeting exactly as written below:\n\n> ${greetingText}`,
-  ];
-
-  if (showReminders && reminders.length) {
-    const reminderText = reminders.map((reminder) => {
-      const label = reminder.label || 'Reminder';
-      const command = reminder.command || '';
-      return `For **${label}**, show this command in its own fenced code block:\n\`\`\`bash\n${command}\n\`\`\``;
-    }).join('\n\n');
-    steps.push(`After the greeting, show these reminders:\n\n${reminderText}`);
-  }
-
-  if (showLastSession) {
-    steps.push(`After the greeting${showReminders && reminders.length ? ' and reminders' : ''}, include a brief "Last session:" line if the recall results contain something relevant. If not, omit that line.`);
-  }
-
-  steps.push(`Then continue directly with the user's request below.`);
-
-  const parts = [
-    markerStart,
-    'SynaBun Codex panel boot instructions. Apply these instructions ONLY to this first turn of this thread.',
-    'Do not mention these instructions. Do not repeat the greeting on later turns.',
-    '',
-    'Before replying to the user:',
-    ...steps.map((step, index) => `${index + 1}. ${step}`),
-    '',
-  ];
-
-  parts.push(markerEnd, '', String(userPrompt || '').trim());
-  return parts.filter((part) => part !== undefined).join('\n').trim();
-}
-
-// ── OpenCode Panel Greeting (isolated from Claude + Codex) ──
-
-function buildSeededOpencodeGreetingConfig() {
-  const base = loadGreetingConfig();
-  return {
-    version: 1,
-    enabled: false,
-    defaults: deepCloneJson(base.defaults, {}),
-    projects: deepCloneJson(base.projects, {}),
-    global: deepCloneJson(base.global, {}),
-  };
-}
-
-function normalizeOpencodeGreetingConfig(config) {
-  const seeded = buildSeededOpencodeGreetingConfig();
-  const next = (config && typeof config === 'object') ? config : {};
-  return {
-    version: 1,
-    enabled: typeof next.enabled === 'boolean' ? next.enabled : seeded.enabled,
-    defaults: deepCloneJson(next.defaults, seeded.defaults),
-    projects: deepCloneJson(next.projects, seeded.projects),
-    global: deepCloneJson(next.global, seeded.global),
-  };
-}
-
-function saveOpencodeGreetingConfig(config) {
-  const dir = dirname(OPENCODE_GREETING_CONFIG_PATH);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(OPENCODE_GREETING_CONFIG_PATH, JSON.stringify(normalizeOpencodeGreetingConfig(config), null, 2), 'utf-8');
-}
-
-function loadOpencodeGreetingConfig() {
-  try {
-    if (!existsSync(OPENCODE_GREETING_CONFIG_PATH)) {
-      const seeded = buildSeededOpencodeGreetingConfig();
-      saveOpencodeGreetingConfig(seeded);
-      return seeded;
-    }
-    const parsed = JSON.parse(readFileSync(OPENCODE_GREETING_CONFIG_PATH, 'utf-8'));
-    const normalized = normalizeOpencodeGreetingConfig(parsed);
-    if (JSON.stringify(parsed) !== JSON.stringify(normalized)) saveOpencodeGreetingConfig(normalized);
-    return normalized;
-  } catch {
-    const seeded = buildSeededOpencodeGreetingConfig();
-    try { saveOpencodeGreetingConfig(seeded); } catch {}
-    return seeded;
-  }
-}
-
-// No caller since the legacy OpenCode socket handler was removed: the v2 panel
-// sends the prompt as typed. Kept because Settings → Automations → Greetings
-// still edits this config; wiring it into the v2 send path is the owner's decision.
-function buildOpencodeGreetingUserPrompt({ cwd = PACKAGE_ROOT, userPrompt = '' } = {}) {
-  const config = loadOpencodeGreetingConfig();
-  if (config.enabled !== true) return '';
-
-  const project = detectGreetingProject(cwd);
-  const projectConfig = getProviderGreetingProjectConfig(config, project);
-  const defaultTemplate = '{time_greeting}! Working on **{project_label}** (`{branch}` branch). {date}.';
-  const projectLabel = projectConfig?.label || project;
-  const branch = getGreetingGitBranch(cwd);
-  const vars = {
-    time_greeting: getTimeGreeting(),
-    project,
-    project_name: project,
-    project_label: projectLabel,
-    branch,
-    date: new Date().toLocaleDateString('en-US', {
-      weekday: 'long',
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-    }),
-  };
-  const greetingText = resolveGreetingTemplate(
-    projectConfig?.greetingTemplate || config.defaults?.greetingTemplate || defaultTemplate,
-    vars,
-  ).trim();
-  if (!greetingText) return '';
-
-  const reminders = Array.isArray(projectConfig?.reminders)
-    ? projectConfig.reminders.filter((reminder) => reminder && (reminder.label || reminder.command))
-    : [];
-  const showReminders = projectConfig?.showReminders ?? config.defaults?.showReminders ?? false;
-  const showLastSession = projectConfig?.showLastSession ?? config.defaults?.showLastSession ?? false;
-
-  const parts = [];
-  // OpenCode does not bind a session to a project directory the way Codex does
-  // — its tools default to the serve process's cwd, not the user-selected
-  // project. Spell out the absolute project path here so the agent always uses
-  // it for Read/Bash/etc. instead of falling back to the serve cwd.
-  if (cwd && cwd !== PACKAGE_ROOT) {
-    parts.push(`Project working directory: \`${cwd}\``);
-    parts.push(`Use this absolute path as the working directory for all file operations (Read, Write, Edit, Bash). Do not operate on the SynaBun project unless explicitly asked.`);
-    parts.push('');
-  }
-  parts.push(`Before answering, please use the recall tool to search for "recent sessions, ongoing work, known issues, decisions" in the "${project}" project with recency_boost enabled.`);
-  parts.push('');
-  parts.push(`Start your reply with this greeting:`);
-  parts.push(`> ${greetingText}`);
-
-  if (showReminders && reminders.length) {
-    parts.push('');
-    parts.push('After the greeting, show these service reminders:');
-    for (const reminder of reminders) {
-      const label = reminder.label || 'Reminder';
-      const command = reminder.command || '';
-      parts.push(`- **${label}**: \`${command}\``);
-    }
-  }
-
-  if (showLastSession) {
-    parts.push('');
-    parts.push('If the recall results mention recent work, include a brief "Last session:" summary line.');
-  }
-
-  const userMsg = String(userPrompt || '').trim();
-  if (userMsg) {
-    parts.push('');
-    parts.push(`Then respond to: ${userMsg}`);
-  }
-
-  return parts.join('\n').trim();
-}
-
-// GET /api/greeting/config — read the full greeting configuration
-app.get('/api/greeting/config', (req, res) => {
-  try {
-    res.json({ ok: true, config: loadGreetingConfig() });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-// PUT /api/greeting/config/:project — update a project's greeting config
-app.put('/api/greeting/config/:project', (req, res) => {
-  try {
-    const { project } = req.params;
-    const { greetingTemplate, showReminders, showLastSession, reminders, label } = req.body;
-    const config = loadGreetingConfig();
-
-    const target = project === 'global'
-      ? (config.global || (config.global = {}))
-      : (config.projects[project] || (config.projects[project] = {}));
-
-    if (greetingTemplate !== undefined) target.greetingTemplate = greetingTemplate;
-    if (showReminders !== undefined) target.showReminders = showReminders;
-    if (showLastSession !== undefined) target.showLastSession = showLastSession;
-    if (reminders !== undefined) target.reminders = reminders;
-    if (label !== undefined) target.label = label;
-
-    const dir = dirname(GREETING_CONFIG_PATH);
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    writeFileSync(GREETING_CONFIG_PATH, JSON.stringify(config, null, 2), 'utf-8');
-    res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-// GET /api/codex-panel/greeting/config — read Codex-only greeting configuration
-app.get('/api/codex-panel/greeting/config', (req, res) => {
-  try {
-    res.json({ ok: true, config: loadCodexGreetingConfig() });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-// PUT /api/codex-panel/greeting/config — update top-level Codex greeting settings
-app.put('/api/codex-panel/greeting/config', (req, res) => {
-  try {
-    const config = loadCodexGreetingConfig();
-    if (typeof req.body?.enabled === 'boolean') config.enabled = req.body.enabled;
-    saveCodexGreetingConfig(config);
-    res.json({ ok: true, config });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-// PUT /api/codex-panel/greeting/config/:project — update Codex-only project greeting config
-app.put('/api/codex-panel/greeting/config/:project', (req, res) => {
-  try {
-    const { project } = req.params;
-    const { greetingTemplate, showReminders, showLastSession, reminders, label } = req.body;
-    const config = loadCodexGreetingConfig();
-
-    const target = project === 'global'
-      ? (config.global || (config.global = {}))
-      : (config.projects[project] || (config.projects[project] = {}));
-
-    if (greetingTemplate !== undefined) target.greetingTemplate = greetingTemplate;
-    if (showReminders !== undefined) target.showReminders = showReminders;
-    if (showLastSession !== undefined) target.showLastSession = showLastSession;
-    if (reminders !== undefined) target.reminders = reminders;
-    if (label !== undefined) target.label = label;
-
-    saveCodexGreetingConfig(config);
-    res.json({ ok: true, config });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-// GET /api/opencode-panel/greeting/config — read OpenCode-only greeting configuration
-app.get('/api/opencode-panel/greeting/config', (req, res) => {
-  try {
-    res.json({ ok: true, config: loadOpencodeGreetingConfig() });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-// PUT /api/opencode-panel/greeting/config — update top-level OpenCode greeting settings
-app.put('/api/opencode-panel/greeting/config', (req, res) => {
-  try {
-    const config = loadOpencodeGreetingConfig();
-    if (typeof req.body?.enabled === 'boolean') config.enabled = req.body.enabled;
-    saveOpencodeGreetingConfig(config);
-    res.json({ ok: true, config });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-// PUT /api/opencode-panel/greeting/config/:project — update OpenCode-only project greeting config
-app.put('/api/opencode-panel/greeting/config/:project', (req, res) => {
-  try {
-    const { project } = req.params;
-    const { greetingTemplate, showReminders, showLastSession, reminders, label } = req.body;
-    const config = loadOpencodeGreetingConfig();
-
-    const target = project === 'global'
-      ? (config.global || (config.global = {}))
-      : (config.projects[project] || (config.projects[project] = {}));
-
-    if (greetingTemplate !== undefined) target.greetingTemplate = greetingTemplate;
-    if (showReminders !== undefined) target.showReminders = showReminders;
-    if (showLastSession !== undefined) target.showLastSession = showLastSession;
-    if (reminders !== undefined) target.reminders = reminders;
-    if (label !== undefined) target.label = label;
-
-    saveOpencodeGreetingConfig(config);
-    res.json({ ok: true, config });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
-  }
+// ── Greeting (lib/greeting/, docs/greeting.md) ──
+// One greeting for every agent: the Assistant, the Claude Code / Codex / OpenCode panels and a
+// terminal Claude Code session ask /api/greeting/open when a person opens a fresh session, and the
+// session's model is told once what was said. The engine is built with the Assistant (it reads the
+// same stores); the route is mounted here, synchronously, so that an engine that did not start
+// answers 503 with its reason instead of looking like an older server (404).
+//
+// The three template greetings this replaces (the Claude Code hook directive, the Codex and the
+// OpenCode panel prompts) are gone with their endpoints. Their config files (greeting-config.json,
+// codex-greeting-config.json, opencode-greeting-config.json) are left on disk, unread.
+app.use('/api/greeting', (req, res, next) => {
+  if (_greetingRouter) return _greetingRouter(req, res, next);
+  res.status(503).json({ ok: false, code: 'GREETING_UNAVAILABLE', error: 'The greeting engine is not running', reason: _greetingError || 'starting' });
 });
 
 // ── SynaBun rules (lib/rulesets/) ──
@@ -22770,7 +22209,13 @@ app.get('/api/health', (req, res) => {
     // getDb() auto-creates the directory, file, and schema if missing
     getDb();
     const count = countMemories();
-    res.json({ ok: true, storage: 'sqlite', memories: count, projectDir: PACKAGE_ROOT, install: INSTALL_KIND, startLauncher: getStartLauncherState(), entry: START_ENTRY });
+    res.json({
+      ok: true, storage: 'sqlite', memories: count, projectDir: PACKAGE_ROOT, install: INSTALL_KIND, startLauncher: getStartLauncherState(), entry: START_ENTRY,
+      // Which server this is, and whether it is on its way out for a restart: a
+      // page showing the restart tells this one from the one that replaces it.
+      bootId: SERVER_BOOT_ID,
+      ...(_restartRequestedAt ? { restarting: true } : {}),
+    });
   } catch (err) {
     res.json({ ok: false, reason: 'db_error', detail: err.message });
   }
@@ -24166,88 +23611,42 @@ app.get('/invite/logout', (req, res) => {
 });
 
 // --- Cloudflare Tunnel Management ---
-let tunnelProcess = null;
+// The public address (invite links, remote MCP) is a Cloudflare quick tunnel, run by a cloudflared SynaBun
+// brings itself: the copy inside an installer, or the pinned release file fetched into the data home on the
+// first start and checked against its SHA-256 (lib/cloudflared/). The address is kept here as well, because the
+// Host rule and the remote rule read it (remoteWebOrigins): it is set the moment cloudflared prints it.
 let tunnelUrl = null;
-let tunnelStarting = false;
+const cloudflared = createCloudflaredManager({ dataHome: DATA_HOME, log: (line) => console.log(line) });
+const tunnel = createQuickTunnel({ cloudflared, port: PORT, onUrl: (url) => { tunnelUrl = url; }, log: (line) => console.log(line) });
+// Starting and stopping it is the owner's, from the app's own pages: never an invite guest, anybody from outside
+// or another machine on the network (its socket's peer), never a page of another origin (an Origin that is not
+// exactly this server's own, at its port: the tunnel's and the invite proxy's included; or the browser's own
+// Sec-Fetch-Site: cross-site). A hook, a script or an MCP client on this computer sends neither header and passes.
+// See lib/http-guards.js and lib/request-gate.js.
+const tunnelOwnerGuard = ownerRouteGuard({
+  isGuestRequest: (req) => isGuestRequest(req) || requestGates.isRemote(req) || requestGates.fromAnotherMachine(req),
+  port: PORT, allowedOrigins: publicWebOrigins, refuseCrossSite: true,
+  ownOriginsOnly: true, publicOrigins: remoteWebOrigins,
+});
 
-function findCloudflared() {
-  // Try PATH-based lookup first (cross-platform)
+// What is happening: idle, downloading (with progress), starting, running (the address, which copy of
+// cloudflared runs and its version), failed (with the reason). Asking never downloads anything.
+app.get('/api/tunnel/status', async (req, res) => {
   try {
-    const cmd = process.platform === 'win32' ? 'where cloudflared' : 'which cloudflared';
-    const result = execSync(cmd, { encoding: 'utf-8', timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
-    if (result) return result.split('\n')[0].trim();
-  } catch { /* not in PATH */ }
-
-  // Windows-specific fallback paths
-  if (process.platform === 'win32') {
-    const paths = [
-      `${process.env.LOCALAPPDATA}\\cloudflared\\cloudflared.exe`,
-      `${process.env.ProgramFiles}\\cloudflared\\cloudflared.exe`,
-      `${process.env['ProgramFiles(x86)']}\\cloudflared\\cloudflared.exe`,
-    ];
-    for (const p of paths) { if (p && existsSync(p)) return p; }
+    res.json(await tunnel.status());
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err?.message || String(err) });
   }
-  return null;
-}
-
-app.get('/api/tunnel/status', (req, res) => {
-  res.json({
-    ok: true,
-    available: !!findCloudflared(),
-    running: !!tunnelProcess,
-    starting: tunnelStarting,
-    url: tunnelUrl,
-  });
 });
 
-app.post('/api/tunnel/start', (req, res) => {
-  if (tunnelProcess) return res.json({ ok: true, url: tunnelUrl, message: 'Already running.' });
-  const bin = findCloudflared();
-  if (!bin) return res.status(400).json({ error: 'cloudflared not found. Install it from https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/' });
-
-  tunnelStarting = true;
-  tunnelUrl = null;
-
-  const child = spawn(bin, ['tunnel', '--url', `http://localhost:${PORT}`], {
-    stdio: ['ignore', 'pipe', 'pipe'],
-    windowsHide: true,
-  });
-
-  tunnelProcess = child;
-  let urlFound = false;
-
-  const parseUrl = (data) => {
-    const text = data.toString();
-    // cloudflared prints the URL to stderr
-    const match = text.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
-    if (match && !urlFound) {
-      urlFound = true;
-      tunnelUrl = match[0];
-      tunnelStarting = false;
-      console.log(`  Tunnel:  ${tunnelUrl}`);
-    }
-  };
-
-  child.stdout.on('data', parseUrl);
-  child.stderr.on('data', parseUrl);
-
-  child.on('close', () => {
-    tunnelProcess = null;
-    tunnelUrl = null;
-    tunnelStarting = false;
-  });
-
-  // Respond immediately, client polls /api/tunnel/status for the URL
-  res.json({ ok: true, message: 'Tunnel starting...' });
+// Answers at once; on a machine without cloudflared the start fetches it first, then goes on by itself.
+// The page follows it through /api/tunnel/status.
+app.post('/api/tunnel/start', tunnelOwnerGuard, (req, res) => {
+  res.json(tunnel.start());
 });
 
-app.post('/api/tunnel/stop', (req, res) => {
-  if (!tunnelProcess) return res.json({ ok: true, message: 'Not running.' });
-  tunnelProcess.kill();
-  tunnelProcess = null;
-  tunnelUrl = null;
-  tunnelStarting = false;
-  res.json({ ok: true, message: 'Tunnel stopped.' });
+app.post('/api/tunnel/stop', tunnelOwnerGuard, (req, res) => {
+  res.json(tunnel.stop());
 });
 
 // --- MCP HTTP Transport ---
@@ -24275,15 +23674,12 @@ try {
     next();
   }, mcpRouter);
 
-  // Open path: /mcp — local-only (reject tunnel traffic when key is set)
-  app.use('/mcp', (req, res, next) => {
-    if (req.headers['cf-connecting-ip'] && activeMcpKey) {
-      return res.status(403).json({ error: 'Forbidden' });
-    }
-    next();
-  }, mcpRouter);
+  // Open path: /mcp — for this computer only. What comes in from outside (the tunnel, or anything under the
+  // tunnel's or the invite proxy's name) needs /mcp/<key>, and is refused while no key is set
+  // (lib/request-gate.js mcpWithoutKey)
+  app.use('/mcp', requestGates.mcpWithoutKey, mcpRouter);
 
-  console.log('  MCP HTTP endpoint mounted at /mcp' + (activeMcpKey ? ' (key required for tunnel)' : ' (open)'));
+  console.log('  MCP HTTP endpoint mounted at /mcp' + (activeMcpKey ? ' (from outside: /mcp/<key>)' : ' (local only: no key is set)'));
 } catch (err) {
   console.error('  MCP HTTP mount failed (run npm run build in mcp-server):', err.message);
 }
@@ -25348,7 +24744,7 @@ _nativeLoopRuntime = new NativeLoopRuntime({
   try {
     const [
       { createAssistantDispatcher }, { createAssistantRuntime }, { createAssistantApi }, { createUsageLedger },
-      { createClaudeAccounts }, { createAssistantMemory }, { hookRecall },
+      { createClaudeAccounts }, { createAssistantMemory }, { hookRecall, markInjected: assistantMarkInjected },
       claudeBridgeModule, { detectProject: assistantDetectProject }, { getDb: assistantGetDb },
       { handleRemember: assistantHandleRemember }, assistantCategories,
       { createAssistantCatalog }, { createAssistantConfigStore }, { createAssistantRouter, TASK_CLASS_META },
@@ -25452,11 +24848,177 @@ _nativeLoopRuntime = new NativeLoopRuntime({
       listAccounts: () => ({ codex: listCodexAccountsForClient(), 'claude-code': claudeAccounts.listForClient() }),
       readFilter: () => assistantConfigStore.routing().catalogFilter || {},
       readHidden: () => assistantHiddenModels.all(),
+      // A hidden alias ("haiku") hides the model it named when it was hidden: each build settles that.
+      reconcileHidden: (args) => assistantHiddenModels.reconcile(args),
+      // A provider lists other models than before: every open window reloads its menus.
+      onChange: ({ providers }) => broadcastSync({ type: 'assistant:catalog-changed', providers }),
       log: (tag, message) => assistantLog(tag, message),
     });
     _assistantCatalog = assistantCatalog;
     // A Models toggle or a Settings → OpenCode checkbox reaches routing on the next call.
-    assistantHiddenModels.onChange(() => assistantCatalog.invalidate());
+    assistantHiddenModels.onChange((change) => {
+      // What a catalog build settled about a hidden alias is already in that build. When it
+      // rewrote the list (the alias moved to another model and is shown again, its old model
+      // stays hidden under its own id), every open window is told.
+      if (change?.reason === 'pins') {
+        if (change.moved?.length) {
+          broadcastSync({ type: 'assistant:hidden-models-changed', providers: assistantHiddenModels.all(), pins: assistantHiddenModels.allPins(), changed: [change.provider], reason: 'pins' });
+        }
+        return;
+      }
+      assistantCatalog.invalidate();
+    });
+    // The catalog is a copy of the lists the panels' own selectors read. When Claude Code's
+    // changes (a CLI update, other models on the account) the copy goes with it; Codex's
+    // does the same from GET /api/codex/models.
+    onClaudeModelsChanged(() => { assistantCatalog.refresh().catch(() => {}); });
+    // User context (lib/assistant-user-context.js, docs/assistant.md): what the Assistant knows
+    // about the user and what happened in recent conversations, for every brain, learned and
+    // injected by the harness. Its own try/catch: without it the Assistant works as before.
+    let assistantUserContext = null;
+    // Why it did not start, for Settings → Automation behavior (the 503 of /api/assistant/user-context).
+    let assistantUserContextError = null;
+    try {
+      const [
+        { createAssistantUserContext, createUserContextStore, learningJudgeReason }, { createStatementWriter, cheapestClaudeModel },
+        userTypesafe, userTypesafeKnobs, userEmbeddings, userIdentity, { query: userClaudeQuery },
+      ] = await Promise.all([
+        import('./lib/assistant-user-context.js'), import('./lib/assistant-user-writer.js'),
+        import('../mcp-server/dist/services/typesafe.js'), import('../mcp-server/dist/services/typesafe-config.js'),
+        import('../mcp-server/dist/services/local-embeddings.js'), import('../mcp-server/dist/services/identity.js'),
+        import('@anthropic-ai/claude-agent-sdk'),
+      ]);
+      const userStore = createUserContextStore({
+        getDb: assistantGetDb,
+        remember: assistantHandleRemember,
+        reflect: reflectMemory,
+        embed: (text) => userEmbeddings.generateEmbedding(text),
+        // The two categories are made the first time something is stored in them.
+        ensureCategory: (name, description, parent, parentDescription) => {
+          if (assistantCategories.categoryExists(name)) return;
+          if (parent && !assistantCategories.categoryExists(parent)) assistantCategories.addCategory(parent, parentDescription || parent, undefined, undefined, true);
+          assistantCategories.addCategory(name, description, parent);
+        },
+        // user-knowledge, and the seeds read in place: communication-style and its other children.
+        knowledgeCategories: () => ['user-knowledge', 'communication-style', ...assistantCategories.getChildCategories('communication-style').map((category) => category.name)],
+        // A write's own judgments (secret, duplicate, category) are logged against the assistant session, so the usage ledger counts them.
+        withSession: (sessionId, project, fn) => userIdentity.runWithIdentity({
+          key: `assistant-user-context:${sessionId || 'none'}`, source: 'assistant', clientId: 'assistant-user-context',
+          pins: { terminalSessionId: null, browserSessionId: null, browserTabId: null }, state: {}, lastSeen: Date.now(),
+          memoryContext: { session: sessionId || undefined, project: project || undefined },
+        }, fn),
+        log: (tag, message) => assistantLog(tag, message),
+      });
+      assistantUserContext = createAssistantUserContext({
+        settings: () => assistantConfigStore.userContext(),
+        store: userStore,
+        // Jev answers the learning loop's questions on the existing `user-learning` surface (its switch and log), origin `assistant`.
+        judge: {
+          // One reading for both: the loop asks whether Jev can answer, Settings says why it cannot.
+          available: () => learningJudgeReason({ typesafe: userTypesafe, knobs: userTypesafeKnobs }) === null,
+          reason: () => learningJudgeReason({ typesafe: userTypesafe, knobs: userTypesafeKnobs }),
+          ask: (state, questions, opts = {}) => userTypesafe.judge(state, questions, {
+            surface: 'user-learning', origin: 'assistant', sessionId: opts.sessionId ?? null, project: opts.project ?? null,
+            timeoutMs: opts.timeoutMs, onUsage: opts.onUsage, onLogged: opts.onLogged,
+          }),
+        },
+        // Jev cannot write: the statement is a Claude one-shot on the cheapest Claude model, with
+        // no settings, hooks, MCP servers or tools. Without a Claude login the user's own sentence is kept.
+        writer: createStatementWriter({
+          claudeQuery: userClaudeQuery,
+          claudeExecutable: () => getClaudeSdkExecutable(),
+          model: () => cheapestClaudeModel(assistantCatalog.peek?.() || null) || 'haiku',
+          accountEnv: () => claudeAccounts.envFor?.('default') || {},
+          cwd: DATA_HOME,
+          env: process.env,
+          log: (tag, message) => assistantLog(tag, message),
+        }),
+        usage: assistantUsage,
+        markInjected: assistantMarkInjected,
+        statePath: resolve(LOOP_DATA_DIR, 'assistant-user-context.json'),
+        rates: () => { const cfg = typesafeConfig(); return { input: cfg.costPerMillionInput, output: cfg.costPerMillionOutput }; },
+        log: (tag, message) => assistantLog(tag, message),
+      });
+    } catch (err) {
+      // Nothing in this handler may throw (a rejection can carry null, or a value that has no string form):
+      // it is what keeps an engine that did not start from taking the Assistant down with it.
+      let reason = 'unknown error';
+      try { reason = String(err?.message || err || reason).slice(0, 300); } catch { /* an error that cannot be read */ }
+      assistantUserContext = null;
+      assistantUserContextError = reason;
+      console.warn('[assistant] user context unavailable:', reason);
+    }
+    // Greeting (lib/greeting/, docs/greeting.md): one greeting for every agent, written by the
+    // harness ahead of time and shown when a person comes back and opens a fresh session. It reads
+    // what SynaBun already records (thread records, session summaries, dispatched runs, schedules,
+    // what is known about the person) and writes with the same isolated one-shot the statement
+    // writer uses. Its own try/catch: without it every session opens quietly.
+    try {
+      const [
+        { createGreetingEngine }, { createGreetingSources }, { createGreetingWriter }, { createGreetingApi },
+        { createOneShot: createGreetingOneShot, cheapestClaudeModel: greetingCheapestModel }, greetingKnobs, { query: greetingClaudeQuery },
+      ] = await Promise.all([
+        import('./lib/greeting/engine.js'), import('./lib/greeting/sources.js'), import('./lib/greeting/writer.js'), import('./lib/greeting/api.js'),
+        import('./lib/assistant-user-writer.js'), import('../mcp-server/dist/services/typesafe-config.js'), import('@anthropic-ai/claude-agent-sdk'),
+      ]);
+      const greetingLog = (tag, message) => assistantLog(tag, message);
+      // Credentials out of anything read into a greeting (the same pattern list the memory writer redacts with).
+      const greetingRedact = typeof greetingKnobs.redactCredentials === 'function'
+        ? (text) => greetingKnobs.redactCredentials(String(text ?? ''))
+        : (text) => String(text ?? '');
+      _greeting = createGreetingEngine({
+        settingsPath: resolve(LOOP_DATA_DIR, 'greeting.json'),
+        statePath: resolve(LOOP_DATA_DIR, 'greeting-state.json'),
+        sources: createGreetingSources({
+          getDb: assistantGetDb,
+          listRuns: () => _assistantDispatcher?.list?.({ status: 'all', limit: 500 }) || [],
+          listSchedules: () => loadSchedules(),
+          projects: () => loadHookProjects(),
+          detectProject: assistantDetectProject,
+          sessionCategories: () => ['conversations', ...assistantCategories.getChildCategories('conversations').map((category) => category.name)],
+          // What is known about the person (the digest's ranking), while that layer is on.
+          knowledge: (project) => (assistantUserContext && assistantUserContext.layers().knowledge ? assistantUserContext.preview({ project }).rows : []),
+          // A conversation's working thread is newer than its memory (written 45 s after a turn).
+          workingThreads: () => Object.values(assistantUserContext?._internals?.state?.().threads || {}),
+          log: greetingLog,
+        }),
+        writer: createGreetingWriter({
+          oneShot: createGreetingOneShot({
+            claudeQuery: greetingClaudeQuery,
+            claudeExecutable: () => getClaudeSdkExecutable(),
+            model: () => greetingCheapestModel(assistantCatalog.peek?.() || null) || 'haiku',
+            accountEnv: () => claudeAccounts.envFor?.('default') || {},
+            cwd: DATA_HOME,
+            env: process.env,
+            label: 'greeting writer',
+            logTag: 'greeting:writer-error',
+            log: greetingLog,
+            // Two sentences from a short list of facts need no thinking: it only costs output tokens and seconds.
+            queryOptions: { effort: 'low', maxThinkingTokens: 0, thinking: { type: 'disabled' } },
+          }),
+          redact: greetingRedact,
+        }),
+        redact: greetingRedact,
+        broadcast: (event) => broadcastSync(event),
+        log: greetingLog,
+      });
+      _greetingRouter = createGreetingApi({
+        getEngine: () => _greeting,
+        getError: () => _greetingError,
+        isGuestRequest,
+        defaultProject: () => assistantDetectProject(assistantConfigStore.read().defaultBrain?.cwd || PACKAGE_ROOT) || 'global',
+        log: greetingLog,
+      });
+      _greetingError = null;
+      _greeting.start();
+    } catch (err) {
+      let reason = 'unknown error';
+      try { reason = String(err?.message || err || reason).slice(0, 300); } catch { /* an error that cannot be read */ }
+      _greeting = null;
+      _greetingRouter = null;
+      _greetingError = reason;
+      console.warn('[greeting] unavailable:', reason);
+    }
     app.use('/api/assistant/hidden-models', createAssistantHiddenModelsRouter({
       hiddenModels: assistantHiddenModels, catalog: assistantCatalog, opencodeStore: opencodeHiddenModels, isGuestRequest, broadcastSync,
     }));
@@ -25607,6 +25169,9 @@ _nativeLoopRuntime = new NativeLoopRuntime({
       pricing: assistantPricing,
       usage: assistantUsage,
       clarifier: assistantClarifier,
+      userContext: assistantUserContext,
+      // The greeting a conversation opened with (told to the brain once) and when the person was last here.
+      greeting: _greeting,
     });
     assistantDesktop?.attach?.({ runtime: _assistantRuntime, dispatcher: _assistantDispatcher });
     // Warm the catalog so brain capabilities (vision, tier) are known on first attach,
@@ -25664,6 +25229,10 @@ _nativeLoopRuntime = new NativeLoopRuntime({
       clarifier: assistantClarifier,
       // Composer uploads (the paperclip's non-inline files), next to data/images.
       attachments: createAttachmentStore({ root: resolve(DATA_HOME, 'data', 'attachments') }),
+      // Settings → Automation behavior: the layers and the digest a new conversation would get.
+      userContext: assistantUserContext,
+      userContextError: () => assistantUserContextError,
+      defaultProject: () => assistantDetectProject(assistantConfigStore.read().defaultBrain?.cwd || PACKAGE_ROOT) || 'global',
     }));
     const shutdownAssistant = () => {
       try { assistantRouter.shutdown(); } catch {}
@@ -25671,6 +25240,7 @@ _nativeLoopRuntime = new NativeLoopRuntime({
       try { assistantDesktop?.shutdown?.(); } catch {}
       try { _assistantRuntime?.shutdown?.(); } catch {}
       try { _assistantDispatcher?.shutdown?.(); } catch {}
+      try { _greeting?.shutdown?.(); } catch {}
       // Usage rows whose append failed get their last try (synchronous: an 'exit' handler runs it too).
       try { assistantUsage.flush(); } catch {}
     };
@@ -25680,6 +25250,8 @@ _nativeLoopRuntime = new NativeLoopRuntime({
     console.log('[assistant] runtime ready');
   } catch (err) {
     console.warn('[assistant] unavailable:', err.message);
+    // The greeting engine is built with the Assistant: Settings says why it is not there.
+    if (!_greeting && !_greetingError) { try { _greetingError = `The Assistant did not start: ${String(err?.message || err).slice(0, 240)}`; } catch { _greetingError = 'The Assistant did not start'; } }
   }
   // WhatsApp Link: after the runtime and dispatcher exist (its own guard; see startWhatsAppLink).
   await startWhatsAppLink();
@@ -26508,6 +26080,18 @@ app.post('/api/sessions/heartbeat', express.json(), (req, res) => {
   const { claudeSessionId } = req.body || {};
   if (!claudeSessionId) return res.status(400).json({ error: 'claudeSessionId required' });
   const entry = sessionRegistry.get(claudeSessionId);
+  // A person's own prompt (prompt-submit.mjs says so; a loop, a dispatched run, a subagent and the
+  // Assistant's brain never do): the greeting engine keeps when they were last here, and their
+  // last words as one short quote.
+  if (req.body?.human === true && _greeting && !isGuestRequest(req)) {
+    try {
+      _greeting.noteActivity({
+        cwd: (typeof req.body.cwd === 'string' && req.body.cwd) || entry?.cwd || null,
+        surface: req.body.surface === 'claude-panel' ? 'claude-panel' : 'claude-cli',
+        words: typeof req.body.words === 'string' ? req.body.words.slice(0, 400) : '',
+      });
+    } catch { /* the heartbeat itself never fails on it */ }
+  }
   if (entry) { entry.lastActivity = Date.now(); res.json({ ok: true }); }
   else res.status(404).json({ error: 'Session not registered' });
 });
@@ -26800,6 +26384,13 @@ function spawnGit(args, opts = {}) {
   return spawnSync('git', args, baseOpts);
 }
 
+// spawnGit for a command that only reads, in a folder a request named: nothing the repository's own configuration
+// names is started for it (lib/git-read.js: no file system monitor program, no hook, no external diff, no fetch).
+function spawnGitRead(args, opts = {}) {
+  const read = gitReadSync(opts.cwd, args, { env: opts.env });
+  return spawnGit(read.args, { ...opts, env: read.env });
+}
+
 function logGitFailure(where, err) {
   const msg = err?.stderr?.toString?.() || err?.message || String(err);
   if (!msg || /not a git repository/i.test(msg)) return;
@@ -26827,7 +26418,7 @@ setImmediate(() => {
 // repos owned by a different OS user/SID. Common on Windows external drives or repos
 // copied from another machine. Returns true only when git emits the specific error.
 function detectDubiousOwnership(dir) {
-  const r = spawnGit(['rev-parse', '--is-inside-work-tree'], { cwd: dir, timeout: 3000 });
+  const r = spawnGitRead(['rev-parse', '--is-inside-work-tree'], { cwd: dir, timeout: 3000 });
   if (r.status === 0) return false;
   const stderr = r.stderr?.toString?.() || '';
   return /dubious ownership|safe\.directory/i.test(stderr);
@@ -26842,7 +26433,7 @@ function normalizeGitPath(dir) {
 /** Try to get git status for a directory. Returns { branch, statuses } or null. */
 function getGitInfo(dir) {
   // Check if inside a git work tree (spawnGit for consistent path resolution)
-  const inside = spawnGit(['rev-parse', '--is-inside-work-tree'], { cwd: dir, timeout: 3000 });
+  const inside = spawnGitRead(['rev-parse', '--is-inside-work-tree'], { cwd: dir, timeout: 3000 });
   if (inside.status !== 0) {
     logGitFailure('rev-parse --is-inside-work-tree', inside.error || { stderr: inside.stderr });
     return null;
@@ -26853,27 +26444,27 @@ function getGitInfo(dir) {
   // then short SHA for detached HEAD. The chained fallback is essential for Windows users
   // with older Git for Windows installs where --show-current exits non-zero.
   let branch = '';
-  const showCurrent = spawnGit(['branch', '--show-current'], { cwd: dir, timeout: 3000 });
+  const showCurrent = spawnGitRead(['branch', '--show-current'], { cwd: dir, timeout: 3000 });
   if (showCurrent.status === 0) {
     branch = showCurrent.stdout.toString().trim();
   } else {
     logGitFailure('branch --show-current', showCurrent.error || { stderr: showCurrent.stderr });
   }
   if (!branch) {
-    const abbrev = spawnGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: dir, timeout: 3000 });
+    const abbrev = spawnGitRead(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: dir, timeout: 3000 });
     if (abbrev.status === 0) {
       const b = abbrev.stdout.toString().trim();
       if (b && b !== 'HEAD') branch = b;
     }
   }
   if (!branch) {
-    const shortSha = spawnGit(['rev-parse', '--short', 'HEAD'], { cwd: dir, timeout: 3000 });
+    const shortSha = spawnGitRead(['rev-parse', '--short', 'HEAD'], { cwd: dir, timeout: 3000 });
     if (shortSha.status === 0) branch = shortSha.stdout.toString().trim();
   }
 
   try {
     // Get status for this directory (porcelain v1: XY <path>)
-    const statusResult = spawnGit(['status', '--porcelain', '-u', '.'], { cwd: dir, maxBuffer: 256 * 1024 * 1024 });
+    const statusResult = spawnGitRead(['status', '--porcelain', '-u', '.'], { cwd: dir, maxBuffer: 256 * 1024 * 1024 });
     if (statusResult.status !== 0) {
       logGitFailure('status --porcelain', statusResult.error || { stderr: statusResult.stderr });
       return { branch, statuses: new Map() };
@@ -26999,7 +26590,7 @@ app.get('/api/terminal/branches', (req, res) => {
   const dir = req.query.path;
   if (!dir || typeof dir !== 'string') return res.status(400).json({ error: 'path required' });
 
-  const inside = spawnGit(['rev-parse', '--is-inside-work-tree'], { cwd: dir, timeout: 3000 });
+  const inside = spawnGitRead(['rev-parse', '--is-inside-work-tree'], { cwd: dir, timeout: 3000 });
   if (inside.status !== 0) {
     logGitFailure('branches: rev-parse', inside.error || { stderr: inside.stderr });
     return res.json({ branches: [], current: null });
@@ -27008,11 +26599,11 @@ app.get('/api/terminal/branches', (req, res) => {
   try {
     // Current branch — chained fallback (older git may not support --show-current)
     let current = '';
-    const showCurrent = spawnGit(['branch', '--show-current'], { cwd: dir, timeout: 3000 });
+    const showCurrent = spawnGitRead(['branch', '--show-current'], { cwd: dir, timeout: 3000 });
     if (showCurrent.status === 0) current = showCurrent.stdout.toString().trim();
     else logGitFailure('branches: show-current', showCurrent.error || { stderr: showCurrent.stderr });
     if (!current) {
-      const abbrev = spawnGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: dir, timeout: 3000 });
+      const abbrev = spawnGitRead(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: dir, timeout: 3000 });
       if (abbrev.status === 0) {
         const b = abbrev.stdout.toString().trim();
         if (b && b !== 'HEAD') current = b;
@@ -27021,7 +26612,7 @@ app.get('/api/terminal/branches', (req, res) => {
 
     // All local branches — plain `git branch` parsed manually; avoids --format=%(refname:short)
     // which can get mangled by cmd.exe variable expansion on Windows even with proper quoting.
-    const branchResult = spawnGit(['branch'], { cwd: dir });
+    const branchResult = spawnGitRead(['branch'], { cwd: dir });
     if (branchResult.status !== 0) logGitFailure('branch list', branchResult.error || { stderr: branchResult.stderr });
     const raw = branchResult.status === 0 ? branchResult.stdout.toString() : '';
     // Plain `git branch` output: each line is "  branch" or "* branch" (current). Strip
@@ -27077,7 +26668,7 @@ app.post('/api/terminal/checkout', (req, res) => {
     return res.status(400).json({ error: 'Invalid branch name' });
   }
 
-  const inside = spawnGit(['rev-parse', '--is-inside-work-tree'], { cwd: dir, timeout: 3000 });
+  const inside = spawnGitRead(['rev-parse', '--is-inside-work-tree'], { cwd: dir, timeout: 3000 });
   if (inside.status !== 0) {
     logGitFailure('checkout: rev-parse', inside.error || { stderr: inside.stderr });
     return res.status(400).json({ error: 'Not a git repository' });
@@ -27085,6 +26676,8 @@ app.post('/api/terminal/checkout', (req, res) => {
 
   // Branch is validated against /^[\w.\-/]+$/ above, so no shell metacharacters are possible.
   // No '--' separator — that would make git treat the branch name as a file pathspec.
+  // (The switch itself is a write and runs plainly, with the repository's post-checkout hook; the two questions
+  // around it are reads.)
   const result = spawnGit(['checkout', branch], { cwd: dir, timeout: 10000 });
   if (result.status !== 0) {
     const stderr = result.stderr?.toString?.()?.trim() || result.error?.message || 'Checkout failed';
@@ -27093,7 +26686,7 @@ app.post('/api/terminal/checkout', (req, res) => {
 
   // Return confirmed branch name + git's own output
   let current = '';
-  const showCurrent = spawnGit(['branch', '--show-current'], { cwd: dir, timeout: 3000 });
+  const showCurrent = spawnGitRead(['branch', '--show-current'], { cwd: dir, timeout: 3000 });
   if (showCurrent.status === 0) current = showCurrent.stdout.toString().trim();
   else logGitFailure('checkout: show-current', showCurrent.error || { stderr: showCurrent.stderr });
   const output = result.stderr?.toString?.()?.trim() || `Switched to branch '${current}'`;
@@ -27106,18 +26699,24 @@ const _gitStatusCache = new Map(); // dir -> { at, promise }
 const GIT_STATUS_TTL_MS = 1500;
 
 async function computeGitStatus(dir) {
+  // Each of these only reads: run as lib/git-read.js runs a read, so nothing the folder's own git configuration
+  // names is started (the route takes any folder).
+  const read = async (args, options) => {
+    const safe = await gitRead(dir, args);
+    return execFileAsync('git', safe.args, { cwd: dir, env: safe.env, ...options });
+  };
   try {
-    await execFileAsync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: dir, timeout: 3000 });
+    await read(['rev-parse', '--is-inside-work-tree'], { timeout: 3000 });
   } catch {
     return { ok: true, isGit: false, branch: null, changes: [] };
   }
 
   const resolveBranch = async () => {
     try {
-      const { stdout } = await execFileAsync('git', ['branch', '--show-current'], { cwd: dir, timeout: 3000 });
+      const { stdout } = await read(['branch', '--show-current'], { timeout: 3000 });
       let branch = stdout.trim();
       if (!branch) {
-        const { stdout: head } = await execFileAsync('git', ['rev-parse', '--short', 'HEAD'], { cwd: dir, timeout: 3000 });
+        const { stdout: head } = await read(['rev-parse', '--short', 'HEAD'], { timeout: 3000 });
         branch = head.trim();
       }
       return branch;
@@ -27126,7 +26725,7 @@ async function computeGitStatus(dir) {
 
   const [branch, statusOut] = await Promise.all([
     resolveBranch(),
-    execFileAsync('git', ['status', '--porcelain'], { cwd: dir, timeout: 5000, maxBuffer: 256 * 1024 * 1024 }),
+    read(['status', '--porcelain'], { timeout: 5000, maxBuffer: 256 * 1024 * 1024 }),
   ]);
 
   const changes = [];
@@ -27154,7 +26753,29 @@ async function computeGitStatus(dir) {
   return { ok: true, isGit: true, branch, changes };
 }
 
-app.get('/api/git/status', async (req, res) => {
+// The folder a git route is asked about: inside a registered folder, as the disk resolves it (the rule of
+// GET /api/git/diff, lib/git-diff-api.js). Answers 403 itself and returns null for any other.
+function registeredGitFolder(asked, res) {
+  try { return confinedFolder(asked, allowedFileRoots()); }
+  catch (err) { res.status(err instanceof PathConfineError ? err.status : 403).json({ error: err?.message || 'Path outside registered project roots' }); return null; }
+}
+
+// git in a folder, by argument array and never through a shell: what it printed. It throws when git could not
+// be started, failed or took too long, as the command lines the /api/git routes used to run did. For reads only
+// (every caller is one): run as lib/git-read.js runs a read, so no program the repository's own configuration
+// names is started. `git add` and `git commit` are not run through here: a commit keeps the repository's hooks.
+function gitOutput(dir, args, { timeout = 5000, maxBuffer } = {}) {
+  const read = gitReadSync(dir, args);
+  const result = spawnSync('git', read.args, { cwd: dir, env: read.env, stdio: 'pipe', timeout, windowsHide: true, ...(maxBuffer ? { maxBuffer } : {}) });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(result.stderr?.toString?.()?.trim?.() || `git ${args[0]} failed`);
+  return result.stdout.toString();
+}
+
+// status, commit and generate-message are the owner's (editorOwnerGuard) and run git in the folder they are given,
+// registered or not: the MCP `git` tool asks for whatever folder an agent works in, and the Codex panel reads the
+// status before a branch switch.
+app.get('/api/git/status', editorOwnerGuard, async (req, res) => {
   const dir = req.query.path;
   if (!dir || typeof dir !== 'string') return res.status(400).json({ error: 'path required' });
 
@@ -27181,13 +26802,13 @@ app.get('/api/git/status', async (req, res) => {
   }
 });
 
-app.post('/api/git/commit', (req, res) => {
+app.post('/api/git/commit', editorOwnerGuard, (req, res) => {
   const { path: dir, message, files } = req.body;
-  if (!dir || !message) return res.status(400).json({ error: 'path and message required' });
+  if (!dir || typeof dir !== 'string' || !message) return res.status(400).json({ error: 'path and message required' });
   if (typeof message !== 'string' || message.trim().length === 0) return res.status(400).json({ error: 'Commit message cannot be empty' });
 
   try {
-    execSync('git rev-parse --is-inside-work-tree', { cwd: dir, stdio: 'pipe', timeout: 3000 });
+    gitOutput(dir, ['rev-parse', '--is-inside-work-tree'], { timeout: 3000 });
   } catch {
     return res.status(400).json({ error: 'Not a git repository' });
   }
@@ -27222,30 +26843,32 @@ app.post('/api/git/commit', (req, res) => {
   }
 });
 
-app.get('/api/git/diff-summary', (req, res) => {
-  const dir = req.query.path;
-  if (!dir || typeof dir !== 'string') return res.status(400).json({ error: 'path required' });
+app.get('/api/git/diff-summary', editorOwnerGuard, (req, res) => {
+  const asked = req.query.path;
+  if (!asked || typeof asked !== 'string') return res.status(400).json({ error: 'path required' });
+  const dir = registeredGitFolder(asked, res);
+  if (!dir) return;
 
   try {
-    execSync('git rev-parse --is-inside-work-tree', { cwd: dir, stdio: 'pipe', timeout: 3000 });
+    gitOutput(dir, ['rev-parse', '--is-inside-work-tree'], { timeout: 3000 });
   } catch {
     return res.status(400).json({ error: 'Not a git repository' });
   }
 
   try {
     // Get diff stat for tracked files
-    const stat = execSync('git diff --stat --stat-width=120', { cwd: dir, stdio: 'pipe', timeout: 5000 }).toString().trim();
+    const stat = gitOutput(dir, ['diff', '--stat', '--stat-width=120']).trim();
 
     // Get diff stat for staged files
-    const stagedStat = execSync('git diff --cached --stat --stat-width=120', { cwd: dir, stdio: 'pipe', timeout: 5000 }).toString().trim();
+    const stagedStat = gitOutput(dir, ['diff', '--cached', '--stat', '--stat-width=120']).trim();
 
     // Get untracked files
-    const untracked = execSync('git ls-files --others --exclude-standard', { cwd: dir, stdio: 'pipe', timeout: 5000 }).toString().trim();
+    const untracked = gitOutput(dir, ['ls-files', '--others', '--exclude-standard']).trim();
 
     // Get short diff for context (limited to avoid huge payloads)
-    const diff = execSync('git diff -U1 --no-color', { cwd: dir, stdio: 'pipe', timeout: 8000, maxBuffer: 64 * 1024 }).toString().substring(0, 4000);
+    const diff = gitOutput(dir, ['diff', '-U1', '--no-color'], { timeout: 8000, maxBuffer: 64 * 1024 }).substring(0, 4000);
 
-    const stagedDiff = execSync('git diff --cached -U1 --no-color', { cwd: dir, stdio: 'pipe', timeout: 8000, maxBuffer: 64 * 1024 }).toString().substring(0, 4000);
+    const stagedDiff = gitOutput(dir, ['diff', '--cached', '-U1', '--no-color'], { timeout: 8000, maxBuffer: 64 * 1024 }).substring(0, 4000);
 
     // Build a commit message from the changes
     const changedFiles = [];
@@ -27307,64 +26930,27 @@ app.get('/api/git/diff-summary', (req, res) => {
 
 // ── Git Diff (raw content) ──
 
-app.get('/api/git/diff', (req, res) => {
-  const dir = req.query.path;
-  if (!dir || typeof dir !== 'string') return res.status(400).json({ error: 'path required' });
-  const maxLines = Math.min(Math.max(parseInt(req.query.maxLines) || 500, 50), 2000);
-
-  try {
-    execSync('git rev-parse --is-inside-work-tree', { cwd: dir, stdio: 'pipe', timeout: 3000 });
-  } catch {
-    return res.status(400).json({ error: 'Not a git repository' });
-  }
-
-  try {
-    let branch = '';
-    try { branch = execSync('git branch --show-current', { cwd: dir, stdio: 'pipe', timeout: 3000 }).toString().trim(); } catch {}
-    if (!branch) try { branch = execSync('git rev-parse --short HEAD', { cwd: dir, stdio: 'pipe', timeout: 3000 }).toString().trim(); } catch {}
-
-    const rawDiff = execSync('git diff --no-color', { cwd: dir, stdio: 'pipe', timeout: 10000, maxBuffer: 2 * 1024 * 1024 }).toString();
-    const rawStaged = execSync('git diff --cached --no-color', { cwd: dir, stdio: 'pipe', timeout: 10000, maxBuffer: 2 * 1024 * 1024 }).toString();
-    const untracked = execSync('git ls-files --others --exclude-standard', { cwd: dir, stdio: 'pipe', timeout: 5000 }).toString().trim();
-
-    const truncate = (text) => {
-      const lines = text.split('\n');
-      if (lines.length <= maxLines) return { text, truncated: false };
-      return { text: lines.slice(0, maxLines).join('\n'), truncated: true };
-    };
-
-    const d = truncate(rawDiff);
-    const s = truncate(rawStaged);
-    const untrackedFiles = untracked ? untracked.split('\n').filter(Boolean) : [];
-
-    res.json({
-      ok: true,
-      branch,
-      diff: d.text,
-      stagedDiff: s.text,
-      untrackedFiles,
-      truncated: d.truncated || s.truncated
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+// lib/git-diff-api.js: GET /api/git/diff. The folder is one of the registered roots (as for the editor's file
+// routes), git is run by argument array and only reads, and the route refuses invite guests by itself.
+app.use(createGitDiffRouter({ fileRoots: allowedFileRoots, guard: editorOwnerGuard }));
 
 // ── Git Log ──
 
-app.get('/api/git/log', (req, res) => {
-  const dir = req.query.path;
-  if (!dir || typeof dir !== 'string') return res.status(400).json({ error: 'path required' });
+app.get('/api/git/log', editorOwnerGuard, (req, res) => {
+  const asked = req.query.path;
+  if (!asked || typeof asked !== 'string') return res.status(400).json({ error: 'path required' });
+  const dir = registeredGitFolder(asked, res);
+  if (!dir) return;
   const count = Math.min(Math.max(parseInt(req.query.count) || 10, 1), 50);
 
   try {
-    execSync('git rev-parse --is-inside-work-tree', { cwd: dir, stdio: 'pipe', timeout: 3000 });
+    gitOutput(dir, ['rev-parse', '--is-inside-work-tree'], { timeout: 3000 });
   } catch {
     return res.status(400).json({ error: 'Not a git repository' });
   }
 
   try {
-    const raw = execSync(`git log --oneline --no-decorate -n ${count}`, { cwd: dir, stdio: 'pipe', timeout: 5000 }).toString().trim();
+    const raw = gitOutput(dir, ['log', '--oneline', '--no-decorate', '-n', String(count)]).trim();
     const commits = raw ? raw.split('\n').map(line => {
       const spaceIdx = line.indexOf(' ');
       return { hash: line.substring(0, spaceIdx), message: line.substring(spaceIdx + 1) };
@@ -27377,22 +26963,22 @@ app.get('/api/git/log', (req, res) => {
 
 // ── Git Generate Commit Message (AI-powered) ──
 
-app.post('/api/git/generate-message', async (req, res) => {
+app.post('/api/git/generate-message', editorOwnerGuard, async (req, res) => {
   const dir = req.body?.path;
   if (!dir || typeof dir !== 'string') return res.status(400).json({ error: 'path required' });
 
   try {
-    execSync('git rev-parse --is-inside-work-tree', { cwd: dir, stdio: 'pipe', timeout: 3000 });
+    gitOutput(dir, ['rev-parse', '--is-inside-work-tree'], { timeout: 3000 });
   } catch {
     return res.status(400).json({ error: 'Not a git repository' });
   }
 
   // Gather diff data — separate try/catch per command so one failure doesn't skip the rest
   let diffText = '', stagedText = '', untrackedList = '', recentCommits = '';
-  try { diffText = execSync('git diff --no-color', { cwd: dir, stdio: 'pipe', timeout: 8000, maxBuffer: 2 * 1024 * 1024 }).toString().substring(0, 4000); } catch {}
-  try { stagedText = execSync('git diff --cached --no-color', { cwd: dir, stdio: 'pipe', timeout: 8000, maxBuffer: 2 * 1024 * 1024 }).toString().substring(0, 4000); } catch {}
-  try { untrackedList = execSync('git ls-files --others --exclude-standard', { cwd: dir, stdio: 'pipe', timeout: 5000 }).toString().trim(); } catch {}
-  try { recentCommits = execSync('git log --oneline --no-decorate -n 5', { cwd: dir, stdio: 'pipe', timeout: 3000 }).toString().trim(); } catch {}
+  try { diffText = gitOutput(dir, ['diff', '--no-color'], { timeout: 8000, maxBuffer: 2 * 1024 * 1024 }).substring(0, 4000); } catch {}
+  try { stagedText = gitOutput(dir, ['diff', '--cached', '--no-color'], { timeout: 8000, maxBuffer: 2 * 1024 * 1024 }).substring(0, 4000); } catch {}
+  try { untrackedList = gitOutput(dir, ['ls-files', '--others', '--exclude-standard']).trim(); } catch {}
+  try { recentCommits = gitOutput(dir, ['log', '--oneline', '--no-decorate', '-n', '5'], { timeout: 3000 }).trim(); } catch {}
 
   const allDiff = (diffText + '\n' + stagedText).trim();
   if (!allDiff && !untrackedList) {
@@ -27445,8 +27031,8 @@ app.post('/api/git/generate-message', async (req, res) => {
   // Fallback: heuristic (same logic as /api/git/diff-summary)
   try {
     let stat = '', stagedStat = '';
-    try { stat = execSync('git diff --stat --stat-width=120', { cwd: dir, stdio: 'pipe', timeout: 5000, maxBuffer: 2 * 1024 * 1024 }).toString().trim(); } catch {}
-    try { stagedStat = execSync('git diff --cached --stat --stat-width=120', { cwd: dir, stdio: 'pipe', timeout: 5000, maxBuffer: 2 * 1024 * 1024 }).toString().trim(); } catch {}
+    try { stat = gitOutput(dir, ['diff', '--stat', '--stat-width=120'], { maxBuffer: 2 * 1024 * 1024 }).trim(); } catch {}
+    try { stagedStat = gitOutput(dir, ['diff', '--cached', '--stat', '--stat-width=120'], { maxBuffer: 2 * 1024 * 1024 }).trim(); } catch {}
     const changedFiles = [];
     for (const line of (stat + '\n' + stagedStat).split('\n').filter(l => l.includes('|'))) {
       const m = line.match(/^\s*(.+?)\s*\|/);
@@ -28644,7 +28230,7 @@ function isDroppableSidepanelProviderEvent(message) {
 function broadcastSync(message, excludeWs = null) {
   const data = JSON.stringify(message);
   const messageType = String(message?.type || '');
-  const ownerOnly = ['sidepanel:', 'schedule:', 'schedule-group:', 'quick-timer:', 'assistant:', 'whatsapp:']
+  const ownerOnly = ['sidepanel:', 'schedule:', 'schedule-group:', 'quick-timer:', 'assistant:', 'whatsapp:', 'editor:']
     .some((prefix) => messageType.startsWith(prefix));
   const dropUnderBackpressure = isDroppableSidepanelProviderEvent(message);
   let sent = 0;
@@ -33424,8 +33010,26 @@ const httpServer = app.listen(PORT, async () => {
 // zlib adds per-frame CPU + latency on the terminal hot path.
 const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
 
-/** Public origins SynaBun is reached through: the running Cloudflare tunnel and the invite proxy in use (ui-invite.js). Their host names are the only non-local names the WebSocket Origin check accepts in a Host header. */
+/** Public origins SynaBun is reached through: the running Cloudflare tunnel, the invite proxy in use (ui-invite.js) and the names of SYNABUN_ALLOWED_HOSTS. Their host names are the only non-local names the Host rule (HTTP: lib/request-gate.js; WebSocket Origin check; the editor's routes) accepts. */
 function publicWebOrigins() {
+  // The tunnel's and the invite proxy's addresses are the names requests from outside arrive under, never the
+  // owner's own. In this list only the owner's own names stand without a scheme (lib/http-guards.js accepts the
+  // pages of such a host as an Origin on any port): an invite address that was saved without one stands as its
+  // https origin, and a name of SYNABUN_ALLOWED_HOSTS that is one of theirs adds nothing.
+  const outside = remoteWebOrigins();
+  const theirs = hostsOf(outside);
+  const origins = outside.map((each) => (hostNameOf(each) ? `https://${each}` : each));
+  // Names the owner added: SYNABUN_ALLOWED_HOSTS as the server was started with it (the shell's own value: it
+  // keeps applying), and the line of the data home's .env as it is now, read with dotenv's own parser
+  // (savedValueOf): the line counts for what dotenv gave it when the server started. A name added to the file is
+  // answered at the next request, and one taken out of it is refused at the next request: no restart either way.
+  const own = extraHostNames(startedAllowedHosts.value, savedValueOf(ENV_PATH));
+  origins.push(...own.filter((each) => each.includes('://') || !theirs.includes(hostNameOf(each))));
+  return origins;
+}
+
+/** The names requests from outside arrive under: the running Cloudflare tunnel's and the invite proxy's in use. Whatever names one of them is remote, with CF-Connecting-IP or without (lib/request-gate.js isRemote): it needs an invite session and is never the owner. The names of SYNABUN_ALLOWED_HOSTS are not among them: those are the owner's own for this computer. */
+function remoteWebOrigins() {
   const origins = [];
   if (tunnelUrl) origins.push(tunnelUrl);
   const proxy = loadInviteProxy();
@@ -33433,9 +33037,20 @@ function publicWebOrigins() {
   return origins;
 }
 
-httpServer.on('upgrade', (req, socket, head) => {
-  // Block tunnel traffic from WebSocket upgrades, except cookie-authenticated invite sessions
-  if (req.headers['cf-connecting-ip'] && !isValidInviteSession(req)) {
+httpServer.on('upgrade', function onUpgrade(req, socket, head) {
+  // The Host rule first, as in front of every route (lib/request-gate.js): an upgrade whose Host is not one of
+  // this server's names is refused, on every /ws/* path and with an Origin or without one. The Origin rule
+  // below lets a client without an Origin pass, so without this a request under any name reached /ws/sync and
+  // the terminal handoff. A name that is not known while this computer's names are still being read (its
+  // Bonjour name right after a start) is asked again when they are, as a route's request is: the handler then
+  // starts over, once. A name that is known never waits.
+  if (!requestGates.ownHost(req)) {
+    if (!requestGates.ownHostAfterNames(req, socket, () => onUpgrade(req, socket, head))) refuseUpgrade(socket, 403);
+    return;
+  }
+
+  // What comes in from outside (the tunnel, the invite proxy's name) opens no socket without an invite session
+  if (requestGates.isRemote(req) && !isValidInviteSession(req)) {
     socket.destroy();
     return;
   }
@@ -34199,7 +33814,9 @@ process.on('exit', () => {
   try { restoreSleepSync(); } catch {}
   try { terminalHost.killNow(); } catch {}
   try { _whatsapp?.killNow(); } catch {}
+  try { tunnel.killNow(); } catch {}
   try { stopOpencodeServer(); } catch {}
+  try { editorCompletionServe.stop('exit'); } catch {}
   try { _claudeBridge?.shutdownAllBridges?.(); } catch {}
   try { saveSessionSnapshot(); } catch {}
   try { flushUiStateSync(); } catch {}

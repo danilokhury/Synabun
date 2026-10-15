@@ -5,6 +5,10 @@
 
 import { getHelpSections, getVariant } from './registry.js';
 import { registerAction, getDisplayKey } from './ui-keybinds.js';
+import { t } from './i18n.js';
+
+// The modifier of the File Explorer's keys, as this system shows it.
+const MOD_KEY = /Mac|iPhone|iPad/.test(globalThis.navigator?.platform || '') ? '&#8984;' : 'Ctrl';
 
 // Shared help sections that appear in all variants
 // Keyboard section uses dynamic keys from central keybinds system
@@ -44,6 +48,28 @@ function getSharedHelpSections() {
       <div class="help-row"><div class="help-keys"><span class="help-key">Drag</span><span class="help-key">Grip</span></div><span class="help-desc">Move panel</span></div>
       <div class="help-row"><div class="help-keys"><span class="help-key">Drag</span><span class="help-key">Edge</span></div><span class="help-desc">Resize panel</span></div>
       <div class="help-row"><div class="help-keys"><span class="help-key">Pin</span><span class="help-key">&#x1F4CC;</span></div><span class="help-desc">Lock panel position &amp; size</span></div>
+    </div>`
+  },
+  {
+    // The File Explorer's tree, while it has the keyboard (shared/explorer/, docs/file-explorer.md)
+    order: 85,
+    html: `<div class="help-section">
+      <div class="help-section-title">${t('fileExplorer.help.title')}</div>
+      <div class="help-row"><div class="help-keys"><span class="help-key">${getDisplayKey('toggle-file-explorer')}</span></div><span class="help-desc">${t('fileExplorer.help.toggle')}</span></div>
+      <div class="help-row"><div class="help-keys"><span class="help-key">&uarr;</span><span class="help-key">&darr;</span><span class="help-key">Home</span><span class="help-key">End</span></div><span class="help-desc">${t('fileExplorer.help.move')}</span></div>
+      <div class="help-row"><div class="help-keys"><span class="help-key">&rarr;</span><span class="help-key">&larr;</span></div><span class="help-desc">${t('fileExplorer.help.fold')}</span></div>
+      <div class="help-row"><div class="help-keys"><span class="help-key">Enter</span></div><span class="help-desc">${t('fileExplorer.help.open')}</span></div>
+      <div class="help-row"><div class="help-keys"><span class="help-key">Space</span></div><span class="help-desc">${t('fileExplorer.help.peek')}</span></div>
+      <div class="help-row"><div class="help-keys"><span class="help-key">Shift</span><span class="help-key">&uarr; &darr;</span></div><span class="help-desc">${t('fileExplorer.help.range')}</span></div>
+      <div class="help-row"><div class="help-keys"><span class="help-key">A&ndash;Z</span></div><span class="help-desc">${t('fileExplorer.help.typeAhead')}</span></div>
+      <div class="help-row"><div class="help-keys"><span class="help-key">&darr;</span><span class="help-key">Enter</span></div><span class="help-desc">${t('fileExplorer.help.offers')}</span></div>
+      <div class="help-row"><div class="help-keys"><span class="help-key">F2</span></div><span class="help-desc">${t('fileExplorer.help.rename')}</span></div>
+      <div class="help-row"><div class="help-keys"><span class="help-key">Del</span></div><span class="help-desc">${t('fileExplorer.help.delete')}</span></div>
+      <div class="help-row"><div class="help-keys"><span class="help-key">${MOD_KEY}</span><span class="help-key">X / C / V</span></div><span class="help-desc">${t('fileExplorer.help.clipboard')}</span></div>
+      <div class="help-row"><div class="help-keys"><span class="help-key">${MOD_KEY}</span><span class="help-key">Alt</span><span class="help-key">C</span></div><span class="help-desc">${t('fileExplorer.help.copyPath')}</span></div>
+      <div class="help-row"><div class="help-keys"><span class="help-key">${MOD_KEY}</span><span class="help-key">P</span></div><span class="help-desc">${t('fileExplorer.help.goToFile')}</span></div>
+      <div class="help-row"><div class="help-keys"><span class="help-key">Shift</span><span class="help-key">F10</span></div><span class="help-desc">${t('fileExplorer.help.menu')}</span></div>
+      <div class="help-row"><div class="help-keys"><span class="help-key">Esc</span></div><span class="help-desc">${t('fileExplorer.help.escape')}</span></div>
     </div>`
   },
   {

@@ -74,6 +74,18 @@ const SYNC_HANDLERS = {
   // Assistant → Models toggles (every provider): the Assistant's model menus,
   // Routes editor and Models manager reload their lists.
   'assistant:hidden-models-changed': (msg) => emit('sync:assistant:hidden-models-changed', msg),
+  // A provider lists other models than before (CLI update, account change, OpenCode
+  // provider connected): the same menus reload.
+  'assistant:catalog-changed': (msg) => emit('sync:assistant:catalog-changed', msg),
+
+  // Settings → Automation behavior switched in another window: an open Settings follows.
+  'assistant:user-context-changed': (msg) => emit('sync:assistant:user-context-changed', msg),
+
+  // Code editor preferences saved in another window (word wrap, font size…): the editor follows.
+  'editor:config-changed': (msg) => emit('sync:editor:config-changed', msg),
+
+  // Settings → Greeting switched in another window: an open Settings follows.
+  'greeting:changed': (msg) => emit('sync:greeting:changed', msg),
 
   // Card sync (relayed from other clients)
   'card:opened':    (msg) => emit('sync:card:opened', msg),
@@ -177,6 +189,10 @@ const SYNC_HANDLERS = {
 
   // Skin change sync
   'skin:changed': (msg) => emit('sync:skin:changed', msg),
+
+  // The server says it is restarting, before it goes: every window shows the
+  // restart, not only the one that asked for it (ui-loading.js).
+  'server:restarting': (msg) => emit('server:restarting', msg),
 
   // Session indexing progress
   'indexing:started':          (msg) => emit('ws:message', msg),

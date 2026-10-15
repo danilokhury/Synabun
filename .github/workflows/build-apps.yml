@@ -95,9 +95,6 @@ jobs:
       - name: Preflight
         run: node packaging/build.mjs preflight --target ${{ matrix.target }}
 
-      - name: Builder tests
-        run: npm run test:packaging
-
       - name: Import the macOS signing certificate
         if: runner.os == 'macOS' && env.HAS_MAC_CERTIFICATE == 'true'
         env:

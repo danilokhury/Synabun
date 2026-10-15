@@ -486,8 +486,9 @@ export const api = {
   sessionDelete:  (sessionId)     => request({ type: 'session:delete', sessionId }),
   sessionMessages:(sessionId)     => request({ type: 'session:messages', sessionId }),
   sessionContext: ({ sessionId, cwd } = {}) => request({ type: 'session:context', sessionId, cwd }),
-  send: ({ sessionId, parts, model, agent, mode, variant, cwd, mcpProfile, noAbortPrev }) =>
-    request({ type: 'message:send', sessionId, parts, model, agent, mode, variant, cwd, mcpProfile, noAbortPrev: !!noAbortPrev }, 30 * 60 * 1000),
+  // `human` / `greetingId`: lib/greeting/ (a server that does not know them ignores them).
+  send: ({ sessionId, parts, model, agent, mode, variant, cwd, mcpProfile, noAbortPrev, human, greetingId }) =>
+    request({ type: 'message:send', sessionId, parts, model, agent, mode, variant, cwd, mcpProfile, noAbortPrev: !!noAbortPrev, ...(human ? { human: true } : {}), ...(greetingId ? { greetingId } : {}) }, 30 * 60 * 1000),
   abort: (sessionId) => request({ type: 'message:abort', sessionId }),
   compact: ({ sessionId, cwd, mcpProfile, model } = {}) => request({ type: 'session:compact', sessionId, cwd, mcpProfile, model }, 5 * 60 * 1000),
   permissionReply: ({ sessionId, permissionId, response, cwd, message }) =>

@@ -8,7 +8,10 @@
 // <template> (nothing runs, nothing loads) and rebuilt node by node into
 // fresh elements, so nothing the parser saw survives unless it is listed
 // here: no on* or style attributes, no ids, no namespaced markup. No
-// dependency, nothing touches `document` at import time.
+// dependency beyond file-links.js (pure), nothing touches `document` at
+// import time.
+
+import { localFileHref } from '../file-links.js';
 
 const HTML_NS = 'http://www.w3.org/1999/xhtml';
 
@@ -49,6 +52,10 @@ function copyAttributes(from, to, tag) {
   if (tag === 'a') {
     const href = safeHref(from.getAttribute('href'));
     if (href) to.setAttribute('href', href);
+    // A path or a file: URL does not survive as an href (it is resolved against the page, or dropped).
+    // Kept as written, as data: ui-file-links.js reads it on a click and opens the file in the editor.
+    const file = localFileHref(from.getAttribute('href'));
+    if (file) to.setAttribute('data-file-target', file);
     const title = from.getAttribute('title');
     if (title) to.setAttribute('title', title);
     to.setAttribute('rel', 'noopener noreferrer');

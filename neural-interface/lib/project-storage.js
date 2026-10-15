@@ -18,8 +18,8 @@ import {
   resolve,
   sep,
 } from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { isMainThread, parentPort, Worker, workerData } from 'node:worker_threads';
+import { runGitReadSync } from './git-read.js';
 
 export const PROJECT_STORAGE_SAFE_CONFIRMATION = 'CLEAR SELECTED CACHES';
 export const PROJECT_STORAGE_DEPENDENCY_CONFIRMATION = 'DELETE DEPENDENCIES';
@@ -216,11 +216,11 @@ function measurePath(rootPath, { entryLimit = MEASURE_ENTRY_LIMIT } = {}) {
   return { bytes, fileCount, incomplete, containsRepository };
 }
 
+// Both questions are reads, run as lib/git-read.js runs one: a registered project is a folder like any other, and
+// listing its files starts nothing its own git configuration names (`git ls-files` asks the file system monitor).
 function gitInfoForProject(projectRoot) {
   const canonicalProjectRoot = canonicalExistingPath(projectRoot);
-  const probe = spawnSync('git', ['-C', projectRoot, 'rev-parse', '--show-toplevel'], {
-    encoding: 'utf8', timeout: 5_000, windowsHide: true,
-  });
+  const probe = runGitReadSync(projectRoot, ['rev-parse', '--show-toplevel'], { encoding: 'utf8', timeout: 5_000 });
   if (probe.status !== 0) {
     let current = canonicalProjectRoot;
     while (true) {
@@ -237,9 +237,7 @@ function gitInfoForProject(projectRoot) {
   if (!pathIsWithin(gitRoot, canonicalProjectRoot, { allowEqual: true })) {
     return { isRepository: false, verified: false, root: gitRoot, tracked: [] };
   }
-  const listed = spawnSync('git', ['-C', gitRoot, 'ls-files', '-z'], {
-    encoding: 'buffer', timeout: 20_000, maxBuffer: 64 * 1024 * 1024, windowsHide: true,
-  });
+  const listed = runGitReadSync(gitRoot, ['ls-files', '-z'], { encoding: 'buffer', timeout: 20_000, maxBuffer: 64 * 1024 * 1024 });
   if (listed.status !== 0 || listed.error) {
     return { isRepository: true, verified: false, root: gitRoot, tracked: [] };
   }

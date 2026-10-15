@@ -1355,6 +1355,7 @@ export function createAssistantDispatcher({
       entry, ctx: null, ring: [], ringChars: 0, followUps: [], waitResolve: null, idleTimer: null,
       pendingResolvers: new Map(), dead: false, lastEventAt: now(), stalledFlagged: false, turnCounter: 0, abortReason: null,
       evidence: null, // the current turn's commands / tool results / edited files (assistant-evidence.js)
+      completed: false, // its turn loop ended on a completion (agent_complete, a closed finished tab, a removal)
     };
     live.set(entry.runId, liveState);
     const extraEnv = {};
@@ -1701,7 +1702,7 @@ export function createAssistantDispatcher({
           emit(entry, 'idle');
           const next = await waitForFollowUp();
           if (next.kind === 'abort') { entry.completionReason = entry.completionReason || liveState.abortReason || 'aborted'; return { providerSessionId: inner.identity?.()?.providerSessionId }; }
-          if (next.kind === 'complete') { entry.completionReason = 'complete'; return { providerSessionId: inner.identity?.()?.providerSessionId }; }
+          if (next.kind === 'complete') { entry.completionReason = next.reason || 'complete'; liveState.completed = true; return { providerSessionId: inner.identity?.()?.providerSessionId }; }
           if (next.kind === 'timeout') { entry.completionReason = 'idle_timeout'; return { providerSessionId: inner.identity?.()?.providerSessionId }; }
           if (liveState.turnCounter >= entry.maxTurns) {
             entry.completionReason = 'max_turns';
@@ -2431,12 +2432,30 @@ export function createAssistantDispatcher({
     emit(entry, 'follow_up_queued', { queued: liveState.followUps.length });
     return { ok: true, queued: true, position: liveState.followUps.length, run: view(entry) };
   }
-  function complete(runId) {
+  function complete(runId, { reason = 'complete' } = {}) {
     const entry = requireEntry(runId);
     const liveState = live.get(runId);
     if (TERMINAL_STATES.has(entry.state)) return { ok: true, run: view(entry) };
-    if (liveState?.waitResolve) { liveState.waitResolve({ kind: 'complete' }); return { ok: true, run: view(entry) }; }
-    return stop(runId, 'complete');
+    if (liveState?.waitResolve) { liveState.waitResolve({ kind: 'complete', reason }); return { ok: true, run: view(entry) }; }
+    return stop(runId, reason);
+  }
+  /**
+   * The user closed the sidepanel tab of a worker that reported its task done
+   * and waits warm for a follow-up (its X, or Back to Assistant): the run is
+   * completed the way agent_complete completes it, with the reason
+   * `tab_closed`. Its result stays as the worker reported it, and the brain is
+   * handed no stop to react to. Any other run is refused (RUN_NOT_FINISHED):
+   * the tab then stops it as its X always did. A run that already ended is
+   * left as it is.
+   */
+  function completeClosedTab(runId) {
+    const entry = requireEntry(runId);
+    if (TERMINAL_STATES.has(entry.state)) return { ok: true, completed: false, alreadyTerminal: true, run: view(entry) };
+    if (!finishedIdle(entry, { outcomes: ['done'] }) || !live.get(runId)?.waitResolve) {
+      const outcome = entry.lastResult?.status || null;
+      throw new DispatchError('RUN_NOT_FINISHED', `Run ${runId} is ${entry.state}${outcome ? ` (last result: ${outcome})` : ''}: closing its tab completes only a worker that reported its task done and waits for a follow-up.`, { status: 409, state: entry.state, outcome });
+    }
+    return { ...complete(runId, { reason: 'tab_closed' }), completed: true };
   }
   async function stop(runId, reason = 'assistant') {
     const entry = requireEntry(runId);
@@ -2469,13 +2488,16 @@ export function createAssistantDispatcher({
   // ── runtime feed → registry ────────────────────────────────────────────────
   function finalize(entry, runtimeRun) {
     if (TERMINAL_STATES.has(entry.state)) return;
-    const status = runtimeRun?.status || 'completed';
+    const liveState = live.get(entry.runId);
+    let status = runtimeRun?.status || 'completed';
+    // A completed worker whose loop file was swept meanwhile (a stale-file cleanup) reaches the
+    // runtime's next check as "stopped": its turn loop had already ended on the completion.
+    if (status === 'stopped' && liveState?.completed && /^state_(removed|inactive)$/.test(String(runtimeRun?.stoppedReason || ''))) status = 'completed';
     entry.state = TERMINAL_STATES.has(status) ? status : 'completed';
     entry.turnState = 'terminal';
     entry.finishedAt = iso(now());
     entry.completionReason = entry.completionReason || runtimeRun?.stoppedReason || (status === 'completed' ? 'complete' : status);
     if (runtimeRun?.error) entry.error = runtimeRun.error;
-    const liveState = live.get(entry.runId);
     try { finishUsage(entry, liveState || null); } catch (error) { log(entry.runId, 'assistant:meter-error', error?.message || String(error)); }
     if (liveState) {
       liveState.dead = true;
@@ -2681,9 +2703,9 @@ export function createAssistantDispatcher({
    * failed run whose cause is still being judged is not finished yet.
    */
   function removable(entry) { return TERMINAL_STATES.has(entry.state) && !entry.judging; }
-  function finishedIdle(entry) {
+  function finishedIdle(entry, { outcomes = ['done', 'blocked'] } = {}) {
     return entry.state === 'idle' && !entry.judging
-      && ['done', 'blocked'].includes(entry.lastResult?.status)
+      && outcomes.includes(entry.lastResult?.status)
       && !(live.get(entry.runId)?.followUps?.length);
   }
   async function finishIdleForRemoval(entry) {
@@ -2727,7 +2749,7 @@ export function createAssistantDispatcher({
       && (!assistantSessionId || entry.assistantSessionId === String(assistantSessionId))
       && (!workflowId || entry.workflowId === String(workflowId))
       && (!wanted || wanted.has(entry.runId)));
-    await Promise.all(scoped.filter(finishedIdle).map((entry) => finishIdleForRemoval(entry).catch(() => {})));
+    await Promise.all(scoped.filter((entry) => finishedIdle(entry)).map((entry) => finishIdleForRemoval(entry).catch(() => {})));
     const targets = scoped.filter(removable);
     return { ok: true, removed: markRemoved(targets), skipped: scoped.filter((entry) => !removable(entry)).map((entry) => entry.runId) };
   }
@@ -2758,7 +2780,7 @@ export function createAssistantDispatcher({
   stalledTimer.unref?.();
 
   return {
-    dispatch, sendTurn, complete, stop, killAll, get, peek, list, totals, wait, transcript, pendingPermissions,
+    dispatch, sendTurn, complete, completeClosedTab, stop, killAll, get, peek, list, totals, wait, transcript, pendingPermissions,
     respondPermission, subscribe, shutdown, limits,
     sessionBudget, checkSession, refreshLimits,
     resolveRoute, declineRoute, heldRouteRefusal, escalate,

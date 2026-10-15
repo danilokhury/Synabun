@@ -43,13 +43,17 @@ import { mountChangesBar } from './ocp-v2-changes.js';
 import { mountEnvironmentPopover } from './ocp-v2-status.js';
 import { watchWorktree, newSessionPlan, checkoutOutcome } from './ocp-v2-changes-logic.js';
 import { mountRenderer } from './ocp-v2-render.js';
+import { offerGreeting } from './ocp-v2-greeting.js';
 import { mountCompose, focusCompose, appendPathToCompose } from './ocp-v2-send.js';
 import { mountProjectBar, unmountProjectBar } from './ocp-v2-projectbar.js';
 import { registerSidepanel, syncSidepanelLayout, focusSidepanel, openAnotherSidepanelSession, isHostedSessionFocused } from '../ui-sidepanel-windows.js';
 import { nativeLoopWindowId } from '../ui-native-window-id.js';
 import { requestGeneratedSessionTitle } from '../session-title.js';
+import { wireFileLinks } from '../ui-file-links.js';
+import { backToAssistant, buildWorkerEndCard, endWorkerRunOnClose, forgetWorkerEnd, trackWorkerEnd } from '../ui-worker-end.js';
+import { isDispatchedRun } from '../worker-end.js';
 import {
-  registerAutomationSession, unregisterAutomationSession, stopAutomationRun,
+  registerAutomationSession, unregisterAutomationSession, stopAutomationRun, isAutomationSession,
 } from './ocp-v2-automation-ownership.js';
 import {
   registerPrimaryPanel, bindPrimarySession, isChildPanelOpen, getVisibleChildPanel, openChildSession,
@@ -92,6 +96,8 @@ const _automationRunning = new Set();
 const _automationContinuedManually = new Set();
 const _automationManualSendInFlight = new Set();
 const _foreignActiveAutomationSessions = new Set();
+const _workerEnds = new Map(); // sessionId -> end card of the dispatched worker it belongs to (ui-worker-end.js)
+let _renderer = null;
 let _visible = false;
 let _booted = false;
 let _bootPromise = null;
@@ -420,6 +426,9 @@ function buildPanel() {
   messages.className = 'ocpv2-messages';
   messagesContainer.appendChild(messages);
   panel.appendChild(messagesContainer);
+  // A link to a file the code editor can open opens it there (shared with the other panels). A relative
+  // path is a path in the session's directory.
+  wireFileLinks(messagesContainer, { cwd: () => getState().cwd || '' });
 
   // ── What the session changed on disk (session.diff) ─────────────────────
   mountChangesBar(panel, getDefaultStore());
@@ -445,7 +454,17 @@ function buildPanel() {
   });
 
   let composer = null;
-  const renderer = mountRenderer(messages, getDefaultStore(), {
+  const renderer = _renderer = mountRenderer(messages, getDefaultStore(), {
+    // A dispatched worker's end: the last card of its session's transcript.
+    endCard: (s) => workerEndCard(s?.sessionId),
+    // SynaBun's greeting for a person who comes back to a new session: never for an automation run's.
+    onEmpty: (host, s) => offerGreeting(host, {
+      sessionId: s?.sessionId || null,
+      cwd: s?.cwd || '',
+      automation: !!s?.sessionId && (_automationRunIds.has(s.sessionId) || isAutomationSession(s.sessionId)),
+      onOpenMemory: (id) => { if (id) emit('memory:open', { id }); },
+      isCurrent: () => (getState().sessionId || null) === (s?.sessionId || null) && getState().messageOrder.length === 0,
+    }),
     onOpenSession: (session, extra) => openCreatedSession(session, extra),
     // Fork is a navigation: its intent begins at the click, and the fork takes
     // the panel only while that click is still the user's latest choice.
@@ -504,7 +523,18 @@ function buildPanel() {
       const sessionId = session?.sessionId;
       if (phase === 'started') requestOpenCodeSessionTitle(session, meta);
       if (!sessionId || !_automationRunIds.has(sessionId) || _automationRunning.has(sessionId)) return;
-      if (phase === 'started') _automationManualSendInFlight.add(sessionId);
+      if (phase === 'started') {
+        const first = !_automationContinuedManually.has(sessionId) && !_automationManualSendInFlight.has(sessionId);
+        _automationManualSendInFlight.add(sessionId);
+        if (first) {
+          // The tab is the user's from here on (Codex's releaseAutomationForManualUse): the run's
+          // end card goes, and the router leaves the run alone, so nothing of it comes back here.
+          const runId = _automationRunIds.get(sessionId);
+          forgetWorkerEnd(runId);
+          showWorkerEnd(sessionId, null);
+          window.dispatchEvent(new CustomEvent('native-loop:dismissed', { detail: { runId } }));
+        }
+      }
       if (phase === 'failed') _automationManualSendInFlight.delete(sessionId);
       if (phase === 'succeeded') {
         _automationManualSendInFlight.delete(sessionId);
@@ -2238,11 +2268,12 @@ function dismissAutomationSession(sessionId) {
   if (!runId) return false;
   window.dispatchEvent(new CustomEvent('native-loop:dismissed', { detail: { runId } }));
   if (_automationRunning.has(sessionId)) {
-    fetch('/api/loop/stop', {
+    // A worker that finished its task is completed; any other run is stopped.
+    endWorkerRunOnClose(runId, () => fetch('/api/loop/stop', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ runId }),
-    }).catch(() => {});
+    }).catch(() => {}));
   }
   return true;
 }
@@ -2317,6 +2348,8 @@ function removeTab(sessionId, { byUser = false } = {}) {
   const titleTimer = _titleReassertTimers.get(sessionId);
   if (titleTimer) clearTimeout(titleTimer);
   _titleReassertTimers.delete(sessionId);
+  forgetWorkerEnd(_automationRunIds.get(sessionId));
+  _workerEnds.delete(sessionId);
   _automationRunIds.delete(sessionId);
   unregisterAutomationSession(sessionId);
   _automationRunning.delete(sessionId);
@@ -2354,20 +2387,54 @@ function createTabPill(sessionId) {
     if (event.target.closest('.term-minimized-pill-close')) return;
     handlePillClick(sessionId);
   });
-  pill.querySelector('.term-minimized-pill-close')?.addEventListener('click', async (event) => {
+  pill.querySelector('.term-minimized-pill-close')?.addEventListener('click', (event) => {
     event.stopPropagation();
-    // Mirror header X. Native transcripts are preserved unless the user has
-    // continued the terminal automation manually; backend cleanup is best-effort.
-    // Asked first when prompts are still waiting in that session; declined:
-    // the tab stays and nothing is deleted.
-    if (!(await mayCloseTab(sessionId))) return;
-    const wasRunning = sessionId === getState().sessionId && !!getState().running;
-    closeSessionBackend(sessionId, { wasRunning, context: 'pill close' }).catch(() => {});
-    try { await handlePillClose(sessionId, { byUser: true }); }
-    catch (err) { console.warn('[ocp-v2-panel] local pill close failed', err); }
+    closeTabByUser(sessionId, 'pill close');
   });
   tray.appendChild(pill);
   return pill;
+}
+
+// Mirror header X. Native transcripts are preserved unless the user has
+// continued the terminal automation manually; backend cleanup is best-effort.
+// Asked first when prompts are still waiting in that session; declined: the
+// tab stays, nothing is deleted, and this resolves false.
+async function closeTabByUser(sessionId, context) {
+  if (!(await mayCloseTab(sessionId))) return false;
+  const wasRunning = sessionId === getState().sessionId && !!getState().running;
+  closeSessionBackend(sessionId, { wasRunning, context }).catch(() => {});
+  try { await handlePillClose(sessionId, { byUser: true }); }
+  catch (err) { console.warn(`[ocp-v2-panel] local ${context} failed`, err); }
+  return true;
+}
+
+// The end of a worker the Assistant dispatched: its button closes the tab the
+// way the tab's X does (a warm worker that finished its task is completed, one
+// still at work is stopped; its record stays for the Assistant) and shows the
+// Assistant session that dispatched it.
+function workerEndCard(sessionId) {
+  const view = sessionId ? _workerEnds.get(sessionId) : null;
+  if (!view) return null;
+  return {
+    sig: view.sig,
+    build: () => buildWorkerEndCard(view, {
+      classes: {
+        card: 'ocpv2-post-plan-card ocpv2-worker-end', title: 'ocpv2-post-plan-header', detail: 'ocpv2-post-plan-body',
+        meta: 'ocpv2-post-plan-saved', note: 'ocpv2-post-plan-note', actions: 'ocpv2-post-plan-actions', button: 'ocpv2-post-plan-btn primary',
+      },
+      onBack: async () => {
+        if (!(await closeTabByUser(sessionId, 'worker end close'))) return false;
+        backToAssistant(view.assistantSessionId);
+        return true;
+      },
+    }),
+  };
+}
+
+function showWorkerEnd(sessionId, view) {
+  if (view) _workerEnds.set(sessionId, view);
+  else if (!_workerEnds.delete(sessionId)) return;
+  _renderer?.render();
 }
 
 function escapeHtml(s) {
@@ -2539,9 +2606,12 @@ export async function attachOpenCodeAutomation(run, { focus = !!run?.focus, isCa
   // Establish ownership before connect()/boot(): native provider events use a
   // separate socket and may report a Task child while this attach is awaiting.
   const previousRunId = _automationRunIds.get(sessionId);
+  const running = run.status === 'starting' || run.status === 'running';
+  // The user continued this run's session by hand after the run ended: the tab stays theirs.
+  const released = !running && previousRunId === run.runId
+    && (_automationContinuedManually.has(sessionId) || _automationManualSendInFlight.has(sessionId));
   _automationRunIds.set(sessionId, run.runId);
   registerAutomationSession(sessionId, run.runId);
-  const running = run.status === 'starting' || run.status === 'running';
   if (running || previousRunId !== run.runId) {
     _automationContinuedManually.delete(sessionId);
     _automationManualSendInFlight.delete(sessionId);
@@ -2565,6 +2635,16 @@ export async function attachOpenCodeAutomation(run, { focus = !!run?.focus, isCa
     await handlePillClose(sessionId).catch(() => {});
     return { ok: false, reason: 'dismissed' };
   }
+  if (released) {
+    // The dock's Focus raises it; the run is let go again, and nothing in the tab changes.
+    window.dispatchEvent(new CustomEvent('native-loop:dismissed', { detail: { runId: run.runId } }));
+    if (focus && _nav.latest() === attachBegan && _tabSessionIds.includes(sessionId)) {
+      const nav = _nav.observe();
+      if (!_visible) await showPrimaryOpencodePanel();
+      await switchToSession(sessionId, _tabInfoCache.get(sessionId) || null, { nav });
+    }
+    return { ok: true, sessionId, released: true };
+  }
   ensureTab(sessionId, info);
   if (focus && _nav.latest() === attachBegan) {
     // (Its own navigation, observed after boot landed: a click made while the
@@ -2577,13 +2657,15 @@ export async function attachOpenCodeAutomation(run, { focus = !!run?.focus, isCa
     await rehydrateActiveSession().catch(() => {});
   }
   if (getState().sessionId === sessionId) setRunning(running);
-  if (run.status === 'failed' && run.error && getState().sessionId === sessionId
+  // (A dispatched worker's failure, with its reason, is on its end card.)
+  if (run.status === 'failed' && run.error && !isDispatchedRun(run) && getState().sessionId === sessionId
     && _tabInfoCache.get(sessionId)?._automationLifecycleError !== run.error) {
     const cachedInfo = _tabInfoCache.get(sessionId) || info;
     cachedInfo._automationLifecycleError = run.error;
     _tabInfoCache.set(sessionId, _stoppedShares.clean(cachedInfo));
     pushError({ message: run.error });
   }
+  trackWorkerEnd(run, { apply: (view) => showWorkerEnd(sessionId, view) });
   renderPill();
   return { ok: true, sessionId };
 }

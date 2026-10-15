@@ -41,6 +41,24 @@ export function isTemporaryChat() {
   return String(process.env.SYNABUN_TEMPORARY_CHAT ?? '').trim() === '1';
 }
 
+/**
+ * Where a Claude Code session was opened, for SynaBun's greeting (neural-interface/lib/greeting/):
+ * 'claude-panel' for a session of the Claude Code side panel (its bridge sets the marker, and the
+ * panel shows the greeting itself), 'claude-cli' for an interactive terminal session, null for
+ * everything else: `claude -p`, an SDK program, the Assistant's brain. A loop or a dispatched run
+ * is told apart by its caller (it shares the terminal's environment).
+ */
+export function greetingSurface(env = process.env) {
+  if (env.SYNABUN_ASSISTANT_SESSION) return null;
+  if (String(env.SYNABUN_PANEL_SESSION ?? '').trim() === '1') return 'claude-panel';
+  return env.CLAUDE_CODE_ENTRYPOINT === 'cli' ? 'claude-cli' : null;
+}
+
+/** SYNABUN_GREETING=off: no greeting is asked for, whatever Settings says. */
+export function greetingOff(env = process.env) {
+  return /^(off|0|false|no)$/i.test(String(env.SYNABUN_GREETING ?? '').trim());
+}
+
 /** A network call whose timeout would be shorter than this is skipped. */
 export const MIN_CALL_MS = 250;
 
@@ -95,6 +113,8 @@ export const ENV_PATH = join(DATA_HOME, '.env');
 export const HOOK_FEATURES_PATH = join(DATA_DIR, 'hook-features.json');
 export const PENDING_REMEMBER_DIR = join(DATA_DIR, 'pending-remember');
 export const LOOP_LOG_DIR = join(DATA_DIR, 'logs');
+// The note about the greeting a terminal session opened with, from SessionStart to the first prompt.
+export const GREETING_NOTE_DIR = join(DATA_DIR, 'greeting-notes');
 
 // --- Loop logging (mirrors neural-interface/lib/loop-logger.js) ---
 // Writes per-loop entries from inside hooks into the same logfile the server uses.

@@ -12,6 +12,7 @@
 // send/stop) · file input. The other runtime controls live in the toolbar.
 
 import { matchSlashCommands, SLASH_COMMANDS } from './asst-slash.js';
+import { isLongPaste, typedText } from './asst-automation.js';
 
 const TEXT_EXTENSIONS = new Set([
   'txt', 'md', 'js', 'ts', 'jsx', 'tsx', 'json', 'html', 'css', 'scss', 'less', 'xml', 'svg',
@@ -151,6 +152,7 @@ export function createComposer(hostEl, hooks = {}) {
     files: [],    // { name, content }
     uploads: [],  // { name, size, mime, path, status: 'uploading'|'done', progress, controller }
     memories: [], // node objects
+    pastes: [],   // long text pastes still to be told apart from typed words (asst-automation.js typedText)
     slashOpen: false,
     slashIndex: 0,
     slashItems: [],
@@ -321,6 +323,9 @@ export function createComposer(hostEl, hooks = {}) {
     if (!text && !state.images.length && !state.files.length && !state.uploads.length && !state.memories.length) return;
     const payload = {
       text,
+      // What the user typed, without the long pastes: all SynaBun may learn about them from (the prompt keeps everything).
+      typed: typedText(text, state.pastes),
+      pastes: state.pastes.slice(),
       images: state.images.slice(),
       files: state.files.slice(),
       uploads: state.uploads.map(({ name, size, mime, path }) => ({ name, size, mime, path })),
@@ -334,6 +339,7 @@ export function createComposer(hostEl, hooks = {}) {
     state.files = [];
     state.uploads = [];
     state.memories = [];
+    state.pastes = [];
     renderAttachments();
     closeSlash();
     autoResize();
@@ -409,9 +415,12 @@ export function createComposer(hostEl, hooks = {}) {
     return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
   }
 
-  // ── Paste (images) ──
+  // ── Paste (images; long text is remembered as pasted, not typed) ──
   textarea.addEventListener('paste', (e) => {
     if (!e.clipboardData) return;
+    let pasted = '';
+    try { pasted = e.clipboardData.getData?.('text/plain') || ''; } catch { pasted = ''; }
+    if (isLongPaste(pasted)) state.pastes = [...state.pastes, pasted].slice(-20);
     for (const item of e.clipboardData.items) {
       if (item.type.startsWith('image/')) {
         const blob = item.getAsFile();
@@ -596,6 +605,7 @@ export function createComposer(hostEl, hooks = {}) {
       state.files.push(...(payload.files || []));
       state.uploads.push(...(payload.uploads || []).map((u) => ({ ...u, status: 'done', progress: 1 })));
       state.memories.push(...(payload.memories || []));
+      state.pastes = [...state.pastes, ...(payload.pastes || [])].slice(-20);
       renderAttachments();
       autoResize();
       updateSlash();

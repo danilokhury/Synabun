@@ -29,11 +29,13 @@ import { emit, on, state as appState } from '../state.js';
 import { storage } from '../storage.js';
 import { KEYS } from '../constants.js';
 import { t } from '../i18n.js';
+import { forgetGreeting, mountGreeting } from '../greeting/greeting-card.js';
 import { notify, NOTIF_TYPE } from '../ui-notifications.js';
 import { getProviderMeta } from '../provider-icons.js';
 import { isGuest, hasPermission } from '../ui-sync.js';
 import { getWhiteboardElementById } from '../ui-whiteboard.js';
 import { focusNativeLoopRun } from '../ui-native-loop-router.js';
+import { wireFileLinks } from '../ui-file-links.js';
 import { injectAssistantStyles } from './asst-styles.js';
 import { createAssistantSocket } from './asst-ws.js';
 import { createRenderer, ICON_ASSISTANT, mdInto } from './asst-render.js';
@@ -42,7 +44,7 @@ import { lastInputAt, onKey, onPointer } from '../synabun-ticker.js';
 import { buildControlResponse, closedControlState, normalizeControlRequest, renderControlCard } from './asst-control.js';
 import { buildPromptText, createComposer } from './asst-composer.js';
 import { buildDispatchSpec, parseSlashCommand, slashHelpMarkdown } from './asst-slash.js';
-import { createBrainPicker, testDensityLabel } from './asst-brain-picker.js';
+import { cachedProjects, createBrainPicker, testDensityLabel } from './asst-brain-picker.js';
 import { createRovingToolbar } from './asst-roving.js';
 import { openAccountsManager } from './asst-accounts.js';
 import { createAgentsDock } from './asst-agents-dock.js';
@@ -52,9 +54,9 @@ import { createRouteModeControl, openModelsManager, openRoutesEditor, refreshMod
 import { budgetChipText, budgetTone, openBudgetEditor } from './asst-budget.js';
 import { computerRemoteView, createComputerPanel, createComputerToggle, normalizeComputerRemote, openFrameLightbox, closeFrameLightbox, requestDesktopStop } from './asst-computer.js';
 import {
-  applyLimit, applyLimitPacket, applyUsagePacket, brainLabel, createTabState, DEFAULT_ROUTE_MODE, deserializeTabState, fmtCost, fmtRunLine, limitExpiresIn, limitNoticeText, modelShortName,
-  brainModePatch, normalizeBrain, normalizeComputerMode, permissionModeLabel, normalizeRouteMode, normalizeTestDensity, providerShortLabel, readStoredBrain, runFromPayload,
-  serializeTabState, tabStorageKey,
+  applyLimit, applyLimitPacket, applyUsagePacket, brainLabel, createRenameWriter, createTabState, DEFAULT_ROUTE_MODE, deserializeTabState, fmtCost, fmtRunLine, limitExpiresIn, limitNoticeText, modelShortName,
+  brainModePatch, normalizeBrain, normalizeComputerMode, permissionModeLabel, normalizeRouteMode, normalizeTestDensity, projectLabel, providerShortLabel, readStoredBrain, runFromPayload,
+  serializeTabState, tabStorageKey, userSessionTitle,
 } from './asst-state.js';
 import {
   closeAssistantSession, dispatchAssistantRun, escalateAssistantRun, focusAssistantRun, getAssistantRun,
@@ -93,10 +95,6 @@ function num(value) {
   return value != null && value !== '' && Number.isFinite(n) ? n : null;
 }
 
-function basename(path) {
-  return String(path || '').split(/[\\/]/).filter(Boolean).pop() || String(path || '');
-}
-
 function relativeTime(value) {
   const ms = new Date(value || 0).getTime();
   if (!ms) return '';
@@ -109,6 +107,10 @@ function relativeTime(value) {
   return `${Math.floor(hrs / 24)}d`;
 }
 
+// Renames on their way to a session record. One writer for the page, not one per tab: a write
+// outlives the tab that asked for it, and every Sessions menu waits for all of them.
+const renames = createRenameWriter({ patch: patchAssistantSession });
+
 function clipCopy(text) {
   if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).catch(() => {});
 }
@@ -116,17 +118,21 @@ function clipCopy(text) {
 /**
  * mountAssistant(viewport, { sessionId, brain, host, session })
  * host: { id: 'terminal'|'sidepanel', notifySource: 'cli'|'panel',
- *         setLabel(text), setStatus('idle'|'working'|'action'|'done'), setBrain(brain),
+ *         setLabel(text), setName?(text, renamed) (a rename that was not saved: the tab's name and its
+ *         renamed flag go back, saved label included), setStatus('idle'|'working'|'action'|'done'), setBrain(brain),
  *         isVisible() → bool, toolbarSlot?: Element (where the toolbar goes; default the root),
  *         takeHeroOrigin?() → DOMRect | null (a character the host showed while starting: the empty state's flies in from it) }
  * The hooks may fire during mount, before this returns.
- * The tab label is always "SynaBun"; a user rename arrives via controller.setTitle.
+ * The tab label is always "SynaBun"; a user rename arrives via controller.setTitle
+ * and is written to the session record (saveRename), where every session list reads it.
  */
 export function mountAssistant(viewport, { sessionId, brain, host = {}, session = null } = {}) {
   injectAssistantStyles();
   const saved = deserializeTabState(storage.getItem(tabStorageKey(sessionId)));
+  let greetingId = null; // the greeting this conversation opened with, until its first prompt carries it
+  const defaultTitle = tt('assistant.defaultTitle', 'SynaBun');
   const st = createTabState(sessionId, brain || session?.brain || saved?.brain || readStoredBrain(storage), {
-    title: tt('assistant.defaultTitle', 'SynaBun'),
+    title: defaultTitle,
     // The agents tray starts collapsed; it only expands on request.
     dockOpen: saved ? saved.dockOpen : storage.getItem(KEYS.ASSISTANT_DOCK_OPEN) === '1',
     dockShowAll: saved ? saved.dockShowAll : storage.getItem(KEYS.ASSISTANT_DOCK_SHOW_ALL) === '1',
@@ -145,7 +151,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     engine: '',
     sdkVersion: '',
     routing: null,                                 // server view { mode, effectiveMode, defaultMode, askBelow }
-    features: { routing: null, computer: null, testDensity: null },   // null = unknown yet
+    features: { routing: null, computer: null, testDensity: null, rename: null },   // null = unknown yet
     testDensityEffective: null,                    // server view: the level in effect
     brainCapabilities: null,
     computerEffective: st.computerUse === true,
@@ -154,8 +160,9 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     desktopActive: false,
     desktopProbe: false,
     routingProbe: false,
-    sessionTitle: String(session?.title || ''),  // the server's name (first prompt): history + notifications, never the tab
+    sessionTitle: String(session?.title || ''),  // the server's name (the user's rename, else the first prompt): history + notifications
   });
+  let recordName = userSessionTitle(session); // the name the session record holds as the user's ('' = never renamed)
   const controls = new Map(); // requestId → { card, origin, kind }
   // Cards answered here (requestId → card): one the server closed before the answer
   // arrived (control_cancelled after it) says so instead of keeping "Allowed".
@@ -253,6 +260,45 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
   /** Push the name to the tab; the host ignores it for renamed tabs and unchanged labels. */
   function syncTabLabel() {
     try { host.setLabel?.(st.title); } catch { /* ignore */ }
+  }
+
+  /** What the session record says about its name (a session view: the rename's answer, a broadcast, an attach). */
+  function applyRecordName(meta) {
+    if (!meta || typeof meta !== 'object' || !meta.title || (meta.id && meta.id !== sessionId)) return;
+    st.sessionTitle = String(meta.title);
+    recordName = userSessionTitle(meta);
+  }
+
+  /**
+   * A rename names the session, not this tab: it goes to the session record, which the Sessions
+   * menu and every other list read, through the page's one writer (`renames`). A host also calls
+   * setTitle when it mounts a renamed tab (`restored`): the name the record already holds is not
+   * written again, one it lacks (a rename made before the record kept names) is, and it never
+   * replaces a name on its way. "SynaBun" is no name: it is written only to take a rename back.
+   * `from` is the name the tab had before: a write that fails puts it back (renameFailed).
+   */
+  function saveRename(from, restored = false) {
+    if (destroyed || (restored && renames.pending(sessionId))) return;
+    renames.save(sessionId, st.title, {
+      from, recordName, recordTitle: st.sessionTitle, keepsRenames: st.features.rename === true, defaultTitle,
+      onSaved: applyRecordName,
+      onFailed: renameFailed,
+    });
+  }
+
+  /**
+   * A rename that did not reach the record: the tab goes back to the name the record answers to,
+   * in the host and in the label it saved, and the transcript says so. A name with nothing to go
+   * back to (a restored one, or the name the tab already shows) stays: the next mount sends it again.
+   */
+  function renameFailed({ name, back }) {
+    const previous = back || defaultTitle;
+    if (destroyed || previous === st.title) return;
+    st.userRenamed = previous !== defaultTitle;
+    st.title = previous;
+    try { host.setName?.(previous, st.userRenamed); } catch { /* ignore */ }
+    persist();
+    renderer.appendStatus(tt('assistant.status.renameFailed', 'Could not save the name “{name}”. The session is still called “{previous}”.', { name, previous }), 'warn');
   }
 
   /** Notifications say which conversation: the rename, else the session's first-prompt title. */
@@ -380,6 +426,20 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     return st.features.routing === true;
   }
 
+  // ── File links ──
+  // A link to a file the code editor can open opens it there (shared with the other panels): one listener
+  // for the transcript, whatever drew the message. A relative path is a path in the brain's project.
+  wireFileLinks(transcriptEl, {
+    cwd: () => st.brain?.project || '',
+    textLinks: 'a.file-link',
+    // A path the editor does not open keeps what a click on it did: it is copied.
+    copyPath: (link) => {
+      clipCopy((link.textContent || '').replace(/:\d+$/, ''));
+      link.style.opacity = '0.5';
+      setTimeout(() => { link.style.opacity = ''; }, 300);
+    },
+  });
+
   // ── Renderer ──
   const renderer = createRenderer(transcriptEl, {
     t,
@@ -391,10 +451,18 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     onReadRun: (runId) => readRun(runId),
     onEscalateRun: (runId, target) => escalateRun(runId, target),
     onMemoryClick: (id) => { if (id) emit('memory:open', { id }); },
+    // The greeting this conversation opens with (lib/greeting/ decides whether there is one): its id
+    // goes back with the first prompt, so the brain is told once what was said.
+    greeting: (slot) => (guestBlocked() ? null : mountGreeting(slot, {
+      surface: 'assistant', session: sessionId, cwd: st.brain?.project || null, t,
+      onOpenMemory: (id) => { if (id) emit('memory:open', { id }); },
+    }).then((greeting) => { greetingId = greeting?.id || null; return greeting; })),
     brainLabel: () => brainModelLabel(),
     onChangeRoutes: () => openRoutes(),
     onRouteEvent: (ev) => handleRouteCardEvent(ev),
     emptySuggestions: () => emptySuggestions(),
+    // "Choose a project" in the empty state is the toolbar's Working project field (asst-brain-picker.js).
+    mountEmptyProject: (slot) => picker.mountEmptyProject(slot),
     onSuggestion: (template) => composer.fillTemplate(template),
     heroOrigin: () => { try { return host.takeHeroOrigin?.() || null; } catch { return null; } },
     onMascotChange: () => director?.retarget(),
@@ -426,7 +494,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
   });
 
   function emptySuggestions() {
-    const project = st.brain.project ? basename(st.brain.project) : tt('assistant.empty.thisProject', 'this project');
+    const project = projectLabel(st.brain.project, cachedProjects()) || tt('assistant.empty.thisProject', 'this project');
     const list = [];
     if (computerAvailable()) list.push({ id: 'computer', label: tt('assistant.empty.suggestComputer', 'Use my Mac to…'), template: tt('assistant.empty.templateComputer', 'Use my Mac to {caret}') });
     list.push({ id: 'web', label: tt('assistant.empty.suggestWeb', 'Look up … on the web'), template: tt('assistant.empty.templateWeb', 'Look up {caret} on the web') });
@@ -457,8 +525,6 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
   director = createMascotDirector({
     getTarget: () => renderer.mascot(),
     caret: () => composer.caretPoint(),
-    setEnabled: (on) => renderer.setRigsEnabled(on),
-    isVisible: () => visible(),
     env: {
       input: (fn) => { const offPointer = onPointer(fn); const offKey = onKey(fn); return () => { offPointer(); offKey(); }; },
       lastInputAt,
@@ -495,6 +561,8 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     // Test density sits right after the permission mode; hidden on a server that does not know it.
     getTestDensity: () => testDensityView(),
     onTestDensity: (level) => setTestDensity(level),
+    // The registered projects arrived: their labels name the project in the fields and the "Fix … in" suggestion.
+    onProjects: () => { picker.render(); renderer.refreshEmpty(); },
   });
 
   const computerToggle = createComputerToggle(barGroups.computer, {
@@ -828,8 +896,8 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
   function applySessionMeta(meta) {
     if (!meta || typeof meta !== 'object') return;
     if (meta.id && meta.id !== sessionId) return;
-    // The server's title names the conversation (history, notifications), never the tab.
-    if (meta.title) st.sessionTitle = String(meta.title);
+    // The server's title names the conversation (history, notifications); the tab's name is the host's.
+    applyRecordName(meta);
     if (meta.brain && typeof meta.brain === 'object') {
       const next = normalizeBrain({ ...st.brain, ...meta.brain, provider: meta.brain.provider || meta.brain.brain || st.brain.provider });
       if (JSON.stringify(next) !== JSON.stringify(st.brain)) { st.brain = next; picker.render(); host.setBrain?.(next); persist(); }
@@ -853,6 +921,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
       if (typeof meta.features.routing === 'boolean') st.features.routing = meta.features.routing;
       if (typeof meta.features.computer === 'boolean') st.features.computer = meta.features.computer;
       if (typeof meta.features.testDensity === 'boolean') st.features.testDensity = meta.features.testDensity;
+      if (typeof meta.features.rename === 'boolean') st.features.rename = meta.features.rename;
     }
     if ('testDensityExplicit' in meta) st.testDensity = normalizeTestDensity(meta.testDensityExplicit, null);
     if (meta.testDensity) st.testDensityEffective = normalizeTestDensity(meta.testDensity);
@@ -929,7 +998,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
 
   function routeModeView() {
     const r = st.routing || {};
-    return { mode: normalizeRouteMode(st.routeMode, null) || r.mode || null, effectiveMode: r.effectiveMode, defaultMode: r.defaultMode };
+    return { mode: normalizeRouteMode(st.routeMode, null) || r.mode || null, effectiveMode: r.effectiveMode, defaultMode: r.defaultMode, askBelow: r.askBelow };
   }
 
   function setRouteMode(mode, { quiet = false } = {}) {
@@ -1204,6 +1273,10 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
       request_id: `q-${Date.now().toString(36)}-${(querySeq += 1)}`,
     };
     if (payload.images?.length) msg.images = payload.images.map(i => ({ base64: i.base64, mediaType: i.mediaType }));
+    // The typed words apart from long pastes (asst-composer.js): what the server may learn about the user from.
+    if (typeof payload.typed === 'string') msg.typed = payload.typed;
+    // The greeting shown when this conversation opened: echoed once, with the first prompt.
+    if (greetingId) { msg.greetingId = greetingId; greetingId = null; forgetGreeting('assistant', sessionId); }
     const row = renderer.appendUser(payload.display ?? payload.text, { images: payload.images, files: [...(payload.files || []), ...(payload.uploads || [])], memories: payload.memories });
     director.sent();
     sentQueries.set(msg.request_id, { payload, row });
@@ -1212,7 +1285,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     setRunning(true);
     sock.send(msg);
     // Name the conversation like the server will (its first prompt) — not the tab.
-    if (!st.sessionTitle || /^(?:SynaBun|Assistant(?: \d+)?)$/.test(st.sessionTitle)) {
+    if (!st.userRenamed && (!st.sessionTitle || /^(?:SynaBun|Assistant(?: \d+)?)$/.test(st.sessionTitle))) {
       const guess = String(payload.text || '').split('\n')[0].trim().slice(0, 60);
       if (guess) st.sessionTitle = guess;
     }
@@ -1256,7 +1329,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
         return true;
       case 'resume':
         if (parsed.sessionId) resume(parsed.sessionId);
-        else sock.send({ type: 'list_sessions' });
+        else renames.settled().then(() => { if (!destroyed) sock.send({ type: 'list_sessions' }); }); // a rename on its way is in the list
         return true;
       case 'stop':
         if (parsed.all) await stopAll();
@@ -1391,6 +1464,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     picker.render();
     host.setBrain?.(st.brain);
     persist();
+    if (before.project !== st.brain.project) renderer.refreshEmpty();
     if (meta.silent) return;
     if (meta.requiresSwitch) {
       const b = st.brain;
@@ -1400,7 +1474,6 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     } else if (before.permissionMode !== st.brain.permissionMode || !!before.planMode !== !!st.brain.planMode) {
       sock.send({ type: 'set_permission_mode', mode: st.brain.permissionMode, planMode: st.brain.planMode === true });
     }
-    if (before.project !== st.brain.project) renderer.refreshEmpty();
     patchAssistantSession(sessionId, { brain: st.brain }).catch((err) => {
       // Refused (a model disabled in Assistant → Models): undo, so the refused
       // brain is neither shown nor saved as the last used one — the next start
@@ -1408,6 +1481,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
       if (err?.code !== 'MODEL_DISABLED' || destroyed || st.brain !== applied) return;
       st.brain = before;
       picker.render();
+      if (applied.project !== before.project) renderer.refreshEmpty();
       host.setBrain?.(before);
       persist();
       if (!meta.requiresSwitch) renderer.appendError(err.message || String(err));
@@ -1418,7 +1492,8 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
   async function focusRun(runId) {
     if (!runId) return;
     focusAssistantRun(runId).catch(() => {});
-    try { await focusNativeLoopRun(runId); } catch { /* router not ready */ }
+    // The user's own Focus: a run whose tab was closed opens again.
+    try { await focusNativeLoopRun(runId, { reopen: true }); } catch { /* router not ready */ }
   }
 
   async function stopRun(runId) {
@@ -1649,6 +1724,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
       providerIcon,
       getBrain: () => st.brain,
       brainName: () => brainModelLabel(),
+      getRouting: () => st.routing,
       onToast: toast,
       onSaved: (routing) => {
         if (routing?.defaultMode) {
@@ -1701,7 +1777,8 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     e.stopPropagation();
     if (isMenuOpen(sessionsBtn)) { closeMenu(); return; }
     let list = [];
-    try { list = await listAssistantSessions(); } catch { /* server not ready */ }
+    // A rename still on its way to a record is in the list this opens: this tab's, another tab's, a closed one's.
+    try { await renames.settled(); list = await listAssistantSessions(); } catch { /* server not ready */ }
     if (!destroyed) showSessionsMenu(list);
   });
   function toggleDock() {
@@ -1789,6 +1866,8 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
       if (force) renderer.clear();
       if (Array.isArray(transcript) && transcript.length) renderer.renderTranscript(transcript);
       renderer.showEmpty(); // no-op once the transcript has rows
+      // A conversation with nothing in it yet may be greeted; a restored one never is.
+      if (Array.isArray(transcript) && !transcript.length && !(Number(meta?.turns) > 0)) renderer.offerGreeting();
       for (const run of (Array.isArray(data?.runs) ? data.runs : [])) dock.upsertRun(run);
     } catch (err) {
       console.warn('[assistant] could not restore the conversation', err);
@@ -1819,7 +1898,15 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     getBrain: () => st.brain,
     setBrain: (b, meta) => applyBrain(b, meta || { requiresSwitch: false, field: 'external' }),
     getTitle: () => st.title,
-    setTitle: (text) => { st.userRenamed = true; setTitle(text); },
+    /** A rename (the host's tab, float header or ✎), or with `restored` the name a host puts back when it mounts a renamed tab. */
+    setTitle: (text, { restored = false } = {}) => {
+      const next = String(text || '').trim();
+      if (!next) return;
+      const from = restored ? next : st.title; // a restored name has none to go back to
+      st.userRenamed = next !== defaultTitle; // the default name is no rename
+      setTitle(next);
+      saveRename(from, restored);
+    },
     isRunning: () => st.running,
     isConnected: () => st.connected,
     send: (text, extra = {}) => submit({ text: String(text ?? ''), images: extra.images || [], files: extra.files || [], uploads: extra.uploads || [], memories: extra.memories || [] }),
@@ -1834,12 +1921,12 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     insertText: (text) => composer.insertText(text),
     /** A file path from the explorer ("send to panel") → the composer, as inline code. */
     attachPath: (path) => { if (path) { composer.insertText(`\`${path}\` `); composer.focus(); } },
-    /** The server's name for the conversation (first prompt) — tooltips, never the tab label. */
+    /** The server's name for the conversation (the user's rename, else the first prompt): tooltips. */
     getConversationTitle: () => st.sessionTitle || '',
     getStatus: () => st.status || 'idle',
     focus: () => composer.focus(),
-    onShown: () => { syncTabLabel(); renderer.scrollEnd(true); if (visible()) composer.focus(); director.touch(); director.visibilityChanged(); },
-    onHidden: () => { closeMenu(); picker.close(); director.stopTyping(); director.visibilityChanged(); },
+    onShown: () => { syncTabLabel(); renderer.scrollEnd(true); if (visible()) composer.focus(); director.touch(); },
+    onHidden: () => { closeMenu(); picker.close(); director.stopTyping(); },
     counts: () => dock.counts(),
     destroy: ({ closeServer = false } = {}) => {
       if (destroyed) return;

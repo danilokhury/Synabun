@@ -234,6 +234,24 @@ async function probeNatives() {
   out.externalTools = inside.length
     ? { ok: false, error: `packaged, though the user installs them: ${inside.join(', ')}`, packaged: inside }
     : { ok: true, packaged: [] };
+
+  // cloudflared, the program behind the public address: the application finds the copy it came with, that copy
+  // is the pinned one, and it runs. Nothing is downloaded for this, and no tunnel is opened.
+  try {
+    const { createCloudflaredManager, probeCloudflaredVersion } = await load('neural-interface/lib/cloudflared/manager.js');
+    const manager = createCloudflaredManager({ findSystem: () => null, fetchImpl: async () => { throw new Error('diagnostics download nothing'); } });
+    const found = await manager.inspect();
+    if (found.source !== 'bundled') {
+      out.cloudflared = { ok: false, error: `the copy inside the application is missing or is not the pinned cloudflared ${found.pinned}`, pinned: found.pinned };
+    } else {
+      const version = await probeCloudflaredVersion((await manager.ensure()).path);
+      out.cloudflared = version === found.pinned
+        ? { ok: true, source: 'bundled', version }
+        : { ok: false, error: `it answers "${version ?? 'nothing'}" for its version, not ${found.pinned}`, pinned: found.pinned };
+    }
+  } catch (error) {
+    out.cloudflared = { ok: false, error: String(error?.message || error) };
+  }
   return out;
 }
 

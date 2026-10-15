@@ -18,10 +18,12 @@
 // Anything else is the renderer's pose: the hero idles, the "Thinking" row's
 // character thinks, the stage acts out its call. A pose the director sets is
 // held: the renderer leaves it alone until the director lets go and asks it
-// to restore its own. Only one panel animates its rigs: the visible one used
-// last (typing, focus, a new stage). Pure logic: the clock, timers and page
-// input come in through `env`, so node:test drives it with fakes
-// (tests/assistant-mascot.test.mjs).
+// to restore its own. A director knows its own panel only: nothing in this
+// module is shared between directors, so every open session dresses and
+// animates its own character at the same time as every other one (a rig that
+// is off screen parks itself: synabun-mascot.js). Pure logic: the clock,
+// timers and page input come in through `env`, so node:test drives it with
+// fakes (tests/assistant-mascot.test.mjs).
 
 export const MASCOT_TIMING = Object.freeze({
   watchEveryMs: 120,
@@ -60,32 +62,16 @@ export function lookToward(box, point, { horizontal = false } = {}) {
   return { x: unit((vx / d) * m), y: unit((vy / d) * m) };
 }
 
-// ── One panel animates: the visible one used last ──
-const directors = new Set();
-let lead = null;
-let seq = 0;
-
-function elect() {
-  let best = null;
-  for (const d of directors) if (d.visible() && (!best || d.activeAt() > best.activeAt())) best = d;
-  if (!best) for (const d of directors) if (!best || d.activeAt() > best.activeAt()) best = d;
-  if (best === lead) return;
-  const prev = lead;
-  lead = best;
-  prev?.leadChanged();
-  best?.leadChanged();
-}
-
 /**
- * createMascotDirector({ getTarget, caret, setEnabled, isVisible, env })
- * getTarget() → the renderer's visible mascot { kind: 'hero'|'stage', rig, el,
- *   parked?(), hold(on), restore() } or null; caret() → the caret's client
- *   point or null; setEnabled(on) → whether this panel's rigs animate;
- *   isVisible() → the panel is on screen.
+ * createMascotDirector({ getTarget, caret, env })
+ * getTarget() → the renderer's visible mascot { kind: 'hero'|'stage'|'working',
+ *   rig, el, parked?(), hold(on), restore() } or null; caret() → the caret's
+ *   client point or null.
  * env: { now, setTimeout, clearTimeout, input(fn) → unsubscribe (page pointer
  *   and key input), lastInputAt() }.
+ * All of its state is its own: one director per panel, any number at once.
  */
-export function createMascotDirector({ getTarget = () => null, caret = () => null, setEnabled = () => {}, isVisible = () => true, env = {} } = {}) {
+export function createMascotDirector({ getTarget = () => null, caret = () => null, env = {} } = {}) {
   const now = env.now || (() => Date.now());
   const later = env.setTimeout || ((fn, ms) => setTimeout(fn, ms));
   const cancel = env.clearTimeout || ((id) => clearTimeout(id));
@@ -108,7 +94,6 @@ export function createMascotDirector({ getTarget = () => null, caret = () => nul
   let sleepTimer = 0;
   let lastInput = now();
   let stopInput = null;
-  let activeAt = (seq += 1);
 
   const safe = (fn) => { try { return fn(); } catch { return undefined; } };
   const boxOf = (t) => safe(() => t.el?.getBoundingClientRect?.()) || null;
@@ -199,7 +184,6 @@ export function createMascotDirector({ getTarget = () => null, caret = () => nul
   /** The draft changed: `present` false (an empty draft) ends the watch. */
   function type(present = true) {
     if (destroyed) return;
-    touch();
     noteInput();
     if (!present) { stopTyping(); return; }
     const first = !typing;
@@ -237,27 +221,13 @@ export function createMascotDirector({ getTarget = () => null, caret = () => nul
     armSleep();
   }
 
-  function touch() {
-    activeAt = (seq += 1);
-    elect();
-  }
-
-  const self = {
-    visible: () => !destroyed && safe(isVisible) !== false,
-    activeAt: () => activeAt,
-    leadChanged() { if (!destroyed) safe(() => setEnabled(lead === self)); },
-  };
-  directors.add(self);
-  touch();
-  if (lead !== self) self.leadChanged();
-
   return {
     /** The draft changed (typing): the mascot watches the caret column. */
     type,
     /** Blur, or the draft went away. */
     stopTyping,
     /** A prompt went out: the watch hands over at once (the renderer gives the hero to the "Thinking" row). */
-    sent() { touch(); stopTyping(); },
+    sent() { stopTyping(); },
     /** A card waits on the user (`rectOf()` → its box), or none (null). */
     setBlocked(rectOf) {
       blocked = typeof rectOf === 'function' ? rectOf : null;
@@ -285,20 +255,12 @@ export function createMascotDirector({ getTarget = () => null, caret = () => nul
     },
     /** The turn ended with `pose` ('success' | 'error' | null): played once on the rig on screen. */
     turnEnded,
-    /** The renderer's visible mascot changed; a new stage makes this panel the one that animates. */
-    retarget() {
-      if (destroyed) return;
-      const t = safe(getTarget) || null;
-      if (t && t !== target && t.kind === 'stage') touch();
-      apply();
-    },
-    /** The user is here (focus, a click): this panel animates. */
-    touch() { touch(); noteInput(); },
-    /** The host showed or hid the panel. */
-    visibilityChanged() { elect(); },
-    isLead: () => lead === self,
+    /** The renderer's visible mascot changed. */
+    retarget() { apply(); },
+    /** The user is here (focus, a click): a sleeping hero wakes, the quiet starts over. */
+    touch() { if (!destroyed) noteInput(); },
     /** For tests and devtools: what the director holds right now. */
-    state: () => ({ target: target?.kind || null, pose: shown.split('|')[0] || null, typing, blocked: !!blocked, offline, sleeping, oneShot: oneShot?.pose || null, lead: lead === self }),
+    state: () => ({ target: target?.kind || null, pose: shown.split('|')[0] || null, typing, blocked: !!blocked, offline, sleeping, oneShot: oneShot?.pose || null }),
     destroy() {
       if (destroyed) return;
       if (target && holding) safe(() => target.hold(false));
@@ -306,8 +268,6 @@ export function createMascotDirector({ getTarget = () => null, caret = () => nul
       for (const id of [typingTimer, lookTimer, sleepTimer]) if (id) cancel(id);
       dropOneShot();
       if (stopInput) { safe(stopInput); stopInput = null; }
-      directors.delete(self);
-      if (lead === self) { lead = null; elect(); }
     },
   };
 }

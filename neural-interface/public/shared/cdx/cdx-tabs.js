@@ -13,6 +13,7 @@ import {
 } from './cdx-plan.js';
 import { fetchBlobNamespace, putBlob, deleteBlob, flushBlobs } from '../blob-store.js';
 import { state as appState, on as appOn } from '../state.js';
+import { forgetGreeting, mountGreeting } from '../greeting/greeting-card.js';
 import { fetchProjects, searchSessions } from '../api.js';
 import {
   getCodexModelName,
@@ -24,6 +25,8 @@ import { syncSidepanelLayout, focusSidepanel, isHostedSessionFocused } from '../
 import { notify, NOTIF_TYPE } from '../ui-notifications.js';
 import { createStickyScrollController } from '../ui-scroll-follow.js';
 import { requestGeneratedSessionTitle } from '../session-title.js';
+import { fileLinkText } from '../ui-file-links.js';
+import { WORKER_END_CLASS, backToAssistant, buildWorkerEndCard, endWorkerRunOnClose, forgetWorkerEnd } from '../ui-worker-end.js';
 import {
   CODEX_COMMANDS, CODEX_COMMAND_BY_NAME, parseCodexCommand, codexCommandHints,
   capabilityAvailability, latestCompletedCodexText, configValue, configRestriction,
@@ -467,6 +470,8 @@ function buildWsCallbacks(tab, options = {}) {
         clearTranscript();
       }
       restoreServerRequests(heldRequests);
+      // The history rebuilt the transcript: a dispatched worker's end card goes back at its end.
+      placeWorkerEnd(tab);
       if (options.historyOnly) {
         tab._automationHydrated = true;
         closeAutomationHistorySocket(tab);
@@ -1247,6 +1252,7 @@ function writeThreadSnapshot(tab, { force = false } = {}) {
   const accountId = String(tab.accountId || 'default');
   const snapshotNodes = [...messagesEl.children].filter((node) => (
     !node.classList?.contains('cxp-empty') && !node.classList?.contains('cxp-thinking')
+    && !node.classList?.contains(WORKER_END_CLASS)
   ));
   const ownsEveryNode = codexTranscriptNodesHaveOwnership(snapshotNodes, { threadId, accountId });
   if (!ownsEveryNode) {
@@ -1257,6 +1263,8 @@ function writeThreadSnapshot(tab, { force = false } = {}) {
   }
   const snapshotEl = messagesEl.cloneNode(true);
   stripMcpAppRuntime(snapshotEl);
+  // A worker's end card is drawn again from its run, never restored from markup.
+  snapshotEl.querySelectorAll(`.${WORKER_END_CLASS}`).forEach((node) => node.remove());
   const html = snapshotEl.innerHTML || '';
   if (!html.trim()) return;
   const ownedItemNodes = snapshotNodes.filter((node) => node.dataset?.itemId);
@@ -1506,6 +1514,11 @@ function storedAutoAccept() {
 function releaseAutomationForManualUse(tab = _boundTab) {
   const runId = detachTerminalCodexAutomation(tab, storedAutoAccept());
   if (!runId) return false;
+  // While the tab still shows the run's thread, the dock's Focus on the run raises it (cdx-panel.js).
+  tab.releasedRunId = runId;
+  forgetWorkerEnd(runId);
+  tab._workerEnd = null;
+  placeWorkerEnd(tab);
   window.dispatchEvent(new CustomEvent('native-loop:dismissed', { detail: { runId } }));
   if (isActiveTab(tab)) syncToolbarState();
   saveTabs();
@@ -2843,6 +2856,7 @@ export function createTab(saved = {}, { autoSwitch = true } = {}) {
     automationRunId,
     automationActive: !!saved.automationActive,
     automationOwnerId: saved.automationOwnerId || null,
+    releasedRunId: automationRunId ? null : (saved.releasedRunId || null),
   };
   tab.messagesEl = createMessagesEl(tab);
   tab.pillEl = createTrayPill(tab);
@@ -2870,15 +2884,18 @@ export function closeTab(idx, { detachAutomation = false } = {}) {
   const tab = _tabs[idx];
   teardownMcpApps(tab, 'Tab closed');
   if (tab.automationRunId && !detachAutomation) {
+    const runId = tab.automationRunId;
     window.dispatchEvent(new CustomEvent('native-loop:dismissed', {
-      detail: { runId: tab.automationRunId },
+      detail: { runId },
     }));
-    fetch('/api/loop/stop', {
+    // A worker that finished its task is completed; any other run is stopped.
+    endWorkerRunOnClose(runId, () => fetch('/api/loop/stop', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ runId: tab.automationRunId }),
-    }).catch(() => {});
+      body: JSON.stringify({ runId }),
+    }).catch(() => {}));
   }
+  if (tab.automationRunId) forgetWorkerEnd(tab.automationRunId);
   wsDisconnectTab(tab, { releaseWriter: !tabHasActiveWriterWork(tab) });
   tab.closed = true;
   tab.titleRequestController?.abort();
@@ -2921,6 +2938,31 @@ export function closeTab(idx, { detachAutomation = false } = {}) {
   }
   updateActiveTabView();
   saveTabs();
+}
+
+/**
+ * The end of a worker the Assistant dispatched (ui-worker-end.js), as
+ * `tab._workerEnd` says it: one card, the last node of the transcript, put
+ * back after a history render and never in a snapshot. Its button closes the
+ * tab the way the X does (a warm worker that finished its task is completed,
+ * one still at work is stopped; its record stays for the Assistant) and shows
+ * the Assistant session that dispatched it.
+ */
+export function placeWorkerEnd(tab) {
+  const messagesEl = tab?.messagesEl;
+  if (!messagesEl || tab.closed) return;
+  messagesEl.querySelectorAll(`:scope > .${WORKER_END_CLASS}`).forEach((node) => node.remove());
+  const view = tab._workerEnd;
+  if (!view) return;
+  messagesEl.appendChild(buildWorkerEndCard(view, {
+    classes: { card: 'cxp-worker-end', title: 'cxp-post-plan-header', detail: 'cxp-post-plan-note', button: 'cxp-request-btn' },
+    onBack: () => {
+      const idx = _tabs.indexOf(tab);
+      if (idx >= 0) closeTab(idx);
+      backToAssistant(view.assistantSessionId);
+    },
+  }));
+  if (isActiveTab(tab)) scrollEnd(true);
 }
 
 export function saveTabs() {
@@ -2977,6 +3019,7 @@ export function saveTabs() {
           automationRunId: tab.automationRunId || null,
           automationActive: !!tab.automationActive,
           automationOwnerId: tab.automationOwnerId || null,
+          releasedRunId: tab.releasedRunId || null,
         };
       });
     const localRunIds = new Set(localTabs.map((tab) => tab.automationRunId).filter(Boolean));
@@ -3097,6 +3140,34 @@ export function updateTrayPillRunning() {
 }
 
 
+// ── Greeting (shared/greeting/, lib/greeting/) ──
+// What SynaBun says when a person comes back and opens a new thread: one or two sentences in the
+// empty state, written by SynaBun ahead of time (the thread's model never greets). Only for the
+// bound tab while it holds no thread and shows no automation run; the short wait lets a tab that
+// was made for a run, or is restoring a thread, say so first. Its id goes back with the first
+// prompt (`greetingId`), so the model is told once what was said.
+function offerGreetingSoon() {
+  const tab = _boundTab;
+  if (!tab) return;
+  setTimeout(() => { try { offerGreeting(tab); } catch { /* a thread always opens */ } }, 300);
+}
+function offerGreeting(tab) {
+  if (tab !== _boundTab || tab.closed || _threadId || _running || _startingThread || tab.automationActive || tab.automationRunId) return;
+  const host = _messagesEl?.querySelector(':scope > .cxp-empty');
+  if (!host || host.style.display === 'none') return;
+  // "Restoring Codex thread…" / "Starting fresh Codex thread…": not an idle new thread.
+  if (host.querySelector('.cxp-empty-status')?.textContent) return;
+  const key = () => `${tab.id}.${tab.greetSeq || 0}`;
+  const session = key();
+  mountGreeting(host, {
+    surface: 'codex-panel', session, cwd: _project || tab.project || '',
+    onOpenMemory: (id) => { if (id) emit('memory:open', { id }); },
+    isCurrent: () => tab === _boundTab && !_threadId && session === key() && !!_messagesEl?.contains(host),
+  }).then((greeting) => {
+    if (session === key()) tab.greeting = greeting ? { id: greeting.id, session } : null;
+  }).catch(() => {});
+}
+
 // ── Thread state (lines 4711-5000) ──
 function hideEmpty() {
   const empty = _messagesEl?.querySelector('.cxp-empty');
@@ -3125,6 +3196,7 @@ export function clearTranscript(emptyText = freshThreadText()) {
   for (const child of [..._messagesEl.children]) retireMcpAppNode(child, () => child.remove());
   _messagesEl.insertAdjacentHTML('afterbegin', `<div class="cxp-empty"><div class="cxp-empty-logo">${OPENAI_ICON}</div><span class="cxp-empty-name">Codex</span><span class="cxp-empty-status"></span></div>`);
   document.dispatchEvent(new CustomEvent('cdx-empty-rebuilt'));
+  if (!emptyText) offerGreetingSoon();
   _items.clear();
   _requestCards.clear();
   _blockingServerRequests = new Map();
@@ -3285,6 +3357,8 @@ export function resetThreadState({ tone = 'ready', preserveStatus = false } = {}
   clearPostCompactionState(_boundTab, { updateTranscript: false });
   setSessionLabel('New session', { persist: false });
   if (!preserveStatus) setStatus(_project ? 'Fresh thread ready' : 'Select a project', tone);
+  // A new thread in the same tab is a new opening for the greeting.
+  if (_boundTab) { _boundTab.greetSeq = (_boundTab.greetSeq || 0) + 1; _boundTab.greeting = null; }
   clearTranscript();
   syncInputEnabled();
   syncSessionControls();
@@ -4954,6 +5028,14 @@ export function dispatchPrompt(prompt, { tab = activeTab(), images = null, paths
   };
   if (tab?.model) msg.model = tab.model;
   if (tab?.effort && tab.effort !== 'off') msg.effort = tab.effort;
+  // A person's own turn: the greeting engine keeps when they were last here. The greeting this
+  // tab opened with goes back once, with the first prompt of its new thread.
+  msg.human = true;
+  if (tab?.greeting?.id) {
+    if (msg.fresh) msg.greetingId = tab.greeting.id;
+    forgetGreeting('codex-panel', tab.greeting.session);
+    tab.greeting = null;
+  }
   if (imageList.length) {
     msg.images = imageList;
   }
@@ -7929,6 +8011,7 @@ export function initContextBridge() {
     withRequestTab: withTab,
     sendSocket,
     emit,
+    fileLinkText,
     activeTab,
     isActiveTab,
     dispatchPrompt,

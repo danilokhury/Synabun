@@ -28,16 +28,18 @@ import { getHiddenModels, HIDDEN_MODELS_EVENT, hiddenModelMatch } from '../ocp-h
 import { getProviderMeta } from '../provider-icons.js';
 import { on } from '../state.js';
 import { fetchAssistantCatalog, fetchProjects } from './asst-api.js';
-import { closeMenu, isMenuOpen, openMenu } from './asst-menu.js';
+import { closeMenu, currentMenu, isMenuOpen, openMenu } from './asst-menu.js';
 import {
   ACCOUNT_PROVIDERS,
   brainRequiresSwitch,
+  emptyProjectView,
   modelShortName,
   normalizeBrain,
   PERMISSION_MODES,
   PLAN_MODE_PROVIDERS,
   permissionModeLabel,
   PROVIDERS,
+  projectLabel,
   resolveBrainDefaults,
   TEST_DENSITIES,
   normalizeTestDensity,
@@ -45,6 +47,9 @@ import {
 } from './asst-state.js';
 
 let _projectsCache = null;
+
+/** SynaBun's registered projects as the last load saw them ([{ path, label }]; [] before the first). */
+export function cachedProjects() { return _projectsCache || []; }
 
 const ICON_FOLDER = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
 const ICON_SHIELD = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 5 6v5c0 4.5 3 8 7 10 4-2 7-5.5 7-10V6z"/></svg>';
@@ -114,6 +119,9 @@ let _catalog = null;
 let _catalogAt = 0;
 let _catalogPartial = false; // built without the server's catalog (no context variants)
 let _catalogLoading = null;
+let _catalogEpoch = 0;      // bumped by every invalidation: a load that began before it is not kept
+let _catalogForceNext = false; // the lists changed: the next load asks the server for a new build
+const _catalogListeners = new Set();
 const CATALOG_TTL_MS = 60_000;
 
 function trimNumber(n) {
@@ -172,11 +180,16 @@ let _hidden = { 'claude-code': new Set(), codex: new Set(), opencode: new Set() 
 
 function hiddenSets(remote) {
   const out = {};
+  // Entries with a pin record (an alias hidden as the model it named then): each hides its own row only.
+  const rowOnly = {};
   for (const provider of PROVIDERS) {
     const list = Array.isArray(remote?.hidden?.[provider]) ? remote.hidden[provider] : [];
     out[provider] = new Set(list.map(id => String(id).toLowerCase()));
+    const pins = remote?.hiddenPins?.[provider];
+    rowOnly[provider] = new Set(pins && typeof pins === 'object' ? Object.keys(pins).map(id => id.toLowerCase()) : []);
   }
   out.opencode = new Set([...(out.opencode || []), ...hiddenOpencodeIds(remote)]);
+  out.rowOnly = rowOnly;
   return out;
 }
 
@@ -185,6 +198,9 @@ function hiddenSets(remote) {
  * id, or the model it resolves to at the same context window ("opus[1m]" →
  * "claude-opus-5-5[1m]"); "opus" and "opus[1m]" hide independently. OpenCode:
  * full or bare id (this window's Settings → OpenCode mirror counts too).
+ * A hidden alias hides the model it named when it was hidden, and the server
+ * keeps the list true to that (an alias that moved to another model is taken
+ * off it); such an entry hides its own row only, never through `resolved`.
  */
 export function hiddenModelFor(provider, id, { resolved = null, sets = _hidden } = {}) {
   const want = String(id || '').trim().toLowerCase();
@@ -195,22 +211,87 @@ export function hiddenModelFor(provider, id, { resolved = null, sets = _hidden }
   const suffix = (want.match(/\[(1m|extended)\]$/) || [''])[0];
   const up = String(resolved || '').trim().toLowerCase().replace(/\[(1m|extended)\]$/, '');
   const key = up ? `${up}${suffix}` : '';
-  return key && key !== want && list.has(key) ? key : null;
+  return key && key !== want && list.has(key) && !sets.rowOnly?.[provider]?.has(key) ? key : null;
 }
 
 /**
- * { 'claude-code': [...], codex: [...], opencode: [...] } — the runtime option
- * lists the sidepanels use, enriched with tier/vision/price from
- * GET /api/assistant/catalog (which alone is used when a local list is empty).
- * Models the user hid (Assistant → Models, and Settings → OpenCode for
- * OpenCode) never appear, from either list.
+ * One provider's menu rows. Which models exist is the server catalog's word: it
+ * is built from the list the provider's own selector reads, with the models the
+ * user hid already left out. The window's runtime list (`local`) only adds what
+ * the catalog does not carry (the tagline, the default / top tag, a legacy
+ * selector). It stands in for the catalog only when the catalog has no row for
+ * the provider (request failed, older server, provider not answering there), or
+ * holds the provider's static stand-in while this window has a verified list.
+ */
+export function mergeProviderModels(provider, remoteList, localList, { sets = _hidden, remoteSource = null } = {}) {
+  const remote = (Array.isArray(remoteList) ? remoteList : []).filter(m => m?.id);
+  const local = (Array.isArray(localList) ? localList : []).filter(m => m?.id || m?.model);
+  const localVerified = local.length > 0 && !local.some(m => m.catalogSource === 'fallback');
+  const out = [];
+  const seen = new Set();
+  const push = (m) => { if (m && !seen.has(m.id)) { seen.add(m.id); out.push(m); } };
+  if (remote.length && !(remoteSource === 'fallback' && localVerified)) {
+    const own = new Map(local.map(m => [String(m.id || m.model), m]));
+    for (const r of remote) {
+      if (hiddenModelFor(provider, r.id, { resolved: r.upstream || null, sets })) continue;
+      const mine = own.get(String(r.id)) || null;
+      // The catalog row first. What it does not carry (an older server, a row with no
+      // label or effort list) is read from the window's row for the same id.
+      const row = normalizeCatalogModel(
+        { ...r, desc: mine?.desc || r.desc || r.description || '', tier: mine?.tier || r.tier || null, upstream: r.upstream || mine?.resolvedModel || null },
+        mine ? {
+          label: mine.label || mine.displayName || '', efforts: modelEffortIds(mine) || undefined, contextWindow: mine.contextWindow || null,
+          defaultEffort: mine.defaultEffort || mine.defaultReasoningEffort || null, isDefault: mine.isDefault,
+        } : {},
+      );
+      if (row) row.selector = mine ? (modelSelectorValue(mine) || row.id) : row.id;
+      push(row);
+    }
+    return out;
+  }
+  const byId = new Map(remote.map(m => [String(m.id), m]));
+  for (const m of local) {
+    const extra = byId.get(String(m?.id)) || {};
+    if (hiddenModelFor(provider, m.id || m.model, { resolved: extra.upstream || m.resolvedModel || null, sets })) continue;
+    push(normalizeCatalogModel(m, extra));
+  }
+  return out;
+}
+
+/**
+ * The catalog's empty list for `provider` is its answer, not a gap: the list was
+ * read (`sources`: live, or the last verified one) and the provider said it has
+ * no model (`known`: OpenCode with nothing connected) or listed some and the
+ * user hid every one (`listed`). Not an answer: no list or no `sources` (request
+ * failed, an older server), a provider that did not answer ('unavailable'), and
+ * the server's static stand-in while this window holds a verified list (the
+ * same precedence as mergeProviderModels).
+ */
+function catalogSaysNone(remote, provider, local) {
+  const rows = remote?.models?.[provider];
+  if (!Array.isArray(rows) || rows.length) return false;
+  const source = remote.sources?.[provider];
+  if (source !== 'live' && source !== 'stale' && source !== 'fallback') return false;
+  if (!(Number(remote.listed?.[provider]) > 0) && remote.known?.[provider] !== true) return false;
+  return !(source === 'fallback' && local.length > 0 && !local.some(m => m.catalogSource === 'fallback'));
+}
+
+/**
+ * { 'claude-code': [...], codex: [...], opencode: [...] }: the models of every
+ * Assistant model menu and of the Routes editor, from GET /api/assistant/catalog
+ * (see mergeProviderModels). Models the user hid (Assistant → Models, and
+ * Settings → OpenCode for OpenCode) never appear. `force` asks the server for a
+ * new build instead of its cached one.
  */
 export async function loadModelCatalog({ force = false } = {}) {
   if (!force && _catalog && Date.now() - _catalogAt < CATALOG_TTL_MS) return _catalog;
   if (_catalogLoading) return _catalogLoading;
+  const epoch = _catalogEpoch;
+  const serverForce = force || _catalogForceNext;
+  _catalogForceNext = false;
   _catalogLoading = (async () => {
     const [remote] = await Promise.all([
-      fetchAssistantCatalog().catch(() => null),
+      fetchAssistantCatalog({ force: serverForce }).catch(() => null),
       ...PROVIDERS.map(p => Promise.resolve(ensureModelsForProfile(p, force)).catch(() => [])),
     ]);
     const out = {};
@@ -218,36 +299,16 @@ export async function loadModelCatalog({ force = false } = {}) {
     const sets = remote ? hiddenSets(remote) : { ..._hidden, opencode: new Set([...(_hidden.opencode || []), ...hiddenOpencodeIds(null)]) };
     _hidden = sets;
     for (const provider of PROVIDERS) {
-      const remoteList = Array.isArray(remote?.models?.[provider]) ? remote.models[provider] : [];
-      const byId = new Map(remoteList.filter(m => m?.id).map(m => [String(m.id), m]));
       const local = getModelsForProfile(provider) || [];
-      const source = local.length ? local : remoteList;
-      const seen = new Set();
-      out[provider] = source.map(m => normalizeCatalogModel(m, byId.get(String(m?.id)) || {})).filter((m) => {
-        if (!m || seen.has(m.id)) return false;
-        const extra = byId.get(String(m.id)) || {};
-        if (hiddenModelFor(provider, m.id, { resolved: extra.upstream || m.resolvedModel || null, sets })) return false;
-        seen.add(m.id);
-        return true;
-      });
-      // Context variants ("opus[1m]", "gpt-x[extended]") the local list lacks: the
-      // catalog lists every one, each right after its base model.
-      if (provider !== 'opencode' && source !== remoteList) {
-        for (const r of remoteList) {
-          if (!/\[(1m|extended)\]$/i.test(String(r?.id || '')) || seen.has(String(r.id))) continue;
-          if (hiddenModelFor(provider, r.id, { resolved: r.upstream || null, sets })) continue;
-          const m = normalizeCatalogModel(r, r);
-          if (!m) continue;
-          seen.add(m.id);
-          const base = String(r.id).replace(/\[(1m|extended)\]$/i, '');
-          const at = out[provider].findIndex(x => x.id === base);
-          if (at >= 0) out[provider].splice(at + 1, 0, m); else out[provider].push(m);
-        }
-      }
+      // An empty list the catalog vouches for is its answer: the window's own rows do not stand in for it.
+      out[provider] = catalogSaysNone(remote, provider, local)
+        ? []
+        : mergeProviderModels(provider, remote?.models?.[provider], local, { sets, remoteSource: remote?.sources?.[provider] || null });
     }
     _catalog = out;
-    // Built without the server's catalog: not cached, the next open asks again.
-    _catalogAt = remote ? Date.now() : 0;
+    // Not kept when built without the server's catalog, or when the lists changed
+    // while it loaded: the next open asks again.
+    _catalogAt = remote && epoch === _catalogEpoch ? Date.now() : 0;
     _catalogPartial = !remote;
     return out;
   })().finally(() => { _catalogLoading = null; });
@@ -256,6 +317,11 @@ export async function loadModelCatalog({ force = false } = {}) {
 
 /** The last loadModelCatalog() result, synchronously (null before the first load). */
 export function cachedModelCatalog() { return _catalog; }
+
+/** UI metadata from the same catalog load; no second list or extra endpoint. */
+export function modelCatalogStatus() {
+  return { partial: _catalogPartial, hiddenCounts: Object.fromEntries(PROVIDERS.map(provider => [provider, _hidden[provider]?.size || 0])) };
+}
 
 /** The catalog row for provider/model (covers "[1m]" / "[extended]" ids), else null. */
 export function catalogModelRow(provider, model, catalog = _catalog) {
@@ -268,6 +334,27 @@ export function invalidateModelCatalog() {
   _catalog = null;
   _catalogAt = 0;
   _catalogPartial = false;
+  _catalogEpoch += 1;
+}
+
+/**
+ * Tells `listener` whenever the lists behind loadModelCatalog() changed: a model
+ * hidden or shown, a provider listing other models (the server's
+ * `assistant:catalog-changed`), an OpenCode provider connected or removed. The
+ * cache is already dropped when it is called. Returns the function that stops it.
+ */
+export function onModelCatalogChange(listener) {
+  if (typeof listener !== 'function') return () => {};
+  _catalogListeners.add(listener);
+  return () => { _catalogListeners.delete(listener); };
+}
+
+function modelListsChanged() {
+  invalidateModelCatalog();
+  _catalogForceNext = true;
+  for (const listener of [..._catalogListeners]) {
+    try { listener(); } catch { /* a listener's failure is its own */ }
+  }
 }
 
 /**
@@ -289,19 +376,25 @@ export function resolvableModels(provider, keep = '', catalog = _catalog) {
   return hiddenModelFor(provider, keep) || unsure ? [...rows, { id: keep, selector: keep }] : rows;
 }
 
-// A Settings → OpenCode checkbox or an Assistant → Models toggle (this window, or another via sync).
-if (typeof document !== 'undefined') document.addEventListener(HIDDEN_MODELS_EVENT, invalidateModelCatalog);
-on('sync:opencode:hidden-models-changed', invalidateModelCatalog);
-on('sync:assistant:hidden-models-changed', invalidateModelCatalog);
+// A Settings → OpenCode checkbox or an Assistant → Models toggle (this window, or another via
+// sync), an OpenCode provider connected or removed in Settings, a provider listing other models.
+if (typeof document !== 'undefined') {
+  document.addEventListener(HIDDEN_MODELS_EVENT, modelListsChanged);
+  document.addEventListener('ocp-providers-changed', modelListsChanged);
+}
+on('sync:opencode:hidden-models-changed', modelListsChanged);
+on('sync:assistant:hidden-models-changed', modelListsChanged);
+on('sync:assistant:catalog-changed', modelListsChanged);
 
 function sameModel(selected, m) {
   if (!selected) return false;
   return selected === m.id || selected === m.selector;
 }
 
-function modelDesc(m, tr) {
+function modelDesc(m, tr, showUnknown = false) {
   return [
-    m.ctxLabel, m.desc, fmtModelPrice(m.price), m.vision === true ? tr('assistant.brain.vision', 'vision') : '',
+    m.ctxLabel || (showUnknown ? m.contextWindow ? tr('assistant.routes.menu.contextTokens', '{count} tokens', { count: m.contextWindow.toLocaleString() }) : tr('assistant.routes.menu.contextUnknown', 'Context unknown') : ''), m.desc,
+    fmtModelPrice(m.price) || (showUnknown ? tr('assistant.routes.menu.priceUnknown', 'Price unknown') : ''), m.vision === true ? tr('assistant.brain.vision', 'vision') : '',
     m.outputs?.image === true ? tr('assistant.brain.imageOut', 'makes images') : '',
     m.outputs?.video === true ? tr('assistant.brain.videoOut', 'makes video') : '',
   ].filter(Boolean).join(' · ');
@@ -331,9 +424,19 @@ export async function openModelMenu(anchor, opts = {}) {
   const tr = tf(t);
   const b = normalizeBrain(brain);
   anchor.setAttribute('aria-busy', 'true');
+  // Open immediately: a slow provider still has a visible, cancellable state.
+  const loading = opts.routingEditor ? openMenu(anchor, {
+    title, className: 'asst-model-menu asst-route-model-menu',
+    items: [{ kind: 'info', label: tr('assistant.routes.editorState.loadingModels', 'Loading models…') }],
+    width: 380, zIndex: opts.zIndex ?? null, repositionOnResize: true,
+  }) : null;
+  if (loading) loading.el.setAttribute('aria-busy', 'true');
+  if (loading) { loading.el.setAttribute('role', 'dialog'); anchor.setAttribute('aria-haspopup', 'dialog'); }
   let catalog = {};
-  try { catalog = await loadModelCatalog(); } catch { catalog = {}; } finally { anchor.removeAttribute('aria-busy'); }
-  if (!anchor.isConnected) return null;
+  let failed = false;
+  try { catalog = await loadModelCatalog({ force: opts.forceReload === true }); } catch { failed = true; } finally { anchor.removeAttribute('aria-busy'); }
+  if (!anchor.isConnected || (loading && currentMenu() !== loading.el)) return null;
+  const metadata = modelCatalogStatus();
   const items = [];
   if (includeHere) {
     items.push({ kind: 'radio', id: '__here', label: hereLabel || tr('assistant.routes.brainDecides', 'Let the brain decide'), selected: !current, onSelect: () => onSelect?.({ here: true }) });
@@ -342,26 +445,30 @@ export async function openModelMenu(anchor, opts = {}) {
   let listed = 0;
   for (const provider of list) {
     const models = (catalog[provider] || []).filter(m => typeof accept !== 'function' || accept(provider, m));
-    if (!models.length) continue;
+    if (!models.length && !opts.routingEditor) continue;
     listed += models.length;
     const meta = getProviderMeta(provider);
-    const note = warnSwitch && provider !== b.provider ? tr('assistant.brain.newConversation', 'starts a new conversation') : '';
+    const hiddenCount = metadata.hiddenCounts[provider] || 0;
+    const note = opts.routingEditor ? tr('assistant.routes.menu.hiddenCount', '{count} hidden in Models', { count: hiddenCount }) : warnSwitch && provider !== b.provider ? tr('assistant.brain.newConversation', 'starts a new conversation') : '';
     items.push({ kind: 'header', label: meta.label, icon: meta.icon, color: meta.color, note });
     for (const m of models) {
       items.push({
         kind: 'radio',
         id: `${provider}:${m.id}`,
         label: m.label,
-        desc: modelDesc(m, tr),
+        desc: modelDesc(m, tr, opts.routingEditor),
+        title: `${m.label || m.id} · ${m.id}`,
         tag: tierTag(m, tr),
         keywords: `${meta.label} ${m.id}`,
         selected: !!current && current.provider === provider && sameModel(current.model, m),
         onSelect: () => onSelect?.({ provider, model: m.id, label: m.label, tier: m.tier || null, vision: m.vision ?? null, outputs: m.outputs || null, efforts: m.efforts || null, price: m.price || null }),
       });
     }
+    if (opts.routingEditor && !models.length) items.push({ kind: 'info', label: typeof accept === 'function' ? tr('assistant.routes.menu.noCompatible', 'No compatible models shown for this provider.') : tr('assistant.routes.menu.providerEmpty', 'No models shown for this provider.') });
   }
   // Nothing passes the filter (e.g. no model makes video yet): say so instead of an empty list.
   if (!listed && typeof accept === 'function' && emptyLabel) items.push({ kind: 'info', label: emptyLabel });
+  if (opts.routingEditor && !listed && typeof accept !== 'function') items.push({ kind: 'info', label: tr('assistant.routes.editorState.modelsEmpty', 'No models are available. Check Models or connect a provider, then reload.') });
   if (allowCustom) {
     items.push({ kind: 'separator' });
     items.push({
@@ -378,20 +485,53 @@ export async function openModelMenu(anchor, opts = {}) {
       },
     });
   }
-  if (typeof opts.onManageModels === 'function') {
+  if (!opts.routingEditor && typeof opts.onManageModels === 'function') {
     items.push({ id: '__manage_models', label: tr('assistant.models.manage', 'Manage models…'), onSelect: () => opts.onManageModels() });
   }
-  return openMenu(anchor, {
+  const menu = openMenu(anchor, {
     title: title || tr('assistant.brain.model', 'Model'),
     items,
     filter: true,
     filterPlaceholder: tr('assistant.brain.filterModels', 'Filter models…'),
     placement,
-    width: 300,
+    width: opts.routingEditor ? 380 : 300,
     role: 'menu',
-    className: 'asst-model-menu',
+    className: `asst-model-menu${opts.routingEditor ? ' asst-route-model-menu' : ''}`,
     zIndex: opts.zIndex ?? null,
+    repositionOnResize: opts.routingEditor === true,
+    filterEmptyLabel: tr('assistant.routes.menu.noMatches', 'No matching models. Check Models for hidden choices.'),
   });
+  if (opts.routingEditor && menu) {
+    // Search and a custom-id input belong to a dialog; choices are a radio group.
+    // A menu role cannot contain these form fields or recovery buttons.
+    menu.el.setAttribute('role', 'dialog');
+    anchor.setAttribute('aria-haspopup', 'dialog');
+    const choices = menu.list.querySelectorAll('[role="menuitemradio"]');
+    for (const choice of choices) choice.setAttribute('role', 'radio');
+    const groupRole = () => {
+      const visible = [...choices].filter(n => !n.hidden);
+      const focusChoice = visible.find(n => n.getAttribute('aria-checked') === 'true') || visible[0];
+      for (const choice of choices) choice.tabIndex = choice === focusChoice ? 0 : -1;
+      menu.list.setAttribute('role', visible.length ? 'radiogroup' : 'group');
+      menu.list.setAttribute('aria-labelledby', `${menu.el.id}-title`);
+    };
+    groupRole(); menu.el.querySelector('.asst-dd-filter')?.addEventListener('input', groupRole);
+    // Outside the filter's scroller: recovery stays visible, including zero results.
+    const footer = document.createElement('div'); footer.className = 'asst-route-menu-foot';
+    const note = document.createElement('div'); note.className = 'asst-dd-info';
+    note.textContent = failed || metadata.partial ? tr('assistant.routes.menu.failed', 'Model list could not be refreshed. Provider lists may be out of date.') : tr('assistant.routes.menu.hiddenHelp', 'Missing a model? Your Models list controls what is shown.');
+    note.setAttribute('role', 'status'); footer.append(note);
+    const customInput = menu.list.querySelector('.asst-dd-input');
+    if (customInput) footer.append(customInput);
+    for (const [label, action] of [
+      ...(typeof opts.onManageModels === 'function' ? [[tr('assistant.models.manage', 'Manage models…'), () => { closeMenu(); opts.onManageModels(); }]] : []),
+      [tr('assistant.routes.reloadModels', 'Reload models'), () => { closeMenu(); openModelMenu(anchor, { ...opts, forceReload: true }); }],
+    ]) {
+      const button = document.createElement('button'); button.type = 'button'; button.className = 'asst-dd-item'; button.tabIndex = -1; button.textContent = label; button.addEventListener('click', action); footer.append(button);
+    }
+    menu.el.append(footer); menu.reposition();
+  }
+  return menu;
 }
 
 // ── Picker ──────────────────────────────────────────────────────────────────
@@ -410,7 +550,8 @@ const FIELD_GROUP = { model: 'brain', effort: 'brain', variant: 'brain', mode: '
  *          onAddAccount(provider), onManageAccounts(provider), onToast(text),
  *          getMenuAnchor() → fallback anchor (the toolbar "⋯"),
  *          menuPlacement: 'below' (default) | 'above' | 'auto',
- *          getTestDensity() → level | null (null hides the field), onTestDensity(level) }
+ *          getTestDensity() → level | null (null hides the field), onTestDensity(level),
+ *          onProjects(projects) — the registered projects were (re)loaded }
  */
 export function createBrainPicker(host, hooks = {}) {
   const t = tf(hooks.t);
@@ -439,6 +580,8 @@ export function createBrainPicker(host, hooks = {}) {
 
   let destroyed = false;
   let loading = null;
+  // The empty state's "Choose a project" (mountEmptyProject): the project field's second button.
+  let heroProject = null;
 
   function currentBrain() {
     return normalizeBrain(hooks.getBrain?.());
@@ -503,7 +646,7 @@ export function createBrainPicker(host, hooks = {}) {
         : (level ? level.label : (brain.effort || t('assistant.brain.effortOff', 'off'))),
       variantSupported: brain.provider === 'opencode' && hasEfforts,
       variant: level ? level.label : (brain.effort || t('assistant.brain.variantDefault', 'default variant')),
-      project: brain.project ? basename(brain.project) : t('assistant.brain.projectHome', 'Home'),
+      project: brain.project ? projectLabel(brain.project, _projectsCache || []) : t('assistant.brain.projectHome', 'Home'),
       mode: permissionModeLabel(brain, (id, fallback) => t(`assistant.brain.modes.${id}`, fallback)),
       mcp: presets[brain.mcpProfile]?.label || brain.mcpProfile || 'full',
       account: ACCOUNT_PROVIDERS.has(brain.provider) ? accountLabel(brain) : '',
@@ -555,6 +698,53 @@ export function createBrainPicker(host, hooks = {}) {
     setBtn('tests', { label: testsLabel, icon: testsIcon(testDensityBars(tests)), hidden: !tests, tooltip: `${t('assistant.tests.title', 'Test density')}: ${testsLabel}` });
     if (tests) buttons.tests.dataset.level = tests; else delete buttons.tests.dataset.level;
     setBtn('mcp', { label: v.mcp, icon: ICON_PLUG, tooltip: `${t('assistant.brain.mcp', 'MCP tool profile')}: ${v.mcp}` });
+    renderEmptyProject(brain);
+  }
+
+  function renderEmptyProject(brain = currentBrain()) {
+    const btn = heroProject;
+    if (!btn) return;
+    const view = emptyProjectView(brain.project, _projectsCache || [], t);
+    btn.dataset.chosen = view.chosen ? '1' : '0';
+    const key = btn.querySelector('.asst-empty-project-key');
+    key.textContent = view.key;
+    key.hidden = !view.key;
+    btn.querySelector('.asst-dd-label').textContent = view.label;
+    if (view.title) btn.setAttribute('data-tooltip', view.title); else btn.removeAttribute('data-tooltip');
+    btn.setAttribute('aria-label', view.aria);
+  }
+
+  /**
+   * The empty state's project picker, in `slot` (asst-render.js): one more
+   * button for the project field, drawn by render() like the toolbar's and
+   * opening the same menu, so the two always show the same project. A pick
+   * sends focus back to it. A new slot replaces the last one; null removes it.
+   */
+  function mountEmptyProject(slot) {
+    heroProject?.remove();
+    heroProject = null;
+    if (destroyed || !slot || typeof slot.appendChild !== 'function') return null;
+    const btn = el('button', 'asst-dd asst-empty-project-btn');
+    btn.type = 'button';
+    btn.dataset.field = 'project';
+    btn.setAttribute('aria-haspopup', 'menu');
+    btn.setAttribute('aria-expanded', 'false');
+    // glyph | seam | "Project" + name | caret: the field's capsule at the suggestions' md size.
+    const icon = el('span', 'asst-icon');
+    icon.innerHTML = ICON_FOLDER;
+    const caret = el('span', 'asst-dd-caret');
+    caret.innerHTML = ICON_CARET;
+    for (const part of [icon, caret]) part.setAttribute('aria-hidden', 'true');
+    btn.append(icon, el('span', 'asst-empty-project-key'), el('span', 'asst-dd-label'), caret);
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (isMenuOpen(btn)) { closeMenu(); return; }
+      openField('project', btn, { restoreFocus: true });
+    });
+    slot.appendChild(btn);
+    heroProject = btn;
+    renderEmptyProject();
+    return btn;
   }
 
   /** Current values for the toolbar "⋯" menu (fields hidden inline stay reachable there). */
@@ -590,7 +780,12 @@ export function createBrainPicker(host, hooks = {}) {
     if (provider === 'codex') jobs.push(fetchCodexAccounts(force));
     if (provider === 'claude-code') jobs.push(fetchClaudeAccounts(force));
     if (provider === 'opencode') jobs.push(fetchOpencodeAgents(force));
-    if (!_projectsCache || force) jobs.push(fetchProjects().then((p) => { _projectsCache = p; }).catch(() => { _projectsCache = _projectsCache || []; }));
+    if (!_projectsCache || force) {
+      jobs.push(fetchProjects().then((p) => {
+        _projectsCache = p;
+        if (!destroyed) { try { hooks.onProjects?.(p); } catch { /* the host's own failure */ } }
+      }).catch(() => { _projectsCache = _projectsCache || []; }));
+    }
     await Promise.allSettled(jobs);
   }
 
@@ -615,8 +810,11 @@ export function createBrainPicker(host, hooks = {}) {
     return fallback || btn || root;
   }
 
-  /** Open a field menu; `anchorOverride` (e.g. the toolbar "⋯") when the inline button is hidden. */
-  async function openField(field, anchorOverride = null) {
+  /**
+   * Open a field menu; `anchorOverride` (e.g. the toolbar "⋯") when the inline
+   * button is hidden. `restoreFocus`: a pick sends focus back to the anchor.
+   */
+  async function openField(field, anchorOverride = null, { restoreFocus = false } = {}) {
     const anchor = anchorFor(field, anchorOverride);
     const brain = currentBrain();
     if (field === 'model') {
@@ -708,10 +906,10 @@ export function createBrainPicker(host, hooks = {}) {
 
     if (field === 'project') {
       const projects = _projectsCache || [];
-      const items = [{ kind: 'radio', id: '', label: t('assistant.brain.projectNone', 'Home directory'), desc: t('assistant.brain.projectNoneDesc', 'no project'), selected: !brain.project, onSelect: () => commit({ project: null }, 'project') }];
-      for (const p of projects) items.push({ kind: 'radio', id: p.path, label: p.label || basename(p.path), desc: p.path, selected: p.path === brain.project, onSelect: () => commit({ project: p.path }, 'project') });
+      const items = [{ kind: 'radio', id: '', label: t('assistant.brain.projectNone', 'Home directory'), desc: t('assistant.brain.projectNoneDesc', 'no project'), selected: !brain.project, restoreFocus, onSelect: () => commit({ project: null }, 'project') }];
+      for (const p of projects) items.push({ kind: 'radio', id: p.path, label: p.label || basename(p.path), desc: p.path, selected: p.path === brain.project, restoreFocus, onSelect: () => commit({ project: p.path }, 'project') });
       items.push({ kind: 'separator' });
-      items.push({ kind: 'input', placeholder: t('assistant.brain.projectCustom', 'Type a directory path…'), value: brain.project && !projects.some(p => p.path === brain.project) ? brain.project : '', onSubmit: (v) => commit({ project: v }, 'project') });
+      items.push({ kind: 'input', placeholder: t('assistant.brain.projectCustom', 'Type a directory path…'), value: brain.project && !projects.some(p => p.path === brain.project) ? brain.project : '', restoreFocus, onSubmit: (v) => commit({ project: v }, 'project') });
       menu(t('assistant.brain.project', 'Working project'), items, { width: 280, filter: projects.length > 8, filterPlaceholder: t('assistant.brain.filterProjects', 'Filter projects…') });
       return;
     }
@@ -788,8 +986,9 @@ export function createBrainPicker(host, hooks = {}) {
     openField,
     fieldSummary,
     modelLabel: () => modelLabel(),
+    mountEmptyProject,
     setBrain() { render(); },
     close: closeMenu,
-    destroy() { destroyed = true; closeMenu(); Object.values(buttons).forEach((b) => b.remove()); root.remove(); },
+    destroy() { destroyed = true; closeMenu(); Object.values(buttons).forEach((b) => b.remove()); heroProject?.remove(); heroProject = null; root.remove(); },
   };
 }

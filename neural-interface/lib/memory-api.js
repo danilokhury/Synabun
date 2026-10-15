@@ -99,6 +99,15 @@ export function filterInjected(results, { caller, session, generation } = {}, co
   if (seen.size > 500) seen.delete(seen.values().next().value);
   return fresh;
 }
+/**
+ * Record memories as already in an Assistant conversation's context (its user-context digest, a
+ * nudge or a cue: lib/assistant-user-context.js), in the same ledger automatic recall reads: they
+ * are not injected again in that context generation.
+ */
+export function markInjected(rows, { session, generation } = {}) {
+  const list = (Array.isArray(rows) ? rows : []).filter(r => r && r.id).map(r => ({ id: r.id, revision: r.revision }));
+  if (list.length) filterInjected(list, { caller: 'assistant', session, generation });
+}
 function input(body) {
   if (typeof body?.query !== 'string' || !body.query.trim() || body.query.length > 16000) throw new Error('query must be non-empty text of at most 16000 characters.');
   const out = {query:body.query};
@@ -316,9 +325,14 @@ async function planConflict(text, body, ctx, retrieve) {
 // The assistant passes { origin:'assistant', defer:true }: retrieval and ranking
 // run now, but nothing is rendered or committed to the injection ledger until
 // it calls finish(tier) with the size its prompt-urgency judgment chose;
-// finish(null) withholds the memories. The HTTP route never passes options.
-export async function hookRecall(body = {}, retrieve = retrieveMemory, { origin = null, defer = false } = {}) {
+// finish(null) withholds the memories. `divert` (category names; the assistant's
+// user-context engine) keeps those categories out of the rendered block: they
+// are searched and ranked with the rest, then returned apart as `diverted`
+// (never rendered, never committed here). The HTTP route never passes options.
+export async function hookRecall(body = {}, retrieve = retrieveMemory, { origin = null, defer = false, divert = null } = {}) {
   const opts=input(body);
+  const divertSet=Array.isArray(divert) && divert.length ? new Set(divert.map(String)) : null;
+  const isDiverted=r=>!!divertSet && divertSet.has(String(r.category));
   const ctx=origin ? {...hookContext(body),origin} : hookContext(body);
   const judgeOff=body.judge === false;
   // `surface` implies ranking; `rank:true` alone keeps meaning brief-rank.
@@ -332,7 +346,7 @@ export async function hookRecall(body = {}, retrieve = retrieveMemory, { origin 
     return out;
   };
   const skipFollowup=()=>{
-    const out=withStale({results:[],context:'',already_present:false,skipped:'referential-followup',estimated_tokens:0,ranked:false,rank_surface:null,judged:0,dropped:[],floor:null});
+    const out=withStale({results:[],context:'',already_present:false,skipped:'referential-followup',estimated_tokens:0,ranked:false,rank_surface:null,judged:0,dropped:[],floor:null,diverted:[]});
     return defer ? {...out,deferred:true,candidates:0,finish:()=>out} : out;
   };
   // A judged ranking decides relevance for follow-ups too; the regex is the
@@ -347,7 +361,8 @@ export async function hookRecall(body = {}, retrieve = retrieveMemory, { origin 
   const budget=Math.max(100,Math.min(2000,Number(body.token_budget)||600));
   const identity={caller:body.caller,session:body.claudeSessionId || body.session,generation:body.context_generation};
   let candidates=filterInjected(result.results,identity,false);
-  const alreadyPresent=result.results.length>0 && candidates.length===0;
+  // "Already supplied" is about the block: a diverted category never renders in it.
+  const alreadyPresent=result.results.some(r=>!isDiverted(r)) && !candidates.some(r=>!isDiverted(r));
   let ranked=false, scores=null, dropped=[], floor=null, logId=null;
   if (canRank && (candidates.length > 1 || (floorWanted && candidates.length === 1))) {
     const settings=surfaceConfig(surface);
@@ -369,6 +384,14 @@ export async function hookRecall(body = {}, retrieve = retrieveMemory, { origin 
       }
     }
     if (!ranked && isReferentialFollowup(opts.query)) return skipFollowup();
+  }
+  // Diverted categories leave the candidates here, after the ranking and its floor judged them.
+  let diverted=[];
+  if (divertSet) {
+    diverted=candidates.filter(isDiverted).map(r=>({id:r.id,revision:r.revision,category:r.category,project:r.project,content:r.content,
+      subcategory:r.payload?.subcategory ?? null,importance:r.payload?.importance ?? null,created_at:r.created_at,updated_at:r.payload?.updated_at ?? r.created_at,
+      related_memory_ids:r.payload?.related_memory_ids ?? null,score:r.score,ranked:ranked && scores.has(r.id),relevance:ranked && scores.has(r.id) ? scores.get(r.id) : null}));
+    candidates=candidates.filter(r=>!isDiverted(r));
   }
   // The first `lim` candidates that fit `tok` tokens (the classic path: limit / budget).
   const render=(lim,tok)=>{
@@ -394,7 +417,7 @@ export async function hookRecall(body = {}, retrieve = retrieveMemory, { origin 
   // `scores` null: the row is still annotated, with no candidates.
   const outcome=(extra)=>({surface,floor,
     candidates:scores ? [...scores].map(([id,relevance])=>({id,relevance,level:relevanceLevel(relevance)})) : [],
-    ...extra,dropped:dropped.map(d=>d.id)});
+    ...extra,dropped:dropped.map(d=>d.id),...(diverted.length ? {diverted:diverted.map(d=>d.id)} : {})});
   // Commit what was injected to the ledger, record it on the ranking's log row, shape the answer.
   const finalize=({results,context,delivered},extra={})=>{
     filterInjected(delivered,identity);
@@ -402,6 +425,7 @@ export async function hookRecall(body = {}, retrieve = retrieveMemory, { origin 
     const out={results:results.filter(r=>delivered.some(h=>h.id===r.id)),context,already_present:alreadyPresent,
       estimated_tokens:estimateTokens(context),degraded:result.degraded,ranked,rank_surface:ranked ? surface : null,
       judged:scores?.size ?? 0,dropped,floor};
+    if (divertSet) out.diverted=diverted;
     if (ranked && !delivered.length && dropped.length) out.skipped='judged-irrelevant';
     return out;
   };
@@ -415,7 +439,7 @@ export async function hookRecall(body = {}, retrieve = retrieveMemory, { origin 
     if (!tier) {
       if (logId) annotateTypeSafeLog(logId,outcome({injected:[],withheld:'prompt-urgency'}));
       settled={results:[],context:'',already_present:false,estimated_tokens:0,degraded:result.degraded,ranked,
-        rank_surface:ranked ? surface : null,judged:scores?.size ?? 0,dropped,floor,withheld:'prompt-urgency'};
+        rank_surface:ranked ? surface : null,judged:scores?.size ?? 0,dropped,floor,withheld:'prompt-urgency',...(divertSet ? {diverted:[]} : {})};
       return settled;
     }
     const lim=Math.max(1,Math.min(50,Math.floor(Number(tier.limit))||limit));
@@ -424,7 +448,7 @@ export async function hookRecall(body = {}, retrieve = retrieveMemory, { origin 
     return settled;
   };
   return {deferred:true,ranked,rank_surface:ranked ? surface : null,judged:scores?.size ?? 0,dropped,floor,
-    already_present:alreadyPresent,degraded:result.degraded,candidates:candidates.length,finish};
+    already_present:alreadyPresent,degraded:result.degraded,candidates:candidates.length,...(divertSet ? {diverted} : {}),finish};
 }
 
 /**

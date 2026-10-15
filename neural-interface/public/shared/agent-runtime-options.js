@@ -130,6 +130,14 @@ export function clampEffortId(effort, ids) {
 
 export const CODEX_EFFORT_VALUE_IDS = EFFORT_LEVELS_BY_PROFILE.codex.map(e => e.id);
 
+// The Claude and Codex lists are asked again once a copy is this old (the server
+// answers from its own discovery cache, so it is a local round trip): a page that
+// stays open for days must not keep the list it loaded with. OpenCode's copy is
+// dropped by its change events instead (`ocp-providers-changed`): its list is large.
+const MODEL_LIST_MAX_AGE_MS = 60_000;
+const _modelListAt = new Map();
+function modelListIsFresh(key) { return Date.now() - (_modelListAt.get(key) || 0) < MODEL_LIST_MAX_AGE_MS; }
+
 const _codexModelsCache = new Map();
 const _codexModelsLoading = new Map();
 let _opencodeModelsCache = null;
@@ -268,7 +276,7 @@ export function mergeCodexModelIds(models = []) {
 
 export async function fetchCodexModels(force = false, accountId = 'default') {
   const account = String(accountId || 'default');
-  if (!force && _codexModelsCache.has(account)) return _codexModelsCache.get(account);
+  if (!force && _codexModelsCache.has(account) && modelListIsFresh(`codex:${account}`)) return _codexModelsCache.get(account);
   if (_codexModelsLoading.has(account)) return _codexModelsLoading.get(account);
   const loading = (async () => {
     try {
@@ -278,6 +286,7 @@ export async function fetchCodexModels(force = false, accountId = 'default') {
       const models = Array.isArray(data?.models) ? data.models : [];
       const normalized = mergeCodexModelOptions(models, { fallback: false });
       _codexModelsCache.set(account, normalized);
+      _modelListAt.set(`codex:${account}`, Date.now());
       return normalized;
     } catch {
       const previous = _codexModelsCache.get(account) || [];
@@ -455,19 +464,25 @@ export async function fetchOpencodeModels(force = false) {
 // Live model list from the installed Claude Code CLI. Falls back to the static
 // list so the picker still renders when the CLI is missing or discovery fails.
 export async function fetchClaudeModels(force = false) {
-  if (!force && _claudeModelsCache && _claudeModelsCache.length) return _claudeModelsCache;
+  if (!force && _claudeModelsCache && _claudeModelsCache.length && modelListIsFresh('claude-code')) return _claudeModelsCache;
   if (_claudeModelsLoading) return _claudeModelsLoading;
+  // A list the CLI verified is never traded for the unverified stand-in: a discovery
+  // that fails once (mid-update, mid-restart) must not strip a working picker.
+  const verified = () => (_claudeModelsCache?.length && _claudeModelsCache.some(m => m.catalogSource !== 'fallback') ? _claudeModelsCache : null);
   _claudeModelsLoading = (async () => {
     try {
       const resp = await fetch(`/api/claude/models${force ? '?refresh=1' : ''}`);
       const data = await resp.json().catch(() => ({}));
       const models = Array.isArray(data?.models) ? data.models : [];
-      _claudeModelsCache = models.length
-        ? models.map(model => ({ ...model, catalogSource: data?.source || 'cli' }))
-        : [...CLAUDE_FALLBACK_MODELS];
+      if (models.length && data?.source !== 'fallback') {
+        _claudeModelsCache = models.map(model => ({ ...model, catalogSource: data?.source || 'cli' }));
+        _modelListAt.set('claude-code', Date.now());
+      } else {
+        _claudeModelsCache = verified() || (models.length ? models.map(model => ({ ...model, catalogSource: 'fallback' })) : [...CLAUDE_FALLBACK_MODELS]);
+      }
       return _claudeModelsCache;
     } catch {
-      _claudeModelsCache = [...CLAUDE_FALLBACK_MODELS];
+      _claudeModelsCache = verified() || [...CLAUDE_FALLBACK_MODELS];
       return _claudeModelsCache;
     } finally {
       _claudeModelsLoading = null;
@@ -585,6 +600,7 @@ export function clearRuntimeOptionCaches() {
   _codexModelsLoading.clear();
   _opencodeModelsCache = null;
   _claudeModelsCache = null;
+  _modelListAt.clear();
   _mcpProfilePresets = null;
   _claudeAccountsCache = null;
   _opencodeAgentsCache = null;

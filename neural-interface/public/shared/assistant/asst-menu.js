@@ -21,6 +21,7 @@
 //   info            { label, value }                 → non-interactive row
 //   tag             { label }                        → non-interactive badge row
 //   input           { placeholder, value, onSubmit } → inline text field
+// `restoreFocus` on an item or input sends focus back to the anchor once it is chosen.
 // Keys: ↑/↓ move, Home/End jump, Enter/Space activate, Esc closes (focus back
 // to the anchor), Tab closes. The optional filter hides non-matching items and
 // any group left empty.
@@ -72,6 +73,7 @@ export function closeMenu({ restoreFocus = false } = {}) {
   menu.remove();
   if (anchor?.isConnected) {
     if (anchor.getAttribute('aria-haspopup')) anchor.setAttribute('aria-expanded', 'false');
+    anchor.removeAttribute('aria-controls');
     if (restoreFocus) { try { anchor.focus({ preventScroll: true }); } catch { /* detached */ } }
   }
   try { onClose?.(); } catch { /* listener error */ }
@@ -115,7 +117,7 @@ function buildItems(list, items, { role, onActivate }) {
       input.value = spec.value || '';
       input.setAttribute('aria-label', spec.label || spec.placeholder || 'Value');
       input.dataset.submit = '1';
-      input._asstSubmit = (value) => { closeMenu(); spec.onSubmit?.(value); };
+      input._asstSubmit = (value) => { closeMenu({ restoreFocus: !!spec.restoreFocus }); spec.onSubmit?.(value); };
       list.appendChild(input);
       continue;
     }
@@ -160,7 +162,7 @@ function buildItems(list, items, { role, onActivate }) {
 }
 
 /** Hide items that do not match `query`, then any header/separator left without items. */
-export function applyMenuFilter(list, query) {
+export function applyMenuFilter(list, query, emptyLabel = 'No matches') {
   const q = String(query || '').trim().toLowerCase();
   const rows = [...list.children];
   for (const row of rows) {
@@ -192,7 +194,7 @@ export function applyMenuFilter(list, query) {
   let empty = list.querySelector('.asst-dd-empty.asst-dd-noresults');
   const hasItem = rows.some(r => !r.hidden && (r.classList.contains('asst-dd-item') || r.classList.contains('asst-dd-input')));
   if (q && !hasItem) {
-    if (!empty) { empty = el('div', 'asst-dd-empty asst-dd-noresults', 'No matches'); list.appendChild(empty); }
+    if (!empty) { empty = el('div', 'asst-dd-empty asst-dd-noresults', emptyLabel); list.appendChild(empty); }
     empty.hidden = false;
   } else if (empty) empty.hidden = true;
 }
@@ -287,12 +289,13 @@ export function openMenu(anchor, opts = {}) {
     item.onSelect?.(item, node);
   };
   buildItems(list, items, { role, onActivate: activate });
-  if (width) menu.style.minWidth = `${width}px`;
+  if (width) menu.style.minWidth = opts.repositionOnResize ? `min(${width}px, calc(100vw - 16px))` : `${width}px`;
+  if (width && opts.repositionOnResize) menu.style.width = `min(${width}px, calc(100vw - 16px))`;
   document.body.appendChild(menu);
   positionMenu(menu, anchor, placement);
 
   if (filterInput) {
-    filterInput.addEventListener('input', () => { applyMenuFilter(list, filterInput.value); positionMenu(menu, anchor, placement); });
+    filterInput.addEventListener('input', () => { applyMenuFilter(list, filterInput.value, opts.filterEmptyLabel); positionMenu(menu, anchor, placement); });
   }
 
   const onDocDown = (e) => {
@@ -341,16 +344,17 @@ export function openMenu(anchor, opts = {}) {
     // Keep single-letter global keybinds out of an open menu.
     e.stopPropagation();
   };
-  const onResize = () => closeMenu();
+  const onResize = () => opts.repositionOnResize ? positionMenu(menu, anchor, placement) : closeMenu();
+  const onBlur = () => closeMenu();
   document.addEventListener('mousedown', onDocDown, true);
   document.addEventListener('keydown', onKey, true);
   window.addEventListener('resize', onResize);
-  window.addEventListener('blur', onResize);
+  window.addEventListener('blur', onBlur);
   const cleanup = () => {
     document.removeEventListener('mousedown', onDocDown, true);
     document.removeEventListener('keydown', onKey, true);
     window.removeEventListener('resize', onResize);
-    window.removeEventListener('blur', onResize);
+    window.removeEventListener('blur', onBlur);
   };
 
   _open = { menu, anchor, onClose, cleanup };

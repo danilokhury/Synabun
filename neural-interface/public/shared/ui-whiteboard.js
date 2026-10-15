@@ -2882,6 +2882,11 @@ export function isSidepanelKeyTarget(el) {
   return !!el?.closest?.('[data-sidepanel-provider]');
 }
 
+// A key pressed inside the File Explorer's code editor (shared/editor/editor-panel.js) is the editor's.
+export function isEditorPanelKeyTarget(el) {
+  return !!el?.closest?.('#fe-editor-panel');
+}
+
 function onKeyDown(e) {
   if (!isWhiteboardActive()) return;
 
@@ -2897,6 +2902,13 @@ function onKeyDown(e) {
   // Nor while it is inside a side panel: Escape there stops a turn, and Delete, Backspace or
   // Ctrl+A/Z/C on one of its controls is not a board edit.
   if (isSidepanelKeyTarget(e.target) || isSidepanelKeyTarget(ae)) return;
+  // Nor while it is inside the code editor's panel: on one of its tabs, header or status-bar buttons, in one of
+  // its menus, its palette or its popover (all attached inside the panel), M, Delete, Backspace or
+  // Ctrl+A/Z/Y/C is the editor's key, or nobody's, and never a board edit.
+  if (isEditorPanelKeyTarget(e.target) || isEditorPanelKeyTarget(ae)) return;
+  // Nor while it is in the File Explorer, or in what it opens over the page (its menu, preview and questions):
+  // Delete there deletes a file, and a letter is the name of a row being typed.
+  if (ae?.closest?.('#file-explorer-panel, .fe-ctx-flyout, .fe-modal-overlay, .fe-git-popover')) return;
 
   const isEditingText = !!document.activeElement?.closest('.wb-text.editing');
   const editingListLi = document.activeElement?.closest('.wb-list.editing li') || null;

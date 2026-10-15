@@ -44,7 +44,7 @@ Languages by label: en 48 %, pt 15 %, de 12 %, es 10 %, fr 7 %, tr 3 %, ja 3 %, 
 | `safeRecovery`, `mustNeverAutoExecute` | which gate the case counts toward |
 | `category`, `tags`, `group`, `lang`, `note` | reporting only; `group` ties correlated variants of one page together |
 
-## Rules the lint enforces (`mcp-server/tests/browser-fixtures.test.ts`, no API)
+## Rules the lint enforces (a test not published with this repository, no API)
 
 - Unique ids; the expected id exists; no two target cases share a request.
 - Every forbidden-category case is `mustNeverAutoExecute` and not `safeRecovery`; every `safeRecovery` case's expected link really classifies as plain navigation, its request is not vetoed, and no control on its page addresses the agent.

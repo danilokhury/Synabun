@@ -1,9 +1,15 @@
 import { mountMemoryMaintenance } from './ui-memory-maintenance.js';
 import { buildJudgmentsTab, wireJudgmentsTab } from './ui-judgments.js';
 import { buildWhatsAppTab, wireWhatsAppTab } from './ui-whatsapp.js';
+import { buildCodeEditorTab, wireCodeEditorTab } from './settings/settings-code-editor-pane.js';
 import { SETTINGS_GROUPS, SETTINGS_PAGES, DEFAULT_SETTINGS_PAGE, pageKeys, getSettingsPage, resolveSettingsTarget, homeOfControl } from './settings/settings-ia.js';
 import * as kit from './settings/settings-kit.js';
 import { RULES_HOST_LABELS, describeRulesHost, describeRulesInstall, describeRulesInstallAll } from './settings/settings-rules.js';
+import { readUserContextResponse, describeUserContext, describeUserContextSaveFailure } from './settings/settings-user-context.js';
+import { readGreetingStatus, describeGreeting, describeGreetingSaveFailure } from './settings/settings-greeting.js';
+import { renderGreeting, clearGreeting } from './greeting/greeting-card.js';
+import { createTunnelCard, drawInto, mcpKeyNeededText, readTunnel } from './ui-tunnel.js';
+import { remoteMcpAddress } from './tunnel-view.js';
 import { initI18n, isReady as i18nReady, SUPPORTED_LOCALES, LOCALE_NAMES, SYSTEM_LOCALE, getLocale, getLocaleChoice, setLocaleChoice, getSystemLocale, englishTranslator, loadEnglishTranslator } from './i18n.js';
 import { wireSettingsShell, wireSettingsSearch, collectSearchRows, revealSettingsTarget, followSettingsTarget, onSettingsTakeover, applyStoredSections, storeSectionState } from './settings/settings-shell.js';
 import { buildSettingsSearchIndex } from './settings/settings-search.js';
@@ -12,7 +18,7 @@ import { buildSettingsSearchIndex } from './settings/settings-search.js';
 // ═══════════════════════════════════════════
 //
 // The most complex shared UI module. Builds a floating settings panel with
-// eleven task pages in five groups (./settings/settings-ia.js). A page is a
+// twelve task pages in five groups (./settings/settings-ia.js). A page is a
 // title, a one-line purpose and section cards (./settings/settings-kit.js);
 // each builder below owns one pane of a page. Variant-registered tabs (the 2D
 // Graphics tab) join the Appearance page. Old tab ids still open the right page.
@@ -62,6 +68,7 @@ const TAB_ICONS = {
   discord: '<svg viewBox="0 0 24 24"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.095 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.095 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg>',
   whatsapp: '<svg viewBox="0 0 24 24"><path d="M3.5 20.5l1.3-3.9A8.5 8.5 0 1 1 8 19.6z"/><path d="M9.5 8.5c.4 2.6 2.9 5.2 5.5 5.6l1-1.2 1.6.8c-.3 1-1.1 1.6-2.1 1.5-2.9-.3-5.8-3.2-6.1-6.1-.1-1 .5-1.8 1.5-2.1l.8 1.6z"/></svg>',
   morelogin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M12 11.5a1 1 0 0 0-1 1c0 1.8-.3 3.6-1.2 5.2"/><path d="M7.8 14.5a8 8 0 0 0-.6 4.3"/><path d="M12 7.5a4.5 4.5 0 0 1 4.5 4.5c0 .6 0 1.2-.1 1.8"/><path d="M5 9.2a7 7 0 0 1 11-1.9"/><path d="M15 13a3 3 0 0 1-3 3"/></svg>',
+  editor: '<svg viewBox="0 0 24 24"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/><line x1="13.5" y1="5" x2="10.5" y2="19"/></svg>',
 };
 
 // ── Shared icon constants ──
@@ -1721,7 +1728,163 @@ function buildPermissionsTab(toolCategories, toolPermissions) {
       </div>`;
 }
 
-function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo, openclawBridge, greetingConfig, codexGreetingConfig, opencodeGreetingConfig, toolPermissions, toolCategories) {
+// ── Automation behavior: the Assistant's user context ──
+// settings/settings-user-context.js reads the server's answer and decides what is true; these draw it. The
+// same markup is built with the page and redrawn after a save, so a state never looks different the second time.
+
+/** What GET /api/assistant/user-context answered, as a reading (never throws: no answer is a reading too). */
+// ── The greeting (Settings → Automations → Greeting) ──
+// settings/settings-greeting.js reads the server's answers and decides what is true; these ask and draw.
+async function loadGreetingReading() {
+  try {
+    const res = await fetch('/api/greeting');
+    const body = await res.json().catch(() => null);
+    return readGreetingStatus({ status: res.status, body });
+  } catch (err) {
+    return readGreetingStatus({ status: 0, error: err?.message });
+  }
+}
+
+/** What a new session would open with right now. `write`: ask the writer for the sentence now (one small call). */
+async function fetchGreetingPreview({ write = false } = {}) {
+  try {
+    const res = await fetch('/api/greeting/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(write ? { write: true } : {}) });
+    const body = await res.json().catch(() => null);
+    if (res.ok && body?.ok === true && body.preview && typeof body.preview === 'object') return body.preview;
+    return { failed: String(body?.reason || body?.error || `HTTP ${res.status}`) };
+  } catch (err) {
+    return { failed: err?.message || 'no answer' };
+  }
+}
+
+/** The section after an answer: the note, the switch, what stands in its way, and the preview (the card every panel shows). */
+function drawGreetingSection(overlay, view) {
+  const q = (selector) => overlay.querySelector(selector);
+  const note = q('#gr-status-note');
+  if (note) { note.hidden = !view.note; note.textContent = view.note ? view.note.text : ''; note.dataset.grState = view.state; }
+  const row = q('[data-gr-row]');
+  if (row) { row.classList.toggle('enabled', view.on); row.classList.toggle('uc-disabled', view.disabled); }
+  const toggle = q('[data-gr-toggle]');
+  if (toggle) { toggle.classList.toggle('on', view.on); toggle.setAttribute('aria-pressed', view.on ? 'true' : 'false'); toggle.disabled = view.disabled; }
+  const notes = q('#gr-notes');
+  if (notes) notes.innerHTML = userContextNotesHTML(view.notes);
+  const box = q('#gr-preview');
+  if (!box) return;
+  const preview = view.preview;
+  box.hidden = !preview.shown;
+  box.dataset.grPreviewState = preview.state;
+  const project = q('#gr-preview-project');
+  if (project) project.textContent = preview.project;
+  const lead = q('#gr-preview-lead');
+  if (lead) { lead.textContent = preview.lead || preview.empty; lead.hidden = !(preview.lead || preview.empty); }
+  const card = q('#gr-preview-card');
+  if (card) {
+    if (preview.greeting) renderGreeting(card, preview.greeting, { t: kit.tx, onOpenMemory: (id) => { if (id) emit('memory:open', { id }); } });
+    else clearGreeting(card);
+  }
+  const spend = q('#gr-preview-spend');
+  if (spend) { spend.textContent = preview.spend; spend.hidden = !preview.spend; }
+  const write = q('#gr-write');
+  if (write) write.hidden = !preview.canWrite;
+}
+
+async function loadUserContextReading() {
+  try {
+    const res = await fetch('/api/assistant/user-context');
+    const body = await res.json().catch(() => null);
+    return readUserContextResponse({ status: res.status, body });
+  } catch (err) {
+    return readUserContextResponse({ status: 0, error: err?.message });
+  }
+}
+
+/** What stands in the way of a layer: one line each, with the Settings page that fixes it when there is one. */
+const userContextNotesHTML = (notes = []) => notes.map(note => `<div class="uc-layer-note" data-tone="${note.tone === 'warn' ? 'warn' : 'info'}">${kit.esc(note.text)}${
+  note.link ? ` <button type="button" class="cc-copy-btn stg-text-btn uc-note-link" data-uc-goto="${kit.esc(JSON.stringify(note.link.target))}">${kit.esc(note.link.label)}</button>` : ''
+}</div>`).join('');
+
+/** The digest's lines, or the one sentence that stands in for them (nothing known yet, the layer is off). */
+const userContextDigestHTML = (digest) => (digest.rows.length
+  ? digest.rows.map(row => `<button type="button" class="uc-digest-row" role="listitem" data-uc-memory="${kit.esc(row.id)}" title="${kit.te('settings.redesign.hooks.uc.openMemory')}"><span class="uc-digest-statement">${kit.esc(row.statement)}</span><span class="uc-digest-facet">${kit.esc(row.facet)}${row.seed ? ` · ${kit.te('settings.redesign.hooks.uc.seed')}` : ''}</span></button>`).join('')
+  : `<div class="stg-help uc-digest-message" role="listitem" style="margin:0">${kit.esc(digest.message)}</div>`);
+
+/** Put a view (describeUserContext) on the section: the note, each switch and its notes, the digest. */
+function drawUserContext(overlay, view) {
+  const section = overlay.querySelector('#stg-sec-automation-behavior');
+  if (!section) return;
+  const note = section.querySelector('#uc-status-note');
+  if (note) { note.hidden = !view.note; note.textContent = view.note?.text || ''; note.dataset.ucState = view.state; }
+  const layers = section.querySelector('#uc-layers');
+  if (layers) { layers.dataset.ucReady = view.ready ? '1' : '0'; layers.dataset.ucState = view.state; }
+  for (const [key, row] of Object.entries(view.layers)) {
+    const toggle = section.querySelector(`.cc-toggle[data-uc-layer="${key}"]`);
+    if (!toggle) continue;
+    toggle.classList.toggle('on', row.on);
+    toggle.setAttribute('aria-pressed', row.on ? 'true' : 'false');
+    toggle.disabled = row.disabled;
+    toggle.setAttribute('aria-describedby', `uc-layer-${key}-help uc-layer-${key}-notes${view.note ? ' uc-status-note' : ''}`);
+    const item = toggle.closest('.cc-integration-item');
+    item?.classList.toggle('enabled', row.on);
+    item?.classList.toggle('uc-disabled', row.disabled);
+    const notes = section.querySelector(`#uc-layer-${key}-notes`);
+    if (notes) notes.innerHTML = userContextNotesHTML(row.notes);
+  }
+  const applies = section.querySelector('#uc-applies');
+  if (applies) { applies.hidden = !view.applies; applies.textContent = view.applies; }
+  const digest = section.querySelector('#uc-digest');
+  if (digest) {
+    digest.hidden = !view.digest.shown;
+    digest.dataset.ucDigestState = view.digest.state;
+    const count = digest.querySelector('#uc-digest-count');
+    if (count) count.textContent = view.digest.count;
+    const rows = digest.querySelector('#uc-digest-rows');
+    if (rows) rows.innerHTML = view.digest.shown ? userContextDigestHTML(view.digest) : '';
+    const more = digest.querySelector('#uc-digest-more');
+    if (more) { more.hidden = !view.digest.omitted; more.textContent = view.digest.omitted; }
+  }
+}
+
+/**
+ * Does the server that answered refuse MCP from outside while no access key is set? One that brings its own
+ * tunnel program does (lib/request-gate.js mcpWithoutKey); one started before that change, still running until
+ * it is restarted, leaves the endpoint open to whoever has the address. Its tunnel status tells the two apart,
+ * and the words about a missing key say what is true for the server that is running.
+ */
+function closesKeylessMcp(tunnelStatus) {
+  return !!tunnelStatus?.cloudflared;
+}
+
+/**
+ * Settings → Automations → Online access, the tunnel, for a reading of tunnel-view.js (the same reading the Share
+ * menu draws). Two pieces, each drawn again by itself when the reading changes: the row (the state as a word
+ * with its dot, the address while one is up, the switch), and what belongs under it (a download's progress; the
+ * sentence about the state; after a failure its reason and a way to try again; for a running tunnel the remote
+ * MCP address to copy, or what is missing for one, an access key, and which cloudflared runs).
+ */
+function tunnelRowHtml(view) {
+  const tone = { ok: 'ok', busy: 'busy', err: 'err', warn: 'warn' }[view.tone] || '';
+  return `
+            <div class="cc-integration-info">
+              <div class="cc-integration-label" id="cc-tunnel-label"><span class="stg-pill"${tone ? ` data-state="${tone}"` : ''} role="status">${escapeHtml(view.label)}${view.progress ? ` · ${escapeHtml(view.progress.text)}` : ''}</span></div>
+              ${view.kind === 'running' ? `<div class="cc-integration-path" id="cc-tunnel-url">${escapeHtml(view.url)}</div>` : ''}
+            </div>
+            ${view.action ? `<button type="button" class="cc-toggle${view.on ? ' on' : ''}" id="cc-tunnel-toggle" role="switch" aria-checked="${view.on ? 'true' : 'false'}" ${kit.inv('AUT049')} aria-label="${kit.L('AUT049')}" title="${escapeHtml(view.actionLabel)}"></button>` : ''}`;
+}
+
+function tunnelExtraHtml(view, mcpKeyInfo) {
+  const running = view.kind === 'running';
+  const address = running ? remoteMcpAddress(view.url, mcpKeyInfo?.key) : null;
+  return [
+    view.progress ? `<div class="stg-tunnel-progress" role="progressbar" aria-label="${escapeHtml(view.label)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${view.progress.percent}"><span style="width:${view.progress.percent}%"></span></div>` : '',
+    !running && view.detail ? `<div class="stg-help" id="cc-tunnel-detail"${view.kind === 'failed' ? ' role="alert"' : ''}>${escapeHtml(view.detail)}</div>` : '',
+    view.kind === 'failed' ? `<button type="button" class="cc-copy-btn" id="cc-tunnel-retry">${escapeHtml(view.actionLabel)}</button>` : '',
+    address ? `<button type="button" class="cc-copy-btn" id="cc-tunnel-copy-url" ${kit.inv('AUT050')} title="${kit.H('AUT050')}">${COPY_ICON} ${kit.te('settings.redesign.hooks.copyMcpUrl')}</button>` : '',
+    running && !address ? `<div class="stg-help" id="cc-tunnel-key-needed">${escapeHtml(mcpKeyNeededText())}</div>` : '',
+    running && view.copy ? `<div class="stg-help" id="cc-tunnel-copy">${escapeHtml(view.copy)}${view.copyNote ? ` ${escapeHtml(view.copyNote)}` : ''}</div>` : '',
+  ].filter(Boolean).join('');
+}
+
+function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo, openclawBridge, greeting, toolPermissions, toolCategories, userContext = null) {
   const gh = ccIntegrations.global.hooks || {};
   const ssOn = !!gh.SessionStart;
   const psOn = !!gh.UserPromptSubmit;
@@ -1733,7 +1896,6 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
   const subStopOn = !!gh.SubagentStop;
   const hf = ccIntegrations.hookFeatures || {};
   const cmOn = hf.conversationMemory !== false;
-  const grOn = hf.greeting === true;
   const ulOn = hf.userLearning !== false;
   const ulThreshold = hf.userLearningThreshold || 8;
   const ulMaxNudges = hf.userLearningMaxNudges || 3;
@@ -1766,7 +1928,7 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
       { label: 'Gemini Web', on: false },
     ];
     const openaiItems = [
-      { label: 'Codex CLI', on: true },
+      { label: 'Codex CLI', on: compat.codex !== false },
       { label: 'Cursor', on: false },
       { label: 'ChatGPT Web', on: false },
     ];
@@ -1797,91 +1959,35 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
     </div>`;
   };
 
-  // One greeting editor. `ids` are the inventory ids of its controls, in the order below.
-  function buildGreetingSection({ kind, enabled, config, prefix, bodyId, toggleAttrs, ids }) {
-    const [idToggle, idProject, idTemplate, idShowReminders, idLastSession, idAdd, idSave] = ids;
-    const gc = config || { defaults: {}, projects: {}, global: {} };
-    const greetingProjects = Object.keys(gc.projects || {});
-    const firstKey = greetingProjects[0] || 'global';
-    const projectKeys = [...greetingProjects, 'global'];
-    const firstCfg = firstKey === 'global'
-      ? { ...gc.defaults, ...gc.global }
-      : { ...gc.defaults, ...(gc.projects[firstKey] || {}) };
-    const projectLabel = (key) => (key === 'global' ? h('greeting.global') : escapeHtml((gc.projects[key] || {}).label || key));
-    const buildReminderRow = (reminder) => `
-      <div class="cc-greeting-reminder-row">
-        <span class="cc-greeting-drag-handle" title="${h('dragToReorder')}">&#8942;&#8942;</span>
-        <input class="cc-greeting-reminder-input label" placeholder="${h('label')}" aria-label="${h('label')}" value="${escapeHtml(reminder.label || '')}">
-        <input class="cc-greeting-reminder-input cmd" placeholder="${h('command')}" aria-label="${h('command')}" value="${escapeHtml(reminder.command || '')}">
-        <button type="button" class="cc-greeting-reminder-remove" title="${h('remove')}" aria-label="${h('remove')}">&times;</button>
-      </div>`;
-    const remindersHTML = (firstCfg.reminders || []).map(buildReminderRow).join('');
-    const variable = (name, id) => `<tr><td><code>{${name}}</code></td><td id="${prefix}-cs-${id}"></td></tr>`;
-
-    return kit.card({
-      id: `${prefix}-greeting-config`, level: 'h4', collapsible: true, collapsed: true,
-      title: h(`greeting.title.${kind}`), purpose: h(`greeting.purpose.${kind}`),
-      status: `<button type="button" class="cc-toggle${enabled ? ' on' : ''}" ${toggleAttrs} ${kit.inv(idToggle)} aria-label="${kit.L(idToggle)}" title="${kit.H(idToggle)}"></button>`,
-      body: `
-          <div id="${bodyId}" style="display:${enabled ? 'block' : 'none'}">
-            <div class="stg-field" ${kit.inv(idProject)}>
-              <label id="${prefix}-greeting-project-caption">${kit.L(idProject)}</label>
-              <div class="cc-dropdown" id="${prefix}-greeting-project-dropdown" role="group" aria-labelledby="${prefix}-greeting-project-caption">
-                <button class="cc-dropdown-trigger" type="button" aria-haspopup="listbox" aria-describedby="${prefix}-greeting-project-help">
-                  <span class="cc-dropdown-value" id="${prefix}-greeting-project-label">${projectLabel(firstKey)}</span>
-                  <svg class="cc-dropdown-arrow" viewBox="0 0 24 24" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
-                </button>
-                <div class="cc-dropdown-menu" id="${prefix}-greeting-project-menu">
-                  ${projectKeys.map((key) => `<div class="cc-dropdown-item${key === firstKey ? ' active' : ''}" data-value="${key}">${projectLabel(key)}</div>`).join('')}
+  // The greeting (lib/greeting/): one switch for every agent, and what a new session would open with right now.
+  // `greeting` is the view of what the server answered (describeGreeting). Without the engine (a server started
+  // before it existed, one where it did not start, no answer) the switch shows off and disabled under a line
+  // that says which of those it is. The preview is filled in once Settings is open (drawGreetingSection).
+  const gr = greeting || describeGreeting(null, null, { tx: kit.tx });
+  const greetingBlock = `
+          <div class="stg-help uc-status-note" id="gr-status-note" role="status" data-gr-state="${gr.state}" data-stg-data${gr.note ? '' : ' hidden'}>${gr.note ? kit.esc(gr.note.text) : ''}</div>
+          <div class="cc-hook-toggles" id="gr-switch" data-gr-ready="${gr.ready ? '1' : '0'}">
+              <div class="cc-integration-item${gr.on ? ' enabled' : ''}${gr.disabled ? ' uc-disabled' : ''}" data-gr-row>
+                <div class="cc-integration-info">
+                  <div class="cc-integration-label" id="gr-enabled-label">${kit.L('AUT058')}</div>
+                  <div class="cc-integration-path" id="gr-enabled-help">${kit.H('AUT058')}</div>
+                  <div class="uc-layer-notes" id="gr-notes" data-stg-data>${userContextNotesHTML(gr.notes)}</div>
                 </div>
-                <input type="hidden" id="${prefix}-greeting-project" value="${firstKey}">
+                <button type="button" class="cc-toggle${gr.on ? ' on' : ''}" data-gr-toggle ${kit.inv('AUT058')} aria-pressed="${gr.on ? 'true' : 'false'}" aria-labelledby="gr-enabled-label" aria-describedby="gr-enabled-help gr-notes gr-status-note"${gr.disabled ? ' disabled' : ''}></button>
               </div>
-              <div class="stg-help" id="${prefix}-greeting-project-help">${kit.H(idProject)}</div>
+          </div>
+          <div class="stg-help uc-save-status" id="gr-save-status" role="alert" data-stg-data hidden></div>
+          <div class="uc-digest gr-preview" id="gr-preview" data-gr-preview-state="${gr.preview.state}" ${kit.inv('AUT059')}${gr.preview.shown ? '' : ' hidden'}>
+            <div class="uc-digest-head">
+              <span class="uc-digest-title" id="gr-preview-title">${kit.L('AUT059')}</span>
+              <span class="uc-digest-count" id="gr-preview-project" data-stg-data>${kit.esc(gr.preview.project)}</span>
             </div>
-            <div class="cc-greeting-field stg-field" ${kit.inv(idTemplate)}>
-              <label class="cc-greeting-label" for="${prefix}-greeting-template">${kit.L(idTemplate)}</label>
-              <textarea class="cc-greeting-textarea" id="${prefix}-greeting-template" placeholder="${h('greeting.templatePlaceholder')}" aria-describedby="${prefix}-greeting-template-help">${escapeHtml(firstCfg.greetingTemplate || '')}</textarea>
-              <div class="stg-help" id="${prefix}-greeting-template-help">${kit.H(idTemplate)}</div>
-              <div class="cc-greeting-cheatsheet-toggle" id="${prefix}-greeting-cheatsheet-toggle" ${kit.inv('AUT047')} role="button" tabindex="0">
-                <svg viewBox="0 0 24 24" aria-hidden="true" style="width:11px;height:11px;fill:none;stroke:currentColor;stroke-width:2;vertical-align:-1px"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
-                ${kit.L('AUT047')}
-              </div>
-              <div class="cc-greeting-cheatsheet" id="${prefix}-greeting-cheatsheet" style="display:none">
-                <table class="cc-cheatsheet-table">
-                  <thead><tr><th>${h('greeting.placeholder')}</th><th>${h('greeting.showsAs')}</th></tr></thead>
-                  <tbody>
-                    ${variable('time_greeting', 'time')}
-                    ${variable('project_label', 'label')}
-                    ${variable('project_name', 'name')}
-                    ${variable('branch', 'branch')}
-                    ${variable('date', 'date')}
-                  </tbody>
-                </table>
-                <div class="cc-cheatsheet-example">
-                  <div class="cc-greeting-label" style="margin-bottom:3px">${h('greeting.example')}</div>
-                  <div class="cc-cheatsheet-preview" id="${prefix}-cs-preview"></div>
-                </div>
-              </div>
-            </div>
-            <div class="cc-greeting-checkboxes">
-              ${kit.toggleField(idShowReminders, kit.switchInput(`${prefix}-greeting-show-reminders`, { checked: !!firstCfg.showReminders }), { forId: `${prefix}-greeting-show-reminders` })}
-              ${kit.toggleField(idLastSession, kit.switchInput(`${prefix}-greeting-show-last-session`, { checked: !!firstCfg.showLastSession }), { forId: `${prefix}-greeting-show-last-session` })}
-            </div>
-            <div class="cc-greeting-field stg-field" style="margin-top:12px">
-              <label class="cc-greeting-label" id="${prefix}-greeting-reminders-label">${h('greeting.reminders')}</label>
-              <div class="cc-greeting-reminder-list" id="${prefix}-greeting-reminders" role="group" aria-labelledby="${prefix}-greeting-reminders-label">${remindersHTML}</div>
-              <div class="stg-help">${h('greeting.remindersHelp')}</div>
-              <button type="button" class="conn-add-btn" id="${prefix}-greeting-add-reminder" ${kit.inv(idAdd)} title="${kit.H(idAdd)}" style="margin-top:6px">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                ${kit.L(idAdd)}
-              </button>
-            </div>
-            <button type="button" class="conn-add-btn stg-save-btn" id="${prefix}-greeting-save" ${kit.inv(idSave)} title="${kit.H(idSave)}" style="width:100%;margin-top:4px;border-style:solid;background:rgba(79,195,247,0.08);border-color:rgba(79,195,247,0.25);color:rgba(79,195,247,0.9)">
-              ${kit.L(idSave)}
-            </button>
-          </div>`,
-    });
-  }
+            <div class="stg-help gr-preview-help" style="margin:2px 0 0">${kit.H('AUT059')}</div>
+            <div class="stg-help gr-preview-lead" id="gr-preview-lead" role="status" data-stg-data>${kit.esc(gr.preview.lead || gr.preview.empty)}</div>
+            <div class="gr-preview-card" id="gr-preview-card" data-stg-data></div>
+            <div class="stg-help gr-preview-spend" id="gr-preview-spend" data-stg-data${gr.preview.spend ? '' : ' hidden'}>${kit.esc(gr.preview.spend)}</div>
+            <button type="button" class="conn-add-btn" id="gr-write" ${kit.inv('AUT060')} title="${kit.H('AUT060')}" style="margin:0;width:auto;padding:4px 10px;border-style:solid"${gr.preview.canWrite ? '' : ' hidden'}>${kit.L('AUT060')}</button>
+          </div>`;
 
   const feature = (invId, key, on, extra = '') => `
               <div class="cc-integration-item${on ? ' enabled' : ''}" data-feature="${key}">
@@ -1892,26 +1998,65 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
                 <button type="button" class="cc-toggle${on ? ' on' : ''}" data-cc-feature="${key}" ${kit.inv(invId)} aria-labelledby="cc-feature-${key}-label" aria-describedby="cc-feature-${key}-help"></button>
               </div>`;
 
+  // The Assistant's user context: three layers and the digest a new conversation starts with.
+  // `userContext` is the view of what the server answered (describeUserContext). Without the engine (a server
+  // started before it existed, one where it did not start, no answer) the rows show switched off and disabled
+  // under a line that says which of those it is: public/ is served live, lib/ only after a restart.
+  const uc = userContext || describeUserContext(null, { tx: kit.tx });
+  const layer = (invId, key) => {
+    const row = uc.layers[key];
+    return `
+              <div class="cc-integration-item${row.on ? ' enabled' : ''}${row.disabled ? ' uc-disabled' : ''}" data-uc-layer-row="${key}">
+                <div class="cc-integration-info">
+                  <div class="cc-integration-label" id="uc-layer-${key}-label">${kit.L(invId)}</div>
+                  <div class="cc-integration-path" id="uc-layer-${key}-help">${kit.H(invId)}</div>
+                  <div class="uc-layer-notes" id="uc-layer-${key}-notes" data-stg-data>${userContextNotesHTML(row.notes)}</div>
+                </div>
+                <button type="button" class="cc-toggle${row.on ? ' on' : ''}" data-uc-layer="${key}" ${kit.inv(invId)} aria-pressed="${row.on ? 'true' : 'false'}" aria-labelledby="uc-layer-${key}-label" aria-describedby="uc-layer-${key}-help uc-layer-${key}-notes${uc.note ? ' uc-status-note' : ''}"${row.disabled ? ' disabled' : ''}></button>
+              </div>`;
+  };
+  const userContextBlock = `
+          <div class="stg-help uc-status-note" id="uc-status-note" role="status" data-uc-state="${uc.state}" data-stg-data${uc.note ? '' : ' hidden'}>${uc.note ? kit.esc(uc.note.text) : ''}</div>
+          <div class="cc-hook-toggles" id="uc-layers" data-uc-ready="${uc.ready ? '1' : '0'}" data-uc-state="${uc.state}">
+            ${layer('AUT053', 'knowledge')}
+            ${layer('AUT054', 'nudges')}
+            ${layer('AUT055', 'trace')}
+          </div>
+          <div class="stg-help uc-save-status" id="uc-save-status" role="alert" data-stg-data hidden></div>
+          <div class="stg-help uc-applies" id="uc-applies"${uc.applies ? '' : ' hidden'}>${kit.esc(uc.applies)}</div>
+          <div class="uc-digest" id="uc-digest" data-uc-digest-state="${uc.digest.state}" ${kit.inv('AUT056')}${uc.digest.shown ? '' : ' hidden'}>
+            <div class="uc-digest-head">
+              <span class="uc-digest-title" id="uc-digest-title">${kit.L('AUT056')}</span>
+              <span class="uc-digest-count" id="uc-digest-count" data-stg-data>${kit.esc(uc.digest.count)}</span>
+            </div>
+            <div class="stg-help uc-digest-help" style="margin:2px 0 0">${kit.H('AUT056')}</div>
+            <div class="uc-digest-rows" id="uc-digest-rows" role="list" aria-labelledby="uc-digest-title" data-stg-data>${uc.digest.shown ? userContextDigestHTML(uc.digest) : ''}</div>
+            <div class="stg-help" id="uc-digest-more" style="margin:0 0 8px"${uc.digest.omitted ? '' : ' hidden'}>${kit.esc(uc.digest.omitted)}</div>
+            <button type="button" class="conn-add-btn" id="uc-digest-all" ${kit.inv('AUT057')} title="${kit.H('AUT057')}" style="margin:0;width:auto;padding:4px 10px;border-style:solid">${kit.L('AUT057')}</button>
+          </div>`;
+
   return `
       <div class="stg-pane" data-stg-pane="hooks">
 
         ${kit.card({
           id: 'stg-sec-greetings', section: 'automations.greetings',
           body: `
-          ${buildGreetingSection({ kind: 'cc', enabled: grOn, config: greetingConfig, prefix: 'cc', bodyId: 'cc-greeting-body', toggleAttrs: 'data-cc-feature="greeting"',
-            ids: ['AUT001', 'AUT002', 'AUT003', 'AUT004', 'AUT005', 'AUT009', 'AUT010'] })}
-          ${buildGreetingSection({ kind: 'codex', enabled: codexGreetingConfig?.enabled === true, config: codexGreetingConfig, prefix: 'codex', bodyId: 'codex-greeting-body', toggleAttrs: 'data-codex-greeting-toggle="enabled"',
-            ids: ['AUT011', 'AUT012', 'AUT013', 'AUT014', 'AUT015', 'AUT016', 'AUT017'] })}
-          ${buildGreetingSection({ kind: 'opencode', enabled: opencodeGreetingConfig?.enabled === true, config: opencodeGreetingConfig, prefix: 'opencode', bodyId: 'opencode-greeting-body', toggleAttrs: 'data-opencode-greeting-toggle="enabled"',
-            ids: ['AUT018', 'AUT019', 'AUT020', 'AUT021', 'AUT022', 'AUT026', 'AUT027'] })}`,
+          ${greetingBlock}`,
         })}
 
         ${kit.card({
           id: 'stg-sec-automation-behavior', section: 'automations.automation_behavior',
-          status: providerBadge({ cli: true, vscode: true, web: false, cowork: false }),
           body: `
-          <div class="stg-help" style="margin:0 0 10px">${h('claudeOnly')}</div>
-          <div class="cc-hook-toggles">
+          ${userContextBlock}
+
+          ${kit.card({
+            id: 'stg-sec-hooks', level: 'h4', collapsible: true, collapsed: true, advanced: true, attrs: 'data-cc-target="global"',
+            title: h('hooksTitle'), purpose: h('hooksPurpose'),
+            // These hooks are Claude Code's own (~/.claude/settings.json, hooks/claude-code): no other assistant runs them.
+            status: `<span class="cc-hooks-badge${allOn ? ' all-on' : ''}" id="cc-hooks-badge">${onCount}/${hookRows.length}</span>${providerBadge({ cli: true, vscode: true, web: false, cowork: false, codex: false })}`,
+            body: `
+            <div class="stg-help" style="margin:0 0 10px">${h('claudeOnly')}</div>
+            <div class="cc-hook-toggles">
             ${feature('AUT036', 'conversationMemory', cmOn)}
             ${feature('AUT039', 'userLearning', ulOn, `
                   <div class="cc-ul-threshold" id="cc-ul-threshold" style="display:${ulOn ? 'flex' : 'none'};align-items:center;gap:6px;margin-top:5px;flex-wrap:wrap">
@@ -1924,14 +2069,8 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
                   </div>`)}
             ${feature('AUT040', 'taskRecallGate', taskRecallOn)}
             ${feature('AUT041', 'subagentRemember', srOn)}
-          </div>
-
-          ${kit.card({
-            id: 'stg-sec-hooks', level: 'h4', collapsible: true, collapsed: true, advanced: true, attrs: 'data-cc-target="global"',
-            title: h('hooksTitle'), purpose: h('hooksPurpose'),
-            status: `<span class="cc-hooks-badge${allOn ? ' all-on' : ''}" id="cc-hooks-badge">${onCount}/${hookRows.length}</span>${providerBadge({ cli: true, vscode: true, web: false, cowork: false })}`,
-            body: `
-            <div class="cc-hook-toggles">
+            </div>
+            <div class="cc-hook-toggles" style="margin-top:10px">
               ${hookRows.map(r => `
               <div class="cc-integration-item${r.on ? ' enabled' : ''}" data-hook="${r.key}">
                 <div class="cc-integration-info">
@@ -1949,20 +2088,14 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
           status: providerBadge({ cli: true, vscode: true, web: true, webNote: h('compat.viaAddress'), cowork: false }),
           body: `
           ${kit.subhead(h('tunnel.title'))}
-          <div class="cc-integration-item${tunnelStatus.running ? ' enabled' : ''}" id="cc-tunnel-row" ${kit.inv('AUT048')}>
-            <div class="cc-integration-info">
-              <div class="cc-integration-label" id="cc-tunnel-label">${tunnelStatus.running ? h('running') : tunnelStatus.available ? h('ready') : h('tunnel.notInstalled')}</div>
-              <div class="cc-integration-path" id="cc-tunnel-url">${tunnelStatus.url ? escapeHtml(tunnelStatus.url) : (tunnelStatus.available ? h('exposeMcpToClaudeWebVia') : h('tunnel.install'))}</div>
-            </div>
-            ${tunnelStatus.available ? `<button type="button" class="cc-toggle${tunnelStatus.running ? ' on' : ''}" id="cc-tunnel-toggle" ${kit.inv('AUT049')} aria-label="${kit.L('AUT049')}" title="${kit.H('AUT049')}"></button>` : ''}
-          </div>
-          ${tunnelStatus.url ? `<button type="button" class="cc-copy-btn" id="cc-tunnel-copy-url" ${kit.inv('AUT050')} title="${kit.H('AUT050')}" style="margin-top:4px">${copyIcon} ${h('copyMcpUrl')}</button>` : ''}
+          <div class="cc-integration-item${readTunnel(tunnelStatus).on ? ' enabled' : ''}" id="cc-tunnel-row" ${kit.inv('AUT048')}>${tunnelRowHtml(readTunnel(tunnelStatus))}</div>
+          <div class="stg-tunnel-extra" id="cc-tunnel-extra">${tunnelExtraHtml(readTunnel(tunnelStatus), mcpKeyInfo)}</div>
 
           <div style="margin-top:10px">
             <div class="cc-integration-item${mcpKeyInfo.hasKey ? ' enabled' : ''}" id="cc-apikey-row">
               <div class="cc-integration-info">
                 <div class="cc-integration-label">${h('apikey.title')}</div>
-                <div class="cc-integration-path" id="cc-apikey-status">${mcpKeyInfo.hasKey ? escapeHtml(mcpKeyInfo.maskedKey) : h('apikey.none')}</div>
+                <div class="cc-integration-path" id="cc-apikey-status">${mcpKeyInfo.hasKey ? escapeHtml(mcpKeyInfo.maskedKey) : h(closesKeylessMcp(tunnelStatus) ? 'apikey.noneClosed' : 'apikey.none')}</div>
               </div>
               <button type="button" class="conn-add-btn" id="cc-apikey-generate" ${kit.inv('AUT042')} title="${kit.H('AUT042')}" style="margin:0;padding:3px 8px;width:auto;border-style:solid;background:rgba(255,255,255,0.03)">${mcpKeyInfo.hasKey ? h('regenerate') : h('generateKey')}</button>
             </div>
@@ -3044,12 +3177,11 @@ export async function openSettingsModal(options = {}) {
   let connections = [];
   let ccIntegrations = { global: { installed: false }, projects: [] };
   let ccSkills = [];
-  let tunnelStatus = { available: false, running: false, url: null };
+  let tunnelStatus = null;   // GET /api/tunnel/status; null until it answered (tunnel-view.js reads either)
   let mcpKeyInfo = { hasKey: false };
   let _bridgeResult = null;
-  let greetingConfig = { defaults: {}, projects: {}, global: {} };
-  let codexGreetingConfig = { enabled: true, defaults: {}, projects: {}, global: {} };
-  let opencodeGreetingConfig = { enabled: false, defaults: {}, projects: {}, global: {} };
+  // The greeting (lib/greeting/): what its endpoint answered, as a reading (no answer is a reading too).
+  let greetingReading = readGreetingStatus({ status: 0 });
   let setupStatus = { claude: {}, gemini: {}, codex: {}, opencode: {}, paths: {} };
   let cliConfig = {};
   let toolPermissions = {};
@@ -3059,9 +3191,12 @@ export async function openSettingsModal(options = {}) {
   let customIconsData = { extensions: {}, filenames: {} };
   let youtubeConfig = { secrets: {}, configured: {}, pipeline: {} };
   let typesafeConfig = null;
+  // The Assistant's user context (lib/assistant-user-context.js): what its endpoint answered, as a reading.
+  // No answer is a reading too: the section says what is true instead of showing switches that do nothing.
+  let userContextReading = readUserContextResponse({ status: 0 });
 
   try {
-    const [settingsRes, connRes, ccRes, skillsRes, tunnelRes, keyRes, bridgeRes, greetRes, codexGreetRes, opencodeGreetRes, setupRes, cliRes, toolPermsRes, toolCatsRes, discordRes, skinsRes, iconsRes, youtubeRes, typesafeRes] = await Promise.allSettled([
+    const [settingsRes, connRes, ccRes, skillsRes, tunnelRes, keyRes, bridgeRes, greetRes, setupRes, cliRes, toolPermsRes, toolCatsRes, discordRes, skinsRes, iconsRes, youtubeRes, typesafeRes, userContextRes] = await Promise.allSettled([
       fetch('/api/settings').then(r => r.json()),
       fetch('/api/connections').then(r => r.json()),
       fetch('/api/claude-code/integrations').then(r => r.json()),
@@ -3069,9 +3204,7 @@ export async function openSettingsModal(options = {}) {
       fetch('/api/tunnel/status').then(r => r.json()),
       fetch('/api/mcp-key').then(r => r.json()),
       fetch('/api/bridges/openclaw').then(r => r.json()),
-      fetch('/api/greeting/config').then(r => r.json()),
-      fetch('/api/codex-panel/greeting/config').then(r => r.json()),
-      fetch('/api/opencode-panel/greeting/config').then(r => r.json()),
+      loadGreetingReading(),
       fetch('/api/setup/status').then(r => r.json()),
       fetch('/api/cli/config').then(r => r.json()),
       fetch('/api/claude-code/tool-permissions').then(r => r.json()),
@@ -3081,8 +3214,10 @@ export async function openSettingsModal(options = {}) {
       fetch('/api/file-icons').then(r => r.json()),
       fetch('/api/youtube/config').then(r => r.json()),
       fetch('/api/typesafe/config').then(r => r.json()),
+      loadUserContextReading(),
     ]);
     if (typesafeRes.status === 'fulfilled' && typesafeRes.value.ok) typesafeConfig = typesafeRes.value;
+    if (userContextRes.status === 'fulfilled') userContextReading = userContextRes.value;
     if (settingsRes.status === 'fulfilled') settings = settingsRes.value;
     if (connRes.status === 'fulfilled' && connRes.value.connections) connections = connRes.value.connections;
     if (ccRes.status === 'fulfilled' && ccRes.value.ok) ccIntegrations = ccRes.value;
@@ -3090,9 +3225,7 @@ export async function openSettingsModal(options = {}) {
     if (tunnelRes.status === 'fulfilled' && tunnelRes.value.ok) tunnelStatus = tunnelRes.value;
     if (keyRes.status === 'fulfilled' && keyRes.value.ok) mcpKeyInfo = keyRes.value;
     if (bridgeRes.status === 'fulfilled' && bridgeRes.value.ok) _bridgeResult = bridgeRes.value;
-    if (greetRes.status === 'fulfilled' && greetRes.value.ok) greetingConfig = greetRes.value.config;
-    if (codexGreetRes.status === 'fulfilled' && codexGreetRes.value.ok) codexGreetingConfig = codexGreetRes.value.config;
-    if (opencodeGreetRes.status === 'fulfilled' && opencodeGreetRes.value.ok) opencodeGreetingConfig = opencodeGreetRes.value.config;
+    if (greetRes.status === 'fulfilled') greetingReading = greetRes.value;
     if (setupRes.status === 'fulfilled' && setupRes.value.ok) setupStatus = setupRes.value;
     if (cliRes.status === 'fulfilled' && cliRes.value.ok) cliConfig = cliRes.value.config;
     if (toolPermsRes.status === 'fulfilled' && toolPermsRes.value.ok) toolPermissions = toolPermsRes.value.tools;
@@ -3153,7 +3286,7 @@ export async function openSettingsModal(options = {}) {
         <div class="settings-content">
           ${buildPagesHTML({
             server: buildServerTab(settings, connections),
-            hooks: buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo, openclawBridge, greetingConfig, codexGreetingConfig, opencodeGreetingConfig, toolPermissions, toolCategories),
+            hooks: buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo, openclawBridge, describeGreeting(greetingReading, null, { tx: kit.tx, t: kit.tx }), toolPermissions, toolCategories, describeUserContext(userContextReading, { tx: kit.tx })),
             terminal: buildTerminalTab(cliConfig),
             opencode: buildOpencodeTab(),
             notifications: buildNotificationsTab(),
@@ -3169,6 +3302,7 @@ export async function openSettingsModal(options = {}) {
             whatsapp: buildWhatsAppTab(),
             morelogin: buildMoreLoginTab(),
             permissions: buildPermissionsTab(toolCategories, toolPermissions),
+            editor: buildCodeEditorTab(),
             social: buildSocialTab(toolCategories, toolPermissions),
             youtube: buildYoutubeTab(youtubeConfig),
             language: buildLanguageTab(),
@@ -4261,6 +4395,9 @@ export async function openSettingsModal(options = {}) {
   // ── WhatsApp tab — self-loads its status (never part of the blocking fetch above) ──
   wireWhatsAppTab(overlay, { toast: showCCToast });
 
+  // ── Code editor: AI autocomplete (loads and saves itself) ──
+  wireCodeEditorTab(overlay);
+
   // ── Discord tab handlers ──
   {
     // Token save
@@ -4683,6 +4820,152 @@ export async function openSettingsModal(options = {}) {
     toggle.addEventListener('click', () => { ccToggleHook('global', null, toggle, overlay.querySelector('.iface-section[data-cc-target="global"]'), toggle.dataset.ccHook); });
   });
 
+  // ── The Assistant's user context: layers and the digest preview ──
+  const ucRowsEl = overlay.querySelector('#uc-digest-rows');
+  const redrawUserContext = (reading = userContextReading) => drawUserContext(overlay, describeUserContext(reading, { tx: kit.tx }));
+  // What could not be saved, said next to the switches (role="alert"); empty clears it.
+  const setUserContextSaveStatus = (text = '') => {
+    const status = overlay.querySelector('#uc-save-status');
+    if (status) { status.hidden = !text; status.textContent = text; }
+  };
+  // A line of the digest opens its memory (the owner corrects line 1 there and the digest follows).
+  ucRowsEl?.addEventListener('click', (e) => {
+    const row = e.target.closest('[data-uc-memory]');
+    if (!row) return;
+    const id = row.dataset.ucMemory;
+    close();
+    emit('memory:open', { id });
+  });
+  overlay.querySelector('#uc-digest-all')?.addEventListener('click', () => {
+    close();
+    emit('explorer:show-category', { category: 'user-knowledge', fallback: 'communication-style' });
+  });
+  // A note that names another Settings page (learning needs AI decisions) goes there.
+  overlay.querySelector('#uc-layers')?.addEventListener('click', (e) => {
+    const link = e.target.closest('[data-uc-goto]');
+    if (!link) return;
+    try { applySettingsOpenOptions(overlay, JSON.parse(link.dataset.ucGoto)); } catch { /* a malformed target goes nowhere */ }
+  });
+  // The switch moves at once and follows the server's answer: the stored settings when the save went through,
+  // back where it was (with the reason next to the switches) when it did not. Saves go one after the other, in
+  // the order of the clicks, so a second click made before the first was answered is kept, not dropped.
+  let userContextSaves = Promise.resolve();
+  const userContextWanted = {};   // layer → what its last click asked for, until that save is answered
+  const userContextWaiting = {};  // layer → saves not answered yet
+  const userContextBusy = () => Object.values(userContextWaiting).some(count => count > 0);
+  // What the page shows while saves are on their way: the stored settings with the clicks on top.
+  const userContextShown = () => (userContextReading.state === 'ready'
+    ? { ...userContextReading, payload: { ...userContextReading.payload, settings: { ...userContextReading.payload.settings, ...userContextWanted } } }
+    : userContextReading);
+  const markUserContextWaiting = () => overlay.querySelectorAll('.cc-toggle[data-uc-layer]').forEach(other => { other.style.opacity = userContextWaiting[other.dataset.ucLayer] > 0 ? '0.4' : ''; });
+  overlay.querySelectorAll('.cc-toggle[data-uc-layer]').forEach(toggle => {
+    toggle.addEventListener('click', () => {
+      if (toggle.disabled || userContextReading.state !== 'ready') return;
+      const layerKey = toggle.dataset.ucLayer;
+      const wanted = !toggle.classList.contains('on');
+      const name = overlay.querySelector(`#uc-layer-${layerKey}-label`)?.textContent?.trim() || layerKey;
+      userContextWanted[layerKey] = wanted;
+      userContextWaiting[layerKey] = (userContextWaiting[layerKey] || 0) + 1;
+      setUserContextSaveStatus('');
+      redrawUserContext(userContextShown());
+      markUserContextWaiting();
+      userContextSaves = userContextSaves.then(async () => {
+        let failure = null;
+        try {
+          const res = await fetch('/api/assistant/user-context', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ [layerKey]: wanted }) });
+          const body = await res.json().catch(() => null);
+          const reading = readUserContextResponse({ status: res.status, body });
+          if (res.ok && reading.state === 'ready') userContextReading = reading;
+          else failure = { status: res.status, body };
+        } catch (err) {
+          failure = { status: 0, error: err?.message };
+        }
+        userContextWaiting[layerKey] -= 1;
+        // Every click on this switch was answered: it shows the stored value again (a later click still on its way keeps its wish).
+        if (userContextWaiting[layerKey] <= 0) delete userContextWanted[layerKey];
+        if (!overlay.isConnected) return;
+        if (failure) setUserContextSaveStatus(describeUserContextSaveFailure({ name, wanted, ...failure }, { tx: kit.tx }));
+        redrawUserContext(userContextShown());
+        markUserContextWaiting();
+      });
+    });
+  });
+  // Switched in another window (or by a hand edit another Settings saved): this one follows.
+  const offUserContextSync = on('sync:assistant:user-context-changed', async () => {
+    if (userContextBusy() || userContextReading.state !== 'ready' || !overlay.isConnected) return;
+    const reading = await loadUserContextReading();
+    if (reading.state !== 'ready' || userContextBusy() || !overlay.isConnected) return;
+    userContextReading = reading;
+    redrawUserContext();
+  });
+  overlay.addEventListener('settings-close', () => offUserContextSync(), { once: true });
+
+  // ── Greeting (lib/greeting/): the one switch, and what a new session would open with right now ──
+  // The switch moves at once and goes back, with the reason in the line under it, when the save fails;
+  // quick clicks are saved in the order they were made. The preview is asked when Settings opens and
+  // after every change; "Write it now" asks the writer for the sentence (one small call).
+  let greetingPreview = null;
+  let greetingSaves = Promise.resolve();
+  let greetingClosed = false; // Settings was closed: an answer that arrives late draws nothing
+  const drawGreeting = () => drawGreetingSection(overlay, describeGreeting(greetingReading, greetingPreview, { tx: kit.tx, t: kit.tx }));
+  const refreshGreetingPreview = async ({ write = false } = {}) => {
+    if (greetingReading.state !== 'ready') { drawGreeting(); return; }
+    if (!greetingPreview) greetingPreview = { loading: true };
+    drawGreeting();
+    const answer = await fetchGreetingPreview({ write });
+    if (greetingClosed) return;
+    greetingPreview = answer;
+    drawGreeting();
+  };
+  const greetingToggle = overlay.querySelector('[data-gr-toggle]');
+  if (greetingToggle) {
+    greetingToggle.addEventListener('click', () => {
+      if (greetingToggle.disabled || greetingReading.state !== 'ready') return;
+      const before = greetingReading;
+      const wanted = before.payload.settings.enabled === false;
+      greetingReading = { ...before, payload: { ...before.payload, settings: { ...before.payload.settings, enabled: wanted }, enabled: wanted && before.payload.killed !== true } };
+      const status = overlay.querySelector('#gr-save-status');
+      if (status) { status.hidden = true; status.textContent = ''; }
+      drawGreeting();
+      greetingSaves = greetingSaves.then(async () => {
+        let res = null;
+        let body = null;
+        let error = null;
+        try {
+          res = await fetch('/api/greeting', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: wanted }) });
+          body = await res.json().catch(() => null);
+        } catch (err) { error = err?.message || String(err); }
+        const next = readGreetingStatus({ status: res?.status || 0, body, error });
+        if (next.state === 'ready') greetingReading = next;
+        else {
+          greetingReading = before;
+          if (status) { status.textContent = describeGreetingSaveFailure({ status: res?.status || 0, body, error }, { tx: kit.tx }); status.hidden = false; }
+        }
+        drawGreeting();
+        if (next.state === 'ready') await refreshGreetingPreview();
+      });
+    });
+  }
+  const greetingWrite = overlay.querySelector('#gr-write');
+  if (greetingWrite) {
+    greetingWrite.addEventListener('click', async () => {
+      if (greetingWrite.disabled) return;
+      const label = greetingWrite.textContent;
+      greetingWrite.disabled = true;
+      greetingWrite.textContent = kit.tx('settings.redesign.hooks.greet.preview.writing');
+      try { await refreshGreetingPreview({ write: true }); }
+      finally { greetingWrite.disabled = false; greetingWrite.textContent = label; }
+    });
+  }
+  // Switched in another window: an open Settings follows.
+  const offGreetingSync = on('sync:greeting:changed', async () => {
+    greetingReading = await loadGreetingReading();
+    if (greetingClosed) return;
+    await refreshGreetingPreview();
+  });
+  overlay.addEventListener('settings-close', () => { greetingClosed = true; offGreetingSync(); }, { once: true });
+  refreshGreetingPreview();
+
   // Feature toggles
   overlay.querySelectorAll('.cc-toggle[data-cc-feature]').forEach(toggle => {
     toggle.addEventListener('click', async () => {
@@ -4693,11 +4976,6 @@ export async function openSettingsModal(options = {}) {
         const data = await res.json();
         if (data.ok) {
           toggle.classList.toggle('on'); const row = toggle.closest('.cc-integration-item'); if (row) row.classList.toggle('enabled', !isOn);
-          // Show/hide greeting body when greeting feature is toggled
-          if (feature === 'greeting') {
-            const gcBody = overlay.querySelector('#cc-greeting-body');
-            if (gcBody) gcBody.style.display = !isOn ? 'block' : 'none';
-          }
           // Show/hide user learning threshold when feature is toggled
           if (feature === 'userLearning') {
             const ulThreshold = overlay.querySelector('#cc-ul-threshold');
@@ -4707,64 +4985,6 @@ export async function openSettingsModal(options = {}) {
         else { alert(data.error || kit.tx('settings.redesign.hooks.failedToToggleFeature')); }
       } catch (err) { alert(kit.tx('settings.redesign.hooks.failed2', { message: err.message })); }
       finally { toggle.style.opacity = ''; toggle.style.pointerEvents = ''; }
-    });
-  });
-
-  overlay.querySelectorAll('.cc-toggle[data-codex-greeting-toggle]').forEach(toggle => {
-    toggle.addEventListener('click', async () => {
-      const isOn = toggle.classList.contains('on');
-      try {
-        toggle.style.opacity = '0.4';
-        toggle.style.pointerEvents = 'none';
-        const res = await fetch('/api/codex-panel/greeting/config', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ enabled: !isOn }),
-        });
-        const data = await res.json();
-        if (!data.ok) {
-          alert(data.error || kit.tx('settings.redesign.hooks.failedToToggleCodexGreeting'));
-          return;
-        }
-        codexGreetingConfig.enabled = !isOn;
-        toggle.classList.toggle('on', !isOn);
-        const body = overlay.querySelector('#codex-greeting-body');
-        if (body) body.style.display = !isOn ? 'block' : 'none';
-      } catch (err) {
-        alert(kit.tx('settings.redesign.hooks.failed2', { message: err.message }));
-      } finally {
-        toggle.style.opacity = '';
-        toggle.style.pointerEvents = '';
-      }
-    });
-  });
-
-  overlay.querySelectorAll('.cc-toggle[data-opencode-greeting-toggle]').forEach(toggle => {
-    toggle.addEventListener('click', async () => {
-      const isOn = toggle.classList.contains('on');
-      try {
-        toggle.style.opacity = '0.4';
-        toggle.style.pointerEvents = 'none';
-        const res = await fetch('/api/opencode-panel/greeting/config', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ enabled: !isOn }),
-        });
-        const data = await res.json();
-        if (!data.ok) {
-          alert(data.error || kit.tx('settings.redesign.hooks.failedToToggleOpencodeGreeting'));
-          return;
-        }
-        opencodeGreetingConfig.enabled = !isOn;
-        toggle.classList.toggle('on', !isOn);
-        const body = overlay.querySelector('#opencode-greeting-body');
-        if (body) body.style.display = !isOn ? 'block' : 'none';
-      } catch (err) {
-        alert(kit.tx('settings.redesign.hooks.failed2', { message: err.message }));
-      } finally {
-        toggle.style.opacity = '';
-        toggle.style.pointerEvents = '';
-      }
     });
   });
 
@@ -4873,242 +5093,6 @@ export async function openSettingsModal(options = {}) {
       });
     }
   }
-
-  // ── Greeting editor handlers ──
-  function wireGreetingEditor({ prefix, configRef, saveBaseUrl, onSave }) {
-    const gcSelect = overlay.querySelector(`#${prefix}-greeting-project`);
-    const gcTemplate = overlay.querySelector(`#${prefix}-greeting-template`);
-    const gcShowReminders = overlay.querySelector(`#${prefix}-greeting-show-reminders`);
-    const gcShowLastSession = overlay.querySelector(`#${prefix}-greeting-show-last-session`);
-    const gcReminderList = overlay.querySelector(`#${prefix}-greeting-reminders`);
-    const gcAddReminder = overlay.querySelector(`#${prefix}-greeting-add-reminder`);
-    const gcSave = overlay.querySelector(`#${prefix}-greeting-save`);
-    if (!gcSelect || !gcTemplate || !gcReminderList || !gcSave) return;
-
-    function getGreetingCfg(key) {
-      const gc = configRef() || { defaults: {}, projects: {}, global: {} };
-      if (key === 'global') return { ...gc.defaults, ...gc.global };
-      return { ...gc.defaults, ...(gc.projects[key] || {}) };
-    }
-
-    function reminderRowHTML(reminder) {
-      return `<div class="cc-greeting-reminder-row">
-        <span class="cc-greeting-drag-handle" title="${kit.te('settings.redesign.hooks.dragToReorder')}">&#8942;&#8942;</span>
-        <input class="cc-greeting-reminder-input label" placeholder="${kit.te('settings.redesign.hooks.label')}" value="${escapeHtml(reminder.label || '')}">
-        <input class="cc-greeting-reminder-input cmd" placeholder="${kit.te('settings.redesign.hooks.command')}" value="${escapeHtml(reminder.command || '')}">
-        <button class="cc-greeting-reminder-remove" title="${kit.te('settings.redesign.hooks.remove')}">&times;</button>
-      </div>`;
-    }
-
-    function wireReminderRemoveButtons() {
-      gcReminderList.querySelectorAll('.cc-greeting-reminder-remove').forEach((btn) => {
-        btn.onclick = () => {
-          const row = btn.closest('.cc-greeting-reminder-row');
-          if (!row) return;
-          row.style.opacity = '0';
-          row.style.transition = 'opacity 0.15s';
-          setTimeout(() => row.remove(), 150);
-        };
-      });
-    }
-
-    function wireReminderDragHandles() {
-      gcReminderList.querySelectorAll('.cc-greeting-drag-handle').forEach((handle) => {
-        handle.onmousedown = (event) => {
-          event.preventDefault();
-          const row = handle.closest('.cc-greeting-reminder-row');
-          if (!row) return;
-          row.style.opacity = '0.5';
-          const rows = [...gcReminderList.querySelectorAll('.cc-greeting-reminder-row')];
-          const startY = event.clientY;
-          const startIdx = rows.indexOf(row);
-          const onMove = (moveEvent) => {
-            const dy = moveEvent.clientY - startY;
-            const rowH = row.offsetHeight + 4;
-            const shift = Math.round(dy / rowH);
-            const newIdx = Math.max(0, Math.min(rows.length - 1, startIdx + shift));
-            if (newIdx !== rows.indexOf(row)) {
-              const ref = gcReminderList.children[newIdx];
-              if (newIdx > rows.indexOf(row)) gcReminderList.insertBefore(row, ref?.nextSibling || null);
-              else gcReminderList.insertBefore(row, ref);
-            }
-          };
-          const onUp = () => {
-            row.style.opacity = '';
-            document.removeEventListener('mousemove', onMove);
-            document.removeEventListener('mouseup', onUp);
-          };
-          document.addEventListener('mousemove', onMove);
-          document.addEventListener('mouseup', onUp);
-        };
-      });
-    }
-
-    function populateGreetingFields(key) {
-      const cfg = getGreetingCfg(key);
-      gcTemplate.value = cfg.greetingTemplate || '';
-      if (gcShowReminders) gcShowReminders.checked = !!cfg.showReminders;
-      if (gcShowLastSession) gcShowLastSession.checked = !!cfg.showLastSession;
-      gcReminderList.innerHTML = (cfg.reminders || []).map((reminder) => reminderRowHTML(reminder)).join('');
-      wireReminderRemoveButtons();
-      wireReminderDragHandles();
-    }
-
-    const gcDropdown = overlay.querySelector(`#${prefix}-greeting-project-dropdown`);
-    const gcDropdownLabel = overlay.querySelector(`#${prefix}-greeting-project-label`);
-    const gcDropdownMenu = overlay.querySelector(`#${prefix}-greeting-project-menu`);
-    if (gcDropdown && gcDropdownMenu) {
-      gcDropdown.querySelector('.cc-dropdown-trigger')?.addEventListener('click', () => {
-        gcDropdown.classList.toggle('open');
-      });
-      gcDropdownMenu.querySelectorAll('.cc-dropdown-item').forEach((item) => {
-        item.addEventListener('click', () => {
-          const val = item.dataset.value;
-          gcSelect.value = val;
-          gcSelect.dispatchEvent(new Event('change'));
-          if (gcDropdownLabel) gcDropdownLabel.textContent = item.textContent;
-          gcDropdownMenu.querySelectorAll('.cc-dropdown-item').forEach((entry) => entry.classList.remove('active'));
-          item.classList.add('active');
-          gcDropdown.classList.remove('open');
-          populateGreetingFields(val);
-        });
-      });
-      document.addEventListener('click', (event) => {
-        if (!gcDropdown.contains(event.target)) gcDropdown.classList.remove('open');
-      });
-    }
-
-    gcAddReminder?.addEventListener('click', () => {
-      const tmp = document.createElement('div');
-      tmp.innerHTML = reminderRowHTML({ label: '', command: '' });
-      const newRow = tmp.firstElementChild;
-      gcReminderList.appendChild(newRow);
-      wireReminderRemoveButtons();
-      wireReminderDragHandles();
-      newRow.querySelector('.label')?.focus();
-    });
-
-    gcSave.addEventListener('click', async () => {
-      const project = gcSelect.value || 'global';
-      const reminders = [];
-      gcReminderList.querySelectorAll('.cc-greeting-reminder-row').forEach((row) => {
-        const label = row.querySelector('.label')?.value?.trim() || '';
-        const command = row.querySelector('.cmd')?.value?.trim() || '';
-        if (label || command) reminders.push({ label, command });
-      });
-      const body = {
-        greetingTemplate: gcTemplate.value || '',
-        showReminders: gcShowReminders?.checked ?? false,
-        showLastSession: gcShowLastSession?.checked ?? false,
-        reminders,
-      };
-      gcSave.style.opacity = '0.5';
-      gcSave.style.pointerEvents = 'none';
-      try {
-        const res = await fetch(`${saveBaseUrl}/${encodeURIComponent(project)}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-        const data = await res.json();
-        if (!data.ok) {
-          alert(data.error || kit.tx('settings.redesign.hooks.failedToSave'));
-          return;
-        }
-        onSave(project, body);
-        showCCToast(kit.tx('settings.redesign.hooks.greetingConfigSaved'));
-      } catch (err) {
-        alert(kit.tx('settings.redesign.hooks.failed2', { message: err.message }));
-      } finally {
-        gcSave.style.opacity = '';
-        gcSave.style.pointerEvents = '';
-      }
-    });
-
-    wireReminderRemoveButtons();
-    wireReminderDragHandles();
-
-    const csToggle = overlay.querySelector(`#${prefix}-greeting-cheatsheet-toggle`);
-    const csPanel = overlay.querySelector(`#${prefix}-greeting-cheatsheet`);
-    if (csToggle && csPanel) {
-      const updateCheatsheetPreview = () => {
-        const hour = new Date().getHours();
-        const timeGreeting = hour >= 5 && hour < 12 ? kit.tx('settings.redesign.hooks.goodMorning') : hour >= 12 && hour < 17 ? kit.tx('settings.redesign.hooks.goodAfternoon') : kit.tx('settings.redesign.hooks.goodEvening');
-        const dateStr = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-        const key = gcSelect.value || 'global';
-        const gc = configRef() || {};
-        const projCfg = key === 'global' ? gc.global : gc.projects?.[key];
-        const label = projCfg?.label || key;
-        const name = key === 'global' ? 'global' : key;
-
-        overlay.querySelector(`#${prefix}-cs-time`).textContent = timeGreeting;
-        overlay.querySelector(`#${prefix}-cs-label`).textContent = label;
-        overlay.querySelector(`#${prefix}-cs-name`).textContent = name;
-        overlay.querySelector(`#${prefix}-cs-branch`).textContent = kit.tx('settings.redesign.hooks.dev');
-        overlay.querySelector(`#${prefix}-cs-date`).textContent = dateStr;
-
-        const tpl = gcTemplate.value || '{time_greeting}! Working on **{project_label}** ({branch} branch). {date}.';
-        const resolved = tpl
-          .replace(/\{time_greeting\}/g, timeGreeting)
-          .replace(/\{project_label\}/g, label)
-          .replace(/\{project_name\}/g, name)
-          .replace(/\{branch\}/g, 'dev')
-          .replace(/\{date\}/g, dateStr)
-          .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-          .replace(/`(.+?)`/g, '<code>$1</code>');
-        overlay.querySelector(`#${prefix}-cs-preview`).innerHTML = resolved;
-      };
-
-      csToggle.addEventListener('click', () => {
-        const open = csPanel.style.display !== 'none';
-        csPanel.style.display = open ? 'none' : 'block';
-        csToggle.classList.toggle('open', !open);
-        if (!open) updateCheatsheetPreview();
-      });
-      gcSelect.addEventListener('change', () => {
-        if (csPanel.style.display !== 'none') updateCheatsheetPreview();
-      });
-      gcTemplate.addEventListener('input', () => {
-        if (csPanel.style.display !== 'none') updateCheatsheetPreview();
-      });
-    }
-  }
-
-  wireGreetingEditor({
-    prefix: 'cc',
-    configRef: () => greetingConfig,
-    saveBaseUrl: '/api/greeting/config',
-    onSave: (project, body) => {
-      const target = project === 'global'
-        ? (greetingConfig.global || (greetingConfig.global = {}))
-        : (greetingConfig.projects[project] || (greetingConfig.projects[project] = {}));
-      Object.assign(target, body);
-    },
-  });
-
-  wireGreetingEditor({
-    prefix: 'codex',
-    configRef: () => codexGreetingConfig,
-    saveBaseUrl: '/api/codex-panel/greeting/config',
-    onSave: (project, body) => {
-      const target = project === 'global'
-        ? (codexGreetingConfig.global || (codexGreetingConfig.global = {}))
-        : (codexGreetingConfig.projects[project] || (codexGreetingConfig.projects[project] = {}));
-      Object.assign(target, body);
-    },
-  });
-
-  wireGreetingEditor({
-    prefix: 'opencode',
-    configRef: () => opencodeGreetingConfig,
-    saveBaseUrl: '/api/opencode-panel/greeting/config',
-    onSave: (project, body) => {
-      const target = project === 'global'
-        ? (opencodeGreetingConfig.global || (opencodeGreetingConfig.global = {}))
-        : (opencodeGreetingConfig.projects[project] || (opencodeGreetingConfig.projects[project] = {}));
-      Object.assign(target, body);
-    },
-  });
 
   // Per-project toggles
   overlay.querySelectorAll('.cc-enable-btn[data-cc-project-toggle]').forEach(btn => {
@@ -6442,69 +6426,48 @@ export async function openSettingsModal(options = {}) {
 
   }
 
-  // ── Tunnel toggle ──
-  const tunnelToggle = overlay.querySelector('#cc-tunnel-toggle');
-  if (tunnelToggle) {
-    tunnelToggle.addEventListener('click', async () => {
-      const isOn = tunnelToggle.classList.contains('on');
-      const endpoint = isOn ? '/api/tunnel/stop' : '/api/tunnel/start';
-      try {
-        tunnelToggle.style.opacity = '0.4'; tunnelToggle.style.pointerEvents = 'none';
-        const res = await fetch(endpoint, { method: 'POST' }); const data = await res.json();
-        if (data.ok) {
-          if (isOn) {
-            tunnelToggle.classList.remove('on');
-            const row = overlay.querySelector('#cc-tunnel-row'); if (row) row.classList.remove('enabled');
-            const label = overlay.querySelector('#cc-tunnel-label'); if (label) label.textContent = kit.tx('settings.redesign.hooks.ready');
-            const urlEl = overlay.querySelector('#cc-tunnel-url'); if (urlEl) urlEl.textContent = kit.tx('settings.redesign.hooks.exposeMcpToClaudeWebVia');
-          } else {
-            tunnelToggle.classList.add('on');
-            const row = overlay.querySelector('#cc-tunnel-row'); if (row) row.classList.add('enabled');
-            const label = overlay.querySelector('#cc-tunnel-label'); if (label) label.textContent = kit.tx('settings.redesign.hooks.starting');
-            const urlEl = overlay.querySelector('#cc-tunnel-url'); if (urlEl) urlEl.textContent = kit.tx('settings.redesign.hooks.waitingForTunnelUrl');
-            let attempts = 0;
-            const poll = setInterval(async () => {
-              attempts++;
-              try {
-                const sr = await fetch('/api/tunnel/status'); const sd = await sr.json();
-                if (sd.url) {
-                  clearInterval(poll);
-                  if (label) label.textContent = kit.tx('settings.redesign.hooks.running');
-                  if (urlEl) urlEl.textContent = sd.url;
-                  let copyBtn = overlay.querySelector('#cc-tunnel-copy-url');
-                  if (!copyBtn) {
-                    const wrapper = document.createElement('div'); wrapper.style.cssText = 'margin-top:6px;display:flex;gap:6px;align-items:center';
-                    wrapper.innerHTML = `<button type="button" class="conn-add-btn" id="cc-tunnel-copy-url" ${kit.inv('AUT050')} style="margin:0;flex:1;font-size:12px;padding:6px 10px"><svg viewBox="0 0 24 24" style="width:12px;height:12px"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> ${kit.te('settings.redesign.hooks.copyMcpUrl')}</button>`;
-                    row.parentNode.insertBefore(wrapper, row.nextSibling);
-                    copyBtn = wrapper.querySelector('#cc-tunnel-copy-url');
-                    copyBtn.addEventListener('click', () => {
-                      const tunnelMcpUrl = (urlEl?.textContent || '') + '/mcp';
-                      navigator.clipboard.writeText(tunnelMcpUrl);
-                      copyBtn.innerHTML = '<svg viewBox="0 0 24 24" style="width:12px;height:12px"><polyline points="20 6 9 17 4 12"/></svg> ' + kit.te('settings.redesign.hooks.copied') + '';
-                      setTimeout(() => { copyBtn.innerHTML = '<svg viewBox="0 0 24 24" style="width:12px;height:12px"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> ' + kit.te('settings.redesign.hooks.copyMcpUrl') + ''; }, 2000);
-                    });
-                  }
-                } else if (attempts >= 30) { clearInterval(poll); if (label) label.textContent = kit.tx('settings.redesign.hooks.timeout'); if (urlEl) urlEl.textContent = kit.tx('settings.redesign.hooks.failedToGetTunnelUrlCheck'); }
-              } catch {}
-            }, 1000);
-          }
-        } else { alert(data.error || kit.tx('settings.redesign.hooks.failed')); }
-      } catch (err) { alert(kit.tx('settings.redesign.hooks.failed2', { message: err.message })); }
-      finally { tunnelToggle.style.opacity = ''; tunnelToggle.style.pointerEvents = ''; }
-    });
-  }
-
-  // Copy tunnel MCP URL
-  const tunnelCopy = overlay.querySelector('#cc-tunnel-copy-url');
-  if (tunnelCopy) {
-    tunnelCopy.addEventListener('click', () => {
-      const urlEl = overlay.querySelector('#cc-tunnel-url'); const baseUrl = urlEl?.textContent || '';
-      if (!baseUrl) { alert(kit.tx('settings.redesign.hooks.tunnelUrlNotAvailable')); return; }
-      const tunnelMcpUrl = mcpKeyInfo.key ? baseUrl + '/mcp/' + mcpKeyInfo.key : baseUrl + '/mcp';
-      navigator.clipboard.writeText(tunnelMcpUrl);
-      tunnelCopy.innerHTML = '<svg viewBox="0 0 24 24" style="width:12px;height:12px"><polyline points="20 6 9 17 4 12"/></svg> ' + kit.te('settings.redesign.hooks.copied') + '';
-      setTimeout(() => { tunnelCopy.innerHTML = '<svg viewBox="0 0 24 24" style="width:12px;height:12px"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> ' + kit.te('settings.redesign.hooks.copyMcpUrl') + ''; }, 2000);
-    });
+  // ── Public address (the Cloudflare tunnel) ──
+  // One block, drawn again whenever the server says something new: ui-tunnel.js asks again by itself while the
+  // tunnel program is being downloaded or a start waits for its address, for as long as this dialog is open.
+  // A start on a machine that has no cloudflared fetches it and goes on by itself: one press.
+  let redrawTunnelBox = () => {};
+  let latestTunnelStatus = () => tunnelStatus;
+  const tunnelRow = overlay.querySelector('#cc-tunnel-row');
+  const tunnelExtra = overlay.querySelector('#cc-tunnel-extra');
+  if (tunnelRow && tunnelExtra) {
+    const drawTunnel = (view) => {
+      tunnelRow.classList.toggle('enabled', view.on);
+      drawInto(tunnelRow, tunnelRowHtml(view));
+      drawInto(tunnelExtra, tunnelExtraHtml(view, mcpKeyInfo));
+    };
+    const tunnelCard = createTunnelCard({ alive: () => tunnelRow.isConnected, onChange: drawTunnel });
+    latestTunnelStatus = () => tunnelCard.status() || tunnelStatus;
+    redrawTunnelBox = () => drawTunnel(tunnelCard.view());
+    tunnelCard.show(tunnelStatus);
+    const onTunnelClick = async (event) => {
+      const button = event.target.closest('button');
+      if (!button || !(tunnelRow.contains(button) || tunnelExtra.contains(button))) return;
+      if (button.id === 'cc-tunnel-toggle' || button.id === 'cc-tunnel-retry') {
+        const action = tunnelCard.view().action;
+        if (action === 'start' || action === 'retry') {
+          // Shown at once; the server answers immediately too, and then says what it is doing.
+          tunnelCard.show({ ...(tunnelCard.status() || {}), state: 'starting', starting: true, url: null, error: null });
+          await tunnelCard.start();
+        } else if (action === 'stop' || action === 'cancel') {
+          await tunnelCard.stop();
+        }
+      } else if (button.id === 'cc-tunnel-copy-url') {
+        // The remote MCP address is the public one with the access key in it: there is none without a key.
+        const address = remoteMcpAddress(tunnelCard.view().url, mcpKeyInfo?.key);
+        if (!address) { redrawTunnelBox(); return; }
+        navigator.clipboard.writeText(address);
+        const before = button.innerHTML;
+        button.innerHTML = '<svg viewBox="0 0 24 24" style="width:12px;height:12px"><polyline points="20 6 9 17 4 12"/></svg> ' + kit.te('settings.redesign.hooks.copied') + '';
+        setTimeout(() => { if (button.isConnected) button.innerHTML = before; }, 2000);
+      }
+    };
+    tunnelRow.addEventListener('click', onTunnelClick);
+    tunnelExtra.addEventListener('click', onTunnelClick);
   }
 
   // ── API key generate / copy / revoke ──
@@ -6589,6 +6552,7 @@ export async function openSettingsModal(options = {}) {
           if (statusEl) statusEl.textContent = '***' + data.key.slice(-8);
           if (row) row.classList.add('enabled');
           apikeyGenBtn.textContent = kit.tx('settings.redesign.hooks.regenerate');
+          redrawTunnelBox();
         } else { alert(data.error || kit.tx('settings.redesign.hooks.failedToGenerateKey')); }
       } catch (err) { alert(kit.tx('settings.redesign.hooks.failed2', { message: err.message })); }
       finally { apikeyGenBtn.style.opacity = ''; apikeyGenBtn.style.pointerEvents = ''; }
@@ -6606,15 +6570,18 @@ export async function openSettingsModal(options = {}) {
   const apikeyRevokeBtn = overlay.querySelector('#cc-apikey-revoke');
   if (apikeyRevokeBtn) {
     apikeyRevokeBtn.addEventListener('click', async () => {
-      if (!confirm(kit.tx('settings.redesign.hooks.revokeThisApiKeyTheMcp'))) return;
+      // What a revoke leaves behind depends on the server that runs: see closesKeylessMcp.
+      const closed = closesKeylessMcp(latestTunnelStatus());
+      if (!confirm(kit.tx(closed ? 'settings.redesign.hooks.revokeKeyClosed' : 'settings.redesign.hooks.revokeThisApiKeyTheMcp'))) return;
       try {
         const res = await fetch('/api/mcp-key', { method: 'DELETE' }); const data = await res.json();
         if (data.ok) {
           mcpKeyInfo = { hasKey: false };
           const reveal = overlay.querySelector('#cc-apikey-reveal'); if (reveal) reveal.style.display = 'none';
-          const statusEl = overlay.querySelector('#cc-apikey-status'); if (statusEl) statusEl.textContent = kit.tx('settings.redesign.hooks.noKeyConfiguredTunnelIsOpen');
+          const statusEl = overlay.querySelector('#cc-apikey-status'); if (statusEl) statusEl.textContent = kit.tx(closed ? 'settings.redesign.hooks.apikey.noneClosed' : 'settings.redesign.hooks.apikey.none');
           const row = overlay.querySelector('#cc-apikey-row'); if (row) row.classList.remove('enabled');
           const genBtn = overlay.querySelector('#cc-apikey-generate'); if (genBtn) genBtn.textContent = kit.tx('settings.redesign.hooks.generateKey');
+          redrawTunnelBox();
         }
       } catch (err) { alert(kit.tx('settings.redesign.hooks.failed2', { message: err.message })); }
     });

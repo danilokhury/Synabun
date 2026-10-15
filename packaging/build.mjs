@@ -110,7 +110,7 @@ async function build(options) {
   for (const warning of verdict.warnings) note(`warning: ${warning}`);
 
   // Loaded only now: a listing or a refusal needs none of it.
-  const { fetchRuntime, stageApplication, installDependencies, prepareNatives, provisionEmbeddingModel } = await import('./lib/stage.mjs');
+  const { fetchRuntime, stageApplication, installDependencies, prepareNatives, provisionEmbeddingModel, provisionCloudflared } = await import('./lib/stage.mjs');
   const { assembleBundle, createArtifacts } = await import('./lib/bundle.mjs');
   const { auditBundle, smokeTest } = await import('./lib/verify.mjs');
 
@@ -149,6 +149,7 @@ async function build(options) {
   await installDependencies(ctx);
   await prepareNatives(ctx);
   await provisionEmbeddingModel(ctx);
+  await provisionCloudflared(ctx);
   assembleBundle(ctx);
   await auditBundle(ctx);
   if (ctx.cross) {

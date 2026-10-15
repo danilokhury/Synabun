@@ -212,9 +212,13 @@ function render(_container, store, opts = {}) {
   );
   const questions = requestsVisibleIn(s.pendingQuestions, s.sessionId, isKnownDescendantSession);
   const retry = retryBannerView(s.sessionStatus);
-  const hasInteractiveCards = permissions.length > 0 || questions.length > 0 || !!s.showPostPlanActions;
+  // The panel's last card for the session on screen (a dispatched worker's end): { sig, build } or null.
+  const endCard = typeof opts.endCard === 'function' ? opts.endCard(s) : null;
+  const hasInteractiveCards = permissions.length > 0 || questions.length > 0 || !!s.showPostPlanActions || !!endCard;
   if (s.messageOrder.length === 0 && !hasInteractiveCards && !s.errors.length && !retry && !revertBanner) {
     _reconcile(_container, [{ key: '__empty__', sig: 'empty', build: _buildEmpty }]);
+    // The panel may put SynaBun's greeting in it (ocp-v2-greeting.js).
+    try { opts.onEmpty?.(_container.querySelector(':scope > .ocpv2-empty'), s); } catch { /* the empty state stands on its own */ }
     return;
   }
 
@@ -345,6 +349,8 @@ function render(_container, store, opts = {}) {
       build: () => renderQuestionCard(q, store),
     });
   }
+
+  if (endCard) desired.push({ key: 'end', sig: `end:${endCard.sig}`, build: endCard.build });
 
   _reconcile(_container, desired);
 }

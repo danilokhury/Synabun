@@ -8,11 +8,13 @@
 // the face, plus one prop drawn in the face's own pill geometry. Rigs draw
 // from the shared ticker (shared/synabun-ticker.js): 30 fps while a pose
 // loops, 60 fps for blends and reactions, no frames at all while still. One
-// pointermove listener and one IntersectionObserver serve every rig, and only
-// one rig at a time plays a pose loop (the one posed most recently); the
-// others hold their pose's still frame. Under prefers-reduced-motion every
-// pose is its still frame and changes are instant. A rig tears itself down
-// once its SVG leaves the document.
+// loop, one pointermove listener and one IntersectionObserver serve every rig,
+// and every rig that is active and on screen plays its own pose: N rigs move
+// at once, each on its own clock. No rig waits for another; a host that wants
+// one moving character among several of its own (an Assistant panel's hero,
+// stage and "Thinking" row) says so with setActive(). Under
+// prefers-reduced-motion every pose is its still frame and changes are
+// instant. A rig tears itself down once its SVG leaves the document.
 //
 // v1 callers are unchanged: createMascot(container, opts) → { el, destroy,
 // look, blink }, idle, blinking every 3-7 s and following the cursor.
@@ -307,7 +309,7 @@ const MINIS = [
 ];
 
 /**
- * motion: 'loop' (30 fps while it leads), 'blink' (still between slow blinks),
+ * motion: 'loop' (30 fps), 'blink' (still between slow blinks),
  * 'once' (plays `settle` ms, then still; `hold` before opts.then), 'still'.
  * blinks: random blinks every 3-7 s. tracks: follows the cursor.
  * look: follows look(), easing with this time constant (ms).
@@ -994,25 +996,14 @@ export function paintMascot(svg, frame) {
   painter.paint(frame);
 }
 
-// ── Shared runtime: one observer, one motion listener, one lead ──
+// ── Shared runtime: one observer and one motion listener for every rig ──
+// Nothing here picks a rig: each one decides from its own state (active, on
+// screen, motion allowed) whether it moves.
 
 const rigs = new Set();
-let leadRig = null;
-let promoteSeq = 0;
 let stopMotionWatch = null;
 let io = null;
 const ioRigs = new WeakMap();
-
-/** Only one rig plays a pose loop: the most recently posed one that wants to. */
-function elect() {
-  let best = null;
-  for (const rig of rigs) if (rig.wantsLead() && (!best || rig.promotedAt() > best.promotedAt())) best = rig;
-  if (best === leadRig) return;
-  const prev = leadRig;
-  leadRig = best;
-  prev?.leadChanged();
-  best?.leadChanged();
-}
 
 function observe(el, rig) {
   if (typeof IntersectionObserver !== 'function') return;
@@ -1034,13 +1025,11 @@ function register(rig) {
   rigs.add(rig);
   stopMotionWatch ||= onReducedMotionChange(() => {
     for (const r of Array.from(rigs)) r.motionChanged();
-    elect();
   });
 }
 
 function unregister(rig) {
   rigs.delete(rig);
-  if (leadRig === rig) { leadRig = null; elect(); }
   if (!rigs.size && stopMotionWatch) { stopMotionWatch(); stopMotionWatch = null; }
 }
 
@@ -1088,14 +1077,12 @@ export function createMascot(container, options) {
   let active = startActive !== false;
   let visible = true;
   let seenConnected = svg.isConnected;
-  let promotedAt = (promoteSeq += 1);
   let clock = 0; // rig time in ms: the ticker's dt while drawing, real time while still
   let frozenAt = tickerNow(); // while not drawing: when the clock was last brought up to date; -1 while drawing
   let pose = { name: 'idle', raw: {}, start: 0, then: null };
   let settled = false; // a one-shot's opts.then has fired
   let blend = null; // { from, start, dur }
   let lastFrame = null; // the last frame before blinks and reactions
-  let drawn = false; // has drawn a live frame (a never-drawn rig has nothing to blend from)
   let look = { x: 0, y: 0 }; // eased gaze
   let track = { x: 0, y: 0 }; // idle: where the cursor (or look()) points
   let hostLook = { x: 0, y: 0 };
@@ -1119,10 +1106,10 @@ export function createMascot(container, options) {
 
   const def = () => POSES[pose.name];
   const animating = () => !destroyed && active && visible && !isReducedMotion();
-  const isLead = () => leadRig === rig;
   const poseTime = () => clock - pose.start;
 
-  function wantsLead() {
+  /** This pose moves on its own right now: a loop, a patient pose, a one-shot still playing. */
+  function playing() {
     if (!animating()) return false;
     const { motion, settle } = def();
     if (motion === 'loop' || motion === 'blink') return true;
@@ -1186,7 +1173,6 @@ export function createMascot(container, options) {
   function nextRate() {
     if (!animating()) return 0;
     if (blend || blinkStart >= 0 || reactions.length || aim || easing() || miniPopping()) return 60;
-    if (!isLead()) return 0;
     const d = def();
     const t = poseTime();
     if (d.motion === 'loop') return 30;
@@ -1208,9 +1194,9 @@ export function createMascot(container, options) {
     const d = def();
     const at0 = tickerNow();
     let at = Infinity;
-    if (d.blinks && (d.motion === 'still' || isLead())) at = Math.min(at, nextBlinkAt);
+    if (d.blinks) at = Math.min(at, nextBlinkAt);
     if (d.tracks) at = Math.min(at, nextGlanceAt, nextFidgetAt, glance ? glance.until : Infinity);
-    if (d.motion === 'blink' && isLead()) at = Math.min(at, at0 + d.idleFor(poseTime()));
+    if (d.motion === 'blink') at = Math.min(at, at0 + d.idleFor(poseTime()));
     if (d.motion === 'once' && pose.then && !settled) at = Math.min(at, at0 + Math.max(0, d.settle + (d.hold || 0) - poseTime()));
     if (!Number.isFinite(at)) return;
     wakeTimer = setTimeout(() => {
@@ -1243,15 +1229,15 @@ export function createMascot(container, options) {
   function handleDue() {
     const d = def();
     const t = tickerNow();
-    if (d.blinks && (d.motion === 'still' || isLead()) && t >= nextBlinkAt) {
+    if (d.blinks && t >= nextBlinkAt) {
       nextBlinkAt = t + rand(3000, 7000);
       startBlink();
     }
     if (d.tracks) {
       if (glance && t >= glance.until) glance = null;
       if (t >= nextGlanceAt) {
-        // Only while the cursor is still and no other rig is busy.
-        if (t - pointerAt < 2500 || leadRig) nextGlanceAt = t + 3000;
+        // Only while the cursor is still.
+        if (t - pointerAt < 2500) nextGlanceAt = t + 3000;
         else {
           const [x, y] = GLANCES[Math.floor(Math.random() * GLANCES.length)];
           glance = { x, y, until: t + rand(700, 1000) };
@@ -1261,7 +1247,6 @@ export function createMascot(container, options) {
       if (t >= nextFidgetAt) {
         const quietFor = t - Math.max(lastInputAt(), pointerAt);
         if (quietFor < 20000) nextFidgetAt = t + (20000 - quietFor) + rand(0, 5000);
-        else if (leadRig) nextFidgetAt = t + 10000;
         else {
           nextFidgetAt = t + rand(45000, 75000);
           startReaction(Math.random() < 0.5 ? 'hop' : 'wiggle');
@@ -1303,8 +1288,7 @@ export function createMascot(container, options) {
 
   /** The pose frame this rig would draw now, before blends and overlays. */
   function frameNow() {
-    const loopOn = isLead() && def().motion !== 'still';
-    return poseFrame(pose.name, poseTime(), { ...pose.raw, look, range, ticks, still: !loopOn });
+    return poseFrame(pose.name, poseTime(), { ...pose.raw, look, range, ticks, still: !playing() });
   }
 
   /** Ease from what is on screen to what comes next, unless they already match. */
@@ -1400,10 +1384,7 @@ export function createMascot(container, options) {
     handleDue();
     if (aim) { aimAt(aim); aim = null; }
     easeLook(dt);
-    const wasLead = isLead();
     painter.paint(compose());
-    drawn = true;
-    if (wasLead && def().motion === 'once' && poseTime() >= def().settle) elect();
     const rate = nextRate();
     setRate(rate);
     if (!rate) armWake();
@@ -1497,9 +1478,7 @@ export function createMascot(container, options) {
       }
       scheduleIdle();
     }
-    promotedAt = (promoteSeq += 1);
     if (animating()) requestFrames(BLEND_MS);
-    elect();
     refresh();
     return api;
   }
@@ -1537,8 +1516,7 @@ export function createMascot(container, options) {
     const next = !!on;
     if (destroyed || next === active) return api;
     active = next;
-    if (active) { promotedAt = (promoteSeq += 1); revive(); }
-    elect();
+    if (active) revive();
     refresh();
     return api;
   }
@@ -1560,18 +1538,6 @@ export function createMascot(container, options) {
   }
 
   const rig = {
-    promotedAt: () => promotedAt,
-    wantsLead,
-    leadChanged() {
-      if (destroyed) return;
-      // Gaining or losing the loop swaps the still frame for the live one: blend
-      // when they differ (a patient pose between blinks, a settled one-shot: no).
-      if (drawn && animating()) {
-        syncClock();
-        blendIn();
-      }
-      refresh();
-    },
     visibilityChanged(inView) {
       if (destroyed) return;
       if (svg.isConnected) seenConnected = true;
@@ -1579,7 +1545,6 @@ export function createMascot(container, options) {
       const was = visible;
       visible = inView;
       if (visible && !was) revive();
-      elect();
       refresh(); // also wakes a rig that was built before it was attached
     },
     motionChanged() {
@@ -1619,7 +1584,6 @@ export function createMascot(container, options) {
       if (p) aim = p;
     }
   }
-  elect();
   refresh();
   return api;
 }

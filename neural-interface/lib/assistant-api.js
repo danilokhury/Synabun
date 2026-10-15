@@ -30,6 +30,8 @@ export const BUDGET_ENFORCEMENT = Object.freeze({
 });
 
 const OWNER_ONLY = { error: 'The assistant is available to the owner only', code: 'GUEST_FORBIDDEN' };
+// What GET /catalog is made from when no catalog builder is wired: one object, so its answer is reused like any build's.
+const NO_CATALOG = Object.freeze({});
 
 function sendError(res, error, fallbackStatus = 500) {
   if (error instanceof DispatchError || (error && error.code && error.status)) {
@@ -119,6 +121,11 @@ export function createAssistantApi({
   // Remote sessions (lib/remote-policy.js): the session's policy, or null. Defaults
   // to the runtime's view, else the process-wide registry.
   sessionPolicy = null,
+  // The user-context engine (assistant-user-context.js) and the project a new conversation starts in.
+  userContext = null,
+  // Why the engine did not start on this server (a string or null), for the settings page.
+  userContextError = () => null,
+  defaultProject = () => 'global',
 } = {}) {
   if (!dispatcher) throw new Error('createAssistantApi requires a dispatcher');
   const router = Router();
@@ -268,22 +275,26 @@ export function createAssistantApi({
   // ── catalog ────────────────────────────────────────────────────────────────
   router.get('/catalog', async (req, res) => {
     try {
-      const force = req.query.refresh === '1';
+      // refresh=1 rebuilds from the providers' endpoints; deep=1 also makes them ask the CLI / app-server again.
+      const deep = req.query.deep === '1';
+      const force = req.query.refresh === '1' || deep;
       // Brain view / search: compact rows (OpenCode can list hundreds of models).
       const view = req.query.view === 'brain' ? 'brain' : req.query.view === 'manage' ? 'manage' : 'full';
       const provider = req.query.provider ? String(req.query.provider) : null;
       const q = req.query.q || req.query.search ? String(req.query.q || req.query.search) : null;
       // The Models manager: every row with hidden: true|false.
-      if (view === 'manage' && catalog?.get) return res.json({ ok: true, ...(await catalog.get({ force, view: 'manage', provider })) });
+      if (view === 'manage' && catalog?.get) return res.json({ ok: true, ...(await catalog.get({ force, deep, view: 'manage', provider })) });
       if (catalog?.get && (view === 'brain' || provider || q)) {
         let preferences = {};
         try { preferences = configStore?.routing?.().preferences || {}; } catch {}
-        const brief = await catalog.get({ force, view: 'brain', provider, q, preferences });
+        const brief = await catalog.get({ force, deep, view: 'brain', provider, q, preferences });
         return res.json({ ok: true, generatedAt: new Date(now()).toISOString(), ...brief, limits: dispatcher.limits, runs: dispatcher.list({ activeOnly: true }), totals: dispatcher.totals() });
       }
-      // Reuse only while the catalog underneath is the same build (invalidate() drops it).
-      if (!force && catalogCache && now() - catalogCache.at < 30_000 && (!catalog?.peek || catalog.peek() === catalogCache.base)) return res.json(catalogCache.value);
-      const base = typeof buildCatalog === 'function' ? await buildCatalog({ force }) : {};
+      // The catalog says how long one of its builds is good for (one without a verified list is redone
+      // within seconds), so it is asked every time: this answer is reused only while it hands back the
+      // build the answer was made from (a rebuild or invalidate() gives another one).
+      const base = typeof buildCatalog === 'function' ? await buildCatalog({ force, deep }) : NO_CATALOG;
+      if (!force && catalogCache && catalogCache.base === base && now() - catalogCache.at < 30_000) return res.json(catalogCache.value);
       // Hidden rows stay server-side (view=manage lists them); the lists themselves ship.
       const { hiddenRows: _hiddenRows, ...visible } = base || {};
       const value = {
@@ -470,6 +481,41 @@ export function createAssistantApi({
       bounds: { minUsd: BUDGET_MIN_USD, maxUsd: BUDGET_MAX_USD }, session, pricing: pricingStatus, enforcement: BUDGET_ENFORCEMENT,
     };
   }
+  // ── User context (Settings → Automation behavior): the three layers and what a new conversation is told ──
+  function userContextPayload(req) {
+    let fallback = 'global';
+    try { fallback = String(defaultProject() || 'global'); } catch { fallback = 'global'; }
+    const project = String(req.query?.project || '').trim().slice(0, 200) || fallback;
+    return { ok: true, settings: configStore.userContext(), capabilities: userContext.capabilities(), preview: userContext.preview({ project }) };
+  }
+  const userContextReady = (res) => {
+    if (userContext && configStore?.userContext) return true;
+    let reason = null;
+    try { reason = typeof userContextError === 'function' ? userContextError() : userContextError; } catch { reason = null; }
+    res.status(503).json({ ok: false, code: 'USER_CONTEXT_UNAVAILABLE', error: 'User context is not available on this server', reason: reason ? String(reason).slice(0, 300) : null });
+    return false;
+  };
+  router.get('/user-context', (req, res) => {
+    if (!userContextReady(res)) return;
+    try { res.json(userContextPayload(req)); } catch (error) { sendError(res, error); }
+  });
+  router.put('/user-context', (req, res) => {
+    if (!userContextReady(res)) return;
+    if (!configStore.patchUserContext) return res.status(503).json({ ok: false, code: 'CONFIG_UNAVAILABLE', error: 'User context settings are read-only' });
+    if (callerContext(req).kind !== 'ui') return res.status(403).json({ ok: false, code: 'UI_ONLY', error: 'User context settings are changed from Settings only.' });
+    try {
+      const body = req.body || {};
+      const { project: _project, ...patch } = body.settings && typeof body.settings === 'object' ? body.settings : body;
+      configStore.patchUserContext(patch);
+      // Read live by the engine: the next turn (and the next brain start) follows it.
+      broadcastSync({ type: 'assistant:user-context-changed', settings: configStore.userContext() });
+      res.json(userContextPayload(req));
+    } catch (error) {
+      if (error?.code === 'USER_CONTEXT_INVALID') return res.status(400).json({ ok: false, code: error.code, error: error.message, message: error.message, field: error.field || null });
+      sendError(res, error, 400);
+    }
+  });
+
   router.get('/budget', (req, res) => {
     if (!configStore?.budget) return res.status(503).json({ ok: false, code: 'CONFIG_UNAVAILABLE', error: 'Budget settings are not available' });
     try { res.json(budgetPayload(req.query.sessionId || null)); } catch (error) { sendError(res, error); }
@@ -778,6 +824,12 @@ export function createAssistantApi({
   });
   router.post('/runs/:runId/complete', orchestrationGuard, (req, res) => {
     try { res.json(dispatcher.complete(req.params.runId)); } catch (error) { sendError(res, error); }
+  });
+  // The user closed the sidepanel tab of a worker that finished its task: completed, never "stopped
+  // by the user" (409 RUN_NOT_FINISHED for any other run, which the tab then stops as before).
+  router.post('/runs/:runId/tab-closed', (req, res) => {
+    if (callerContext(req).kind !== 'ui') return res.status(403).json({ ok: false, code: 'UI_ONLY', error: 'Only the sidepanel that closed the tab reports it.' });
+    try { res.json(dispatcher.completeClosedTab(req.params.runId)); } catch (error) { sendError(res, error); }
   });
   router.post('/runs/:runId/focus', (req, res) => {
     const run = dispatcher.get(req.params.runId);

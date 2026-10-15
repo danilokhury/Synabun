@@ -165,7 +165,7 @@ export function createAssistantMemory({
   };
   let categoryEnsured = false;
 
-  const none = (skipped, extra = {}) => ({ block: '', results: [], alreadyPresent: false, skipped, decision: null, urgency: null, ...extra });
+  const none = (skipped, extra = {}) => ({ block: '', results: [], alreadyPresent: false, skipped, decision: null, urgency: null, diverted: [], ...extra });
   function annotateUrgency(u, outcome) {
     if (!u?.logId) return;
     try { judge?.annotate?.(u.logId, outcome); } catch { /* diagnostics */ }
@@ -178,9 +178,10 @@ export function createAssistantMemory({
     }
     return shouldSkipRecall(text) ? { decision: 'skip', fallback: true } : { decision: 'should', fallback: true };
   }
-  /** Nothing to inject, whether deferred (candidates after the floor) or rendered (results). */
+  /** Nothing to inject, whether deferred (candidates after the floor) or rendered (results); diverted memories count as something. */
   function emptyRecall(data) {
     if (!data || data.already_present) return false;
+    if (Array.isArray(data.diverted) && data.diverted.length) return false;
     if (data.deferred) return Number(data.candidates) === 0;
     return !(Array.isArray(data.results) && data.results.length);
   }
@@ -195,9 +196,11 @@ export function createAssistantMemory({
    *     after the floor. The other side finishes in the background.
    *  4. The urgency sizes the injection (consider / should / must); without a
    *     judgment the old skip regex decides, else `should`.
-   * → { block, results, alreadyPresent, skipped, decision, urgency }
+   * `divert`: category names kept out of the block (the user-context engine's
+   * knowledge categories); what the search found of them comes back as `diverted`.
+   * → { block, results, alreadyPresent, skipped, decision, urgency, diverted }
    */
-  async function recallForPrompt({ prompt, project, session, generation, tokenBudget } = {}) {
+  async function recallForPrompt({ prompt, project, session, generation, tokenBudget, divert = null } = {}) {
     if (!settings.autoRecall) return none('disabled');
     const origin = classifyTurn(prompt);
     if (origin.origin === 'system') return none('system');
@@ -231,7 +234,8 @@ export function createAssistantMemory({
     const urgencyP = canJudge
       ? Promise.resolve().then(() => judge.promptUrgency({ prompt: clipForJudge(text), project: projectLabel, sessionId: session || null, timeoutMs: settings.recallBudgetMs })).catch(() => null)
       : Promise.resolve(null);
-    const recallP = Promise.resolve().then(() => hookRecall(body, undefined, { origin: 'assistant', defer: true }))
+    const divertList = Array.isArray(divert) && divert.length ? divert.map(String) : null;
+    const recallP = Promise.resolve().then(() => hookRecall(body, undefined, { origin: 'assistant', defer: true, ...(divertList ? { divert: divertList } : {}) }))
       .then((data) => ({ data }), (error) => ({ error }));
     const release = (settled) => { try { if (settled?.data?.deferred) settled.data.finish?.(null); } catch { /* nothing committed */ } };
 
@@ -273,7 +277,8 @@ export function createAssistantMemory({
     const results = Array.isArray(view?.results) ? view.results : [];
     const block = formatMemoryBlock(view, { nudge: decision === 'must' ? MUST_RECALL_NUDGE : '' });
     annotateUrgency(u, { decision, fallback, tier: tier.name, injected: results.map((row) => row.id).filter(Boolean) });
-    return { block, results, alreadyPresent: !!view?.already_present, skipped: null, decision, urgency: u?.urgency || null };
+    const diverted = Array.isArray(view?.diverted) ? view.diverted : [];
+    return { block, results, alreadyPresent: !!view?.already_present, skipped: null, decision, urgency: u?.urgency || null, diverted };
   }
 
   /**
@@ -282,7 +287,10 @@ export function createAssistantMemory({
    *        hasPendingObligations(), markRemembered(), onRecall(result),
    *        describeTurn(text) → { system, prompt } | null (the runtime's record
    *        of the turn it sent: the mailbox / router text is system, and a
-   *        router-stamped prompt recalls on the user's own words) }
+   *        router-stamped prompt recalls on the user's own words),
+   *        divert() → category names recall keeps out of the block, or null,
+   *        turnContext({ recalled, meta, prompt }) → the user-context engine's
+   *        per-turn block for this turn ('' when it has nothing to say) }
    */
   function claudeHooks(ctx = {}) {
     const state = { nudgedTurn: false };
@@ -294,12 +302,18 @@ export function createAssistantMemory({
           let meta = null;
           try { meta = ctx.describeTurn?.(raw) || null; } catch { meta = null; }
           if (meta?.system) return {};
+          let divert = null;
+          try { divert = ctx.divert?.() || null; } catch { divert = null; }
           const recalled = await recallForPrompt({
-            prompt: meta?.prompt ?? raw, project: ctx.project, session: ctx.session, generation: ctx.getGeneration?.(),
+            prompt: meta?.prompt ?? raw, project: ctx.project, session: ctx.session, generation: ctx.getGeneration?.(), divert,
           });
           try { ctx.onRecall?.(recalled); } catch {}
-          if (!recalled.block) return {};
-          return { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: recalled.block } };
+          // The user-context block follows the memories (the same order a Codex / OpenCode turn has).
+          let extra = '';
+          try { extra = String(ctx.turnContext?.({ recalled, meta, prompt: meta?.prompt ?? raw }) || ''); } catch { extra = ''; }
+          const context = [recalled.block, extra].filter(Boolean).join('\n\n');
+          if (!context) return {};
+          return { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: context } };
         }],
       }],
       PreCompact: [{

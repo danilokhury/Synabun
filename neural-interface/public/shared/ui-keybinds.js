@@ -25,6 +25,8 @@ let _reverseMap = new Map();      // combo string → actionId (for O(1) dispatc
 let _recording = null;            // { actionId, originalCombo } when recording
 let _pendingBindings = null;      // working copy during modal editing
 let _modalOpen = false;
+// Actions that were removed ("toggle-toolbar" was "Hide all toolbars"): a saved key for one is dropped on load.
+const RETIRED_ACTIONS = ['toggle-toolbar'];
 
 // ── Combo building ──
 
@@ -426,6 +428,8 @@ export async function initKeybinds() {
   } catch {
     _bindings = { ...DEFAULT_KEYBINDS };
   }
+  // A key saved for an action that is gone does nothing and must not hold its combo (or show up as a conflict).
+  for (const actionId of RETIRED_ACTIONS) delete _bindings[actionId];
 
   _reverseMap = buildReverseMap(_bindings);
 

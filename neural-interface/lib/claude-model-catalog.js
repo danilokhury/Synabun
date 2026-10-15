@@ -45,6 +45,32 @@ const CACHE_TTL_MS = 10 * 60 * 1000;
 let _cache = { at: 0, key: '', models: [] };
 let _inflight = null;
 
+// Who else keeps a copy of this list (the Assistant's model catalog). Told when a
+// discovery returns a list that differs from the one before it, so a copy is
+// dropped the moment the picker's own source changes: after a CLI update, or
+// when the account's models change. The first discovery after a start counts.
+const _changeListeners = new Set();
+
+export function onClaudeModelsChanged(listener) {
+  if (typeof listener !== 'function') return () => {};
+  _changeListeners.add(listener);
+  return () => { _changeListeners.delete(listener); };
+}
+
+// What makes two lists the same list for a picker: ids in order, the model each
+// runs as, the label, the context window and the effort levels.
+export function claudeModelsSignature(models) {
+  return JSON.stringify((Array.isArray(models) ? models : []).map(m => [
+    m?.id || '', m?.resolvedModel || '', m?.label || '', m?.contextWindow || 0, (m?.effortLevels || []).join(','),
+  ]));
+}
+
+function notifyModelsChanged(models) {
+  for (const listener of [..._changeListeners]) {
+    try { listener(models); } catch {}
+  }
+}
+
 // What a cache keyed on "the CLI" has to key on. An update never changes the
 // configured path: the native installer and Homebrew re-point a symlink at a new
 // version directory, and npm rewrites the entrypoint in place. The resolved target
@@ -262,7 +288,7 @@ export function queryClaudeCliModels(claudeBin, { cwd, timeoutMs = DISCOVERY_TIM
 // Cached discovery. `source` lets the UI distinguish a verified list from the
 // baked-in fallback. Cache is keyed on the binary's identity, so switching the
 // configured CLI (Settings > Terminal) or updating it re-discovers.
-export async function discoverClaudeModels(claudeBin, { force = false, cwd } = {}) {
+export async function discoverClaudeModels(claudeBin, { force = false, cwd, query = queryClaudeCliModels } = {}) {
   const bin = String(claudeBin || '');
   const key = binaryIdentity(bin);
   const fresh = _cache.models.length
@@ -273,10 +299,12 @@ export async function discoverClaudeModels(claudeBin, { force = false, cwd } = {
 
   _inflight = (async () => {
     try {
-      const raw = await queryClaudeCliModels(bin, { cwd });
+      const raw = await query(bin, { cwd });
       const models = normalizeClaudeModels(raw);
       if (models.length) {
+        const changed = claudeModelsSignature(models) !== claudeModelsSignature(_cache.models);
         _cache = { at: Date.now(), key, models };
+        if (changed) notifyModelsChanged(models);
         return { source: 'cli', models };
       }
       return { source: 'fallback', models: [...CLAUDE_FALLBACK_MODELS] };

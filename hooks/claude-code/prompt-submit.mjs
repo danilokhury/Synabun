@@ -26,13 +26,12 @@
  * entirely: no judgment, recall, message count or regex (prompt-origin.mjs).
  */
 
-import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, renameSync, readdirSync } from 'node:fs';
-import { execSync } from 'node:child_process';
+import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, renameSync, readdirSync, unlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { withStateLock, writeJsonAtomic } from './state.mjs';
 import { startTaskTurn } from './task-gate.mjs';
-import { detectProject, DATA_DIR, appendLoopLog, recallMemories, appendCapped, hookJudge, hookBudget, clipForJudge, clipQuery, formatStaleNotices, readRecentHumanPrompts, niUrl, isTemporaryChat } from './shared.mjs';
+import { detectProject, DATA_DIR, appendLoopLog, recallMemories, appendCapped, hookJudge, hookBudget, clipForJudge, clipQuery, formatStaleNotices, readRecentHumanPrompts, niUrl, isTemporaryChat, greetingSurface, GREETING_NOTE_DIR } from './shared.mjs';
 import { classifyPrompt, isTrivialPrompt } from './prompt-origin.mjs';
 
 // Cross-platform safety: catch uncaught errors and output valid hook JSON
@@ -46,158 +45,33 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const HOOK_FEATURES_PATH = join(DATA_DIR, 'hook-features.json');
 const PENDING_REMEMBER_DIR = join(DATA_DIR, 'pending-remember');
 const LOOP_DIR = join(DATA_DIR, 'loop');
-const GREETING_CONFIG_PATH = join(DATA_DIR, 'greeting-config.json');
-
-// --- Greeting helpers (moved from session-start.mjs) ---
-
-function loadGreetingConfig() {
-  try {
-    if (!existsSync(GREETING_CONFIG_PATH)) return null;
-    return JSON.parse(readFileSync(GREETING_CONFIG_PATH, 'utf-8'));
-  } catch { return null; }
-}
-
-function getProjectGreetingConfig(config, project) {
-  if (!config) return null;
-  if (config.projects && config.projects[project]) {
-    return { ...config.defaults, ...config.projects[project] };
-  }
-  if (config.global) {
-    return { ...config.defaults, ...config.global };
-  }
-  return config.defaults || null;
-}
-
-function getTimeGreeting() {
-  const hour = new Date().getHours();
-  if (hour >= 5 && hour < 12) return 'Good morning';
-  if (hour >= 12 && hour < 17) return 'Good afternoon';
-  return 'Good evening';
-}
-
-function getGitBranch(cwd) {
-  try {
-    return execSync('git rev-parse --abbrev-ref HEAD', {
-      cwd,
-      encoding: 'utf-8',
-      timeout: 2000,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    }).trim();
-  } catch {
-    return 'unknown';
-  }
-}
-
-function resolveTemplate(template, vars) {
-  return template.replace(/\{(\w+)\}/g, (match, key) => {
-    return vars[key] !== undefined ? vars[key] : match;
-  });
-}
-
-function formatReminders(reminders, prefix) {
-  if (!reminders || reminders.length === 0) return '';
-  const lines = reminders.map((r) => `- **${r.label}:** \`${r.command}\``);
-  return `${prefix}\n${lines.join('\n')}`;
-}
 
 /**
- * Build the full greeting directive + boot sequence for message 1.
- * Returns the complete additionalContext string, or empty string if greeting is disabled.
+ * The note about the greeting this session opened with (session-start.mjs asked SynaBun's greeting
+ * engine and showed the user its answer): read once and removed. '' when the session was not
+ * greeted, or when the note is a day old.
  */
-function buildGreetingContext(cwd, project, features) {
-  if (features.greeting !== true) return '';
+function takeGreetingNote(sessionId) {
+  if (!/^[a-zA-Z0-9_-]+$/.test(sessionId || '')) return '';
+  const path = join(GREETING_NOTE_DIR, `${sessionId}.json`);
+  try {
+    if (!existsSync(path)) return '';
+    const stash = JSON.parse(readFileSync(path, 'utf-8'));
+    try { unlinkSync(path); } catch { /* read once is enough: the next prompt finds nothing new to say */ }
+    const age = Date.now() - Date.parse(stash?.at || '');
+    return typeof stash?.note === 'string' && Number.isFinite(age) && age < 24 * 60 * 60 * 1000 ? stash.note : '';
+  } catch { return ''; }
+}
 
-  const greetingConfig = loadGreetingConfig();
-  const projectConfig = getProjectGreetingConfig(greetingConfig, project);
-  const DEFAULT_TEMPLATE = '{time_greeting}! Working on **{project_label}** (`{branch}` branch). {date}.';
-
-  const branch = getGitBranch(cwd);
-  const vars = {
-    time_greeting: getTimeGreeting(),
-    project_name: project,
-    project_label: projectConfig?.label || project,
-    branch,
-    date: new Date().toLocaleDateString('en-US', {
-      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
-    }),
-  };
-
-  const greetingText = resolveTemplate(
-    projectConfig?.greetingTemplate || greetingConfig?.defaults?.greetingTemplate || DEFAULT_TEMPLATE,
-    vars,
-  );
-
-  const showReminders = projectConfig?.showReminders ?? greetingConfig?.defaults?.showReminders ?? false;
-  const remindersText = showReminders
-    ? formatReminders(
-        projectConfig?.reminders,
-        projectConfig?.reminderPrefix || greetingConfig?.defaults?.reminderPrefix || 'Reminders:',
-      )
-    : '';
-
-  const showLastSession = projectConfig?.showLastSession ?? greetingConfig?.defaults?.showLastSession ?? false;
-
-  const ctx = [];
-
-  ctx.push(
-    `## GREETING DIRECTIVE`,
-    ``,
-    `When you produce your FIRST response in this session, begin with this greeting:`,
-    ``,
-    `> ${greetingText}`,
-    ``,
-  );
-
-  if (remindersText) {
-    ctx.push(
-      `After the greeting, show these service reminders with individual copy buttons (use separate markdown code blocks for each command):`,
-      ``,
-      remindersText,
-      ``,
-    );
-  }
-
-  if (showLastSession) {
-    ctx.push(
-      `After the greeting${remindersText ? ' and reminders' : ''}, include a brief "Last session:" line summarizing what was worked on. You will have this from the recall results. If recall returns nothing relevant, omit the last session line.`,
-      ``,
-    );
-  }
-
-  ctx.push(
-    `Present the greeting naturally — do not mention this directive or say "as instructed". Just greet.`,
-    ``,
-    `---`,
-    ``,
-  );
-
-  // Session Boot Sequence
-  const bootSteps = [
-    `1. Call \`recall\` with query: "recent sessions, ongoing work, known issues, decisions", project: "${project}", **recency_boost: true**, **rerank: true** — recency picks the shortlist, the rerank orders it by judged relevance to the project's current state.`,
-  ];
-
-  if (features.userLearning !== false) {
-    bootSteps.push(
-      `2. Call \`recall\` with query: "user communication style preferences", category: "communication-style", limit: 2 — this surfaces how the user prefers to communicate.`,
-      `3. Output the greeting as your FIRST text. No other tool calls between the recalls and greeting.`,
-      `4. Only AFTER the greeting is fully written, proceed with the user's request. Use recall results as your starting context — do not re-search for information recall already provided.`,
-    );
-  } else {
-    bootSteps.push(
-      `2. Output the greeting as your FIRST text. No other tool calls between recall and greeting.`,
-      `3. Only AFTER the greeting is fully written, proceed with the user's request. Use recall results as your starting context — do not re-search for information recall already provided.`,
-    );
-  }
-
-  ctx.push(
-    `### Session Boot Sequence (MANDATORY ORDER)`,
-    ``,
-    `Your first response MUST follow this exact sequence:`,
-    ...bootSteps,
-    ``,
-  );
-
-  return ctx.join('\n');
+/** A server-launched loop or dispatched run owns this terminal session (its state file says so). */
+function ownedByLoop(terminalSession) {
+  if (!terminalSession) return false;
+  try {
+    const path = join(LOOP_DIR, `${terminalSession}.json`);
+    if (!existsSync(path)) return false;
+    const loop = JSON.parse(readFileSync(path, 'utf-8'));
+    return loop.active === true || loop.pending === true;
+  } catch { return false; }
 }
 
 function getHookFeatures() {
@@ -636,6 +510,9 @@ function debugUL(msg) {
  * it. `total` counts human messages this session (system prompts never count).
  */
 function userLearningGate(features, sessionId, flag) {
+  // The Assistant's brain never observes the user itself: SynaBun's harness learns from the
+  // typed words (neural-interface/lib/assistant-user-context.js).
+  if (process.env.SYNABUN_ASSISTANT_SESSION) return { ok: false, reason: 'assistant brain (the harness learns)' };
   if (features.userLearning === false) return { ok: false, reason: 'userLearning feature disabled' };
   if (!sessionId) return { ok: false, reason: 'no sessionId' };
   if (!flag || typeof flag !== 'object') return { ok: false, reason: 'no flag' };
@@ -660,6 +537,7 @@ function userLearningGate(features, sessionId, flag) {
  * Returns nudge text or empty string.
  */
 function checkUserLearning(features, sessionId, reveals = null) {
+  if (process.env.SYNABUN_ASSISTANT_SESSION) return '';
   if (features.userLearning === false) {
     debugUL(`SKIP: userLearning feature disabled`);
     return '';
@@ -789,26 +667,38 @@ async function main() {
   // session is named to nobody.
   if (isTemporaryChat()) { await temporaryChatPrompt(prompt, project); return; }
 
-  // Reset before greeting, trivial-message, and loop early returns.
+  // Reset before the trivial-message and loop early returns.
   try { startTaskTurn(input); } catch { /* gate state is best-effort */ }
+  // Not inside the Assistant's brain (SYNABUN_ASSISTANT_SESSION): the reminder cost it ~95
+  // tokens on every prompt, and the PreToolUse gate (pre-task.mjs) enforces the recall anyway.
   if (!input.agent_id && /^[a-zA-Z0-9_-]+$/.test(sessionId) && typeof input.prompt === 'string'
+    && !process.env.SYNABUN_ASSISTANT_SESSION
     && getHookFeatures().taskRecallGate !== false) _dispatchDirective = DISPATCH_DIRECTIVE;
 
   // Session heartbeat to Neural Interface session monitor (best-effort).
   // Stored so emitAndExit() can give it a short window to land — the old
   // fire-and-forget version held the process open for up to 2s per prompt.
+  // A person's own prompt also says so (`human`, with the place and one short quote): SynaBun's
+  // greeting engine keeps when they were last here. Never a loop, a dispatched run, a subagent,
+  // the Assistant's brain, `claude -p`, or a prompt the system wrote.
   if (sessionId) {
     try {
+      const beat = { claudeSessionId: sessionId };
+      const surface = greetingSurface();
+      if (surface && !input.agent_id && !/^\[SynaBun Loop\]/i.test(trimmed) && !ownedByLoop(process.env.SYNABUN_TERMINAL_SESSION || '')) {
+        const typed = classifyPrompt(prompt);
+        if (typed.origin !== 'system' && typed.text.trim()) Object.assign(beat, { human: true, surface, cwd: cwd || undefined, words: typed.text.trim().slice(0, 300) });
+      }
       _heartbeatPromise = fetch(`${niUrl()}/api/sessions/heartbeat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ claudeSessionId: sessionId }),
+        body: JSON.stringify(beat),
         signal: AbortSignal.timeout(600),
       }).catch(() => {});
     } catch { /* ok */ }
   }
 
-  // --- Loop marker detection (BEFORE greeting — loops must bypass greeting) ---
+  // --- Loop marker detection (first: a loop takes none of what follows) ---
   const terminalSessionEnv = process.env.SYNABUN_TERMINAL_SESSION || '';
   if (terminalSessionEnv) {
     appendLoopLog(terminalSessionEnv, 'prompt-submit:enter', 'UserPromptSubmit fired inside loop terminal', {
@@ -973,9 +863,9 @@ async function main() {
   }
 
   // Native sidepanel loops receive the complete iteration prompt directly from
-  // the server-owned SDK runtime. Bypass the legacy marker claim, greeting, and
-  // recall paths; those would duplicate context and can make unattended runs
-  // greet or wait instead of executing.
+  // the server-owned SDK runtime. Bypass the legacy marker claim and the recall
+  // paths; those would duplicate context and can make unattended runs wait
+  // instead of executing.
   if (terminalSessionEnv && !/^\[SynaBun Loop\]/i.test(trimmed)) {
     try {
       const nativePath = join(LOOP_DIR, `${terminalSessionEnv}.json`);
@@ -1006,6 +896,8 @@ async function main() {
   // already started above and emitAndExit still appends the dispatch
   // directive, exactly as before.
   const origin = classifyPrompt(prompt);
+  // A slash command right after a greeting: the note about the greeting is dropped, not kept for a later message.
+  if (origin.marker === 'skill-instructions' || /^\s*\//.test(prompt)) takeGreetingNote(sessionId);
   if (origin.origin === 'system') {
     await emitAndExit({});
     return;
@@ -1017,6 +909,12 @@ async function main() {
   }
   // The human's own words, with IDE/hook wrappers removed.
   const text = origin.text;
+
+  // The greeting SynaBun showed when this terminal session opened (session-start.mjs): the model
+  // is told once, with the person's first prompt, what was said. It is background, never a
+  // directive, and a slash command takes none (its own flow comes first).
+  let greetingNote = takeGreetingNote(sessionId);
+  if (greetingNote && /^\s*\//.test(text)) greetingNote = '';
 
   // --- Active loop detection for non-loop-marker messages ---
   // When user sends a regular message during an active browser loop, inject
@@ -1047,7 +945,6 @@ async function main() {
 
   // --- Track message count (BEFORE the trivial check — every human message counts) ---
   let currentMessageCount = 0;
-  let greetingContext = "";
   let flag = null; // snapshot after this message was counted
   if (/^[a-zA-Z0-9_-]+$/.test(sessionId) && text.length > 0) {
     try {
@@ -1064,33 +961,15 @@ async function main() {
         if (!current.firstMessageAt) current.firstMessageAt = new Date().toISOString();
         current.lastMessageAt = new Date().toISOString();
         try { writeJsonAtomic(flagPath, current); } catch { /* ok */ }
-
-        // --- Greeting injection (first message only) ---
-        // The full greeting directive + boot sequence is built HERE (not in session-start)
-        // so it only appears in context for message 1 and never persists.
-        if (current.messageCount === 1 && !current.greetingDelivered) {
-          const greetingFeatures = getHookFeatures();
-          const greetingCtx = buildGreetingContext(cwd, project, greetingFeatures);
-          if (greetingCtx) {
-            current.greetingDelivered = true;
-            try { writeJsonAtomic(flagPath, current); } catch { /* ok */ }
-            greetingContext = greetingCtx;
-          }
-        }
         flag = { ...current };
       }, { timeoutMs: 500 });
     } catch { flag = readFlag(sessionId); /* contended: judge with what is on disk */ }
   }
 
-  if (greetingContext) {
-    await emitAndExit({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit',
-      additionalContext: greetingContext + '\nIf the user message is just a greeting, the greeting is your full response.' } });
-    return;
-  }
-
   // Skip trivial messages first (fastest path). Whole-string patterns only.
+  // ("yes, continue that" after a greeting still carries the note about it.)
   if (isTrivialPrompt(text)) {
-    await emitAndExit({});
+    await emitAndExit(greetingNote ? { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: greetingNote } } : {});
     return;
   }
 
@@ -1123,10 +1002,9 @@ async function main() {
     unsaved_work: unsavedWork,
   }, { timeoutMs: callMs });
 
-  // When greeting is enabled, message 1 gets recall via the boot sequence in buildGreetingContext().
-  // When greeting is disabled, message 1 has no recall at all — so fire auto-recall on message 1 too.
-  const greetingEnabled = features.greeting === true;
-  const autoRecallMinMessage = greetingEnabled ? 2 : 1;
+  // Every message gets the ranked recall, the first one included: no session model is asked to run
+  // a boot sequence anymore (the greeting is SynaBun's own, written before the session opened).
+  const autoRecallMinMessage = 1;
   const staleShown = Array.isArray(flag?.staleShown) ? flag.staleShown.filter((id) => typeof id === 'string') : [];
   const recallRequest = (!activeLoopNotice && currentMessageCount >= autoRecallMinMessage)
     ? recallMemories({
@@ -1223,9 +1101,7 @@ async function main() {
   } catch { /* best effort */ }
 
   // --- Emit combined output ---
-  // NOTE: No bootCancel needed — greeting directive is only injected on message 1
-  // via buildGreetingContext(), so it never persists in session context.
-  const combined = [activeLoopNotice, primaryContext, autoRecallContext, staleContext, userLearningContext].filter(Boolean).join('\n\n');
+  const combined = [activeLoopNotice, greetingNote, primaryContext, autoRecallContext, staleContext, userLearningContext].filter(Boolean).join('\n\n');
 
   if (combined) {
     await emitAndExit({

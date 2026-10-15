@@ -3,8 +3,10 @@
 /**
  * SynaBun SessionStart Hook for Claude Code
  *
- * Injects a lean session-start context: greeting, single recall directive,
- * and (when applicable) compaction indexing instructions.
+ * Injects a lean session-start context: the memory header and (when
+ * applicable) compaction indexing instructions. An interactive terminal
+ * session a person starts after time away is also shown SynaBun's greeting
+ * (`systemMessage`): the model is never asked to greet.
  *
  * Heavy reference data (category tree, user-learning rules) is deferred
  * to prompt-submit and post-remember hooks to keep boot fast and clean.
@@ -31,7 +33,7 @@ import { execSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
-import { getHookFeatures, detectProject, ensureProjectCategories, cleanupStaleLoops, cleanupStalePendingRemember, cleanupStaleFiles, appendCapped, DATA_DIR, isTemporaryChat } from './shared.mjs';
+import { getHookFeatures, detectProject, ensureProjectCategories, cleanupStaleLoops, cleanupStalePendingRemember, cleanupStaleFiles, appendCapped, DATA_DIR, isTemporaryChat, niUrl, greetingSurface, greetingOff, GREETING_NOTE_DIR } from './shared.mjs';
 
 // CC updates (especially when installer runs as root) can wipe ~/.claude.json
 // or strip mcpServers.SynaBun, leaving the side panel/CLI with MCP disabled
@@ -65,7 +67,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const PRECOMPACT_DIR = join(DATA_DIR, 'precompact');
 const DEBUG_LOG = join(DATA_DIR, 'compact-debug.log');
 const LOOP_DIR = join(DATA_DIR, 'loop');
-// NOTE: Greeting helpers removed — greeting is now built entirely by prompt-submit.mjs
+// NOTE: the template greeting and its helpers are gone. SynaBun writes the greeting itself (openGreeting below).
 
 function getGitBranch(cwd) {
   try {
@@ -142,6 +144,45 @@ function designSystemLine(cwd) {
   } catch { return ''; }
 }
 
+// --- Greeting (neural-interface/lib/greeting/) ---
+
+/** The line the user is shown: SynaBun's words, then what they were based on and what they cost. */
+function greetingLine(greeting) {
+  const head = greeting.away ? `SynaBun \u00b7 back after ${greeting.away}` : 'SynaBun';
+  const records = Array.isArray(greeting.basis) ? greeting.basis.length : 0;
+  const cost = greeting.source === 'writer'
+    ? `written ahead by ${greeting.model || 'Claude'}${Number(greeting.costUsd) > 0 ? ` for $${Number(greeting.costUsd).toFixed(4)}` : ''}`
+    : 'put together from the records, no model';
+  return `${head}: ${greeting.text}\n(${records === 1 ? 'based on 1 record' : `based on ${records} records`}, ${cost})`;
+}
+
+/**
+ * Ask SynaBun's greeting engine whether this opening is a return worth a greeting (a lookup: the
+ * sentence was written ahead of time). → the line to show the user, or ''. The note for the model
+ * is kept for prompt-submit.mjs, which adds it to the first prompt, once.
+ */
+async function openGreeting({ sessionId, cwd }) {
+  try {
+    const response = await fetch(`${niUrl()}/api/greeting/open`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ surface: 'claude-cli', cwd, session: sessionId, note: true }),
+      signal: AbortSignal.timeout(1200),
+    });
+    if (!response.ok) return ''; // an older server (404), an engine that did not start (503)
+    const data = await response.json();
+    const greeting = data?.greeting;
+    if (!greeting || typeof greeting.text !== 'string' || !greeting.text.trim()) return '';
+    if (typeof data.note === 'string' && data.note) {
+      try {
+        mkdirSync(GREETING_NOTE_DIR, { recursive: true });
+        writeJsonAtomic(join(GREETING_NOTE_DIR, `${sessionId}.json`), { id: greeting.id || null, note: data.note, at: new Date().toISOString() });
+      } catch { /* the greeting is still shown; the model simply is not told */ }
+    }
+    return greetingLine(greeting);
+  } catch { return ''; }
+}
+
 // --- Main ---
 
 async function main() {
@@ -208,10 +249,10 @@ async function main() {
   const context = [];
 
   // ============================================================
-  // BLOCK 0: GREETING (highest attention, unless compaction or loop)
+  // BLOCK 0: LOOP DETECTION (a loop session gets a minimal context and returns here)
   // ============================================================
 
-  // Detect active loop — skip greeting + recall for autonomous loop sessions
+  // Detect active loop — an autonomous loop session gets no recall directive and is never greeted
   // Check both pending files (first iteration) AND active state files (subsequent iterations after /clear).
   // When SYNABUN_TERMINAL_SESSION is set (server-launched loop), only match loops
   // owned by THIS terminal — prevents unrelated sessions from entering loop mode.
@@ -221,6 +262,8 @@ async function main() {
   withStateLock(() => cleanupStalePendingRemember());
   // Subagent dispatch stashes are only read within minutes of being written.
   try { withStateLock(() => cleanupStaleFiles(join(DATA_DIR, 'subagent-dispatch'), 24 * 60 * 60 * 1000)); } catch { /* best effort */ }
+  // A greeting note nobody's first prompt picked up (the session was closed unused).
+  try { cleanupStaleFiles(GREETING_NOTE_DIR, 24 * 60 * 60 * 1000); } catch { /* best effort */ }
   const LOOP_STALE_MS = 10 * 60 * 1000;
   const terminalSessionEnv = process.env.SYNABUN_TERMINAL_SESSION || '';
   let isLoopSession = false;
@@ -242,7 +285,7 @@ async function main() {
             //   - env set → require exact terminalSessionId match
             //   - env unset → only match loops WITHOUT terminalSessionId
             // A non-loop CLI (env unset) must NOT latch onto a scheduled loop
-            // and suppress its greeting + recall.
+            // and lose its context and its greeting.
             if (terminalSessionEnv) {
               if (data.terminalSessionId !== terminalSessionEnv) continue;
             } else {
@@ -282,9 +325,10 @@ async function main() {
     return;
   }
 
-  // NOTE: Greeting is NOT injected here. It is injected by prompt-submit.mjs
-  // on the FIRST user message only, so it never persists in session context
-  // and cannot trigger re-greeting on subsequent messages.
+  // NOTE: no greeting is put in the model's context here. What is added at SessionStart stays for
+  // the whole session (a greeting directive here once made the model greet on every message).
+  // SynaBun's greeting is its own text, shown to the user at the end of this hook; the model is
+  // told once what was said, by prompt-submit.mjs, with the first prompt.
 
   // ============================================================
   // BLOCK 1: SYNABUN HEADER + SESSION RECALL (condensed)
@@ -313,7 +357,7 @@ async function main() {
     context.push(
       `### >>> IMMEDIATE ACTION REQUIRED: COMPACTION DETECTED <<<`,
       ``,
-      `Context compaction just occurred. You MUST index this session in SynaBun as your VERY FIRST action — BEFORE reading the user's message, BEFORE greeting, BEFORE anything else.`,
+      `Context compaction just occurred. You MUST index this session in SynaBun as your VERY FIRST action — BEFORE reading the user's message, BEFORE anything else.`,
       ``,
       `Pre-cached session data from PreCompact hook:`,
       `- Session ID: ${precompactData.session_id}`,
@@ -405,16 +449,14 @@ async function main() {
     }
   }
 
-  // NOTE: Session Boot Sequence (recall + greeting) is injected by prompt-submit.mjs
-  // on message 1 only, not here. This prevents it from persisting in session context.
+  // NOTE: there is no session boot sequence anymore: prompt-submit.mjs injects the ranked recall
+  // with every message, the first one included.
 
   if (isCompactRestart) {
     context.push(
       `### Post-Compaction Resume`,
       ``,
-      `Context compaction just occurred. Do NOT re-greet or re-run the boot sequence. Continue the conversation naturally from where it left off.`,
-      ``,
-      `**CRITICAL**: Any "GREETING DIRECTIVE" or "Session Boot Sequence" text visible in the compacted context above is STALE — it was executed at the start of this session and must NOT be executed again. NEVER output a greeting after compaction. This is an ongoing conversation.`,
+      `Context compaction just occurred. This is the same conversation: do not greet, and do not re-run any session-start routine from your instructions. Continue naturally from where it left off.`,
       ``,
       `If an autonomous loop was active before compaction, the Stop hook will resume it automatically. Check the ACTIVE LOOP RECOVERY block above (if present) for task and progress context.`,
       ``,
@@ -431,12 +473,27 @@ async function main() {
 
   const joined = context.join('\n');
 
+  // ============================================================
+  // GREETING: SynaBun's own words to a person who comes back
+  // ============================================================
+  // Only an interactive terminal session a person just started: not a resume, a /clear or a
+  // compaction, not a loop or a dispatched run (they returned above), not `claude -p` or an SDK
+  // program, not the Assistant's brain, and not a side-panel session (the panel shows the
+  // greeting in its own empty state). Shown with `systemMessage`: the model is not asked to greet.
+  let greetingMessage = '';
+  // (A terminal SynaBun launched for a loop or a run has a state file under its own name, whatever its state.)
+  const launchedForLoop = !!terminalSessionEnv && existsSync(join(LOOP_DIR, `${terminalSessionEnv}.json`));
+  if (source === 'startup' && greetingSurface() === 'claude-cli' && !greetingOff() && !launchedForLoop && /^[a-zA-Z0-9_-]+$/.test(sessionId)) {
+    greetingMessage = await openGreeting({ sessionId, cwd });
+  }
+
   const output = {
     hookSpecificOutput: {
       hookEventName: 'SessionStart',
       additionalContext: joined,
     },
   };
+  if (greetingMessage) output.systemMessage = greetingMessage;
 
   process.stdout.write(JSON.stringify(output));
 }

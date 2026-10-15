@@ -1097,6 +1097,46 @@ const CSS = `
   cursor: default;
 }
 
+/* A dispatched worker's end (ui-worker-end.js): the post-plan card's frame. Complete keeps its
+   green; the other ends take the panel's own amber, error red or neutral. The title says the state. */
+.ocpv2-worker-end .ocpv2-post-plan-body { overflow-wrap: anywhere; }
+.ocpv2-worker-end .ocpv2-post-plan-btn:focus-visible { outline: 2px solid rgba(255,255,255,0.7); outline-offset: 2px; }
+.ocpv2-worker-end[data-tone="warn"] {
+  border-color: rgba(232,180,80,0.32);
+  background: rgba(232,180,80,0.04);
+  box-shadow: 0 12px 32px rgba(0,0,0,0.22), 0 0 0 1px rgba(232,180,80,0.08) inset;
+}
+.ocpv2-worker-end[data-tone="warn"] .ocpv2-post-plan-header {
+  color: rgba(255,200,120,0.95);
+  background: rgba(232,180,80,0.14);
+  border-color: rgba(232,180,80,0.28);
+}
+.ocpv2-worker-end[data-tone="err"] {
+  border-color: rgba(220,100,100,0.32);
+  background: rgba(220,100,100,0.05);
+  box-shadow: 0 12px 32px rgba(0,0,0,0.22), 0 0 0 1px rgba(220,100,100,0.08) inset;
+}
+.ocpv2-worker-end[data-tone="err"] .ocpv2-post-plan-header {
+  color: rgba(255,166,166,0.92);
+  background: rgba(220,100,100,0.12);
+  border-color: rgba(220,100,100,0.28);
+}
+.ocpv2-worker-end[data-tone="off"] {
+  border-color: rgba(255,255,255,0.12);
+  background: rgba(255,255,255,0.03);
+  box-shadow: 0 12px 32px rgba(0,0,0,0.22);
+}
+.ocpv2-worker-end[data-tone="off"] .ocpv2-post-plan-header {
+  color: rgba(255,255,255,0.7);
+  background: rgba(255,255,255,0.06);
+  border-color: rgba(255,255,255,0.12);
+}
+.ocpv2-worker-end:not([data-tone="ok"]) .ocpv2-post-plan-saved { color: rgba(255,255,255,0.45); }
+.ocpv2-worker-end:not([data-tone="ok"]) .ocpv2-post-plan-btn.primary {
+  background: rgba(255,255,255,0.085);
+  border-color: rgba(255,255,255,0.2);
+}
+
 /* Stub shown in place of raw question-tool JSON while the AskUser card handles it */
 .ocpv2-part-question-stub {
   font-size: 10.5px;

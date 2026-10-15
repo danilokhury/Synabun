@@ -14,7 +14,8 @@
 
 import { pagerState } from './cp-restore.js';
 
-const STALE_ROWS = '.thinking, .msg-permission-prompt, .post-plan-card';
+// (A worker's end card is drawn again from its run: ui-worker-end.js.)
+const STALE_ROWS = '.thinking, .msg-permission-prompt, .post-plan-card, .worker-end-card';
 const STALE_PROMPTS = '.cp-plan-approval-card.active-perm, .perm-card.active-perm, .cp-rewind-confirm';
 const SELF_WIRED_CARDS = '.tool-card.cp-bash-card, .tool-card.cp-diff-card, .tool-card.cp-agent-card';
 

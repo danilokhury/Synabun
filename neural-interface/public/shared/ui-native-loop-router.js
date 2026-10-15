@@ -7,6 +7,7 @@ import {
   isNewerRunDescriptor,
   LocalReleaseTracker,
   resolveRouteClaim,
+  withoutDismissed,
 } from './ui-native-loop-router-state.js';
 
 const DISMISSED_KEY = 'synabun-native-loop-dismissed';
@@ -47,6 +48,15 @@ function mergeDismissed(raw) {
 }
 
 try { mergeDismissed(localStorage.getItem(DISMISSED_KEY)); } catch {}
+
+// A closed tab's run is dismissed: nothing routes it back here by itself (a
+// reconcile, a late event, another window's claim). Only the user asks for it
+// again, with the agents dock's Focus (focusNativeLoopRun with `reopen`).
+function undismiss(runId) {
+  if (!_dismissed.delete(runId)) return false;
+  try { localStorage.setItem(DISMISSED_KEY, withoutDismissed(localStorage.getItem(DISMISSED_KEY), runId)); } catch {}
+  return true;
+}
 
 function persistDismissed() {
   try {
@@ -279,10 +289,13 @@ export function getNativeLoopRun(runId) {
  * Bring a dispatched run's sidepanel tab to the front. Attaches with
  * focus:true even when this window already owns the claim (the normal route
  * path only focuses on first attach). Falls back to a fetch when the run has
- * not been broadcast to this window yet.
+ * not been broadcast to this window yet. With `reopen` (the user's own Focus,
+ * in the agents dock) a run whose tab was closed opens again: a live run
+ * attaches as it would have, an ended one with its transcript and end card.
  */
-export async function focusNativeLoopRun(runId) {
+export async function focusNativeLoopRun(runId, { reopen = false } = {}) {
   if (!runId || _suspended) return false;
+  if (reopen) undismiss(runId);
   let run = getNativeLoopRun(runId);
   if (!run) {
     try {

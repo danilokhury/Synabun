@@ -12,6 +12,11 @@ licensed under the Apache License 2.0:
     Copyright 2012-2024 Microsoft Corporation
     https://github.com/microsoft/TypeScript
 
+  - cloudflared (Cloudflare's own release binary, unmodified: inside the
+    application installers; downloaded on first use by an npm install)
+    Copyright (c) Cloudflare, Inc.
+    https://github.com/cloudflare/cloudflared
+
 This product also includes software licensed under the MIT License
 and BSD-2-Clause License. See THIRD-PARTY-LICENSES.md for a complete
 listing of all third-party software and their respective licenses.

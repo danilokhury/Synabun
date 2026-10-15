@@ -15,6 +15,13 @@
 // planner) and the router can pick cheap-first, send image work to a model that
 // can see, and image / video creation to a model that makes them. Everything
 // I/O is injected; parsers are pure.
+//
+// Which models exist is never decided here. Each provider's rows are the list
+// its own model selector reads (/api/claude/models, /api/codex/models,
+// /api/opencode/providers/full); the static tables (prices, tier hints, the 1M
+// rule) only describe a row. A model the provider lists and no table knows is
+// offered with what is unknown left unknown; a model only a table knows is
+// never offered. `sources` says how each provider's list was obtained.
 
 import { sortEfforts, variantNames } from './effort-levels.js';
 import { listPrice } from './assistant-pricing.js';
@@ -80,6 +87,43 @@ export function contextLabel(row) {
 function resolvedKey(row) {
   if (!row?.upstream) return null;
   return `${baseModelId(row.upstream)}${contextSuffix(row.id)}`.toLowerCase();
+}
+
+// ── moving aliases ───────────────────────────────────────────────────────────
+// "opus", "haiku", "default" name whatever model Claude Code points them at, and
+// that changes with a CLI update. A hidden alias is pinned to the model it named
+// when it was hidden (lib/assistant-hidden-models.js); these say what a row names.
+
+/** A model id without its snapshot date ("claude-haiku-4-5-20251001", "…@20251001"), lower-case: what makes two ids one model. */
+export function modelIdentity(id) {
+  return baseModelId(id).trim().toLowerCase().replace(/[-@]\d{8}$/, '');
+}
+
+/**
+ * What a moving alias row names right now: { model, variant } ("opus[1m]" →
+ * { model: 'claude-opus-5-5', variant: '1m' }), lower-case. null for a row that
+ * is its own model (a concrete id, every Codex row), for OpenCode (its
+ * `upstream` is the provider, not a model) and whenever the provider did not
+ * name a versioned model behind the alias (the static stand-in list, an alias
+ * resolving to another alias): nothing is guessed.
+ */
+export function aliasTargetOf(row) {
+  if (!row?.id || row.provider === 'opencode' || String(row.id).includes('/')) return null;
+  const model = baseModelId(row.upstream || '').trim().toLowerCase();
+  if (!model || !/\d/.test(model) || modelIdentity(model) === modelIdentity(row.id)) return null;
+  return { model, variant: contextVariantOf(row.id) };
+}
+
+/** The id of the model a pin or an alias target names, context included ("claude-opus-5-5[1m]"), lower-case. */
+export function pinnedModelId(pin) {
+  const model = baseModelId(pin?.model || '').trim().toLowerCase();
+  return model ? `${model}${pin.variant ? `[${String(pin.variant).toLowerCase()}]` : ''}` : '';
+}
+
+/** Do a pin and an alias target name the same model at the same context window? (A new snapshot date is the same model.) */
+export function sameModelPin(a, b) {
+  return !!a && !!b && !!modelIdentity(a.model) && modelIdentity(a.model) === modelIdentity(b.model)
+    && String(a.variant || '').toLowerCase() === String(b.variant || '').toLowerCase();
 }
 
 /**
@@ -305,6 +349,9 @@ export function rowIsHidden(catalog, row) {
  * "opus[1m]"). Context variants hide independently: hiding "opus" leaves
  * "opus[1m]" alone and the other way round; same for "gpt-x" / "gpt-x[extended]".
  * OpenCode: the full "provider/model" id, or a bare model id.
+ * An entry with a pin record (catalog.hiddenPins: an alias hidden as the model
+ * it named, or that model's own id once the alias moved on) hides its own row
+ * only: it never reaches another alias through the resolved model.
  */
 export function hiddenModelId(catalog, provider, id, { row = null } = {}) {
   if (!provider || !id) return null;
@@ -322,7 +369,8 @@ export function hiddenModelId(catalog, provider, id, { row = null } = {}) {
     .find((r) => String(r?.id || '').toLowerCase() === want);
   const resolved = resolvedKey(own);
   if (!resolved || resolved === want) return null;
-  return hidden.find((h) => String(h).toLowerCase() === resolved) || null;
+  const pins = catalog?.hiddenPins?.[provider] || null;
+  return hidden.find((h) => String(h).toLowerCase() === resolved && !pins?.[resolved]) || null;
 }
 
 /**
@@ -442,7 +490,9 @@ function ctxText(ctx) {
 
 /** One routing-sheet line: `id · tier · $in/$out · vision · image-out · video-out · ctx · efforts`. */
 export function formatModelLine(row) {
-  const parts = [row.id, row.tier || '?', priceText(row.price, row.listPrice)];
+  // Only Codex bills a plan; any other row without a price is a model no table prices yet.
+  const planBilled = row.provider === 'codex' || !!row.listPrice;
+  const parts = [row.id, row.tier || '?', row.price || planBilled ? priceText(row.price, row.listPrice) : 'price unknown'];
   if (row.vision) parts.push('vision');
   if (rowMakes(row, 'image')) parts.push('image-out');
   if (rowMakes(row, 'video')) parts.push('video-out');
@@ -549,6 +599,12 @@ export function compactRow(row) {
  * @param {()=>object} [deps.readFilter]   → { opencode:[globs] } (routing.catalogFilter)
  * @param {()=>object} [deps.readHidden] → { 'claude-code': [], codex: [], opencode: [] } ids the user
  *   hid (Assistant → Models; OpenCode's list is Settings → OpenCode's). A bare array = OpenCode ids.
+ * @param {(args:{provider:string, rows:object[], source:string})=>{ids:string[], pins:object}|null} [deps.reconcileHidden]
+ *   settles a provider's hidden list against the rows just listed (hidden aliases are pinned to a model:
+ *   lib/assistant-hidden-models.js `reconcile`); its ids and pins replace readHidden's for that build
+ * @param {(change:{providers:string[], generatedAt:string})=>void} [deps.onChange] a build listed other
+ *   models than the build before it (hiding has its own event and does not count)
+ * @param {number} [deps.retryMs] how soon a build is redone while Claude Code or Codex gave no verified list
  */
 export function createAssistantCatalog({
   fetchJson,
@@ -557,24 +613,53 @@ export function createAssistantCatalog({
   listAccounts = () => ({}),
   readFilter = () => ({}),
   readHidden = () => [],
+  reconcileHidden = null,
+  onChange = null,
   ttlMs = 30_000,
+  retryMs = 5_000,
   now = Date.now,
   log = () => {},
 } = {}) {
   if (typeof fetchJson !== 'function') throw new Error('createAssistantCatalog requires fetchJson');
   let cache = null;
   let inflight = null;
+  // The last verified list Claude Code and Codex gave: what their rows are built
+  // from while the provider does not answer, or answers with its static stand-in.
+  const lastLive = {};
+  let degradedBuilds = 0;
+  let epoch = 0; // bumped by invalidate(): a build that began before it is not kept
+  let lastListed = null; // provider → signature of the rows the last build listed
 
-  async function build() {
+  const pickArray = (value, keys = []) => {
+    if (Array.isArray(value)) return value;
+    for (const key of keys) if (Array.isArray(value?.[key])) return value[key];
+    return [];
+  };
+
+  /**
+   * One provider's answer → the list to build rows from and how it was obtained:
+   * 'live' (the provider answered), 'stale' (it did not: its last verified list),
+   * 'fallback' (never verified: the endpoint's static stand-in), 'unavailable'.
+   */
+  function settle(provider, payload) {
+    const list = pickArray(payload, ['models']);
+    const verified = !!payload && payload.ok !== false && payload.source !== 'fallback' && list.length > 0;
+    if (verified) { lastLive[provider] = list; return { list, state: 'live' }; }
+    if (lastLive[provider]) return { list: lastLive[provider], state: 'stale' };
+    return list.length ? { list, state: 'fallback' } : { list: [], state: 'unavailable' };
+  }
+
+  function listedSignature(rows) {
+    return JSON.stringify(arr(rows).map((row) => [row.id, row.label, row.upstream || '', row.status || '', row.contextWindow || 0, arr(row.efforts).join(',')]));
+  }
+
+  async function build({ deep = false } = {}) {
+    // `deep` also drops the providers' own discovery caches (a CLI or app-server round trip).
+    const fresh = deep ? '?refresh=1' : '';
     const [claudeModels, codexModels, opencodeProviders, projects, mcpProfile] = await Promise.all([
-      fetchJson('/api/claude/models'), fetchJson('/api/codex/models'), fetchJson('/api/opencode/providers/full'),
+      fetchJson(`/api/claude/models${fresh}`), fetchJson(`/api/codex/models${fresh}`), fetchJson('/api/opencode/providers/full'),
       fetchJson('/api/projects'), fetchJson('/api/mcp/profile'),
     ]);
-    const pickArray = (value, keys = []) => {
-      if (Array.isArray(value)) return value;
-      for (const key of keys) if (Array.isArray(value?.[key])) return value[key];
-      return [];
-    };
     const filter = (() => { try { return readFilter() || {}; } catch { return {}; } })();
     const presets = mcpProfile?.presets && typeof mcpProfile.presets === 'object'
       ? Object.entries(mcpProfile.presets).map(([name, preset]) => ({ name, label: preset?.label || name, groups: preset?.groups || [], tools: preset?.tools || null }))
@@ -590,12 +675,34 @@ export function createAssistantCatalog({
       if (Array.isArray(raw)) raw = { opencode: raw };
       return Object.fromEntries(CATALOG_PROVIDERS.map((p) => [p, arr(raw[p]).map(String)]));
     })();
+    const claude = settle('claude-code', claudeModels);
+    const codex = settle('codex', codexModels);
+    // OpenCode is read from its serve on every build; while it is down its models are unknown, not remembered.
+    const sources = {
+      'claude-code': claude.state,
+      codex: codex.state,
+      opencode: opencodeProviders && opencodeProviders.ok !== false ? 'live' : 'unavailable',
+    };
+    for (const p of ['claude-code', 'codex']) if (sources[p] !== 'live') log('catalog:source', `${p}: ${sources[p]}`);
     const all = {
-      'claude-code': withClaudeContextVariants(normalizeClaudeRows(pickArray(claudeModels, ['models']), { pricing: claudePricing })),
-      codex: normalizeCodexRows(pickArray(codexModels, ['models']), { priceOf: codexPrice }),
+      'claude-code': withClaudeContextVariants(normalizeClaudeRows(claude.list, { pricing: claudePricing })),
+      codex: normalizeCodexRows(codex.list, { priceOf: codexPrice }),
       opencode: parseOpenCodeProviders(opencodeProviders, { filter: filter.opencode || null }),
     };
-    const lookup = { hidden };
+    // A hidden alias hides the model it named when it was hidden. With the rows at hand the
+    // store settles that: an alias that moved on is shown again and its old model stays hidden.
+    const hiddenPins = Object.fromEntries(CATALOG_PROVIDERS.map((p) => [p, {}]));
+    if (typeof reconcileHidden === 'function') {
+      for (const p of CATALOG_PROVIDERS) {
+        try {
+          const settled = reconcileHidden({ provider: p, rows: all[p], source: sources[p] });
+          if (!settled || !Array.isArray(settled.ids)) continue;
+          hidden[p] = settled.ids.map(String);
+          hiddenPins[p] = settled.pins && typeof settled.pins === 'object' ? settled.pins : {};
+        } catch (error) { log('catalog:hidden-pins-error', `${p}: ${error?.message || String(error)}`); }
+      }
+    }
+    const lookup = { hidden, hiddenPins };
     const models = {};
     const hiddenRows = {};
     const listedCounts = {};
@@ -606,11 +713,20 @@ export function createAssistantCatalog({
       for (const row of all[p]) (hidden[p].length && hiddenModelId(lookup, p, row.id, { row }) ? hiddenRows[p] : models[p]).push(row);
     }
     const opencode = models.opencode;
+    const listedNow = Object.fromEntries(CATALOG_PROVIDERS.map((p) => [p, listedSignature(all[p])]));
+    const changed = lastListed ? CATALOG_PROVIDERS.filter((p) => listedNow[p] !== lastListed[p]) : [];
+    lastListed = listedNow;
     return {
       generatedAt: new Date(now()).toISOString(),
+      // Providers whose listed models differ from the build before (not part of the value's meaning: full() reports it).
+      changedProviders: changed,
       models,
       hidden,
+      // provider → { hidden id (lower-case) → { model, variant, label, at, … } }: the entries that hide one row only.
+      hiddenPins,
       hiddenRows,
+      // How each provider's list was obtained: live | stale | fallback | unavailable.
+      sources,
       listed: listedCounts,
       // The provider answered with an authoritative list, even an empty one (OpenCode's `connected`).
       known: { opencode: openCodeConnectedKnown(opencodeProviders) },
@@ -630,28 +746,57 @@ export function createAssistantCatalog({
     };
   }
 
-  async function full({ force = false } = {}) {
-    if (!force && cache && now() - cache.at < ttlMs) return cache.value;
+  /**
+   * `force` rebuilds now from the providers' endpoints (each answers from its own
+   * discovery cache, exactly as it does for its panel's selector); `deep` makes
+   * those endpoints ask the CLI / app-server again as well.
+   */
+  async function full({ force = false, deep = false } = {}) {
+    if (!force && !deep && cache && now() - cache.at < cache.ttl) return cache.value;
     if (inflight) return inflight;
-    inflight = build().then((value) => { cache = { at: now(), value }; return value; }).finally(() => { inflight = null; });
+    const started = epoch;
+    inflight = build({ deep }).then((built) => {
+      const { changedProviders, ...value } = built;
+      // No verified list from Claude Code or Codex: ask again soon, backing off to the
+      // normal lifetime (a provider that is not installed must not be spawned every few seconds).
+      const degraded = ['claude-code', 'codex'].some((p) => value.sources[p] !== 'live');
+      degradedBuilds = degraded ? degradedBuilds + 1 : 0;
+      const ttl = degraded ? Math.min(ttlMs, retryMs * 2 ** (degradedBuilds - 1)) : ttlMs;
+      cache = { at: now(), value, ttl: started === epoch ? ttl : 0 };
+      if (changedProviders.length && typeof onChange === 'function') {
+        try { onChange({ providers: changedProviders, generatedAt: value.generatedAt }); } catch (error) { log('catalog:onchange-error', error?.message || String(error)); }
+      }
+      return value;
+    }).finally(() => { inflight = null; });
     return inflight;
   }
 
-  /** Every row, hidden ones included, per provider (the Models manager, id resolution). */
-  async function manageRows({ force = false } = {}) {
-    const value = await full({ force });
-    return Object.fromEntries(CATALOG_PROVIDERS.map((p) => [p, [...arr(value.models?.[p]), ...arr(value.hiddenRows?.[p])]]));
+  /**
+   * Every row, hidden ones included, per provider, and how each provider's list was obtained:
+   * { rows, sources, generatedAt } of one build, so what a row says is never read against another build's source.
+   */
+  async function manageSnapshot({ force = false, deep = false } = {}) {
+    const value = await full({ force, deep });
+    return {
+      rows: Object.fromEntries(CATALOG_PROVIDERS.map((p) => [p, [...arr(value.models?.[p]), ...arr(value.hiddenRows?.[p])]])),
+      sources: { ...value.sources },
+      generatedAt: value.generatedAt,
+    };
   }
+
+  /** Every row, hidden ones included, per provider (the Models manager, id resolution). */
+  async function manageRows(options = {}) { return (await manageSnapshot(options)).rows; }
 
   /**
    * view 'full' (default): every visible row. view 'brain': compact rows,
    * OpenCode capped; `provider` + `q` narrow the list (agent_catalog search).
    * view 'manage': every row with hidden: true|false and hiddenBy (the list
    * entry that hides it), plus `archived`: every hidden id per provider with
-   * the rows it covers; listed:false = no current row (still restorable).
+   * the rows it covers; listed:false = no current row (still restorable); `pin`
+   * = the model an alias entry was hidden as (see hiddenPins).
    */
-  async function get({ force = false, view = 'full', provider = null, q = null, brain = null, preferences = {} } = {}) {
-    const value = await full({ force });
+  async function get({ force = false, deep = false, view = 'full', provider = null, q = null, brain = null, preferences = {} } = {}) {
+    const value = await full({ force, deep });
     if (view === 'manage') {
       const models = {};
       const archived = {};
@@ -672,10 +817,11 @@ export function createAssistantCatalog({
         });
         archived[p] = arr(value.hidden?.[p]).map((id) => {
           const covered = covers.get(String(id).toLowerCase()) || [];
-          return { id, listed: covered.length > 0, group: p === 'opencode' ? String(id).split('/')[0] : null, rows: covered };
+          const pin = value.hiddenPins?.[p]?.[String(id).toLowerCase()] || null;
+          return { id, listed: covered.length > 0, group: p === 'opencode' ? String(id).split('/')[0] : null, rows: covered, ...(pin ? { pin } : {}) };
         });
       }
-      return { view: 'manage', generatedAt: value.generatedAt, models, archived, hidden: value.hidden, listed: value.listed };
+      return { view: 'manage', generatedAt: value.generatedAt, models, archived, hidden: value.hidden, hiddenPins: value.hiddenPins, listed: value.listed, sources: value.sources };
     }
     if (view !== 'brain' && !provider && !q) return value;
     const needle = q ? String(q).toLowerCase() : null;
@@ -690,7 +836,7 @@ export function createAssistantCatalog({
       const sheet = selectSheetModels(value, { brain, preferences, max: 40 });
       for (const p of CATALOG_PROVIDERS) models[p] = (p === 'opencode' ? sheet[p] : value.models[p]).map(compactRow);
     }
-    const { opencodeHidden, hidden, hiddenRows, ...rest } = value;
+    const { opencodeHidden, hidden, hiddenPins, hiddenRows, ...rest } = value;
     const hiddenCount = Object.fromEntries(CATALOG_PROVIDERS.map((p) => [p, arr(hiddenRows?.[p]).length]));
     return { ...rest, view: 'brain', models, opencodeTotal: value.opencodeTotal, hiddenCount, opencodeHiddenCount: arr(opencodeHidden).length };
   }
@@ -725,7 +871,13 @@ export function createAssistantCatalog({
     return { vision: row.vision ?? null, tier: row.tier || null, price: row.price || null, label: row.label || row.id, contextWindow: row.contextWindow || null, source: hit?.match || 'default', id: row.id };
   }
 
-  function invalidate() { cache = null; }
+  function invalidate() { cache = null; epoch += 1; }
+  /** A provider's own list changed: drop the copy and build the next one now (onChange reports the difference). */
+  function refresh() {
+    invalidate();
+    const pending = inflight; // began before the change: let it end, then build again
+    return pending ? pending.catch(() => null).then(() => full()) : full();
+  }
 
-  return { get, full, peek, find, hiddenId, manageRows, brainInfo, invalidate };
+  return { get, full, peek, find, hiddenId, manageRows, manageSnapshot, brainInfo, invalidate, refresh };
 }

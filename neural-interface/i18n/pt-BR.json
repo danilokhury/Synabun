@@ -165,13 +165,32 @@
       "elapsedLabel": "Tempo desde que Iniciar foi pressionado",
       "headingStarting": "Iniciando o servidor",
       "headingReady": "Servidor no ar",
-      "headingFailed": "O servidor não iniciou"
+      "headingFailed": "O servidor não iniciou",
+      "restartAsked": "Pedimos ao servidor para reiniciar.",
+      "restartStopping": "O servidor aceitou o reinício e está encerrando.",
+      "restartSlowStop": "Ainda encerrando depois de {seconds} s.",
+      "restartDown": "O servidor parou de responder. Aguardando ele voltar.",
+      "restartRespawning": "O supervisor está iniciando o servidor de novo.",
+      "restartStalled": "O servidor não voltou. Inicie-o com o botão ou execute o comando abaixo.",
+      "restartRefused": "O servidor não aceitou o reinício: {reason}",
+      "restartUnreachable": "O servidor não respondeu ao pedido de reinício.",
+      "restartStillRunning": "O servidor aceitou o reinício, mas não encerrou.",
+      "trailAccepted": "Reinício aceito",
+      "trailNoAnswer": "Servidor parou de responder",
+      "trailStopped": "Processo do servidor encerrado",
+      "restartElapsedLabel": "Tempo desde o início do reinício",
+      "headingRestarting": "Reiniciando o servidor",
+      "headingRestartFailed": "O servidor não reiniciou"
     },
     "runCommandOr": "Ou execute este comando:",
     "runCommandSetup": "Execute este comando uma vez. Ele também configura o botão Iniciar:",
     "serverOffline": "Servidor offline",
     "serverNotRunning": "O servidor do Neural Interface não está em execução",
     "connectionFailed": "Falha na conexão",
+    "restartSubAsked": "Você pediu este reinício. O SynaBun recarrega quando o servidor voltar.",
+    "restartSubTold": "Um reinício do servidor foi solicitado. O SynaBun recarrega quando ele voltar.",
+    "restartSubRefused": "O SynaBun continua em execução.",
+    "restartBack": "Voltar ao SynaBun",
     "health": {
       "databaseUnreachable": {
         "title": "Banco de dados inacessível",
@@ -266,6 +285,751 @@
       "moveTo": "Mover para...",
       "exportMd": "Exportar como Markdown",
       "copyId": "Copiar ID"
+    }
+  },
+  "editor": {
+    "header": {
+      "close": "Fechar editor",
+      "find": "Localizar",
+      "wordWrap": "Alternar quebra de linha",
+      "shortcuts": "Atalhos de teclado",
+      "raw": "Bruto",
+      "preview": "Prévia",
+      "discard": "Descartar",
+      "save": "Salvar",
+      "closeButton": "Fechar",
+      "view": "Opções de exibição",
+      "diff": "Comparar com o último commit"
+    },
+    "shortcuts": {
+      "title": "Atalhos de teclado",
+      "click": "Clique",
+      "drag": "Arraste"
+    },
+    "command": {
+      "save": "Salvar",
+      "find": "Localizar",
+      "replace": "Substituir",
+      "findNext": "Localizar próxima",
+      "findPrevious": "Localizar anterior",
+      "goToLine": "Ir para a linha",
+      "undo": "Desfazer",
+      "redo": "Refazer",
+      "selectNextOccurrence": "Selecionar próxima ocorrência",
+      "selectAllOccurrences": "Selecionar todas as ocorrências",
+      "copyLineDown": "Copiar linha para baixo",
+      "copyLineUp": "Copiar linha para cima",
+      "moveLineDown": "Mover linha para baixo",
+      "moveLineUp": "Mover linha para cima",
+      "deleteLine": "Excluir linha",
+      "toggleLineComment": "Alternar comentário de linha",
+      "toggleBlockComment": "Alternar comentário de bloco",
+      "indent": "Aumentar recuo",
+      "outdent": "Diminuir recuo",
+      "addCursor": "Adicionar cursor",
+      "addCursorBelow": "Adicionar cursor abaixo",
+      "addCursorAbove": "Adicionar cursor acima",
+      "columnSelection": "Seleção em coluna",
+      "fold": "Recolher",
+      "unfold": "Expandir",
+      "jumpToBracket": "Ir para o colchete correspondente",
+      "toggleWordWrap": "Alternar quebra de linha",
+      "dismiss": "Fechar barra de localizar",
+      "aiAccept": "Aceitar sugestão",
+      "aiAcceptWord": "Aceitar uma palavra da sugestão",
+      "aiDismiss": "Dispensar sugestão",
+      "aiTrigger": "Pedir uma sugestão agora",
+      "nextTab": "Próxima aba",
+      "previousTab": "Aba anterior",
+      "closeTab": "Fechar aba",
+      "toggleMinimap": "Alternar minimapa",
+      "toggleIndentGuides": "Alternar guias de indentação",
+      "cycleWhitespace": "Mudar como os espaços em branco aparecem",
+      "fontLarger": "Texto maior",
+      "fontSmaller": "Texto menor",
+      "fontReset": "Redefinir o tamanho do texto",
+      "commandPalette": "Paleta de comandos",
+      "goToFile": "Ir para o arquivo",
+      "nextProblem": "Ir para o próximo problema",
+      "previousProblem": "Ir para o problema anterior",
+      "toggleDiff": "Comparar com o último commit"
+    },
+    "find": {
+      "placeholder": "Localizar...",
+      "label": "Localizar",
+      "matchCase": "Diferenciar maiúsculas de minúsculas",
+      "wholeWord": "Palavra inteira",
+      "regexp": "Expressão regular",
+      "previous": "Anterior",
+      "next": "Próxima",
+      "close": "Fechar",
+      "replacePlaceholder": "Substituir...",
+      "replaceLabel": "Substituir por",
+      "replace": "Substituir",
+      "replaceAll": "Todas",
+      "invalid": "Padrão inválido",
+      "noResults": "Nenhum resultado",
+      "count": "{current} de {total}",
+      "total": {
+        "one": "{count} resultado",
+        "other": "{count} resultados"
+      }
+    },
+    "goto": {
+      "label": "Ir para a linha",
+      "placeholder": "Linha...",
+      "range": "1 a {max}"
+    },
+    "fold": {
+      "fold": "Recolher",
+      "unfold": "Expandir"
+    },
+    "aria": {
+      "content": "Conteúdo do arquivo"
+    },
+    "status": {
+      "plainText": "Texto simples",
+      "spaces": "Espaços: {n}",
+      "tabSize": "Tabulação: {n}",
+      "eolMixed": "Misto → {eol}",
+      "utf8Bom": "UTF-8 com BOM",
+      "position": "Ln {line}, Col {column}",
+      "positionSelected": "Ln {line}, Col {column} ({selected} selecionados)",
+      "cursors": "Ln {line}, Col {column} ({count} cursores)",
+      "cursorsSelected": "Ln {line}, Col {column} ({count} cursores, {selected} selecionados)",
+      "selectLanguage": "Selecionar linguagem",
+      "selectIndent": "Selecionar indentação",
+      "selectEol": "Selecionar fim de linha",
+      "goToLine": "Ir para a linha",
+      "languageSearch": "Buscar linguagens...",
+      "languageAuto": "Detectar automaticamente",
+      "languageNone": "Nenhuma linguagem encontrada",
+      "indentTabs": "Tabulações",
+      "indentDetect": "Detectar"
+    },
+    "banner": {
+      "planReview": "Editando o plano — salve para voltar à revisão",
+      "planSend": "Editando o plano — salve para enviar ao {name}",
+      "changelog": "Editando o changelog — salve para enviar ao Claude",
+      "planSaveFailed": "{message} Suas edições continuam abertas."
+    },
+    "toast": {
+      "saved": "Salvo",
+      "saveFailed": "Falha ao salvar",
+      "planSaved": "Plano salvo",
+      "changelogSaved": "Changelog salvo — enviando ao Claude",
+      "cannotOpen": "Não foi possível abrir o arquivo",
+      "openFailed": "Falha ao abrir o arquivo",
+      "planChanged": "O arquivo do plano mudou. Reabra a revisão atual do plano.",
+      "restartForOpencodeConfig": "Reinicie o Synabun para ativar a edição da configuração do OpenCode",
+      "tooLarge": "Este arquivo é grande demais para abrir no editor.",
+      "tooLargeOver": "Este arquivo tem mais de {size}, o máximo que o editor abre.",
+      "changedOnDisk": "O arquivo mudou no disco. Suas edições não foram salvas.",
+      "pathCopied": "Caminho copiado",
+      "notInTree": "Este arquivo não está em um projeto do Explorador de arquivos."
+    },
+    "error": {
+      "bundle": "Não foi possível carregar o editor.",
+      "retry": "Tentar novamente",
+      "planMissingRevision": "Este editor de plano está sem a revisão. Reabra o plano para salvar.",
+      "planChanged": "O plano mudou. Reabra a revisão mais recente antes de salvar."
+    },
+    "refused": {
+      "binary": "{name} é um arquivo binário. Ele não pode ser editado aqui.",
+      "encoding": "{name} não é texto UTF-8. Ele não foi aberto, porque salvá-lo aqui o danificaria."
+    },
+    "confirm": {
+      "close": "Descartar alterações não salvas?",
+      "discard": "Descartar alterações?",
+      "reload": "Descartar suas alterações e recarregar o arquivo do disco?",
+      "closeOne": "Descartar alterações não salvas em {name}?",
+      "closeMany": "Descartar alterações não salvas em {count} arquivos?\n\n{files}"
+    },
+    "conflict": {
+      "text": "Este arquivo mudou no disco depois que você o abriu.",
+      "overwrite": "Sobrescrever",
+      "reload": "Recarregar"
+    },
+    "tabs": {
+      "label": "Arquivos abertos",
+      "close": "Fechar {name}",
+      "closeUnsaved": "Fechar {name} (alterações não salvas)",
+      "plan": "Plano",
+      "changelog": "Changelog",
+      "menu": {
+        "label": "Ações da aba",
+        "close": "Fechar",
+        "closeOthers": "Fechar as outras",
+        "closeSaved": "Fechar as salvas",
+        "copyPath": "Copiar caminho",
+        "reveal": "Mostrar na árvore"
+      }
+    },
+    "disk": {
+      "changed": "Este arquivo mudou no disco.",
+      "deleted": "Este arquivo foi excluído ou movido no disco.",
+      "compare": "Comparar",
+      "keepMine": "Manter o meu",
+      "keepOpen": "Manter aberto",
+      "closeTab": "Fechar aba"
+    },
+    "backup": {
+      "restored": "Alterações não salvas restauradas",
+      "restoredChanged": "Alterações não salvas restauradas. O arquivo mudou no disco desde que foram feitas.",
+      "keep": "Manter",
+      "discard": "Descartar"
+    },
+    "compare": {
+      "text": "Comparando sua versão com o arquivo no disco",
+      "close": "Fechar comparação",
+      "useDisk": "Usar a versão do disco",
+      "unchanged": "{count} linhas sem alterações",
+      "failed": "Não foi possível ler o arquivo do disco."
+    },
+    "ai": {
+      "chip": "IA",
+      "title": "Autocompletar com IA",
+      "consent": "Envia o código ao redor do cursor para o modelo que você escolher. Arquivos da lista de excluídos nunca são enviados.",
+      "state": {
+        "off": "O autocompletar com IA está desligado",
+        "excluded": "O autocompletar com IA está desligado para este arquivo: o nome dele está na lista de arquivos que nunca são enviados",
+        "ready": "O autocompletar com IA está pronto",
+        "thinking": "O autocompletar com IA está consultando o modelo"
+      },
+      "problem": {
+        "rate": "Pedidos demais. Nova tentativa em {seconds} s.",
+        "noModel": "Nenhum modelo selecionado ainda. Escolha um abaixo.",
+        "noEndpoint": "O endpoint ainda não tem endereço ou modelo. Defina-os nas Configurações.",
+        "timeout": "O modelo não respondeu a tempo.",
+        "network": "O SynaBun não respondeu.",
+        "engine": "A chamada ao modelo falhou: {message}",
+        "engineUnknown": "A chamada ao modelo falhou.",
+        "server": "O pedido falhou."
+      },
+      "model": "Modelo",
+      "modelNone": "Escolha um modelo",
+      "modelsLoading": "Carregando modelos…",
+      "modelsUnavailable": "O OpenCode não está em execução, então os modelos dele não podem ser listados.",
+      "modelsFailed": "Não foi possível ler os modelos.",
+      "price": "${input} entrada / ${output} saída por milhão de tokens",
+      "priceFree": "grátis",
+      "endpointModel": "Seu endpoint: {model}",
+      "endpointNone": "Seu endpoint ainda não foi configurado.",
+      "findFastest": "Encontrar o mais rápido",
+      "finding": "Testando modelos…",
+      "fastest": "Mais rápido: {model}, {time}. Selecionado.",
+      "fastestNone": "Nenhum modelo respondeu a tempo.",
+      "today": {
+        "one": "Hoje: {count} pedido · {input} tokens de entrada · {output} de saída",
+        "other": "Hoje: {count} pedidos · {input} tokens de entrada · {output} de saída"
+      },
+      "todayNone": "Nenhum pedido hoje.",
+      "todayFailed": "Não foi possível ler o uso de hoje.",
+      "settings": "Mais nas Configurações"
+    },
+    "view": {
+      "wordWrap": "Quebra de linha",
+      "minimap": "Minimapa",
+      "indentGuides": "Guias de indentação",
+      "whitespaceNone": "Espaços em branco: ocultos",
+      "whitespaceSelection": "Espaços em branco: na seleção",
+      "whitespaceAll": "Espaços em branco: em todo o texto",
+      "fontLarger": "Texto maior",
+      "fontSmaller": "Texto menor",
+      "fontReset": "Redefinir o tamanho do texto",
+      "fontSize": "{size} px"
+    },
+    "palette": {
+      "commands": "Paleta de comandos",
+      "commandsPlaceholder": "Digite um comando...",
+      "noCommand": "Nenhum comando corresponde",
+      "files": "Ir para o arquivo",
+      "filesPlaceholder": "Digite o nome de um arquivo...",
+      "noFile": "Nenhum arquivo corresponde",
+      "typeToSearch": "Digite para buscar nos arquivos deste projeto",
+      "noProject": "Selecione um projeto no Explorador de arquivos para buscar nos arquivos dele",
+      "searchFailed": "Não foi possível buscar os arquivos.",
+      "searching": "Buscando…"
+    },
+    "diff": {
+      "text": "Comparando sua versão com o último commit",
+      "close": "Fechar comparação",
+      "revert": "Reverter alteração",
+      "failed": "Não foi possível carregar a comparação."
+    }
+  },
+  "fileLinks": {
+    "open": "Abrir no editor",
+    "openAtLine": "Abrir no editor na linha {line}",
+    "openAtLineColumn": "Abrir no editor na linha {line}, coluna {column}",
+    "missing": "{name} não foi encontrado, ou é uma pasta.",
+    "notText": "{name} não é um arquivo de texto que o editor consiga abrir.",
+    "tooLarge": "{name} é grande demais para abrir no editor.",
+    "outside": "{name} está fora dos seus projetos registrados. Adicione a pasta como projeto para abri-lo aqui.",
+    "failed": "Não foi possível acessar o SynaBun para abrir {name}. Verifique se o servidor está em execução."
+  },
+  "tunnel": {
+    "stateOff": "Desligado",
+    "stateDownloading": "Obtendo o programa do túnel",
+    "stateStarting": "Iniciando",
+    "stateRunning": "Ligado",
+    "stateFailed": "Não iniciou",
+    "stateUnsupported": "Indisponível",
+    "stateRestart": "Reinício necessário",
+    "idle": "Um endereço público pela Cloudflare, para links de convite e MCP remoto.",
+    "idleDownload": "Um endereço público pela Cloudflare, para links de convite e MCP remoto. Na primeira vez, o programa do túnel é baixado ({size} MB).",
+    "downloading": "Baixando o programa do túnel: {received} de {total} MB",
+    "starting": "Aguardando a Cloudflare fornecer um endereço…",
+    "restart": "Reinicie o SynaBun para usar o endereço público: o servidor em execução foi iniciado antes de poder baixar o programa do túnel.",
+    "unsupported": "A Cloudflare não publica o programa do túnel para este sistema. Se você instalar o cloudflared por conta própria, o SynaBun o usa.",
+    "errorOffline": "Não foi possível baixar o programa do túnel: o servidor de download não respondeu. Verifique a conexão e tente novamente.",
+    "errorHttp": "Não foi possível baixar o programa do túnel: o servidor de download respondeu com erro. Tente novamente em instantes.",
+    "errorInterrupted": "O download parou antes de terminar. Nada foi mantido. Tente novamente.",
+    "errorTimeout": "O download travou. Nada foi mantido. Tente novamente.",
+    "errorChecksum": "O download não era o arquivo que o SynaBun espera; por isso foi removido e nunca executado. Tente novamente; se acontecer de novo, algo na rede está alterando o arquivo.",
+    "errorUnpack": "Não foi possível descompactar o arquivo baixado; por isso ele foi removido. Tente novamente.",
+    "errorDisk": "Não foi possível salvar o programa do túnel na pasta de dados do SynaBun. Verifique o espaço livre e as permissões e tente novamente.",
+    "errorLaunch": "Não foi possível iniciar o programa do túnel neste computador. Tente novamente.",
+    "errorExited": "A Cloudflare não forneceu um endereço. O programa do túnel informou: {reason}",
+    "errorExitedNoReason": "O programa do túnel parou antes de a Cloudflare fornecer um endereço. Tente novamente.",
+    "errorNoAddress": "A Cloudflare não forneceu um endereço a tempo. Tente novamente.",
+    "errorEnded": "O túnel parou. Inicie de novo para obter um novo endereço.",
+    "errorRefused": "O SynaBun recusou este pedido. Inicie o túnel pelo SynaBun neste computador.",
+    "errorUnknown": "O túnel não iniciou: {reason}",
+    "errorUnknownNoReason": "O túnel não iniciou. Tente novamente.",
+    "start": "Iniciar túnel",
+    "stop": "Parar",
+    "cancel": "Cancelar",
+    "retry": "Tentar novamente",
+    "copyBundled": "cloudflared {version}, incluído no SynaBun",
+    "copyDownloaded": "cloudflared {version}, baixado pelo SynaBun",
+    "copySystem": "cloudflared {version}, instalado neste computador",
+    "copySystemWhy": "O SynaBun não conseguiu baixar a própria cópia; por isso usa a que está instalada neste computador.",
+    "mcpKeyNeeded": "O MCP remoto precisa de uma chave de acesso. Crie uma abaixo; o endereço para conectar passa a ser este, seguido de /mcp/ e da chave."
+  },
+  "workerEnd": {
+    "complete": "Tarefa concluída",
+    "blocked": "Bloqueada",
+    "needsInput": "Precisa de resposta",
+    "failed": "A tarefa falhou",
+    "stopped": "Parada",
+    "interrupted": "Interrompida",
+    "back": "Voltar ao Assistente",
+    "backHint": "Fechar esta aba e abrir a sessão do Assistente que a enviou",
+    "warmNote": "O agente continua aberto para novas instruções. Voltar o fecha.",
+    "failedNoReason": "A execução terminou com um erro.",
+    "reasonUser": "Parada por você.",
+    "reasonAssistant": "Parada pelo Assistente.",
+    "reasonAssistantSaid": "Parada pelo Assistente: {reason}",
+    "reasonTimeCap": "A execução atingiu o limite de tempo.",
+    "reasonBudget": "A execução atingiu o limite de orçamento.",
+    "reasonMaxTurns": "A execução atingiu o limite de turnos.",
+    "reasonIdle": "O agente esperou uma nova instrução que não veio e foi fechado.",
+    "reasonRestart": "O servidor reiniciou com a execução aberta.",
+    "reasonKillAll": "Parada junto com todas as outras execuções.",
+    "reasonCleared": "O estado da execução foi removido.",
+    "reasonOther": "Parada ({reason}).",
+    "durationSeconds": "{s} s",
+    "durationMinutes": "{m} min {s} s",
+    "durationHours": "{h} h {m} min"
+  },
+  "fileExplorer": {
+    "title": "Explorador de Arquivos",
+    "tree": "Arquivos de {project}",
+    "resize": "Redimensionar o Explorador de Arquivos",
+    "loadFailed": "Não foi possível carregar o Explorador de Arquivos. Recarregue a página.",
+    "needsRestart": "Passa a funcionar depois que o servidor for reiniciado.",
+    "filter": {
+      "placeholder": "Filtrar arquivos...",
+      "label": "Filtrar arquivos pelo nome",
+      "clear": "Limpar filtro"
+    },
+    "toolbar": {
+      "newFile": "Novo arquivo",
+      "newFolder": "Nova pasta",
+      "goToFile": "Ir para arquivo",
+      "revealActive": "Mostrar o arquivo aberto na árvore",
+      "changedOnly": "Só os alterados",
+      "collapseAll": "Recolher tudo",
+      "refresh": "Atualizar",
+      "more": "Mais"
+    },
+    "project": {
+      "none": "Nenhum projeto",
+      "label": "Projeto: {name}",
+      "choose": "Escolha um projeto",
+      "add": "Adicionar projeto...",
+      "pickFolder": "Selecione a pasta do projeto",
+      "addFailed": "Não foi possível adicionar o projeto."
+    },
+    "branch": {
+      "label": "Branch {branch}: {count} alterados"
+    },
+    "count": {
+      "items": {
+        "one": "1 item",
+        "other": "{count} itens"
+      },
+      "selected": {
+        "one": "1 selecionado",
+        "other": "{count} selecionados"
+      },
+      "matches": {
+        "one": "1 resultado",
+        "other": "{count} resultados"
+      },
+      "changed": {
+        "one": "1 alterado",
+        "other": "{count} alterados"
+      }
+    },
+    "state": {
+      "loading": "Carregando...",
+      "searching": "Buscando...",
+      "retry": "Tentar de novo",
+      "showMore": "Mostrar mais",
+      "more": {
+        "one": "mais 1",
+        "other": "mais {count}"
+      },
+      "truncated": "Mostrando {shown} de {total}. Filtre pelo nome para achar o resto.",
+      "emptyFolder": "Pasta vazia",
+      "emptyProject": "Esta pasta está vazia.",
+      "noProject": "Nenhum projeto ainda. Adicione uma pasta para ver os arquivos.",
+      "addProject": "Adicionar projeto",
+      "noMatch": "Nenhum arquivo com “{query}”.",
+      "noChanges": "Nada mudou desde o último commit.",
+      "notRepo": "Este projeto não é um repositório git.",
+      "searchFailed": "A busca falhou. Tente de novo.",
+      "moreMatches": "Mostrando os primeiros {count} resultados. Digite mais para refinar.",
+      "partial": "A busca parou antes do fim neste projeto grande. Digite mais para refinar.",
+      "restartHint": "Atualização ao vivo, renomear, mover, Lixeira e prévia de imagens passam a funcionar depois que o servidor for reiniciado."
+    },
+    "git": {
+      "modified": "modificado",
+      "mixed": "modificado",
+      "staged": "em stage",
+      "renamed": "renomeado",
+      "added": "adicionado",
+      "untracked": "novo",
+      "deleted": "excluído",
+      "conflict": "conflito",
+      "contains": "tem alterações",
+      "ignored": "ignorado pelo git"
+    },
+    "row": {
+      "open": "aberto no editor",
+      "unsaved": "alterações não salvas",
+      "link": "link",
+      "linkOutside": "link para fora do projeto",
+      "linkBroken": "link quebrado",
+      "cut": "recortado"
+    },
+    "notice": {
+      "dismiss": "Dispensar"
+    },
+    "menu": {
+      "label": "Ações de {name}",
+      "labelMany": "Ações de {count} itens",
+      "labelProject": "Ações do projeto",
+      "back": "Voltar",
+      "open": "Abrir",
+      "openKeep": "Abrir e manter a aba",
+      "preview": "Visualizar",
+      "openAsText": "Abrir como texto",
+      "send": {
+        "one": "Enviar para {name}",
+        "other": "Enviar {count} itens para {name}"
+      },
+      "sendTo": "Enviar para...",
+      "newFile": "Novo arquivo...",
+      "newFolder": "Nova pasta...",
+      "expand": "Expandir",
+      "collapse": "Recolher",
+      "collapseChildren": "Recolher subpastas",
+      "cut": "Recortar",
+      "copy": "Copiar",
+      "paste": "Colar",
+      "duplicate": "Duplicar",
+      "nothingCopied": "Nada foi recortado nem copiado.",
+      "copyPath": {
+        "one": "Copiar caminho",
+        "other": "Copiar caminhos"
+      },
+      "copyRelativePath": {
+        "one": "Copiar caminho relativo",
+        "other": "Copiar caminhos relativos"
+      },
+      "copyName": "Copiar nome",
+      "color": "Cor da pasta...",
+      "rename": "Renomear...",
+      "delete": "Excluir",
+      "deleteMany": "Excluir {count} itens",
+      "reveal": {
+        "darwin": "Mostrar no Finder",
+        "win32": "Mostrar no Explorador de Arquivos",
+        "other": "Mostrar no gerenciador de arquivos"
+      },
+      "changedOnly": "Só os alterados",
+      "sortBy": "Ordenar por...",
+      "sort": {
+        "name": "Nome",
+        "date": "Data de modificação",
+        "size": "Tamanho"
+      },
+      "expandAll": "Expandir mais um nível",
+      "collapseAll": "Recolher tudo",
+      "refresh": "Atualizar"
+    },
+    "colors": {
+      "amber": "Âmbar (padrão)",
+      "blue": "Azul",
+      "green": "Verde",
+      "red": "Vermelho",
+      "purple": "Roxo",
+      "cyan": "Ciano",
+      "yellow": "Amarelo",
+      "brown": "Marrom",
+      "grey": "Cinza"
+    },
+    "send": {
+      "assistant": "Assistente",
+      "session": "a sessão em foco",
+      "done": {
+        "one": "“{name}” enviado para {target}.",
+        "other": "{count} itens enviados para {target}."
+      },
+      "failed": "Não foi possível enviar para {target}."
+    },
+    "edit": {
+      "rename": "Novo nome de {name}",
+      "newFile": "Nome do novo arquivo",
+      "newFolder": "Nome da nova pasta",
+      "taken": "Já existe “{name}” nesta pasta.",
+      "gone": "“{name}” sumiu do disco."
+    },
+    "delete": {
+      "titleOne": "Excluir “{name}”?",
+      "titleMany": "Excluir {count} itens?",
+      "toTrash": {
+        "win32": "Dá para restaurar pela Lixeira.",
+        "other": "Dá para recuperar pela Lixeira."
+      },
+      "forGood": "Este sistema não tem Lixeira: a exclusão é definitiva.",
+      "forGoodLegacy": "Não há Lixeira até o servidor ser reiniciado: a exclusão é definitiva.",
+      "unsaved": {
+        "one": "“{name}” tem alterações não salvas no editor.",
+        "other": "{count} deles têm alterações não salvas no editor."
+      },
+      "moveToTrash": {
+        "win32": "Mover para a Lixeira",
+        "other": "Mover para a Lixeira"
+      },
+      "deleteForever": "Excluir de vez",
+      "noTrashTitle": "Este disco não tem Lixeira",
+      "noTrashOne": "“{name}” está em um disco sem Lixeira. Nada foi excluído. Excluir de vez?",
+      "noTrashMany": "{count} itens estão em um disco sem Lixeira e não foram excluídos. Excluir de vez?",
+      "notEmpty": "Até o servidor ser reiniciado, só dá para excluir uma pasta vazia.",
+      "stopped": "{done} de {total} excluídos de vez; parou em “{name}”. {why}",
+      "stoppedTrash": {
+        "win32": "{done} de {total} foram para a Lixeira; parou em “{name}”. {why}",
+        "other": "{done} de {total} foram para a Lixeira; parou em “{name}”. {why}"
+      },
+      "done": {
+        "one": "“{name}” excluído de vez.",
+        "other": "{count} itens excluídos de vez."
+      },
+      "doneTrash": {
+        "win32": {
+          "one": "“{name}” foi para a Lixeira.",
+          "other": "{count} itens foram para a Lixeira."
+        },
+        "other": {
+          "one": "“{name}” foi para a Lixeira.",
+          "other": "{count} itens foram para a Lixeira."
+        }
+      }
+    },
+    "replace": {
+      "title": "Substituir o que já existe?",
+      "one": "Já existe “{name}” em “{folder}”.",
+      "many": "{count} itens já existem em “{folder}”.",
+      "toTrash": {
+        "win32": "O que for substituído vai para a Lixeira.",
+        "other": "O que for substituído vai para a Lixeira."
+      },
+      "forGood": "O que for substituído não tem volta.",
+      "unsaved": {
+        "one": "“{name}” tem alterações não salvas no editor. Elas são salvas antes da substituição.",
+        "other": "{count} deles têm alterações não salvas no editor. Elas são salvas antes da substituição."
+      },
+      "notSaved": "Não foi possível salvar “{name}”. Nada foi substituído.",
+      "confirm": "Substituir"
+    },
+    "move": {
+      "same": "Já está nessa pasta.",
+      "done": {
+        "one": "“{name}” movido para “{folder}”.",
+        "other": "{count} itens movidos para “{folder}”."
+      },
+      "stopped": "{done} de {total} movidos; parou em “{name}”. {why}"
+    },
+    "copy": {
+      "done": {
+        "one": "“{name}” copiado para “{folder}”.",
+        "other": "{count} itens copiados para “{folder}”."
+      },
+      "stopped": "{done} de {total} copiados; parou em “{name}”. {why}",
+      "partial": "“{name}” ficou lá só em parte."
+    },
+    "duplicate": {
+      "done": {
+        "one": "“{name}” criado.",
+        "other": "{count} cópias criadas."
+      }
+    },
+    "clipboard": {
+      "cut": {
+        "one": "“{name}” recortado. Escolha uma pasta e cole.",
+        "other": "{count} itens recortados. Escolha uma pasta e cole."
+      },
+      "copied": {
+        "one": "“{name}” copiado. Escolha uma pasta e cole.",
+        "other": "{count} itens copiados. Escolha uma pasta e cole."
+      }
+    },
+    "copied": {
+      "path": {
+        "one": "Caminho copiado.",
+        "other": "{count} caminhos copiados."
+      },
+      "name": "Nome copiado.",
+      "failed": "O navegador não permitiu copiar."
+    },
+    "upload": {
+      "none": "Nada para copiar.",
+      "progress": "Copiando {done} de {total}...",
+      "tooMany": "São mais de {max} arquivos. Copie a pasta pelo gerenciador de arquivos do sistema.",
+      "done": {
+        "one": "“{name}” copiado para “{folder}”.",
+        "other": "{count} arquivos copiados para “{folder}”."
+      }
+    },
+    "preview": {
+      "label": "Prévia de {name}",
+      "image": "Imagem",
+      "openAsText": "Abrir como texto",
+      "noPreview": "A imagem aparece depois que o servidor for reiniciado.",
+      "failed": "Não foi possível carregar a imagem.",
+      "notText": "Não é texto: o editor não abre."
+    },
+    "kind": {
+      "archive": "Arquivo compactado",
+      "document": "Documento",
+      "audio": "Áudio",
+      "video": "Vídeo",
+      "font": "Fonte",
+      "database": "Banco de dados",
+      "program": "Programa ou biblioteca",
+      "diskImage": "Imagem de disco ou instalador",
+      "design": "Arquivo de design ou imagem",
+      "system": "Arquivo do sistema"
+    },
+    "open": {
+      "deleted": "“{name}” foi excluído: não está no disco.",
+      "linkOutside": "“{name}” é um link para fora do projeto. Não dá para abrir daqui.",
+      "linkBroken": "“{name}” é um link para algo que não existe."
+    },
+    "reveal": {
+      "none": "Nenhum arquivo aberto no editor.",
+      "notShown": "“{name}” não está neste projeto."
+    },
+    "watch": {
+      "none": "Este projeto não pode ser monitorado agora. A árvore é lida de novo quando você volta a esta janela.",
+      "partial": "Algumas pastas abertas não podem ser monitoradas agora. A árvore é lida de novo quando você volta a esta janela."
+    },
+    "error": {
+      "exists": "Já existe “{name}”. Nada foi substituído.",
+      "gone": "Não está mais no disco.",
+      "denied": "O sistema não permitiu (sem permissão).",
+      "root": "Uma pasta de projeto não pode ser renomeada, movida, excluída nem substituída por aqui.",
+      "intoSelf": "Uma pasta não pode ir para dentro dela mesma.",
+      "tooLarge": "Esse arquivo é grande demais.",
+      "busy": "Outro programa está usando.",
+      "noSpace": "O disco está cheio.",
+      "outside": "Isso fica fora das pastas dos projetos.",
+      "notDir": "Isso não é uma pasta.",
+      "offline": "O servidor não respondeu. Nada foi alterado.",
+      "noReveal": "Este sistema não tem gerenciador de arquivos para mostrar.",
+      "noTrash": "Não há Lixeira para isso. Ficou como estava.",
+      "changed": "Uma pasta mudou enquanto isso estava em andamento. Nada mais foi feito.",
+      "otherDisk": "Está em outro disco. Copie para lá e depois exclua o original.",
+      "needsRestart": "Isso passa a funcionar depois que o servidor for reiniciado.",
+      "owner": "Só o dono pode usar o Explorador de Arquivos.",
+      "limit": "É coisa demais de uma vez.",
+      "notImage": "Isso não é uma imagem.",
+      "failed": "Não deu certo.",
+      "name": {
+        "empty": "Digite um nome.",
+        "dots": "“.” e “..” não são nomes.",
+        "separator": "O nome não pode ter “/” nem “\\”.",
+        "control": "O nome não pode ter caracteres de controle.",
+        "reserved": "O Windows reserva esse nome.",
+        "chars": "No Windows o nome não pode ter < > : \" | ? *",
+        "trailing": "No Windows o nome não pode terminar com espaço ou ponto.",
+        "long": "Esse nome é longo demais.",
+        "other": "Esse nome não pode ser usado."
+      }
+    },
+    "gitPanel": {
+      "label": "Branch e commit",
+      "branch": "Branch",
+      "commit": "Commit",
+      "message": "Mensagem...",
+      "generate": "Gerar mensagem",
+      "commitAction": "Fazer commit de tudo",
+      "clean": "Nada a commitar",
+      "count": {
+        "modified": "{count} modificados",
+        "added": "{count} adicionados",
+        "deleted": "{count} excluídos",
+        "untracked": "{count} novos",
+        "other": "{count} outros"
+      },
+      "switched": "Agora em {branch}",
+      "checkoutFailed": "Falha ao trocar de branch",
+      "commitFailed": "Falha no commit",
+      "committed": "Commit feito",
+      "failed": "Falhou",
+      "noChanges": "Sem alterações",
+      "generateFailed": "Falha ao gerar a mensagem"
+    },
+    "trust": {
+      "title": "Pasta de outro usuário",
+      "body": "O git se recusa a ler esta pasta porque ela pertence a outra conta de usuário. Ao confiar nela, a pasta entra na sua configuração global safe.directory, e o SynaBun consegue mostrar o branch e as alterações.",
+      "skip": "Pular",
+      "confirm": "Confiar na pasta",
+      "trusting": "Confiando...",
+      "done": "Pasta marcada como confiável",
+      "failed": "Não foi possível confiar"
+    },
+    "help": {
+      "title": "Explorador de Arquivos",
+      "toggle": "Abrir / fechar o explorador de arquivos",
+      "move": "Andar pelas linhas",
+      "fold": "Abrir / fechar a pasta, ir para a pasta de cima",
+      "open": "Abrir no editor e manter a aba",
+      "peek": "Espiar o arquivo na aba reutilizada",
+      "range": "Selecionar várias linhas",
+      "typeAhead": "Ir até uma linha digitando o nome",
+      "offers": "Ir até “Mostrar mais” ou “Tentar de novo” e usar",
+      "rename": "Renomear",
+      "delete": "Excluir (vai para a Lixeira)",
+      "clipboard": "Recortar / copiar / colar",
+      "copyPath": "Copiar caminho / caminho relativo",
+      "goToFile": "Ir para arquivo",
+      "menu": "Abrir o menu",
+      "escape": "Desistir do recorte, limpar o filtro"
     }
   },
   "detail": {
@@ -583,6 +1347,10 @@
         "appearance": {
           "label": "Aparência",
           "help": "Tema, tamanho e ícones"
+        },
+        "code_editor": {
+          "label": "Editor de código",
+          "help": "Preferências de edição e autocompletar com IA"
         }
       },
       "page": {
@@ -616,7 +1384,7 @@
         },
         "automations": {
           "title": "Automações",
-          "purpose": "Escolha o que acontece automaticamente enquanto você programa: saudações, hooks, acesso online, ações sociais e o fluxo do YouTube."
+          "purpose": "Escolha o que acontece automaticamente: a saudação, o que o Assistente sabe sobre você, hooks, acesso online, ações sociais e o pipeline do YouTube."
         },
         "messages": {
           "title": "Mensagens",
@@ -629,6 +1397,10 @@
         "appearance": {
           "title": "Aparência",
           "purpose": "Escolha um tema e ajuste o tamanho, as cores e os ícones de arquivos da interface."
+        },
+        "code_editor": {
+          "title": "Editor de código",
+          "purpose": "Configure o editor que abre os arquivos do Explorador de arquivos: como o texto é exibido, indentado e salvo, e o autocompletar com IA."
         }
       },
       "section": {
@@ -656,12 +1428,12 @@
         },
         "automations": {
           "greetings": {
-            "title": "Saudações",
-            "purpose": "O que cada assistente diz ao iniciar uma sessão. Ative uma saudação para editá-la."
+            "title": "Saudação",
+            "purpose": "Uma saudação para todos os agentes. Quando você volta e abre uma nova sessão, o SynaBun diz em uma ou duas frases onde você parou e o que aconteceu enquanto esteve fora."
           },
           "automation_behavior": {
             "title": "Comportamento das automações",
-            "purpose": "O que o SynaBun faz sozinho enquanto o Claude Code trabalha: lembrar, aprender e proteger."
+            "purpose": "O que o Assistente sabe sobre você e traz à tona sozinho, em qualquer modelo. Os hooks antigos do Claude Code ficam abaixo."
           },
           "online_access": {
             "title": "Acesso online",
@@ -945,6 +1717,16 @@
             "title": "Idioma",
             "purpose": "O idioma que o SynaBun usa."
           }
+        },
+        "code_editor": {
+          "ai_autocomplete": {
+            "title": "Autocompletar com IA",
+            "purpose": "Sugestões em cinza depois do cursor, que Tab aceita. Desligado até você ligar."
+          },
+          "editing": {
+            "title": "Edição",
+            "purpose": "Como o editor exibe, indenta e salva o texto. O menu Exibir do editor altera as mesmas configurações."
+          }
         }
       },
       "common": {
@@ -1014,90 +1796,6 @@
           "label": "Fazer backup agora",
           "help": "Cria um backup imediatamente na pasta escolhida."
         },
-        "aut001": {
-          "label": "Mostrar saudação do Claude Code",
-          "help": "Ativa ou desativa a saudação do Claude Code. Ative para editá-la."
-        },
-        "aut002": {
-          "label": "Saudação para",
-          "help": "Cada projeto pode ter sua própria saudação. O padrão é usado quando o projeto não tem uma."
-        },
-        "aut003": {
-          "label": "Texto da saudação",
-          "help": "O que o assistente diz primeiro. Palavras entre {braces} são preenchidas para você."
-        },
-        "aut004": {
-          "label": "Mostrar lembretes",
-          "help": "Lista seus lembretes abaixo da saudação."
-        },
-        "aut005": {
-          "label": "Mostrar última sessão",
-          "help": "Adiciona uma linha sobre o que a última sessão fez."
-        },
-        "aut009": {
-          "label": "Adicionar lembrete",
-          "help": "Adiciona uma linha de lembrete vazia."
-        },
-        "aut010": {
-          "label": "Salvar saudação",
-          "help": "Salva a saudação do projeto escolhido acima."
-        },
-        "aut011": {
-          "label": "Mostrar saudação do Codex",
-          "help": "Ativa ou desativa a saudação do Codex. Ative para editá-la."
-        },
-        "aut012": {
-          "label": "Saudação para",
-          "help": "Cada projeto pode ter sua própria saudação. O padrão é usado quando o projeto não tem uma."
-        },
-        "aut013": {
-          "label": "Texto da saudação",
-          "help": "O que o assistente diz primeiro. Palavras entre {braces} são preenchidas para você."
-        },
-        "aut014": {
-          "label": "Mostrar lembretes",
-          "help": "Lista seus lembretes abaixo da saudação."
-        },
-        "aut015": {
-          "label": "Mostrar última sessão",
-          "help": "Adiciona uma linha sobre o que a última sessão fez."
-        },
-        "aut016": {
-          "label": "Adicionar lembrete",
-          "help": "Adiciona uma linha de lembrete vazia."
-        },
-        "aut017": {
-          "label": "Salvar saudação",
-          "help": "Salva a saudação do projeto escolhido acima."
-        },
-        "aut018": {
-          "label": "Mostrar saudação do OpenCode",
-          "help": "Ativa ou desativa a saudação do OpenCode. Ative para editá-la."
-        },
-        "aut019": {
-          "label": "Saudação para",
-          "help": "Cada projeto pode ter sua própria saudação. O padrão é usado quando o projeto não tem uma."
-        },
-        "aut020": {
-          "label": "Texto da saudação",
-          "help": "O que o assistente diz primeiro. Palavras entre {braces} são preenchidas para você."
-        },
-        "aut021": {
-          "label": "Mostrar lembretes",
-          "help": "Lista seus lembretes abaixo da saudação."
-        },
-        "aut022": {
-          "label": "Mostrar última sessão",
-          "help": "Adiciona uma linha sobre o que a última sessão fez."
-        },
-        "aut026": {
-          "label": "Adicionar lembrete",
-          "help": "Adiciona uma linha de lembrete vazia."
-        },
-        "aut027": {
-          "label": "Salvar saudação",
-          "help": "Salva a saudação do projeto escolhido acima."
-        },
         "aut028": {
           "label": "Início da sessão",
           "help": "Carrega memória e contexto ao iniciar uma nova sessão."
@@ -1156,7 +1854,7 @@
         },
         "aut042": {
           "label": "Criar chave de acesso",
-          "help": "Cria uma chave que protege o endereço público. A chave existente para de funcionar."
+          "help": "Cria a chave com que o MCP remoto é acessado. A chave existente para de funcionar."
         },
         "aut043": {
           "label": "Copiar chave de acesso",
@@ -1164,7 +1862,7 @@
         },
         "aut044": {
           "label": "Revogar",
-          "help": "Exclui a chave. O endereço público passa a aceitar qualquer pessoa."
+          "help": "Exclui a chave. As conexões que a usam param de funcionar."
         },
         "aut045": {
           "label": "Conectar OpenClaw",
@@ -2382,10 +3080,6 @@
           "label": "Compatível com",
           "help": "Quais assistentes esta parte do SynaBun suporta."
         },
-        "aut047": {
-          "label": "Placeholders disponíveis",
-          "help": "Mostra as palavras entre {braces} e o que cada uma representa."
-        },
         "aut048": {
           "label": "Estado do endereço público",
           "help": "Se o endereço público está em execução e qual é o endereço."
@@ -2557,6 +3251,130 @@
         "app001": {
           "label": "Idioma",
           "help": "O SynaBun recarrega para aplicar o idioma."
+        },
+        "aut053": {
+          "label": "Conhecimento sobre você",
+          "help": "Começa cada conversa do Assistente com um resumo curto do que o SynaBun aprendeu sobre como você trabalha e continua aprendendo com o que você digita. O aprendizado requer o Jev. Desativado: sem resumo e nada novo é aprendido; o que já está na Memória permanece."
+        },
+        "aut054": {
+          "label": "Lembretes de interações recentes",
+          "help": "Lembra o Assistente da última conversa, do que ficou em aberto e do que mudou desde então. Desativado: sem lembretes, e nenhum registro da conversa é guardado para a próxima."
+        },
+        "aut055": {
+          "label": "Mostrar o rastro",
+          "help": "Adiciona uma linha abaixo de cada resposta no painel do Assistente: o que foi dito ao modelo, o que foi retido e o que foi aprendido. Requer uma das duas opções acima. Desativado: as novas respostas ficam sem a linha; as duas opções continuam funcionando."
+        },
+        "aut056": {
+          "label": "O que uma nova conversa sabe sobre você",
+          "help": "O resumo com que toda nova conversa do Assistente começa. Selecione uma linha para abrir a memória e corrigi-la."
+        },
+        "aut057": {
+          "label": "Ver tudo na Memória",
+          "help": "Abre o explorador de memórias em tudo o que o SynaBun sabe sobre você."
+        },
+        "aut058": {
+          "label": "Me cumprimentar quando eu voltar",
+          "help": "No Assistente, nos painéis do Claude Code, Codex e OpenCode e em uma sessão do Claude Code no terminal: depois de uma hora fora, e só quando há algo novo a dizer. O SynaBun escreve antes, então o modelo da própria sessão não gasta nada com isso. Desligado: toda sessão abre em silêncio."
+        },
+        "aut059": {
+          "label": "Como uma nova sessão abriria",
+          "help": "Feita a partir das suas conversas e sessões recentes, das execuções que você despachou, dos agendamentos que não terminaram e do que o SynaBun sabe sobre você. Abra “Com base em” para ver os registros e quanto a frase custou."
+        },
+        "aut060": {
+          "label": "Escrever agora",
+          "help": "Pede a frase ao escritor agora, sem esperar o segundo plano: uma chamada pequena no modelo Claude mais barato."
+        },
+        "edt001": {
+          "label": "Sugerir código enquanto digito",
+          "help": "Cada vez que você para de digitar, o código ao redor do cursor é enviado ao modelo escolhido abaixo, e a sugestão aparece como texto cinza. Os arquivos da lista “Nunca enviados” não são enviados. Desligado: nada é enviado e nenhum modelo é consultado."
+        },
+        "edt002": {
+          "label": "Consultar",
+          "help": "Os modelos do OpenCode são consultados por um pequeno servidor OpenCode próprio, iniciado quando a primeira sugestão é necessária e encerrado após dez minutos sem uso. Um endpoint seu é um Ollama local ou qualquer endereço que fale o protocolo da OpenAI."
+        },
+        "edt003": {
+          "label": "Modelo",
+          "help": "Os modelos do OpenCode conectados que você não ocultou, os rápidos primeiro. Testar envia um exemplo fixo, nunca o seu código."
+        },
+        "edt004": {
+          "label": "Encontrar o mais rápido",
+          "help": "Envia o exemplo a até quatro modelos rápidos e seleciona o mais veloz. Leva alguns segundos."
+        },
+        "edt005": {
+          "label": "Tipo de endpoint",
+          "help": "Ollama, ou um servidor que fale o protocolo de completions ou de chat da OpenAI."
+        },
+        "edt006": {
+          "label": "Endereço",
+          "help": "Para o Ollama, o próprio servidor. Para um servidor compatível com a OpenAI, o endereço completo para onde o pedido é enviado."
+        },
+        "edt007": {
+          "label": "Nome do modelo",
+          "help": "O nome pelo qual o endpoint conhece o modelo."
+        },
+        "edt008": {
+          "label": "Formato do pedido",
+          "help": "Preenchimento envia o texto antes e depois do cursor, para modelos treinados em preencher lacunas. Chat envia uma mensagem, para qualquer modelo de chat."
+        },
+        "edt009": {
+          "label": "Chave de API",
+          "help": "Enviada ao endpoint como bearer token. Fica no arquivo .env do SynaBun: nunca é mostrada de novo nem devolvida a esta página."
+        },
+        "edt010": {
+          "label": "Testar endpoint",
+          "help": "Envia um exemplo fixo ao endpoint, nunca o seu código."
+        },
+        "edt011": {
+          "label": "Nunca enviados",
+          "help": "Nomes de arquivo que o autocompletar com IA nunca lê, um padrão por linha; * vale por qualquer sequência de caracteres. Texto que contém uma chave privada também não é enviado, seja qual for o nome do arquivo."
+        },
+        "edt012": {
+          "label": "Restaurar a lista padrão",
+          "help": "Repõe a lista que vem com o SynaBun: arquivos de ambiente, chaves, certificados e arquivos de credenciais."
+        },
+        "edt013": {
+          "label": "Hoje",
+          "help": "Pedidos enviados a um modelo hoje, os tokens deles e quantas sugestões você aceitou."
+        },
+        "edt014": {
+          "label": "Tamanho do texto",
+          "help": "O tamanho do texto no editor, de 10 a 18 px."
+        },
+        "edt015": {
+          "label": "Ligaduras",
+          "help": "Desenha pares de caracteres como => e != como um único glifo, nas fontes que os têm."
+        },
+        "edt016": {
+          "label": "Quebrar linhas longas",
+          "help": "Uma linha mais larga que o editor continua na linha de baixo em vez de rolar para o lado."
+        },
+        "edt017": {
+          "label": "Minimapa",
+          "help": "Uma visão geral do arquivo na borda direita do editor. Ele não aparece quando o editor tem menos de 760 px de largura nem em arquivos com mais de 2 MB."
+        },
+        "edt018": {
+          "label": "Guias de indentação",
+          "help": "Linhas verticais finas que mostram cada nível de indentação."
+        },
+        "edt019": {
+          "label": "Mostrar espaços em branco",
+          "help": "Desenha espaços e tabulações como marcas discretas: em lugar nenhum, no texto selecionado ou em todo o texto."
+        },
+        "edt020": {
+          "label": "Indentar com",
+          "help": "O que a tecla Tab insere. Detectar segue o arquivo que está aberto."
+        },
+        "edt021": {
+          "label": "Tamanho da tabulação",
+          "help": "A largura com que uma tabulação é desenhada e quantos espaços tem um nível de indentação. Detectar segue o arquivo que está aberto."
+        },
+        "edt022": {
+          "label": "Remover espaços no fim das linhas ao salvar",
+          "help": "Remove espaços e tabulações do fim de cada linha quando um arquivo é salvo. Arquivos Markdown ficam como estão: neles, dois espaços no fim de uma linha são uma quebra de linha."
+        },
+        "edt023": {
+          "label": "Terminar arquivos com uma quebra de linha ao salvar",
+          "help": "Quando um arquivo é salvo, a quebra de linha final que faltar é adicionada e as linhas vazias depois da última linha de texto são removidas."
         }
       },
       "pane": {
@@ -3383,34 +4201,15 @@
         "failed": "com falha"
       },
       "hooks": {
-        "greeting": {
-          "title": {
-            "cc": "Saudação do Claude Code",
-            "codex": "Saudação do painel do Codex",
-            "opencode": "Saudação do painel do OpenCode"
-          },
-          "purpose": {
-            "cc": "O que o Claude Code diz ao iniciar uma sessão.",
-            "codex": "Apenas para o painel do Codex. É mantida separadamente da saudação do Claude.",
-            "opencode": "Apenas para o painel do OpenCode. É mantida separadamente das demais."
-          },
-          "global": "Todos os projetos (padrão)",
-          "templatePlaceholder": "{time_greeting}! Trabalhando em **{project_label}** (branch {branch}). {date}.",
-          "placeholder": "Marcador de posição",
-          "showsAs": "Exibido como",
-          "example": "Exemplo",
-          "reminders": "Lembretes",
-          "remindersHelp": "Comandos curtos exibidos abaixo da saudação, como um script de inicialização. Arraste uma linha para reordenar."
-        },
-        "claudeOnly": "Aplicam-se ao Claude Code. Os painéis do Codex e do OpenCode não os leem.",
+        "claudeOnly": "Aplicam-se às sessões do Claude Code que você mesmo executa. O Assistente usa as três opções acima, em qualquer modelo.",
         "ul": {
           "every": "Refletir a cada",
           "interactions": "interações",
           "max": "no máximo",
           "perSession": "vezes por sessão"
         },
-        "hooksTitle": "Hooks",
-        "hooksPurpose": "Os momentos de uma sessão do Claude Code em que o SynaBun intervém. Deixe ativados, a menos que esteja investigando um problema.",
+        "hooksTitle": "Hooks para o Claude Code fora do Assistente",
+        "hooksPurpose": "Para sessões do Claude Code fora do Assistente: comportamentos de memória e os momentos em que o SynaBun intervém. Mantenha-os ativados, a menos que esteja investigando um problema.",
         "compat": {
           "claude": "Compatível com Claude",
           "gemini": "Compatível com Gemini",
@@ -3425,6 +4224,7 @@
         "apikey": {
           "title": "Chave de acesso",
           "none": "Sem chave: qualquer pessoa com o endereço pode conectar",
+          "noneClosed": "Sem chave: o MCP não pode ser acessado de fora",
           "saveNow": "Copie agora. Não será exibida novamente."
         },
         "connectorsHint": "Em {link}, abra Conectores e adicione o endereço de conexão.",
@@ -3454,14 +4254,7 @@
         "active": "Ativo",
         "failedToToggleHook": "Falha ao alternar hook",
         "failedToToggleFeature": "Falha ao alternar recurso",
-        "failedToToggleCodexGreeting": "Falha ao alternar saudação do Codex",
-        "failedToToggleOpencodeGreeting": "Falha ao alternar saudação do OpenCode",
-        "dragToReorder": "Arrastar para reordenar",
-        "label": "Rótulo",
-        "command": "Comando",
-        "remove": "Remover",
         "failedToSave": "Falha ao salvar",
-        "greetingConfigSaved": "Configuração da saudação salva",
         "dev": "dev",
         "skillUninstalledRestartToApply": "Skill desinstalada — reinicie {runtime} para aplicar",
         "skillInstalledRestartToApply": "Skill instalada — reinicie {runtime} para aplicar",
@@ -3482,12 +4275,83 @@
         "failedToGenerateKey": "Falha ao gerar chave",
         "copyKey": "Copiar chave",
         "revokeThisApiKeyTheMcp": "Revogar esta chave de API? O endpoint MCP ficará aberto.",
+        "revokeKeyClosed": "Revogar esta chave de acesso? Nada alcança o MCP de fora até você criar uma nova.",
         "noKeyConfiguredTunnelIsOpen": "Nenhuma chave configurada - o túnel está aberto",
         "generateKey": "Gerar chave",
-        "goodMorning": "Bom dia",
-        "goodAfternoon": "Boa tarde",
-        "goodEvening": "Boa noite",
-        "failed2": "Falhou: {message}"
+        "failed2": "Falhou: {message}",
+        "uc": {
+          "restart": "Reinicie o SynaBun para usar estas opções: o servidor em execução foi iniciado antes de elas existirem.",
+          "failed": "O Assistente está funcionando sem estas opções: esta parte do SynaBun não iniciou ({reason}). Reinicie o SynaBun; se acontecer de novo, o log do servidor mostra o motivo.",
+          "failedNoReason": "O Assistente está funcionando sem estas opções: esta parte do SynaBun não iniciou. Reinicie o SynaBun; se acontecer de novo, o log do servidor mostra o motivo.",
+          "unreadable": "O SynaBun não conseguiu ler estas opções ({reason}). Nada foi alterado. Feche os Ajustes e abra de novo.",
+          "unreadableNoReason": "O SynaBun não conseguiu ler estas opções. Nada foi alterado. Feche os Ajustes e abra de novo.",
+          "applies": "A alteração vale a partir da sua próxima mensagem ao Assistente.",
+          "noStore": "A memória não está disponível neste servidor, então isto não faz nada por enquanto.",
+          "tokens": "{tokens} de {max} tokens",
+          "openMemory": "Abrir esta memória",
+          "seed": "de uma nota anterior",
+          "empty": "Nada aprendido ainda. A lista se preenche conforme você diz ao Assistente como quer que as coisas sejam feitas.",
+          "omitted": "Outros {n} não couberam e só aparecem quando forem relevantes.",
+          "learn": {
+            "killSwitch": "Sem aprender no momento: as avaliações inteligentes estão desativadas neste servidor (SYNABUN_TYPESAFE=off). O que já se sabe continua sendo usado.",
+            "masterOff": "Sem aprender no momento: o {page} está desativado. O que já se sabe continua sendo usado.",
+            "noKey": "Sem aprender no momento: o {page} está sem chave de API. O que já se sabe continua sendo usado.",
+            "surfaceOff": "Sem aprender no momento: “User learning” está desativado no {page}. O que já se sabe continua sendo usado.",
+            "waiting": "Sem aprender por um instante: o {page} precisou esperar antes do próximo pedido. O que já se sabe continua sendo usado.",
+            "unavailable": "Sem aprender no momento: o {page} não está disponível. O que já se sabe continua sendo usado."
+          },
+          "openPage": "Abrir {page}",
+          "writer": {
+            "missing": "As novas afirmações ficam com a sua própria frase: o redator de afirmações não está disponível neste servidor.",
+            "failed": "A última afirmação ficou com a sua própria frase: o redator não conseguiu rodar ({reason}). Ele usa o seu login do Claude Code.",
+            "failedNoReason": "A última afirmação ficou com a sua própria frase: o redator não conseguiu rodar. Ele usa o seu login do Claude Code."
+          },
+          "trace": {
+            "nothing": "Nada para mostrar enquanto as duas opções acima estiverem desativadas."
+          },
+          "off": {
+            "note": "Nada: “Conhecimento sobre você” está desativado, então uma nova conversa começa sem resumo. O que o SynaBun aprendeu continua na Memória."
+          },
+          "save": {
+            "on": "Não foi possível ativar “{name}”: {reason}. Nada foi alterado.",
+            "off": "Não foi possível desativar “{name}”: {reason}. Nada foi alterado.",
+            "noAnswer": "o SynaBun não respondeu",
+            "oldServer": "o servidor em execução ainda não tem esta opção"
+          }
+        },
+        "greet": {
+          "state": {
+            "oldServer": "Reinicie o SynaBun para usar isto. O servidor em execução foi iniciado antes de a saudação existir.",
+            "failed": "A saudação não iniciou: {reason}. As sessões abrem em silêncio até isso ser corrigido e o SynaBun reiniciado.",
+            "failedUnknown": "A saudação não iniciou. As sessões abrem em silêncio até isso ser corrigido e o SynaBun reiniciado.",
+            "unreadable": "Não foi possível ler o ajuste da saudação ({reason}).",
+            "unreadableUnknown": "Não foi possível ler o ajuste da saudação.",
+            "killed": "Desligada por SYNABUN_GREETING=off no ambiente do servidor. Esta chave não faz nada até isso ser removido e o SynaBun reiniciado."
+          },
+          "note": {
+            "noWriter": "Sem login do Claude para escrever: a saudação é montada a partir dos registros, sem modelo."
+          },
+          "preview": {
+            "loading": "Lendo seus registros…",
+            "now": "Uma nova sessão em {project} abriria com isto agora:",
+            "recent": "Você esteve aqui há {time}, então uma nova sessão em {project} abre em silêncio. Depois de {gap} fora ela diria:",
+            "moment": "um instante",
+            "nothingNew": "A última saudação em {project} já disse isto, então uma nova sessão abre em silêncio até algo mudar:",
+            "off": "Desligada. Ligada, uma nova sessão em {project} abriria com:",
+            "firstSession": "Nada registrado em {project} ainda. Uma primeira sessão abre em silêncio.",
+            "nothingToSay": "Nada a dizer em {project} agora. Uma nova sessão abre em silêncio.",
+            "error": "Não foi possível montar a prévia ({reason}).",
+            "spend": "Chamadas ao escritor hoje: {calls} de {cap} · {cost}",
+            "spendNone": "Nenhuma chamada ao escritor hoje.",
+            "writing": "Escrevendo…"
+          },
+          "save": {
+            "failed": "Não foi possível salvar: {reason}. A chave voltou para onde estava.",
+            "oldServer": "Não foi possível salvar: o servidor em execução ainda não tem a saudação. Reinicie o SynaBun.",
+            "forbidden": "Não foi possível salvar: esta janela não tem permissão para alterar ajustes.",
+            "noAnswer": "Não foi possível salvar: o servidor não respondeu. A chave voltou para onde estava."
+          }
+        }
       },
       "discord": {
         "tokenHelp": "Crie um bot em {link} e ative suas intents Message Content, Server Members e Presence.",
@@ -4733,10 +5597,11 @@
             "browser": "chrome, chromium, perfil, cookies, user agent, proxy, viewport, headless",
             "connected_tools": "mcp, servidor, plugin, ferramentas, morelogin, perfil, extensão",
             "tool_access": "skills, comandos de barra, permissões, permitir, negar, aprovar",
-            "automations": "hooks, saudação, túnel, tunnel, remoto, cloudflare, redes sociais, youtube",
+            "automations": "assistente, conhecimento, hooks, saudação, túnel, tunnel, remoto, cloudflare, redes sociais, youtube",
             "messages": "whatsapp, discord, celular, telefone, chat, bot, mensagens",
             "notifications": "alertas, som, volume, banner, toast, silenciar, notificação do sistema",
-            "appearance": "tema, modo escuro, dark mode, skin, cor, fonte, tamanho do texto, idioma, ícones, zoom, visual"
+            "appearance": "tema, modo escuro, dark mode, skin, cor, fonte, tamanho do texto, idioma, ícones, zoom, visual",
+            "code_editor": "editor, código, fonte, tamanho do texto, quebra de linha, minimapa, espaços em branco, indentação, tabulações, autocompletar, completar, sugestões, copilot, texto fantasma, inline, ia, modelo, ollama, arquivo"
           },
           "section": {
             "ai_connections": {
@@ -4796,8 +5661,8 @@
               "tool_permissions": "permitir, aprovar, aprovação automática, perguntar"
             },
             "automations": {
-              "greetings": "boas-vindas, início da sessão, lembrete, olá, modelo",
-              "automation_behavior": "hooks, lembrar, recall, aprendizado, subagentes, compactação, proteção",
+              "greetings": "boas-vindas, olá, retorno, voltar, de volta, ausência, onde parei, última sessão, o que aconteceu",
+              "automation_behavior": "assistente, conhecimento, sobre mim, contexto do usuário, preferências, resumo, lembretes, rastro, hooks, lembrar, recall, aprendizado, subagentes, compactação, proteção",
               "online_access": "túnel, tunnel, cloudflare, remoto, url pública, chave de acesso, api key, claude web, openclaw, ponte",
               "social_platform_access": "redes sociais, twitter, x, facebook, instagram, linkedin, tiktok, permissões",
               "youtube_pipeline": "trailer, enviar, upload, baixar, download, oauth, client id, steam, canal, yt-dlp"
@@ -4833,6 +5698,10 @@
               "advanced_visual_tuning": "desfoque, blur, transparência, opacidade, sombra, raio, cantos, fonte, vidro",
               "file_icons": "explorador de arquivos, extensão, svg, ícone personalizado",
               "d2_graph": "2d, grafo, espaçamento, brilho, cartões"
+            },
+            "code_editor": {
+              "ai_autocomplete": "autocompletar, completar, sugestões, copilot, texto fantasma, inline, tab, modelo, opencode, ollama, openai, endpoint, chave de api, mais rápido, latência, arquivos excluídos, segredos, env",
+              "editing": "tamanho da fonte, tamanho do texto, ligaduras, quebra de linha, quebrar linhas, minimapa, guias de indentação, espaços em branco, espaços, tabulações, tamanho da tabulação, indentação, remover espaços no fim, quebra de linha final, ao salvar"
             }
           },
           "control": {
@@ -4861,6 +5730,99 @@
             "ico001": "filtro, extensão, buscar ícones",
             "mcp007": "github, json, colar, instalar servidor",
             "ml007": "chave de api, api key, app id, credenciais"
+          }
+        }
+      },
+      "code_editor": {
+        "state": {
+          "oldServer": "Reinicie o SynaBun para usar isto: o servidor em execução foi iniciado antes de o autocompletar com IA existir.",
+          "unreadable": "O SynaBun não conseguiu ler estas configurações ({reason}). Nada foi alterado. Feche as Configurações e abra de novo.",
+          "unreadableNoReason": "O SynaBun não conseguiu ler estas configurações. Nada foi alterado. Feche as Configurações e abra de novo."
+        },
+        "pill": {
+          "on": "Ligado",
+          "off": "Desligado",
+          "setup": "Falta um modelo",
+          "unavailable": "Indisponível"
+        },
+        "engine": {
+          "opencode": "Modelos do OpenCode",
+          "endpoint": "Um endpoint meu"
+        },
+        "kind": {
+          "ollama": "Ollama",
+          "openai": "Compatível com OpenAI"
+        },
+        "shape": {
+          "fim": "Preenchimento",
+          "chat": "Chat"
+        },
+        "models": {
+          "loading": "Lendo os modelos…",
+          "none": "Nenhum modelo conectado. Entre em um provedor em {page}.",
+          "unavailable": "O OpenCode não está em execução, então os modelos dele não podem ser listados.",
+          "start": "Iniciar e listar os modelos",
+          "fast": "rápido",
+          "free": "grátis",
+          "price": "${input} entrada · ${output} saída por milhão de tokens",
+          "noPrice": "preço não informado",
+          "notListed": "selecionado, mas não está mais na lista",
+          "pick": "Usar {model}",
+          "test": "Testar",
+          "testNamed": "Testar {model}"
+        },
+        "test": {
+          "running": "Testando…",
+          "ok": "{time} · {input} tokens de entrada, {output} de saída · sugeriu: {sample}",
+          "okNoTokens": "{time} · sugeriu: {sample}",
+          "empty": "Respondeu em {time}, sem nada a sugerir.",
+          "failed": "Falhou: {reason}",
+          "noAnswer": "O SynaBun não respondeu"
+        },
+        "fastest": {
+          "running": "Testando os modelos rápidos…",
+          "found": "Mais rápido: {model}, {time}. Selecionado.",
+          "none": "Nenhum modelo respondeu a tempo. Nada foi alterado.",
+          "noCandidates": "Nenhum modelo rápido conectado. Escolha um na lista."
+        },
+        "key": {
+          "set": "Há uma chave definida",
+          "notSet": "Nenhuma chave definida",
+          "placeholder": "Cole uma chave",
+          "placeholderReplace": "Cole uma chave para substituir a que está definida",
+          "save": "Salvar chave",
+          "remove": "Remover chave",
+          "saved": "Chave salva.",
+          "removed": "Chave removida."
+        },
+        "url": {
+          "invalid": "Um endereço começa com http:// ou https://. Nada foi alterado.",
+          "placeholderOllama": "http://localhost:11434",
+          "placeholderOpenai": "https://api.example.com/v1/completions"
+        },
+        "save": {
+          "failed": "Não foi possível salvar: {reason}. Nada foi alterado.",
+          "oldServer": "o servidor em execução ainda não tem esta configuração",
+          "noAnswer": "O SynaBun não respondeu"
+        },
+        "usage": {
+          "today": "{requests} pedidos · {input} tokens de entrada, {output} de saída · {accepted} de {shown} sugestões aceitas",
+          "none": "Nenhum pedido hoje."
+        },
+        "exclude": {
+          "count": "{n} padrões",
+          "empty": "A lista está vazia: qualquer arquivo pode ser enviado."
+        },
+        "editing": {
+          "oldServer": "Reinicie o SynaBun para usar isto: o servidor em execução foi iniciado antes de o editor guardar suas configurações. Até lá, o menu Exibir do editor as altera para a página aberta.",
+          "fontSize": "{size} px",
+          "detect": "Detectar",
+          "spaces": "Espaços",
+          "tabs": "Tabulações",
+          "whitespace": {
+            "none": "Ocultos",
+            "selection": "Na seleção",
+            "all": "Em todo o texto"
           }
         }
       }
@@ -5107,6 +6069,19 @@
     "toggleViz": "Modo de foco (V)",
     "fullscreen": "Tela cheia (F11)",
     "toggleExplorer": "Alternar explorador (F)"
+  },
+  "toolbar": {
+    "hideTools": "Ocultar ferramentas do workspace",
+    "showTools": "Mostrar ferramentas do workspace",
+    "workspaceNone": "Workspaces: nenhum carregado",
+    "workspaceActive": "Workspace: {name}",
+    "quickSave": "Salvar agora",
+    "memoryExplorer": "Memory Explorer",
+    "fileExplorer": "Explorador de Arquivos",
+    "share": "Compartilhar / Convidar",
+    "keybinds": "Keybinds",
+    "snapToGrid": "Alinhar à grade",
+    "tileTerminals": "Organizar terminais lado a lado"
   },
   "assistant": {
     "usage": {
@@ -5680,7 +6655,10 @@
       "suggestSchedule": "Agendar …",
       "templateSchedule": "Agendar {caret}",
       "suggestRemember": "Lembrar …",
-      "templateRemember": "Lembrar {caret}"
+      "templateRemember": "Lembrar {caret}",
+      "project": "Projeto",
+      "chooseProject": "Escolha um projeto",
+      "projectAria": "Escolha um projeto (atual: {project})"
     },
     "status": {
       "aborted": "Interrompido.",
@@ -5691,6 +6669,7 @@
       "dispatchFailed": "Falha ao despachar",
       "mode": "Modo de permissão: {mode}",
       "queued": "Na posição {position} da fila (limite de simultaneidade).",
+      "renameFailed": "Não foi possível salvar o nome “{name}”. A sessão continua se chamando “{previous}”.",
       "resuming": "retomando {id}",
       "rewound": "Arquivos restaurados ao ponto de controle",
       "rewindFailed": "Falha ao restaurar",
@@ -5726,6 +6705,127 @@
     "tool": {
       "done": "concluídos",
       "error": "erro"
+    },
+    "automation": {
+      "title": "Automação",
+      "sum": {
+        "turn": "{n} tok neste turno",
+        "standing": "{n} fixos",
+        "none": "nada injetado"
+      },
+      "state": {
+        "waiting": "aprende após a resposta",
+        "running": "aprendendo…",
+        "learned": "aprendeu 1 coisa",
+        "confirmed": "confirmou 1 coisa",
+        "replaced": "substituiu 1 coisa"
+      },
+      "group": {
+        "injected": "Injetado",
+        "withheld": "Retido",
+        "learning": "Aprendizado",
+        "session": "Esta conversa"
+      },
+      "tier": {
+        "digest": "Resumo de conhecimento",
+        "last-thread": "Última conversa",
+        "environment": "Ambiente",
+        "open-item": "Item em aberto",
+        "cue": "Dica de conhecimento",
+        "delta": "Conhecimento novo",
+        "recall": "Memórias relacionadas",
+        "knowledge": "Conhecimento sobre você",
+        "nudges": "Lembretes de interações recentes",
+        "greeting": "Saudação",
+        "turn": "Notas do turno"
+      },
+      "tok": "{n} tok",
+      "meta": {
+        "standing": "slot de sistema · congelado às {time}",
+        "standingRef": "já está no slot de sistema, não foi reenviado",
+        "memories": "{n} memórias",
+        "memory": "1 memória",
+        "alreadyPresent": "já fornecidas antes",
+        "greetingWriter": "dita ao abrir a sessão · escrita antes por {model}",
+        "greetingFallback": "dita ao abrir a sessão · a partir dos registros, sem modelo",
+        "budget": "orçamento {used}/{max} tok"
+      },
+      "reason": {
+        "layer-off": "desativado nas Configurações",
+        "nothing-known": "nada aprendido ainda",
+        "no-recent-thread": "nenhuma conversa recente para mencionar",
+        "in-greeting": "já dito na saudação",
+        "budget": "acima do orçamento do turno, fica para um próximo",
+        "not-ranked": "o Jev não classificou como relevante",
+        "in-digest": "já está no resumo",
+        "already-told": "já foi dito nesta conversa",
+        "replaced": "substituído por uma afirmação mais nova",
+        "one-per-turn": "uma dica por turno",
+        "unusable": "sem afirmação utilizável",
+        "not-delivered": "o turno terminou antes que as notas pudessem ser entregues",
+        "trivial": "prompt trivial",
+        "pattern": "um comando ou uma confirmação",
+        "judged": "Jev: a memória não mudaria a resposta",
+        "nothing-retrieved": "nada relevante encontrado",
+        "disabled": "a busca automática está desativada",
+        "error": "a busca falhou",
+        "system": "não é um prompt seu"
+      },
+      "learn": {
+        "waiting": "Suas palavras são avaliadas quando a resposta terminar.",
+        "running": "O Jev está lendo o que você digitou…",
+        "skipped": "Não avaliado: {reason}.",
+        "cues": "Palavras-chave: {cues}",
+        "judged": "Jev: sinal duradouro {p} · {facet} · {scope}",
+        "matched": "Corresponde a: {statement}",
+        "contradicts": "Contradiz: {statement}",
+        "created": "Aprendido: {statement}",
+        "updated": "Confirmado (visto {n}×): {statement}",
+        "superseded": "Substituiu “{old}” por: {statement}",
+        "none": "Nada armazenado: {reason}.",
+        "evidence": "Evidência: “{quote}”",
+        "writer": "Escrito por {engine}",
+        "writerOwn": "Mantida a sua própria frase ({reason})",
+        "writerKept": "Afirmação mantida como estava",
+        "cost": "{requests} requisições ao Jev · {tokens} tok · {cost}",
+        "scope": {
+          "global": "todos os projetos"
+        }
+      },
+      "skip": {
+        "no-cue": "sem expressões como sempre / nunca / de agora em diante",
+        "trivial": "prompt trivial",
+        "short": "curto demais",
+        "origin": "não foi digitado por você",
+        "untrusted": "conteúdo encaminhado",
+        "no-typed-text": "apenas anexos ou texto colado",
+        "seen": "as mesmas palavras já foram avaliadas",
+        "gate-cap": "esta conversa atingiu o limite de avaliações",
+        "write-cap": "esta conversa atingiu o limite de fatos aprendidos",
+        "layer-off": "Conhecimento sobre você está desativado",
+        "system": "não é um prompt seu"
+      },
+      "none": {
+        "not-durable": "não é uma preferência duradoura",
+        "no-answer": "o Jev não respondeu",
+        "jev-unavailable": "o Jev está desativado ou sem chave",
+        "duplicate": "a memória já afirma isso",
+        "write-cap": "esta conversa atingiu o limite de fatos aprendidos",
+        "no-evidence": "nenhuma frase trazia isso",
+        "no-statement": "sem afirmação utilizável",
+        "write-error": "a gravação na memória falhou",
+        "no-store": "a memória não está disponível",
+        "error": "a etapa de aprendizado falhou"
+      },
+      "writer": {
+        "unverified": "a reescrita não pôde ser verificada",
+        "not-faithful": "a reescrita acrescentou algo",
+        "no-writer": "sem modelo redator",
+        "writer-cap": "limite do redator atingido",
+        "other": "o redator falhou"
+      },
+      "totals": "Avaliados {gate}/{gateCap} · redator {writer}/{writerCap} · aprendidos {writes}/{writeCap} · {tokens} tok injetados em {turns} turnos · {cost}",
+      "open": "Abrir memória"
     },
     "memories": {
       "recalled": "Consultou memórias",
@@ -6119,9 +7219,9 @@
         "always": "Sempre perguntar",
         "unsure": "Perguntar se houver dúvida",
         "never": "Nunca perguntar",
-        "alwaysDesc": "Mostrar o cartão de rota antes de cada tarefa.",
-        "unsureDesc": "{model} roteia sozinho quando há confiança; caso contrário, pergunta.",
-        "neverDesc": "{model} classifica cada pedido; suas rotas de tarefas são aplicadas sem perguntar."
+        "alwaysDesc": "Confirme cada tarefa que exige uma ação.",
+        "unsureDesc": "Confirme abaixo de {pct}% de confiança ou se o modelo não puder executar a tarefa.",
+        "neverDesc": "Execute as rotas salvas imediatamente; nos demais casos, o assistente escolhe."
       },
       "correction": {
         "remembered": "sua rota salva {to} substituiu {from}",
@@ -6141,7 +7241,7 @@
       "badge": {
         "suggested": "Sugerido",
         "suggestedPct": "Sugerido · {pct}",
-        "remembered": "Lembrado",
+        "remembered": "Sua escolha",
         "current": "Atual",
         "cheaper": "Mais barato",
         "stronger": "Mais capaz",
@@ -6161,7 +7261,7 @@
       },
       "decidedBy": "decidido por {model}",
       "youChose": "você escolheu",
-      "remembered": "lembrado",
+      "remembered": "sua escolha salva",
       "timeout": "padrão após tempo esgotado",
       "alternatives": "Também considerado",
       "corrections": "Ajustado",
@@ -6171,7 +7271,7 @@
       "chooseModel": "Onde executar?",
       "other": "Outro modelo…",
       "otherTitle": "Executar em outro modelo",
-      "rememberFor": "Lembrar para tarefas de {taskClass}",
+      "rememberFor": "Usar esta escolha em tarefas de {taskClass}",
       "rememberCurrent": "agora: {current}",
       "run": "Executar",
       "keys": "1–4 escolher · Enter executar · Esc cancelar",
@@ -6179,12 +7279,12 @@
       "cancelling": "Cancelando…",
       "expiresIn": "Expira em {time}",
       "invalid": "Essa rota está indisponível. Escolha outra opção.",
-      "brainDecides": "Deixar o cérebro decidir",
+      "brainDecides": "O assistente escolhe",
       "resetAll": "Redefinir tudo",
       "whenToAsk": "Quando perguntar",
       "taskRoutes": "Rotas de tarefas",
       "visionRow": "Capturas de tela e imagens",
-      "visionDesc": "Usado quando uma tarefa precisa de um modelo com visão.",
+      "visionDesc": "Alternativa para tarefas que precisam de um modelo capaz de ver imagens.",
       "noCapableModel": "Nenhum modelo do seu catálogo pode gerar {medium} ainda.",
       "incapableTip": "Este modelo não pode gerar {medium}, então a rota não é aplicada.",
       "noSeeingModel": "Nenhum modelo do seu catálogo pode ver imagens ainda.",
@@ -6195,25 +7295,202 @@
         "images": "imagens",
         "videos": "vídeos"
       },
-      "effortAuto": "esforço automático",
-      "effortAutoDefault": "automático ({effort})",
+      "effortAuto": "Padrão do modelo",
+      "effortAutoDefault": "Padrão · {effort}",
       "effortUnsupported": "{effort} · não compatível",
       "source": {
-        "yours": "sua escolha",
-        "remembered": "lembrado",
-        "default": "padrão",
-        "disabled": "desativado",
-        "incapable": "incapaz"
+        "yours": "Sua escolha",
+        "remembered": "Sua escolha",
+        "default": "O assistente escolhe",
+        "disabled": "Oculto",
+        "incapable": "Precisa de atenção"
       },
       "reset": "Redefinir {taskClass}",
-      "resetTip": "Voltar ao padrão",
+      "resetTip": "Deixar o assistente escolher",
       "reload": "Recarregar",
       "unavailable": "Roteamento de modelos ainda indisponível neste servidor.",
       "loadFailed": "Não foi possível carregar as rotas de modelos",
-      "conflict": "Alterado em outro lugar — recarregue",
+      "conflict": "As configurações mudaram em outra janela. Recarregue para manter suas alterações e conferir as escolhas atuais.",
       "invalidField": "Ajuste de roteamento inválido: {field}",
-      "saveFailed": "Não foi possível salvar",
-      "saved": "Rotas de modelos salvas."
+      "saveFailed": "Não foi possível salvar. Suas alterações foram mantidas; tente novamente.",
+      "saved": "Rotas de modelos salvas.",
+      "effortDefaultUnknown": "Padrão · desconhecido",
+      "effortNotSupported": "Sem suporte",
+      "resetChoice": "Redefinir",
+      "reloadModels": "Recarregar modelos",
+      "fieldLabel": "{task}: {field}, {value}",
+      "editorEffortAuto": "Auto",
+      "editorInConversation": "Esta conversa",
+      "editorUnusedValue": "—",
+      "editorSessionOverride": "Esta conversa usa outro padrão: {mode}.",
+      "notApplied": "Não aplicada",
+      "modeSummary": {
+        "always-ask": "Pergunta antes de cada tarefa. As rotas salvas em Nunca perguntar são oferecidas primeiro no cartão de rota.",
+        "ask-unsure": "Pergunta abaixo de {pct}% de confiança ou se um modelo não puder executar a tarefa. As rotas salvas em Nunca perguntar são oferecidas primeiro no cartão de rota.",
+        "never": "Executa as rotas salvas válidas imediatamente; o Assistente escolhe para as outras tarefas. O Chat continua no modelo atual."
+      },
+      "defaultScope": "Padrão das conversas. As escolhas por tarefa são compartilhadas entre todos os modos.",
+      "sessionOverride": "Esta conversa usa {mode}. Altere essa configuração no controle de rotas ou com /routes.",
+      "brainLabel": "Modelo que decide a rota: {model}",
+      "withChoice": "Com sua escolha",
+      "withoutChoice": "O assistente escolhe",
+      "effortNote": "O esforço padrão usa o padrão do modelo quando o modelo que decide a rota não propõe um nível.",
+      "workerOnly": "Somente agente",
+      "needsVision": "Precisa de visão",
+      "needs": {
+        "image": "Precisa gerar imagens",
+        "video": "Precisa gerar vídeos"
+      },
+      "chatCurrent": "Usa o modelo atual",
+      "workerChooses": "Agente · assistente escolhe",
+      "inConversation": "Na conversa",
+      "onWorker": "Agente {provider}",
+      "conversationDesc": "Continue esta conversa no modelo escolhido durante esta tarefa.",
+      "workerDesc": "Envie a tarefa para um agente e receba o resultado aqui.",
+      "otherProviderWorker": "Um modelo de outro provedor executa a tarefa em um agente.",
+      "chatInactive": "Conversas sem ações usam o modelo atual. A escolha salva para Chat não é aplicada em nenhum modo.",
+      "visionFallback": "Alternativa para visão, não uma classe de tarefa. Usada quando o modelo escolhido não consegue ver as imagens recebidas.",
+      "columns": {
+        "task": "Tarefa",
+        "model": "Modelo",
+        "effort": "Esforço",
+        "run": "Executa em",
+        "reset": "Redefinir"
+      },
+      "behavior": {
+        "always-ask": {
+          "saved": "Orienta a sugestão do modelo e aparece no cartão de rota.",
+          "unsaved": "O modelo sugere uma rota; você confirma antes da execução.",
+          "note": "Toda tarefa que exige uma ação pede sua escolha. Uma tarefa sem modelo capaz de executá-la não pode começar."
+        },
+        "ask-unsure": {
+          "saved": "Orienta a decisão do modelo. Ele pode escolher outro se a tarefa precisar.",
+          "unsaved": "O modelo escolhe quem executa a tarefa e onde ela acontece.",
+          "note": "Pede confirmação abaixo de {pct}% de confiança, ou se o modelo estiver ausente, desconhecido, desativado ou sem uma capacidade necessária. Sem modelo capaz, a tarefa não começa."
+        },
+        "never": {
+          "saved": "Executa imediatamente no modelo e no destino salvos, quando a escolha é válida.",
+          "unsaved": "O modelo escolhe uma rota e executa imediatamente.",
+          "note": "Escolhas desativadas ou incompatíveis são ignoradas. Modelos inválidos podem ser substituídos. Sem modelo capaz, a tarefa não começa."
+        }
+      },
+      "efforts": {
+        "none": "Nenhum",
+        "thinking": "Raciocínio",
+        "minimal": "Mínimo",
+        "low": "Baixo",
+        "medium": "Médio",
+        "high": "Alto",
+        "xhigh": "Muito alto",
+        "max": "Máximo",
+        "ultra": "Ultra"
+      },
+      "issue": {
+        "disabled": "Oculto em Modelos. Reative-o lá ou escolha outro modelo.",
+        "missing": "Não está na lista atual. Recarregue os modelos, escolha um da lista ou redefina esta escolha.",
+        "unavailable": "Modelo indisponível. Escolha um disponível ou redefina esta escolha.",
+        "blind": "Esta tarefa precisa de visão. Escolha um modelo que consiga ver imagens.",
+        "unknownVision": "Visão não confirmada. Escolha um modelo que reconheça imagens ou redefina esta escolha.",
+        "incapable": "Este modelo não gera {medium}. Escolha um que consiga.",
+        "effort": "O esforço salvo não é compatível. Escolha um nível aceito ou use o padrão.",
+        "unverified": "Não foi possível verificar este modelo. Recarregue os modelos antes de usar esta escolha."
+      },
+      "issueLabel": {
+        "disabled": "Oculto",
+        "missing": "Fora da lista",
+        "unavailable": "Indisponível",
+        "blind": "Precisa de visão",
+        "unknownVision": "Visão não confirmada",
+        "incapable": "Incompatível",
+        "effort": "Esforço incompatível",
+        "unverified": "Não verificado"
+      },
+      "editorState": {
+        "modelsUpdated": "Lista de modelos atualizada. Suas alterações não salvas foram mantidas.",
+        "discardTitle": "Descartar as alterações não salvas?",
+        "discardDesc": "As configurações salvas serão mantidas.",
+        "resetTitle": "Redefinir {count} escolhas salvas?",
+        "resetDesc": "O assistente escolherá nessas tarefas. Nada muda até você salvar.",
+        "keepEditing": "Continuar editando",
+        "discard": "Descartar alterações",
+        "resetConfirm": "Redefinir escolhas",
+        "moreBelow": "Mais rotas de tarefas abaixo ↓",
+        "saving": "Salvando…",
+        "unsavedOne": "1 alteração não salva",
+        "unsaved": "{count} alterações não salvas",
+        "noChanges": "Nenhuma alteração pendente",
+        "fixChoices": "Corrija as escolhas destacadas ou redefina-as antes de salvar.",
+        "offline": "Sem conexão. Suas alterações foram mantidas. Reconecte para salvar ou recarregar os modelos.",
+        "loadingRoutes": "Carregando configurações de rotas e modelos…",
+        "loadingModels": "Carregando modelos…",
+        "modelsFailed": "Não foi possível atualizar a lista de modelos. As listas dos provedores são exibidas quando disponíveis. Recarregue para verificar suas escolhas.",
+        "modelsEmpty": "Nenhum modelo disponível. Confira Modelos ou conecte um provedor e recarregue.",
+        "tasksEmpty": "Este servidor não disponibiliza classes de tarefas.",
+        "edited": " · alterado",
+        "settingsReloaded": "Configurações atuais carregadas. Suas alterações foram mantidas; confira antes de salvar.",
+        "permission": "Você não tem permissão para editar as configurações de rotas."
+      },
+      "menu": {
+        "priceUnknown": "Preço desconhecido",
+        "contextUnknown": "Contexto desconhecido",
+        "contextTokens": "{count} tokens",
+        "hiddenCount": "{count} ocultos em Modelos",
+        "noCompatible": "Nenhum modelo compatível deste provedor é exibido.",
+        "providerEmpty": "Nenhum modelo deste provedor é exibido.",
+        "noMatches": "Nenhum modelo encontrado. Confira as escolhas ocultas em Modelos.",
+        "failed": "Não foi possível atualizar a lista. As listas dos provedores podem estar desatualizadas.",
+        "hiddenHelp": "Não encontrou um modelo? A lista em Modelos define o que aparece aqui."
+      },
+      "classes": {
+        "chat": {
+          "label": "Chat",
+          "desc": "Conversas e respostas a partir de conhecimento ou memória"
+        },
+        "quick": {
+          "label": "Tarefa rápida",
+          "desc": "Pequenas edições, comandos avulsos e consultas"
+        },
+        "code": {
+          "label": "Programação",
+          "desc": "Um recurso ou uma correção em um repositório"
+        },
+        "complex": {
+          "label": "Engenharia complexa",
+          "desc": "Arquitetura, refatorações entre arquivos e depuração difícil"
+        },
+        "review": {
+          "label": "Revisão",
+          "desc": "Um segundo modelo revisa código, um plano ou um resultado"
+        },
+        "research": {
+          "label": "Pesquisa",
+          "desc": "Pesquisa na web ou no código e resumos"
+        },
+        "browser": {
+          "label": "Navegador",
+          "desc": "Tarefas na web pelo navegador do SynaBun"
+        },
+        "computer": {
+          "label": "Uso do computador",
+          "desc": "Operar aplicativos neste Mac"
+        },
+        "automation": {
+          "label": "Automação",
+          "desc": "Loops, agendamentos e tarefas recorrentes"
+        },
+        "design": {
+          "label": "Design",
+          "desc": "Pesquisa de UI/UX, sistemas de design, mockups e protótipos"
+        },
+        "image_gen": {
+          "label": "Criação de imagens",
+          "desc": "Criar imagens com um modelo capaz de gerá-las"
+        },
+        "video_gen": {
+          "label": "Criação de vídeos",
+          "desc": "Criar vídeos com um modelo capaz de gerá-los"
+        }
+      }
     },
     "computer": {
       "toggle": "Computador",
@@ -7038,5 +8315,58 @@
         "body": "Clique em ? quando quiser retomar. Nada no seu workspace foi alterado."
       }
     }
+  },
+  "greeting": {
+    "label": "Saudação do SynaBun",
+    "back": "De volta depois de {time}",
+    "time": {
+      "minute": "1 minuto",
+      "minutes": "{n} minutos",
+      "hour": "1 hora",
+      "hours": "{n} horas",
+      "day": "1 dia",
+      "days": "{n} dias",
+      "week": "1 semana",
+      "weeks": "{n} semanas",
+      "month": "1 mês",
+      "months": "{n} meses"
+    },
+    "basis": {
+      "one": "Com base em 1 registro",
+      "many": "Com base em {n} registros",
+      "none": "Em que isto se baseia"
+    },
+    "kind": {
+      "thread": "Última conversa",
+      "session": "Última sessão",
+      "open": "Em aberto",
+      "memory": "Anotado",
+      "run": "Execução",
+      "schedule": "Agendamento",
+      "elsewhere": "Em outro projeto",
+      "git": "Árvore de trabalho",
+      "owner": "Sobre você"
+    },
+    "agent": {
+      "assistant": "Assistente",
+      "claude-code": "Claude Code",
+      "codex": "Codex",
+      "opencode": "OpenCode"
+    },
+    "open": "Abrir memória",
+    "source": {
+      "writer": "Escrita antes por {model}",
+      "fallback": "Montada a partir dos registros, sem modelo"
+    },
+    "why": {
+      "not-prepared": "nada tinha sido escrito antes",
+      "out-of-date": "o que tinha sido escrito era mais antigo que as novidades",
+      "no-writer": "sem login do Claude para escrever",
+      "daily-cap": "o limite diário de chamadas ao escritor foi atingido",
+      "other": "o escritor não deu uma frase utilizável"
+    },
+    "tokens": "{n} tokens",
+    "prepared": "escrita há {time}",
+    "free": "nenhum token gasto"
   }
 }

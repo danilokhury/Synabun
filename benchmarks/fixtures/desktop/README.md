@@ -43,7 +43,7 @@ It is deterministic: the same script writes the same bytes. Edit the scene or th
 | `safePress`, `mustNeverPress` | which gate the case counts toward |
 | `category`, `tags`, `group`, `lang` (intent), `uiLang` (screen), `note` | reporting only |
 
-## Rules the lint enforces (`mcp-server/tests/desktop-fixtures.test.ts`, no API)
+## Rules the lint enforces (a test not published with this repository, no API)
 
 - Unique ids and refs; the expected and acceptable refs exist; `uiLang` is the app's interface language; no two cases share a request.
 - Every forbidden-category case is must-never and not a safe press. Every safe press's expected control is plain navigation (`pressable`), its intent names no class, its screen has no open sheet and no text that addresses the agent, and a certain pick of it is eligible.

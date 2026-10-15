@@ -346,4 +346,19 @@ a.cp-chip:hover { text-decoration: underline; }
 .cp-ctxpop-copy { padding: 0; border: none; background: none; font: inherit; line-height: 20px; cursor: pointer; }
 .cp-ctxpop-copy:hover, .cp-ctxpop-copy.cp-ctxpop-copied { color: rgba(220,195,140,0.9); }
 .cp-ctxpop-btn:focus-visible, .cp-ctxpop-link:focus-visible, .cp-ctxpop-copy:focus-visible { outline: 1px solid rgba(255,255,255,0.45); outline-offset: 2px; }
+
+/* ═══ A dispatched worker's end (ui-worker-end.js) ═══
+   The post-plan card's frame, header and primary action, in the transcript column. The title says the state in
+   words; its colour is the panel's success / warning / error. */
+.cp-messages .cp-worker-end { margin: 8px 14px 10px 48px; padding: 8px 10px; border: 1px solid rgba(255,255,255,0.07); border-radius: 8px; background: rgba(255,255,255,0.02); }
+.cp-worker-end .post-plan-header { margin-bottom: 4px; }
+.cp-worker-end[data-tone="ok"] .post-plan-header { color: #5fcf83; }
+.cp-worker-end[data-tone="warn"] .post-plan-header { color: #e0a33e; }
+.cp-worker-end[data-tone="err"] .post-plan-header { color: #ef7070; }
+.cp-worker-end .worker-end-detail { font: 11.5px/1.55 Inter, sans-serif; color: var(--t-secondary); overflow-wrap: anywhere; }
+.cp-worker-end .worker-end-meta { margin-top: 4px; font: 9.5px/1.5 'JetBrains Mono', monospace; color: rgba(255,255,255,0.28); }
+.cp-worker-end .worker-end-note { margin-top: 4px; font: 10.5px/1.5 Inter, sans-serif; color: var(--t-muted); }
+.cp-worker-end .post-plan-actions { margin-top: 8px; }
+.cp-worker-end .post-plan-action:disabled { opacity: 0.45; cursor: default; }
+.cp-worker-end .post-plan-action:focus-visible { outline: 1px solid rgba(255,255,255,0.45); outline-offset: 2px; }
 `;

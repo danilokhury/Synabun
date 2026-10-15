@@ -1,0 +1,63 @@
+{
+  "version": "2026.10.0",
+  "baseUrl": "https://github.com/cloudflare/cloudflared/releases/download/2026.10.0/",
+  "release": "https://github.com/cloudflare/cloudflared/releases/tag/2026.10.0",
+  "license": "Apache-2.0",
+  "origin": "Cloudflare's own release files, the stable release of 2026-10-05. `sha256` is the digest GitHub publishes for the release asset (the `digest` of the asset in the releases API). `binary.sha256` is the checksum in the release's own notes (SHA256 Checksums): for the macOS archives that is the checksum of the cloudflared inside, for the other files it is the file itself. Each file was downloaded on 2026-10-13 and both values, and the sizes, were computed from it and found equal to what is published.",
+  "platforms": {
+    "darwin-arm64": {
+      "file": "cloudflared-darwin-arm64.tgz",
+      "sha256": "a2f79ff7b9420aa537d74af239f376da170bbabeb529aec416002adac6a72e70",
+      "size": 19809074,
+      "archive": "tgz",
+      "member": "cloudflared",
+      "binary": {
+        "sha256": "72edfd3eea463aef4d5cb89e2e209cecb048cc756c2b01915de2e0ad7cb39830",
+        "size": 39364384,
+        "format": "macho"
+      }
+    },
+    "darwin-x64": {
+      "file": "cloudflared-darwin-amd64.tgz",
+      "sha256": "903845b81828c8cb3c5d13d816a2de71c06a3da5785469df8eb0e1b736d92f9f",
+      "size": 21741581,
+      "archive": "tgz",
+      "member": "cloudflared",
+      "binary": {
+        "sha256": "0560c9ab7281ac3f746055323623ed23bc0405b6dab9400474020cba33a978da",
+        "size": 42328240,
+        "format": "macho"
+      }
+    },
+    "linux-x64": {
+      "file": "cloudflared-linux-amd64",
+      "sha256": "d33ff2d14475178d2012c2c56beba87389ac5ded27649519f198a7d3134a99db",
+      "size": 40129756,
+      "binary": {
+        "sha256": "d33ff2d14475178d2012c2c56beba87389ac5ded27649519f198a7d3134a99db",
+        "size": 40129756,
+        "format": "elf"
+      }
+    },
+    "linux-arm64": {
+      "file": "cloudflared-linux-arm64",
+      "sha256": "e6422b9d4f72d3194bc5a38676f13667c06666523217b842a877d72a80b5ac08",
+      "size": 37687584,
+      "binary": {
+        "sha256": "e6422b9d4f72d3194bc5a38676f13667c06666523217b842a877d72a80b5ac08",
+        "size": 37687584,
+        "format": "elf"
+      }
+    },
+    "win32-x64": {
+      "file": "cloudflared-windows-amd64.exe",
+      "sha256": "86aee4017b26625cee8484c113558f48effa4cd47f7aa05fcf425604e5d2b23c",
+      "size": 55365048,
+      "binary": {
+        "sha256": "86aee4017b26625cee8484c113558f48effa4cd47f7aa05fcf425604e5d2b23c",
+        "size": 55365048,
+        "format": "pe"
+      }
+    }
+  }
+}

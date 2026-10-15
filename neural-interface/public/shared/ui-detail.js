@@ -1167,6 +1167,21 @@ export function initDetailPanel() {
     closeAllCards();
   });
 
+  // A memory asked for by id: the Assistant's memory chips and automation trace,
+  // Settings → Automation behavior. One that is not on the map yet (just learned,
+  // or filtered out) opens from the store.
+  on('memory:open', ({ id } = {}) => {
+    if (!id) return;
+    const node = state.allNodes.find(n => n.id === id);
+    if (node) {
+      state.selectedNodeId = node.id;
+      openMemoryCard(node);
+      emit('graph:navigate', { node, zoom: 'close' });
+      return;
+    }
+    fetchMemory(id).then((fresh) => { if (fresh?.payload) openMemoryCard({ id, payload: fresh.payload }); }).catch(() => {});
+  });
+
   // Persist open card positions after resize/drag and sync to other clients
   on('detail:layout-changed', (payload) => {
     persistOpenCards();

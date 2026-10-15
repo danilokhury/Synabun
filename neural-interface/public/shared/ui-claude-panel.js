@@ -7,6 +7,7 @@ import { hostedSidepanelId, sidepanelHost } from './ui-sidepanel-runtime.js';
 import { storage } from './storage.js';
 import { fetchBlobNamespace, putBlob, deleteBlob, flushBlobs } from './blob-store.js';
 import { state, emit, on } from './state.js';
+import { forgetGreeting, mountGreeting } from './greeting/greeting-card.js';
 import { fetchClaudeSessions, fetchBrowserSessions, searchSessions } from './api.js';
 import { createFrameRenderer } from './utils.js';
 import { notify, NOTIF_TYPE } from './ui-notifications.js';
@@ -15,6 +16,9 @@ import { subscribeCliStatus, recheckCliStatus, getCliDocUrl, getCliInstallComman
 import { nativeLoopWindowId } from './ui-native-window-id.js';
 import { createStickyScrollController } from './ui-scroll-follow.js';
 import { requestGeneratedSessionTitle } from './session-title.js';
+import { wireFileLinks } from './ui-file-links.js';
+import { WORKER_END_CLASS, backToAssistant, buildWorkerEndCard, endWorkerRunOnClose, forgetWorkerEnd, trackWorkerEnd, updateWorkerEndBusy } from './ui-worker-end.js';
+import { isDispatchedRun, isEndOfRunAbort } from './worker-end.js';
 // ── cp/ feature modules (SDK-engine CLI parity: diffs, agents, bash, perms, statusline) ──
 import { setCpCtx } from './cp/cp-ctx.js';
 import { buildDiffCard, buildDiffPreviewEl, finalizeDiffCard } from './cp/cp-diff.js';
@@ -24,7 +28,7 @@ import { buildAgentCard, ensureAgentScope, noteAgentActivity, updateAgentTodoBad
 import { renderPermissionCard, renderPlanApprovalCard, renderElicitationCard, decorateAskCard, askAnnotations, markAskAnswered, PERMISSION_MODES, MODE_LABELS } from './cp/cp-permissions.js';
 import { normalizeSession, changedStartSettings, sessionFlags, sessionRows, fastModeSupported, fastModeReason, mergeSessionModels, parseMcpServerLines, formatMcpServerLines } from './cp/cp-session-model.js';
 import { renderSessionSettingsCard } from './cp/cp-session-settings.js';
-import { describeOrigin, reconcileTasks, adoptLiveTasks, describeHistorySystemRow, workEndedByRestart } from './cp/cp-tasks-model.js';
+import { describeOrigin, reconcileTasks, adoptLiveTasks, describeHistorySystemRow, workEndedByRestart, isTaskRunning } from './cp/cp-tasks-model.js';
 import { renderTasksCard } from './cp/cp-tasks.js';
 import { sessionListLabel, collectTags, tagSession as tagClaudeSession, sessionActionsAvailable, sessionOpsSupported, labelledSessionIds, mergeSessionSearch, writeSessionTitle, forkSession as forkClaudeSession, deleteSession as deleteClaudeSession, fetchSubagentMessages, forkTitle, entryBefore, promptText, removeFrom, sessionRowParts, fillSelectOptions } from './cp/cp-sessions.js';
 import { contextCard, usageCard, mcpRows, rewindPreviewText, rewindResultText } from './cp/cp-usage-model.js';
@@ -2928,6 +2932,7 @@ function newTabState(sessionId = null, label = 'New chat', id = null) {
     automationRunId: null,
     automationActive: false,
     automationOwnerId: null,
+    releasedRunId: null,      // the ended run this tab showed before the user continued it by hand
   };
 }
 
@@ -3130,15 +3135,18 @@ function closeTab(idx, { detachAutomation = false } = {}) {
   if (idx < 0 || idx >= _tabs.length) return;
   const tab = _tabs[idx];
   if (tab.automationRunId && !detachAutomation) {
+    const runId = tab.automationRunId;
     window.dispatchEvent(new CustomEvent('native-loop:dismissed', {
-      detail: { runId: tab.automationRunId },
+      detail: { runId },
     }));
-    fetch('/api/loop/stop', {
+    // A worker that finished its task is completed; any other run is stopped.
+    endWorkerRunOnClose(runId, () => fetch('/api/loop/stop', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ runId: tab.automationRunId }),
-    }).catch(() => {});
+      body: JSON.stringify({ runId }),
+    }).catch(() => {}), { busy: hasLiveBackgroundWork(tab) });
   }
+  if (tab.automationRunId) forgetWorkerEnd(tab.automationRunId);
   flushSessionSnapshotSave(tab);
   recordHookEvent(tab, 'SessionEnd', tab.sessionId || '(new)');
   tab.closed = true;
@@ -3264,7 +3272,7 @@ function saveTabs() {
   try {
     // A temporary tab is never written: not the tab, its label, its queue or its session id.
     const kept = persistableTabs(_tabs, _activeTabIdx);
-    const localTabs = kept.tabs.map(t => ({ id: t.id, sessionId: t.sessionId, label: t.label, titleState: t.titleState === 'generating' ? 'default' : (t.titleState || 'default'), sessionCost: t.sessionCost || 0, running: t.running || false, project: t.project || '', model: t.model || '', effort: t.effort || 'off', planMode: t.planMode || false, ...savedMode(t), toolPolicy: t.toolPolicy || 'full', accountId: t.accountId || '', session: normalizeSession(t.session), transcriptAt: t.transcriptAt || null, planFilePath: t.planFilePath || '', conversation: t.conversation || '', queue: t.queue || [], queuePaused: t.queuePaused || false, automationRunId: t.automationRunId || null, automationActive: !!t.automationActive, automationOwnerId: t.automationOwnerId || null }));
+    const localTabs = kept.tabs.map(t => ({ id: t.id, sessionId: t.sessionId, label: t.label, titleState: t.titleState === 'generating' ? 'default' : (t.titleState || 'default'), sessionCost: t.sessionCost || 0, running: t.running || false, project: t.project || '', model: t.model || '', effort: t.effort || 'off', planMode: t.planMode || false, ...savedMode(t), toolPolicy: t.toolPolicy || 'full', accountId: t.accountId || '', session: normalizeSession(t.session), transcriptAt: t.transcriptAt || null, planFilePath: t.planFilePath || '', conversation: t.conversation || '', queue: t.queue || [], queuePaused: t.queuePaused || false, automationRunId: t.automationRunId || null, automationActive: !!t.automationActive, automationOwnerId: t.automationOwnerId || null, releasedRunId: t.releasedRunId || null }));
     const localRunIds = new Set(localTabs.map((tab) => tab.automationRunId).filter(Boolean));
     let foreignAutomationTabs = [];
     try {
@@ -3406,6 +3414,7 @@ function restoreTabs() {
           if (t && saved.automationRunId) t.automationRunId = saved.automationRunId;
           if (t && saved.automationRunId) t.automationActive = !!saved.automationActive;
           if (t && saved.automationRunId) t.automationOwnerId = saved.automationOwnerId || null;
+          if (t && saved.releasedRunId && !saved.automationRunId) t.releasedRunId = saved.releasedRunId;
         }
         if (_tabs.length) {
           switchTab(Math.min(data.activeIdx || 0, _tabs.length - 1));
@@ -7445,7 +7454,57 @@ function handleControlRequest(tab, msg) {
 // What a query tells the bridge about this tab's session: the permission mode
 // (or that the user's own settings should pick it), the tool policy, and what
 // this panel can render. Keys a server that predates them ignores.
+// ── Greeting (shared/greeting/, lib/greeting/) ──
+// What SynaBun says when a person comes back and opens a new chat: one or two sentences in the
+// empty state, written by SynaBun ahead of time (this session's model never greets). Only for a
+// tab that holds no conversation yet: never a resumed session, a temporary chat or a tab showing
+// an automation run (hence the short wait: those are marked right after the tab is made). The
+// server decides whether this opening is a return worth greeting; an older server answers nothing.
+// Asked from _paintTemporary(), which runs wherever the conversation area is rebuilt. Nothing of it
+// is kept on the tab object (what a tab carries over, and what is saved of it, is listed elsewhere).
+const _greetingOf = new WeakMap(); // tab → { seq, host, greeting: { id, session } | null }
+function _greetingState(tab) {
+  let held = _greetingOf.get(tab);
+  if (!held) { held = { seq: 0, host: null, greeting: null }; _greetingOf.set(tab, held); }
+  return held;
+}
+function _offerGreetingSoon(tab) {
+  if (!tab) return;
+  setTimeout(() => { try { _offerGreeting(tab); } catch { /* a tab always opens */ } }, 300);
+}
+function _offerGreeting(tab) {
+  if (!_tabs.includes(tab) || tab.sessionId || tab.temporary || tab.automationRunId || tab.automationActive || tab.running) return;
+  const host = tab.messagesEl?.querySelector(':scope > .cp-empty');
+  if (!host || host.dataset.greetingAsked === '1') return;
+  host.dataset.greetingAsked = '1';
+  const held = _greetingState(tab);
+  // The conversation area was rebuilt: a new conversation in the same tab is a new opening.
+  if (held.host && held.host !== host) { held.seq += 1; held.greeting = null; }
+  held.host = host;
+  const session = `${tab.id}.${held.seq}`;
+  const cwd = tab.project || ddGetValue(_panel?.querySelector('#cp-project')) || '';
+  mountGreeting(host, {
+    surface: 'claude-panel', session, cwd,
+    onOpenMemory: (id) => { if (id) emit('memory:open', { id }); },
+    isCurrent: () => !tab.sessionId && !tab.temporary && !tab.automationRunId && held.host === host && tab.messagesEl?.contains(host),
+  }).then((greeting) => {
+    if (held.host === host) held.greeting = greeting ? { id: greeting.id, session } : null;
+  }).catch(() => {});
+}
+
+// The greeting a chat opened with goes back once, with its first prompt: the bridge tells the model
+// what was said (capability 'greeting'). A temporary chat names nothing, so it takes none.
+function _echoGreeting(tab, msg) {
+  const held = msg.type === 'query' ? _greetingOf.get(tab) : null;
+  if (!held?.greeting?.id) return;
+  if (hasCapability(tab, 'greeting') && !tab.temporary) msg.greetingId = held.greeting.id;
+  forgetGreeting('claude-panel', held.greeting.session);
+  held.greeting = null;
+}
+
 function _applySessionOptions(tab, msg) {
+  // The greeting this chat opened with goes back once, with its first prompt.
+  _echoGreeting(tab, msg);
   // The tab's own mode (statedMode() in cp/cp-permission-model.js: Bypass only
   // as the user's recorded pick). A tab that never picked one leaves it to the
   // user's Claude Code settings (permissions.defaultMode).
@@ -7471,6 +7530,8 @@ function _applySessionOptions(tab, msg) {
 function _paintTemporary(tab) {
   if (!tab) return;
   paintTemporary(tab, { capable: hasCapability(tab, TEMPORARY_CAPABILITY), onToggle: (on) => _chooseTemporary(tab, on) });
+  // The conversation area was (re)built: a new chat may open with SynaBun's greeting.
+  _offerGreetingSoon(tab);
 }
 
 // The user's choice on a new tab. A process kept ready for the other kind of
@@ -9228,6 +9289,9 @@ function send({ shift = false } = {}) {
   // A temporary chat that is over, or one the running server would save: nothing is sent.
   { const refusal = temporaryRefusal(tab, { capable: hasCapability(tab, TEMPORARY_CAPABILITY) }); if (refusal) { appendStatus(tab, refusal); return; } }
 
+  // A message of the user's own in the tab of a run that ended: the tab is theirs from here on.
+  releaseAutomationForManualUse(tab);
+
   // ── !bash shortcut — prefix a Bash-tool hint so Claude executes the command ──
   if (text.startsWith('!') && text.length > 1) {
     const cmd = text.slice(1).trim();
@@ -10162,15 +10226,7 @@ function _onMessagesClick(e) {
     });
     return;
   }
-  const link = e.target.closest('a.file-link');
-  if (link) {
-    e.preventDefault();
-    const path = (link.textContent || '').replace(/:\d+$/, '');
-    navigator.clipboard.writeText(path);
-    link.style.opacity = '0.5';
-    setTimeout(() => { link.style.opacity = ''; }, 300);
-    return;
-  }
+  // File links (a.file-link, and the links of a message's Markdown) are taken by _fileLinkOptions below.
   const hdr = e.target.closest('.tool-hdr');
   if (hdr && !e.target.closest('button, a, input, select, textarea')) {
     const card = hdr.closest('.tool-card');
@@ -10182,6 +10238,25 @@ function _onMessagesClick(e) {
     }
   }
 }
+
+// ── File links ──
+// A link to a file the code editor can open opens it there (ui-file-links.js, shared with the other panels).
+// The same delegation as above: it covers streaming, finished and snapshot-restored messages of every tab.
+const _fileLinkOptions = {
+  // A relative path is a path in the folder of the tab the message belongs to.
+  cwd: (link) => {
+    const tab = _tabs.find((t) => t.messagesEl?.contains(link)) || activeTab();
+    return tab?.init?.cwd || tab?.project || '';
+  },
+  textLinks: 'a.file-link',
+  // A path the editor does not open keeps what a click on it did: it is copied.
+  copyPath: (link) => {
+    const path = (link.textContent || '').replace(/:\d+$/, '');
+    link.style.opacity = '0.5';
+    setTimeout(() => { link.style.opacity = ''; }, 300);
+    return navigator.clipboard.writeText(path);
+  },
+};
 
 // ── Public API ──
 async function _ensureClaudePanelReady() {
@@ -10197,6 +10272,7 @@ async function _ensureClaudePanelReady() {
     });
     wireEvents();
     _panel.querySelector('#cp-messages-container')?.addEventListener('click', _onMessagesClick);
+    wireFileLinks(_panel.querySelector('#cp-messages-container'), _fileLinkOptions);
     await loadConfig();   // must complete before restoreTabs — checks server boot ID
     loadSkills();
     restoreTabs();
@@ -10248,6 +10324,18 @@ export async function attachClaudeAutomation(run, { focus = !!run?.focus, isCanc
   if (!run?.runId || !run?.providerSessionId) return { ok: false, reason: 'identity_pending' };
   await _ensureClaudePanelReady();
   if (isCancelled()) return { ok: false, reason: 'dismissed' };
+  // The user continued this run's tab by hand after the run ended: it stays theirs. The dock's
+  // Focus raises it; the run is let go again, and nothing in the tab changes.
+  const own = _tabs.find((entry) => !entry.automationRunId && entry.releasedRunId === run.runId && entry.sessionId === run.providerSessionId);
+  if (own && !(run.status === 'starting' || run.status === 'running')) {
+    window.dispatchEvent(new CustomEvent('native-loop:dismissed', { detail: { runId: run.runId } }));
+    if (focus) {
+      if (!_visible) await toggleClaudePanel();
+      const ownIdx = _tabs.indexOf(own);
+      if (ownIdx >= 0) switchTab(ownIdx);
+    }
+    return { ok: true, tabId: own.id, released: true };
+  }
   let tab = _tabs.find((entry) => entry.automationRunId === run.runId)
     || _tabs.find((entry) => entry.sessionId === run.providerSessionId);
   if (!tab) {
@@ -10270,6 +10358,7 @@ export async function attachClaudeAutomation(run, { focus = !!run?.focus, isCanc
   tab.automationRunId = run.runId;
   tab.automationActive = running;
   tab.automationOwnerId = nativeLoopWindowId;
+  tab.releasedRunId = null;
   tab.sdkMode = true;
   tab.sessionId = run.providerSessionId;
   tab.label = run.title || tab.label || 'Automation';
@@ -10288,10 +10377,12 @@ export async function attachClaudeAutomation(run, { focus = !!run?.focus, isCanc
       return { ok: false, reason: 'dismissed' };
     }
   }
-  if (run.status === 'failed' && run.error && tab._automationLifecycleError !== run.error) {
+  // (A dispatched worker's failure, with its reason, is on its end card.)
+  if (run.status === 'failed' && run.error && !isDispatchedRun(run) && tab._automationLifecycleError !== run.error) {
     tab._automationLifecycleError = run.error;
     appendError(tab, run.error);
   }
+  trackWorkerEnd(run, { apply: (view) => showWorkerEnd(tab, view), busy: hasLiveBackgroundWork(tab) });
   // The mode control is hidden while the run is active and back when it ended.
   if (tab === activeTab()) populateModeDropdown(_panel?.querySelector('#cp-mode'), tab);
   const idx = _tabs.indexOf(tab);
@@ -10319,10 +10410,60 @@ export function handleClaudeAutomationEvent(runId, payload) {
     return true;
   }
   if (event.type === 'synabun.error') {
+    // Every run's end disposes its SDK query, and the SDK says so in these words: not a failure.
+    if (isEndOfRunAbort(event.message)) return true;
     appendError(tab, event.message || 'Claude Code automation failed');
     return true;
   }
   handleTabMsg(tab, { type: 'event', event, fromRun: true });
+  // Background agents still running keep a warm worker's "Task complete" away.
+  if (event.type === 'system' || event.type === 'result') updateWorkerEndBusy(runId, hasLiveBackgroundWork(tab));
+  return true;
+}
+
+function hasLiveBackgroundWork(tab) {
+  for (const task of tab?.tasks?.values?.() || []) {
+    if (task && !task.ambient && isTaskRunning(task)) return true;
+  }
+  return false;
+}
+
+// The end of a worker the Assistant dispatched (ui-worker-end.js): one card,
+// the last row of its transcript. Its button closes this tab the way the X
+// does (a warm worker that finished its task is completed, one still at work
+// is stopped; its record stays for the Assistant) and shows the Assistant
+// session that dispatched it.
+function showWorkerEnd(tab, view) {
+  tab._workerEnd = view || null;
+  const $msgs = tab.messagesEl;
+  if (!$msgs || tab.closed) return;
+  $msgs.querySelectorAll(`.${WORKER_END_CLASS}`).forEach((el) => el.remove());
+  if (!view) return;
+  $msgs.appendChild(buildWorkerEndCard(view, {
+    classes: { card: 'cp-worker-end', title: 'post-plan-header', actions: 'post-plan-actions', button: 'post-plan-action pp-primary' },
+    onBack: () => {
+      const idx = _tabs.indexOf(tab);
+      if (idx >= 0) closeTab(idx);
+      backToAssistant(view.assistantSessionId);
+    },
+  }));
+  if (tab === activeTab()) scrollEnd(true);
+}
+
+// The user sends a message of their own in the tab of a run that ended (Codex's
+// releaseAutomationForManualUse): the run's end card goes, the tab stops following
+// the run, and the router leaves the run alone, so nothing of it comes back here.
+// A run that is still going keeps its tab (the composer refuses a manual turn then).
+function releaseAutomationForManualUse(tab) {
+  if (!tab?.automationRunId || tab.automationActive) return false;
+  const runId = tab.automationRunId;
+  forgetWorkerEnd(runId);
+  showWorkerEnd(tab, null);
+  tab.automationRunId = null;
+  tab.automationOwnerId = null;
+  tab.releasedRunId = runId;
+  window.dispatchEvent(new CustomEvent('native-loop:dismissed', { detail: { runId } }));
+  saveTabs();
   return true;
 }
 

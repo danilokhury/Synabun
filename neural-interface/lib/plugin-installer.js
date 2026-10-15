@@ -5,6 +5,7 @@ import {
 } from 'fs';
 import { join, resolve, dirname } from 'path';
 import os from 'node:os';
+import { runGitReadSync } from './git-read.js';
 
 const PLUGINS_ROOT = () => join(os.homedir(), '.claude', 'plugins');
 const INSTALLED_PLUGINS_FILE = () => join(PLUGINS_ROOT(), 'installed_plugins.json');
@@ -48,9 +49,10 @@ function claudeNotFoundErr() {
   return { ok: false, error: 'Claude Code CLI not found on PATH. Install `claude` to manage plugins.' };
 }
 
+// (git is asked as lib/git-read.js runs a read: the folder comes from a request, or from Claude Code's registry)
 function gitHeadSha(repoPath) {
   if (!repoPath || !existsSync(repoPath)) return 'unknown';
-  const r = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repoPath, encoding: 'utf-8' });
+  const r = runGitReadSync(repoPath, ['rev-parse', 'HEAD'], { encoding: 'utf-8' });
   const out = (r.stdout || '').trim();
   return out || 'unknown';
 }
@@ -252,7 +254,7 @@ export function repairSynabunPlugins() {
     if (!meta.ok) { failed.push({ marketplaceName: name, error: meta.error }); continue; }
     let githubUrl = null;
     try {
-      const r = spawnSync('git', ['remote', 'get-url', 'origin'], { cwd: path, encoding: 'utf-8' });
+      const r = runGitReadSync(path, ['remote', 'get-url', 'origin'], { encoding: 'utf-8' });
       const u = (r.stdout || '').trim();
       if (/^https?:\/\//.test(u)) githubUrl = u.replace(/\.git$/, '');
     } catch {}

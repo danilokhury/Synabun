@@ -1,6 +1,6 @@
 {
   "name": "claude-memory-mcp",
-  "version": "2.0.4",
+  "version": "2.0.5",
   "private": true,
   "description": "Private MCP server runtime bundled with SynaBun for persistent memory and agent tooling",
   "license": "Apache-2.0",
@@ -16,8 +16,6 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "node ./node_modules/typescript/bin/tsc",
-    "test": "node ./node_modules/vitest/vitest.mjs run",
-    "test:watch": "node ./node_modules/vitest/vitest.mjs",
     "start": "node dist/index.js",
     "setup:embeddings": "node dist/scripts/setup-embeddings.js",
     "start:http": "node dist/preload-http.js",

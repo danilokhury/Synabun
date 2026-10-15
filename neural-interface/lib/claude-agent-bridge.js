@@ -107,6 +107,7 @@ export const PANEL_CAPABILITIES = Object.freeze([
   'message_flags',    // session.hookEvents / promptSuggestions / subagentText / agentSummaries → the matching SDK options
   'task_control',     // inbound `stop_task` / `background_tasks` → `task_control_result`; system/session_crons events
   'origin_human',     // a query marked `typed: true` is sent with origin {kind:'human'}
+  'greeting',         // query `greetingId`: the model is told once what SynaBun greeted the user with (lib/greeting/)
   'session_requests', // inbound `session_request {id, what, args}` → `session_response`: context_usage, usage, mcp_status, mcp_reconnect, mcp_toggle, rewind_preview
   'rewind_stats',     // `rewind_result` carries filesChanged / insertions / deletions
   'session_title',    // query `title` names a new session where the CLI reads it
@@ -602,8 +603,9 @@ export class ClaudeSession {
       // `typesafe:'off'` on a query (the live skin test) keeps this CLI's hooks
       // from paying for judgments: they read the kill switch from their env.
       // (Panel sessions: the CLI reports running / idle / requires_action only when
-      // asked to; `idle` is its own word that a turn is over. See _noteSessionState.)
-      env: { ...cleanEnv(), ...(this.typesafeOff ? { SYNABUN_TYPESAFE: 'off' } : {}), ...(sessionOpts.env || {}), ...(accountEnv || {}), ...(this.panel ? { CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1' } : {}) },
+      // asked to; `idle` is its own word that a turn is over. See _noteSessionState.
+      // SYNABUN_PANEL_SESSION tells the user-level SynaBun hooks that the panel greets here, not they.)
+      env: { ...cleanEnv(), ...(this.typesafeOff ? { SYNABUN_TYPESAFE: 'off' } : {}), ...(sessionOpts.env || {}), ...(accountEnv || {}), ...(this.panel ? { CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1', SYNABUN_PANEL_SESSION: '1' } : {}) },
       abortController: this.abortController,
       stderr: (text) => {
         const t = String(text || '').trim();
@@ -643,6 +645,16 @@ export class ClaudeSession {
       // Resuming a session whose prompt cache has expired pays to write it
       // again: the CLI says how much at SessionStart.
       options.hooks = mergeHookMatchers(options.hooks, {
+        // The greeting SynaBun showed when this conversation opened (lib/greeting/): said to the
+        // model once, with the first prompt, as background. The model is never asked to greet.
+        UserPromptSubmit: [{
+          hooks: [async () => {
+            const note = gen === this._queryGen ? this._greetingNote : '';
+            if (!note) return {};
+            this._greetingNote = '';
+            return { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: note } };
+          }],
+        }],
         SessionStart: [{
           hooks: [async (input) => {
             if (gen === this._queryGen && input?.prompt_cache_likely_expired === true && Number(input?.estimated_cache_write_usd) > 0) {
@@ -2813,6 +2825,17 @@ export class ClaudeSession {
           return;
         }
       } catch {}
+    }
+
+    // The panel echoes the id of the greeting it showed when this conversation opened: the model is
+    // told once, with this prompt (the UserPromptSubmit hook in _startQuery). A slash command takes none.
+    // (A prompt the person typed in the panel is also them being here, whether or not the user-level hooks are installed.)
+    if (this.panel && !warmOnly && msg.typed === true && typeof prompt === 'string' && prompt.trim() && typeof deps.greetingActivity === 'function') {
+      try { deps.greetingActivity({ cwd: cwd || this.cwd || null, words: prompt, temporary: this.temporary === true }); } catch { /* the prompt goes on */ }
+    }
+    if (this.panel && !warmOnly && typeof msg.greetingId === 'string' && typeof deps.greetingNote === 'function') {
+      try { this._greetingNote = String(deps.greetingNote(msg.greetingId, { skip: typeof prompt === 'string' && prompt.trimStart().startsWith('/') }) || ''); }
+      catch { this._greetingNote = ''; }
     }
 
     // SynaBun skill injection runs FIRST; unrecognized /commands pass through to the CLI

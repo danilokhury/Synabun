@@ -649,11 +649,16 @@ export async function createClaudeNativeLoopAdapter(options = {}) {
     }
     if (pumpError) throw pumpError;
   })();
-  pump.catch((error) => onEvent({
-    provider: 'claude-code',
-    runId,
-    event: { type: 'synabun.error', message: error?.message || String(error) },
-  }));
+  pump.catch((error) => {
+    // dispose() aborts the query when the run ends, however it ended, and the
+    // SDK throws "Claude Code process aborted by user" for it: not a failure.
+    if (abortController.signal.aborted) return;
+    onEvent({
+      provider: 'claude-code',
+      runId,
+      event: { type: 'synabun.error', message: error?.message || String(error) },
+    });
+  });
 
   return {
     identity: () => ({ providerSessionId: sessionId }),

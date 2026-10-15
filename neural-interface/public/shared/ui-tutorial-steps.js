@@ -82,11 +82,15 @@ const ASSISTANT_BUTTON = ['#topright-assistant-panel-btn', 'closed'];
 const ACTIVE_TAB = '#assistant-panel.open .asp-viewport.active';
 const ACTIVE_BAR = '#assistant-panel.open .asp-tab-bar.active';
 
+// With the workspace tools hidden (the toolbar's toggle) their controls are off screen, and the step outlines the
+// toggle that shows them.
+const TOOLS_TOGGLE = ['#topright-tools-btn'];
+
 export const FEATURE_STEPS = [
-  { id: 'explain-memory-explorer', chapter: 'memory', targets: [['#topright-memory-explorer-btn']] },
+  { id: 'explain-memory-explorer', chapter: 'memory', targets: [['#topright-memory-explorer-btn'], TOOLS_TOGGLE] },
   { id: 'explain-graph', chapter: 'memory', copy: { '2d': 'body2d' }, targets: [['[data-menu="graph"] > .menubar-label']] },
   { id: 'explain-focus', chapter: 'workspace', targets: [['#wb-toolbar'], ['#titlebar-viz-toggle', 'graph']] },
-  { id: 'explain-workspaces', chapter: 'workspace', targets: [['#ws-indicator']] },
+  { id: 'explain-workspaces', chapter: 'workspace', targets: [['#ws-indicator'], TOOLS_TOGGLE] },
   { id: 'explain-terminals', chapter: 'tools', menu: 'apps', targets: [['#menu-terminal-claude', 'body', '#menu-terminal-opencode']] },
   { id: 'explain-browser', chapter: 'tools', menu: 'apps', targets: [['#menu-terminal-browser']] },
   { id: 'explain-side-panel', chapter: 'tools', targets: [['#topright-claude-panel-btn', 'body', '#topright-opencode-panel-btn']] },

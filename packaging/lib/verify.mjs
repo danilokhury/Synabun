@@ -4,16 +4,20 @@
  *   audit   read-only: the files a start needs are there, every native binary
  *           is for the target's processor, the executables may run, nothing
  *           private came along, and none of the tools the user installs
- *           separately (Claude Code, Codex, OpenCode, Gemini CLI).
+ *           separately (Claude Code, Codex, OpenCode, Gemini CLI). One program
+ *           of somebody else's has to be there: cloudflared, the pinned build
+ *           for the target, in its one place.
  *   smoke   runs the bundle on the build machine, in a throwaway home, on a
  *           port nothing uses: its version, its native modules (a real PTY, the
- *           embedding runtime) and an MCP conversation over stdio.
+ *           embedding runtime), its cloudflared (found by the application
+ *           itself, and asked for its version) and an MCP conversation over
+ *           stdio.
  */
 
 import { spawn } from 'node:child_process';
-import { accessSync, constants, existsSync, lstatSync, mkdirSync, readFileSync, statSync } from 'node:fs';
+import { accessSync, constants, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { createServer } from 'node:net';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { externalToolPayloadReason, externalToolsInLock } from '../../lib/external-tools.js';
 import { elfSymbols, unmetImports } from './cross.mjs';
@@ -22,6 +26,26 @@ import { BuildError, FORMAT_PLATFORM, nativeFormat, note, run, step, walk } from
 
 function executable(path) {
   try { accessSync(path, constants.X_OK); return true; } catch { return false; }
+}
+
+/** A file that goes by cloudflared's name: `cloudflared`, `cloudflared.exe`, a release file such as `cloudflared-linux-amd64`. */
+const CLOUDFLARED_NAME = /^cloudflared(?:[-_.][\w.-]*)?$/i;
+
+/**
+ * What the application inside a bundle says about its cloudflared: the pins it will check its copy against
+ * (neural-interface/lib/cloudflared/pins.json, read by the application's own reader), the pin of this target,
+ * and where it will look for the copy that came with it. `error` when the bundle cannot say.
+ */
+async function cloudflaredOf({ app, resources, platform, arch }) {
+  const lib = join(app, 'neural-interface', 'lib', 'cloudflared');
+  try {
+    const knows = await import(pathToFileURL(join(lib, 'pins.js')).href);
+    const { hashFile } = await import(pathToFileURL(join(lib, 'install.js')).href);
+    const pins = knows.readCloudflaredPins(join(lib, 'pins.json'));
+    return { pin: knows.cloudflaredPinFor(pins, platform, arch), path: knows.bundledCloudflaredPath(resources, platform), hashFile, error: null };
+  } catch (error) {
+    return { pin: null, path: null, hashFile: null, error: String(error?.message || error).split('\n')[0] };
+  }
 }
 
 /** Inspect ctx.bundle without running it. Throws a BuildError that lists every problem found. */
@@ -37,6 +61,8 @@ export async function auditBundle(ctx) {
     'synabun-package.json', 'bootstrap.mjs',
     'app/package.json', 'app/setup.js', 'app/launcher.mjs', 'app/lib/packaged-runtime.js', 'app/lib/start-launcher.js',
     'app/neural-interface/server.js', 'app/mcp-server/run.mjs', 'app/mcp-server/dist/index.js', 'app/mcp-server/dist/preload.js',
+    // The tunnel: what says which cloudflared this build carries, and what finds and checks it at run time.
+    'app/neural-interface/lib/cloudflared/pins.json', 'app/neural-interface/lib/cloudflared/manager.js',
     // setup.js reads these to know the dependencies are installed.
     'app/mcp-server/node_modules/.package-lock.json', 'app/neural-interface/node_modules/.package-lock.json',
     windows ? 'runtime/node.exe' : 'runtime/bin/node',
@@ -73,6 +99,12 @@ export async function auditBundle(ctx) {
     }
   }
 
+  // cloudflared (the tunnel behind invite links and remote MCP) is the one program of somebody else's a bundle
+  // carries: exactly the build the application's own pins name for this target, where the application looks
+  // for it, and no other cloudflared anywhere.
+  const tunnel = await cloudflaredOf({ app, resources, platform, arch });
+  const otherCloudflareds = [];
+
   // Every native binary in the bundle: right processor, or not for this system at all.
   let files = 0;
   let bytes = 0;
@@ -95,13 +127,41 @@ export async function auditBundle(ctx) {
       const executable = externalToolPayloadReason(file.relative, { native: true });
       if (executable) external.set(`${executable} (${file.relative})`, 1);
     }
+    if (file.path !== tunnel.path && CLOUDFLARED_NAME.test(basename(file.relative))) otherCloudflareds.push(file.relative);
     if (FORMAT_PLATFORM[format.format] !== platform) foreign.push(file.relative);
     else if (!format.archs.includes(arch)) problems.push(`wrong processor: ${file.relative} is ${format.archs.join('+')}, this is a ${arch} build`);
+  }
+
+  // The bundled cloudflared: there, a program of this target, and the pinned one byte for byte.
+  let cloudflared = null;
+  if (tunnel.error) {
+    problems.push(`cloudflared: the application does not say which one it uses (${tunnel.error})`);
+  } else if (!tunnel.pin) {
+    problems.push(`cloudflared: none is pinned for ${platform}-${arch} (neural-interface/lib/cloudflared/pins.json)`);
+  } else {
+    const place = tunnel.path.slice(root.length + 1);
+    const format = existsSync(tunnel.path) ? nativeFormat(tunnel.path) : null;
+    if (!existsSync(tunnel.path)) {
+      problems.push(`missing: cloudflared ${tunnel.pin.version}, the tunnel program (${place})`);
+    } else if (!format) {
+      problems.push(`cloudflared: ${place} is not a program`);
+    } else if (FORMAT_PLATFORM[format.format] !== platform || !format.archs.includes(arch)) {
+      problems.push(`cloudflared: ${place} is a ${FORMAT_PLATFORM[format.format]} ${format.archs.join('+')} program; this is a ${platform}-${arch} build`);
+    } else {
+      const actual = await tunnel.hashFile(tunnel.path);
+      if (actual.sha256 !== tunnel.pin.binary.sha256) problems.push(`cloudflared: ${place} is not the pinned cloudflared ${tunnel.pin.version} (sha256 ${actual.sha256}, pinned ${tunnel.pin.binary.sha256})`);
+      else cloudflared = { path: place, version: tunnel.pin.version, sha256: actual.sha256, size: actual.size, file: tunnel.pin.file };
+    }
+    let beside = [];
+    try { beside = readdirSync(dirname(tunnel.path)).filter(name => name !== basename(tunnel.path)); } catch { /* no such folder: reported above */ }
+    for (const name of beside) problems.push(`cloudflared: an unexpected file beside it (${dirname(place)}/${name})`);
+    for (const other of otherCloudflareds) problems.push(`cloudflared: another one in the bundle (${other}). Only the pinned one is packaged, at ${place}.`);
   }
 
   if (!windows) {
     const { vendoredBinaryTargets } = await import(pathToFileURL(join(app, 'neural-interface', 'lib', 'native-binary-runtime.js')).href);
     const mustRun = [entry, join(resources, 'runtime', 'bin', 'node'), ...vendoredBinaryTargets({ root: join(app, 'neural-interface'), platform }).map(target => target.path)];
+    if (tunnel.path && existsSync(tunnel.path)) mustRun.push(tunnel.path);
     for (const path of mustRun) if (!executable(path)) problems.push(`not executable: ${path.slice(root.length + 1)}`);
   }
 
@@ -117,10 +177,10 @@ export async function auditBundle(ctx) {
     for (const edge of locked.edges) problems.push(`external tool in a lockfile of the bundle: ${relative} has ${edge.from} depend on ${edge.name}`);
   }
 
-  ctx.report.audit = { files, bytes, natives, foreignBinaries: foreign.length, externalTools: { found: external.size, lockfilesRead: lockfiles.length } };
+  ctx.report.audit = { files, bytes, natives, foreignBinaries: foreign.length, externalTools: { found: external.size, lockfilesRead: lockfiles.length }, cloudflared };
   if (foreign.length) note(`${foreign.length} binaries for other systems remain inside third-party packages (never loaded here)`);
   if (problems.length) throw new BuildError(`The bundle failed its audit (${problems.length} problem${problems.length === 1 ? '' : 's'}). No artifact was created.`, { details: problems.slice(0, 40) });
-  note(`${files} files, ${(bytes / 1024 / 1024).toFixed(0)} MB, ${natives.length} native modules for ${platform}-${arch}, no external tool`);
+  note(`${files} files, ${(bytes / 1024 / 1024).toFixed(0)} MB, ${natives.length} native modules for ${platform}-${arch}, no external tool, cloudflared ${cloudflared.version} (the pinned binary)`);
 }
 
 /** Every file of a bundle with its size and modification time: what "unchanged" is compared against. */
@@ -264,7 +324,7 @@ export async function smokeTest(ctx) {
   for (const [name, result] of Object.entries(facts.natives || {})) if (!result.ok) wrong.push(`${name}: ${result.error || 'failed'}`);
   if (!facts.natives) wrong.push('the native modules were not probed');
   if (wrong.length) throw new BuildError('The bundle does not run correctly on this machine. No artifact was created.', { details: wrong });
-  note(`Node ${facts.node.version} ${facts.node.platform}-${facts.node.arch} from the bundle; terminal and embedding runtime load, no external tool inside`);
+  note(`Node ${facts.node.version} ${facts.node.platform}-${facts.node.arch} from the bundle; terminal and embedding runtime load, no external tool inside${facts.natives.cloudflared?.ok ? `, its own cloudflared ${facts.natives.cloudflared.version} answers` : ''}`);
 
   let mcp;
   try {

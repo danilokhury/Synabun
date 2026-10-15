@@ -64,6 +64,7 @@ export const KEYS = {
   WORKSPACES:          'neural-workspaces',
   ACTIVE_WORKSPACE:    'neural-active-workspace',  // sessionStorage
   GRID_SNAP:           'neural-grid-snap',
+  TOPRIGHT_TOOLS_HIDDEN: 'neural-topright-tools-hidden',  // the workspace tools toggle is off ('true')
   CATEGORIES_VISIBLE:  'neural-categories-visible',
   WHITEBOARD:          'neural-whiteboard',
   WHITEBOARD_RULESET_ALERT_DISMISSED: 'neural-whiteboard-ruleset-alert-dismissed',
@@ -85,6 +86,10 @@ export const KEYS = {
   FILE_EXPLORER_SORT:     'neural-file-explorer-sort',
   FILE_EXPLORER_PROJECT:  'neural-file-explorer-project',
   FILE_EXPLORER_FOLDER_COLORS: 'neural-file-explorer-folder-colors',
+  // Per project: the open folders, the selection, the scroll position, "changed only" (shared/explorer/fx-main.js).
+  FILE_EXPLORER_TREE:     'neural-file-explorer-tree',
+  // Code editor — open tabs per project { v, projects: { [path]: { at, active, tabs: [{ path, pinned, anchor, head, top, dirty }] } } }
+  EDITOR_TABS:            'neural-editor-tabs',
   ACTIVE_SKIN:            'neural-active-skin',
   COST_WIDGET_POS:        'neural-cost-widget-pos',
   COST_WIDGET_COLLAPSED:  'neural-cost-widget-collapsed',
@@ -142,7 +147,6 @@ export const KEYBIND_META = {
   'toggle-explorer':     { label: 'Toggle Explorer',       group: 'Navigation' },
   'toggle-focus-mode':   { label: 'Toggle Focus Mode',     group: 'Navigation' },
   'toggle-minimap':      { label: 'Toggle Minimap',        group: 'View' },
-  'toggle-toolbar':      { label: 'Hide All Toolbars',    group: 'View' },
   'open-settings':       { label: 'Open Settings',          group: 'Settings' },
   'open-keybinds':       { label: 'Open Keybinds',         group: 'Settings' },
   'launch-assistant':    { label: 'Assistant',             group: 'Launch App', icon: 'assistant' },

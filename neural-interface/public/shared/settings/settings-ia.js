@@ -119,6 +119,14 @@ export const SETTINGS_PAGES = [
     ],
   },
   {
+    id: 'code-editor', key: 'code_editor', group: 'tools', icon: 'editor',
+    panes: [{ id: 'editor' }],
+    sections: [
+      { id: 'stg-sec-editor-editing', key: 'editing', state: 'open' },
+      { id: 'stg-sec-editor-ai', key: 'ai_autocomplete', state: 'open' },
+    ],
+  },
+  {
     id: 'automations', key: 'automations', group: 'automations', icon: 'hooks',
     panes: [{ id: 'hooks' }, { id: 'social' }, { id: 'youtube', titleKey: k('pane.youtube') }],
     sections: [
@@ -243,8 +251,10 @@ export const SETTINGS_CONTROLS = {
   'stg-sec-ml-server': 'ML012 ML013 ML014',
   'stg-sec-skills': 'SKL004 SKL001',
   'stg-sec-tool-permissions': 'PER012 PER001 PER002 PER003 PER004 PER005 PER006 PER007 PER008 PER009 PER010 PER011',
-  'stg-sec-greetings': 'AUT001 AUT002 AUT003 AUT047 AUT004 AUT005 AUT009 AUT010 AUT011 AUT012 AUT013 AUT014 AUT015 AUT016 AUT017 AUT018 AUT019 AUT020 AUT021 AUT022 AUT026 AUT027',
-  'stg-sec-automation-behavior': 'AUT046 AUT036 AUT037 AUT038 AUT039 AUT040 AUT041 AUT028 AUT029 AUT030 AUT031 AUT032 AUT033 AUT034 AUT035',
+  'stg-sec-editor-editing': 'EDT014 EDT015 EDT016 EDT017 EDT018 EDT019 EDT020 EDT021 EDT022 EDT023',
+  'stg-sec-editor-ai': 'EDT001 EDT002 EDT003 EDT004 EDT005 EDT006 EDT007 EDT008 EDT009 EDT010 EDT011 EDT012 EDT013',
+  'stg-sec-greetings': 'AUT058 AUT059 AUT060',
+  'stg-sec-automation-behavior': 'AUT053 AUT054 AUT055 AUT056 AUT057 AUT046 AUT036 AUT037 AUT038 AUT039 AUT040 AUT041 AUT028 AUT029 AUT030 AUT031 AUT032 AUT033 AUT034 AUT035',
   'stg-sec-online-access': 'AUT048 AUT042 AUT043 AUT044 AUT045 AUT049 AUT050 AUT051 AUT052',
   'stg-sec-social': 'SOC003 SOC001 SOC002',
   'stg-sec-youtube': 'YT017 YT001 YT002 YT003 YT004 YT005 YT006 YT007 YT008 YT009 YT010 YT011 YT012 YT013 YT014 YT015 YT016 YT018',
@@ -326,9 +336,13 @@ export const SETTINGS_TAB_ALIASES = {
 
 // Old `expand` / `highlight` / `scrollTo` ids whose element was merged into another
 // section. Ids that still exist in the markup (setup-claude, jv-sec-log, wa-sec-setup,
-// recall-controls, cc-greeting-config, bridge-openclaw, project-storage-manager,
-// cc-cli-paths …) need no entry: they resolve to themselves.
+// recall-controls, bridge-openclaw, project-storage-manager, cc-cli-paths …) need
+// no entry: they resolve to themselves.
 export const SETTINGS_SECTION_ALIASES = {
+  // The three greeting editors became the one Greeting section (lib/greeting/).
+  'cc-greeting-config':       'stg-sec-greetings',
+  'codex-greeting-config':    'stg-sec-greetings',
+  'opencode-greeting-config': 'stg-sec-greetings',
   'notif-sources-section':  'stg-sec-when',
   'notif-triggers-section': 'stg-sec-when',
   'notif-sound-section':    'stg-sec-sounds',

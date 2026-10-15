@@ -42,8 +42,5 @@ jobs:
       - name: Build MCP server
         run: npm run mcp:build
 
-      - name: Run tests
-        run: npm test
-
       - name: Inspect npm package
         run: npm run pack:check

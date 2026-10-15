@@ -7,9 +7,6 @@
 import { emit, on } from './state.js';
 import {
   fetchInviteStatus,
-  fetchTunnelStatus,
-  startTunnel,
-  stopTunnel,
   generateInviteKey,
   revokeInviteKey,
   revokeAllInviteSessions,
@@ -18,15 +15,25 @@ import {
   saveInvitePermissions,
 } from './api.js';
 import { isGuest } from './ui-sync.js';
+import { createTunnelCard, drawInto } from './ui-tunnel.js';
 
 const $ = (id) => document.getElementById(id);
 
 let _isOpen = false;
 let _data = { hasKey: false, maskedKey: null, activeSessions: 0, proxyConfig: { useProxy: false, proxyUrl: '' } };
-let _tunnelUrl = null;
-let _tunnelAvailable = false;
-let _tunnelStarting = false;
-let _tunnelPollTimer = null;
+// The Cloudflare tunnel: what the server says of it, read by tunnel-view.js; asked again by itself while a
+// download or a start is on its way, for as long as the dropdown is open (ui-tunnel.js).
+let _tunnelKind = null;
+const _tunnel = createTunnelCard({
+  alive: () => _isOpen,
+  onChange(view) {
+    if (!_isOpen) return;
+    // The address coming or going changes the other sections too (the invite link); anything else only this block.
+    const whole = view.kind !== _tunnelKind && (view.kind === 'running' || _tunnelKind === 'running');
+    _tunnelKind = view.kind;
+    if (whole) render(); else drawTunnel();
+  },
+});
 let _keyMode = 'auto'; // 'auto' | 'custom'
 let _revealedKey = null; // shown only right after generation
 let _permissions = { terminal: false, whiteboard: false, memories: true, skills: false, cards: true, browser: false };
@@ -60,45 +67,17 @@ function toggleDropdown() {
 
 async function loadAndRender() {
   try {
-    const [inviteRes, tunnelRes, permRes] = await Promise.all([
+    const [inviteRes, , permRes] = await Promise.all([
       fetchInviteStatus(),
-      fetchTunnelStatus(),
+      _tunnel.refresh(),
       fetchInvitePermissions(),
     ]);
     _data = inviteRes;
-    _tunnelUrl = tunnelRes.url || null;
-    _tunnelAvailable = tunnelRes.available;
-    _tunnelStarting = tunnelRes.starting || false;
     if (permRes?.permissions) _permissions = permRes.permissions;
   } catch (err) {
     console.warn('[invite] Failed to load status:', err);
   }
   render();
-}
-
-// ─── Tunnel polling ─────────────────────
-
-function pollForTunnelUrl() {
-  if (_tunnelPollTimer) clearInterval(_tunnelPollTimer);
-  let attempts = 0;
-  _tunnelPollTimer = setInterval(async () => {
-    attempts++;
-    try {
-      const res = await fetchTunnelStatus();
-      if (res.url) {
-        clearInterval(_tunnelPollTimer);
-        _tunnelPollTimer = null;
-        _tunnelUrl = res.url;
-        _tunnelStarting = false;
-        if (_isOpen) render();
-      } else if (attempts >= 30) {
-        clearInterval(_tunnelPollTimer);
-        _tunnelPollTimer = null;
-        _tunnelStarting = false;
-        if (_isOpen) render();
-      }
-    } catch {}
-  }, 1000);
 }
 
 // ─── URL helpers ────────────────────────
@@ -107,7 +86,7 @@ function getBaseUrl() {
   if (_data.proxyConfig?.useProxy && _data.proxyConfig?.proxyUrl) {
     return _data.proxyConfig.proxyUrl.replace(/\/+$/, '');
   }
-  return _tunnelUrl || null;
+  return _tunnel.view().url || null;
 }
 
 function getInviteUrl() {
@@ -136,9 +115,7 @@ function render() {
   const dd = $('invite-dropdown');
   if (!dd) return;
 
-  const baseUrl = getBaseUrl();
   const inviteUrl = getInviteUrl();
-  const hasUrl = !!baseUrl;
   const useProxy = _data.proxyConfig?.useProxy || false;
 
   dd.innerHTML = `
@@ -153,39 +130,7 @@ function render() {
           <button class="invite-alt-link" id="invite-mode-tunnel">Use Cloudflare tunnel</button>
         </div>
       ` : `
-        ${hasUrl ? `
-          <div class="invite-status-row">
-            <span class="invite-status-dot active"></span>
-            <span class="invite-url-text">${baseUrl}</span>
-            <button class="invite-copy-icon" id="invite-copy-base-url" data-tooltip="Copy"><svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
-            <span class="invite-copied" id="invite-copied-url">Copied</span>
-          </div>
-          <div class="invite-action-row">
-            <button class="invite-btn" id="invite-tunnel-stop">Stop</button>
-            <button class="invite-alt-link" id="invite-mode-proxy">Use custom URL</button>
-          </div>
-        ` : `
-          ${_tunnelAvailable ? `
-            ${_tunnelStarting ? `
-              <div class="invite-action-row">
-                <button class="invite-btn" disabled style="opacity:0.5;cursor:default">
-                  <svg viewBox="0 0 24 24" class="invite-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
-                  Starting...
-                </button>
-              </div>
-            ` : `
-              <div class="invite-action-row">
-                <button class="invite-btn primary" id="invite-tunnel-start">Start Tunnel</button>
-                <button class="invite-alt-link" id="invite-mode-proxy">Use custom URL</button>
-              </div>
-            `}
-          ` : `
-            <div class="invite-action-row">
-              <span style="font-size:10px;color:var(--t-dimmed)">cloudflared not available</span>
-              <button class="invite-alt-link" id="invite-mode-proxy">Use custom URL</button>
-            </div>
-          `}
-        `}
+        <div id="invite-tunnel"></div>
       `}
     </div>
 
@@ -242,12 +187,118 @@ function render() {
     ` : ''}
   `;
 
+  wireTunnel();
+  drawTunnel();
   wireEvents();
   updateBadge();
 }
 
+// ─── The tunnel block ───────────────────
+// Drawn by itself: while cloudflared is being downloaded the progress changes every second, and the rest of the
+// dropdown (a password being typed, a key just shown) must not be drawn over for that.
+
+const COPY_ICON = '<svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+const SPINNER = '<svg viewBox="0 0 24 24" class="invite-spin invite-tunnel-spinner" aria-hidden="true"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>';
+const USE_CUSTOM = '<button class="invite-alt-link" id="invite-mode-proxy">Use custom URL</button>';
+
+/** The markup of the tunnel block for a reading of tunnel-view.js. */
+function tunnelBlock(view) {
+  const label = escHtml(view.label);
+  const detail = view.detail ? `<div class="invite-tunnel-detail">${escHtml(view.detail)}</div>` : '';
+  if (view.kind === 'running') {
+    return `
+      <div class="invite-status-row" role="status">
+        <span class="invite-status-dot active" aria-hidden="true"></span>
+        <span class="invite-url-text" title="${label}">${escHtml(view.url)}</span>
+        <button class="invite-copy-icon" id="invite-copy-base-url" data-tooltip="Copy" aria-label="Copy">${COPY_ICON}</button>
+        <span class="invite-copied" id="invite-copied-url">Copied</span>
+      </div>
+      ${view.copy ? `<div class="invite-tunnel-detail invite-tunnel-copy">${escHtml(view.copy)}${view.copyNote ? ` ${escHtml(view.copyNote)}` : ''}</div>` : ''}
+      <div class="invite-action-row">
+        <button class="invite-btn" id="invite-tunnel-stop">${escHtml(view.actionLabel)}</button>
+        ${USE_CUSTOM}
+      </div>`;
+  }
+  if (view.kind === 'downloading' || view.kind === 'starting') {
+    return `
+      <div class="invite-status-row" role="status">
+        ${SPINNER}
+        <span class="invite-tunnel-state">${label}</span>
+        ${view.progress ? `<span class="invite-tunnel-percent">${escHtml(view.progress.text)}</span>` : ''}
+      </div>
+      ${view.progress ? `<div class="invite-progress" role="progressbar" aria-label="${label}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${view.progress.percent}"><span style="width:${view.progress.percent}%"></span></div>` : ''}
+      ${detail}
+      <div class="invite-action-row">
+        <button class="invite-btn" id="invite-tunnel-stop">${escHtml(view.actionLabel)}</button>
+        ${USE_CUSTOM}
+      </div>`;
+  }
+  if (view.kind === 'failed') {
+    return `
+      <div class="invite-status-row" role="alert">
+        <span class="invite-status-dot error" aria-hidden="true"></span>
+        <span class="invite-tunnel-state error">${label}</span>
+      </div>
+      ${detail}
+      <div class="invite-action-row">
+        <button class="invite-btn primary" id="invite-tunnel-start">${escHtml(view.actionLabel)}</button>
+        ${USE_CUSTOM}
+      </div>`;
+  }
+  if (view.kind === 'idle') {
+    return `
+      ${detail}
+      <div class="invite-action-row">
+        <button class="invite-btn primary" id="invite-tunnel-start">${escHtml(view.actionLabel)}</button>
+        ${USE_CUSTOM}
+      </div>`;
+  }
+  // No tunnel can be started from here (the server needs a restart first, or this system has no tunnel
+  // program): the state, why, and the other way to an address.
+  return `
+    <div class="invite-status-row" role="status">
+      <span class="invite-status-dot${view.tone === 'warn' ? ' warn' : ''}" aria-hidden="true"></span>
+      <span class="invite-tunnel-state">${label}</span>
+    </div>
+    ${detail}
+    <div class="invite-action-row">
+      ${USE_CUSTOM}
+    </div>`;
+}
+
+function drawTunnel() {
+  const box = $('invite-tunnel');
+  if (box) drawInto(box, tunnelBlock(_tunnel.view()));
+}
+
+/** One listener for the block: its buttons come and go with the state. */
+function wireTunnel() {
+  const box = $('invite-tunnel');
+  if (!box) return;
+  box.addEventListener('click', async (e) => {
+    const button = e.target.closest('button');
+    if (!button || !box.contains(button)) return;
+    e.stopPropagation();
+    if (button.id === 'invite-tunnel-start') {
+      // Shown at once: the server answers immediately too, and then says what it is doing.
+      _tunnel.show({ ...(_tunnel.status() || {}), state: 'starting', starting: true, url: null, error: null });
+      await _tunnel.start();
+    } else if (button.id === 'invite-tunnel-stop') {
+      await _tunnel.stop();
+    } else if (button.id === 'invite-copy-base-url') {
+      const url = getBaseUrl();
+      if (url) copyText(url, 'invite-copied-url');
+    } else if (button.id === 'invite-mode-proxy') {
+      await saveInviteProxy({ useProxy: true, proxyUrl: _data.proxyConfig?.proxyUrl || '' });
+      _data.proxyConfig = { useProxy: true, proxyUrl: _data.proxyConfig?.proxyUrl || '' };
+      _revealedKey = null;
+      render();
+    }
+  });
+}
+
 function escHtml(s) {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 const PERM_ICONS = {
@@ -282,48 +333,7 @@ function wireEvents() {
     render();
   });
 
-  $('invite-mode-proxy')?.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    await saveInviteProxy({ useProxy: true, proxyUrl: _data.proxyConfig?.proxyUrl || '' });
-    _data.proxyConfig = { useProxy: true, proxyUrl: _data.proxyConfig?.proxyUrl || '' };
-    _revealedKey = null;
-    render();
-  });
-
-  // Copy base URL
-  $('invite-copy-base-url')?.addEventListener('click', (e) => {
-    e.stopPropagation();
-    const url = getBaseUrl();
-    if (url) copyText(url, 'invite-copied-url');
-  });
-
-  // Tunnel start/stop
-  $('invite-tunnel-start')?.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    try {
-      _tunnelStarting = true;
-      render();
-      await startTunnel();
-      pollForTunnelUrl();
-    } catch (err) {
-      console.error('[invite] Tunnel start failed:', err);
-      _tunnelStarting = false;
-      render();
-    }
-  });
-
-  $('invite-tunnel-stop')?.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    try {
-      await stopTunnel();
-      _tunnelUrl = null;
-      _tunnelStarting = false;
-      if (_tunnelPollTimer) { clearInterval(_tunnelPollTimer); _tunnelPollTimer = null; }
-      render();
-    } catch (err) {
-      console.error('[invite] Tunnel stop failed:', err);
-    }
-  });
+  // (The tunnel block's own buttons, "Use custom URL" among them, are wired in wireTunnel.)
 
   // Proxy save
   $('invite-proxy-save')?.addEventListener('click', async (e) => {

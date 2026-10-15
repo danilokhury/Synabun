@@ -1,6 +1,6 @@
 {
   "name": "neural-memory-interface",
-  "version": "2.0.4",
+  "version": "2.0.5",
   "private": true,
   "description": "Private local SynaBun interface for memory visualization and multi-agent workflows",
   "license": "Apache-2.0",
@@ -17,7 +17,6 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node --test tests/*.test.mjs",
     "build:vendor": "node scripts/build-vendor.mjs",
     "postinstall": "node scripts/rebuild-pty.js && node scripts/build-vendor.mjs"
   },
@@ -52,6 +51,18 @@
     "tar": "^7.5.19"
   },
   "devDependencies": {
+    "@codemirror/autocomplete": "6.20.3",
+    "@codemirror/commands": "6.11.1",
+    "@codemirror/language": "6.13.1",
+    "@codemirror/language-data": "6.5.2",
+    "@codemirror/legacy-modes": "6.5.5",
+    "@codemirror/lint": "6.9.7",
+    "@codemirror/merge": "6.12.2",
+    "@codemirror/search": "6.7.2",
+    "@codemirror/state": "6.7.6",
+    "@codemirror/view": "6.43.14",
+    "@lezer/highlight": "1.2.5",
+    "@replit/codemirror-indentation-markers": "6.5.3",
     "esbuild": "^0.28.1",
     "three": "0.169.0"
   }

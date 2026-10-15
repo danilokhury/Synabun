@@ -65,6 +65,18 @@ runtime dependencies in the published package.
 
 | Package | Manifest range | Locked version | Declared license | Project |
 | --- | --- | --- | --- | --- |
+| `@codemirror/autocomplete` | `6.20.3` | 6.20.3 | MIT | [npm](https://www.npmjs.com/package/@codemirror/autocomplete) |
+| `@codemirror/commands` | `6.11.1` | 6.11.1 | MIT | [npm](https://www.npmjs.com/package/@codemirror/commands) |
+| `@codemirror/language` | `6.13.1` | 6.13.1 | MIT | [npm](https://www.npmjs.com/package/@codemirror/language) |
+| `@codemirror/language-data` | `6.5.2` | 6.5.2 | MIT | [npm](https://www.npmjs.com/package/@codemirror/language-data) |
+| `@codemirror/legacy-modes` | `6.5.5` | 6.5.5 | MIT | [npm](https://www.npmjs.com/package/@codemirror/legacy-modes) |
+| `@codemirror/lint` | `6.9.7` | 6.9.7 | MIT | [npm](https://www.npmjs.com/package/@codemirror/lint) |
+| `@codemirror/merge` | `6.12.2` | 6.12.2 | MIT | [npm](https://www.npmjs.com/package/@codemirror/merge) |
+| `@codemirror/search` | `6.7.2` | 6.7.2 | MIT | [npm](https://www.npmjs.com/package/@codemirror/search) |
+| `@codemirror/state` | `6.7.6` | 6.7.6 | MIT | [npm](https://www.npmjs.com/package/@codemirror/state) |
+| `@codemirror/view` | `6.43.14` | 6.43.14 | MIT | [npm](https://www.npmjs.com/package/@codemirror/view) |
+| `@lezer/highlight` | `1.2.5` | 1.2.5 | MIT | [npm](https://www.npmjs.com/package/@lezer/highlight) |
+| `@replit/codemirror-indentation-markers` | `6.5.3` | 6.5.3 | MIT | [npm](https://www.npmjs.com/package/@replit/codemirror-indentation-markers) |
 | `esbuild` | `^0.28.1` | 0.28.1 | MIT | [npm](https://www.npmjs.com/package/esbuild) |
 | `three` | `0.169.0` | 0.169.0 | MIT | [npm](https://www.npmjs.com/package/three) |
 
@@ -79,6 +91,29 @@ runtime dependencies in the published package.
 | Mermaid | 11.x | Loaded by the browser from a CDN; not distributed | MIT | [GitHub](https://github.com/mermaid-js/mermaid) |
 | html2canvas | 1.4.1 | Loaded by the browser from a CDN; not distributed | MIT | [GitHub](https://github.com/niklasvh/html2canvas) |
 
+### CodeMirror 6
+
+The File Explorer's code editor. Bundled by `neural-interface/scripts/build-vendor.mjs` into `neural-interface/public/vendor/codemirror/`; its `manifest.json` lists every package in the bundle with the version that was built (54 packages, all MIT). The ones SynaBun depends on directly:
+
+- **@codemirror/state** 6.7.6, **@codemirror/view** 6.43.14, **@codemirror/language** 6.13.1, **@codemirror/commands** 6.11.1, **@codemirror/search** 6.7.2, **@codemirror/autocomplete** 6.20.3, **@codemirror/lint** 6.9.7, **@codemirror/merge** 6.12.2, **@codemirror/language-data** 6.5.2, **@codemirror/legacy-modes** 6.5.5
+  - **License:** MIT
+  - **Copyright:** Copyright (C) 2018-2021 by Marijn Haverbeke and others
+  - **URL:** https://codemirror.net/ (source: https://github.com/codemirror)
+- **@lezer/highlight** 1.2.5
+  - **License:** MIT
+  - **Copyright:** Copyright (C) 2018 by Marijn Haverbeke and others
+  - **URL:** https://lezer.codemirror.net/ (source: https://github.com/lezer-parser)
+- **@replit/codemirror-indentation-markers** 6.5.3
+  - **License:** MIT
+  - **Copyright:** Copyright (c) 2022 Replit
+  - **URL:** https://github.com/replit/codemirror-indentation-markers
+
+Brought in by those, and in the bundle too (MIT, Copyright (C) Marijn Haverbeke and others):
+
+- the languages `@codemirror/language-data` loads on demand: `@codemirror/lang-angular`, `@codemirror/lang-cpp`, `@codemirror/lang-css`, `@codemirror/lang-go`, `@codemirror/lang-html`, `@codemirror/lang-java`, `@codemirror/lang-javascript`, `@codemirror/lang-jinja`, `@codemirror/lang-json`, `@codemirror/lang-less`, `@codemirror/lang-liquid`, `@codemirror/lang-markdown`, `@codemirror/lang-php`, `@codemirror/lang-python`, `@codemirror/lang-rust`, `@codemirror/lang-sass`, `@codemirror/lang-sql`, `@codemirror/lang-vue`, `@codemirror/lang-wast`, `@codemirror/lang-xml`, `@codemirror/lang-yaml`, and `@codemirror/streamparser`
+- the Lezer parser runtime and grammars: `@lezer/common`, `@lezer/lr`, `@lezer/cpp`, `@lezer/css`, `@lezer/go`, `@lezer/html`, `@lezer/java`, `@lezer/javascript`, `@lezer/json`, `@lezer/markdown`, `@lezer/php`, `@lezer/python`, `@lezer/rust`, `@lezer/sass`, `@lezer/xml`, `@lezer/yaml`
+- `style-mod`, `w3c-keyname`, `crelt` and `@marijn/find-cluster-break`
+
 ## Vendored Code
 
 | Component | Location | License | Project |
@@ -91,6 +126,17 @@ The QR Code generator is transpiled to JavaScript from
 [nayuki/QR-Code-generator](https://github.com/nayuki/QR-Code-generator), with
 its license header kept. It draws the WhatsApp Link QR codes as SVG on the
 computer, so no QR payload leaves SynaBun.
+
+## Bundled Programs
+
+| Program | Version | Delivery | License | Project |
+| --- | --- | --- | --- | --- |
+| cloudflared | 2026.10.0 (pinned in `neural-interface/lib/cloudflared/pins.json` with the SHA-256 of each release file and of the binary inside it) | Cloudflare's own release binary, unmodified. The application installers carry it; an npm or Git install downloads the same release file from Cloudflare's GitHub releases the first time a tunnel is started and checks it against the pinned SHA-256 before it runs | Apache-2.0 | [GitHub](https://github.com/cloudflare/cloudflared) |
+
+cloudflared opens the Cloudflare quick tunnel behind the public address
+(invite links and remote MCP). It runs as a separate process, started only
+when the user starts a tunnel. Using cloudflared and the tunnel service is
+subject to Cloudflare's own terms.
 
 ## Installed On Demand (Not Distributed)
 

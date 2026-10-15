@@ -27,6 +27,10 @@
       "origin": "SHA-256 of the release asset as published by GitHub."
     }
   },
+  "cloudflared": {
+    "pins": "neural-interface/lib/cloudflared/pins.json",
+    "origin": "Not pinned here: the application fetches cloudflared itself after an npm install, so its pins ship with it. A build reads that same file from the application it stages (lib/stage.mjs provisionCloudflared) and its audit checks the bundle against it."
+  },
   "embeddingModel": {
     "id": "Xenova/all-MiniLM-L6-v2",
     "origin": "SHA-256 of the files the application's own installer (mcp-server setup:embeddings) downloads.",

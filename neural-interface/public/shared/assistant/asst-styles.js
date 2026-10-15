@@ -359,11 +359,19 @@ export function injectAssistantStyles() {
     }
     .asst-empty-title { color: var(--asst-text); font-family: var(--ff-heading, inherit); font-size: 20px; font-weight: 600; letter-spacing: -.01em; }
     .asst-empty-body { max-width: 440px; color: var(--asst-text-3); font-size: 13px; line-height: 1.55; }
+    /* The greeting (public/shared/greeting/) takes the lead's place when there is one. */
+    .asst-empty-greet { display: contents; }
+    .asst-empty.has-greeting .asst-empty-body { display: none; }
     .asst-suggestions { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; max-width: 560px; margin-top: 6px; }
     .asst-chip.asst-suggestion { --cap-h: var(--asst-pill-h-md); --cap-r: var(--asst-pill-r-md); --cap-px: var(--asst-pill-px-md); --cap-fs: 12px; justify-content: flex-start; text-align: left; }
     .asst-chip.asst-suggestion > .asst-icon svg { width: 20px; height: 14px; }
     .asst-chip.asst-suggestion > .asst-icon { color: var(--asst-text-3); }
     .asst-chip.asst-suggestion:is(:hover, :focus-visible) > .asst-icon { color: var(--asst-text); }
+    /* "Choose a project": the toolbar's Working project field, centred under the lead (asst-brain-picker.js mountEmptyProject). An md capsule like the suggestions. */
+    .asst-empty-project { display: flex; justify-content: center; max-width: 100%; }
+    .asst-dd.asst-empty-project-btn { max-width: min(100%, 360px); }
+    .asst-empty-project-btn .asst-dd-label { max-width: 30ch; }
+    .asst-empty-project-key { flex-shrink: 0; color: var(--asst-text-3); font-weight: 400; }
 
     /* ── Messages ───────────────────────────────────────────────────── */
     .asst-msg { display: flex; flex-direction: column; min-width: 0; }
@@ -610,6 +618,39 @@ export function injectAssistantStyles() {
       color: var(--asst-text-3);
       font-size: 12px;
     }
+    /* ── Automation trace (one row per turn: asst-automation.js) ─────── */
+    .asst-transcript > .asst-auto + .asst-route-line,
+    .asst-transcript > .asst-route-line + .asst-auto,
+    .asst-transcript > .asst-msg.msg-user + .asst-auto,
+    .asst-transcript > .asst-msg.msg-assistant + .asst-auto { margin-top: 4px; }
+    .asst-auto .asst-auto-head { color: var(--asst-text-3); }
+    .asst-auto .asst-route-glyph { display: inline-flex; color: var(--asst-text-4); }
+    .asst-auto .asst-route-glyph svg { width: 12px; height: 12px; }
+    .asst-auto.learned .asst-route-glyph { color: var(--asst-brand); }
+    .asst-auto-title { flex-shrink: 0; color: var(--asst-text-2); white-space: nowrap; }
+    /* The summary is what gives way in a narrow panel: one line, ellipsized. */
+    .asst-auto .asst-auto-summary { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .asst-auto.learned .asst-auto-state { color: var(--asst-brand); }
+    .asst-auto-detail { gap: 10px; }
+    .asst-auto-group { display: flex; flex-direction: column; gap: 4px; }
+    .asst-auto-h { color: var(--asst-text-3); font-size: 11px; font-weight: 500; letter-spacing: .02em; }
+    .asst-auto-row { display: flex; flex-direction: column; gap: 2px; color: var(--asst-text-2); }
+    .asst-auto-row.muted { color: var(--asst-text-3); }
+    .asst-auto-row.learned .asst-auto-text { color: var(--asst-text); }
+    .asst-auto-row-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
+    .asst-auto-tier { color: var(--asst-text-2); font-weight: 500; }
+    .asst-auto-meta { color: var(--asst-text-3); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+    .asst-auto-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+    pre.asst-auto-text {
+      padding: 6px 8px;
+      border-radius: var(--asst-r-ctl);
+      background: var(--asst-fill-1);
+      color: var(--asst-text-2);
+      font-family: var(--asst-mono);
+      font-size: 11.5px;
+      line-height: 1.45;
+    }
+    .asst-auto-ids { display: flex; flex-wrap: wrap; gap: 2px 10px; font-family: var(--asst-mono); font-size: 11px; }
     .asst-link { padding: 0; border: 0; background: transparent; color: var(--asst-focus); font: inherit; text-align: left; cursor: pointer; }
     .asst-link:hover { text-decoration: underline; }
     .asst-link:disabled { color: var(--asst-text-4); cursor: default; text-decoration: none; }
@@ -1548,6 +1589,109 @@ export function injectAssistantStyles() {
       .asst-routes-row { flex-wrap: wrap; }
     }
 
+    /* Model routes editor: Settings density on a desktop pointer. Scoped here
+       so route cards, the model manager and other Assistant menus keep their UI. */
+    .asst-routes-overlay { font-family: var(--stg-font, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Inter, sans-serif); }
+    .asst-routes-overlay .asst-routes-modal { width: min(800px, 100%); max-height: calc(100dvh - 32px); border-radius: var(--asst-r-card); line-height: 1.4; }
+    .asst-routes-modal :is(.asst-btn, .asst-dd, .asst-iconbtn) { --cap-h: var(--asst-pill-h-sm); --cap-r: var(--asst-pill-r-xs); --cap-px: var(--asst-pill-px-sm); --cap-icon: 12px; --cap-gap: 4px; }
+    .asst-routes-modal .asst-modal-head { min-height: 40px; padding: 8px 14px 8px 22px; font-size: 13px; }
+    .asst-routes-modal .asst-modal-head .asst-icon { color: var(--asst-text-2); }
+    .asst-routes-modal .asst-modal-close { width: var(--cap-h); height: var(--cap-h); }
+    .asst-routes-modal .asst-modal-body { gap: 12px; padding: 12px 22px; scroll-padding: 28px 0; }
+    .asst-routes-modal .asst-modal-foot { padding: 10px 22px; }
+    .asst-routes-modal .asst-btn { height: var(--cap-h); min-height: var(--cap-h); padding: 0 10px; }
+    .asst-routes-modal .asst-routes-section { flex-shrink: 0; gap: 6px; margin: 0; min-width: 0; }
+    .asst-routes-modal .asst-routes-section-title { margin: 0; color: var(--asst-text); font-size: 13px; font-weight: 600; }
+    .asst-routes-modal .asst-routes-modes { gap: 0; padding: 0; border-radius: var(--asst-pill-r-xs); background: var(--asst-fill-1); }
+    .asst-routes-modal .asst-routes-mode { position: relative; flex-direction: row; align-items: center; justify-content: center; height: var(--asst-pill-h-sm); padding: 0 8px; gap: 0; min-width: 0; border-radius: var(--asst-pill-r-xs); box-shadow: none; color: var(--asst-text-2); }
+    .asst-routes-mode input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+    .asst-routes-modal .asst-routes-mode:has(input:checked) { background: var(--asst-fill-3); color: var(--asst-text); box-shadow: inset 0 0 0 1px var(--asst-line-2); }
+    .asst-routes-modal .asst-routes-mode-label { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12px; font-weight: 500; }
+    .asst-routes-modal .asst-routes-mode-desc, .asst-routes-session-note { margin: 0; color: var(--asst-text-2); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+    .asst-routes-session-note { color: var(--asst-text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .asst-routes-mode:has(:focus-visible) { outline: 2px solid var(--asst-focus); outline-offset: 2px; z-index: 1; }
+    .asst-routes-section-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+    .asst-routes-list-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .asst-routes-modal .asst-routes-list-actions .asst-btn { background: transparent; box-shadow: none; padding: 0 2px; color: var(--asst-text-2); font-weight: 400; }
+    .asst-routes-modal .asst-routes-list-actions .asst-btn:hover:not(:disabled) { color: var(--asst-text); background: var(--asst-fill-1); }
+    /* Reserve the widths the current model names, effort words and destinations
+       need; give all remaining space to task descriptions instead of a share. */
+    .asst-routes-modal .asst-routes-columns, .asst-routes-modal .asst-routes-row { display: grid; grid-template-columns: minmax(0, 1fr) 208px 84px 128px var(--asst-pill-h-sm); column-gap: 6px; }
+    .asst-routes-columns { position: sticky; top: -14px; z-index: 1; padding: 4px 8px; color: var(--asst-text-3); font-size: 11.5px; background: var(--asst-popover); }
+    .asst-routes-columns span:last-child { visibility: hidden; }
+    .asst-routes-modal .asst-routes-list { padding: 0 8px; border: 1px solid var(--asst-line); border-radius: var(--radius-group, 9px); background: var(--asst-field); }
+    .asst-routes-modal .asst-routes-row { align-items: center; row-gap: 0; padding: 2px 0; border-top: 1px solid var(--asst-line); }
+    .asst-routes-modal .asst-routes-row:first-child { border-top: 0; }
+    .asst-routes-modal .asst-routes-row-main { min-width: 0; }
+    .asst-routes-modal .asst-routes-row-label { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13px; font-weight: 400; line-height: 1.3; }
+    .asst-routes-modal :is(.asst-routes-row-desc, .asst-routes-row-note, .asst-routes-row-warning, .asst-routes-row-context) { margin: 0; padding: 0; border: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--asst-text-3); font-size: 11.5px; line-height: 1.3; }
+    .asst-routes-modal :is(.asst-routes-row-note, .asst-routes-row-warning) { color: var(--asst-warn); }
+    .asst-routes-modal .asst-routes-row > :is(.asst-routes-row-note, .asst-routes-row-warning, .asst-routes-row-context) { grid-column: 1 / -1; white-space: normal; overflow: visible; overflow-wrap: anywhere; }
+    .asst-routes-inactive { margin-inline-start: 6px; color: var(--asst-text-3); font-size: 11px; }
+    .asst-routes-cell { display: flex; min-width: 0; }
+    .asst-routes-cell-label { display: none; }
+    .asst-routes-modal .asst-dd { width: 100%; max-width: none; height: var(--cap-h); min-height: var(--cap-h); padding: 0 6px; background: var(--asst-fill-2); box-shadow: inset 0 0 0 1px var(--asst-line); color: var(--asst-text); }
+    .asst-routes-modal .asst-dd .asst-dd-label { flex: 1; max-width: none; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; line-height: 1; font-size: 12px; text-align: start; }
+    .asst-routes-modal .asst-dd > .asst-icon { margin: 0; padding: 0; box-shadow: none; }
+    .asst-routes-modal .asst-dd:disabled { opacity: 1; cursor: default; background: transparent; box-shadow: none; color: var(--asst-text-3); }
+    .asst-routes-modal .asst-routes-source { display: inline-flex; flex-shrink: 0; min-width: 0; width: 12px; height: 12px; padding: 0; border-radius: 0; background: none; box-shadow: none; color: var(--asst-text-3); }
+    .asst-routes-source svg { width: 12px; height: 12px; }
+    .asst-routes-modal .asst-routes-source[data-edited="true"] { color: var(--asst-text); }
+    .asst-routes-modal .asst-routes-source:is([data-source="disabled"], [data-source="incapable"]) { color: var(--asst-warn); text-decoration: none; }
+    .asst-routes-modal .asst-routes-reset { width: var(--cap-h); min-width: var(--cap-h); padding: 0; color: var(--asst-text-3); }
+    .asst-routes-draft { flex: 1; min-width: 0; color: var(--asst-text-3); font-size: 12px; }
+    .asst-routes-draft[data-dirty="true"] { color: var(--asst-brand); }
+    .asst-routes-scroll-cue { display: none; flex-shrink: 0; min-height: 44px; padding: 8px 14px; border: 0; border-top: 1px solid var(--asst-line); background: transparent; color: var(--asst-text-2); font: inherit; font-size: 12px; cursor: pointer; }
+    .asst-routes-confirm { display: flex; flex-shrink: 0; align-items: center; flex-wrap: wrap; gap: 8px; padding: 10px 22px; border-top: 1px solid var(--asst-line); }
+    .asst-routes-confirm-copy { display: flex; flex: 1 1 240px; flex-direction: column; gap: 4px; min-width: 0; font-size: 12px; }
+    .asst-routes-confirm-copy span { color: var(--asst-text-2); }
+    .asst-routes-confirm-action { box-shadow: inset 0 0 0 1px var(--asst-warn); }
+    .asst-routes-modal .asst-routes-notice { box-shadow: none; padding: 0; color: var(--asst-text-2); }
+    .asst-routes-catalog-note { padding: 8px; color: var(--asst-warn); font-size: 12px; line-height: 1.45; background: var(--asst-fill-1); border-radius: var(--asst-pill-r-xs); }
+    .asst-routes-modal .asst-routes-error { flex-wrap: wrap; }
+    .asst-routes-modal .asst-routes-error span { min-width: 0; overflow-wrap: anywhere; }
+    .asst-routes-overlay :is(.asst-route-model-menu, .asst-route-field-menu) { max-width: min(440px, calc(100vw - 16px)); font-family: inherit; font-size: 12px; }
+    .asst-routes-overlay :is(.asst-route-model-menu, .asst-route-field-menu) .asst-dd-item { height: var(--asst-pill-h-sm); min-height: var(--asst-pill-h-sm); padding: 0 8px; border-radius: var(--asst-pill-r-xs); }
+    .asst-routes-overlay :is(.asst-route-model-menu, .asst-route-field-menu) .asst-dd-item-main { flex-direction: row; align-items: center; gap: 8px; }
+    .asst-routes-overlay :is(.asst-route-model-menu, .asst-route-field-menu) .asst-dd-item-label { flex-shrink: 0; max-width: 60%; }
+    .asst-routes-overlay :is(.asst-route-model-menu, .asst-route-field-menu) .asst-dd-item-desc { flex: 1; text-align: end; }
+    .asst-routes-overlay .asst-route-model-menu .asst-dd-input { height: var(--asst-pill-h-sm); min-height: var(--asst-pill-h-sm); font-size: 12px; border-radius: var(--asst-pill-r-xs); }
+    .asst-routes-overlay .asst-route-model-menu .asst-dd-input:focus-visible { outline: 2px solid var(--asst-focus); outline-offset: -2px; }
+    .asst-route-menu-foot { flex-shrink: 0; display: flex; flex-wrap: wrap; align-items: center; border-top: 1px solid var(--asst-line-2); padding-top: 4px; }
+    .asst-route-menu-foot .asst-dd-info { flex: 1 0 100%; font-size: 12px; color: var(--asst-text-2); }
+    .asst-route-menu-foot .asst-dd-item { flex: 1; width: auto; }
+    /* Large targets belong to a coarse pointer or the narrow stacked layout. */
+    @media (pointer: coarse), (max-width: 600px) {
+      .asst-routes-modal :is(.asst-btn, .asst-dd, .asst-iconbtn) { --cap-h: 44px; }
+      .asst-routes-modal .asst-routes-mode { height: auto; min-height: 44px; }
+      .asst-routes-modal .asst-routes-mode-label { white-space: normal; }
+      .asst-routes-modal .asst-routes-columns, .asst-routes-modal .asst-routes-row { grid-template-columns: minmax(0, 1.15fr) minmax(0, 1.55fr) minmax(0, .7fr) minmax(0, .9fr) 44px; }
+      .asst-routes-overlay :is(.asst-route-model-menu, .asst-route-field-menu) :is(.asst-dd-item, .asst-dd-input) { min-height: 44px; height: auto; padding: 8px; }
+      .asst-routes-overlay :is(.asst-route-model-menu, .asst-route-field-menu) .asst-dd-item-main { flex-direction: column; align-items: stretch; gap: 2px; }
+      .asst-routes-overlay :is(.asst-route-model-menu, .asst-route-field-menu) :is(.asst-dd-item-label, .asst-dd-item-desc) { white-space: normal; max-width: none; text-align: start; overflow-wrap: anywhere; }
+    }
+    @media (max-width: 600px) {
+      .asst-routes-overlay { padding: 8px; }
+      .asst-routes-overlay .asst-routes-modal { max-height: calc(100dvh - 16px); }
+      .asst-routes-modal .asst-modal-body { padding: 14px; gap: 16px; }
+      .asst-routes-modal .asst-modal-head { padding-inline: 14px 8px; }
+      .asst-routes-modal .asst-routes-modes { grid-template-columns: 1fr; }
+      .asst-routes-modal .asst-routes-columns { display: none; }
+      .asst-routes-modal .asst-routes-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 44px; gap: 8px; padding: 12px 0; }
+      .asst-routes-modal .asst-routes-row-main, .asst-routes-modal .asst-routes-model-cell { grid-column: 1 / -1; }
+      .asst-routes-cell { flex-direction: column; gap: 4px; }
+      .asst-routes-cell-label { display: block; color: var(--asst-text-3); font-size: 11.5px; }
+      .asst-routes-reset-cell { align-self: end; }
+      .asst-routes-reset-cell:empty { display: none; }
+      .asst-routes-modal .asst-modal-foot { display: grid; grid-template-columns: 1fr auto auto; padding: 10px 14px; }
+      .asst-routes-draft { grid-column: 1 / -1; grid-row: 1; }
+      .asst-routes-reset-all { grid-column: 1; grid-row: 2; justify-self: start; }
+      .asst-routes-cancel { grid-column: 2; grid-row: 2; }
+      .asst-routes-save { grid-column: 3; grid-row: 2; }
+      .asst-routes-scroll-cue { display: block; }
+      .asst-routes-confirm { padding: 10px 14px; }
+    }
+
     /* ── Frame lightbox ─────────────────────────────────────────────── */
     .asst-lightbox { position: fixed; inset: 0; z-index: 100040; display: flex; align-items: center; justify-content: center; background: var(--asst-scrim-strong); }
     .asst-lightbox-figure { display: flex; flex-direction: column; align-items: center; gap: 10px; margin: 0; }
@@ -1645,6 +1789,9 @@ export function injectAssistantStyles() {
       :is(.asst-cost, .asst-bar-group[data-group="context"]) { display: none !important; }
       .asst-suggestions { flex-direction: column; align-items: stretch; width: 100%; }
       .asst-chip.asst-suggestion { justify-content: flex-start; max-width: none; }
+      .asst-empty-project { width: 100%; }
+      .asst-dd.asst-empty-project-btn { flex: 1 1 auto; justify-content: flex-start; max-width: none; }
+      .asst-empty-project-btn .asst-dd-label { flex: 1 1 auto; max-width: none; text-align: start; }
       .asst-msg.msg-user .asst-msg-content { max-width: 92%; }
       .asst-dd-model .asst-dd-label { max-width: 9ch; }
       .asst-route-opt-sub { display: none; }
@@ -1661,7 +1808,7 @@ export function injectAssistantStyles() {
     }
     @container asst (max-height: 260px) {
       /* the toolbar stays: it carries the controls */
-      :is(.asst-empty-body, .asst-empty-mascot, .asst-suggestions) { display: none !important; }
+      :is(.asst-empty-body, .asst-empty-mascot, .asst-empty-project, .asst-suggestions, .asst-empty-greet) { display: none !important; }
       .asst-empty { gap: 4px; padding: 4px; }
       .asst-empty-title { font-size: 14px; }
       .asst-bottom { margin-top: 6px; }

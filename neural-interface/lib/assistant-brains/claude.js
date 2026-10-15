@@ -125,9 +125,13 @@ export function createClaudeBrain({ session, sink, deps = {}, persona = '', hook
     // prompt-submit.mjs steps aside (it injected every memory twice and paid Jev
     // twice) and stop.mjs skips the claim check (a relayed worker "tests pass"
     // has its evidence in the worker's turn, not here). Hooks read it from env.
+    // SYNABUN_ASSISTANT_THREADS: the user-context engine keeps this conversation's
+    // thread record (its nudges layer is on), so pre-compact.mjs asks for no
+    // conversation memory of its own.
     env: {
       ...(typeof deps.claudeAccountEnv === 'function' ? deps.claudeAccountEnv(brain.accountId) : {}),
       SYNABUN_ASSISTANT_SESSION: String(session.id),
+      ...(deps.userContextThreads === true ? { SYNABUN_ASSISTANT_THREADS: '1' } : {}),
     },
     maxBudgetUsd: Number(deps.maxBudgetUsd) > 0 ? Number(deps.maxBudgetUsd) : undefined,
   });

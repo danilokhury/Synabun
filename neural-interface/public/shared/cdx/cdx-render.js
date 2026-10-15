@@ -16,6 +16,7 @@ import { bindExpandableCard, setCardExpanded } from './cdx-cards.js';
 import { mountMcpAppCard } from './cdx-mcp-app-host.js';
 import { OUTPUT_LIMITS, boundedText, jsonAnswer, prettyJsonFences, readableStructuredValue, fileChangeDiffs, parseUnifiedDiff, deduplicateTurnDiff } from './cdx-output-model.js';
 import { renderReadableOutput, renderReadableBlock, cleanOutputBlocks, hydrateOutputControls, observeOutputBlocks, renderDiffView, restoreDiffViews } from './cdx-output.js';
+import { fileLinkTitle, fillFileLinkCopy, isInsideRoots, parseFileLinkTarget } from '../file-links.js';
 export { setCardExpanded } from './cdx-cards.js';
 
 // ── Shared context (set by cdx-tabs via setRenderContext) ──
@@ -375,101 +376,45 @@ export function postProcessRenderedHtml(container) {
 // ═══════════════════════════════════════════
 // File Path Linking
 // ═══════════════════════════════════════════
+// What a target means is decided in ../file-links.js, shared with the other panels; a click is taken by the
+// one listener cdx-panel.js puts on the transcript (../ui-file-links.js), so links in a stored transcript
+// work like fresh ones.
 
 export function normalizePathForCompare(path) {
   return String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
 }
 
+// The folder a relative link is read from: the project of the tab the transcript belongs to.
+function fileLinkWhere() {
+  return {
+    cwd: _ctx.boundTab?.project || _ctx.project || '',
+    origin: globalThis.location?.origin || '',
+  };
+}
+
 export function isProjectFilePath(path) {
-  const normalized = normalizePathForCompare(path);
-  if (!normalized.startsWith('/')) return false;
-  const roots = new Set([
-    normalizePathForCompare(_ctx.project),
-    ...(_ctx.projects || []).map((entry) => normalizePathForCompare(entry?.path)).filter(Boolean),
-  ]);
-  for (const root of roots) {
-    if (!root) continue;
-    if (normalized === root || normalized.startsWith(`${root}/`)) return true;
-  }
-  return false;
+  return isInsideRoots(path, [_ctx.boundTab?.project, _ctx.project, ...(_ctx.projects || []).map((entry) => entry?.path)]);
 }
 
-export function parseProjectFileTarget(rawTarget) {
-  if (!rawTarget) return null;
-  let raw = String(rawTarget).trim();
-  if (!raw || raw === '#') return null;
-  if (raw.startsWith('file://')) {
-    try { raw = decodeURIComponent(new URL(raw).pathname || ''); }
-    catch { raw = raw.replace(/^file:\/\//, ''); }
-  }
-
-  let pathPart = raw;
-  let hash = '';
-  if (/^[a-z]+:\/\//i.test(raw)) {
-    try {
-      const parsed = new URL(raw, window.location.origin);
-      if (parsed.origin !== window.location.origin) return null;
-      pathPart = parsed.pathname || '';
-      hash = parsed.hash || '';
-    } catch {
-      return null;
-    }
-  } else {
-    const hashIndex = raw.indexOf('#');
-    if (hashIndex >= 0) {
-      pathPart = raw.slice(0, hashIndex);
-      hash = raw.slice(hashIndex);
-    }
-  }
-
-  try { pathPart = decodeURIComponent(pathPart); } catch {}
-  pathPart = normalizePathForCompare(pathPart);
-
-  let line = null;
-  let column = null;
-  const suffixMatch = pathPart.match(/:(\d+)(?::(\d+))?$/);
-  if (suffixMatch) {
-    line = Number(suffixMatch[1]) || null;
-    column = Number(suffixMatch[2]) || null;
-    pathPart = normalizePathForCompare(pathPart.slice(0, suffixMatch.index));
-  }
-  if (!isProjectFilePath(pathPart)) return null;
-  const hashMatch = hash.match(/^#L(\d+)(?:C(\d+))?$/i);
-  if (hashMatch) {
-    line = Number(hashMatch[1]) || line;
-    column = Number(hashMatch[2]) || column;
-  }
-
-  return { filePath: pathPart, line, column };
+// A link target that is a file of this tab's project or of a registered one, or null.
+function projectFileTarget(rawTarget) {
+  const target = parseFileLinkTarget(rawTarget, fileLinkWhere());
+  return target?.path && isProjectFilePath(target.path) ? target : null;
 }
 
-export function openProjectFileTarget(target) {
-  if (!target?.filePath) return false;
-  _ctx.emit('open-file-editor', {
-    filePath: target.filePath,
-    line: target.line || undefined,
-    column: target.column || undefined,
-  });
-  return true;
-}
-
-export function maybeOpenProjectFileLink(rawTarget, event) {
-  const target = parseProjectFileTarget(rawTarget);
-  if (!target) return false;
-  event?.preventDefault?.();
-  return openProjectFileTarget(target);
+function openInEditorTitle(target) {
+  const { key, params } = fileLinkTitle(target);
+  return _ctx.fileLinkText?.(key, params) || fillFileLinkCopy(key, params);
 }
 
 export function markProjectFileAnchors(container) {
   if (!container) return;
   container.querySelectorAll('a[href]').forEach((link) => {
-    const target = parseProjectFileTarget(link.getAttribute('href'));
+    const target = projectFileTarget(link.getAttribute('href'));
     if (!target) return;
     link.classList.add('cxp-file-link');
-    link.dataset.projectFilePath = target.filePath;
-    link.title = target.line
-      ? `Open in editor${target.column ? ` at line ${target.line}, column ${target.column}` : ` at line ${target.line}`}`
-      : 'Open in editor';
+    link.dataset.projectFilePath = target.path;
+    link.title = openInEditorTitle(target);
   });
 }
 
@@ -497,19 +442,10 @@ export function linkifyFilePaths(container) {
       const link = document.createElement('a');
       link.className = 'cxp-file-link';
       link.textContent = pathStr;
-      const target = parseProjectFileTarget(pathStr);
-      link.title = target?.line
-        ? `Open in editor${target.column ? ` at line ${target.line}, column ${target.column}` : ` at line ${target.line}`}`
-        : target ? 'Open in editor' : 'Click to copy path';
+      const target = projectFileTarget(pathStr);
+      link.title = target ? openInEditorTitle(target) : 'Click to copy path';
       link.href = '#';
-      link.addEventListener('click', (e) => {
-        if (maybeOpenProjectFileLink(pathStr, e)) return;
-        e.preventDefault();
-        const cleanPath = pathStr.replace(/:\d+(:\d+)?$/, '');
-        navigator.clipboard.writeText(cleanPath).catch(() => {});
-        link.classList.add('cxp-file-link-copied');
-        setTimeout(() => link.classList.remove('cxp-file-link-copied'), 1500);
-      });
+      // The click is taken on the transcript (cdx-panel.js): the editor when it can open the path, else a copy.
       frag.appendChild(link);
       lastIndex = match.index + match[0].length;
     }

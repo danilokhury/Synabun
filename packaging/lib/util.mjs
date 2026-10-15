@@ -40,9 +40,10 @@ export function sha256File(path) {
 /**
  * Download `url` to `destination` unless a file with the pinned checksum is
  * already there. A file that does not match its pin is removed and the build
- * stops: nothing unverified is ever unpacked or run.
+ * stops: nothing unverified is ever unpacked or run. (`fetchImpl` is the
+ * transport: the tests give one that asks a local server.)
  */
-export async function fetchVerified({ url, sha256, destination, label = url }) {
+export async function fetchVerified({ url, sha256, destination, label = url, fetchImpl = fetch }) {
   if (!/^[0-9a-f]{64}$/.test(String(sha256 || ''))) throw new BuildError(`No pinned SHA-256 for ${label}; refusing to download it.`);
   if (existsSync(destination) && await sha256File(destination) === sha256) {
     note(`${label}: cached, checksum verified`);
@@ -52,7 +53,7 @@ export async function fetchVerified({ url, sha256, destination, label = url }) {
   const partial = `${destination}.${process.pid}.part`;
   note(`${label}: downloading ${url}`);
   try {
-    const response = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(20 * 60 * 1000) });
+    const response = await fetchImpl(url, { redirect: 'follow', signal: AbortSignal.timeout(20 * 60 * 1000) });
     if (!response.ok || !response.body) throw new BuildError(`Download failed (${response.status}) for ${url}`);
     await pipeline(Readable.fromWeb(response.body), createWriteStream(partial));
     const actual = await sha256File(partial);

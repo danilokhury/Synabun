@@ -193,6 +193,11 @@ export function createAssistantRuntime({
   // Clarification (assistant-clarify.js): human prompts, the brain's own
   // question cards and the clarify cards' answers reach it from here.
   clarifier = null,
+  // The user-context engine (assistant-user-context.js): what the Assistant knows about the
+  // user, nudges from recent conversations, the learning loop and the per-turn trace.
+  userContext = null,
+  // lib/greeting/ engine (or null): the note about the greeting a conversation opened with, and when the person was last here.
+  greeting = null,
   // Remote sessions (lib/remote-policy.js): the level registry shared with the
   // dispatcher and the WhatsApp bridge, and the registered project paths a
   // remote session's workers must run in.
@@ -341,6 +346,10 @@ export function createAssistantRuntime({
       // Closing (endSessionWork): the close under way (a promise), and the generation it started.
       gen: 0, work: new Map(), workActive: null, workTimer: null, workPumpQueued: false, routeGens: new Map(),
       closing: null, closedGen: 0,
+      // User context (assistant-user-context.js): what the live brain was built for (a layer
+      // switched since restarts an idle brain), the human turns sent and not ended yet (oldest
+      // first), and the last reply (context for what the next message teaches).
+      brainUserContext: null, ucTurns: [], lastReply: '',
     };
   }
   // ── remote sessions (lib/remote-policy.js) ─────────────────────────────────
@@ -728,6 +737,12 @@ export function createAssistantRuntime({
    */
   function brainNeedsRestart(live) {
     if (!live?.brain) return false;
+    // Its persona was built with (or without) a user-context layer that was switched since.
+    if (userContext && live.brainUserContext !== null) {
+      let key = null;
+      try { key = userContext.brainKey(live.record); } catch { key = null; }
+      if (key !== null && key !== live.brainUserContext) return true;
+    }
     const policy = remotePolicyFor(live);
     // A Codex / OpenCode brain built before the session became remote is not read-only yet.
     if (live.brainProvider !== 'claude-code') return !!policy && live.brainRemoteReadOnly !== true;
@@ -828,6 +843,8 @@ export function createAssistantRuntime({
   function publicRecord(record, { withLive = true, live = null, persisted = false } = {}) {
     const out = { ...record };
     if (!persisted) delete out.usageState;
+    // The user-context state (frozen digest, delivery ledgers) is the server's own.
+    if (!persisted) delete out.userContext;
     if (withLive && live) {
       out.running = live.running;
       out.attached = live.sockets.size;
@@ -845,7 +862,8 @@ export function createAssistantRuntime({
       out.computerRemote = computer ? { state: computer.state, reason: computer.reason, level: computer.level, approved: live.computerTurn?.approved === true } : null;
       out.testDensity = testDensityOf(record);
       out.testDensityExplicit = normalizeTestDensity(record.testDensity, null);
-      out.features = { routing: !!router, computer: computerSupported(), testDensity: true };
+      // `rename`: this server keeps a rename on the record (userRenamed), so a panel writes it here.
+      out.features = { routing: !!router, computer: computerSupported(), testDensity: true, rename: true };
       out.budget = sessionMoney(record.id);
       out.remoteLevel = policy ? effectiveLevel(policy, { untrusted: live.turnUntrusted === true, now: now() }) : null;
     }
@@ -1192,6 +1210,8 @@ export function createAssistantRuntime({
         // The Claude CLI's own cap stopped the brain: its process cannot run another turn.
         if (event.subtype === 'error_max_budget_usd' && live.brainProvider === 'claude-code') live.brainCapHit = true;
         if (live.planTurn) live.planText = planTurnText(event);
+        // The reply the user's next message answers (context for the learning loop; a subagent's result is not it).
+        if (typeof event.result === 'string' && event.result.trim() && !event.parent_tool_use_id) live.lastReply = clip(event.result, 600);
         touch(live);
       }
       if (TRANSCRIPT_EVENT_TYPES.has(event.type) && !(event.type === 'system' && event.subtype !== 'init')) appendTranscript(id, { at: iso(now()), packet });
@@ -1297,7 +1317,31 @@ export function createAssistantRuntime({
       }
     }
     sendToSockets(live, packet);
+    // After the packet: the turn's trace moves under the reply the panel has just closed.
+    if ((packet.type === 'done' || packet.type === 'aborted' || packet.type === 'error') && !live.running) finishUserContextTurn(live, packet.type);
     if (plan) offerPlanCard(live, plan, planGen);
+  }
+  /** The oldest human turn still open ended: its trace moves under the reply and learning starts, off the reply path. */
+  function finishUserContextTurn(live, outcome) {
+    const handle = live.ucTurns.shift();
+    if (!handle || !userContext) return;
+    try { userContext.endTurn(live.record, handle, { outcome }); } catch (error) { log('assistant:user-context', error?.message || String(error)); }
+  }
+  /** One turn's user-context trace: to the panel and into the journal, a full snapshot each time (the panel upserts by traceId). */
+  function emitAutomation(live, event) {
+    if (!event || sessions.get(live.record.id) !== live) return;
+    const packet = { type: 'event', event };
+    sendToSockets(live, packet);
+    appendTranscript(live.record.id, { at: iso(now()), packet });
+  }
+  /** The cards of a session left unanswered right now: the runtime's plan card, route cards, clarify cards. */
+  function openCards(live) {
+    const out = [];
+    const title = (card) => clip(card?.request?.title || card?.request?.summary || card?.request?.route?.summary || card?.request?.questions?.[0]?.question || '', 80);
+    if (live.planCard?.requestId) out.push({ id: String(live.planCard.requestId), kind: 'plan', title: clip(String(live.planCard.plan || '').split('\n')[0], 80) });
+    try { for (const card of router?.pendingCards?.(live.record.id) || []) if (card?.request_id) out.push({ id: String(card.request_id), kind: 'route', title: title(card) }); } catch {}
+    try { for (const card of clarifier?.pendingCards?.(live.record.id) || []) if (card?.request_id) out.push({ id: String(card.request_id), kind: 'question', title: title(card) }); } catch {}
+    return out;
   }
   /**
    * Codex and OpenCode end a plan turn with the plan instead of asking for
@@ -1750,9 +1794,18 @@ export function createAssistantRuntime({
     if (remote) live.record.brain = clampedBrain(live, live.record.brain);
     const brain = live.record.brain;
     const sink = { send: (packet) => onBrainPacket(live, packet) };
-    const persona = await personaFor(live);
+    const basePersona = await personaFor(live);
     if (stale()) return null;
     if (live.brain) return live.brain;
+    // What SynaBun has learned about the user rides after the persona, in the same system-level
+    // slot (Claude systemPromptAppend, Codex developerInstructions, OpenCode agent prompt), frozen
+    // per provider conversation so the prompt cache holds.
+    let userSuffix = { text: '', key: null, nudges: false };
+    if (userContext) {
+      try { userSuffix = userContext.personaSuffix(live.record) || userSuffix; }
+      catch (error) { log('assistant:user-context', error?.message || String(error)); }
+    }
+    const persona = userSuffix.text ? `${basePersona}\n\n${userSuffix.text}` : basePersona;
     live.personaText = persona;
     // Computer use: one unforgeable grant per brain (the MCP `computer` group is
     // advertised only to callers presenting it). Revoked when the brain goes.
@@ -1798,6 +1851,8 @@ export function createAssistantRuntime({
       // A Codex / OpenCode brain of a remote session is read-only for good: the
       // read-only sandbox (Codex), the plan agent (OpenCode), no auto-accept.
       remoteReadOnly: !!remote && remoteBrainLimited(brain.provider),
+      // The engine keeps this conversation's thread record: pre-compact.mjs asks for no conversation memory.
+      userContextThreads: brain.provider === 'claude-code' && userSuffix.nudges === true,
     };
     const gate = ensureGate(live);
     // A remote session's hook / plugin refuses a call it could not check (fail closed).
@@ -1813,11 +1868,14 @@ export function createAssistantRuntime({
     const memoryHooks = brain.provider === 'claude-code' && memory?.claudeHooks ? memory.claudeHooks({
       session: live.record.id, project: live.record.project || 'global',
       getGeneration: () => live.record.memoryGeneration || 1,
-      bumpGeneration: () => { live.record.memoryGeneration = (live.record.memoryGeneration || 1) + 1; touch(live); },
+      bumpGeneration: () => { live.record.memoryGeneration = (live.record.memoryGeneration || 1) + 1; try { userContext?.onCompaction(live.record); } catch {} touch(live); },
       markRemembered: () => { live.rememberedThisTurn = true; live.obligations.clear(); },
       hasPendingObligations: () => live.obligations.size > 0 && !live.rememberedThisTurn,
       onRecall: (recalled) => { if (recalled?.results?.length || recalled?.alreadyPresent) sendToSockets(live, { type: 'event', event: { type: 'synabun.memories', memories: recalled.results || [], alreadyPresent: !!recalled.alreadyPresent } }); },
       describeTurn: (text) => describeTurn(live, text),
+      // User context: its categories stay out of Related Memories, and its per-turn block follows them.
+      divert: () => userContext?.divertCategories() || null,
+      turnContext: ({ recalled, meta }) => (userContext && meta?.uc ? userContext.turnBlock(live.record, meta.uc, recalled).text : ''),
     }) : null;
     // Claude: memory, the route gate, the browser policy (every session: plan mode and subagents too), a remote session's hook.
     const claude = brain.provider === 'claude-code';
@@ -1829,6 +1887,7 @@ export function createAssistantRuntime({
     live.brainSkipAllowed = remote ? deps.remoteLevel === 'autonomous' : null;
     live.brainComputerMode = computerMode;
     live.brainRemoteReadOnly = deps.remoteReadOnly === true;
+    live.brainUserContext = userSuffix.key;
     live.record.status = 'idle';
     touch(live);
     try { await created.start?.(); } catch (error) {
@@ -1866,6 +1925,9 @@ export function createAssistantRuntime({
     live.running = false;
     closePlanCard(live, 'brain_disposed');
     live.planTurn = false;
+    live.brainUserContext = null;
+    // A human turn the brain took with it never ends on its own: its trace and its learning close here.
+    for (const handle of live.ucTurns.splice(0)) { try { userContext?.endTurn(live.record, handle, { outcome: 'aborted' }); } catch {} }
     // A remote session's computer use ends with its brain: the turn's approval, its open request, the live grant.
     endComputerTurn(live, reason === 'closed' ? 'session_closed' : 'brain_disposed');
     settleNativeQuestions(live, 'brain_disposed');
@@ -1998,7 +2060,7 @@ export function createAssistantRuntime({
   // `offerPlan`: a system turn that revises a plan still ends with a plan card.
   // `work`: the scheduler entry this system turn is; `request`: { id, reply } of a
   // prompt a socket sent (refuse); `turnGen`: the generation runQuery entered in.
-  async function runTurn(live, { text, images = [], cwd = null, model = null, effort = null, permissionMode = null, planMode = null, system = false, taskId = null, turnModel = null, turnEffort = null, gateOpen = false, gateCarry = false, origin = null, authority = null, untrusted = false, offerPlan = false, work = null, request = null, turnGen = live.gen, computerRoutes = null } = {}) {
+  async function runTurn(live, { text, images = [], cwd = null, model = null, effort = null, permissionMode = null, planMode = null, system = false, taskId = null, turnModel = null, turnEffort = null, gateOpen = false, gateCarry = false, origin = null, authority = null, untrusted = false, offerPlan = false, work = null, request = null, turnGen = live.gen, computerRoutes = null, typed = null, greetingId = null } = {}) {
     const prompt = String(text || '').trim();
     if (!prompt && !(Array.isArray(images) && images.length)) return refuse(live, 'EMPTY_PROMPT', 'No prompt provided', { packet: { type: 'error', message: 'No prompt provided' }, request });
     // The scheduler's turn goes once a Stop, the session closing or a newer
@@ -2057,6 +2119,8 @@ export function createAssistantRuntime({
       return refuse(live, 'ASSISTANT_BUSY', BUSY_MESSAGE, { packet: { type: 'error', message: BUSY_MESSAGE, code: 'ASSISTANT_BUSY' }, request });
     }
     let finalText = prompt;
+    // A Codex / OpenCode turn's recall result, for the user-context block below.
+    let turnRecalled = null;
     if (!system) {
       live.lastPrompt = prompt;
       // A prompt from elsewhere (WhatsApp, the API) is news to the panel: it goes live too.
@@ -2065,7 +2129,8 @@ export function createAssistantRuntime({
       if (origin && origin !== 'ui') sendToSockets(live, promptPacket);
       if (live.brainProvider !== 'claude-code' && memory?.recallForPrompt) {
         let recalled = null;
-        try { recalled = await memory.recallForPrompt({ prompt, project: live.record.project, session: live.record.id, generation: live.record.memoryGeneration || 1 }); } catch {}
+        try { recalled = await memory.recallForPrompt({ prompt, project: live.record.project, session: live.record.id, generation: live.record.memoryGeneration || 1, divert: userContext?.divertCategories() || null }); } catch {}
+        turnRecalled = recalled;
         // Closed while it recalled: the session that reopened hears nothing of this prompt, and its record keeps what came since.
         if (cancelled()) return dropTurn(live, request);
         try {
@@ -2167,7 +2232,8 @@ export function createAssistantRuntime({
     live.record.lastActiveAt = iso(now());
     live.turnStartedMs = now();
     live.record.turns = (Number(live.record.turns) || 0) + 1;
-    if (isDefaultSessionTitle(live.record.title)) {
+    // A name the user gave (updateSession) is never replaced, whatever it says.
+    if (!live.record.userRenamed && isDefaultSessionTitle(live.record.title)) {
       if (!system) { live.record.title = clip(prompt.split('\n')[0], 60); broadcast('assistant:session-updated', live); }
     }
     touch(live);
@@ -2175,12 +2241,48 @@ export function createAssistantRuntime({
     // the record, and routed/continuation turns override it for one turn only.
     const effectiveModel = turnModel || live.record.brain.model || null;
     const effectiveEffort = brainEffort(live.record.brain.provider, effectiveModel, turnEffort || live.record.brain.effort || null);
+    // User context (assistant-user-context.js): a human turn's trace and learning start here.
+    // A Codex / OpenCode turn gets its per-turn block now (its recall result is known); a Claude
+    // turn gets it in the in-process UserPromptSubmit hook, which finds the handle in turnMeta.
+    let ucTurn = null;
+    // Greeting (lib/greeting/): a human turn is the person being here, and the greeting the panel
+    // showed when this conversation opened is told to the brain once, as background (never for a
+    // slash command). The user-context block carries it when that engine runs; else it goes in
+    // front of the user's words by itself.
+    let greeted = null;
+    if (!system && greeting) {
+      try { greeting.noteActivity({ project: live.record.project || null, cwd: live.record.brain.cwd || null, surface: 'assistant', words: typed || prompt }); } catch { /* the turn goes on */ }
+      if (greetingId) {
+        try {
+          const shown = greeting.peek(greetingId);
+          const note = greeting.consumeNote(greetingId, { skip: prompt.trimStart().startsWith('/') });
+          if (note && shown) greeted = { id: shown.id, text: shown.text, note, ids: (shown.basis || []).map((row) => row.id).filter(Boolean), source: shown.source, model: shown.model, costUsd: shown.costUsd };
+        } catch { greeted = null; }
+      }
+    }
+    if (!system && userContext) {
+      try {
+        ucTurn = userContext.beginTurn(live.record, {
+          prompt, typed, origin: origin || null, untrusted: untrusted === true, generation: live.record.memoryGeneration || 1,
+          previousReply: live.lastReply || '', cwd: live.record.brain.cwd || null, taskId, greeting: greeted,
+          emit: (event) => emitAutomation(live, event), persist: () => touch(live), openCards: () => openCards(live),
+        });
+        if (live.brainProvider !== 'claude-code') {
+          const block = userContext.turnBlock(live.record, ucTurn, turnRecalled).text;
+          // After the memories and the router / test lines, right before the user's words.
+          if (block) finalText = finalText.endsWith(prompt) ? `${finalText.slice(0, finalText.length - prompt.length)}${block}\n\n${prompt}` : `${block}\n\n${finalText}`;
+        }
+        live.ucTurns.push(ucTurn);
+      } catch (error) { ucTurn = null; log('assistant:user-context', error?.message || String(error)); }
+    }
+    // No user-context engine to carry it: the note goes right before the user's words.
+    if (greeted && !ucTurn) finalText = finalText.endsWith(prompt) ? `${finalText.slice(0, finalText.length - prompt.length)}${greeted.note}\n\n${prompt}` : `${greeted.note}\n\n${finalText}`;
     // The Claude brain recalls in its UserPromptSubmit hook, which sees only the
     // final text: record who wrote it (mailbox / router = system) and the user's
     // own words, so a router-stamped first turn recalls on the prompt itself.
     if (live.brainProvider === 'claude-code' && finalText.trim()) {
       live.turnMeta.delete(finalText.trim());
-      live.turnMeta.set(finalText.trim(), { system: !!system, prompt: system ? null : prompt });
+      live.turnMeta.set(finalText.trim(), { system: !!system, prompt: system ? null : prompt, ...(ucTurn ? { uc: ucTurn } : {}) });
       while (live.turnMeta.size > 8) live.turnMeta.delete(live.turnMeta.keys().next().value);
     }
     // Every turn starts unrouted; a continuation or a route_decided "here" turn starts open.
@@ -2199,6 +2301,12 @@ export function createAssistantRuntime({
       scheduleUsage(live.record.id);
       live.planTurn = false;
       live.record.status = 'idle';
+      // The prompt never reached the brain: nothing is traced or learned from it.
+      if (ucTurn) {
+        const at = live.ucTurns.indexOf(ucTurn);
+        if (at >= 0) live.ucTurns.splice(at, 1);
+        try { userContext?.cancelTurn(live.record, ucTurn); } catch {}
+      }
       const message = error?.message || String(error);
       sendToSockets(live, { type: 'error', message });
       sendToSockets(live, { type: 'done', code: 1 });
@@ -2299,6 +2407,8 @@ export function createAssistantRuntime({
     if (!run?.assistantSessionId) return;
     const live = sessions.get(run.assistantSessionId);
     if (!live) return;
+    // The conversation's thread record: its runs, their outcomes and follow-ups.
+    try { userContext?.onDispatch(live.record, payload); } catch {}
     if (!live.record.dispatchRunIds?.includes(run.runId)) { live.record.dispatchRunIds = [...(live.record.dispatchRunIds || []), run.runId].slice(-100); touch(live); }
     sendToSockets(live, { type: 'assistant:dispatch', reason: payload.reason, run });
     scheduleUsage(live.record.id);
@@ -2334,6 +2444,7 @@ export function createAssistantRuntime({
     if (!live) return;
     const removed = new Set((payload.runIds || []).map(String));
     if (!removed.size) return;
+    try { userContext?.onDispatch(live.record, { type: 'assistant:run-removed', runIds: [...removed] }); } catch {}
     for (const runId of removed) {
       live.obligations.delete(runId);
       live.nudgedRuns.delete(runId);
@@ -2428,7 +2539,14 @@ export function createAssistantRuntime({
   async function updateSession(id, patch = {}) {
     const live = sessions.get(id);
     if (!live) return null;
-    if (patch.title) live.record.title = clip(patch.title, 60);
+    // A rename (tab, float header, sidepanel ✎) is the session's one name: every list reads it
+    // here, and `userRenamed` tells a host to reopen the session under it. Calling it "SynaBun"
+    // again gives the name up: the next prompt titles it, as for a session never renamed. The
+    // mark stays, as `false`: a host holding the old name with a saved tab must not write it back
+    // (no mark at all means a rename the record never heard of, which a host does write).
+    const renamed = typeof patch.title === 'string' ? clip(patch.title, 60) : '';
+    if (renamed && renamed !== DEFAULT_SESSION_TITLE) { live.record.title = renamed; live.record.userRenamed = true; }
+    else if (renamed && live.record.userRenamed) { live.record.title = DEFAULT_SESSION_TITLE; live.record.userRenamed = false; }
     if (patch.routing && typeof patch.routing === 'object' && 'mode' in patch.routing) applyRouteMode(live, patch.routing.mode);
     if ('computerUse' in patch) applyComputerUse(live, patch.computerUse);
     if ('testDensity' in patch) applyTestDensity(live, patch.testDensity);
@@ -2447,11 +2565,19 @@ export function createAssistantRuntime({
       // A usage limit is the account's: another provider or account starts without the notice.
       if (next.provider !== live.record.brain.provider || next.accountId !== live.record.brain.accountId) setLimit(live, null);
       live.record.brain = next;
-      live.record.project = detectProject(next.cwd) || live.record.project || 'global';
+      // The panel's brain names its working folder `project` and never sends `cwd`. A project picked
+      // there (the toolbar's Working project, the empty state's picker) moves the folder the way a
+      // prompt's cwd does (runTurn): a brain that is running keeps its conversation and gets the folder
+      // with its next turn; one not started yet starts there, with it as its Default project.
+      const folder = !patch.brain.cwd && typeof patch.brain.project === 'string' ? patch.brain.project.trim() : '';
+      if (folder && folder !== next.cwd) live.record.brain = { ...next, cwd: folder };
+      live.record.project = detectProject(live.record.brain.cwd) || live.record.project || 'global';
       if (providerChanged) {
         await disposeBrain(live, 'switched');
         live.record.providerSessionId = null;
         live.record.providerThreadId = null;
+        // Another conversation: its user-context digest is built (and frozen) anew.
+        try { userContext?.conversationReplaced(live.record); } catch {}
         if (live.record.usageState) delete live.record.usageState[next.provider === 'claude-code' ? 'claude' : next.provider];
         if (live.record.usageState) delete live.record.usageState.codexThreadId;
         live.record.status = 'idle';
@@ -2495,6 +2621,8 @@ export function createAssistantRuntime({
       live.record.status = 'ended';
       touch(live);
       persist({ force: true });
+      // The conversation's thread memory is written now (not awaited: an embedding and a write).
+      try { userContext?.sessionClosed(id); } catch {}
       broadcast('assistant:session-ended', live);
     } finally { closed(); }
     return view(live);
@@ -2512,6 +2640,7 @@ export function createAssistantRuntime({
       usageTimers.delete(id);
       usageSentAt.delete(id);
       metered('drop', () => usage?.dropSession?.(id));
+      try { userContext?.sessionDestroyed(id); } catch {}
       try { remotePolicy?.forgetSession?.(id); } catch {}
       try { rmSync(resolve(dataDir, 'assistant', id), { recursive: true, force: true }); } catch {}
       persist({ force: true });
@@ -2795,7 +2924,7 @@ export function createAssistantRuntime({
         // `request_id`: the panel's id for this prompt. A refusal reaches this socket
         // alone and carries it back, so this panel (only) puts the text back.
         const request = { id: msg.request_id ? String(msg.request_id) : null, reply };
-        const result = await runQuery(live, { text: msg.prompt, images: msg.images || [], cwd: msg.cwd || null, model: msg.model || null, effort: msg.effort || null, permissionMode: msg.permissionMode || null, planMode: typeof msg.planMode === 'boolean' ? msg.planMode : null, origin: 'ui', request });
+        const result = await runQuery(live, { text: msg.prompt, images: msg.images || [], cwd: msg.cwd || null, model: msg.model || null, effort: msg.effort || null, permissionMode: msg.permissionMode || null, planMode: typeof msg.planMode === 'boolean' ? msg.planMode : null, origin: 'ui', request, typed: typeof msg.typed === 'string' ? msg.typed : null, greetingId: typeof msg.greetingId === 'string' ? msg.greetingId : null });
         // Refused before it ran: the panel, "working" since it sent, shows what runs now.
         if (result && !result.ok && result.code !== 'TURN_FAILED') reply({ type: 'reattach_result', ok: true, sessionId: live.record.id, running: isBusy(live.record.id) });
         return;
@@ -2866,12 +2995,14 @@ export function createAssistantRuntime({
         return;
       case 'compact':
         live.record.memoryGeneration = (live.record.memoryGeneration || 1) + 1;
+        try { userContext?.onCompaction(live.record); } catch {}
         touch(live);
         // Session work: it starts once a running turn ends, and nothing else starts until it settles.
         queueWork(live, { kind: 'compact', reply });
         return;
       case 'clear':
         live.record.memoryGeneration = (live.record.memoryGeneration || 1) + 1;
+        try { userContext?.onCompaction(live.record); } catch {}
         touch(live);
         return;
       case 'heartbeat':
@@ -2898,6 +3029,8 @@ export function createAssistantRuntime({
           live.record.providerSessionId = msg.providerSessionId;
           // Another provider session: the meter's baseline was the old one's.
           if (moved) resetMeterIdentity(live, msg.providerSessionId);
+          // …and so was the frozen user-context digest.
+          if (moved) { try { userContext?.conversationReplaced(live.record); } catch {} }
           touch(live);
           await live.brain?.resume?.(msg.providerSessionId);
         }
@@ -3338,6 +3471,7 @@ export function createAssistantRuntime({
       live.record.status = 'idle';
     }
     persist({ force: true });
+    try { userContext?.shutdown(); } catch {}
     // Rows whose append failed get one more try before the process goes.
     metered('flush', () => usage?.flush?.());
   }
@@ -3367,6 +3501,6 @@ export function createAssistantRuntime({
     brainSpend, brainCapUsd, onBudgetChanged, currentTask, usageView,
     // Programmatic surface (the WhatsApp bridge) and remote sessions.
     observe, submit, stopTurn, answerControl, answerDispatchControl, pendingControls, isBusy, sessionPolicy, sessionChannel,
-    _internals: { sessions, ensureBrain, disposeBrain, runQuery, enqueueMailbox, deliverMailbox, settings, ensureGate, onBrainPacket, onTurnFinished, remoteHooks, packetObservers },
+    _internals: { sessions, ensureBrain, disposeBrain, runQuery, enqueueMailbox, deliverMailbox, settings, ensureGate, onBrainPacket, onTurnFinished, remoteHooks, packetObservers, userContext },
   };
 }

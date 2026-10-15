@@ -45,6 +45,60 @@
     "discard": "Discard"
   },
 
+  "greeting": {
+    "label": "Greeting from SynaBun",
+    "back": "Back after {time}",
+    "time": {
+      "minute": "1 minute",
+      "minutes": "{n} minutes",
+      "hour": "1 hour",
+      "hours": "{n} hours",
+      "day": "1 day",
+      "days": "{n} days",
+      "week": "1 week",
+      "weeks": "{n} weeks",
+      "month": "1 month",
+      "months": "{n} months"
+    },
+    "basis": {
+      "one": "Based on 1 record",
+      "many": "Based on {n} records",
+      "none": "What this is based on"
+    },
+    "kind": {
+      "thread": "Last conversation",
+      "session": "Last session",
+      "open": "Open",
+      "memory": "Noted",
+      "run": "Run",
+      "schedule": "Schedule",
+      "elsewhere": "Elsewhere",
+      "git": "Working tree",
+      "owner": "About you"
+    },
+    "agent": {
+      "assistant": "Assistant",
+      "claude-code": "Claude Code",
+      "codex": "Codex",
+      "opencode": "OpenCode"
+    },
+    "open": "Open memory",
+    "source": {
+      "writer": "Written ahead by {model}",
+      "fallback": "Put together from the records, no model"
+    },
+    "why": {
+      "not-prepared": "nothing was written ahead yet",
+      "out-of-date": "what was written ahead was older than the news",
+      "no-writer": "no Claude sign-in to write with",
+      "daily-cap": "the daily limit of writer calls was reached",
+      "other": "the writer gave no usable sentence"
+    },
+    "tokens": "{n} tokens",
+    "prepared": "written {time} ago",
+    "free": "no tokens spent"
+  },
+
   "nav": {
     "view": "View",
     "graph": "Graph",
@@ -170,13 +224,32 @@
       "elapsedLabel": "Time since Start was pressed",
       "headingStarting": "Starting the server",
       "headingReady": "Server is up",
-      "headingFailed": "The server did not start"
+      "headingFailed": "The server did not start",
+      "restartAsked": "Asked the server to restart.",
+      "restartStopping": "The server accepted the restart and is shutting down.",
+      "restartSlowStop": "Still shutting down after {seconds} s.",
+      "restartDown": "The server stopped answering. Waiting for it to come back.",
+      "restartRespawning": "The supervisor is starting the server again.",
+      "restartStalled": "The server has not come back. Start it with the button, or run the command below.",
+      "restartRefused": "The server did not accept the restart: {reason}",
+      "restartUnreachable": "The server did not answer the restart request.",
+      "restartStillRunning": "The server accepted the restart but did not shut down.",
+      "trailAccepted": "Restart accepted",
+      "trailNoAnswer": "Server stopped answering",
+      "trailStopped": "Server process exited",
+      "restartElapsedLabel": "Time since the restart began",
+      "headingRestarting": "Restarting the server",
+      "headingRestartFailed": "The server did not restart"
     },
     "runCommandOr": "Or run this command:",
     "runCommandSetup": "Run this command once. It also sets up the Start button:",
     "serverOffline": "Server Offline",
     "serverNotRunning": "The Neural Interface server is not running",
     "connectionFailed": "Connection Failed",
+    "restartSubAsked": "You asked for this restart. SynaBun reloads when the server is back.",
+    "restartSubTold": "A restart of the server was requested. SynaBun reloads when it is back.",
+    "restartSubRefused": "SynaBun is still running.",
+    "restartBack": "Back to SynaBun",
     "health": {
       "databaseUnreachable": {
         "title": "Database Unreachable",
@@ -276,6 +349,751 @@
     }
   },
 
+  "editor": {
+    "header": {
+      "close": "Close editor",
+      "find": "Find",
+      "wordWrap": "Toggle word wrap",
+      "shortcuts": "Keyboard shortcuts",
+      "raw": "Raw",
+      "preview": "Preview",
+      "discard": "Discard",
+      "save": "Save",
+      "closeButton": "Close",
+      "view": "View options",
+      "diff": "Compare with the last commit"
+    },
+    "shortcuts": {
+      "title": "Keyboard Shortcuts",
+      "click": "Click",
+      "drag": "Drag"
+    },
+    "command": {
+      "save": "Save",
+      "find": "Find",
+      "replace": "Replace",
+      "findNext": "Find next",
+      "findPrevious": "Find previous",
+      "goToLine": "Go to line",
+      "undo": "Undo",
+      "redo": "Redo",
+      "selectNextOccurrence": "Select next occurrence",
+      "selectAllOccurrences": "Select all occurrences",
+      "copyLineDown": "Copy line down",
+      "copyLineUp": "Copy line up",
+      "moveLineDown": "Move line down",
+      "moveLineUp": "Move line up",
+      "deleteLine": "Delete line",
+      "toggleLineComment": "Toggle line comment",
+      "toggleBlockComment": "Toggle block comment",
+      "indent": "Indent",
+      "outdent": "Outdent",
+      "addCursor": "Add cursor",
+      "addCursorBelow": "Add cursor below",
+      "addCursorAbove": "Add cursor above",
+      "columnSelection": "Column selection",
+      "fold": "Fold",
+      "unfold": "Unfold",
+      "jumpToBracket": "Jump to matching bracket",
+      "toggleWordWrap": "Toggle word wrap",
+      "dismiss": "Close find bar",
+      "aiAccept": "Accept suggestion",
+      "aiAcceptWord": "Accept one word of the suggestion",
+      "aiDismiss": "Dismiss suggestion",
+      "aiTrigger": "Ask for a suggestion now",
+      "nextTab": "Next tab",
+      "previousTab": "Previous tab",
+      "closeTab": "Close tab",
+      "toggleMinimap": "Toggle minimap",
+      "toggleIndentGuides": "Toggle indent guides",
+      "cycleWhitespace": "Change how whitespace is shown",
+      "fontLarger": "Larger text",
+      "fontSmaller": "Smaller text",
+      "fontReset": "Reset text size",
+      "commandPalette": "Command palette",
+      "goToFile": "Go to file",
+      "nextProblem": "Go to next problem",
+      "previousProblem": "Go to previous problem",
+      "toggleDiff": "Compare with the last commit"
+    },
+    "find": {
+      "placeholder": "Find...",
+      "label": "Find",
+      "matchCase": "Match case",
+      "wholeWord": "Whole word",
+      "regexp": "Regular expression",
+      "previous": "Previous",
+      "next": "Next",
+      "close": "Close",
+      "replacePlaceholder": "Replace...",
+      "replaceLabel": "Replace with",
+      "replace": "Replace",
+      "replaceAll": "All",
+      "invalid": "Invalid pattern",
+      "noResults": "No results",
+      "count": "{current} of {total}",
+      "total": {
+        "one": "{count} result",
+        "other": "{count} results"
+      }
+    },
+    "goto": {
+      "label": "Go to Line",
+      "placeholder": "Line...",
+      "range": "1 to {max}"
+    },
+    "fold": {
+      "fold": "Fold",
+      "unfold": "Unfold"
+    },
+    "aria": {
+      "content": "File contents"
+    },
+    "status": {
+      "plainText": "Plain Text",
+      "spaces": "Spaces: {n}",
+      "tabSize": "Tab Size: {n}",
+      "eolMixed": "Mixed → {eol}",
+      "utf8Bom": "UTF-8 with BOM",
+      "position": "Ln {line}, Col {column}",
+      "positionSelected": "Ln {line}, Col {column} ({selected} selected)",
+      "cursors": "Ln {line}, Col {column} ({count} cursors)",
+      "cursorsSelected": "Ln {line}, Col {column} ({count} cursors, {selected} selected)",
+      "selectLanguage": "Select language",
+      "selectIndent": "Select indentation",
+      "selectEol": "Select line ending",
+      "goToLine": "Go to line",
+      "languageSearch": "Search languages...",
+      "languageAuto": "Auto detect",
+      "languageNone": "No language matches",
+      "indentTabs": "Tabs",
+      "indentDetect": "Detect"
+    },
+    "banner": {
+      "planReview": "Editing plan — save to return to review",
+      "planSend": "Editing plan — save to send to {name}",
+      "changelog": "Editing changelog — save to send to Claude",
+      "planSaveFailed": "{message} Your edits are still open."
+    },
+    "toast": {
+      "saved": "Saved",
+      "saveFailed": "Save failed",
+      "planSaved": "Plan saved",
+      "changelogSaved": "Changelog saved — sending to Claude",
+      "cannotOpen": "Cannot open file",
+      "openFailed": "Failed to open file",
+      "planChanged": "The plan file changed. Reopen the current plan revision.",
+      "restartForOpencodeConfig": "Restart Synabun to apply OpenCode config editor support",
+      "tooLarge": "This file is too large to open in the editor.",
+      "tooLargeOver": "This file is larger than {size}, the most the editor opens.",
+      "changedOnDisk": "The file changed on disk. Your edits were not saved.",
+      "pathCopied": "Path copied",
+      "notInTree": "This file is not in a project of the File Explorer."
+    },
+    "error": {
+      "bundle": "The editor could not be loaded.",
+      "retry": "Retry",
+      "planMissingRevision": "This plan editor is missing its revision. Reopen the plan to save.",
+      "planChanged": "The plan changed. Reopen the latest revision before saving."
+    },
+    "refused": {
+      "binary": "{name} is a binary file. It cannot be edited here.",
+      "encoding": "{name} is not UTF-8 text. It was not opened, because saving it here would damage it."
+    },
+    "confirm": {
+      "close": "Discard unsaved changes?",
+      "discard": "Discard changes?",
+      "reload": "Discard your changes and reload the file from disk?",
+      "closeOne": "Discard unsaved changes in {name}?",
+      "closeMany": "Discard unsaved changes in {count} files?\n\n{files}"
+    },
+    "conflict": {
+      "text": "This file changed on disk after you opened it.",
+      "overwrite": "Overwrite",
+      "reload": "Reload"
+    },
+    "tabs": {
+      "label": "Open files",
+      "close": "Close {name}",
+      "closeUnsaved": "Close {name} (unsaved changes)",
+      "plan": "Plan",
+      "changelog": "Changelog",
+      "menu": {
+        "label": "Tab actions",
+        "close": "Close",
+        "closeOthers": "Close others",
+        "closeSaved": "Close saved",
+        "copyPath": "Copy path",
+        "reveal": "Reveal in tree"
+      }
+    },
+    "disk": {
+      "changed": "This file changed on disk.",
+      "deleted": "This file was deleted or moved on disk.",
+      "compare": "Compare",
+      "keepMine": "Keep mine",
+      "keepOpen": "Keep open",
+      "closeTab": "Close tab"
+    },
+    "backup": {
+      "restored": "Unsaved changes restored",
+      "restoredChanged": "Unsaved changes restored. The file has changed on disk since they were made.",
+      "keep": "Keep",
+      "discard": "Discard"
+    },
+    "compare": {
+      "text": "Comparing your version with the file on disk",
+      "close": "Close comparison",
+      "useDisk": "Use disk version",
+      "unchanged": "{count} unchanged lines",
+      "failed": "The file could not be read from disk."
+    },
+    "ai": {
+      "chip": "AI",
+      "title": "AI autocomplete",
+      "consent": "Sends the code around the caret to the model you choose. Files on the excluded list are never sent.",
+      "state": {
+        "off": "AI autocomplete is off",
+        "excluded": "AI autocomplete is off for this file: its name is on the list of files that are never sent",
+        "ready": "AI autocomplete is ready",
+        "thinking": "AI autocomplete is asking the model"
+      },
+      "problem": {
+        "rate": "Too many requests. Trying again in {seconds} s.",
+        "noModel": "No model is selected yet. Choose one below.",
+        "noEndpoint": "The endpoint has no address or no model yet. Set them in Settings.",
+        "timeout": "The model did not answer in time.",
+        "network": "SynaBun did not answer.",
+        "engine": "The model call failed: {message}",
+        "engineUnknown": "The model call failed.",
+        "server": "The request failed."
+      },
+      "model": "Model",
+      "modelNone": "Choose a model",
+      "modelsLoading": "Loading models…",
+      "modelsUnavailable": "OpenCode is not running, so its models cannot be listed.",
+      "modelsFailed": "The models could not be read.",
+      "price": "${input} in / ${output} out per million tokens",
+      "priceFree": "free",
+      "endpointModel": "Your endpoint: {model}",
+      "endpointNone": "Your endpoint is not set up yet.",
+      "findFastest": "Find fastest",
+      "finding": "Testing models…",
+      "fastest": "Fastest: {model}, {time}. Selected.",
+      "fastestNone": "No model answered in time.",
+      "today": {
+        "one": "Today: {count} request · {input} tokens in · {output} out",
+        "other": "Today: {count} requests · {input} tokens in · {output} out"
+      },
+      "todayNone": "No requests today.",
+      "todayFailed": "Today's use could not be read.",
+      "settings": "More in Settings"
+    },
+    "view": {
+      "wordWrap": "Word wrap",
+      "minimap": "Minimap",
+      "indentGuides": "Indent guides",
+      "whitespaceNone": "Whitespace: hidden",
+      "whitespaceSelection": "Whitespace: in the selection",
+      "whitespaceAll": "Whitespace: everywhere",
+      "fontLarger": "Larger text",
+      "fontSmaller": "Smaller text",
+      "fontReset": "Reset text size",
+      "fontSize": "{size} px"
+    },
+    "palette": {
+      "commands": "Command palette",
+      "commandsPlaceholder": "Type a command...",
+      "noCommand": "No command matches",
+      "files": "Go to file",
+      "filesPlaceholder": "Type a file name...",
+      "noFile": "No file matches",
+      "typeToSearch": "Type to search this project's files",
+      "noProject": "Select a project in the File Explorer to search its files",
+      "searchFailed": "The files could not be searched.",
+      "searching": "Searching…"
+    },
+    "diff": {
+      "text": "Comparing your version with the last commit",
+      "close": "Close comparison",
+      "revert": "Revert change",
+      "failed": "The comparison could not be loaded."
+    }
+  },
+  "fileLinks": {
+    "open": "Open in editor",
+    "openAtLine": "Open in editor at line {line}",
+    "openAtLineColumn": "Open in editor at line {line}, column {column}",
+    "missing": "{name} was not found, or it is a folder.",
+    "notText": "{name} is not a text file the editor can open.",
+    "tooLarge": "{name} is too large to open in the editor.",
+    "outside": "{name} is outside your registered projects. Add its folder as a project to open it here.",
+    "failed": "Could not reach SynaBun to open {name}. Check that the server is running."
+  },
+  "tunnel": {
+    "stateOff": "Off",
+    "stateDownloading": "Getting the tunnel program",
+    "stateStarting": "Starting",
+    "stateRunning": "On",
+    "stateFailed": "Did not start",
+    "stateUnsupported": "Not available",
+    "stateRestart": "Restart needed",
+    "idle": "A public address through Cloudflare, for invite links and remote MCP.",
+    "idleDownload": "A public address through Cloudflare, for invite links and remote MCP. The first start downloads the tunnel program ({size} MB).",
+    "downloading": "Downloading the tunnel program: {received} of {total} MB",
+    "starting": "Waiting for Cloudflare to give an address…",
+    "restart": "Restart SynaBun to use the public address: the server that is running was started before it could download the tunnel program.",
+    "unsupported": "Cloudflare publishes no tunnel program for this system. If you install cloudflared yourself, SynaBun uses it.",
+    "errorOffline": "The tunnel program could not be downloaded: the download server was not reached. Check the connection and try again.",
+    "errorHttp": "The tunnel program could not be downloaded: the download server answered with an error. Try again in a moment.",
+    "errorInterrupted": "The download stopped before it was complete. Nothing was kept. Try again.",
+    "errorTimeout": "The download stalled. Nothing was kept. Try again.",
+    "errorChecksum": "The download was not the file SynaBun expects, so it was removed and never run. Try again; if it happens again, something on the network is changing the file.",
+    "errorUnpack": "The downloaded file could not be unpacked, so it was removed. Try again.",
+    "errorDisk": "The tunnel program could not be saved in SynaBun's data folder. Check free space and permissions, then try again.",
+    "errorLaunch": "The tunnel program could not be started on this computer. Try again.",
+    "errorExited": "Cloudflare gave no address. The tunnel program said: {reason}",
+    "errorExitedNoReason": "The tunnel program stopped before Cloudflare gave an address. Try again.",
+    "errorNoAddress": "Cloudflare gave no address in time. Try again.",
+    "errorEnded": "The tunnel stopped. Start it again for a new address.",
+    "errorRefused": "SynaBun refused this request. Start the tunnel from SynaBun on this computer.",
+    "errorUnknown": "The tunnel did not start: {reason}",
+    "errorUnknownNoReason": "The tunnel did not start. Try again.",
+    "start": "Start tunnel",
+    "stop": "Stop",
+    "cancel": "Cancel",
+    "retry": "Try again",
+    "copyBundled": "cloudflared {version}, included with SynaBun",
+    "copyDownloaded": "cloudflared {version}, downloaded by SynaBun",
+    "copySystem": "cloudflared {version}, installed on this computer",
+    "copySystemWhy": "SynaBun could not download its own copy, so the one installed on this computer is used.",
+    "mcpKeyNeeded": "Remote MCP needs an access key. Create one below; the address to connect is then this one followed by /mcp/ and the key."
+  },
+  "workerEnd": {
+    "complete": "Task complete",
+    "blocked": "Blocked",
+    "needsInput": "Needs input",
+    "failed": "Task failed",
+    "stopped": "Stopped",
+    "interrupted": "Interrupted",
+    "back": "Back to Assistant",
+    "backHint": "Close this tab and open the Assistant session that dispatched it",
+    "warmNote": "The worker is still open for follow-ups. Going back closes it.",
+    "failedNoReason": "The run ended with an error.",
+    "reasonUser": "Stopped by you.",
+    "reasonAssistant": "Stopped by the Assistant.",
+    "reasonAssistantSaid": "Stopped by the Assistant: {reason}",
+    "reasonTimeCap": "The run reached its time limit.",
+    "reasonBudget": "The run reached its budget limit.",
+    "reasonMaxTurns": "The run reached its turn limit.",
+    "reasonIdle": "The worker waited for a follow-up that did not come, and closed.",
+    "reasonRestart": "The server restarted while the run was open.",
+    "reasonKillAll": "Stopped together with every other run.",
+    "reasonCleared": "The run's state was removed.",
+    "reasonOther": "Stopped ({reason}).",
+    "durationSeconds": "{s}s",
+    "durationMinutes": "{m}m {s}s",
+    "durationHours": "{h}h {m}m"
+  },
+  "fileExplorer": {
+    "title": "File Explorer",
+    "tree": "Files of {project}",
+    "resize": "Resize the File Explorer",
+    "loadFailed": "The File Explorer could not be loaded. Reload the page.",
+    "needsRestart": "Starts working after the server is restarted.",
+    "filter": {
+      "placeholder": "Filter files...",
+      "label": "Filter files by name",
+      "clear": "Clear filter"
+    },
+    "toolbar": {
+      "newFile": "New file",
+      "newFolder": "New folder",
+      "goToFile": "Go to file",
+      "revealActive": "Show the open file in the tree",
+      "changedOnly": "Changed files only",
+      "collapseAll": "Collapse all",
+      "refresh": "Refresh",
+      "more": "More"
+    },
+    "project": {
+      "none": "No project",
+      "label": "Project: {name}",
+      "choose": "Choose a project",
+      "add": "Add project...",
+      "pickFolder": "Select the project folder",
+      "addFailed": "The project could not be added."
+    },
+    "branch": {
+      "label": "Branch {branch}: {count} changed"
+    },
+    "count": {
+      "items": {
+        "one": "1 item",
+        "other": "{count} items"
+      },
+      "selected": {
+        "one": "1 selected",
+        "other": "{count} selected"
+      },
+      "matches": {
+        "one": "1 match",
+        "other": "{count} matches"
+      },
+      "changed": {
+        "one": "1 changed",
+        "other": "{count} changed"
+      }
+    },
+    "state": {
+      "loading": "Loading...",
+      "searching": "Searching...",
+      "retry": "Try again",
+      "showMore": "Show more",
+      "more": {
+        "one": "1 more",
+        "other": "{count} more"
+      },
+      "truncated": "Showing {shown} of {total}. Filter by name to find the rest.",
+      "emptyFolder": "Empty folder",
+      "emptyProject": "This folder is empty.",
+      "noProject": "No project yet. Add a folder to see its files.",
+      "addProject": "Add project",
+      "noMatch": "No file matches “{query}”.",
+      "noChanges": "Nothing has changed since the last commit.",
+      "notRepo": "This project is not a git repository.",
+      "searchFailed": "The search did not work. Try again.",
+      "moreMatches": "Showing the first {count} matches. Type more to narrow them down.",
+      "partial": "The search stopped early in this large project. Type more to narrow it down.",
+      "restartHint": "Live updates, rename, move, the Trash and image preview start working after the server is restarted."
+    },
+    "git": {
+      "modified": "modified",
+      "mixed": "modified",
+      "staged": "staged",
+      "renamed": "renamed",
+      "added": "added",
+      "untracked": "new",
+      "deleted": "deleted",
+      "conflict": "conflict",
+      "contains": "holds changes",
+      "ignored": "ignored by git"
+    },
+    "row": {
+      "open": "open in the editor",
+      "unsaved": "unsaved changes",
+      "link": "link",
+      "linkOutside": "link out of the project",
+      "linkBroken": "broken link",
+      "cut": "cut"
+    },
+    "notice": {
+      "dismiss": "Dismiss"
+    },
+    "menu": {
+      "label": "Actions for {name}",
+      "labelMany": "Actions for {count} items",
+      "labelProject": "Actions for the project",
+      "back": "Back",
+      "open": "Open",
+      "openKeep": "Open and keep the tab",
+      "preview": "Preview",
+      "openAsText": "Open as text",
+      "send": {
+        "one": "Send to {name}",
+        "other": "Send {count} items to {name}"
+      },
+      "sendTo": "Send to...",
+      "newFile": "New file...",
+      "newFolder": "New folder...",
+      "expand": "Expand",
+      "collapse": "Collapse",
+      "collapseChildren": "Collapse folders inside",
+      "cut": "Cut",
+      "copy": "Copy",
+      "paste": "Paste",
+      "duplicate": "Duplicate",
+      "nothingCopied": "Nothing was cut or copied.",
+      "copyPath": {
+        "one": "Copy path",
+        "other": "Copy paths"
+      },
+      "copyRelativePath": {
+        "one": "Copy relative path",
+        "other": "Copy relative paths"
+      },
+      "copyName": "Copy name",
+      "color": "Folder color...",
+      "rename": "Rename...",
+      "delete": "Delete",
+      "deleteMany": "Delete {count} items",
+      "reveal": {
+        "darwin": "Reveal in Finder",
+        "win32": "Show in File Explorer",
+        "other": "Show in file manager"
+      },
+      "changedOnly": "Changed files only",
+      "sortBy": "Sort by...",
+      "sort": {
+        "name": "Name",
+        "date": "Date modified",
+        "size": "Size"
+      },
+      "expandAll": "Expand one more level",
+      "collapseAll": "Collapse all",
+      "refresh": "Refresh"
+    },
+    "colors": {
+      "amber": "Amber (default)",
+      "blue": "Blue",
+      "green": "Green",
+      "red": "Red",
+      "purple": "Purple",
+      "cyan": "Cyan",
+      "yellow": "Yellow",
+      "brown": "Brown",
+      "grey": "Grey"
+    },
+    "send": {
+      "assistant": "Assistant",
+      "session": "the focused session",
+      "done": {
+        "one": "Sent “{name}” to {target}.",
+        "other": "Sent {count} items to {target}."
+      },
+      "failed": "Could not send to {target}."
+    },
+    "edit": {
+      "rename": "New name for {name}",
+      "newFile": "Name of the new file",
+      "newFolder": "Name of the new folder",
+      "taken": "“{name}” is already in this folder.",
+      "gone": "“{name}” is gone from disk."
+    },
+    "delete": {
+      "titleOne": "Delete “{name}”?",
+      "titleMany": "Delete {count} items?",
+      "toTrash": {
+        "win32": "You can restore it from the Recycle Bin.",
+        "other": "You can put it back from the Trash."
+      },
+      "forGood": "This system has no Trash: it is deleted for good.",
+      "forGoodLegacy": "There is no Trash until the server is restarted: it is deleted for good.",
+      "unsaved": {
+        "one": "“{name}” has unsaved changes in the editor.",
+        "other": "{count} of them have unsaved changes in the editor."
+      },
+      "moveToTrash": {
+        "win32": "Move to Recycle Bin",
+        "other": "Move to Trash"
+      },
+      "deleteForever": "Delete for good",
+      "noTrashTitle": "No Trash on this disk",
+      "noTrashOne": "“{name}” is on a disk without a Trash. Nothing was deleted. Delete it for good?",
+      "noTrashMany": "{count} items are on a disk without a Trash and were not deleted. Delete them for good?",
+      "notEmpty": "Until the server is restarted, a folder can only be deleted when it is empty.",
+      "stopped": "Deleted {done} of {total} for good, then stopped at “{name}”. {why}",
+      "stoppedTrash": {
+        "win32": "Moved {done} of {total} to the Recycle Bin, then stopped at “{name}”. {why}",
+        "other": "Moved {done} of {total} to the Trash, then stopped at “{name}”. {why}"
+      },
+      "done": {
+        "one": "Deleted “{name}” for good.",
+        "other": "Deleted {count} items for good."
+      },
+      "doneTrash": {
+        "win32": {
+          "one": "Moved “{name}” to the Recycle Bin.",
+          "other": "Moved {count} items to the Recycle Bin."
+        },
+        "other": {
+          "one": "Moved “{name}” to the Trash.",
+          "other": "Moved {count} items to the Trash."
+        }
+      }
+    },
+    "replace": {
+      "title": "Replace what is there?",
+      "one": "“{name}” is already in “{folder}”.",
+      "many": "{count} items are already in “{folder}”.",
+      "toTrash": {
+        "win32": "What is replaced goes to the Recycle Bin.",
+        "other": "What is replaced goes to the Trash."
+      },
+      "forGood": "What is replaced cannot be brought back.",
+      "unsaved": {
+        "one": "“{name}” has unsaved changes in the editor. They are saved before it is replaced.",
+        "other": "{count} of them have unsaved changes in the editor. They are saved before they are replaced."
+      },
+      "notSaved": "“{name}” could not be saved. Nothing was replaced.",
+      "confirm": "Replace"
+    },
+    "move": {
+      "same": "It is already in that folder.",
+      "done": {
+        "one": "Moved “{name}” to “{folder}”.",
+        "other": "Moved {count} items to “{folder}”."
+      },
+      "stopped": "Moved {done} of {total}, then stopped at “{name}”. {why}"
+    },
+    "copy": {
+      "done": {
+        "one": "Copied “{name}” to “{folder}”.",
+        "other": "Copied {count} items to “{folder}”."
+      },
+      "stopped": "Copied {done} of {total}, then stopped at “{name}”. {why}",
+      "partial": "“{name}” is there only in part."
+    },
+    "duplicate": {
+      "done": {
+        "one": "Made “{name}”.",
+        "other": "Made {count} copies."
+      }
+    },
+    "clipboard": {
+      "cut": {
+        "one": "“{name}” cut. Pick a folder and paste.",
+        "other": "{count} items cut. Pick a folder and paste."
+      },
+      "copied": {
+        "one": "“{name}” copied. Pick a folder and paste.",
+        "other": "{count} items copied. Pick a folder and paste."
+      }
+    },
+    "copied": {
+      "path": {
+        "one": "Path copied.",
+        "other": "{count} paths copied."
+      },
+      "name": "Name copied.",
+      "failed": "The browser did not allow copying."
+    },
+    "upload": {
+      "none": "Nothing to copy.",
+      "progress": "Copying {done} of {total}...",
+      "tooMany": "That is more than {max} files. Copy the folder with the system's file manager.",
+      "done": {
+        "one": "Copied “{name}” into “{folder}”.",
+        "other": "Copied {count} files into “{folder}”."
+      }
+    },
+    "preview": {
+      "label": "Preview of {name}",
+      "image": "Image",
+      "openAsText": "Open as text",
+      "noPreview": "The picture shows after the server is restarted.",
+      "failed": "The picture could not be loaded.",
+      "notText": "Not text: the editor does not open it."
+    },
+    "kind": {
+      "archive": "Archive",
+      "document": "Document",
+      "audio": "Audio",
+      "video": "Video",
+      "font": "Font",
+      "database": "Database",
+      "program": "Program or library",
+      "diskImage": "Disk image or installer",
+      "design": "Design or image file",
+      "system": "System file"
+    },
+    "open": {
+      "deleted": "“{name}” was deleted: it is not on disk.",
+      "linkOutside": "“{name}” is a link that leads out of the project. It is not opened from here.",
+      "linkBroken": "“{name}” is a link to something that is not there."
+    },
+    "reveal": {
+      "none": "No file is open in the editor.",
+      "notShown": "“{name}” is not in this project."
+    },
+    "watch": {
+      "none": "This project cannot be watched right now. The tree is read again when you return to this window.",
+      "partial": "Some open folders cannot be watched right now. The tree is read again when you return to this window."
+    },
+    "error": {
+      "exists": "“{name}” is already there. Nothing was replaced.",
+      "gone": "It is no longer on disk.",
+      "denied": "The system did not allow it (no permission).",
+      "root": "A project folder is not renamed, moved, deleted or replaced from here.",
+      "intoSelf": "A folder cannot go into itself.",
+      "tooLarge": "That file is too large.",
+      "busy": "Another program is using it.",
+      "noSpace": "The disk is full.",
+      "outside": "That is outside the project folders.",
+      "notDir": "That is not a folder.",
+      "offline": "The server did not answer. Nothing was changed.",
+      "noReveal": "This system has no file manager to show it in.",
+      "noTrash": "There is no Trash for it. It was left as it is.",
+      "changed": "A folder changed while this was under way. Nothing more was done.",
+      "otherDisk": "It is on another disk. Copy it there, then delete the original.",
+      "needsRestart": "That starts working after the server is restarted.",
+      "owner": "Only the owner can use the File Explorer.",
+      "limit": "That is too many at once.",
+      "notImage": "That is not an image.",
+      "failed": "That did not work.",
+      "name": {
+        "empty": "Type a name.",
+        "dots": "“.” and “..” are not names.",
+        "separator": "A name cannot contain “/” or “\\”.",
+        "control": "A name cannot contain control characters.",
+        "reserved": "Windows keeps that name for itself.",
+        "chars": "On Windows a name cannot contain < > : \" | ? *",
+        "trailing": "On Windows a name cannot end in a space or a dot.",
+        "long": "That name is too long.",
+        "other": "That name cannot be used."
+      }
+    },
+    "gitPanel": {
+      "label": "Branch and commit",
+      "branch": "Branch",
+      "commit": "Commit",
+      "message": "Message...",
+      "generate": "Generate message",
+      "commitAction": "Commit all changes",
+      "clean": "Clean working tree",
+      "count": {
+        "modified": "{count} modified",
+        "added": "{count} added",
+        "deleted": "{count} deleted",
+        "untracked": "{count} new",
+        "other": "{count} other"
+      },
+      "switched": "Switched to {branch}",
+      "checkoutFailed": "Checkout failed",
+      "commitFailed": "Commit failed",
+      "committed": "Committed",
+      "failed": "Failed",
+      "noChanges": "No changes",
+      "generateFailed": "Failed to generate message"
+    },
+    "trust": {
+      "title": "Git ownership mismatch",
+      "body": "Git refuses to read this workspace because another user account owns it. Trusting it adds the folder to your global safe.directory setting, so SynaBun can show its branch and changes.",
+      "skip": "Skip",
+      "confirm": "Trust workspace",
+      "trusting": "Trusting...",
+      "done": "Workspace trusted",
+      "failed": "Trust failed"
+    },
+    "help": {
+      "title": "File Explorer",
+      "toggle": "Toggle file explorer",
+      "move": "Move along the rows",
+      "fold": "Open / close a folder, go to its parent",
+      "open": "Open in the editor and keep the tab",
+      "peek": "Look at a file in the reused tab",
+      "range": "Select several rows",
+      "typeAhead": "Go to a row by typing its name",
+      "offers": "Go to “Show more” or “Try again”, and use it",
+      "rename": "Rename",
+      "delete": "Delete (to the Trash)",
+      "clipboard": "Cut / copy / paste",
+      "copyPath": "Copy path / relative path",
+      "goToFile": "Go to file",
+      "menu": "Open the menu",
+      "escape": "Give up a cut, clear the filter"
+    }
+  },
   "detail": {
     "category": "Category",
     "subcategory": "Subcategory",
@@ -597,6 +1415,10 @@
         "appearance": {
           "label": "Appearance",
           "help": "Theme, size and icons"
+        },
+        "code_editor": {
+          "label": "Code editor",
+          "help": "Editing preferences and AI autocomplete"
         }
       },
       "page": {
@@ -630,7 +1452,7 @@
         },
         "automations": {
           "title": "Automations",
-          "purpose": "Choose what happens automatically while you code: greetings, hooks, online access, social actions and the YouTube pipeline."
+          "purpose": "Choose what happens automatically: the greeting, what the Assistant knows about you, hooks, online access, social actions and the YouTube pipeline."
         },
         "messages": {
           "title": "Messages",
@@ -643,6 +1465,10 @@
         "appearance": {
           "title": "Appearance",
           "purpose": "Choose a theme and adjust the size, colors and file icons of the interface."
+        },
+        "code_editor": {
+          "title": "Code editor",
+          "purpose": "Set up the editor that opens files from the File Explorer: how text is shown, indented and saved, and AI autocomplete."
         }
       },
       "section": {
@@ -670,12 +1496,12 @@
         },
         "automations": {
           "greetings": {
-            "title": "Greetings",
-            "purpose": "What each assistant says when a session starts. Switch a greeting on to edit it."
+            "title": "Greeting",
+            "purpose": "One greeting for every agent. When you come back and open a new session, SynaBun says in a sentence or two where you left off and what happened while you were away."
           },
           "automation_behavior": {
             "title": "Automation behavior",
-            "purpose": "What SynaBun does by itself while Claude Code works: remembering, learning and guarding."
+            "purpose": "What the Assistant knows about you and brings up by itself, on any model. The older hooks for Claude Code are below."
           },
           "online_access": {
             "title": "Online access",
@@ -959,6 +1785,16 @@
             "title": "Language",
             "purpose": "The language SynaBun speaks."
           }
+        },
+        "code_editor": {
+          "ai_autocomplete": {
+            "title": "AI autocomplete",
+            "purpose": "Grey suggestions after the caret that Tab accepts. Off until you switch it on."
+          },
+          "editing": {
+            "title": "Editing",
+            "purpose": "How the editor shows text, indents it and saves it. The View menu in the editor changes the same settings."
+          }
         }
       },
       "common": {
@@ -1028,90 +1864,6 @@
           "label": "Back up now",
           "help": "Makes a backup right away in the chosen folder."
         },
-        "aut001": {
-          "label": "Show the Claude Code greeting",
-          "help": "Switches the Claude Code greeting on or off. Switch it on to edit it."
-        },
-        "aut002": {
-          "label": "Greeting for",
-          "help": "Each project can have its own greeting. The default is used when a project has none."
-        },
-        "aut003": {
-          "label": "Greeting text",
-          "help": "What the assistant says first. Words in {braces} are filled in for you."
-        },
-        "aut004": {
-          "label": "Show reminders",
-          "help": "Lists your reminders under the greeting."
-        },
-        "aut005": {
-          "label": "Show last session",
-          "help": "Adds a line about what the last session did."
-        },
-        "aut009": {
-          "label": "Add reminder",
-          "help": "Adds an empty reminder row."
-        },
-        "aut010": {
-          "label": "Save greeting",
-          "help": "Saves the greeting for the project chosen above."
-        },
-        "aut011": {
-          "label": "Show the Codex greeting",
-          "help": "Switches the Codex greeting on or off. Switch it on to edit it."
-        },
-        "aut012": {
-          "label": "Greeting for",
-          "help": "Each project can have its own greeting. The default is used when a project has none."
-        },
-        "aut013": {
-          "label": "Greeting text",
-          "help": "What the assistant says first. Words in {braces} are filled in for you."
-        },
-        "aut014": {
-          "label": "Show reminders",
-          "help": "Lists your reminders under the greeting."
-        },
-        "aut015": {
-          "label": "Show last session",
-          "help": "Adds a line about what the last session did."
-        },
-        "aut016": {
-          "label": "Add reminder",
-          "help": "Adds an empty reminder row."
-        },
-        "aut017": {
-          "label": "Save greeting",
-          "help": "Saves the greeting for the project chosen above."
-        },
-        "aut018": {
-          "label": "Show the OpenCode greeting",
-          "help": "Switches the OpenCode greeting on or off. Switch it on to edit it."
-        },
-        "aut019": {
-          "label": "Greeting for",
-          "help": "Each project can have its own greeting. The default is used when a project has none."
-        },
-        "aut020": {
-          "label": "Greeting text",
-          "help": "What the assistant says first. Words in {braces} are filled in for you."
-        },
-        "aut021": {
-          "label": "Show reminders",
-          "help": "Lists your reminders under the greeting."
-        },
-        "aut022": {
-          "label": "Show last session",
-          "help": "Adds a line about what the last session did."
-        },
-        "aut026": {
-          "label": "Add reminder",
-          "help": "Adds an empty reminder row."
-        },
-        "aut027": {
-          "label": "Save greeting",
-          "help": "Saves the greeting for the project chosen above."
-        },
         "aut028": {
           "label": "Session startup",
           "help": "Loads memory and context when a new session begins."
@@ -1170,7 +1922,7 @@
         },
         "aut042": {
           "label": "Create an access key",
-          "help": "Makes a key that protects the public address. An existing key stops working."
+          "help": "Makes the key that remote MCP is reached with. An existing key stops working."
         },
         "aut043": {
           "label": "Copy the access key",
@@ -1178,7 +1930,7 @@
         },
         "aut044": {
           "label": "Revoke",
-          "help": "Deletes the key. The public address then accepts anyone."
+          "help": "Deletes the key. Connections that use it stop working."
         },
         "aut045": {
           "label": "Connect OpenClaw",
@@ -2396,10 +3148,6 @@
           "label": "Works with",
           "help": "Which assistants this part of SynaBun supports."
         },
-        "aut047": {
-          "label": "Placeholders you can use",
-          "help": "Shows the words in {braces} and what each becomes."
-        },
         "aut048": {
           "label": "Public address status",
           "help": "Whether the public address is running, and the address itself."
@@ -2419,6 +3167,26 @@
         "aut052": {
           "label": "Disconnect OpenClaw",
           "help": "Removes OpenClaw's memories from the map. OpenClaw's own files are not touched."
+        },
+        "aut053": {
+          "label": "Knowledge of you",
+          "help": "Starts each Assistant conversation with a short digest of what SynaBun has learned about how you work, and keeps learning from what you type. Learning needs Jev. Off: no digest and nothing new is learned; what is already in Memory stays."
+        },
+        "aut054": {
+          "label": "Recent-interaction nudges",
+          "help": "Reminds the Assistant of the last conversation, of what is still open and of what changed since. Off: no reminders, and no record of a conversation is kept for the next one."
+        },
+        "aut055": {
+          "label": "Show the trace",
+          "help": "Adds one line under each reply in the Assistant panel: what the model was told, what was held back and what was learned. Needs one of the two settings above. Off: new replies get no line; the two settings keep working."
+        },
+        "aut056": {
+          "label": "What a new conversation is told about you",
+          "help": "The digest every new Assistant conversation starts with. Select a line to open its memory and correct it."
+        },
+        "aut057": {
+          "label": "See all in Memory",
+          "help": "Opens the memory explorer on everything SynaBun knows about you."
         },
         "skl004": {
           "label": "Skills",
@@ -2571,6 +3339,110 @@
         "app001": {
           "label": "Language",
           "help": "SynaBun reloads to apply the language."
+        },
+        "aut058": {
+          "label": "Greet me when I come back",
+          "help": "In the Assistant, the Claude Code, Codex and OpenCode panels and a terminal Claude Code session: after an hour away, and only when there is something new to say. SynaBun writes it ahead of time, so the session's own model spends nothing on it. Off: every session opens quietly."
+        },
+        "aut059": {
+          "label": "What a new session would open with",
+          "help": "Built from your recent conversations and sessions, the runs you dispatched, schedules that did not complete and what SynaBun knows about you. Open “Based on” to see the records and what the sentence cost."
+        },
+        "aut060": {
+          "label": "Write it now",
+          "help": "Asks the writer for this sentence now instead of waiting for the background: one small call on the cheapest Claude model."
+        },
+        "edt001": {
+          "label": "Suggest code as I type",
+          "help": "Each time you pause typing, the code around the caret is sent to the model you choose below, and its suggestion appears as grey text. Files on the “Never sent” list are not sent. Off: nothing is sent and no model is asked."
+        },
+        "edt002": {
+          "label": "Ask",
+          "help": "OpenCode models are asked through a small OpenCode server of their own, started when a suggestion is first needed and stopped after ten idle minutes. An endpoint of your own is a local Ollama, or any address that speaks the OpenAI protocol."
+        },
+        "edt003": {
+          "label": "Model",
+          "help": "The connected OpenCode models you have not hidden, fast ones first. Test sends a fixed sample, never your code."
+        },
+        "edt004": {
+          "label": "Find fastest",
+          "help": "Sends the sample to up to four fast models and selects the quickest. It takes a few seconds."
+        },
+        "edt005": {
+          "label": "Endpoint kind",
+          "help": "Ollama, or a server that speaks the OpenAI completions or chat protocol."
+        },
+        "edt006": {
+          "label": "Address",
+          "help": "For Ollama, the server itself. For an OpenAI-compatible server, the full address a request is posted to."
+        },
+        "edt007": {
+          "label": "Model name",
+          "help": "The name the endpoint knows the model by."
+        },
+        "edt008": {
+          "label": "Request shape",
+          "help": "Fill-in sends the text before and after the caret, for models trained to fill a gap. Chat sends a message, for any chat model."
+        },
+        "edt009": {
+          "label": "API key",
+          "help": "Sent to the endpoint as a bearer token. Kept in SynaBun's .env file: it is never shown again and never sent back to this page."
+        },
+        "edt010": {
+          "label": "Test endpoint",
+          "help": "Sends a fixed sample to the endpoint, never your code."
+        },
+        "edt011": {
+          "label": "Never sent",
+          "help": "File names AI autocomplete never reads, one pattern per line; * stands for any run of characters. Text that holds a private key is not sent either, whatever the file is called."
+        },
+        "edt012": {
+          "label": "Restore the default list",
+          "help": "Puts back the list SynaBun ships with: environment files, keys, certificates and credential files."
+        },
+        "edt013": {
+          "label": "Today",
+          "help": "Requests sent to a model today, their tokens, and how many suggestions you accepted."
+        },
+        "edt014": {
+          "label": "Text size",
+          "help": "The size of the text in the editor, from 10 to 18 px."
+        },
+        "edt015": {
+          "label": "Ligatures",
+          "help": "Draws character pairs such as => and != as one glyph, in fonts that have them."
+        },
+        "edt016": {
+          "label": "Wrap long lines",
+          "help": "A line wider than the editor continues on the next row instead of scrolling sideways."
+        },
+        "edt017": {
+          "label": "Minimap",
+          "help": "An overview of the file at the right edge of the editor. It is left out when the editor is narrower than 760 px, and for files over 2 MB."
+        },
+        "edt018": {
+          "label": "Indent guides",
+          "help": "Thin vertical lines that show each level of indentation."
+        },
+        "edt019": {
+          "label": "Show whitespace",
+          "help": "Draws spaces and tabs as faint marks: nowhere, in the selected text, or everywhere."
+        },
+        "edt020": {
+          "label": "Indent with",
+          "help": "What the Tab key inserts. Detect follows the file that is open."
+        },
+        "edt021": {
+          "label": "Tab size",
+          "help": "How wide a tab is drawn, and how many spaces one level of indentation is. Detect follows the file that is open."
+        },
+        "edt022": {
+          "label": "Trim trailing whitespace on save",
+          "help": "Removes spaces and tabs at the end of every line when a file is saved. Markdown files are left as they are: two spaces at the end of a line are a line break there."
+        },
+        "edt023": {
+          "label": "End files with one newline on save",
+          "help": "When a file is saved, a missing final line break is added and empty lines after the last line of text are removed."
         }
       },
       "pane": {
@@ -3397,34 +4269,15 @@
         "failed": "failed"
       },
       "hooks": {
-        "greeting": {
-          "title": {
-            "cc": "Claude Code greeting",
-            "codex": "Codex panel greeting",
-            "opencode": "OpenCode panel greeting"
-          },
-          "purpose": {
-            "cc": "What Claude Code says when a session starts.",
-            "codex": "For the Codex panel only. It is kept separately from Claude's.",
-            "opencode": "For the OpenCode panel only. It is kept separately from the others."
-          },
-          "global": "All projects (default)",
-          "templatePlaceholder": "{time_greeting}! Working on **{project_label}** ({branch} branch). {date}.",
-          "placeholder": "Placeholder",
-          "showsAs": "Shows as",
-          "example": "Example",
-          "reminders": "Reminders",
-          "remindersHelp": "Short commands shown under the greeting, such as a start script. Drag a row to reorder."
-        },
-        "claudeOnly": "These apply to Claude Code. The Codex and OpenCode panels do not read them.",
+        "claudeOnly": "These apply to Claude Code sessions you run yourself. The Assistant uses the three settings above, on any model.",
         "ul": {
           "every": "Reflect every",
           "interactions": "interactions",
           "max": "at most",
           "perSession": "times per session"
         },
-        "hooksTitle": "Hooks",
-        "hooksPurpose": "The moments in a Claude Code session when SynaBun steps in. Leave them on unless you are tracking down a problem.",
+        "hooksTitle": "Hooks for standalone Claude Code",
+        "hooksPurpose": "For Claude Code sessions outside the Assistant: memory behaviors and the moments when SynaBun steps in. Leave them on unless you are tracking down a problem.",
         "compat": {
           "claude": "Works with Claude",
           "gemini": "Works with Gemini",
@@ -3439,6 +4292,7 @@
         "apikey": {
           "title": "Access key",
           "none": "No key: anyone with the address can connect",
+          "noneClosed": "No key: MCP cannot be reached from outside",
           "saveNow": "Copy it now. It will not be shown again."
         },
         "connectorsHint": "In {link}, open Connectors and add the connection address.",
@@ -3468,14 +4322,7 @@
         "active": "Active",
         "failedToToggleHook": "Failed to toggle hook",
         "failedToToggleFeature": "Failed to toggle feature",
-        "failedToToggleCodexGreeting": "Failed to toggle Codex greeting",
-        "failedToToggleOpencodeGreeting": "Failed to toggle OpenCode greeting",
-        "dragToReorder": "Drag to reorder",
-        "label": "Label",
-        "command": "Command",
-        "remove": "Remove",
         "failedToSave": "Failed to save",
-        "greetingConfigSaved": "Greeting config saved",
         "dev": "dev",
         "skillUninstalledRestartToApply": "Skill uninstalled — restart {runtime} to apply",
         "skillInstalledRestartToApply": "Skill installed — restart {runtime} to apply",
@@ -3496,12 +4343,83 @@
         "failedToGenerateKey": "Failed to generate key",
         "copyKey": "Copy Key",
         "revokeThisApiKeyTheMcp": "Revoke this API key? The MCP endpoint will become open.",
+        "revokeKeyClosed": "Revoke this access key? Nothing reaches MCP from outside until you create a new one.",
         "noKeyConfiguredTunnelIsOpen": "No key configured - tunnel is open",
         "generateKey": "Generate Key",
-        "goodMorning": "Good morning",
-        "goodAfternoon": "Good afternoon",
-        "goodEvening": "Good evening",
-        "failed2": "Failed: {message}"
+        "failed2": "Failed: {message}",
+        "uc": {
+          "restart": "Restart SynaBun to use these: the server that is running was started before they were added.",
+          "failed": "The Assistant is running without these: this part of SynaBun did not start ({reason}). Restart SynaBun; if it happens again, the server log says why.",
+          "failedNoReason": "The Assistant is running without these: this part of SynaBun did not start. Restart SynaBun; if it happens again, the server log says why.",
+          "unreadable": "SynaBun could not read these settings ({reason}). Nothing was changed. Close Settings and open it again.",
+          "unreadableNoReason": "SynaBun could not read these settings. Nothing was changed. Close Settings and open it again.",
+          "applies": "A change applies from your next message to the Assistant.",
+          "noStore": "Memory is not available on this server, so this does nothing for now.",
+          "tokens": "{tokens} of {max} tokens",
+          "openMemory": "Open this memory",
+          "seed": "from an earlier note",
+          "empty": "Nothing learned yet. It fills in as you tell the Assistant how you want things done.",
+          "omitted": "{n} more did not fit and are brought up only when relevant.",
+          "learn": {
+            "killSwitch": "Not learning right now: smart judgments are switched off for this server (SYNABUN_TYPESAFE=off). What is already known is still used.",
+            "masterOff": "Not learning right now: {page} is switched off. What is already known is still used.",
+            "noKey": "Not learning right now: {page} has no API key. What is already known is still used.",
+            "surfaceOff": "Not learning right now: “User learning” is switched off in {page}. What is already known is still used.",
+            "waiting": "Not learning for a moment: {page} was asked to wait before its next request. What is already known is still used.",
+            "unavailable": "Not learning right now: {page} is not available. What is already known is still used."
+          },
+          "openPage": "Open {page}",
+          "writer": {
+            "missing": "New statements are kept in your own words: the statement writer is not available on this server.",
+            "failed": "The last statement was kept in your own words: the writer could not run ({reason}). It runs on your Claude Code login.",
+            "failedNoReason": "The last statement was kept in your own words: the writer could not run. It runs on your Claude Code login."
+          },
+          "trace": {
+            "nothing": "Nothing to show while both settings above are off."
+          },
+          "off": {
+            "note": "Nothing: “Knowledge of you” is off, so a new conversation starts without a digest. What SynaBun has learned stays in Memory."
+          },
+          "save": {
+            "on": "Could not switch “{name}” on: {reason}. Nothing was changed.",
+            "off": "Could not switch “{name}” off: {reason}. Nothing was changed.",
+            "noAnswer": "SynaBun did not answer",
+            "oldServer": "the running server does not have this setting yet"
+          }
+        },
+        "greet": {
+          "state": {
+            "oldServer": "Restart SynaBun to use this. The running server was started before the greeting existed.",
+            "failed": "The greeting did not start: {reason}. Sessions open quietly until that is fixed and SynaBun is restarted.",
+            "failedUnknown": "The greeting did not start. Sessions open quietly until that is fixed and SynaBun is restarted.",
+            "unreadable": "The greeting setting could not be read ({reason}).",
+            "unreadableUnknown": "The greeting setting could not be read.",
+            "killed": "Switched off by SYNABUN_GREETING=off in the server's environment. This switch does nothing until that is removed and SynaBun is restarted."
+          },
+          "note": {
+            "noWriter": "No Claude sign-in to write with: the greeting is put together from the records, without a model."
+          },
+          "preview": {
+            "loading": "Reading your records…",
+            "now": "A new session in {project} would open with this now:",
+            "recent": "You were here {time} ago, so a new session in {project} opens quietly. After {gap} away it would say:",
+            "moment": "a moment",
+            "nothingNew": "The last greeting in {project} already said this, so a new session opens quietly until something changes:",
+            "off": "Off. Switched on, a new session in {project} would open with:",
+            "firstSession": "Nothing recorded in {project} yet. A first session opens quietly.",
+            "nothingToSay": "Nothing to say in {project} right now. A new session opens quietly.",
+            "error": "The preview could not be built ({reason}).",
+            "spend": "Writer calls today: {calls} of {cap} · {cost}",
+            "spendNone": "No writer calls today.",
+            "writing": "Writing…"
+          },
+          "save": {
+            "failed": "Could not save: {reason}. The switch is back where it was.",
+            "oldServer": "Could not save: the running server does not have the greeting yet. Restart SynaBun.",
+            "forbidden": "Could not save: this window is not allowed to change settings.",
+            "noAnswer": "Could not save: the server did not answer. The switch is back where it was."
+          }
+        }
       },
       "discord": {
         "tokenHelp": "Create a bot at {link} and switch on its Message Content, Server Members and Presence intents.",
@@ -4747,10 +5665,11 @@
             "browser": "chrome, chromium, profile, cookies, user agent, proxy, viewport, headless",
             "connected_tools": "mcp, server, plugin, tools, morelogin, profile, extension",
             "tool_access": "skills, slash commands, permissions, allow, deny, approve",
-            "automations": "hooks, greeting, tunnel, remote, cloudflare, social, youtube",
+            "automations": "assistant, knowledge, hooks, greeting, tunnel, remote, cloudflare, social, youtube",
             "messages": "whatsapp, discord, phone, chat, bot, messaging",
             "notifications": "alerts, sound, volume, banner, toast, mute, desktop notification",
-            "appearance": "theme, dark mode, skin, color, font, text size, language, locale, icons, zoom, look"
+            "appearance": "theme, dark mode, skin, color, font, text size, language, locale, icons, zoom, look",
+            "code_editor": "editor, code, font, text size, word wrap, minimap, whitespace, indentation, tabs, autocomplete, completion, suggestions, copilot, ghost text, inline, ai, model, ollama, file"
           },
           "section": {
             "ai_connections": {
@@ -4810,8 +5729,8 @@
               "tool_permissions": "allow, approve, auto approve, ask"
             },
             "automations": {
-              "greetings": "welcome, session start, reminder, hello, template",
-              "automation_behavior": "hooks, remember, recall, learning, subagents, compaction, guard",
+              "greetings": "welcome, welcome back, hello, return, come back, away, where I left off, last session, what happened",
+              "automation_behavior": "assistant, knowledge, about me, user context, preferences, digest, nudges, reminders, trace, hooks, remember, recall, learning, subagents, compaction, guard",
               "online_access": "tunnel, cloudflare, remote, public url, access key, api key, claude web, openclaw, bridge",
               "social_platform_access": "social media, twitter, x, facebook, instagram, linkedin, tiktok, permissions",
               "youtube_pipeline": "trailer, upload, download, oauth, client id, steam, channel, yt-dlp"
@@ -4847,6 +5766,10 @@
               "advanced_visual_tuning": "blur, transparency, opacity, shadow, radius, corners, font, glass",
               "file_icons": "file explorer, extension, svg, custom icon",
               "d2_graph": "2d, graph, spacing, glow, cards"
+            },
+            "code_editor": {
+              "ai_autocomplete": "autocomplete, completion, suggestions, copilot, ghost text, inline, tab, model, opencode, ollama, openai, endpoint, api key, fastest, latency, excluded files, secrets, env",
+              "editing": "font size, text size, ligatures, word wrap, wrap lines, minimap, indent guides, whitespace, spaces, tabs, tab size, indentation, trim trailing whitespace, final newline, on save"
             }
           },
           "control": {
@@ -4875,6 +5798,99 @@
             "ico001": "filter, extension, search icons",
             "mcp007": "github, json, paste, install server",
             "ml007": "api key, app id, credentials"
+          }
+        }
+      },
+      "code_editor": {
+        "state": {
+          "oldServer": "Restart SynaBun to use this: the server that is running was started before AI autocomplete was added.",
+          "unreadable": "SynaBun could not read these settings ({reason}). Nothing was changed. Close Settings and open it again.",
+          "unreadableNoReason": "SynaBun could not read these settings. Nothing was changed. Close Settings and open it again."
+        },
+        "pill": {
+          "on": "On",
+          "off": "Off",
+          "setup": "Needs a model",
+          "unavailable": "Not available"
+        },
+        "engine": {
+          "opencode": "OpenCode models",
+          "endpoint": "An endpoint of my own"
+        },
+        "kind": {
+          "ollama": "Ollama",
+          "openai": "OpenAI-compatible"
+        },
+        "shape": {
+          "fim": "Fill-in",
+          "chat": "Chat"
+        },
+        "models": {
+          "loading": "Reading the models…",
+          "none": "No model is connected. Sign in to a provider in {page}.",
+          "unavailable": "OpenCode is not running, so its models cannot be listed.",
+          "start": "Start it and list the models",
+          "fast": "fast",
+          "free": "free",
+          "price": "${input} in · ${output} out per million tokens",
+          "noPrice": "price not listed",
+          "notListed": "selected, but no longer in the list",
+          "pick": "Use {model}",
+          "test": "Test",
+          "testNamed": "Test {model}"
+        },
+        "test": {
+          "running": "Testing…",
+          "ok": "{time} · {input} tokens in, {output} out · suggested: {sample}",
+          "okNoTokens": "{time} · suggested: {sample}",
+          "empty": "Answered in {time}, with nothing to suggest.",
+          "failed": "Failed: {reason}",
+          "noAnswer": "SynaBun did not answer"
+        },
+        "fastest": {
+          "running": "Testing the fast models…",
+          "found": "Fastest: {model}, {time}. Selected.",
+          "none": "No model answered in time. Nothing was changed.",
+          "noCandidates": "No fast model is connected. Pick one from the list."
+        },
+        "key": {
+          "set": "A key is set",
+          "notSet": "No key is set",
+          "placeholder": "Paste a key",
+          "placeholderReplace": "Paste a key to replace the one that is set",
+          "save": "Save key",
+          "remove": "Remove key",
+          "saved": "Key saved.",
+          "removed": "Key removed."
+        },
+        "url": {
+          "invalid": "An address starts with http:// or https://. Nothing was changed.",
+          "placeholderOllama": "http://localhost:11434",
+          "placeholderOpenai": "https://api.example.com/v1/completions"
+        },
+        "save": {
+          "failed": "Could not save: {reason}. Nothing was changed.",
+          "oldServer": "the running server does not have this setting yet",
+          "noAnswer": "SynaBun did not answer"
+        },
+        "usage": {
+          "today": "{requests} requests · {input} tokens in, {output} out · {accepted} of {shown} suggestions accepted",
+          "none": "No requests today."
+        },
+        "exclude": {
+          "count": "{n} patterns",
+          "empty": "The list is empty: every file may be sent."
+        },
+        "editing": {
+          "oldServer": "Restart SynaBun to use this: the server that is running was started before the editor kept its settings. Until then, the View menu in the editor changes them for the open page.",
+          "fontSize": "{size} px",
+          "detect": "Detect",
+          "spaces": "Spaces",
+          "tabs": "Tabs",
+          "whitespace": {
+            "none": "Hidden",
+            "selection": "In the selection",
+            "all": "Everywhere"
           }
         }
       }
@@ -5100,6 +6116,19 @@
     "toggleViz": "Focus Mode (V)",
     "fullscreen": "Fullscreen (F11)",
     "toggleExplorer": "Toggle Explorer (F)"
+  },
+  "toolbar": {
+    "hideTools": "Hide workspace tools",
+    "showTools": "Show workspace tools",
+    "workspaceNone": "Workspaces: none loaded",
+    "workspaceActive": "Workspace: {name}",
+    "quickSave": "Quick save",
+    "memoryExplorer": "Memory Explorer",
+    "fileExplorer": "File Explorer",
+    "share": "Share / Invite",
+    "keybinds": "Keybinds",
+    "snapToGrid": "Snap to grid",
+    "tileTerminals": "Tile terminals"
   },
 
   "assistant": {
@@ -5674,7 +6703,10 @@
       "suggestSchedule": "Schedule …",
       "templateSchedule": "Schedule {caret}",
       "suggestRemember": "Remember …",
-      "templateRemember": "Remember {caret}"
+      "templateRemember": "Remember {caret}",
+      "project": "Project",
+      "chooseProject": "Choose a project",
+      "projectAria": "Choose a project (now: {project})"
     },
     "status": {
       "aborted": "Aborted.",
@@ -5685,6 +6717,7 @@
       "dispatchFailed": "Dispatch failed",
       "mode": "Permission mode: {mode}",
       "queued": "Queued at position {position} (concurrency limit).",
+      "renameFailed": "Could not save the name “{name}”. The session is still called “{previous}”.",
       "resuming": "resuming {id}",
       "rewound": "Files rewound to checkpoint",
       "rewindFailed": "Rewind failed",
@@ -5720,6 +6753,127 @@
     "tool": {
       "done": "done",
       "error": "error"
+    },
+    "automation": {
+      "title": "Automation",
+      "sum": {
+        "turn": "{n} tok this turn",
+        "standing": "{n} standing",
+        "none": "nothing injected"
+      },
+      "state": {
+        "waiting": "learning after the reply",
+        "running": "learning…",
+        "learned": "learned 1 thing",
+        "confirmed": "confirmed 1 thing",
+        "replaced": "replaced 1 thing"
+      },
+      "group": {
+        "injected": "Injected",
+        "withheld": "Withheld",
+        "learning": "Learning",
+        "session": "This conversation"
+      },
+      "tier": {
+        "digest": "Knowledge digest",
+        "last-thread": "Last conversation",
+        "environment": "Environment",
+        "open-item": "Open item",
+        "cue": "Knowledge cue",
+        "delta": "New knowledge",
+        "recall": "Related memories",
+        "knowledge": "Knowledge of you",
+        "nudges": "Recent-interaction nudges",
+        "greeting": "Greeting",
+        "turn": "Per-turn notes"
+      },
+      "tok": "{n} tok",
+      "meta": {
+        "standing": "system slot · frozen {time}",
+        "standingRef": "already in the system slot, not resent",
+        "memories": "{n} memories",
+        "memory": "1 memory",
+        "alreadyPresent": "already supplied earlier",
+        "greetingWriter": "said at session open · written ahead by {model}",
+        "greetingFallback": "said at session open · from the records, no model",
+        "budget": "budget {used}/{max} tok"
+      },
+      "reason": {
+        "layer-off": "switched off in Settings",
+        "nothing-known": "nothing learned yet",
+        "no-recent-thread": "no recent conversation to mention",
+        "in-greeting": "already said in the greeting",
+        "budget": "over the turn budget, kept for a later turn",
+        "not-ranked": "not ranked relevant by Jev",
+        "in-digest": "already in the digest",
+        "already-told": "already told in this conversation",
+        "replaced": "replaced by a newer statement",
+        "one-per-turn": "one cue per turn",
+        "unusable": "no usable statement",
+        "not-delivered": "the turn ended before the notes could be delivered",
+        "trivial": "trivial prompt",
+        "pattern": "a command or an acknowledgement",
+        "judged": "Jev: memory would not change the reply",
+        "nothing-retrieved": "nothing relevant found",
+        "disabled": "automatic recall is off",
+        "error": "the search failed",
+        "system": "not a prompt of yours"
+      },
+      "learn": {
+        "waiting": "Your words are judged once the reply is done.",
+        "running": "Jev is reading what you typed…",
+        "skipped": "Not judged: {reason}.",
+        "cues": "Cue words: {cues}",
+        "judged": "Jev: lasting signal {p} · {facet} · {scope}",
+        "matched": "Matches: {statement}",
+        "contradicts": "Contradicts: {statement}",
+        "created": "Learned: {statement}",
+        "updated": "Confirmed (seen {n}×): {statement}",
+        "superseded": "Replaced “{old}” with: {statement}",
+        "none": "Nothing stored: {reason}.",
+        "evidence": "Evidence: “{quote}”",
+        "writer": "Written by {engine}",
+        "writerOwn": "Kept as your own sentence ({reason})",
+        "writerKept": "Statement kept as recorded",
+        "cost": "{requests} Jev requests · {tokens} tok · {cost}",
+        "scope": {
+          "global": "all projects"
+        }
+      },
+      "skip": {
+        "no-cue": "no always / never / from-now-on wording",
+        "trivial": "trivial prompt",
+        "short": "too short",
+        "origin": "not typed by you",
+        "untrusted": "forwarded content",
+        "no-typed-text": "only attachments or pasted text",
+        "seen": "the same words were already judged",
+        "gate-cap": "this conversation reached its limit of judgments",
+        "write-cap": "this conversation reached its limit of learned facts",
+        "layer-off": "Knowledge of you is off",
+        "system": "not a prompt of yours"
+      },
+      "none": {
+        "not-durable": "not a lasting preference",
+        "no-answer": "Jev did not answer",
+        "jev-unavailable": "Jev is off or has no key",
+        "duplicate": "memory already states this",
+        "write-cap": "this conversation reached its limit of learned facts",
+        "no-evidence": "no sentence carried it",
+        "no-statement": "no usable statement",
+        "write-error": "the memory write failed",
+        "no-store": "memory is not available",
+        "error": "the learning step failed"
+      },
+      "writer": {
+        "unverified": "the rewrite could not be checked",
+        "not-faithful": "the rewrite added something",
+        "no-writer": "no writer model",
+        "writer-cap": "writer limit reached",
+        "other": "the writer failed"
+      },
+      "totals": "Judged {gate}/{gateCap} · writer {writer}/{writerCap} · learned {writes}/{writeCap} · {tokens} tok injected over {turns} turns · {cost}",
+      "open": "Open memory"
     },
     "memories": {
       "recalled": "Recalled",
@@ -6113,9 +7267,9 @@
         "always": "Always ask",
         "unsure": "Ask when unsure",
         "never": "Never ask",
-        "alwaysDesc": "Show the route card before every task.",
-        "unsureDesc": "{model} routes on its own when confident, asks otherwise.",
-        "neverDesc": "{model} sorts each request; your task routes apply without asking."
+        "alwaysDesc": "Confirm every actionable task.",
+        "unsureDesc": "Confirm below {pct}% confidence or when a model cannot run the task.",
+        "neverDesc": "Run saved routes immediately; otherwise the assistant chooses."
       },
       "correction": {
         "remembered": "your saved route {to} replaced {from}",
@@ -6135,11 +7289,11 @@
       "badge": {
         "suggested": "Suggested",
         "suggestedPct": "Suggested · {pct}",
-        "remembered": "Remembered",
+        "remembered": "Your choice",
         "current": "Current",
         "cheaper": "Cheaper",
         "stronger": "Stronger",
-        "other": "Your pick",
+        "other": "Your choice",
         "makesImages": "Makes images",
         "makesVideo": "Makes video",
         "canSee": "Can see"
@@ -6155,7 +7309,7 @@
       },
       "decidedBy": "decided by {model}",
       "youChose": "you chose",
-      "remembered": "remembered",
+      "remembered": "your saved choice",
       "timeout": "default after timeout",
       "alternatives": "Also considered",
       "corrections": "Adjusted",
@@ -6165,7 +7319,7 @@
       "chooseModel": "Where should this run?",
       "other": "Other model…",
       "otherTitle": "Run on another model",
-      "rememberFor": "Remember for {taskClass} tasks",
+      "rememberFor": "Use this choice for {taskClass} tasks",
       "rememberCurrent": "now: {current}",
       "run": "Run",
       "keys": "1–4 choose · Enter runs · Esc cancels",
@@ -6173,12 +7327,12 @@
       "cancelling": "Cancelling…",
       "expiresIn": "Expires in {time}",
       "invalid": "That route is not available. Pick another option.",
-      "brainDecides": "Let the brain decide",
+      "brainDecides": "Assistant chooses",
       "resetAll": "Reset all",
       "whenToAsk": "When to ask",
       "taskRoutes": "Task routes",
       "visionRow": "Screenshots & images",
-      "visionDesc": "Used when a task needs a model that can see.",
+      "visionDesc": "Fallback when a task needs a model that can see.",
       "noCapableModel": "No model in your catalog can make {medium} yet.",
       "incapableTip": "This model can't generate {medium}, so the route is not applied.",
       "noSeeingModel": "No model in your catalog can see images yet.",
@@ -6189,25 +7343,202 @@
         "images": "images",
         "videos": "videos"
       },
-      "effortAuto": "auto effort",
-      "effortAutoDefault": "auto ({effort})",
+      "effortAuto": "Model default",
+      "effortAutoDefault": "Default · {effort}",
       "effortUnsupported": "{effort} · unsupported",
       "source": {
-        "yours": "yours",
-        "remembered": "remembered",
-        "default": "default",
-        "disabled": "disabled",
-        "incapable": "incapable"
+        "yours": "Your choice",
+        "remembered": "Your choice",
+        "default": "Assistant chooses",
+        "disabled": "Hidden",
+        "incapable": "Needs attention"
       },
       "reset": "Reset {taskClass}",
-      "resetTip": "Back to default",
+      "resetTip": "Let the assistant choose",
       "reload": "Reload",
       "unavailable": "Model routing is not available on this server yet.",
       "loadFailed": "Could not load model routes",
-      "conflict": "Changed elsewhere — reload",
+      "conflict": "Settings changed elsewhere. Reload to keep your edits and review the latest choices.",
       "invalidField": "Invalid routing setting: {field}",
-      "saveFailed": "Could not save",
-      "saved": "Model routes saved."
+      "saveFailed": "Could not save. Your edits are kept; try again.",
+      "saved": "Model routes saved.",
+      "effortDefaultUnknown": "Default · unknown",
+      "effortNotSupported": "Not supported",
+      "resetChoice": "Reset",
+      "reloadModels": "Reload models",
+      "fieldLabel": "{task}: {field}, {value}",
+      "editorEffortAuto": "Auto",
+      "editorInConversation": "This conversation",
+      "editorUnusedValue": "—",
+      "editorSessionOverride": "This conversation overrides the default: {mode}.",
+      "notApplied": "Not applied",
+      "modeSummary": {
+        "always-ask": "Asks before every task. Routes saved in Never ask are offered first on the route card.",
+        "ask-unsure": "Asks below {pct}% confidence or if a model cannot run the task. Routes saved in Never ask are offered first on the route card.",
+        "never": "Runs valid saved routes immediately; the Assistant chooses for other tasks. Plain Chat stays on the current brain."
+      },
+      "defaultScope": "Default for conversations. Saved task choices are shared across all modes.",
+      "sessionOverride": "This conversation uses {mode}. Its override is changed from the route chip or /routes.",
+      "brainLabel": "Routing brain: {model}",
+      "withChoice": "With your choice",
+      "withoutChoice": "Assistant chooses",
+      "effortNote": "Default effort uses the model default when the brain does not propose a level.",
+      "workerOnly": "Worker only",
+      "needsVision": "Needs vision",
+      "needs": {
+        "image": "Needs image output",
+        "video": "Needs video output"
+      },
+      "chatCurrent": "Uses the current brain",
+      "workerChooses": "Worker · assistant chooses",
+      "inConversation": "In conversation",
+      "onWorker": "{provider} worker",
+      "conversationDesc": "Continue this conversation on the chosen model for this task.",
+      "workerDesc": "Hand the task to a worker and show its result here.",
+      "otherProviderWorker": "A model from another provider runs on a worker.",
+      "chatInactive": "Plain chat stays on the current brain. A stored Chat choice is not applied in any mode.",
+      "visionFallback": "Vision fallback, not a task class. Used when the chosen model cannot see image input.",
+      "columns": {
+        "task": "Task",
+        "model": "Model",
+        "effort": "Effort",
+        "run": "Runs in",
+        "reset": "Reset"
+      },
+      "behavior": {
+        "always-ask": {
+          "saved": "Guides the brain’s suggestion and is offered on the route card.",
+          "unsaved": "The brain suggests a route; you confirm before it runs.",
+          "note": "Every actionable task asks for your choice. A task with no capable model cannot run."
+        },
+        "ask-unsure": {
+          "saved": "Guides the brain’s choice. It can choose another model if the task needs one.",
+          "unsaved": "The brain chooses a model and where it runs.",
+          "note": "Asks below {pct}% confidence, or when a model is missing, unknown, disabled or lacks a required capability. A task with no capable model cannot run."
+        },
+        "never": {
+          "saved": "Runs on your saved model and destination immediately, when the choice is valid.",
+          "unsaved": "The brain chooses a route and runs it immediately.",
+          "note": "Disabled or incompatible choices are skipped. Invalid model picks can be corrected. A task with no capable model cannot run."
+        }
+      },
+      "efforts": {
+        "none": "None",
+        "thinking": "Thinking",
+        "minimal": "Minimal",
+        "low": "Low",
+        "medium": "Medium",
+        "high": "High",
+        "xhigh": "Extra high",
+        "max": "Maximum",
+        "ultra": "Ultra"
+      },
+      "issue": {
+        "disabled": "Hidden in Models. Show it there or choose another model.",
+        "missing": "Not in the current list. Reload models, choose a listed model or reset this choice.",
+        "unavailable": "Model unavailable. Choose an available model or reset this choice.",
+        "blind": "This task needs vision. Choose a model that can see images.",
+        "unknownVision": "Vision is unverified. Choose a model known to see images or reset this choice.",
+        "incapable": "This model cannot generate {medium}. Choose one that can.",
+        "effort": "Saved effort is unsupported. Choose a supported level or use the default.",
+        "unverified": "Could not verify this model. Reload models before relying on this choice."
+      },
+      "issueLabel": {
+        "disabled": "Hidden",
+        "missing": "Not listed",
+        "unavailable": "Unavailable",
+        "blind": "Needs vision",
+        "unknownVision": "Vision unverified",
+        "incapable": "Incompatible",
+        "effort": "Unsupported effort",
+        "unverified": "Unverified"
+      },
+      "editorState": {
+        "modelsUpdated": "Model list updated. Your unsaved changes are kept.",
+        "discardTitle": "Discard unsaved changes?",
+        "discardDesc": "Your saved settings will stay as they are.",
+        "resetTitle": "Reset {count} saved choices?",
+        "resetDesc": "The assistant will choose for these tasks. Nothing changes until you save.",
+        "keepEditing": "Keep editing",
+        "discard": "Discard changes",
+        "resetConfirm": "Reset choices",
+        "moreBelow": "More task routes below ↓",
+        "saving": "Saving…",
+        "unsavedOne": "1 unsaved change",
+        "unsaved": "{count} unsaved changes",
+        "noChanges": "No unsaved changes",
+        "fixChoices": "Fix the highlighted choices or reset them before saving.",
+        "offline": "Offline. Your edits are kept. Reconnect to save or reload models.",
+        "loadingRoutes": "Loading routing settings and models…",
+        "loadingModels": "Loading models…",
+        "modelsFailed": "Could not refresh the model list. Showing provider lists where available. Reload models to verify your choices.",
+        "modelsEmpty": "No models are available. Check Models or connect a provider, then reload.",
+        "tasksEmpty": "No task classes are available on this server.",
+        "edited": " · edited",
+        "settingsReloaded": "Latest settings loaded. Your edits are kept; review them before saving.",
+        "permission": "You do not have permission to edit routing settings."
+      },
+      "menu": {
+        "priceUnknown": "Price unknown",
+        "contextUnknown": "Context unknown",
+        "contextTokens": "{count} tokens",
+        "hiddenCount": "{count} hidden in Models",
+        "noCompatible": "No compatible models shown for this provider.",
+        "providerEmpty": "No models shown for this provider.",
+        "noMatches": "No matching models. Check Models for hidden choices.",
+        "failed": "Model list could not be refreshed. Provider lists may be out of date.",
+        "hiddenHelp": "Missing a model? Your Models list controls what is shown."
+      },
+      "classes": {
+        "chat": {
+          "label": "Chat",
+          "desc": "Conversation and questions answered from knowledge or memory"
+        },
+        "quick": {
+          "label": "Quick task",
+          "desc": "Small edits, one-off shell commands and lookups"
+        },
+        "code": {
+          "label": "Coding",
+          "desc": "A feature or bug fix inside one repository"
+        },
+        "complex": {
+          "label": "Complex engineering",
+          "desc": "Architecture, cross-file refactors and hard debugging"
+        },
+        "review": {
+          "label": "Review",
+          "desc": "A second model reviews code, a plan or a result"
+        },
+        "research": {
+          "label": "Research",
+          "desc": "Web or codebase research and summaries"
+        },
+        "browser": {
+          "label": "Browser",
+          "desc": "Web tasks in the SynaBun browser"
+        },
+        "computer": {
+          "label": "Computer use",
+          "desc": "Operate desktop apps on this Mac"
+        },
+        "automation": {
+          "label": "Automation",
+          "desc": "Loops, schedules and recurring work"
+        },
+        "design": {
+          "label": "Design",
+          "desc": "UI/UX research, design systems, mockups and prototypes"
+        },
+        "image_gen": {
+          "label": "Image creation",
+          "desc": "Create images with a model that generates them"
+        },
+        "video_gen": {
+          "label": "Video creation",
+          "desc": "Create videos with a model that generates them"
+        }
+      }
     },
     "computer": {
       "toggle": "Computer",

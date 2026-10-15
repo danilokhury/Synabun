@@ -79,7 +79,6 @@ synabun/
 ├── neural-interface/   # Local UI and agent sidepanels
 │   ├── lib/            # Server-side modules
 │   ├── public/         # Frontend HTML, CSS, and JavaScript
-│   ├── tests/          # Node.js regression tests
 │   └── server.js       # Express backend
 ├── hooks/              # Claude Code lifecycle hooks
 │   └── claude-code/
@@ -105,7 +104,6 @@ Runtime data is not stored in the checkout. It defaults to `~/.synabun` on macOS
 | Setup wizard | `neural-interface/public/onboarding.html` |
 | Claude Code hooks | `hooks/claude-code/` (7 hook files) |
 | Claude Code skills | `skills/synabun/` (SKILL.md + modules/) |
-| Regression tests | `neural-interface/tests/` |
 
 ### After Making Changes
 
@@ -131,10 +129,10 @@ There is no linter configured yet. We rely on consistent style through conventio
 
 ```bash
 npm --prefix mcp-server run build
-node --test neural-interface/tests/*.test.mjs
+npm run pack:check
 ```
 
-Run checks from the repository root after installing the package dependencies.
+Run checks from the repository root after installing the package dependencies. The automated test suites are not published with this repository.
 
 ### Manual Testing
 

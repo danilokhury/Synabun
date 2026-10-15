@@ -4,7 +4,8 @@
 //
 // Save/load full scene snapshots: open cards, graph node positions,
 // camera state (3D), active category filters, and selection.
-// Floating overlay in top-right of the canvas.
+// The switcher leads the top-right dock; Snap to grid and Tile terminals are on
+// the whiteboard rail and in View.
 // Export/import as JSON for backup.
 //
 // Events emitted:
@@ -20,6 +21,7 @@
 import { state, emit, on } from './state.js';
 import { KEYS } from './constants.js';
 import { storage } from './storage.js';
+import { t } from './i18n.js';
 import { posStore } from './node-positions-store.js';
 import { getVariant } from './registry.js';
 import {
@@ -525,18 +527,13 @@ function updateIndicator() {
   if (!indicator || !nameEl) return;
 
   const activeId = getActiveId();
-  if (activeId) {
-    const workspaces = getWorkspaces();
-    const active = workspaces.find(w => w.id === activeId);
-    if (active) {
-      nameEl.textContent = active.name;
-      indicator.classList.add('has-workspace');
-      return;
-    }
-  }
-
-  nameEl.textContent = 'No workspace';
-  indicator.classList.remove('has-workspace');
+  const active = activeId ? getWorkspaces().find(w => w.id === activeId) : null;
+  nameEl.textContent = active ? active.name : 'No workspace';
+  indicator.classList.toggle('has-workspace', !!active);
+  // The name is cut short in the bar, or not shown at all where the band is narrow: the tooltip has it whole.
+  const label = active ? t('toolbar.workspaceActive', { name: active.name }) : t('toolbar.workspaceNone');
+  indicator.dataset.tooltip = label;
+  indicator.setAttribute('aria-label', label);
 }
 
 
@@ -552,6 +549,7 @@ function openDropdown() {
   _isOpen = true;
   dropdown.style.display = '';
   indicator?.classList.add('open');
+  indicator?.setAttribute('aria-expanded', 'true');
   renderList();
 
   emit('panel:close-all-dropdowns-except', 'workspace');
@@ -565,6 +563,7 @@ function closeDropdown() {
   _isOpen = false;
   dropdown.style.display = 'none';
   indicator?.classList.remove('open');
+  indicator?.setAttribute('aria-expanded', 'false');
 }
 
 function toggleDropdown() {
@@ -668,25 +667,33 @@ export function initWorkspaces() {
     });
   }
 
-  // Grid snap toggle
+  // Grid snap: the whiteboard rail's toggle and View → Snap to grid (the rail shows in Focus Mode only)
   const gridBtn = $('ws-grid-toggle');
+  const gridMenu = $('menu-toggle-grid-snap');
+  const showGridSnap = () => {
+    gridBtn?.classList.toggle('active', state.gridSnap);
+    gridBtn?.setAttribute('aria-pressed', String(state.gridSnap));
+    gridMenu?.classList.toggle('active', state.gridSnap);
+    document.body.classList.toggle('grid-active', state.gridSnap);
+  };
+  const toggleGridSnap = () => {
+    state.gridSnap = !state.gridSnap;
+    showGridSnap();
+    storage.setItem(KEYS.GRID_SNAP, state.gridSnap);
+  };
+  if (storage.getItem(KEYS.GRID_SNAP) === 'true') {
+    state.gridSnap = true;
+    showGridSnap();
+  }
   if (gridBtn) {
-    const saved = storage.getItem(KEYS.GRID_SNAP);
-    if (saved === 'true') {
-      state.gridSnap = true;
-      gridBtn.classList.add('active');
-      document.body.classList.add('grid-active');
-    }
     gridBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      state.gridSnap = !state.gridSnap;
-      gridBtn.classList.toggle('active', state.gridSnap);
-      document.body.classList.toggle('grid-active', state.gridSnap);
-      storage.setItem(KEYS.GRID_SNAP, state.gridSnap);
+      toggleGridSnap();
     });
   }
+  if (gridMenu) gridMenu.addEventListener('click', toggleGridSnap);
 
-  // Tile floating terminals
+  // Tile floating terminals: the rail's button and View → Tile terminals
   const tileBtn = $('ws-tile-btn');
   if (tileBtn) {
     tileBtn.addEventListener('click', (e) => {
@@ -694,12 +701,19 @@ export function initWorkspaces() {
       tileFloatingTerminals();
     });
   }
+  const tileMenu = $('menu-tile-terminals');
+  if (tileMenu) {
+    tileMenu.addEventListener('click', () => {
+      emit('panel:close-all-dropdowns');
+      tileFloatingTerminals();
+    });
+  }
 
-  // Close dropdown on click outside
+  // Close dropdown on click outside (the session pills hang inside #topright-controls, but are not the toolbar)
   document.addEventListener('click', (e) => {
     if (!_isOpen) return;
     const container = $('topright-controls') || $('workspace-overlay');
-    if (container && !container.contains(e.target)) {
+    if (container && (!container.contains(e.target) || e.target.closest('#term-minimized-tray'))) {
       closeDropdown();
     }
   });

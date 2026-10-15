@@ -11,7 +11,8 @@ export function routeSidepanelEvent(event, data) {
   const host = sidepanelHost();
   if (!host) return false;
   if (hostedSidepanelId) {
-    if (!['open-plan-editor', 'open-changelog-editor', 'browser:reconnect'].includes(event)) return false;
+    // The code editor lives in the main window: what opens it from a detached session goes there.
+    if (!['open-plan-editor', 'open-changelog-editor', 'open-file-editor', 'browser:reconnect'].includes(event)) return false;
     host.emitFromSession(hostedSidepanelId, event, data);
     return true;
   }

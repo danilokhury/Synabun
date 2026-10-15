@@ -16,10 +16,10 @@
 // open. `synabun.route` events (phase card|auto|decided|pending|expired|
 // declined|cancelled) update the line in place by routeId.
 
-import { clampEffortId, getEffortLevelsForModel, modelEffortIds } from '../agent-runtime-options.js';
 import { getProviderMeta } from '../provider-icons.js';
-import { fetchManageCatalog, getRouting, patchHiddenModels, putRouting } from './asst-api.js';
-import { catalogModelRow, fmtModelPrice, hiddenModelFor, ICON_CARET, invalidateModelCatalog, loadModelCatalog, openModelMenu } from './asst-brain-picker.js';
+import { fetchManageCatalog, patchHiddenModels } from './asst-api.js';
+import { catalogModelRow, fmtModelPrice, hiddenModelFor, ICON_CARET, invalidateModelCatalog, openModelMenu } from './asst-brain-picker.js';
+// The Routes editor's model lists (where they come from, how they stay current): asst-route-models.js.
 import { closeMenu, isMenuOpen, openMenu } from './asst-menu.js';
 import { decorateControlHead } from './asst-control.js';
 import {
@@ -63,13 +63,12 @@ export function routeModeLabel(mode, t) {
   return tr('assistant.routes.mode.unsure', 'Ask when unsure');
 }
 
-export function routeModeDescription(mode, model, t) {
+export function routeModeDescription(mode, model, t, askBelow = 0.75) {
   const tr = tf(t);
-  const who = str(model) || tr('assistant.routes.theBrain', 'The assistant');
   const m = normalizeRouteMode(mode, DEFAULT_ROUTE_MODE);
-  if (m === 'always-ask') return tr('assistant.routes.mode.alwaysDesc', 'Show the route card before every task.');
-  if (m === 'never') return tr('assistant.routes.mode.neverDesc', '{model} sorts each request; your task routes apply without asking.', { model: who });
-  return tr('assistant.routes.mode.unsureDesc', '{model} routes on its own when confident, asks otherwise.', { model: who });
+  if (m === 'always-ask') return tr('assistant.routes.mode.alwaysDesc', 'Confirm every actionable task.');
+  if (m === 'never') return tr('assistant.routes.mode.neverDesc', 'Run saved routes immediately; otherwise the assistant chooses.');
+  return tr('assistant.routes.mode.unsureDesc', 'Confirm below {pct}% confidence or when a model cannot run the task.', { pct: Math.round(askBelow * 100) });
 }
 
 // ── Pure model ──────────────────────────────────────────────────────────────
@@ -208,7 +207,7 @@ function badgeText(o, n, tr) {
   const pct = fmtConfidence(n?.confidence);
   switch (o.badge) {
     case 'suggested': return pct ? tr('assistant.routes.badge.suggestedPct', 'Suggested · {pct}', { pct }) : tr('assistant.routes.badge.suggested', 'Suggested');
-    case 'remembered': return tr('assistant.routes.badge.remembered', 'Remembered');
+    case 'remembered': return tr('assistant.routes.badge.remembered', 'Your choice');
     case 'current': return tr('assistant.routes.badge.current', 'Current');
     case 'capable':
       if (!n?.requires && n?.visionOnly) return tr('assistant.routes.badge.canSee', 'Can see');
@@ -344,6 +343,13 @@ export function designRouteSight(pref, catalog) {
   return row.status === 'unavailable' ? 'unavailable' : 'ok';
 }
 
+/** Saved ids may resolve through a listed alias; all metadata still comes from this catalog. */
+export function routeCatalogRow(pref, catalog) {
+  if (!pref?.provider || !catalog) return null;
+  const rows = Array.isArray(catalog[pref.provider]) ? catalog[pref.provider] : [];
+  return pref.model ? catalogModelRow(pref.provider, pref.model, catalog) || aliasRow(pref.provider, pref.model, rows) : rows.find(m => m.isDefault) || null;
+}
+
 /** Text parts of a route line (pure). */
 export function routeLineParts(route, phase = 'decided', { brainLabel = '', t = null } = {}) {
   const tr = tf(t);
@@ -366,9 +372,9 @@ export function routeLineParts(route, phase = 'decided', { brainLabel = '', t = 
   switch (str(r.decidedBy)) {
     case 'brain': decided = tr('assistant.routes.decidedBy', 'decided by {model}', { model: brainLabel || tr('assistant.routes.theBrainLower', 'the assistant') }); break;
     case 'user': decided = tr('assistant.routes.youChose', 'you chose'); break;
-    case 'remembered': decided = tr('assistant.routes.remembered', 'remembered'); break;
+    case 'remembered': decided = tr('assistant.routes.remembered', 'your saved choice'); break;
     case 'timeout': decided = tr('assistant.routes.timeout', 'default after timeout'); break;
-    default: decided = r.remembered ? tr('assistant.routes.remembered', 'remembered') : '';
+    default: decided = r.remembered ? tr('assistant.routes.remembered', 'your saved choice') : '';
   }
   const meta = [];
   if (effort && effort !== 'off') meta.push(effort);
@@ -598,7 +604,7 @@ export function createRouteModeControl(hostEl, hooks = {}) {
           kind: 'radio',
           id,
           label: routeModeLabel(id, hooks.t),
-          desc: routeModeDescription(id, model, hooks.t),
+          desc: routeModeDescription(id, model, hooks.t, hooks.getMode?.()?.askBelow ?? 0.75),
           selected: id === mode,
           onSelect: () => { if (id !== mode) hooks.onChange?.(id); },
         })),
@@ -779,7 +785,7 @@ export function renderRouteCard(container, input, hooks = {}) {
         state.other = {
           id: 'other', kind, provider: target.provider, model: target.model, effort: null,
           label: target.label || '', badge: null, number: options.length + 1, here: false,
-          title: target.label || target.model, badgeText: tr('assistant.routes.badge.other', 'Your pick'),
+          title: target.label || target.model, badgeText: tr('assistant.routes.badge.other', 'Your choice'),
           vision: target.vision === true, price: target.price || null, reason: '', warning: null, disabled: false,
         };
         state.selectedId = 'other';
@@ -798,7 +804,7 @@ export function renderRouteCard(container, input, hooks = {}) {
     rememberInput.type = 'checkbox';
     rememberInput.addEventListener('change', () => { state.remember = rememberInput.checked; });
     // `remember.label` is the task-class label ("Code"), not a sentence.
-    const text = tr('assistant.routes.rememberFor', 'Remember for {taskClass} tasks', { taskClass: (n.remember.label || n.taskClassLabel).toLowerCase() });
+    const text = tr('assistant.routes.rememberFor', 'Use this choice for {taskClass} tasks', { taskClass: (n.remember.label || n.taskClassLabel).toLowerCase() });
     label.append(rememberInput, el('span', null, text));
     if (n.remember.current) label.appendChild(el('span', 'asst-route-remember-current', tr('assistant.routes.rememberCurrent', 'now: {current}', { current: n.remember.current })));
     card.appendChild(label);
@@ -1005,321 +1011,9 @@ export function renderRouteCard(container, input, hooks = {}) {
   return entry;
 }
 
-// ── Routes editor (modal) ───────────────────────────────────────────────────
-
-let _editor = null;
-
-/**
- * "Model routes…" editor. hooks: { t, providerIcon, getBrain() → brain, onSaved(routing), onClose() }
- * Returns { el, close } (async: resolves after the first load).
- */
-export async function openRoutesEditor(hooks = {}) {
-  if (_editor) { _editor.close(); }
-  const tr = tf(hooks.t);
-  const overlay = el('div', 'asst-modal-overlay');
-  overlay.setAttribute('role', 'dialog');
-  overlay.setAttribute('aria-modal', 'true');
-  overlay.setAttribute('aria-label', tr('assistant.routes.editorTitle', 'Model routes'));
-  const modal = el('div', 'asst-modal asst-routes-modal');
-  modal.innerHTML = `
-    <div class="asst-modal-head"><span class="asst-icon" aria-hidden="true">${ICON_ROUTE}</span><span>${esc(tr('assistant.routes.editorTitle', 'Model routes'))}</span><button type="button" class="asst-iconbtn asst-modal-close" aria-label="${esc(tr('common.close', 'Close'))}">${ICON_X}</button></div>
-    <div class="asst-modal-body"><div class="asst-modal-note">${esc(tr('common.loading', 'Loading...'))}</div></div>
-    <div class="asst-modal-foot">
-      <button type="button" class="asst-btn asst-btn-secondary asst-routes-reset-all">${esc(tr('assistant.routes.resetAll', 'Reset all'))}</button>
-      <span class="asst-modal-spacer"></span>
-      <button type="button" class="asst-btn asst-btn-secondary asst-routes-cancel">${esc(tr('common.cancel', 'Cancel'))}</button>
-      <button type="button" class="asst-btn asst-btn-primary asst-routes-save">${esc(tr('common.save', 'Save'))}</button>
-    </div>`;
-  overlay.appendChild(modal);
-  const body = modal.querySelector('.asst-modal-body');
-  const saveBtn = modal.querySelector('.asst-routes-save');
-  const resetAllBtn = modal.querySelector('.asst-routes-reset-all');
-  const returnTo = document.activeElement;
-
-  const state = { data: null, catalog: null, version: null, defaultMode: DEFAULT_ROUTE_MODE, prefs: {}, patch: {}, error: '', conflict: false, saving: false };
-
-  function close() {
-    if (!overlay.isConnected) return;
-    closeMenu();
-    document.removeEventListener('keydown', onKey, true);
-    overlay.remove();
-    _editor = null;
-    try { hooks.onClose?.(); } catch { /* ignore */ }
-    if (returnTo?.isConnected) { try { returnTo.focus({ preventScroll: true }); } catch { /* ignore */ } }
-  }
-  function onKey(e) {
-    if (e.key === 'Escape') {
-      if (isMenuOpen()) return; // the menu closes itself first
-      e.preventDefault(); e.stopPropagation(); close();
-      return;
-    }
-    e.stopPropagation();
-  }
-  document.addEventListener('keydown', onKey, true);
-  overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
-  modal.querySelector('.asst-modal-close').addEventListener('click', close);
-  modal.querySelector('.asst-routes-cancel').addEventListener('click', close);
-  document.body.appendChild(overlay);
-  _editor = { close };
-
-  function effectivePref(key) {
-    return Object.prototype.hasOwnProperty.call(state.patch, key) ? state.patch[key] : (state.prefs[key] || null);
-  }
-
-  function sourceOf(key) {
-    if (Object.prototype.hasOwnProperty.call(state.patch, key)) return state.patch[key] ? 'yours' : 'default';
-    const pref = state.prefs[key];
-    if (!pref) return 'default';
-    return pref.by === 'user' ? 'yours' : 'remembered';
-  }
-
-  function sourceLabel(source) {
-    if (source === 'disabled') return tr('assistant.routes.source.disabled', 'disabled');
-    if (source === 'incapable') return tr('assistant.routes.source.incapable', 'incapable');
-    if (source === 'yours') return tr('assistant.routes.source.yours', 'yours');
-    if (source === 'remembered') return tr('assistant.routes.source.remembered', 'remembered');
-    return tr('assistant.routes.source.default', 'default');
-  }
-
-  /** Does the route's model generate `medium`? true | false | null (the catalog cannot tell). */
-  function routeMakes(pref, medium) {
-    if (!medium || !pref?.provider || !state.catalog) return null;
-    const rows = Array.isArray(state.catalog[pref.provider]) ? state.catalog[pref.provider] : [];
-    const row = pref.model ? catalogModelRow(pref.provider, pref.model, state.catalog) : rows.find(m => m.isDefault) || null;
-    if (!row?.outputs || typeof row.outputs !== 'object') return null;
-    return row.outputs[medium] === true;
-  }
-  /** No model in the loaded catalog makes `medium` (false while the catalog has no output data). */
-  function noMaker(medium) {
-    const rows = Object.values(state.catalog || {}).flatMap(list => (Array.isArray(list) ? list : []));
-    return rows.some(m => m?.outputs && typeof m.outputs === 'object') && !rows.some(m => m?.outputs?.[medium] === true);
-  }
-  /** No model in the loaded catalog can see (false while no catalog is loaded). */
-  function noSeer() {
-    const rows = Object.values(state.catalog || {}).flatMap(list => (Array.isArray(list) ? list : []));
-    return rows.length > 0 && !rows.some(m => m?.vision === true);
-  }
-
-  function taskRows() {
-    const classes = Array.isArray(state.data?.taskClasses) ? state.data.taskClasses.filter(c => c?.id) : [];
-    const rows = classes.map(c => ({
-      id: String(c.id), label: str(c.label) || humanizeClass(c.id), description: str(c.description), defaultKind: str(c.defaultKind) || 'direct',
-      // Image / video creation: only models that generate the medium, always on a worker; design: only models that can see.
-      requires: c.requires === 'image' || c.requires === 'video' ? c.requires : null, dispatchOnly: c.dispatchOnly === true, visionOnly: c.vision === true,
-    }));
-    if (!rows.some(r => r.id === 'vision')) rows.push({ id: 'vision', label: tr('assistant.routes.visionRow', 'Screenshots & images'), description: tr('assistant.routes.visionDesc', 'Used when a task needs a model that can see.'), defaultKind: 'direct' });
-    return rows;
-  }
-
-  function render() {
-    body.innerHTML = '';
-    if (state.error) {
-      const banner = el('div', 'asst-routes-error');
-      banner.setAttribute('role', 'alert');
-      banner.appendChild(el('span', null, state.error));
-      if (state.conflict) {
-        const reload = el('button', 'asst-btn asst-btn-secondary', tr('assistant.routes.reload', 'Reload'));
-        reload.type = 'button';
-        reload.addEventListener('click', () => load());
-        banner.appendChild(reload);
-      }
-      body.appendChild(banner);
-    }
-    if (!state.data) return;
-
-    // When to ask (default route mode)
-    const modeSection = el('section', 'asst-routes-section');
-    modeSection.appendChild(el('div', 'asst-routes-section-title', tr('assistant.routes.whenToAsk', 'When to ask')));
-    const modes = el('div', 'asst-routes-modes');
-    modes.setAttribute('role', 'radiogroup');
-    modes.setAttribute('aria-label', tr('assistant.routes.whenToAsk', 'When to ask'));
-    const brainName = hooks.brainName?.() || '';
-    for (const id of ROUTE_MODES) {
-      const b = el('button', 'asst-routes-mode');
-      b.type = 'button';
-      b.setAttribute('role', 'radio');
-      b.setAttribute('aria-checked', state.defaultMode === id ? 'true' : 'false');
-      b.dataset.mode = id;
-      b.innerHTML = `<span class="asst-routes-mode-label">${esc(routeModeLabel(id, hooks.t))}</span><span class="asst-routes-mode-desc">${esc(routeModeDescription(id, brainName, hooks.t))}</span>`;
-      b.addEventListener('click', () => { state.defaultMode = id; render(); modal.querySelector(`.asst-routes-mode[data-mode="${id}"]`)?.focus(); });
-      modes.appendChild(b);
-    }
-    modeSection.appendChild(modes);
-    body.appendChild(modeSection);
-
-    // Task routes
-    const section = el('section', 'asst-routes-section');
-    section.appendChild(el('div', 'asst-routes-section-title', tr('assistant.routes.taskRoutes', 'Task routes')));
-    const list = el('div', 'asst-routes-list');
-    for (const row of taskRows()) list.appendChild(taskRow(row));
-    section.appendChild(list);
-    body.appendChild(section);
-    saveBtn.disabled = state.saving;
-  }
-
-  function taskRow(row) {
-    const pref = effectivePref(row.id);
-    const medium = row.requires || null;
-    const seeing = !medium && row.visionOnly === true;
-    // A saved route onto a model the user hid is never applied (the brain decides); nor, for
-    // image / video creation, one onto a model that cannot generate the medium, or for design one
-    // the router would skip (not known to see, missing from the catalog, unavailable).
-    const sight = seeing && pref ? designRouteSight(pref, state.catalog) : null;
-    const source = pref?.model && hiddenModelFor(pref.provider, pref.model) ? 'disabled'
-      : medium && pref && routeMakes(pref, medium) === false ? 'incapable'
-        : sight && sight !== 'ok' ? 'incapable' : sourceOf(row.id);
-    const emptyLabel = medium ? tr('assistant.routes.noCapableModel', 'No model in your catalog can make {medium} yet.', { medium: mediumWords(medium, tr) })
-      : seeing ? tr('assistant.routes.noSeeingModel', 'No model in your catalog can see images yet.') : '';
-    const node = el('div', 'asst-routes-row');
-    node.dataset.taskClass = row.id;
-    const main = el('div', 'asst-routes-row-main');
-    main.appendChild(el('div', 'asst-routes-row-label', row.label));
-    if (row.description) main.appendChild(el('div', 'asst-routes-row-desc', row.description));
-    if ((medium && noMaker(medium)) || (seeing && noSeer())) main.appendChild(el('div', 'asst-routes-row-note', emptyLabel));
-    node.appendChild(main);
-
-    const modelBtn = el('button', 'asst-dd asst-routes-model');
-    modelBtn.type = 'button';
-    modelBtn.setAttribute('aria-haspopup', 'menu');
-    const label = pref ? routeTargetLabel(pref) : tr('assistant.routes.brainDecides', 'Let the brain decide');
-    modelBtn.innerHTML = `${pref?.provider ? `<span class="asst-icon" aria-hidden="true" style="color:${esc(providerColor(pref.provider))}">${providerIconHtml(pref.provider, hooks)}</span>` : ''}<span class="asst-dd-label"></span>`;
-    modelBtn.querySelector('.asst-dd-label').textContent = label;
-    modelBtn.setAttribute('aria-label', `${row.label}: ${label}`);
-    modelBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      if (isMenuOpen(modelBtn)) { closeMenu(); return; }
-      openModelMenu(modelBtn, {
-        brain: hooks.getBrain?.() || null,
-        t: hooks.t,
-        includeHere: true,
-        hereLabel: tr('assistant.routes.brainDecides', 'Let the brain decide'),
-        title: row.label,
-        current: pref ? { provider: pref.provider, model: pref.model } : null,
-        onToast: hooks.onToast,
-        // Image / video creation: only models that generate the medium (no custom id: its output is unknown);
-        // design: only models that can see.
-        ...(medium ? { accept: (_p, m) => m?.outputs?.[medium] === true, allowCustom: false, emptyLabel } : {}),
-        ...(seeing ? { accept: (_p, m) => m?.vision === true && m?.status !== 'unavailable', allowCustom: false, emptyLabel } : {}),
-        onSelect: (target) => {
-          if (target?.here) state.patch[row.id] = null;
-          else if (target?.model) {
-            // The effort survives when the new model runs it; otherwise the nearest level it does.
-            const ids = modelEffortIds(catalogModelRow(target.provider, target.model, state.catalog));
-            const effort = !pref?.effort ? null : (ids ? clampEffortId(pref.effort, ids) : (pref.provider === target.provider ? pref.effort : null));
-            state.patch[row.id] = { kind: row.defaultKind || 'direct', provider: target.provider, model: target.model, effort, label: target.label || '' };
-          }
-          render();
-          modal.querySelector(`.asst-routes-row[data-task-class="${CSS.escape(row.id)}"] .asst-routes-model`)?.focus();
-        },
-      });
-    });
-    node.appendChild(modelBtn);
-
-    // Exactly the selected model's levels (the provider list only for an unknown model).
-    const modelRow = pref?.provider ? catalogModelRow(pref.provider, pref.model, state.catalog) : null;
-    const efforts = pref?.provider ? getEffortLevelsForModel(pref.provider, modelRow) : [];
-    if (pref && efforts.some(e => e.id !== 'off')) {
-      const effortBtn = el('button', 'asst-dd asst-routes-effort');
-      effortBtn.type = 'button';
-      effortBtn.setAttribute('aria-haspopup', 'menu');
-      const level = efforts.find(e => e.id === pref.effort);
-      const autoLabel = modelRow?.defaultEffort
-        ? tr('assistant.routes.effortAutoDefault', 'auto ({effort})', { effort: efforts.find(e => e.id === modelRow.defaultEffort)?.label?.toLowerCase() || modelRow.defaultEffort })
-        : tr('assistant.routes.effortAuto', 'auto effort');
-      const effortLabel = level ? level.label
-        : pref.effort ? tr('assistant.routes.effortUnsupported', '{effort} · unsupported', { effort: pref.effort })
-          : autoLabel;
-      effortBtn.innerHTML = '<span class="asst-dd-label"></span>';
-      effortBtn.querySelector('.asst-dd-label').textContent = effortLabel;
-      effortBtn.setAttribute('aria-label', `${tr('assistant.brain.effort', 'Thinking effort')}: ${effortLabel}`);
-      effortBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        if (isMenuOpen(effortBtn)) { closeMenu(); return; }
-        openMenu(effortBtn, {
-          title: tr('assistant.brain.effort', 'Thinking effort'),
-          role: 'menu',
-          items: [
-            { kind: 'radio', id: '', label: autoLabel, selected: !pref.effort, onSelect: () => { state.patch[row.id] = { ...pref, effort: null }; render(); } },
-            ...efforts.filter(x => x.id !== 'off').map(x => ({ kind: 'radio', id: x.id, label: x.label, desc: x.desc || '', selected: pref.effort === x.id, onSelect: () => { state.patch[row.id] = { ...pref, effort: x.id }; render(); } })),
-          ],
-        });
-      });
-      node.appendChild(effortBtn);
-    }
-
-    const badge = el('span', 'asst-routes-source', sourceLabel(source));
-    badge.dataset.source = source;
-    if (source === 'incapable') {
-      badge.setAttribute('data-tooltip', !seeing ? tr('assistant.routes.incapableTip', "This model can't generate {medium}, so the route is not applied.", { medium: mediumWords(medium, tr) })
-        : sight === 'blind' ? tr('assistant.routes.incapableSeeTip', "This model can't see images, so the route is not applied.")
-          : sight === 'unavailable' ? tr('assistant.routes.unavailableTip', "This model isn't available right now, so the route is not applied.")
-            : tr('assistant.routes.unknownSeeTip', "This model isn't known to see images, so the route is not applied."));
-    }
-    node.appendChild(badge);
-
-    const reset = el('button', 'asst-iconbtn asst-routes-reset', '↺');
-    reset.type = 'button';
-    reset.setAttribute('aria-label', tr('assistant.routes.reset', 'Reset {taskClass}', { taskClass: row.label }));
-    reset.setAttribute('data-tooltip', tr('assistant.routes.resetTip', 'Back to default'));
-    reset.hidden = source === 'default';
-    reset.addEventListener('click', () => { state.patch[row.id] = null; render(); });
-    node.appendChild(reset);
-    return node;
-  }
-
-  async function load() {
-    state.error = '';
-    state.conflict = false;
-    try {
-      const [data, catalog] = await Promise.all([getRouting(), loadModelCatalog().catch(() => null)]);
-      state.catalog = catalog || null;
-      state.data = data || {};
-      state.version = data?.version ?? null;
-      state.defaultMode = normalizeRouteMode(data?.routing?.defaultMode, DEFAULT_ROUTE_MODE);
-      state.prefs = obj(data?.routing?.preferences) ? { ...data.routing.preferences } : {};
-      state.patch = {};
-    } catch (err) {
-      state.data = null;
-      state.error = err?.status === 404
-        ? tr('assistant.routes.unavailable', 'Model routing is not available on this server yet.')
-        : `${tr('assistant.routes.loadFailed', 'Could not load model routes')}: ${err?.message || err}`;
-    }
-    render();
-    modal.querySelector('.asst-routes-mode[aria-checked="true"]')?.focus();
-  }
-
-  resetAllBtn.addEventListener('click', () => {
-    for (const key of new Set([...Object.keys(state.prefs), ...Object.keys(state.patch)])) state.patch[key] = null;
-    render();
-  });
-
-  saveBtn.addEventListener('click', async () => {
-    if (!state.data || state.saving) return;
-    state.saving = true;
-    saveBtn.disabled = true;
-    const patch = { defaultMode: state.defaultMode };
-    if (Object.keys(state.patch).length) patch.preferences = { ...state.patch };
-    try {
-      const res = await putRouting(patch, state.version);
-      try { hooks.onSaved?.(res?.routing || null, res); } catch { /* ignore */ }
-      close();
-    } catch (err) {
-      state.saving = false;
-      if (err?.status === 409 || err?.code === 'VERSION_CONFLICT') {
-        state.error = tr('assistant.routes.conflict', 'Changed elsewhere — reload');
-        state.conflict = true;
-      } else if (err?.code === 'ROUTING_INVALID') {
-        state.error = tr('assistant.routes.invalidField', 'Invalid routing setting: {field}', { field: err?.message || '' });
-      } else {
-        state.error = `${tr('assistant.routes.saveFailed', 'Could not save')}: ${err?.message || err}`;
-      }
-      render();
-    }
-  });
-
-  await load();
-  return { el: overlay, close };
-}
+// ── Routes editor (draft, modes, task choices) ───────────────────────────────
+// Its model lists still come only through asst-route-models.js.
+export { openRoutesEditor } from './asst-routes-editor.js';
 
 // ── Models manager (Assistant → Models…) ───────────────────────────────────
 

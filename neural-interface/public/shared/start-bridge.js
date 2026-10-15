@@ -12,6 +12,11 @@
 // the time it happened), and its own probe of the server. Nothing is guessed:
 // no percentages, and no step is named before the launch reported it.
 //
+// A restart the user asked for is shown by the same bridge (`restart()`): the
+// screen is drawn in the click, and what it says comes from the same three
+// things, plus the server's own word that it is shutting down. The supervisor
+// that brings the server back reports on the same beacon (`reason: 'restart'`).
+//
 // offline.html is shown when nothing can be fetched, so the server pastes this
 // file into it (lib/offline-page.js drops the `export` keywords). Keep every
 // export a plain `export function` / `export const` at the start of a line,
@@ -37,6 +42,7 @@ export const START_LIMITS = {
   lostAfterMs: 3000,     // a launch that was reporting went silent: stop repeating what it said
   idleBeaconChecks: 2,   // on load, look for a start already under way (a reload in the middle of one)
   reloadDelayMs: 150,    // the "it is up" frame before the page reloads
+  restartGraceMs: 15000, // a restart was asked and the server neither went away nor said it is going: stop waiting
   beaconTimeoutMs: 1200,
 };
 
@@ -152,7 +158,7 @@ export function startBeaconTarget(loc) {
 }
 
 const START_LAUNCH_STATES = ['starting', 'started', 'failed', 'gave-up'];
-const START_LAUNCH_STEPS = ['received', 'locked', 'terminal', 'spawned'];
+const START_LAUNCH_STEPS = ['received', 'locked', 'terminal', 'spawned', 'exited'];
 const START_SUPERVISOR_PHASES = ['checking', 'dependencies', 'browser', 'build', 'snapshot', 'server', 'listening', 'failed'];
 
 function startCleanError(error) {
@@ -217,6 +223,8 @@ export function readStartBeacon(data, { port, askedAt = null, following = null, 
   const newest = Math.max(last.at, supervisor ? supervisor.at : 0, startedAt);
   return {
     id,
+    // 'restart': a supervisor bringing its server back, not a launcher starting one.
+    reason: data.reason === 'restart' ? 'restart' : 'start',
     state: data.state,
     startedAt,
     step: last.id,
@@ -251,7 +259,10 @@ export function fetchStartBeacon(target, { fetchImpl, timeoutMs = START_LIMITS.b
  * idle → launching → starting | waiting → stalled | failed, or online at any
  * point. The page keeps probing in every state, so a server started by hand is
  * noticed just the same.
- *   probe()    → Promise<boolean>   is the server answering?
+ *   probe()    → Promise<boolean | { up, boot, stopping }>   is the server
+ *                answering? `boot` names the server that answered and
+ *                `stopping` is its own word that it is shutting down for a
+ *                restart; a server that says neither is just `true`.
  *   launch()   → hand START_LINK to the OS
  *   beacon()   → Promise<object|null>  the launch's raw report (optional)
  *   port       → the server's port (what a beacon must be about)
@@ -267,6 +278,13 @@ export function fetchStartBeacon(target, { fetchImpl, timeoutMs = START_LIMITS.b
  *   'stalled'    stallAfterMs with no word, or the launcher gave up waiting
  *   'failed'     the launcher reports that the start failed, and why
  *   'online'     the server answers this page
+ *
+ * A restart (`restart()`) adds two:
+ *   'restarting' the server was asked to restart, or said it is restarting;
+ *                it has not come back and no supervisor reports on it yet
+ *   'refused'    the restart did not happen and the server still answers
+ * While one is under way `snapshot().restart` says what is known of it, and
+ * 'online' means a server other than the one that was asked answers.
  */
 export function createStartBridge({
   probe,
@@ -292,9 +310,13 @@ export function createStartBridge({
   let launchSeenAt = 0;
   let idleChecks = 0;
   let shown = '';
+  // The restart under way, on this page's clock: when it was asked for (or
+  // this page was told), when the server said it is restarting, when it first
+  // did not answer, and the server that is being replaced.
+  let restart = null;
   const past = [];
 
-  const busy = () => state === 'launching' || state === 'starting' || state === 'waiting';
+  const busy = () => state === 'launching' || state === 'starting' || state === 'waiting' || state === 'restarting';
 
   function snapshot() {
     return {
@@ -304,15 +326,24 @@ export function createStartBridge({
       since,
       elapsedMs: since === null ? 0 : Math.max(0, now() - since),
       launch: launchInfo,
+      restart: restart ? {
+        asked: restart.asked,
+        askedAt: restart.askedAt,
+        acceptedAt: restart.acceptedAt,
+        downAt: restart.downAt,
+        refused: restart.refused,
+      } : null,
     };
   }
 
   function update() {
     const snap = snapshot();
     const l = snap.launch;
+    const r = snap.restart;
     const key = [
       snap.state, snap.clicks, busy() ? Math.floor(snap.elapsedMs / 1000) : '',
       l ? [l.id, l.state, l.step, l.supervisor?.phase, l.supervisor?.detail?.step, l.supervisor?.detail?.files, l.quietMs >= lim.quietAfterMs, l.error?.message].join('|') : '',
+      r ? [r.acceptedAt !== null, r.downAt !== null, r.refused?.code].join('|') : '',
     ].join('/');
     if (key === shown) return;
     shown = key;
@@ -326,14 +357,65 @@ export function createStartBridge({
   }
 
   function schedule(delay) {
-    if (stopped || state === 'online') return;
+    if (stopped || state === 'online' || state === 'refused') return;
     if (timer) clearTimer(timer);
     timer = setTimer(tick, delay ?? (busy() ? lim.pollMs : lim.idlePollMs));
+  }
+
+  /** One probe answer as { up, boot, stopping }; a bare `true` is a server that says nothing about itself. */
+  function readProbe(value) {
+    if (value === true) return { up: true, boot: '', stopping: false };
+    if (value && typeof value === 'object' && value.up === true) {
+      return { up: true, boot: typeof value.boot === 'string' ? value.boot : '', stopping: value.stopping === true };
+    }
+    return { up: false, boot: '', stopping: false };
+  }
+
+  /** The restart did not happen and the server is still there: say why and stop. */
+  function refuse(why) {
+    restart.refused = why;
+    set('refused');
+  }
+
+  /**
+   * During a restart an answer is not yet the server being back: the one that
+   * was asked keeps answering while it shuts down. True only when the server
+   * that answers is another one. A server that names itself (`boot`) settles
+   * it; one that does not (an older server) is believed once it was seen gone.
+   */
+  function judgeRestart(seen) {
+    const r = restart;
+    if (!seen.up) {
+      if (r.downAt === null) r.downAt = now();
+      return false;
+    }
+    if (seen.stopping) {
+      // Its own word: it is the one being replaced, and it is on its way out.
+      if (r.acceptedAt === null) r.acceptedAt = now();
+      if (!r.boot && seen.boot) r.boot = seen.boot;
+      r.downAt = null; // an answer it missed was not it stopping
+      return false;
+    }
+    const named = !!r.boot && !!seen.boot;
+    if (named && seen.boot !== r.boot) return true;
+    if (!named && r.downAt !== null) return true;
+    // The same server (or one that cannot be told apart), not shutting down.
+    if (named) r.downAt = null;
+    if (r.pending) return false; // the request is still on its way
+    if (r.rejected) { refuse(r.rejected); return false; }
+    if (r.unanswered) { refuse({ code: 'unreachable', status: 0, message: '' }); return false; }
+    if (r.acceptedAt !== null && now() - r.acceptedAt >= lim.restartGraceMs) {
+      if (named) { refuse({ code: 'still-running', status: 0, message: '' }); return false; }
+      return true; // it tells nothing about itself: load it again and see
+    }
+    return false;
   }
 
   /** What the launch says, when there is one to listen to right now. */
   async function listen() {
     if (!beacon) return;
+    // A restart: nobody is starting anything while the old server still answers.
+    if (restart && restart.downAt === null) return;
     // Idle: only just after load, for a start that was already under way.
     if (state === 'idle' && idleChecks >= lim.idleBeaconChecks) return;
     if (state === 'idle') idleChecks++;
@@ -357,7 +439,8 @@ export function createStartBridge({
     // reading how. What it said last is no longer known to be true.
     if (state === 'starting' && now() - launchSeenAt >= lim.lostAfterMs) {
       launchInfo = null;
-      if (askedAt === null) { since = null; set('idle'); } // a start this page never asked for: back to watching
+      if (restart) set('restarting'); // back to what this page sees for itself
+      else if (askedAt === null) { since = null; set('idle'); } // a start this page never asked for: back to watching
       else set(now() - askedAt >= lim.hintAfterMs ? 'waiting' : 'launching');
     }
   }
@@ -366,17 +449,22 @@ export function createStartBridge({
     timer = null;
     if (stopped || probing) return;
     probing = true;
-    let up = false;
-    try { up = (await probe()) === true; } catch {}
-    if (!up && !stopped) await listen();
+    let seen = readProbe(false);
+    try { seen = readProbe(await probe()); } catch {}
+    let up = seen.up && !seen.stopping; // a server on its way out is not one to connect to
+    if (restart && !stopped && state !== 'refused') up = judgeRestart(seen);
+    if (!up && !stopped && state !== 'refused') await listen();
     probing = false;
     if (stopped) return;
     if (up) { set('online'); update(); return; }
+    if (state === 'refused') { update(); return; }
     if (state === 'launching' || state === 'waiting') {
       const waited = now() - askedAt;
       if (waited >= lim.stallAfterMs) set('stalled');
       else if (waited >= lim.hintAfterMs) set('waiting');
     }
+    // Gone, and nobody reports bringing it back: the button and the command return.
+    if (state === 'restarting' && restart.downAt !== null && now() - restart.downAt >= lim.stallAfterMs) set('stalled');
     update();
     schedule();
   }
@@ -388,17 +476,79 @@ export function createStartBridge({
     watch() { schedule(0); },
     /** The click. Ignored while a start is already under way. */
     start() {
-      if (stopped || state === 'online' || busy()) return false;
+      if (stopped || state === 'online' || state === 'refused' || busy()) return false;
       clicks++;
       askedAt = now();
       since = askedAt;
       // What the last try reported is over: a launcher still saying so is not this one.
       if (launchInfo && !past.includes(launchInfo.id)) past.push(launchInfo.id);
       launchInfo = null;
+      restart = null; // a restart that did not bring it back is over: this is a start
       state = 'idle'; // a second try after 'stalled' announces 'launching' again
       set('launching');
       update();
       try { launch(); } catch {}
+      schedule();
+      return true;
+    },
+    /**
+     * A restart of the server. Call it from the click itself: the first
+     * snapshot is handed to onUpdate before anything is asked of the network.
+     *   request()  → Promise<{ ok, boot, status, message }>  the asking (this
+     *                page's own click); leave it out when the page is only told
+     *   announced  → the server itself said it is restarting (`boot`: which one)
+     * A request that fails counts as refused only once the server is seen to
+     * be still there. Returns false when a restart is already being shown; an
+     * announcement then still counts as the server's word.
+     */
+    restart({ request = null, announced = false, boot = '' } = {}) {
+      if (stopped || state === 'online') return false;
+      if (restart) {
+        if (announced && !restart.refused) {
+          if (restart.acceptedAt === null) restart.acceptedAt = now();
+          if (!restart.boot && boot) restart.boot = String(boot);
+          update();
+        }
+        return false;
+      }
+      if (typeof request !== 'function' && !announced) return false;
+      askedAt = now();
+      since = askedAt;
+      if (launchInfo && !past.includes(launchInfo.id)) past.push(launchInfo.id);
+      launchInfo = null;
+      const mine = restart = {
+        asked: typeof request === 'function',
+        askedAt,
+        acceptedAt: announced ? askedAt : null,
+        downAt: null,
+        boot: announced && boot ? String(boot) : '',
+        pending: typeof request === 'function',
+        rejected: null,
+        unanswered: false,
+        refused: null,
+      };
+      state = 'idle';
+      set('restarting');
+      update();
+      if (mine.asked) {
+        Promise.resolve().then(() => request()).then((answer) => {
+          if (stopped || restart !== mine) return;
+          mine.pending = false;
+          if (answer && answer.ok === true) {
+            if (mine.acceptedAt === null) mine.acceptedAt = now();
+            if (answer.boot) mine.boot = String(answer.boot);
+          } else {
+            mine.rejected = { code: 'refused', status: Number(answer?.status) || 0, message: String(answer?.message || '').slice(0, 200) };
+          }
+          update();
+          schedule(0); // look at once: a refusal is only one when the server still answers
+        }, () => {
+          if (stopped || restart !== mine) return;
+          mine.pending = false;
+          mine.unanswered = true;
+          schedule(0);
+        });
+      }
       schedule();
       return true;
     },
@@ -452,6 +602,22 @@ export const START_COPY = {
   headingStarting: 'Starting the server',
   headingReady: 'Server is up',
   headingFailed: 'The server did not start',
+  // A restart: each sentence is said only once the page holds what it says.
+  restartAsked: 'Asked the server to restart.',
+  restartStopping: 'The server accepted the restart and is shutting down.',
+  restartSlowStop: 'Still shutting down after {seconds} s.',
+  restartDown: 'The server stopped answering. Waiting for it to come back.',
+  restartRespawning: 'The supervisor is starting the server again.',
+  restartStalled: 'The server has not come back. Start it with the button, or run the command below.',
+  restartRefused: 'The server did not accept the restart: {reason}',
+  restartUnreachable: 'The server did not answer the restart request.',
+  restartStillRunning: 'The server accepted the restart but did not shut down.',
+  trailAccepted: 'Restart accepted',
+  trailNoAnswer: 'Server stopped answering',
+  trailStopped: 'Server process exited',
+  restartElapsedLabel: 'Time since the restart began',
+  headingRestarting: 'Restarting the server',
+  headingRestartFailed: 'The server did not restart',
 };
 
 /** `{name}` placeholders, like the app's t(). */
@@ -474,12 +640,15 @@ function startStepSeconds(ms) {
 
 /**
  * Everything a surface renders for one snapshot, as data:
+ *   reason    'start' | 'restart'      what is under way: a start, or a restart of a server that was up
  *   mascot    'asleep' | 'waking' | 'working' | 'ready' | 'failed' | 'stalled'
  *   busy      the button is disabled (a start is under way)
- *   button    'start' | 'starting' | 'retry'
+ *   button    'start' | 'starting' | 'retry' | 'none' (a restart: nothing to press) | 'back' (it was refused)
+ *   heading   key | null               the title when it is not the surface's own for this mascot
  *   headline  { key, params } | null   the status sentence (the live region)
  *   hint      { key, params } | null   a second, quieter sentence
  *   elapsed   '12 s' | ''              the page's clock since the click
+ *   elapsedLabel  key                  what that clock counts from
  *   trail     [{ key, time }]          what was reported, with when
  *   error     { message, log } | null
  * A headline names a step only when the snapshot holds the report of it.
@@ -488,38 +657,57 @@ export function startStatusView(snap, { platform = 'linux', limits = START_LIMIT
   const state = snap?.state || 'idle';
   const launchOf = snap?.launch || null;
   const sup = launchOf?.supervisor || null;
+  // A restart this page asked for or was told of; or one it only reads the report of.
+  const restart = snap?.restart || null;
+  const restartReport = launchOf?.reason === 'restart';
   const view = {
     state,
+    reason: restart || restartReport ? 'restart' : 'start',
     mascot: 'asleep',
-    busy: state === 'launching' || state === 'starting' || state === 'waiting',
+    busy: state === 'launching' || state === 'starting' || state === 'waiting' || state === 'restarting',
     button: 'start',
+    heading: null,
     headline: null,
     hint: null,
     elapsed: '',
+    elapsedLabel: restart || restartReport ? 'restartElapsedLabel' : 'elapsedLabel',
     trail: [],
     error: null,
   };
   if (view.busy) {
-    view.button = 'starting';
+    view.button = restart ? 'none' : 'starting';
     view.elapsed = formatStartElapsed(snap.elapsedMs);
+    if (view.reason === 'restart') view.heading = 'headingRestarting';
   }
 
   // The reported steps, each at the time it was reported for, counted from the
   // click (or from the launch's own start when another page asked for it).
-  if (launchOf) {
+  const firstPhase = (phase) => (sup ? sup.phases.find(p => p.phase === phase)?.at || (sup.phase === phase ? sup.at : 0) : 0);
+  if (restart) {
+    // A restart this page follows from its beginning: what the server said to
+    // it, what its own probe saw, then what the supervisor reports.
+    const add = (key, at) => { if (at !== null && at !== undefined) view.trail.push({ key, time: startStepSeconds(at - restart.askedAt) }); };
+    add('trailAccepted', restart.acceptedAt);
+    const exited = launchOf ? launchOf.steps.find(step => step.id === 'exited')?.at : undefined;
+    if (exited !== undefined) add('trailStopped', exited);
+    else add('trailNoAnswer', restart.downAt);
+    add('trailServer', firstPhase('server') || null);
+    add('trailListening', firstPhase('listening') || null);
+  } else if (launchOf) {
     const asked = snap.askedAt !== null && snap.askedAt !== undefined && launchOf.startedAt >= snap.askedAt - 2000;
     const zero = asked ? snap.askedAt : launchOf.startedAt;
     const add = (key, at) => { if (at) view.trail.push({ key, time: startStepSeconds(at - zero) }); };
-    add('trailLauncher', launchOf.startedAt);
+    if (!restartReport) add('trailLauncher', launchOf.startedAt); // a restart has no launcher
     for (const step of launchOf.steps) {
       if (step.id === 'terminal') add('trailTerminal', step.at);
       if (step.id === 'spawned') add('trailProcess', step.at);
+      if (step.id === 'exited') add('trailStopped', step.at);
     }
     if (sup) {
-      add('trailSupervisor', sup.startedAt);
-      const first = (phase) => sup.phases.find(p => p.phase === phase)?.at || (sup.phase === phase ? sup.at : 0);
-      add('trailServer', first('server'));
-      add('trailListening', first('listening'));
+      // The supervisor of a restart was usually there long before it: listed only when it began with it.
+      if (!restartReport || sup.startedAt >= launchOf.startedAt - 2000) add('trailSupervisor', sup.startedAt);
+      add('trailServer', firstPhase('server'));
+      add('trailListening', firstPhase('listening'));
     }
   }
 
@@ -540,7 +728,34 @@ export function startStatusView(snap, { platform = 'linux', limits = START_LIMIT
   }
   if (state === 'stalled') {
     view.mascot = 'stalled';
-    view.headline = launchOf?.state === 'gave-up' ? { key: 'gaveUp', params: {} } : { key: 'stalled', params: {} };
+    view.headline = launchOf?.state === 'gave-up' ? { key: 'gaveUp', params: {} }
+      : restart ? { key: 'restartStalled', params: {} } : { key: 'stalled', params: {} };
+    return view;
+  }
+  if (state === 'refused') {
+    // The server is still there: nothing to start, only the way back to the app.
+    const why = restart?.refused || {};
+    view.mascot = 'failed';
+    view.button = 'back';
+    view.heading = 'headingRestartFailed';
+    view.headline = why.code === 'unreachable' ? { key: 'restartUnreachable', params: {} }
+      : why.code === 'still-running' ? { key: 'restartStillRunning', params: {} }
+        : { key: 'restartRefused', params: { reason: why.message || `HTTP ${why.status || 0}` } };
+    return view;
+  }
+  if (state === 'restarting' && restart) {
+    if (restart.downAt !== null) {
+      view.mascot = 'working';
+      view.headline = { key: 'restartDown', params: {} };
+    } else if (restart.acceptedAt !== null) {
+      view.mascot = 'working';
+      view.headline = { key: 'restartStopping', params: {} };
+      const stoppingMs = snap.elapsedMs - (restart.acceptedAt - restart.askedAt);
+      if (stoppingMs >= limits.quietAfterMs) view.hint = { key: 'restartSlowStop', params: { seconds: Math.floor(stoppingMs / 1000) } };
+    } else {
+      view.mascot = 'waking';
+      view.headline = { key: 'restartAsked', params: {} };
+    }
     return view;
   }
   if (state === 'failed') {
@@ -568,6 +783,10 @@ export function startStatusView(snap, { platform = 'linux', limits = START_LIMIT
       // Slow on purpose (an install, a download, a backup): silence there is expected.
       const slow = ['dependencies', 'browser', 'build', 'snapshot'].includes(sup.phase);
       if (isQuiet && !slow) view.hint = { key: 'quiet', params: { seconds: quiet } };
+    } else if (restartReport) {
+      // The supervisor opened this report to bring the server back; it has named no step yet.
+      view.headline = { key: 'restartRespawning', params: {} };
+      if (isQuiet) view.hint = { key: 'quiet', params: { seconds: quiet } };
     } else if (launchOf.step === 'terminal') {
       view.headline = isQuiet ? { key: 'terminalQuiet', params: { seconds: quiet } } : { key: 'terminalOpened', params: {} };
     } else if (launchOf.step === 'spawned') {

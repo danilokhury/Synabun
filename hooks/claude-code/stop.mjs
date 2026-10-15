@@ -184,8 +184,7 @@ function planDebug(msg) {
 /**
  * Soft-cleanup a pending-remember flag file.
  * Resets enforcement fields (editCount, retries, files) while preserving
- * session-wide tracking (messageCount, greetingDelivered, etc.) to prevent
- * the greeting from re-firing mid-session.
+ * session-wide tracking (messageCount, the user-learning counters, etc.).
  */
 function softCleanupFlag(flagPath) {
   try {
@@ -200,7 +199,6 @@ function softCleanupFlag(flagPath) {
       messageCount: flag.messageCount || 0,
       totalSessionMessages: flag.totalSessionMessages || 0,
       totalEdits: flag.totalEdits || 0,
-      greetingDelivered: flag.greetingDelivered || false,
       categoryTreeInjected: flag.categoryTreeInjected || false,
       rememberCount: flag.rememberCount || 0,
       planRetries: flag.planRetries || 0,
@@ -225,7 +223,7 @@ function softCleanupFlag(flagPath) {
     writeJsonAtomic(flagPath, cleaned);
   } catch {
     // If we can't clean up gracefully, leave the file as-is
-    // (better than deleting and resetting greeting tracking)
+    // (better than deleting and resetting the session's counters)
   }
 }
 
@@ -920,7 +918,9 @@ function handleStop({ sessionId, lastMessage, cwd, transcriptPath, judged = {}, 
     // CHECK 2.5: User learning (bundled with task or standalone)
     // Skipped when waiting for user action (interactive flows like Leonardo questionnaires).
     // Limited to 1 retry to minimize chat noise.
-    if (!waitingForUser && flag.userLearningPending && !flag.userLearningObserved) {
+    // Never inside the Assistant's brain (SYNABUN_ASSISTANT_SESSION): SynaBun's harness learns
+    // about the user there, and prompt-submit.mjs never arms this in it.
+    if (!waitingForUser && flag.userLearningPending && !flag.userLearningObserved && !process.env.SYNABUN_ASSISTANT_SESSION) {
       const ulRetries = flag.userLearningRetries || 0;
       if (ulRetries < 1) {
         flag.userLearningRetries = ulRetries + 1;

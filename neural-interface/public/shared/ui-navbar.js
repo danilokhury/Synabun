@@ -8,6 +8,8 @@ import { initDetachedAgentSessions } from './ui-sidepanel-sessions.js';
 import { state, emit, on } from './state.js';
 import { getVariant } from './registry.js';
 import { KEYS } from './constants.js';
+import { storage } from './storage.js';
+import { t } from './i18n.js';
 import { loadIfaceConfig, saveIfaceConfig, applyIfaceConfig } from './ui-settings.js';
 import { registerAction } from './ui-keybinds.js';
 import { startTutorial } from './ui-tutorial.js';
@@ -324,32 +326,54 @@ export function initNavbar() {
     document.addEventListener('visibilitychange', () => { if (!document.hidden) updateClock(); });
   }
 
-  // ── "Hide all toolbars" toggle (workspace toolbar + whiteboard tool rail) ──
-  // Sidepanel buttons and the session-pill tray (#term-minimized-tray) stay visible.
-  const collapseBtn = $('topright-collapse-btn');
+  // ── The workspace tools toggle (#topright-tools-btn) ──
+  // A plain on/off button for the dock (the workspace switcher and the tools), remembered across reloads. The agent
+  // buttons and the session pills stay where they are either way. A menu the dock had open closes with it.
   const controls = $('topright-controls');
-  if (collapseBtn && controls) {
-    const applyToolbarsHidden = (hidden) => {
-      controls.classList.toggle('collapsed', hidden);
-      // Body-level flag reaches #wb-toolbar, which lives outside #topright-controls.
-      document.body.classList.toggle('toolbars-hidden', hidden);
-      collapseBtn.setAttribute('data-tooltip', hidden ? 'Show all toolbars' : 'Hide all toolbars');
+  const toolsBtn = $('topright-tools-btn');
+  if (controls && toolsBtn) {
+    const showTools = (shown) => {
+      if (!shown) emit('panel:close-all-dropdowns');
+      controls.classList.toggle('tools-hidden', !shown);
+      const label = t(shown ? 'toolbar.hideTools' : 'toolbar.showTools');
+      toolsBtn.dataset.tooltip = label;
+      toolsBtn.setAttribute('aria-label', label);
+      toolsBtn.setAttribute('aria-expanded', String(shown));
     };
-
-    // Restore persisted state
-    applyToolbarsHidden(localStorage.getItem('synabun-toolbar-collapsed') === '1');
-
-    collapseBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const hidden = !controls.classList.contains('collapsed');
-      applyToolbarsHidden(hidden);
-      localStorage.setItem('synabun-toolbar-collapsed', hidden ? '1' : '0');
-      // Close any open dropdowns when hiding
-      if (hidden) emit('panel:close-all-dropdowns');
+    showTools(storage.getItem(KEYS.TOPRIGHT_TOOLS_HIDDEN) !== 'true');
+    toolsBtn.addEventListener('click', () => {
+      const shown = controls.classList.contains('tools-hidden');
+      showTools(shown);
+      storage.setItem(KEYS.TOPRIGHT_TOOLS_HIDDEN, String(!shown));
     });
-
-    registerAction('toggle-toolbar', () => collapseBtn.click());
   }
+
+  // ── Session pills in the row: the whole name is the tooltip ──
+  // Laid out in a row, a pill keeps its width on hover (styles.css): widening, it would push the others onto another
+  // line under the pointer. A name cut short is read from the tooltip instead; a pill that brings a tooltip of its own
+  // (the Assistant's) keeps it.
+  const tray = $('term-minimized-tray');
+  if (controls && tray && controls.contains(tray)) {
+    const nameTips = () => {
+      for (const pill of tray.children) {
+        const name = pill.querySelector('.term-minimized-pill-label')?.textContent.trim() || '';
+        if (pill.hasAttribute('data-tooltip') && pill.dataset.tooltip !== pill.dataset.nameTip) {
+          delete pill.dataset.nameTip;
+        } else if (name) {
+          pill.dataset.tooltip = name;
+          pill.dataset.nameTip = name;
+        } else if (pill.dataset.nameTip != null) {
+          pill.removeAttribute('data-tooltip');
+          delete pill.dataset.nameTip;
+        }
+      }
+    };
+    new MutationObserver(nameTips).observe(tray, { childList: true, subtree: true, characterData: true });
+    nameTips();
+  }
+
+  // "Hide all toolbars" is gone: whoever had it on gets every toolbar back, and its key goes with it.
+  try { localStorage.removeItem('synabun-toolbar-collapsed'); } catch { /* storage refused: nothing to clear */ }
 
   // ── Update alert ──
   initUpdate();

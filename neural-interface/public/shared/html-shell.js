@@ -7,6 +7,76 @@ import { getVariant } from './registry.js';
 import { t } from './i18n.js';
 
 /**
+ * The File Explorer's editor panel (slides from the file explorer's right edge).
+ * The editor itself is CodeMirror, mounted in #fe-editor-host by shared/editor/editor-panel.js,
+ * which also fills the shortcuts list, the tab strip (#fe-editor-tabs, there while two or more
+ * files are open) and the bars, and builds the find and go-to-line bars.
+ */
+export function getEditorPanelHTML() {
+  return `<!-- File Editor (separate panel, slides from file explorer's right edge) -->
+<div id="fe-editor-panel" class="fe-editor-panel">
+  <div class="fe-editor-header">
+    <button class="fe-editor-back" id="fe-editor-back" data-tooltip="${t('editor.header.close')}" aria-label="${t('editor.header.close')}">
+      <svg viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>
+    </button>
+    <span class="fe-editor-dot" id="fe-editor-dot"></span>
+    <span class="fe-editor-filepath" id="fe-editor-filepath"></span>
+    <div style="flex:1"></div>
+    <button class="fe-editor-action" id="fe-editor-find-btn" data-tooltip="${t('editor.header.find')}" aria-label="${t('editor.header.find')}">
+      <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    </button>
+    <button class="fe-editor-action" id="fe-editor-word-wrap" data-tooltip="${t('editor.header.wordWrap')}" aria-label="${t('editor.header.wordWrap')}" aria-pressed="true">
+      <svg viewBox="0 0 24 24"><path d="M3 6h18M3 12h15a3 3 0 1 1 0 6h-4"/><polyline points="16 16 14 18 16 20"/><path d="M3 18h7"/></svg>
+    </button>
+    <button class="fe-editor-action" id="fe-editor-view-btn" data-tooltip="${t('editor.header.view')}" aria-label="${t('editor.header.view')}" aria-haspopup="menu" aria-expanded="false">
+      <svg viewBox="0 0 24 24"><path d="M4 7h2.5M11.5 7H20M4 17h8.5M17.5 17H20"/><circle cx="9" cy="7" r="2.5"/><circle cx="15" cy="17" r="2.5"/></svg>
+    </button>
+    <button class="fe-editor-action" id="fe-editor-diff-btn" data-tooltip="${t('editor.header.diff')}" aria-label="${t('editor.header.diff')}" aria-pressed="false" hidden>
+      <svg viewBox="0 0 24 24"><path d="M12 3v10M7 8h10M7 19h10"/></svg>
+    </button>
+    <div class="fe-editor-help-wrap">
+      <button class="fe-editor-action fe-editor-help-btn" id="fe-editor-help-btn" data-tooltip="${t('editor.header.shortcuts')}" aria-label="${t('editor.header.shortcuts')}" aria-expanded="false" aria-controls="fe-editor-keybinds">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      </button>
+      <div class="fe-editor-keybinds" id="fe-editor-keybinds"></div>
+    </div>
+    <div class="fe-editor-sep"></div>
+    <div class="fe-editor-view-toggle" id="fe-editor-view-toggle" style="display:none">
+      <button class="fe-editor-toggle-btn active" data-mode="raw" aria-pressed="true">${t('editor.header.raw')}</button>
+      <button class="fe-editor-toggle-btn" data-mode="preview" aria-pressed="false">${t('editor.header.preview')}</button>
+    </div>
+    <div class="fe-editor-sep" id="fe-editor-sep-preview" style="display:none"></div>
+    <button class="fe-editor-btn" id="fe-editor-discard" disabled>${t('editor.header.discard')}</button>
+    <button class="fe-editor-btn fe-editor-save" id="fe-editor-save" disabled>${t('editor.header.save')}</button>
+    <button class="fe-editor-btn" id="fe-editor-close">${t('editor.header.closeButton')}</button>
+  </div>
+  <div class="fe-editor-tabs" id="fe-editor-tabs" role="tablist" aria-label="${t('editor.tabs.label')}" hidden></div>
+  <div class="fe-editor-bars" id="fe-editor-bars"></div>
+  <div class="fe-editor-body">
+    <div class="fe-editor-host" id="fe-editor-host"></div>
+    <div class="fe-editor-preview" id="fe-editor-preview"></div>
+    <div class="fe-editor-message" id="fe-editor-message" hidden>
+      <div class="fe-editor-message-text" id="fe-editor-message-text" role="status"></div>
+      <button class="fe-editor-btn" id="fe-editor-message-retry" hidden>${t('editor.error.retry')}</button>
+    </div>
+  </div>
+  <div class="fe-editor-statusbar is-empty" id="fe-editor-statusbar">
+    <button type="button" class="fe-editor-status-btn" id="fe-editor-lang"></button>
+    <span class="fe-editor-sep"></span>
+    <button type="button" class="fe-editor-status-btn" id="fe-editor-indent"></button>
+    <span class="fe-editor-sep"></span>
+    <button type="button" class="fe-editor-status-btn" id="fe-editor-eol"></button>
+    <span class="fe-editor-sep"></span>
+    <span id="fe-editor-encoding">UTF-8</span>
+    <div style="flex:1"></div>
+    <button type="button" class="fe-editor-status-btn" id="fe-editor-cursor"></button>
+    <span class="fe-editor-sep"></span>
+    <span id="fe-editor-size"></span>
+  </div>
+</div>`;
+}
+
+/**
  * Returns the full shared HTML string for injection into <body>.
  * Variant-specific elements (camera HUD, controls panel, minimap, etc.)
  * are NOT included — those live in each variant's HTML file.
@@ -210,6 +280,15 @@ export function getSharedHTML() {
             <span class="menu-check">&#10003;</span>
             <span class="menu-text">File Explorer</span>
             <span class="menu-shortcut" data-keybind-for="toggle-file-explorer"></span>
+          </div>
+          <div class="menu-sep"></div>
+          <div class="menu-item menu-toggle" id="menu-toggle-grid-snap">
+            <span class="menu-check">&#10003;</span>
+            <span class="menu-text">${t('toolbar.snapToGrid')}</span>
+          </div>
+          <div class="menu-item" id="menu-tile-terminals">
+            <span class="menu-check"></span>
+            <span class="menu-text">${t('toolbar.tileTerminals')}</span>
           </div>
           <div class="menu-sep"></div>
           <div id="menu-variant-slot"></div>
@@ -425,69 +504,19 @@ ${is3D ? `
   </div>
 </div>
 
-<!-- Top-Right Controls (Trash + Grid + Workspace) -->
+<!-- Top-Right Controls: one row. The glass dock (workspace switcher, then the tools), then #topright-buttons: the
+     tools toggle (#topright-tools-btn, shows and hides the dock) and the agent side panels, always one row of their own.
+     Snap to grid and Tile terminals are on the whiteboard rail (#wb-toolbar) and in View. The session pills
+     (#term-minimized-tray) are a row under the bar, right-aligned with it (styles.css: "Fit"). -->
 <div id="topright-controls">
   <div id="topright-inner">
-  <button id="topright-trash-btn" class="topright-icon-btn" data-tooltip="${t('nav.trash')}">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><line x1="10" y1="10" x2="10" y2="18"/><line x1="14" y1="10" x2="14" y2="18"/></svg>
-    <span class="count-badge count-badge--red" id="titlebar-trash-count"></span>
-  </button>
-
-  <button id="ws-grid-toggle" class="topright-icon-btn" data-tooltip="Snap to Grid">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="1.5"/><circle cx="12" cy="6" r="1.5"/><circle cx="18" cy="6" r="1.5"/><circle cx="6" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="18" cy="12" r="1.5"/><circle cx="6" cy="18" r="1.5"/><circle cx="12" cy="18" r="1.5"/><circle cx="18" cy="18" r="1.5"/></svg>
-  </button>
-
-  <button id="ws-tile-btn" class="topright-icon-btn" data-tooltip="Tile terminals">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="8" rx="2"/><rect x="3" y="13" width="8" height="8" rx="2"/><rect x="13" y="13" width="8" height="8" rx="2"/></svg>
-  </button>
-
-  <span class="tr-divider"></span>
-
-  <button id="topright-update-btn" class="topright-icon-btn" style="display:none" data-tooltip="Update available">
-    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-    <span class="count-badge count-badge--green" id="update-badge"></span>
-  </button>
-
-  <button id="topright-keybinds-btn" class="topright-icon-btn" data-tooltip="Keybinds">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="3"/><circle cx="7" cy="9" r="1" fill="currentColor" stroke="none"/><circle cx="12" cy="9" r="1" fill="currentColor" stroke="none"/><circle cx="17" cy="9" r="1" fill="currentColor" stroke="none"/><path d="M7 15h10"/></svg>
-  </button>
-
-  <button id="topright-memory-explorer-btn" class="topright-icon-btn" data-tooltip="Memory Explorer">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/></svg>
-  </button>
-
-  <button id="topright-file-explorer-btn" class="topright-icon-btn" data-tooltip="File Explorer">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-  </button>
-
-  <span class="tr-divider"></span>
-
-  <div id="bookmarks-overlay">
-    <button id="topright-bookmarks-btn" class="topright-icon-btn" data-tooltip="Bookmarks">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
-      <span class="count-badge count-badge--gold" id="bookmark-count"></span>
-    </button>
-    <div id="bookmarks-dropdown" style="display:none;">
-      <div id="bookmarks-list"></div>
-    </div>
-  </div>
-  <div id="invite-overlay">
-    <button id="invite-btn" class="topright-icon-btn" data-tooltip="Share / Invite">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
-      <span class="count-badge count-badge--blue" id="invite-session-count" style="display:none"></span>
-    </button>
-    <div id="invite-dropdown" style="display:none;"></div>
-  </div>
-
-  <span class="tr-divider"></span>
-
   <div id="workspace-overlay">
-    <div id="ws-indicator">
+    <button id="ws-indicator" type="button" aria-expanded="false" aria-controls="ws-dropdown" aria-label="${t('toolbar.workspaceNone')}" data-tooltip="${t('toolbar.workspaceNone')}">
       <svg class="ws-icon" viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
       <span id="ws-active-name">No workspace</span>
-      <button id="ws-quick-save" class="ws-quick-save" data-tooltip="Quick save"><svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg></button>
       <svg class="ws-chevron" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
-    </div>
+    </button>
+    <button id="ws-quick-save" class="ws-quick-save" type="button" aria-label="${t('toolbar.quickSave')}" data-tooltip="${t('toolbar.quickSave')}"><svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg></button>
     <div id="ws-dropdown" style="display:none;">
       <div class="ws-save-bar">
         <input type="text" id="ws-name-input" placeholder="Save workspace..." autocomplete="off" spellcheck="false">
@@ -504,7 +533,56 @@ ${is3D ? `
       <input type="file" id="ws-import-file" accept=".json" style="display:none;">
     </div>
   </div>
+
+  <span class="tr-divider"></span>
+
+  <button id="topright-memory-explorer-btn" class="topright-icon-btn" aria-label="${t('toolbar.memoryExplorer')}" data-tooltip="${t('toolbar.memoryExplorer')}">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/></svg>
+  </button>
+
+  <button id="topright-file-explorer-btn" class="topright-icon-btn" aria-label="${t('toolbar.fileExplorer')}" data-tooltip="${t('toolbar.fileExplorer')}">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+  </button>
+
+  <div id="bookmarks-overlay">
+    <button id="topright-bookmarks-btn" class="topright-icon-btn" aria-label="${t('nav.bookmarks')}" data-tooltip="${t('nav.bookmarks')}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+      <span class="count-badge count-badge--gold" id="bookmark-count"></span>
+    </button>
+    <div id="bookmarks-dropdown" style="display:none;">
+      <div id="bookmarks-list"></div>
+    </div>
   </div>
+
+  <button id="topright-trash-btn" class="topright-icon-btn" aria-label="${t('nav.trash')}" data-tooltip="${t('nav.trash')}">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><line x1="10" y1="10" x2="10" y2="18"/><line x1="14" y1="10" x2="14" y2="18"/></svg>
+    <span class="count-badge count-badge--red" id="titlebar-trash-count"></span>
+  </button>
+
+  <span class="tr-divider"></span>
+
+  <div id="invite-overlay">
+    <button id="invite-btn" class="topright-icon-btn" aria-label="${t('toolbar.share')}" data-tooltip="${t('toolbar.share')}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+      <span class="count-badge count-badge--blue" id="invite-session-count" style="display:none"></span>
+    </button>
+    <div id="invite-dropdown" style="display:none;"></div>
+  </div>
+
+  <button id="topright-keybinds-btn" class="topright-icon-btn" aria-label="${t('toolbar.keybinds')}" data-tooltip="${t('toolbar.keybinds')}">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="3"/><circle cx="7" cy="9" r="1" fill="currentColor" stroke="none"/><circle cx="12" cy="9" r="1" fill="currentColor" stroke="none"/><circle cx="17" cy="9" r="1" fill="currentColor" stroke="none"/><path d="M7 15h10"/></svg>
+  </button>
+
+  <button id="topright-update-btn" class="topright-icon-btn" style="display:none" data-tooltip="Update available">
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+    <span class="count-badge count-badge--green" id="update-badge"></span>
+  </button>
+  </div>
+  <div id="topright-buttons">
+  <button id="topright-tools-btn" class="topright-icon-btn" type="button" aria-expanded="true" aria-controls="topright-inner" aria-label="${t('toolbar.hideTools')}" data-tooltip="${t('toolbar.hideTools')}">
+    <svg viewBox="0 0 24 24"><path d="M13 17l5-5-5-5"/><path d="M6 17l5-5-5-5"/></svg>
+    <span class="topright-tools-dot" aria-hidden="true"></span>
+  </button>
   <button id="topright-assistant-panel-btn" class="topright-icon-btn" data-tooltip="${t('assistant.panel.open')}">
     <svg viewBox="0 0 24 24" fill="currentColor"><rect x="8" y="5.5" width="11" height="5" rx="2.5" transform="rotate(-12 13.5 8)"/><rect x="4.5" y="12.5" width="11" height="5" rx="2.5" transform="rotate(-12 10 15)"/></svg>
   </button>
@@ -520,12 +598,7 @@ ${is3D ? `
     <svg viewBox="0 0 24 30" fill="currentColor"><path d="M18 6H6V24H18V6ZM24 30H0V0H24V30Z"/></svg>
     <span class="count-badge count-badge--green" id="opencode-update-badge"></span>
   </button>
-  <button id="topright-collapse-btn" class="topright-collapse-btn" data-tooltip="Hide all toolbars">
-    <svg viewBox="0 0 24 24" class="collapse-chevron"><polyline points="9 18 15 12 9 6"/></svg>
-    <span class="collapse-dots">
-      <span></span><span></span><span></span>
-    </span>
-  </button>
+  </div>
   <div id="term-minimized-tray"></div>
 </div>
 
@@ -626,130 +699,46 @@ ${is3D ? `
 <div id="file-explorer-panel">
   <div class="fe-project-row">
     <div class="fe-project-selector" id="fe-project-selector">
-      <button class="fe-project-btn" id="fe-project-btn">
-        <svg class="fe-project-icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-        <span class="fe-project-label" id="fe-project-label">Project</span>
-        <svg class="fe-project-chevron" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+      <button type="button" class="fe-project-btn" id="fe-project-btn">
+        <svg class="fe-project-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+        <span class="fe-project-label" id="fe-project-label">${t('fileExplorer.project.none')}</span>
+        <svg class="fe-project-chevron" viewBox="0 0 24 24" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
       </button>
       <div class="fe-project-dropdown" id="fe-project-dropdown"></div>
     </div>
-    <button class="fe-branch-btn" id="fe-branch-btn" style="display:none">
-      <svg viewBox="0 0 24 24"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
+    <button type="button" class="fe-branch-btn" id="fe-branch-btn" style="display:none">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
       <span class="fe-branch-btn-name" id="fe-branch-btn-name"></span>
       <span class="fe-branch-btn-badge" id="fe-branch-btn-badge"></span>
     </button>
   </div>
   <div class="fe-filter">
-    <svg class="fe-filter-icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="21" y2="21"/></svg>
-    <input type="text" id="fe-filter-input" placeholder="Search files..." autocomplete="off" spellcheck="false">
-    <button id="fe-filter-clear">&times;</button>
+    <svg class="fe-filter-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18l-7 8v6l-4-2v-4z"/></svg>
+    <input type="text" id="fe-filter-input" placeholder="${t('fileExplorer.filter.placeholder')}" aria-label="${t('fileExplorer.filter.label')}" autocomplete="off" spellcheck="false">
+    <button type="button" id="fe-filter-clear" aria-label="${t('fileExplorer.filter.clear')}" hidden>&times;</button>
   </div>
-  <div class="fe-toolbar">
-    <button class="detail-action-btn" id="fe-collapse-all" data-tooltip="Collapse all"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
-    <button class="detail-action-btn" id="fe-expand-all" data-tooltip="Expand all"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h16M18 9v6"/></svg></button>
+  <div class="fe-toolbar" role="toolbar" aria-label="${t('fileExplorer.title')}">
+    <button type="button" class="detail-action-btn" id="fe-new-file" data-tooltip="${t('fileExplorer.toolbar.newFile')}" aria-label="${t('fileExplorer.toolbar.newFile')}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="12" x2="12" y2="18"/><line x1="9" y1="15" x2="15" y2="15"/></svg></button>
+    <button type="button" class="detail-action-btn" id="fe-new-folder" data-tooltip="${t('fileExplorer.toolbar.newFolder')}" aria-label="${t('fileExplorer.toolbar.newFolder')}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg></button>
     <div class="detail-action-sep"></div>
-    <button class="detail-action-btn" id="fe-sort-btn" data-tooltip="Sort: name"><svg viewBox="0 0 24 24"><path d="M3 6h7M3 12h5M3 18h3M16 4v16M12 16l4 4 4-4"/></svg></button>
+    <button type="button" class="detail-action-btn" id="fe-goto-file" data-tooltip="${t('fileExplorer.toolbar.goToFile')}" aria-label="${t('fileExplorer.toolbar.goToFile')}"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="21" y2="21"/></svg></button>
+    <button type="button" class="detail-action-btn" id="fe-reveal-active" data-tooltip="${t('fileExplorer.toolbar.revealActive')}" aria-label="${t('fileExplorer.toolbar.revealActive')}" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2"/><line x1="12" y1="1" x2="12" y2="4"/><line x1="12" y1="20" x2="12" y2="23"/><line x1="1" y1="12" x2="4" y2="12"/><line x1="20" y1="12" x2="23" y2="12"/></svg></button>
+    <button type="button" class="detail-action-btn" id="fe-changed-only" data-tooltip="${t('fileExplorer.toolbar.changedOnly')}" aria-label="${t('fileExplorer.toolbar.changedOnly')}" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 21V9a9 9 0 0 0 9 9"/></svg></button>
     <div class="detail-action-sep"></div>
-    <button class="detail-action-btn fe-disabled" id="fe-undo-btn" data-tooltip="Undo delete"><svg viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg></button>
-    <button class="detail-action-btn fe-disabled" id="fe-redo-btn" data-tooltip="Redo delete"><svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button>
-    <div class="detail-action-sep"></div>
-    <button class="detail-action-btn" id="fe-refresh" data-tooltip="Refresh"><svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button>
+    <button type="button" class="detail-action-btn" id="fe-collapse-all" data-tooltip="${t('fileExplorer.toolbar.collapseAll')}" aria-label="${t('fileExplorer.toolbar.collapseAll')}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 14h6v6"/><path d="M20 10h-6V4"/><path d="M14 10l7-7"/><path d="M3 21l7-7"/></svg></button>
+    <button type="button" class="detail-action-btn" id="fe-refresh" data-tooltip="${t('fileExplorer.toolbar.refresh')}" aria-label="${t('fileExplorer.toolbar.refresh')}"><svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button>
+    <button type="button" class="detail-action-btn" id="fe-more" data-tooltip="${t('fileExplorer.toolbar.more')}" aria-label="${t('fileExplorer.toolbar.more')}" aria-haspopup="menu"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg></button>
   </div>
   <div id="fe-tree" class="fe-tree"></div>
+  <div class="fe-notice" id="fe-notice" role="status" hidden><span class="fe-notice-text"></span><button type="button" class="fe-notice-action" hidden></button><button type="button" class="fe-notice-close">&times;</button></div>
   <div class="fe-footer">
-    <span id="fe-count">0 items</span>
+    <span id="fe-count" aria-live="polite"></span>
+    <span class="fe-restart-hint" id="fe-restart-hint" role="img" tabindex="0" data-tooltip="${t('fileExplorer.state.restartHint')}" aria-label="${t('fileExplorer.state.restartHint')}" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><line x1="12" y1="11" x2="12" y2="16"/><circle cx="12" cy="8" r="0.6"/></svg></span>
   </div>
-  <div class="fe-resize-handle" id="fe-resize-handle"></div>
+  <div class="fe-resize-handle" id="fe-resize-handle" role="separator" aria-orientation="vertical" aria-label="${t('fileExplorer.resize')}" tabindex="0"></div>
 </div>
 
-<!-- File Editor (separate panel, slides from file explorer's right edge) -->
-<div id="fe-editor-panel" class="fe-editor-panel">
-  <div class="fe-editor-header">
-    <button class="fe-editor-back" id="fe-editor-back" data-tooltip="Close editor">
-      <svg viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>
-    </button>
-    <span class="fe-editor-dot" id="fe-editor-dot"></span>
-    <span class="fe-editor-filepath" id="fe-editor-filepath"></span>
-    <div style="flex:1"></div>
-    <button class="fe-editor-action" id="fe-editor-find-btn" data-tooltip="Find (Ctrl+F)">
-      <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-    </button>
-    <button class="fe-editor-action" id="fe-editor-word-wrap" data-tooltip="Toggle word wrap">
-      <svg viewBox="0 0 24 24"><path d="M3 6h18M3 12h15a3 3 0 1 1 0 6h-4"/><polyline points="16 16 14 18 16 20"/><path d="M3 18h7"/></svg>
-    </button>
-    <div class="fe-editor-help-wrap">
-      <button class="fe-editor-action fe-editor-help-btn" id="fe-editor-help-btn" data-tooltip="Keyboard shortcuts">
-        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-      </button>
-      <div class="fe-editor-keybinds" id="fe-editor-keybinds">
-        <div class="fe-editor-keybinds-title">Keyboard Shortcuts</div>
-        <div class="fe-editor-kb"><kbd>Ctrl+S</kbd> <span>Save</span></div>
-        <div class="fe-editor-kb"><kbd>Ctrl+F</kbd> <span>Find</span></div>
-        <div class="fe-editor-kb"><kbd>Ctrl+H</kbd> <span>Replace</span></div>
-        <div class="fe-editor-kb"><kbd>Ctrl+G</kbd> <span>Go to Line</span></div>
-        <div class="fe-editor-kb"><kbd>Ctrl+D</kbd> <span>Duplicate Line</span></div>
-        <div class="fe-editor-kb"><kbd>Ctrl+/</kbd> <span>Toggle Comment</span></div>
-        <div class="fe-editor-kb"><kbd>Tab</kbd> <span>Indent</span></div>
-        <div class="fe-editor-kb"><kbd>Shift+Tab</kbd> <span>Unindent</span></div>
-        <div class="fe-editor-kb"><kbd>Enter</kbd> <span>Auto-indent</span></div>
-        <div class="fe-editor-kb"><kbd>Esc</kbd> <span>Close panel</span></div>
-      </div>
-    </div>
-    <div class="fe-editor-sep"></div>
-    <div class="fe-editor-view-toggle" id="fe-editor-view-toggle" style="display:none">
-      <button class="fe-editor-toggle-btn active" data-mode="raw">Raw</button>
-      <button class="fe-editor-toggle-btn" data-mode="preview">Preview</button>
-    </div>
-    <div class="fe-editor-sep" id="fe-editor-sep-preview" style="display:none"></div>
-    <button class="fe-editor-btn" id="fe-editor-discard" disabled>Discard</button>
-    <button class="fe-editor-btn fe-editor-save" id="fe-editor-save" disabled>Save</button>
-    <button class="fe-editor-btn" id="fe-editor-close">Close</button>
-  </div>
-  <div class="fe-editor-find" id="fe-editor-find">
-    <div class="fe-editor-find-row">
-      <input type="text" class="fe-editor-find-input" id="fe-editor-find-input" placeholder="Find..." spellcheck="false" autocomplete="off" />
-      <span class="fe-editor-find-count" id="fe-editor-find-count"></span>
-      <button class="fe-editor-find-nav" id="fe-editor-find-prev" data-tooltip="Previous">
-        <svg viewBox="0 0 24 24"><polyline points="18 15 12 9 6 15"/></svg>
-      </button>
-      <button class="fe-editor-find-nav" id="fe-editor-find-next" data-tooltip="Next">
-        <svg viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
-      </button>
-      <button class="fe-editor-find-nav" id="fe-editor-find-close" data-tooltip="Close">
-        <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-      </button>
-    </div>
-    <div class="fe-editor-replace-row">
-      <input type="text" class="fe-editor-replace-input" id="fe-editor-replace-input" placeholder="Replace..." spellcheck="false" autocomplete="off" />
-      <button class="fe-editor-replace-btn" id="fe-editor-replace">Replace</button>
-      <button class="fe-editor-replace-btn" id="fe-editor-replace-all">All</button>
-    </div>
-  </div>
-  <div class="fe-editor-goto" id="fe-editor-goto">
-    <span class="fe-editor-goto-label">Go to Line</span>
-    <input type="number" class="fe-editor-goto-input" id="fe-editor-goto-input" min="1" placeholder="Line..." />
-  </div>
-  <div class="fe-editor-body">
-    <div class="fe-editor-gutter" id="fe-editor-gutter"></div>
-    <div class="fe-editor-line-highlight" id="fe-editor-line-highlight"></div>
-    <pre class="fe-editor-highlight" id="fe-editor-highlight" aria-hidden="true"><code id="fe-editor-highlight-code"></code></pre>
-    <textarea class="fe-editor-textarea" id="fe-editor-textarea"
-      spellcheck="false" autocorrect="off" autocapitalize="off"></textarea>
-    <div class="fe-editor-preview" id="fe-editor-preview"></div>
-    <div class="fe-editor-scrollmap" id="fe-editor-scrollmap">
-      <div class="fe-editor-scrollmap-thumb" id="fe-editor-scrollmap-thumb"></div>
-    </div>
-  </div>
-  <div class="fe-editor-statusbar">
-    <span id="fe-editor-lang"></span>
-    <div style="flex:1"></div>
-    <span id="fe-editor-cursor">Ln 1, Col 1</span>
-    <span class="fe-editor-sep"></span>
-    <span id="fe-editor-size"></span>
-    <span class="fe-editor-sep"></span>
-    <span>UTF-8</span>
-  </div>
-</div>
+${getEditorPanelHTML()}
 
 <!-- Detail cards are spawned dynamically by ui-detail.js -->
 
@@ -833,6 +822,12 @@ ${is3D ? `
         <svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
       </button>
       <div class="wb-tool-sep"></div>
+      <button class="wb-tool wb-toggle" id="ws-grid-toggle" type="button" aria-pressed="false" aria-label="${t('toolbar.snapToGrid')}" data-tooltip="${t('toolbar.snapToGrid')}">
+        <svg viewBox="0 0 24 24"><g fill="currentColor" stroke="none"><circle cx="6" cy="6" r="1.6"/><circle cx="12" cy="6" r="1.6"/><circle cx="18" cy="6" r="1.6"/><circle cx="6" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="18" cy="12" r="1.6"/><circle cx="6" cy="18" r="1.6"/><circle cx="12" cy="18" r="1.6"/><circle cx="18" cy="18" r="1.6"/></g></svg>
+      </button>
+      <button class="wb-tool" id="ws-tile-btn" type="button" aria-label="${t('toolbar.tileTerminals')}" data-tooltip="${t('toolbar.tileTerminals')}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="8" rx="2"/><rect x="3" y="13" width="8" height="8" rx="2"/><rect x="13" y="13" width="8" height="8" rx="2"/></svg>
+      </button>
       <button class="wb-tool wb-tool-sm" id="wb-toggle-logo" data-tooltip="Toggle logo">
         <img src="logo-synabun.png" alt="" style="width:18px;height:auto;opacity:0.6;">
       </button>

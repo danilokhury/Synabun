@@ -33,6 +33,7 @@ import {
 } from './ocp-v2-send-logic.js';
 import { hydrateTranscript } from './ocp-v2-rehydrate.js';
 import { captureBinding, trackBinding, isBindingToken, searchOnBinding } from './ocp-v2-binding.js';
+import { takeGreetingId } from './ocp-v2-greeting.js';
 
 const STOR_MODE = 'opencode-v2-mode';   // the last agent picked (build / plan / a custom one)
 const STOR_HISTORY = 'ocp-v2-prompt-history';
@@ -1449,6 +1450,10 @@ export function mountCompose(rootEl, store = getDefaultStore(), opts = {}) {
         variant: turn.variant || undefined,
         cwd: options.cwd || turn.cwd || undefined,
         mcpProfile: turn.mcpProfile || undefined,
+        // A person's own message (the greeting engine keeps when they were last here), and the
+        // greeting this session opened with, told to the model once.
+        human: true,
+        greetingId: takeGreetingId(turnSessionId) || undefined,
       });
       if (res?.error) return failSend(shouldSuppressAbortError(res.error) ? '' : res.error);
       // Delivered: that stands, whatever the panel shows by now.

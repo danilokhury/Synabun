@@ -92,3 +92,14 @@ export class LocalReleaseTracker {
     }
   }
 }
+
+/**
+ * The saved list of dismissed runs (localStorage, `[{ runId, at }]`) without
+ * one run: what the agents dock's Focus leaves when it reopens a closed tab.
+ * Anything unreadable becomes an empty list.
+ */
+export function withoutDismissed(raw, runId) {
+  let stored;
+  try { stored = JSON.parse(raw || '[]'); } catch { stored = []; }
+  return JSON.stringify((Array.isArray(stored) ? stored : []).filter((entry) => entry?.runId && entry.runId !== runId));
+}

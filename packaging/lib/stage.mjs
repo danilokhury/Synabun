@@ -10,6 +10,9 @@
  *   4. the native modules: compiled where there is no prebuilt binary, made
  *      executable, and stripped of other platforms' binaries
  *   5. the public embedding model, checked against its pins
+ *   6. cloudflared, the program behind the public address: Cloudflare's own
+ *      release file for the target, checked against the application's pins
+ *      (neural-interface/lib/cloudflared/pins.json), and the binary inside it
  *
  * Nothing is copied from the source checkout's node_modules or from a user's
  * data, and nothing is installed into the source checkout.
@@ -361,6 +364,74 @@ export async function prepareNatives(ctx) {
     note(`executable bits: ${sweep.checked} native executables checked, ${sweep.repaired.length} repaired, ${scripts} scripts repaired`);
     ctx.report.executablesRepaired = sweep.repaired.length + scripts;
   }
+}
+
+/**
+ * cloudflared, the program that opens the public address (invite links, remote
+ * MCP). An npm install fetches it into the data home the first time a tunnel
+ * is started; an installer carries it, so that nothing is downloaded on the
+ * user's machine. It is the only program of somebody else's a build contains
+ * (the tools the user installs stay out: excludeExternalTools above).
+ *
+ * Which file, and what it has to be, is the application's own knowledge: the
+ * pins and the code that unpacks and checks are read from the application that
+ * was just staged, so a build cannot carry a cloudflared the application would
+ * not have fetched itself. The release file is checked against its pinned
+ * SHA-256 before anything reads it, the binary taken out of it against its
+ * own, and what is placed has to be a program of the target's system and
+ * processor. It waits in the work folder; the bundle step puts it beside the
+ * runtime (bundle.mjs), where the application looks for it.
+ */
+export async function provisionCloudflared(ctx) {
+  step('cloudflared (the tunnel behind invite links and remote MCP)');
+  const { platform, arch } = ctx.target;
+  const lib = join(ctx.app, 'neural-interface', 'lib', 'cloudflared');
+  let pins;
+  let knows;
+  let unpack;
+  try {
+    knows = await import(pathToFileURL(join(lib, 'pins.js')).href);
+    unpack = await import(pathToFileURL(join(lib, 'install.js')).href);
+    pins = knows.readCloudflaredPins(join(lib, 'pins.json'));
+  } catch (error) {
+    throw new BuildError('The staged application does not say which cloudflared it uses. Nothing was packaged.', { details: [String(error?.message || error)] });
+  }
+  const pin = knows.cloudflaredPinFor(pins, platform, arch);
+  if (!pin) {
+    throw new BuildError(`No cloudflared is pinned for ${ctx.target.id}. Nothing was packaged.`, {
+      details: [`pinned: ${Object.keys(pins.platforms).join(', ')}`, 'An installer carries the tunnel program; add this target to neural-interface/lib/cloudflared/pins.json.'],
+    });
+  }
+  const releaseFile = await fetchVerified({
+    url: pin.url, sha256: pin.sha256, destination: join(ctx.cache, 'cloudflared', pin.version, pin.file), label: `${pin.file} ${pin.version}`, fetchImpl: ctx.fetch,
+  });
+  const folder = join(ctx.work, knows.BUNDLED_FOLDER);
+  removeTree(folder);
+  mkdirSync(folder, { recursive: true });
+  // Only its owner may write it, whatever the build machine's umask: the application does not run a copy that
+  // lies in a folder others may write (lib/cloudflared/install.js unsafePlace).
+  chmodSync(folder, 0o755);
+  const path = join(folder, pin.binary.name);
+  try {
+    await unpack.binaryFromRelease({ pin, releaseFile, destination: path, platform });
+  } catch (error) {
+    removeTree(folder);
+    throw new BuildError(`cloudflared ${pin.version} for ${ctx.target.id} is not the pinned binary. Nothing was packaged.`, { details: [String(error?.message || error), `from ${pin.url}`] });
+  }
+  const format = nativeFormat(path);
+  if (FORMAT_PLATFORM[format?.format] !== platform || !format.archs.includes(arch)) {
+    removeTree(folder);
+    throw new BuildError(`The pinned cloudflared for ${ctx.target.id} is ${format ? `a ${FORMAT_PLATFORM[format.format]} ${format.archs.join('+')} program` : 'not a program'}, not one for ${platform}-${arch}. Nothing was packaged.`, {
+      details: [`${pin.file} from ${pin.url}`, 'The pins name the wrong file for this target: neural-interface/lib/cloudflared/pins.json.'],
+    });
+  }
+  ctx.cloudflared = { folder, path, name: pin.binary.name, pin };
+  ctx.report.cloudflared = {
+    version: pin.version, file: pin.file, url: pin.url, sha256: pin.sha256,
+    binary: { name: pin.binary.name, sha256: pin.binary.sha256, size: pin.binary.size },
+    license: pins.license, origin: pins.origin,
+  };
+  note(`${pin.binary.name} ${pin.version} for ${platform}-${arch}: the release file and the binary match their pins`);
 }
 
 /**

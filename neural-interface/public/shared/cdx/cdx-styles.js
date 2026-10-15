@@ -2442,6 +2442,42 @@ export function injectStyles() {
       .cxp-post-plan-utilities .cxp-request-btn { flex: 1; justify-content: center; }
     }
 
+    /* ── A dispatched worker's end (ui-worker-end.js): the post-plan header and note in the
+       compaction card's hairline frame, in the transcript column. The title says the state in words. ── */
+    .cxp-worker-end {
+      display: grid;
+      gap: var(--cxp-space-2);
+      min-width: 0;
+      margin: var(--cxp-space-2) var(--cxp-space-2) var(--cxp-space-3) calc(var(--cxp-space-2) + 24px + var(--cxp-space-2));
+      padding: var(--cxp-space-3) var(--cxp-space-4);
+      border: 1px solid var(--cxp-border-strong);
+      border-radius: var(--cxp-radius-md);
+      font-family: var(--cxp-font);
+    }
+    .cxp-worker-end[data-tone="ok"] .cxp-post-plan-header { color: var(--cxp-success); }
+    .cxp-worker-end[data-tone="warn"] .cxp-post-plan-header { color: var(--cxp-warning); }
+    .cxp-worker-end[data-tone="err"] .cxp-post-plan-header { color: var(--cxp-danger); }
+    .cxp-worker-end .cxp-post-plan-note { overflow-wrap: anywhere; }
+    .cxp-worker-end .worker-end-meta {
+      font-family: var(--cxp-mono);
+      font-size: var(--cxp-fs-xs);
+      color: var(--cxp-text-3);
+    }
+    .cxp-worker-end .worker-end-note {
+      font-size: var(--cxp-fs-sm);
+      line-height: var(--cxp-lh-tight);
+      color: var(--cxp-text-3);
+    }
+    .cxp-worker-end .worker-end-actions { display: flex; margin-top: var(--cxp-space-1); }
+    .cxp-worker-end .cxp-request-btn:focus-visible {
+      outline: 2px solid var(--cxp-focus);
+      outline-offset: 2px;
+    }
+    @media (max-width: 390px) {
+      .cxp-worker-end { margin-left: var(--cxp-space-2); padding: var(--cxp-space-3); }
+      .cxp-worker-end .cxp-request-btn { flex: 1; justify-content: center; }
+    }
+
     /* ── Composer ── */
     .cxp-bottom {
       flex-shrink: 0;

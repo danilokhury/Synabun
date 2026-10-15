@@ -44,7 +44,9 @@ import {
   protectFirstLaunchAfterUpdate,
   recordLauncherFailure,
 } from './lib/first-launch-protection.js';
-import { noteSupervisorFailure, openSupervisorRecord, registerStartLauncher } from './lib/start-launcher.js';
+import {
+  RESTART_REPORT_ENV, noteSupervisorFailure, openRestartReport, openSupervisorRecord, registerStartLauncher, resolvePort,
+} from './lib/start-launcher.js';
 import { packagedRuntime } from './lib/packaged-runtime.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -83,7 +85,18 @@ process.env.MEMORY_DATA_DIR = resolve(DATA_HOME, 'mcp-data');
 // has no server to ask, and shows these phases instead of a guess. Each phase
 // is noted when it begins. Opened in main(), once the data home is settled.
 let supervisor = null;
-const startPhase = (name, detail) => { try { supervisor?.phase(name, detail); } catch {} };
+// A restart reports the same phases on the start beacon while the server is
+// away (lib/start-launcher.js openRestartReport): the page that asked for it
+// is waiting, with no server to ask. Open only while a restart lasts.
+let restartReport = null;
+// Set by a server that had no supervisor, on the one it starts to take its
+// place after a restart. This process only: nothing it starts inherits it.
+const STARTED_FOR_RESTART = !!process.env[RESTART_REPORT_ENV];
+delete process.env[RESTART_REPORT_ENV];
+const startPhase = (name, detail) => {
+  try { supervisor?.phase(name, detail); } catch {}
+  try { restartReport?.phase(); } catch {}
+};
 const startFailed = (code, message, extra = {}) => { try { supervisor?.fail({ code, message, ...extra }); } catch {} };
 
 // ── Migration: move legacy in-repository state to the platform data home ──
@@ -470,9 +483,19 @@ function startServer() {
   let firstLaunch = true;
   let currentChild = null;
   let shuttingDown = false;
+  // The port the server last said it listens on: where a restart's report is read.
+  let listenPort = null;
   const restartLog = [];
   const CRASH_WINDOW_MS = 60_000;
   const CRASH_LIMIT = 5;
+
+  // A restart that ends without a server keeps saying why until the page that
+  // waits for it has read it (a moment; 20 s at the most when nobody reads).
+  const exitAfterReport = (code, error) => {
+    const report = restartReport;
+    if (!report?.open) { process.exit(code); return; }
+    report.failed(error).finally(() => process.exit(code));
+  };
 
   function spawnOnce() {
     const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', '--max-old-space-size=6144', serverPath], {
@@ -491,7 +514,7 @@ function startServer() {
     child.on('error', (error) => {
       fail(`Could not start the server: ${error.message}`);
       startFailed('SERVER_SPAWN_FAILED', `the server could not be started: ${error.message}`);
-      process.exit(1);
+      exitAfterReport(1, { code: 'SERVER_SPAWN_FAILED', message: `the server could not be started: ${error.message}` });
     });
 
     let opened = !firstLaunch;
@@ -503,7 +526,9 @@ function startServer() {
       // The server prints its address from its listen callback: it is up.
       if (!announced && s.includes('Server:')) {
         announced = true;
-        startPhase('listening', { port: Number(s.match(/Server:\s+http:\/\/localhost:(\d+)/)?.[1]) || undefined });
+        const port = Number(s.match(/Server:\s+http:\/\/localhost:(\d+)/)?.[1]) || undefined;
+        if (port) listenPort = port;
+        startPhase('listening', { port });
       }
       if (!opened && s.includes('Server:')) {
         opened = true;
@@ -538,10 +563,16 @@ function startServer() {
         const now = Date.now();
         restartLog.push(now);
         while (restartLog.length && now - restartLog[0] > CRASH_WINDOW_MS) restartLog.shift();
+        // The page that asked for this has no server to ask now: from here
+        // until the new one is listening, this supervisor says what happens.
+        try { restartReport?.close(); } catch {}
+        restartReport = openRestartReport({ port: listenPort || resolvePort({ dataHome: DATA_HOME }), dataHome: DATA_HOME, exited: true });
         if (restartLog.length > CRASH_LIMIT) {
+          const message = `the server restarted ${restartLog.length} times in ${Math.round(CRASH_WINDOW_MS / 1000)} s`;
           fail(`Server restarted ${restartLog.length} times in ${Math.round(CRASH_WINDOW_MS / 1000)}s — aborting supervisor.`);
-          startFailed('RESTART_LOOP', `the server restarted ${restartLog.length} times in ${Math.round(CRASH_WINDOW_MS / 1000)} s`);
-          process.exit(1);
+          startFailed('RESTART_LOOP', message);
+          exitAfterReport(1, { code: 'RESTART_LOOP', message });
+          return;
         }
         firstLaunch = false;
         setTimeout(spawnOnce, 250);
@@ -551,7 +582,8 @@ function startServer() {
       if (code !== 0 && code !== null) {
         fail(`Server exited with code ${code}`);
         startFailed('SERVER_EXITED', `the server exited with code ${code}`, { exitCode: code });
-        process.exit(code);
+        exitAfterReport(code, { code: 'SERVER_EXITED', message: `the server exited with code ${code}`, exitCode: code });
+        return;
       }
       process.exit(0);
     });
@@ -798,6 +830,11 @@ async function main() {
   // and passes what it says on to the page that is waiting.
   supervisor = openSupervisorRecord(DATA_HOME);
   process.on('exit', supervisor.release);
+  // Taking the place of a server that restarted without a supervisor: the
+  // pages that asked are waiting, so this start says what it is doing.
+  if (STARTED_FOR_RESTART) {
+    restartReport = openRestartReport({ port: resolvePort({ dataHome: DATA_HOME }), dataHome: DATA_HOME });
+  }
 
   // Prerequisites
   checkNodeVersion();

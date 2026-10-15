@@ -1,13 +1,14 @@
 // ═══════════════════════════════════════════
 // SynaBun Neural Interface — Loading Overlay
-// Health check, server start, server-offline retry, command copy
+// Health check, server start, server-offline retry, command copy,
+// and the restart the user asked for (the same screen, one more reason)
 // ═══════════════════════════════════════════
 
 import { fetchHealth, startHealth } from './api.js';
-import { emit } from './state.js';
+import { emit, on } from './state.js';
 import { t } from './i18n.js';
 import {
-  START_STORAGE, createStartBridge, fetchStartBeacon, isMacPlatform, isWindowsPlatform,
+  START_LIMITS, START_STORAGE, createStartBridge, fetchStartBeacon, isMacPlatform, isWindowsPlatform,
   manualStartCommands, openStartLink, startBeaconTarget, startButtonUsable, startStatusView,
 } from './start-bridge.js';
 // Imported with the app, not when it is needed: once the server is down
@@ -25,6 +26,12 @@ let _offlineBridge = null;
 let _offlineTitle = '';
 // The mascot rig in the overlay, mounted the first time the server is offline.
 let _mascot = null;
+// The overlay was put over the running app for a restart. Everything the page
+// held (sockets, terminals, panel sessions) was the old server's, so once the
+// server is back the page loads again instead of carrying on.
+let _restartShown = false;
+// The tab's title from before the restart, for when it is refused.
+let _restartTitle = null;
 
 // What the mascot does for each thing the page knows about a start
 // (startStatusView's `mascot`), as poses of the shared rig.
@@ -83,6 +90,7 @@ export function showLoadingError(title, sub, canStart, serverOffline) {
   }
 
   clearStartStatus();
+  clearRestartLook();
 
   if (serverOffline) {
     const $hint = $('loading-server-cmd-hint');
@@ -131,6 +139,7 @@ function resetLoadingToConnecting() {
   if ($action) $action.style.display = 'none';
   if ($actionStatus) $actionStatus.textContent = '';
   clearStartStatus();
+  clearRestartLook();
   if (_statusDot) _statusDot.classList.remove('error');
 }
 
@@ -222,6 +231,14 @@ function clearStartStatus() {
   if ($trail) $trail.replaceChildren();
 }
 
+/** What a restart changed about the overlay's look, undone. */
+function clearRestartLook() {
+  const $overlay = $('loading-overlay');
+  if ($overlay) $overlay.classList.remove('over-app', 'restart-busy', 'restart-refused');
+  const btn = $('loading-action-btn');
+  if (btn) btn.style.display = '';
+}
+
 /**
  * The overlay's mascot as the shared rig, so a start can be acted out. The
  * markup's own still drawing stays as the fallback when the rig cannot mount.
@@ -259,24 +276,51 @@ function renderStart(snap) {
   const platform = isWindowsPlatform(navigator) ? 'windows' : isMacPlatform(navigator) ? 'mac' : 'linux';
   const view = startStatusView(snap, { platform });
   const say = (line) => (line ? t(`loading.start.${line.key}`, line.params) : '');
+  // A restart this page asked for or was told of, while it runs.
+  const restarting = !!snap.restart && (view.busy || view.state === 'online');
 
   poseMascot(view.mascot);
 
+  const $overlay = $('loading-overlay');
+  if ($overlay) {
+    // While a restart runs there is nothing to press and no command to type;
+    // refused, the server is still there and only the way back is offered.
+    $overlay.classList.toggle('restart-busy', restarting);
+    $overlay.classList.toggle('restart-refused', view.state === 'refused');
+  }
+
   const $text = $('loading-text');
   if ($text) {
-    const title = view.mascot === 'waking' || view.mascot === 'working' ? t('loading.start.headingStarting')
-      : view.mascot === 'ready' ? t('loading.start.headingReady')
-        : view.mascot === 'failed' ? t('loading.start.headingFailed')
-          : _offlineTitle || t('loading.serverOffline');
+    const title = view.heading ? t(`loading.start.${view.heading}`)
+      : view.mascot === 'waking' || view.mascot === 'working' ? t('loading.start.headingStarting')
+        : view.mascot === 'ready' ? t('loading.start.headingReady')
+          : view.mascot === 'failed' ? t('loading.start.headingFailed')
+            : _offlineTitle || t('loading.serverOffline');
     if ($text.textContent !== title) $text.textContent = title;
+  }
+
+  // Under the title: whose restart this is, for as long as it is one.
+  const $sub = $('loading-sub');
+  if ($sub && _restartShown) {
+    const sub = view.state === 'refused' ? t('loading.restartSubRefused')
+      : restarting ? (snap.restart.asked ? t('loading.restartSubAsked') : t('loading.restartSubTold'))
+        : t('loading.serverNotRunning');
+    if ($sub.textContent !== sub) $sub.textContent = sub;
   }
 
   const btn = $('loading-action-btn');
   const $label = $('loading-action-label');
-  if (btn) btn.disabled = view.busy || view.state === 'online';
+  if (btn) {
+    btn.disabled = view.busy || view.state === 'online';
+    // No dead button: when a restart did not bring the server back, Start is
+    // offered only if its launcher is there (the command below always is).
+    const startOffered = view.button === 'start' || view.button === 'retry';
+    btn.style.display = _restartShown && startOffered && !startButtonUsable(stored(START_STORAGE.launcher)) ? 'none' : '';
+  }
   if ($label) {
     $label.textContent = view.button === 'starting' ? t('loading.starting')
-      : view.button === 'retry' ? t('common.retry') : t('loading.startServer');
+      : view.button === 'retry' ? t('common.retry')
+        : view.button === 'back' ? t('loading.restartBack') : t('loading.startServer');
   }
 
   const $status = $('loading-action-status');
@@ -286,7 +330,7 @@ function renderStart(snap) {
   const $elapsed = $('loading-action-elapsed');
   if ($elapsed) {
     $elapsed.textContent = view.elapsed;
-    $elapsed.setAttribute('aria-label', view.elapsed ? `${t('loading.start.elapsedLabel')}: ${view.elapsed}` : '');
+    $elapsed.setAttribute('aria-label', view.elapsed ? `${t(`loading.start.${view.elapsedLabel}`)}: ${view.elapsed}` : '');
   }
 
   const $hint = $('loading-action-hint');
@@ -319,13 +363,28 @@ function renderStart(snap) {
  */
 function watchForServer() {
   if (_offlineBridge) return;
+  openBridge().watch();
+}
+
+/**
+ * Is the server answering, which server is it (`bootId`), and does it say it
+ * is on its way out for a restart. One that predates those two says neither.
+ */
+async function probeServer() {
+  const health = await fetchHealth();
+  return {
+    up: !!health && health.ok !== false,
+    boot: typeof health?.bootId === 'string' ? health.bootId : '',
+    stopping: health?.restarting === true,
+  };
+}
+
+/** The bridge behind the overlay, for either reason it is up: the server is offline, or it is being restarted. */
+function openBridge() {
   mountMascot();
   const beaconAt = startBeaconTarget(window.location);
   const bridge = createStartBridge({
-    probe: async () => {
-      const health = await fetchHealth();
-      return !!health && health.ok !== false;
-    },
+    probe: probeServer,
     launch: () => openStartLink({ document, location: window.location, userAgent: navigator.userAgent }),
     beacon: beaconAt ? () => fetchStartBeacon(beaconAt) : null,
     port: beaconAt ? beaconAt.port : 0,
@@ -336,13 +395,91 @@ function watchForServer() {
     onState(state) {
       if (_offlineBridge !== bridge) return;
       if (state !== 'online') return;
+      // Back from a restart: the page loads again, after the frame that says so.
+      if (_restartShown) {
+        setTimeout(() => window.location.reload(), START_LIMITS.reloadDelayMs);
+        return;
+      }
       resetLoadingToConnecting();
       emit('loading:retried');
       if (_initCallback) _initCallback();
     },
   });
   _offlineBridge = bridge;
-  bridge.watch();
+  return bridge;
+}
+
+// ═══════════════════════════════════════════
+// Restart Server
+// ═══════════════════════════════════════════
+
+/**
+ * The user chose Restart Server. The screen changes here, in the click: the
+ * overlay is up and says a restart was asked for before the request has even
+ * left, and nothing on the way to that first frame waits for the network.
+ * From there it shows what is really known (start-bridge.js `restart()`): the
+ * server's answer, its own word that it is shutting down, the probe that finds
+ * it gone, the supervisor's report of bringing it back. The page loads again
+ * by itself when another server than the one that was asked answers.
+ */
+export function requestServerRestart() {
+  return beginRestart({ request: postRestart });
+}
+
+/** Ask for the restart: { ok, boot } when the server says it will, { ok: false, status, message } when it will not. */
+async function postRestart() {
+  const res = await fetch('/api/server/restart', { method: 'POST', signal: AbortSignal.timeout(10000) });
+  let body = null;
+  try { body = await res.json(); } catch {}
+  if (!res.ok || !body || body.ok === false) {
+    return { ok: false, status: res.status, message: String(body?.error || body?.message || '') };
+  }
+  return { ok: true, boot: typeof body.bootId === 'string' ? body.bootId : '' };
+}
+
+/**
+ * Show the restart: this window asked for it (`request`), or the server told
+ * every window that it is restarting (`announced`, over the sync socket).
+ */
+function beginRestart({ request = null, announced = false, boot = '' } = {}) {
+  // Already on screen (this window asked, and here is the server saying so too).
+  if (_restartShown && _offlineBridge) {
+    _offlineBridge.restart({ announced, boot });
+    return false;
+  }
+  // The overlay is up because the server is offline: there is nothing to restart.
+  if (_offlineBridge) return false;
+  const $overlay = $('loading-overlay');
+  if (!$overlay) return false;
+
+  _restartShown = true;
+  _restartTitle = document.title;
+  document.title = t('loading.start.headingRestarting');
+  _offlineTitle = t('loading.serverOffline');
+  // `over-app`: no fade-in and above whatever is open. The screen is there in the frame of the click.
+  $overlay.classList.add('over-app', 'error', 'server-offline');
+  $overlay.classList.remove('hidden');
+  // Nothing behind the screen keeps the keyboard (a terminal, an editor).
+  try { document.activeElement?.blur?.(); } catch {}
+  if (_statusDot) _statusDot.classList.add('error');
+  const $action = $('loading-action');
+  if ($action) $action.style.display = 'block';
+  const $hint = $('loading-server-cmd-hint');
+  if ($hint) $hint.textContent = startButtonUsable(stored(START_STORAGE.launcher)) ? t('loading.runCommandOr') : t('loading.runCommandSetup');
+  const $retry = $('loading-retry-status');
+  if ($retry) $retry.textContent = '';
+  clearStartStatus();
+  return openBridge().restart({ request, announced, boot });
+}
+
+/** The restart did not happen and the server is still there: give the app back. */
+function dismissRestart() {
+  resetLoadingToConnecting();
+  _restartShown = false;
+  if (_restartTitle !== null) document.title = _restartTitle;
+  _restartTitle = null;
+  const $overlay = $('loading-overlay');
+  if ($overlay) $overlay.classList.add('hidden');
 }
 
 // ═══════════════════════════════════════════
@@ -354,6 +491,8 @@ function watchForServer() {
  * Calls /api/health/start and re-triggers init on success.
  */
 async function handleStartAction() {
+  // A restart the server refused: the button is the way back to the app.
+  if (_offlineBridge && _offlineBridge.state === 'refused') { dismissRestart(); return; }
   // Server offline: nothing to call, the OS starts it.
   if (_offlineBridge) { _offlineBridge.start(); return; }
 
@@ -416,6 +555,8 @@ async function handleRetryConnection() {
     // fetchHealth uses AbortSignal.timeout(3000) internally
     if (health && health.ok !== false) {
       if ($status) $status.textContent = t('loading.connectedLoading');
+      // After a restart the page loads again (see openBridge).
+      if (_restartShown) { window.location.reload(); return; }
       resetLoadingToConnecting();
       emit('loading:retried');
       if (_initCallback) _initCallback();
@@ -463,4 +604,7 @@ export function initLoading({ onInit } = {}) {
   // ── Retry connection ──
   const retryBtn = $('loading-retry-btn');
   if (retryBtn) retryBtn.addEventListener('click', handleRetryConnection);
+
+  // ── The server says it is restarting (ui-sync.js): every window shows it ──
+  on('server:restarting', (msg) => beginRestart({ announced: true, boot: typeof msg?.bootId === 'string' ? msg.bootId : '' }));
 }

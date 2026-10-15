@@ -1509,6 +1509,28 @@ export function initExplorer() {
     }
   });
 
+  // Open the explorer on one category, expanded and in view (Settings → Automation
+  // behavior → "See all in Memory"). `fallback`: used while `category` does not exist yet.
+  on('explorer:show-category', ({ category, fallback } = {}) => {
+    const name = state.categoryMetadata?.[category] ? category : (fallback || category);
+    if (!name) return;
+    if (!_visible) toggleExplorer();
+    let changed = _collapsed.delete(name);
+    const parent = state.categoryMetadata?.[name]?.parent;
+    if (parent && _collapsed.delete(parent)) changed = true;
+    if (changed) saveCollapsed();
+    buildTreeImpl();
+    const container = $('explorer-tree');
+    if (!container) return;
+    const idx = _flatRows.findIndex(r => r.kind === 'category' && r.item?.name === name);
+    if (_virtActive && idx >= 0) {
+      container.scrollTop = Math.max(0, idx * _rowH - 40);
+      renderVirtualWindow(container);
+    }
+    const row = container.querySelector(`.explorer-node[data-cat="${CSS.escape(name)}"]`);
+    if (row && !_virtActive) row.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+
   // Search integration
   on('search:apply', () => {
     if (_visible) scheduleBuildTree();

@@ -1,6 +1,6 @@
 {
   "name": "synabun",
-  "version": "2.0.4",
+  "version": "2.0.5",
   "description": "Local-first persistent vector memory, MCP tooling, and multi-agent workflows for AI assistants",
   "license": "Apache-2.0",
   "author": "The SynaBun Authors",
@@ -77,8 +77,6 @@
     "docs/judgments.md",
     "docs/style-guide.md",
     "docs/whatsapp.md",
-    "benchmarks/browser-v2-results.json",
-    "benchmarks/browser-live-results.json",
     "benchmarks/fixtures/browser/",
     "benchmarks/fixtures/desktop/",
     "README.md",
@@ -88,9 +86,6 @@
     "start": "node --disable-warning=ExperimentalWarning setup.js",
     "server": "node --disable-warning=ExperimentalWarning neural-interface/server.js",
     "mcp:build": "npm --prefix mcp-server run build",
-    "test": "npm run test:mcp && npm run test:neural",
-    "test:mcp": "npm --prefix mcp-server test",
-    "test:neural": "npm --prefix neural-interface test",
     "pack:check": "npm pack --dry-run --json --ignore-scripts",
     "build:targets": "node packaging/build.mjs targets",
     "build:mac:arm": "node packaging/build.mjs build --target macos-arm64",
@@ -98,10 +93,9 @@
     "build:linux:x64": "node packaging/build.mjs build --target linux-x64",
     "build:windows:x64": "node packaging/build.mjs build --target windows-x64",
     "build:windows:x86": "node packaging/build.mjs build --target windows-x86",
-    "test:packaging": "node --test packaging/tests/*.test.mjs",
     "postinstall": "node postinstall.js",
     "preuninstall": "node preuninstall.js",
-    "prepublishOnly": "npm --prefix mcp-server ci --ignore-scripts && npm --prefix neural-interface ci --ignore-scripts && npm run mcp:build && npm test && node -e \"const fs = require('node:fs'); for (const path of ['mcp-server/dist/index.js', 'NOTICE', 'THIRD-PARTY-LICENSES.md']) fs.accessSync(path)\" && npm run pack:check"
+    "prepublishOnly": "npm --prefix mcp-server ci --ignore-scripts && npm --prefix neural-interface ci --ignore-scripts && npm run mcp:build && node -e \"const fs = require('node:fs'); for (const path of ['mcp-server/dist/index.js', 'NOTICE', 'THIRD-PARTY-LICENSES.md']) fs.accessSync(path)\" && npm run pack:check"
   },
   "keywords": [
     "ai-agents",

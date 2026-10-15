@@ -7,6 +7,9 @@ import { registerSidepanel, setSidepanelVisible, sidepanelAcceptsKeyboard, openA
 import { subscribeCliStatus, recheckCliStatus, getCliDocUrl, getCliInstallCommand, getCliLabel } from '../cli-status.js';
 import { nativeLoopWindowId } from '../ui-native-window-id.js';
 import { createStickyScrollController, getStickyScrollController } from '../ui-scroll-follow.js';
+import { wireFileLinks } from '../ui-file-links.js';
+import { trackWorkerEnd } from '../ui-worker-end.js';
+import { isDispatchedRun } from '../worker-end.js';
 import { injectStyles } from './cdx-styles.js';
 import { mountContextMenu } from './cdx-context-menu.js';
 import { teardownMcpApps } from './cdx-mcp-app-host.js';
@@ -39,6 +42,7 @@ import {
   handleNotify,
   appendLocalUserMessage, hydrateCodexAutomationHistory,
   clearPlanHandoffState,
+  placeWorkerEnd,
   withTab,
   ensureProjectsLoaded,
   setActiveProject,
@@ -107,7 +111,6 @@ let _contextMenu = null;
  * monolith and are referenced by wireEvents / ensurePanel.
  *
  * Expected shape:
- *   maybeOpenProjectFileLink(href, event) -> bool
  *   flushCardBody(itemState)
  *   resetThreadState(opts)
  *   appendSystem(text, tone)
@@ -785,14 +788,18 @@ async function saveRecallProfile(profile) {
 // ═══════════════════════════════════════════
 
 function wireEvents() {
-  // Project links retain their existing handling; card heads bind in cdx-render.
-  const msgContainer = panelEl('#cxp-messages-container');
-  if (msgContainer) {
-    msgContainer.addEventListener('click', (e) => {
-      const link = e.target.closest('a[href]');
-      if (link && msgContainer.contains(link) && _host.maybeOpenProjectFileLink?.(link.getAttribute('href'), e)) return;
-    });
-  }
+  // File links open in the code editor (../ui-file-links.js, shared with the other panels): one listener for
+  // every tab's transcript, so stored and streaming messages behave alike. Card heads bind in cdx-render.
+  wireFileLinks(panelEl('#cxp-messages-container'), {
+    // A relative path is a path in the project of the tab on screen (a worker run's tab has the run's folder).
+    cwd: (link) => (allTabs().find((tab) => tab.messagesEl?.contains(link)) || activeTab())?.project || '',
+    textLinks: 'a.cxp-file-link',
+    // A path the editor does not open keeps what a click on it did: it is copied.
+    copyPath: (link, path) => navigator.clipboard.writeText(path).then(() => {
+      link.classList.add('cxp-file-link-copied');
+      setTimeout(() => link.classList.remove('cxp-file-link-copied'), 1500);
+    }),
+  });
 
   const input = panelEl('#cxp-input');
   const send = panelEl('#cxp-send');
@@ -1274,6 +1281,19 @@ export async function attachCodexAutomation(run, {
   ensurePanel();
   await ensureProjectsLoaded();
   if (isCancelled()) return { ok: false, reason: 'dismissed' };
+  const running = run.status === 'starting' || run.status === 'running';
+  // The user continued this run's thread by hand after the run ended: the tab stays theirs. The
+  // dock's Focus raises it; the run is let go again, and nothing in the tab changes.
+  const own = allTabs().find((entry) => !entry.automationRunId && entry.releasedRunId === run.runId && entry.threadId === threadId);
+  if (own && !running) {
+    window.dispatchEvent(new CustomEvent('native-loop:dismissed', { detail: { runId: run.runId } }));
+    if (focus) {
+      if (!_visible) await toggleCodexPanel();
+      const ownIdx = allTabs().indexOf(own);
+      if (ownIdx >= 0) switchTab(ownIdx);
+    }
+    return { ok: true, tabId: own.id, released: true };
+  }
   let tab = allTabs().find((entry) => entry.automationRunId === run.runId);
   if (!tab) {
     tab = createTab({
@@ -1291,7 +1311,6 @@ export async function attachCodexAutomation(run, {
     }, { autoSwitch: false });
   }
   if (!tab) return { ok: false, reason: 'tab_limit' };
-  const running = run.status === 'starting' || run.status === 'running';
   // A task-mode worker between turns (waiting for a follow-up) is alive, not working.
   const working = running && run.turnState !== 'idle' && run.turnState !== 'terminal';
   tab.automationRunId = run.runId;
@@ -1315,10 +1334,12 @@ export async function attachCodexAutomation(run, {
       return { ok: false, reason: 'dismissed' };
     }
   }
-  if (run.status === 'failed' && run.error && tab._automationLifecycleError !== run.error) {
+  // (A dispatched worker's failure, with its reason, is on its end card.)
+  if (run.status === 'failed' && run.error && !isDispatchedRun(run) && tab._automationLifecycleError !== run.error) {
     tab._automationLifecycleError = run.error;
     withTab(tab, () => appendSystem(run.error, 'error'));
   }
+  trackWorkerEnd(run, { apply: (view) => { tab._workerEnd = view; placeWorkerEnd(tab); } });
   saveTabs();
   renderPills();
   if (focus) {

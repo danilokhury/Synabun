@@ -217,6 +217,17 @@ async function main() {
     return;
   }
 
+  // The Assistant's brain while SynaBun keeps the conversation's thread record itself
+  // (SYNABUN_ASSISTANT_THREADS=1: the user-context nudges layer is on, see
+  // neural-interface/lib/assistant-user-context.js). No summary is asked of the brain: no
+  // pending flag, so Stop has nothing to wait for, and no cache for SessionStart to inject.
+  // Every other session, and the brain with that layer off, goes on as before.
+  if (process.env.SYNABUN_ASSISTANT_SESSION && String(process.env.SYNABUN_ASSISTANT_THREADS ?? '').trim() === '1') {
+    try { appendCapped(DEBUG_LOG, `[${new Date().toISOString()}] PRE-COMPACT session_id=${sessionId} trigger=${trigger} SKIPPED (assistant thread record)\n`); } catch { /* ok */ }
+    process.exit(0);
+    return;
+  }
+
   // The obligation first: whatever happens below, Stop will ask for the
   // conversations memory of this generation.
   const generation = randomUUID();

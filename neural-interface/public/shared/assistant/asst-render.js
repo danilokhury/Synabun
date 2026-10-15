@@ -20,6 +20,7 @@
 
 import { assistantEventKey, fmtCost, fmtElapsed, isRemovableRun, isRunIdle, isTerminalRunStatus, modelShortName, providerShortLabel, routeTargetLabel, runTone, summarizeMailbox } from './asst-state.js';
 import { createRouteLine } from './asst-route.js';
+import { closeMenu, isMenuOpen } from './asst-menu.js';
 import { computerToolName, describeComputerAction, frameUrls, markerPercent, openFrameLightbox, parseComputerResult, swapImage } from './asst-computer.js';
 import * as mascotLib from '../synabun-mascot.js';
 import { isReducedMotion, subscribe } from '../synabun-ticker.js';
@@ -27,6 +28,7 @@ import { KIND_SPECS, callOutcome, commandOf, editDiff, editPaths, fmtDuration, g
 import { injectRackStyles } from './asst-rack-styles.js';
 import { formatRunTokens } from './asst-usage.js';
 import { sanitizeHtmlString, sanitizeInto } from './asst-sanitize.js';
+import { automationView } from './asst-automation.js';
 
 // ── Markdown (lazy marked, same CDN build as the sidepanels) ───────────────
 let _marked = null;
@@ -227,7 +229,7 @@ export function updateRunCard(card, run, opts = {}) {
       const routeBits = [r.taskClassLabel || r.taskClass || t('assistant.routes.task', 'task')];
       if (r.status === 'pending') routeBits.push(t('assistant.routes.state.pending', 'waiting for your choice'));
       else if (r.decidedBy === 'user') routeBits.push(t('assistant.routes.youChose', 'you chose'));
-      else if (r.remembered || r.decidedBy === 'remembered') routeBits.push(t('assistant.routes.remembered', 'remembered'));
+      else if (r.remembered || r.decidedBy === 'remembered') routeBits.push(t('assistant.routes.remembered', 'your saved choice'));
       else if (Number.isFinite(Number(r.confidence))) routeBits.push(`${Math.round(Number(r.confidence) <= 1 ? Number(r.confidence) * 100 : Number(r.confidence))}%`);
       const tip = r.target ? `${t('assistant.routes.routedTo', 'Routed to')} ${routeTargetLabel(r.target, { effort: true })}` : t('assistant.routes.title', 'Model routing');
       bits.push(`<span class="asst-run-route" data-tooltip="${esc(tip)}">⇄ ${esc(routeBits.join(', '))}</span>`);
@@ -434,12 +436,12 @@ export function createRenderer(transcriptEl, hooks = {}) {
   const scopes = new Map(); // parent_tool_use_id → { container, stream, key }
   const runCards = new Map(); // runId → card element
   const routeLines = new Map(); // routeId → line handle
+  const autoRows = new Map(); // traceId → the turn's automation trace row
   let working = null;
   let workingFace = null; // the "Thinking" row's character: { still, rig?, el, target? } (syncWorkingFace)
   let followTail = true;
   let emptyEl = null;
   let hero = null; // the empty state's character: { rig, el, box, parked, leaving, held, dock, egg, target }
-  let rigsOn = true; // this panel's rigs may animate (asst-mascot.js lets one panel at a time)
   const mcpWarned = new Set();
   let lastErrorText = ''; // a synthetic API-error message's text, so the result does not repeat it
   let turnFrames = []; // computer cards with inline thumbnails in the current turn
@@ -539,8 +541,15 @@ export function createRenderer(transcriptEl, hooks = {}) {
   function hideEmpty({ park = false } = {}) {
     if (!emptyEl) return;
     if (!(park && parkHero())) dropHero();
+    closeEmptyMenu();
     emptyEl.remove();
     emptyEl = null;
+  }
+
+  /** A menu opened from the empty state's project picker does not outlive it. */
+  function closeEmptyMenu() {
+    const btn = emptyEl?.querySelector('.asst-empty-project-btn');
+    if (btn && isMenuOpen(btn)) closeMenu();
   }
 
   // ── The hero ──
@@ -698,13 +707,6 @@ export function createRenderer(transcriptEl, hooks = {}) {
     try { hooks.onMascotChange?.(); } catch { /* the director is gone */ }
   }
 
-  /** Whether this panel's rigs animate (another panel may lead); still frames otherwise. */
-  function setRigsEnabled(on) {
-    if (rigsOn === !!on) return;
-    rigsOn = !!on;
-    activateRigs();
-  }
-
   function prune() {
     const rows = $msgs.children;
     while (rows.length > MAX_MESSAGES && rows[0] !== working) rows[0].remove();
@@ -757,8 +759,8 @@ export function createRenderer(transcriptEl, hooks = {}) {
         const a = el('a', 'file-link', match[0]);
         a.href = '#';
         a.title = t('assistant.copyPath', 'Click to copy path');
-        const path = match[0].replace(/:\d+$/, '');
-        a.addEventListener('click', (e) => { e.preventDefault(); hooks.copy?.(path); a.style.opacity = '0.5'; setTimeout(() => { a.style.opacity = ''; }, 300); });
+        // The click is taken on the transcript (asst-panel.js → ui-file-links.js): the code editor when it
+        // can open the path, else the copy a click has always made.
         frag.appendChild(a);
         last = match.index + match[0].length;
       }
@@ -1502,7 +1504,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
       rack.clearTimer = 0;
       rack.row.classList.add('is-staged');
       if (!rack.rig) {
-        try { rack.rig = mascotLib.createMascot(rack.stage.face, { width: 72, height: 36, rangeX: 10, rangeY: 7, active: rigsOn, pose: 'idle' }); } catch { rack.rig = null; }
+        try { rack.rig = mascotLib.createMascot(rack.stage.face, { width: 72, height: 36, rangeX: 10, rangeY: 7, pose: 'idle' }); } catch { rack.rig = null; }
         rack.pose = null;
         rack.target = rack.rig ? stageTarget(rack) : null;
         if (hero?.parked) dropHero(); // the stage is the character now: a hero still on its way out goes at once
@@ -1564,12 +1566,16 @@ export function createRenderer(transcriptEl, hooks = {}) {
     rack.bubble = { step: null, since: 0, key: '', open: false };
   }
 
-  /** One rig animates: the hero, else the newest stage, else the "Thinking" row's; none while another panel leads (setRigsEnabled). */
+  /**
+   * One rig of this transcript animates: the hero, else the newest stage, else
+   * the "Thinking" row's. The rule ends at this renderer: every other panel
+   * runs its own, so N live sessions show N moving characters.
+   */
   function activateRigs() {
     const newest = hero?.rig ? null : newestStage();
-    for (const rack of racks) if (rack.rig) rack.rig.setActive?.(rigsOn && rack === newest);
-    hero?.rig?.setActive?.(rigsOn);
-    workingFace?.rig?.setActive?.(rigsOn && !hero?.rig && !newest);
+    for (const rack of racks) if (rack.rig) rack.rig.setActive?.(rack === newest);
+    hero?.rig?.setActive?.(true);
+    workingFace?.rig?.setActive?.(!hero?.rig && !newest);
   }
 
   /** The bubble's call: the awake one, else the newest; it holds 900 ms (3 s for thinking) before the next wins. */
@@ -2634,7 +2640,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
       return;
     }
     try {
-      const rig = mascotLib.createMascot(host, { width: 56, height: 28, active: rigsOn, pose: 'think' });
+      const rig = mascotLib.createMascot(host, { width: 56, height: 28, pose: 'think' });
       const face = { still: false, rig, el: rig.el, held: false };
       face.target = { kind: 'working', rig, el: rig.el, hold(on) { face.held = !!on; }, restore() { if (workingFace === face) rig.setPose('think'); } };
       workingFace = face;
@@ -2761,6 +2767,115 @@ export function createRenderer(transcriptEl, hooks = {}) {
     if (line) { line.el.remove(); routeLines.delete(routeId); }
   }
 
+  // ── The automation trace ──
+  // What the harness did for a turn (`synabun.automation`, asst-automation.js):
+  // one disclosure row per turn, upserted by its traceId. It appears where the
+  // turn was sent, moves under the reply when the turn ends and updates in
+  // place when learning finishes. Drawn from the event alone, so the live row
+  // and the replayed one are the same. Opening one keeps the next ones open.
+  let autoUid = 0;
+  const TRACE_OPEN_KEY = 'synabun-asst-trace-open';
+  const traceOpenPref = () => { try { return localStorage.getItem(TRACE_OPEN_KEY) === '1'; } catch { return false; } };
+
+  function buildAutoRow() {
+    const node = el('div', 'asst-route-line asst-auto');
+    const detailId = `asst-auto-detail-${++autoUid}`;
+    node.innerHTML = `
+      <button type="button" class="asst-route-line-head asst-auto-head" aria-expanded="false" aria-controls="${detailId}">
+        <span class="asst-route-glyph asst-icon" aria-hidden="true">${ICON_MEMORY}</span>
+        <span class="asst-route-class asst-auto-title"></span>
+        <span class="asst-route-meta asst-auto-summary"></span>
+        <span class="asst-route-state asst-auto-state"></span>
+        <span class="asst-route-chev" aria-hidden="true">&#x203A;</span>
+      </button>
+      <div class="asst-route-detail asst-auto-detail" id="${detailId}" hidden></div>`;
+    const head = node.querySelector('.asst-auto-head');
+    const detail = node.querySelector('.asst-auto-detail');
+    const setOpen = (open) => {
+      head.setAttribute('aria-expanded', open ? 'true' : 'false');
+      detail.hidden = !open;
+      node.classList.toggle('open', open);
+    };
+    head.addEventListener('click', () => {
+      const open = head.getAttribute('aria-expanded') !== 'true';
+      setOpen(open);
+      try { localStorage.setItem(TRACE_OPEN_KEY, open ? '1' : '0'); } catch { /* no storage: this row only */ }
+    });
+    setOpen(traceOpenPref());
+    return { el: node, detail, atEnd: false };
+  }
+
+  function paintAutoRow(row, ev) {
+    const view = automationView(ev, { t: hooks.t });
+    row.el.dataset.traceId = view.traceId;
+    row.el.dataset.phase = view.phase;
+    row.el.classList.toggle('busy', view.tone === 'busy');
+    row.el.classList.toggle('learned', view.tone === 'learned');
+    row.el.querySelector('.asst-auto-title').textContent = view.title;
+    row.el.querySelector('.asst-auto-summary').textContent = view.summary;
+    const state = row.el.querySelector('.asst-auto-state');
+    state.textContent = view.state;
+    state.hidden = !view.state;
+    row.detail.replaceChildren();
+    for (const group of view.groups) {
+      const box = el('div', 'asst-auto-group');
+      box.dataset.group = group.key;
+      box.appendChild(el('div', 'asst-auto-h', group.title));
+      for (const item of group.rows) {
+        const line = el('div', `asst-auto-row${item.tone ? ` ${item.tone}` : ''}`);
+        if (item.label || item.meta) {
+          const lead = el('div', 'asst-auto-row-head');
+          if (item.label) lead.appendChild(el('span', 'asst-auto-tier', item.label));
+          if (item.meta) lead.appendChild(el('span', 'asst-auto-meta', item.meta));
+          line.appendChild(lead);
+        }
+        // Memory text and the user's own words: always as text, never as markup.
+        if (item.text) line.appendChild(el(item.pre ? 'pre' : 'div', 'asst-auto-text', item.text));
+        if (item.ids.length) {
+          const ids = el('div', 'asst-auto-ids');
+          for (const id of item.ids) {
+            const link = el('button', 'asst-link', String(id).slice(0, 8));
+            link.type = 'button';
+            link.dataset.memoryId = id;
+            link.title = `${t('assistant.automation.open', 'Open memory')} ${id}`;
+            link.setAttribute('aria-label', link.title);
+            link.addEventListener('click', () => hooks.onMemoryClick?.(id, { id }));
+            ids.appendChild(link);
+          }
+          line.appendChild(ids);
+        }
+        box.appendChild(line);
+      }
+      row.detail.appendChild(box);
+    }
+  }
+
+  /** Create or update the trace row for `ev.traceId`. */
+  function upsertAutomation(ev) {
+    const id = String(ev?.traceId || '');
+    if (!id) return null;
+    let row = autoRows.get(id);
+    const fresh = !row || !row.el.isConnected;
+    if (fresh) {
+      row = buildAutoRow();
+      autoRows.set(id, row);
+      while (autoRows.size > 200) autoRows.delete(autoRows.keys().next().value);
+    }
+    paintAutoRow(row, ev);
+    // Under the reply once the turn has ended; a later snapshot (learning) never moves it again.
+    const ended = ev.phase !== 'sent';
+    if (fresh || (ended && !row.atEnd)) {
+      // Placed like any row (before "Working…"), but a status line of the harness never dismisses the hero.
+      if (working && working.parentNode === $msgs) $msgs.insertBefore(row.el, working);
+      else $msgs.appendChild(row.el);
+      if (ended) row.atEnd = true;
+      prune();
+      if (racks.size) syncRacks();
+      scrollEnd();
+    }
+    return row.el;
+  }
+
   // ── Empty state ──
   function showEmpty() {
     if (emptyEl || $msgs.querySelector(':scope > :not(.asst-working)')) return;
@@ -2769,14 +2884,22 @@ export function createRenderer(transcriptEl, hooks = {}) {
       <div class="asst-empty-mascot" aria-hidden="true"></div>
       <div class="asst-empty-title" role="heading" aria-level="2">${esc(t('assistant.empty.heading', 'What should we do?'))}</div>
       <div class="asst-empty-body">${esc(t('assistant.empty.lead', 'I can use your Mac, look things up on the web, edit files and run commands, and remember or schedule things.'))}</div>
+      <div class="asst-empty-greet"></div>
+      <div class="asst-empty-project" hidden></div>
       <div class="asst-suggestions" role="list"></div>`;
     const box = emptyEl.querySelector('.asst-empty-mascot');
     try {
-      const rig = mascotLib.createMascot(box, { width: 120, height: 60, active: rigsOn });
+      const rig = mascotLib.createMascot(box, { width: 120, height: 60 });
       hero = { rig, el: rig.el, box, parked: false, leaving: false, held: false, dock: null, egg: false, leaveTimer: 0 };
       hero.target = heroTarget(hero);
       wireEgg(hero);
     } catch { hero = null; }
+    // The project the conversation works in, under the lead: the host draws the picker (the brain
+    // picker's project field), so it and the toolbar's Working project are one control.
+    const projectSlot = emptyEl.querySelector('.asst-empty-project');
+    let picker = null;
+    try { picker = typeof hooks.mountEmptyProject === 'function' ? hooks.mountEmptyProject(projectSlot) : null; } catch { picker = null; }
+    projectSlot.hidden = !picker;
     renderSuggestions();
     $msgs.appendChild(emptyEl);
     // The host's "Starting…" character flies into place (not on replay or reduced motion).
@@ -2784,6 +2907,20 @@ export function createRenderer(transcriptEl, hooks = {}) {
     try { from = hooks.heroOrigin?.() || null; } catch { from = null; }
     if (from && hero) flipFrom(hero.el, from); // the SVG: the box is as wide as the empty state
     mascotChanged();
+  }
+
+  /**
+   * The greeting SynaBun prepared for this return (public/shared/greeting/) takes the lead's place.
+   * The panel calls it once it knows the conversation is new: a restored one is never greeted.
+   */
+  function offerGreeting() {
+    const owner = emptyEl;
+    if (!owner || owner.dataset.greetingAsked === '1' || typeof hooks.greeting !== 'function') return;
+    owner.dataset.greetingAsked = '1';
+    const slot = owner.querySelector('.asst-empty-greet');
+    Promise.resolve().then(() => hooks.greeting(slot))
+      .then((greeting) => { if (greeting && emptyEl === owner) owner.classList.add('has-greeting'); })
+      .catch(() => { /* no greeting: the lead stays */ });
   }
 
   function renderSuggestions() {
@@ -3111,6 +3248,9 @@ export function createRenderer(transcriptEl, hooks = {}) {
         // The card itself arrives as a control_request; its outcome is a line (the panel's card shows it live).
         if (ev.phase !== 'card') appendStatus(clarifyLine(ev), 'info');
         return true;
+      case 'synabun.automation':
+        upsertAutomation(ev);
+        return true;
       default:
         return false;
     }
@@ -3233,6 +3373,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
     scopes.clear();
     runCards.clear();
     routeLines.clear();
+    autoRows.clear();
     turnFrames = [];
     rootScope.stream = null;
     rootScope.kept = null;
@@ -3249,6 +3390,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
     seen.clear();
     snapshot = null;
     waiting = null;
+    closeEmptyMenu();
     $msgs.innerHTML = '';
     emptyEl = null;
     followTail = true;
@@ -3273,6 +3415,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
     registerRouteLine,
     removeRouteLine,
     getRouteLine: (routeId) => routeLines.get(routeId) || null,
+    upsertAutomation,
     getRunCard: (runId) => runCards.get(runId) || null,
     handleEvent,
     /** The live gate for an event (false: already drawn); registers what it lets through. */
@@ -3289,6 +3432,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
     hideWorking,
     isWorkingShown: () => !!working?.isConnected,
     showEmpty,
+    offerGreeting,
     refreshEmpty: renderSuggestions,
     isEmpty: () => !!emptyEl,
     scrollEnd,
@@ -3296,7 +3440,6 @@ export function createRenderer(transcriptEl, hooks = {}) {
     md,
     /** The character on screen, for the panel's director: { kind, rig, el, hold(on), restore() } or null. */
     mascot: visibleMascot,
-    setRigsEnabled,
     /** What this turn did: real calls (not the prompt-time recall), whether the last one failed, a turn error. */
     turnStats: () => ({ calls: turn.calls, lastFailed: turn.last?.state === 'error', errored: turn.errored }),
     /** The text of the turn's last message at the root ('' when it folded into a rack or there was none). */

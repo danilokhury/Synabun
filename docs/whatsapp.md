@@ -309,7 +309,7 @@ Base path `/api/whatsapp`. Errors are `{ ok: false, code, error, field? }` with 
 | `crash` | the connector process crashes (respawn, crash breaker) |
 | `state` | nothing; every answer includes `sent` (what SynaBun sent, without addresses) and `status` |
 
-Tests: `node --test neural-interface/tests/whatsapp-*.test.mjs` (fakes throughout, a temporary data home, `SYNABUN_TYPESAFE=off`).
+Tests use fakes throughout, a temporary data home and `SYNABUN_TYPESAFE=off`; they are not published with this repository.
 
 ## Integration (server.js)
 
@@ -322,4 +322,4 @@ The feature modules are self-contained; `neural-interface/server.js` wires them:
 - The WebSocket upgrade Origin check (`lib/http-guards.js`), app-wide.
 - Project Nayuki's QR Code generator (MIT, `neural-interface/lib/whatsapp/vendor/qrcodegen.js`) is listed in THIRD-PARTY-LICENSES.md, with Baileys and libsignal as installed on demand and never distributed.
 
-End to end: `node --test neural-interface/tests/whatsapp-e2e.test.mjs` (the real service, manager, host core, bridge and Assistant runtime over the fake socket) and `whatsapp-contract.test.mjs` (the cross-codebase rules: one send call site, Baileys only through the adapter, the npm tarball, the wiring above).
+End to end, the tests run the real service, manager, host core, bridge and Assistant runtime over the fake socket, and check the cross-codebase rules: one send call site, Baileys only through the adapter, the npm tarball, the wiring above.

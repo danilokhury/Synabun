@@ -231,6 +231,56 @@ export function modelShortName(model) {
   return tail.replace(/:\d+$/, '');
 }
 
+// ── Projects ────────────────────────────────────────────────────────────────
+
+/** A folder path without trailing separators ("/a/b/" is "/a/b"); the root stays itself. */
+function folderPath(path) {
+  const value = str(path);
+  return value.replace(/[\\/]+$/, '') || value;
+}
+
+/**
+ * What a working folder is called: its label among SynaBun's registered
+ * projects (GET /api/projects: [{ path, label }]), else the folder's own name;
+ * '' for none. The toolbar's Working project, the empty state's picker and the
+ * "Fix … in {project}" suggestion all read it, so they name it the same way.
+ */
+export function projectLabel(path, projects = []) {
+  const want = folderPath(path);
+  if (!want) return '';
+  const row = (Array.isArray(projects) ? projects : []).find(p => p && folderPath(p.path) === want);
+  return str(row?.label) || want.split(/[\\/]/).filter(Boolean).pop() || want;
+}
+
+const fillParams = (text, params) => (params ? String(text).replace(/\{(\w+)\}/g, (_, k) => (params[k] != null ? params[k] : `{${k}}`)) : String(text));
+
+/**
+ * The empty state's project picker: { chosen, key, label, title, aria }. With
+ * no project the brain works in the home directory and the picker asks
+ * "Choose a project"; with one it reads "Project  Synabun", the path in its
+ * tooltip. `tr(key, fallback, params)` translates.
+ */
+export function emptyProjectView(project, projects = [], tr = (_key, fallback, params) => fillParams(fallback, params)) {
+  const path = str(project);
+  const name = projectLabel(path, projects);
+  if (!name) {
+    return {
+      chosen: false,
+      key: '',
+      label: tr('assistant.empty.chooseProject', 'Choose a project'),
+      title: tr('assistant.brain.projectNoneTip', 'Working project: home directory'),
+      aria: tr('assistant.empty.projectAria', 'Choose a project (now: {project})', { project: tr('assistant.brain.projectNone', 'Home directory') }),
+    };
+  }
+  return {
+    chosen: true,
+    key: tr('assistant.empty.project', 'Project'),
+    label: name,
+    title: path,
+    aria: tr('assistant.empty.projectAria', 'Choose a project (now: {project})', { project: name === path ? name : `${name}, ${path}` }),
+  };
+}
+
 /** Does switching from `a` to `b` require a fresh server session (switch_brain)? */
 export function brainRequiresSwitch(a, b) {
   const x = normalizeBrain(a);
@@ -543,6 +593,121 @@ export function readStoredBrain(storage) {
 
 export function tabStorageKey(sessionId) {
   return `${KEYS.ASSISTANT_TAB_PREFIX}${sessionId}`;
+}
+
+/**
+ * The name the user gave a session, '' when they never renamed it. It lives on
+ * the server's session record (`title` + `userRenamed`, written by a rename in
+ * either host): the Sessions menu and a reopened tab read the same name, and a
+ * host's saved tab label is only its copy.
+ */
+export function userSessionTitle(meta) {
+  if (!meta || typeof meta !== 'object' || meta.userRenamed !== true) return '';
+  return str(meta.title);
+}
+
+/** What a tab is called until the user renames it (the server's DEFAULT_SESSION_TITLE). */
+export const DEFAULT_SESSION_TITLE = 'SynaBun';
+
+/**
+ * The title to write to the session record for a tab's name, null when there is
+ * nothing to write. `recordName` is userSessionTitle() of the record,
+ * `recordTitle` its title, `keepsRenames` whether the server marks renames
+ * (features.rename; one not restarted yet does not, and holds a name once its
+ * title says it), `defaultTitle` the default tab name as this locale shows it.
+ * The default name is no name: it is only written to take a rename back.
+ */
+export function renameToSave(name, { recordName = '', recordTitle = '', keepsRenames = false, defaultTitle = DEFAULT_SESSION_TITLE } = {}) {
+  const next = str(name);
+  if (!next) return null;
+  if (next === DEFAULT_SESSION_TITLE || next === str(defaultTitle)) return keepsRenames && str(recordName) ? DEFAULT_SESSION_TITLE : null;
+  return next === (keepsRenames ? str(recordName) : str(recordTitle)) ? null : next;
+}
+
+/**
+ * The name a host gives the tab it mounts for a session: the record's
+ * (userSessionTitle), else the label saved with the tab when the record says
+ * nothing about a name (a rename made before the record kept names). A record
+ * with `userRenamed: false` had its name given up: a saved label is stale.
+ */
+export function restoredSessionName(meta, savedLabel = '') {
+  return userSessionTitle(meta) || (sessionNameGivenUp(meta) ? '' : str(savedLabel));
+}
+
+/** The record says its name was taken back ("SynaBun" again): no saved label or renamed flag stands for it. */
+export function sessionNameGivenUp(meta) {
+  return !!meta && typeof meta === 'object' && meta.userRenamed === false;
+}
+
+/**
+ * Every rename on its way to a session record, one write at a time per session,
+ * so the name asked for last is the one the record ends with: after each answer
+ * the newest name is compared with what the record holds now, and what still
+ * differs (taking a rename back included) is written. One writer for the page,
+ * not one per tab: a write goes on after its tab closed, and a session list
+ * waits for `settled()`. `patch(sessionId, { title })` is the request.
+ *
+ * save(sessionId, name, opts): `recordName` / `recordTitle` / `keepsRenames` /
+ * `defaultTitle` are renameToSave()'s, as the caller knows the record (a write
+ * under way hears the record from its answer instead); `from` is the name the
+ * tab had before the first of them. `onSaved(session)` gets each answer,
+ * `onFailed({ name, back })` a write that did not get through: `name` was not
+ * saved, `back` is the name the record answers to (the last one it confirmed,
+ * else `from`). The latest call's callbacks are the ones used. The promise
+ * never rejects.
+ */
+export function createRenameWriter({ patch } = {}) {
+  const jobs = new Map(); // sessionId → { name, back, record, keepsRenames, defaultTitle, onSaved, onFailed, done }
+
+  const toWrite = (job) => renameToSave(job.name, { recordName: job.record.name, recordTitle: job.record.title, keepsRenames: job.keepsRenames, defaultTitle: job.defaultTitle });
+
+  async function run(sessionId, job) {
+    // The title of the last write the server answered. It may keep a name cut or tidied, which
+    // never equals the tab's: the same title is not sent twice in a row.
+    let written = null;
+    for (;;) {
+      const name = job.name;
+      const title = toWrite(job);
+      if (!title || title === written) break;
+      let session = null;
+      try { session = (await patch(sessionId, { title }))?.session || null; } catch {
+        jobs.delete(sessionId);
+        try { job.onFailed?.({ name: job.name, back: job.back }); } catch { /* the caller's */ }
+        return;
+      }
+      written = title;
+      job.back = name;
+      job.record = session?.title
+        ? { name: userSessionTitle(session), title: str(session.title) }
+        : { name: job.keepsRenames && title !== DEFAULT_SESSION_TITLE ? title : '', title };
+      try { job.onSaved?.(session); } catch { /* the caller's */ }
+    }
+    jobs.delete(sessionId);
+  }
+
+  function save(sessionId, name, { from = '', recordName = '', recordTitle = '', keepsRenames = false, defaultTitle = DEFAULT_SESSION_TITLE, onSaved = null, onFailed = null } = {}) {
+    const next = str(name);
+    if (!sessionId || !next) return Promise.resolve();
+    const waiting = jobs.get(sessionId);
+    if (waiting) {
+      // A write is under way: this name is the one compared with its answer.
+      Object.assign(waiting, { name: next, keepsRenames, defaultTitle, onSaved, onFailed });
+      return waiting.done;
+    }
+    const job = { name: next, back: str(from), record: { name: str(recordName), title: str(recordTitle) }, keepsRenames, defaultTitle, onSaved, onFailed, done: null };
+    if (!toWrite(job)) return Promise.resolve();
+    jobs.set(sessionId, job);
+    job.done = run(sessionId, job);
+    return job.done;
+  }
+
+  return {
+    save,
+    /** A rename of this session is on its way. */
+    pending: (sessionId) => jobs.has(sessionId),
+    /** Resolves once every rename that was on its way has its answer, whatever tab asked for it. */
+    settled: () => Promise.all([...jobs.values()].map((job) => job.done)).then(() => {}),
+  };
 }
 
 export function createTabState(sessionId, brain, extra = {}) {

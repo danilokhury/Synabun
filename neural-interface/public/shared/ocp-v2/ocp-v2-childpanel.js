@@ -18,6 +18,8 @@
 
 import { state, emit } from '../state.js';
 import { injectStyles } from './ocp-v2-styles.js';
+import { getDefaultStore } from './ocp-v2-state.js';
+import { wireFileLinks } from '../ui-file-links.js';
 import { mountRenderer } from './ocp-v2-render.js';
 import { mountCompose } from './ocp-v2-send.js';
 import { trackContextGauge } from './ocp-v2-context-gauge.js';
@@ -212,6 +214,8 @@ export function createChildPanel({
     messages.className = 'ocpv2-messages';
     messagesContainer.appendChild(messages);
     panel.appendChild(messagesContainer);
+    // File links open in the code editor, as in the main panel: a sub-agent works in its parent's directory.
+    wireFileLinks(messagesContainer, { cwd: () => store.getState().cwd || getDefaultStore().getState().cwd || '' });
 
     // This panel's own questions (closing it with prompts waiting, deleting a
     // message) show above its compose box.

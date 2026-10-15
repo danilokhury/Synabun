@@ -10,6 +10,8 @@
 //   Anthropic  https://platform.claude.com/docs/en/about-claude/pricing
 //   OpenAI     https://developers.openai.com/api/docs/pricing
 //              (gpt-6-sol: https://developers.openai.com/api/docs/models/gpt-6-sol)
+//   claude-haiku-5-5: added 2026-10-13 from the Claude API reference bundled with Claude Code
+//              (its model table, cached 2026-10-06), not from a reading of the pricing page.
 //
 // $ per million tokens, one rate per token class:
 //   input         uncached input
@@ -18,9 +20,12 @@
 //   cacheWrite1h  Anthropic's 1-hour cache write (2x input). The Claude CLI writes most of
 //                 its cache at this rate, so an estimate of its usage prices writes with it.
 //   output        output, reasoning / thinking included
-//   long          OpenAI only: a request whose prompt is over `size` input tokens is priced at
-//                 these rates for the whole request (2x input and cache, 1.5x output).
-//                 Anthropic prices the full 1M window at the standard rate (Claude 4.6 and later).
+//   long          a second rate card: a request whose prompt is over `size` input tokens is
+//                 priced at these rates for the whole request. OpenAI: over 272K, 2x input and
+//                 cache, 1.5x output. Anthropic prices the full 1M window at the standard rate
+//                 (Claude 4.6 and later), except Claude Haiku 5.5: over 100K, $0.50 / $2.50.
+//                 The Claude estimates below price every request at the standard card: the
+//                 Claude meters report a model's tokens, not each request's prompt size.
 //
 // What is billed is the provider's business: Claude Code and Codex usually run on a plan, where
 // these dollars are the list-price equivalent of the tokens, not a charge.
@@ -37,9 +42,17 @@ export const LONG_PROMPT_TOKENS = 272_000;
 
 const round = (value) => Number(Number(value).toFixed(6));
 
-/** Anthropic: cache writes are 1.25x (5 minutes) and 2x (1 hour) the input rate; cache reads are per model. */
-function claude(input, output, cacheRead) {
-  return Object.freeze({ input, output, cacheRead, cacheWrite: round(input * 1.25), cacheWrite1h: round(input * 2), long: null });
+/**
+ * Anthropic: cache writes are 1.25x (5 minutes) and 2x (1 hour) the input rate; cache reads are per model.
+ * `over` ({ size, input, output }) is the rate card of a prompt over `size` input tokens, with the
+ * same cache ratios as the standard card.
+ */
+function claude(input, output, cacheRead, over = null) {
+  const long = over ? Object.freeze({
+    size: over.size, input: over.input, output: over.output, cacheRead: round(over.input * (cacheRead / input)),
+    cacheWrite: round(over.input * 1.25), cacheWrite1h: round(over.input * 2),
+  }) : null;
+  return Object.freeze({ input, output, cacheRead, cacheWrite: round(input * 1.25), cacheWrite1h: round(input * 2), long });
 }
 /** OpenAI: cache writes are 1.25x input; over 272K prompt tokens input and cache rates double and output is 1.5x. */
 function openai(input, output, cacheRead) {
@@ -64,6 +77,8 @@ const ANTHROPIC = Object.freeze({
   'claude-sonnet-5': claude(2, 10, 0.2),
   'claude-sonnet-4-6': claude(3, 15, 0.3),
   'claude-sonnet-4-5': claude(3, 15, 0.3),
+  // Two rate cards, chosen by prompt length: $0.10 / $0.50 up to 100K prompt tokens, $0.50 / $2.50 above. Cache reads 0.1x.
+  'claude-haiku-5-5': claude(0.1, 0.5, 0.01, { size: 100_000, input: 0.5, output: 2.5 }),
   'claude-haiku-4-5': claude(1, 5, 0.1),
   // Retired models, at their last published price (old sessions are still priced).
   'claude-3-5-sonnet': claude(3, 15, 0.3),

@@ -4,7 +4,8 @@
 //
 // The assistant's user-editable knobs live in one JSON file: `defaultBrain`,
 // `persona`, `limits`, `memory` (read by the other assistant modules),
-// `routing` and the budget caps (owned here; see assistant-budget.js). Knobs
+// `routing`, the budget caps (owned here; see assistant-budget.js) and
+// `userContext` (the three layers of assistant-user-context.js). Knobs
 // are data: the file is re-read when its mtime changes, so a PUT from the
 // routes or budget editor, or a hand edit, applies without a restart. Writes
 // are atomic (tmp + rename) and keep every unknown key.
@@ -12,6 +13,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { effectiveBudget, validateBudgetPatch, writeBudgetInto } from './assistant-budget.js';
+import { normalizeUserContext, USER_CONTEXT_DEFAULTS } from './assistant-user-context-budgets.js';
 
 export const ROUTE_MODES = ['always-ask', 'ask-unsure', 'never'];
 export const PREFERENCE_KINDS = ['direct', 'dispatch'];
@@ -145,6 +147,22 @@ export function effectiveRouting(raw = {}) {
   };
 }
 
+export const USER_CONTEXT_KEYS = Object.freeze(Object.keys(USER_CONTEXT_DEFAULTS));
+
+/** A partial `userContext` patch: booleans only, known layers only. */
+export function validateUserContextPatch(patch = {}) {
+  const fail = (field, message) => { const error = new Error(message); error.code = 'USER_CONTEXT_INVALID'; error.field = field; error.status = 400; return error; };
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw fail('userContext', 'userContext must be an object');
+  const out = {};
+  for (const [key, value] of Object.entries(patch)) {
+    if (!USER_CONTEXT_KEYS.includes(key)) throw fail(key, `Unknown userContext setting "${key}"`);
+    if (typeof value !== 'boolean') throw fail(key, `userContext.${key} must be true or false`);
+    out[key] = value;
+  }
+  if (!Object.keys(out).length) throw fail('userContext', `Nothing to change: send one of ${USER_CONTEXT_KEYS.join(', ')}`);
+  return out;
+}
+
 export function createAssistantConfigStore({ path, log = () => {}, now = Date.now } = {}) {
   if (!path) throw new Error('createAssistantConfigStore requires path');
   let cached = null; // { mtimeMs, value }
@@ -224,9 +242,20 @@ export function createAssistantConfigStore({ path, log = () => {}, now = Date.no
     return patchRouting({ preferences: { [key]: value } });
   }
 
+  /** The user-context layers (assistant-user-context.js): knowledge, nudges, trace. All on by default; read live. */
+  function userContext() { return normalizeUserContext(read().userContext); }
+  /** Switch layers (a validated partial patch). Every unknown key of the file is kept. */
+  function patchUserContext(patch = {}) {
+    const clean = validateUserContextPatch(patch);
+    const current = read();
+    const stored = current.userContext && typeof current.userContext === 'object' && !Array.isArray(current.userContext) ? current.userContext : {};
+    write({ ...current, userContext: { ...stored, ...clean, updatedAt: new Date(now()).toISOString() } });
+    return userContext();
+  }
+
   function onChange(fn) { listeners.add(fn); return () => listeners.delete(fn); }
 
-  return { read, routing, version, patchRouting, setPreference, budget, budgetVersion, patchBudget, onChange, path };
+  return { read, routing, version, patchRouting, setPreference, budget, budgetVersion, patchBudget, userContext, patchUserContext, onChange, path };
 }
 
 export function fileExists(path) { try { return existsSync(path); } catch { return false; } }

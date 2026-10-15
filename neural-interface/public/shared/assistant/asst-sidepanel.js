@@ -26,7 +26,7 @@ import {
 } from '../ui-assistant.js';
 import { mountAssistant } from './asst-panel.js';
 import { openModelsManager } from './asst-route.js';
-import { brainLabel, readStoredBrain } from './asst-state.js';
+import { brainLabel, readStoredBrain, restoredSessionName } from './asst-state.js';
 import { closeMenu, isMenuOpen, openMenu } from './asst-menu.js';
 import { injectAssistantSidepanelStyles } from './asst-sidepanel-styles.js';
 import { createMascot, mascotCameoSvg } from '../synabun-mascot.js';
@@ -50,7 +50,7 @@ let _initialized = false;
 let _starting = false;
 let _startError = ''; // the last message the host showed while starting (the failed state repeats it)
 let _placeholderMascot = null; // the character while starting: the empty state's, same size; it flies to the empty state's spot
-let _pendingPath = '';
+let _pendingPaths = []; // file paths sent while no session was open: attached, in order, when one is
 let _toastTimer = null;
 let _renaming = false;
 const _tabs = [];   // { sessionId, viewport, toolbar, ctl, pill, label, userRenamed, status, brain }
@@ -260,7 +260,7 @@ function showPanelToast(text) {
 
 // ── Tabs ─────────────────────────────────────────────────────────────────────
 
-function mountTab({ sessionId, meta = null, brain = null, label = '', userRenamed = false, prompt = '', show = true } = {}) {
+function mountTab({ sessionId, meta = null, brain = null, label = '', userRenamed = false, prompt = '', show = true, restoring = false } = {}) {
   if (!sessionId) return null;
   ensurePanel();
   const existing = findTab(sessionId);
@@ -280,9 +280,13 @@ function mountTab({ sessionId, meta = null, brain = null, label = '', userRename
   toolbar.className = 'asp-tab-bar';
   toolbar.dataset.sessionId = sessionId;
   panelEl('.asp-bar-slot').appendChild(toolbar);
-  const renamed = !!(userRenamed && label);
+  // A renamed session comes back under its name: the session record's (a rename made in either
+  // host, the one the Sessions menu lists), else the rename saved with this tab. A record whose
+  // name was given up says so: the label and the renamed flag saved with a tab are stale.
+  const name = restoredSessionName(meta, userRenamed ? label : '');
+  const renamed = !!name;
   // The record exists before mountAssistant: the host hooks fire during mount.
-  const tab = { sessionId, viewport, toolbar, ctl: null, pill: null, label: renamed ? label : defaultLabel(), userRenamed: renamed, status: 'idle', brain: brain || meta?.brain || null };
+  const tab = { sessionId, viewport, toolbar, ctl: null, pill: null, label: renamed ? name : defaultLabel(), userRenamed: renamed, status: 'idle', brain: brain || meta?.brain || null };
   _tabs.push(tab);
   const host = {
     id: HOST_ID,
@@ -291,6 +295,16 @@ function mountTab({ sessionId, meta = null, brain = null, label = '', userRename
       const next = String(text || '').trim();
       if (!next || tab.userRenamed || tab.label === next) return;
       tab.label = next;
+      renderHeader();
+      renderPills();
+      saveTabs();
+    },
+    // A rename the panel could not save: the tab and its saved label go back to the record's name.
+    setName(text, renamed) {
+      const next = String(text || '').trim();
+      if (!next) return;
+      tab.label = next;
+      tab.userRenamed = !!renamed;
       renderHeader();
       renderPills();
       saveTabs();
@@ -311,7 +325,7 @@ function mountTab({ sessionId, meta = null, brain = null, label = '', userRename
     },
   };
   tab.ctl = mountAssistant(viewport, { sessionId, brain: tab.brain, host, session: meta });
-  if (tab.userRenamed) tab.ctl.setTitle(tab.label);
+  if (tab.userRenamed) tab.ctl.setTitle(tab.label, { restored: true });
   if (show) {
     switchTo(_tabs.length - 1);
     if (!_visible) setVisible(true);
@@ -324,7 +338,8 @@ function mountTab({ sessionId, meta = null, brain = null, label = '', userRename
   renderPills();
   saveTabs();
   if (prompt) setTimeout(() => { if (findTab(sessionId)) tab.ctl?.send(prompt); }, 50);
-  if (_pendingPath && tab === activeTab()) { const path = _pendingPath; _pendingPath = ''; tab.ctl.attachPath(path); }
+  // (Not while the saved tabs are coming back: the first of them is not the one that was showing.)
+  if (_pendingPaths.length && !restoring && tab === activeTab()) { const paths = _pendingPaths; _pendingPaths = []; for (const path of paths) tab.ctl.attachPath(path); }
   return tab;
 }
 
@@ -635,12 +650,14 @@ export async function initAssistantPanel() {
     if (!_visible) setVisible(true);
     tab.ctl?.attachImageDataUrl(dataUrl, 'whiteboard');
   });
-  on('assistant:attach-path', ({ path } = {}) => {
+  on('assistant:attach-path', (request = {}) => {
+    const { path } = request;
     if (!path || assistantBlocked()) return;
     const tab = activeTab();
     if (!_visible) setVisible(true);
     if (tab?.ctl) tab.ctl.attachPath(path);
-    else _pendingPath = String(path);
+    else _pendingPaths.push(String(path));
+    request.taken = true; // the sender says "sent" only of what was taken
   });
   // The server renamed a conversation (first prompt): refresh tooltips after the component applied it.
   on('sync:assistant:session-updated', (msg) => {
@@ -663,6 +680,7 @@ export async function initAssistantPanel() {
       label: entry.label || '',
       userRenamed: !!entry.userRenamed,
       show: false,
+      restoring: true,
     });
   }
   if (_tabs.length) {
@@ -670,6 +688,10 @@ export async function initAssistantPanel() {
     markActive();
     renderHeader();
     renderPills();
+    // Paths that were sent while the sessions were being asked about go to the one that is showing again.
+    const paths = _pendingPaths;
+    _pendingPaths = [];
+    for (const path of paths) activeTab()?.ctl?.attachPath(path);
   }
   saveTabs();
 }

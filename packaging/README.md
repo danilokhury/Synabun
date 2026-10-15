@@ -2,7 +2,8 @@
 
 `packaging/` turns this repository into an application people install without
 Node or npm: the existing server and browser interface, a Node runtime of its
-own, the dependencies for one platform, and a small native executable in front.
+own, the dependencies for one platform, [cloudflared](#cloudflared) for the
+public address, and a small native executable in front.
 It is a development tool. Nothing in this folder is published to npm.
 
 The native launcher starts or reuses the server in the background, without a
@@ -136,19 +137,27 @@ removed.
    Execute permissions are restored on the bundled executables and `bin` scripts.
 6. **Embedding model.** The public `Xenova/all-MiniLM-L6-v2` files are fetched by
    the application's own installer and checked against their pins.
-7. **Bundle.** Runtime, application, bootstrap, manifest, and the native entry
-   compiled from `launcher/launcher.c`.
-8. **Audit.** Required files, the processor of every native binary, execute
+7. **cloudflared.** Cloudflare's release file for the target is downloaded and
+   checked against the application's own pins, the binary is taken out of it
+   and checked against its own, and placed with its execute bit. See
+   [cloudflared](#cloudflared).
+8. **Bundle.** Runtime, application, cloudflared, bootstrap, manifest, and the
+   native entry compiled from `launcher/launcher.c`.
+9. **Audit.** Required files, the processor of every native binary, execute
    permissions, no private file, and no external tool: not its package, not its
-   command, not its executable, not an entry in a lockfile of the bundle.
-9. **Smoke run.** In a throwaway home, on a port nothing uses, with none of the
-   external tools in reach: the version, a real pseudo-terminal, the embedding
-   runtime, and an MCP conversation over stdio. Running must not change a file
-   of the bundle.
-10. **Artifact.** With its SHA-256 and a `build-report.json`.
+   command, not its executable, not an entry in a lockfile of the bundle. And
+   the one program that has to be there: the pinned cloudflared of the target,
+   in its one place, and no other cloudflared anywhere.
+10. **Smoke run.** In a throwaway home, on a port nothing uses, with none of the
+    external tools in reach: the version, a real pseudo-terminal, the embedding
+    runtime, the application finding its own cloudflared and asking it for its
+    version, and an MCP conversation over stdio. Running must not change a file
+    of the bundle.
+11. **Artifact.** With its SHA-256 and a `build-report.json`, which names the
+    cloudflared that is inside (`cloudflared`, and `audit.cloudflared`).
 
-A cross build does the same ten steps with the replacements listed under
-[Cross builds](#cross-builds); step 9 is recorded as not run.
+A cross build does the same eleven steps with the replacements listed under
+[Cross builds](#cross-builds); step 10 is recorded as not run.
 
 ## How a packaged application runs
 
@@ -228,6 +237,58 @@ SynaBun version | doctor | profile | migrate-data | restore-backup
 - **Not included.** The Playwright browser is downloaded on first start, as with
   the npm install. Claude Code, Codex, OpenCode and Gemini CLI are never
   included: see [External tools](#external-tools).
+- **Included: the tunnel program.** The public address (invite links, remote
+  MCP) works without a download: see [cloudflared](#cloudflared).
+
+## cloudflared
+
+The public address is a Cloudflare quick tunnel, opened by `cloudflared`
+(`docs/tunnel.md`). An npm install downloads it into the data home the first
+time a tunnel is started. An application build carries it, so that an installed
+SynaBun downloads nothing for it. It is the one program of somebody else's that
+a build contains, and not an [external tool](#external-tools): those are the
+user's own installations and stay out.
+
+- **One place knows which cloudflared.** `neural-interface/lib/cloudflared/pins.json`
+  holds the version, Cloudflare's own release file for each platform, and two
+  SHA-256 checksums for each (the file, and the binary inside it), with where
+  each comes from. It ships with the application, which checks its copy against
+  it at run time. A build reads that same file **from the application it
+  staged**, and unpacks and checks with the application's own code
+  (`lib/cloudflared/install.js`): an installer cannot carry a cloudflared the
+  application would not have fetched itself. `pins.json` in this folder only
+  points there.
+- **Staging** (`lib/stage.mjs` `provisionCloudflared`). The release file for the
+  target is downloaded into `build/cache/cloudflared/<version>/` and compared
+  with its pin before anything reads it. The macOS files are archives: the one
+  entry named `cloudflared` is read out, by SynaBun's own reader. The binary is
+  compared with its own pin, has to be a program of the target's system and
+  processor by its header, and gets its execute bit. A file that fails any of
+  it stops the build; nothing is placed.
+- **In the bundle** (`lib/bundle.mjs` `placeCloudflared`). `<resources>/cloudflared/cloudflared`
+  (`cloudflared.exe` on Windows), beside `runtime/` and `app/`: where the
+  application looks for the copy that came with it
+  (`lib/cloudflared/pins.js` `bundledCloudflaredPath`). The manifest records its
+  version and SHA-256.
+- **The audit** refuses a bundle without it, with a cloudflared of another
+  system or processor, with one that is not the pinned binary byte for byte,
+  with one that may not run, with another file in its folder, or with a second
+  cloudflared anywhere else in the bundle.
+- **At run time** the application uses that copy and never downloads. If the
+  copy is not the pinned binary any more, it is not run and not touched
+  (running never writes inside the application): the pinned one is then
+  fetched into the data home, as after an npm install.
+- **Signing.** On macOS the bundled cloudflared is left as it is: Cloudflare
+  signs it (Developer ID, hardened runtime, a secure timestamp). Signing it
+  again would make it another file than the pinned one.
+
+To move to another cloudflared release, change the pins (the header of
+`lib/cloudflared/pins.js` says how), then run
+`node scripts/verify-cloudflared-pins.mjs --all`: every pinned file is
+downloaded for real into a scratch folder and both checksums are checked.
+
+cloudflared is Apache-2.0 software by Cloudflare, Inc. `NOTICE` and
+`THIRD-PARTY-LICENSES.md`, which every bundle carries, name it.
 
 ## External tools
 
@@ -247,11 +308,11 @@ express "the client without the program", so the rule lives in one list,
 - **The lockfiles** hold none of those packages and no dependency edge to one,
   so `npm ci` and `npm install` never download them. After an `npm install`
   that touched an SDK, run `node scripts/strip-external-tools.mjs` (`--check`
-  only reports); `packaging/tests/external-tools.test.mjs` fails until it is.
+  only reports); the external-tools test fails until it is.
 - **An install** removes any that arrived anyway: the Neural Interface's
   `postinstall`, and the server at start.
 - **A build** removes them from what it stages (step 4) and its audit refuses a
-  bundle that holds one (step 8). `<entry> diagnostics --natives` on an
+  bundle that holds one (step 9). `<entry> diagnostics --natives` on an
   installed application reports `externalTools`, which fails if one is inside.
 
 At run time every SDK call is told which executable to start, and none is left
@@ -280,7 +341,8 @@ before it starts, with the same reason.
 ## Prerequisites
 
 - **All:** Node 22.19 or newer to run the builder, and network access to
-  nodejs.org, the npm registry and huggingface.co.
+  nodejs.org, the npm registry, huggingface.co and github.com (cloudflared's
+  release files).
 - **macOS:** Xcode command line tools (`clang`, `hdiutil`, `codesign`).
 - **Linux:** `cc`, `g++`, `make`, `python3`, `tar`. `appimagetool` is downloaded
   (pinned) unless one is installed or `APPIMAGETOOL` names one.
@@ -298,7 +360,8 @@ before it starts, with the same reason.
 `pins.json` holds the SHA-256 of everything downloaded that is not covered by a
 lockfile: the Node archives, `appimagetool` and the AppImage runtime, and the
 embedding model files. A download that does not match is deleted and the build
-stops.
+stops. cloudflared is pinned the same way, in the application's own file
+(`neural-interface/lib/cloudflared/pins.json`): see [cloudflared](#cloudflared).
 
 To move to another Node version, change `node.version` and `node.baseUrl` and
 copy the five checksums from that release's `SHASUMS256.txt`; keep it equal to
@@ -327,41 +390,19 @@ The signing and notarization steps have not been run with real credentials.
 ## CI
 
 `.github/workflows/build-apps.yml` is started by hand. It builds each requested
-target on that target's runner, runs these tests there, and keeps the result as
-a workflow artifact. It creates no release and publishes nothing.
+target on that target's runner and keeps the result as a workflow artifact. It
+creates no release and publishes nothing.
 
 ## Tests
 
-```
-npm run test:packaging
-```
-
-`builder.test.mjs` covers the decisions (targets, refusals, private files,
-pins). `external-tools.test.mjs` holds the [external tools](#external-tools)
-rule: the real lockfiles, the list, an installed tree being cleared, staging,
-and the audit refusing a bundle that carries one. `cross.test.mjs` covers what
-a cross build checks instead of running:
-the package selection, what a compiled file asks of the target, the AppImage,
-the Windows command files. `entry.test.mjs` compiles the native entry and runs it and the bootstrap
-against stand-ins, with spaces and non-ASCII characters in every path.
-`bundle.test.mjs` runs a finished bundle and is skipped unless
-`SYNABUN_BUNDLE_ENTRY` names one; `SYNABUN_BUNDLE_LIVE=1` also starts the real
-server from it on an unused port in a throwaway home, where none of the
-external tools can be found: each has to be reported as not installed, with
-how to install it, and the server has to keep answering.
-
-The parts of the application that change for a packaged install are tested with
-the rest of it, in `neural-interface/tests/packaged-runtime.test.mjs`; finding
-the user's Claude Code and handing it to the SDK, in
-`neural-interface/tests/claude-executable.test.mjs` and
-`claude-bridge-executable.test.mjs`.
+The builder's tests are not published with this repository.
 
 ## Verified so far
 
-- `macos-arm64`: built, audited, run, tested with `bundle.test.mjs` including
+- `macos-arm64`: built, audited, run, tested with the bundle test including
   the live start. Unsigned.
 - `macos-x64`: built and run on Apple Silicon through Rosetta 2, tested with
-  `bundle.test.mjs` without the live start. Unsigned.
+  the bundle test without the live start. Unsigned.
 - `linux-x64` and `windows-x64`: cross-built on macOS (Apple Silicon) into an
   AppImage and an NSIS installer, with every check under
   [Cross builds](#cross-builds) passing. Neither is started by its build, so
@@ -370,5 +411,12 @@ the user's Claude Code and handing it to the SDK, in
   pages. Unsigned.
 - Not run at all: a native build on Linux or on Windows, the CI workflow,
   signing and notarization. Treat the first run of each as its first test.
+- cloudflared (added 2026-10-13): no application has been built with it yet.
+  What is verified: the pins, by a real download of all five release files
+  through the application's own code (`scripts/verify-cloudflared-pins.mjs --all`);
+  staging, placement and the audit, by the cloudflared test with stand-ins.
+  The first build of each target is the first test of the real step, of the
+  smoke run's cloudflared check, and (when signing is used) of a notarized
+  bundle that carries a binary Cloudflare signed.
 
 Native builds leave development files and dependencies intact. Local agent instructions are excluded from the disposable package stage; other private files still block a build. External CLI dependency edges are stripped from staged lockfile copies before npm runs, and executable payloads are removed only from that stage.

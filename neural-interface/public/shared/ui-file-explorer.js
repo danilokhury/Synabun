@@ -5,6 +5,13 @@ import { sendToFocusedSession } from './ui-sidepanel-windows.js';
 //
 // Docked sidebar that shows project files in a tree view.
 // Sits adjacent to the Memory Explorer (to its right).
+//
+// This file is the panel's shell: it opens and closes it, sizes it, selects the
+// project, holds the branch button's popover and the file icons, and wires the
+// code editor. The tree and everything it does (keyboard, menu, operations,
+// following the disk, git marks) is shared/explorer/, created here and loaded by
+// its address: the editor's browser tests run this file without its imports.
+// docs/file-explorer.md says what the panel does.
 
 import { KEYS } from './constants.js';
 import { registerAction } from './ui-keybinds.js';
@@ -14,24 +21,29 @@ import { attachPathToOpencode } from './ui-opencode-panel-v2.js';
 import { isCodexPanelOpen, toggleCodexPanel } from './cdx/cdx-panel.js';
 import { addPathChip as addCodexPathChip } from './cdx/cdx-tabs.js';
 import { on, emit, state } from './state.js';
-import { debounce, rafThrottle } from './utils.js';
+import {
+  closeEditorPanel, initEditorPanel, isEditorPanelOpen,
+  openChangelogInEditor, openFileInEditor, openPlanInEditor, saveEditorPanel,
+} from './editor/editor-panel.js';
 
-// Route to the most recently focused provider, even when several panels
-// are visible. The provider opens if minimized and attaches its native path chip.
-async function sendPathToActivePanel(filePath) {
-  if (sendToFocusedSession('path', filePath)) return;
-  const target = state.lastActivePanel || 'claude';
-
-  // The Assistant sidepanel: through the bus (a static import would close an import cycle).
-  if (target === 'assistant') { emit('assistant:attach-path', { path: filePath }); return; }
-  if (target === 'opencode') {
-    await attachPathToOpencode(filePath);
-  } else if (target === 'codex') {
-    if (!isCodexPanelOpen()) await toggleCodexPanel();
-    addCodexPathChip(filePath);
-  } else {
-    await sendToClaudePanel(filePath);
-  }
+// What each side panel offers for a path. Every entry names its function only when it is called: a page that
+// runs this file without its imports (the editor's tests) has none of them.
+const SEND = {
+  sendToFocusedSession: (kind, data) => sendToFocusedSession(kind, data),
+  lastActive: () => state.lastActivePanel,
+  // As a file reference, whatever is in the path (a space would otherwise make it text of the prompt).
+  claude: (path) => sendToClaudePanel(path, { asFile: true }),
+  codex: async (path) => { if (!isCodexPanelOpen()) await toggleCodexPanel(); addCodexPathChip(path); },
+  opencode: (path) => attachPathToOpencode(path),
+  assistant: (path) => attachToAssistant('assistant', path),
+};
+function attachToAssistant(target, filePath) {
+  // The Assistant sidepanel: through the bus (a static import would close an import cycle). It marks the request
+  // it took; one it did not take (the Assistant is switched off, or is not there) is not said to be sent.
+  if (target !== 'assistant') return false;
+  const request = { path: filePath };
+  emit('assistant:attach-path', request);
+  return request.taken === true;
 }
 
 const $ = (id) => document.getElementById(id);
@@ -39,65 +51,22 @@ const $ = (id) => document.getElementById(id);
 // ─── Local state ────────────────────────
 let _visible = false;
 let _width = 260;
-let _collapsed = new Set();   // set of dir paths that are collapsed
-let _filterText = '';
-let _sortMode = 'name';       // 'name' | 'size' | 'date'
-let _cache = new Map();       // path → items array
 let _rootLoaded = false;
 let _projects = [];            // [{ path, label }] from API
 let _selectedProject = null;   // { path, label } of current project
-let _editorOpen = false;
-let _editorFilePath = null;
-let _editorOriginal = '';
-let _editorDirty = false;
-let _editorPreviewMode = false;   // false = raw, true = rendered MD
-let _editorIsMarkdown = false;
-let _findOpen = false;
-let _findMatches = [];            // [{ start, end }]
-let _findIndex = -1;
-let _undoStack = [];              // [{ value, selStart, selEnd }]
-let _redoStack = [];
-let _undoBurstOpen = false;       // true while user is in a typing burst
 let _folderColors = {};           // { "/path/to/folder": "#hex" }
 let _customIcons = null;          // { extensions: {}, filenames: {} } from server
-let _planEditMode = false;        // true when editing a plan file from Claude panel
-let _planEditFilePath = null;     // path of the plan file being edited
-let _planEditSource = null;       // panel that opened the plan editor
-let _planEditTabId = null;        // tab id to route plan editor events back
-let _planEditContract = null;     // optional versioned document identity and atomic save callback
-let _editorSaving = false;
-let _editorOpenSequence = 0;
-let _changelogEditMode = false;   // true when editing a changelog draft from Claude panel
-let _changelogEditFilePath = null; // path of the changelog draft being edited
+let _fx = null;                   // shared/explorer/fx-main.js createExplorer(): the tree and what it does
+let _fxLoading = null;
+let _guest = false;                // an invited guest's page: the File Explorer is the owner's, and is not offered
+let _showing = null;              // the first tree being put up (the projects are read, then the selected one is shown)
+let _tr = (key) => key;           // the translator, once shared/explorer/ is loaded
+let _git = { isGit: false, branch: '', count: 0 };
 
 const MIN_WIDTH = 240;
 const MAX_WIDTH = 500;
-
-function planEditorSourceLabel(source) {
-  if (source === 'codex') return 'Codex';
-  if (source === 'opencode') return 'OpenCode';
-  return 'Claude';
-}
-
-function planEditorEvent(extra = {}) {
-  const { planId, revision, accountId, threadId, sidepanelWindowId = null } = _planEditContract || {};
-  return { source: _planEditSource, tabId: _planEditTabId, planId, revision, accountId, threadId, sidepanelWindowId, ...extra };
-}
-
-function emitPlanEditorState() {
-  if (_planEditMode) emit('plan-editor-state', planEditorEvent({ dirty: _editorDirty, saving: _editorSaving, open: _editorOpen }));
-}
-
-function cancelPlanEditMode() {
-  if (!_planEditMode) return;
-  const event = planEditorEvent();
-  _planEditMode = false;
-  _planEditFilePath = null;
-  _planEditSource = null;
-  _planEditTabId = null;
-  _planEditContract = null;
-  emit('plan-edit-cancelled', event);
-}
+const tr = (key, params) => _tr(key, params);
+const samePath = (a, b) => String(a || '').replace(/\\/g, '/').replace(/\/+$/, '') === String(b || '').replace(/\\/g, '/').replace(/\/+$/, '');
 
 // ─── SVG icons ────────────────────────
 const FOLDER_SVG = '<svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>';
@@ -177,17 +146,17 @@ function getFileIcon(filename) {
   return { svg: FI.file, color: null };
 }
 
-// Git status → badge text + class
-const GIT_BADGE = {
-  modified: ['M', 'fe-git-modified'],
-  staged:   ['S', 'fe-git-staged'],
-  added:    ['A', 'fe-git-added'],
-  deleted:  ['D', 'fe-git-deleted'],
-  untracked:['?', 'fe-git-untracked'],
-  conflict: ['!', 'fe-git-conflict'],
-  renamed:  ['R', 'fe-git-renamed'],
-  mixed:    ['M', 'fe-git-mixed'],
-};
+// The tree and what it does, loaded when the panel is there.
+function loadTree() {
+  if (!_fxLoading) {
+    _fxLoading = import('/shared/explorer/fx-main.js').catch((error) => {
+      console.error('[file-explorer] could not load the tree', error);
+      return null;
+    });
+  }
+  return _fxLoading;
+}
+const whenTree = () => loadTree().then(() => _fx);
 
 
 // ═══════════════════════════════════════════
@@ -195,7 +164,7 @@ const GIT_BADGE = {
 // ═══════════════════════════════════════════
 
 function applyFileExplorerWidth() {
-  const w = _visible ? `${_width}px` : '0px';
+  const w = _visible && !_guest ? `${_width}px` : '0px';
   document.documentElement.style.setProperty('--file-explorer-width', w);
 }
 
@@ -219,8 +188,6 @@ function calcDefaultWidth() {
 
 function saveVisible() { try { storage.setItem(KEYS.FILE_EXPLORER_VISIBLE, String(_visible)); } catch {} }
 function saveWidth() { try { storage.setItem(KEYS.FILE_EXPLORER_WIDTH, String(_width)); } catch {} }
-function saveCollapsed() { try { storage.setItem(KEYS.FILE_EXPLORER_COLLAPSED, JSON.stringify([..._collapsed])); } catch {} }
-function saveSort() { try { storage.setItem(KEYS.FILE_EXPLORER_SORT, _sortMode); } catch {} }
 function saveFolderColors() { try { storage.setItem(KEYS.FILE_EXPLORER_FOLDER_COLORS, JSON.stringify(_folderColors)); } catch {} }
 
 function loadPersistedState() {
@@ -231,66 +198,111 @@ function loadPersistedState() {
   if (w >= MIN_WIDTH && w <= MAX_WIDTH) _width = w;
 
   try {
-    const col = JSON.parse(storage.getItem(KEYS.FILE_EXPLORER_COLLAPSED) || '[]');
-    if (Array.isArray(col)) _collapsed = new Set(col);
-  } catch {}
-
-  const sort = storage.getItem(KEYS.FILE_EXPLORER_SORT);
-  if (sort === 'name' || sort === 'size' || sort === 'date') _sortMode = sort;
-
-  try {
     const fc = JSON.parse(storage.getItem(KEYS.FILE_EXPLORER_FOLDER_COLORS) || '{}');
     if (fc && typeof fc === 'object') _folderColors = fc;
   } catch {}
 }
+
+// Folder colours: the first is the folder's own, the one a folder has when none is set.
+const FOLDER_COLORS = [
+  { hex: '#ffb74d', key: 'amber' },
+  { hex: '#64b5f6', key: 'blue' },
+  { hex: '#81c784', key: 'green' },
+  { hex: '#e57373', key: 'red' },
+  { hex: '#ba68c8', key: 'purple' },
+  { hex: '#4dd0e1', key: 'cyan' },
+  { hex: '#fff176', key: 'yellow' },
+  { hex: '#a1887f', key: 'brown' },
+  { hex: '#90a4ae', key: 'grey' },
+];
+const folderColors = {
+  all: FOLDER_COLORS,
+  of: (path) => _folderColors[path],
+  set(path, color) {
+    if (color) _folderColors[path] = color; else delete _folderColors[path];
+    saveFolderColors();
+  },
+  // A folder that was renamed or moved keeps its colour, and so do the folders inside it.
+  move(from, to) {
+    let changed = false;
+    for (const path of Object.keys(_folderColors)) {
+      if (path !== from && !path.startsWith(`${from}/`)) continue;
+      _folderColors[to + path.slice(from.length)] = _folderColors[path];
+      delete _folderColors[path];
+      changed = true;
+    }
+    if (changed) saveFolderColors();
+  },
+};
 
 
 // ═══════════════════════════════════════════
 // PROJECT SELECTOR
 // ═══════════════════════════════════════════
 
+let _projectsFailed = false;
+
 async function fetchProjects() {
   try {
     const res = await fetch('/api/projects');
     const data = await res.json();
-    if (data.ok && Array.isArray(data.projects)) {
+    _projectsFailed = !(data.ok && Array.isArray(data.projects));
+    if (!_projectsFailed) {
       _projects = data.projects;
+      // What this server has for the tree (an older one lists nothing: the tree then asks it for nothing new).
+      _fx?.api.serverSays(Array.isArray(data.capabilities) ? data.capabilities : []);
     }
-  } catch {}
+  } catch { _projectsFailed = true; }
   return _projects;
+}
+
+function showProjectLabel() {
+  const label = $('fe-project-label');
+  const btn = $('fe-project-btn');
+  const name = _selectedProject ? _selectedProject.label : tr('fileExplorer.project.none');
+  if (label) label.textContent = name;
+  if (btn) {
+    btn.title = _selectedProject ? _selectedProject.path : '';
+    btn.setAttribute('aria-label', tr('fileExplorer.project.label', { name }));
+  }
 }
 
 function selectProject(proj) {
   _selectedProject = proj;
   try { storage.setItem(KEYS.FILE_EXPLORER_PROJECT, proj.path); } catch {}
-
-  // Update label
-  const label = $('fe-project-label');
-  if (label) label.textContent = proj.label;
-
-  // Close dropdown
+  showProjectLabel();
   closeProjectDropdown();
-
-  // Reset tree state
-  _cache.clear();
-  _collapsed.clear();
-  saveCollapsed();
-  _rootLoaded = false;
-  loadDirectory(_selectedProject.path).then(() => {
-    _rootLoaded = true;
-    buildFileTree();
-  });
+  buildProjectDropdown();
+  // The tree of that project comes back as it was left: what was open, selected and scrolled to.
+  return whenTree().then((tree) => tree?.setProject(proj));
 }
 
-function updateBranchLabel(branch) {
+// The tree of the selected project, or what there is to say when there is none.
+async function showTree() {
+  const tree = await whenTree();
+  if (!tree) return;
+  await fetchProjects();
+  initProjectSelector();
+  await tree.setProject(_selectedProject);
+  if (_projectsFailed) {
+    tree.notice.show(tr('fileExplorer.error.offline'), { tone: 'error', action: { label: tr('fileExplorer.state.retry'), run: showTree } });
+  }
+}
+
+function updateBranchLabel(git) {
+  _git = git;
   const btn = $('fe-branch-btn');
   const nameEl = $('fe-branch-btn-name');
+  const badge = $('fe-branch-btn-badge');
   if (!btn) return;
 
-  if (branch) {
+  if (git.isGit && git.branch) {
     btn.style.display = '';
-    if (nameEl) nameEl.textContent = branch;
-    refreshGitStatus();
+    if (nameEl) nameEl.textContent = git.branch;
+    if (badge) badge.textContent = git.count > 0 ? git.count : '';
+    btn.setAttribute('aria-label', tr('fileExplorer.branch.label', { branch: git.branch, count: git.count }));
+    btn.dataset.tooltip = tr('fileExplorer.branch.label', { branch: git.branch, count: git.count });
+    if (_gitPopoverOpen) renderGitSummary();
   } else {
     btn.style.display = 'none';
     closeGitPopover();
@@ -302,7 +314,6 @@ function updateBranchLabel(branch) {
 // GIT POPOVER
 // ═══════════════════════════════════════════
 
-let _gitChanges = [];
 let _gitPopoverOpen = false;
 
 function positionGitPopover() {
@@ -320,22 +331,10 @@ function positionGitPopover() {
   let top = r.top + (r.height / 2) - 18; // align arrow with button center
 
   // If it would overflow the right edge, flip to the left
-  let flipped = false;
   const popWidth = pop.offsetWidth || 248;
-  if (left + popWidth > window.innerWidth) {
-    left = r.left - popWidth - 8;
-    flipped = true;
-  }
-
-  // Arrow positioning
-  if (arrow) {
-    arrow.style.left = flipped ? '' : '-5px';
-    arrow.style.right = flipped ? '-5px' : '';
-    arrow.style.borderLeft = flipped ? 'none' : '1px solid rgba(255,255,255,0.1)';
-    arrow.style.borderBottom = flipped ? 'none' : '1px solid rgba(255,255,255,0.1)';
-    arrow.style.borderRight = flipped ? '1px solid rgba(255,255,255,0.1)' : 'none';
-    arrow.style.borderTop = flipped ? '1px solid rgba(255,255,255,0.1)' : 'none';
-  }
+  const flipped = left + popWidth > window.innerWidth;
+  if (flipped) left = Math.max(8, r.left - popWidth - 8);
+  if (arrow) arrow.classList.toggle('flipped', flipped);
 
   // Clamp to viewport — respect navbar at top
   if (top + popHeight > window.innerHeight - 8) top = window.innerHeight - popHeight - 8;
@@ -353,22 +352,13 @@ function openGitPopover() {
   resetCommitOutput();
   _gitPopoverOpen = true;
   btn?.classList.add('active');
+  btn?.setAttribute('aria-expanded', 'true');
   positionGitPopover();
-
-  // Reset arrow for default (right-side) positioning
-  const arrow = pop.querySelector('.fe-git-popover-arrow');
-  if (arrow) {
-    arrow.style.left = '-5px';
-    arrow.style.right = '';
-    arrow.style.borderLeft = '1px solid rgba(255,255,255,0.1)';
-    arrow.style.borderBottom = '1px solid rgba(255,255,255,0.1)';
-    arrow.style.borderRight = 'none';
-    arrow.style.borderTop = 'none';
-  }
 
   requestAnimationFrame(() => pop.classList.add('visible'));
   loadGitBranches();
-  refreshGitStatus();
+  renderGitSummary();
+  _fx?.refresh();
 }
 
 function closeGitPopover() {
@@ -379,6 +369,7 @@ function closeGitPopover() {
   _gitPopoverOpen = false;
   pop.classList.remove('visible');
   btn?.classList.remove('active');
+  btn?.setAttribute('aria-expanded', 'false');
 }
 
 function toggleGitPopover() {
@@ -386,47 +377,32 @@ function toggleGitPopover() {
   else openGitPopover();
 }
 
-async function refreshGitStatus() {
-  if (!_selectedProject) return;
-  try {
-    const res = await fetch('/api/git/status?path=' + encodeURIComponent(_selectedProject.path));
-    const data = await res.json();
-    if (!data.ok || !data.isGit) return;
-
-    _gitChanges = data.changes || [];
-
-    // Update button badge
-    const badge = $('fe-branch-btn-badge');
-    if (badge) badge.textContent = _gitChanges.length > 0 ? _gitChanges.length : '';
-
-    // Update branch name on button
-    const nameEl = $('fe-branch-btn-name');
-    if (nameEl && data.branch) nameEl.textContent = data.branch;
-
-    // Update summary in popover
-    const summary = $('fe-git-summary');
-    if (summary) {
-      if (_gitChanges.length === 0) {
-        summary.innerHTML = 'Clean working tree';
-      } else {
-        const counts = { modified: 0, added: 0, deleted: 0, untracked: 0, other: 0 };
-        for (const c of _gitChanges) {
-          if (c.status === 'modified' || c.status === 'mixed') counts.modified++;
-          else if (c.status === 'added' || c.status === 'staged') counts.added++;
-          else if (c.status === 'deleted') counts.deleted++;
-          else if (c.status === 'untracked') counts.untracked++;
-          else counts.other++;
-        }
-        const parts = [];
-        if (counts.modified) parts.push('<span class="gs-m">' + counts.modified + ' modified</span>');
-        if (counts.added) parts.push('<span class="gs-a">' + counts.added + ' added</span>');
-        if (counts.deleted) parts.push('<span class="gs-d">' + counts.deleted + ' deleted</span>');
-        if (counts.untracked) parts.push('<span class="gs-u">' + counts.untracked + ' untracked</span>');
-        if (counts.other) parts.push(counts.other + ' other');
-        summary.innerHTML = parts.join(' &middot; ');
-      }
-    }
-  } catch {}
+// What changed, in words and counts: from the git state the tree already holds.
+function renderGitSummary() {
+  const summary = $('fe-git-summary');
+  if (!summary) return;
+  const changes = _fx?.state.git.changed() || [];
+  summary.textContent = '';
+  if (changes.length === 0) { summary.textContent = tr('fileExplorer.gitPanel.clean'); return; }
+  const counts = { modified: 0, added: 0, deleted: 0, untracked: 0, other: 0 };
+  for (const c of changes) {
+    if (c.status === 'modified' || c.status === 'mixed') counts.modified++;
+    else if (c.status === 'added' || c.status === 'staged') counts.added++;
+    else if (c.status === 'deleted') counts.deleted++;
+    else if (c.status === 'untracked') counts.untracked++;
+    else counts.other++;
+  }
+  const classes = { modified: 'gs-m', added: 'gs-a', deleted: 'gs-d', untracked: 'gs-u', other: '' };
+  let first = true;
+  for (const kind of Object.keys(counts)) {
+    if (!counts[kind]) continue;
+    if (!first) summary.append(' · ');
+    first = false;
+    const part = document.createElement('span');
+    if (classes[kind]) part.className = classes[kind];
+    part.textContent = tr(`fileExplorer.gitPanel.count.${kind}`, { count: counts[kind] });
+    summary.append(part);
+  }
 }
 
 async function loadGitBranches() {
@@ -458,21 +434,15 @@ async function switchBranch(branch) {
     });
     const data = await res.json();
     if (data.ok) {
-      showToast('Switched to ' + (data.branch || branch));
+      showToast(tr('fileExplorer.gitPanel.switched', { branch: data.branch || branch }));
       closeGitPopover();
-      _cache.clear();
-      _rootLoaded = false;
-      loadDirectory(_selectedProject.path).then(() => {
-        _rootLoaded = true;
-        buildFileTree();
-      });
+      _fx?.refresh();
     } else {
-      showToast(data.error || 'Checkout failed');
-      refreshGitStatus();
+      showToast(data.error || tr('fileExplorer.gitPanel.checkoutFailed'));
       loadGitBranches();
     }
   } catch {
-    showToast('Checkout failed');
+    showToast(tr('fileExplorer.gitPanel.checkoutFailed'));
   }
 }
 
@@ -495,18 +465,12 @@ async function doGitCommit() {
     if (data.ok) {
       input.value = '';
       showCommitOutput(data.output, true);
-      _cache.clear();
-      _rootLoaded = false;
-      loadDirectory(_selectedProject.path).then(() => {
-        _rootLoaded = true;
-        buildFileTree();
-      });
-      refreshGitStatus();
+      _fx?.refresh();
     } else {
-      showCommitOutput(data.error || 'Commit failed', false);
+      showCommitOutput(data.error || tr('fileExplorer.gitPanel.commitFailed'), false);
     }
   } catch {
-    showCommitOutput('Commit failed', false);
+    showCommitOutput(tr('fileExplorer.gitPanel.commitFailed'), false);
   } finally {
     btn?.classList.remove('loading');
   }
@@ -521,11 +485,11 @@ function showCommitOutput(text, isSuccess) {
   controls.style.display = 'none';
 
   const icon = isSuccess
-    ? '<svg viewBox="0 0 24 24" style="width:11px;height:11px;stroke:#66bb6a;fill:none;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round;vertical-align:-1px"><polyline points="20 6 9 17 4 12"/></svg>'
-    : '<svg viewBox="0 0 24 24" style="width:11px;height:11px;stroke:#ef5350;fill:none;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round;vertical-align:-1px"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+    ? '<svg viewBox="0 0 24 24" class="fe-git-output-icon ok" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>'
+    : '<svg viewBox="0 0 24 24" class="fe-git-output-icon" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
 
   output.innerHTML =
-    `<div class="fe-git-output-header">${icon} ${isSuccess ? 'Committed' : 'Failed'}</div>` +
+    `<div class="fe-git-output-header">${icon} ${escHtml(tr(isSuccess ? 'fileExplorer.gitPanel.committed' : 'fileExplorer.gitPanel.failed'))}</div>` +
     `<pre class="fe-git-output-pre${isSuccess ? '' : ' error'}">${escHtml(text)}</pre>`;
   output.style.display = 'block';
   pop.classList.add('fe-git-output-mode');
@@ -558,10 +522,10 @@ async function generateCommitMessage() {
       input.value = data.message;
       input.focus();
     } else {
-      showToast(data.summary || 'No changes');
+      showToast(data.summary || tr('fileExplorer.gitPanel.noChanges'));
     }
   } catch {
-    showToast('Failed to generate message');
+    showToast(tr('fileExplorer.gitPanel.generateFailed'));
   } finally {
     genBtn?.classList.remove('loading');
   }
@@ -573,23 +537,25 @@ function createGitPopover() {
   const pop = document.createElement('div');
   pop.className = 'fe-git-popover';
   pop.id = 'fe-git-popover';
+  pop.setAttribute('role', 'dialog');
+  pop.setAttribute('aria-label', tr('fileExplorer.gitPanel.label'));
   pop.innerHTML = `
     <div class="fe-git-popover-arrow"></div>
     <div class="fe-git-controls" id="fe-git-controls">
       <div class="fe-git-pop-section">
-        <label class="fe-git-pop-label">Branch</label>
+        <label class="fe-git-pop-label" for="fe-git-branch-select">${escHtml(tr('fileExplorer.gitPanel.branch'))}</label>
         <select class="fe-git-branch-select" id="fe-git-branch-select"></select>
       </div>
       <div class="fe-git-pop-sep"></div>
       <div class="fe-git-pop-section">
-        <label class="fe-git-pop-label">Commit</label>
+        <label class="fe-git-pop-label" for="fe-git-commit-input">${escHtml(tr('fileExplorer.gitPanel.commit'))}</label>
         <div class="fe-git-commit-area">
-          <button class="fe-git-gen-btn" id="fe-git-gen-btn" data-tooltip="Generate message">
-            <svg viewBox="0 0 24 24"><path d="M12 2L9.5 8.5 3 10l5 4-1.5 7L12 17.5 17.5 21 16 14l5-4-6.5-1.5z"/></svg>
+          <button class="fe-git-gen-btn" id="fe-git-gen-btn" data-tooltip="${escHtml(tr('fileExplorer.gitPanel.generate'))}" aria-label="${escHtml(tr('fileExplorer.gitPanel.generate'))}">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2L9.5 8.5 3 10l5 4-1.5 7L12 17.5 17.5 21 16 14l5-4-6.5-1.5z"/></svg>
           </button>
-          <input type="text" class="fe-git-commit-input" id="fe-git-commit-input" placeholder="Message..." autocomplete="off" spellcheck="false" maxlength="200">
-          <button class="fe-git-commit-btn" id="fe-git-commit-btn">
-            <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+          <input type="text" class="fe-git-commit-input" id="fe-git-commit-input" placeholder="${escHtml(tr('fileExplorer.gitPanel.message'))}" autocomplete="off" spellcheck="false" maxlength="200">
+          <button class="fe-git-commit-btn" id="fe-git-commit-btn" data-tooltip="${escHtml(tr('fileExplorer.gitPanel.commitAction'))}" aria-label="${escHtml(tr('fileExplorer.gitPanel.commitAction'))}">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
           </button>
         </div>
       </div>
@@ -611,6 +577,8 @@ function initGitPanel() {
   const commitBtn = $('fe-git-commit-btn');
 
   if (branchBtn) {
+    branchBtn.setAttribute('aria-haspopup', 'dialog');
+    branchBtn.setAttribute('aria-expanded', 'false');
     branchBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       toggleGitPopover();
@@ -623,6 +591,11 @@ function initGitPanel() {
     if (popover && !popover.contains(e.target) && branchBtn && !branchBtn.contains(e.target)) {
       closeGitPopover();
     }
+  });
+  // Its keys stay in it, and Escape closes it.
+  popover.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (e.key === 'Escape') { e.preventDefault(); closeGitPopover(); branchBtn?.focus(); }
   });
 
   // Reposition on scroll/resize
@@ -644,7 +617,6 @@ function initGitPanel() {
   if (commitInput) {
     commitInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') { e.preventDefault(); doGitCommit(); }
-      e.stopPropagation();
     });
     commitInput.addEventListener('click', (e) => e.stopPropagation());
   }
@@ -653,27 +625,37 @@ function initGitPanel() {
 function closeProjectDropdown() {
   const wrap = $('fe-project-selector');
   if (wrap) wrap.classList.remove('open');
+  $('fe-project-btn')?.setAttribute('aria-expanded', 'false');
 }
 
 function toggleProjectDropdown() {
   const wrap = $('fe-project-selector');
   if (!wrap) return;
-  wrap.classList.toggle('open');
+  const open = wrap.classList.toggle('open');
+  $('fe-project-btn')?.setAttribute('aria-expanded', String(open));
+  if (open) ($('fe-project-dropdown')?.querySelector('.fe-project-option.active') || $('fe-project-dropdown')?.querySelector('.fe-project-option'))?.focus();
 }
 
 function buildProjectDropdown() {
   const dd = $('fe-project-dropdown');
   if (!dd) return;
   dd.innerHTML = '';
+  dd.setAttribute('role', 'listbox');
+  dd.setAttribute('aria-label', tr('fileExplorer.project.choose'));
 
-  const folderSvg = '<svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>';
-  const plusSvg = '<svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>';
+  const folderSvg = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>';
+  const plusSvg = '<svg viewBox="0 0 24 24" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>';
 
   for (const p of _projects) {
+    const active = !!_selectedProject && _selectedProject.path === p.path;
     const opt = document.createElement('button');
-    opt.className = 'fe-project-option' + (_selectedProject && _selectedProject.path === p.path ? ' active' : '');
+    opt.type = 'button';
+    opt.className = 'fe-project-option' + (active ? ' active' : '');
+    opt.setAttribute('role', 'option');
+    opt.setAttribute('aria-selected', String(active));
+    opt.title = p.path;
     opt.innerHTML = folderSvg + '<span class="fe-opt-label">' + escHtml(p.label) + '</span>';
-    opt.addEventListener('click', (e) => { e.stopPropagation(); selectProject(p); });
+    opt.addEventListener('click', (e) => { e.stopPropagation(); selectProject(p); $('fe-project-btn')?.focus(); });
     dd.appendChild(opt);
   }
 
@@ -683,23 +665,26 @@ function buildProjectDropdown() {
   dd.appendChild(sep);
 
   const addBtn = document.createElement('button');
+  addBtn.type = 'button';
   addBtn.className = 'fe-project-option fe-add-project';
-  addBtn.innerHTML = plusSvg + '<span class="fe-opt-label">Add project...</span>';
+  addBtn.setAttribute('role', 'option');
+  addBtn.setAttribute('aria-selected', 'false');
+  addBtn.innerHTML = plusSvg + '<span class="fe-opt-label">' + escHtml(tr('fileExplorer.project.add')) + '</span>';
   addBtn.addEventListener('click', (e) => { e.stopPropagation(); addProjectFlow(); });
   dd.appendChild(addBtn);
 }
 
-function escHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function escHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML.replace(/"/g, '&quot;'); }
 
 async function addProjectFlow() {
   closeProjectDropdown();
   try {
-    const res = await fetch('/api/browse-folder', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ description: 'Select project folder' }) });
+    const res = await fetch('/api/browse-folder', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ description: tr('fileExplorer.project.pickFolder') }) });
     const data = await res.json();
     if (!data.path) return; // User cancelled
 
     // Register as a project
-    const label = data.path.split(/[\\/]/).pop() || data.path;
+    const label = data.path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || data.path;
     const integRes = await fetch('/api/claude-code/integrations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target: 'project', projectPath: data.path, label }) });
     const integData = await integRes.json().catch(() => ({}));
 
@@ -710,16 +695,16 @@ async function addProjectFlow() {
 
     // Refresh projects list and select the new one
     await fetchProjects();
-    const newProj = _projects.find(p => p.path.replace(/\\/g, '/') === data.path.replace(/\\/g, '/'));
+    const newProj = _projects.find(p => samePath(p.path, data.path));
     if (newProj) {
       _selectedProject = newProj;
       try { storage.setItem(KEYS.FILE_EXPLORER_PROJECT, newProj.path); } catch {}
     }
     initProjectSelector();
     if (newProj) selectProject(newProj);
-    else { _cache.clear(); buildFileTree(); }
+    else showToast(tr('fileExplorer.project.addFailed'));
   } catch (err) {
-    showToast('Failed to add project');
+    showToast(tr('fileExplorer.project.addFailed'));
   }
 }
 
@@ -734,31 +719,40 @@ function promptTrustWorkspace(trustPath) {
 
     const modal = document.createElement('div');
     modal.className = 'fe-modal fe-trust-modal';
+    modal.setAttribute('role', 'alertdialog');
+    modal.setAttribute('aria-modal', 'true');
+    modal.setAttribute('aria-labelledby', 'fe-trust-title');
     modal.innerHTML = `
-      <div class="fe-modal-title">Git ownership mismatch</div>
+      <div class="fe-modal-title" id="fe-trust-title"></div>
       <div class="fe-modal-body">
-        Git is refusing to read this workspace because it's owned by a different user account. Trusting it adds the directory to your global <code>safe.directory</code> config so Synabun's git UI can show the branch and changes.
+        <span id="fe-trust-body"></span>
         <div class="fe-trust-path" id="fe-trust-path"></div>
       </div>
       <div class="fe-modal-actions">
-        <button class="fe-modal-btn fe-modal-cancel" id="fe-trust-skip">Skip</button>
-        <button class="fe-modal-btn fe-modal-confirm" id="fe-trust-confirm">Trust workspace</button>
+        <button class="fe-modal-btn fe-modal-cancel" id="fe-trust-skip"></button>
+        <button class="fe-modal-btn fe-modal-confirm" id="fe-trust-confirm"></button>
       </div>
     `;
     overlay.appendChild(modal);
     document.body.appendChild(overlay);
+    modal.querySelector('#fe-trust-title').textContent = tr('fileExplorer.trust.title');
+    modal.querySelector('#fe-trust-body').textContent = tr('fileExplorer.trust.body');
     modal.querySelector('#fe-trust-path').textContent = trustPath;
+    modal.querySelector('#fe-trust-skip').textContent = tr('fileExplorer.trust.skip');
+    modal.querySelector('#fe-trust-confirm').textContent = tr('fileExplorer.trust.confirm');
 
     requestAnimationFrame(() => overlay.classList.add('fe-modal-overlay--in'));
+    modal.querySelector('#fe-trust-skip').focus();
 
     const done = () => {
       overlay.classList.remove('fe-modal-overlay--in');
       setTimeout(() => overlay.remove(), 150);
-      document.removeEventListener('keydown', onKey);
+      window.removeEventListener('keydown', onKey, true);
       resolve();
     };
-    const onKey = (ev) => { if (ev.key === 'Escape') done(); };
-    document.addEventListener('keydown', onKey);
+    // Taken at the window: the page's own shortcuts listen before a dialog's buttons would.
+    const onKey = (ev) => { ev.stopPropagation(); if (ev.key === 'Escape') { ev.preventDefault(); done(); } };
+    window.addEventListener('keydown', onKey, true);
 
     modal.querySelector('#fe-trust-skip').addEventListener('click', done);
     overlay.addEventListener('click', (ev) => { if (ev.target === overlay) done(); });
@@ -766,7 +760,7 @@ function promptTrustWorkspace(trustPath) {
     modal.querySelector('#fe-trust-confirm').addEventListener('click', async () => {
       const btn = modal.querySelector('#fe-trust-confirm');
       btn.disabled = true;
-      btn.textContent = 'Trusting...';
+      btn.textContent = tr('fileExplorer.trust.trusting');
       try {
         const res = await fetch('/api/terminal/trust-workspace', {
           method: 'POST',
@@ -774,10 +768,10 @@ function promptTrustWorkspace(trustPath) {
           body: JSON.stringify({ path: trustPath }),
         });
         const data = await res.json();
-        if (data.ok) showToast('Workspace trusted');
-        else showToast(data.error || 'Trust failed');
+        if (data.ok) showToast(tr('fileExplorer.trust.done'));
+        else showToast(data.error || tr('fileExplorer.trust.failed'));
       } catch {
-        showToast('Trust failed');
+        showToast(tr('fileExplorer.trust.failed'));
       }
       done();
     });
@@ -787,21 +781,21 @@ function promptTrustWorkspace(trustPath) {
 function initProjectSelector() {
   const btn = $('fe-project-btn');
   const wrap = $('fe-project-selector');
-  if (!btn || !wrap || _projects.length === 0) return;
+  if (!btn || !wrap) return;
 
   // Restore persisted selection
   const saved = storage.getItem(KEYS.FILE_EXPLORER_PROJECT);
   const match = _projects.find(p => p.path === saved);
-  _selectedProject = match || _projects[0];
+  _selectedProject = match || _projects[0] || null;
 
-  // Update label
-  const label = $('fe-project-label');
-  if (label) label.textContent = _selectedProject.label;
+  showProjectLabel();
 
   // Build dropdown options
   buildProjectDropdown();
 
   // Wire toggle (safe to reassign)
+  btn.setAttribute('aria-haspopup', 'listbox');
+  btn.setAttribute('aria-expanded', 'false');
   btn.onclick = (e) => { e.stopPropagation(); toggleProjectDropdown(); };
 
   // Close on outside click
@@ -810,593 +804,41 @@ function initProjectSelector() {
       if (!wrap.contains(e.target)) closeProjectDropdown();
     };
     document.addEventListener('click', wrap._outsideHandler);
-  }
-}
-
-
-// ═══════════════════════════════════════════
-// API
-// ═══════════════════════════════════════════
-
-async function loadDirectory(dirPath) {
-  const params = new URLSearchParams();
-  // Use selected project root when no specific path given
-  const target = dirPath || (_selectedProject ? _selectedProject.path : null);
-  if (target) params.set('path', target);
-  const res = await fetch(`/api/project-files?${params}`);
-  const data = await res.json();
-  if (data.items) {
-    const key = data.path || '';
-    _cache.set(key, data);
-    // Update branch label when loading the project root
-    if (target && _selectedProject && target.replace(/\\/g, '/') === _selectedProject.path.replace(/\\/g, '/')) {
-      updateBranchLabel(data.branch || null);
-    }
-  }
-  return data;
-}
-
-async function searchFiles(term, signal) {
-  const params = new URLSearchParams({ search: term });
-  // Scope search to selected project
-  if (_selectedProject) params.set('path', _selectedProject.path);
-  const res = await fetch(`/api/project-files?${params}`, signal ? { signal } : undefined);
-  return res.json();
-}
-
-
-// ═══════════════════════════════════════════
-// TREE RENDERING
-// ═══════════════════════════════════════════
-
-function sortItems(items) {
-  const sorted = [...items];
-  // Always dirs first
-  sorted.sort((a, b) => {
-    if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
-    if (_sortMode === 'size' && a.type === 'file' && b.type === 'file') {
-      return (b.size || 0) - (a.size || 0);
-    }
-    if (_sortMode === 'date' && a.mtime && b.mtime) {
-      return b.mtime - a.mtime;
-    }
-    return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
-  });
-  return sorted;
-}
-
-function createRow(item, depth) {
-  const node = document.createElement('div');
-  node.className = 'fe-node';
-  node.dataset.path = item.fullPath || item.name;
-  node.dataset.type = item.type;
-  node.dataset.expanded = 'false';
-  node.dataset.depth = depth;
-  node._item = item;  // stashed so the delegated #fe-tree listener can recover context
-
-  const row = document.createElement('div');
-  row.className = 'fe-row';
-  row.style.paddingLeft = `${depth * 16 + 8}px`;
-
-  if (item.type === 'dir') {
-    const chevron = document.createElement('span');
-    chevron.className = 'fe-chevron';
-    chevron.textContent = '\u25B6'; // ▶
-    row.appendChild(chevron);
-  } else {
-    // Spacer for alignment
-    const spacer = document.createElement('span');
-    spacer.style.width = '12px';
-    spacer.style.flexShrink = '0';
-    row.appendChild(spacer);
-  }
-
-  const icon = document.createElement('span');
-  if (item.type === 'dir') {
-    icon.className = 'fe-icon fe-icon--dir';
-    icon.innerHTML = FOLDER_SVG;
-    if (_folderColors[item.fullPath]) {
-      const svg = icon.querySelector('svg');
-      if (svg) { svg.style.fill = _folderColors[item.fullPath]; svg.style.stroke = _folderColors[item.fullPath]; }
-    }
-  } else {
-    const fi = getFileIcon(item.name);
-    icon.className = 'fe-icon fe-icon--file';
-    if (fi.img) {
-      icon.innerHTML = `<img src="${fi.img}" class="fe-icon-img">`;
-    } else {
-      icon.innerHTML = fi.svg;
-      if (fi.color) icon.style.color = fi.color;
-    }
-  }
-  row.appendChild(icon);
-
-  const name = document.createElement('span');
-  name.className = 'fe-name';
-  name.textContent = item.name;
-  row.appendChild(name);
-
-  // Git badge
-  if (item.git && GIT_BADGE[item.git]) {
-    const [text, cls] = GIT_BADGE[item.git];
-    const badge = document.createElement('span');
-    badge.className = `fe-git-badge ${cls}`;
-    badge.textContent = text;
-    row.appendChild(badge);
-  }
-
-  node.appendChild(row);
-
-  // Children container for dirs
-  if (item.type === 'dir') {
-    const children = document.createElement('div');
-    children.className = 'fe-children';
-    node.appendChild(children);
-  }
-
-  // Row click (dir → expand/collapse; file → context menu) and right-click are
-  // handled by the delegated listeners on #fe-tree (see onFeTreeClick /
-  // onFeTreeContextMenu). The node carries data-path/data-type/data-depth and a
-  // stashed _item so the handler can recover the same context createRow had.
-
-  return node;
-}
-
-// Delegated tree interaction — one click + one contextmenu listener on #fe-tree,
-// instead of two listeners per row re-created on every expand. Recovers the
-// server item / depth / row / icon from the clicked .fe-node.
-function onFeTreeClick(e) {
-  const nodeEl = e.target.closest('.fe-node');
-  if (!nodeEl) return;
-  const item = nodeEl._item;
-  if (!item) return;
-  const depth = Number(nodeEl.dataset.depth) || 0;
-  if (item.type === 'dir') {
-    if (nodeEl.dataset.expanded === 'true') {
-      collapseDir(nodeEl, item.fullPath);
-    } else {
-      expandDir(nodeEl, item.fullPath, depth + 1);
-    }
-  } else {
-    e.preventDefault();
-    e.stopPropagation();
-    showContextMenu(e, item, nodeEl, nodeEl.querySelector('.fe-row'), nodeEl.querySelector('.fe-icon'), depth);
-  }
-}
-
-function onFeTreeContextMenu(e) {
-  const nodeEl = e.target.closest('.fe-node');
-  if (!nodeEl || !nodeEl._item) return;
-  e.preventDefault();
-  e.stopPropagation();
-  const depth = Number(nodeEl.dataset.depth) || 0;
-  showContextMenu(e, nodeEl._item, nodeEl, nodeEl.querySelector('.fe-row'), nodeEl.querySelector('.fe-icon'), depth);
-}
-
-// ─── Delete undo/redo stacks ─────────────
-let _deleteUndoStack = [];   // [{ path, content, type }]  — deleted items
-let _deleteRedoStack = [];   // [{ path, content, type }]  — undone deletes
-
-function updateDeleteButtons() {
-  const undoBtn = $('fe-undo-btn');
-  const redoBtn = $('fe-redo-btn');
-  if (undoBtn) undoBtn.classList.toggle('fe-disabled', _deleteUndoStack.length === 0);
-  if (redoBtn) redoBtn.classList.toggle('fe-disabled', _deleteRedoStack.length === 0);
-}
-
-async function deleteFileOrDir(filePath, itemName, type) {
-  // Read content before deleting (for undo) — only for files
-  let content = null;
-  if (type === 'file') {
-    try {
-      const r = await fetch(`/api/file-content?path=${encodeURIComponent(filePath)}`);
-      const d = await r.json();
-      if (d.ok) content = d.content;
-    } catch {}
-  }
-
-  const res = await fetch(`/api/file-content?path=${encodeURIComponent(filePath)}`, { method: 'DELETE' });
-  const data = await res.json();
-  if (!data.ok) {
-    showToast(data.error || 'Delete failed');
-    return false;
-  }
-
-  _deleteUndoStack.push({ path: filePath, content, type });
-  _deleteRedoStack = [];
-  updateDeleteButtons();
-  showToast(`Deleted ${itemName}`);
-
-  // Refresh tree
-  _cache.clear();
-  await loadDirectory();
-  buildFileTree();
-  return true;
-}
-
-async function undoDelete() {
-  if (_deleteUndoStack.length === 0) return;
-  const entry = _deleteUndoStack.pop();
-
-  if (entry.type === 'file' && entry.content !== null) {
-    // Recreate file via POST — need to ensure parent dir exists
-    try {
-      const res = await fetch('/api/file-content', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: entry.path, content: entry.content, create: true }),
-      });
-      const data = await res.json();
-      if (!data.ok) { showToast('Undo failed'); _deleteUndoStack.push(entry); updateDeleteButtons(); return; }
-    } catch { showToast('Undo failed'); _deleteUndoStack.push(entry); updateDeleteButtons(); return; }
-  } else if (entry.type === 'dir') {
-    // Recreate empty dir
-    try {
-      const res = await fetch('/api/file-mkdir', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: entry.path }),
-      });
-      const data = await res.json();
-      if (!data.ok) { showToast('Undo failed'); _deleteUndoStack.push(entry); updateDeleteButtons(); return; }
-    } catch { showToast('Undo failed'); _deleteUndoStack.push(entry); updateDeleteButtons(); return; }
-  } else {
-    showToast('Cannot undo — file content was not saved');
-    _deleteUndoStack.push(entry);
-    updateDeleteButtons();
-    return;
-  }
-
-  _deleteRedoStack.push(entry);
-  updateDeleteButtons();
-  showToast(`Restored ${entry.path.split('/').pop()}`);
-  _cache.clear();
-  await loadDirectory();
-  buildFileTree();
-}
-
-async function redoDelete() {
-  if (_deleteRedoStack.length === 0) return;
-  const entry = _deleteRedoStack.pop();
-
-  const res = await fetch(`/api/file-content?path=${encodeURIComponent(entry.path)}`, { method: 'DELETE' });
-  const data = await res.json();
-  if (!data.ok) { showToast('Redo failed'); _deleteRedoStack.push(entry); updateDeleteButtons(); return; }
-
-  _deleteUndoStack.push(entry);
-  updateDeleteButtons();
-  showToast(`Deleted ${entry.path.split('/').pop()}`);
-  _cache.clear();
-  await loadDirectory();
-  buildFileTree();
-}
-
-// ─── Confirmation modal ──────────────────
-function showDeleteConfirm(itemName, itemType, onConfirm) {
-  // Remove any existing modal
-  const existing = document.getElementById('fe-delete-modal');
-  if (existing) existing.remove();
-
-  const overlay = document.createElement('div');
-  overlay.id = 'fe-delete-modal';
-  overlay.className = 'fe-modal-overlay';
-
-  const modal = document.createElement('div');
-  modal.className = 'fe-modal';
-
-  const typeLabel = itemType === 'dir' ? 'folder' : 'file';
-  modal.innerHTML = `
-    <div class="fe-modal-title">Delete ${typeLabel}</div>
-    <div class="fe-modal-body">Are you sure you want to delete <strong>${itemName}</strong>?${itemType === 'dir' ? '<br><span style="color:rgba(255,255,255,0.35);font-size:11px">Only empty folders can be deleted.</span>' : ''}</div>
-    <div class="fe-modal-actions">
-      <button class="fe-modal-btn fe-modal-cancel">Cancel</button>
-      <button class="fe-modal-btn fe-modal-confirm">Delete</button>
-    </div>
-  `;
-
-  overlay.appendChild(modal);
-  document.body.appendChild(overlay);
-
-  // Animate in
-  requestAnimationFrame(() => overlay.classList.add('fe-modal-overlay--in'));
-
-  const dismiss = () => {
-    overlay.classList.remove('fe-modal-overlay--in');
-    setTimeout(() => overlay.remove(), 150);
-  };
-
-  modal.querySelector('.fe-modal-cancel').addEventListener('click', dismiss);
-  modal.querySelector('.fe-modal-confirm').addEventListener('click', () => {
-    dismiss();
-    onConfirm();
-  });
-  overlay.addEventListener('click', (ev) => { if (ev.target === overlay) dismiss(); });
-  // Esc to cancel
-  const onKey = (ev) => { if (ev.key === 'Escape') { dismiss(); document.removeEventListener('keydown', onKey); } };
-  document.addEventListener('keydown', onKey);
-}
-
-// ─── Context menu ────────────────────────
-let _activeCtxMenu = null;
-let _activeColorPalette = null;
-
-const FOLDER_COLORS = [
-  { hex: '#ffb74d', label: 'Amber' },
-  { hex: '#64b5f6', label: 'Blue' },
-  { hex: '#81c784', label: 'Green' },
-  { hex: '#e57373', label: 'Red' },
-  { hex: '#ba68c8', label: 'Purple' },
-  { hex: '#4dd0e1', label: 'Cyan' },
-  { hex: '#fff176', label: 'Yellow' },
-  { hex: '#a1887f', label: 'Brown' },
-  { hex: '#90a4ae', label: 'Grey' },
-];
-
-function dismissCtxMenu() {
-  if (_activeCtxMenu) {
-    if (_activeCtxMenu._row) _activeCtxMenu._row.classList.remove('fe-row--ctx-active');
-    _activeCtxMenu.classList.remove('fe-ctx-flyout--in');
-    _activeCtxMenu.classList.add('fe-ctx-flyout--out');
-    const el = _activeCtxMenu;
-    setTimeout(() => el.remove(), 150);
-    _activeCtxMenu = null;
-  }
-}
-
-function dismissColorPalette() {
-  if (_activeColorPalette) { _activeColorPalette.remove(); _activeColorPalette = null; }
-}
-
-function setFolderColor(folderPath, color, iconEl, dotEl) {
-  if (color) {
-    _folderColors[folderPath] = color;
-  } else {
-    delete _folderColors[folderPath];
-  }
-  saveFolderColors();
-
-  // Update icon in DOM
-  if (iconEl) {
-    const svg = iconEl.querySelector('svg');
-    if (svg) {
-      svg.style.fill = color || '';
-      svg.style.stroke = color || '';
-    }
-  }
-  // Update color dot
-  if (dotEl) {
-    dotEl.style.color = color || '#ffb74d';
-  }
-}
-
-function showColorPalette(e, folderPath, iconEl, dotEl) {
-  dismissColorPalette();
-  dismissCtxMenu();
-
-  const palette = document.createElement('div');
-  palette.className = 'fe-color-palette';
-
-  const currentColor = _folderColors[folderPath] || '#ffb74d';
-
-  for (const c of FOLDER_COLORS) {
-    const swatch = document.createElement('button');
-    swatch.className = 'fe-color-swatch' + (c.hex === currentColor ? ' fe-color-swatch--active' : '');
-    swatch.style.background = c.hex;
-    swatch.title = c.label;
-    swatch.addEventListener('click', (ev) => {
-      ev.stopPropagation();
-      setFolderColor(folderPath, c.hex === '#ffb74d' ? null : c.hex, iconEl, dotEl);
-      dismissColorPalette();
+    // Arrows move along the list, Escape closes it; none of its keys reach the page's shortcuts.
+    wrap.addEventListener('keydown', (e) => {
+      if (!wrap.classList.contains('open')) { if (e.key === 'ArrowDown' && e.target === btn) { e.preventDefault(); e.stopPropagation(); toggleProjectDropdown(); } return; }
+      e.stopPropagation();
+      const options = [...wrap.querySelectorAll('.fe-project-option')];
+      const at = options.indexOf(document.activeElement);
+      if (e.key === 'Escape') { e.preventDefault(); closeProjectDropdown(); btn.focus(); }
+      else if (e.key === 'ArrowDown') { e.preventDefault(); options[(at + 1) % options.length]?.focus(); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); options[(at - 1 + options.length) % options.length]?.focus(); }
+      else if (e.key === 'Home') { e.preventDefault(); options[0]?.focus(); }
+      else if (e.key === 'End') { e.preventDefault(); options[options.length - 1]?.focus(); }
     });
-    palette.appendChild(swatch);
   }
-
-  // Reset button
-  if (_folderColors[folderPath]) {
-    const resetBtn = document.createElement('button');
-    resetBtn.className = 'fe-ctx-item fe-color-reset';
-    resetBtn.textContent = 'Reset';
-    resetBtn.addEventListener('click', (ev) => {
-      ev.stopPropagation();
-      setFolderColor(folderPath, null, iconEl, dotEl);
-      dismissColorPalette();
-    });
-    palette.appendChild(resetBtn);
-  }
-
-  const panel = $('file-explorer-panel');
-  if (panel) panel.appendChild(palette);
-
-  // Position near the click
-  const panelRect = panel.getBoundingClientRect();
-  palette.style.top = `${e.clientY - panelRect.top + 4}px`;
-  palette.style.left = `${e.clientX - panelRect.left}px`;
-
-  // Clamp
-  requestAnimationFrame(() => {
-    const palRect = palette.getBoundingClientRect();
-    if (palRect.right > panelRect.right - 8) {
-      palette.style.left = `${panelRect.width - palRect.width - 8}px`;
-    }
-    if (palRect.bottom > panelRect.bottom - 8) {
-      palette.style.top = `${e.clientY - panelRect.top - palRect.height - 4}px`;
-    }
-  });
-
-  _activeColorPalette = palette;
-
-  const onOutside = (ev) => {
-    if (!palette.contains(ev.target)) {
-      dismissColorPalette();
-      document.removeEventListener('mousedown', onOutside, true);
-    }
-  };
-  setTimeout(() => document.addEventListener('mousedown', onOutside, true), 0);
 }
 
-function _ctxItem(iconSvg, label, onClick) {
-  const btn = document.createElement('button');
-  btn.className = 'fe-ctx-item';
-  btn.innerHTML = iconSvg + `<span>${label}</span>`;
-  btn.addEventListener('click', onClick);
-  return btn;
-}
 
-function _ctxSeparator() {
-  const sep = document.createElement('div');
-  sep.className = 'fe-ctx-separator';
-  return sep;
-}
-
-function showContextMenu(e, item, nodeEl, rowEl, iconEl, depth) {
-  dismissCtxMenu();
-  dismissColorPalette();
-
-  const panel = $('file-explorer-panel');
-  if (!panel) return;
-
-  // ── Flyout container (positioned outside panel, to its right)
-  const flyout = document.createElement('div');
-  flyout.className = 'fe-ctx-flyout';
-
-  // ── Arrow element
-  const arrow = document.createElement('div');
-  arrow.className = 'fe-ctx-arrow';
-  flyout.appendChild(arrow);
-
-  // ── Menu body
-  const menu = document.createElement('div');
-  menu.className = 'fe-ctx-menu';
-
-  const copyIcon = '<svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
-  const nameIcon = '<svg viewBox="0 0 24 24"><path d="M4 7V4h16v3"/><path d="M9 20h6"/><path d="M12 4v16"/></svg>';
-  const aiIcon = '<svg viewBox="0 0 24 24"><path d="M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5L12 3z"/><path d="M18 14l.9 2.1L21 17l-2.1.9L18 20l-.9-2.1L15 17l2.1-.9L18 14z"/></svg>';
-  const editIcon = '<svg viewBox="0 0 24 24"><path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>';
-  const paletteIcon = '<svg viewBox="0 0 24 24"><circle cx="13.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="10.5" r="2.5"/><circle cx="8.5" cy="7.5" r="2.5"/><circle cx="6.5" cy="12.5" r="2.5"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.93 0 1.5-.67 1.5-1.5 0-.39-.14-.74-.39-1.04-.24-.28-.37-.59-.37-.96 0-.83.67-1.5 1.5-1.5H16c3.31 0 6-2.69 6-6 0-5.5-4.5-10-10-10z"/></svg>';
-  const collapseIcon = '<svg viewBox="0 0 24 24"><path d="M4 14h6v6"/><path d="M20 10h-6V4"/><path d="M14 10l7-7"/><path d="M3 21l7-7"/></svg>';
-  const expandIcon = '<svg viewBox="0 0 24 24"><path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/></svg>';
-
-  // ── Copy Path (both)
-  menu.appendChild(_ctxItem(copyIcon, 'Copy Path', () => {
-    navigator.clipboard.writeText(item.fullPath).then(() => showToast('Path copied'));
-    dismissCtxMenu();
-  }));
-
-  // ── Copy Name (both)
-  menu.appendChild(_ctxItem(nameIcon, 'Copy Name', () => {
-    navigator.clipboard.writeText(item.name).then(() => showToast('Name copied'));
-    dismissCtxMenu();
-  }));
-
-  // ── Send to AI (both)
-  menu.appendChild(_ctxItem(aiIcon, 'Send to AI', () => {
-    sendPathToActivePanel(item.fullPath);
-    dismissCtxMenu();
-  }));
-
-  if (item.type === 'file') {
-    menu.appendChild(_ctxSeparator());
-
-    // ── Edit File
-    menu.appendChild(_ctxItem(editIcon, 'Edit File', () => {
-      dismissCtxMenu();
-      if ((_editorOpen || _planEditMode) && !closeFileEditor()) return;
-      openFileEditor(item.fullPath);
-    }));
-  }
-
-  if (item.type === 'dir') {
-    menu.appendChild(_ctxSeparator());
-
-    // ── Change Color
-    menu.appendChild(_ctxItem(paletteIcon, 'Change Color', (ev) => {
-      dismissCtxMenu();
-      showColorPalette(ev, item.fullPath, iconEl, null);
-    }));
-
-    menu.appendChild(_ctxSeparator());
-
-    // ── Expand / Collapse
-    const isExpanded = nodeEl.dataset.expanded === 'true';
-    if (isExpanded) {
-      menu.appendChild(_ctxItem(collapseIcon, 'Collapse', () => {
-        collapseDir(nodeEl, item.fullPath);
-        dismissCtxMenu();
-      }));
-
-      // ── Collapse All Children
-      menu.appendChild(_ctxItem(collapseIcon, 'Collapse Children', () => {
-        nodeEl.querySelectorAll('.fe-node[data-type="dir"][data-expanded="true"]').forEach(n => {
-          n.dataset.expanded = 'false';
-          _collapsed.add(n.dataset.path);
-        });
-        saveCollapsed();
-        dismissCtxMenu();
-      }));
-    } else {
-      menu.appendChild(_ctxItem(expandIcon, 'Expand', () => {
-        expandDir(nodeEl, item.fullPath, depth + 1);
-        dismissCtxMenu();
-      }));
-    }
-  }
-
-  // ── Delete (both files and dirs)
-  menu.appendChild(_ctxSeparator());
-  const deleteIcon = '<svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
-  const deleteBtn = _ctxItem(deleteIcon, 'Delete', () => {
-    dismissCtxMenu();
-    showDeleteConfirm(item.name, item.type, () => {
-      deleteFileOrDir(item.fullPath, item.name, item.type);
-    });
-  });
-  deleteBtn.classList.add('fe-ctx-item--danger');
-  menu.appendChild(deleteBtn);
-
-  flyout.appendChild(menu);
-
-  // ── Position: flyout docks to the right edge of the panel, arrow points at the row
-  document.body.appendChild(flyout);
-
-  const panelRect = panel.getBoundingClientRect();
-  const rowRect = rowEl.getBoundingClientRect();
-  const rowCenterY = rowRect.top + rowRect.height / 2;
-
-  // Flyout left edge sits at the panel's right edge + small gap for arrow
-  flyout.style.left = `${panelRect.right + 6}px`;
-  flyout.style.opacity = '0';
-
-  requestAnimationFrame(() => {
-    const flyRect = flyout.getBoundingClientRect();
-    // Vertically center on the row, but clamp to viewport
-    let top = rowCenterY - flyRect.height / 2;
-    if (top < 8) top = 8;
-    if (top + flyRect.height > window.innerHeight - 8) top = window.innerHeight - flyRect.height - 8;
-    flyout.style.top = `${top}px`;
-
-    // Arrow points at the row center
-    const arrowY = rowCenterY - top;
-    arrow.style.top = `${Math.max(12, Math.min(flyRect.height - 12, arrowY))}px`;
-
-    // Animate in
-    flyout.style.opacity = '';
-    flyout.classList.add('fe-ctx-flyout--in');
-  });
-
-  // Highlight the source row
-  rowEl.classList.add('fe-row--ctx-active');
-
-  _activeCtxMenu = flyout;
-  _activeCtxMenu._row = rowEl;
-
-  // Close on outside click
-  const onOutside = (ev) => {
-    if (!flyout.contains(ev.target)) {
-      dismissCtxMenu();
-      document.removeEventListener('mousedown', onOutside, true);
-    }
-  };
-  setTimeout(() => document.addEventListener('mousedown', onOutside, true), 0);
+// Show a file in the tree (the editor's "Reveal in tree"): the explorer is opened, the file's project is
+// selected when it is another one, its folders are expanded, and its row is selected and marked for a
+// moment. Answers whether the file was found.
+async function revealFileInTree(filePath) {
+  const slashes = (p) => String(p || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  const target = slashes(filePath);
+  if (!target) return false;
+  if (!_visible) toggleFileExplorer();
+  const tree = await whenTree();
+  if (!tree) return false;
+  // A panel that was just opened is still reading its projects: the file's project is chosen after that.
+  syncTree();
+  await _showing;
+  await tree.whenLoaded();
+  if (!_projects.length) await fetchProjects();
+  const project = [..._projects].sort((a, b) => b.path.length - a.path.length).find((p) => target.startsWith(slashes(p.path) + '/'));
+  if (!project) return false;
+  if (!_selectedProject || slashes(_selectedProject.path) !== slashes(project.path)) await selectProject(project);
+  return tree.reveal(target);
 }
 
 function showToast(msg) {
@@ -1404,6 +846,7 @@ function showToast(msg) {
   if (!toast) {
     toast = document.createElement('div');
     toast.id = 'fe-toast';
+    toast.setAttribute('role', 'status');
     toast.style.cssText = 'position:fixed;bottom:60px;left:50%;transform:translateX(-50%);background:rgba(30,30,34,0.95);color:#e0e0e0;padding:6px 16px;border-radius:6px;font-size:12px;font-family:var(--ff-mono);z-index:2147483647;pointer-events:none;opacity:0;transition:opacity 0.2s;border:1px solid rgba(255,255,255,0.1);';
     document.body.appendChild(toast);
   }
@@ -1411,1139 +854,6 @@ function showToast(msg) {
   toast.style.opacity = '1';
   clearTimeout(toast._timer);
   toast._timer = setTimeout(() => { toast.style.opacity = '0'; }, 3500);
-}
-
-// ═══════════════════════════════════════════
-// INLINE FILE EDITOR
-// ═══════════════════════════════════════════
-
-// File extension → language label
-const EXT_LANG = {
-  js: 'JavaScript', mjs: 'JavaScript', cjs: 'JavaScript',
-  ts: 'TypeScript', tsx: 'TypeScript',
-  json: 'JSON', html: 'HTML', css: 'CSS',
-  md: 'Markdown', py: 'Python', sh: 'Shell', bash: 'Shell',
-  yml: 'YAML', yaml: 'YAML', toml: 'TOML',
-  sql: 'SQL', rs: 'Rust', go: 'Go', rb: 'Ruby',
-  env: 'ENV', gitignore: 'Git', dockerignore: 'Docker',
-};
-
-const COMMENT_PREFIX = {
-  JavaScript: '//', TypeScript: '//', JSON: '//', CSS: '//',
-  HTML: '<!--', Python: '#', Shell: '#', YAML: '#', TOML: '#',
-  SQL: '--', Rust: '//', Go: '//', Ruby: '#', ENV: '#', Git: '#', Docker: '#',
-};
-
-// ─── Syntax Highlighting ────────────────────────
-
-const SH_KEYWORDS = {
-  JavaScript: 'async|await|break|case|catch|class|const|continue|debugger|default|delete|do|else|export|extends|finally|for|from|function|if|import|in|instanceof|let|new|of|return|static|super|switch|this|throw|try|typeof|var|void|while|with|yield|true|false|null|undefined',
-  TypeScript: 'abstract|as|async|await|break|case|catch|class|const|continue|debugger|declare|default|delete|do|else|enum|export|extends|finally|for|from|function|if|implements|import|in|instanceof|interface|keyof|let|new|of|return|static|super|switch|this|throw|try|type|typeof|var|void|while|with|yield|true|false|null|undefined',
-  Python: 'and|as|assert|async|await|break|class|continue|def|del|elif|else|except|finally|for|from|global|if|import|in|is|lambda|nonlocal|not|or|pass|raise|return|try|while|with|yield|True|False|None',
-  JSON: 'true|false|null',
-  Shell: 'if|then|else|elif|fi|for|while|do|done|case|esac|in|function|return|exit|local|export|source|set|unset|shift|read|echo|printf|test|eval',
-  SQL: 'SELECT|FROM|WHERE|AND|OR|NOT|INSERT|INTO|VALUES|UPDATE|SET|DELETE|CREATE|TABLE|DROP|ALTER|ADD|INDEX|JOIN|LEFT|RIGHT|INNER|OUTER|ON|AS|ORDER|BY|GROUP|HAVING|LIMIT|OFFSET|UNION|ALL|DISTINCT|COUNT|SUM|AVG|MIN|MAX|IS|NULL|LIKE|BETWEEN|IN|EXISTS|PRIMARY|KEY|FOREIGN|REFERENCES|DEFAULT|CASCADE|VIEW|BEGIN|END|IF|ELSE|THEN|WHILE|DECLARE|COMMIT|ROLLBACK',
-  Rust: 'as|async|await|break|const|continue|crate|dyn|else|enum|extern|false|fn|for|if|impl|in|let|loop|match|mod|move|mut|pub|ref|return|self|Self|static|struct|super|trait|true|type|unsafe|use|where|while|yield',
-  Go: 'break|case|chan|const|continue|default|defer|else|fallthrough|for|func|go|goto|if|import|interface|map|package|range|return|select|struct|switch|type|var|true|false|nil',
-  Ruby: 'alias|and|begin|break|case|class|def|do|else|elsif|end|ensure|false|for|if|in|module|next|nil|not|or|redo|rescue|retry|return|self|super|then|true|undef|unless|until|when|while|yield',
-  TOML: 'true|false',
-  YAML: 'true|false|null|yes|no|on|off',
-};
-
-const SH_MAX_SIZE = 80000;
-
-function _shEsc(s) {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-function _shBuildRules(lang) {
-  const rules = [];
-  const cStyle = ['JavaScript', 'TypeScript', 'CSS', 'Go', 'Rust'];
-  const hashStyle = ['Python', 'Shell', 'YAML', 'TOML', 'Ruby', 'ENV', 'Git', 'Docker'];
-
-  // Comments (highest priority)
-  if (cStyle.includes(lang)) rules.push({ p: '\\/\\*[\\s\\S]*?\\*\\/', c: 'sh-cm' });
-  if (lang === 'HTML') rules.push({ p: '<!--[\\s\\S]*?-->', c: 'sh-cm' });
-  if (cStyle.includes(lang) && lang !== 'CSS') rules.push({ p: '\\/\\/[^\\n]*', c: 'sh-cm' });
-  if (hashStyle.includes(lang)) rules.push({ p: '#[^\\n]*', c: 'sh-cm' });
-  if (lang === 'SQL') rules.push({ p: '--[^\\n]*', c: 'sh-cm' });
-
-  // JSON property keys (before generic strings so they match first)
-  if (lang === 'JSON') {
-    rules.push({ p: '"(?:[^"\\\\\\n]|\\\\.)*"(?=\\s*:)', c: 'sh-prop' });
-  }
-
-  // Strings
-  rules.push({ p: '"(?:[^"\\\\\\n]|\\\\.)*"', c: 'sh-str' });
-  rules.push({ p: "'(?:[^'\\\\\\n]|\\\\.)*'", c: 'sh-str' });
-  if (['JavaScript', 'TypeScript'].includes(lang)) {
-    rules.push({ p: '`(?:[^`\\\\]|\\\\.)*`', c: 'sh-str' });
-  }
-  if (lang === 'Python') {
-    // Triple-quoted strings
-    rules.push({ p: '"""[\\s\\S]*?"""|\'\'\'[\\s\\S]*?\'\'\'', c: 'sh-str' });
-  }
-
-  // Numbers
-  rules.push({ p: '\\b(?:0x[0-9a-fA-F]+|0b[01]+|\\d+(?:\\.\\d+)?(?:e[+-]?\\d+)?)\\b', c: 'sh-num' });
-
-  // CSS-specific: at-rules, selectors, properties
-  if (lang === 'CSS') {
-    rules.push({ p: '@[a-zA-Z][a-zA-Z-]*', c: 'sh-kw' });
-    rules.push({ p: '!important', c: 'sh-kw' });
-    rules.push({ p: '[.#][a-zA-Z_-][a-zA-Z0-9_-]*', c: 'sh-fn' });
-    rules.push({ p: ':[a-zA-Z][a-zA-Z-]*', c: 'sh-attr' });
-  }
-
-  // HTML-specific: tags and attributes
-  if (lang === 'HTML') {
-    rules.push({ p: '<\\/?[a-zA-Z][a-zA-Z0-9-]*', c: 'sh-tag' });
-    rules.push({ p: '\\/?>', c: 'sh-op' });
-    rules.push({ p: '\\b[a-zA-Z][a-zA-Z-]*(?=\\s*=)', c: 'sh-attr' });
-  }
-
-  // Keywords
-  const kw = SH_KEYWORDS[lang];
-  if (kw) {
-    const flags = lang === 'SQL' ? 'i' : '';
-    rules.push({ p: '\\b(?:' + kw + ')\\b', c: 'sh-kw', flags });
-  }
-
-  // Function calls (identifier followed by paren)
-  if (!['JSON', 'CSS', 'HTML', 'YAML', 'TOML', 'ENV', 'Markdown'].includes(lang)) {
-    rules.push({ p: '\\b[a-zA-Z_$][a-zA-Z0-9_$]*(?=\\s*\\()', c: 'sh-fn' });
-  }
-
-  // YAML keys (word at line start followed by colon)
-  if (lang === 'YAML' || lang === 'TOML') {
-    rules.push({ p: '^[ \\t]*[a-zA-Z_][a-zA-Z0-9_.\\-]*(?=\\s*[:=])', c: 'sh-prop' });
-  }
-
-  // Shell variables
-  if (lang === 'Shell' || lang === 'ENV') {
-    rules.push({ p: '\\$[a-zA-Z_][a-zA-Z0-9_]*|\\$\\{[^}]+\\}', c: 'sh-prop' });
-  }
-
-  // Brackets
-  rules.push({ p: '[{}\\[\\]()]', c: 'sh-br' });
-
-  return rules;
-}
-
-// Cache compiled regexes per language
-const _shCache = {};
-
-function _shGetRegex(lang) {
-  if (_shCache[lang]) return _shCache[lang];
-  const rules = _shBuildRules(lang);
-  if (rules.length === 0) return null;
-  // Combine all rule patterns into one alternation
-  const combined = rules.map(r => '(' + r.p + ')').join('|');
-  const flags = 'gm' + (rules.some(r => r.flags?.includes('i')) ? 'i' : '');
-  _shCache[lang] = { regex: new RegExp(combined, flags), rules };
-  return _shCache[lang];
-}
-
-function highlightCode(text, lang) {
-  if (!text) return '';
-  if (text.length > SH_MAX_SIZE || !lang || lang === 'Plain Text' || lang === 'Markdown') {
-    return _shEsc(text);
-  }
-
-  const compiled = _shGetRegex(lang);
-  if (!compiled) return _shEsc(text);
-
-  const { regex, rules } = compiled;
-  regex.lastIndex = 0;
-  let result = '';
-  let lastIndex = 0;
-  let match;
-
-  while ((match = regex.exec(text)) !== null) {
-    // Unmatched text before this token
-    if (match.index > lastIndex) {
-      result += _shEsc(text.slice(lastIndex, match.index));
-    }
-    // Find which capturing group matched
-    for (let i = 0; i < rules.length; i++) {
-      if (match[i + 1] !== undefined) {
-        result += '<span class="' + rules[i].c + '">' + _shEsc(match[0]) + '</span>';
-        break;
-      }
-    }
-    lastIndex = match.index + match[0].length;
-    // Guard against zero-length matches
-    if (match[0].length === 0) { regex.lastIndex++; lastIndex++; }
-  }
-  // Remaining text
-  if (lastIndex < text.length) result += _shEsc(text.slice(lastIndex));
-
-  return result;
-}
-
-let _shLang = '';
-let _shLines = null;      // cached line split for large files
-let _shViewStart = 0;     // first buffered line
-let _shViewEnd = 0;       // last buffered line
-const SH_LINE_H = 20;
-const SH_BUFFER = 80;     // lines of buffer above/below viewport
-const SH_REBUFFER = 30;   // re-render when within this many lines of buffer edge
-
-function updateHighlight() {
-  const textarea = $('fe-editor-textarea');
-  const code = $('fe-editor-highlight-code');
-  if (!textarea || !code) return;
-
-  const text = textarea.value;
-  if (!text || !_shLang || _shLang === 'Plain Text' || _shLang === 'Markdown') {
-    code.innerHTML = _shEsc(text || '') + '\n';
-    _shLines = null;
-    return;
-  }
-
-  if (text.length <= SH_MAX_SIZE) {
-    // Small file: highlight everything
-    code.innerHTML = highlightCode(text, _shLang) + '\n';
-    _shLines = null;
-    return;
-  }
-
-  // Large file: viewport-based highlighting
-  _shLines = text.split('\n');
-  _shRenderViewport(textarea, code, text);
-}
-
-function _shRenderViewport(textarea, code, text) {
-  if (!_shLines) return;
-
-  const scrollTop = textarea.scrollTop;
-  const viewH = textarea.clientHeight;
-  const firstVisLine = Math.max(0, Math.floor(scrollTop / SH_LINE_H));
-  const visLineCount = Math.ceil(viewH / SH_LINE_H);
-
-  const startLine = Math.max(0, firstVisLine - SH_BUFFER);
-  const endLine = Math.min(_shLines.length, firstVisLine + visLineCount + SH_BUFFER);
-
-  _shViewStart = startLine;
-  _shViewEnd = endLine;
-
-  // Character offsets for the visible chunk
-  let charStart = 0;
-  for (let i = 0; i < startLine; i++) charStart += _shLines[i].length + 1;
-  let charEnd = charStart;
-  for (let i = startLine; i < endLine; i++) charEnd += _shLines[i].length + 1;
-  if (charEnd > text.length) charEnd = text.length;
-
-  const chunk = text.slice(charStart, charEnd);
-  const highlighted = highlightCode(chunk, _shLang);
-
-  // Use real newlines as spacers — guarantees identical line height to textarea
-  code.innerHTML =
-    '\n'.repeat(startLine) +
-    highlighted +
-    '\n'.repeat(Math.max(0, _shLines.length - endLine)) +
-    '\n';
-}
-
-function syncHighlightScroll() {
-  const textarea = $('fe-editor-textarea');
-  const code = $('fe-editor-highlight-code');
-  if (!textarea || !code) return;
-  code.style.transform = `translate(${-textarea.scrollLeft}px, ${-textarea.scrollTop}px)`;
-
-  // Large file: re-render viewport if scrolled near buffer edge
-  if (_shLines) {
-    const firstVisLine = Math.floor(textarea.scrollTop / SH_LINE_H);
-    const lastVisLine = firstVisLine + Math.ceil(textarea.clientHeight / SH_LINE_H);
-    if (firstVisLine < _shViewStart + SH_REBUFFER || lastVisLine > _shViewEnd - SH_REBUFFER) {
-      _shRenderViewport(textarea, code, textarea.value);
-    }
-  }
-}
-
-function detectLang(filename) {
-  const parts = filename.split('.');
-  if (parts.length < 2) return 'Plain Text';
-  const ext = parts.pop().toLowerCase();
-  // Check the full dotfile name first (e.g. .env, .gitignore)
-  const dotName = filename.startsWith('.') ? filename.slice(1).toLowerCase() : null;
-  return EXT_LANG[dotName] || EXT_LANG[ext] || ext.toUpperCase();
-}
-
-function formatSize(bytes) {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function updateGutter() {
-  const gutter = $('fe-editor-gutter');
-  const textarea = $('fe-editor-textarea');
-  if (!gutter || !textarea) return;
-  const lines = textarea.value.split('\n').length;
-  // Incremental: line numbers are just 1..N, so we only add/remove the tail delta.
-  // childElementCount is the source of truth (desync-proof, no layout read), and the
-  // common typing case (line count unchanged) does zero DOM work.
-  let have = gutter.childElementCount;
-  if (have === lines) return;
-  if (have < lines) {
-    const frag = document.createDocumentFragment();
-    for (let i = have + 1; i <= lines; i++) {
-      const d = document.createElement('div');
-      d.textContent = i;
-      frag.appendChild(d);
-    }
-    gutter.appendChild(frag);
-  } else {
-    while (have > lines) { gutter.removeChild(gutter.lastChild); have--; }
-  }
-}
-
-// Debounced heavy editor render. Re-highlighting the whole file and reconciling
-// the gutter shouldn't run on every keystroke; the colorized <pre> sits behind a
-// transparent-text textarea, so the user reads live textarea glyphs while
-// colorization catches up a beat later. Caret/line-highlight + dirty state stay
-// immediate (see the input listener). Discrete actions (undo/redo/replace) keep
-// calling updateHighlight()/updateGutter() directly for instant feedback.
-const debouncedEditorRender = debounce(() => {
-  updateHighlight();
-  updateGutter();
-}, 90);
-
-function updateCursorPos() {
-  const textarea = $('fe-editor-textarea');
-  const el = $('fe-editor-cursor');
-  if (!textarea || !el) return;
-  const val = textarea.value;
-  const pos = textarea.selectionStart;
-  const before = val.substring(0, pos);
-  const ln = before.split('\n').length;
-  const col = pos - before.lastIndexOf('\n');
-  el.textContent = `Ln ${ln}, Col ${col}`;
-}
-
-function syncGutterScroll() {
-  const gutter = $('fe-editor-gutter');
-  const textarea = $('fe-editor-textarea');
-  if (gutter && textarea) gutter.scrollTop = textarea.scrollTop;
-}
-
-let _hlMirror = null;
-let _hlMirrorSynced = false;   // false \u2192 re-copy textarea computed styles + width into the mirror
-let _hlResizeObs = null;
-const _hlMirrorProps = [
-  'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight',
-  'letterSpacing', 'wordSpacing', 'whiteSpace', 'overflowWrap',
-  'wordBreak', 'tabSize', 'paddingTop', 'paddingRight',
-  'paddingBottom', 'paddingLeft', 'boxSizing'
-];
-
-// Force the next getLineVisualTop to re-copy the textarea's computed styles into
-// the measuring mirror. Needed on word-wrap toggle, which changes wrapping without
-// changing the textarea's box size and so isn't caught by the ResizeObserver.
-function invalidateLineMirror() { _hlMirrorSynced = false; }
-
-function getLineVisualTop(textarea, pos) {
-  if (!_hlMirror) {
-    _hlMirror = document.createElement('div');
-    _hlMirror.style.position = 'absolute';
-    _hlMirror.style.visibility = 'hidden';
-    _hlMirror.style.pointerEvents = 'none';
-    _hlMirror.style.top = '-9999px';
-    _hlMirror.style.left = '0';
-    _hlMirror.style.height = 'auto';
-    _hlMirror.style.overflow = 'hidden';
-    _hlMirror.style.border = 'none';
-    document.body.appendChild(_hlMirror);
-    _hlMirrorSynced = false;
-  }
-  // Observe the textarea so any box-size change (panel/window resize, show/hide)
-  // invalidates the cached copy automatically. The textarea element is stable
-  // across file opens, so this observes exactly once.
-  if (typeof ResizeObserver === 'function' && _hlResizeObs?._target !== textarea) {
-    _hlResizeObs?.disconnect();
-    _hlResizeObs = new ResizeObserver(() => { _hlMirrorSynced = false; });
-    _hlResizeObs.observe(textarea);
-    _hlResizeObs._target = textarea;
-    _hlMirrorSynced = false;
-  }
-  // The getComputedStyle read + 16 style writes was the per-caret-move hot cost;
-  // copy only when stale. The marker measurement below is the one unavoidable read.
-  if (!_hlMirrorSynced) {
-    const cs = getComputedStyle(textarea);
-    for (const p of _hlMirrorProps) _hlMirror.style[p] = cs[p];
-    _hlMirror.style.width = textarea.clientWidth + 'px';
-    _hlMirrorSynced = true;
-  }
-
-  const val = textarea.value;
-  const lineStart = val.lastIndexOf('\n', pos - 1) + 1;
-  _hlMirror.textContent = '';
-  _hlMirror.appendChild(document.createTextNode(val.substring(0, lineStart)));
-  const marker = document.createElement('span');
-  marker.textContent = '\u200b';
-  _hlMirror.appendChild(marker);
-  return marker.offsetTop;
-}
-
-function updateLineHighlight() {
-  const textarea = $('fe-editor-textarea');
-  const hl = $('fe-editor-line-highlight');
-  if (!textarea || !hl) return;
-  const yPos = getLineVisualTop(textarea, textarea.selectionStart);
-  hl.style.top = `${yPos - textarea.scrollTop}px`;
-}
-
-function updateScrollmap() {
-  const textarea = $('fe-editor-textarea');
-  const thumb = $('fe-editor-scrollmap-thumb');
-  const map = $('fe-editor-scrollmap');
-  if (!textarea || !thumb || !map) return;
-  const sh = textarea.scrollHeight;
-  const ch = textarea.clientHeight;
-  if (sh <= ch) { thumb.style.display = 'none'; return; }
-  thumb.style.display = '';
-  const mapH = map.clientHeight;
-  const ratio = ch / sh;
-  const thumbH = Math.max(12, mapH * ratio);
-  const scrollRatio = textarea.scrollTop / (sh - ch);
-  thumb.style.height = `${thumbH}px`;
-  thumb.style.top = `${scrollRatio * (mapH - thumbH)}px`;
-}
-
-// ─── Undo/Redo stack ───────────────────────
-function editorPushUndo(ta) {
-  _undoStack.push({ value: ta.value, selStart: ta.selectionStart, selEnd: ta.selectionEnd });
-  if (_undoStack.length > 200) _undoStack.shift();
-  _redoStack = [];
-}
-
-function editorInsertText(ta, text) {
-  if (_editorSaving) return;
-  editorPushUndo(ta);
-  const start = ta.selectionStart;
-  const end = ta.selectionEnd;
-  ta.value = ta.value.substring(0, start) + text + ta.value.substring(end);
-  const newPos = start + text.length;
-  ta.selectionStart = ta.selectionEnd = newPos;
-  ta.dispatchEvent(new Event('input'));
-}
-
-function editorReplaceRange(ta, from, to, text) {
-  if (_editorSaving) return;
-  editorPushUndo(ta);
-  ta.value = ta.value.substring(0, from) + text + ta.value.substring(to);
-  ta.dispatchEvent(new Event('input'));
-}
-
-function editorUndo(ta) {
-  if (_editorSaving) return;
-  if (_undoStack.length === 0) return;
-  _redoStack.push({ value: ta.value, selStart: ta.selectionStart, selEnd: ta.selectionEnd });
-  const state = _undoStack.pop();
-  ta.value = state.value;
-  ta.selectionStart = state.selStart;
-  ta.selectionEnd = state.selEnd;
-  updateEditorDirtyState();
-  updateGutter();
-  updateHighlight();
-}
-
-function editorRedo(ta) {
-  if (_editorSaving) return;
-  if (_redoStack.length === 0) return;
-  _undoStack.push({ value: ta.value, selStart: ta.selectionStart, selEnd: ta.selectionEnd });
-  const state = _redoStack.pop();
-  ta.value = state.value;
-  ta.selectionStart = state.selStart;
-  ta.selectionEnd = state.selEnd;
-  updateEditorDirtyState();
-  updateGutter();
-  updateHighlight();
-}
-
-function getEditorSelectionOffset(text, lineNum, columnNum = 1) {
-  const content = String(text || '');
-  const lines = content.split('\n');
-  const targetLine = Math.min(Math.max(1, Number(lineNum) || 1), lines.length || 1);
-  const targetColumn = Math.max(1, Number(columnNum) || 1);
-  let pos = 0;
-  for (let i = 0; i < targetLine - 1; i++) pos += lines[i].length + 1;
-  pos += Math.min(targetColumn - 1, (lines[targetLine - 1] || '').length);
-  return { pos, line: targetLine };
-}
-
-function focusEditorLocation(lineNum, columnNum = 1) {
-  const textarea = $('fe-editor-textarea');
-  if (!textarea || !lineNum || lineNum < 1) return;
-  const { pos, line } = getEditorSelectionOffset(textarea.value, lineNum, columnNum);
-  textarea.focus();
-  textarea.setSelectionRange(pos, pos);
-  const yPos = getLineVisualTop(textarea, pos);
-  const lineHeight = 20;
-  textarea.scrollTop = Math.max(0, yPos - 5 * lineHeight);
-  updateCursorPos();
-  updateLineHighlight();
-  syncGutterScroll();
-}
-
-async function openFileEditor(filePath, opts = {}) {
-  const openSequence = ++_editorOpenSequence;
-  const contract = _planEditContract;
-  try {
-    const normalizedPath = String(filePath || '').replace(/\\/g, '/');
-    const res = await fetch(`/api/file-content?path=${encodeURIComponent(filePath)}`);
-    const data = await res.json();
-    if (openSequence !== _editorOpenSequence) return;
-    if (!res.ok) {
-      const isOpencodeConfig = normalizedPath.endsWith('/.config/opencode/config.json');
-      const isAllowlistMiss = res.status === 403 && data?.error === 'Path outside registered project roots';
-      if (isOpencodeConfig && isAllowlistMiss) {
-        showToast('Restart Synabun to apply OpenCode config editor support');
-        cancelPlanEditMode();
-        return;
-      }
-      showToast(data.error || 'Cannot open file');
-      cancelPlanEditMode();
-      return;
-    }
-
-    if (typeof contract?.expectedMarkdown === 'string'
-      && String(data.content).replace(/\r\n/g, '\n') !== contract.expectedMarkdown.replace(/\r\n/g, '\n')) {
-      showToast('The plan file changed. Reopen the current plan revision.');
-      cancelPlanEditMode();
-      return;
-    }
-    _editorOpen = true;
-    _editorFilePath = data.path;
-    if (_planEditMode) _planEditFilePath = data.path;
-    // Normalize line endings — textarea always returns \n, server may send \r\n on Windows
-    _editorOriginal = data.content.replace(/\r\n/g, '\n');
-    _editorDirty = false;
-    _undoStack = [];
-    _redoStack = [];
-    _undoBurstOpen = false;
-
-    // Slide editor panel open
-    dismissCtxMenu();
-    const editorPanel = $('fe-editor-panel');
-    if (editorPanel) editorPanel.classList.add('open');
-    document.body.classList.add('fe-editor-open');
-    if (document.querySelector('.claude-panel.open')) editorPanel?.classList.add('panel-adjacent');
-
-    const textarea = $('fe-editor-textarea');
-    if (textarea) {
-      textarea.value = _editorOriginal;
-      textarea.scrollTop = 0;
-      textarea.setSelectionRange(0, 0);
-      // Push initial state so first Ctrl+Z reverts to original
-      _undoStack.push({ value: _editorOriginal, selStart: 0, selEnd: 0 });
-    }
-
-    // File path in header (show relative path from project root)
-    const fpEl = $('fe-editor-filepath');
-    if (fpEl) {
-      const rel = _selectedProject ? data.path.replace(_selectedProject.path.replace(/\\/g, '/'), '') : data.path;
-      fpEl.textContent = rel.startsWith('/') ? rel.slice(1) : rel;
-    }
-
-    // Language detection + markdown check + syntax highlighting
-    const lang = detectLang(data.name);
-    _shLang = lang;
-    const langEl = $('fe-editor-lang');
-    if (langEl) langEl.textContent = lang;
-    _editorIsMarkdown = lang === 'Markdown';
-    _editorPreviewMode = false;
-    updateViewToggle();
-    // Reset toggle buttons
-    const toggleBtns = document.querySelectorAll('.fe-editor-toggle-btn');
-    toggleBtns.forEach(b => b.classList.toggle('active', b.dataset.mode === 'raw'));
-    setPreviewMode(false);
-
-    // Close find bar + go-to-line on new file
-    closeFind();
-    closeGoToLine();
-
-    // File size
-    const sizeEl = $('fe-editor-size');
-    if (sizeEl) sizeEl.textContent = formatSize(data.size || 0);
-
-    // Plan/changelog edit banner
-    const edPanel = $('fe-editor-panel');
-    edPanel?.querySelector('.fe-plan-banner')?.remove();
-    if (_planEditMode) {
-      const banner = document.createElement('div');
-      banner.className = 'fe-plan-banner';
-      banner.textContent = _planEditSource === 'codex'
-        ? 'Editing plan — save to return to review'
-        : `Editing plan — save to send to ${planEditorSourceLabel(_planEditSource)}`;
-      edPanel?.prepend(banner);
-    } else if (_changelogEditMode) {
-      const banner = document.createElement('div');
-      banner.className = 'fe-plan-banner';
-      banner.textContent = 'Editing changelog — save to send to Claude';
-      edPanel?.prepend(banner);
-    }
-
-    updateGutter();
-    updateHighlight();
-    updateCursorPos();
-    updateEditorDirtyState();
-    // Defer so the textarea has rendered its scroll dimensions
-    requestAnimationFrame(() => {
-      if (opts?.line) focusEditorLocation(opts.line, opts.column || 1);
-      updateLineHighlight();
-      updateScrollmap();
-      syncHighlightScroll();
-    });
-  } catch (err) {
-    cancelPlanEditMode();
-    showToast('Failed to open file');
-  }
-}
-
-function closeFileEditor() {
-  if (_editorSaving) return false;
-  if (_editorDirty) {
-    if (!confirm('Discard unsaved changes?')) return false;
-  }
-
-  // Emit cancel events before clearing flags so Claude panel can re-enable buttons
-  if (_planEditMode) cancelPlanEditMode();
-  if (_changelogEditMode) emit('changelog-edit-cancelled');
-
-  ++_editorOpenSequence;
-  _editorOpen = false;
-  _editorFilePath = null;
-  _editorOriginal = '';
-  _editorDirty = false;
-  _editorIsMarkdown = false;
-  _editorPreviewMode = false;
-  _planEditMode = false;
-  _planEditFilePath = null;
-  _planEditSource = null;
-  _planEditTabId = null;
-  _changelogEditMode = false;
-  _changelogEditFilePath = null;
-  $('fe-editor-panel')?.querySelector('.fe-plan-banner')?.remove();
-  _shLang = '';
-  _shLines = null;
-  _shViewStart = 0;
-  _shViewEnd = 0;
-  if (_hlMirror) { _hlMirror.remove(); _hlMirror = null; }
-  const hlCode = $('fe-editor-highlight-code');
-  if (hlCode) hlCode.innerHTML = '';
-
-  // Close find bar and preview
-  closeFind();
-  setPreviewMode(false);
-  updateViewToggle();
-
-  // Slide editor panel closed
-  const editorPanel = $('fe-editor-panel');
-  if (editorPanel) editorPanel.classList.remove('open');
-  document.body.classList.remove('fe-editor-open');
-
-  // Restore footer
-  const data = _cache.values().next().value;
-  updateCount(data?.items?.length || 0);
-
-  return true;
-}
-
-async function saveFileEditor() {
-  if (!_editorFilePath || _editorSaving) return;
-  const textarea = $('fe-editor-textarea');
-  if (!textarea) return;
-  const savedContent = textarea.value;
-  const savedPath = _editorFilePath;
-  const planEvent = _planEditMode ? planEditorEvent() : null;
-  const contract = _planEditContract;
-  _editorSaving = true;
-  textarea.readOnly = true;
-  updateEditorDirtyState();
-  let saved = false;
-  let result = null;
-  try {
-    if (planEvent?.source === 'codex' && typeof contract?.save !== 'function') {
-      throw new Error('This plan editor is missing its revision. Reopen the plan to save.');
-    }
-    if (typeof contract?.save === 'function') {
-      result = await contract.save({ ...planEvent, content: savedContent });
-      if (!result?.ok) throw new Error(result?.reason || result?.error || 'The plan changed. Reopen the latest revision before saving.');
-    } else {
-      const res = await fetch('/api/file-content', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: savedPath, content: savedContent }),
-      });
-      result = await res.json();
-      if (!res.ok) throw new Error(result.error || 'Save failed');
-    }
-    _editorOriginal = savedContent;
-    saved = true;
-  } catch (error) {
-    showToast(error?.message || 'Save failed');
-    if (_planEditSource === 'codex') {
-      const banner = $('fe-editor-panel')?.querySelector('.fe-plan-banner');
-      if (banner) banner.textContent = `${error?.message || 'Save failed'} Your edits are still open.`;
-    }
-  } finally {
-    _editorSaving = false;
-    textarea.readOnly = false;
-    updateEditorDirtyState();
-  }
-  if (!saved) return;
-
-  if (planEvent && _planEditMode && savedPath === _planEditFilePath) {
-    _planEditMode = false;
-    _planEditFilePath = null;
-    _planEditSource = null;
-    _planEditTabId = null;
-    _planEditContract = null;
-    showToast('Plan saved');
-    emit('plan-saved', {
-      ...planEvent, filePath: result?.path || savedPath, content: savedContent,
-      persisted: typeof contract?.save === 'function', savedRevision: result?.document?.revision,
-    });
-    closeFileEditor();
-    return;
-  }
-  if (_changelogEditMode && savedPath === _changelogEditFilePath) {
-    _changelogEditMode = false;
-    _changelogEditFilePath = null;
-    showToast('Changelog saved — sending to Claude');
-    emit('changelog-saved', { content: savedContent });
-    closeFileEditor();
-    return;
-  }
-  showToast('Saved');
-}
-
-function discardFileEditor() {
-  if (_editorSaving) return;
-  if (!confirm('Discard changes?')) return;
-  const textarea = $('fe-editor-textarea');
-  if (textarea) textarea.value = _editorOriginal;
-  updateEditorDirtyState();
-}
-
-function updateEditorDirtyState() {
-  const textarea = $('fe-editor-textarea');
-  _editorDirty = textarea ? textarea.value !== _editorOriginal : false;
-
-  const dot = $('fe-editor-dot');
-  if (dot) dot.classList.toggle('dirty', _editorDirty);
-
-  const saveBtn = $('fe-editor-save');
-  if (saveBtn) {
-    saveBtn.disabled = _editorSaving || (!_editorDirty && !_planEditMode);
-    saveBtn.classList.toggle('dirty', _editorDirty);
-  }
-
-  const discardBtn = $('fe-editor-discard');
-  if (discardBtn) discardBtn.disabled = _editorSaving || !_editorDirty;
-  emitPlanEditorState();
-}
-
-// ─── Markdown rendering (same as Skills Studio) ────────────
-function renderMarkdown(md) {
-  let text = md.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, '');
-  text = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  text = text.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
-    return `<pre><code class="lang-${lang}">${code.trimEnd()}</code></pre>`;
-  });
-  text = text.replace(/^######\s+(.+)$/gm, '<h6>$1</h6>');
-  text = text.replace(/^#####\s+(.+)$/gm, '<h5>$1</h5>');
-  text = text.replace(/^####\s+(.+)$/gm, '<h4>$1</h4>');
-  text = text.replace(/^###\s+(.+)$/gm, '<h3>$1</h3>');
-  text = text.replace(/^##\s+(.+)$/gm, '<h2>$1</h2>');
-  text = text.replace(/^#\s+(.+)$/gm, '<h1>$1</h1>');
-  text = text.replace(/^---+$/gm, '<hr>');
-  text = text.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
-  text = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-  text = text.replace(/\*(.+?)\*/g, '<em>$1</em>');
-  text = text.replace(/~~(.+?)~~/g, '<del>$1</del>');
-  text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
-  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
-  text = text.replace(/^&gt;\s?(.*)$/gm, '<blockquote>$1</blockquote>');
-  text = text.replace(/<\/blockquote>\n<blockquote>/g, '\n');
-  text = text.replace(/^(\|.+\|)\n(\|[-| :]+\|)\n((?:\|.+\|\n?)+)/gm, (_, header, _sep, body) => {
-    const ths = header.split('|').filter(c => c.trim()).map(c => `<th>${c.trim()}</th>`).join('');
-    const rows = body.trim().split('\n').map(row => {
-      const tds = row.split('|').filter(c => c.trim()).map(c => `<td>${c.trim()}</td>`).join('');
-      return `<tr>${tds}</tr>`;
-    }).join('');
-    return `<table><thead><tr>${ths}</tr></thead><tbody>${rows}</tbody></table>`;
-  });
-  text = text.replace(/^[-*]\s+(.+)$/gm, '<li>$1</li>');
-  text = text.replace(/((?:<li>.*<\/li>\n?)+)/g, '<ul>$1</ul>');
-  text = text.replace(/^\d+\.\s+(.+)$/gm, '<oli>$1</oli>');
-  text = text.replace(/((?:<oli>.*<\/oli>\n?)+)/g, (match) => {
-    return '<ol>' + match.replace(/<\/?oli>/g, (t) => t.replace('oli', 'li')) + '</ol>';
-  });
-  text = text.replace(/^(?!<[a-z/])((?!<).+)$/gm, '<p>$1</p>');
-  text = text.replace(/<p>\s*<\/p>/g, '');
-  return text;
-}
-
-function setPreviewMode(preview) {
-  _editorPreviewMode = preview;
-  const textarea = $('fe-editor-textarea');
-  const gutter = $('fe-editor-gutter');
-  const previewEl = $('fe-editor-preview');
-  const highlight = $('fe-editor-highlight');
-  const lineHighlight = $('fe-editor-line-highlight');
-
-  if (preview) {
-    if (textarea) textarea.style.display = 'none';
-    if (gutter) gutter.style.display = 'none';
-    if (highlight) highlight.style.display = 'none';
-    if (lineHighlight) lineHighlight.style.display = 'none';
-    if (previewEl) {
-      previewEl.innerHTML = renderMarkdown(textarea?.value || '');
-      previewEl.classList.add('visible');
-    }
-  } else {
-    if (textarea) textarea.style.display = '';
-    if (gutter) gutter.style.display = '';
-    if (highlight) highlight.style.display = '';
-    if (lineHighlight) lineHighlight.style.display = '';
-    if (previewEl) previewEl.classList.remove('visible');
-  }
-}
-
-function updateViewToggle() {
-  const toggle = $('fe-editor-view-toggle');
-  const sep = $('fe-editor-sep-preview');
-  if (toggle) toggle.style.display = _editorIsMarkdown ? 'flex' : 'none';
-  if (sep) sep.style.display = _editorIsMarkdown ? '' : 'none';
-}
-
-// ─── Find ─────────────────────────────────
-function openFind() {
-  _findOpen = true;
-  const bar = $('fe-editor-find');
-  const input = $('fe-editor-find-input');
-  if (bar) bar.classList.add('open');
-  if (input) { input.value = ''; input.focus(); }
-  _findMatches = [];
-  _findIndex = -1;
-  updateFindCount();
-}
-
-function closeFind() {
-  _findOpen = false;
-  const bar = $('fe-editor-find');
-  if (bar) bar.classList.remove('open');
-  _findMatches = [];
-  _findIndex = -1;
-  updateFindCount();
-}
-
-function doFind(query) {
-  _findMatches = [];
-  _findIndex = -1;
-  if (!query) { updateFindCount(); return; }
-
-  const textarea = $('fe-editor-textarea');
-  if (!textarea) return;
-  const text = textarea.value;
-  const lower = text.toLowerCase();
-  const q = query.toLowerCase();
-  let pos = 0;
-  while (true) {
-    const idx = lower.indexOf(q, pos);
-    if (idx === -1) break;
-    _findMatches.push({ start: idx, end: idx + q.length });
-    pos = idx + 1;
-  }
-  if (_findMatches.length > 0) {
-    _findIndex = 0;
-    selectFindMatch();
-  }
-  updateFindCount();
-}
-
-function findNext() {
-  if (_findMatches.length === 0) return;
-  _findIndex = (_findIndex + 1) % _findMatches.length;
-  selectFindMatch(true);
-  updateFindCount();
-}
-
-function findPrev() {
-  if (_findMatches.length === 0) return;
-  _findIndex = (_findIndex - 1 + _findMatches.length) % _findMatches.length;
-  selectFindMatch(true);
-  updateFindCount();
-}
-
-function selectFindMatch(focusTextarea) {
-  const textarea = $('fe-editor-textarea');
-  if (!textarea || _findIndex < 0 || _findIndex >= _findMatches.length) return;
-  const m = _findMatches[_findIndex];
-  if (focusTextarea) {
-    textarea.focus();
-    textarea.setSelectionRange(m.start, m.end);
-  }
-  // Scroll match into view
-  const yPos = getLineVisualTop(textarea, m.start);
-  const lineHeight = 20;
-  textarea.scrollTop = Math.max(0, yPos - 5 * lineHeight);
-}
-
-function updateFindCount() {
-  const el = $('fe-editor-find-count');
-  if (!el) return;
-  if (_findMatches.length === 0) {
-    const input = $('fe-editor-find-input');
-    el.textContent = input?.value ? 'No results' : '';
-  } else {
-    el.textContent = `${_findIndex + 1} of ${_findMatches.length}`;
-  }
-}
-
-function doReplace() {
-  if (_editorSaving) return;
-  const textarea = $('fe-editor-textarea');
-  const replaceInput = $('fe-editor-replace-input');
-  if (!textarea || !replaceInput || _findMatches.length === 0 || _findIndex < 0) return;
-  const m = _findMatches[_findIndex];
-  const replacement = replaceInput.value;
-  const savedIndex = _findIndex;
-  editorReplaceRange(textarea, m.start, m.end, replacement);
-  textarea.selectionStart = textarea.selectionEnd = m.start + replacement.length;
-  updateEditorDirtyState();
-  updateGutter();
-  doFind($('fe-editor-find-input')?.value || '');
-  // Stay at same index (next match slid into this position)
-  if (_findMatches.length > 0) {
-    _findIndex = Math.min(savedIndex, _findMatches.length - 1);
-    selectFindMatch(true);
-    updateFindCount();
-  }
-}
-
-function doReplaceAll() {
-  if (_editorSaving) return;
-  const textarea = $('fe-editor-textarea');
-  const findInput = $('fe-editor-find-input');
-  const replaceInput = $('fe-editor-replace-input');
-  if (!textarea || !findInput?.value || !replaceInput) return;
-  const query = findInput.value;
-  const replacement = replaceInput.value;
-  const text = textarea.value;
-  const lower = text.toLowerCase();
-  const q = query.toLowerCase();
-  const parts = [];
-  let pos = 0;
-  while (true) {
-    const idx = lower.indexOf(q, pos);
-    if (idx === -1) break;
-    parts.push(text.substring(pos, idx), replacement);
-    pos = idx + q.length;
-  }
-  parts.push(text.substring(pos));
-  editorPushUndo(textarea);
-  textarea.value = parts.join('');
-  updateEditorDirtyState();
-  updateGutter();
-  updateHighlight();
-  doFind(query);
-}
-
-// ─── Go to Line ───────────────────────────
-function openGoToLine() {
-  const bar = $('fe-editor-goto');
-  const input = $('fe-editor-goto-input');
-  if (bar) bar.classList.add('open');
-  if (input) { input.value = ''; input.focus(); }
-}
-
-function closeGoToLine() {
-  const bar = $('fe-editor-goto');
-  if (bar) bar.classList.remove('open');
-}
-
-function goToLine(lineNum) {
-  focusEditorLocation(lineNum, 1);
-  closeGoToLine();
-}
-
-
-// Append a muted "… N more (truncated)" row when the server capped a large dir,
-// so files aren't silently dropped. Styled like the inline "Loading..." indicator.
-function appendTruncationNotice(container, total, shown, depth) {
-  if (!total || total <= shown) return;
-  const note = document.createElement('div');
-  note.style.cssText = `padding:4px 0 4px ${depth * 16 + 24}px;font-size:11px;color:rgba(255,255,255,0.3);font-family:var(--ff-mono);`;
-  note.textContent = `… ${total - shown} more (truncated — narrow with search)`;
-  container.appendChild(note);
-}
-
-async function buildFileTree() {
-  const tree = $('fe-tree');
-  if (!tree) return;
-  // Delegated listeners survive innerHTML clears, so wire them once on the container.
-  if (!tree._delegated) {
-    tree.addEventListener('click', onFeTreeClick);
-    tree.addEventListener('contextmenu', onFeTreeContextMenu);
-    tree._delegated = true;
-  }
-  tree.innerHTML = '';
-
-  const data = _cache.values().next().value || await loadDirectory();
-  if (!data || !data.items) return;
-
-  const items = sortItems(data.items);
-  const rootPath = data.path || '';
-
-  for (const item of items) {
-    // Apply client-side filter
-    if (_filterText && !item.name.toLowerCase().includes(_filterText.toLowerCase())) continue;
-    item.fullPath = rootPath + '/' + item.name;
-    const node = createRow(item, 0);
-
-    // Restore expanded state
-    if (item.type === 'dir' && !_collapsed.has(item.fullPath)) {
-      // Only auto-expand if previously expanded (not collapsed)
-      // By default dirs start collapsed (not in _collapsed means not explicitly toggled)
-    }
-
-    tree.appendChild(node);
-  }
-
-  if (data.truncated) appendTruncationNotice(tree, data.total, items.length, 0);
-  updateCount(items.length);
-}
-
-async function expandDir(nodeEl, dirPath, depth) {
-  nodeEl.dataset.expanded = 'true';
-  _collapsed.delete(dirPath);
-  saveCollapsed();
-
-  const childrenEl = nodeEl.querySelector('.fe-children');
-  if (!childrenEl) return;
-
-  // If already loaded, just show
-  if (childrenEl.children.length > 0) return;
-
-  // Loading indicator
-  childrenEl.innerHTML = '<div style="padding:4px 0 4px ' + (depth * 16 + 24) + 'px;font-size:11px;color:rgba(255,255,255,0.25);font-family:var(--ff-mono);">Loading...</div>';
-
-  const data = await loadDirectory(dirPath);
-  childrenEl.innerHTML = '';
-
-  if (!data || !data.items) return;
-
-  const items = sortItems(data.items);
-  for (const item of items) {
-    if (_filterText && !item.name.toLowerCase().includes(_filterText.toLowerCase())) continue;
-    item.fullPath = dirPath + '/' + item.name;
-    const child = createRow(item, depth);
-    childrenEl.appendChild(child);
-  }
-
-  if (data.truncated) appendTruncationNotice(childrenEl, data.total, items.length, depth);
-}
-
-function collapseDir(nodeEl, dirPath) {
-  nodeEl.dataset.expanded = 'false';
-  if (dirPath) {
-    _collapsed.add(dirPath);
-    saveCollapsed();
-  }
-}
-
-function collapseAll() {
-  const tree = $('fe-tree');
-  if (!tree) return;
-  tree.querySelectorAll('.fe-node[data-type="dir"][data-expanded="true"]').forEach(n => {
-    n.dataset.expanded = 'false';
-    _collapsed.add(n.dataset.path);
-  });
-  saveCollapsed();
-}
-
-async function expandAll() {
-  const tree = $('fe-tree');
-  if (!tree) return;
-  const dirs = tree.querySelectorAll('.fe-node[data-type="dir"][data-expanded="false"]');
-  for (const n of dirs) {
-    const path = n.dataset.path;
-    // Determine depth by counting ancestor fe-children
-    let depth = 0;
-    let parent = n.parentElement;
-    while (parent && parent !== tree) {
-      if (parent.classList.contains('fe-children')) depth++;
-      parent = parent.parentElement;
-    }
-    await expandDir(n, path, depth + 1);
-  }
-}
-
-function updateCount(count) {
-  const el = $('fe-count');
-  if (el) el.textContent = `${count} items`;
-}
-
-
-// ═══════════════════════════════════════════
-// SEARCH (debounced server-side for >2 chars)
-// ═══════════════════════════════════════════
-
-let _searchTimer = null;
-let _searchAbort = null;
-
-function onFilterInput(e) {
-  _filterText = e.target.value.trim();
-
-  clearTimeout(_searchTimer);
-  // Cancel any in-flight search — its response is for a now-stale query.
-  _searchAbort?.abort();
-
-  if (_filterText.length > 2) {
-    _searchTimer = setTimeout(async () => {
-      const tree = $('fe-tree');
-      if (!tree) return;
-      tree.innerHTML = '<div style="padding:12px;font-size:11px;color:rgba(255,255,255,0.3);font-family:var(--ff-mono);text-align:center;">Searching...</div>';
-
-      const controller = new AbortController();
-      _searchAbort = controller;
-      const queryAtRequest = _filterText;
-      let data;
-      try {
-        data = await searchFiles(_filterText, controller.signal);
-      } catch (err) {
-        if (err && err.name === 'AbortError') return;  // superseded by a newer search
-        tree.innerHTML = '<div style="padding:12px;font-size:11px;color:rgba(255,120,120,0.6);font-family:var(--ff-mono);text-align:center;">Search failed</div>';
-        updateCount(0);
-        return;
-      }
-      // Guard against an out-of-order response landing after the query moved on.
-      if (queryAtRequest !== _filterText) return;
-      tree.innerHTML = '';
-
-      if (!data || !data.items || data.items.length === 0) {
-        tree.innerHTML = '<div style="padding:12px;font-size:11px;color:rgba(255,255,255,0.25);font-family:var(--ff-mono);text-align:center;">No results</div>';
-        updateCount(0);
-        return;
-      }
-
-      for (const item of data.items) {
-        item.fullPath = item.path;
-        const node = createRow(item, 0);
-        // Show relative path for search results
-        const nameEl = node.querySelector('.fe-name');
-        if (nameEl) nameEl.textContent = item.path;
-        tree.appendChild(node);
-      }
-      updateCount(data.items.length);
-    }, 300);
-  } else {
-    // Client-side filter on loaded tree
-    buildFileTree();
-  }
 }
 
 
@@ -2560,11 +870,13 @@ function initResizeHandle() {
   let resizeRaf = 0;
   let pendingWidth = _width;
   let explorerWidth = 0;
+  const clamp = (width) => Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, window.innerWidth - 48), width));
 
   const applyResize = () => {
     resizeRaf = 0;
     _width = pendingWidth;
     panel.style.width = `${_width}px`;
+    handle.setAttribute('aria-valuenow', String(_width));
     applyFileExplorerWidth();
   };
   const scheduleResize = (width) => {
@@ -2578,32 +890,54 @@ function initResizeHandle() {
     }
     applyResize();
   };
+  const settle = () => {
+    saveWidth();
+    window.dispatchEvent(new Event('resize'));
+  };
 
-  handle.addEventListener('mousedown', (e) => {
+  handle.setAttribute('aria-valuemin', String(MIN_WIDTH));
+  handle.setAttribute('aria-valuemax', String(MAX_WIDTH));
+  handle.setAttribute('aria-valuenow', String(_width));
+
+  // A mouse, a finger or a pen: the pointer is held by the handle until it is let go.
+  handle.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 && e.pointerType === 'mouse') return;
     e.preventDefault();
     dragging = true;
     explorerWidth = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--explorer-width')) || 0;
+    try { handle.setPointerCapture(e.pointerId); } catch {}
     handle.classList.add('active');
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
   });
 
-  document.addEventListener('mousemove', (e) => {
+  handle.addEventListener('pointermove', (e) => {
     if (!dragging) return;
     // The panel left edge starts at --explorer-width
-    const newWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, e.clientX - explorerWidth));
-    scheduleResize(newWidth);
+    scheduleResize(clamp(e.clientX - explorerWidth));
   });
 
-  document.addEventListener('mouseup', () => {
+  const release = () => {
     if (!dragging) return;
     dragging = false;
     flushResize();
     handle.classList.remove('active');
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
-    saveWidth();
-    window.dispatchEvent(new Event('resize'));
+    settle();
+  };
+  handle.addEventListener('pointerup', release);
+  handle.addEventListener('pointercancel', release);
+
+  // The arrow keys resize it too.
+  handle.addEventListener('keydown', (e) => {
+    const step = e.key === 'ArrowRight' ? 16 : e.key === 'ArrowLeft' ? -16 : 0;
+    if (!step) return;
+    e.preventDefault();
+    e.stopPropagation();
+    pendingWidth = clamp(_width + step);
+    flushResize();
+    settle();
   });
 }
 
@@ -2614,15 +948,16 @@ function initResizeHandle() {
 
 export function toggleFileExplorer() {
   const panel = $('file-explorer-panel');
-  if (!panel) return;
+  if (!panel || _guest) return;
 
   // If closing while editor is open + dirty, prompt first
-  if (_visible && _editorOpen) {
-    if (!closeFileEditor()) return; // User cancelled discard
+  if (_visible && isEditorPanelOpen()) {
+    if (!closeEditorPanel()) return; // User cancelled discard
   }
 
   _visible = !_visible;
   panel.classList.toggle('open', _visible);
+  panel.inert = !_visible;
   saveVisible();
 
   // Toggle unified title bar style (seamless with sidebar, slides under title bar)
@@ -2643,13 +978,17 @@ export function toggleFileExplorer() {
   const tbBtn = $('topright-file-explorer-btn');
   if (tbBtn) tbBtn.classList.toggle('active', _visible);
 
-  // Build tree on first show
-  if (_visible && !_rootLoaded) {
+  if (!_visible) closeGitPopover();
+  syncTree();
+}
+
+// The tree follows the panel: built when it is first shown, and following the disk only while it is shown.
+function syncTree() {
+  if (!_fx) return;
+  _fx.setVisible(_visible && !_guest);
+  if (_visible && !_guest && !_rootLoaded) {
     _rootLoaded = true;
-    fetchProjects().then(() => {
-      initProjectSelector();
-      return loadDirectory();
-    }).then(() => buildFileTree());
+    _showing = showTree();
   }
 }
 
@@ -2671,423 +1010,49 @@ export function initFileExplorer() {
 
   // Re-render tree when custom icons change
   on('sync:icons:changed', () => {
-    loadCustomIcons().then(() => { if (_rootLoaded) buildFileTree(); });
+    loadCustomIcons().then(() => { _fx?.redraw(); });
   });
 
-  // ── Plan editor — open plan file from Claude panel for direct editing ──
-  on('open-plan-editor', (contract = {}) => {
-    const { filePath, source = 'claude', tabId = null } = contract;
-    if (!filePath) return;
-    if (_planEditMode && _planEditFilePath === filePath
-      && _planEditSource === source && _planEditTabId === tabId
-      && _planEditContract?.planId === contract.planId && _planEditContract?.revision === contract.revision) {
-      $('fe-editor-textarea')?.focus();
-      return;
-    }
-    if ((_editorOpen || _planEditMode) && !closeFileEditor()) {
-      emit('plan-edit-cancelled', { source, tabId, planId: contract.planId, revision: contract.revision, accountId: contract.accountId, threadId: contract.threadId, sidepanelWindowId: contract.sidepanelWindowId || null });
-      return;
-    }
-    _planEditMode = true;
-    _planEditFilePath = filePath;
-    _planEditSource = source;
-    _planEditTabId = tabId;
-    _planEditContract = contract;
-    openFileEditor(filePath);
+  // ── Code editor (shared/editor/) — opened from the tree, and by other panels through the bus ──
+  initEditorPanel({
+    toast: showToast,
+    projectRoot: () => _selectedProject?.path || null,
+    beforeOpen: () => _fx?.closeMenus(),
+    revealInTree: revealFileInTree,
+    fileIcon: getFileIcon,
+    // ui-settings.js imports this module: it is loaded when it is asked for, not at the top.
+    openSettings: (target) => import('./ui-settings.js').then((settings) => settings.openSettingsModal(target)).catch((error) => console.warn('[editor] could not open Settings', error)),
   });
-
-  // ── Changelog editor — open changelog draft from Claude panel for direct editing ──
-  on('open-changelog-editor', ({ filePath }) => {
-    if ((_editorOpen || _planEditMode) && !closeFileEditor()) return;
-    _changelogEditMode = true;
-    _changelogEditFilePath = filePath;
-    openFileEditor(filePath);
-  });
-
-  on('open-file-editor', ({ filePath, line, column } = {}) => {
-    if (!filePath) return;
-    if ((_editorOpen || _planEditMode) && !closeFileEditor()) return;
-    _planEditContract = null;
-    _planEditMode = false;
-    _planEditFilePath = null;
-    _planEditSource = null;
-    _planEditTabId = null;
-    _changelogEditMode = false;
-    _changelogEditFilePath = null;
-    openFileEditor(filePath, { line, column });
-  });
+  // Plan editor — a panel opens its plan file for direct editing
+  on('open-plan-editor', (contract = {}) => openPlanInEditor(contract));
+  // Changelog editor — the Claude panel opens a changelog draft for direct editing
+  on('open-changelog-editor', ({ filePath } = {}) => openChangelogInEditor({ filePath }));
+  on('open-file-editor', ({ filePath, line, column } = {}) => openFileInEditor(filePath, { line, column }));
 
   const panel = $('file-explorer-panel');
   if (!panel) return;
+
+  // The File Explorer is the owner's: its routes refuse an invited guest. A guest's page does not offer it (as it
+  // does not offer Share): its button and menu entry are hidden, and so is the panel if the owner left it open.
+  // Nothing is stored for that: the state on the server is the owner's.
+  on('session:info', ({ isGuest: guest } = {}) => {
+    _guest = !!guest;
+    for (const id of ['menu-toggle-file-explorer', 'topright-file-explorer-btn']) { const el = $(id); if (el) el.style.display = _guest ? 'none' : ''; }
+    panel.hidden = _guest;
+    const shown = _visible && !_guest;
+    document.getElementById('title-bar')?.classList.toggle('file-explorer-active', shown);
+    document.body.classList.toggle('file-explorer-open', shown);
+    applyFileExplorerWidth();
+    if (_guest) closeGitPopover();
+    syncTree();
+  });
 
   // Set width — use navbar-aligned default if no persisted value
   if (!storage.getItem(KEYS.FILE_EXPLORER_WIDTH)) {
     _width = calcDefaultWidth();
   }
   panel.style.width = `${_width}px`;
-
-  // Wire filter
-  const filterInput = $('fe-filter-input');
-  const filterClear = $('fe-filter-clear');
-  if (filterInput) filterInput.addEventListener('input', onFilterInput);
-  if (filterClear) filterClear.addEventListener('click', () => {
-    if (filterInput) filterInput.value = '';
-    _filterText = '';
-    buildFileTree();
-  });
-
-  // Wire toolbar
-  const collapseBtn = $('fe-collapse-all');
-  const expandBtn = $('fe-expand-all');
-  const sortBtn = $('fe-sort-btn');
-  const refreshBtn = $('fe-refresh');
-
-  if (collapseBtn) collapseBtn.addEventListener('click', collapseAll);
-  if (expandBtn) expandBtn.addEventListener('click', expandAll);
-
-  if (sortBtn) {
-    const sortModes = ['name', 'size', 'date'];
-    const sortLabels = { name: 'Sort: name', size: 'Sort: size', date: 'Sort: date' };
-    sortBtn.addEventListener('click', () => {
-      const idx = sortModes.indexOf(_sortMode);
-      _sortMode = sortModes[(idx + 1) % sortModes.length];
-      sortBtn.dataset.tooltip = sortLabels[_sortMode];
-      saveSort();
-      buildFileTree();
-    });
-    sortBtn.dataset.tooltip = `Sort: ${_sortMode}`;
-  }
-
-  const undoBtn = $('fe-undo-btn');
-  const redoBtn = $('fe-redo-btn');
-  if (undoBtn) undoBtn.addEventListener('click', undoDelete);
-  if (redoBtn) redoBtn.addEventListener('click', redoDelete);
-
-  if (refreshBtn) refreshBtn.addEventListener('click', () => {
-    _cache.clear();
-    _rootLoaded = false;
-    fetchProjects().then(() => {
-      initProjectSelector();
-      return loadDirectory();
-    }).then(() => {
-      _rootLoaded = true;
-      buildFileTree();
-    });
-  });
-
-  // Editor buttons + features
-  const editorBack = $('fe-editor-back');
-  const editorSave = $('fe-editor-save');
-  const editorDiscard = $('fe-editor-discard');
-  const editorClose = $('fe-editor-close');
-  const editorTextarea = $('fe-editor-textarea');
-  const wordWrapBtn = $('fe-editor-word-wrap');
-
-  if (editorBack) editorBack.addEventListener('click', closeFileEditor);
-  if (editorSave) editorSave.addEventListener('click', saveFileEditor);
-  if (editorDiscard) editorDiscard.addEventListener('click', discardFileEditor);
-  if (editorClose) editorClose.addEventListener('click', closeFileEditor);
-
-  // Word wrap toggle (enabled by default)
-  if (wordWrapBtn) wordWrapBtn.classList.add('active');
-  if (wordWrapBtn && editorTextarea) {
-    wordWrapBtn.addEventListener('click', () => {
-      const wrapped = editorTextarea.style.whiteSpace === 'pre-wrap';
-      const newWrap = wrapped ? 'pre' : 'pre-wrap';
-      const newOverflow = wrapped ? 'normal' : 'break-word';
-      editorTextarea.style.whiteSpace = newWrap;
-      editorTextarea.style.overflowWrap = newOverflow;
-      const hl = $('fe-editor-highlight');
-      if (hl) { hl.style.whiteSpace = newWrap; hl.style.overflowWrap = newOverflow; }
-      wordWrapBtn.classList.toggle('active', !wrapped);
-      // Wrapping changed without a box-size change → re-sync the measuring mirror
-      // and reposition the current-line highlight.
-      invalidateLineMirror();
-      updateLineHighlight();
-    });
-  }
-
-  // Keybinds help popover
-  const helpBtn = $('fe-editor-help-btn');
-  const keybindsPanel = $('fe-editor-keybinds');
-  if (helpBtn && keybindsPanel) {
-    helpBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      keybindsPanel.classList.toggle('open');
-    });
-    document.addEventListener('click', () => keybindsPanel.classList.remove('open'));
-    keybindsPanel.addEventListener('click', (e) => e.stopPropagation());
-  }
-
-  // Raw/Preview toggle for markdown files
-  document.querySelectorAll('.fe-editor-toggle-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const mode = btn.dataset.mode;
-      _editorPreviewMode = mode === 'preview';
-      document.querySelectorAll('.fe-editor-toggle-btn').forEach(b => b.classList.toggle('active', b === btn));
-      setPreviewMode(_editorPreviewMode);
-    });
-  });
-
-  // Find & Replace bar
-  const findBtn = $('fe-editor-find-btn');
-  const findInput = $('fe-editor-find-input');
-  const findPrevBtn = $('fe-editor-find-prev');
-  const findNextBtn = $('fe-editor-find-next');
-  const findCloseBtn = $('fe-editor-find-close');
-  const replaceBtn = $('fe-editor-replace');
-  const replaceAllBtn = $('fe-editor-replace-all');
-  const replaceInput = $('fe-editor-replace-input');
-
-  if (findBtn) findBtn.addEventListener('click', () => {
-    if (_findOpen) closeFind(); else openFind();
-  });
-  if (findCloseBtn) findCloseBtn.addEventListener('click', closeFind);
-  if (findNextBtn) findNextBtn.addEventListener('click', findNext);
-  if (findPrevBtn) findPrevBtn.addEventListener('click', findPrev);
-  if (replaceBtn) replaceBtn.addEventListener('click', doReplace);
-  if (replaceAllBtn) replaceAllBtn.addEventListener('click', doReplaceAll);
-  if (findInput) {
-    findInput.addEventListener('input', () => doFind(findInput.value));
-    findInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.shiftKey ? findPrev() : findNext(); }
-      if (e.key === 'Escape') closeFind();
-    });
-  }
-  if (replaceInput) {
-    replaceInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') doReplace();
-      if (e.key === 'Escape') closeFind();
-    });
-  }
-
-  // Go to Line
-  const gotoInput = $('fe-editor-goto-input');
-  if (gotoInput) {
-    gotoInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { goToLine(parseInt(gotoInput.value, 10)); }
-      if (e.key === 'Escape') closeGoToLine();
-    });
-  }
-
-  // Auto-close bracket/quote pairs
-  const PAIRS = { '(': ')', '[': ']', '{': '}', '"': '"', "'": "'", '`': '`' };
-
-  if (editorTextarea) {
-    editorTextarea.addEventListener('input', () => {
-      // Immediate: cheap feedback the user perceives directly.
-      updateEditorDirtyState();
-      updateLineHighlight();
-      // Debounced: full-file syntax highlight + gutter reconcile (heavy on big files).
-      debouncedEditorRender();
-    });
-    // Scroll sync: gutter follows textarea, update scrollmap + line highlight + syntax.
-    // Coalesced to one run per frame (vsync-aligned) so fast scrolling doesn't fire
-    // four DOM-measuring ops on every scroll pixel. Passive: the handler never
-    // calls preventDefault.
-    const onEditorScroll = rafThrottle(() => {
-      syncGutterScroll();
-      syncHighlightScroll();
-      updateScrollmap();
-      updateLineHighlight();
-    });
-    editorTextarea.addEventListener('scroll', onEditorScroll, { passive: true });
-    // Cursor position + line highlight tracking
-    editorTextarea.addEventListener('click', () => { updateCursorPos(); updateLineHighlight(); });
-    editorTextarea.addEventListener('keyup', () => { updateCursorPos(); updateLineHighlight(); });
-    editorTextarea.addEventListener('select', () => { updateCursorPos(); updateLineHighlight(); });
-
-    let _undoBurstTimer = null;
-
-    editorTextarea.addEventListener('keydown', (e) => {
-      if (_editorSaving) return;
-      const ta = e.target;
-      const mod = e.ctrlKey || e.metaKey;
-
-      // Typing snapshot — capture pre-edit state on first key of each burst
-      const isTypingKey = e.key.length === 1 && !mod;
-      const isDeleteKey = (e.key === 'Backspace' || e.key === 'Delete') && !mod;
-      if ((isTypingKey || isDeleteKey) && !PAIRS[e.key]) {
-        if (!_undoBurstOpen) {
-          _undoBurstOpen = true;
-          const top = _undoStack.length ? _undoStack[_undoStack.length - 1] : null;
-          if (!top || top.value !== ta.value) {
-            _undoStack.push({ value: ta.value, selStart: ta.selectionStart, selEnd: ta.selectionEnd });
-            if (_undoStack.length > 200) _undoStack.shift();
-            _redoStack = [];
-          }
-        }
-        clearTimeout(_undoBurstTimer);
-        _undoBurstTimer = setTimeout(() => { _undoBurstOpen = false; }, 400);
-      }
-
-      // Ctrl+Z → undo
-      if (e.key === 'z' && mod && !e.shiftKey) {
-        e.preventDefault();
-        editorUndo(ta);
-        return;
-      }
-
-      // Ctrl+Y or Ctrl+Shift+Z → redo
-      if ((e.key === 'y' && mod) || (e.key === 'z' && mod && e.shiftKey)) {
-        e.preventDefault();
-        editorRedo(ta);
-        return;
-      }
-
-      // Tab → insert 2 spaces
-      if (e.key === 'Tab' && !e.shiftKey) {
-        e.preventDefault();
-        editorInsertText(ta, '  ');
-        return;
-      }
-
-      // Shift+Tab → unindent selected lines
-      if (e.key === 'Tab' && e.shiftKey) {
-        e.preventDefault();
-        const start = ta.selectionStart;
-        const end = ta.selectionEnd;
-        const val = ta.value;
-        const lineStart = val.lastIndexOf('\n', start - 1) + 1;
-        const lineEnd = val.indexOf('\n', end);
-        const blockEnd = lineEnd === -1 ? val.length : lineEnd;
-        const block = val.substring(lineStart, blockEnd);
-        const unindented = block.split('\n').map(l => l.startsWith('  ') ? l.slice(2) : l.replace(/^\t/, '')).join('\n');
-        editorReplaceRange(ta, lineStart, blockEnd, unindented);
-        ta.setSelectionRange(lineStart, lineStart + unindented.length);
-        updateEditorDirtyState();
-        updateGutter();
-        return;
-      }
-
-      // Enter → auto-indent
-      if (e.key === 'Enter' && !mod) {
-        e.preventDefault();
-        const pos = ta.selectionStart;
-        const val = ta.value;
-        const lineStart = val.lastIndexOf('\n', pos - 1) + 1;
-        const line = val.substring(lineStart, pos);
-        const indent = line.match(/^(\s*)/)[1];
-        editorInsertText(ta, '\n' + indent);
-        return;
-      }
-
-      // Ctrl+D → duplicate line
-      if (e.key === 'd' && mod) {
-        e.preventDefault();
-        const pos = ta.selectionStart;
-        const val = ta.value;
-        const lineStart = val.lastIndexOf('\n', pos - 1) + 1;
-        let lineEnd = val.indexOf('\n', pos);
-        if (lineEnd === -1) lineEnd = val.length;
-        const line = val.substring(lineStart, lineEnd);
-        editorPushUndo(ta);
-        ta.value = val.substring(0, lineEnd) + '\n' + line + val.substring(lineEnd);
-        const newPos = lineEnd + 1 + line.length;
-        ta.selectionStart = ta.selectionEnd = newPos;
-        updateEditorDirtyState();
-        updateGutter();
-        return;
-      }
-
-      // Ctrl+/ → toggle line comment
-      if (e.key === '/' && mod) {
-        e.preventDefault();
-        const lang = $('fe-editor-lang')?.textContent || '';
-        const prefix = COMMENT_PREFIX[lang] || '//';
-        const start = ta.selectionStart;
-        const end = ta.selectionEnd;
-        const val = ta.value;
-        const lineStart = val.lastIndexOf('\n', start - 1) + 1;
-        let lineEnd = val.indexOf('\n', end);
-        if (lineEnd === -1) lineEnd = val.length;
-        const block = val.substring(lineStart, lineEnd);
-        const lines = block.split('\n');
-        const allCommented = lines.every(l => l.trimStart().startsWith(prefix));
-        const toggled = lines.map(l => {
-          if (allCommented) {
-            const idx = l.indexOf(prefix);
-            return l.substring(0, idx) + l.substring(idx + prefix.length + (l[idx + prefix.length] === ' ' ? 1 : 0));
-          }
-          return prefix + ' ' + l;
-        }).join('\n');
-        editorReplaceRange(ta, lineStart, lineEnd, toggled);
-        ta.setSelectionRange(lineStart, lineStart + toggled.length);
-        updateEditorDirtyState();
-        updateGutter();
-        return;
-      }
-
-      // Ctrl+S → save
-      if (e.key === 's' && mod) {
-        e.preventDefault();
-        saveFileEditor();
-        return;
-      }
-
-      // Ctrl+F → find
-      if (e.key === 'f' && mod) {
-        e.preventDefault();
-        openFind();
-        return;
-      }
-
-      // Ctrl+G → go to line
-      if (e.key === 'g' && mod) {
-        e.preventDefault();
-        openGoToLine();
-        return;
-      }
-
-      // Ctrl+H → focus replace (open find first if needed)
-      if (e.key === 'h' && mod) {
-        e.preventDefault();
-        if (!_findOpen) openFind();
-        const ri = $('fe-editor-replace-input');
-        if (ri) ri.focus();
-        return;
-      }
-
-      // Auto-close brackets and quotes
-      if (PAIRS[e.key]) {
-        const pos = ta.selectionStart;
-        const end = ta.selectionEnd;
-        editorPushUndo(ta);
-        if (pos !== end) {
-          const selected = ta.value.substring(pos, end);
-          ta.value = ta.value.substring(0, pos) + e.key + selected + PAIRS[e.key] + ta.value.substring(end);
-          ta.setSelectionRange(pos + 1, pos + 1 + selected.length);
-        } else {
-          ta.value = ta.value.substring(0, pos) + e.key + PAIRS[e.key] + ta.value.substring(pos);
-          ta.setSelectionRange(pos + 1, pos + 1);
-        }
-        e.preventDefault();
-        updateEditorDirtyState();
-        return;
-      }
-
-      // Backspace → delete matching pair if cursor is between them
-      if (e.key === 'Backspace' && !mod) {
-        const pos = ta.selectionStart;
-        if (pos > 0 && pos === ta.selectionEnd) {
-          const before = ta.value[pos - 1];
-          const after = ta.value[pos];
-          if (PAIRS[before] === after) {
-            e.preventDefault();
-            editorPushUndo(ta);
-            ta.value = ta.value.substring(0, pos - 1) + ta.value.substring(pos + 1);
-            ta.selectionStart = ta.selectionEnd = pos - 1;
-            updateEditorDirtyState();
-            updateGutter();
-            return;
-          }
-        }
-      }
-    });
-  }
-
-  // Git panel
-  initGitPanel();
+  panel.inert = !_visible;
 
   // Resize handle
   initResizeHandle();
@@ -3116,12 +1081,32 @@ export function initFileExplorer() {
     applyFileExplorerWidth();
     if (menuEl) menuEl.classList.add('active');
     if (toolbarBtn) toolbarBtn.classList.add('active');
-    _rootLoaded = true;
-    fetchProjects().then(() => {
-      initProjectSelector();
-      return loadDirectory();
-    }).then(() => buildFileTree());
   }
+
+  // The tree, and what the panel says in the user's language.
+  loadTree().then((mod) => {
+    if (!mod) {
+      // Its own words could not be loaded with it: they are asked for by themselves.
+      import('/shared/i18n.js').then((i18n) => { $('fe-tree')?.append(Object.assign(document.createElement('div'), { className: 'fe-note fe-note--error', textContent: i18n.t('fileExplorer.loadFailed') })); }).catch(() => {});
+      return;
+    }
+    _tr = mod.t;
+    initGitPanel();
+    _fx = mod.createExplorer({
+      panel,
+      storage,
+      KEYS,
+      editor: { openFile: (path, at) => openFileInEditor(path, at), save: () => saveEditorPanel() },
+      send: SEND,
+      fileIcon: getFileIcon,
+      folderSvg: FOLDER_SVG,
+      colors: folderColors,
+      onGit: updateBranchLabel,
+      addProject: addProjectFlow,
+      readServer: fetchProjects,
+    });
+    syncTree();
+  });
 }
 
 // Exports for Settings → Icons tab preview

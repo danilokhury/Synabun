@@ -15,6 +15,7 @@ import { isGuest, hasPermission } from './ui-sync.js';
 import { sendToPanel } from './ui-claude-panel.js';
 import { forceCheckToolUpdates, showUpdateToast, TOOL_LABELS } from './ui-tool-updates.js';
 import { forceCheckSynabunUpdate, openSynabunUpdateModal } from './ui-update.js';
+import { requestServerRestart } from './ui-loading.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -420,34 +421,10 @@ function wireTerminalMenu() {
       const result = await requestPwaInstall();
       if (result === 'instructions') location.assign(installGuideUrl());
     },
-    'menu-restart-server':   async () => {
-      try {
-        // Cache project path before server goes down
-        try {
-          const h = await fetch('/api/health');
-          const hd = await h.json();
-          if (hd.projectDir) localStorage.setItem('synabun-project-dir', hd.projectDir);
-        } catch {}
-        document.title = 'Restarting...';
-        await fetch('/api/server/restart', { method: 'POST' });
-
-        // Poll /api/health until the server has gone down AND come back up.
-        // The everDown flag prevents premature reload during the brief window
-        // where the old process is still serving requests during shutdown grace.
-        const deadline = Date.now() + 15000;
-        let everDown = false;
-        while (Date.now() < deadline) {
-          await new Promise(r => setTimeout(r, 250));
-          try {
-            const r = await fetch('/api/health', { cache: 'no-store' });
-            if (!r.ok) { everDown = true; continue; }
-            if (everDown) { location.reload(); return; }
-          } catch { everDown = true; }
-        }
-        // Timeout safety net — reload anyway so the user isn't stranded.
-        location.reload();
-      } catch {}
-    },
+    // The restart screen is drawn in this click, before anything is asked of
+    // the network; from there it follows the restart and loads the page again
+    // when the server is back (ui-loading.js requestServerRestart).
+    'menu-restart-server':   () => { requestServerRestart(); },
     'menu-stop-server':      async () => {
       const previousTitle = document.title;
       try {
