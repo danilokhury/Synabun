@@ -685,6 +685,7 @@
     "reasonAssistantSaid": "Stopped by the Assistant: {reason}",
     "reasonTimeCap": "The run reached its time limit.",
     "reasonBudget": "The run reached its budget limit.",
+    "reasonBudgetShare": "This provider used up its share of the session budget.",
     "reasonMaxTurns": "The run reached its turn limit.",
     "reasonIdle": "The worker waited for a follow-up that did not come, and closed.",
     "reasonRestart": "The server restarted while the run was open.",
@@ -1369,7 +1370,8 @@
         "memory_data": "Memory & data",
         "tools": "Tools",
         "automations": "Automations",
-        "personalize": "Personalize"
+        "personalize": "Personalize",
+        "app": "SynaBun"
       },
       "nav": {
         "ai_connections": {
@@ -1419,6 +1421,10 @@
         "code_editor": {
           "label": "Code editor",
           "help": "Editing preferences and AI autocomplete"
+        },
+        "about": {
+          "label": "About",
+          "help": "Version, links and licenses"
         }
       },
       "page": {
@@ -1469,6 +1475,10 @@
         "code_editor": {
           "title": "Code editor",
           "purpose": "Set up the editor that opens files from the File Explorer: how text is shown, indented and saved, and AI autocomplete."
+        },
+        "about": {
+          "title": "About",
+          "purpose": "The version you run, what it runs on, and the open-source software SynaBun is built with."
         }
       },
       "section": {
@@ -1794,6 +1804,20 @@
           "editing": {
             "title": "Editing",
             "purpose": "How the editor shows text, indents it and saves it. The View menu in the editor changes the same settings."
+          }
+        },
+        "about": {
+          "links": {
+            "title": "Links",
+            "purpose": "The project's pages. They open in your browser."
+          },
+          "system": {
+            "title": "System",
+            "purpose": "What this copy of SynaBun runs on. Copy info puts these details on the clipboard."
+          },
+          "dependencies": {
+            "title": "Dependencies",
+            "purpose": "Every package SynaBun ships with, the version installed here and its license."
           }
         }
       },
@@ -3443,6 +3467,18 @@
         "edt023": {
           "label": "End files with one newline on save",
           "help": "When a file is saved, a missing final line break is added and empty lines after the last line of text are removed."
+        },
+        "abt001": {
+          "label": "Check for updates",
+          "help": "Looks for a newer version of SynaBun and of the coding tools: the same check as Check for updates in the Apps menu."
+        },
+        "abt002": {
+          "label": "Copy info",
+          "help": "Copies the version, install, runtime, system and dependency versions as plain text, for a bug report. No paths, keys or settings."
+        },
+        "abt003": {
+          "label": "Filter dependencies",
+          "help": "Shows only the packages whose name contains what you type."
         }
       },
       "pane": {
@@ -4551,6 +4587,7 @@
         "allCustomIconsReset": "All custom icons reset"
       },
       "judgments": {
+        "budgetShareScore": "{provider}: share score {score} \u00b7 confidence {confidence}",
         "showEveryJudgmentAboutThisMemory": ": show every judgment about this memory in the log",
         "checkingTypesafe": "Checking TypeSafe…",
         "learnMoreAtTypesafe": "Learn more at",
@@ -5058,6 +5095,8 @@
         "longerAnswersAreCutThereWith": "Longer answers are cut there with a note; the full answer stays in SynaBun.",
         "freshConversation": "Fresh conversation",
         "inMessageYourself": "In \"Message yourself\"",
+        "transcribeVoiceNotes": "Transcribe voice notes",
+        "voiceNotesAreTurnedIntoText": "Turned into text on this computer by whisper.cpp and FFmpeg, which you install yourself; nothing goes to a transcription service. The text then reaches the Assistant like a typed message, and approvals still take a typed yes.",
         "commandsYouCanSend": "Commands you can send",
         "answerAQuestionOrAnApproval": "When SynaBun asks something, answer in your own words. An approval takes a plain yes or no; any other message approves nothing and carries the conversation on.",
         "whatSynabunMayDoFromWhatsapp": "What SynaBun may do from WhatsApp",
@@ -5086,7 +5125,7 @@
         "nowOnYourPhone": "Now on your phone:",
         "send": "send",
         "inTheWhatsappChatWithSynabun": "in the WhatsApp chat with SynaBun within",
-        "autonomousThenRunsFor8Hours": ". Autonomous then runs for 8 hours.",
+        "autonomousUntilTurnedOff": ". Autonomous then stays on until you turn it off.",
         "noLog": "No log.",
         "theInstallLogIsEmpty": "The install log is empty.",
         "cancel": "Cancel",
@@ -5175,7 +5214,6 @@
         "tries": "tries",
         "previewSample": "{label}Here is what I found…",
         "ownerSince": "· since {date}",
-        "levelUntil": "until {time}",
         "errorCode": "Code: {code}",
         "sessionCurrent": "Current: {title}",
         "levelPaused": "· paused",
@@ -5232,7 +5270,7 @@
           },
           "autonomous": {
             "title": "Autonomous",
-            "body": "SynaBun acts without asking, like the Assistant on this computer. Turning it on takes a second click here and an ALLOW code sent from your phone within 5 minutes. It turns back to Ask after 8 hours. Autonomous can read any file your computer account can, including SynaBun's WhatsApp login. Use it only with a locked phone, ideally on a second number."
+            "body": "SynaBun acts without asking, like the Assistant on this computer. Turning it on takes a second click here and an ALLOW code sent from your phone within 5 minutes. It stays on until you turn it off. Autonomous can read any file your computer account can, including SynaBun's WhatsApp login. Use it only with a locked phone, ideally on a second number."
           }
         },
         "progress": {
@@ -5278,7 +5316,7 @@
           },
           "prefix": {
             "label": "Only messages that start with sb",
-            "hint": "Keep using \"Message yourself\" for notes; start a message with sb (or sb:) to talk to SynaBun. Commands like /stop, the ALLOW code and replies to SynaBun's own messages always reach it."
+            "hint": "Keep using \"Message yourself\" for notes; start a message with sb (or sb:) to talk to SynaBun, or say \"sb\" first in a voice note. Commands like /stop, the ALLOW code and replies to SynaBun's own messages always reach it."
           }
         },
         "commands": {
@@ -5308,12 +5346,13 @@
           }
         },
         "limits": {
-          "0": "Text and pictures (up to 4 per message, 5 MB each). Voice notes, videos, documents and stickers are not read yet.",
+          "0": "Text and pictures (up to 4 per message, 5 MB each), and voice notes transcribed on this computer (up to 10 minutes and 20 MB each). Videos, documents and stickers are not read yet.",
           "1": "At most 20 messages a minute and 300 a day; 5 messages can wait in line while SynaBun works.",
           "2": "Messages older than 10 minutes when SynaBun comes back online are skipped (it tells you how many).",
           "3": "Answers are split into messages of 3,500 characters; the rest stays in SynaBun.",
           "4": "Computer use from WhatsApp is off until you turn it on above. Then: never at Read-only or while paused, after one yes per task at Ask on my phone, and without asking while Autonomous is active. Agents started from WhatsApp never get it.",
-          "5": "Levels, models and settings change only here, never from the phone."
+          "5": "Levels, models and settings change only here, never from the phone.",
+          "6": "A voice note is an ordinary message: it never approves anything and never runs a command. Approvals take a typed yes."
         },
         "privacyStays": {
           "session": {
@@ -5380,7 +5419,8 @@
             "3": "In \"Message yourself\", only messages typed on the phone reach SynaBun. Messages typed into that chat from WhatsApp Web or Desktop are ignored.",
             "4": "With \"Only messages that start with sb\", a note without sb never reaches SynaBun and is not logged; commands, the ALLOW code and replies to SynaBun's messages always get through.",
             "5": "The QR code expires after about a minute. Press \"Show a new code\" and scan faster, or link with your phone number instead.",
-            "6": "Stuck on \"Reconnecting\"? Check this computer's internet connection, then press Reconnect now."
+            "6": "Stuck on \"Reconnecting\"? Check this computer's internet connection, then press Reconnect now.",
+            "7": "Voice notes not transcribed? This computer needs whisper.cpp, its speech model and FFmpeg, which you install yourself; the line under \"Transcribe voice notes\" says what is missing."
           },
           "browserTools": "Not the same as the WhatsApp browser tools. The whatsapp MCP profile lets agents read WhatsApp Web in SynaBun's browser; this tab is you chatting with SynaBun from your phone. They do not share a session.",
           "uninstall": "Uninstalling SynaBun does not unlink WhatsApp. Use Unlink or Remove here first, or log SynaBun out under WhatsApp → Settings → Linked devices."
@@ -5405,7 +5445,7 @@
           "UNKNOWN": "Something unexpected happened. The install log has the details."
         },
         "error": {
-          "HOST_HELD": "The WhatsApp connector kept crashing, so SynaBun stopped it. Reconnect to try again; the install log may help.",
+          "HOST_HELD": "The WhatsApp connector does not match this SynaBun version (it was updated while SynaBun ran), so SynaBun stopped it. Restart SynaBun to load the matching one.",
           "HOST_UNAVAILABLE": "The WhatsApp connector did not start.",
           "REPLACED": "Another copy of this WhatsApp link connected from somewhere else and took over. Reconnect here to take it back.",
           "LOCKED": "Another SynaBun is using the WhatsApp session files. Close it, then reconnect.",
@@ -5431,7 +5471,15 @@
           "banned": {
             "title": "WhatsApp refused this account",
             "sub": "WhatsApp blocked the account from linking devices, possibly a temporary or permanent ban. Check the WhatsApp app on the phone."
+          },
+          "invalid_session": {
+            "title": "The saved WhatsApp session is invalid",
+            "sub": "WhatsApp rejected this device session (badSession). Link again to pair it; automatic retries cannot repair the credentials."
           }
+        },
+        "warning": {
+          "replaced": "Another copy is using this WhatsApp session. SynaBun retries every 5 minutes; close the other copy or unlink and link again.",
+          "forbidden": "WhatsApp refused this account; it may be restricted or banned. SynaBun retries every 5 minutes; check WhatsApp on the phone."
         },
         "activity": {
           "inbound": "Received",
@@ -5457,6 +5505,18 @@
           "effort": "Thinking effort",
           "effortDefault": "Default effort",
           "saved": "WhatsApp model saved. It applies from your next message."
+        },
+        "voice": {
+          "ready": "Voice notes are transcribed on this computer.",
+          "readyOff": "Voice notes can be transcribed on this computer; turned off.",
+          "notSetUp": "Voice notes: not set up — missing {missing}.",
+          "partInvalid": "{name}: the path set for it does not work",
+          "part": {
+            "engine": "whisper.cpp (whisper-cli)",
+            "model": "the speech model (ggml-small.bin)",
+            "ffmpeg": "FFmpeg",
+            "tools": "the transcription tools"
+          }
         },
         "phoneError": {
           "NEEDS_COUNTRY_CODE": "Add your country code first, for example +44 for the UK or +1 for the US.",
@@ -5540,7 +5600,6 @@
             "title": "Is this your WhatsApp?"
           },
           "connected": {
-            "until": "until {time}",
             "readOnlyBrain": "Read-only ({brain} brain)",
             "title": "Connected"
           },
@@ -5669,7 +5728,8 @@
             "messages": "whatsapp, discord, phone, chat, bot, messaging",
             "notifications": "alerts, sound, volume, banner, toast, mute, desktop notification",
             "appearance": "theme, dark mode, skin, color, font, text size, language, locale, icons, zoom, look",
-            "code_editor": "editor, code, font, text size, word wrap, minimap, whitespace, indentation, tabs, autocomplete, completion, suggestions, copilot, ghost text, inline, ai, model, ollama, file"
+            "code_editor": "editor, code, font, text size, word wrap, minimap, whitespace, indentation, tabs, autocomplete, completion, suggestions, copilot, ghost text, inline, ai, model, ollama, file",
+            "about": "version, GitHub, license, dependencies, Node, Electron, Chromium, system, update, credits, copyright, release notes, changelog"
           },
           "section": {
             "ai_connections": {
@@ -5770,6 +5830,11 @@
             "code_editor": {
               "ai_autocomplete": "autocomplete, completion, suggestions, copilot, ghost text, inline, tab, model, opencode, ollama, openai, endpoint, api key, fastest, latency, excluded files, secrets, env",
               "editing": "font size, text size, ligatures, word wrap, wrap lines, minimap, indent guides, whitespace, spaces, tabs, tab size, indentation, trim trailing whitespace, final newline, on save"
+            },
+            "about": {
+              "links": "GitHub, repository, releases, changelog, issue, bug report, website, docs, documentation, npm, license, Discord, community",
+              "system": "version, Node, Node.js, Electron, Chromium, SQLite, operating system, OS, macOS, Windows, Linux, architecture, data folder, port, install, diagnostics",
+              "dependencies": "packages, libraries, npm, licenses, open source, third party, versions, node_modules"
             }
           },
           "control": {
@@ -5893,6 +5958,69 @@
             "all": "Everywhere"
           }
         }
+      },
+      "about": {
+        "loading": "Loading…",
+        "version": "Version {version}",
+        "channel": {
+          "stable": "Stable",
+          "prerelease": "Pre-release",
+          "dev": "Development build"
+        },
+        "install": {
+          "desktop": "Desktop app",
+          "app": "Installed app",
+          "npm": "npm install",
+          "git": "Git clone"
+        },
+        "restartNote": "Links, dependencies and the full system details appear after SynaBun restarts: the server that is running is older than this page.",
+        "copied": "Copied to the clipboard.",
+        "copyFailed": "The browser did not allow copying.",
+        "links": {
+          "none": "No links found in package.json."
+        },
+        "link": {
+          "repository": "GitHub repository",
+          "releases": "Releases",
+          "changelog": "Changelog",
+          "issues": "Report an issue",
+          "website": "Website",
+          "docs": "Documentation",
+          "npm": "npm package",
+          "license": "License",
+          "discord": "Discord",
+          "x": "X"
+        },
+        "row": {
+          "version": "Version",
+          "install": "Install",
+          "os": "Operating system",
+          "dataFolder": "Data folder",
+          "port": "Server port"
+        },
+        "package": {
+          "neural_interface": "Neural Interface",
+          "mcp_server": "MCP server",
+          "desktop": "Desktop app",
+          "whatsapp_connector": "WhatsApp connector"
+        },
+        "deps": {
+          "filterPlaceholder": "Filter",
+          "notInstalled": "not installed",
+          "declared": "declared {range}",
+          "optional": "optional",
+          "onDemand": "Installed on demand, into the data folder, when you set up WhatsApp.",
+          "vendored": "Bundled in the interface",
+          "dev": "Development dependencies ({count})",
+          "noMatch": "No package matches “{query}”.",
+          "none": "No dependencies found."
+        },
+        "footer": {
+          "license": "Licensed under {license}.",
+          "copyright": "Copyright © {years} {holder}",
+          "builtWith": "Built with open-source software"
+        },
+        "afterRestart": "Shown after SynaBun restarts."
       }
     }
   },
@@ -6131,7 +6259,102 @@
     "tileTerminals": "Tile terminals"
   },
 
+  "accounts": {
+    "apiShort": "API",
+    "subscriptionBadge": "{service} account",
+    "apiKeyBadge": "API key",
+    "signedOut": "Signed out",
+    "checking": "Checking…",
+    "keyUnreadable": "Key unreadable",
+    "defaultName": "Default",
+    "current": "This tab",
+    "nowNote": "Applies now: the next message runs under {label}.",
+    "nextNote": "This chat stays on {current}. {label} opens in a new chat.",
+    "sameNote": "This tab already uses {label}.",
+    "missingNote": "That account is no longer set up. Choose another one.",
+    "menuNoteNow": "The account you pick applies from the next message.",
+    "menuNoteChat": "This chat stays on {label}. Picking another account opens a new chat.",
+    "newChatUnder": "This chat runs under {label}.",
+    "tooManyTabs": "Close a tab first: the most tabs are open.",
+    "menuTitle": "{provider} accounts",
+    "triggerLabel": "{provider} account: {summary}",
+    "manage": "Manage {label}",
+    "back": "All accounts",
+    "addAccount": "Add account",
+    "refresh": "Refresh",
+    "subscriptionShort": "Subscription",
+    "emptyAccounts": "No accounts yet.",
+    "usageLeft": "{percent}% left",
+    "usageLimited": "Limit reached",
+    "usageResets": "Resets {time}",
+    "reading": "Reading the accounts…",
+    "readFailed": "Could not read the accounts. Try again.",
+    "needsServer": "Choosing an account needs a newer SynaBun server: restart it to enable this.",
+    "otherAccounts": "Other accounts…",
+    "uses": "Uses",
+    "usesGroup": "What {label} uses",
+    "credSubscription": "{service} subscription",
+    "credApiKey": "API key",
+    "inUse": "in use",
+    "signedIn": "Signed in",
+    "notSignedIn": "Not signed in",
+    "notChecked": "Not checked yet",
+    "noKey": "None",
+    "savedKey": "Saved",
+    "keyUnreadableLong": "Saved key cannot be read: save it again",
+    "keyKeptBy": "{hint}, kept by {cli}",
+    "signIn": "Sign in with {service}",
+    "useApiKey": "Use an API key",
+    "signOut": "Sign out",
+    "removeKey": "Remove key",
+    "rename": "Rename",
+    "remove": "Remove account",
+    "save": "Save",
+    "cancel": "Cancel",
+    "keyPlaceholder": "Paste API key",
+    "keyLabel": "API key for {label}",
+    "nameLabel": "Account name",
+    "freshPrompt": "Sign {label} in: with {service} (a terminal opens) or with an API key.",
+    "signInPending": "Finish signing in in the terminal. This menu updates when {cli} confirms it.",
+    "checkingKey": "Checking the key with {vendor}…",
+    "keySavedNote": "{label} now uses its API key.",
+    "modeSetApiKey": "{label} now uses its API key, from the next message.",
+    "modeSetSubscription": "{label} now uses its {service} account, from the next message.",
+    "signedOutNote": "{label} is signed out of {service}.",
+    "keyRemovedNote": "The API key of {label} was removed.",
+    "confirmSignOut": "Sign {label} out of {service}? {cli} removes the subscription login from this account.",
+    "confirmRemoveKey": "Remove the API key saved for {label}?",
+    "confirmRemove": "Remove {label}? Its folder, its sign-in and its saved key are deleted.",
+    "busyTurn": "Finish or stop the current turn first.",
+    "failed": "That did not work. Try again.",
+    "errInvalidKey": "That doesn't look like an {vendor} API key.",
+    "errOauthToken": "That's a Claude sign-in token. Use Sign in with Claude.",
+    "errKeyRejected": "{vendor} rejected that key.",
+    "errPermission": "Saving keys requires the owner’s SynaBun window. Reload and try again.",
+    "errAccountUnavailable": "This account is no longer available. Select an account again.",
+    "errAccountBusy": "Finish this account’s work, then try again.",
+    "errUnreachable": "Couldn't reach {vendor} to check the key. Try again.",
+    "errUnavailable": "{vendor} couldn't check the key. Try again shortly.",
+    "errServer": "Couldn't reach SynaBun. Check the connection and try again.",
+    "errStorage": "Couldn't save the key for this account."
+  },
   "assistant": {
+    "accountUsage": {
+      "autoPicked": "Auto chose {to}: {usage}",
+      "fallbackPicked": "{from} out of usage → {to}: {usage}",
+      "allLimitedPicked": "All subscriptions limited; soonest reset → {to}: {usage}",
+      "directWorkerHint": "Runs on a worker because this conversation belongs to another account.",
+      "noSubscription": "Auto requires a signed-in subscription account.",
+      "auto": "Auto · most usage left",
+      "autoHint": "Signed-in subscriptions only. Another account runs on a worker.",
+      "composerHint": "Pick the subscription with most usage left and start a new conversation.",
+      "notApplicable": "Usage n/a",
+      "limitedUntil": "Limited until {time}",
+      "limited": "Limited",
+      "unknown": "Usage unknown",
+      "left": "{percent}% left",
+      "resets": "resets {time}"
+    },
     "usage": {
       "task": "Current task",
       "tokens": "tokens",
@@ -7008,7 +7231,7 @@
       "routesUnavailable": "Model routing is not available on this server.",
       "computerUsage": "Usage: /computer [on|off]",
       "computerUnavailable": "Computer use is not available here.",
-      "budget": "Set the money caps (per run, session, brain)"
+      "budget": "Set the session budget and view provider shares"
     },
     "prompts": {
       "recall": "Use the SynaBun recall tool to search memory for: \"{query}\". Summarize the most relevant results with their IDs.",
@@ -7143,6 +7366,7 @@
       }
     },
     "accounts": {
+      "signInAccount": "Sign in to {label}…",
       "title": "{provider} accounts",
       "add": "Add account…",
       "manage": "Manage…",
@@ -7164,7 +7388,40 @@
       "openLogin": "Open sign-in page",
       "enterCode": "Enter this code:",
       "loginTimeout": "Login was not confirmed. The account was created — use \"Log in\" to retry.",
-      "confirmRemove": "Remove account \"{label}\"? Its config directory is kept on disk."
+      "confirmRemove": "Remove account \"{label}\"? Its config directory is kept on disk.",
+      "noteClaude2": "Each account has its own CLAUDE_CONFIG_DIR (settings, sign-in, sessions) and runs on its Claude subscription or its API key. \"Default\" is your ambient ~/.claude.",
+      "create": "Add account",
+      "useBrain": "Use for the brain",
+      "useWorkers": "Use for workers",
+      "workersSet": "Claude Code workers now use {label} when a dispatch names no account.",
+      "switchMode": "Use its {mode}",
+      "modeSet": "{label} now uses its {mode}.",
+      "finishInTerminal": "Finish signing in in the terminal. This list updates when Claude Code confirms it.",
+      "signOut": "Sign out of Claude",
+      "confirmSignOut": "Sign {label} out of Claude?",
+      "signedOut": "{label} is signed out of Claude.",
+      "removeKey": "Remove API key",
+      "confirmRemoveKey": "Remove the API key saved for {label}?",
+      "keyRemoved": "The API key of {label} was removed.",
+      "pasteKey": "Paste API key",
+      "keyFor": "API key for {label}",
+      "checkingKey": "Checking the key with Anthropic…",
+      "keySaved": "{label} now uses its API key.",
+      "notSignedIn": "Not signed in",
+      "checking": "Checking sign-in…",
+      "workerTag": "workers use it",
+      "subscription": "Claude subscription",
+      "apiKey": "API key",
+      "inUseNow": "in use",
+      "renamePrompt": "Name for {label}",
+      "confirmRemoveClaude": "Remove \"{label}\"? Its config directory, its sign-in and its saved key are deleted.",
+      "chooseSignIn": "Sign it in: with Claude (a terminal opens) or with an API key.",
+      "signInFirst": "Signed out: sign it in from Manage…",
+      "usesHeader": "{label} uses (every session on it)",
+      "workersHeader": "Claude Code workers use",
+      "noteCodex2": "Each account has its own CODEX_HOME (sign-in, sessions) and runs on its ChatGPT subscription or its API key. \"Default\" is your ambient ~/.codex.",
+      "codexWorkersHeader": "Codex workers use",
+      "codexWorkersSet": "Codex workers now use {label} when a dispatch names no account."
     },
     "transcript": "Conversation",
     "toolbar": {
@@ -7206,55 +7463,57 @@
     },
     "budget": {
       "title": "Budget",
-      "menu": "Budget…",
+      "menu": "Budget\u2026",
       "thisSession": "This session",
-      "caps": "Caps (US dollars)",
-      "defaultRun": "Default per-run cap",
-      "defaultRunDesc": "Each dispatched run stops at this spend unless the brain asks for another cap.",
-      "maxRun": "Largest per-run cap",
-      "maxRunDesc": "The most a brain may give one run (budget_usd).",
-      "sessionWarn": "Session warning",
-      "sessionWarnDesc": "The brain and this panel are warned once when the session spends this much.",
-      "sessionHard": "Session hard cap",
-      "sessionHardDesc": "Brain + every run of the session. At this spend runs stop, and dispatches, follow-ups and brain turns are refused.",
-      "brain": "Brain cap",
-      "brainDesc": "The central brain's own spend in one session, checked before every brain turn.",
-      "effective": "In effect: {value} · default {def}",
-      "sourceSaved": "saved",
-      "sourceDefault": "default",
-      "sourceLegacy": "from soft budget",
-      "sourceEdited": "edited",
-      "howEnforced": "How caps are enforced",
-      "brainRow": "Brain",
-      "resetAll": "Defaults",
-      "reload": "Reload",
-      "saved": "Budget saved — applies now.",
-      "saveFailed": "Could not save the budget",
-      "loadFailed": "Could not load the budget",
-      "conflict": "Changed elsewhere — reload to see the saved caps.",
-      "unavailable": "Budget settings are not available on this server yet (restart SynaBun to load them).",
+      "amount": "Budget per session (USD)",
+      "noLimit": "No limit",
+      "perSession": "{amount} / session",
+      "spendUnlimited": "{spent} \u00b7 no limit",
+      "applies": "Applies to each new session and all open sessions. Jev splits it across providers.",
       "errNumber": "Enter an amount in US dollars.",
       "errRange": "Between {min} and {max}.",
-      "errMaxOverHard": "Cannot exceed the session hard cap ({hard}).",
-      "errDefaultOverMax": "Cannot exceed the largest per-run cap ({max}).",
-      "errWarnOverHard": "Must be below the session hard cap ({hard}).",
-      "errBrainOverHard": "Cannot exceed the session hard cap ({hard}).",
-      "sessionLine": "{total} spent of {hard} — brain {brain}, agents {agents}; {reserved} reserved by live runs, {available} left for new runs.",
-      "meterLabel": "Session spend against the hard cap",
-      "notMetered": "not metered",
-      "notMeteredCodex": "not metered (Codex brain)",
-      "unpriced": "{n} run(s) used a model with no known price: their tokens are recorded but the dollar caps cannot meter them.",
-      "pricingOk": "Codex list prices: models.dev (OpenCode cache).",
-      "pricingTable": "List prices: SynaBun's table, checked against the Anthropic and OpenAI pricing pages on {date}. A Codex model it does not list is priced from models.dev.",
-      "pricingDrift": "models.dev lists another price for {models}: the table may be out of date.",
-      "pricingMissing": "Codex list prices unavailable (no OpenCode models.dev cache): Codex runs are flagged unpriced.",
-      "repaired": "The saved file broke a rule ({fields}); the values in effect were corrected. Save to store them.",
-      "applies": "Saved caps apply at once to open sessions and their runs: the next dispatch, follow-up, turn end and metered step. A Claude run keeps the CLI cap it started with, and the dispatcher also stops it at the new cap after its turn.",
-      "chipSplit": "Brain {brain} · agents {agents}",
-      "chipCap": "{total} of the {hard} session cap",
-      "chipUnpriced": "{n} run(s) with unpriced usage"
+      "invalid": "The server rejected this budget. Check the amount and try again.",
+      "loadFailed": "Could not load the budget. Try again.",
+      "saveFailed": "Could not save the budget. Your edit is kept; try again.",
+      "conflict": "Changed elsewhere again. Your edit is kept; try again.",
+      "retry": "Try again",
+      "saving": "Saving\u2026",
+      "saved": "Budget saved \u2014 applies now.",
+      "chipSplit": "Brain {brain} \u00b7 agents {agents}",
+      "chipUnpriced": "{n} run(s) with unpriced usage",
+      "meterLabel": "Session spend against the budget",
+      "brainRow": "Brain",
+      "providerSpend": "{spent} spent",
+      "providerAmounts": "Share {share} \u00b7 spent {spent} \u00b7 left for tasks {left}",
+      "reserve": "{reserve} reserved for the brain within this share.",
+      "dry": "Share used up",
+      "fixedRule": "Fixed rule",
+      "awaitingSplit": "The split is prepared when work starts.",
+      "ineligible": {
+        "no_models": "No available models",
+        "signed_out": "Signed out",
+        "limited": "Provider usage limit reached"
+      },
+      "fallback": {
+        "jev_off": "Jev is off",
+        "jev_unavailable": "Jev is unavailable",
+        "jev_incomplete": "Jev returned an incomplete split",
+        "nothing_left": "No budget left"
+      }
     },
     "routes": {
+      "budgetDecision": "budget re-route",
+      "budgetProvider": "Budget: the {provider} share of this session's budget is used up.",
+      "budgetSpent": "Budget: this session's budget is spent.",
+      "budgetDryOne": "Budget: the {list} share is used up.",
+      "budgetDryMany": "Budget: the {list} shares are used up.",
+      "account": {
+        "workersDefault": "Workers default",
+        "removed": "{id} · account removed",
+        "removedHint": "Account removed. Save another account choice before running this route.",
+        "signedOut": "Signed out. Sign in from the provider account menu before running this route.",
+        "conversationHint": "Uses this conversation’s account. Change it in the composer model selector."
+      },
       "title": "Model routing",
       "editor": "Model routes…",
       "editorTitle": "Model routes",
@@ -7399,6 +7658,7 @@
       "chatInactive": "Plain chat stays on the current brain. A stored Chat choice is not applied in any mode.",
       "visionFallback": "Vision fallback, not a task class. Used when the chosen model cannot see image input.",
       "columns": {
+        "account": "Account",
         "task": "Task",
         "model": "Model",
         "effort": "Effort",
@@ -8365,5 +8625,315 @@
         "body": "Click ? whenever you want to pick it up again. Nothing in your workspace was changed."
       }
     }
+  },
+  "codexSettings": {
+    "title": "Codex Settings",
+    "close": "Close",
+    "account": "Account",
+    "models": "Model & reasoning",
+    "permissions": "Permissions",
+    "tools": "Tools",
+    "advanced": "Advanced",
+    "loading": "Loading…",
+    "error": "Could not save or load settings: {message}",
+    "default": "(default)",
+    "defaultAccount": "Default account",
+    "manage": "Manage account",
+    "usage": "{name}: {percent}% used · resets {time}",
+    "unknown": "unknown",
+    "runtime": "CLI {cli} · Automation SDK {sdk} · Protocol {protocol}",
+    "mcp": "MCP servers",
+    "alwaysAllowed": "Always allowed",
+    "loginRequired": "Login required",
+    "running": "Running",
+    "configured": "{value} (configured)",
+    "refresh": "Refresh",
+    "revoke": "Revoke",
+    "authenticate": "Authenticate",
+    "noMcp": "Configure MCP servers in $CODEX_HOME/config.toml under [mcp_servers].",
+    "folders": "Always allowed folders",
+    "write": "Write",
+    "read": "Read",
+    "none": "None",
+    "applyTo": "Apply to",
+    "savedDefaults": "Saved defaults",
+    "currentThread": "Current thread",
+    "scopeHint": "Saved defaults affect new threads. Current thread choices apply to subsequent turns. MCP settings apply to this account; allowed folders apply across Codex tabs.",
+    "features": "Runtime features",
+    "on": "On",
+    "off": "Off",
+    "saveDefaults": "Save defaults",
+    "applyThread": "Apply to current thread",
+    "saving": "Saving…",
+    "saved": "Saved and verified",
+    "notApplied": "The effective value did not change for {keys}. Check the source layer or managed configuration.",
+    "busy": "Wait for the active turn to finish.",
+    "noSchema": "The running CLI did not report its settings schema. No settings will be written.",
+    "tokens": "tokens",
+    "source": "Source: {layer}",
+    "managed": "Managed configuration",
+    "model": "Model",
+    "reviewModel": "Review model",
+    "effort": "Reasoning effort",
+    "summary": "Reasoning summary",
+    "serviceTier": "Service tier",
+    "personality": "Personality",
+    "approval": "Approval policy",
+    "sandbox": "Sandbox mode",
+    "webSearch": "Web search",
+    "provider": "Provider",
+    "verbosity": "Response verbosity",
+    "contextWindow": "Context window",
+    "autoCompact": "Auto-compact",
+    "gateway": "Gateway OAuth",
+    "cancel": "Cancel",
+    "signIn": "Sign in",
+    "httpsRequired": "Authorization requires an HTTPS URL.",
+    "continueAt": "Continue sign-in at {host}",
+    "openHost": "Open {host}",
+    "verification": "User verification · Experimental",
+    "credentialReady": "Local credential ready",
+    "credentialMissing": "No local credential",
+    "localCredential": "Device credential only. Registration is managed by the verification provider.",
+    "remove": "Remove",
+    "enroll": "Enroll",
+    "removeCredential": "Remove the local user verification credential?",
+    "changedConversation": "This conversation changed. Reopen Settings to continue.",
+    "configRepaired": "Codex configuration repaired. The original was backed up.",
+    "warningHelp": "Edit the reported key in the reported config file, then reconnect Codex. Existing messages do not block sending.",
+    "dismiss": "Dismiss",
+    "openSettings": "Open settings",
+    "gatewayStates": {
+      "notReady": "Sign-in required",
+      "started": "Waiting for sign-in",
+      "succeeded": "Signed in",
+      "failed": "Sign-in failed"
+    },
+    "values": {
+      "never": "Never",
+      "untrusted": "Untrusted commands",
+      "on-request": "On request",
+      "read-only": "Read only",
+      "workspace-write": "Workspace write",
+      "danger-full-access": "Full access",
+      "auto": "Automatic",
+      "concise": "Concise",
+      "detailed": "Detailed",
+      "none": "None",
+      "low": "Low",
+      "medium": "Medium",
+      "high": "High",
+      "disabled": "Disabled",
+      "cached": "Cached",
+      "indexed": "Indexed",
+      "live": "Live",
+      "friendly": "Friendly",
+      "pragmatic": "Pragmatic"
+    }
+  },
+  "desktop": {
+    "update": {
+      "source": "SynaBun app",
+      "tooltip": "SynaBun update available: v{current} → v{latest}",
+      "tooltipDownloading": "Downloading SynaBun v{latest}",
+      "tooltipReady": "SynaBun v{latest} is ready: it installs when SynaBun is idle",
+      "titleAvailable": "Update available",
+      "titleDownloading": "Downloading the update",
+      "titleDownloaded": "Update ready",
+      "titleInstalling": "Installing the update",
+      "titleMove": "Move SynaBun to Applications",
+      "titleManual": "Install the update yourself",
+      "titleError": "The update did not finish",
+      "notesLabel": "What's new",
+      "notesEmpty": "This release has no notes.",
+      "snapshot": "Before v{version} starts for the first time, SynaBun takes a verified snapshot of your data.",
+      "backup": "Download full backup",
+      "backupWorking": "Creating backup...",
+      "backupDone": "{file} ({size} MB)",
+      "backupFailed": "Backup failed: {reason}",
+      "later": "Later",
+      "download": "Download update",
+      "downloadStarting": "Starting the download.",
+      "progress": "{transferred} of {total} MB",
+      "progressUnknown": "{transferred} MB downloaded",
+      "hide": "Hide",
+      "hideHint": "The download continues while this is hidden. SynaBun installs the update by itself when nothing is running.",
+      "readyBody": "SynaBun v{version} is downloaded. It installs by itself once nothing is running: SynaBun shows a one-minute notice, then restarts into it. It also installs when you quit SynaBun.",
+      "waitingBody": "Waiting for: {list}.",
+      "countdownBody": "SynaBun restarts into v{version} in {seconds} s.",
+      "postponedBody": "Postponed until {time}. It also installs when you quit SynaBun.",
+      "nowBody": "SynaBun restarts into v{version} as soon as nothing is running.",
+      "installNow": "Install now",
+      "installingBody": "SynaBun is stopping its server and installing v{version}. It closes and opens again by itself.",
+      "moveBody": "macOS is running SynaBun from a disk image or a temporary location, where it cannot update itself. Move it to the Applications folder; SynaBun opens again from there and can update.",
+      "move": "Move to Applications",
+      "manualBody": "SynaBun cannot replace itself in its current folder. Download the disk image of v{version}, open it and drag SynaBun to the Applications folder.",
+      "manualReady": "The disk image of v{version} is downloaded. Open it and drag SynaBun to the Applications folder to replace the old copy.",
+      "manualFile": "File: {path}",
+      "manualDownload": "Download disk image",
+      "showFile": "Show disk image",
+      "errorFallback": "SynaBun could not check for updates. Check the connection and try again.",
+      "errorNext": "SynaBun keeps the version it runs and tries again at its next check. You can try now, or download the new version yourself.",
+      "manualLink": "Download it yourself",
+      "close": "Close",
+      "retry": "Try again",
+      "testFeed": "test feed",
+      "metaAvailable": "From the SynaBun app",
+      "metaDownloading": "Downloading: {percent}%",
+      "metaDownloaded": "Ready: installs when SynaBun is idle",
+      "metaCountdown": "Restarting to install it",
+      "metaPostponed": "Postponed: installs on quit or later"
+    },
+    "busy": {
+      "assistant": "an Assistant run or dispatched agent",
+      "claude-panel": "a Claude Code panel reply",
+      "codex-panel": "a Codex panel reply",
+      "opencode-panel": "an OpenCode panel reply",
+      "claude-cli": "a Claude Code session in use",
+      "loop": "a loop",
+      "schedule": "a schedule",
+      "backup": "a backup",
+      "maintenance": "indexing or an install",
+      "unknown": "work SynaBun cannot see the end of",
+      "test": "the test switch"
+    },
+    "notice": {
+      "countdownTitle": "Updating to v{version}",
+      "countdownLine": "SynaBun restarts in {seconds} s.",
+      "later": "Later",
+      "postponed": "SynaBun asks again in an hour, or installs the update when you quit it.",
+      "updatedTitle": "SynaBun is updated",
+      "updatedLine": "Now v{version}, updated from v{previous}.",
+      "updatedLineShort": "Now v{version}.",
+      "failedTitle": "The update did not finish",
+      "details": "Details",
+      "close": "Close"
+    },
+    "menu": {
+      "quit": "Quit SynaBun"
+    },
+    "offline": {
+      "hint": "The SynaBun app restarts its server by itself. If it stays offline, quit SynaBun and open it again.",
+      "stalled": "The server has not come back. Quit SynaBun and open it again.",
+      "failedHint": "Quit SynaBun and open it again. If the start fails, the start screen says why."
+    },
+    "titleBar": {
+      "appMenu": "SynaBun menu"
+    }
+  },
+  "desktopShell": {
+    "update": {
+      "installingAtLaunch": "SynaBun downloaded v{version} earlier and installs it before it starts. It opens again when it is done.",
+      "updateAvailableManualDetail": "This copy cannot replace itself where it is. Download the new disk image and install it the way you installed SynaBun.",
+      "updateDownloading": "SynaBun v{version} is downloading",
+      "updateAutoDetail": "SynaBun installs it by itself as soon as nothing is running, after a one-minute notice you can postpone. It also installs when you quit SynaBun.",
+      "installNow": "Install now",
+      "downloadYourself": "Download it yourself",
+      "countdownTitle": "Updating SynaBun to v{version}",
+      "countdownBody": "SynaBun restarts in one minute. Open SynaBun to postpone it.",
+      "updatedTitle": "SynaBun is updated",
+      "updatedBody": "SynaBun now runs v{version} (it was v{previous}).",
+      "errorSwapFailed": "The update to v{version} did not install ({reason}). SynaBun kept v{previous}."
+    }
+  },
+  "cliInstall": {
+    "titleMissing": "{label} is not installed",
+    "titleBroken": "{label} failed to start",
+    "titleInstalling": "Installing {label}…",
+    "titleFailed": "{label} could not be installed",
+    "titleDone": "{label} is installed",
+    "titlePath": "Run {label} in your other terminals",
+    "bodyPath": "SynaBun terminals are ready. Add {dir} to your PATH for other terminals.",
+    "addPath": "Add to PATH",
+    "addingPath": "Adding…",
+    "pathFailed": "PATH could not be updated: {error}",
+    "copyPathDiagnostics": "Copy PATH diagnostics",
+    "stepPath": "Adding the CLI folder to your PATH…",
+    "stepPathAdded": "Added {dir} to your PATH",
+    "bodyMissing": "Install it with one click from {vendor}'s official installer, or run:",
+    "bodyMissingArchive": "Install it with one click from {vendor}'s official release, or run:",
+    "bodyMissingManual": "Install it with this command, then re-check:",
+    "bodyBroken": "{label} was found at {path}, but it could not be started:",
+    "bodyBrokenVersion": "{label} {version} was found at {path}, but it could not be started:",
+    "bodyBrokenLatched": "{label} is installed, but it could not be started:",
+    "bodyBrokenHint": "Check the CLI path in Settings, then re-check.",
+    "configuredFailed": "The path set in Settings did not work: {error}",
+    "bodyFailedManual": "Run it yourself:",
+    "doneNotOnPath": "It is in {dir}. SynaBun finds it there; add that folder to your PATH to run it in a terminal.",
+    "doneAddedToPath": "Added {dir} to your PATH. New terminal windows and tabs pick it up.",
+    "stepStart": "Starting the official installer…",
+    "stepDownload": "Downloading…",
+    "stepDownloadProgress": "Downloading: {received} of {total} MB",
+    "stepDownloadReceived": "Downloading: {received} MB",
+    "stepVerify": "Checking the download…",
+    "stepRun": "Running the official installer…",
+    "stepExtract": "Unpacking…",
+    "stepPlace": "Putting it in place…",
+    "stepCheck": "Checking that it starts…",
+    "errorOffline": "The download server could not be reached. Check the connection and try again.",
+    "errorHttp": "The download server answered with an error. Try again in a moment.",
+    "errorChecksum": "The download did not match its published checksum, so it was removed and never run.",
+    "errorInterrupted": "The download stopped before it was complete. Nothing was kept. Try again.",
+    "errorTimeout": "The installer took too long and was stopped.",
+    "errorInstallerFailed": "The official installer stopped with an error.",
+    "errorNotFound": "The installer finished, but SynaBun does not find {label} afterwards.",
+    "errorUnpack": "The download could not be unpacked, so it was removed.",
+    "errorDisk": "The files could not be written. Check free space and permissions, then try again.",
+    "errorCancelled": "The installation was stopped.",
+    "errorUnsupported": "There is no one-click install for this system. Use the command below or the install guide.",
+    "errorRefused": "SynaBun refused the request. Install from SynaBun on this computer.",
+    "errorConnection": "The connection to SynaBun closed before the installation finished.",
+    "errorUnknown": "The installation did not finish.",
+    "install": "Install",
+    "installing": "Installing…",
+    "retry": "Try again",
+    "guide": "Install guide",
+    "recheck": "Re-check",
+    "checking": "Checking…",
+    "copy": "Copy",
+    "copied": "Copied",
+    "dismiss": "Dismiss",
+    "logLabel": "Installer output"
+  },
+  "gitBash": {
+    "label": "Git Bash for Claude Code (Windows)",
+    "help": "Claude Code on Windows runs its Bash tool and its hooks in Git Bash. SynaBun uses the Git for Windows of this PC, or its own copy when the PC has none.",
+    "badgeSystem": "On this PC",
+    "badgeReady": "SynaBun's copy",
+    "badgeMissing": "Not found",
+    "badgeDownloading": "Downloading",
+    "badgeFailed": "Not installed",
+    "badgeOff": "Off",
+    "sourceEnv": "CLAUDE_CODE_GIT_BASH_PATH names {path}.",
+    "sourceSettings": "Your Claude Code settings name {path}.",
+    "sourceSystem": "Git for Windows on this PC: {path}",
+    "sourceSystemPassed": "Git for Windows on this PC: {path}. Claude Code would not find it by itself, so SynaBun names it.",
+    "sourceBundled": "Git for Windows {version}, installed with SynaBun: {path}",
+    "sourceDownloaded": "Git for Windows {version}, downloaded by SynaBun: {path}",
+    "missing": "No Git Bash on this PC. SynaBun downloads its own copy of Git for Windows {version} ({size} MB) and checks it against its published SHA-256.",
+    "stepDownload": "Downloading Git for Windows {version}: {done} of {total} MB",
+    "stepExtract": "Unpacking Git for Windows {version}: {percent}%",
+    "stepVerify": "Checking every file against the pinned release…",
+    "stepPlace": "Putting it in place…",
+    "failed": "Git for Windows could not be put in place. {reason}",
+    "off": "Turned off: SYNABUN_GIT_BASH=off is set, so SynaBun downloads nothing and names no Git Bash.",
+    "unsupported": "No Git for Windows release is pinned for this processor. Install Git for Windows from git-scm.com.",
+    "settingsNamed": "A claude you start in another terminal uses it too: your Claude Code settings name it.",
+    "settingsKept": "Your Claude Code settings name a Git Bash that is not there ({value}). SynaBun left that value as it is.",
+    "settingsError": "Your Claude Code settings could not be updated: {message}",
+    "download": "Download",
+    "retry": "Try again",
+    "recheck": "Re-check",
+    "checking": "Checking…",
+    "errorOffline": "The download server could not be reached. Check the connection and try again.",
+    "errorHttp": "The download server answered with an error. Try again in a moment.",
+    "errorInterrupted": "The download stopped before it was complete. Nothing was kept.",
+    "errorTimeout": "Nothing arrived from the download server for too long.",
+    "errorChecksum": "What arrived is not the published release, so it was removed and never run.",
+    "errorUnpack": "The download could not be unpacked, so it was removed.",
+    "errorDisk": "The files could not be written. Check free space (about 550 MB) and permissions.",
+    "errorCancelled": "The download was stopped.",
+    "errorUnknown": "The download did not finish.",
+    "errorRequest": "SynaBun did not answer: {message}"
   }
 }

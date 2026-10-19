@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from 'child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, chmodSync } from 'fs';
 import { join, resolve, isAbsolute } from 'path';
+import { withPackagedPathLast } from './augmented-path.js';
 
 const GITHUB_URL_RE = /^https?:\/\/github\.com\/([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/i;
 
@@ -87,11 +88,22 @@ export function maskEnv(env) {
   return out;
 }
 
+/**
+ * The environment of a git / package-manager run: this process's, with a
+ * packaged application's runtime and npm's global bin after the user's own
+ * PATH (augmented-path.js withPackagedPathLast): a repository is installed
+ * with the user's npm, pnpm, yarn, uv or pip when they have one, SynaBun's
+ * bundled npm only when they have none. Unchanged for an npm or Git install.
+ */
+export function installEnv(extra = {}, base = process.env) {
+  return withPackagedPathLast({ ...base, ...extra });
+}
+
 async function runCommand(cmd, args, opts = {}) {
   return new Promise((resolvePromise) => {
     const child = spawn(cmd, args, {
       cwd: opts.cwd,
-      env: { ...process.env, ...(opts.env || {}) },
+      env: installEnv(opts.env || {}),
       stdio: ['ignore', 'pipe', 'pipe'],
       shell: false,
     });
@@ -466,7 +478,7 @@ export async function installDependencies({ dataHome, name, repoPath, onLine }) 
 
   if (hasPyproject || hasRequirements) {
     if (hasUvLock || hasPyproject) {
-      const uvExists = spawnSync('which', ['uv']).status === 0;
+      const uvExists = spawnSync('which', ['uv'], { env: installEnv() }).status === 0;
       if (uvExists) {
         logInstall(dataHome, name, 'running uv sync');
         const res = await runCommand('uv', ['sync'], { cwd: repoPath, onLine: (line) => { logInstall(dataHome, name, line); onLine?.(line); } });

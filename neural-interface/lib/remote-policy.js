@@ -10,7 +10,9 @@
 //                refuse, user allow rules included; routing always asks (one
 //                route card per task is the task's approval); workers get no
 //                computer, no "user-authorized-full" and a registered cwd.
-//   autonomous — the modes as configured, until autonomousUntil; then ask.
+//   autonomous — the modes as configured. On WhatsApp it stays until the owner
+//                lowers it in Settings; any other channel only until its
+//                autonomousUntil, then ask.
 // Ask and Autonomous hold only on a Claude brain: its in-process PreToolUse
 // hook sees every call with its arguments. A Codex or OpenCode brain runs
 // ordinary commands inside its own sandbox / permissions without asking, so a
@@ -25,7 +27,7 @@
 //
 // Computer use (the Assistant's own computer tools) is off unless the owner
 // turned on its switch at this computer (the policy's `computerUse`), and then
-// only as remoteComputerUse says: unasked while Autonomous is active, after
+// only as remoteComputerUse says: unasked while Autonomous is on, after
 // one yes per turn at Ask, never at Read-only, while paused or on a Codex /
 // OpenCode brain. That function is the one place that decides; the runtime,
 // the brain's hook, the desktop gate, the persona and the panel all ask it.
@@ -81,16 +83,17 @@ export class RemotePolicyError extends Error {
 
 /**
  * The level that applies now: null without a policy. Paused reads as
- * read-only, an expired (or never armed) autonomous as ask, a turn whose
- * prompt carried untrusted content is capped at ask, and a session whose brain
- * cannot hold Ask/Autonomous (`provider`, else the policy's brainProvider:
- * Codex, OpenCode) is read-only.
+ * read-only, a turn whose prompt carried untrusted content is capped at ask,
+ * and a session whose brain cannot hold Ask/Autonomous (`provider`, else the
+ * policy's brainProvider: Codex, OpenCode) is read-only. Autonomous on
+ * WhatsApp has no time limit (it stays until the owner lowers it); on any
+ * other channel an expired (or never armed) autonomousUntil reads as ask.
  */
 export function effectiveLevel(policy, { untrusted = false, now = Date.now(), provider = null } = {}) {
   if (!policy) return null;
   let level = normalizeLevel(policy.level);
   if (policy.paused === true) level = 'read-only';
-  if (level === 'autonomous') {
+  if (level === 'autonomous' && policy.channel !== 'whatsapp') {
     const until = toMs(policy.autonomousUntil);
     if (!(until > now)) level = 'ask';
   }
@@ -139,7 +142,8 @@ export const COMPUTER_REASONS = Object.freeze({
  *            read_only           the Read-only level (or a session nobody registered since a restart)
  *            unsupported, setup  computer use is not available, or not set up, on this machine (`desktop`)
  *   ask      ask                 the Ask level: one yes per turn turns it on for that turn
- *            autonomous_expired  Autonomous is configured but its window is closed (or was never armed)
+ *            autonomous_expired  Autonomous is configured but its autonomousUntil passed (or was never set): never
+ *                                on WhatsApp, where Autonomous has no time limit
  *            untrusted           Autonomous is active, but this turn carries content the owner did not write
  *   allowed  autonomous          Autonomous is active: the computer tools run unasked
  * `desktop`: { supported, ready } of the desktop service (omitted: not checked).
@@ -288,17 +292,20 @@ function defaultDataHome(env = process.env) {
   if (osPlatform() === 'win32' && env.APPDATA) return resolve(env.APPDATA, 'synabun');
   return resolve(homedir(), '.synabun');
 }
-/** Every place the WhatsApp Link may keep its session and connector (lib/whatsapp/paths.js), the refused override too. */
+/**
+ * Every place the WhatsApp Link may keep its session and connector (lib/whatsapp/paths.js), the refused
+ * override too, and the voice-note folder whose programs the WhatsApp host runs (transcriptionDir).
+ */
 function whatsappLocations(dataHome, env, platform) {
   const out = [];
   try {
     const wa = resolveWhatsAppPaths({ dataHome, env, platform });
-    out.push(wa.waHome, wa.defaultWaHome, wa.runtimeDir, wa.stagingDir);
+    out.push(wa.waHome, wa.defaultWaHome, wa.runtimeDir, wa.stagingDir, wa.transcriptionDir);
   } catch {}
   const override = typeof env.SYNABUN_WHATSAPP_HOME === 'string' ? env.SYNABUN_WHATSAPP_HOME.trim() : '';
   if (override) out.push(resolve(override));
   if (env.LOCALAPPDATA) out.push(resolve(env.LOCALAPPDATA, 'synabun', 'whatsapp'));
-  out.push(resolve(dataHome, 'whatsapp'), resolve(dataHome, 'runtime', 'whatsapp'));
+  out.push(resolve(dataHome, 'whatsapp'), resolve(dataHome, 'runtime', 'whatsapp'), resolve(dataHome, 'runtime', 'whatsapp-transcription'));
   return [...new Set(out.filter(Boolean))];
 }
 const slash = (value) => String(value || '').replace(/\\/g, '/').replace(/\/{2,}/g, '/').toLowerCase();
@@ -359,6 +366,8 @@ const DENIED_PATTERNS = [
   { re: /\/etc\/cron|\/var\/at\/tabs|\/usr\/lib\/cron|\/var\/spool\/cron/, why: 'crontab' },
   { re: /\/api\/whatsapp\b/, why: 'the WhatsApp link' },
   { re: /(?:^|[^a-z0-9_-])runtime\/whatsapp\b/, why: 'the WhatsApp link' },
+  // The voice-note folder by name, wherever it sits (a relative path, a moved home): the WhatsApp host runs the programs in it.
+  { re: /(?:^|[^a-z0-9_.-])whatsapp-transcription(?=$|[^a-z0-9_-])/, why: 'the WhatsApp link (voice-note programs)' },
   { re: /(?:^|[^a-z0-9_-])\.?synabun\/whatsapp\b/, why: 'the WhatsApp link' },
   // The session store by name, wherever it sits (a relative path, a moved home): state.db and its -wal/-shm/-journal.
   { re: /(?:^|[^a-z0-9_.-])state\.db(?:-(?:wal|shm|journal))?(?=$|[^a-z0-9_.-])/, why: 'the WhatsApp login (state.db)' },

@@ -50,6 +50,7 @@ import { registerSidepanel, syncSidepanelLayout, focusSidepanel, openAnotherSide
 import { nativeLoopWindowId } from '../ui-native-window-id.js';
 import { requestGeneratedSessionTitle } from '../session-title.js';
 import { wireFileLinks } from '../ui-file-links.js';
+import { mountCliBanner } from '../ui-cli-banner.js';
 import { backToAssistant, buildWorkerEndCard, endWorkerRunOnClose, forgetWorkerEnd, trackWorkerEnd } from '../ui-worker-end.js';
 import { isDispatchedRun } from '../worker-end.js';
 import {
@@ -121,6 +122,8 @@ const _titleReassertTimers = new Map();
 // rename carries is not the session's: nothing shows it or pushes it again.
 const _pendingRenames = createPendingRenames();
 let _composer = null;           // the primary panel's composer (mountCompose)
+let _cliBanner = null;          // the CLI banner and send-block (ui-cli-banner.js)
+let _cliWasBlocked = false;    // the banner held sends back last time it said (a change to usable heals the serve)
 // Where the panel goes. Every choice of the user (a tab, a session in the
 // menu, New session, a project, a worktree) begins an intent, and a navigation
 // binds the panel only while its intent is the latest one: a later choice wins
@@ -430,6 +433,30 @@ function buildPanel() {
   // path is a path in the session's directory.
   wireFileLinks(messagesContainer, { cwd: () => getState().cwd || '' });
 
+  // ── The CLI banner (ui-cli-banner.js) ───────────────────────────────────
+  // Above the transcript while OpenCode is not usable: not installed (with
+  // Install, which runs OpenCode's own installer or official release on the
+  // server), being installed, failed to install, or found but failed to start
+  // (with the error it gave). The panel gets `ocp-cli-blocked` meanwhile, and
+  // the composer holds sends back (sendBlocked below).
+  _cliBanner = mountCliBanner({
+    toolKey: 'opencode',
+    prefix: 'ocp',
+    panel: () => panel,
+    anchor: () => messagesContainer,
+    // OpenCode was installed (or found again) while its serve could not start: start it now rather than at the
+    // next retry of the auto-heal, whose wait has grown by then.
+    onBlockedChange: (blocked) => {
+      const usableAgain = _cliWasBlocked && !blocked;
+      _cliWasBlocked = blocked;
+      if (usableAgain && getState().serverStatus !== 'ready') {
+        clearTimeout(_healTimer);
+        _healTimer = null;
+        scheduleAutoHeal('cli-usable', 0);
+      }
+    },
+  });
+
   // ── What the session changed on disk (session.diff) ─────────────────────
   mountChangesBar(panel, getDefaultStore());
 
@@ -519,6 +546,10 @@ function buildPanel() {
     // (ocp-v2-binding.js): the session the prompt or the Stop was for, frozen
     // before the first await. It is never the live state.
     canSend: (session) => !_automationRunning.has(session?.sessionId),
+    // While the CLI banner shows (OpenCode missing, broken or being installed),
+    // a send stays in the box and the banner is pointed at instead.
+    sendBlocked: () => !!_cliBanner?.blocked(),
+    onSendBlocked: () => _cliBanner?.nudge(),
     onManualSend: (session, phase, meta) => {
       const sessionId = session?.sessionId;
       if (phase === 'started') requestOpenCodeSessionTitle(session, meta);
@@ -2210,6 +2241,7 @@ function applyVisibility(nextVisible) {
   _panelEl.classList.toggle('ocpv2-open', _visible);
   if (_visible) {
     state.lastActivePanel = 'opencode';
+    _cliBanner?.refresh();
   } else {
     // The popover is a child of <body>: it does not go with the panel by itself.
     _contextMenu?.close();

@@ -373,9 +373,14 @@ export class NativeLoopRuntime {
     record.startupCancelPromise = new Promise((resolveCancel) => { record._cancelStartup = resolveCancel; });
     this.records.set(runId, record);
     this._emit('sidepanel:run-created', record);
-    const maxMs = Math.max(1, Number(nativeState.maxMinutes) || 30) * 60_000;
-    record.timer = setTimeout(() => { this.stop(runId, 'time_cap').catch(() => {}); }, maxMs);
-    record.timer.unref?.();
+    // A task run's (assistant dispatch) maxMinutes is work time, which its dispatcher counts and
+    // enforces (assistant-dispatch.js, the work clock): idle time between its turns does not count,
+    // so it gets no wall-clock cap here. A loop's maxMinutes stays the wall clock.
+    if (record.runMode !== 'task') {
+      const maxMs = Math.max(1, Number(nativeState.maxMinutes) || 30) * 60_000;
+      record.timer = setTimeout(() => { this.stop(runId, 'time_cap').catch(() => {}); }, maxMs);
+      record.timer.unref?.();
+    }
 
     const startupSignal = record.startupAbortController.signal;
     const factoryPromise = Promise.resolve().then(() => factory({
@@ -510,7 +515,7 @@ export class NativeLoopRuntime {
         return;
       }
       const elapsed = this.now() - new Date(state.startedAt || record.startedAt).getTime();
-      if (elapsed >= Math.max(1, Number(state.maxMinutes) || 30) * 60_000) {
+      if (record.runMode !== 'task' && elapsed >= Math.max(1, Number(state.maxMinutes) || 30) * 60_000) {
         await this.stop(record.runId, 'time_cap');
         return;
       }

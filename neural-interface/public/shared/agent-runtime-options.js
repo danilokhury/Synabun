@@ -301,21 +301,27 @@ export async function fetchCodexModels(force = false, accountId = 'default') {
 
 let _codexAccountsCache = null;
 let _codexAccountsLoading = null;
+let _codexWorkerAccountId = null;
+const CODEX_DEFAULT_ACCOUNT = { id: 'default', label: 'Default', isDefault: true, provider: 'codex' };
 
-// Fetch the saved ChatGPT/Codex accounts for launch-account selectors.
-// Each account maps to a CODEX_HOME on the server; 'default' is the existing ~/.codex.
+// Codex accounts (per-account CODEX_HOME) for the brain picker, the accounts
+// manager and the launch-account selectors. Each row carries its state
+// (lib/codex-accounts.js describe(): mode, signedIn, identity); the assistant's
+// answer also names the account Codex workers use. 'default' is the ambient ~/.codex.
 export async function fetchCodexAccounts(force = false) {
   if (!force && _codexAccountsCache && _codexAccountsCache.length) return _codexAccountsCache;
   if (_codexAccountsLoading) return _codexAccountsLoading;
   _codexAccountsLoading = (async () => {
     try {
-      const resp = await fetch('/api/codex/accounts');
+      const resp = await fetch('/api/assistant/codex/accounts', { cache: 'no-store' }).then((r) => (r.ok ? r : fetch('/api/codex/accounts', { cache: 'no-store' })));
       const data = await resp.json().catch(() => ({}));
       const accounts = Array.isArray(data?.accounts) ? data.accounts : [];
-      _codexAccountsCache = accounts.length ? accounts : [{ id: 'default', label: 'Default', isDefault: true }];
+      _codexWorkerAccountId = typeof data?.workerAccountId === 'string' && data.workerAccountId ? data.workerAccountId : null;
+      const withDefault = accounts.some((a) => a?.id === 'default') ? accounts : [CODEX_DEFAULT_ACCOUNT, ...accounts];
+      _codexAccountsCache = withDefault.map((a) => (a.id === 'default' ? { ...CODEX_DEFAULT_ACCOUNT, ...a, isDefault: true } : a));
       return _codexAccountsCache;
     } catch {
-      _codexAccountsCache = [{ id: 'default', label: 'Default', isDefault: true }];
+      _codexAccountsCache = [CODEX_DEFAULT_ACCOUNT];
       return _codexAccountsCache;
     } finally {
       _codexAccountsLoading = null;
@@ -325,23 +331,32 @@ export async function fetchCodexAccounts(force = false) {
 }
 
 export function getCachedCodexAccounts() {
-  return _codexAccountsCache || [{ id: 'default', label: 'Default', isDefault: true }];
+  return _codexAccountsCache || [CODEX_DEFAULT_ACCOUNT];
+}
+
+/** The Codex account dispatched Codex workers use when a dispatch names none ('default' when unset). */
+export function getCodexWorkerAccountId() {
+  return _codexWorkerAccountId || 'default';
 }
 
 const CLAUDE_DEFAULT_ACCOUNT = { id: 'default', label: 'Default', isDefault: true };
 let _claudeAccountsCache = null;
 let _claudeAccountsLoading = null;
+let _claudeWorkerAccountId = null;
 
 // Claude account profiles (per-account CLAUDE_CONFIG_DIR) — served by the
-// assistant API. 'default' is the ambient ~/.claude and always exists.
+// assistant API. 'default' is the ambient ~/.claude and always exists. Each
+// row carries its state (lib/claude-accounts.js describe(): mode, signedIn,
+// identity); the answer also names the account Claude Code workers use.
 export async function fetchClaudeAccounts(force = false) {
   if (!force && _claudeAccountsCache && _claudeAccountsCache.length) return _claudeAccountsCache;
   if (_claudeAccountsLoading) return _claudeAccountsLoading;
   _claudeAccountsLoading = (async () => {
     try {
-      const resp = await fetch('/api/assistant/claude/accounts');
+      const resp = await fetch('/api/assistant/claude/accounts', { cache: 'no-store' });
       const data = await resp.json().catch(() => ({}));
       const accounts = Array.isArray(data?.accounts) ? data.accounts : [];
+      _claudeWorkerAccountId = typeof data?.workerAccountId === 'string' && data.workerAccountId ? data.workerAccountId : null;
       const withDefault = accounts.some(a => a?.id === 'default') ? accounts : [CLAUDE_DEFAULT_ACCOUNT, ...accounts];
       _claudeAccountsCache = withDefault.map(a => (a.id === 'default' ? { ...CLAUDE_DEFAULT_ACCOUNT, ...a, isDefault: true } : a));
       return _claudeAccountsCache;
@@ -357,6 +372,11 @@ export async function fetchClaudeAccounts(force = false) {
 
 export function getCachedClaudeAccounts() {
   return _claudeAccountsCache || [CLAUDE_DEFAULT_ACCOUNT];
+}
+
+/** The Claude account dispatched Claude Code workers use when a dispatch names none ('default' when unset). */
+export function getClaudeWorkerAccountId() {
+  return _claudeWorkerAccountId || 'default';
 }
 
 let _opencodeAgentsCache = null;

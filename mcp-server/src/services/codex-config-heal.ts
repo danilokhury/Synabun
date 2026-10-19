@@ -7,8 +7,9 @@
  * Having both forms defines the same TOML key twice, so Codex rejects the
  * configuration and starts with defaults.
  *
- * This module deliberately edits only the SynaBun MCP tables. All unrelated
- * Codex configuration is left byte-for-byte intact. File writes are atomic,
+ * This module edits the SynaBun MCP tables and the known ignored feature keys
+ * emitted by its old Settings writer. All unrelated configuration is left
+ * byte-for-byte intact. Repairs keep a backup; file writes are atomic,
  * preserve the original mode, and are idempotent.
  */
 import {
@@ -56,6 +57,7 @@ export interface CodexMcpDefinition {
 }
 
 export type HealReason =
+  | 'removed_ignored_settings'
   | 'removed_duplicate_inline_env'
   | 'normalized_inline_env'
   | 'removed_managed_profile_override'
@@ -364,15 +366,20 @@ export function healCodexConfig(configPath: string): HealResult {
   }
 
   const before = inspectCodexConfigContent(content);
-  if (!before.connected && !before.issues.length) {
+  const cleaned = removeIgnoredCodexSettings(content);
+  if (cleaned === content && !before.connected && !before.issues.length) {
     return { healed: false, reason: 'no_synabun_section' };
   }
-  const repaired = repairCodexConfigContent(content);
+  const repaired = repairCodexConfigContent(cleaned);
+  if (cleaned !== content) repaired.reason = 'removed_ignored_settings';
   if (!repaired.reason || repaired.content === content) {
     return { healed: false, reason: 'no_duplicate', inspection: before };
   }
 
   try {
+    // Keep the exact original, including unrelated tables and its permissions.
+    const backup = `${configPath}.synabun-backup-${Date.now()}-${process.pid}`;
+    copyFileSync(configPath, backup);
     atomicWrite(configPath, repaired.content);
   } catch (err) {
     return { healed: false, reason: 'write_error', error: err instanceof Error ? err.message : String(err) };
@@ -382,6 +389,30 @@ export function healCodexConfig(configPath: string): HealResult {
     reason: repaired.reason,
     inspection: inspectCodexConfigContent(repaired.content),
   };
+}
+
+/** Narrow repair for keys emitted by the old Settings writer. These literal
+ * dotted keys are ignored by Codex; personality's feature flag is removed.
+ * Do not sweep arbitrary user flags or normalize unrelated TOML. */
+export function removeIgnoredCodexSettings(content: string): string {
+  let section = '';
+  let multiline: string | null = null;
+  return content.split(/(?<=\n)/).filter(line => {
+    // Avoid treating text inside TOML multiline strings as configuration.
+    const delimiters = line.match(/"""|'''/g) || [];
+    if (multiline) {
+      if (delimiters.filter(d => d === multiline).length % 2) multiline = null;
+      return true;
+    }
+    for (const delimiter of delimiters) if (delimiters.filter(d => d === delimiter).length % 2) multiline = delimiter;
+    const header = /^\s*\[([^\]]+)\]\s*(?:#.*)?$/.exec(line.trim());
+    if (header) section = header[1].replace(/["']/g, '').trim();
+    else if (/^\s*\[/.test(line)) section = '__other_table__';
+    if (!section && /^\s*["']features\.(?:personality|fast_mode|apps|unified_exec)["']\s*=\s*(?:true|false)\s*(?:#.*)?$/.test(line.trim())) return false;
+    if ((!section && /^\s*features\.personality\s*=\s*(?:true|false)\s*(?:#.*)?$/.test(line.trim()))
+      || (section === 'features' && /^\s*(?:personality|"personality"|'personality')\s*=\s*(?:true|false)\s*(?:#.*)?$/.test(line.trim()))) return false;
+    return true;
+  }).join('');
 }
 
 export function upsertCodexMcpConfig(configPath: string, definition: CodexMcpDefinition): CodexConfigInspection {

@@ -132,11 +132,24 @@ computer, so no QR payload leaves SynaBun.
 | Program | Version | Delivery | License | Project |
 | --- | --- | --- | --- | --- |
 | cloudflared | 2026.10.0 (pinned in `neural-interface/lib/cloudflared/pins.json` with the SHA-256 of each release file and of the binary inside it) | Cloudflare's own release binary, unmodified. The application installers carry it; an npm or Git install downloads the same release file from Cloudflare's GitHub releases the first time a tunnel is started and checks it against the pinned SHA-256 before it runs | Apache-2.0 | [GitHub](https://github.com/cloudflare/cloudflared) |
+| Git for Windows | 2.56.0.2 (`v2.56.0.windows.2`, pinned in `neural-interface/lib/git-bash/pins.json` with the SHA-256 of its release file and the digest of the tree it holds) | Git for Windows' own release file `Git-2.56.0.2-64-bit.tar.bz2`, unmodified but for five links into `/proc` it leaves out. Windows only: the Windows x64 installer carries it; an npm install on Windows that finds no Git Bash downloads the same release file from Git for Windows' GitHub releases and checks it against the pinned SHA-256 before it is unpacked. macOS and Linux builds carry none | GPL-2.0-only for Git (some of its parts LGPL-2.1); the MSYS2 and MinGW programs and libraries it is built with carry their own licenses (GPL, LGPL, BSD, MIT, Apache-2.0 and others) | [GitHub](https://github.com/git-for-windows/git) |
 
 cloudflared opens the Cloudflare quick tunnel behind the public address
 (invite links and remote MCP). It runs as a separate process, started only
 when the user starts a tunnel. Using cloudflared and the tunnel service is
 subject to Cloudflare's own terms.
+
+Git for Windows provides the Git Bash and Unix tools Claude Code runs its
+Bash tool and hooks with on Windows, used only on a PC that has no Git for
+Windows of its own. Claude Code starts it; SynaBun itself uses only its git,
+for its own git features on such a PC. Copyright (c) Linus Torvalds and the
+Git contributors; the Git for Windows project and its contributors; the
+authors of each component. The copy carries `LICENSE.txt` (Git's `COPYING`
+and `LGPL-2.1` of the tag) and `SOURCE.txt` (where the source is: Git at the
+pinned tag, https://github.com/git-for-windows/git/tree/v2.56.0.windows.2,
+and the release's "Source code" archives; the other components at
+https://github.com/git-for-windows). The license of each component is in the
+copy's `usr/share/licenses`, `ucrt64/share/licenses` and `ucrt64/doc`.
 
 ## Installed On Demand (Not Distributed)
 

@@ -3,6 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!-- Inside the SynaBun desktop app this page lays out its own top (shared/desktop-titlebar-page.js). -->
+<meta name="synabun-titlebar" content="page">
 <title>Setup - SynaBun</title>
 <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
 <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
@@ -51,6 +53,15 @@
     align-items: center;
     justify-content: center;
   }
+
+  /* ── Inside the SynaBun desktop app (shared/desktop-titlebar-page.js): the window has no native title bar, and a
+     strip along the top drags it. The logo keeps its click, and on macOS clears the traffic lights. ── */
+  .ob-logo { -webkit-app-region: no-drag; }
+  html.desktop-titlebar--darwin .ob-logo { left: calc(env(titlebar-area-x, 86px) + 12px) !important; }
+  /* The Details areas (desktop app): what the wizard checked and what this copy has, in the build output's box. */
+  .ob-details { margin-top: 12px; }
+  .ob-details .mcp-other-header:focus-visible { outline: 1px solid var(--accent-border); outline-offset: -1px; }
+  .ob-details .terminal { margin: 0; max-height: 200px; word-break: break-word; user-select: text; }
 
   /* Background canvas */
   #bgCanvas {
@@ -1068,7 +1079,7 @@
 
 <canvas id="bgCanvas"></canvas>
 
-<a href="https://synabun.ai" target="_blank" rel="noopener" style="position:fixed;top:24px;left:28px;z-index:10;opacity:0.4;transition:opacity 0.2s;" onmouseenter="this.style.opacity='0.7'" onmouseleave="this.style.opacity='0.4'">
+<a href="https://synabun.ai" target="_blank" rel="noopener" class="ob-logo" style="position:fixed;top:24px;left:28px;z-index:10;opacity:0.4;transition:opacity 0.2s;" onmouseenter="this.style.opacity='0.7'" onmouseleave="this.style.opacity='0.4'">
   <img src="synabun.png?v=2" alt="SynaBun" style="height:34px;width:auto;">
 </a>
 
@@ -1137,6 +1148,16 @@
       <h2>Environment Check</h2>
       <p class="subtitle">Verifying your system has everything SynaBun needs.</p>
       <ul class="dep-list" id="depList"></ul>
+      <!-- Desktop app: the commands the check ran and what they answered (shared/install-details-view.js). -->
+      <div class="mcp-other-section ob-details" id="envDetails" hidden>
+        <div class="mcp-other-header" id="envDetailsHeader" role="button" tabindex="0" aria-expanded="false" aria-controls="envDetailsBody">
+          <span>Details</span>
+          <svg class="mcp-other-chevron" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><polyline points="6 9 12 15 18 9" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+        </div>
+        <div class="mcp-other-body" id="envDetailsBody" style="display:none;">
+          <div class="terminal" id="envDetailsLog" role="log"></div>
+        </div>
+      </div>
     </div>
 
     <!-- Step 2: Memory Name & Location -->
@@ -1192,6 +1213,16 @@
       </div>
       <div class="terminal" id="buildOutput" style="display:none"></div>
       <button class="action-btn" id="buildBtn">Install & Build</button>
+      <!-- Desktop app: what this copy came with, every dependency with its version (shared/install-details-view.js). -->
+      <div class="mcp-other-section ob-details" id="installDetails" hidden>
+        <div class="mcp-other-header" id="installDetailsHeader" role="button" tabindex="0" aria-expanded="false" aria-controls="installDetailsBody">
+          <span>Details</span>
+          <svg class="mcp-other-chevron" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><polyline points="6 9 12 15 18 9" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+        </div>
+        <div class="mcp-other-body" id="installDetailsBody" style="display:none;">
+          <div class="terminal" id="installDetailsLog" role="log"></div>
+        </div>
+      </div>
     </div>
 
     <!-- Step 4: Add Projects -->
@@ -1416,9 +1447,18 @@ import {
 // Install as an app: the wizard has no step for it. The browser's own dialog opens once, from a click that
 // moves the wizard on anyway (the welcome choices, Next), and the wizard never reads the answer. Also import-free.
 import { initPwaInstall, isStandalone, offerPwaInstallOnce } from './shared/pwa-install.js';
+import { isDesktopApp } from './shared/desktop-bridge.js';
+// The desktop app: no native title bar (a strip along the top drags the window), and Details areas under the
+// environment check and the install step. Both import-free; neither does anything in a browser.
+import { initDesktopPageTitleBar } from './shared/desktop-titlebar-page.js';
+import { environmentLines, installLines } from './shared/install-details-view.js';
+
+initDesktopPageTitleBar();
 
 // Chrome and Edge hand the page their install event when it can be installed; Safari and Firefox have none.
-if (!isStandalone()) initPwaInstall();
+// The SynaBun desktop app is its own window: it never asks for the event, so offerPwaInstallOnce() has none
+// to open there.
+if (!isStandalone() && !isDesktopApp()) initPwaInstall();
 
 // ═══════════════════════════════════════════
 // STATE
@@ -2152,9 +2192,62 @@ async function onDepsStep() {
       detail.innerHTML = `${dep.detail} &mdash; <a href="${dep.url}" target="_blank" rel="noopener">Download \u2197</a>`;
     }
   }
+  showDetails('envDetails', environmentLines, 1);
 }
 
 function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// ═══════════════════════════════════════════
+// DETAILS (desktop app): what the wizard checked and what this copy has
+// ═══════════════════════════════════════════
+// GET /api/setup/install-details, read once; open by default, collapsible. An npm or Git install shows none.
+
+const SHOW_DETAILS = isDesktopApp();
+let installDetailsRequest = null;
+function loadInstallDetails() {
+  if (!installDetailsRequest) {
+    installDetailsRequest = fetch('/api/setup/install-details')
+      .then(res => (res.ok ? res.json() : Promise.reject(new Error(`the server answered ${res.status}`))))
+      .catch((error) => { installDetailsRequest = null; throw error; });
+  }
+  return installDetailsRequest;
+}
+
+function openDetails(prefix, stepIndex, open) {
+  const section = document.getElementById(prefix);
+  section.classList.toggle('open', open);
+  document.getElementById(`${prefix}Body`).style.display = open ? '' : 'none';
+  document.getElementById(`${prefix}Header`).setAttribute('aria-expanded', String(open));
+  requestAnimationFrame(() => resizeViewport(stepIndex));
+}
+
+function wireDetails(prefix, stepIndex) {
+  const header = document.getElementById(`${prefix}Header`);
+  const toggle = () => openDetails(prefix, stepIndex, !document.getElementById(prefix).classList.contains('open'));
+  header.addEventListener('click', toggle);
+  header.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toggle(); }
+  });
+}
+wireDetails('envDetails', 1);
+wireDetails('installDetails', 3);
+
+async function showDetails(prefix, linesOf, stepIndex) {
+  if (!SHOW_DETAILS) return;
+  const section = document.getElementById(prefix);
+  const log = document.getElementById(`${prefix}Log`);
+  const first = section.hidden;
+  section.hidden = false;
+  if (first) openDetails(prefix, stepIndex, true);
+  log.textContent = 'Reading what this copy has\u2026';
+  try {
+    const lines = linesOf(await loadInstallDetails());
+    log.textContent = lines.length ? lines.join('\n') : 'Nothing to show.';
+  } catch (err) {
+    log.textContent = `Could not read the details: ${err.message}`;
+  }
+  resizeViewport(stepIndex);
+}
 
 // ═══════════════════════════════════════════
 // STEP 3: Install & Build
@@ -2225,6 +2318,7 @@ async function onBuildStep() {
       $btn.textContent = 'Already Done';
       $btn.classList.add('success');
       $btn.disabled = true;
+      showDetails('installDetails', installLines, 3);
       return;
     }
   } catch {}

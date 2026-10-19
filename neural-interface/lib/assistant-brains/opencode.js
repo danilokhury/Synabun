@@ -7,7 +7,7 @@
 // (`agent.assistant.prompt`) in the per-serve config so the model sees it as
 // its system prompt; SSE events are translated to the unified envelope.
 
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { normalizeOpenCodeModel } from '../native-loop-providers.js';
@@ -46,11 +46,14 @@ export const OPENCODE_ROUTE_GATE_PLUGIN = pathToFileURL(resolve(dirname(fileURLT
  */
 export const OPENCODE_PLAN_AGENT = 'synabun-plan';
 
+/** The brain's SynaBun MCP tool-call timeout (ms): as long as the Codex brain's tool_timeout_sec (server.js). */
+export const OPENCODE_BRAIN_MCP_TIMEOUT_MS = 180_000;
+
 /**
  * `routeGate` ({ url, session, token }) installs the route-gate plugin in this
  * isolated serve's config only (assistant brains; never the shared sidepanel setup).
  */
-export function patchOpenCodeAssistantConfig(xdgRoot, { persona = '', role = 'assistant', model = null, desktopGrant = null, routeGate = null } = {}) {
+export function patchOpenCodeAssistantConfig(xdgRoot, { persona = '', role = 'assistant', model = null, desktopGrant = null, routeGate = null, brainCredential = null } = {}) {
   const configPath = resolve(xdgRoot, 'opencode', 'config.json');
   if (!existsSync(configPath)) return false;
   const config = JSON.parse(readFileSync(configPath, 'utf8'));
@@ -60,7 +63,15 @@ export function patchOpenCodeAssistantConfig(xdgRoot, { persona = '', role = 'as
     // Computer use: an unforgeable per-brain grant unlocks the `computer` group.
     if (desktopGrant) env.SYNABUN_DESKTOP_GRANT = desktopGrant;
     else delete env.SYNABUN_DESKTOP_GRANT;
+    // A WhatsApp conversation's brain credential (whatsapp_send_file), for this serve's SynaBun MCP child only.
+    // This file names the variable; the value is in the serve's own environment (ensureIsolatedServe), so
+    // neither this file (it is in every backup of data/) nor OPENCODE_CONFIG_CONTENT ever holds it.
+    if (brainCredential) env.SYNABUN_BRAIN_TOKEN = '{env:SYNABUN_BRAIN_TOKEN}';
+    else delete env.SYNABUN_BRAIN_TOKEN;
     config.mcp.SynaBun[envKey] = env;
+    // OpenCode gives an MCP tool call 60 s unless the server says otherwise; agent_route may wait on the
+    // user's route card and whatsapp_send_file on an upload (130 s): the Codex brain's 180 s here too.
+    config.mcp.SynaBun.timeout = OPENCODE_BRAIN_MCP_TIMEOUT_MS;
   }
   config.agent = { ...(config.agent || {}) };
   config.agent.assistant = {
@@ -89,6 +100,8 @@ export function patchOpenCodeAssistantConfig(xdgRoot, { persona = '', role = 'as
   if (routeGate?.url && routeGate?.session && routeGate?.token) plugins.push([OPENCODE_ROUTE_GATE_PLUGIN, { url: routeGate.url, session: routeGate.session, token: routeGate.token, ...(routeGate.remote === true ? { remote: true } : {}) }]);
   if (plugins.length) config.plugin = plugins; else delete config.plugin;
   writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n', 'utf8');
+  // It carries this brain's grants (the desktop grant): readable by this user only.
+  try { chmodSync(configPath, 0o600); } catch { /* a filesystem without modes */ }
   return true;
 }
 
@@ -203,8 +216,8 @@ export function createOpenCodeBrain({ session, sink, deps = {}, persona = '' } =
     if (startPromise) return startPromise;
     startPromise = (async () => {
       const xdgRoot = deps.setupOpencodeSidepanelConfig(termId, brain.mcpProfile || null);
-      try { personaInstalled = patchOpenCodeAssistantConfig(xdgRoot, { persona, model: null, desktopGrant: deps.desktopGrant || null, routeGate: deps.routeGate || null }); } catch { personaInstalled = false; }
-      entry = await deps.ensureIsolatedServe(termId, { xdgRoot, keepAlive: true, mcpProfile: brain.mcpProfile || null });
+      try { personaInstalled = patchOpenCodeAssistantConfig(xdgRoot, { persona, model: null, desktopGrant: deps.desktopGrant || null, routeGate: deps.routeGate || null, brainCredential: deps.brainCredential || null }); } catch { personaInstalled = false; }
+      entry = await deps.ensureIsolatedServe(termId, { xdgRoot, keepAlive: true, mcpProfile: brain.mcpProfile || null, brainCredential: deps.brainCredential || null });
       if (!entry?.client) throw new Error('OpenCode isolated serve failed to start');
       client = entry.client;
       await client.waitUntilConnected?.(20_000);

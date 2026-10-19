@@ -22,6 +22,8 @@ import { catalogModelRow, fmtModelPrice, hiddenModelFor, ICON_CARET, invalidateM
 // The Routes editor's model lists (where they come from, how they stay current): asst-route-models.js.
 import { closeMenu, isMenuOpen, openMenu } from './asst-menu.js';
 import { decorateControlHead } from './asst-control.js';
+import { accountSummary } from '../account-view.js';
+import { accountUsageText, autoAccountLabel } from '../account-usage.js';
 import {
   DEFAULT_ROUTE_MODE,
   fmtConfidence,
@@ -38,6 +40,18 @@ function num(v) { const n = Number(v); return v != null && v !== '' && typeof v 
 function obj(v) { return v && typeof v === 'object' && !Array.isArray(v) ? v : null; }
 function arr(v) { return Array.isArray(v) ? v : []; }
 function firstStr(...values) { for (const v of values) { const s = str(v); if (s) return s; } return ''; }
+
+export function routeDisplayAccount(target, t = null) {
+  if (target?.accountId === 'auto') return autoAccountLabel(t);
+  if (target?.account) return [accountSummary(target.account, target.provider === 'codex' ? 'codex' : 'claude'), accountUsageText(target.account, t)].join(' · ');
+  return target?.accountId ? tf(t)('assistant.routes.account.removed', '{id} · account removed', { id: target.accountId }) : '';
+}
+function routeAccountError(error, t) {
+  if (error?.code === 'ACCOUNT_NO_SUBSCRIPTION') return tf(t)('assistant.accountUsage.noSubscription', 'Auto requires a signed-in subscription account.');
+  return error?.code === 'ACCOUNT_NOT_FOUND'
+    ? tf(t)('assistant.routes.account.removedHint', 'Account removed. Save another account choice before running this route.')
+    : tf(t)('assistant.routes.account.signedOut', 'Signed out. Sign in from the provider account menu before running this route.');
+}
 
 /** Local translator: hooks.t when it resolves, else the fallback with {param} interpolation. */
 function tf(t) {
@@ -93,6 +107,7 @@ function normalizeRouteOption(o) {
     provider: normalizeProvider(src.provider, str(src.provider) || null),
     model: str(src.model),
     effort: str(src.effort) || null,
+    ...(Object.hasOwn(src, 'accountId') ? { accountId: src.accountId, account: obj(src.account), accountError: obj(src.accountError) } : {}),
     label: str(src.label),
     badge: str(src.badge) || null,
     tier: str(src.tier) || null,
@@ -101,6 +116,7 @@ function normalizeRouteOption(o) {
     contextWindow: num(src.contextWindow),
     reason: str(src.reason),
     warning: str(src.warning) || null,
+    budget: str(src.budget) || null,
     disabled: src.disabled === true,
     disabledReason: str(src.disabledReason) || null,
   };
@@ -174,7 +190,7 @@ export function sameRouteTarget(a, b) {
   return (str(a.kind) || 'direct') === (str(b.kind) || 'direct')
     && str(a.provider) === str(b.provider)
     && modelKey(a.model) === modelKey(b.model)
-    && (str(a.effort) || '') === (str(b.effort) || '');
+    && (str(a.effort) || '') === (str(b.effort) || '') && str(a.accountId) === str(b.accountId);
 }
 
 const BADGE_RANK = { suggested: 0, remembered: 1, current: 2, capable: 3, cheaper: 4, stronger: 5 };
@@ -269,6 +285,7 @@ export function routeOptions(n, { brainLabel = '', t = null } = {}) {
       // "here" is the brain's own model: prefer its display label over a raw id.
       title: isHere ? tr('assistant.routes.doHere', 'Do it here with {model}', { model: str(o.label) || hereModel }) : (label || o.id),
       badgeText: badgeText(o, n, tr),
+      disabledReason: o.budget === 'share_used_up' ? routeBudgetReason({ provider: o.provider }, t) : o.disabledReason,
       selected: o.id === defaultId,
     };
   });
@@ -350,6 +367,16 @@ export function routeCatalogRow(pref, catalog) {
   return pref.model ? catalogModelRow(pref.provider, pref.model, catalog) || aliasRow(pref.provider, pref.model, rows) : rows.find(m => m.isDefault) || null;
 }
 
+/** Budget messages are UI copy; never show the server's English disabledReason. */
+export function routeBudgetReason({ provider, dry } = {}, t) {
+  const tr = tf(t), names = { 'claude-code': 'Claude Code', codex: 'Codex', opencode: 'OpenCode' };
+  if (provider) return tr('assistant.routes.budgetProvider', "Budget: the {provider} share of this session's budget is used up.", { provider: names[provider] || provider });
+  const list = [...new Set(arr(dry))].map(id => names[id] || id);
+  if (!list.length) return tr('assistant.routes.budgetSpent', "Budget: this session's budget is spent.");
+  return tr(list.length === 1 ? 'assistant.routes.budgetDryOne' : 'assistant.routes.budgetDryMany',
+    list.length === 1 ? 'Budget: the {list} share is used up.' : 'Budget: the {list} shares are used up.', { list: list.join(', ') });
+}
+
 /** Text parts of a route line (pure). */
 export function routeLineParts(route, phase = 'decided', { brainLabel = '', t = null } = {}) {
   const tr = tf(t);
@@ -366,10 +393,12 @@ export function routeLineParts(route, phase = 'decided', { brainLabel = '', t = 
   else if (phase === 'declined' && str(r.reasonCode) === 'no_capable_model') {
     state = str(r.needs) === 'vision' ? tr('assistant.routes.reason.noSeeingModel', 'no model can see images') : tr('assistant.routes.reason.noCapableModel', 'no model can make this');
   }
+  else if (str(r.reasonCode) === 'budget_exhausted') state = routeBudgetReason({ dry: r.dry }, t);
   else if (phase === 'declined') state = tr('assistant.routes.state.declined', 'declined');
   else if (phase === 'cancelled') state = tr('assistant.routes.state.cancelled', 'cancelled');
   let decided = '';
-  switch (str(r.decidedBy)) {
+  switch (r.source === 'budget' ? 'budget' : str(r.decidedBy)) {
+    case 'budget': decided = tr('assistant.routes.budgetDecision', 'budget re-route'); break;
     case 'brain': decided = tr('assistant.routes.decidedBy', 'decided by {model}', { model: brainLabel || tr('assistant.routes.theBrainLower', 'the assistant') }); break;
     case 'user': decided = tr('assistant.routes.youChose', 'you chose'); break;
     case 'remembered': decided = tr('assistant.routes.remembered', 'your saved choice'); break;
@@ -377,6 +406,8 @@ export function routeLineParts(route, phase = 'decided', { brainLabel = '', t = 
     default: decided = r.remembered ? tr('assistant.routes.remembered', 'your saved choice') : '';
   }
   const meta = [];
+  const accountLabel = routeDisplayAccount(target, t);
+  if (accountLabel) meta.push(accountLabel);
   if (effort && effort !== 'off') meta.push(effort);
   if (confidence) meta.push(confidence);
   return {
@@ -390,7 +421,7 @@ export function routeLineParts(route, phase = 'decided', { brainLabel = '', t = 
     muted: phase === 'expired' || phase === 'declined' || phase === 'cancelled',
     pending: phase === 'pending' || phase === 'card',
     decidedText: decided,
-    reason: str(r.reason),
+    reason: target?.accountError ? routeAccountError(target.accountError, t) : str(r.reason),
     alternatives: arr(r.alternatives).map(a => routeTargetLabel(a, { effort: true })).filter(Boolean),
     corrections: arr(r.corrections).map(c => correctionText(c, tr)).filter(Boolean),
   };
@@ -400,9 +431,15 @@ export function routeLineParts(route, phase = 'decided', { brainLabel = '', t = 
 function correctionText(c, tr) {
   if (typeof c === 'string') return c;
   if (!c || typeof c !== 'object') return '';
+  if (['account_auto', 'account_limited', 'accounts_all_limited'].includes(c.reason) && c.usage) {
+    const key = c.reason === 'account_auto' ? 'autoPicked' : c.reason === 'account_limited' ? 'fallbackPicked' : 'allLimitedPicked';
+    const fallbacks = { autoPicked: 'Auto chose {to}: {usage}', fallbackPicked: '{from} out of usage → {to}: {usage}', allLimitedPicked: 'All subscriptions limited; soonest reset → {to}: {usage}' };
+    const text = tr(`assistant.accountUsage.${key}`, fallbacks[key], { from: str(c.from), to: str(c.to), usage: accountUsageText({ mode: 'subscription', usage: c.usage }, (key, params) => tr(key, key, params)) });
+    return text + (c.workerForAccount ? ' · ' + tr('assistant.accountUsage.directWorkerHint', 'Runs on a worker because this conversation belongs to another account.') : '');
+  }
   if (c.reason === 'remembered_route') return tr('assistant.routes.correction.remembered', 'your saved route {to} replaced {from}', { to: str(c.to), from: str(c.from) });
   if (c.reason === 'remembered_disabled') return tr('assistant.routes.correction.rememberedDisabled', 'saved route {from} is disabled, kept the pick', { from: str(c.from) });
-  const text = firstStr(c.text, c.summary);
+  const text = firstStr(c.text, c.summary, c.message);
   if (text) return text;
   if (c.field && (c.from || c.to)) return `${c.field}: ${str(c.from) || '—'} → ${str(c.to) || 'default'}`;
   return str(c.field);
@@ -414,6 +451,14 @@ export function routeLineText(route, phase, opts) {
   if (p.stateText && !p.targetLabel) return `⇄ ${p.taskClass} · ${p.stateText}`;
   const head = [p.kindLabel, p.targetLabel].filter(Boolean).join(' · ');
   return [`⇄ ${p.taskClass} → ${head}`, ...p.meta].join(' · ');
+}
+
+/** Everything the one-line row can cut short (meta, state included): its tooltip. */
+export function routeLineTitle(route, phase, opts) {
+  const p = routeLineParts(route, phase, opts);
+  const tail = [p.kindLabel, p.targetLabel, ...p.meta, p.stateText].filter(Boolean).join(' · ');
+  if (!tail) return `⇄ ${p.taskClass}`;
+  return `⇄ ${p.taskClass} ${p.kindLabel || p.targetLabel ? '→' : '·'} ${tail}`;
 }
 
 // ═══════════════════════════════════════════
@@ -449,8 +494,12 @@ function providerColor(provider) {
 let _lineUid = 0;
 
 /**
- * The compact route line. opts: { phase, t, providerIcon, brainLabel() , onChangeRoutes() }
- * Returns { el, routeId, update(route, phase) }.
+ * The compact route line, always one line: the glyph, arrow, kind and mark
+ * hold; the rest (model · account · usage, or the state) gives way first,
+ * then the class; the title has it all. data-live: "waiting" while it waits
+ * for a choice, "working" while a run it dispatched is (setRunning).
+ * opts: { phase, t, providerIcon, brainLabel() , onChangeRoutes() }
+ * Returns { el, routeId, update(route, phase), setRunning(on) }.
  */
 export function createRouteLine(route, opts = {}) {
   const tr = tf(opts.t);
@@ -458,20 +507,19 @@ export function createRouteLine(route, opts = {}) {
   const detailId = `asst-route-detail-${++_lineUid}`;
   node.innerHTML = `
     <button type="button" class="asst-route-line-head" aria-expanded="false" aria-controls="${detailId}">
-      <span class="asst-route-glyph" aria-hidden="true">⇄</span>
+      <span class="asst-route-glyph asst-icon" aria-hidden="true">${ICON_ROUTE}</span>
       <span class="asst-route-class"></span>
       <span class="asst-route-arrow" aria-hidden="true">→</span>
       <span class="asst-route-kind"></span>
       <span class="asst-route-icon asst-icon" aria-hidden="true"></span>
-      <span class="asst-route-target"></span>
-      <span class="asst-route-meta"></span>
-      <span class="asst-route-state"></span>
+      <span class="asst-route-rest"><span class="asst-route-target"></span> <span class="asst-route-meta"></span> <span class="asst-route-state"></span></span>
       <span class="asst-route-chev" aria-hidden="true">&#x203A;</span>
+      <span class="asst-route-sweep" aria-hidden="true"></span>
     </button>
     <div class="asst-route-detail" id="${detailId}" hidden></div>`;
   const head = node.querySelector('.asst-route-line-head');
   const detail = node.querySelector('.asst-route-detail');
-  let current = { route: obj(route) || {}, phase: opts.phase || 'decided' };
+  let current = { route: obj(route) || {}, phase: opts.phase || 'decided', running: false };
 
   head.addEventListener('click', () => {
     const open = head.getAttribute('aria-expanded') !== 'true';
@@ -487,6 +535,8 @@ export function createRouteLine(route, opts = {}) {
     node.dataset.phase = current.phase;
     node.classList.toggle('muted', p.muted);
     node.classList.toggle('pending', p.pending);
+    const live = p.pending ? 'waiting' : current.running && !p.muted && !p.stateText ? 'working' : '';
+    if (live) node.dataset.live = live; else delete node.dataset.live;
     node.querySelector('.asst-route-class').textContent = p.taskClass;
     const arrow = node.querySelector('.asst-route-arrow');
     const kindEl = node.querySelector('.asst-route-kind');
@@ -494,7 +544,7 @@ export function createRouteLine(route, opts = {}) {
     const targetEl = node.querySelector('.asst-route-target');
     const metaEl = node.querySelector('.asst-route-meta');
     const stateEl = node.querySelector('.asst-route-state');
-    arrow.hidden = !p.targetLabel && !p.pending;
+    arrow.hidden = !p.targetLabel && !p.pending && !p.kindLabel;
     kindEl.textContent = p.kindLabel;
     kindEl.hidden = !p.kindLabel;
     iconEl.innerHTML = p.targetLabel ? providerIconHtml(p.provider, opts) : '';
@@ -506,7 +556,9 @@ export function createRouteLine(route, opts = {}) {
     metaEl.hidden = !p.meta.length;
     stateEl.textContent = p.stateText;
     stateEl.hidden = !p.stateText;
+    node.querySelector('.asst-route-rest').hidden = targetEl.hidden && metaEl.hidden && stateEl.hidden;
     head.setAttribute('aria-label', routeLineText(current.route, current.phase, { brainLabel, t: opts.t }));
+    head.title = routeLineTitle(current.route, current.phase, { brainLabel, t: opts.t });
 
     detail.innerHTML = '';
     const rows = [];
@@ -533,6 +585,12 @@ export function createRouteLine(route, opts = {}) {
     update(nextRoute, phase) {
       if (nextRoute && typeof nextRoute === 'object') current.route = { ...current.route, ...nextRoute };
       if (phase) current.phase = phase;
+      render();
+    },
+    /** A run this route dispatched is queued or working (the renderer knows from its run cards). */
+    setRunning(on) {
+      if (current.running === !!on) return;
+      current.running = !!on;
       render();
     },
   };
@@ -705,7 +763,7 @@ export function renderRouteCard(container, input, hooks = {}) {
     row.setAttribute('aria-disabled', o.disabled ? 'true' : 'false');
     row.tabIndex = -1;
     const kindWord = o.kind && o.kind !== 'direct' ? routeKindLabel(o.kind) : '';
-    const sub = [kindWord, o.effort && o.effort !== 'off' ? o.effort : '', o.price ? priceText(o.price) : '', o.vision ? tr('assistant.brain.vision', 'vision') : '', o.reason].filter(Boolean).join(' · ');
+    const sub = [kindWord, routeDisplayAccount(o, hooks.t), o.effort && o.effort !== 'off' ? o.effort : '', o.price ? priceText(o.price) : '', o.vision ? tr('assistant.brain.vision', 'vision') : '', o.reason].filter(Boolean).join(' · ');
     row.innerHTML = `
       <span class="asst-route-num" aria-hidden="true">${esc(o.number)}</span>
       <span class="asst-route-opt-icon asst-icon" aria-hidden="true"${o.provider ? ` style="color:${esc(providerColor(o.provider))}"` : ''}>${providerIconHtml(o.provider, hooks)}</span>
@@ -718,7 +776,7 @@ export function renderRouteCard(container, input, hooks = {}) {
     row.querySelector('.asst-route-opt-title').textContent = o.title;
     if (sub) row.querySelector('.asst-route-opt-sub').textContent = sub;
     const warn = row.querySelector('.asst-route-opt-warn');
-    if (warn) warn.textContent = o.disabled && o.disabledReason ? o.disabledReason : o.warning;
+    if (warn) warn.textContent = o.accountError ? routeAccountError(o.accountError, hooks.t) : o.disabled && o.disabledReason ? o.disabledReason : o.warning;
     if (o.badgeText) row.querySelector('.asst-route-badge').textContent = o.badgeText;
     row.addEventListener('click', () => { if (!o.disabled) select(o.id, { focus: true }); });
     return row;

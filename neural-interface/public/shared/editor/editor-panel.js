@@ -2078,7 +2078,7 @@ export function initEditorPanel(host = {}) {
     // listeners run in the order they were added): what was just written follows by itself.
     try {
       const value = kept ? storage.getItem(KEYS.EDITOR_TABS) : null;
-      if (value) navigator.sendBeacon?.('/api/ui-state', new Blob([JSON.stringify({ [KEYS.EDITOR_TABS]: JSON.parse(value) })], { type: 'application/json' }));
+      if (value && storage.persists !== false) navigator.sendBeacon?.('/api/ui-state', new Blob([JSON.stringify({ [KEYS.EDITOR_TABS]: JSON.parse(value) })], { type: 'application/json' }));
     } catch { /* the debounced write is what is left */ }
     _backups?.flush({ leaving: true });
   };

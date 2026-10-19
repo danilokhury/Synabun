@@ -52,6 +52,11 @@ const SOURCE_LABELS = {
   'winget': 'winget',
   'scoop': 'Scoop',
   'choco': 'Chocolatey',
+  'mise': 'mise',
+  'asdf': 'asdf',
+  'cargo': 'Cargo',
+  'snap': 'Snap',
+  'system': 'your system package manager',
 };
 
 function sourceLabel(src) {

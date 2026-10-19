@@ -33,6 +33,27 @@ const FAT_BLOB_KEYS = new Set([
 // as a string and still needs JSON.parse for the server payload.
 const STR_SENTINEL = Symbol('storage:str');
 
+// Showcase mode: a page opened with `?showcase` (any value but "0" or "false")
+// hydrates as usual but never writes back, so what a demo walk-through opens,
+// moves or types leaves the user's saved UI state as it was. Reads work from
+// the in-memory cache. (blob-store.js keeps its own writes.)
+function _readShowcaseMode() {
+  try {
+    const params = new URLSearchParams(globalThis.window?.location?.search || '');
+    if (!params.has('showcase')) return false;
+    const value = String(params.get('showcase')).trim().toLowerCase();
+    return value !== '0' && value !== 'false';
+  } catch {
+    return false;
+  }
+}
+const SHOWCASE_MODE = _readShowcaseMode();
+
+/** True when this page load is a showcase (`?showcase`): nothing is written back. */
+export function isShowcaseMode() {
+  return SHOWCASE_MODE;
+}
+
 // ── Hydrate from server ──────────────────────────────
 
 async function _hydrate() {
@@ -55,8 +76,8 @@ async function _hydrate() {
     // First run or server down: import from localStorage
     console.info('[storage] Migrating localStorage to server...');
     _migrateFromLocalStorage();
-    // Build dirty set from everything we imported
-    for (const [key, val] of Object.entries(_cache)) {
+    // Build dirty set from everything we imported (a showcase only reads it)
+    if (!SHOWCASE_MODE) for (const [key, val] of Object.entries(_cache)) {
       try { _dirty[key] = JSON.parse(val); } catch { _dirty[key] = val; }
     }
     if (Object.keys(_dirty).length > 0) {
@@ -74,6 +95,10 @@ else await _hydrate();
 // ── Drop-in API (mirrors localStorage) ───────────────
 
 export const storage = (hostedSidepanelId && sidepanelHost()?.storageFor(hostedSidepanelId)) || {
+  // False in showcase mode: values stay in this page. Code that sends a value to the server
+  // by itself (an unload beacon) asks this first.
+  persists: !SHOWCASE_MODE,
+
   getItem(key) {
     return _cache[key] ?? null;
   },
@@ -105,11 +130,13 @@ export const storage = (hostedSidepanelId && sidepanelHost()?.storageFor(hostedS
 // ── Debounced flush to server ────────────────────────
 
 function _scheduleDebouncedFlush() {
+  if (SHOWCASE_MODE) { _dirty = {}; return; }
   if (_flushTimer) clearTimeout(_flushTimer);
   _flushTimer = setTimeout(_flushToServer, DEBOUNCE_MS);
 }
 
 async function _flushToServer() {
+  if (SHOWCASE_MODE) { _dirty = {}; _flushTimer = null; return; }
   const payload = {};
   for (const [k, v] of Object.entries(_dirty)) {
     if (v === STR_SENTINEL) {
@@ -142,7 +169,7 @@ async function _flushToServer() {
 
 // ── Flush on page unload (sendBeacon for reliability) ──
 
-window.addEventListener('beforeunload', () => {
+if (!SHOWCASE_MODE) window.addEventListener('beforeunload', () => {
   if (_flushTimer) {
     clearTimeout(_flushTimer);
     _flushTimer = null;

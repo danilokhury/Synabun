@@ -1,3 +1,5 @@
+import { redactProviderSecrets } from './provider-panel-api-key-auth.js';
+import { applyClaudeLaunchEnv, CLAUDE_CREDENTIAL_ENV } from './claude-accounts.js';
 import { claudeStallSeconds } from './claude-stall-policy.js';
 import { detectProject as memoryProject } from '../../mcp-server/dist/config.js';
 // ── Claude Agent SDK bridge for the Claude sidepanel (claude-skin) ──
@@ -223,7 +225,7 @@ const _allSessions = new Set();
 
 function _orphanKey(wid, sid) { return sid ? `${wid}:${sid}` : wid; }
 
-function log(...args) { console.log('[claude-sdk]', ...args); }
+function log(...args) { console.log('[claude-sdk]', ...args.map(redactProviderSecrets)); }
 
 // Panel sessions, a temporary chat (lib/claude-temporary.js): the plan files
 // Claude Code wrote for one that still have to be removed. path → { plansDirs,
@@ -415,6 +417,7 @@ export class ClaudeSession {
   // ── wire helpers ──────────────────────────────────────────────────────────
 
   send(data) {
+    data = redactProviderSecrets(data);
     if (this.destroyed) return;
     if (this.orphanBuffer) {
       // High-volume deltas are not buffered while detached — full assistant
@@ -451,6 +454,7 @@ export class ClaudeSession {
   // without a prompt: the first real ensureQuery() adopts it if the session's
   // configuration is still the one it was started with.
   ensureQuery({ warm = false } = {}) {
+    if (this._authChanging) { this._startRefused = { code: 'auth_changing', message: 'Sign-in is changing. Try again.' }; return null; }
     if (this.q) return this.q;
     // Panel sessions under a named Claude account: every process start checks
     // the account again (a message, a recreation after a stall, a lost-session
@@ -480,6 +484,16 @@ export class ClaudeSession {
       return null;
     }
     let accountEnv = null;
+    if (!this.panel && typeof this.opts.claudeAccountId === 'string' && this.opts.claudeAccountId && this.opts.claudeAccountId !== 'default'
+      && typeof deps.claudeAccountLaunch === 'function') {
+      let launch = null;
+      try { launch = deps.claudeAccountLaunch(this.opts.claudeAccountId); } catch { launch = null; }
+      if (!launch?.ok) {
+        this._startRefused = { code: 'account_unavailable', message: ACCOUNT_UNAVAILABLE };
+        log(`session create refused: the account "${this.opts.claudeAccountId}" is no longer set up`);
+        return null;
+      }
+    }
     if (this.panel && this.accountId) {
       accountEnv = this._accountEnvOf(this.accountId);
       if (!accountEnv) {
@@ -609,9 +623,24 @@ export class ClaudeSession {
       abortController: this.abortController,
       stderr: (text) => {
         const t = String(text || '').trim();
-        if (t) this.send({ type: 'stderr', text: t });
+        // Raw diagnostic chunks can split a credential. API-key sessions use
+        // the SDK's structured errors instead of forwarding raw stderr.
+        if (t && !this._usesProfileApiKey) this.send({ type: 'stderr', text: t });
       },
     };
+    // The account decides the credential (lib/claude-accounts.js launchFor()):
+    // every inherited credential variable is removed, then the account's own
+    // config directory and, in API-key mode, its key are added. Subscription
+    // mode adds no key, so Claude Code uses the login in that directory. No
+    // other account's key, and nothing SynaBun was started with, reaches it.
+    const launch = this._launchFor(accountEnv);
+    this._usesProfileApiKey = !!launch?.env?.ANTHROPIC_API_KEY;
+    this._credentialMode = launch?.mode || null; // what the process was given: 'subscription' | 'apiKey'
+    if (launch) options.env = applyClaudeLaunchEnv(options.env, launch);
+    // On Windows, the Git Bash the host names for this process (lib/git-bash/: SynaBun's own copy on a PC without
+    // one); without it Claude Code has no Bash tool and runs the hooks in PowerShell. Panel tabs and the brain.
+    if (typeof deps?.childEnv === 'function') options.env = deps.childEnv(options.env);
+
     if (Array.isArray(sessionOpts.disallowedTools) && sessionOpts.disallowedTools.length) options.disallowedTools = [...sessionOpts.disallowedTools];
     if (this.panel) {
       // The process is launched able to take Bypass, so the tab's mode control
@@ -918,6 +947,29 @@ export class ClaudeSession {
     try { env = deps.claudeAccountEnv(account); } catch { env = null; }
     if (!env || typeof env.CLAUDE_CONFIG_DIR !== 'string' || !env.CLAUDE_CONFIG_DIR) return null;
     return env;
+  }
+
+  // The launch of the account this session runs under (the host's
+  // claudeAccountLaunch(), lib/claude-accounts.js launchFor()), or null when
+  // the session names none: panel sessions always do ('' = the default
+  // account); any other session only when it was given `claudeAccountId` (the
+  // Assistant's brain). A host without claudeAccountLaunch gets what it had:
+  // the named account's directory and the profile key, nothing stripped for
+  // a default account without a key.
+  _launchFor(accountEnv) {
+    const named = this.panel ? (this.accountId || 'default') : (typeof this.opts.claudeAccountId === 'string' && this.opts.claudeAccountId ? this.opts.claudeAccountId : null);
+    if (!named) return null;
+    if (typeof deps.claudeAccountLaunch === 'function') {
+      let launch = null;
+      try { launch = deps.claudeAccountLaunch(named); } catch { launch = null; }
+      if (launch?.ok) return launch;
+      return null;
+    }
+    if (!this.panel) return null;
+    let key = null;
+    try { key = deps.claudeAccountApiKey?.(named) || null; } catch { key = null; }
+    if (!accountEnv && !key) return null;
+    return { ok: true, accountId: named, mode: key ? 'apiKey' : 'subscription', env: { ...(accountEnv || {}), ...(key ? { ANTHROPIC_API_KEY: key } : {}) }, unset: [...CLAUDE_CREDENTIAL_ENV] };
   }
 
   // A start ensureQuery() refused (see there): tell the tab why and close the
@@ -1383,6 +1435,11 @@ export class ClaudeSession {
         }
         return;
       }
+      case 'rate_limit_event': {
+        try { deps?.accountRateLimit?.(this.panel ? this.accountId || 'default' : this.opts.claudeAccountId || 'default', m.rate_limit_info); } catch {}
+        this.sendEvent(m);
+        return;
+      }
       case 'result': {
         this._flushDeltas();
         this._handleResult(m);
@@ -1645,7 +1702,7 @@ export class ClaudeSession {
           this.sendEvent({
             type: 'system', subtype: 'session_info',
             info: {
-              account: r.account || null,
+              account: this._usesProfileApiKey ? { authMethod: 'apiKey' } : r.account || null,
               outputStyle: r.output_style || '',
               availableOutputStyles: Array.isArray(r.available_output_styles) ? r.available_output_styles : [],
               models: Array.isArray(r.models) ? r.models : [],
@@ -3128,6 +3185,28 @@ export class ClaudeSession {
   }
 }
 
+// Credentials are fixed in the CLI environment. Retire only this account's
+// idle panel processes before changing its key; hold starts until storage/logout
+// finishes. Other accounts and non-panel SDK callers are unaffected.
+// (The Assistant's brain names its account with `claudeAccountId`: retired the same way.)
+const sessionAccountOf = (s) => (s.panel ? (s.accountId || 'default') : (typeof s.opts?.claudeAccountId === 'string' && s.opts.claudeAccountId ? s.opts.claudeAccountId : null));
+export async function withPanelAccountAuthChange(accountId, change) {
+  const sessions = [..._allSessions].filter(s => !s.destroyed && sessionAccountOf(s) === accountId);
+  if (sessions.some(s => s.inTurn || s.pendingTurns || s.pendingPerms.size || s._hasPendingWork() || s._authChanging)) {
+    throw Object.assign(new Error('Finish or stop this account’s work before changing sign-in.'), { status: 409 });
+  }
+  for (const session of sessions) session._authChanging = true;
+  try {
+    await Promise.all(sessions.map(session => session._endQuery({ graceful: false })));
+    return await change();
+  } finally { for (const session of sessions) session._authChanging = false; }
+}
+
+/** Whether a live session (a panel tab's, the Assistant brain's) runs under this account. */
+export function accountInUse(accountId) {
+  return [..._allSessions].some(s => !s.destroyed && sessionAccountOf(s) === accountId);
+}
+
 // ── connection layer ─────────────────────────────────────────────────────────
 
 export function createClaudeBridge(ws) {
@@ -3214,6 +3293,14 @@ export function killSession(windowId, sessionId) {
 export function isSessionLive(sessionId) {
   if (!sessionId) return false;
   return [..._allSessions].some(s => !s.destroyed && s.sessionId === sessionId && !!s.q);
+}
+
+// How many side-panel sessions are working (a turn, a question, background tasks
+// or crons, a sign-in change): the desktop app waits for them before it restarts
+// into an update (GET /api/system/activity). The Assistant's brain counts there itself.
+export function panelSessionsWorking() {
+  return [..._allSessions].filter(s => s.panel && !s.destroyed
+    && (s.inTurn || s.pendingTurns || s.pendingPerms.size || s._hasPendingWork() || s._authChanging)).length;
 }
 
 export function shutdownAllBridges() {

@@ -56,9 +56,15 @@
 //
 // Writes are not run through here: a commit by the owner runs the
 // repository's hooks, and that is what a commit does.
+//
+// On a Windows PC without git, SynaBun's own copy of Git for Windows
+// (lib/git-bash/) is the git of every read: its folder is put at the end of
+// the read's PATH (setGitFallbackFolder, withGitFallback, which the commit
+// routes use too). Nothing changes where the computer has a git of its own.
 
 import { execFile, spawnSync } from 'node:child_process';
 import { devNull } from 'node:os';
+import { delimiter } from 'node:path';
 
 /** What the environment of a read adds. */
 export const GIT_READ_ENV = Object.freeze({
@@ -78,9 +84,35 @@ const PROBE_TIMEOUT_MS = 3000;
 export const MONITOR_MEMO_MS = 10_000;
 const MONITOR_MEMO_MAX = 200;
 
-/** The environment a read is run in: `env` and what a read adds to it. */
+let fallbackFolder = () => null;
+
+/**
+ * Where SynaBun's own git is on a computer that has none (Windows: the cmd folder of SynaBun's copy of Git for
+ * Windows, lib/git-bash/manager.js), as a function asked at every start; null while git is the computer's own.
+ * The folder goes at the end of PATH, so a git of the computer's, installed meanwhile, still comes first.
+ */
+export function setGitFallbackFolder(folder) {
+  fallbackFolder = typeof folder === 'function' ? folder : () => null;
+}
+
+/** `env` with the fallback folder at the end of its PATH (whatever its spelling), or `env` itself without one. */
+export function withGitFallback(env = process.env) {
+  let folder = null;
+  try { folder = fallbackFolder(); } catch { folder = null; }
+  if (!folder) return env;
+  const keys = Object.keys(env).filter((name) => name.toUpperCase() === 'PATH');
+  const name = keys[0] || (process.platform === 'win32' ? 'Path' : 'PATH');
+  const parts = String(env[name] || '').split(delimiter).filter(Boolean);
+  if (parts.some((part) => part.toLowerCase() === folder.toLowerCase())) return env;
+  const out = { ...env };
+  for (const each of keys) delete out[each];
+  out[name] = [...parts, folder].join(delimiter);
+  return out;
+}
+
+/** The environment a read is run in: `env` and what a read adds to it (and SynaBun's git, where the computer has none). */
 export function gitReadEnv(env = process.env) {
-  return { ...env, ...GIT_READ_ENV };
+  return withGitFallback({ ...env, ...GIT_READ_ENV });
 }
 
 /** Does this command compare the index with the working tree (and so ask the file system monitor)? */

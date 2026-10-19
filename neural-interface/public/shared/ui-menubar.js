@@ -14,8 +14,10 @@ import { registerAction } from './ui-keybinds.js';
 import { isGuest, hasPermission } from './ui-sync.js';
 import { sendToPanel } from './ui-claude-panel.js';
 import { forceCheckToolUpdates, showUpdateToast, TOOL_LABELS } from './ui-tool-updates.js';
-import { forceCheckSynabunUpdate, openSynabunUpdateModal } from './ui-update.js';
+import { forceCheckSynabunUpdate, openSynabunUpdateModal, synabunUpdateSourceLabel } from './ui-update.js';
 import { requestServerRestart } from './ui-loading.js';
+import { desktopBridge, isDesktopApp } from './desktop-bridge.js';
+import { t } from './i18n.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -391,8 +393,7 @@ function wireTerminalMenu() {
         }
       }
       if (syn?.updateAvailable) {
-        const srcLabel = syn.source === 'both' ? 'npm + GitHub' : syn.source === 'github' ? 'GitHub' : 'npm';
-        updates.push({ label: `SynaBun v${syn.current} → v${syn.latest}`, source: srcLabel });
+        updates.push({ label: `SynaBun v${syn.current} → v${syn.latest}`, source: synabunUpdateSourceLabel(syn) });
       }
 
       const errors = [];
@@ -426,6 +427,9 @@ function wireTerminalMenu() {
     // when the server is back (ui-loading.js requestServerRestart).
     'menu-restart-server':   () => { requestServerRestart(); },
     'menu-stop-server':      async () => {
+      // Inside the desktop app the server is the app's: stopping it is quitting SynaBun.
+      const desktop = desktopBridge();
+      if (desktop) { await desktop.quit(); return; }
       const previousTitle = document.title;
       try {
         document.title = 'Stopping...';
@@ -451,6 +455,12 @@ function wireTerminalMenu() {
   registerAction('toggle-terminal', () => emit('terminal:toggle'));
   registerAction('toggle-terminal-alt', () => emit('terminal:toggle'));
 
+  // The desktop app is SynaBun's own window: no browser installs it, and Stop Server is Quit SynaBun there.
+  if (isDesktopApp()) {
+    const quitLabel = [...($('menu-stop-server')?.querySelector('.menu-text')?.childNodes || [])].filter(node => node.nodeType === 3).pop();
+    if (quitLabel) quitLabel.textContent = ` ${t('desktop.menu.quit')}`;
+    return;
+  }
   initPwaInstall({ changed: value => {
     const el = $('menu-install-app');
     if (el) el.style.display = value === 'installed' ? 'none' : '';

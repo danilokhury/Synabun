@@ -43,6 +43,7 @@ export const WORKER_END_COPY = Object.freeze({
   reasonAssistantSaid: 'Stopped by the Assistant: {reason}',
   reasonTimeCap: 'The run reached its time limit.',
   reasonBudget: 'The run reached its budget limit.',
+  reasonBudgetShare: 'This provider used up its share of the session budget.',
   reasonMaxTurns: 'The run reached its turn limit.',
   reasonIdle: 'The worker waited for a follow-up that did not come, and closed.',
   reasonRestart: 'The server restarted while the run was open.',
@@ -155,6 +156,7 @@ function stopReason(reason, t) {
     case 'assistant': case 'complete': return t('reasonAssistant');
     case 'time_cap': return t('reasonTimeCap');
     case 'budget_cap': case 'session_budget_cap': case 'budget_unpriced': return t('reasonBudget');
+    case 'budget_share': return t('reasonBudgetShare');
     case 'max_turns': return t('reasonMaxTurns');
     case 'idle_timeout': return t('reasonIdle');
     case 'server_restart': case 'server_shutdown': return t('reasonRestart');

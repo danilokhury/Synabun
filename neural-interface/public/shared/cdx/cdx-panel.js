@@ -4,7 +4,7 @@
 import { storage } from '../storage.js';
 import { state, emit, on } from '../state.js';
 import { registerSidepanel, setSidepanelVisible, sidepanelAcceptsKeyboard, openAnotherSidepanelSession } from '../ui-sidepanel-windows.js';
-import { subscribeCliStatus, recheckCliStatus, getCliDocUrl, getCliInstallCommand, getCliLabel } from '../cli-status.js';
+import { mountCliBanner } from '../ui-cli-banner.js';
 import { nativeLoopWindowId } from '../ui-native-window-id.js';
 import { createStickyScrollController, getStickyScrollController } from '../ui-scroll-follow.js';
 import { wireFileLinks } from '../ui-file-links.js';
@@ -30,6 +30,7 @@ import {
   requestModelList, populateModelDropdown,
   setSessionLabel, renameActiveSession, promptNameNewSession, openSettingsPanel, renderSessionMenu,
   toggleAccountMenu,
+  mountCodexAccountMenu,
   contextMenuData, contextMenuReading, refreshContextMenuDetails,
   addImageFromFile, removeImage, renderImageStrip,
   addPathChip, removePathChip, renderPathStrip,
@@ -62,8 +63,7 @@ document.addEventListener('visibilitychange', () => {
 let _panel = null;
 let _visible = false;
 let _resizeBound = false;
-let _cliInstalled = null;
-let _cliUnsub = null;
+let _cliBanner = null; // the CLI banner and send-block (ui-cli-banner.js)
 
 // ═══════════════════════════════════════════
 //  Bound State (mirrors active tab — managed by cdx-tabs)
@@ -275,7 +275,6 @@ function buildPanel() {
         <button class="cxp-btn" id="cxp-slide" title="Slide panel"><svg viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg></button>
       </div>
       <div class="cxp-session-menu" id="cxp-session-menu"></div>
-      <div class="cxp-account-menu" id="cxp-account-menu"></div>
     </div>
     <div class="cxp-messages-container" id="cxp-messages-container"></div>
     <div class="cxp-bottom">
@@ -406,122 +405,66 @@ function startupEmptyText() {
 }
 
 // ── CLI installation status (banner + send-block) ──
-let _cliInstallFailureForced = false;
-let _cliFailureReason = null;
+// One controller (ui-cli-banner.js) draws the banner above the transcript while
+// Codex is not usable: not installed (with Install, which runs OpenAI's own
+// installer on the server), being installed, failed to install, or found but
+// failed to start (with the error it gave). It toggles `cxp-cli-blocked` on the
+// panel, which syncInputEnabled (cdx-tabs.js) reads to keep Send off. What it
+// says is cli-install-view.js (`cliInstall.*` strings).
+let _cliWasBlocked = false;
 
-function ensureCliBannerEl() {
-  if (!_panel) return null;
-  const container = panelEl('#cxp-messages-container');
-  if (!container || !container.parentNode) return null;
-  let banner = container.parentNode.querySelector(':scope > .cxp-cli-banner');
-  if (banner) { renderCliBannerContent(banner); return banner; }
-  const url = getCliDocUrl('codex');
-  banner = document.createElement('div');
-  banner.className = 'cxp-cli-banner';
-  banner.innerHTML = `
-    <div class="cxp-cli-banner-icon">!</div>
-    <div class="cxp-cli-banner-text">
-      <div class="cxp-cli-banner-title"></div>
-      <div class="cxp-cli-banner-body"></div>
-    </div>
-    <div class="cxp-cli-banner-actions">
-      <a class="cxp-cli-banner-link" href="${url}" target="_blank" rel="noopener noreferrer">Install guide</a>
-      <button class="cxp-cli-banner-recheck" type="button">Re-check</button>
-    </div>
-  `;
-  container.parentNode.insertBefore(banner, container);
-  const btn = banner.querySelector('.cxp-cli-banner-recheck');
-  btn?.addEventListener('click', async () => {
-    btn.disabled = true;
-    btn.textContent = 'Checking…';
-    try { await recheckCliStatus('codex'); }
-    finally {
-      if (btn.isConnected) {
-        btn.disabled = false;
-        btn.textContent = 'Re-check';
-      }
-    }
-  });
-  renderCliBannerContent(banner);
-  return banner;
+function cliBanner() {
+  if (!_cliBanner) {
+    _cliBanner = mountCliBanner({
+      toolKey: 'codex',
+      prefix: 'cxp',
+      panel: () => _panel,
+      anchor: () => panelEl('#cxp-messages-container'),
+      onBlockedChange: (blocked) => {
+        try { syncInputEnabled(); } catch {}
+        const usableAgain = _cliWasBlocked && !blocked;
+        _cliWasBlocked = blocked;
+        if (usableAgain) reconnectAfterCli();
+      },
+    });
+  }
+  return _cliBanner;
 }
 
-// Two very different situations reach this banner, and telling the user the
-// CLI is "not installed" when it is installed sends them off to reinstall
-// something that is already there. Distinguish them.
-function renderCliBannerContent(banner) {
-  const titleEl = banner.querySelector('.cxp-cli-banner-title');
-  const bodyEl = banner.querySelector('.cxp-cli-banner-body');
-  if (!titleEl || !bodyEl) return;
-  const label = getCliLabel('codex');
-  bodyEl.replaceChildren();
-
-  if (_cliInstalled === null) {
-    titleEl.textContent = `${label} CLI not installed`;
-    const cmd = getCliInstallCommand('codex');
-    bodyEl.append('Run ');
-    const code = document.createElement('code');
-    code.textContent = cmd;
-    bodyEl.append(code, ' or follow the install guide.');
-    return;
+// Codex was installed (or found again) after this tab's session could not start it: the tab connects again, so
+// Send works without reopening the panel. A tab that is running, or one an automation owns, is left alone.
+function reconnectAfterCli() {
+  const tab = activeTab();
+  if (!tab || tab.closed || tab.automationActive || tab.running) return;
+  if (tab.connected && tab.bootstrapped) return;
+  try {
+    if (tab.ws && tab.ws.readyState === WebSocket.OPEN) disconnectTab(tab);
+    connectTab(tab);
+  } catch (error) {
+    console.warn('[cdx-panel] reconnect after Codex became usable failed', error);
   }
-
-  titleEl.textContent = `${label} CLI failed to start`;
-  bodyEl.append(`${label} v${_cliInstalled} is installed, but it could not be launched. `);
-  if (_cliFailureReason) {
-    const code = document.createElement('code');
-    code.textContent = _cliFailureReason;
-    bodyEl.append(code);
-  } else {
-    bodyEl.append('Check the CLI path in Settings, then re-check.');
-  }
-}
-
-function removeCliBannerEl() {
-  if (!_panel) return;
-  const container = panelEl('#cxp-messages-container');
-  const banner = container?.parentNode?.querySelector(':scope > .cxp-cli-banner');
-  banner?.remove();
 }
 
 function refreshCliBanner() {
   if (!_panel) return;
-  const missing = _cliInstalled === null || _cliInstallFailureForced;
-  _panel.classList.toggle('cxp-cli-blocked', missing);
-  if (missing) ensureCliBannerEl();
-  else removeCliBannerEl();
+  cliBanner().refresh();
   try { syncInputEnabled(); } catch {}
 }
 
 export function isCdxCliInstalled() {
-  return _cliInstalled !== null && !_cliInstallFailureForced;
+  return !cliBanner().blocked();
 }
 
+// A session could not start Codex: "failed to start" with its words at once,
+// then the server is asked again and its answer decides what stays. (The
+// answer is read from the re-check itself: a spawn failure does not change
+// the version, so a change-only notification would never clear the banner.)
 export function flagCdxCliInstallFailure(reason = null) {
-  _cliInstallFailureForced = true;
-  _cliFailureReason = reason ? String(reason).slice(0, 300) : null;
-  refreshCliBanner();
-  // Clear the latch from the value recheckCliStatus RETURNS. Relying on the
-  // subscriber callback alone deadlocked: the callback only fired when the
-  // version string changed, and a spawn failure does not change the version,
-  // so the banner could never be dismissed — the Re-check button included.
-  recheckCliStatus('codex')
-    .then((info) => {
-      if (!info?.installed) return;
-      _cliInstallFailureForced = false;
-      _cliFailureReason = null;
-      refreshCliBanner();
-    })
-    .catch(() => {});
+  cliBanner().flagFailure(reason);
 }
 
 function ensureCliSubscription() {
-  if (_cliUnsub) return;
-  _cliUnsub = subscribeCliStatus('codex', (info) => {
-    _cliInstalled = info?.installed || null;
-    if (_cliInstalled) { _cliInstallFailureForced = false; _cliFailureReason = null; }
-    refreshCliBanner();
-  });
+  cliBanner();
 }
 
 // ═══════════════════════════════════════════
@@ -906,7 +849,6 @@ function wireEvents() {
     },
     onOpen: () => {
       sessionMenu?.classList.remove('open');
-      panelEl('#cxp-account-menu')?.classList.remove('open');
       panelEl('#cxp-effort-menu')?.classList.remove('open');
       refreshContextMenuDetails();
     },
@@ -916,8 +858,8 @@ function wireEvents() {
     // After this click has reached the document, whose handler closes the menu.
     onAccount: () => setTimeout(() => toggleAccountMenu(), 0),
   });
-  // The account menu hangs under the header, which a floating window is moved by.
-  panelEl('#cxp-account-menu')?.addEventListener('pointerdown', (event) => event.stopPropagation());
+  // The header account menu (account-menu.js, shared with the Claude panel): before the cog.
+  mountCodexAccountMenu(panelEl('.cxp-actions'), _panel);
   const slideBtn = panelEl('#cxp-slide');
   slideBtn?.addEventListener('click', () => setVisible(false));
   const changelogBtn = panelEl('#cxp-action-changelog');
@@ -1035,7 +977,6 @@ function wireEvents() {
   });
   document.addEventListener('click', (event) => {
     if (!event.target.closest('.cxp-header')) sessionMenu?.classList.remove('open');
-    if (!event.target.closest('#cxp-account-menu')) panelEl('#cxp-account-menu')?.classList.remove('open');
     if (!event.target.closest('.cxp-dropdown')) {
       _panel?.querySelectorAll('.cxp-dropdown.open').forEach((node) => node.classList.remove('open'));
     }

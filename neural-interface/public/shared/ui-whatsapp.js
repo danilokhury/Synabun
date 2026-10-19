@@ -20,8 +20,8 @@ import { escapeHtml } from './utils.js';
 import * as kit from './settings/settings-kit.js';
 import { emit, on } from './state.js';
 import {
-  waView, confirmLine, formatCountdown, clockTime, levelLabel, modeLabel, chooseNote, connectorSize, brainLimitText,
-  brainChoiceInUse, brainChoiceLabel, brainChoiceNotes,
+  waView, confirmLine, formatCountdown, levelLabel, modeLabel, chooseNote, connectorSize, brainLimitText,
+  brainChoiceInUse, brainChoiceLabel, brainChoiceNotes, connectionWarningText, transcriptionLine,
   localizedCopy, localize, setTranslator,
 } from './whatsapp/wa-view.js';
 import { normalizePhone, PHONE_ERRORS as PHONE_ERROR_SOURCE } from './whatsapp/wa-phone.js';
@@ -59,8 +59,9 @@ const attr = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/"/g, '&quot;
 const esc = (s) => escapeHtml(String(s ?? ''));
 const num = (n) => Number(n || 0).toLocaleString('en-US');
 const btn = (id, label, cls = '', extra = '') => `<button class="wa-btn${cls ? ` ${cls}` : ''}" id="${id}" type="button" ${extra}>${esc(label)}</button>`;
-// `named`: the row's <strong id="<id>-label"> and <small id="<id>-help"> name and describe the switch.
-const toggle = (id, named = false) => `<label class="recall-toggle"><input type="checkbox" id="${id}"${named ? ` aria-labelledby="${id}-label" aria-describedby="${id}-help"` : ''}><span class="recall-toggle-track"></span></label>`;
+// `named`: the row's <strong id="<id>-label"> and <small id="<id>-help"> name and describe the switch
+// (`alsoDescribedBy`: the id of one more line that describes it, such as a status line).
+const toggle = (id, named = false, alsoDescribedBy = '') => `<label class="recall-toggle"><input type="checkbox" id="${id}"${named ? ` aria-labelledby="${id}-label" aria-describedby="${id}-help${alsoDescribedBy ? ` ${alsoDescribedBy}` : ''}"` : ''}><span class="recall-toggle-track"></span></label>`;
 const tile = (id, label) => `<div class="db-stat"><span class="db-stat-label">${esc(label)}</span><span class="db-stat-value" id="${id}">—</span></div>`;
 const radios = (name, options, invId = '') => `<div class="wa-radios" role="radiogroup"${invId ? ` ${kit.inv(invId)}` : ''}>${options.map((o) => `
   <label class="wa-radio"><input type="radio" name="${name}" value="${attr(o.value)}"><span><strong>${esc(o.label)}</strong>${o.hint ? `<small>${esc(o.hint)}</small>` : ''}</span></label>`).join('')}</div>`;
@@ -114,6 +115,7 @@ export function buildWhatsAppTab() {
       <ol class="wa-steps" id="wa-steps" hidden>${steps}</ol>
 
       ${section({ id: 'wa-sec-setup', badgeId: 'wa-setup-badge', body: `
+        <div class="wa-callout wa-callout-warn" id="wa-conn-warning" role="status" hidden></div>
         <div class="wa-pane" data-pane="loading"><div class="settings-hint">${kit.te('settings.redesign.whatsapp.askingSynabunForTheWhatsappStatus')}</div></div>
         <div class="wa-pane" data-pane="unavailable" hidden><div class="settings-hint" id="wa-unavailable-text"></div></div>
 
@@ -233,6 +235,7 @@ export function buildWhatsAppTab() {
         <div class="settings-field"><label>${kit.te('settings.redesign.whatsapp.longAnswers')}</label>${radios('wa-max', MAX_MESSAGE_OPTIONS, 'WA045')}<div class="settings-hint">${kit.te('settings.redesign.whatsapp.longerAnswersAreCutThereWith')}</div></div>
         <div class="settings-field"><label>${kit.te('settings.redesign.whatsapp.freshConversation')}</label>${radios('wa-rotation', ROTATION_OPTIONS, 'WA046')}</div>
         <div class="settings-field" id="wa-trigger-field"><label>${kit.te('settings.redesign.whatsapp.inMessageYourself')}</label>${radios('wa-trigger', TRIGGER_OPTIONS, 'WA047')}</div>
+        <div class="settings-field wa-toggle-row" id="wa-voice-field" hidden><span><strong id="wa-voice-label">${kit.te('settings.redesign.whatsapp.transcribeVoiceNotes')}</strong><small id="wa-voice-help">${kit.te('settings.redesign.whatsapp.voiceNotesAreTurnedIntoText')}</small><small id="wa-voice-status" role="status"></small></span>${toggle('wa-voice', true, 'wa-voice-status')}</div>
         <div class="settings-field"><label>${kit.te('settings.redesign.whatsapp.commandsYouCanSend')}</label>
           <ul class="wa-commands">${COMMANDS.map((c) => `<li><code>${esc(c.name)}</code> ${esc(c.text)}</li>`).join('')}</ul>
           <div class="settings-hint">${kit.te('settings.redesign.whatsapp.answerAQuestionOrAnApproval')}</div>
@@ -381,6 +384,10 @@ export function wireWhatsAppTab(overlay, { toast = () => {} } = {}) {
     const pane = state.showChoose && ['link_expired', 'logged_out'].includes(status?.state) ? 'choose' : view.pane;
     for (const el of tabBody.querySelectorAll('.wa-pane')) show(el, el.dataset.pane === pane);
     renderPaneActions(view);
+    // A 440 / 403 the link keeps retrying: why, while it lasts (status.warning).
+    const warning = connectionWarningText(status);
+    setText($('wa-conn-warning'), warning);
+    show($('wa-conn-warning'), !!warning);
     renderSetupDetails(status, view, pane);
     renderConnector(status);
     renderConversation(status);
@@ -422,7 +429,7 @@ export function wireWhatsAppTab(overlay, { toast = () => {} } = {}) {
         [kit.tx('settings.redesign.whatsapp.mode'), modeLabel(s.mode)],
         [kit.tx('settings.redesign.whatsapp.account'), [s.account?.name && s.account.name !== '~' ? s.account.name : null, s.account?.masked].filter(Boolean).join(' · ') || '—'],
         [kit.tx('settings.redesign.whatsapp.owner'), s.owner?.masked ? `${s.owner.masked}${s.owner.boundAt ? (" " + kit.tx('settings.redesign.whatsapp.ownerSince', { date: new Date(s.owner.boundAt).toLocaleDateString() })) : ''}` : '—'],
-        [kit.tx('settings.redesign.whatsapp.level'), `${levelLabel(s.level)}${s.level === 'autonomous' && s.levelExpiresAt ? (" " + kit.tx('settings.redesign.whatsapp.levelUntil', { time: clockTime(s.levelExpiresAt) })) : ''}`],
+        [kit.tx('settings.redesign.whatsapp.level'), levelLabel(s.level)],
       ];
       const html = lines.map(([k, v]) => `<div><strong>${esc(k)}</strong> ${esc(v)}</div>`).join('');
       if ($('wa-connected-facts').innerHTML !== html) $('wa-connected-facts').innerHTML = html;
@@ -457,6 +464,13 @@ export function wireWhatsAppTab(overlay, { toast = () => {} } = {}) {
     setRadio('wa-rotation', cfg.rotation);
     setRadio('wa-trigger', cfg.selfTrigger);
     show($('wa-trigger-field'), s.mode !== 'dedicated');
+    // Voice notes (a server without them sends neither the field nor status.transcription: the row stays hidden).
+    const voiceKnown = typeof cfg.transcriptionEnabled === 'boolean' && !!s.transcription;
+    show($('wa-voice-field'), voiceKnown);
+    if (voiceKnown) {
+      setChecked($('wa-voice'), cfg.transcriptionEnabled);
+      setText($('wa-voice-status'), transcriptionLine(s));
+    }
     const session = s.session;
     setText($('wa-session-line'), session?.id ? kit.tx('settings.redesign.whatsapp.sessionCurrent', { title: session.title || kit.tx('settings.redesign.whatsapp.whatsappConversation') }) : kit.tx('settings.redesign.whatsapp.noConversationYetYourFirstMessage'));
     $('wa-open-conversation').disabled = !session?.id;
@@ -562,7 +576,7 @@ export function wireWhatsAppTab(overlay, { toast = () => {} } = {}) {
     const box = $('wa-allow-box');
     const e = state.escalation;
     if (!e || Date.now() > e.expiresAt) { show(box, false); return; }
-    const html = `<strong>${kit.te('settings.redesign.whatsapp.nowOnYourPhone')}</strong> ${kit.te('settings.redesign.whatsapp.send')} <code class="wa-allow-code">ALLOW ${esc(e.code)}</code> ${kit.te('settings.redesign.whatsapp.inTheWhatsappChatWithSynabun')} <span id="wa-allow-countdown">${esc(formatCountdown(e.expiresAt - Date.now()))}</span>${kit.te('settings.redesign.whatsapp.autonomousThenRunsFor8Hours')}`;
+    const html = `<strong>${kit.te('settings.redesign.whatsapp.nowOnYourPhone')}</strong> ${kit.te('settings.redesign.whatsapp.send')} <code class="wa-allow-code">ALLOW ${esc(e.code)}</code> ${kit.te('settings.redesign.whatsapp.inTheWhatsappChatWithSynabun')} <span id="wa-allow-countdown">${esc(formatCountdown(e.expiresAt - Date.now()))}</span>${kit.te('settings.redesign.whatsapp.autonomousUntilTurnedOff')}`;
     if (box.dataset.sig !== e.code) { box.innerHTML = html; box.dataset.sig = e.code; }
     show(box, true);
   }
@@ -847,6 +861,7 @@ export function wireWhatsAppTab(overlay, { toast = () => {} } = {}) {
   radioSave('wa-rotation', 'rotation');
   radioSave('wa-trigger', 'selfTrigger');
   $('wa-forward').addEventListener('change', () => putConfig({ forwardBackground: $('wa-forward').checked }));
+  $('wa-voice').addEventListener('change', () => putConfig({ transcriptionEnabled: $('wa-voice').checked }));
   $('wa-label').addEventListener('input', renderLabelPreview);
   $('wa-label-save').addEventListener('click', () => putConfig({ replyLabel: $('wa-label').value.trim() || null }).then((r) => { if (r.ok !== false) toast(kit.tx('settings.redesign.whatsapp.replyLabelSaved')); }));
 

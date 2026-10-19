@@ -12,7 +12,10 @@
 //   unavailable | not_installed | installing | install_failed | ready |
 //   linking (method qr|code; phase starting|waiting|scanned) | link_expired |
 //   confirm_owner (kind self|code) | connected | reconnecting | paused |
-//   logged_out (reason removed|inactive|banned) | error (code)
+//   logged_out (reason removed|inactive|banned|invalid_session) | error (code)
+// `warning` ('replaced' | 'forbidden' | null) rides along: a saved session
+// that another copy took over (440) or that WhatsApp refuses (403) keeps
+// retrying every 5 minutes, and Settings says why until it is stable again.
 //
 // Secrets keep to one path each: a link QR or pairing code only goes down the
 // NDJSON response of the tab that asked for it, the claim code and wa.me link
@@ -30,14 +33,16 @@ import { createWhatsAppApi } from './api.js';
 import { brainChoiceView, checkBrainChoice, cleanBrainChoice } from './brain.js';
 import { createWhatsAppBridge, outboxPlan } from './bridge.js';
 import { parseCommand } from './commands.js';
-import { createWhatsAppConfigStore, currentLevel, MODES, SERVICE_DEFAULTS, USER_DEFAULTS, USER_FIELDS } from './config.js';
+import { createWhatsAppConfigStore, currentLevel, MODES, SERVICE_DEFAULTS, TRANSCRIPTION_FIELDS, USER_DEFAULTS, USER_FIELDS } from './config.js';
 import { chunk, toWhatsApp } from './format.js';
 import { composePrompt, createCoalescer } from './inbound.js';
 import { createWhatsAppInstaller, NPM_CI_ARGS } from './installer.js';
 import { createWhatsAppManager } from './manager.js';
 import { isInside, resolveWhatsAppPaths } from './paths.js';
 import { renderQrSvg } from './qr-svg.js';
-import { maskNumber, redactWa } from './redact.js';
+import { CONN_WARNINGS, FILE_SEND_AS, LIMITS, VOICE_MARKER } from './protocol.js';
+import { resolveTranscriptionTools, TRANSCRIPTION_LIMITS } from './transcription.js';
+import { maskNumber, redactFilePath, redactLogLine, redactRequestedPath, redactWa } from './redact.js';
 import { providerLabel, remoteBrainLimited, remoteBrainNotice } from '../remote-policy.js';
 import { normalizePhone, PHONE_ERRORS } from '../../public/shared/whatsapp/wa-phone.js';
 
@@ -51,12 +56,12 @@ export const SERVICE_LIMITS = Object.freeze({
   escalationMs: 5 * MINUTE,      // the phone has this long to answer ALLOW <code>
   escalationTries: 3,
   escalationEchoMs: 10 * MINUTE, // a late ALLOW after this is passed on as text
-  autonomousMs: 8 * HOUR,
   testEveryMs: 20_000,
   activityMax: 200,
   logRetentionDays: 7,
   broadcastDebounceMs: 150,
   inactiveAfterMs: 13 * DAY,     // logged out after this long without a connection reads as "inactive"
+  warningStableMs: 10 * MINUTE,  // a 440 / 403 warning clears after this long connected (the host's stable time)
 });
 
 export const TEST_MESSAGE = 'SynaBun test message. If you can read this, WhatsApp is working.';
@@ -80,7 +85,6 @@ export function whatsappError(status, code, message, field) {
   return error;
 }
 
-const hhmm = (ms) => new Date(ms).toTimeString().slice(0, 5);
 const ymd = (ms) => { const d = new Date(ms); return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`; };
 const pick = (obj, keys) => Object.fromEntries(keys.map((key) => [key, obj[key]]));
 /** "ABCD1234" → "ABCD-1234" (how WhatsApp shows a pairing code). */
@@ -104,6 +108,8 @@ export function formatPairingCode(code) {
  * @param {Function} [deps.bridgeFactory]     (deps) → createWhatsAppBridge-shaped object
  * @param {() => object|null} [deps.getDefaultBrain]  the Assistant panel's brain ("Same as the Assistant")
  * @param {() => object|null} [deps.getCatalog]       the Assistant's model catalog ({ peek(), full() }): the WhatsApp brain is checked against it
+ * @param {Function} [deps.checkTranscription]  ({ home, enginePath, modelPath, ffmpegPath, env, platform }) → what voice notes
+ *   need and lack (transcription.js resolveTranscriptionTools; tests pass a fake). Read only: nothing is run here.
  */
 export function createWhatsAppService({
   dataHome,
@@ -128,6 +134,7 @@ export function createWhatsAppService({
   policy = undefined,
   getDefaultBrain = null,
   getCatalog = null,
+  checkTranscription = resolveTranscriptionTools,
   rng = undefined,
   bridgeLimits = undefined,
   now = Date.now,
@@ -140,11 +147,22 @@ export function createWhatsAppService({
   const disabled = String(env.SYNABUN_WHATSAPP || '').trim().toLowerCase() === 'off';
   const fake = env.SYNABUN_WHATSAPP_FAKE === '1';
   const paths = pathsOverride || resolveWhatsAppPaths({ dataHome, env, platform, extraBackupRoots });
-  const say = (message, level = 'info') => { try { log(`[whatsapp] ${redactWa(message)}`, level); } catch {} };
+  // Every line passes redactWa, but send_file's audit line, whose exact shape redact.js fileAuditLine checks.
+  const say = (message, level = 'info') => { try { log(`[whatsapp] ${redactLogLine(message)}`, level); } catch {} };
   // A refused SYNABUN_WHATSAPP_HOME (inside a backed-up folder) says so once, in the server log.
   for (const warning of paths.warnings || []) say(warning, 'warn');
 
-  const config = createWhatsAppConfigStore({ get: getKvConfig, set: setKvConfig, now, log: (tag, msg) => say(`${tag}: ${msg}`, 'warn') });
+  const config = createWhatsAppConfigStore({
+    get: getKvConfig, set: setKvConfig, now, log: (tag, msg) => say(`${tag}: ${msg}`, 'warn'),
+    // An 8-hour Autonomous of an earlier version was read (and stored) as Ask: one Activity line says so.
+    // Called from a config read, so never before `activity` below exists: no read happens while this function builds.
+    onLegacyAutonomous: () => {
+      try {
+        record('security', 'Autonomous from an earlier version ended; turn it on again to keep it on without a time limit');
+        notify();
+      } catch {}
+    },
+  });
   const installer = disabled ? null : installerFactory({ dataHome, paths, env, platform, log: (msg, level) => say(msg, level), now });
   const manager = disabled ? null : managerFactory({ dataHome, paths, env, platform, log: (msg, level) => say(msg, level), now });
 
@@ -160,15 +178,18 @@ export function createWhatsAppService({
     fatal: null,            // { code, message, at }
     escalation: null,       // { code, expiresAt, attemptsLeft, timer }
     escalationEndedAt: 0,
-    autonomousTimer: null,
     retentionTimer: null,
     lastConn: null,         // last conn snapshot (for transitions)
     lastStateAt: 0,
+    lastDisconnectAt: null, // conn.lastDisconnect.at of the last disconnect already looked at
+    warning: null,          // { kind: 'replaced'|'forbidden', since } while a 440 / 403 episode lasts
+    warningTimer: null,     // clears the warning once the connection was open for warningStableMs
     connectedAt: 0,
     reconnectAttempt: 0,
     wasConnected: false,
     testAt: 0,
     notesSkipped: 0,        // self-chat notes without the "sb" trigger (never logged)
+    transcription: null,    // { at, key, value }: what voice notes need and lack, looked at again at most every minute
     bridge: null,
     rev: 0,
     lastSignature: '',
@@ -188,7 +209,7 @@ export function createWhatsAppService({
     return value;
   }
   function managerStatus() {
-    const empty = { host: { state: 'stopped', pid: null, restarts: 0, lastError: null }, conn: { state: 'idle', mode: null, registered: false, me: null, owner: null, lastDisconnect: null, retryInMs: null, counters: {}, paused: false, awaitingConfirmUntil: null, claim: null, lastError: null }, runtime: { loaded: false, version: null, fake: false, error: null } };
+    const empty = { host: { state: 'stopped', pid: null, restarts: 0, lastError: null, retryInMs: null }, conn: { state: 'idle', mode: null, registered: false, me: null, owner: null, lastDisconnect: null, retryInMs: null, counters: {}, paused: false, awaitingConfirmUntil: null, claim: null, lastError: null }, runtime: { loaded: false, version: null, fake: false, error: null } };
     if (!manager) return empty;
     try { const s = manager.status(); return { host: { ...empty.host, ...(s?.host || {}) }, conn: { ...empty.conn, ...(s?.conn || {}) }, runtime: { ...empty.runtime, ...(s?.runtime || {}) } }; }
     catch { return empty; }
@@ -203,7 +224,10 @@ export function createWhatsAppService({
   }
   // The host's own "sb" filter stays off (selfTrigger 'all'): it would drop /stop,
   // /status and card answers too. selfTrigger 'prefix' is applied here (applyTrigger).
-  function prefsOf(cfg) { return { mode: cfg.mode, selfTrigger: 'all' }; }
+  // The voice-note settings go to the host, which transcribes (lib/whatsapp/transcription.js).
+  function prefsOf(cfg) {
+    return { mode: cfg.mode, selfTrigger: 'all', ...pick(cfg, TRANSCRIPTION_FIELDS) };
+  }
   function configureHost(cfg = config.read()) {
     if (!manager) return;
     Promise.resolve(manager.configure?.(prefsOf(cfg))).catch(() => {});
@@ -211,6 +235,32 @@ export function createWhatsAppService({
   function replyPrefix(cfg = config.read()) {
     if (cfg.replyLabel) return cfg.replyLabel;
     return cfg.mode === 'dedicated' ? '' : 'SynaBun:';
+  }
+  /**
+   * Voice notes as Settings shows them: { enabled, available, missing, invalid, language, home }. The
+   * same resolution the host makes before it downloads a note (the host checks again right before a
+   * program runs); missing / invalid are 'engine' | 'model' | 'ffmpeg'. Read only, cached a minute.
+   */
+  function transcriptionView(cfg = config.read()) {
+    const key = JSON.stringify([cfg.transcriptionEnginePath, cfg.transcriptionModelPath, cfg.transcriptionFfmpegPath]);
+    let tools = state.transcription && state.transcription.key === key && now() - state.transcription.at < TRANSCRIPTION_LIMITS.recheckMs ? state.transcription.value : null;
+    if (!tools) {
+      try {
+        tools = checkTranscription({ home: paths.transcriptionDir, enginePath: cfg.transcriptionEnginePath, modelPath: cfg.transcriptionModelPath, ffmpegPath: cfg.transcriptionFfmpegPath, env, platform });
+      } catch {
+        tools = null;
+      }
+      if (!tools || !Array.isArray(tools.missing)) tools = { missing: ['engine', 'model', 'ffmpeg'], invalid: [], available: false };
+      state.transcription = { at: now(), key, value: tools };
+    }
+    return {
+      enabled: cfg.transcriptionEnabled === true,
+      available: tools.available === true,
+      missing: [...tools.missing],
+      invalid: Array.isArray(tools.invalid) ? [...tools.invalid] : [],
+      language: cfg.transcriptionLanguage,
+      home: paths.transcriptionDir || null,
+    };
   }
 
   // ── the tab's state machine ────────────────────────────────────────────────
@@ -221,7 +271,6 @@ export function createWhatsAppService({
   function errorCodeOf(conn) {
     if (state.fatal?.code && state.fatal.code !== 'LOGGED_OUT') return state.fatal.code;
     const reason = String(conn.lastError || '');
-    if (reason === 'reconnect_limit') return 'RECONNECT_LIMIT';
     if (reason === 'pairing_code_failed') return 'PAIRING_FAILED';
     return 'SESSION_ERROR';
   }
@@ -270,7 +319,7 @@ export function createWhatsAppService({
     const tab = tabState();
     const inst = installerStatus();
     const conn = managerStatus().conn;
-    const level = currentLevel(cfg, now());
+    const level = currentLevel(cfg);
     const counters = {};
     for (const [key, value] of Object.entries(conn.counters || {})) if (Number.isFinite(value)) counters[key] = value;
     return {
@@ -280,13 +329,18 @@ export function createWhatsAppService({
       phase: tab.phase || null,
       mode: cfg.mode,
       level,
-      levelExpiresAt: level === 'autonomous' ? cfg.autonomousUntil : null,
+      // Autonomous has no time limit: kept for older readers, always null.
+      levelExpiresAt: null,
       paused: cfg.paused,
       pausedBy: cfg.pausedBy,
       // The owner's switch for computer use from WhatsApp (what it allows per level: remoteComputerUse).
       computerUse: cfg.computerUse === true,
       // Which brain runs the WhatsApp conversation: null = same as the Assistant.
       brain: cfg.brain ? { provider: cfg.brain.provider, model: cfg.brain.model, effort: cfg.brain.effort || null } : null,
+      // A 440 / 403 the link keeps retrying: 'replaced' | 'forbidden' | null (its own field, so a clear re-reads every tab).
+      warning: state.warning?.kind || null,
+      // Voice notes on and set up (no path, no list of what is missing: the status has those).
+      transcription: (() => { const v = transcriptionView(cfg); return { enabled: v.enabled, available: v.available }; })(),
       rev: state.rev,
       connector: { installed: !!inst.installed, stage: state.install?.stage || null, updateAvailable: !!inst.outdated, errorCode: state.installError?.code || null },
       counters,
@@ -320,9 +374,17 @@ export function createWhatsAppService({
       if (state.logFile !== file) { state.logFile = file; try { chmodSync(file, 0o600); } catch {} }
     } catch {}
   }
-  /** One activity row. `text` (a message body) is kept only while activityText is on. */
-  function record(kind, detail, text = null) {
-    const entry = { at: now(), kind, detail: redactWa(String(detail || '')).slice(0, 300) };
+  /**
+   * One activity row. `text` (a message body) is kept only while activityText is on. `filePath`: a
+   * file's path, appended through redactFilePath (redactWa would read most paths as key material);
+   * the rest of `detail` is SynaBun's own words and goes through redactWa as always.
+   */
+  function record(kind, detail, text = null, { filePath = null, requested = false } = {}) {
+    const words = redactWa(String(detail || ''));
+    // A path can hold control characters (a file or a link target named with a newline): never a second log line.
+    // A refused request's path is the model's own text: key-shaped runs in it are masked too (redactRequestedPath).
+    const shownPath = filePath ? (requested ? redactRequestedPath : redactFilePath)(filePath).replace(/[\u0000-\u001f\u007f\u2028\u2029]/g, '?') : '';
+    const entry = { at: now(), kind, detail: (filePath ? `${words} ${shownPath}` : words).slice(0, filePath ? 600 : 300) };
     if (text && config.read().activityText) entry.text = redactWa(String(text)).slice(0, 2000);
     activity.push(entry);
     if (activity.length > L.activityMax) activity.splice(0, activity.length - L.activityMax);
@@ -338,12 +400,19 @@ export function createWhatsAppService({
       if (name.slice(9, 17) < cutoff) { try { unlinkSync(path.join(paths.logsDir, name)); } catch {} }
     }
   }
+  // Why a voice note was not transcribed (the host's reason), for the activity log.
+  const AUDIO_REASONS = Object.freeze({
+    transcription_disabled: 'transcription is off', transcription_unavailable: 'transcription is not set up',
+    too_large: 'over 20 MB', too_long: 'over 10 minutes', stale: 'sent while SynaBun was offline', transcription_failed: 'transcription failed',
+  });
   function describeInbound(message) {
     const parts = [];
-    if (String(message.text || '').trim()) parts.push('text');
+    if (message.voice === true) parts.push('a voice note (transcribed on this computer)');
+    else if (String(message.text || '').trim()) parts.push('text');
     const images = Array.isArray(message.images) ? message.images.length : 0;
     if (images) parts.push(`${images} image${images === 1 ? '' : 's'}`);
-    if (message.unsupported) parts.push(`${String(message.unsupported.type || 'unsupported')} (not supported)`);
+    if (message.unsupported?.type === 'audio' && Object.hasOwn(AUDIO_REASONS, String(message.unsupported.reason))) parts.push(`a voice note (not transcribed: ${AUDIO_REASONS[message.unsupported.reason]})`);
+    else if (message.unsupported) parts.push(`${String(message.unsupported.type || 'unsupported')} (not supported)`);
     const flags = [message.forwarded ? 'forwarded' : null, message.quoted ? (message.quoted.fromBot ? 'reply to SynaBun' : 'quote') : null].filter(Boolean);
     return `Message from you: ${parts.join(', ') || 'empty'}${flags.length ? ` (${flags.join(', ')})` : ''}`;
   }
@@ -352,11 +421,12 @@ export function createWhatsAppService({
   // Why a refused reply was dropped (the bridge's outboxPlan decides; the phone cannot be told).
   const DROPPED_BECAUSE = {
     PAUSED: 'sending is paused because the owner looked different than expected. See Setup & link',
-    HELD: 'the WhatsApp connector kept crashing and was stopped. Press Reconnect',
+    HELD: 'the WhatsApp connector does not match this SynaBun version (an update was installed while it ran). Restart SynaBun',
   };
+  const NO_MANAGER = Object.freeze({ ok: false, code: 'UNAVAILABLE', message: 'WhatsApp is not running on this computer' });
   const transport = {
     send: async (text, opts = {}) => {
-      const result = await manager.send(text, opts);
+      const result = manager ? await manager.send(text, opts) : NO_MANAGER;
       if (result?.ok) record('reply', `Sent a message (${String(text).length} characters)`, text);
       else {
         const code = String(result?.code || 'unknown');
@@ -368,9 +438,9 @@ export function createWhatsAppService({
       notify();
       return result;
     },
-    react: (id, name) => manager.react(id, name),
-    presence: (value) => manager.presence(value),
-    markRead: (ids) => manager.markRead(ids),
+    react: async (id, name) => (manager ? manager.react(id, name) : NO_MANAGER),
+    presence: async (value) => (manager ? manager.presence(value) : NO_MANAGER),
+    markRead: async (ids) => (manager ? manager.markRead(ids) : NO_MANAGER),
     connected: () => connectedNow(),
   };
   const bridgeConfig = { read: () => config.read(), write: (patch) => config.write(patch) };
@@ -409,7 +479,7 @@ export function createWhatsAppService({
   }
   function bridgeStatus() { try { return state.bridge?.status?.() || null; } catch { return null; } }
   function refreshBridge() { try { state.bridge?.refresh?.(); } catch {} }
-  /** A notice from SynaBun itself (escalation, autonomous expiry): straight to the phone, labelled like the bridge's replies. */
+  /** A notice from SynaBun itself (the Autonomous request and its ALLOW answer): straight to the phone, labelled like the bridge's replies. */
   async function notice(text) {
     if (!manager || !connectedNow()) return false;
     const prefix = replyPrefix();
@@ -417,7 +487,7 @@ export function createWhatsAppService({
     return !!result?.ok;
   }
 
-  // ── autonomous: the phone's ALLOW code, the 8 h window ────────────────────
+  // ── autonomous: the phone's ALLOW code; on until the owner lowers it ───────
   function endEscalation(reason) {
     const esc = state.escalation;
     if (!esc) return;
@@ -439,36 +509,15 @@ export function createWhatsAppService({
     esc.timer?.unref?.();
     state.escalation = esc;
     record('security', 'Autonomous requested on this computer; waiting for the ALLOW code from the phone');
-    notice('Autonomous was requested on your computer. To turn it on for 8 hours, reply ALLOW followed by the 4-digit code shown in SynaBun, within 5 minutes. Ignore this message if it was not you.').catch(() => {});
+    notice('Autonomous was requested on your computer. To turn it on, reply ALLOW followed by the 4-digit code shown in SynaBun, within 5 minutes. Ignore this message if it was not you.').catch(() => {});
     notify();
     return { code, expiresAt: esc.expiresAt, attemptsLeft: esc.attemptsLeft };
   }
-  function armAutonomousTimer() {
-    T.clearTimeout(state.autonomousTimer);
-    state.autonomousTimer = null;
-    const cfg = config.read();
-    if (cfg.level !== 'autonomous') return;
-    const left = (cfg.autonomousUntil || 0) - now();
-    if (left <= 0) { expireAutonomous(); return; }
-    // setTimeout caps at 2^31-1 ms; 8 h is far below it.
-    state.autonomousTimer = T.setTimeout(expireAutonomous, left);
-    state.autonomousTimer?.unref?.();
-  }
-  function expireAutonomous() {
-    state.autonomousTimer = null;
-    const cfg = config.read();
-    if (cfg.level !== 'autonomous') return;
-    config.write({ level: 'ask', autonomousUntil: null });
-    refreshBridge();
-    record('security', 'Autonomous ended; back to Ask on my phone');
-    notice('Autonomous ended: I ask on your phone again before acting.').catch(() => {});
-    notify();
-  }
   const sameCode = (a, b) => { const x = Buffer.from(String(a)); const y = Buffer.from(String(b)); return x.length === y.length && timingSafeEqual(x, y); };
-  /** "ALLOW 1234" from the owner: complete, refuse or explain. → true when consumed. */
+  /** "ALLOW 1234" typed by the owner: complete, refuse or explain. → true when consumed. A voice note never is one. */
   function handleAllow(message) {
     const match = /^\s*allow\s+(\d{4})\s*$/i.exec(String(message.text || ''));
-    if (!match || message.forwarded || (Array.isArray(message.images) && message.images.length)) return false;
+    if (!match || message.forwarded || message.voice === true || (Array.isArray(message.images) && message.images.length)) return false;
     const esc = state.escalation;
     if (!esc) {
       if (state.escalationEndedAt && now() - state.escalationEndedAt < L.escalationEchoMs) {
@@ -493,16 +542,54 @@ export function createWhatsAppService({
       }
       return true;
     }
-    const until = now() + L.autonomousMs;
-    config.write({ level: 'autonomous', autonomousUntil: until });
+    // No time limit: Autonomous stays on, restarts included, until the owner lowers it in Settings.
+    config.write({ level: 'autonomous', autonomousUntil: null });
     endEscalation('allowed');
     refreshBridge();
-    armAutonomousTimer();
-    record('security', `Autonomous turned on from the phone until ${hhmm(until)}`);
-    notice(`Autonomous is on until ${hhmm(until)}. I act without asking for 8 hours, then go back to Ask. Send /pause to stop everything.`).catch(() => {});
+    record('security', 'Autonomous turned on from the phone; it stays on until it is turned off in Settings → WhatsApp');
+    notice('Autonomous is on. It stays on until you turn it off in Settings → WhatsApp on your computer. /pause pauses your messages and /stop stops the current task; neither changes the level.').catch(() => {});
     notify();
     return true;
   }
+
+  // ── a saved session another copy took over (440) or WhatsApp refuses (403) ─
+  // The host keeps retrying it every 5 minutes; this is what Settings shows meanwhile. One
+  // Activity line opens an episode and one closes it, after 10 minutes connected: the
+  // connects and drops in between are not logged one by one (the server log has each).
+  const WARNING_ACTIVITY = Object.freeze({
+    replaced: 'Another copy is using this WhatsApp session; SynaBun keeps retrying every 5 minutes',
+    forbidden: 'WhatsApp refused this account (it may be restricted or banned); SynaBun keeps retrying every 5 minutes',
+  });
+  function noteWarning(kind) {
+    if (!WARNING_ACTIVITY[kind]) return;
+    clearWarningTimer();
+    if (state.warning?.kind === kind) return;
+    state.warning = { kind, since: now() };
+    record('security', WARNING_ACTIVITY[kind]);
+  }
+  function clearWarningTimer() {
+    if (!state.warningTimer) return;
+    T.clearTimeout(state.warningTimer);
+    state.warningTimer = null;
+  }
+  function clearWarning() {
+    clearWarningTimer();
+    state.warning = null;
+  }
+  /** The connection is open: once it stays so for warningStableMs, the episode is over. */
+  function armWarningClear() {
+    if (!state.warning || state.warningTimer) return;
+    state.warningTimer = T.setTimeout(() => {
+      state.warningTimer = null;
+      if (!state.warning || !connectedNow()) return;
+      state.warning = null;
+      record('state', 'The WhatsApp connection is stable again');
+      notify();
+    }, L.warningStableMs);
+    state.warningTimer?.unref?.();
+  }
+  // A saved session WhatsApp itself rejected: a stream error naming a bad session, or a QR for linked credentials.
+  const INVALID_SESSION_ERRORS = new Set(['badSession', 'session_rejected']);
 
   // ── manager events ─────────────────────────────────────────────────────────
   function onState(snapshot) {
@@ -511,17 +598,25 @@ export function createWhatsAppService({
     state.lastConn = conn;
     state.lastStateAt = now();
     const cfg = config.read();
+    // A disconnect this service has not looked at yet (a respawned host's conn repeats the last one).
+    const drop = conn.lastDisconnect && conn.lastDisconnect.at !== state.lastDisconnectAt ? conn.lastDisconnect : null;
+    if (drop) state.lastDisconnectAt = drop.at;
+    const warned = drop && conn.state === 'reconnecting' ? CONN_WARNINGS[drop.code] || null : null;
+    const episode = !!state.warning || !!warned;
     if (conn.state === 'open' && prev?.state !== 'open') {
       state.connectedAt = now();
       state.reconnectAttempt = 0;
       state.fatal = null;
       config.write({ setup: { ...(cfg.setup || {}), connectedAt: now(), lastEnd: null, ...(conn.registered && !cfg.setup?.linkedAt ? { linkedAt: now() } : {}) } });
-      record('state', 'Connected to WhatsApp');
+      if (!episode) record('state', 'Connected to WhatsApp');
     }
+    if (conn.state === 'open') armWarningClear();
+    else clearWarningTimer();
     if (conn.state === 'reconnecting' && prev?.state !== 'reconnecting') {
       state.reconnectAttempt += 1;
-      if (prev?.state === 'open') record('state', 'Connection lost; reconnecting');
+      if (prev?.state === 'open' && !episode) record('state', drop ? `Connection lost (code ${drop.code ?? 'none'}, ${drop.reason}); reconnecting` : 'Connection lost; reconnecting');
     }
+    if (warned) noteWarning(warned);
     // The link's phase follows the host: a QR/code on screen is "waiting", the phone accepting it is "scanned".
     // Terminal states only count once the host took the link request (a fresh host starts out "unlinked").
     const link = state.link;
@@ -542,10 +637,14 @@ export function createWhatsAppService({
       }
       if (!claim?.active && !conn.owner?.bound && prev?.claim?.active) endClaim({ type: 'expired' });
     }
-    if (['logged_out', 'forbidden'].includes(conn.state) && prev?.state !== conn.state) onLoggedOut(conn.state === 'forbidden' ? 'banned' : logoutReason(cfg));
+    // 'forbidden' is a link attempt WhatsApp refused: a saved session retries a 403 instead (the warning above).
+    if (['logged_out', 'forbidden'].includes(conn.state) && prev?.state !== conn.state) {
+      onLoggedOut(conn.state === 'forbidden' ? 'banned' : INVALID_SESSION_ERRORS.has(conn.lastError) ? 'invalid_session' : logoutReason(cfg));
+    }
     if (conn.state === 'unlinked' && prev && prev.state !== 'unlinked' && !state.link) {
-      // Confirmation refused or timed out, or the host wiped the link.
+      // Confirmation refused or timed out, or the host wiped the link: nothing is left to retry.
       config.write({ owner: null, setup: cfg.setup ? { ...cfg.setup, linkedAt: null } : null });
+      clearWarning();
     }
     // Every state change reaches the bridge (it sends the restart note and flushes its outbox on connect).
     const connected = conn.state === 'open';
@@ -554,14 +653,21 @@ export function createWhatsAppService({
     try { const r = bridge?.onConnection?.({ connected, state: conn.state }); if (r?.catch) r.catch(() => {}); } catch {}
     notify();
   }
+  const LOGGED_OUT_ACTIVITY = Object.freeze({
+    banned: 'WhatsApp refused this account (it may be banned)',
+    inactive: 'WhatsApp logged SynaBun out after a long time offline',
+    invalid_session: 'WhatsApp rejected the saved session as invalid; link again to pair this device',
+    removed: 'WhatsApp logged SynaBun out (removed from the phone)',
+  });
   function onLoggedOut(reason) {
     const cfg = config.read();
     config.write({ owner: null, setup: { ...(cfg.setup || {}), linkedAt: null, lastEnd: { state: 'logged_out', reason, at: now() } } });
-    record('security', reason === 'banned' ? 'WhatsApp refused this account (it may be banned)' : reason === 'inactive' ? 'WhatsApp logged SynaBun out after a long time offline' : 'WhatsApp logged SynaBun out (removed from the phone)');
+    record('security', LOGGED_OUT_ACTIVITY[reason] || LOGGED_OUT_ACTIVITY.removed);
+    clearWarning();
     endEscalation('logged out');
     dropBridge().catch(() => {});
     // The host wiped the credentials; nothing is left for it to do.
-    T.setTimeout(() => { if (!isLinked()) manager.stop().catch?.(() => {}); }, 1000)?.unref?.();
+    T.setTimeout(() => { if (!isLinked()) Promise.resolve(manager?.stop?.()).catch(() => {}); }, 1000)?.unref?.();
   }
   function onQr({ qr, expiresAt } = {}) {
     const link = state.link;
@@ -601,23 +707,52 @@ export function createWhatsAppService({
     notify();
   }
   const TRIGGER_RE = /^\s*sb(?:\s+|:\s*|$)/i; // "sb hi", "sb:hi", or a bare "sb" caption on a picture
+  // Spoken, the prefix comes back as "SB", "SB," "S.B." or "s b": letters s and b, then no other letter.
+  const SPOKEN_TRIGGER_RE = /^\s*s\.?\s?b\.?(?=$|[^\p{L}\p{N}])[\s,:;.!?…-]*/iu;
   const ALLOW_RE = /^\s*allow\s+\d{4}\s*$/i;
+  /** A transcribed voice note's text → its transcript (one line) and its caption (after the first "\n"). */
+  function voiceParts(text) {
+    const body = text.startsWith(VOICE_MARKER) ? text.slice(VOICE_MARKER.length) : text;
+    const cut = body.indexOf('\n');
+    return cut < 0 ? { transcript: body.trim(), caption: '' } : { transcript: body.slice(0, cut).trim(), caption: body.slice(cut + 1) };
+  }
+  const voiceText = (transcript, caption) => (transcript ? `${VOICE_MARKER} ${transcript}${caption.trim() ? `\n${caption}` : ''}` : caption);
+  /**
+   * A voice note in "Message yourself" with selfTrigger 'prefix': it is for SynaBun when its spoken
+   * transcript starts with the prefix (stripped; the marker stays), when its caption does (stripped),
+   * or when it replies to one of SynaBun's messages. Never a command or an ALLOW code. → the message or null.
+   */
+  function voiceTrigger(message, text) {
+    const { transcript, caption } = voiceParts(text);
+    const spoken = SPOKEN_TRIGGER_RE.exec(transcript);
+    if (spoken) {
+      const rest = transcript.slice(spoken[0].length).trim();
+      return rest || caption.trim() ? { ...message, text: voiceText(rest, caption) } : null;
+    }
+    const typed = TRIGGER_RE.exec(caption);
+    if (typed) return { ...message, text: voiceText(transcript, caption.slice(typed[0].length)) };
+    if (message.quoted?.fromBot === true) return message;
+    return null;
+  }
   /**
    * "Message yourself" with selfTrigger 'prefix': only messages that start with
    * "sb " or "sb:" are for SynaBun (the prefix is stripped). Commands (/stop,
    * /status …), the ALLOW answer and replies quoting SynaBun's own messages
-   * always pass. Anything else is a note to self: dropped here, never logged.
+   * always pass. A voice note: voiceTrigger. Anything else is a note to self:
+   * dropped here, never logged.
    * → the message to act on, or null.
    */
   function applyTrigger(message) {
     const cfg = config.read();
     if (cfg.mode !== 'self' || cfg.selfTrigger !== 'prefix') return message;
     const text = typeof message.text === 'string' ? message.text : String(message.text ?? '');
+    if (message.voice === true) return voiceTrigger(message, text);
     const hasImages = Array.isArray(message.images) && message.images.length > 0;
     const match = TRIGGER_RE.exec(text);
     if (match) {
       const rest = text.slice(match[0].length);
-      return rest.trim() || hasImages ? { ...message, text: rest } : null;
+      // A bare "sb" caption on a voice note that was not transcribed still gets the note that says why.
+      return rest.trim() || hasImages || message.unsupported?.type === 'audio' ? { ...message, text: rest } : null;
     }
     if (!message.forwarded && ALLOW_RE.test(text)) return message;
     const command = parseCommand(message);
@@ -653,8 +788,9 @@ export function createWhatsAppService({
     state.fatal = { code: String(code || 'ERROR'), message: message ? redactWa(message) : null, at: now() };
     const labels = {
       LOGGED_OUT: 'WhatsApp logged SynaBun out', REPLACED: 'Another copy of this link took over the session', FORBIDDEN: 'WhatsApp refused the connection',
-      CONFIRM_TIMEOUT: 'The linked account was not confirmed within 10 minutes and was logged out', RECONNECT_LIMIT: 'Too many reconnects: SynaBun stopped trying',
-      HOST_HELD: 'The WhatsApp connector kept crashing and was stopped', OWNER_ANOMALY: 'Sending paused: the owner looked different than expected', LOCKED: 'Another SynaBun is using the WhatsApp session files',
+      CONFIRM_TIMEOUT: 'The linked account was not confirmed within 10 minutes and was logged out',
+      CRASH: 'The WhatsApp connector crashed; SynaBun restarts it and reconnects by itself',
+      HOST_HELD: 'The WhatsApp connector does not match this SynaBun version and was stopped; restart SynaBun', OWNER_ANOMALY: 'Sending paused: the owner looked different than expected', LOCKED: 'Another SynaBun is using the WhatsApp session files',
       AUTH_PERMS: 'The WhatsApp session files could not be made private (fix the folder permissions, then reconnect)',
     };
     record('error', labels[state.fatal.code] || `WhatsApp connector: ${state.fatal.code}`);
@@ -679,25 +815,52 @@ export function createWhatsAppService({
   function requireAvailable() {
     if (disabled) throw whatsappError(409, 'UNAVAILABLE', 'WhatsApp is turned off on this computer (SYNABUN_WHATSAPP=off).');
   }
-  /** Start the host and the linked session (autostart, resume, reconnect). */
+  /** The ops that talk to the host: a service built without a manager answers 409 instead of throwing. */
+  function requireManager() {
+    if (!manager) throw whatsappError(409, 'UNAVAILABLE', 'WhatsApp is not running on this computer.');
+  }
+  /** What a connect answered: nothing linked any more clears the link on record. */
+  function afterConnect(result, cfg) {
+    if (result?.ok) { ensureBridge(); return; }
+    if (result?.code === 'NOT_LINKED') config.write({ owner: null, setup: cfg.setup ? { ...cfg.setup, linkedAt: null } : null });
+    else state.fatal = { code: result?.code || 'CONNECT_FAILED', message: result?.message ? redactWa(result.message) : null, at: now() };
+  }
+  /** Start the host and the linked session (autostart, resume, reconnect, turning WhatsApp on). */
   async function run() {
+    if (!manager) {
+      state.fatal = { code: 'HOST_UNAVAILABLE', message: NO_MANAGER.message, at: now() };
+      notify();
+      return { ...NO_MANAGER };
+    }
     const cfg = config.read();
     wireManager();
     const started = await manager.start(prefsOf(cfg));
     if (!started?.ok) {
       state.fatal = { code: started?.code || 'HOST_UNAVAILABLE', message: started?.message ? redactWa(started.message) : null, at: now() };
+      // A host that is slow to start, or that crashed and is respawning, comes up later: the manager
+      // keeps the intent and connects on its ready. Not awaited: it may wait for that ready.
+      if (config.read().enabled && !state.stopping) {
+        Promise.resolve(manager.connect({ purpose: 'run', mode: cfg.mode })).then((result) => { if (result?.ok || result?.code === 'NOT_LINKED') { afterConnect(result, config.read()); notify(); } }, () => {});
+      }
       notify();
       return started || { ok: false, code: 'HOST_UNAVAILABLE' };
     }
     const result = await manager.connect({ purpose: 'run', mode: cfg.mode });
-    if (!result?.ok) {
-      if (result?.code === 'NOT_LINKED') config.write({ owner: null, setup: cfg.setup ? { ...cfg.setup, linkedAt: null } : null });
-      else state.fatal = { code: result?.code || 'CONNECT_FAILED', message: result?.message ? redactWa(result.message) : null, at: now() };
-    } else {
-      ensureBridge();
-    }
+    afterConnect(result, cfg);
     notify();
     return result;
+  }
+  /**
+   * Settings turned WhatsApp off (`enabled: false`): the host stops, and with it every pending retry.
+   * The link (and its credentials) stays: turning it on again resumes the saved session.
+   */
+  async function stopForDisable() {
+    refreshBridge(); // control of the Mac ends first (the bridge re-registers its sessions without computer use)
+    if (state.link) finishLink('failed', { type: 'error', code: 'DISABLED' });
+    endClaim({ type: 'cancelled' });
+    endEscalation('WhatsApp turned off');
+    clearWarning();
+    if (manager) { try { await manager.stop(); } catch (error) { say(`stop: ${error?.message || error}`, 'warn'); } }
   }
   async function start() {
     if (state.started) return status();
@@ -707,7 +870,6 @@ export function createWhatsAppService({
     pruneLogs();
     state.retentionTimer = T.setInterval(pruneLogs, 6 * HOUR);
     state.retentionTimer?.unref?.();
-    armAutonomousTimer();
     const cfg = config.read();
     configureHost(cfg);
     if (installerStatus().installed && cfg.enabled && isLinked(cfg)) {
@@ -718,7 +880,7 @@ export function createWhatsAppService({
   }
   async function shutdown({ timeoutMs = 5000 } = {}) {
     state.stopping = true;
-    for (const timer of [state.broadcastTimer, state.autonomousTimer, state.escalation?.timer, state.link?.timer]) if (timer) T.clearTimeout(timer);
+    for (const timer of [state.broadcastTimer, state.escalation?.timer, state.link?.timer, state.warningTimer]) if (timer) T.clearTimeout(timer);
     if (state.retentionTimer) T.clearInterval(state.retentionTimer);
     try { state.install?.controller?.abort(); } catch {}
     if (state.link) { state.link.stream.end({ type: 'error', code: 'SHUTTING_DOWN' }); state.link = null; }
@@ -730,6 +892,7 @@ export function createWhatsAppService({
   }
   function killNow() {
     state.stopping = true;
+    clearWarningTimer();
     const bridge = state.bridge;
     try { bridge?.endComputerUse?.('process exit'); } catch {}
     state.bridge = null;
@@ -749,8 +912,8 @@ export function createWhatsAppService({
       state.linkOutcome = { state: 'link_expired', at: now() };
       record('state', lastEvent?.code ? `Linking failed (${lastEvent.code})` : 'The link code expired before a phone used it');
       // Nothing linked: stop the host (and Baileys) until the next attempt.
-      const r = manager.disconnect?.();
-      Promise.resolve(r).finally(() => { if (!isLinked() && !state.link) Promise.resolve(manager.stop?.()).catch(() => {}); }).catch(() => {});
+      const r = manager?.disconnect?.();
+      Promise.resolve(r).finally(() => { if (!isLinked() && !state.link) Promise.resolve(manager?.stop?.()).catch(() => {}); }).catch(() => {});
     }
     notify();
   }
@@ -767,6 +930,7 @@ export function createWhatsAppService({
     if (state.link) throw whatsappError(409, 'LINK_BUSY', 'Another SynaBun tab is already linking WhatsApp. Finish or close it first.');
     if (state.install) throw whatsappError(409, 'INSTALL_BUSY', 'The WhatsApp connector is still installing.');
     if (!installerStatus().installed) throw whatsappError(409, 'NOT_INSTALLED', 'Install the WhatsApp connector first.');
+    requireManager();
     const cfg = config.read();
     if (isLinked(cfg)) throw whatsappError(409, 'ALREADY_LINKED', 'A WhatsApp account is already linked. Unlink it first.');
     if (body.mode !== undefined) {
@@ -785,7 +949,7 @@ export function createWhatsAppService({
       state.link = null;
       T.clearTimeout(current.timer);
       record('state', 'Linking cancelled (the settings tab closed)');
-      Promise.resolve(manager.disconnect?.()).finally(() => { if (!isLinked() && !state.link) Promise.resolve(manager.stop?.()).catch(() => {}); }).catch(() => {});
+      Promise.resolve(manager?.disconnect?.()).finally(() => { if (!isLinked() && !state.link) Promise.resolve(manager?.stop?.()).catch(() => {}); }).catch(() => {});
       notify();
     });
     stream.write({ type: 'state', state: 'linking', phase: 'starting', method });
@@ -814,6 +978,7 @@ export function createWhatsAppService({
   async function confirmOwner(body = {}) {
     requireAvailable();
     if (typeof body.accept !== 'boolean') throw whatsappError(400, 'BAD_REQUEST', 'accept must be true or false', 'accept');
+    requireManager();
     const result = await manager.confirmOwner(body.accept);
     if (!result?.ok) throw whatsappError(409, result?.code || 'NOT_AWAITING', result?.message ? redactWa(result.message) : 'Nothing is waiting for confirmation.');
     if (!body.accept) {
@@ -821,7 +986,7 @@ export function createWhatsAppService({
       config.write({ owner: null, setup: cfg.setup ? { ...cfg.setup, linkedAt: null } : null });
       record('security', 'You said the linked account is not yours; SynaBun logged it out');
       await dropBridge();
-      Promise.resolve(manager.stop?.()).catch(() => {});
+      Promise.resolve(manager?.stop?.()).catch(() => {});
     }
     notify();
     return { ok: true, status: status() };
@@ -839,6 +1004,7 @@ export function createWhatsAppService({
     if (cfg.mode !== 'dedicated') throw whatsappError(409, 'WRONG_MODE', 'Claim codes are for the second-number mode.');
     if (conn.state !== 'open') throw whatsappError(409, 'NOT_CONNECTED', 'WhatsApp is not connected.');
     if (conn.owner?.bound) throw whatsappError(409, 'OWNER_BOUND', 'An owner is already set. Reset it first.');
+    requireManager();
     const result = await manager.claimStart({ ttlMs: L.claimTtlMs });
     if (!result?.ok) throw whatsappError(409, result?.code || 'CLAIM_FAILED', result?.message ? redactWa(result.message) : 'Could not start a claim code.');
     if (state.claim) endClaim({ type: 'cancelled' });
@@ -849,7 +1015,7 @@ export function createWhatsAppService({
     stream.onAbort(() => {
       if (state.claim !== current) return;
       state.claim = null;
-      Promise.resolve(manager.claimCancel?.()).catch(() => {});
+      Promise.resolve(manager?.claimCancel?.()).catch(() => {});
       notify();
     });
     let qrSvg = null;
@@ -861,6 +1027,7 @@ export function createWhatsAppService({
   async function resetOwner() {
     requireAvailable();
     if (config.read().mode !== 'dedicated') throw whatsappError(409, 'WRONG_MODE', 'In "Message yourself" the owner is the linked account. Unlink to link another one.');
+    requireManager();
     const result = await manager.ownerReset();
     if (!result?.ok) throw whatsappError(409, result?.code || 'RESET_FAILED', result?.message ? redactWa(result.message) : 'Could not reset the owner.');
     // The second account stays linked: keep that on record while the owner is unbound.
@@ -884,7 +1051,7 @@ export function createWhatsAppService({
     (async () => {
       // The host holds the runtime's files open (Windows locks them): stop it first, restart after.
       if (hostRunning()) await dropBridge();
-      try { await manager.stop(); } catch {}
+      try { await manager?.stop(); } catch {}
       let result;
       try {
         result = await installer.install({
@@ -928,7 +1095,7 @@ export function createWhatsAppService({
     requireAvailable();
     if (state.install) throw whatsappError(409, 'INSTALL_BUSY', 'The connector is being installed.');
     if (isLinked()) throw whatsappError(409, 'STILL_LINKED', 'Unlink WhatsApp before removing the connector.');
-    try { await manager.stop(); } catch {}
+    try { await manager?.stop(); } catch {}
     const result = await installer.uninstall();
     state.installCache = null;
     state.installError = null;
@@ -986,6 +1153,67 @@ export function createWhatsAppService({
     if (!result?.ok) throw whatsappError(502, result?.code || 'SEND_FAILED', result?.message ? redactWa(result.message) : 'The test message could not be sent.');
     return { ok: true };
   }
+  // ── a local file to the owner (whatsapp_send_file; docs/whatsapp.md → Sending files) ──
+  // The HTTP status of each refusal (POST /api/assistant/whatsapp/send-file answers with it).
+  const FILE_STATUS = Object.freeze({
+    BAD_REQUEST: 400, ADDRESS_FORBIDDEN: 400, FILE_FORBIDDEN: 403, FILE_TOO_LARGE: 413, FILE_INVALID: 422,
+    NOT_CONNECTED: 409, PAUSED: 409, NO_OWNER: 409, HELD: 409, THROTTLED: 429, SEND_FAILED: 502, HOST_UNAVAILABLE: 503, TIMEOUT: 504,
+  });
+  const FILE_FIELDS = Object.freeze(['path', 'caption', 'as']);
+  // Refusals whose message is about the file itself (local-file.js): its path, and why.
+  const FILE_REFUSALS = new Set(['FILE_FORBIDDEN', 'FILE_TOO_LARGE', 'FILE_INVALID', 'BAD_REQUEST']);
+  const UNCERTAIN_FILE = 'WhatsApp did not confirm the file: it may or may not have arrived. Do not send it again unless the user asks.';
+  const fileSize = (bytes) => { const n = Number(bytes) || 0; return n >= 1024 * 1024 ? `${(n / (1024 * 1024)).toFixed(1)} MiB` : n >= 1024 ? `${Math.round(n / 1024)} KiB` : `${n} bytes`; };
+  /**
+   * Send a local file to the owner, for the WhatsApp conversation `sessionId` (the caller proved it
+   * holds that conversation's brain: lib/assistant-api.js). Only { path, caption?, as? } (anything
+   * else is a 400); only the active WhatsApp session (never an older one, a desktop chat or a
+   * worker: 403 WHATSAPP_SESSION_REQUIRED); only while WhatsApp is on, not paused and connected
+   * (409 PAUSED / NOT_CONNECTED). The host checks and reads the file (local-file.js). Exactly one
+   * request, never retried: a refusal with `uncertain: true` (a timeout) may have been delivered.
+   * Activity records the outcome with the path, never the caption or the bytes.
+   */
+  async function sendFile(sessionId, fields = {}) {
+    requireAvailable();
+    const body = fields && typeof fields === 'object' && !Array.isArray(fields) ? fields : null;
+    if (!body) throw whatsappError(400, 'BAD_REQUEST', 'Send { path, caption?, as? }.');
+    const extra = Object.keys(body).find((key) => !FILE_FIELDS.includes(key));
+    if (extra !== undefined) throw whatsappError(400, 'BAD_REQUEST', `Unknown field "${extra.slice(0, 40)}": a file send takes path, caption and as only.`, extra.slice(0, 40));
+    if (typeof body.path !== 'string' || !body.path.trim() || body.path.length > LIMITS.MAX_FILE_PATH || /[\u0000-\u001f\u007f]/.test(body.path)) throw whatsappError(400, 'BAD_REQUEST', `path must be the absolute path of a file on this computer (at most ${LIMITS.MAX_FILE_PATH} characters, no control characters).`, 'path');
+    if (body.caption !== undefined && body.caption !== null && (typeof body.caption !== 'string' || body.caption.length > LIMITS.MAX_FILE_CAPTION)) throw whatsappError(400, 'BAD_REQUEST', `caption must be text of at most ${LIMITS.MAX_FILE_CAPTION} characters.`, 'caption');
+    if (body.as !== undefined && body.as !== null && !FILE_SEND_AS.includes(body.as)) throw whatsappError(400, 'BAD_REQUEST', `as must be one of ${FILE_SEND_AS.join(', ')}.`, 'as');
+    const cfg = config.read();
+    const active = bridgeStatus()?.sessionId || cfg.sessionId || null;
+    let channel = null;
+    try { channel = sessionId ? getRuntime()?.sessionChannel?.(String(sessionId)) || null : null; } catch { channel = null; }
+    if (!sessionId || !active || String(sessionId) !== String(active) || channel !== 'whatsapp') {
+      throw whatsappError(403, 'WHATSAPP_SESSION_REQUIRED', 'Only the active WhatsApp conversation sends files to the phone.');
+    }
+    if (!cfg.enabled || cfg.paused || state.stopping) throw whatsappError(409, 'PAUSED', 'WhatsApp is turned off or paused on this computer: nothing was sent.');
+    requireManager();
+    if (!connectedNow()) throw whatsappError(409, 'NOT_CONNECTED', 'WhatsApp is not connected: nothing was sent.');
+    const request = { path: body.path };
+    if (typeof body.caption === 'string') request.caption = body.caption;
+    if (typeof body.as === 'string') request.as = body.as;
+    let result;
+    try { result = await manager.sendFile(request); } catch (error) { result = { ok: false, code: 'SEND_FAILED', message: error?.message || String(error) }; }
+    if (result?.ok) {
+      record('reply', `Sent a file to your phone: ${result.type}${result.fallback ? ' (as a document: over 16 MiB)' : ''}, ${fileSize(result.size)}:`, null, { filePath: result.path });
+      notify();
+      return { ok: true, id: result.id ?? null, type: result.type, mimetype: result.mimetype, size: result.size, fileName: result.fileName, path: result.path, fallback: result.fallback === true };
+    }
+    const code = String(result?.code || 'SEND_FAILED');
+    const uncertain = result?.uncertain === true;
+    record('error', `A file was not sent (${code}${uncertain ? '; delivery unknown' : ''}):`, null, { filePath: body.path, requested: true });
+    notify();
+    // A file's own refusal keeps its path readable (redactFilePath: numbers, JIDs and credentials still hidden).
+    const reason = result?.message ? (FILE_REFUSALS.has(code) ? redactFilePath(result.message) : redactWa(result.message)) : 'WhatsApp refused the file.';
+    const error = whatsappError(FILE_STATUS[code] || 502, code, uncertain ? UNCERTAIN_FILE : reason);
+    if (uncertain) error.uncertain = true;
+    if (Number.isFinite(result?.retryAfterMs)) error.retryAfterMs = result.retryAfterMs;
+    throw error;
+  }
+
   function pause({ by = 'desktop' } = {}) {
     requireAvailable();
     // An agent's pause counts as the desktop's: the phone cannot undo it.
@@ -1012,6 +1240,7 @@ export function createWhatsAppService({
     requireAvailable();
     if (!installerStatus().installed) throw whatsappError(409, 'NOT_INSTALLED', 'Install the WhatsApp connector first.');
     if (!isLinked()) throw whatsappError(409, 'NOT_LINKED', 'No WhatsApp account is linked.');
+    requireManager();
     const cfg = config.read();
     if (!cfg.enabled) config.write({ enabled: true });
     state.fatal = null;
@@ -1024,13 +1253,13 @@ export function createWhatsAppService({
     if (state.link) finishLink('failed', { type: 'error', code: 'UNLINKED' });
     endClaim({ type: 'cancelled' });
     endEscalation('unlinked');
-    T.clearTimeout(state.autonomousTimer);
-    state.autonomousTimer = null;
     await dropBridge();
     let loggedOut = false;
     let code = null;
     if (manager && installerStatus().installed) {
-      if (!hostRunning()) { const started = await manager.start(prefsOf(config.read())); if (!started?.ok) code = started?.code || 'HOST_UNAVAILABLE'; }
+      // A host between restarts ('backoff') is started now: the logout must not wait out a respawn of up to 5 minutes,
+      // and the link is not reconnected first (resume: false drops the run intent).
+      if (managerStatus().host.state !== 'running') { const started = await manager.start(prefsOf(config.read()), { resume: false }); if (!started?.ok) code = started?.code || 'HOST_UNAVAILABLE'; }
       if (!code) {
         const result = await manager.logout();
         loggedOut = !!result?.ok;
@@ -1045,6 +1274,7 @@ export function createWhatsAppService({
     state.fatal = null;
     state.lastConn = null;
     state.wasConnected = false;
+    clearWarning();
     return { loggedOut, code };
   }
   async function unlink() {
@@ -1092,7 +1322,8 @@ export function createWhatsAppService({
   const userView = (cfg) => pick(cfg, USER_FIELDS);
   function getConfig() {
     const cfg = config.read();
-    return { ok: true, config: userView(cfg), version: cfg.version, level: currentLevel(cfg, now()), levelExpiresAt: currentLevel(cfg, now()) === 'autonomous' ? cfg.autonomousUntil : null, escalation: escalationView() };
+    // levelExpiresAt: Autonomous has no time limit (always null, kept for older readers).
+    return { ok: true, config: userView(cfg), version: cfg.version, level: currentLevel(cfg), levelExpiresAt: null, escalation: escalationView() };
   }
   function escalationView() {
     const esc = state.escalation;
@@ -1113,7 +1344,7 @@ export function createWhatsAppService({
       patch.brain = checked.brain;
     }
     const before = config.read();
-    const wantsAutonomous = patch?.level === 'autonomous' && currentLevel(before, now()) !== 'autonomous';
+    const wantsAutonomous = patch?.level === 'autonomous' && currentLevel(before) !== 'autonomous';
     if (wantsAutonomous && body.confirmEscalation === true && !connectedNow()) {
       throw whatsappError(409, 'PHONE_REQUIRED', 'Connect WhatsApp first: your phone confirms Autonomous with an ALLOW code.', 'level');
     }
@@ -1122,15 +1353,28 @@ export function createWhatsAppService({
     let pending = null;
     if (result.pending) pending = startEscalation();
     else if (patch && Object.hasOwn(patch, 'level') && patch.level !== 'autonomous') endEscalation('level lowered');
-    if (before.level !== after.level || before.autonomousUntil !== after.autonomousUntil) {
-      armAutonomousTimer();
+    if (before.level !== after.level) {
       record('security', `Level set to ${after.level === 'read-only' ? 'Read-only' : after.level === 'ask' ? 'Ask on my phone' : 'Autonomous'} from this computer`);
     }
     if (before.computerUse !== after.computerUse) record('security', after.computerUse ? 'Computer use from WhatsApp turned on from this computer' : 'Computer use from WhatsApp turned off from this computer');
     if (before.activityText !== after.activityText) record('settings', after.activityText ? 'Message text is now kept in this activity log' : 'Message text is no longer kept in this activity log');
     if (before.selfTrigger !== after.selfTrigger) record('settings', after.selfTrigger === 'prefix' ? 'Only messages that start with sb go to SynaBun now' : 'Every message in "Message yourself" goes to SynaBun now');
+    // Voice notes: the host gets the new settings at once (it transcribes), and Settings looks at the tools again.
+    const transcriptionChanged = TRANSCRIPTION_FIELDS.some((key) => before[key] !== after[key]);
+    if (transcriptionChanged) {
+      state.transcription = null;
+      if (before.transcriptionEnabled !== after.transcriptionEnabled) record('settings', after.transcriptionEnabled ? 'Voice notes are transcribed on this computer now' : 'Voice notes are no longer transcribed');
+      if (TRANSCRIPTION_FIELDS.some((key) => key !== 'transcriptionEnabled' && before[key] !== after[key])) record('settings', 'Voice note settings changed (language or program paths)');
+      configureHost(after);
+    }
     if (JSON.stringify(before.brain) !== JSON.stringify(after.brain)) {
       record('settings', after.brain ? `WhatsApp now runs on ${providerLabel(after.brain.provider)} / ${after.brain.model}${after.brain.effort ? ` (${after.brain.effort})` : ''}, from the next message` : 'WhatsApp now runs on the same brain as the Assistant, from the next message');
+    }
+    // Off stops the host and every retry (the link stays); on resumes the saved session. Pause is separate.
+    if (before.enabled !== after.enabled) {
+      record('settings', after.enabled ? 'WhatsApp turned on from this computer' : 'WhatsApp turned off from this computer: disconnected, and no reconnect until it is turned on again');
+      if (!after.enabled) await stopForDisable();
+      else if (state.started && !state.stopping && manager && installerStatus().installed && isLinked(after)) await run().catch(() => {});
     }
     refreshBridge();
     notify();
@@ -1192,7 +1436,7 @@ export function createWhatsAppService({
    * when it is Codex or OpenCode and the level asks for more than read-only.
    */
   function brainLimitView(cfg, sessionId) {
-    if (currentLevel(cfg, now()) === 'read-only') return null;
+    if (currentLevel(cfg) === 'read-only') return null;
     let provider = null;
     try { provider = sessionId ? getRuntime()?.getSession?.(sessionId, { transcript: false })?.brain?.provider || null : null; } catch { provider = null; }
     if (!provider) provider = brainChoice(cfg).effective?.provider || null;
@@ -1204,6 +1448,7 @@ export function createWhatsAppService({
     if (!fakeEnabled()) throw whatsappError(404, 'NOT_FOUND', 'Not found');
     const action = String(body.action || '');
     const cfg = config.read();
+    requireManager();
     const call = async (name, args = {}) => {
       const result = await manager.fake(name, args);
       if (result?.ok === false) throw whatsappError(409, result.code || 'FAKE_FAILED', result.message || `fake ${name} failed`);
@@ -1241,7 +1486,7 @@ export function createWhatsAppService({
     const tab = tabState();
     const { conn, host, runtime } = managerStatus();
     const inst = installerStatus();
-    const level = currentLevel(cfg, now());
+    const level = currentLevel(cfg);
     const bridge = bridgeStatus();
     const sessionId = bridge?.sessionId || cfg.sessionId || null;
     let confirm = null;
@@ -1257,7 +1502,8 @@ export function createWhatsAppService({
       ...tab,
       mode: cfg.mode,
       level,
-      levelExpiresAt: level === 'autonomous' ? cfg.autonomousUntil : null,
+      // Autonomous has no time limit: kept for older readers, always null.
+      levelExpiresAt: null,
       enabled: cfg.enabled,
       paused: cfg.paused,
       pausedBy: cfg.pausedBy,
@@ -1268,7 +1514,7 @@ export function createWhatsAppService({
         installedAt: inst.installedAt ?? null, approxSizeMB: inst.approxSizeMB ?? null, stage: state.install?.stage || null,
         errorCode: state.installError?.code || null, errorMessage: state.installError?.message || null, runtime: runtime.loaded ? { version: runtime.version, fake: runtime.fake } : null,
       },
-      host: { state: host.state, restarts: host.restarts || 0 },
+      host: { state: host.state, restarts: host.restarts || 0, retryInMs: Number.isFinite(host.retryInMs) ? host.retryInMs : null },
       account: conn.me ? { masked: conn.me.masked, name: conn.me.name ?? null } : null,
       owner,
       confirm,
@@ -1277,6 +1523,10 @@ export function createWhatsAppService({
       brainChoice: brainChoice(cfg),
       bridge: bridge ? { running: !!bridge.running, queued: bridge.queued || 0, pendingCards: bridge.pendingCards || 0, lastReplyAt: bridge.lastReplyAt || null } : null,
       connection: tab.state === 'reconnecting' ? { attempt: state.reconnectAttempt, nextRetryAt: Number.isFinite(conn.retryInMs) ? state.lastStateAt + conn.retryInMs : null } : null,
+      // 'replaced' (440) | 'forbidden' (403) while the link retries one of them, until it is stable again.
+      warning: state.warning?.kind || null,
+      // Voice notes: on, and whether whisper-cli, the model and FFmpeg are found (what is missing when not).
+      transcription: transcriptionView(cfg),
       counters: { ...(conn.counters || {}) },
       config: userView(cfg),
       version: cfg.version,
@@ -1299,6 +1549,8 @@ export function createWhatsAppService({
   return {
     router, start, shutdown, killNow, status,
     toSyncPayload,
+    // Not a /api/whatsapp route: POST /api/assistant/whatsapp/send-file calls it for the brain it identified.
+    sendFile,
     _internals: { state, config, ops, activity, record, tabState, handleAllow, flushBroadcast, manager, installer, paths, brainChoice },
   };
 }

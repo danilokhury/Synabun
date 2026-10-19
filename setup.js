@@ -16,7 +16,7 @@
  * 8. Auto-opens browser to onboarding wizard (or main page if setup complete)
  */
 
-import { execSync, spawn, exec } from 'node:child_process';
+import { execFileSync, execSync, spawn, exec } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync, cpSync, readdirSync, mkdirSync, unlinkSync, createWriteStream, statSync, renameSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -333,9 +333,11 @@ function installDeps(name, dir, { includeDev = false } = {}) {
 
 function installPlaywrightChromium() {
   const niDir = resolve(PACKAGE_ROOT, 'neural-interface');
+  // SynaBun's own Playwright on the Node that runs SynaBun (its absolute path): a packaged application puts its
+  // runtime last on PATH, so a `node` or `npx` by name may be the user's, of any version.
   try {
-    const result = execSync('node -e "const pw=require(\'playwright\');const p=pw.chromium.executablePath();process.stdout.write(p)"', {
-      cwd: niDir, encoding: 'utf8', timeout: 10_000,
+    const result = execFileSync(process.execPath, ['-e', "const pw=require('playwright');const p=pw.chromium.executablePath();process.stdout.write(p)"], {
+      cwd: niDir, encoding: 'utf8', timeout: 10_000, windowsHide: true,
     });
     if (existsSync(result)) {
       ok('Playwright Chromium already installed');
@@ -346,11 +348,10 @@ function installPlaywrightChromium() {
   info('Installing Playwright Chromium (for browser automation)...');
   startPhase('browser');
   try {
-    execSync('npx playwright install chromium', {
-      cwd: niDir,
-      stdio: 'inherit',
-      timeout: 120_000,
-    });
+    const cli = resolve(niDir, 'node_modules', 'playwright', 'cli.js');
+    const options = { cwd: niDir, stdio: 'inherit', timeout: 120_000 };
+    if (existsSync(cli)) execFileSync(process.execPath, [cli, 'install', 'chromium'], options);
+    else execSync('npx playwright install chromium', options);
     ok('Playwright Chromium installed');
   } catch (err) {
     console.log('  (optional) Playwright Chromium install failed — system Chrome will be used');

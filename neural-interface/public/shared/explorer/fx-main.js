@@ -488,7 +488,7 @@ export function createExplorer(host) {
     if (due) {
       try {
         const value = storage.getItem(treeKey);
-        if (value) navigator.sendBeacon?.('/api/ui-state', new Blob([JSON.stringify({ [treeKey]: JSON.parse(value) })], { type: 'application/json' }));
+        if (value && storage.persists !== false) navigator.sendBeacon?.('/api/ui-state', new Blob([JSON.stringify({ [treeKey]: JSON.parse(value) })], { type: 'application/json' }));
       } catch { /* the debounced write is what is left */ }
     }
     stopWatch();

@@ -21,6 +21,8 @@
 // plans with it, remote-policy asks below the autonomous level for whatever it
 // refuses, and plan mode auto-allows what it allows.
 
+import { REPLY_TOOLS } from './assistant-route-gate.js';
+
 // ── the read-only classifier ─────────────────────────────────────────────────
 
 // Claude built-ins that only read. Edit/Write & co. are refused; Bash runs only
@@ -45,6 +47,11 @@ const SYNABUN_READ_TOOLS = new Set([
   // they start or steer a worker with its own capability.
   'agent_route', 'agent_clarify', 'agent_catalog', 'agent_list', 'agent_status', 'agent_read', 'agent_wait', 'agent_stop', 'agent_focus', 'agent_usage',
 ]);
+// SynaBun's reply tools (assistant-route-gate.js REPLY_TOOLS: whatsapp_send_file): delivering a file the
+// user asked for is the turn's answer, not a change, so plan mode, the read-only level and a read-only
+// (Codex / OpenCode) WhatsApp brain let it through unasked. It grants nothing else: the WhatsApp host
+// checks the file, and the endpoint takes only the WhatsApp conversation's own brain.
+const SYNABUN_REPLY_TOOLS = new Set(REPLY_TOOLS);
 // Multiplexed SynaBun tools: read-only for these actions only.
 const SYNABUN_READ_ACTIONS = {
   memories: new Set(['recent', 'stats', 'by-category', 'by-project', 'get', 'get-batch', 'history', 'context', 'triage']),
@@ -168,7 +175,7 @@ export function isReadOnlyMcpTool(name, input = {}, { serverName = null } = {}) 
     // A screenshot saved as a file (save / path) writes one. Any save but a clear false counts.
     const save = input?.save;
     if (leaf === 'browser_screenshot' && (input?.path || (save !== undefined && save !== null && booleanArg(save) !== false))) return false;
-    if (SYNABUN_READ_TOOLS.has(leaf) || /^browser_extract_/.test(leaf)) return true;
+    if (SYNABUN_READ_TOOLS.has(leaf) || SYNABUN_REPLY_TOOLS.has(leaf) || /^browser_extract_/.test(leaf)) return true;
     const actions = SYNABUN_READ_ACTIONS[leaf];
     return !!actions && actions.has(String(input?.action || ''));
   }

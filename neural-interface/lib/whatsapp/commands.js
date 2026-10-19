@@ -2,10 +2,10 @@
 // SynaBun — WhatsApp Link: the owner's slash commands
 // ═══════════════════════════════════════════
 //
-// Pure parsing and fixed texts. A command is the owner's own text — never a
-// forwarded or quoted message — that starts with one of COMMANDS
-// (case-insensitive). Commands run at once, busy or paused. Any other "/x" is
-// a prompt; "//x" sends the literal "/x". No command raises the level or
+// Pure parsing and fixed texts. A command is the owner's own typed text —
+// never a forwarded or quoted message, never a voice note — that starts with
+// one of COMMANDS (case-insensitive). Commands run at once, busy or paused.
+// Any other "/x" is a prompt; "//x" sends the literal "/x". No command raises the level or
 // changes a setting: those names get a fixed refusal (they would otherwise
 // reach the brain's CLI as its own slash commands).
 
@@ -21,7 +21,7 @@ const REFUSED = new Set([
 
 export const HELP_TEXT = [
   '*SynaBun on WhatsApp*',
-  'Write to me like you would in SynaBun. Pictures work too.',
+  'Write to me like you would in SynaBun. Pictures work too, and voice notes when this computer can transcribe them.',
   '',
   '/status — what I am doing, spend and level',
   '/stop — stop the current task, its agents and anything waiting for your answer',
@@ -31,7 +31,7 @@ export const HELP_TEXT = [
   '/cards — ask again what is still waiting for your answer',
   '/help — this list',
   '',
-  'When I ask something, just answer in your own words. An approval takes a plain yes or no; any other message approves nothing and carries on the conversation. Start with // to send text that begins with a slash.',
+  'When I ask something, just answer in your own words. An approval takes a plain yes or no, typed; any other message (a voice note too) approves nothing and carries on the conversation. Start with // to send text that begins with a slash.',
   'Levels, models and other settings change only in SynaBun on your computer (Settings → WhatsApp).',
 ].join('\n');
 
@@ -40,10 +40,10 @@ export const SETTINGS_REFUSAL = 'Settings change only in SynaBun on your compute
 /**
  * An inbound message → { kind: 'command', name, args } | { kind: 'refused', name }
  * | { kind: 'literal', text } ("//x" → "/x") | null (not a command: a prompt).
- * Only the owner's own text counts: forwarded or quoted messages are prompts.
+ * Only the owner's own typed text counts: forwarded or quoted messages and voice notes are prompts.
  */
 export function parseCommand(message) {
-  if (!message || message.owner === false || message.forwarded || message.quoted) return null;
+  if (!message || message.owner === false || message.forwarded || message.quoted || message.voice === true) return null;
   const text = String(message.text ?? '').trim();
   if (!text.startsWith('/')) return null;
   if (text.startsWith('//')) return { kind: 'literal', text: text.slice(1) };
@@ -66,8 +66,8 @@ function levelLabel(level) {
 
 /**
  * /status text from a snapshot: { connected, sessionId, title, brain:{provider,model},
- * running, turnKind, queued, pendingCards, currentCard, budget:{totalUsd, hardUsd},
- * brainUsd, brainCapUsd, level, paused, pausedBy, autonomousUntil }.
+ * running, turnKind, queued, pendingCards, currentCard, budget:{ unlimited, totalUsd, amountUsd, leftUsd },
+ * brainUsd, level, paused, pausedBy }. Autonomous has no time limit: it holds until it is turned off in Settings.
  */
 export function statusText(s = {}) {
   const lines = ['*SynaBun status*'];
@@ -83,10 +83,9 @@ export function statusText(s = {}) {
     : 'idle';
   lines.push(`Now: ${doing}${s.queued ? ` · ${s.queued} message${s.queued === 1 ? '' : 's'} queued` : ''}`);
   if (s.pendingCards) lines.push(`Waiting for you: ${s.pendingCards} question${s.pendingCards === 1 ? '' : 's'} or approval${s.pendingCards === 1 ? '' : 's'}${s.currentCard ? ` (${s.currentCard})` : ''} — /cards asks again`);
-  if (s.budget && Number.isFinite(Number(s.budget.hardUsd))) lines.push(`Spend: ${usd(s.budget.totalUsd)} of ${usd(s.budget.hardUsd)} session cap${Number.isFinite(Number(s.brainCapUsd)) ? ` (brain ${usd(s.brainUsd)} of ${usd(s.brainCapUsd)})` : ''}`);
-  let level = `Level: ${levelLabel(s.level)}`;
-  if (s.level === 'autonomous' && s.autonomousUntil) level += ` until ${new Date(Number(s.autonomousUntil)).toTimeString().slice(0, 5)}`;
-  lines.push(level);
+  if (s.budget?.unlimited === true) lines.push(`Spend: ${usd(s.budget.totalUsd)} (no limit)`);
+  else if (s.budget && Number.isFinite(Number(s.budget.amountUsd))) lines.push(`Spend: ${usd(s.budget.totalUsd)} of the ${usd(s.budget.amountUsd)} budget${Number.isFinite(Number(s.brainUsd)) ? ` (brain ${usd(s.brainUsd)})` : ''}`);
+  lines.push(`Level: ${levelLabel(s.level)}${s.level === 'autonomous' ? ' until turned off' : ''}`);
   if (s.paused) lines.push(`Paused${s.pausedBy === 'desktop' ? ' from your computer' : ''} — ${s.pausedBy === 'desktop' ? 'resume it in SynaBun' : 'send /resume'}`);
   return lines.join('\n');
 }

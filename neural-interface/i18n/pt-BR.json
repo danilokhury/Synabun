@@ -623,6 +623,7 @@
     "reasonAssistantSaid": "Parada pelo Assistente: {reason}",
     "reasonTimeCap": "A execução atingiu o limite de tempo.",
     "reasonBudget": "A execução atingiu o limite de orçamento.",
+    "reasonBudgetShare": "Este provedor esgotou sua cota do orçamento da sessão.",
     "reasonMaxTurns": "A execução atingiu o limite de turnos.",
     "reasonIdle": "O agente esperou uma nova instrução que não veio e foi fechado.",
     "reasonRestart": "O servidor reiniciou com a execução aberta.",
@@ -1301,7 +1302,8 @@
         "memory_data": "Memória e dados",
         "tools": "Ferramentas",
         "automations": "Automações",
-        "personalize": "Personalizar"
+        "personalize": "Personalizar",
+        "app": "SynaBun"
       },
       "nav": {
         "ai_connections": {
@@ -1351,6 +1353,10 @@
         "code_editor": {
           "label": "Editor de código",
           "help": "Preferências de edição e autocompletar com IA"
+        },
+        "about": {
+          "label": "Sobre",
+          "help": "Versão, links e licenças"
         }
       },
       "page": {
@@ -1401,6 +1407,10 @@
         "code_editor": {
           "title": "Editor de código",
           "purpose": "Configure o editor que abre os arquivos do Explorador de arquivos: como o texto é exibido, indentado e salvo, e o autocompletar com IA."
+        },
+        "about": {
+          "title": "Sobre",
+          "purpose": "A versão que você usa, onde ela roda e o software de código aberto com que o SynaBun é feito."
         }
       },
       "section": {
@@ -1726,6 +1736,20 @@
           "editing": {
             "title": "Edição",
             "purpose": "Como o editor exibe, indenta e salva o texto. O menu Exibir do editor altera as mesmas configurações."
+          }
+        },
+        "about": {
+          "links": {
+            "title": "Links",
+            "purpose": "As páginas do projeto. Elas abrem no seu navegador."
+          },
+          "system": {
+            "title": "Sistema",
+            "purpose": "Onde esta cópia do SynaBun roda. Copiar informações coloca estes detalhes na área de transferência."
+          },
+          "dependencies": {
+            "title": "Dependências",
+            "purpose": "Cada pacote que acompanha o SynaBun, a versão instalada aqui e a licença dele."
           }
         }
       },
@@ -3375,6 +3399,18 @@
         "edt023": {
           "label": "Terminar arquivos com uma quebra de linha ao salvar",
           "help": "Quando um arquivo é salvo, a quebra de linha final que faltar é adicionada e as linhas vazias depois da última linha de texto são removidas."
+        },
+        "abt001": {
+          "label": "Buscar atualizações",
+          "help": "Procura uma versão mais nova do SynaBun e das ferramentas de código: a mesma verificação do item Check for updates do menu Apps."
+        },
+        "abt002": {
+          "label": "Copiar informações",
+          "help": "Copia a versão, a instalação, o ambiente, o sistema e as versões das dependências em texto simples, para um relato de problema. Sem caminhos, chaves ou ajustes."
+        },
+        "abt003": {
+          "label": "Filtrar dependências",
+          "help": "Mostra só os pacotes cujo nome contém o que você digitar."
         }
       },
       "pane": {
@@ -4483,6 +4519,7 @@
         "allCustomIconsReset": "Todos os ícones personalizados redefinidos"
       },
       "judgments": {
+        "budgetShareScore": "{provider}: pontuação da cota {score} · confiança {confidence}",
         "showEveryJudgmentAboutThisMemory": ": mostrar no registro todas as avaliações desta memória",
         "checkingTypesafe": "Verificando TypeSafe…",
         "learnMoreAtTypesafe": "Saiba mais em",
@@ -4990,6 +5027,8 @@
         "longerAnswersAreCutThereWith": "Respostas maiores são cortadas com um aviso; a resposta completa fica no SynaBun.",
         "freshConversation": "Nova conversa",
         "inMessageYourself": "Em “Mensagem para você”",
+        "transcribeVoiceNotes": "Transcrever áudios",
+        "voiceNotesAreTurnedIntoText": "Convertidos em texto neste computador pelo whisper.cpp e pelo FFmpeg, que você instala; nada vai para um serviço de transcrição. O texto chega ao Assistente como uma mensagem digitada, e aprovações continuam exigindo um sim digitado.",
         "commandsYouCanSend": "Comandos que você pode enviar",
         "answerAQuestionOrAnApproval": "Quando o SynaBun perguntar algo, responda com suas próprias palavras. Uma aprovação aceita um simples sim ou não; qualquer outra mensagem não aprova nada e a conversa continua.",
         "whatSynabunMayDoFromWhatsapp": "O que o SynaBun pode fazer pelo WhatsApp",
@@ -5018,7 +5057,7 @@
         "nowOnYourPhone": "Agora no seu celular:",
         "send": "envie",
         "inTheWhatsappChatWithSynabun": "na conversa do WhatsApp com o SynaBun dentro de",
-        "autonomousThenRunsFor8Hours": ". O modo Autônomo funciona por 8 horas.",
+        "autonomousUntilTurnedOff": ". O modo Autônomo permanece ativo até você desativá-lo.",
         "noLog": "Sem registro.",
         "theInstallLogIsEmpty": "O registro de instalação está vazio.",
         "cancel": "Cancelar",
@@ -5107,7 +5146,6 @@
         "tries": "tentativas",
         "previewSample": "{label}Veja o que encontrei…",
         "ownerSince": "· desde {date}",
-        "levelUntil": "até {time}",
         "errorCode": "Código: {code}",
         "sessionCurrent": "Atual: {title}",
         "levelPaused": "· pausado",
@@ -5164,7 +5202,7 @@
           },
           "autonomous": {
             "title": "Autônomo",
-            "body": "O SynaBun age sem perguntar, como o Assistente neste computador. Para ativar, é preciso um segundo clique aqui e um código ALLOW enviado pelo celular em até 5 minutos. Volta para Perguntar após 8 horas. O modo Autônomo pode ler qualquer arquivo acessível à sua conta do computador, incluindo o login do WhatsApp do SynaBun. Use apenas com um celular bloqueado, de preferência em um segundo número."
+            "body": "O SynaBun age sem perguntar, como o Assistente neste computador. Para ativar, é preciso um segundo clique aqui e um código ALLOW enviado pelo celular em até 5 minutos. Permanece ativo até você desativá-lo. O modo Autônomo pode ler qualquer arquivo acessível à sua conta do computador, incluindo o login do WhatsApp do SynaBun. Use apenas com um celular bloqueado, de preferência em um segundo número."
           }
         },
         "progress": {
@@ -5210,7 +5248,7 @@
           },
           "prefix": {
             "label": "Apenas mensagens que começam com sb",
-            "hint": "Continue usando “Mensagem para você” para anotações; comece com sb (ou sb:) para falar com o SynaBun. Comandos como /stop, o código ALLOW e respostas às mensagens do SynaBun sempre chegam."
+            "hint": "Continue usando “Mensagem para você” para anotações; comece com sb (ou sb:) para falar com o SynaBun, ou diga “sb” no início de um áudio. Comandos como /stop, o código ALLOW e respostas às mensagens do SynaBun sempre chegam."
           }
         },
         "commands": {
@@ -5240,12 +5278,13 @@
           }
         },
         "limits": {
-          "0": "Texto e imagens (até 4 por mensagem, 5 MB cada). Áudios, vídeos, documentos e figurinhas ainda não são lidos.",
+          "0": "Texto e imagens (até 4 por mensagem, 5 MB cada), e áudios transcritos neste computador (até 10 minutos e 20 MB cada). Vídeos, documentos e figurinhas ainda não são lidos.",
           "1": "No máximo 20 mensagens por minuto e 300 por dia; 5 mensagens podem aguardar na fila enquanto o SynaBun trabalha.",
           "2": "Mensagens com mais de 10 minutos quando o SynaBun volta a ficar online são ignoradas (ele informa quantas).",
           "3": "As respostas são divididas em mensagens de 3,500 caracteres; o restante fica no SynaBun.",
           "4": "O uso do computador pelo WhatsApp fica desativado até você ativá-lo acima. Depois: nunca em Somente leitura ou em pausa, após um sim por tarefa em Perguntar no meu celular, e sem perguntar enquanto o Autônomo estiver ativo. Agentes iniciados pelo WhatsApp nunca o recebem.",
-          "5": "Níveis, modelos e ajustes só mudam aqui, nunca pelo celular."
+          "5": "Níveis, modelos e ajustes só mudam aqui, nunca pelo celular.",
+          "6": "Um áudio é uma mensagem comum: nunca aprova nada e nunca executa um comando. Aprovações exigem um sim digitado."
         },
         "privacyStays": {
           "session": {
@@ -5312,7 +5351,8 @@
             "3": "Em “Mensagem para você”, apenas mensagens digitadas no celular chegam ao SynaBun. Mensagens digitadas nessa conversa pelo WhatsApp Web ou Desktop são ignoradas.",
             "4": "Com “Apenas mensagens que começam com sb”, uma anotação sem sb nunca chega ao SynaBun nem é registrada; comandos, código ALLOW e respostas às mensagens do SynaBun sempre passam.",
             "5": "O código QR expira após cerca de um minuto. Pressione “Mostrar novo código” e escaneie mais rápido ou vincule com seu número de telefone.",
-            "6": "Preso em “Reconectando”? Confira a conexão à internet deste computador e pressione Reconectar agora."
+            "6": "Preso em “Reconectando”? Confira a conexão à internet deste computador e pressione Reconectar agora.",
+            "7": "Áudios não transcritos? Este computador precisa do whisper.cpp, do modelo de fala dele e do FFmpeg, que você instala; a linha abaixo de “Transcrever áudios” diz o que falta."
           },
           "browserTools": "É diferente das ferramentas de navegador do WhatsApp. O perfil MCP whatsapp permite que agentes leiam o WhatsApp Web no navegador do SynaBun; esta aba é para você conversar com o SynaBun pelo celular. Não compartilham sessão.",
           "uninstall": "Desinstalar o SynaBun não desvincula o WhatsApp. Use Desvincular ou Remover aqui primeiro ou desconecte o SynaBun em WhatsApp → Configurações → Dispositivos conectados."
@@ -5337,7 +5377,7 @@
           "UNKNOWN": "Algo inesperado ocorreu. O registro de instalação contém os detalhes."
         },
         "error": {
-          "HOST_HELD": "O conector do WhatsApp falhou repetidamente e o SynaBun o interrompeu. Reconecte para tentar novamente; o registro de instalação pode ajudar.",
+          "HOST_HELD": "O conector do WhatsApp não corresponde a esta versão do SynaBun (foi atualizado com o SynaBun em execução), então o SynaBun o interrompeu. Reinicie o SynaBun para carregar a versão correspondente.",
           "HOST_UNAVAILABLE": "O conector do WhatsApp não iniciou.",
           "REPLACED": "Outra cópia deste vínculo do WhatsApp conectou de outro lugar e assumiu o controle. Reconecte aqui para retomar.",
           "LOCKED": "Outro SynaBun está usando os arquivos da sessão do WhatsApp. Feche-o e reconecte.",
@@ -5363,7 +5403,15 @@
           "banned": {
             "title": "O WhatsApp recusou esta conta",
             "sub": "O WhatsApp bloqueou a vinculação de dispositivos para a conta, possivelmente por banimento temporário ou permanente. Confira o app WhatsApp no celular."
+          },
+          "invalid_session": {
+            "title": "A sessão salva do WhatsApp é inválida",
+            "sub": "O WhatsApp rejeitou a sessão deste dispositivo (badSession). Vincule novamente; as tentativas automáticas não conseguem reparar as credenciais."
           }
+        },
+        "warning": {
+          "replaced": "Outra cópia está usando esta sessão do WhatsApp. O SynaBun tenta novamente a cada 5 minutos; feche a outra cópia ou desvincule e vincule novamente.",
+          "forbidden": "O WhatsApp recusou esta conta; ela pode estar restrita ou banida. O SynaBun tenta novamente a cada 5 minutos; confira o WhatsApp no celular."
         },
         "activity": {
           "inbound": "Recebidas",
@@ -5389,6 +5437,18 @@
           "effort": "Esforço de raciocínio",
           "effortDefault": "Esforço padrão",
           "saved": "Modelo do WhatsApp salvo. Vale a partir da sua próxima mensagem."
+        },
+        "voice": {
+          "ready": "Os áudios são transcritos neste computador.",
+          "readyOff": "Os áudios podem ser transcritos neste computador; desativado.",
+          "notSetUp": "Áudios: não configurado — falta {missing}.",
+          "partInvalid": "{name}: o caminho definido para ele não funciona",
+          "part": {
+            "engine": "whisper.cpp (whisper-cli)",
+            "model": "o modelo de fala (ggml-small.bin)",
+            "ffmpeg": "FFmpeg",
+            "tools": "as ferramentas de transcrição"
+          }
         },
         "phoneError": {
           "NEEDS_COUNTRY_CODE": "Adicione o código do país primeiro, por exemplo +44 para o Reino Unido ou +1 para os EUA.",
@@ -5472,7 +5532,6 @@
             "title": "Este é o seu WhatsApp?"
           },
           "connected": {
-            "until": "até {time}",
             "readOnlyBrain": "Somente leitura (cérebro {brain})",
             "title": "Conectado"
           },
@@ -5601,7 +5660,8 @@
             "messages": "whatsapp, discord, celular, telefone, chat, bot, mensagens",
             "notifications": "alertas, som, volume, banner, toast, silenciar, notificação do sistema",
             "appearance": "tema, modo escuro, dark mode, skin, cor, fonte, tamanho do texto, idioma, ícones, zoom, visual",
-            "code_editor": "editor, código, fonte, tamanho do texto, quebra de linha, minimapa, espaços em branco, indentação, tabulações, autocompletar, completar, sugestões, copilot, texto fantasma, inline, ia, modelo, ollama, arquivo"
+            "code_editor": "editor, código, fonte, tamanho do texto, quebra de linha, minimapa, espaços em branco, indentação, tabulações, autocompletar, completar, sugestões, copilot, texto fantasma, inline, ia, modelo, ollama, arquivo",
+            "about": "versão, GitHub, licença, dependências, Node, Electron, Chromium, sistema, atualização, créditos, copyright, notas de versão, changelog"
           },
           "section": {
             "ai_connections": {
@@ -5702,6 +5762,11 @@
             "code_editor": {
               "ai_autocomplete": "autocompletar, completar, sugestões, copilot, texto fantasma, inline, tab, modelo, opencode, ollama, openai, endpoint, chave de api, mais rápido, latência, arquivos excluídos, segredos, env",
               "editing": "tamanho da fonte, tamanho do texto, ligaduras, quebra de linha, quebrar linhas, minimapa, guias de indentação, espaços em branco, espaços, tabulações, tamanho da tabulação, indentação, remover espaços no fim, quebra de linha final, ao salvar"
+            },
+            "about": {
+              "links": "GitHub, repositório, versões publicadas, changelog, problema, relatar bug, site, documentação, npm, licença, Discord, comunidade",
+              "system": "versão, Node, Node.js, Electron, Chromium, SQLite, sistema operacional, SO, macOS, Windows, Linux, arquitetura, pasta de dados, porta, instalação, diagnóstico",
+              "dependencies": "pacotes, bibliotecas, npm, licenças, código aberto, terceiros, versões, node_modules"
             }
           },
           "control": {
@@ -5825,6 +5890,69 @@
             "all": "Em todo o texto"
           }
         }
+      },
+      "about": {
+        "loading": "Carregando…",
+        "version": "Versão {version}",
+        "channel": {
+          "stable": "Estável",
+          "prerelease": "Pré-lançamento",
+          "dev": "Desenvolvimento"
+        },
+        "install": {
+          "desktop": "App para computador",
+          "app": "App instalado",
+          "npm": "Instalação pelo npm",
+          "git": "Clone do Git"
+        },
+        "restartNote": "Links, dependências e todos os detalhes do sistema aparecem depois que o SynaBun reiniciar: o servidor em execução é mais antigo que esta página.",
+        "copied": "Copiado para a área de transferência.",
+        "copyFailed": "O navegador não permitiu copiar.",
+        "links": {
+          "none": "Nenhum link encontrado no package.json."
+        },
+        "link": {
+          "repository": "Repositório no GitHub",
+          "releases": "Versões publicadas",
+          "changelog": "Histórico de alterações",
+          "issues": "Relatar um problema",
+          "website": "Site",
+          "docs": "Documentação",
+          "npm": "Pacote npm",
+          "license": "Licença",
+          "discord": "Discord",
+          "x": "X"
+        },
+        "row": {
+          "version": "Versão",
+          "install": "Instalação",
+          "os": "Sistema operacional",
+          "dataFolder": "Pasta de dados",
+          "port": "Porta do servidor"
+        },
+        "package": {
+          "neural_interface": "Neural Interface",
+          "mcp_server": "Servidor MCP",
+          "desktop": "App para computador",
+          "whatsapp_connector": "Conector do WhatsApp"
+        },
+        "deps": {
+          "filterPlaceholder": "Filtrar",
+          "notInstalled": "não instalado",
+          "declared": "declarado {range}",
+          "optional": "opcional",
+          "onDemand": "Instalado sob demanda, na pasta de dados, quando você configura o WhatsApp.",
+          "vendored": "Incluído na interface",
+          "dev": "Dependências de desenvolvimento ({count})",
+          "noMatch": "Nenhum pacote corresponde a “{query}”.",
+          "none": "Nenhuma dependência encontrada."
+        },
+        "footer": {
+          "license": "Licenciado sob {license}.",
+          "copyright": "Copyright © {years} {holder}",
+          "builtWith": "Feito com software de código aberto"
+        },
+        "afterRestart": "Aparece depois que o SynaBun reiniciar."
       }
     }
   },
@@ -6083,7 +6211,102 @@
     "snapToGrid": "Alinhar à grade",
     "tileTerminals": "Organizar terminais lado a lado"
   },
+  "accounts": {
+    "apiShort": "API",
+    "subscriptionBadge": "Conta {service}",
+    "apiKeyBadge": "Chave de API",
+    "signedOut": "Sem login",
+    "checking": "Verificando…",
+    "keyUnreadable": "Chave ilegível",
+    "defaultName": "Padrão",
+    "current": "Esta aba",
+    "nowNote": "Vale agora: a próxima mensagem roda em {label}.",
+    "nextNote": "Esta conversa continua em {current}. {label} abre numa conversa nova.",
+    "sameNote": "Esta aba já usa {label}.",
+    "missingNote": "Essa conta não está mais configurada. Escolha outra.",
+    "menuNoteNow": "A conta escolhida vale a partir da próxima mensagem.",
+    "menuNoteChat": "Esta conversa continua em {label}. Escolher outra conta abre uma conversa nova.",
+    "newChatUnder": "Esta conversa roda em {label}.",
+    "tooManyTabs": "Feche uma aba antes: o máximo de abas está aberto.",
+    "menuTitle": "Contas do {provider}",
+    "triggerLabel": "Conta do {provider}: {summary}",
+    "manage": "Gerenciar {label}",
+    "back": "Todas as contas",
+    "addAccount": "Adicionar conta",
+    "refresh": "Atualizar",
+    "subscriptionShort": "Assinatura",
+    "emptyAccounts": "Nenhuma conta ainda.",
+    "usageLeft": "{percent}% restante",
+    "usageLimited": "Limite atingido",
+    "usageResets": "Renova em {time}",
+    "reading": "Lendo as contas…",
+    "readFailed": "Não foi possível ler as contas. Tente de novo.",
+    "needsServer": "Escolher uma conta precisa de um servidor SynaBun mais novo: reinicie-o para ativar.",
+    "otherAccounts": "Outras contas…",
+    "uses": "Usa",
+    "usesGroup": "O que {label} usa",
+    "credSubscription": "Assinatura {service}",
+    "credApiKey": "Chave de API",
+    "inUse": "em uso",
+    "signedIn": "Com login",
+    "notSignedIn": "Sem login",
+    "notChecked": "Ainda não verificado",
+    "noKey": "Nenhuma",
+    "savedKey": "Salva",
+    "keyUnreadableLong": "A chave salva não pode ser lida: salve de novo",
+    "keyKeptBy": "{hint}, guardada pelo {cli}",
+    "signIn": "Entrar com {service}",
+    "useApiKey": "Usar uma chave de API",
+    "signOut": "Sair",
+    "removeKey": "Remover chave",
+    "rename": "Renomear",
+    "remove": "Remover conta",
+    "save": "Salvar",
+    "cancel": "Cancelar",
+    "keyPlaceholder": "Cole a chave de API",
+    "keyLabel": "Chave de API de {label}",
+    "nameLabel": "Nome da conta",
+    "freshPrompt": "Faça o login em {label}: com {service} (abre um terminal) ou com uma chave de API.",
+    "signInPending": "Termine o login no terminal. Este menu se atualiza quando o {cli} confirmar.",
+    "checkingKey": "Verificando a chave com a {vendor}…",
+    "keySavedNote": "{label} agora usa a chave de API.",
+    "modeSetApiKey": "{label} agora usa a chave de API, a partir da próxima mensagem.",
+    "modeSetSubscription": "{label} agora usa a conta {service}, a partir da próxima mensagem.",
+    "signedOutNote": "{label} saiu do {service}.",
+    "keyRemovedNote": "A chave de API de {label} foi removida.",
+    "confirmSignOut": "Desconectar {label} do {service}? O {cli} remove o login da assinatura desta conta.",
+    "confirmRemoveKey": "Remover a chave de API salva em {label}?",
+    "confirmRemove": "Remover {label}? A pasta, o login e a chave salva dela são apagados.",
+    "busyTurn": "Termine ou pare o turno atual antes.",
+    "failed": "Não deu certo. Tente de novo.",
+    "errInvalidKey": "Isso não parece uma chave de API da {vendor}.",
+    "errOauthToken": "Isso é um token de login do Claude. Use Entrar com Claude.",
+    "errKeyRejected": "A {vendor} recusou essa chave.",
+    "errPermission": "Salvar chaves exige a janela do SynaBun do dono. Recarregue e tente de novo.",
+    "errAccountUnavailable": "Esta conta não está mais disponível. Escolha uma conta de novo.",
+    "errAccountBusy": "Termine o trabalho desta conta e tente de novo.",
+    "errUnreachable": "Não foi possível falar com a {vendor} para verificar a chave. Tente de novo.",
+    "errUnavailable": "A {vendor} não conseguiu verificar a chave. Tente de novo em instantes.",
+    "errServer": "Não foi possível falar com o SynaBun. Verifique a conexão e tente de novo.",
+    "errStorage": "Não foi possível salvar a chave desta conta."
+  },
   "assistant": {
+    "accountUsage": {
+      "autoPicked": "Auto escolheu {to}: {usage}",
+      "fallbackPicked": "{from} sem uso disponível → {to}: {usage}",
+      "allLimitedPicked": "Todas as assinaturas atingiram o limite; renovação mais próxima → {to}: {usage}",
+      "directWorkerHint": "Executa em um worker porque esta conversa pertence a outra conta.",
+      "noSubscription": "Auto requer uma conta de assinatura conectada.",
+      "auto": "Auto · mais uso disponível",
+      "autoHint": "Somente assinaturas conectadas. Outra conta executa em um worker.",
+      "composerHint": "Escolhe a assinatura com mais uso disponível e inicia uma nova conversa.",
+      "notApplicable": "Uso não aplicável",
+      "limitedUntil": "Limite atingido até {time}",
+      "limited": "Limite atingido",
+      "unknown": "Uso desconhecido",
+      "left": "{percent}% disponível",
+      "resets": "renova em {time}"
+    },
     "usage": {
       "task": "Tarefa atual",
       "tokens": "tokens",
@@ -6960,7 +7183,7 @@
       "routesUnavailable": "Roteamento de modelos indisponível neste servidor.",
       "computerUsage": "Uso: /computer [on|off]",
       "computerUnavailable": "Uso do computador indisponível aqui.",
-      "budget": "Definir limites de gastos (por execução, sessão e cérebro)"
+      "budget": "Definir o orçamento por sessão e ver as cotas dos provedores"
     },
     "prompts": {
       "recall": "Use a ferramenta recall do SynaBun para buscar na memória: \"{query}\". Resuma os resultados mais relevantes com seus IDs.",
@@ -7095,6 +7318,7 @@
       }
     },
     "accounts": {
+      "signInAccount": "Entrar em {label}…",
       "title": "Contas de {provider}",
       "add": "Adicionar conta…",
       "manage": "Gerenciar…",
@@ -7116,7 +7340,40 @@
       "openLogin": "Abrir página de login",
       "enterCode": "Digite este código:",
       "loginTimeout": "O login não foi confirmado. A conta foi criada — use “Entrar” para tentar novamente.",
-      "confirmRemove": "Remover conta \"{label}\"? Seu diretório de configuração é mantido no disco."
+      "confirmRemove": "Remover conta \"{label}\"? Seu diretório de configuração é mantido no disco.",
+      "noteClaude2": "Cada conta tem seu próprio CLAUDE_CONFIG_DIR (ajustes, login, sessões) e usa a assinatura Claude ou a chave de API dela. “Padrão” é seu ~/.claude do ambiente.",
+      "create": "Adicionar conta",
+      "useBrain": "Usar no cérebro",
+      "useWorkers": "Usar nos workers",
+      "workersSet": "Os workers do Claude Code agora usam {label} quando o despacho não indica uma conta.",
+      "switchMode": "Usar a {mode}",
+      "modeSet": "{label} agora usa a {mode}.",
+      "finishInTerminal": "Termine o login no terminal. Esta lista se atualiza quando o Claude Code confirmar.",
+      "signOut": "Sair do Claude",
+      "confirmSignOut": "Desconectar {label} do Claude?",
+      "signedOut": "{label} saiu do Claude.",
+      "removeKey": "Remover chave de API",
+      "confirmRemoveKey": "Remover a chave de API salva em {label}?",
+      "keyRemoved": "A chave de API de {label} foi removida.",
+      "pasteKey": "Cole a chave de API",
+      "keyFor": "Chave de API de {label}",
+      "checkingKey": "Verificando a chave com a Anthropic…",
+      "keySaved": "{label} agora usa a chave de API.",
+      "notSignedIn": "Sem login",
+      "checking": "Verificando o login…",
+      "workerTag": "usada pelos workers",
+      "subscription": "Assinatura Claude",
+      "apiKey": "Chave de API",
+      "inUseNow": "em uso",
+      "renamePrompt": "Nome para {label}",
+      "confirmRemoveClaude": "Remover \"{label}\"? A pasta de configuração, o login e a chave salva dela são apagados.",
+      "chooseSignIn": "Faça o login: com o Claude (abre um terminal) ou com uma chave de API.",
+      "signInFirst": "Sem login: entre em Gerenciar…",
+      "usesHeader": "{label} usa (todas as sessões nela)",
+      "workersHeader": "Os workers do Claude Code usam",
+      "noteCodex2": "Cada conta tem seu próprio CODEX_HOME (login, sessões) e usa a assinatura ChatGPT ou a chave de API dela. “Padrão” é seu ~/.codex do ambiente.",
+      "codexWorkersHeader": "Os workers do Codex usam",
+      "codexWorkersSet": "Os workers do Codex agora usam {label} quando o despacho não indica uma conta."
     },
     "transcript": "Conversa",
     "toolbar": {
@@ -7160,53 +7417,55 @@
       "title": "Orçamento",
       "menu": "Orçamento…",
       "thisSession": "Esta sessão",
-      "caps": "Limites (dólares americanos)",
-      "defaultRun": "Limite padrão por execução",
-      "defaultRunDesc": "Cada execução despachada para ao atingir este gasto, a menos que o cérebro peça outro limite.",
-      "maxRun": "Limite máximo por execução",
-      "maxRunDesc": "O máximo que um cérebro pode atribuir a uma execução (budget_usd).",
-      "sessionWarn": "Aviso da sessão",
-      "sessionWarnDesc": "O cérebro e este painel são avisados uma vez quando a sessão gasta este valor.",
-      "sessionHard": "Limite máximo da sessão",
-      "sessionHardDesc": "Cérebro + todas as execuções da sessão. Ao atingir este gasto, as execuções param e despachos, próximos passos e turnos do cérebro são recusados.",
-      "brain": "Limite do cérebro",
-      "brainDesc": "O gasto do próprio cérebro central em uma sessão, verificado antes de cada turno.",
-      "effective": "Em vigor: {value} · padrão {def}",
-      "sourceSaved": "salvo",
-      "sourceDefault": "padrão",
-      "sourceLegacy": "do orçamento flexível",
-      "sourceEdited": "editadas ",
-      "howEnforced": "Como os limites são aplicados",
-      "brainRow": "Cérebro",
-      "resetAll": "Padrões",
-      "reload": "Recarregar",
-      "saved": "Orçamento salvo — aplicado agora.",
-      "saveFailed": "Não foi possível salvar o orçamento",
-      "loadFailed": "Não foi possível carregar o orçamento",
-      "conflict": "Alterado em outro lugar — recarregue para ver os limites salvos.",
-      "unavailable": "Ajustes de orçamento ainda indisponíveis neste servidor (reinicie o SynaBun para carregá-los).",
-      "errNumber": "Insira um valor em dólares americanos.",
+      "amount": "Orçamento por sessão (USD)",
+      "noLimit": "Sem limite",
+      "perSession": "{amount} / sessão",
+      "spendUnlimited": "{spent} · sem limite",
+      "applies": "Vale para cada nova sessão e para as sessões abertas. O Jev divide o valor entre os provedores.",
+      "errNumber": "Digite um valor em dólares americanos.",
       "errRange": "Entre {min} e {max}.",
-      "errMaxOverHard": "Não pode exceder o limite máximo da sessão ({hard}).",
-      "errDefaultOverMax": "Não pode exceder o limite máximo por execução ({max}).",
-      "errWarnOverHard": "Deve ser menor que o limite máximo da sessão ({hard}).",
-      "errBrainOverHard": "Não pode exceder o limite máximo da sessão ({hard}).",
-      "sessionLine": "{total} gastos de {hard} — cérebro {brain}, agentes {agents}; {reserved} reservados por execuções ativas, {available} disponíveis para novas execuções.",
-      "meterLabel": "Gasto da sessão em relação ao limite máximo",
-      "notMetered": "não medido",
-      "notMeteredCodex": "não medido (cérebro Codex)",
-      "unpriced": "{n} execução(ões) usaram modelo sem preço conhecido: os tokens são registrados, mas os limites em dólares não conseguem medir o gasto.",
-      "pricingOk": "Preços de tabela do Codex: models.dev (cache do OpenCode).",
-      "pricingTable": "Preços de tabela: tabela do SynaBun, verificada com as páginas de preços da Anthropic e OpenAI em {date}. Um modelo do Codex não listado usa o preço de models.dev.",
-      "pricingDrift": "models.dev lista outro preço para {models}: a tabela pode estar desatualizada.",
-      "pricingMissing": "Preços de tabela do Codex indisponíveis (sem cache models.dev do OpenCode): execuções do Codex são marcadas sem preço.",
-      "repaired": "O arquivo salvo violou uma regra ({fields}); os valores em vigor foram corrigidos. Salve para armazená-los.",
-      "applies": "Limites salvos se aplicam imediatamente a sessões abertas e suas execuções: no próximo despacho, próximo passo, fim de turno e etapa medida. Uma execução do Claude mantém o limite CLI inicial, e o despachante também a interrompe no novo limite após o turno.",
+      "invalid": "O servidor recusou este orçamento. Confira o valor e tente novamente.",
+      "loadFailed": "Não foi possível carregar o orçamento. Tente novamente.",
+      "saveFailed": "Não foi possível salvar o orçamento. Sua alteração foi mantida; tente novamente.",
+      "conflict": "O orçamento mudou de novo em outra janela. Sua alteração foi mantida; tente novamente.",
+      "retry": "Tentar novamente",
+      "saving": "Salvando…",
+      "saved": "Orçamento salvo — já está valendo.",
       "chipSplit": "Cérebro {brain} · agentes {agents}",
-      "chipCap": "{total} do limite de sessão de {hard}",
-      "chipUnpriced": "{n} execução(ões) com uso sem preço"
+      "chipUnpriced": "{n} execução(ões) com uso sem preço conhecido",
+      "meterLabel": "Gasto da sessão em relação ao orçamento",
+      "brainRow": "Cérebro",
+      "providerSpend": "{spent} gastos",
+      "providerAmounts": "Cota {share} · gasto {spent} · disponível para tarefas {left}",
+      "reserve": "{reserve} reservados para o cérebro dentro desta cota.",
+      "dry": "Cota esgotada",
+      "fixedRule": "Regra fixa",
+      "awaitingSplit": "A divisão é preparada quando o trabalho começa.",
+      "ineligible": {
+        "no_models": "Nenhum modelo disponível",
+        "signed_out": "Sem conexão com a conta",
+        "limited": "Limite de uso do provedor atingido"
+      },
+      "fallback": {
+        "jev_off": "Jev desativado",
+        "jev_unavailable": "Jev indisponível",
+        "jev_incomplete": "O Jev retornou uma divisão incompleta",
+        "nothing_left": "Sem saldo no orçamento"
+      }
     },
     "routes": {
+      "budgetDecision": "redirecionado pelo orçamento",
+      "budgetProvider": "Orçamento: a cota do {provider} nesta sessão se esgotou.",
+      "budgetSpent": "Orçamento: o valor desta sessão se esgotou.",
+      "budgetDryOne": "Orçamento: a cota do {list} se esgotou.",
+      "budgetDryMany": "Orçamento: as cotas de {list} se esgotaram.",
+      "account": {
+        "workersDefault": "Padrão dos workers",
+        "removed": "{id} · conta removida",
+        "removedHint": "Conta removida. Salve outra conta antes de executar esta rota.",
+        "signedOut": "Não conectada. Entre pelo menu de contas do provedor antes de executar esta rota.",
+        "conversationHint": "Usa a conta desta conversa. Altere-a no seletor de modelo do compositor."
+      },
       "title": "Roteamento de modelos",
       "editor": "Rotas de modelos…",
       "editorTitle": "Rotas de modelos",
@@ -7351,6 +7610,7 @@
       "chatInactive": "Conversas sem ações usam o modelo atual. A escolha salva para Chat não é aplicada em nenhum modo.",
       "visionFallback": "Alternativa para visão, não uma classe de tarefa. Usada quando o modelo escolhido não consegue ver as imagens recebidas.",
       "columns": {
+        "account": "Conta",
         "task": "Tarefa",
         "model": "Modelo",
         "effort": "Esforço",
@@ -8368,5 +8628,315 @@
     "tokens": "{n} tokens",
     "prepared": "escrita há {time}",
     "free": "nenhum token gasto"
+  },
+  "codexSettings": {
+    "title": "Ajustes do Codex",
+    "close": "Fechar",
+    "account": "Conta",
+    "models": "Modelo e raciocínio",
+    "permissions": "Permissões",
+    "tools": "Ferramentas",
+    "advanced": "Avançado",
+    "loading": "Carregando…",
+    "error": "Não foi possível salvar ou carregar os ajustes: {message}",
+    "default": "(padrão)",
+    "defaultAccount": "Conta padrão",
+    "manage": "Gerenciar conta",
+    "usage": "{name}: {percent}% usado · reinicia em {time}",
+    "unknown": "desconhecido",
+    "runtime": "CLI {cli} · SDK de automação {sdk} · Protocolo {protocol}",
+    "mcp": "Servidores MCP",
+    "alwaysAllowed": "Sempre permitido",
+    "loginRequired": "Login necessário",
+    "running": "Em execução",
+    "configured": "{value} (configurado)",
+    "refresh": "Atualizar",
+    "revoke": "Revogar",
+    "authenticate": "Autenticar",
+    "noMcp": "Configure servidores MCP em $CODEX_HOME/config.toml na seção [mcp_servers].",
+    "folders": "Pastas sempre permitidas",
+    "write": "Escrita",
+    "read": "Leitura",
+    "none": "Nenhuma",
+    "applyTo": "Aplicar a",
+    "savedDefaults": "Padrões salvos",
+    "currentThread": "Conversa atual",
+    "scopeHint": "Os padrões valem para novas conversas. As escolhas da conversa atual valem para os próximos turnos. Os ajustes MCP valem para esta conta; as pastas permitidas valem para todas as abas do Codex.",
+    "features": "Recursos do runtime",
+    "on": "Ativado",
+    "off": "Desativado",
+    "saveDefaults": "Salvar padrões",
+    "applyThread": "Aplicar à conversa atual",
+    "saving": "Salvando…",
+    "saved": "Salvo e verificado",
+    "notApplied": "O valor efetivo não mudou para {keys}. Confira a camada de origem ou a configuração gerenciada.",
+    "busy": "Aguarde o turno ativo terminar.",
+    "noSchema": "A CLI em execução não informou seu esquema de ajustes. Nenhum ajuste será gravado.",
+    "tokens": "tokens",
+    "source": "Origem: {layer}",
+    "managed": "Configuração gerenciada",
+    "model": "Modelo",
+    "reviewModel": "Modelo de revisão",
+    "effort": "Esforço de raciocínio",
+    "summary": "Resumo do raciocínio",
+    "serviceTier": "Nível de serviço",
+    "personality": "Personalidade",
+    "approval": "Política de aprovação",
+    "sandbox": "Modo de sandbox",
+    "webSearch": "Busca na web",
+    "provider": "Provedor",
+    "verbosity": "Detalhamento da resposta",
+    "contextWindow": "Janela de contexto",
+    "autoCompact": "Compactação automática",
+    "gateway": "OAuth do gateway",
+    "cancel": "Cancelar",
+    "signIn": "Entrar",
+    "httpsRequired": "A autorização exige uma URL HTTPS.",
+    "continueAt": "Continue o login em {host}",
+    "openHost": "Abrir {host}",
+    "verification": "Verificação de usuário · Experimental",
+    "credentialReady": "Credencial local pronta",
+    "credentialMissing": "Sem credencial local",
+    "localCredential": "Credencial apenas do dispositivo. O provedor de verificação gerencia o registro.",
+    "remove": "Remover",
+    "enroll": "Cadastrar",
+    "removeCredential": "Remover a credencial local de verificação?",
+    "changedConversation": "Esta conversa mudou. Reabra os Ajustes para continuar.",
+    "configRepaired": "Configuração do Codex corrigida. O original foi salvo em backup.",
+    "warningHelp": "Edite a chave indicada no arquivo de configuração informado e reconecte o Codex. As mensagens existentes não impedem o envio.",
+    "dismiss": "Dispensar",
+    "openSettings": "Abrir ajustes",
+    "gatewayStates": {
+      "notReady": "Login necessário",
+      "started": "Aguardando login",
+      "succeeded": "Conectado",
+      "failed": "Falha no login"
+    },
+    "values": {
+      "never": "Nunca",
+      "untrusted": "Comandos não confiáveis",
+      "on-request": "Quando solicitado",
+      "read-only": "Somente leitura",
+      "workspace-write": "Escrita no workspace",
+      "danger-full-access": "Acesso total",
+      "auto": "Automático",
+      "concise": "Conciso",
+      "detailed": "Detalhado",
+      "none": "Nenhum",
+      "low": "Baixo",
+      "medium": "Médio",
+      "high": "Alto",
+      "disabled": "Desativada",
+      "cached": "Em cache",
+      "indexed": "Indexada",
+      "live": "Ao vivo",
+      "friendly": "Amigável",
+      "pragmatic": "Pragmática"
+    }
+  },
+  "desktop": {
+    "update": {
+      "source": "app do SynaBun",
+      "tooltip": "Atualização do SynaBun disponível: v{current} → v{latest}",
+      "tooltipDownloading": "Baixando o SynaBun v{latest}",
+      "tooltipReady": "O SynaBun v{latest} está pronto: ele é instalado quando o SynaBun estiver ocioso",
+      "titleAvailable": "Atualização disponível",
+      "titleDownloading": "Baixando a atualização",
+      "titleDownloaded": "Atualização pronta",
+      "titleInstalling": "Instalando a atualização",
+      "titleMove": "Mova o SynaBun para Aplicativos",
+      "titleManual": "Instale a atualização manualmente",
+      "titleError": "A atualização não foi concluída",
+      "notesLabel": "Novidades",
+      "notesEmpty": "Esta versão não tem notas.",
+      "snapshot": "Antes de a v{version} iniciar pela primeira vez, o SynaBun faz um snapshot verificado dos seus dados.",
+      "backup": "Baixar backup completo",
+      "backupWorking": "Criando backup...",
+      "backupDone": "{file} ({size} MB)",
+      "backupFailed": "O backup falhou: {reason}",
+      "later": "Mais tarde",
+      "download": "Baixar atualização",
+      "downloadStarting": "Iniciando o download.",
+      "progress": "{transferred} de {total} MB",
+      "progressUnknown": "{transferred} MB baixados",
+      "hide": "Ocultar",
+      "hideHint": "O download continua com esta janela oculta. O SynaBun instala a atualização sozinho quando nada estiver em execução.",
+      "readyBody": "O SynaBun v{version} foi baixado. Ele é instalado sozinho quando nada estiver em execução: o SynaBun mostra um aviso de um minuto e reinicia já atualizado. Ele também é instalado quando você sai do SynaBun.",
+      "waitingBody": "Aguardando: {list}.",
+      "countdownBody": "O SynaBun reinicia na v{version} em {seconds} s.",
+      "postponedBody": "Adiado até {time}. Ele também é instalado quando você sai do SynaBun.",
+      "nowBody": "O SynaBun reinicia na v{version} assim que nada estiver em execução.",
+      "installNow": "Instalar agora",
+      "installingBody": "O SynaBun está parando o servidor e instalando a v{version}. Ele fecha e abre de novo sozinho.",
+      "moveBody": "O macOS está executando o SynaBun a partir de uma imagem de disco ou de um local temporário, onde ele não consegue se atualizar. Mova-o para a pasta Aplicativos; o SynaBun abre de novo a partir de lá e pode se atualizar.",
+      "move": "Mover para Aplicativos",
+      "manualBody": "O SynaBun não consegue se substituir na pasta atual. Baixe a imagem de disco da v{version}, abra-a e arraste o SynaBun para a pasta Aplicativos.",
+      "manualReady": "A imagem de disco da v{version} foi baixada. Abra-a e arraste o SynaBun para a pasta Aplicativos para substituir a cópia antiga.",
+      "manualFile": "Arquivo: {path}",
+      "manualDownload": "Baixar imagem de disco",
+      "showFile": "Mostrar imagem de disco",
+      "errorFallback": "O SynaBun não conseguiu procurar atualizações. Verifique a conexão e tente novamente.",
+      "errorNext": "O SynaBun mantém a versão em execução e tenta de novo na próxima verificação. Você pode tentar agora ou baixar a nova versão manualmente.",
+      "manualLink": "Baixar manualmente",
+      "close": "Fechar",
+      "retry": "Tentar novamente",
+      "testFeed": "feed de teste",
+      "metaAvailable": "Pelo app do SynaBun",
+      "metaDownloading": "Baixando: {percent}%",
+      "metaDownloaded": "Pronta: é instalada quando o SynaBun estiver ocioso",
+      "metaCountdown": "Reiniciando para instalá-la",
+      "metaPostponed": "Adiada: é instalada ao sair ou mais tarde"
+    },
+    "busy": {
+      "assistant": "uma execução do Assistente ou um agente despachado",
+      "claude-panel": "uma resposta no painel do Claude Code",
+      "codex-panel": "uma resposta no painel do Codex",
+      "opencode-panel": "uma resposta no painel do OpenCode",
+      "claude-cli": "uma sessão do Claude Code em uso",
+      "loop": "um loop",
+      "schedule": "um agendamento",
+      "backup": "um backup",
+      "maintenance": "uma indexação ou instalação",
+      "unknown": "um trabalho cujo fim o SynaBun não consegue ver",
+      "test": "o interruptor de teste"
+    },
+    "notice": {
+      "countdownTitle": "Atualizando para a v{version}",
+      "countdownLine": "O SynaBun reinicia em {seconds} s.",
+      "later": "Mais tarde",
+      "postponed": "O SynaBun pergunta de novo em uma hora, ou instala a atualização quando você sair dele.",
+      "updatedTitle": "O SynaBun foi atualizado",
+      "updatedLine": "Agora na v{version}, atualizado a partir da v{previous}.",
+      "updatedLineShort": "Agora na v{version}.",
+      "failedTitle": "A atualização não foi concluída",
+      "details": "Detalhes",
+      "close": "Fechar"
+    },
+    "menu": {
+      "quit": "Sair do SynaBun"
+    },
+    "offline": {
+      "hint": "O app do SynaBun reinicia o servidor sozinho. Se ele continuar offline, saia do SynaBun e abra-o de novo.",
+      "stalled": "O servidor não voltou. Saia do SynaBun e abra-o de novo.",
+      "failedHint": "Saia do SynaBun e abra-o de novo. Se a inicialização falhar, a tela de início diz o motivo."
+    },
+    "titleBar": {
+      "appMenu": "Menu do SynaBun"
+    }
+  },
+  "desktopShell": {
+    "update": {
+      "installingAtLaunch": "O SynaBun baixou a v{version} antes e a instala antes de iniciar. Ele abre de novo quando terminar.",
+      "updateAvailableManualDetail": "Esta cópia não consegue se substituir onde está. Baixe a nova imagem de disco e instale-a do jeito que você instalou o SynaBun.",
+      "updateDownloading": "O SynaBun v{version} está sendo baixado",
+      "updateAutoDetail": "O SynaBun a instala sozinho assim que nada estiver em execução, depois de um aviso de um minuto que você pode adiar. Ela também é instalada quando você sai do SynaBun.",
+      "installNow": "Instalar agora",
+      "downloadYourself": "Baixar manualmente",
+      "countdownTitle": "Atualizando o SynaBun para a v{version}",
+      "countdownBody": "O SynaBun reinicia em um minuto. Abra o SynaBun para adiar.",
+      "updatedTitle": "O SynaBun foi atualizado",
+      "updatedBody": "O SynaBun agora executa a v{version} (antes era a v{previous}).",
+      "errorSwapFailed": "A atualização para a v{version} não foi instalada ({reason}). O SynaBun manteve a v{previous}."
+    }
+  },
+  "cliInstall": {
+    "titleMissing": "{label} não está instalado",
+    "titleBroken": "{label} não conseguiu iniciar",
+    "titleInstalling": "Instalando {label}…",
+    "titleFailed": "Não foi possível instalar {label}",
+    "titleDone": "{label} está instalado",
+    "titlePath": "Execute {label} nos seus outros terminais",
+    "bodyPath": "Os terminais do SynaBun estão prontos. Adicione {dir} ao PATH para outros terminais.",
+    "addPath": "Adicionar ao PATH",
+    "addingPath": "Adicionando…",
+    "pathFailed": "Não foi possível atualizar o PATH: {error}",
+    "copyPathDiagnostics": "Copiar diagnóstico do PATH",
+    "stepPath": "Adicionando a pasta do CLI ao PATH…",
+    "stepPathAdded": "Adicionado {dir} ao seu PATH",
+    "bodyMissing": "Instale com um clique pelo instalador oficial de {vendor} ou execute:",
+    "bodyMissingArchive": "Instale com um clique pela versão oficial publicada por {vendor} ou execute:",
+    "bodyMissingManual": "Instale com este comando e depois verifique novamente:",
+    "bodyBroken": "{label} foi encontrado em {path}, mas não conseguiu iniciar:",
+    "bodyBrokenVersion": "{label} {version} foi encontrado em {path}, mas não conseguiu iniciar:",
+    "bodyBrokenLatched": "{label} está instalado, mas não conseguiu iniciar:",
+    "bodyBrokenHint": "Confira o caminho da CLI em Ajustes e verifique novamente.",
+    "configuredFailed": "O caminho definido em Ajustes não funcionou: {error}",
+    "bodyFailedManual": "Execute você mesmo:",
+    "doneNotOnPath": "Ele está em {dir}. O SynaBun o encontra ali; adicione essa pasta ao seu PATH para usá-lo em um terminal.",
+    "doneAddedToPath": "Adicionado {dir} ao seu PATH. Novas janelas e abas de terminal já usam a alteração.",
+    "stepStart": "Iniciando o instalador oficial…",
+    "stepDownload": "Baixando…",
+    "stepDownloadProgress": "Baixando: {received} de {total} MB",
+    "stepDownloadReceived": "Baixando: {received} MB",
+    "stepVerify": "Verificando o download…",
+    "stepRun": "Executando o instalador oficial…",
+    "stepExtract": "Descompactando…",
+    "stepPlace": "Colocando no lugar…",
+    "stepCheck": "Verificando se ele inicia…",
+    "errorOffline": "Não foi possível acessar o servidor de download. Verifique a conexão e tente novamente.",
+    "errorHttp": "O servidor de download respondeu com erro. Tente novamente em instantes.",
+    "errorChecksum": "O download não corresponde ao checksum publicado; por isso foi removido e nunca executado.",
+    "errorInterrupted": "O download parou antes de terminar. Nada foi mantido. Tente novamente.",
+    "errorTimeout": "O instalador demorou demais e foi interrompido.",
+    "errorInstallerFailed": "O instalador oficial parou com um erro.",
+    "errorNotFound": "O instalador terminou, mas o SynaBun não encontra {label} depois disso.",
+    "errorUnpack": "Não foi possível descompactar o download; por isso ele foi removido.",
+    "errorDisk": "Não foi possível gravar os arquivos. Verifique o espaço livre e as permissões e tente novamente.",
+    "errorCancelled": "A instalação foi interrompida.",
+    "errorUnsupported": "Não há instalação com um clique para este sistema. Use o comando abaixo ou o guia de instalação.",
+    "errorRefused": "O SynaBun recusou o pedido. Instale pelo SynaBun neste computador.",
+    "errorConnection": "A conexão com o SynaBun foi encerrada antes de a instalação terminar.",
+    "errorUnknown": "A instalação não terminou.",
+    "install": "Instalar",
+    "installing": "Instalando…",
+    "retry": "Tentar novamente",
+    "guide": "Guia de instalação",
+    "recheck": "Verificar novamente",
+    "checking": "Verificando…",
+    "copy": "Copiar",
+    "copied": "Copiado",
+    "dismiss": "Dispensar",
+    "logLabel": "Saída do instalador"
+  },
+  "gitBash": {
+    "label": "Git Bash para o Claude Code (Windows)",
+    "help": "No Windows, o Claude Code roda a ferramenta Bash e os hooks no Git Bash. O SynaBun usa o Git for Windows deste PC, ou a própria cópia quando o PC não tem um.",
+    "badgeSystem": "Neste PC",
+    "badgeReady": "Cópia do SynaBun",
+    "badgeMissing": "Não encontrado",
+    "badgeDownloading": "Baixando",
+    "badgeFailed": "Não instalado",
+    "badgeOff": "Desligado",
+    "sourceEnv": "CLAUDE_CODE_GIT_BASH_PATH aponta para {path}.",
+    "sourceSettings": "As configurações do seu Claude Code apontam para {path}.",
+    "sourceSystem": "Git for Windows deste PC: {path}",
+    "sourceSystemPassed": "Git for Windows deste PC: {path}. O Claude Code não o encontraria sozinho, então o SynaBun informa o caminho.",
+    "sourceBundled": "Git for Windows {version}, instalado com o SynaBun: {path}",
+    "sourceDownloaded": "Git for Windows {version}, baixado pelo SynaBun: {path}",
+    "missing": "Nenhum Git Bash neste PC. O SynaBun baixa a própria cópia do Git for Windows {version} ({size} MB) e confere o SHA-256 publicado.",
+    "stepDownload": "Baixando o Git for Windows {version}: {done} de {total} MB",
+    "stepExtract": "Descompactando o Git for Windows {version}: {percent}%",
+    "stepVerify": "Conferindo cada arquivo com a versão fixada…",
+    "stepPlace": "Colocando no lugar…",
+    "failed": "Não foi possível instalar o Git for Windows. {reason}",
+    "off": "Desligado: SYNABUN_GIT_BASH=off está definido, então o SynaBun não baixa nada nem indica um Git Bash.",
+    "unsupported": "Nenhuma versão do Git for Windows está fixada para este processador. Instale o Git for Windows pelo git-scm.com.",
+    "settingsNamed": "Um claude aberto em outro terminal também o usa: as configurações do seu Claude Code apontam para ele.",
+    "settingsKept": "As configurações do seu Claude Code apontam para um Git Bash que não existe ({value}). O SynaBun manteve esse valor como está.",
+    "settingsError": "Não foi possível atualizar as configurações do seu Claude Code: {message}",
+    "download": "Baixar",
+    "retry": "Tentar novamente",
+    "recheck": "Verificar novamente",
+    "checking": "Verificando…",
+    "errorOffline": "Não foi possível acessar o servidor de download. Verifique a conexão e tente novamente.",
+    "errorHttp": "O servidor de download respondeu com erro. Tente novamente em instantes.",
+    "errorInterrupted": "O download parou antes de terminar. Nada foi mantido.",
+    "errorTimeout": "Nada chegou do servidor de download por tempo demais.",
+    "errorChecksum": "O que chegou não é a versão publicada; por isso foi removido e nunca executado.",
+    "errorUnpack": "Não foi possível descompactar o download; por isso ele foi removido.",
+    "errorDisk": "Não foi possível gravar os arquivos. Verifique o espaço livre (cerca de 550 MB) e as permissões.",
+    "errorCancelled": "O download foi interrompido.",
+    "errorUnknown": "O download não terminou.",
+    "errorRequest": "O SynaBun não respondeu: {message}"
   }
 }

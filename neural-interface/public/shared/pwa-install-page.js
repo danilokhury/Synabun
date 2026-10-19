@@ -1,5 +1,6 @@
 import { canPromptPwaInstall, initPwaInstall, installGuideMode, installGuideRequested, isStandalone,
   leavePwaInstallHandoff, requestPwaInstall } from './pwa-install.js';
+import { isDesktopApp } from './desktop-bridge.js';
 
 // The wizard (first run) and the main UI (setup done) open the browser's dialog from a press the user makes
 // anyway, so a browser that has one shows this page only when Apps > Install as App asked for it. true, false,
@@ -12,7 +13,8 @@ async function setupComplete() {
   } catch { return null; }
 }
 
-if (isStandalone()) location.replace('/');
+// Already the installed app, or the SynaBun desktop app's own window: nothing to install here.
+if (isStandalone() || isDesktopApp()) location.replace('/');
 else {
   const pt = navigator.language.toLowerCase().startsWith('pt');
   const copy = pt ? {

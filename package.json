@@ -1,6 +1,6 @@
 {
   "name": "synabun",
-  "version": "2.0.5",
+  "version": "2.0.7",
   "description": "Local-first persistent vector memory, MCP tooling, and multi-agent workflows for AI assistants",
   "license": "Apache-2.0",
   "author": "The SynaBun Authors",
@@ -59,7 +59,10 @@
     "lib/paths.js",
     "lib/start-launcher.js",
     "lib/packaged-runtime.js",
+    "lib/child-path.js",
+    "lib/log-redact.js",
     "lib/desktop-pwa.js",
+    "lib/desktop-app.js",
     "lib/external-tools.js",
     "lib/paths.d.ts",
     "lib/data-home-migration.js",

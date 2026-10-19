@@ -12,8 +12,10 @@
 //   messages only) → awaiting_confirm drops everything → classifyInbound
 //   (owner + the raw stanza that carried it) → a backlog message must come
 //   from an offline stanza and be younger than 24 h → dedupe (seen) →
-//   extract → 'inbound' event (`backlog: true` on offline ones; the bridge
-//   skips those older than 10 minutes), which never carries a JID or a phone
+//   extract (a voice note is transcribed here, by transcription.js: only
+//   after the owner and duplicate checks) → 'inbound' event (`backlog: true`
+//   on offline ones; the bridge skips those older than 10 minutes; `voice:
+//   true` on a transcribed voice note), which never carries a JID or a phone
 //   number.
 //
 // Self mode after a fresh link sits in awaiting_confirm: nothing is accepted
@@ -24,10 +26,14 @@
 import {
   CONN, DEFAULT_PREFIX, ERR, EV, LIMITS, OP, PROTOCOL_VERSION, REACTIONS, pickPrefs, validateEvent, validateOp,
 } from './protocol.js';
+import { homedir } from 'node:os';
+import path from 'node:path';
 import { openAuthStore } from './auth-store.js';
 import * as adapter from './baileys-adapter.js';
 import { classifyInbound, createClaim, createOwnerState, maskJid, normalizeUserJid, parseJid, sameAccount } from './identity.js';
-import { redactWa, setRedactionContext } from './redact.js';
+import { checkRequestPath, fileDenial, LocalFileError, prepareLocalFile, protectedPlaces } from './local-file.js';
+import { fileAuditLine, redactFilePath, redactWa, setRedactionContext } from './redact.js';
+import { createTranscriber } from './transcription.js';
 
 const CONFIRM_WINDOW_MS = 10 * 60_000;
 const PRESENCE_REFRESH_MS = 10_000;
@@ -50,6 +56,14 @@ const RESTART_BURST_MAX = 5;
 const RESTART_BURST_WINDOW_MS = 10 * 60_000;
 const TAP_TTL_MS = 10 * 60_000;
 const BACKLOG_MAX_AGE_MS = 24 * 3_600_000;
+// A voice note sent longer ago than this is not transcribed: the bridge skips messages older than
+// 10 minutes (its staleMs) and transcribing a backlog would only hold up the newer messages. A minute
+// short of it, so a note does not go stale while it is being transcribed.
+const AUDIO_STALE_MS = 9 * 60_000;
+// Typed commands that only read or stop (/stop, /pause, /status, /help, /cards) run at once, as
+// commands do: they never wait behind a voice note being transcribed. /resume and /new keep their
+// place: going ahead of what was sent before them would change what those messages do.
+const AT_ONCE_COMMAND = /^\s*\/(?:stop|pause|status|help|cards)(?:\s|$)/i;
 const TAP_MAX = 1000;
 const TAP_PER_SENDER = 50;
 const RECENT_OWNER_MAX = 200;
@@ -81,17 +95,21 @@ function hostError(code, message, extra) {
   return err;
 }
 
+// The stops classifyDisconnect can still decide: a logout (401, or a session WhatsApp says is
+// invalid) and, while linking, an account WhatsApp refuses. A saved session retries everything else.
 const STOP_FATAL = {
   [CONN.LOGGED_OUT]: 'LOGGED_OUT',
-  [CONN.REPLACED]: 'REPLACED',
   [CONN.FORBIDDEN]: 'FORBIDDEN',
-  [CONN.ERROR]: 'SESSION_ERROR',
 };
 
 /**
  * @param {object} o
  * @param {(msg:object) => void} o.send       deliver one event to the main process
- * @param {{authDir:string, runtimeDir:string}} o.paths
+ * @param {{authDir:string, runtimeDir:string, transcriptionDir?:string}} o.paths
+ * @param {object} [o.transcriber]  createTranscriber()-shaped (tests); the default runs in this process,
+ *   configured by every `configure` op (a host that was never configured transcribes nothing)
+ * @param {Function} [o.prepareFile]  local-file.js prepareLocalFile-shaped (tests hold a read open with it)
+ * @param {string} [o.home]           the user's home, for send_file's denylist (default os.homedir())
  */
 export function createHostCore({
   send,
@@ -105,6 +123,9 @@ export function createHostCore({
   openStore = openAuthStore,
   reconnect = {},
   sendCaps = SEND_CAPS,
+  transcriber: transcriberOverride = null,
+  prepareFile = prepareLocalFile,
+  home = homedir(),
 } = {}) {
   if (typeof send !== 'function') throw new TypeError('createHostCore: send is required');
   if (!paths?.authDir) throw new TypeError('createHostCore: paths.authDir is required');
@@ -143,8 +164,12 @@ export function createHostCore({
   const logTimes = [];
   const timerIds = {};
 
-  const policy = adapter.createReconnectPolicy({ now, rng, ...reconnect });
+  // Reconnect delays (2 s … 300 s, never giving up); `reconnect` overrides its knobs (tests).
+  const policy = adapter.createReconnectPolicy({ rng, ...reconnect });
   const logger = adapter.createSilentLogger({ sink: (level, message) => say(level, message) });
+  // Voice notes: off until a configure turns it on. Its log lines never carry what a program printed.
+  const transcriptionHome = paths.transcriptionDir || (paths.runtimeDir ? path.join(path.dirname(paths.runtimeDir), 'whatsapp-transcription') : null);
+  const transcriber = transcriberOverride || createTranscriber({ home: transcriptionHome, env, platform, now, log: (level, message) => say(level, message) });
 
   // ── Plumbing ──
 
@@ -375,8 +400,14 @@ export function createHostCore({
       });
     } catch (err) {
       sock = null;
-      session = null;
       say('error', `[whatsapp] could not create the socket: ${err?.message}`);
+      // A saved, linked session keeps its credentials and tries again on the ladder; a link attempt has nothing to keep.
+      if (isLinked()) {
+        lastDisconnect = { reason: 'socket_failed', code: null, at: now() };
+        scheduleReconnect();
+        return;
+      }
+      session = null;
       setState(CONN.ERROR, { error: 'socket_failed' });
       return;
     }
@@ -385,10 +416,28 @@ export function createHostCore({
     s.ev.on('creds.update', (u) => { if (g === gen) onCredsUpdate(u); });
     s.ev.on('messages.upsert', (u) => {
       if (g !== gen) return;
-      // One at a time: a slow image download must not let a later text overtake it.
-      inboundChain = inboundChain
-        .then(() => onUpsert(u))
-        .catch((err) => say('warn', `[whatsapp] inbound processing failed: ${err?.message}`));
+      const failed = (err) => say('warn', `[whatsapp] inbound processing failed: ${err?.message}`);
+      if (atOnce(u)) {
+        Promise.resolve().then(() => onUpsert(u)).catch(failed);
+        return;
+      }
+      // One at a time: a slow image download or a voice note's transcription must not let a later text overtake it.
+      inboundChain = inboundChain.then(() => onUpsert(u)).catch(failed);
+    });
+  }
+
+  /** A live batch of nothing but typed commands that only read or stop (AT_ONCE_COMMAND): not queued behind other messages. */
+  function atOnce(u) {
+    const messages = Array.isArray(u?.messages) ? u.messages : [];
+    if (u?.type !== 'notify' || Object.hasOwn(u, 'requestId') || !messages.length || !runtime?.mod) return false;
+    return messages.every((msg) => {
+      let d;
+      try { d = adapter.describeContent(msg, runtime.mod); } catch { return false; }
+      if (d.drop || d.kind !== 'text') return false;
+      const ctx = d.contextInfo;
+      // A forwarded or quoted "/stop" is not a command (commands.js parseCommand).
+      if (ctx && (ctx.isForwarded || Number(ctx.forwardingScore) > 0 || ctx.quotedMessage)) return false;
+      return AT_ONCE_COMMAND.test(d.text);
     });
   }
 
@@ -444,7 +493,8 @@ export function createHostCore({
 
   function onQr(qr) {
     if (!session || session.purpose !== 'link' || isLinked()) {
-      // A QR while running means the server no longer knows these creds.
+      // A QR while running means the server no longer knows these creds: the saved session was rejected.
+      say('warn', '[whatsapp] WhatsApp asked this device to pair again (it rejected the saved session): link again to pair this device');
       closeSocket();
       session = null;
       stopWith(CONN.LOGGED_OUT, 'session_rejected', { wipe: true, fatal: 'LOGGED_OUT' });
@@ -545,15 +595,18 @@ export function createHostCore({
         const t = now();
         while (restartBurst.length && t - restartBurst[0] > RESTART_BURST_WINDOW_MS) restartBurst.shift();
         if (restartBurst.length >= RESTART_BURST_MAX) {
-          scheduleReconnect();
+          // A burst of restarts falls back to the backoff ladder (which never gives up).
+          noteDisconnect(c, `recovering automatically (restart burst; next try in ${seconds(scheduleReconnect())})`);
           return;
         }
         restartBurst.push(t);
+        noteDisconnect(c, 'recovering automatically (reconnecting now)', 'info');
         counters.reconnects += 1;
         openSocket();
         return;
       }
       case 'refresh_version': {
+        noteDisconnect(c, 'recovering automatically (checking the WhatsApp Web version)');
         const g = gen;
         adapter.refreshVersion({ runtime, store, now }).then((refreshed) => {
           if (g !== gen || shuttingDown || !session) return;
@@ -565,31 +618,43 @@ export function createHostCore({
           } else {
             scheduleReconnect();
           }
-        }, () => scheduleReconnect());
+        }, () => { if (g === gen) scheduleReconnect(); });
         return;
       }
       case 'backoff':
-        scheduleReconnect();
+        noteDisconnect(c, `recovering automatically (next try in ${seconds(scheduleReconnect({ long: c.delay === 'long' }))})`);
         return;
       default:
+        noteDisconnect(c, c.state === CONN.FORBIDDEN ? 'WhatsApp refused this account; check WhatsApp on the phone' : 'link again to pair this device');
         stopWith(c.state, c.reason, { wipe: c.wipe, fatal: STOP_FATAL[c.state] });
     }
   }
 
-  function scheduleReconnect() {
-    const next = policy.next();
-    if (next.giveUp) {
-      stopWith(CONN.ERROR, 'reconnect_limit', { fatal: 'RECONNECT_LIMIT' });
-      return;
-    }
-    retryAt = now() + next.delayMs;
+  /** One line per disconnect: its code, reason and what happens next. Never a JID, a number or a key (say redacts, and is rate limited). */
+  function noteDisconnect(c, action, level = 'warn') {
+    say(level, `[whatsapp] disconnected (code ${c.code ?? 'none'}, ${c.reason}): ${action}`);
+  }
+
+  const seconds = (ms) => `${Math.max(0, Math.round((Number(ms) || 0) / 1000))} s`;
+
+  /**
+   * Try again after the policy's delay (`long`: 440 / 403 start at the top of
+   * the ladder). Never gives up; does nothing while shutting down or without a
+   * session (Disconnect, Unlink and shutdown cancel what is pending).
+   * @returns {number} the delay, or 0 when nothing was scheduled
+   */
+  function scheduleReconnect({ long = false } = {}) {
+    if (shuttingDown || !session) return 0;
+    const { delayMs } = policy.next({ long });
+    retryAt = now() + delayMs;
     setTimer('reconnect', () => {
       retryAt = null;
       if (shuttingDown || !session) return;
       counters.reconnects += 1;
       openSocket();
-    }, next.delayMs);
+    }, delayMs);
     setState(CONN.RECONNECTING);
+    return delayMs;
   }
 
   function stopWith(state, reason, { wipe = false, fatal = null } = {}) {
@@ -709,8 +774,9 @@ export function createHostCore({
     owner.noteChat(msg.key.remoteJid);
     recentOwner.set(id, { copy: adapter.quotableCopy(msg, d), at: now() });
     if (recentOwner.size > RECENT_OWNER_MAX) recentOwner.delete(recentOwner.keys().next().value);
-    const ex = await adapter.extractInbound(msg, { mod: runtime.mod, sock, logger, sentIds: { has: isOwnSent }, described: d, text: verdict.text });
     const ts = Number(msg.messageTimestamp);
+    const audioStale = d.kind === 'audio' && Number.isFinite(ts) && ts > 0 && now() - ts * 1000 > AUDIO_STALE_MS;
+    const ex = await adapter.extractInbound(msg, { mod: runtime.mod, sock, logger, sentIds: { has: isOwnSent }, described: d, text: verdict.text, transcriber, audioStale });
     counters.accepted += 1;
     touch();
     emit({
@@ -726,6 +792,8 @@ export function createHostCore({
         quoted: ex.quoted,
         owner: true,
         ...(backlog ? { backlog: true } : {}),
+        ...(ex.voice ? { voice: true } : {}),
+        ...(ex.voice && ex.audioFile ? { audioFile: true } : {}),
       },
     });
   }
@@ -822,14 +890,50 @@ export function createHostCore({
   }
 
   /**
-   * Send `content` ({text} or {react}) to the owner — the ONLY socket send in
-   * the WhatsApp Link. The target is always resolved here, from the owner
-   * state; callers cannot name one.
+   * A file's turn in the send queue (send_file): the owner it was accepted for must still be the
+   * owner; then it is read (local-file.js prepareLocalFile, which checks it again from scratch); then
+   * the link must be exactly as it was when the read began. Anything that changed sends nothing:
+   * NO_OWNER (another owner, or none), NOT_CONNECTED (another socket, a drop), PAUSED. A reconnect
+   * while the file waited its turn is no change of owner: like a text reply, it goes on the new link.
    */
-  async function sendToOwner(content, { replyTo = null } = {}) {
+  async function readFileForOwner(file, accepted) {
+    // The same owner, whichever of their ids (phone number or LID) they last wrote from: the chat the
+    // request was accepted for still belongs to the owner bound now (a reset or another owner does not).
+    if (!owner.replyJid() || !owner.isOwnerJid(accepted.target)) throw hostError(ERR.NO_OWNER, 'the owner changed before the file was read: nothing was sent');
+    const s = sock;
+    const g = gen;
+    let prepared;
+    try {
+      prepared = await prepareFile(file.path, { as: file.as, caption: file.caption, paths, home, platform });
+    } catch (err) {
+      if (err instanceof LocalFileError || (typeof err?.code === 'string' && ERR[err.code])) throw hostError(err.code, err.message, { fileRefusal: true });
+      throw hostError(ERR.FILE_INVALID, `the file could not be read: ${err?.message || err}`, { fileRefusal: true });
+    }
+    if (sock !== s || gen !== g || !sock || connState !== CONN.OPEN) throw hostError(ERR.NOT_CONNECTED, 'WhatsApp disconnected while the file was read: nothing was sent');
+    if (paused) throw hostError(ERR.PAUSED, 'sending was paused while the file was read: nothing was sent');
+    return prepared;
+  }
+
+  /**
+   * The audit line of a file about to go out: its canonical path, size, form and the masked chat,
+   * never its bytes or its caption. Not rate limited like say(): every real send attempt is logged.
+   * The path goes through redactFilePath (redactWa would read most paths as key material); the
+   * manager logs the line as written only when it has exactly this shape (redact.js fileAuditLine).
+   */
+  function noteFileSend(file, target) {
+    const line = fileAuditLine(`[whatsapp] file send ${JSON.stringify({ path: file.path, size: file.size, chat: maskJid(target), type: file.type })}`);
+    if (line) emit({ t: EV.LOG, level: 'info', message: line.slice(0, 4000) });
+  }
+
+  /**
+   * Send `content` ({text} or {react}), or a local `file` ({path, caption, as}: send_file), to the
+   * owner — the ONLY socket send in the WhatsApp Link. The target is always resolved here, from the
+   * owner state; callers cannot name one. A file is read in its turn of the queue (readFileForOwner).
+   */
+  async function sendToOwner(content, { replyTo = null, file = null } = {}) {
     if (!sock || connState !== CONN.OPEN) throw hostError(ERR.NOT_CONNECTED, 'WhatsApp is not connected');
     if (paused) throw hostError(ERR.PAUSED, 'sending is paused after an owner anomaly');
-    assertOwnerTarget();
+    const accepted = { target: assertOwnerTarget() };
     if (typeof content?.text === 'string') {
       if (!content.text.trim()) throw hostError(ERR.BAD_REQUEST, 'text is empty');
       if (content.text.length > LIMITS.MAX_TEXT) throw hostError(ERR.TOO_LONG, `text is longer than ${LIMITS.MAX_TEXT} characters`);
@@ -849,9 +953,12 @@ export function createHostCore({
       if (delay > 0) await sleep(delay);
       if (!sock || connState !== CONN.OPEN) throw hostError(ERR.NOT_CONNECTED, 'WhatsApp is not connected');
       if (paused) throw hostError(ERR.PAUSED, 'sending is paused after an owner anomaly');
+      const prepared = file ? await readFileForOwner(file, accepted) : null;
       const target = assertOwnerTarget();
+      if (prepared && !owner.isOwnerJid(accepted.target)) throw hostError(ERR.NO_OWNER, 'the owner changed while the file was read: nothing was sent');
       const quoted = replyTo ? recentOwner.get(replyTo)?.copy : undefined;
-      const payload = typeof content.text === 'string' ? { text: content.text, linkPreview: null } : content;
+      const payload = prepared ? adapter.fileMessage(prepared) : typeof content.text === 'string' ? { text: content.text, linkPreview: null } : content;
+      if (prepared) noteFileSend(prepared, target);
       let res;
       try {
         res = await sock.sendMessage(target, payload, quoted ? { quoted } : undefined);
@@ -865,6 +972,7 @@ export function createHostCore({
       if (payload.react) counters.reactions += 1;
       else counters.sent += 1;
       touch();
+      if (prepared) return { id, path: prepared.path, size: prepared.size, fileName: prepared.fileName, type: prepared.type, mimetype: prepared.mimetype, fallback: prepared.fallback };
       return { id };
     };
     const p = sendChain.then(run, run);
@@ -1046,6 +1154,18 @@ export function createHostCore({
     throw hostError(ERR.BAD_REQUEST, 'in self mode the owner is the linked account; log out to link another one');
   }
 
+  /**
+   * send_file: what the request alone shows is refused before it takes a place in the queue (a
+   * malformed path, a URL / share / stream, a protected place as written); everything is checked
+   * again, on the real file, right before it is read (readFileForOwner → prepareFile).
+   */
+  async function opSendFile({ path: filePath, caption = null, as = 'auto' }) {
+    const written = checkRequestPath(filePath, { platform });
+    const denied = fileDenial(written, protectedPlaces({ paths, home, platform }));
+    if (denied) throw hostError(ERR.FILE_FORBIDDEN, `${written.length > 220 ? `…${written.slice(-220)}` : written} is protected (${denied}): SynaBun never sends it from WhatsApp`, { fileRefusal: true });
+    return sendToOwner({}, { file: { path: filePath, caption: caption ?? null, as: as ?? 'auto' } });
+  }
+
   async function opReact({ id, reaction }) {
     const text = reaction === null ? '' : REACTIONS[reaction];
     const own = recentOwner.get(id);
@@ -1073,11 +1193,14 @@ export function createHostCore({
 
   async function dispatch(msg) {
     switch (msg.op) {
-      case OP.CONFIGURE:
+      case OP.CONFIGURE: {
         prefs = { ...prefs, ...pickPrefs(msg.prefs) };
         if (!isLinked() && !session) owner = createOwnerState({ mode: prefs.mode || 'self' });
+        let transcription = null;
+        try { transcription = transcriber.configure(prefs); } catch (err) { say('warn', `[whatsapp] voice note settings were not applied: ${err?.message}`); }
         emitState();
-        return { prefs: { ...prefs } };
+        return { prefs: { ...prefs }, transcription };
+      }
       case OP.CONNECT: return opConnect(msg);
       case OP.DISCONNECT: return opDisconnect();
       case OP.LOGOUT: return opLogout();
@@ -1086,10 +1209,11 @@ export function createHostCore({
       case OP.CLAIM_CANCEL: return opClaimCancel();
       case OP.OWNER_RESET: return opOwnerReset();
       case OP.SEND: return sendToOwner({ text: msg.text }, { replyTo: msg.replyTo ?? null });
+      case OP.SEND_FILE: return opSendFile(msg);
       case OP.REACT: return opReact(msg);
       case OP.PRESENCE: return presence(msg.state);
       case OP.READ: return opRead(msg);
-      case OP.STATUS: return { conn: connStatus(), runtime: { ...runtimeInfo } };
+      case OP.STATUS: return { conn: connStatus(), runtime: { ...runtimeInfo }, transcription: transcriptionStatus() };
       case OP.SHUTDOWN:
         await shutdown();
         return { ok: true };
@@ -1100,6 +1224,10 @@ export function createHostCore({
       default:
         throw hostError(ERR.UNKNOWN_OP, `unknown op '${msg.op}'`);
     }
+  }
+
+  function transcriptionStatus() {
+    try { return transcriber.status(); } catch { return null; }
   }
 
   /** Replies are not schema-checked like events: redact any JID-bearing string as a backstop. */
@@ -1135,7 +1263,10 @@ export function createHostCore({
     } catch (err) {
       const code = typeof err?.code === 'string' && ERR[err.code] ? err.code : ERR.INTERNAL;
       if (code === ERR.INTERNAL) say('warn', `[whatsapp] ${msg.op} failed: ${err?.message}`);
-      const error = { code, message: redactWa(err?.message || String(err)).slice(0, 300) };
+      // A file's refusal (local-file.js) names the path and why: redactFilePath keeps the path readable for the
+      // brain (redactWa would read it as key material) and still hides numbers, JIDs and credentials.
+      const fileRefusal = err instanceof LocalFileError || err?.fileRefusal === true;
+      const error = { code, message: fileRefusal ? redactFilePath(err?.message || String(err)).slice(0, 500) : redactWa(err?.message || String(err)).slice(0, 300) };
       if (Number.isFinite(err?.retryAfterMs)) {
         error.message = `${error.message} (retry in ${Math.ceil(err.retryAfterMs / 1000)} s)`;
         error.retryAfterMs = Math.max(0, Math.round(err.retryAfterMs));
@@ -1210,6 +1341,8 @@ export function createHostCore({
     if (shuttingDown) return;
     shuttingDown = true;
     session = null;
+    // A transcription still running ends with the host (its scratch folder goes in its finally, or at the next start).
+    try { transcriber.stop?.(); } catch {}
     closeSocket();
     for (const name of Object.keys(timerIds)) clearTimer(name);
     try { store?.close(); } catch {}

@@ -32,6 +32,7 @@ import { registerYoutubeTools } from './tools/youtube.js';
 import { registerStyleGuideTools } from './tools/style-guide.js';
 import { registerMoreLoginTools } from './tools/morelogin.js';
 import { registerAgentTools } from './tools/agents.js';
+import { registerWhatsAppSendFileTool } from './tools/whatsapp-send-file.js';
 import { registerComputerTools } from './tools/computer.js';
 import { profileSchema, profileDescription, handleProfile } from './tools/profile.js';
 import { choiceSchema, choiceDescription, handleChoice } from './tools/choice.js';
@@ -44,6 +45,7 @@ import { invalidateCategoryCache, setOnExternalChange, startWatchingCategories, 
 import { healCodexConfig } from './services/codex-config-heal.js';
 import type { CallerRole } from './services/identity.js';
 import { getEnvPath, config } from './config.js';
+import { SERVER_VERSION } from './version.js';
 import { readFileSync, writeFileSync, watch, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 
@@ -118,8 +120,9 @@ export function registerTools(server: McpServer, runtime: ProfileRuntime = new P
   runtime.setToolGroup('styleguide', registerStyleGuideTools(server));
   runtime.setToolGroup('morelogin',  registerMoreLoginTools(server));
   // Role-gated: advertised only while the runtime's role is 'assistant'
-  // (profiles.ts ROLE_GATED_GROUPS), never by profile selection.
-  runtime.setToolGroup('agents',     registerAgentTools(server));
+  // (profiles.ts ROLE_GATED_GROUPS), never by profile selection. whatsapp_send_file
+  // rides here: only an assistant brain sees it (and only a WhatsApp one may use it).
+  runtime.setToolGroup('agents',     [...registerAgentTools(server), registerWhatsAppSendFileTool(server)]);
   // Capability-gated: advertised only to callers holding a desktop grant
   // (profiles.ts CAPABILITY_GATED_GROUPS), macOS only.
   runtime.setToolGroup('computer',   registerComputerTools(server));
@@ -223,7 +226,7 @@ export function getToolUsageSummary(runtime: ProfileRuntime = mainProfileRuntime
     image: ['image_staged'],
     gsc: ['gsc_'],
     styleguide: ['style_guide'],
-    agents: ['agent_'],
+    agents: ['agent_', 'whatsapp_send_file'],
     computer: ['computer'],
   };
   const usedGroups = new Set<string>();
@@ -262,7 +265,7 @@ export function createMcpServer(forceProfile?: string, options: { catalogMode?: 
   const initialProfile = forceProfile ?? readInitialProfile();
   const runtime = new ProfileRuntime(initialProfile, options);
   const server = new McpServer(
-    { name: 'claude-memory', version: '2.0.0' },
+    { name: 'claude-memory', version: SERVER_VERSION },
     { instructions: buildServerInstructions(runtime) }
   );
   const refs = registerTools(server, runtime);
@@ -329,7 +332,7 @@ const _initialProfile = readInitialProfile();
 mainProfileRuntime = new ProfileRuntime(_initialProfile);
 
 const server = new McpServer(
-  { name: 'claude-memory', version: '2.0.0' },
+  { name: 'claude-memory', version: SERVER_VERSION },
   { instructions: buildServerInstructions(mainProfileRuntime) }
 );
 
@@ -371,7 +374,7 @@ async function main() {
   // anything else. If the file doesn't exist or is already clean, this is a
   // fast no-op. Atomic write — original is preserved on any failure.
   if (!isClaudeCode()) {
-    const codexConfigPath = join(process.env.USERPROFILE || process.env.HOME || '', '.codex', 'config.toml');
+    const codexConfigPath = join(process.env.CODEX_HOME || join(process.env.USERPROFILE || process.env.HOME || '', '.codex'), 'config.toml');
     try {
       const result = healCodexConfig(codexConfigPath);
       if (result.healed) {

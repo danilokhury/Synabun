@@ -1,6 +1,8 @@
 // Model routes: draft-only editor. All model data comes through asst-route-models.
 // The global default and saved preferences are written together only on Save.
-import { clampEffortId, getEffortLevelsForModel, modelEffortIds } from '../agent-runtime-options.js';
+import { clampEffortId, getEffortLevelsForModel, modelEffortIds, fetchClaudeAccounts, fetchCodexAccounts, getCachedClaudeAccounts, getCachedCodexAccounts, getClaudeWorkerAccountId, getCodexWorkerAccountId } from '../agent-runtime-options.js';
+import { accountSummary, accountName, accountBadge, accountIdentity } from '../account-view.js';
+import { accountUsageText, autoAccountLabel } from '../account-usage.js';
 import { getProviderMeta } from '../provider-icons.js';
 import { getRouting, putRouting } from './asst-api.js';
 import { catalogModelRow, hiddenModelFor, ICON_CARET, openModelMenu } from './asst-brain-picker.js';
@@ -30,7 +32,33 @@ function translator(t) {
     return typeof text === 'string' && text !== key ? text : String(fallback).replace(/\{(\w+)\}/g, (_, k) => params?.[k] ?? `{${k}}`);
   };
 }
-function choiceKey(p) { return p ? JSON.stringify([p.kind || 'direct', p.provider || '', p.model || '', p.effort || '']) : ''; }
+function choiceKey(p) { return p ? JSON.stringify([p.kind || 'direct', p.provider || '', p.model || '', p.effort || '', p.accountId || '']) : ''; }
+
+export function routeAccountView(pref, task, brain, accounts, workers = {}, t = null) {
+  const tr = translator(t);
+  const empty = { label: tr('assistant.routes.editorUnusedValue', '—'), readOnly: true, options: [], hint: '' };
+  if (!pref || pref.provider === 'opencode') return empty;
+  const direct = task.id === 'chat' || routeExecutionKind(pref, task, brain) === 'direct';
+  const provider = task.id === 'chat' ? brain.provider : pref.provider;
+  if (!['claude-code', 'codex'].includes(provider)) return empty;
+  const rows = accounts[provider] || [];
+  const providerView = provider === 'codex' ? 'codex' : 'claude';
+  const id = task.id === 'chat' ? brain.accountId || 'default' : pref.accountId || (direct ? brain.accountId || 'default' : null);
+  const selected = rows.find(a => a.id === id);
+  const missing = id && id !== 'auto' && !selected;
+  const removed = tr('assistant.routes.account.removed', '{id} · account removed', { id });
+  const warning = missing ? tr('assistant.routes.account.removedHint', 'Account removed. Save another account choice before running this route.') : selected?.signedIn === false ? tr('assistant.routes.account.signedOut', 'Signed out. Sign in from the provider account menu before running this route.') : '';
+  const worker = rows.find(a => a.id === (workers[provider] || 'default'));
+  const label = id === 'auto' ? autoAccountLabel(t) : selected ? accountSummary(selected, providerView) : missing ? removed : tr('assistant.routes.account.workersDefault', 'Workers default');
+  const options = [
+    { id: '', label: direct ? tr('assistant.routes.editorInConversation', 'This conversation') : tr('assistant.routes.account.workersDefault', 'Workers default'), desc: worker ? accountSummary(worker, providerView) : '', selected: !pref.accountId },
+    { id: 'auto', label: autoAccountLabel(t), desc: tr('assistant.accountUsage.autoHint', 'Signed-in subscriptions only. Another account runs on a worker.'), selected: id === 'auto' },
+    ...rows.map(a => ({ id: a.id, label: accountName(a, providerView), tag: accountBadge(a, providerView).text, desc: a.signedIn === false ? tr('assistant.routes.account.signedOut', 'Signed out. Sign in from the provider account menu before running this route.') : [accountIdentity(a), accountUsageText(a, t)].filter(Boolean).join(' · '), selected: !!pref.accountId && a.id === id })),
+  ];
+  return { label, readOnly: task.id === 'chat', options, warning, hint: warning || (selected ? `${label} · ${accountUsageText(selected, t)}` : label) };
+}
+
+export function routeModelAccount(pref, provider) { return pref?.provider === provider ? pref.accountId || null : null; }
 
 /** Only actual choices change the draft. Catalog label/by updates are not user edits. */
 export function routeEditorPatch(mode, initialMode, prefs, edits) {
@@ -307,7 +335,7 @@ export async function openRoutesEditor(hooks = {}) {
       const note = el('div', 'asst-routes-catalog-note'); note.setAttribute('role', 'status'); note.append(el('span', '', tr('assistant.routes.editorState.modelsFailed', 'Could not refresh the model list. Showing provider lists where available. Reload models to verify your choices.'))); table.append(note);
     } else if (!rowsOf(state.catalog).length) table.append(el('div', 'asst-routes-catalog-note', tr('assistant.routes.editorState.modelsEmpty', 'No models are available. Check Models or connect a provider, then reload.')));
     const columns = el('div', 'asst-routes-columns'); columns.setAttribute('aria-hidden', 'true');
-    for (const key of ['task', 'model', 'effort', 'run', 'reset']) columns.append(el('span', '', tr(`assistant.routes.columns.${key}`, key)));
+    for (const key of ['task', 'model', 'effort', 'run', 'account', 'reset']) columns.append(el('span', '', tr(`assistant.routes.columns.${key}`, key)));
     table.append(columns);
     const list = el('div', 'asst-routes-list');
     const taskList = tasks();
@@ -363,7 +391,7 @@ export async function openRoutesEditor(hooks = {}) {
           else if (target?.model) {
             const levels = modelEffortIds(catalogModelRow(target.provider, target.model, state.catalog));
             const effort = !pref?.effort ? null : levels ? clampEffortId(pref.effort, levels) : pref.provider === target.provider ? pref.effort : null;
-            setChoice(task.id, { kind: task.dispatchOnly ? 'dispatch' : pref?.kind || task.defaultKind || 'direct', provider: target.provider, model: target.model, effort, label: target.label || target.model }, modelBtn.dataset.focusKey);
+            setChoice(task.id, { kind: task.dispatchOnly ? 'dispatch' : pref?.kind || task.defaultKind || 'direct', provider: target.provider, model: target.model, effort, accountId: routeModelAccount(pref, target.provider), label: target.label || target.model }, modelBtn.dataset.focusKey);
           }
         },
       });
@@ -420,9 +448,20 @@ export async function openRoutesEditor(hooks = {}) {
     if (task.dispatchOnly) run.title = tr('assistant.routes.workerOnly', 'Worker only');
     else if (pref && pref.provider !== brain().provider && task.id !== 'chat') run.title = tr('assistant.routes.otherProviderWorker', 'A model from another provider runs on a worker.');
     const runCell = el('div', 'asst-routes-cell asst-routes-run-cell'); runCell.append(el('span', 'asst-routes-cell-label', tr('assistant.routes.columns.run', 'Runs in')), run); node.append(runCell);
+    const account = routeAccountView(pref, task, brain(), { 'claude-code': getCachedClaudeAccounts(), codex: getCachedCodexAccounts() }, { 'claude-code': getClaudeWorkerAccountId(), codex: getCodexWorkerAccountId() }, hooks.t);
+    const accountCell = el('div', 'asst-routes-cell asst-routes-account-cell');
+    const accountBtn = fieldButton('asst-routes-account', task, tr('assistant.routes.columns.account', 'Account'), account.label, () => {
+      state.menuFocus = `${task.id}-account`;
+      openMenuFor(accountBtn, tr('assistant.routes.columns.account', 'Account'), account.options.map(o => ({ ...o, kind: 'radio', onSelect: () => setChoice(task.id, { ...pref, accountId: o.id || null }, `${task.id}-account`) })));
+    });
+    accountBtn.dataset.focusKey = `${task.id}-account`; accountBtn.disabled = account.readOnly; accountBtn.title = account.hint;
+    if (!account.readOnly) caret(accountBtn);
+    if (account.warning) accountBtn.classList.add('asst-dd-warn');
+    accountCell.append(el('span', 'asst-routes-cell-label', tr('assistant.routes.columns.account', 'Account')), accountBtn); node.append(accountCell);
     const resetCell = el('div', 'asst-routes-reset-cell');
     if (pref) { const reset = button('asst-iconbtn asst-routes-reset', tr('assistant.routes.reset', 'Reset {taskClass}', { taskClass: task.label }), () => setChoice(task.id, null, `${task.id}-model`)); reset.dataset.focusKey = `${task.id}-reset`; reset.title = reset.getAttribute('aria-label'); reset.innerHTML = ICON_RESET; resetCell.append(reset); }
     node.append(resetCell);
+    if (account.warning) { const note = el('div', 'asst-routes-row-warning', account.warning); note.id = `${nameId}-account-warning`; accountBtn.setAttribute('aria-describedby', note.id); node.append(note); }
     if (capabilityNote) node.append(capabilityNote);
     if (issue) { description.hidden = true; node.querySelector('.asst-routes-row-note')?.remove(); const note = el('div', 'asst-routes-row-warning', issueText(issue, task)); note.title = note.textContent; note.id = `${nameId}-issue`; modelBtn.setAttribute('aria-describedby', `${source.id} ${note.id}`); modelBtn.title = `${label} — ${note.textContent}`; node.append(note); }
     if (task.id === 'chat' || task.id === 'vision') {
@@ -453,7 +492,7 @@ export async function openRoutesEditor(hooks = {}) {
     const pending = preserve ? changes() : {};
     state.loading = true; state.error = ''; state.modelsLoading = true; render();
     try {
-      const [data, result] = await Promise.all([getRouting(), loadRouteModels().then(catalog => ({ catalog })).catch(() => ({ catalog: state.catalog, error: true }))]);
+      const [data, result] = await Promise.all([getRouting(), loadRouteModels().then(catalog => ({ catalog })).catch(() => ({ catalog: state.catalog, error: true })), Promise.allSettled([fetchClaudeAccounts(true), fetchCodexAccounts(true)])]);
       if (!overlay.isConnected) return;
       state.data = data; state.version = data.version ?? null; state.initialMode = normalizeRouteMode(data.routing?.defaultMode, DEFAULT_ROUTE_MODE);
       state.mode = pending.defaultMode || state.initialMode; state.prefs = { ...(data.routing?.preferences || {}) }; state.patch = pending.preferences || {};
@@ -485,7 +524,7 @@ export async function openRoutesEditor(hooks = {}) {
 import { openMenu } from './asst-menu.js';
 function openMenuFor(anchor, title, items) {
   if (currentMenu()) { closeMenu({ restoreFocus: true }); return null; }
-  const menu = openMenu(anchor, { title, items, className: 'asst-route-field-menu', role: 'menu' });
+  const menu = openMenu(anchor, { title, items, className: `asst-route-field-menu${anchor.classList.contains('asst-routes-account') ? ' asst-route-account-menu' : ''}`, role: 'menu' });
   const overlay = anchor.closest('.asst-routes-overlay'); if (overlay) adoptMenu(menu, overlay); return menu;
 }
 function adoptMenu(menu, overlay) {

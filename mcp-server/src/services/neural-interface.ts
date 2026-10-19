@@ -132,7 +132,8 @@ async function requestOnce(
   method: string,
   path: string,
   body?: Record<string, unknown>,
-  timeout = DEFAULT_TIMEOUT
+  timeout = DEFAULT_TIMEOUT,
+  extraHeaders: Record<string, string> = {},
 ): Promise<NiResponse> {
   const cancellation = browserCancellation.getStore();
   const callerSignal = cancellation?.signal;
@@ -166,6 +167,8 @@ async function requestOnce(
     headers['X-Synabun-Deadline'] = String(deadline);
     // Lets the server refuse advisory payloads and auto-heal for a batch step on its own authority.
     if (batchContext.getStore()) headers['X-Synabun-Batch'] = '1';
+    // One request's own headers (whatsappSendFile's brain credential): never sent on any other request.
+    for (const [name, value] of Object.entries(extraHeaders)) if (value) headers[name] = value;
     const opts: RequestInit = {
       method,
       headers,
@@ -199,7 +202,9 @@ async function requestOnce(
     if (controller.signal.aborted || /abort/i.test(msg)) {
       return { error: `Request timed out after ${timeout}ms; outcome may be uncertain. Inspect the page before retrying.`, code: 'REQUEST_TIMEOUT', outcome: 'uncertain' };
     }
-    return { error: `Neural Interface unreachable: ${msg}. Is the Neural Interface server running?`, code: 'TRANSPORT_ERROR', outcome: 'uncertain' };
+    // The system's own code for it (fetch puts it on `cause`): ECONNREFUSED means the request never left.
+    const cause = (err as { cause?: { code?: unknown }; code?: unknown } | null)?.cause?.code ?? (err as { code?: unknown } | null)?.code ?? /\b(E[A-Z_]{3,})\b/.exec(msg)?.[1];
+    return { error: `Neural Interface unreachable: ${msg}. Is the Neural Interface server running?`, code: 'TRANSPORT_ERROR', outcome: 'uncertain', ...(typeof cause === 'string' ? { transportCode: cause } : {}) };
   } finally {
     clearTimeout(timer);
     callerSignal?.removeEventListener('abort', cancel);
@@ -1485,4 +1490,31 @@ export async function assistantKillAll(body: { assistantSessionId?: string; work
 
 export async function assistantFocus(runId: string, focus: boolean): Promise<NiResponse> {
   return request('POST', assistantRunPath(runId, '/focus'), { focus });
+}
+
+// whatsapp_send_file: the server's own deadline for the send is 120 s (lib/whatsapp/manager.js); this
+// one outlives it so a server timeout is reported as the server's.
+const WHATSAPP_SEND_FILE_TIMEOUT = 130_000;
+export const WHATSAPP_SEND_FILE_UNCERTAIN = 'SynaBun did not answer in time: the file may or may not have arrived. Do not send it again unless the user asks.';
+export const WHATSAPP_SEND_FILE_LOST = 'SynaBun\'s answer was lost: the file may or may not have arrived. Do not send it again unless the user asks.';
+// The request never reached SynaBun (nothing listens, no route to it): nothing was sent, for certain.
+const WHATSAPP_SEND_FILE_NEVER_LEFT = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH', 'EADDRNOTAVAIL']);
+
+/**
+ * whatsapp_send_file → POST /api/assistant/whatsapp/send-file: exactly one request (requestOnce, no
+ * retry of any kind), because a timeout may come after WhatsApp took the file. `credential` (the
+ * WhatsApp brain's own, identity.ts callerBrainCredential) rides on this request alone; without it
+ * the server refuses (403).
+ */
+export async function whatsappSendFile(body: { path: string; caption?: string; as?: string }, credential: string | null): Promise<NiResponse> {
+  const result = await requestOnce('POST', '/api/assistant/whatsapp/send-file', body as Record<string, unknown>, WHATSAPP_SEND_FILE_TIMEOUT,
+    credential ? { 'X-Synabun-Brain-Token': credential } : {});
+  if (result.code === 'REQUEST_TIMEOUT') return { ok: false, code: 'TIMEOUT', uncertain: true, error: WHATSAPP_SEND_FILE_UNCERTAIN };
+  // Any other failure of the transport after the request left (a reset socket, an answer that is not JSON) may
+  // come after WhatsApp took the file: as uncertain as a timeout, never "is the server running?".
+  if (result.code === 'TRANSPORT_ERROR') {
+    if (WHATSAPP_SEND_FILE_NEVER_LEFT.has(String(result.transportCode))) return { ok: false, code: 'UNREACHABLE', error: 'SynaBun is not reachable (is it running?): nothing was sent.' };
+    return { ok: false, code: 'TRANSPORT_ERROR', uncertain: true, error: WHATSAPP_SEND_FILE_LOST };
+  }
+  return result;
 }

@@ -1,4 +1,5 @@
 import { capabilityAvailability, flattenNativeCatalog, reviewTarget } from './cdx-commands.js';
+import { t } from '../i18n.js';
 import { knownCodexCapabilities } from './cdx-capabilities.js';
 import { codexReadableValue, parseCodexAttachmentPayload, codexGatewayState, codexVerificationState, codexHttpsHandoff } from './cdx-protocol.js';
 
@@ -333,23 +334,27 @@ export function updateCodexGateway(tab, value) {
   accountSecurityViews.get(tab)?.();
 }
 
-export async function mountCodexAccountSecurity({ host, request, tab, capabilities }) {
+export async function mountCodexAccountSecurity({ host, experimentalHost = host, request, tab, capabilities }) {
+  const tr = (key, params) => t(`codexSettings.${key}`, params);
   const view = { error: message => { error.textContent = message; } };
   const error = element('div', 'cxp-settings-hint'); error.setAttribute('role', 'alert');
   const gateway = element('div', 'cxp-settings-section');
   const verification = element('div', 'cxp-settings-section');
-  host.append(gateway, verification, error);
+  host.append(gateway, error);
+  experimentalHost.append(verification);
   const available = name => capabilityAvailability(knownCodexCapabilities(tab) || capabilities, name);
   const renderGateway = () => {
     if (!host.isConnected || tab.closed) { accountSecurityViews.delete(tab); return; }
     gateway.replaceChildren();
     if (!available('gateway_oauth_read').supported) return;
     const value = tab.gatewayOAuth || {};
+    gateway.hidden = !value.required;
+    if (!value.required) return;
     const state = codexGatewayState(value);
-    gateway.append(element('div', 'cxp-settings-section-title', 'Gateway OAuth'));
-    gateway.append(element('div', 'cxp-settings-hint', `${value.providerName || value.providerId || 'Provider'} · ${state.label}`));
+    gateway.append(element('div', 'cxp-settings-section-title', tr('gateway')));
+    gateway.append(element('div', 'cxp-settings-hint', `${value.providerName || value.providerId || tr('provider')} · ${tr(`gatewayStates.${value.status || 'notReady'}`)}`));
     const action = state.pending ? 'gateway_oauth_cancel' : 'gateway_oauth_login';
-    gateway.append(button(state.pending ? 'Cancel' : 'Sign in', async () => {
+    gateway.append(button(tr(state.pending ? 'cancel' : 'signIn'), async () => {
       if (!available(action).supported) throw new Error(available(action).reason);
       await request(action, {});
       // Notification is authoritative; do not overwrite a completed login with a stale optimistic state.
@@ -360,10 +365,10 @@ export async function mountCodexAccountSecurity({ host, request, tab, capabiliti
     }, view, available(action)));
     if (!available(action).supported) gateway.append(element('div', 'cxp-settings-hint', available(action).reason));
     const handoff = codexHttpsHandoff(value.authUrl);
-    if (value.authUrl && !handoff) gateway.append(element('div', 'cxp-settings-hint', 'Authorization URL is unavailable: HTTPS is required.'));
+    if (value.authUrl && !handoff) gateway.append(element('div', 'cxp-settings-hint', tr('httpsRequired')));
     if (handoff && state.pending) {
-      gateway.append(element('div', 'cxp-settings-hint', `Continue sign-in at ${handoff.host}`));
-      gateway.append(button(`Open ${handoff.host}`, () => {
+      gateway.append(element('div', 'cxp-settings-hint', tr('continueAt', { host: handoff.host })));
+      gateway.append(button(tr('openHost', { host: handoff.host }), () => {
         window.open(handoff.url, '_blank', 'noopener,noreferrer');
       }, view));
     }
@@ -386,12 +391,15 @@ export async function mountCodexAccountSecurity({ host, request, tab, capabiliti
       const response = await request('verification_status', {});
       if (!host.isConnected || tab.closed) return;
       const state = codexVerificationState(response.verification);
-      verification.append(element('div', 'cxp-settings-section-title', 'User verification · Experimental'));
-      verification.append(element('div', 'cxp-settings-hint', state.label));
-      verification.append(element('div', 'cxp-settings-hint', 'Local device credential only; backend registration is managed by the verifier.'));
+      const reason = response.verification?.unavailableReason;
+      verification.hidden = !!reason && reason !== 'credentialMissing';
+      if (verification.hidden) return;
+      verification.append(element('div', 'cxp-settings-section-title', tr('verification')));
+      verification.append(element('div', 'cxp-settings-hint', tr(state.enrolled ? 'credentialReady' : 'credentialMissing')));
+      verification.append(element('div', 'cxp-settings-hint', tr('localCredential')));
       const action = state.enrolled ? 'verification_delete' : 'verification_enroll';
-      const control = button(state.enrolled ? 'Remove' : 'Enroll', async () => {
-        if (state.enrolled && !window.confirm('Remove the local user verification credential?')) return;
+      const control = button(tr(state.enrolled ? 'remove' : 'enroll'), async () => {
+        if (state.enrolled && !window.confirm(tr('removeCredential'))) return;
         await request(action, {}); await readVerification();
       }, view, available(action));
       if (state.enrolled) control.style.color = 'var(--cxp-danger)';
@@ -399,7 +407,7 @@ export async function mountCodexAccountSecurity({ host, request, tab, capabiliti
       if (!available(action).supported) verification.append(element('div', 'cxp-settings-hint', available(action).reason));
     } catch (failure) {
       if (available('verification_status').supported) {
-        verification.append(element('div', 'cxp-settings-hint', `User verification unavailable: ${failure.message}`));
+        verification.append(element('div', 'cxp-settings-hint', tr('error', { message: failure.message })));
       }
     }
   }

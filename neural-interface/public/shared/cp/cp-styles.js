@@ -166,6 +166,10 @@ export const CP_STYLES = `
 #cp-mode .cp-dd-item-note { margin-left: 6px; font-size: 9.5px; color: rgba(255,255,255,0.35); }
 .cp-plan-btn-bypass { border-color: rgba(239,112,112,0.45) !important; color: #ef7070 !important; }
 
+/* ═══ Claude accounts: the header account menu is account-menu.js (shared with the Codex panel, its own styles) ═══ */
+/* Its trigger gives way before the session name does. */
+.cp-header-actions:has(> .acct-menu-trigger) { flex-shrink: 1; min-width: 0; }
+
 /* ═══ Rewind ═══ */
 .msg-user { position: relative; }
 .cp-rewind-btn { position: absolute; top: -8px; right: 4px; opacity: 0; pointer-events: none; transition: opacity 0.15s; font: 600 9px/1 Inter, sans-serif; color: rgba(220,195,140,0.9); background: rgba(30,25,18,0.95); border: 1px solid rgba(212,168,72,0.35); border-radius: 8px; padding: 3px 7px; cursor: pointer; z-index: 3; }
@@ -361,4 +365,46 @@ a.cp-chip:hover { text-decoration: underline; }
 .cp-worker-end .post-plan-actions { margin-top: 8px; }
 .cp-worker-end .post-plan-action:disabled { opacity: 0.45; cursor: default; }
 .cp-worker-end .post-plan-action:focus-visible { outline: 1px solid rgba(255,255,255,0.45); outline-offset: 2px; }
+
+/* ═══ CLI banner (ui-cli-banner.js): Claude Code not installed / installing / failed to start ═══ */
+/* Above the transcript, warm like the panel; red once something failed, green for where an install put it. */
+.cp-cli-banner { flex-shrink: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; align-items: start; margin: 6px 8px 0; padding: 10px 12px; border: 1px solid rgba(255,180,80,0.45); border-radius: 8px; background: rgba(255,180,80,0.08); color: rgba(255,235,200,0.92); font-size: 11px; line-height: 1.4; pointer-events: auto; position: relative; z-index: 5; }
+.cp-cli-banner [hidden] { display: none !important; }
+.cp-cli-banner--broken, .cp-cli-banner--failed { border-color: rgba(239,112,112,0.45); background: rgba(239,112,112,0.07); }
+.cp-cli-banner--done { border-color: rgba(95,207,131,0.4); background: rgba(95,207,131,0.06); }
+.cp-cli-banner-icon { width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; border-radius: 50%; background: rgba(255,180,80,0.25); color: rgba(255,210,140,1); font-weight: 700; }
+.cp-cli-banner--broken .cp-cli-banner-icon, .cp-cli-banner--failed .cp-cli-banner-icon { background: rgba(239,112,112,0.2); color: #ef7070; }
+.cp-cli-banner--done .cp-cli-banner-icon { background: rgba(95,207,131,0.18); color: #5fcf83; }
+.cp-cli-banner--installing .cp-cli-banner-icon { animation: cp-cli-working 1.2s ease-in-out infinite; }
+@keyframes cp-cli-working { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
+.cp-cli-banner--nudge { animation: cp-cli-nudge 0.5s ease; }
+@keyframes cp-cli-nudge { 0%, 100% { transform: none; } 25% { transform: translateX(-3px); } 75% { transform: translateX(3px); } }
+.cp-cli-banner-text { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.cp-cli-banner-title { font-size: 12px; font-weight: 600; color: rgba(255,210,140,0.95); }
+.cp-cli-banner--broken .cp-cli-banner-title, .cp-cli-banner--failed .cp-cli-banner-title { color: #ef7070; }
+.cp-cli-banner--done .cp-cli-banner-title { color: #5fcf83; }
+.cp-cli-banner-body, .cp-cli-banner-note, .cp-cli-banner-step { font-size: 11px; color: rgba(255,255,255,0.7); overflow-wrap: anywhere; }
+.cp-cli-banner-command { display: flex; align-items: flex-start; gap: 6px; }
+.cp-cli-banner-command code, .cp-cli-banner-error code { flex: 1; min-width: 0; padding: 3px 6px; background: rgba(0,0,0,0.35); border-radius: 4px; font: 10.5px/1.45 "SF Mono", Menlo, monospace; color: rgba(255,255,255,0.85); white-space: pre-wrap; word-break: break-all; user-select: text; }
+.cp-cli-banner-error code { display: block; max-height: 96px; overflow: auto; color: rgba(255,200,200,0.92); }
+.cp-cli-banner-copy { flex-shrink: 0; height: 22px; padding: 0 8px; border: 1px solid rgba(255,255,255,0.14); border-radius: 5px; background: transparent; color: rgba(255,255,255,0.7); font-family: inherit; font-size: 11px; cursor: pointer; }
+.cp-cli-banner-copy:hover { color: rgba(255,255,255,0.92); border-color: rgba(255,255,255,0.3); }
+.cp-cli-banner-progress { display: flex; flex-direction: column; gap: 4px; }
+.cp-cli-banner-bar { height: 3px; border-radius: 2px; background: rgba(255,255,255,0.08); overflow: hidden; }
+.cp-cli-banner-bar > span { display: block; height: 100%; width: 0; background: rgba(212,162,127,0.85); transition: width 0.2s ease; }
+.cp-cli-banner-log { margin: 0; max-height: 84px; overflow: auto; padding: 4px 6px; background: rgba(0,0,0,0.3); border-radius: 4px; font: 10px/1.45 "SF Mono", Menlo, monospace; color: rgba(255,255,255,0.55); white-space: pre-wrap; word-break: break-all; }
+.cp-cli-banner-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+.cp-cli-banner-install, .cp-cli-banner-link, .cp-cli-banner-path, .cp-cli-banner-recheck, .cp-cli-banner-dismiss { display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 10px; font-family: inherit; font-size: 12px; font-weight: 500; line-height: 1; border-radius: 5px; border: 1px solid rgba(255,255,255,0.2); background: rgba(255,255,255,0.05); color: rgba(255,255,255,0.9); text-decoration: none; cursor: pointer; user-select: none; }
+.cp-cli-banner-install { background: rgba(212,162,127,0.22); border-color: rgba(212,162,127,0.55); color: rgba(255,236,220,0.96); }
+.cp-cli-banner-install:hover:not(:disabled) { background: rgba(212,162,127,0.34); border-color: rgba(212,162,127,0.75); }
+.cp-cli-banner-link:hover, .cp-cli-banner-path:hover:not(:disabled), .cp-cli-banner-recheck:hover:not(:disabled), .cp-cli-banner-dismiss:hover { background: rgba(255,255,255,0.12); border-color: rgba(255,255,255,0.4); }
+.cp-cli-banner-install:disabled, .cp-cli-banner-path:disabled, .cp-cli-banner-recheck:disabled { opacity: 0.5; cursor: default; }
+.cp-cli-banner button:focus-visible, .cp-cli-banner a:focus-visible { outline: 2px solid rgba(212,162,127,0.9); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) {
+  .cp-cli-banner--installing .cp-cli-banner-icon, .cp-cli-banner--nudge { animation: none; }
+  .cp-cli-banner--nudge { box-shadow: 0 0 0 1px rgba(255,180,80,0.8); }
+  .cp-cli-banner-bar > span { transition: none; }
+}
+.claude-panel.cp-cli-blocked .cp-send { opacity: 0.4 !important; cursor: not-allowed !important; }
+.claude-panel.cp-cli-blocked .cp-input { opacity: 0.7; }
 `;

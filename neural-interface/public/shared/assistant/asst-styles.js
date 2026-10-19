@@ -367,10 +367,10 @@ export function injectAssistantStyles() {
     .asst-chip.asst-suggestion > .asst-icon svg { width: 20px; height: 14px; }
     .asst-chip.asst-suggestion > .asst-icon { color: var(--asst-text-3); }
     .asst-chip.asst-suggestion:is(:hover, :focus-visible) > .asst-icon { color: var(--asst-text); }
-    /* "Choose a project": the toolbar's Working project field, centred under the lead (asst-brain-picker.js mountEmptyProject). An md capsule like the suggestions. */
-    .asst-empty-project { display: flex; justify-content: center; max-width: 100%; }
-    .asst-dd.asst-empty-project-btn { max-width: min(100%, 360px); }
-    .asst-empty-project-btn .asst-dd-label { max-width: 30ch; }
+    /* Project and Budget: shared md capsules under the lead, like the suggestions. */
+    .asst-empty-project { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; max-width: 100%; }
+    .asst-dd.asst-empty-control-btn { max-width: min(100%, 360px); }
+    .asst-empty-control-btn .asst-dd-label { max-width: 30ch; }
     .asst-empty-project-key { flex-shrink: 0; color: var(--asst-text-3); font-weight: 400; }
 
     /* ── Messages ───────────────────────────────────────────────────── */
@@ -578,32 +578,61 @@ export function injectAssistantStyles() {
       color: var(--asst-text-2);
     }
 
-    /* ── Route lines ────────────────────────────────────────────────── */
+    /* ── Route lines ────────────────────────────────────────────────────
+       One line at any width, in the cards' column (the rack's 560px, no
+       hang): the glyph, arrow, kind and mark hold; the rest (model ·
+       account · usage, or the state) takes only the room left (flex-basis 0)
+       and ellipsizes first; the class gives way once the rest is down to
+       its "…". The head's title carries the whole text. */
     .asst-route-line { font-size: 12.5px; }
     .asst-route-line-head {
-      display: inline-flex;
+      position: relative;
+      display: flex;
       align-items: center;
       gap: 6px;
-      max-width: calc(100% + 8px);
+      width: fit-content;
+      max-width: min(100%, 560px);
+      min-width: 0;
       min-height: 26px;
-      margin-left: -8px;
       padding: 3px 8px;
+      overflow: hidden;
       border: 0;
       border-radius: var(--asst-r-ctl);
       background: transparent;
       color: var(--asst-text-2);
       font: inherit;
+      white-space: nowrap;
       text-align: left;
       cursor: pointer;
     }
     .asst-route-line-head:hover { background: var(--asst-fill-1); }
     .asst-route-glyph { color: var(--asst-brand); }
+    .asst-route-glyph svg, .asst-route-icon svg { width: 12px; height: 12px; }
+    .asst-route-glyph, .asst-route-arrow, .asst-route-kind, .asst-route-icon, .asst-route-chev { flex: none; }
     .asst-route-arrow, .asst-route-chev { color: var(--asst-text-4); }
     .asst-route-kind { color: var(--asst-text-3); font-size: 11.5px; }
-    .asst-route-icon svg { width: 12px; height: 12px; }
-    .asst-route-target { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--asst-text); font-weight: 500; }
+    .asst-route-class { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    .asst-route-rest { flex: 1 1 0; min-width: 1.2em; overflow: hidden; text-overflow: ellipsis; color: var(--asst-text-3); }
+    .asst-route-target { color: var(--asst-text); font-weight: 500; }
     .asst-route-meta, .asst-route-state { flex-shrink: 0; color: var(--asst-text-3); white-space: nowrap; }
+    .asst-route-meta:not([hidden]) + .asst-route-state::before { content: '· '; color: var(--asst-text-3); }
     .asst-route-line.pending .asst-route-state { color: var(--asst-warn); }
+    /* Live: the rack's sweep (asst-rk-sweep, asst-rack-styles.js) on the row's bottom edge, gold while
+       a run it dispatched works (the mark ticks like the rack's running tick), the warn tone while it
+       waits for your choice. Settled rows hold still. */
+    .asst-route-sweep { position: absolute; left: 0; right: 0; bottom: 0; height: 1.5px; overflow: hidden; pointer-events: none; }
+    .asst-route-line[data-live] .asst-route-sweep::after {
+      content: '';
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      width: 38%;
+      background: linear-gradient(90deg, transparent, var(--asst-brand), transparent);
+      animation: asst-rk-sweep 1.8s cubic-bezier(.45, 0, .55, 1) infinite;
+    }
+    .asst-route-line[data-live="waiting"] .asst-route-sweep::after { background: linear-gradient(90deg, transparent, var(--asst-warn), transparent); }
+    .asst-route-line[data-live="working"] .asst-route-icon { animation: asst-rk-tick 1.1s ease-in-out infinite; }
     .asst-route-line.muted .asst-route-glyph { color: var(--asst-text-4); }
     .asst-route-line.muted .asst-route-class { color: var(--asst-text-3); }
     .asst-route-chev { transition: transform var(--asst-dur-base) var(--asst-ease-standard); }
@@ -1079,6 +1108,11 @@ export function injectAssistantStyles() {
     /* Fields (toolbar and composer): glyph · seam · value ▾ */
     .asst-dd { flex: 0 1 auto; justify-content: flex-start; max-width: calc(18ch + 60px); }
     .asst-dd .asst-dd-label { min-width: 0; max-width: 18ch; overflow: hidden; text-overflow: ellipsis; }
+    .asst-dd-model .asst-dd-label.asst-model-account-label { display: flex; gap: 4px; max-width: 34ch; }
+    .asst-model-account-label :is(.asst-model-name, .asst-model-account) { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    .asst-model-account-label .asst-model-name { flex: 1 1 auto; }
+    .asst-model-account-label .asst-model-account { flex: 0 1 auto; min-width: 4ch; max-width: 12ch; }
+    .asst-model-account-label .asst-model-mode { flex-shrink: 0; }
     /* A display name ("Sonnet 5", a project) is sans; a raw model id (opus[1m]) is mono. */
     .asst-dd.asst-dd-model[data-raw] .asst-dd-label { font-family: var(--asst-mono); font-weight: 400; }
     .asst-dd-caret {
@@ -1503,11 +1537,50 @@ export function injectAssistantStyles() {
     .asst-account-label { color: var(--asst-text); }
     .asst-account-sub { color: var(--asst-text-3); font-size: 11px; }
     .asst-account-row input.asst-dd-input { margin: 0; }
+    /* Claude accounts (claude-account-view.js): what each runs on, its credentials and their actions. */
+    .asst-account-row.claude { flex-wrap: wrap; align-items: flex-start; }
+    .asst-account-row.claude .asst-account-main { flex-basis: 60%; }
+    .asst-account-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+    .asst-account-badge { flex-shrink: 0; padding: 1px 6px; border-radius: var(--asst-pill-r-xs); color: var(--asst-text-2); font-size: 10.5px; box-shadow: inset 0 0 0 1px var(--asst-line-2); }
+    .asst-account-badge[data-tone="ok"] { color: var(--asst-text); box-shadow: inset 0 0 0 1px var(--asst-pill-on-ring); }
+    .asst-account-badge[data-tone="warn"] { color: var(--asst-warn); box-shadow: inset 0 0 0 1px var(--asst-pill-warn-ring); }
+    .asst-account-creds { display: flex; flex-direction: column; gap: 2px; margin-top: 4px; color: var(--asst-text-3); font-size: 11px; }
+    .asst-account-cred { display: flex; align-items: center; gap: 6px; }
+    .asst-account-cred-k { min-width: 120px; }
+    .asst-account-actions { display: flex; flex-wrap: wrap; flex-basis: 100%; gap: 6px; margin-top: 6px; }
+    .asst-account-form { display: flex; flex-basis: 100%; gap: 6px; margin-top: 6px; }
+    .asst-account-form input { flex: 1; min-width: 0; }
+    .asst-account-msg { flex-basis: 100%; margin-top: 4px; color: var(--asst-text-3); font-size: 11px; }
+    .asst-dd.asst-dd-warn { color: var(--asst-warn); box-shadow: inset 0 0 0 1px var(--asst-pill-warn-ring); }
     .asst-login-box { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: var(--asst-r-field); box-shadow: inset 0 0 0 1px var(--asst-line-2); }
     .asst-login-code { color: var(--asst-text); font-family: var(--asst-mono); font-size: 15px; letter-spacing: .1em; }
 
     .asst-routes-modal { width: min(660px, 100%); }
-    .asst-budget-row { align-items: flex-start; }
+    .asst-budget-modal { width: min(560px, calc(100vw - 24px)); }
+    .asst-budget-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; min-width: 0; }
+    .asst-budget-controls > :is(.asst-modal-note, .asst-budget-field-error, .asst-budget-switch-label) { grid-column: 1 / -1; }
+    .asst-budget-controls > .asst-btn { justify-self: start; }
+    .asst-budget-controls .asst-budget-input { width: 96px; min-width: 0; box-sizing: border-box; }
+    .asst-budget-switch-label { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--asst-text); cursor: pointer; }
+    .asst-budget-switch { appearance: none; position: relative; width: 30px; height: 18px; margin: 0; border: 0; border-radius: var(--asst-pill-r-xs); background: var(--asst-fill-3); box-shadow: inset 0 0 0 1px var(--asst-line-2); cursor: pointer; }
+    .asst-budget-switch::before { content: ''; position: absolute; width: 12px; height: 12px; top: 3px; left: 3px; border-radius: var(--asst-pill-r-xs); background: var(--asst-text-3); transition: transform var(--asst-dur-fast) var(--asst-ease-standard); }
+    .asst-budget-switch:checked { background: var(--asst-brand); }
+    .asst-budget-switch:checked::before { background: var(--asst-ink); transform: translateX(12px); }
+    .asst-budget-controls :is(input, button):focus-visible { outline: 2px solid var(--asst-focus); outline-offset: 2px; }
+    .asst-budget-controls input:disabled { opacity: .5; }
+    .asst-budget-popover .asst-dd-list { padding: 8px; }
+    .asst-budget-session { display: flex; flex-direction: column; gap: 12px; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--asst-line); }
+    .asst-budget-total { font-family: var(--asst-mono); }
+    .asst-budget-session[data-tone="warn"] .asst-budget-total, .asst-budget-dry { color: var(--asst-warn); }
+    .asst-budget-session[data-tone="over"] .asst-budget-total { color: var(--asst-live); }
+    .asst-budget-providers { display: flex; flex-direction: column; gap: 8px; }
+    .asst-budget-provider { padding: 8px; border-radius: var(--asst-r-field); background: var(--asst-fill-1); overflow-wrap: anywhere; }
+    .asst-budget-provider[data-eligible="false"] { color: var(--asst-text-3); }
+    .asst-budget-provider-name { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .asst-budget-provider-money { margin-top: 4px; font: 12px/1.5 var(--asst-mono); }
+    .asst-budget-brain { padding: 0 6px; border-radius: var(--asst-pill-r-xs); background: var(--asst-fill-2); font-size: 11.5px; }
+    .asst-budget-dry { font-size: 12px; }
+    .asst-budget-meter { width: 100%; accent-color: var(--asst-brand); }
     .asst-budget-desc, .asst-budget-meta { color: var(--asst-text-3); font-size: 11.5px; line-height: 1.4; }
     .asst-budget-meta { font-variant-numeric: tabular-nums; }
     .asst-budget-field-error { color: var(--asst-live); font-size: 11.5px; line-height: 1.4; }
@@ -1592,7 +1665,7 @@ export function injectAssistantStyles() {
     /* Model routes editor: Settings density on a desktop pointer. Scoped here
        so route cards, the model manager and other Assistant menus keep their UI. */
     .asst-routes-overlay { font-family: var(--stg-font, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Inter, sans-serif); }
-    .asst-routes-overlay .asst-routes-modal { width: min(800px, 100%); max-height: calc(100dvh - 32px); border-radius: var(--asst-r-card); line-height: 1.4; }
+    .asst-routes-overlay .asst-routes-modal { width: min(1040px, 100%); max-height: calc(100dvh - 32px); border-radius: var(--asst-r-card); line-height: 1.4; }
     .asst-routes-modal :is(.asst-btn, .asst-dd, .asst-iconbtn) { --cap-h: var(--asst-pill-h-sm); --cap-r: var(--asst-pill-r-xs); --cap-px: var(--asst-pill-px-sm); --cap-icon: 12px; --cap-gap: 4px; }
     .asst-routes-modal .asst-modal-head { min-height: 40px; padding: 8px 14px 8px 22px; font-size: 13px; }
     .asst-routes-modal .asst-modal-head .asst-icon { color: var(--asst-text-2); }
@@ -1616,7 +1689,7 @@ export function injectAssistantStyles() {
     .asst-routes-modal .asst-routes-list-actions .asst-btn:hover:not(:disabled) { color: var(--asst-text); background: var(--asst-fill-1); }
     /* Reserve the widths the current model names, effort words and destinations
        need; give all remaining space to task descriptions instead of a share. */
-    .asst-routes-modal .asst-routes-columns, .asst-routes-modal .asst-routes-row { display: grid; grid-template-columns: minmax(0, 1fr) 208px 84px 128px var(--asst-pill-h-sm); column-gap: 6px; }
+    .asst-routes-modal .asst-routes-columns, .asst-routes-modal .asst-routes-row { display: grid; grid-template-columns: minmax(100px, 1fr) minmax(120px, 200px) 70px 116px minmax(120px, 190px) var(--asst-pill-h-sm); column-gap: 6px; }
     .asst-routes-columns { position: sticky; top: -14px; z-index: 1; padding: 4px 8px; color: var(--asst-text-3); font-size: 11.5px; background: var(--asst-popover); }
     .asst-routes-columns span:last-child { visibility: hidden; }
     .asst-routes-modal .asst-routes-list { padding: 0 8px; border: 1px solid var(--asst-line); border-radius: var(--radius-group, 9px); background: var(--asst-field); }
@@ -1655,6 +1728,11 @@ export function injectAssistantStyles() {
     .asst-routes-overlay :is(.asst-route-model-menu, .asst-route-field-menu) .asst-dd-item-main { flex-direction: row; align-items: center; gap: 8px; }
     .asst-routes-overlay :is(.asst-route-model-menu, .asst-route-field-menu) .asst-dd-item-label { flex-shrink: 0; max-width: 60%; }
     .asst-routes-overlay :is(.asst-route-model-menu, .asst-route-field-menu) .asst-dd-item-desc { flex: 1; text-align: end; }
+    /* Account identities and quota windows need a second line in their menu. */
+    .asst-routes-overlay .asst-route-account-menu .asst-dd-item { height: auto; min-height: var(--asst-pill-h-sm); padding: 4px 8px; }
+    .asst-routes-overlay .asst-route-account-menu .asst-dd-item-main { flex-direction: column; align-items: stretch; gap: 2px; }
+    .asst-routes-overlay .asst-route-account-menu :is(.asst-dd-item-label, .asst-dd-item-desc) { white-space: normal; max-width: none; text-align: start; overflow-wrap: anywhere; }
+    .asst-model-menu .asst-dd-item[data-kind="radio"]:not([data-id*=":"]) .asst-dd-item-desc { white-space: normal; overflow-wrap: anywhere; }
     .asst-routes-overlay .asst-route-model-menu .asst-dd-input { height: var(--asst-pill-h-sm); min-height: var(--asst-pill-h-sm); font-size: 12px; border-radius: var(--asst-pill-r-xs); }
     .asst-routes-overlay .asst-route-model-menu .asst-dd-input:focus-visible { outline: 2px solid var(--asst-focus); outline-offset: -2px; }
     .asst-route-menu-foot { flex-shrink: 0; display: flex; flex-wrap: wrap; align-items: center; border-top: 1px solid var(--asst-line-2); padding-top: 4px; }
@@ -1665,7 +1743,7 @@ export function injectAssistantStyles() {
       .asst-routes-modal :is(.asst-btn, .asst-dd, .asst-iconbtn) { --cap-h: 44px; }
       .asst-routes-modal .asst-routes-mode { height: auto; min-height: 44px; }
       .asst-routes-modal .asst-routes-mode-label { white-space: normal; }
-      .asst-routes-modal .asst-routes-columns, .asst-routes-modal .asst-routes-row { grid-template-columns: minmax(0, 1.15fr) minmax(0, 1.55fr) minmax(0, .7fr) minmax(0, .9fr) 44px; }
+      .asst-routes-modal .asst-routes-columns, .asst-routes-modal .asst-routes-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr) minmax(0, .7fr) minmax(0, .9fr) minmax(0, 1.4fr) 44px; }
       .asst-routes-overlay :is(.asst-route-model-menu, .asst-route-field-menu) :is(.asst-dd-item, .asst-dd-input) { min-height: 44px; height: auto; padding: 8px; }
       .asst-routes-overlay :is(.asst-route-model-menu, .asst-route-field-menu) .asst-dd-item-main { flex-direction: column; align-items: stretch; gap: 2px; }
       .asst-routes-overlay :is(.asst-route-model-menu, .asst-route-field-menu) :is(.asst-dd-item-label, .asst-dd-item-desc) { white-space: normal; max-width: none; text-align: start; overflow-wrap: anywhere; }
@@ -1678,7 +1756,7 @@ export function injectAssistantStyles() {
       .asst-routes-modal .asst-routes-modes { grid-template-columns: 1fr; }
       .asst-routes-modal .asst-routes-columns { display: none; }
       .asst-routes-modal .asst-routes-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 44px; gap: 8px; padding: 12px 0; }
-      .asst-routes-modal .asst-routes-row-main, .asst-routes-modal .asst-routes-model-cell { grid-column: 1 / -1; }
+      .asst-routes-modal .asst-routes-row-main, .asst-routes-modal .asst-routes-model-cell, .asst-routes-modal .asst-routes-account-cell { grid-column: 1 / -1; }
       .asst-routes-cell { flex-direction: column; gap: 4px; }
       .asst-routes-cell-label { display: block; color: var(--asst-text-3); font-size: 11.5px; }
       .asst-routes-reset-cell { align-self: end; }
@@ -1790,8 +1868,8 @@ export function injectAssistantStyles() {
       .asst-suggestions { flex-direction: column; align-items: stretch; width: 100%; }
       .asst-chip.asst-suggestion { justify-content: flex-start; max-width: none; }
       .asst-empty-project { width: 100%; }
-      .asst-dd.asst-empty-project-btn { flex: 1 1 auto; justify-content: flex-start; max-width: none; }
-      .asst-empty-project-btn .asst-dd-label { flex: 1 1 auto; max-width: none; text-align: start; }
+      .asst-dd.asst-empty-control-btn { flex: 1 1 auto; justify-content: flex-start; max-width: none; }
+      .asst-empty-control-btn .asst-dd-label { flex: 1 1 auto; max-width: none; text-align: start; }
       .asst-msg.msg-user .asst-msg-content { max-width: 92%; }
       .asst-dd-model .asst-dd-label { max-width: 9ch; }
       .asst-route-opt-sub { display: none; }
@@ -1825,6 +1903,8 @@ export function injectAssistantStyles() {
     @keyframes asst-spin { to { transform: rotate(360deg); } }
 
     body.ui-interacting :is(.asst-live-dot, .asst-spinner, .asst-computer-dot, .syna-cameo-eye) { animation-play-state: paused !important; }
+    body.ui-interacting .asst-route-line[data-live] .asst-route-icon,
+    body.ui-interacting .asst-route-line[data-live] .asst-route-sweep::after { animation-play-state: paused !important; }
 
     @media (prefers-reduced-motion: reduce) {
       .asst-transcript { scroll-behavior: auto; }
@@ -1834,6 +1914,8 @@ export function injectAssistantStyles() {
       .term-minimized-pill,
       .term-minimized-pill::before,
       .term-minimized-pill::after { animation: none !important; transition: none !important; }
+      /* A frozen sweep would be a stray stub: the route row draws none (its run card and state words remain). */
+      .asst-route-sweep { display: none; }
     }
   `;
   document.head.appendChild(style);

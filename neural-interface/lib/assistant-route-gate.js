@@ -3,8 +3,9 @@
 // ═══════════════════════════════════════════
 //
 // Every brain turn starts unrouted. Until agent_route answers in that turn,
-// every tool call outside the exempt set is refused before it runs, and the
-// refusal tells the model what to do instead; the turn goes on so it can route.
+// every tool call outside the exempt set (and the reply tools, REPLY_TOOLS) is
+// refused before it runs, and the refusal tells the model what to do instead;
+// the turn goes on so it can route.
 // One module for every host: the Claude PreToolUse hook, the OpenCode plugin
 // (opencode-route-gate.js), the Codex PreToolUse hook (codex-route-gate-hook.mjs)
 // and the reactive fallback all ask the same gate.
@@ -38,6 +39,16 @@ export const ROUTE_GATE_EXEMPT = Object.freeze([
 ]);
 const EXEMPT = new Set(ROUTE_GATE_EXEMPT.map((name) => name.toLowerCase()));
 
+/**
+ * Tools that deliver the turn's answer, like the final text: never a new routing choice, so the gate
+ * lets them through in every state. Kept apart from ROUTE_GATE_EXEMPT, whose coordination tools a
+ * remote session also runs without seeing their arguments (remote-policy.js): a reply tool's
+ * arguments are always checked. whatsapp_send_file sends a file the user asked for to the WhatsApp
+ * conversation (docs/whatsapp.md → Sending files).
+ */
+export const REPLY_TOOLS = Object.freeze(['whatsapp_send_file']);
+const REPLY = new Set(REPLY_TOOLS);
+
 /** "mcp__SynaBun__recall" / "SynaBun_recall" / "SynaBun.recall" → "recall"; other names unchanged. */
 export function toolBaseName(name) {
   const text = String(name ?? '').trim();
@@ -47,6 +58,11 @@ export function toolBaseName(name) {
 
 export function isExemptTool(name) {
   return EXEMPT.has(toolBaseName(name).toLowerCase());
+}
+
+/** A reply tool under any host's name (mcp__SynaBun__…, SynaBun_…, bare). */
+export function isReplyTool(name) {
+  return REPLY.has(toolBaseName(name).toLowerCase());
 }
 
 /** A held gate while the user has not answered the brain's clarify questions. */
@@ -196,7 +212,7 @@ export function createRouteGate({ sessionId = null, routeTool = () => 'agent_rou
   function setUnavailable(reason) { unavailable = reason ? String(reason) : null; }
   /** { allow, exempt?, reason?, refusals, abort } — abort is true once, on the refusal that reaches the limit. */
   function check(tool) {
-    if (isExemptTool(tool)) return { allow: true, exempt: true, state, refusals };
+    if (isExemptTool(tool) || isReplyTool(tool)) return { allow: true, exempt: true, state, refusals };
     if (unavailable) return { allow: true, state, refusals, unavailable: true };
     if (state === 'open' || state === 'failed') return { allow: true, state, refusals };
     refusals += 1;

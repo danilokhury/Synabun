@@ -15,7 +15,7 @@ export const SLASH_COMMANDS = [
   { name: 'project', usage: '/project <path>', descKey: 'assistant.slash.project', desc: 'Set the working project' },
   { name: 'routes', usage: '/routes [always|unsure|never]', descKey: 'assistant.slash.routes', desc: 'Set when to ask before routing (or open the model routes)' },
   { name: 'models', usage: '/models [list | archived | hide <id…> | show <id…>]', descKey: 'assistant.slash.models', desc: 'Switch models off or on for the Assistant (or open the Models list)' },
-  { name: 'budget', usage: '/budget', descKey: 'assistant.slash.budget', desc: 'Set the money caps (per run, session, brain)' },
+  { name: 'budget', usage: '/budget', descKey: 'assistant.slash.budget', desc: 'Set the session budget and view provider shares' },
   { name: 'computer', usage: '/computer [on|off]', descKey: 'assistant.slash.computer', desc: 'Let the assistant use your Mac' },
   { name: 'stop', usage: '/stop [runId|all]', descKey: 'assistant.slash.stop', desc: 'Stop a run, everything, or the current turn' },
   { name: 'new', usage: '/new [provider]', descKey: 'assistant.slash.new', desc: 'Start a fresh session' },

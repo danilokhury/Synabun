@@ -38,6 +38,7 @@ export function createPtyHostManager({
 } = {}) {
   const handlers = new Map();     // id → { onSpawned, onTap, onResized, onClients, onExit }
   const spawnWaiters = new Map(); // id → waiter
+  const preparing = new Map();   // id → operations queued while PATH is read
   const requests = new Map();     // reqId → { resolve, reject, timer }
   let reqSeq = 0;
   let child = null;
@@ -158,6 +159,7 @@ export function createPtyHostManager({
     heldSockets = [];
     queue = [];
     const lost = [...handlers.entries()];
+    preparing.clear();
     handlers.clear();
     for (const [id] of lost) settleSpawn(id, new Error('pty-host exited'));
     spawnWaiters.clear();
@@ -175,6 +177,13 @@ export function createPtyHostManager({
 
   // ── Main → host ──
   function sendOp(msg) {
+    if (preparing.has(msg.id) && msg.op !== OP.SPAWN) {
+      if (msg.op === OP.KILL) {
+        preparing.delete(msg.id);
+        dispatch({ t: EV.SPAWN_ERROR, id: msg.id, message: 'Terminal closed before it started' });
+      } else preparing.get(msg.id).push(msg);
+      return;
+    }
     if (mode === 'inproc') {
       if (!core || !ready) { queue.push(msg); return; }
       core.handleMessage(msg);
@@ -190,11 +199,23 @@ export function createPtyHostManager({
     for (const msg of q) sendOp(msg);
   }
 
-  function spawn(spec, h = {}) {
+  function spawn(spec, h = {}, prepare = null) {
     handlers.set(spec.id, h);
     const w = makeWaiter();
     spawnWaiters.set(spec.id, w);
-    sendOp({ op: OP.SPAWN, ...spec });
+    if (prepare) {
+      const pending = [];
+      preparing.set(spec.id, pending);
+      Promise.resolve().then(prepare).then(prepared => {
+        if (shuttingDown || !handlers.has(spec.id) || preparing.get(spec.id) !== pending) return;
+        preparing.delete(spec.id);
+        sendOp({ op: OP.SPAWN, ...spec, ...prepared });
+        for (const message of pending) sendOp(message);
+      }).catch(error => {
+        preparing.delete(spec.id);
+        dispatch({ t: EV.SPAWN_ERROR, id: spec.id, message: error.message });
+      });
+    } else sendOp({ op: OP.SPAWN, ...spec });
     return w.promise;
   }
 
@@ -315,6 +336,8 @@ export function createPtyHostManager({
 
   async function shutdown({ timeoutMs = 1500 } = {}) {
     shuttingDown = true;
+    for (const id of preparing.keys()) settleSpawn(id, new Error('Terminal host is shutting down'));
+    preparing.clear();
     if (restartTimer) { clearTimeout(restartTimer); restartTimer = null; }
     if (mode === 'inproc') {
       try { core?.shutdownAll(); } catch {}
@@ -332,6 +355,8 @@ export function createPtyHostManager({
 
   function killNow() {
     shuttingDown = true;
+    for (const id of preparing.keys()) settleSpawn(id, new Error('Terminal host is shutting down'));
+    preparing.clear();
     if (restartTimer) { clearTimeout(restartTimer); restartTimer = null; }
     try { child?.kill('SIGTERM'); } catch {}
     try { core?.shutdownAll(); } catch {}

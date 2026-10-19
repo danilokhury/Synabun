@@ -1,0 +1,23 @@
+{
+  "name": "synabun-desktop",
+  "productName": "SynaBun",
+  "version": "0.0.0",
+  "description": "SynaBun desktop app: the window and app host around the packaged SynaBun server",
+  "private": true,
+  "license": "Apache-2.0",
+  "author": {
+    "name": "The SynaBun Authors",
+    "email": "noreply@synabun.ai"
+  },
+  "homepage": "https://synabun.ai",
+  "type": "module",
+  "main": "src/main.mjs",
+  "dependencies": {
+    "electron-updater": "6.8.9",
+    "js-yaml": "4.3.2"
+  },
+  "devDependencies": {
+    "electron": "44.9.0",
+    "electron-builder": "26.15.3"
+  }
+}

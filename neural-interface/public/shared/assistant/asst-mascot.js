@@ -12,6 +12,8 @@
 //   success, error  once, when a turn that did real work ends (then idle)
 //   watch           while you type: eyes on the caret column, look() at most
 //                   every 120 ms; back 1.5 s after the last key, at once on send
+//   project/budget  attention owned by this panel's empty-state chip/menu;
+//                   commits react once; a menu prevents idle sleep
 //   sleep           the hero only, after 90 s with no input while nothing runs;
 //                   the rig wakes itself on a pointer move or a key
 //
@@ -28,6 +30,7 @@
 export const MASCOT_TIMING = Object.freeze({
   watchEveryMs: 120,
   watchIdleMs: 1500,
+  controlDwellMs: 1500,
   sleepAfterMs: 90_000,
   realWorkMs: 3000,
   oneShotMs: Object.freeze({ success: 1000, error: 900 }),
@@ -67,6 +70,9 @@ export function lookToward(box, point, { horizontal = false } = {}) {
  * getTarget() → the renderer's visible mascot { kind: 'hero'|'stage'|'working',
  *   rig, el, parked?(), hold(on), restore() } or null; caret() → the caret's
  *   client point or null.
+ * Control API: attend(owner, { pose, rectOf, options, open }), leave(owner),
+ * controlCommitted({ pose, options, reaction }); type(present, pointOf?) also
+ * watches a budget amount field using the same throttling as the composer.
  * env: { now, setTimeout, clearTimeout, input(fn) → unsubscribe (page pointer
  *   and key input), lastInputAt() }.
  * All of its state is its own: one director per panel, any number at once.
@@ -83,6 +89,9 @@ export function createMascotDirector({ getTarget = () => null, caret = () => nul
   let holding = false; // hold(true) is in force on `target`
   let shown = ''; // the pose (and then) set on `target`
   let typing = false;
+  let typingPoint = null;
+  let attention = null; // { owner, pose, rectOf, options, open }; this panel's empty-state control
+  let attentionTimer = 0;
   let typingTimer = 0;
   let lookTimer = 0;
   let lookedAt = -Infinity;
@@ -106,9 +115,16 @@ export function createMascotDirector({ getTarget = () => null, caret = () => nul
       const point = card && card.width ? { x: card.left + Math.min(card.width * 0.3, 160), y: card.top + Math.min(card.height / 2, 28) } : null;
       return { pose: 'blocked', look: lookToward(boxOf(t), point) };
     }
-    if (oneShot && oneShot.target === t) return { pose: oneShot.pose, opts: { then: 'idle' } };
-    if (typing) return { pose: 'watch', look: lookToward(boxOf(t), safe(caret), { horizontal: true }) };
+    const attentionLook = () => {
+      const rect = attention && safe(attention.rectOf);
+      return lookToward(boxOf(t), rect && { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
+    };
+    if (oneShot && oneShot.target === t) return { pose: oneShot.pose, opts: oneShot.opts || { then: 'idle' }, ...(attention ? { look: attentionLook() } : {}) };
+    if (typing) return { pose: 'watch', look: lookToward(boxOf(t), safe(typingPoint || caret), { horizontal: true }) };
     if (sleeping && t.kind === 'hero' && !safe(() => t.parked?.())) return { pose: 'sleep' };
+    if (attention && t.kind === 'hero' && !safe(() => t.parked?.())) {
+      return { pose: attention.pose, opts: safe(attention.options) || {}, look: attentionLook() };
+    }
     return null;
   }
 
@@ -136,7 +152,7 @@ export function createMascotDirector({ getTarget = () => null, caret = () => nul
       return;
     }
     if (!holding) { holding = true; safe(() => t.hold(true)); }
-    const key = `${want.pose}|${want.opts?.then || ''}`;
+    const key = `${want.pose}|${want.opts?.then || ''}|${!!want.opts?.unlimited}`;
     if (key !== shown) { shown = key; safe(() => t.rig.setPose(want.pose, want.opts)); }
     if (want.look) safe(() => t.rig.look(want.look.x, want.look.y));
   }
@@ -155,7 +171,7 @@ export function createMascotDirector({ getTarget = () => null, caret = () => nul
 
   function canSleep() {
     const t = target;
-    return !destroyed && !!t && t.kind === 'hero' && !safe(() => t.parked?.()) && !turnActive && !typing && !blocked && !offline && !oneShot;
+    return !destroyed && !!t && t.kind === 'hero' && !safe(() => t.parked?.()) && !turnActive && !typing && !attention?.open && !blocked && !offline && !oneShot;
   }
 
   function armSleep() {
@@ -177,17 +193,20 @@ export function createMascotDirector({ getTarget = () => null, caret = () => nul
     if (lookTimer) { cancel(lookTimer); lookTimer = 0; }
     if (!typing) return;
     typing = false;
+    typingPoint = null;
     apply();
     armSleep();
   }
 
   /** The draft changed: `present` false (an empty draft) ends the watch. */
-  function type(present = true) {
+  function type(present = true, pointOf = null) {
     if (destroyed) return;
     noteInput();
     if (!present) { stopTyping(); return; }
+    if (oneShot?.control) dropOneShot(); // a new edit resumes watching after an acknowledgement
     const first = !typing;
     typing = true;
+    typingPoint = typeof pointOf === 'function' ? pointOf : null;
     if (sleepTimer) { cancel(sleepTimer); sleepTimer = 0; }
     if (typingTimer) cancel(typingTimer);
     typingTimer = later(() => { typingTimer = 0; stopTyping(); }, MASCOT_TIMING.watchIdleMs);
@@ -221,13 +240,53 @@ export function createMascotDirector({ getTarget = () => null, caret = () => nul
     armSleep();
   }
 
+  function clearAttention() {
+    if (attentionTimer) { cancel(attentionTimer); attentionTimer = 0; }
+    attention = null;
+  }
+
   return {
     /** The draft changed (typing): the mascot watches the caret column. */
     type,
     /** Blur, or the draft went away. */
     stopTyping,
+    /** Chip previews relax after a short dwell; only open menus hold attention and block sleep. */
+    attend(owner, spec) {
+      if (destroyed || (attention?.open && attention.owner !== owner && !spec.open)) return;
+      noteInput();
+      clearAttention();
+      attention = { owner, ...spec };
+      if (!attention.open) attentionTimer = later(() => {
+        clearAttention();
+        apply();
+        armSleep();
+      }, MASCOT_TIMING.controlDwellMs);
+      apply();
+      armSleep();
+    },
+    leave(owner) {
+      if (attention?.owner !== owner) return;
+      clearAttention();
+      apply();
+      armSleep();
+    },
+    /** Only acknowledged user commits call this; loads, live updates and keystrokes do not. */
+    controlCommitted({ pose, options = {}, reaction = 'nod' }) {
+      if (destroyed) return;
+      const t = safe(getTarget);
+      if (!t || t.kind !== 'hero' || safe(() => t.parked?.()) || turnActive || offline || blocked) return;
+      stopTyping();
+      noteInput();
+      dropOneShot();
+      const shot = { pose, opts: options, target: t, timer: 0, control: true };
+      shot.timer = later(() => { if (oneShot !== shot) return; oneShot = null; apply(); armSleep(); }, 900);
+      oneShot = shot;
+      apply();
+      safe(() => t.rig.react(reaction));
+      armSleep();
+    },
     /** A prompt went out: the watch hands over at once (the renderer gives the hero to the "Thinking" row). */
-    sent() { stopTyping(); },
+    sent() { clearAttention(); dropOneShot(); stopTyping(); apply(); armSleep(); },
     /** A card waits on the user (`rectOf()` → its box), or none (null). */
     setBlocked(rectOf) {
       blocked = typeof rectOf === 'function' ? rectOf : null;
@@ -248,6 +307,7 @@ export function createMascotDirector({ getTarget = () => null, caret = () => nul
     },
     turnStarted() {
       turnActive = true;
+      clearAttention();
       dropOneShot();
       if (sleeping) sleeping = false;
       apply();
@@ -260,14 +320,73 @@ export function createMascotDirector({ getTarget = () => null, caret = () => nul
     /** The user is here (focus, a click): a sleeping hero wakes, the quiet starts over. */
     touch() { if (!destroyed) noteInput(); },
     /** For tests and devtools: what the director holds right now. */
-    state: () => ({ target: target?.kind || null, pose: shown.split('|')[0] || null, typing, blocked: !!blocked, offline, sleeping, oneShot: oneShot?.pose || null }),
+    state: () => ({ target: target?.kind || null, pose: shown.split('|')[0] || null, typing, attention: attention?.pose || null, menuOpen: !!attention?.open, blocked: !!blocked, offline, sleeping, oneShot: oneShot?.pose || null }),
     destroy() {
       if (destroyed) return;
       if (target && holding) safe(() => target.hold(false));
       destroyed = true;
+      clearAttention();
       for (const id of [typingTimer, lookTimer, sleepTimer]) if (id) cancel(id);
       dropOneShot();
       if (stopInput) { safe(stopInput); stopInput = null; }
+    },
+  };
+}
+
+/** Wire one empty-state chip and its body-level menu to its panel's director. No rig or clock here. */
+export function createMascotControl(anchor, { director = () => null, pose, options = () => ({}) } = {}) {
+  const owner = {};
+  let menu = null, preview = null, watched = false, destroyed = false;
+  const listeners = [];
+  const listen = (node, event, fn) => { node.addEventListener(event, fn); listeners.push(() => node.removeEventListener(event, fn)); };
+  function attend(node = anchor) {
+    if (destroyed) return;
+    preview = node;
+    director()?.attend(owner, { pose, options, open: !!menu, rectOf: () => node.getBoundingClientRect() });
+  }
+  const leave = () => { if (!menu) { preview = null; director()?.leave(owner); } };
+  listen(anchor, 'pointerenter', () => attend(menu || anchor));
+  listen(anchor, 'focus', () => attend(menu || anchor));
+  listen(anchor, 'pointerleave', () => { if (document.activeElement !== anchor) leave(); });
+  listen(anchor, 'blur', leave);
+  let stopMenu = () => {};
+  return {
+    open(node) {
+      if (destroyed || !node) return;
+      stopMenu();
+      menu = node;
+      const follow = e => {
+        const option = e.target.closest?.('.asst-dd-item, input, label, button');
+        if (option && node.contains(option)) attend(option);
+      };
+      const type = e => {
+        if (!e.target.matches?.('.asst-budget-input')) return;
+        watched = true;
+        director()?.type(true, () => {
+          const r = e.target.getBoundingClientRect();
+          return { x: r.left + Math.min(r.width - 12, 12 + e.target.value.length * 7), y: r.top + r.height / 2 };
+        });
+      };
+      node.addEventListener('pointerover', follow);
+      node.addEventListener('focusin', follow);
+      node.addEventListener('input', type);
+      stopMenu = () => {
+        node.removeEventListener('pointerover', follow);
+        node.removeEventListener('focusin', follow);
+        node.removeEventListener('input', type);
+      };
+      attend(node.contains(document.activeElement) ? document.activeElement : node);
+    },
+    close() {
+      stopMenu(); menu = null; preview = null;
+      if (watched) { director()?.stopTyping(); watched = false; }
+      director()?.leave(owner);
+    },
+    commit(reaction) { if (!destroyed) director()?.controlCommitted({ pose, options: options(), reaction }); },
+    refresh() { if (preview) attend(preview); },
+    destroy() {
+      this.close(); destroyed = true;
+      for (const off of listeners) off();
     },
   };
 }

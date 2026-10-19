@@ -10,7 +10,12 @@
 //
 //   resolveClaudeLauncher        what a terminal or a shell would start: the
 //                                user's configured command, else the first
-//                                `claude` on PATH that is not inside SynaBun
+//                                `claude` on PATH that is not inside SynaBun.
+//                                server.js asks lib/cli-resolver.js instead
+//                                (Settings, PATH and the OS PATH, the known
+//                                install folders, a --version that answers),
+//                                which follows a Windows `claude.cmd` with
+//                                windowsClaudeTargets below
 //   resolveClaudeSdkExecutable   what the SDK can start. It spawns with
 //                                shell:false, so an npm command file on Windows
 //                                is followed to the executable behind it

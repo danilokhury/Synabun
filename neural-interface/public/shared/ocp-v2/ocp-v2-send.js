@@ -966,6 +966,16 @@ export function mountCompose(rootEl, store = getDefaultStore(), opts = {}) {
     syncButton();
   }
 
+  // The panel holds sends back while its CLI banner shows (opts.sendBlocked,
+  // ui-cli-banner.js): nothing is sent, nothing is cleared, the banner is
+  // pointed at. A composer mounted without the option (a sub-agent's) never is.
+  function sendHeldBack() {
+    let held = false;
+    try { held = !!opts.sendBlocked?.(); } catch { held = false; }
+    if (held) { try { opts.onSendBlocked?.(); } catch {} }
+    return held;
+  }
+
   function rememberPrompt(text) {
     if (!text) return;
     _history.push(text);
@@ -1038,6 +1048,7 @@ export function mountCompose(rootEl, store = getDefaultStore(), opts = {}) {
     // read this snapshot.
     const turn = captureBinding(store);
     if (!turn.sessionId) { store.pushError({ message: 'No session. Reopen the panel to retry.' }); return false; }
+    if (sendHeldBack()) return false;
     if (opts.canSend && opts.canSend(turn) === false) {
       store.pushError({ message: 'Stop the running automation before sending a manual turn.' });
       return false;
@@ -1140,6 +1151,11 @@ export function mountCompose(rootEl, store = getDefaultStore(), opts = {}) {
     const hasPaths = (s.pendingPaths?.length || 0) > 0;
 
     if (_shell) {
+      // The CLI is missing, broken or being installed (the panel's CLI banner
+      // says so): the command stays in the box, in shell mode. (Prompts and
+      // server commands are held back where they are sent, and come back into
+      // the box from there; a local slash command needs no CLI.)
+      if (sendHeldBack()) return false;
       // Only what the user typed (or pasted) into the shell-mode composer runs.
       // Anything that got into the box another way drops back to a prompt.
       const allowed = shellRunAllowed({ shell: _shell, value: _input.value, typedValue: _shellTypedValue });
@@ -1224,6 +1240,7 @@ export function mountCompose(rootEl, store = getDefaultStore(), opts = {}) {
     // first await; everything after it reads `turn`.
     const turn = captureBinding(store);
     const s = store.getState();
+    if (sendHeldBack()) return false;
     if (opts.canSend && opts.canSend(turn) === false) {
       store.pushError({ message: 'Stop the running automation before sending a manual turn.' });
       return false;

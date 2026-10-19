@@ -1,8 +1,12 @@
 // Main-process side of the WhatsApp Link: forks host.js — the only process
 // that loads Baileys or reads the WhatsApp credentials — speaks protocol.js
-// over IPC, respawns it with backoff, and trips a crash breaker (host.state
-// 'held') when it keeps dying. mode 'inproc' (SYNABUN_WHATSAPP_HOST=inproc)
-// runs host-core inside this process instead: tests and a kill switch.
+// over IPC, and respawns it whenever it dies, for as long as it is wanted:
+// 1 / 5 / 15 / 60 / 300 s, never more than 300 s, the ladder starting over
+// once a host ran for 10 minutes. host.state 'held' is only a host speaking
+// another IPC protocol (an update installed while SynaBun ran): it is killed
+// and stays down until start() again. mode 'inproc'
+// (SYNABUN_WHATSAPP_HOST=inproc) runs host-core inside this process instead:
+// tests and a kill switch.
 //
 // Same shape as lib/pty-host/manager.js and lib/desktop/manager.js, with two
 // deliberate differences: the child gets an ALLOWLISTED environment (no API
@@ -10,15 +14,19 @@
 // redacted before it reaches a log (never inherited).
 //
 // Every method resolves; none rejects. Failures are {ok:false, code, message}.
-// After a respawn the host receives the last configure, then — if the link
-// was running — connect({purpose:'run'}) again.
+// The run intent (connect({purpose:'run'}), or a fresh link) is kept here
+// before the request leaves, so a host that is still starting, or one that
+// crashed with the request in flight, gets it anyway: every ready replays the
+// last configure, then connect({purpose:'run'}) while the intent stands. Only
+// NOT_LINKED, a terminal state or fatal event of the host (TERMINAL_CONN,
+// DESIRE_KILLERS), stop(), disconnect() and logout() drop it.
 
 import { fork } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { CONN, ERR, EV, LIMITS, OP, PROTOCOL_VERSION, pickPrefs, validateEvent } from './protocol.js';
+import { ADDRESS_KEYS, CONN, ERR, EV, LIMITS, OP, PROTOCOL_VERSION, pickPrefs, validateEvent } from './protocol.js';
 import { resolveWhatsAppPaths } from './paths.js';
-import { redactWa } from './redact.js';
+import { redactLogLine, redactWa } from './redact.js';
 
 const HOST_PATH = fileURLToPath(new URL('./host.js', import.meta.url));
 
@@ -77,7 +85,10 @@ export function hostExecArgv(parent = process.execArgv, { nodeVersion = process.
 
 const PUBLIC_EVENTS = new Set(['state', 'qr', 'pairing_code', 'linked', 'owner_bound', 'inbound', 'ignored', 'throttled', 'fatal']);
 const TERMINAL_CONN = new Set([CONN.LOGGED_OUT, CONN.REPLACED, CONN.FORBIDDEN, CONN.UNLINKED, CONN.LINK_EXPIRED, CONN.ERROR, CONN.LOCKED]);
-const DESIRE_KILLERS = new Set(['LOGGED_OUT', 'REPLACED', 'FORBIDDEN', 'SESSION_ERROR', 'CONFIRM_TIMEOUT', 'RECONNECT_LIMIT', 'LOCKED']);
+// Fatal events that end the run intent: a logout (401, or a session WhatsApp calls invalid), an
+// account refused while linking, an owner never confirmed, a session store held by another process.
+// A saved session never stops on 440, 403 or a generic 500: the host retries those.
+const DESIRE_KILLERS = new Set(['LOGGED_OUT', 'FORBIDDEN', 'CONFIRM_TIMEOUT', 'LOCKED']);
 const LINE_BURST = 60;
 const LINE_WINDOW_MS = 60_000;
 
@@ -114,11 +125,12 @@ export function createWhatsAppManager({
   log = () => {},
   now = () => Date.now(),
   respawnBackoffMs = [1000, 5000, 15000, 60000, 300000],
-  crashLimit = 5,
-  crashWindowMs = 15 * 60_000,
+  respawnMaxMs = 300_000,    // no respawn waits longer, whatever the ladder says
   stableMs = 10 * 60_000,
   requestTimeoutMs = 15_000,
   sendTimeoutMs = 90_000,
+  // send_file: a read of up to 100 MiB and its upload. Past it the delivery is uncertain (never retried).
+  sendFileTimeoutMs = 120_000,
   readyTimeoutMs = 20_000,
   env = process.env,
   platform = process.platform,
@@ -135,7 +147,6 @@ export function createWhatsAppManager({
   let core = null;
   let token = null;          // identity of the current host (child or inproc core)
   let ready = false;
-  let hadReady = false;
   let hostState = 'stopped';
   let hostPid = null;
   let restarts = 0;
@@ -143,10 +154,10 @@ export function createWhatsAppManager({
   let heldReason = null;
   let launchError = null;    // why the current launch failed before its ready event
   let configured = Promise.resolve(); // the configure replayed on ready
-  let exitTimes = [];
   let failIdx = 0;
   let startedAt = 0;
   let respawnTimer = null;
+  let respawnAt = null;      // when the next host starts, while hostState is 'backoff'
   let readyTimer = null;
   let stoppedByUser = true;
   let lastPrefs = null;
@@ -175,8 +186,11 @@ export function createWhatsAppManager({
     const conn = { ...connCache };
     if (hostState === 'held') conn.state = CONN.HELD;
     else if (hostState === 'stopped') conn.state = CONN.IDLE;
+    // host.retryInMs: how long until the next host starts. While the link is wanted, conn says
+    // "reconnecting" with the same wait (set when the respawn was scheduled, like the host's own retryInMs).
+    const retryInMs = hostState === 'backoff' && respawnAt !== null ? Math.max(0, respawnAt - now()) : null;
     return {
-      host: { state: hostState, pid: hostPid, restarts, lastError },
+      host: { state: hostState, pid: hostPid, restarts, lastError, retryInMs },
       conn,
       runtime: { ...runtimeInfo },
     };
@@ -225,7 +239,7 @@ export function createWhatsAppManager({
   function request(op, fields = {}, { timeoutMs = requestTimeoutMs } = {}) {
     return new Promise((resolve) => {
       if (hostState === 'held') {
-        resolve(fail(ERR.HELD, heldReason || lastError || 'the WhatsApp host is held after repeated crashes'));
+        resolve(fail(ERR.HELD, heldReason || lastError || 'the WhatsApp host speaks another protocol version'));
         return;
       }
       if (hostState === 'stopped') {
@@ -280,6 +294,7 @@ export function createWhatsAppManager({
 
   // ── Host → manager ──
 
+  /** An incompatible host (another IPC protocol): no respawn until start() again. */
   function hold(reason) {
     heldReason = reason;
     lastError = reason;
@@ -287,6 +302,7 @@ export function createWhatsAppManager({
     desired = null;
     clearTimeout(respawnTimer);
     respawnTimer = null;
+    respawnAt = null;
     failAll(ERR.HELD, reason);
     resolveReadyWaiters(false);
     say(`[whatsapp] host held: ${reason}`, 'warn');
@@ -315,19 +331,17 @@ export function createWhatsAppManager({
         ready = true;
         hostPid = m.pid;
         hostState = 'running';
+        respawnAt = null;
         runtimeInfo = { ...m.runtime };
         connCache = { ...m.conn };
-        const replay = hadReady;
-        hadReady = true;
+        // Every ready, the first one included: the configure first, then the run intent.
         configured = lastPrefs
           ? request(OP.CONFIGURE, { prefs: lastPrefs }).then((r) => { if (!r.ok) say(`[whatsapp] configure failed: ${r.message}`, 'warn'); })
           : Promise.resolve();
+        // A connect that waited for this host carries the intent itself.
+        const connectWaiting = queue.some((q) => q.op === OP.CONNECT && pending.has(q.reqId));
         flushQueue();
-        if (replay && desired) {
-          request(OP.CONNECT, { ...desired }).then((r) => {
-            if (!r.ok) say(`[whatsapp] reconnect after a host restart failed: ${r.code}`, 'warn');
-          });
-        }
+        if (desired && !connectWaiting) resumeRun(source);
         resolveReadyWaiters(true);
         emitState();
         return;
@@ -348,7 +362,8 @@ export function createWhatsAppManager({
         emitState();
         return;
       case EV.LOG:
-        say(`[whatsapp-host] ${redactWa(m.message)}`, m.level === 'error' ? 'error' : m.level === 'warn' ? 'warn' : 'info');
+        // send_file's audit line keeps its path legible (redact.js fileAuditLine checks its exact shape).
+        say(`[whatsapp-host] ${redactLogLine(m.message)}`, m.level === 'error' ? 'error' : m.level === 'warn' ? 'warn' : 'info');
         return;
       case EV.FATAL:
         if (DESIRE_KILLERS.has(m.code)) desired = null;
@@ -366,6 +381,19 @@ export function createWhatsAppManager({
         if (PUBLIC_EVENTS.has(t)) emit(t, payload);
       }
     }
+  }
+
+  /** After `configured`, connect the wanted link on the host that just became ready (`me`). */
+  function resumeRun(me) {
+    configured.then(() => {
+      if (token !== me || !ready || stoppedByUser || !desired) return;
+      const intent = desired;
+      request(OP.CONNECT, { ...intent }).then((r) => {
+        if (r.ok) return;
+        if (r.code === ERR.NOT_LINKED && desired === intent) desired = null;
+        say(`[whatsapp] connecting after the host started failed: ${r.code}`, 'warn');
+      });
+    });
   }
 
   // ── Lifecycle ──
@@ -404,6 +432,9 @@ export function createWhatsAppManager({
   function launch() {
     clearTimeout(respawnTimer);
     respawnTimer = null;
+    respawnAt = null;
+    // The respawn wait is over: a host starting now has no "next try" to show.
+    if (connCache.retryInMs !== null) connCache = { ...connCache, retryInMs: null };
     ready = false;
     hostPid = null;
     launchError = null;
@@ -492,21 +523,18 @@ export function createWhatsAppManager({
       emitState();
       return;
     }
+    // A crash is never final: respawn on the ladder, for as long as the host is wanted.
     const reason = `exited (code ${code}, signal ${signal})`;
     lastError = launchError || `the WhatsApp host ${reason}`;
     launchError = null;
     const t = now();
-    exitTimes = exitTimes.filter((x) => t - x < crashWindowMs);
-    exitTimes.push(t);
-    if (exitTimes.length >= crashLimit) {
-      hold(`the WhatsApp host crashed ${exitTimes.length} times in ${Math.round(crashWindowMs / 60_000)} minutes`);
-      return;
-    }
     if (startedAt && t - startedAt >= stableMs) failIdx = 0;
-    const delay = respawnBackoffMs[Math.min(failIdx, respawnBackoffMs.length - 1)] ?? 0;
+    const delay = Math.min(respawnMaxMs, Math.max(0, respawnBackoffMs[Math.min(failIdx, respawnBackoffMs.length - 1)] ?? 0));
     failIdx += 1;
     restarts += 1;
     hostState = 'backoff';
+    respawnAt = t + delay;
+    if (desired) connCache = { ...connCache, retryInMs: delay };
     say(`[whatsapp] host ${reason}; restarting in ${delay} ms`, 'warn');
     emitState();
     respawnTimer = setTimeout(() => {
@@ -517,12 +545,16 @@ export function createWhatsAppManager({
 
   // ── Public API ──
 
-  async function start(prefs) {
+  /**
+   * Start the host (at once, also while a respawn is pending). `resume: false` drops the run intent
+   * first: a host started to log out (Unlink) must not reconnect the link on its ready.
+   */
+  async function start(prefs, { resume = true } = {}) {
     if (prefs !== undefined) lastPrefs = { ...(lastPrefs || {}), ...pickPrefs(prefs) };
+    if (!resume) desired = null;
     stoppedByUser = false;
     if (hostState === 'held') {
       heldReason = null;
-      exitTimes = [];
       failIdx = 0;
       hostState = 'stopped';
     }
@@ -544,8 +576,13 @@ export function createWhatsAppManager({
     const fields = { purpose };
     if (connMode) fields.mode = connMode;
     if (link) fields.link = { method: link.method === 'code' ? 'code' : 'qr', ...(link.phone ? { phone: String(link.phone) } : {}) };
+    // The intent before the request: a host that is not ready yet, or that dies with the request
+    // in flight, connects on its next ready. Only "nothing is linked" ends it here. A host that was
+    // stopped or is held gets no ready of its own: whatever starts it next asks for what it wants.
+    const intent = purpose === 'run' && hostState !== 'stopped' && hostState !== 'held' ? { purpose: 'run', ...(connMode ? { mode: connMode } : {}) } : null;
+    if (intent) desired = intent;
     const res = await request(OP.CONNECT, fields);
-    if (res.ok && purpose === 'run') desired = { purpose: 'run', ...(connMode ? { mode: connMode } : {}) };
+    if (intent && !res.ok && res.code === ERR.NOT_LINKED && desired === intent) desired = null;
     return res;
   }
 
@@ -554,6 +591,7 @@ export function createWhatsAppManager({
     desired = null;
     clearTimeout(respawnTimer);
     respawnTimer = null;
+    respawnAt = null;
     clearTimeout(readyTimer);
     readyTimer = null;
     resolveReadyWaiters(false);
@@ -595,6 +633,7 @@ export function createWhatsAppManager({
     desired = null;
     clearTimeout(respawnTimer);
     respawnTimer = null;
+    respawnAt = null;
     clearTimeout(readyTimer);
     readyTimer = null;
     if (child) { try { child.kill('SIGTERM'); } catch {} }
@@ -622,6 +661,27 @@ export function createWhatsAppManager({
     send: (text, { replyTo = null } = {}) => {
       if (typeof text !== 'string') return Promise.resolve(fail(ERR.BAD_REQUEST, 'text must be a string'));
       return request(OP.SEND, { text, ...(replyTo ? { replyTo } : {}) }, { timeoutMs: sendTimeoutMs });
+    },
+    /**
+     * A local file to the owner (send_file): exactly one request, never retried here or anywhere,
+     * and never queued for a host that is not up yet (HOST_UNAVAILABLE: nothing was sent). A TIMEOUT,
+     * or a host that exits with the request in flight, may come after WhatsApp took the file: those
+     * answers carry `uncertain: true`. Only { path, caption?, as? } travel: an address key is
+     * ADDRESS_FORBIDDEN, any other key BAD_REQUEST.
+     */
+    sendFile: async (fields = {}) => {
+      if (!isPlainObject(fields)) return fail(ERR.BAD_REQUEST, 'send_file takes { path, caption?, as? }');
+      const address = ADDRESS_KEYS.find((key) => Object.hasOwn(fields, key));
+      if (address) return fail(ERR.ADDRESS_FORBIDDEN, `send_file never takes an address ('${address}')`);
+      const extra = Object.keys(fields).find((key) => !['path', 'caption', 'as'].includes(key));
+      if (extra) return fail(ERR.BAD_REQUEST, `send_file has an unknown field '${extra.slice(0, 40)}'`);
+      if (!ready) return fail(ERR.HOST_UNAVAILABLE, 'the WhatsApp host is not running: nothing was sent');
+      const out = { path: fields.path };
+      if (fields.caption !== undefined && fields.caption !== null) out.caption = fields.caption;
+      if (fields.as !== undefined && fields.as !== null) out.as = fields.as;
+      const result = await request(OP.SEND_FILE, out, { timeoutMs: sendFileTimeoutMs });
+      if (!result.ok && (result.code === ERR.TIMEOUT || result.code === ERR.HOST_UNAVAILABLE)) result.uncertain = true;
+      return result;
     },
     react: (id, name) => request(OP.REACT, { id, reaction: name ?? null }, { timeoutMs: sendTimeoutMs }),
     presence: (state) => request(OP.PRESENCE, { state }),

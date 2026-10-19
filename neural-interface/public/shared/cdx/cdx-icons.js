@@ -41,6 +41,8 @@ export let windowId = hostedSidepanelId || sessionStorage.getItem('cxp-window-id
 // ── Storage Keys ──
 export const STOR = {
   threadId: 'synabun-codex-panel-thread',
+  // The account that thread belongs to (its rollout lives in that account's CODEX_HOME).
+  threadAccount: 'synabun-codex-panel-thread-account',
   title: 'synabun-codex-panel-title',
   project: 'synabun-codex-panel-project',
   projectThreads: 'synabun-codex-panel-project-threads',

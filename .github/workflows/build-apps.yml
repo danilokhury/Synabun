@@ -1,11 +1,15 @@
 name: Build applications
 
-# Builds the packaged application for each platform on that platform's own
-# runner and keeps the result as a workflow artifact. Started by hand.
+# Builds the SynaBun desktop app (packaging/) for each platform on that
+# platform's own runner and keeps the builds as workflow artifacts. Started by
+# hand: a check of the builder on each system's own runner.
 #
-# It does not create a release, publish anything or upload anywhere else, and
-# it signs only when the signing secrets below exist. An unsigned build says so
-# in its build report.
+# A release's installers and update feed are not made here. They are built
+# from the release commit on the release machine, audited and attached to the
+# GitHub Release in one go; a release must have one set of files, so this
+# workflow never runs on a release and never attaches anything. It creates no
+# release or tag, pushes nothing and publishes nothing. It signs only when the
+# signing secrets below exist; an unsigned build says so in its build report.
 
 on:
   workflow_dispatch:
@@ -76,7 +80,7 @@ jobs:
     name: ${{ matrix.target }}
     needs: plan
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 90
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
@@ -112,6 +116,21 @@ jobs:
           security list-keychains -d user -s "$KEYCHAIN"
           rm -f "$RUNNER_TEMP/certificate.p12"
 
+      # Windows: the Git for Windows the installer carries (the Git Bash Claude Code needs there), downloaded from
+      # Git for Windows' own GitHub release and checked against neural-interface/lib/git-bash/pins.json by the
+      # script the build's own stage step uses (packaging/lib/git-bash.mjs); the build then finds it in its cache.
+      - name: Git for Windows
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          node packaging/fetch-git-for-windows.mjs --target "${{ matrix.target }}" --cache 'C:\sbc' --json > git-for-windows.json
+          {
+            echo '### Git for Windows'
+            echo '```json'
+            cat git-for-windows.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Build
         shell: bash
         env:
@@ -124,7 +143,7 @@ jobs:
           SYNABUN_WIN_SIGN_PASSWORD: ${{ secrets.SYNABUN_WIN_SIGN_PASSWORD }}
           SYNABUN_WIN_SIGN_THUMBPRINT: ${{ secrets.SYNABUN_WIN_SIGN_THUMBPRINT }}
         run: |
-          options=(--target "${{ matrix.target }}" --no-fallback --out dist-apps)
+          options=(--target "${{ matrix.target }}" --out dist-apps)
           # A short staging path keeps Windows under its path-length limit.
           if [ "$RUNNER_OS" = "Windows" ]; then options+=(--work 'C:\sb' --cache 'C:\sbc'); fi
           if [ "$EMBEDDING_MODEL" = "false" ]; then options+=(--no-embedding-model); fi

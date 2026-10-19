@@ -121,6 +121,69 @@ export function redactWa(value) {
   return text;
 }
 
+/**
+ * A local file path for the send_file audit line and its Activity row: credentials, QR payloads,
+ * JIDs, codes and phone numbers are redacted as in redactWa, but not the key-shape heuristics
+ * (HEX_RE, B64_RE), which read most real paths (`/Users/<you>/App2/…`, a run id folder) as key
+ * material and would leave nothing of the path to audit. Paths only: never for message text.
+ */
+export function redactFilePath(value) {
+  let text = typeof value === 'string' ? value : String(value ?? '');
+  if (!text) return '';
+  text = redactCredentials(text);
+  text = text.replace(QR_URL_RE, '[qr]').replace(QR_REF_RE, '[qr]');
+  text = text.replace(JID_RE, (_m, user, server) => tagFor(user, server));
+  text = text.replace(ALLOW_CODE_RE, (_m, word) => `${word} [code]`);
+  text = text.replace(CLAIM_CODE_RE, '[code]').replace(PAIRING_DASH_RE, '[code]');
+  text = text.replace(NUMBER_RE, (run) => (DATE_LIKE_RE.test(run) ? run : '[number]'));
+  return text.slice(0, 2048);
+}
+
+// A run of key-shaped characters inside a path, between separators, dashes, underscores, dots and spaces.
+const PATH_KEY_RUN_RE = /[A-Za-z0-9+=]{24,}/g;
+
+/**
+ * A path the Assistant asked for and SynaBun refused (its Activity row): redactFilePath, and any run of
+ * 24 or more hex or key-shaped characters between the path's separators, dashes, underscores, dots and
+ * spaces masked too, because the text came from the model and need not name a file at all. Ordinary
+ * names stay readable (their words are short); a real file's canonical path keeps redactFilePath alone.
+ */
+export function redactRequestedPath(value) {
+  return redactFilePath(value).replace(PATH_KEY_RUN_RE, (run) => (/^[0-9a-fA-F]+$/.test(run) || looksLikeKey(run) ? '[key]' : run));
+}
+
+const FILE_AUDIT_PREFIX = '[whatsapp] file send ';
+const FILE_AUDIT_TYPES = new Set(['document', 'image', 'video', 'audio']);
+const MASKED_CHAT_RE = /^(?:••••|••\d{2}|••••\d{4}|linked id ••[A-Za-z0-9]{0,2})$/;
+
+/**
+ * The send_file audit line (host-core.js noteFileSend), checked field by field: exactly
+ * { path, size, chat, type } with a masked chat and a known form, the path through
+ * redactFilePath. → the line, or null for anything else (which gets redactWa like every log line).
+ */
+export function fileAuditLine(message) {
+  const text = typeof message === 'string' ? message : '';
+  if (!text.startsWith(FILE_AUDIT_PREFIX)) return null;
+  let entry;
+  try { entry = JSON.parse(text.slice(FILE_AUDIT_PREFIX.length)); } catch { return null; }
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+  const keys = Object.keys(entry);
+  if (keys.length !== 4 || keys.join(',') !== 'path,size,chat,type') return null;
+  if (typeof entry.path !== 'string' || !Number.isSafeInteger(entry.size) || entry.size < 0 || typeof entry.chat !== 'string' || !MASKED_CHAT_RE.test(entry.chat) || !FILE_AUDIT_TYPES.has(entry.type)) return null;
+  return `${FILE_AUDIT_PREFIX}${JSON.stringify({ path: redactFilePath(entry.path), size: entry.size, chat: entry.chat, type: entry.type })}`;
+}
+
+/**
+ * One log line on its way to SynaBun's log (manager.js, service.js): redactWa, except a send_file
+ * audit line (after the host's "[whatsapp-host] " tag or not), which fileAuditLine checks and keeps.
+ */
+export function redactLogLine(message) {
+  const text = typeof message === 'string' ? message : String(message ?? '');
+  const tag = text.startsWith('[whatsapp-host] ') ? '[whatsapp-host] ' : '';
+  const audit = fileAuditLine(text.slice(tag.length));
+  return audit ? `${tag}${audit}` : redactWa(text);
+}
+
 /** A phone number for display: never more than the last four digits. */
 export function maskNumber(digits) {
   const d = String(digits ?? '').replace(/\D/g, '');

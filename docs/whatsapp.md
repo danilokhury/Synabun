@@ -17,6 +17,7 @@ It is free: SynaBun links to WhatsApp the way WhatsApp Web does, as a **linked d
 
 **Message yourself** links *your* account. SynaBun reads only your own "Message yourself" chat; every other chat, group and contact is ignored. Replies start with `SynaBun:` (change it under *Reply label*). Only messages typed on the phone count: what you type into "Message yourself" from WhatsApp Web or Desktop is ignored. With *In "Message yourself" → Only messages that start with sb* you can keep using the chat for notes: only messages that start with `sb ` or `sb:` reach SynaBun (the prefix is removed; a bare `sb` works as a picture caption), plus commands (`/stop`, `/status` …), the `ALLOW` answer and replies that quote one of SynaBun's messages. Everything else is a note to self and is dropped without being logged. The service applies this filter; the connector's own prefix filter stays off (`selfTrigger: 'all'` to the host) because it would also drop commands and card answers.
 
+
 **A second number** links a spare WhatsApp account (a second SIM, or WhatsApp Business on another number). You chat with it like a contact, so replies notify you, and your own account is never linked. Whoever sends the one-time **claim code** first becomes the owner; nobody else is ever answered.
 
 ## Setup
@@ -38,7 +39,7 @@ Settings → Messages → WhatsApp → **Safety** decides what a message from th
 |---|---|
 | **Read-only** | Answers, research and plans only. Plan mode everywhere, no agents; a plan can be approved on the computer only. |
 | **Ask on my phone** (default) | Before anything that would change files, run a command or start an agent, SynaBun asks on WhatsApp as a yes / no and acts only on your **yes** (once). Any other message approves nothing and the conversation carries on (see [Questions and approvals](#questions-and-approvals)). Where a task runs is asked the same way, and that answer approves exactly one agent: a second one is asked again. Agents started from WhatsApp get no computer use and run in a registered project folder. |
-| **Autonomous** | Acts without asking, like the Assistant on the computer, for **8 hours**, then drops back to Ask. Autonomous can read any file your computer account can, including SynaBun's WhatsApp login. Use it only with a locked phone, ideally on a second number. |
+| **Autonomous** | Acts without asking, like the Assistant on the computer. It **stays on until you turn it off** in Settings → Messages → WhatsApp → **Safety** by choosing Ask on my phone or Read-only, and it survives restarts. Autonomous can read any file your computer account can, including SynaBun's WhatsApp login. Use it only with a locked phone, ideally on a second number. |
 
 **Ask and Autonomous need a Claude brain.** Which model runs the conversation is set under Conversation → **Model** (see [The model](#the-model)); the default is the Assistant panel's last-used brain. On a Codex or OpenCode brain the conversation runs **Read-only**, whatever the level says: Codex cannot ask before ordinary commands, and OpenCode keeps its own permissions. Codex runs in its read-only sandbox with the network off. OpenCode runs its plan agent, with `webfetch`, `websearch` and `codesearch` refused by SynaBun's gate plugin; if that plugin does not load, the conversation does not run. The phone is told once ("This conversation runs read-only because its brain is Codex; switch the WhatsApp brain to Claude for Ask/Autonomous.") and Safety shows the same warning.
 
@@ -46,6 +47,8 @@ Turning on Autonomous takes two steps so that neither a stolen phone nor a local
 
 1. Click **Autonomous** in Settings, then click it again (an armed second click). Settings shows a 4-digit code, and the phone gets a message saying Autonomous was requested (without the code).
 2. Within **5 minutes**, send `ALLOW 1234` (that code) from the phone. Three wrong codes cancel it. A forwarded message never counts.
+
+There is no time limit after that: the phone's confirmation says Autonomous stays on until it is turned off in Settings → WhatsApp. `/pause` pauses acting on your messages and `/stop` stops the current task; neither changes the level. An Autonomous turned on by SynaBun 2.0.5 or earlier (which ended by itself after 8 hours) is not carried over: after the update it reads as Ask, once, and Activity says so ("Autonomous from an earlier version ended; turn it on again to keep it on without a time limit"). Turn it on again to keep it on.
 
 Lowering the level applies at once, and so does switching the conversation's brain to Codex or OpenCode. At every level:
 
@@ -67,7 +70,7 @@ With the switch on, the level decides:
 |---|---|
 | **Read-only** | Off. |
 | **Ask on my phone** | **One yes per task.** At Ask every task is already asked where it runs; for a task done on the Mac that question is the one about the Mac too: *"For "Tidy the desktop", want me to do it on your Mac, here with Sonnet? I'll control the screen until this task is done. (yes / no)"*. A plain **yes** from your phone turns computer use on for that task; there is no approval per click and no second question. `no` drops the task. |
-| **Autonomous** | Works without asking while the 8-hour window is open, **in a task your own plain message started**. Every other turn asks once on your phone, as at Ask: a turn SynaBun starts itself (an agent's result, a route decision, a follow-up on another model, background work), a turn typed into the conversation on the computer, and a message with forwarded or quoted text or a picture. What started the turn decides, not what was said before it. |
+| **Autonomous** | Works without asking while Autonomous is enabled, **in a task your own plain message started**. Every other turn asks once on your phone, as at Ask: a turn SynaBun starts itself (an agent's result, a route decision, a follow-up on another model, background work), a turn typed into the conversation on the computer, and a message with forwarded or quoted text or a picture. What started the turn decides, not what was said before it. |
 
 Off as well, whatever the level: while WhatsApp is paused, in a conversation whose brain is Codex or OpenCode (it runs read-only), and when computer use is not set up on this Mac (the *Computer* switch in the Assistant panel runs the one-time setup).
 
@@ -91,15 +94,16 @@ The approval is bound to the card you saw: SynaBun records on the card, when it 
 - you send **another message** from your phone while an approved task runs: the approval ends at once, before that message is queued; the task goes on without the Mac and your message is delivered after it as before. (A task that runs unasked at Autonomous holds no approval to end: it keeps running, and `/stop` stops it.)
 - you send `/stop`, or press Stop in SynaBun;
 - WhatsApp is paused (`/pause`, **Pause now**, an agent's pause);
-- the level changes, or the Autonomous window runs out;
+- the level changes;
 - the switch is turned off;
+- WhatsApp is turned off on this computer (`enabled: false`, which also stops the connector); turned on again, the switch applies to new tasks as before;
 - the conversation is rotated or replaced (`/new`, the daily or idle rotation): an earlier conversation never controls the Mac again;
 - SynaBun shuts down;
 - someone stops it at the Mac: `Esc`, the pointer in the top-left corner, or the red *Stop* button. The phone is told in one line ("Computer control was stopped on your Mac: I am no longer controlling it."), and computer use stays latched off until *Resume* is pressed on the computer, as for any other session.
 
 **What "stopped" covers.** Every computer action is admitted once and then fenced: it is checked again when its turn in the execution queue comes and before each command it sends to the helper, and it is bound to the turn it was admitted in. When control ends, actions still waiting are answered `CONTROL_ENDED` (or `STOPPED_BY_USER`) and never reach the helper, the helper's command in flight is aborted, and held mouse buttons and keys are released before the desktop is released. What can still complete: the one helper command that was already executing at that instant, when it is past its last abort check (for example a click that was already posted, or an accessibility action after its element reads). No further command follows it.
 
-**What does not change.** Every guard of computer use applies to a WhatsApp conversation exactly as on the computer: blocked apps (password managers, terminals, web browsers), protected windows, password fields, the locked screen, the pause while you use the mouse or keyboard, one controller at a time, the rate limit. The Assistant is told to describe what it did in words (screenshots cannot be sent to the phone), to stop and say so when the screen is locked or asleep, and never to unlock it or type passwords or codes. Agents started from WhatsApp never get computer use, at any level: only the Assistant's own computer tools are covered. The desktop audit log records, for every action of a WhatsApp conversation, that it came from WhatsApp and whether it ran unasked (Autonomous) or under an approved task.
+**What does not change.** Every guard of computer use applies to a WhatsApp conversation exactly as on the computer: blocked apps (password managers, terminals, web browsers), protected windows, password fields, the locked screen, the pause while you use the mouse or keyboard, one controller at a time, the rate limit. The Assistant is told to describe what it did and what is on screen (a screenshot you ask for as a file is sent with `whatsapp_send_file`: [Sending files](#sending-files)), to stop and say so when the screen is locked or asleep, and never to unlock it or type passwords or codes. Agents started from WhatsApp never get computer use, at any level: only the Assistant's own computer tools are covered. The desktop audit log records, for every action of a WhatsApp conversation, that it came from WhatsApp and whether it ran unasked (Autonomous) or under an approved task.
 
 **In the Assistant panel.** The *Computer* switch of a WhatsApp conversation shows what is in effect and says why in its tooltip ("Off for WhatsApp. Turn it on in Settings → Messages → WhatsApp → Safety", "Asks on your phone once per task", "On while Autonomous is active", "Off: WhatsApp is paused"). It is not a per-conversation switch there: clicking it, the *Computer use* item of the panel's menu and `/computer` explain instead of toggling.
 
@@ -123,6 +127,8 @@ The approval is bound to the card you saw: SynaBun records on the card, when it 
 | `/cards` | ask again what is still waiting for your answer |
 | `/help` | the list |
 | `//text` | send text that starts with a slash |
+
+`/status` includes session spend as `Spend: $spent of the $amount budget`, or `Spend: $spent (no limit)`. The session total includes the brain and agents; a metered brain is called out separately. The saved budget is changed in the Assistant UI.
 
 Levels, models and settings never change from the phone (`/level`, `/model`, `/config`, `/allow` … get a fixed refusal).
 
@@ -149,14 +155,14 @@ A tool approval still shows the whole request exactly as it runs, every argument
 
 **Any message carries the conversation on.** While something waits for you, a message that clearly answers it answers it. Anything else is never told to "answer first" and never waits behind it:
 
-- A pending **question** takes your text as its answer, so the Assistant reads it as the reply and carries on in the same turn.
+- A pending **question** takes your typed text as its answer, so the Assistant reads it as the reply and carries on in the same turn. A voice note does not answer it: the question closes without an answer and the transcript goes in as your next message.
 - A pending **approval** (tool, route, plan, a worker's request) is closed **without being granted**: denied or cancelled, never approved. Your message then goes to the Assistant as the next prompt, and it answers that. The brain is told you wrote something else and to end its turn with no text unless it has a result to report; what it still tries to ask in that turn closes the same way, unseen.
 - **The closing text of that turn is never dropped.** Whatever the brain still says when it ends the turn is sent to you as it is, whatever its length, before the answer to your new message: a short result such as "Tests passed: 48/48. Upgrade skipped." arrives. A turn that ends with nothing to say sends nothing (no "Done.").
 - **A request that appears after you already sent a message.** If a message of yours is already on its way when the Assistant raises a question or an approval (it waits for the running turn to end, or it is still being gathered with other quick messages in the 1.5-second window), the request closes at once and is never shown to you: an approval is denied, a question is cancelled, and your message goes in as the next prompt as soon as that turn ends. What you wrote before a request existed is never taken as its answer, not even a `yes`. A question about where a task runs closes the same way, inside its own send: the Assistant hears at once that you wrote something else (it does not wait for a choice that will never come), and a worker that would have waited for that choice is refused instead of being left waiting (`ROUTE_CANCELLED`: nothing stays "waiting for a model choice"). A worker's own request is still shown: it holds no turn, so no message waits behind it.
 - Several things pending at once: all of them close the same way. Nothing can deadlock. Only the current conversation's requests close: a late request from a worker of an earlier conversation (before `/new` or a rotation) stays open, is shown when its turn comes and is still yours to answer.
 - A message sent while the Assistant is working (nothing waiting for you) goes in as soon as that turn ends; messages that wait together go in as one prompt. A turn whose end never arrives is let go after 20 seconds of silence by a queue watch, without you having to write again.
 
-**What grants an approval, and what never does.** An approval is granted only by a deterministic match in the bridge (`lib/whatsapp/cards.js`) on a message the owner typed: `yes` (also `y`, `ok`, `okay`, `sure`, `go ahead`, `do it`, `sim`, 👍 and a few more) as the *whole* message, or for a route the name of an offered model. Never by the model, and never by a message that merely contains a yes ("yes but only the tests" approves nothing and becomes the next prompt). A forwarded message, a picture and `//text` are never an answer. When more than one request is open, or right after the desktop answered one, a yes must carry the request's 3-letter code ("yes K7Q"); a no needs none.
+**What grants an approval, and what never does.** An approval is granted only by a deterministic match in the bridge (`lib/whatsapp/cards.js`) on a message the owner typed: `yes` (also `y`, `ok`, `okay`, `sure`, `go ahead`, `do it`, `sim`, 👍 and a few more) as the *whole* message, or for a route the name of an offered model. Never by the model, and never by a message that merely contains a yes ("yes but only the tests" approves nothing and becomes the next prompt). A forwarded message, a picture, a voice note ([its transcript](#voice-notes) is an ordinary message) and `//text` are never an answer. When more than one request is open, or right after the desktop answered one, a yes must carry the request's 3-letter code ("yes K7Q"); a no needs none.
 
 **A reply that quotes a message is aimed at that message.** Quoting the request itself answers that request, while it is open, and needs no code. Quoting anything else never answers a request that is open: an earlier request that is closed ("use Opus" quoting an old route question does not pick Opus on a newer one), one of the Assistant's ordinary messages (a `yes` to a question it asked in plain text does not approve a tool or a worker that happens to be waiting), or a message SynaBun does not know. What is open then closes without a grant and your message goes on as the next prompt, with the quoted text as context. A reply that is nothing but an answer (`yes`, `no`, `skip`, a bare option number) and quotes a request which is already closed gets "Already answered in SynaBun." and changes nothing. A reply that says more ("1. Explain the command first", "no, use staging instead") is a new message like any other, whatever it quotes: what is open closes without a grant and it goes on as the next prompt. The `ALLOW 1234` flow for Autonomous and the permission levels are separate from all this and unchanged.
 
@@ -167,6 +173,8 @@ A tool approval still shows the whole request exactly as it runs, every argument
 A WhatsApp conversation never sits waiting for workers. The Assistant dispatches, says in one line what it started and ends its turn; you keep chatting and get answers. When a worker finishes, asks something or fails, the result reaches the Assistant as a mailbox event after the current turn, and its report is forwarded to the phone as an *Update* (or as the reply, when you had just approved that task). Results are never merged into the reply to another message.
 
 Two things hold this, besides the persona: `agent_wait` returns after one second for a WhatsApp conversation (`lib/assistant-api.js`), with what is already done and a note telling the brain to end its turn because the result arrives as a mailbox event; desktop sessions wait as they asked. And a message that arrives while a turn runs is delivered when that turn ends, for every brain (Claude, Codex, OpenCode). Adding a message to a turn that is still running is not done: the Claude CLI could take it, but the bridge would have to tell a merged turn from a queued one, and the route gate resets on every prompt.
+
+**A task continued on another model answers you here.** When the router moves your task to another model in the same conversation (a route it chose by itself, a remembered route, or a model you named on a card), the Assistant first says so in one line and ends its turn; the turn that does the task on the new model follows, and its answer is the reply to your message, sent once, whether or not *Forward background results* is on. The runtime marks that turn before any of its output (`synabun.continuation`, with where the prompt it continues came from), and it stays a turn SynaBun starts itself, not a new message of yours: what it may do is decided as for any such turn (at Autonomous it asks once on your phone before it uses the Mac; its questions and approvals reach your phone and take your answer). A task you typed into the conversation on the computer keeps its continuation on the computer, as before.
 
 ## The model
 
@@ -189,21 +197,132 @@ A change applies **from your next message**, with nothing else to do: the bridge
 | Reply label | `SynaBun:` in Message yourself, none for a second number; up to 24 characters |
 | Long answers | Up to 3 messages · 1 · up to 5 (3,500 characters each; the rest stays in SynaBun) |
 | Fresh conversation | After 6 idle hours · every day at 04:00 · never |
-| In "Message yourself" | Every message · only messages that start with `sb ` / `sb:` (commands, ALLOW and replies to SynaBun always pass) |
+| In "Message yourself" | Every message · only messages that start with `sb ` / `sb:` (commands, ALLOW and replies to SynaBun always pass; a voice note when you say "sb" first: [Voice notes](#voice-notes)) |
+| Transcribe voice notes | On · Off: turned into text on this computer ([Voice notes](#voice-notes)); the line under the switch says whether this computer can, or what is missing |
 
 **Open conversation** closes Settings and opens the WhatsApp conversation in the Assistant panel; **Start a fresh conversation** is the desktop's `/new`.
 
-Fixed limits: text and pictures (4 per message, 5 MB each; voice, video, documents and stickers are not read yet), 20 messages a minute and 300 a day. Messages that wait for a running turn are merged into one prompt (up to 12,000 characters and 4 pictures; past that, 5 prompts can wait in line).
+Fixed limits: text, pictures (4 per message, 5 MB each) and voice notes ([transcribed on this computer](#voice-notes), up to 10 minutes and 20 MB each; video, documents and stickers are not read yet), 20 messages a minute and 300 a day. Messages that wait for a running turn are merged into one prompt (up to 12,000 characters and 4 pictures; past that, 5 prompts can wait in line).
 
 **While SynaBun is off.** WhatsApp holds what you send while SynaBun (or the computer) is off and delivers it when SynaBun reconnects. Held messages younger than 24 hours pass the same owner checks as live ones; those sent in the last 10 minutes are answered, older ones are skipped with one note ("I was offline and skipped N older messages; resend what you still need."), and skipped messages never count against the limits above. Older than 24 hours, other chats, history sync and SynaBun's own echoes are dropped.
 
-**Replies that cannot go out yet.** SynaBun sends at most 10 messages a minute, 120 an hour and 500 a day to keep traffic low; status reactions (👀 ✅ ⏳ ❌ ⏹️) stop three short of each cap, so they never hold a reply back. A reply over the cap waits and goes out when the cap frees up; a reply refused while WhatsApp is reconnecting or the connector is restarting waits for the next connection (up to 20). Two refusals drop the reply instead, and Activity says why: sending paused after an owner anomaly (`PAUSED`), and a connector that kept crashing and was stopped (`HELD`). A question or an approval that waited this way is still the same request when it arrives: quoting it answers it. One that closed while it waited (answered on the computer, timed out) is not sent late.
+**Staying connected.** A linked device stays linked across drops, crashes and restarts of SynaBun: the saved credentials are reused every time, and SynaBun never gives up on its own. A dropped connection is retried after 2, 4, 8, 16, 32, 64, 128 and 256 seconds and then every 5 minutes, each wait ±20% and never above 5 minutes; 10 minutes connected start the ladder over. A connector process that exits is started again after 1, 5, 15 and 60 seconds, then every 5 minutes, and reconnects the link by itself. *Reconnect now* skips the wait. Two kinds of disconnect retry from the longest wait and say so in Settings until the connection has been stable for 10 minutes (until then any other drop waits as long too), with one Activity line per episode: another copy using the same session (`440`, *replaced*), so the two copies do not take the session from each other every few seconds, and an account WhatsApp refuses (`403`, *forbidden*). Only a logout (`401`, removed under Linked devices or too long offline), a session WhatsApp explicitly calls invalid, or a saved session WhatsApp answers with a new QR code needs pairing again (*Link again*). Turning WhatsApp off (`enabled: false`) stops the connector and every retry and ends WhatsApp computer use; turning it on resumes the saved session. A pause does neither: it only stops SynaBun acting on messages. Every disconnect leaves one line in the server log with its code, its reason and what happens next ("recovering automatically", or "link again to pair this device").
+
+**Replies that cannot go out yet.** SynaBun sends at most 10 messages a minute, 120 an hour and 500 a day to keep traffic low; status reactions (👀 ✅ ⏳ ❌ ⏹️) stop three short of each cap, so they never hold a reply back. A reply over the cap waits and goes out when the cap frees up; a reply refused while WhatsApp is reconnecting or the connector is restarting waits for the next connection (up to 20). Two refusals drop the reply instead, and Activity says why: sending paused after an owner anomaly (`PAUSED`), and a connector process of another SynaBun version, stopped until SynaBun restarts (`HELD`: an incompatible IPC protocol, after an update installed while SynaBun ran; an ordinary crash is not `HELD`, the connector restarts and the reply waits). A question or an approval that waited this way is still the same request when it arrives: quoting it answers it. One that closed while it waited (answered on the computer, timed out) is not sent late.
+
+## Voice notes
+
+A voice note, or any audio message, is turned into text **on this computer** and reaches the Assistant like a message you typed, starting with `[Voice note transcript]`. Nothing goes to a transcription service or an API: FFmpeg decodes the note and [whisper.cpp](https://github.com/ggml-org/whisper.cpp)'s `whisper-cli` transcribes it with a model file on this disk. **SynaBun does not ship or download FFmpeg, whisper.cpp or a model**: you install them ([below](#install-whispercpp-ffmpeg-and-a-model)). Until all three are found, the line under *Transcribe voice notes* (Settings → WhatsApp → Conversation) says what is missing and a voice note gets a reply that says why it was not read.
+
+**How it works.** The connector process (the only one that loads Baileys) handles a voice note after the owner and duplicate checks, like any message. Before anything is downloaded it checks that transcription is on, that the engine, the model and FFmpeg are found, and that the note's declared size (20 MB) and length (10 minutes) are within the limits. Then:
+
+1. The note is downloaded (30 s at most) and written to a scratch folder of its own.
+2. FFmpeg decodes it to 16 kHz mono PCM: `-nostdin -hide_banner -loglevel error -n -protocol_whitelist file,pipe -format_whitelist ogg,mp3,mov,aac,amr,amrnb,amrwb,wav,matroska,flac -codec_whitelist opus,vorbis,mp3float,mp3,aac,aac_fixed,alac,amrnb,amrwb,flac,pcm_s16le,pcm_s16be,pcm_s24le,pcm_s32le,pcm_f32le,pcm_u8,pcm_alaw,pcm_mulaw -i file:<note> -vn -t 601 -ac 1 -ar 16000 -f s16le file:<pcm>`, 30 s at most. It reads local files only, only the containers WhatsApp sends audio in and only audio decoders: a forwarded note is third-party data, so playlists, `concat` lists, other formats and other decoders are refused (checked against FFmpeg 9.0.1: ogg, m4a, mp3, wav, webm, ADTS AAC and flac decode, cover art included; AIFF, a `concat` list and an HLS playlist are refused).
+3. The decoded length is checked again: over 600 s is too long, whatever the message said about itself (a note without duration metadata included). The PCM gets a WAV header.
+4. `whisper-cli -m <model> -f <wav> -l <language> -t <min(8, CPU threads)> -bs 1 -bo 1 -nt -otxt -of <out>` transcribes it, 3 minutes at most. There is no `-ng`: a Metal or CUDA build uses its GPU.
+5. `<out>.txt` becomes one line (whitespace collapsed, whisper.cpp's `[BLANK_AUDIO]` dropped); no words is a failure.
+
+Both programs run with `execFile` and `windowsHide`, never through a shell, with a minimal environment (where to look and where temporary files go: no keys, no proxies). A program found on PATH is never one inside SynaBun's own folder, a dependency's `node_modules` or a Windows app alias folder. One note is transcribed at a time; messages you send after a voice note wait until its transcript is ready, so they keep their order. Typed `/stop`, `/pause`, `/status`, `/help` and `/cards` do not wait: they run at once, as commands do (`/resume` and `/new` keep their place, because going ahead of what you sent before them would change what those messages do). What you sent before a `/stop` and arrives after it (the voice note still being transcribed, and what waited behind it) is not acted on, as `/stop` clears what already waits in line; one message says so. What WhatsApp held while SynaBun was offline arrives in order and is not affected. A voice note sent more than 9 minutes ago (held while SynaBun was offline) is not transcribed: the bridge skips messages older than 10 minutes, and the minute between keeps a note from going stale while it is transcribed. Whisper's small model on a recent CPU takes a few seconds for a short note (the reporter measured 4.2 s for 13 s of speech and 7.5 s for 60 s, on a Ryzen 7 5700X without a GPU).
+
+**What the Assistant gets.** `[Voice note transcript] <transcript>`, then a line break and the caption when there is one, cut at 8,192 characters with the transcript first. A forwarded voice note stays forwarded: the Assistant reads it as untrusted data, like a forwarded text, and a reply that quotes something keeps its quote. Speech recognition gets words wrong at times ("Amanhã" came out as "Há manhã" in one report): set `transcriptionLanguage` to the language you speak, and read back anything that matters.
+
+**A voice note approves nothing.** Its transcript is an ordinary message (`voice: true` on the inbound message), so it is never a command (a spoken "/stop" is a message), never the `ALLOW` code, never the answer to an approval or a route question (a spoken "yes" closes the request without a grant and goes on as your next message) and never the answer to a question. Approvals take a typed `yes`. A voice note you record in WhatsApp is your message like a typed one. An audio file you attach instead (`audioFile: true`: music, a meeting, someone else's recording) is treated like a picture: its words may be anyone's, so its turn runs capped at Ask.
+
+**"Only messages that start with sb".** A voice note reaches SynaBun when you say "sb" first (Whisper writes it as "SB", "SB," or "S.B."; the prefix is removed and the marker stays), when its caption starts with `sb`, or when it replies to one of SynaBun's messages. Any other voice note in "Message yourself" is a note to self.
+
+**Privacy.** The note, its PCM and WAV copies and the text file live in a private scratch folder (`<folder>/scratch/vn-*`: 0700, files 0600, one per note) that is removed when the note is done, whatever happened; one a crash left behind is removed when the connector starts again. The transcription folder is outside every backup. No output of FFmpeg or whisper-cli is logged, returned or kept (it can hold the transcript): the server log gets one line naming the step that failed. The transcript is message text: the Activity log keeps it only with *Keep message text in the activity log* on. Once transcribed, the text goes to the Assistant's brain like a typed message, and so to that model's provider, as typed text would.
+
+**When a note is not transcribed** the phone hears why (once per reason every 10 minutes) and a caption still goes on as a message. The reason is `unsupported.reason` of the inbound message (`{ type: 'audio', reason }`):
+
+| Reason | When |
+|---|---|
+| `transcription_disabled` | *Transcribe voice notes* is off. Nothing is downloaded |
+| `transcription_unavailable` | whisper-cli, the model or FFmpeg is not found, or a path set for one does not work. Nothing is downloaded |
+| `too_large` | over 20 MB, as declared (nothing downloaded) or as downloaded |
+| `too_long` | over 10 minutes, as declared (nothing downloaded) or as decoded |
+| `stale` | sent more than 9 minutes ago, while SynaBun was offline. Nothing is downloaded |
+| `transcription_failed` | the download, FFmpeg or whisper-cli failed or timed out, a program or the model was gone when it was about to run, or no words came out |
+
+### Install whisper.cpp, FFmpeg and a model
+
+The transcription folder is `DATA_HOME/runtime/whatsapp-transcription/` (`~/.synabun/runtime/whatsapp-transcription` by default; `%APPDATA%\synabun\runtime\whatsapp-transcription` on Windows), next to the connector. SynaBun looks for, in this order:
+
+- **whisper-cli**: the path in `transcriptionEnginePath`; else `<folder>/bin/whisper-cli` (`whisper-cli.exe` on Windows), `<folder>/bin/Release/whisper-cli.exe` (the layout of the official Windows zip), then `whisper-cli` on PATH and, on macOS, in `/opt/homebrew/bin` and `/usr/local/bin` (a server started from the Dock or Finder may not have them on PATH).
+- **FFmpeg**: the path in `transcriptionFfmpegPath`; else `<folder>/bin/ffmpeg` (`ffmpeg.exe`), then PATH and the same Homebrew folders.
+- **The model**: the path in `transcriptionModelPath`; else `<folder>/ggml-small.bin`.
+
+A path set in the settings is used as it is or not at all: one that does not work makes that part missing and is never replaced by a search. Relative PATH entries and network folders are never searched.
+
+- **macOS**: `brew install whisper-cpp ffmpeg` (Homebrew's whisper-cpp is built with Metal).
+- **Windows**: unpack the official Windows zip of a [whisper.cpp release](https://github.com/ggml-org/whisper.cpp/releases) into `<folder>\bin`, keeping its `Release` folder with the DLLs beside `whisper-cli.exe`; put `ffmpeg.exe` of an FFmpeg build ([ffmpeg.org](https://ffmpeg.org/download.html) lists them) into `<folder>\bin`, or on PATH.
+- **Linux**: your distribution's `ffmpeg` package, and its whisper.cpp package where it has one (the program must be named `whisper-cli`), or build whisper.cpp (`cmake -B build && cmake --build build --config Release`) and copy `build/bin/whisper-cli` into `<folder>/bin`.
+- **The model**, on every system: download [`ggml-small.bin`](https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin) (multilingual, about 466 MiB) into `<folder>/`. Another ggml model works through `transcriptionModelPath`.
+
+Installed while SynaBun runs: the connector and Settings look again within a minute (turning the switch off and on looks at once). Nothing needs a restart.
+
+### Settings and API
+
+Settings → WhatsApp → Conversation has the switch (*Transcribe voice notes*) and the line under it: "Voice notes are transcribed on this computer.", or "Voice notes: not set up — missing …". The other fields are set with `PUT /api/whatsapp/config`, behind the same guards as the Settings tab (this computer only):
+
+| Field | Default | Values |
+|---|---|---|
+| `transcriptionEnabled` | `true` | `true` · `false` |
+| `transcriptionLanguage` | `'auto'` | `'auto'` (whisper.cpp detects it per note) or a 2-3 letter lowercase code (`en`, `pt`, `yue`) |
+| `transcriptionEnginePath` | `''` | `''` (found by itself) or the absolute path of the whisper-cli program |
+| `transcriptionModelPath` | `''` | `''` (`<folder>/ggml-small.bin`) or the absolute path of a ggml model |
+| `transcriptionFfmpegPath` | `''` | `''` (found by itself) or the absolute path of the ffmpeg program |
+
+A path must be the absolute path of an existing regular file on this computer (links are followed), a program executable (an `.exe` on Windows), the model readable and not empty; it is never a name looked up on PATH. Anything else is `400 CONFIG_INVALID` with `field`. The connector checks the file again right before it runs it. Only the person at this computer sets a path: a service write may clear one but never set it, no phone command touches them, and remote sessions are refused the transcription folder (`lib/remote-policy.js`), so nothing but you chooses what the connector runs. A `PUT` that changes any of these fields re-configures the connector at once. `GET /status` reports `transcription { enabled, available, missing, invalid, language, home }` (`missing` / `invalid`: `engine`, `model`, `ffmpeg`).
+
+## Sending files
+
+Ask for a file and the Assistant sends it to this chat as a real WhatsApp attachment: a document, a photo, a video or an audio file, including images and videos it had a worker generate. It uses the assistant-only MCP tool `whatsapp_send_file({ path, caption?, as? })`, and only when you asked for a file. For generated media it takes the local path from the worker's result (SynaBun keeps those copies in `DATA_HOME/data/media/`). There is no recipient and no session parameter: the file goes to the bound owner, in the WhatsApp conversation whose brain called the tool, and to nobody else.
+
+**Forms.** `as` is `auto` (the default), `document`, `image`, `video` or `audio`:
+
+| Extension | `auto` sends it as | MIME type |
+|---|---|---|
+| `.jpg` `.jpeg` · `.png` · `.webp` | a photo | `image/jpeg` · `image/png` · `image/webp` |
+| `.mp4` | a video | `video/mp4` |
+| `.ogg` `.opus` · `.mp3` · `.m4a` | audio (an audio file, not a voice note) | `audio/ogg` · `audio/mpeg` · `audio/mp4` |
+| `.pdf` `.md` `.txt` `.csv` `.json` `.patch` `.diff` `.zip` `.7z` `.gz` `.doc` `.docx` `.xls` `.xlsx` `.pptx` `.gif` `.svg` `.wav` `.webm`, anything else | a document, with its name | its type (`application/pdf`, `text/markdown`, …), else `application/octet-stream` |
+
+`document` sends the original file untouched, whatever it is. A native form that does not match the extension (`as: 'image'` for a PDF) is refused: use `auto` or `document`. Photos and videos go without a preview thumbnail: SynaBun never decodes the file it sends (building a video preview would mean running FFmpeg).
+
+**Limits.** A photo, video or audio file over 16 MiB goes as a document instead (`fallback: true` in the answer); nothing over 100 MiB is sent, and that is refused before the file is read. Native audio has no caption: a caption with it is refused, so leave it out or send the file as a document. A caption holds up to 1,024 characters, a path up to 2,048. A file counts against the send limits like a reply (10 a minute, 120 an hour, 500 a day).
+
+**What is refused** (`FILE_FORBIDDEN`), on the path as written **and** on the real file it leads to (links are followed and checked too), on macOS, Linux and Windows:
+
+- the WhatsApp session itself (`DATA_HOME/whatsapp/auth`, wherever `SYNABUN_WHATSAPP_HOME` puts it) and SynaBun's data home (`DATA_HOME` and `~/.synabun`: `data/`, `mcp-data/`, `runtime/`, backups, `.env`, the memory database, the Claude and Codex account folders), except `data/media/`, where the generated images and videos and saved browser screenshots are;
+- browser profiles: Chrome, Chromium, Brave, Edge (`Microsoft Edge` on macOS too), Firefox profiles on every system (`logins.json` and `key4.db` are its saved passwords), Safari, Arc, Opera, Vivaldi and anti-detect profiles (MoreLogin), plus their password, cookie and key files by name wherever they are;
+- app sign-in stores: Discord, Slack, Telegram Desktop (`tdata`), Signal, WhatsApp Desktop;
+- password managers (1Password, Bitwarden, KeePass `*.kdbx`), `~/Library/Keychains`, GNOME Keyring and KWallet, Windows Credential Manager (with its DPAPI keys and the Vault), the Mail and Messages stores and Thunderbird;
+- shell histories (`.zsh_history`, `.bash_history`, fish's history, PowerShell's), `.netrc`, `.npmrc`, `.pypirc`, `.pgpass`, `.git-credentials` and git's `~/.config/git/credentials`, `.vault-token`, the `.docker`, `.kube`, `.aws`, `.azure`, gcloud, `gh`, `.gnupg` and `.ssh` folders, and CLI token stores (cargo, gem, Pulumi, Hugging Face, Kaggle, rclone, hub, glab, doctl, Stripe, Fly, cloudflared, OCI, Databricks);
+- key and certificate files anywhere (`*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore`, `*.ppk`, `*.p8`, SSH `id_*` keys), `.env` files and their variants, terraform state;
+- AI tool configuration and credentials: `~/.claude.json`, `~/.claude*`, `~/.codex*`, OpenCode's configuration and `auth.json`, GitHub Copilot's tokens, `.cursor/mcp.json`, `claude_desktop_config.json`, `mcp-api-key` and `.synabun-api-key` files;
+- copies of those places' secret parts wherever they are (a backup disk, Time Machine): `.synabun/whatsapp`, `mcp-data`, `runtime` and `backups`, `sidepanel-configs`, `.claude/settings*.json` and `.claude/projects`, `.codex*/config.toml`, `sessions` and `history.jsonl`; and SynaBun's own backup archives (`synabun-<kind>-<timestamp>.zip`, `synabun-auto-backup.zip`) by their name, in whatever folder the backups go to.
+
+The list is explicit (`neural-interface/lib/whatsapp/local-file.js`, `DENYLIST`) and matched without regard to letter case. The protected folders (the session, the data home, `~/.claude*`, `~/.codex*`) are also recognized by what they are on disk, their device and inode, so another spelling of the same folder is refused like the usual one: macOS reaches every folder of the data volume under `/System/Volumes/Data/…` too, which `realpath` keeps. On Windows a name is also checked as Windows opens it, without trailing dots and spaces (`.ssh.\id_rsa` is `.ssh\id_rsa`). **The content of a file is never inspected**: a secret inside an ordinary file with an ordinary name is sent like any other file, so ask only for what you mean to receive. Keynote presentations share the `.key` extension with private keys and are refused too: export them to PDF first.
+
+Also refused: a URL, a network share or device path (`\\server\share`, `//server`, `\\?\…`), the system's own namespaces (`/dev`, where `/dev/fd/3` would be the connector's own open file, `/proc`, `/sys`, and macOS's `/.vol`, `/.nofollow`, `/.resolve`, which open any file under another name), a link or a mapped drive that leads to a share or to one of them, and, on Windows, an alternate data stream (`file.txt:stream`), all `FILE_FORBIDDEN`; a relative path or one with a control character (`BAD_REQUEST`); a folder, a missing or unreadable file, an empty file, anything but a regular file (a FIFO, a device) and a file that changes while it is read (`FILE_INVALID`); a file with more than one hard link (`FILE_FORBIDDEN`: its other names cannot be checked against the list).
+
+**How it is read.** In the connector process, in the file's turn of the send queue, right before it goes out: the request is checked, the path resolved, both checked against the list and the protected folders by device and inode, the file opened without following a link (`O_NOFOLLOW` where the system has it, `O_NONBLOCK` so a FIFO swapped in cannot hang it) and compared with what the checks saw (device, inode, size; its real path unchanged and still naming that very file, so a parent folder swapped for a link and back is caught; on Linux the open file's own name is checked against the list too), read to its end and not one byte further, and checked again when the read ends. The owner the request was accepted for must still be the owner before the read (`NO_OWNER`), and the connection must not change while the file is read (`NOT_CONNECTED`): a disconnect, another owner or a pause while the file is read sends nothing. A reconnect while the file waits its turn is no change of owner: like a text reply, it goes on the new link.
+
+**When it is refused.** The answer names the file and the reason (`…/.ssh/id_ed25519 is protected (credentials (SSH, GnuPG, cloud, registry and git logins)): SynaBun never sends it from WhatsApp`), so the Assistant can tell you why; numbers, JIDs and credentials in the path are redacted.
+
+**Who may send.** Only the active WhatsApp conversation's own Assistant brain, at any level (Read-only included) and on any brain (Claude, Codex or OpenCode). Delivering a file you asked for is a reply, like the final text: it needs no route of its own, is never asked on the phone at Ask, and works in plan mode and on the read-only Codex and OpenCode brains. It grants nothing else: no file edits, no computer use, no worker permissions. The brain proves who it is with a credential SynaBun makes for each brain launch of a WhatsApp conversation and gives only to that brain's SynaBun MCP server, through the environment of the brain's own process, never a command line or a file: the Claude CLI expands it into its MCP header, Codex forwards it to its MCP child by name, OpenCode's serve fills it into its MCP entry. The `X-Synabun-Role` and `X-Synabun-Terminal` headers, which any local program can send, prove nothing here. A worker, a desktop chat and an earlier WhatsApp conversation are refused (`403`), and so is any request while WhatsApp is off, paused or not connected (`409`). See [SECURITY.md](../SECURITY.md).
+
+**When the answer is uncertain.** The send is exactly one request, never retried by SynaBun or by the Assistant. A success (`{ ok, id, type, mimetype, size, fileName, path, fallback }`, `path` the canonical one) means WhatsApp took the file. A timeout (the connector gives a file 120 seconds, the tool 130; each brain's MCP client waits longer: Codex and OpenCode 180 seconds), a connector that stops during the send, or an answer lost on the way back (a reset connection) answers with `uncertain: true`: the file may or may not have arrived, and the Assistant says so instead of sending it again. Ask again if it did not arrive. `UNREACHABLE` (nothing listening for the request) means nothing was sent.
+
+**What is kept.** Every real send attempt leaves one line in the server log with the canonical path, the size, the form and the masked chat (`[whatsapp] file send {"path":…,"size":…,"chat":"••••1234","type":"document"}`), never the bytes or the caption; numbers and JIDs in the path are redacted. Activity records each outcome with the path and the size, or the refusal's code; for a refusal the path is the Assistant's own text, so long key-like runs in it are masked too (`[key]`).
 
 ## Security model
 
 **Transport.** Baileys runs only in a forked child process (`lib/whatsapp/host.js`) with an allow-listed environment (no API keys) and redacted output. The main process never loads Baileys and never sees a phone number or JID: events carry masked numbers (`••••1234`) at most. The host's only send call addresses the bound owner; no operation takes an address.
 
 **Owner binding.** Only the owner is answered: in Message yourself, your own chat after you confirmed the account; in second-number mode, the account that sent the claim code. Everything else is dropped by the host and only counted (*Ignored* in Activity).
+
+**Sending files.** `POST /api/assistant/whatsapp/send-file` sits outside `/api/whatsapp` and has its own guards: no invite guests, no tunnel or proxy headers, a loopback socket, a localhost `Host` on SynaBun's port, a JSON body of `path`, `caption` and `as` only, and the calling brain's credential (`X-Synabun-Brain-Token`), compared in constant time ([Sending files](#sending-files)).
 
 **The HTTP API** (`/api/whatsapp`, `lib/http-guards.js`):
 
@@ -221,6 +340,7 @@ App-wide, every WebSocket upgrade (`/ws/*`) must carry no `Origin` or this serve
 |---|---|
 | WhatsApp session keys | `DATA_HOME/whatsapp/auth/` (`%LOCALAPPDATA%\synabun\whatsapp` on Windows; `SYNABUN_WHATSAPP_HOME` overrides): outside every folder a backup copies (`data/`, `mcp-data/`, the skills / agents / skins roots), so backups never copy a live session. On macOS and Linux the folder must be yours at 0700 and its files at 0600, or the store does not open (`AUTH_PERMS`) |
 | The connector | `DATA_HOME/runtime/whatsapp/` |
+| Voice notes | `DATA_HOME/runtime/whatsapp-transcription/`: whisper.cpp, FFmpeg and the model you put there, and `scratch/`, which holds a note only while it is transcribed |
 | Activity log | `DATA_HOME/data/logs/whatsapp-YYYYMMDD.log`, mode 0600, deleted after 7 days |
 | Settings | kv_config row `whatsapp_config` in the SynaBun database |
 | The conversation | an ordinary Assistant session ("WhatsApp · Sep 28") |
@@ -233,7 +353,7 @@ App-wide, every WebSocket upgrade (`/ws/*`) must carry no `Origin` or this serve
 
 ## Unlink and remove
 
-- **Unlink** logs SynaBun out of WhatsApp (the device disappears from Linked devices), deletes the session keys and resets the conversation pointer, owner, pause and autonomous window.
+- **Unlink** logs SynaBun out of WhatsApp (the device disappears from Linked devices), deletes the session keys and resets the conversation pointer, owner, pause and autonomous mode (Autonomous goes back to Ask).
 - **Remove WhatsApp from SynaBun** also removes the connector and the activity log and resets every WhatsApp setting; tick *Also delete the WhatsApp conversation* to delete the Assistant conversation too.
 - **Lost your phone?** Press **Pause now**, or on any device open WhatsApp → Settings → Linked devices → SynaBun → **Log out**.
 - Uninstalling SynaBun does **not** unlink WhatsApp: unlink first, or log it out from the phone.
@@ -248,8 +368,11 @@ App-wide, every WebSocket upgrade (`/ws/*`) must carry no `Origin` or this serve
 | Messages from WhatsApp Web / Desktop get no answer | In Message yourself only messages typed on the phone count. |
 | "Logged out from the phone" | Removed under Linked devices, or the phone was offline for 14 days (WhatsApp then logs out every linked device). *Link again*. |
 | "WhatsApp refused this account" | WhatsApp blocked linking for that account; check the WhatsApp app. |
-| Stuck on "Reconnecting" | Check the computer's internet; *Reconnect now*. After 10 reconnects in 10 minutes SynaBun stops trying. |
-| "The connector kept crashing" | *Reconnect* restarts it; *Install log* shows what npm did. |
+| "The saved WhatsApp session is invalid" | WhatsApp rejected this device's session (`badSession`), or answered the saved session with a new QR code. Automatic retries cannot repair the credentials: *Link again* to pair the device. |
+| Stuck on "Reconnecting" | SynaBun retries indefinitely with exponential backoff and jitter, capped at 5 minutes, also after connector crashes; *Reconnect now* skips the wait. Saved credentials are reused after a restart. Only a logout (401), an explicitly invalid session, or a rejected saved session needs pairing again. Disabling WhatsApp (`enabled: false`) stops the recovery. Check the computer's internet if it never comes back. |
+| "Another copy is using this WhatsApp session" (while reconnecting) | Another SynaBun, or another program with a copy of the same session, connected with it (`440`). SynaBun retries every 5 minutes so the two copies do not keep taking the session from each other; close the other copy, or unlink and link again. The note goes once the connection has been stable for 10 minutes. |
+| "WhatsApp refused this account; it may be restricted or banned" (while reconnecting) | WhatsApp refuses the account (`403`). The link stays and SynaBun retries every 5 minutes; check WhatsApp on the phone. The note goes once the connection has been stable for 10 minutes. |
+| "The WhatsApp connector does not match this SynaBun version" (`HOST_HELD`) | The connector process speaks another IPC protocol than the running server, after an update installed while SynaBun ran. Restart SynaBun. A connector that merely crashes is restarted by itself and never shows this. |
 | Install failed | The message names the cause (`NPM_NOT_FOUND`, `OFFLINE`, `REGISTRY_REFUSED`, `DISK_FULL`, `NO_PERMISSION`, `FILE_IN_USE`, `TIMEOUT`, `VERIFY_FAILED`); *Try again*. |
 | "SynaBun could not make the WhatsApp session files private" (`AUTH_PERMS`) | The session folder or its files are not yours, or cannot be set to 700 / 600 (a shared or network drive, another user's files). Fix the permissions of the folder shown under Data & privacy, then *Reconnect*. |
 | Replies say the conversation "runs read-only because its brain is Codex / OpenCode" | Ask and Autonomous need a Claude brain: pick a Claude model under Conversation → Model. It applies from your next message. |
@@ -258,6 +381,14 @@ App-wide, every WebSocket upgrade (`/ws/*`) must carry no `Origin` or this serve
 | I replied `yes` to an older message and the approval was denied | A reply that quotes a message answers only that message. Quote the request itself, or send `yes` without quoting anything. |
 | The Assistant never asked, but says it could not run something | You had already sent another message when it wanted to ask, so the request was closed without a grant and your message went first. Ask again when you want it. |
 | The tab says WhatsApp is turned off | `SYNABUN_WHATSAPP=off` is set in SynaBun's environment. |
+| Voice notes get "I can't transcribe voice notes yet" | This computer lacks whisper.cpp, its model or FFmpeg; the line under *Transcribe voice notes* says which. Install them ([Voice notes](#install-whispercpp-ffmpeg-and-a-model)); SynaBun notices within a minute. A path set in the settings that stopped working counts as missing. |
+| A voice note "was not transcribed" | Over 10 minutes or 20 MB, or FFmpeg / whisper-cli failed (the server log names the step, never the words). Try a shorter note, or type it. |
+| I said "yes" in a voice note and the approval was denied | By design: a voice note is an ordinary message and approves nothing. Type `yes`. |
+| Voice notes in "Message yourself" get no answer | With *Only messages that start with sb*, say "sb" first, give the note an `sb` caption, or reply to one of SynaBun's messages. |
+| "…is protected: SynaBun never sends it from WhatsApp" (`FILE_FORBIDDEN`) | The file is in a place SynaBun never sends from, or links to one ([Sending files](#sending-files)). Copy what you want to share into an ordinary folder, or send it from the computer. |
+| "The file may or may not have arrived" | The send timed out or the connector stopped during it. SynaBun does not send it again by itself; check the chat and ask again if it is missing. |
+| "SynaBun is not reachable: nothing was sent" (`UNREACHABLE`) | The brain's MCP server could not reach SynaBun at all, so the file was not sent. Check that SynaBun is running, then ask again. |
+| Transcripts get words wrong | Set `transcriptionLanguage` to the language you speak (`auto` guesses per note), or point `transcriptionModelPath` at a larger ggml model. |
 
 **Not the same as the WhatsApp browser tools.** The `whatsapp` MCP profile (`browser_extract_wa_chats`, `browser_extract_wa_messages`) lets agents read WhatsApp Web in SynaBun's browser. The WhatsApp Link is you chatting with SynaBun from your phone. They share nothing.
 
@@ -272,11 +403,13 @@ App-wide, every WebSocket upgrade (`/ws/*`) must carry no `Origin` or this serve
 
 ## API reference
 
+`POST /api/assistant/whatsapp/send-file` is the `whatsapp_send_file` tool's route (see [Sending files](#sending-files)).
+
 Base path `/api/whatsapp`. Errors are `{ ok: false, code, error, field? }` with the status shown; `429` adds `retryAfterMs` and `Retry-After`, `409 VERSION_CONFLICT` adds `version`.
 
 | Route | Body | Answer |
 |---|---|---|
-| `GET /status` | — | The state machine and masked data: `state` (`unavailable` +`reason` (`env`: `SYNABUN_WHATSAPP=off`; `starting`: the server is still starting the Assistant; `error`: the WhatsApp Link failed to load), `not_installed`, `installing` +`stage`, `install_failed` +`code`, `ready`, `linking` +`method` `phase` (`starting`/`waiting`/`scanned`), `link_expired`, `confirm_owner` +`kind` (`self`/`code`), `connected`, `reconnecting`, `paused`, `logged_out` +`reason` (`removed`/`inactive`/`banned`), `error` +`code`), `mode`, `level`, `levelExpiresAt`, `paused`, `pausedBy`, `computerUse` (the [Computer use](#computer-use) switch), `connector {installed, version, pinned, outdated, stage, errorCode}`, `account {masked, name}`, `owner {masked, boundAt}`, `confirm {kind, expiresAt, attemptsLeft}`, `session {id, title}`, `brainLimit {provider, label, text}` (the conversation's brain makes it read-only), `brainChoice {choice, source: 'assistant'\|'choice', effective {provider, providerLabel, model, modelLabel, effort}, fallback {reason: 'disabled'\|'unknown', provider, model}, readOnly {provider, label}, checked}` (the model selector), `connection {attempt, nextRetryAt}`, `counters`, `config`, `version`, `escalation`, `manualCommand`, `paths`. The `whatsapp:status` broadcast carries states, counters and `brain` (the stored choice: ids only) |
+| `GET /status` | — | The state machine and masked data: `state` (`unavailable` +`reason` (`env`: `SYNABUN_WHATSAPP=off`; `starting`: the server is still starting the Assistant; `error`: the WhatsApp Link failed to load), `not_installed`, `installing` +`stage`, `install_failed` +`code`, `ready`, `linking` +`method` `phase` (`starting`/`waiting`/`scanned`), `link_expired`, `confirm_owner` +`kind` (`self`/`code`), `connected`, `reconnecting`, `paused`, `logged_out` +`reason` (`removed`/`inactive`/`banned`/`invalid_session`), `error` +`code`), `warning` (`replaced` (440) / `forbidden` (403) while the link retries one of them, until 10 minutes connected; else `null`), `mode`, `level`, `levelExpiresAt` (always `null`: Autonomous has no time limit; kept for older readers), `paused`, `pausedBy`, `computerUse` (the [Computer use](#computer-use) switch), `connector {installed, version, pinned, outdated, stage, errorCode}`, `account {masked, name}`, `owner {masked, boundAt}`, `confirm {kind, expiresAt, attemptsLeft}`, `session {id, title}`, `brainLimit {provider, label, text}` (the conversation's brain makes it read-only), `brainChoice {choice, source: 'assistant'\|'choice', effective {provider, providerLabel, model, modelLabel, effort}, fallback {reason: 'disabled'\|'unknown', provider, model}, readOnly {provider, label}, checked}` (the model selector), `connection {attempt, nextRetryAt}` (the next reconnect, or the next connector start while it is down), `host {state, restarts, retryInMs}`, `transcription {enabled, available, missing, invalid, language, home}` ([Voice notes](#voice-notes)), `counters`, `config`, `version`, `escalation`, `manualCommand`, `paths`. The `whatsapp:status` broadcast carries states, counters, `warning`, `brain` (the stored choice: ids only) and `transcription {enabled, available}` |
 | `POST /setup` | `{ mode: 'self'\|'dedicated', method: 'qr'\|'code', phone? }` | Records the intent (never the number), installs if needed. `{ ok, next: 'install'\|'link'\|'none', status }` — the tab then opens `/link` |
 | `POST /connector/install` | `{ update?, reinstall? }` | Starts an install (`409 INSTALL_BUSY`); progress in `/status` |
 | `DELETE /connector/install` | `{}` | Cancels a running install |
@@ -290,7 +423,7 @@ Base path `/api/whatsapp`. Errors are `{ ok: false, code, error, field? }` with 
 | `POST /pause` | `{}` | Pause (agents allowed: JSON body required, no Origin/UI header) |
 | `POST /resume`, `/reconnect`, `/unlink` | `{}` | |
 | `POST /remove` | `{ deleteConversation? }` | Unlink, uninstall, clear the log and every setting |
-| `GET /config` · `PUT /config` | `{ config: {…}, expectedVersion, confirmEscalation? }` | User fields: `enabled`, `level`, `progress`, `forwardBackground`, `replyLabel`, `maxMessages`, `rotation`, `selfTrigger`, `activityText`, `strictWorkerApprovals`, `computerUse` (a boolean, off by default: [Computer use](#computer-use)), `brain` (`null` = same as the Assistant, or `{ provider, model, effort }`: checked against the Assistant's catalog, `400 CONFIG_INVALID {field:'brain'}` for an unknown or disabled model or an effort it does not run, `503 CATALOG_UNAVAILABLE` when it cannot be checked). `400 CONFIG_INVALID {field}` (service-owned fields included), `409 VERSION_CONFLICT`, `400 CONFIRM_REQUIRED`, `409 PHONE_REQUIRED`; raising to Autonomous answers `pending: { code, expiresAt, attemptsLeft }` |
+| `GET /config` · `PUT /config` | `{ config: {…}, expectedVersion, confirmEscalation? }` | User fields: `enabled`, `level`, `progress`, `forwardBackground`, `replyLabel`, `maxMessages`, `rotation`, `selfTrigger`, `activityText`, `strictWorkerApprovals`, `computerUse` (a boolean, off by default: [Computer use](#computer-use)), `brain` (`null` = same as the Assistant, or `{ provider, model, effort }`: checked against the Assistant's catalog, `400 CONFIG_INVALID {field:'brain'}` for an unknown or disabled model or an effort it does not run, `503 CATALOG_UNAVAILABLE` when it cannot be checked), `transcriptionEnabled`, `transcriptionLanguage`, `transcriptionEnginePath`, `transcriptionModelPath`, `transcriptionFfmpegPath` ([Voice notes](#settings-and-api): a path is checked on disk, a change re-configures the connector at once). `400 CONFIG_INVALID {field}` (service-owned fields included), `409 VERSION_CONFLICT`, `400 CONFIRM_REQUIRED`, `409 PHONE_REQUIRED`; raising to Autonomous answers `pending: { code, expiresAt, attemptsLeft }` |
 | `GET /activity` · `DELETE /activity` | `?limit=` | The latest rows (`{at, kind, detail, text?}`) and counters; clear |
 | `POST /session/new` | `{}` | A fresh WhatsApp conversation |
 | `POST /__fake` | `{ action, … }` | Only with `SYNABUN_WHATSAPP_FAKE=1` (404 otherwise) |
@@ -305,9 +438,11 @@ Base path `/api/whatsapp`. Errors are `{ ok: false, code, error, field? }` with 
 | `inbound` | `{ from: 'owner'\|'stranger', text, forwarded?, offline?, ageMs? }` — a message from you (your own chat in self mode) or from a stranger (ignored); `offline: true` delivers it the way WhatsApp hands over what it held while SynaBun was off, sent `ageMs` ago |
 | `drop` | the connection drops (reconnect) |
 | `logout` | the phone logs SynaBun out |
-| `ban` | WhatsApp refuses the account |
-| `crash` | the connector process crashes (respawn, crash breaker) |
+| `ban` | WhatsApp refuses the account (`403`: the link retries every 5 minutes and Settings shows the warning) |
+| `crash` | the connector process crashes (it is started again and reconnects, however often it crashes) |
 | `state` | nothing; every answer includes `sent` (what SynaBun sent, without addresses) and `status` |
+
+The `inbound` action sends text. Voice notes are played in process: `fake.inbound({ audio: { data, seconds, fileLength, fail, hang } })` of `fake-baileys.js`, with a stand-in transcriber in the host (`hostOptions.transcriber` of the inproc manager).
 
 Tests use fakes throughout, a temporary data home and `SYNABUN_TYPESAFE=off`; they are not published with this repository.
 

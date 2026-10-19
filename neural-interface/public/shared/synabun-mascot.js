@@ -37,7 +37,8 @@
  *   `opts.count` 1-3 (subagent minis), `opts.mode` 'recall' | 'remember'
  *   (memory), `opts.ticks` 0-3 (plan), `opts.then` a pose to blend to once a
  *   one-shot (success, error, blocked) has played and held. The same pose with
- *   a new count or ticks keeps its loop running.
+ *   a new count or ticks keeps its loop running. `opts.unlimited` selects the
+ *   budget pose's relaxed infinity variant; project peeks into a folder.
  * - `react(name)` — `MASCOT_REACTIONS`: hop (spring, at most one per 600 ms),
  *   wince, nod, pop (plan: pops the newest tick; ticks the next box too
  *   unless setPose passed `ticks`), startle, pulse, click
@@ -81,7 +82,7 @@ export const MASCOT_VIEWBOX = '0 0 280 140';
 /** One pose per tool kind (shared with the activity rack's kind ids). */
 export const MASCOT_KINDS = Object.freeze(['shell', 'read', 'edit', 'search', 'web', 'subagent', 'plan', 'memory', 'runs', 'computer', 'think', 'mcp']);
 export const MASCOT_STATES = Object.freeze(['idle', 'sleep', 'watch', 'wait', 'success', 'error', 'blocked', 'offline']);
-export const MASCOT_POSES = Object.freeze([...MASCOT_KINDS, ...MASCOT_STATES]);
+export const MASCOT_POSES = Object.freeze([...MASCOT_KINDS, ...MASCOT_STATES, 'project', 'budget']);
 export const MASCOT_REACTIONS = Object.freeze(['hop', 'wince', 'nod', 'pop', 'startle', 'pulse', 'click']);
 
 /** The character's SVG. Colour comes from `currentColor` (the mouth at 25 %). */
@@ -145,6 +146,8 @@ export function mascotCameoSvg({ className = '' } = {}) {
 
 /** Each prop's own box in face units, to draw it alone (a ledger row's glyph, a suggestion's). */
 const PROP_BOX = Object.freeze({
+  project: [204, 77, 62, 48],
+  budget: [212, 65, 54, 60],
   shell: [144, 116, 42, 26], // the last keycap and the caret
   read: [65, 20, 150, 88],
   edit: [188, 93, 56, 44],
@@ -315,6 +318,31 @@ const MINIS = [
  * look: follows look(), easing with this time constant (ms).
  */
 const POSES = {
+  // Empty-state controls: host-directed gaze, the same ticker and prop painter as tool kinds.
+  project: {
+    motion: 'loop', blinks: true, look: 70,
+    frame(t, o) {
+      const f = blankFrame();
+      const peek = o.still ? 0.5 : (1 + Math.sin(TAU * t / 2400)) / 2;
+      f.eyes = [eye(0, 2 + 2 * peek, 1, 0.92, -2), eye(0, 2 + 2 * peek, 1, 0.96, 2)];
+      f.mouth = mouth(34, 11);
+      gaze(f, o.look, { x: 16, y: 10 });
+      f.prop = { name: 'project', peek };
+      return f;
+    },
+  },
+  budget: {
+    motion: 'loop', blinks: true, look: 70,
+    frame(t, o) {
+      const f = blankFrame();
+      const lift = o.still ? 0 : Math.sin(TAU * t / 2200);
+      f.eyes = [eye(0, 0, 1, o.unlimited ? 0.65 : 0.93, -3), eye(0, 0, 1, o.unlimited ? 0.65 : 1, 3)];
+      f.mouth = mouth(o.unlimited ? 48 : 34, o.unlimited ? 20 : 11);
+      gaze(f, o.look, { x: 16, y: 10 });
+      f.prop = { name: 'budget', lift, unlimited: o.unlimited };
+      return f;
+    },
+  },
   // ── States ──
   idle: {
     motion: 'still', blinks: true, tracks: true,
@@ -598,6 +626,7 @@ function poseOptions(opts) {
     count: intIn(o.count, 1, 3, 1),
     mode: o.mode === 'remember' ? 'remember' : 'recall',
     ticks: intIn(o.ticks, 0, 3, 1),
+    unlimited: !!o.unlimited,
     still: !!o.still,
   };
 }
@@ -741,6 +770,23 @@ export function reactionFrame(frame, name, p) {
 // ── Props: small, currentColor, in the face's pill geometry ──
 
 const PROPS = {
+  project: {
+    markup: () => '<g fill="none" stroke="currentColor" stroke-opacity=".7" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M208 117V84q0-4 4-4h15l7 8h25v29z"/><path class="syna-folder-front" d="M208 117l5-23h49l-5 23z"/><path class="syna-folder-paper" d="M223 93V85h22v8M229 89h10"/></g>',
+    refs: g => ({ front: g.querySelector('.syna-folder-front'), paper: g.querySelector('.syna-folder-paper') }),
+    update(r, p, put) {
+      put(r.front, 'transform', `translate(0,${n(2 * p.peek)})`);
+      put(r.paper, 'transform', `translate(0,${n(-4 * p.peek)})`);
+    },
+  },
+  budget: {
+    markup: () => '<g fill="none" stroke="currentColor" stroke-opacity=".7" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect x="216" y="96" width="46" height="25" rx="4"/><path d="M250 103h12v10h-12z"/><g class="syna-budget-coin"><circle cx="236" cy="80" r="12"/><path d="M236 73v14M232 76h6q4 0 0 4h-4q-4 4 0 4h6"/></g><path class="syna-budget-infinity" d="M235 80c-16-19-25 15-8 7l17-14c17-8 8 26-9 7"/></g>',
+    refs: g => ({ coin: g.querySelector('.syna-budget-coin'), infinity: g.querySelector('.syna-budget-infinity') }),
+    update(r, p, put) {
+      put(r.coin, 'display', p.unlimited ? 'none' : null);
+      put(r.infinity, 'display', p.unlimited ? null : 'none');
+      put(p.unlimited ? r.infinity : r.coin, 'transform', `translate(0,${n(-3 * p.lift)})`);
+    },
+  },
   shell: { // three keycaps and a block caret under the chin
     markup: () => [0, 1, 2].map(i => `<rect class="syna-key" x="${100 + i * 24}" y="127" width="20" height="9" rx="4.5" fill="currentColor" fill-opacity=".4"/>`).join('')
       + '<rect class="syna-caret" x="174" y="125" width="7" height="12" rx="2" fill="currentColor" fill-opacity=".75"/>',

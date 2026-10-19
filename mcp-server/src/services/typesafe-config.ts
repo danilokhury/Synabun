@@ -31,7 +31,7 @@ export const SURFACES = [
   'browser-page-state', 'browser-target', 'browser-social',
   'task-boundary', 'session-lookup', 'user-learning', 'claim-check',
   'edit-stale', 'supersession', 'compact-digest', 'plan-conflict',
-  'worker-outcome', 'worker-claim', 'desktop-target',
+  'worker-outcome', 'worker-claim', 'desktop-target', 'budget-split',
 ] as const;
 export type SurfaceName = typeof SURFACES[number];
 
@@ -94,6 +94,7 @@ export const SURFACE_META: Record<SurfaceName, SurfaceMeta> = {
   'worker-outcome': { label: 'Worker outcome', description: 'Assistant workers: reads done / blocked / needs input from a final message that has no ## Result block (instead of spending a retry turn), and what kept a failed or blocked run from finishing (capability, access, needs the user, transient), which decides whether escalation is offered.', fallback: 'one result-retry worker turn; every failed, blocked or result-less run offers a one-tier escalation' },
   'worker-claim': { label: 'Worker claim', description: 'Assistant workers: whether a run reported done while claiming success (tests pass, fixed, verified) that its own command output does not show. Flags the run so the Assistant verifies before reporting; asked only when the turn exposed commands or tool results.', fallback: 'no check', ridesWith: 'worker-outcome' },
   'desktop-target': { label: 'Desktop target', description: 'Computer use: ranks the visible controls of the front window against a computer_ax intent. Advisory; one low-risk press by intent only behind the desktop benchmark gate.', fallback: 'the full accessibility tree, or a word-overlap ranking when an intent is given' },
+  'budget-split': { label: 'Budget split', description: 'Assistant sessions with a budget: how much of the money still to be spent will land on each provider (Claude Code, Codex, OpenCode), asked at the first route and at checkpoints (a share used up, a budget change, a run ending). It only divides what the user allowed: shares never add up to more than is left, and it never picks a model.', fallback: 'weights from the saved routes, the session\'s tasks and live runs, times the list price of the routed models; the brain keeps its reserve either way' },
 };
 
 const SURFACE_DEFAULTS: Record<SurfaceName, SurfaceSettings> = {
@@ -132,6 +133,8 @@ const SURFACE_DEFAULTS: Record<SurfaceName, SurfaceSettings> = {
   // Rider of worker-outcome. Flags a run for verification, so the bar is the claim-check bar.
   'worker-claim': { enabled: true, timeoutMs: 2500, minProbability: 0.9 },
   'desktop-target': { ...DESKTOP_TARGET_DEFAULTS },
+  // On the route path (agent_route waits for the first split), never per tick: one call per checkpoint.
+  'budget-split': { enabled: true, timeoutMs: 2000 },
 };
 
 // --- Config shape ---

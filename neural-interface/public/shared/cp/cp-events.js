@@ -626,7 +626,8 @@ export function statusRows({ init = null, account = null, tab = {} } = {}) {
   add('Model', init.model);
   add('Claude Code', init.cliVersion + (tab.sdkVersion ? ` · SDK ${tab.sdkVersion}` : ''));
   add('Working directory', init.cwd);
-  if (account?.email || account?.organization) add('Account', [account.email, account.organization, account.subscriptionType].filter(Boolean).join(' · '));
+  if (account?.authMethod === 'apiKey') add('Account', 'API key');
+  else if (account?.email || account?.organization) add('Account', [account.email, account.organization, account.subscriptionType].filter(Boolean).join(' · '));
   add('Credential', KEY_SOURCES[init.apiKeySource] || init.apiKeySource);
   add('Permission mode', init.permissionMode);
   if (init.effort) add('Effort', init.effort);

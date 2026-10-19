@@ -12,6 +12,10 @@
  * the right script with the caller's arguments and stdio untouched:
  *
  *   SynaBun mcp [...]   the MCP server on stdio (mcp-server/run.mjs), for an IDE
+ *   SynaBun             with no argument, in a build that has the desktop app
+ *                       (<resources>/synabun-shell names its window
+ *                       executable): that window, which takes this process
+ *                       over (POSIX) or is started on its own (Windows)
  *   SynaBun [...]       everything else goes to the packaged bootstrap
  *
  * Nothing is read from the PATH and no shell is involved: every path is built
@@ -21,6 +25,8 @@
  */
 
 #define SYNABUN_MANIFEST "synabun-package.json"
+/* One line: the desktop window's executable, relative to <resources>. Absent in a build without one. */
+#define SYNABUN_SHELL "synabun-shell"
 #define SYNABUN_ENTRY_ENV "SYNABUN_PACKAGED_ENTRY"
 #define SYNABUN_NODE_FLAG "--disable-warning=ExperimentalWarning"
 
@@ -120,6 +126,35 @@ static wchar_t *joined(const wchar_t *left, const wchar_t *right) {
   return out.text;
 }
 
+/*
+ * The desktop window named in <resources>\\synabun-shell (one line, relative to
+ * <resources>, either slash), as an absolute path; NULL when there is none.
+ */
+static wchar_t *read_shell(const wchar_t *resources) {
+  wchar_t *file = joined(resources, L"\\" TEXT(SYNABUN_SHELL));
+  FILE *in = _wfopen(file, L"rb");
+  free(file);
+  if (!in) return NULL;
+  char raw[1024];
+  size_t count = fread(raw, 1, sizeof raw - 1, in);
+  fclose(in);
+  raw[count] = '\0';
+  for (size_t i = 0; i < count; i++) if (raw[i] == '\r' || raw[i] == '\n') { raw[i] = '\0'; break; }
+  if (!raw[0] || strstr(raw, "..\\..") || strstr(raw, "../..")) return NULL;
+  wchar_t relative[1024];
+  if (!MultiByteToWideChar(CP_UTF8, 0, raw, -1, relative, 1024)) return NULL;
+  for (wchar_t *at = relative; *at; at++) if (*at == L'/') *at = L'\\';
+  wchar_t *with_slash = joined(resources, L"\\");
+  wchar_t *combined = joined(with_slash, relative);
+  free(with_slash);
+  wchar_t *full = (wchar_t *)malloc(LONG_PATH * sizeof(wchar_t));
+  if (!full) die(L"out of memory", NULL);
+  DWORD length = GetFullPathNameW(combined, LONG_PATH, full, NULL);
+  free(combined);
+  if (length == 0 || length >= LONG_PATH || !is_file(full)) { free(full); return NULL; }
+  return full;
+}
+
 /* Ctrl+C belongs to the server in this console; this process only waits for it. */
 static BOOL WINAPI on_console_event(DWORD event) {
   return event == CTRL_C_EVENT || event == CTRL_BREAK_EVENT;
@@ -154,6 +189,28 @@ int wmain(int argc, wchar_t **argv) {
   wchar_t *manifest = joined(resources, L"\\" TEXT(SYNABUN_MANIFEST));
   if (!is_file(manifest)) die(L"this copy is incomplete, its application files are missing", manifest);
 
+  /* No argument, and a desktop window in this build: start the window, which outlives this process. */
+  if (argc == 1) {
+    wchar_t *shell = read_shell(resources);
+    if (shell) {
+      STARTUPINFOW shell_startup;
+      PROCESS_INFORMATION shell_process;
+      ZeroMemory(&shell_startup, sizeof shell_startup);
+      ZeroMemory(&shell_process, sizeof shell_process);
+      shell_startup.cb = sizeof shell_startup;
+      wbuf shell_line = {0};
+      append_argument(&shell_line, shell);
+      if (!CreateProcessW(shell, shell_line.text, NULL, NULL, FALSE, 0, NULL, NULL, &shell_startup, &shell_process)) {
+        wchar_t code[32];
+        swprintf(code, 32, L"error %lu", (unsigned long)GetLastError());
+        die(L"could not open the SynaBun window", code);
+      }
+      CloseHandle(shell_process.hThread);
+      CloseHandle(shell_process.hProcess);
+      return 0;
+    }
+  }
+
   wchar_t *runtime = joined(resources, L"\\runtime");
   wchar_t *node = joined(runtime, L"\\node.exe");
   if (!is_file(node)) die(L"this copy is incomplete, its Node runtime is missing", node);
@@ -164,18 +221,23 @@ int wmain(int argc, wchar_t **argv) {
 
   SetEnvironmentVariableW(TEXT(SYNABUN_ENTRY_ENV), self);
 
-  /* The bundled node, npm and npx come first for everything started by name. */
+  /*
+   * The bundled node, npm and npx come LAST, after the user's own PATH: they are
+   * the fallback for what is started by name on a machine without any. SynaBun's
+   * own Node is the absolute path above, never looked up. The script puts npm's
+   * global bin before them (lib/packaged-runtime.js packagedChildEnv).
+   */
   wbuf path = {0};
-  wbuf_text(&path, runtime);
   DWORD existing = GetEnvironmentVariableW(L"PATH", NULL, 0);
   if (existing > 1) {
     wchar_t *current = (wchar_t *)malloc(existing * sizeof(wchar_t));
     if (current && GetEnvironmentVariableW(L"PATH", current, existing) > 0) {
-      wbuf_char(&path, L';');
       wbuf_text(&path, current);
+      wbuf_char(&path, L';');
     }
     free(current);
   }
+  wbuf_text(&path, runtime);
   SetEnvironmentVariableW(L"PATH", path.text);
 
   wbuf line = {0};
@@ -318,6 +380,56 @@ static char *find_resources(const char *directory) {
 }
 
 /*
+ * The desktop window named in <resources>/synabun-shell (one line, relative to
+ * <resources>), resolved; NULL when there is none or it is not an executable.
+ */
+static char *read_shell(const char *resources) {
+  char *file = joined(resources, "/" SYNABUN_SHELL);
+  FILE *in = fopen(file, "r");
+  free(file);
+  if (!in) return NULL;
+  char relative[1024];
+  char *line = fgets(relative, sizeof relative, in);
+  fclose(in);
+  if (!line) return NULL;
+  relative[strcspn(relative, "\r\n")] = '\0';
+  if (!relative[0] || relative[0] == '/' || strstr(relative, "../..")) return NULL;
+  char *with_slash = joined(resources, "/");
+  char *combined = joined(with_slash, relative);
+  free(with_slash);
+  char *resolved = realpath(combined, NULL);
+  free(combined);
+  if (!resolved || !is_file(resolved) || access(resolved, X_OK) != 0) { free(resolved); return NULL; }
+  return resolved;
+}
+
+#if defined(__linux__)
+/* 1 when a file holds the number `wanted` (a /proc/sys switch). */
+static int proc_number_is(const char *path, int wanted) {
+  FILE *in = fopen(path, "r");
+  if (!in) return 0;
+  int value = -1;
+  int read = fscanf(in, "%d", &value);
+  fclose(in);
+  return read == 1 && value == wanted;
+}
+
+/*
+ * Chromium's sandbox needs unprivileged user namespaces; inside an AppImage its
+ * setuid helper cannot be setuid. Where the kernel refuses those namespaces to
+ * this program (AppArmor on Ubuntu 23.10 and later, or the switch turned off),
+ * the window starts without that sandbox instead of not at all. It only ever
+ * shows SynaBun's own local server.
+ */
+static int needs_no_sandbox(void) {
+  if (proc_number_is("/proc/sys/kernel/apparmor_restrict_unprivileged_userns", 1)) return 1;
+  if (proc_number_is("/proc/sys/kernel/unprivileged_userns_clone", 0)) return 1;
+  if (proc_number_is("/proc/sys/user/max_user_namespaces", 0)) return 1;
+  return 0;
+}
+#endif
+
+/*
  * The path the outside world should run. An AppImage runs from a mount that is
  * gone when it exits, so there the image file itself is the entry; APPIMAGE is
  * trusted only when APPDIR is the folder this executable really is in.
@@ -350,6 +462,23 @@ int main(int argc, char **argv) {
   char *resources = find_resources(directory);
   if (!resources) die("this copy is incomplete, its application files are missing", directory);
 
+  /* No argument, and a desktop window in this build: become that window (same
+     pid, same mount for an AppImage). AppImage's own "install and exit" call
+     (APPIMAGE_EXIT_AFTER_INSTALL) has nothing to install here. */
+  if (argc == 1) {
+    const char *exit_after = getenv("APPIMAGE_EXIT_AFTER_INSTALL");
+    if (exit_after && strcmp(exit_after, "true") == 0) return 0;
+    char *shell = read_shell(resources);
+    if (shell) {
+      char *shell_argv[3] = { shell, NULL, NULL };
+#if defined(__linux__)
+      if (needs_no_sandbox()) shell_argv[1] = "--no-sandbox";
+#endif
+      execv(shell, shell_argv);
+      die("could not open the SynaBun window", strerror(errno));
+    }
+  }
+
   char *runtime = joined(resources, "/runtime/bin");
   char *node = joined(runtime, "/node");
   if (access(node, X_OK) != 0) die("this copy is incomplete, its Node runtime is missing", node);
@@ -360,11 +489,16 @@ int main(int argc, char **argv) {
 
   if (setenv(SYNABUN_ENTRY_ENV, stable_entry(self, directory), 1) != 0) die("could not set its environment", strerror(errno));
 
-  /* The bundled node, npm and npx come first for everything started by name. */
+  /*
+   * The bundled node, npm and npx come LAST, after the user's own PATH: they are
+   * the fallback for what is started by name on a machine without any. SynaBun's
+   * own Node is the absolute path above, never looked up. The script puts npm's
+   * global bin before them (lib/packaged-runtime.js packagedChildEnv).
+   */
   const char *current = getenv("PATH");
   if (!current || !*current) current = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
-  char *with_colon = joined(runtime, ":");
-  char *path = joined(with_colon, current);
+  char *with_colon = joined(current, ":");
+  char *path = joined(with_colon, runtime);
   if (setenv("PATH", path, 1) != 0) die("could not set its environment", strerror(errno));
 
   char **command = calloc((size_t)argc + 4, sizeof *command);

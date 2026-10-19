@@ -12,21 +12,26 @@ import { DispatchError } from './assistant-dispatch.js';
 import { openServable } from './assistant-media.js';
 import { designFit, targetMakes } from './assistant-router.js';
 import { normalizeEffort } from './effort-levels.js';
-import { BUDGET_DEFAULTS, BUDGET_FIELDS, BUDGET_MAX_USD, BUDGET_MIN_USD } from './assistant-budget.js';
+import { BUDGET_DEFAULT_USD, BUDGET_MAX_USD, BUDGET_MIN_USD, BUDGET_WARN_RATIO } from './assistant-budget.js';
 import { tooLargeMessage } from './assistant-attachments.js';
 import { getSessionPolicy, requiresHumanApproval } from './remote-policy.js';
 import { clampPlanDispatch, PLAN_DISPATCH_NOTE, runCanChangeCode } from './assistant-plan-permissions.js';
+import { noStore, requireJson, requireLocal, requireLocalHost, sendGuardError } from './http-guards.js';
+
+/** The header whatsapp_send_file's caller proves it is the WhatsApp conversation's own brain with (assistant-runtime.js BRAIN_CREDENTIAL_RE). */
+export const BRAIN_CREDENTIAL_HEADER = 'x-synabun-brain-token';
+const SEND_FILE_FIELDS = Object.freeze(['path', 'caption', 'as']);
 
 /**
- * How far each provider's spend can be held to a cap (shown in the Budget tab).
- * A cap is checked where the provider lets it be checked; between two checks a
- * run can go past it by that much.
+ * How far each provider's spend can be held to the budget (the Budget modal shows it). Spend is
+ * checked where the provider lets it be checked; between two checks a run can go past its share by
+ * that much.
  */
 export const BUDGET_ENFORCEMENT = Object.freeze({
-  'claude-code': { metered: 'reported', perRun: 'The Claude CLI stops the run (--max-budget-usd); it checks between model calls, so one call can pass the cap.', session: 'Checked after every turn; at the hard cap the run is stopped mid-turn.' },
-  opencode: { metered: 'reported', perRun: 'OpenCode reports each step\'s cost; the run stops at the first step past its cap.', session: 'Checked at every step.' },
-  codex: { metered: 'estimated', perRun: 'Codex reports tokens only when a turn ends: priced at the models.dev list price (an API-price estimate; ChatGPT-plan accounts are billed by plan quota) and checked after each turn, so one turn can pass the cap. A failed turn is priced from its rollout.', session: 'Checked after every turn.' },
-  brain: { metered: 'reported', perRun: 'Checked before every brain turn; a Claude brain\'s CLI also stops at what is left of the brain cap. A Codex brain\'s tokens are priced at list price (estimated); a brain model with no price is refused.', session: 'The brain\'s spend counts toward the session hard cap.' },
+  'claude-code': { metered: 'reported', share: 'Checked between model calls (each call at list price while the turn runs, the reported cost at its end), so one call can pass the share. The Claude CLI also stops a run at its ceiling, or at what the session had left when it started.', session: 'At the budget every run stops.' },
+  opencode: { metered: 'reported', share: 'OpenCode reports each step\'s cost; the share is checked at every step, so one step can pass it.', session: 'At the budget every run stops.' },
+  codex: { metered: 'estimated', share: 'Codex reports tokens: priced at list price (an API-price estimate; ChatGPT-plan accounts are billed by plan quota) as its rollout records them, so one record or turn can pass the share. A failed turn is priced from its rollout.', session: 'At the budget every run stops.' },
+  brain: { metered: 'reported', share: 'Your Assistant\'s own turns draw from its provider\'s share, which keeps a reserve for them; checked before every brain turn. A Claude brain\'s CLI also stops at what that share had left when it started. A brain model with no price is refused.', session: 'At the budget the brain takes no turn until the budget is raised.' },
 });
 
 const OWNER_ONLY = { error: 'The assistant is available to the owner only', code: 'GUEST_FORBIDDEN' };
@@ -89,9 +94,17 @@ export function slimRunView(run) {
  * @param {object} deps.dispatcher       createAssistantDispatcher()
  * @param {object} [deps.runtime]        createAssistantRuntime() (sessions; optional until wired)
  * @param {object} [deps.claudeAccounts] createClaudeAccounts()
- * @param {object} [deps.codexAccounts]  { listForClient(), rename(id,label), remove(id, {inUse}), addStart() }
+ * @param {object} [deps.codexAccounts]  createCodexAccounts() (lib/codex-accounts.js)
  * @param {Function} [deps.buildCatalog] async () => catalog object (models/accounts/projects/profiles)
  * @param {Function} [deps.createLoginTerminal] async ({ env, cwd, profile, accountId }) => { terminalSessionId, profile }
+ * @param {Function} [deps.claudeSignIn]  async (accountId) => { sessionId, status, error } — Claude Code's own
+ *   `auth login` in a SynaBun terminal under the account's config directory (lib/provider-panel-terminal-auth.js)
+ * @param {Function} [deps.claudeSetMode] async (accountId, mode) => row — what the account's sessions use
+ * @param {Function} [deps.claudeAccountInUse] (accountId) => '' | why it cannot be removed now
+ * @param {Function} [deps.codexSignIn]   async (accountId) => { sessionId, status, error } — `codex login` in a SynaBun
+ *   terminal under the account's CODEX_HOME (lib/provider-panel-terminal-auth.js)
+ * @param {Function} [deps.codexSetMode]  async (accountId, mode) => row — what the account's sessions use
+ * @param {Function} [deps.codexAccountInUse] (accountId) => '' | why it cannot be removed now
  * @param {object} [deps.attachments]    createAttachmentStore() (POST /attachments)
  */
 export function createAssistantApi({
@@ -100,8 +113,15 @@ export function createAssistantApi({
   usage = null,
   claudeAccounts = null,
   codexAccounts = null,
+  accountUsage = null,
   buildCatalog = null,
   createLoginTerminal = null,
+  claudeSignIn = null,
+  claudeSetMode = null,
+  claudeAccountInUse = null,
+  codexSignIn = null,
+  codexSetMode = null,
+  codexAccountInUse = null,
   broadcastSync = () => {},
   isGuestRequest = () => false,
   log = () => {},
@@ -126,6 +146,10 @@ export function createAssistantApi({
   // Why the engine did not start on this server (a string or null), for the settings page.
   userContextError = () => null,
   defaultProject = () => 'global',
+  // whatsapp_send_file: the WhatsApp service ({ sendFile }) or a function returning it (it is built
+  // after this router), and the port the server listens on (the Host check of that route).
+  whatsapp = null,
+  port = 3344,
 } = {}) {
   if (!dispatcher) throw new Error('createAssistantApi requires a dispatcher');
   const router = Router();
@@ -275,6 +299,7 @@ export function createAssistantApi({
   // ── catalog ────────────────────────────────────────────────────────────────
   router.get('/catalog', async (req, res) => {
     try {
+      await accountUsage?.refresh();
       // refresh=1 rebuilds from the providers' endpoints; deep=1 also makes them ask the CLI / app-server again.
       const deep = req.query.deep === '1';
       const force = req.query.refresh === '1' || deep;
@@ -288,13 +313,21 @@ export function createAssistantApi({
         let preferences = {};
         try { preferences = configStore?.routing?.().preferences || {}; } catch {}
         const brief = await catalog.get({ force, deep, view: 'brain', provider, q, preferences });
-        return res.json({ ok: true, generatedAt: new Date(now()).toISOString(), ...brief, limits: dispatcher.limits, runs: dispatcher.list({ activeOnly: true }), totals: dispatcher.totals() });
+        // Accounts are read live (the catalog build can be seconds old): every Claude and Codex account with
+        // its mode, whether it is signed in and its identity, and the account a worker gets when a dispatch
+        // names none.
+        const accounts = {
+          ...(brief.accounts || {}),
+          ...(claudeAccounts ? { 'claude-code': accountUsage?.list()?.['claude-code'] || claudeAccounts.listForClient() } : {}),
+          ...(codexAccounts ? { codex: accountUsage?.list()?.codex || codexAccounts.listForClient() } : {}),
+        };
+        return res.json({ ok: true, generatedAt: new Date(now()).toISOString(), ...brief, accounts, claudeWorkerAccount: claudeWorkerAccountId(), codexWorkerAccount: codexWorkerAccountId(), limits: dispatcher.limits, runs: dispatcher.list({ activeOnly: true }), totals: dispatcher.totals() });
       }
       // The catalog says how long one of its builds is good for (one without a verified list is redone
       // within seconds), so it is asked every time: this answer is reused only while it hands back the
       // build the answer was made from (a rebuild or invalidate() gives another one).
       const base = typeof buildCatalog === 'function' ? await buildCatalog({ force, deep }) : NO_CATALOG;
-      if (!force && catalogCache && catalogCache.base === base && now() - catalogCache.at < 30_000) return res.json(catalogCache.value);
+      if (!force && catalogCache && catalogCache.base === base && now() - catalogCache.at < 30_000) return res.json(accountUsage ? { ...catalogCache.value, accounts: { ...catalogCache.value.accounts, ...accountUsage.list() } } : catalogCache.value);
       // Hidden rows stay server-side (view=manage lists them); the lists themselves ship.
       const { hiddenRows: _hiddenRows, ...visible } = base || {};
       const value = {
@@ -303,9 +336,11 @@ export function createAssistantApi({
         ...visible,
         accounts: {
           ...(base.accounts || {}),
-          'claude-code': claudeAccounts ? claudeAccounts.listForClient() : (base.accounts?.['claude-code'] || []),
-          codex: codexAccounts ? codexAccounts.listForClient() : (base.accounts?.codex || []),
+          'claude-code': accountUsage?.list()?.['claude-code'] || (claudeAccounts ? claudeAccounts.listForClient() : (base.accounts?.['claude-code'] || [])),
+          codex: accountUsage?.list()?.codex || (codexAccounts ? codexAccounts.listForClient() : (base.accounts?.codex || [])),
         },
+        claudeWorkerAccount: claudeWorkerAccountId(),
+        codexWorkerAccount: codexWorkerAccountId(),
         limits: dispatcher.limits,
         runs: dispatcher.list({ activeOnly: true }),
         totals: dispatcher.totals(),
@@ -469,16 +504,20 @@ export function createAssistantApi({
     } catch (error) { sendError(res, error, 400); }
   });
   // ── budget ─────────────────────────────────────────────────────────────────
+  /** A session's budget view (dispatcher → budget planner): the setting, spend, and the live split. */
+  function sessionBudgetView(sessionId) {
+    if (!sessionId) return null;
+    try { return dispatcher.sessionBudget?.(String(sessionId)) || null; } catch { return null; }
+  }
   function budgetPayload(sessionId = null) {
     const current = configStore.budget();
-    const budget = Object.fromEntries(BUDGET_FIELDS.map((field) => [field, current[field]]));
-    let session = null;
-    if (sessionId) { try { session = dispatcher.sessionBudget?.(String(sessionId)) || null; } catch { session = null; } }
     let pricingStatus = null;
     try { pricingStatus = pricing?.status?.() || null; } catch { pricingStatus = null; }
     return {
-      ok: true, version: current.version, budget, defaults: { ...BUDGET_DEFAULTS }, sources: current.sources, repairs: current.repairs,
-      bounds: { minUsd: BUDGET_MIN_USD, maxUsd: BUDGET_MAX_USD }, session, pricing: pricingStatus, enforcement: BUDGET_ENFORCEMENT,
+      ok: true, version: current.version,
+      budget: { unlimited: current.unlimited === true, amountUsd: current.amountUsd, version: current.version, updatedAt: current.updatedAt || null, source: current.source || 'saved' },
+      defaults: { unlimited: false, amountUsd: BUDGET_DEFAULT_USD }, bounds: { minUsd: BUDGET_MIN_USD, maxUsd: BUDGET_MAX_USD }, warnRatio: BUDGET_WARN_RATIO,
+      session: sessionBudgetView(sessionId), pricing: pricingStatus, enforcement: BUDGET_ENFORCEMENT,
     };
   }
   // ── User context (Settings → Automation behavior): the three layers and what a new conversation is told ──
@@ -525,13 +564,16 @@ export function createAssistantApi({
     if (callerContext(req).kind !== 'ui') return res.status(403).json({ ok: false, code: 'UI_ONLY', error: 'Budget settings are changed from the assistant panel only.' });
     try {
       const body = req.body || {};
-      const patch = body.budget && typeof body.budget === 'object' ? body.budget : {};
+      const patch = body.budget && typeof body.budget === 'object' && !Array.isArray(body.budget) ? body.budget : null;
+      if (!patch) return res.status(400).json({ ok: false, code: 'BUDGET_INVALID', error: 'Send { budget: { unlimited?, amountUsd? }, version }', message: 'Send { budget: { unlimited?, amountUsd? }, version }', field: 'budget', version: null });
       const expectedVersion = body.version ?? null;
       const saved = configStore.patchBudget(patch, { expectedVersion });
-      // Applies now: the dispatcher re-reads its limits, the runtime re-checks every session.
+      // Applies now: the planner divides every open session's budget again, the runtime re-checks
+      // every session (held mailboxes, the brain's next turn) and every panel hears it.
       try { dispatcher.refreshLimits?.(); } catch {}
-      try { runtime?.onBudgetChanged?.(); } catch {}
-      broadcastSync({ type: 'assistant:budget-changed', version: saved.version });
+      if (runtime?.onBudgetChanged) { try { runtime.onBudgetChanged(); } catch {} }
+      else { try { dispatcher.budget?.onBudgetChanged?.(); } catch {} }
+      broadcastSync({ type: 'assistant:budget-changed', version: saved.version, budget: { unlimited: saved.unlimited, amountUsd: saved.amountUsd, version: saved.version, updatedAt: saved.updatedAt || null } });
       res.json(budgetPayload(body.sessionId || null));
     } catch (error) {
       if (error?.code === 'BUDGET_INVALID' || error?.code === 'VERSION_CONFLICT') {
@@ -551,6 +593,45 @@ export function createAssistantApi({
     try { res.json(runtime.gateCheck({ session: body.session, token: body.token, tool: body.tool, input, inputComplete: body.inputComplete === true, providerSessionId: body.providerSessionId || null, agent: body.agent || null, hello: body.hello === true, host: typeof body.host === 'string' ? body.host : null })); }
     catch (error) { sendError(res, error); }
   });
+  // ── whatsapp_send_file (docs/whatsapp.md → Sending files) ──────────────────
+  // A local file to the owner, for the WhatsApp conversation whose brain is calling. Who calls is the
+  // credential that brain alone holds (X-Synabun-Brain-Token: assistant-runtime.js mintBrainCredential),
+  // resolved to its session in constant time; never X-Synabun-Role or X-Synabun-Terminal, which any
+  // local process can send. A loopback socket and a localhost Host only (the checks of /api/whatsapp);
+  // guests were refused above. Only { path, caption?, as? }. Exactly one send, never retried.
+  const portOf = () => (typeof port === 'function' ? port() : port);
+  let hostGuard = null;
+  const localHostOnly = (req, res, next) => {
+    const current = portOf();
+    if (!hostGuard || hostGuard.port !== current) {
+      try { hostGuard = { port: current, check: requireLocalHost(current) }; } catch { return sendGuardError(res, 500, 'BAD_PORT', 'The file route has no valid port.'); }
+    }
+    return hostGuard.check(req, res, next);
+  };
+  router.post('/whatsapp/send-file', noStore, requireLocal, localHostOnly, requireJson, async (req, res) => {
+    let sessionId = null;
+    try { sessionId = runtime?.sessionForBrainCredential?.(req.get(BRAIN_CREDENTIAL_HEADER)) || null; } catch { sessionId = null; }
+    if (!sessionId) return sendGuardError(res, 403, 'BRAIN_CREDENTIAL_REQUIRED', 'Only the WhatsApp conversation\'s own Assistant sends files to the phone: nothing was sent.');
+    const body = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return sendGuardError(res, 400, 'BAD_REQUEST', 'Send { path, caption?, as? }.');
+    const extra = Object.keys(body).find((key) => !SEND_FILE_FIELDS.includes(key));
+    if (extra !== undefined) return sendGuardError(res, 400, 'BAD_REQUEST', `Unknown field "${extra.slice(0, 40)}": a file send takes path, caption and as only.`, extra.slice(0, 40));
+    let service = null;
+    try { service = typeof whatsapp === 'function' ? whatsapp() : whatsapp; } catch { service = null; }
+    if (typeof service?.sendFile !== 'function') return sendGuardError(res, 503, 'WHATSAPP_UNAVAILABLE', 'WhatsApp is not available on this computer: nothing was sent.');
+    try {
+      res.json(await service.sendFile(sessionId, body));
+    } catch (error) {
+      const status = Number(error?.status) || 500;
+      const out = { ok: false, code: error?.code || 'INTERNAL', error: error?.message || String(error) };
+      if (error?.field) out.field = error.field;
+      if (error?.uncertain === true) out.uncertain = true;
+      if (Number.isFinite(error?.retryAfterMs)) out.retryAfterMs = Math.max(0, Math.round(error.retryAfterMs));
+      if (status >= 500) log('assistant:whatsapp-send-file', `${sessionId}: ${out.code}${out.uncertain ? ' (delivery unknown)' : ''}`);
+      res.status(status).json(out);
+    }
+  });
+
   // agent_route: the brain proposes; the router approves, asks, or says pending.
   router.post('/route', orchestrationGuard, async (req, res) => {
     if (!requireRouter(res)) return;
@@ -772,13 +853,16 @@ export function createAssistantApi({
       res.json(brain ? brainWaitView(chat ? chatWaitView(result) : result) : result);
     } catch (error) { sendError(res, error); }
   });
-  router.post('/runs/:runId/send', orchestrationGuard, (req, res) => {
+  router.post('/runs/:runId/send', orchestrationGuard, async (req, res) => {
     try {
       const body = req.body || {};
       const assistantSessionId = req.assistantCaller.assistantSessionId || dispatcher.get(req.params.runId)?.assistantSessionId || null;
       if (planRefusal(req, res, assistantSessionId, 'send a worker a message')) return;
       if (planState(req, assistantSessionId) === 'plan' && planSendRefusal(res, dispatcher.get(req.params.runId))) return;
       const origin = body.origin === 'user' ? 'user' : (req.assistantCaller.kind === 'ui' ? (body.origin || 'assistant') : 'assistant');
+      // A run whose provider share is used up: the session's unspent budget is divided again first, then
+      // sendTurn decides (it refuses with BUDGET_SHARE_EXHAUSTED when no money could move).
+      try { await dispatcher.coverFollowUp?.(req.params.runId); } catch { /* sendTurn decides on the shares as they are */ }
       res.json(dispatcher.sendTurn(req.params.runId, body.text ?? body.message, { origin, queue: body.queue !== false }));
     } catch (error) { sendError(res, error); }
   });
@@ -855,6 +939,14 @@ export function createAssistantApi({
       res.status(201).json({ ok: true, session });
     } catch (error) { sendError(res, error); }
   });
+  // A session's budget and its live split (the spend chip, the Budget modal): the same view the
+  // `assistant:budget` packet carries.
+  router.get('/sessions/:id/budget', (req, res) => {
+    if (!requireRuntime(res)) return;
+    const id = req.params.id;
+    if (!runtime.getSession(id, { transcript: false })) return res.status(404).json({ ok: false, code: 'SESSION_NOT_FOUND', error: `Unknown assistant session ${id}` });
+    try { res.json({ ok: true, budget: sessionBudgetView(id) }); } catch (error) { sendError(res, error); }
+  });
   router.get('/sessions/:id/usage', (req, res) => {
     if (!requireRuntime(res)) return;
     const id = req.params.id;
@@ -870,9 +962,10 @@ export function createAssistantApi({
         const session = usage?.sessionView(id) ?? null;
         // Whether work is in progress is the runtime's to say (a turn that has no tokens yet).
         const head = session ? runtime.usageView?.(id, 'current')?.session || null : null;
-        return res.json({ ok: true, session: session && head ? { ...session, live: head.live, fidelity: head.fidelity } : session, ...(run ? { run: usage?.runView?.(id, run) ?? null } : {}) });
+        return res.json({ ok: true, session: session && head ? { ...session, live: head.live, fidelity: head.fidelity } : session, ...(run ? { run: usage?.runView?.(id, run) ?? null } : {}), budget: sessionBudgetView(id) });
       }
-      res.json({ ok: true, usage: runtime.usageView?.(id, task) ?? usage?.taskView(id, task) ?? null });
+      // The session budget rides along (agent_usage: the mode and each provider's share / spent / left).
+      res.json({ ok: true, usage: runtime.usageView?.(id, task) ?? usage?.taskView(id, task) ?? null, budget: sessionBudgetView(id) });
     } catch (error) { sendError(res, error); }
   });
   router.get('/sessions/:id', (req, res) => {
@@ -940,25 +1033,51 @@ export function createAssistantApi({
     return (accountId) => {
       if (dispatcher.accountInUse(provider, accountId)) return `Stop the dispatched ${provider} runs using account ${accountId} first`;
       if (runtime?.accountInUse?.(provider, accountId)) return `Close the assistant sessions using account ${accountId} first`;
+      if (provider === 'claude-code' && typeof claudeAccountInUse === 'function') return claudeAccountInUse(accountId) || null;
+      if (provider === 'codex' && typeof codexAccountInUse === 'function') return codexAccountInUse(accountId) || null;
       return null;
     };
   }
-  router.get('/claude/accounts', (req, res) => {
-    if (!claudeAccounts) return res.status(503).json({ ok: false, code: 'ACCOUNTS_UNAVAILABLE', error: 'Claude accounts are not available' });
-    res.json({ ok: true, accounts: claudeAccounts.listForClient() });
+  // The Claude account a Claude Code worker runs under when its dispatch names none (null = Default).
+  function claudeWorkerAccountId() {
+    try { return configStore?.workers?.().claudeAccount || null; } catch { return null; }
+  }
+  // The same for Codex workers.
+  function codexWorkerAccountId() {
+    try { return configStore?.workers?.().codexAccount || null; } catch { return null; }
+  }
+  const claudeUnavailable = (res) => res.status(503).json({ ok: false, code: 'ACCOUNTS_UNAVAILABLE', error: 'Claude accounts are not available' });
+  // Every Claude account as every surface shows it (lib/claude-accounts.js describe()): mode, signed in,
+  // identity (an email or a masked key, never a key). `?refresh=1` asks Claude Code about each first.
+  router.get('/claude/accounts', async (req, res) => {
+    if (!claudeAccounts) return claudeUnavailable(res);
+    try {
+      if (req.query.refresh === '1' || req.query.refresh === 'true') await claudeAccounts.refreshStatus?.(null, { force: true });
+      else Promise.resolve(claudeAccounts.refreshStatus?.()).catch(() => {});
+      await accountUsage?.refresh('claude-code');
+      res.json({ ok: true, accounts: accountUsage?.list()?.['claude-code'] || claudeAccounts.listForClient(), workerAccountId: claudeWorkerAccountId() });
+    } catch (error) { sendError(res, error); }
   });
+  // Create an account. `login: true` also opens its Claude sign-in in a SynaBun terminal; otherwise the
+  // caller offers the two ways to sign it in (Claude, or an API key pasted into it).
   router.post('/claude/accounts', async (req, res) => {
-    if (!claudeAccounts) return res.status(503).json({ ok: false, code: 'ACCOUNTS_UNAVAILABLE', error: 'Claude accounts are not available' });
+    if (!claudeAccounts) return claudeUnavailable(res);
     try {
       const account = claudeAccounts.create({ label: req.body?.label });
       let login = null;
-      if (req.body?.login !== false && typeof createLoginTerminal === 'function') {
-        login = await startClaudeLogin(account.id);
-      }
+      if (req.body?.login === true) login = await startClaudeLogin(account.id);
+      catalogCache = null;
       res.status(201).json({ ok: true, account: claudeAccounts.listForClient().find((row) => row.id === account.id) || account, login });
     } catch (error) { sendError(res, error); }
   });
   async function startClaudeLogin(accountId) {
+    // Claude Code's own `auth login` under the account's config directory, in a SynaBun terminal (the
+    // panel's sign-in). The account list says when it is signed in (claude:accounts-changed).
+    if (typeof claudeSignIn === 'function') {
+      const terminal = await claudeSignIn(accountId);
+      if (terminal?.status === 'error') throw Object.assign(new Error(terminal.error || 'Could not open the sign-in terminal.'), { status: 500, code: 'LOGIN_FAILED' });
+      return { mode: 'terminal', terminalSessionId: terminal?.sessionId || null, status: terminal?.status || 'pending', profile: 'shell' };
+    }
     const command = claudeAccounts.loginCommand(accountId);
     const terminal = await createLoginTerminal({ env: command.env, cwd: command.cwd, profile: 'claude-code', accountId, command: command.command });
     claudeAccounts.watchLogin(accountId, {
@@ -970,24 +1089,34 @@ export function createAssistantApi({
     return { mode: 'terminal', terminalSessionId: terminal?.terminalSessionId || terminal?.id || null, profile: terminal?.profile || 'claude-code' };
   }
   router.post('/claude/accounts/:id/login', async (req, res) => {
-    if (!claudeAccounts) return res.status(503).json({ ok: false, code: 'ACCOUNTS_UNAVAILABLE', error: 'Claude accounts are not available' });
-    if (typeof createLoginTerminal !== 'function') return res.status(501).json({ ok: false, code: 'LOGIN_UNAVAILABLE', error: 'Login terminals are not wired' });
+    if (!claudeAccounts) return claudeUnavailable(res);
+    if (typeof claudeSignIn !== 'function' && typeof createLoginTerminal !== 'function') return res.status(501).json({ ok: false, code: 'LOGIN_UNAVAILABLE', error: 'Login terminals are not wired' });
     try {
-      if (!claudeAccounts.get(req.params.id)) return res.status(404).json({ ok: false, code: 'ACCOUNT_NOT_FOUND', error: `Unknown Claude account ${req.params.id}` });
+      const row = claudeAccounts.get(req.params.id);
+      if (!row || row.id !== req.params.id) return res.status(404).json({ ok: false, code: 'ACCOUNT_NOT_FOUND', error: `Unknown Claude account ${req.params.id}` });
       res.json({ ok: true, login: await startClaudeLogin(req.params.id) });
     } catch (error) { sendError(res, error); }
   });
-  router.patch('/claude/accounts/:id', (req, res) => {
-    if (!claudeAccounts) return res.status(503).json({ ok: false, code: 'ACCOUNTS_UNAVAILABLE', error: 'Claude accounts are not available' });
+  // Rename (`label`) and/or choose what the account's sessions use (`mode`: 'subscription' | 'apiKey').
+  router.patch('/claude/accounts/:id', async (req, res) => {
+    if (!claudeAccounts) return claudeUnavailable(res);
     try {
-      const account = claudeAccounts.rename(req.params.id, req.body?.label);
+      const row = claudeAccounts.get(req.params.id);
+      if (!row || row.id !== req.params.id) return res.status(404).json({ ok: false, code: 'ACCOUNT_NOT_FOUND', error: `Unknown Claude account ${req.params.id}` });
+      const { label, mode } = req.body || {};
+      if (label === undefined && mode === undefined) return res.status(400).json({ ok: false, code: 'NOTHING_TO_CHANGE', error: 'Send a label or a mode.' });
+      if (label !== undefined) claudeAccounts.rename(req.params.id, label);
+      if (mode !== undefined) {
+        if (typeof claudeSetMode === 'function') await claudeSetMode(req.params.id, mode);
+        else claudeAccounts.setMode(req.params.id, mode);
+      }
       catalogCache = null;
       broadcastSync({ type: 'assistant:accounts-changed', provider: 'claude-code', accountId: req.params.id });
-      res.json({ ok: true, account });
+      res.json({ ok: true, account: claudeAccounts.describeForClient ? claudeAccounts.describeForClient(req.params.id) : claudeAccounts.get(req.params.id) });
     } catch (error) { sendError(res, error); }
   });
   router.delete('/claude/accounts/:id', (req, res) => {
-    if (!claudeAccounts) return res.status(503).json({ ok: false, code: 'ACCOUNTS_UNAVAILABLE', error: 'Claude accounts are not available' });
+    if (!claudeAccounts) return claudeUnavailable(res);
     try {
       const result = claudeAccounts.remove(req.params.id, { inUse: accountInUse('claude-code') });
       catalogCache = null;
@@ -995,35 +1124,109 @@ export function createAssistantApi({
       res.json({ ok: true, ...result });
     } catch (error) { sendError(res, error); }
   });
-  router.get('/codex/accounts', (req, res) => {
-    if (!codexAccounts) return res.status(503).json({ ok: false, code: 'ACCOUNTS_UNAVAILABLE', error: 'Codex accounts are not available' });
-    res.json({ ok: true, accounts: codexAccounts.listForClient() });
-  });
-  router.post('/codex/accounts/add-start', async (req, res) => {
-    if (!codexAccounts?.addStart) return res.status(501).json({ ok: false, code: 'NOT_IMPLEMENTED', error: 'Add a Codex account from the Codex sidepanel account menu' });
+  // The account a Claude Code worker uses when its dispatch names none. Signed-out accounts are refused.
+  router.put('/claude/worker-account', (req, res) => {
+    if (!claudeAccounts || !configStore?.patchWorkers) return claudeUnavailable(res);
     try {
-      const result = await codexAccounts.addStart(req.body || {});
+      const wanted = req.body?.accountId === null || req.body?.accountId === undefined || req.body?.accountId === '' ? 'default' : String(req.body.accountId);
+      const row = claudeAccounts.get(wanted);
+      if (!row || row.id !== wanted) return res.status(404).json({ ok: false, code: 'ACCOUNT_NOT_FOUND', error: `Unknown Claude account ${wanted}` });
+      const unusable = claudeAccounts.unusableReason?.(wanted) || '';
+      if (unusable) return res.status(409).json({ ok: false, code: 'ACCOUNT_SIGNED_OUT', error: unusable });
+      const workers = configStore.patchWorkers({ claudeAccount: wanted });
       catalogCache = null;
-      broadcastSync({ type: 'assistant:accounts-changed', provider: 'codex', accountId: result?.accountId || null });
-      res.status(201).json({ ok: true, ...result });
+      broadcastSync({ type: 'assistant:accounts-changed', provider: 'claude-code', accountId: wanted, worker: true });
+      res.json({ ok: true, workerAccountId: workers.claudeAccount });
     } catch (error) { sendError(res, error); }
   });
-  router.patch('/codex/accounts/:id', (req, res) => {
-    if (!codexAccounts?.rename) return res.status(503).json({ ok: false, code: 'ACCOUNTS_UNAVAILABLE', error: 'Codex accounts are not available' });
+  const codexUnavailable = (res) => res.status(503).json({ ok: false, code: 'ACCOUNTS_UNAVAILABLE', error: 'Codex accounts are not available' });
+  // Every Codex account as every surface shows it (lib/codex-accounts.js describe()): mode, signed in,
+  // identity (an email or a masked key, never a key). `?refresh=1` asks Codex about each own store first.
+  router.get('/codex/accounts', async (req, res) => {
+    if (!codexAccounts) return codexUnavailable(res);
     try {
-      const account = codexAccounts.rename(req.params.id, req.body?.label);
+      if (req.query.refresh === '1' || req.query.refresh === 'true') await codexAccounts.refreshStatus?.(null, { force: true });
+      else Promise.resolve(codexAccounts.refreshStatus?.()).catch(() => {});
+      await accountUsage?.refresh('codex');
+      res.json({ ok: true, accounts: accountUsage?.list()?.codex || codexAccounts.listForClient(), workerAccountId: codexWorkerAccountId() });
+    } catch (error) { sendError(res, error); }
+  });
+  // `codex login` under the account's CODEX_HOME, in a SynaBun terminal (the panel's sign-in). The account
+  // list says when it is signed in (codex:accounts-changed).
+  async function startCodexLogin(accountId) {
+    if (typeof codexSignIn !== 'function') throw Object.assign(new Error('Login terminals are not wired'), { status: 501, code: 'LOGIN_UNAVAILABLE' });
+    const terminal = await codexSignIn(accountId);
+    if (terminal?.status === 'error') throw Object.assign(new Error(terminal.error || 'Could not open the sign-in terminal.'), { status: 500, code: 'LOGIN_FAILED' });
+    return { mode: 'terminal', terminalSessionId: terminal?.sessionId || null, status: terminal?.status || 'pending', profile: 'shell' };
+  }
+  // Create an account. `login: true` also opens its ChatGPT sign-in in a SynaBun terminal; otherwise the
+  // caller offers the two ways to sign it in (ChatGPT, or an API key pasted into it).
+  router.post('/codex/accounts', async (req, res) => {
+    if (!codexAccounts?.create) return codexUnavailable(res);
+    try {
+      const account = codexAccounts.create({ label: req.body?.label });
+      const login = req.body?.login === true ? await startCodexLogin(account.id) : null;
+      catalogCache = null;
+      res.status(201).json({ ok: true, account: codexAccounts.describeForClient?.(account.id) || account, login });
+    } catch (error) { sendError(res, error); }
+  });
+  // Older pages: create the account and open its ChatGPT sign-in at once.
+  router.post('/codex/accounts/add-start', async (req, res) => {
+    if (!codexAccounts?.create) return codexUnavailable(res);
+    try {
+      const account = codexAccounts.create({ label: req.body?.label });
+      const login = await startCodexLogin(account.id).catch((error) => ({ error: error.message }));
+      catalogCache = null;
+      res.status(201).json({ ok: true, accountId: account.id, account: codexAccounts.describeForClient?.(account.id) || account, login });
+    } catch (error) { sendError(res, error); }
+  });
+  router.post('/codex/accounts/:id/login', async (req, res) => {
+    if (!codexAccounts) return codexUnavailable(res);
+    try {
+      const row = codexAccounts.describe?.(req.params.id);
+      if (!row || row.id !== req.params.id) return res.status(404).json({ ok: false, code: 'ACCOUNT_NOT_FOUND', error: `Unknown Codex account ${req.params.id}` });
+      res.json({ ok: true, login: await startCodexLogin(req.params.id) });
+    } catch (error) { sendError(res, error); }
+  });
+  // Rename (`label`) and/or choose what the account's sessions use (`mode`: 'subscription' (ChatGPT) | 'apiKey').
+  router.patch('/codex/accounts/:id', async (req, res) => {
+    if (!codexAccounts) return codexUnavailable(res);
+    try {
+      const row = codexAccounts.describe?.(req.params.id);
+      if (!row || row.id !== req.params.id) return res.status(404).json({ ok: false, code: 'ACCOUNT_NOT_FOUND', error: `Unknown Codex account ${req.params.id}` });
+      const { label, mode } = req.body || {};
+      if (label !== undefined) codexAccounts.rename(req.params.id, label);
+      if (mode !== undefined) {
+        if (typeof codexSetMode === 'function') await codexSetMode(req.params.id, mode);
+        else codexAccounts.setMode(req.params.id, mode);
+      }
       catalogCache = null;
       broadcastSync({ type: 'assistant:accounts-changed', provider: 'codex', accountId: req.params.id });
-      res.json({ ok: true, account });
+      res.json({ ok: true, account: codexAccounts.describeForClient(req.params.id) });
     } catch (error) { sendError(res, error); }
   });
   router.delete('/codex/accounts/:id', (req, res) => {
-    if (!codexAccounts?.remove) return res.status(503).json({ ok: false, code: 'ACCOUNTS_UNAVAILABLE', error: 'Codex accounts are not available' });
+    if (!codexAccounts?.remove) return codexUnavailable(res);
     try {
       const result = codexAccounts.remove(req.params.id, { inUse: accountInUse('codex') });
       catalogCache = null;
       broadcastSync({ type: 'assistant:accounts-changed', provider: 'codex', accountId: req.params.id, removed: true });
       res.json({ ok: true, ...result });
+    } catch (error) { sendError(res, error); }
+  });
+  // The account a Codex worker uses when its dispatch names none. Signed-out accounts are refused.
+  router.put('/codex/worker-account', (req, res) => {
+    if (!codexAccounts || !configStore?.patchWorkers) return codexUnavailable(res);
+    try {
+      const wanted = req.body?.accountId === null || req.body?.accountId === undefined || req.body?.accountId === '' ? 'default' : String(req.body.accountId);
+      const row = codexAccounts.describe?.(wanted);
+      if (!row || row.id !== wanted) return res.status(404).json({ ok: false, code: 'ACCOUNT_NOT_FOUND', error: `Unknown Codex account ${wanted}` });
+      const unusable = codexAccounts.unusableReason?.(wanted) || '';
+      if (unusable) return res.status(409).json({ ok: false, code: 'ACCOUNT_SIGNED_OUT', error: unusable });
+      const workers = configStore.patchWorkers({ codexAccount: wanted });
+      catalogCache = null;
+      broadcastSync({ type: 'assistant:accounts-changed', provider: 'codex', accountId: wanted, worker: true });
+      res.json({ ok: true, workerAccountId: workers.codexAccount });
     } catch (error) { sendError(res, error); }
   });
 

@@ -10,11 +10,13 @@ export function injectStyles() {
        tokens (docs/codex-sidepanel.md → Visual language). Add a value here
        before using it anywhere else. The lightbox, the minimized pill and
        the Context settings popover live outside the panel, so they carry the
-       tokens too. */
+       tokens too, as does the header account menu (account-menu.js), whose
+       --acct-* values read them. */
     .codex-panel,
     .cxp-lightbox,
     .cxp-session-pill,
-    .cxp-ctxpop {
+    .cxp-ctxpop,
+    .acct-menu--codex {
       /* Surfaces: one treatment per level */
       --cxp-shell: rgba(16, 18, 22, 0.92);
       --cxp-shell-border: rgba(255,255,255,0.08);
@@ -135,7 +137,7 @@ export function injectStyles() {
       outline-offset: 2px;
     }
     /* Inside clipping containers the ring sits on the element instead of around it. */
-    .codex-panel :is(.cxp-fold-summary, .cxp-reasoning summary, .cxp-effort-menu-item, .cxp-account-row-main, .cxp-account-row-remove, .cxp-image-chip-remove, .cxp-sess-rename, .cxp-sess-archive-btn, .cxp-sess-unarchive-btn, .cxp-sess-search-input, .cxp-session-btn, .cxp-header-rename):focus-visible {
+    .codex-panel :is(.cxp-fold-summary, .cxp-reasoning summary, .cxp-effort-menu-item, .cxp-image-chip-remove, .cxp-sess-rename, .cxp-sess-archive-btn, .cxp-sess-unarchive-btn, .cxp-sess-search-input, .cxp-session-btn, .cxp-header-rename):focus-visible {
       outline-offset: -2px;
     }
     .cxp-resize-handle {
@@ -254,6 +256,8 @@ export function injectStyles() {
       margin-left: auto;
       flex-shrink: 0;
     }
+    /* The header account menu's trigger (account-menu.js) gives way before the session name does. */
+    .cxp-actions:has(> .acct-menu-trigger) { flex-shrink: 1; min-width: 0; }
     .cxp-btn {
       width: 24px;
       height: 24px;
@@ -840,97 +844,6 @@ export function injectStyles() {
       color: var(--cxp-text-3);
     }
 
-    /* ── Account menu (under the header; opened from the Context settings popover) ── */
-    .cxp-account-menu {
-      position: absolute;
-      top: calc(100% + 6px);
-      right: 8px;
-      min-width: 230px;
-      max-width: 300px;
-      background: var(--cxp-pop);
-      border: 1px solid var(--cxp-border);
-      border-radius: var(--cxp-radius-md);
-      box-shadow: var(--cxp-shadow-pop);
-      padding: 6px;
-      z-index: 50;
-      display: none;
-      flex-direction: column;
-      gap: 2px;
-    }
-    .cxp-account-menu.open { display: flex; }
-    .cxp-account-empty {
-      padding: 8px 10px;
-      font-size: var(--cxp-fs-sm);
-      color: var(--cxp-text-3);
-    }
-    .cxp-account-row {
-      display: flex;
-      align-items: stretch;
-      gap: 2px;
-      border-radius: var(--cxp-radius-sm);
-      overflow: hidden;
-    }
-    .cxp-account-row.active { background: var(--cxp-surface-2); }
-    .cxp-account-row-main {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      flex: 1;
-      min-width: 0;
-      padding: 7px 9px;
-      background: transparent;
-      border: none;
-      cursor: pointer;
-      text-align: left;
-      font-family: var(--cxp-font);
-      color: var(--cxp-text);
-    }
-    .cxp-account-row-main:hover { background: var(--cxp-surface-1); }
-    .cxp-account-check {
-      width: 12px;
-      flex-shrink: 0;
-      color: var(--cxp-text);
-      font-size: var(--cxp-fs-sm);
-    }
-    .cxp-account-row-text { display: flex; flex-direction: column; min-width: 0; }
-    .cxp-account-row-label {
-      font-size: var(--cxp-fs-md);
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-    .cxp-account-row-sub {
-      font-size: var(--cxp-fs-xs);
-      color: var(--cxp-text-3);
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-    .cxp-account-row-remove {
-      flex-shrink: 0;
-      width: 26px;
-      background: transparent;
-      border: none;
-      color: var(--cxp-text-3);
-      cursor: pointer;
-      font-size: var(--cxp-fs-sm);
-      transition: color var(--cxp-dur-fast), background var(--cxp-dur-fast);
-    }
-    .cxp-account-row-remove:hover { color: var(--cxp-danger); background: var(--cxp-surface-1); }
-    .cxp-account-add {
-      margin-top: 4px;
-      padding: 8px 10px;
-      background: transparent;
-      border: 1px dashed var(--cxp-border-strong);
-      border-radius: var(--cxp-radius-sm);
-      color: var(--cxp-text-2);
-      font-size: var(--cxp-fs-sm);
-      font-family: var(--cxp-font);
-      cursor: pointer;
-      text-align: center;
-      transition: color var(--cxp-dur-fast), background var(--cxp-dur-fast);
-    }
-    .cxp-account-add:hover { background: var(--cxp-surface-1); color: var(--cxp-text); }
 
     /* ── Context settings: the header cog and its popover (cdx-context-menu.js) ──
        One grammar: a 28px head (title, at most one action) and 28px rows (label
@@ -1133,12 +1046,16 @@ export function injectStyles() {
     .cxp-empty-logo svg { width: 32px; height: 32px; }
     .cxp-empty-name { font-size: var(--cxp-fs-lg); font-weight: 500; color: var(--cxp-text-3); }
     .cxp-empty-status { font-size: var(--cxp-fs-sm); color: var(--cxp-text-3); line-height: 1.5; min-height: 1em; }
+    /* The CLI banner (ui-cli-banner.js): Codex not installed (with Install),
+       being installed, failed to install, or found but failed to start. A
+       left edge in the colour of what it says; the Install button is the
+       panel's solid action. */
     .cxp-cli-banner {
       flex-shrink: 0;
       display: grid;
-      grid-template-columns: auto 1fr auto;
+      grid-template-columns: auto minmax(0, 1fr);
       gap: 10px;
-      align-items: center;
+      align-items: start;
       margin: 6px 8px 0;
       padding: 10px 12px;
       border: 1px solid var(--cxp-border);
@@ -1150,6 +1067,11 @@ export function injectStyles() {
       position: relative;
       z-index: 5;
     }
+    .cxp-cli-banner [hidden] { display: none !important; }
+    .cxp-cli-banner--broken,
+    .cxp-cli-banner--failed { box-shadow: inset 2px 0 0 var(--cxp-danger); }
+    .cxp-cli-banner--installing { box-shadow: inset 2px 0 0 var(--cxp-running); }
+    .cxp-cli-banner--done { box-shadow: inset 2px 0 0 var(--cxp-success); }
     .cxp-cli-banner-icon {
       width: 22px; height: 22px;
       display: flex; align-items: center; justify-content: center;
@@ -1158,30 +1080,81 @@ export function injectStyles() {
       color: var(--cxp-warning);
       font-weight: 700;
     }
-    .cxp-cli-banner-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+    .cxp-cli-banner--broken .cxp-cli-banner-icon,
+    .cxp-cli-banner--failed .cxp-cli-banner-icon { border-color: var(--cxp-danger); color: var(--cxp-danger); }
+    .cxp-cli-banner--installing .cxp-cli-banner-icon { border-color: var(--cxp-running); color: var(--cxp-running); animation: cxp-working 1.2s ease-in-out infinite; }
+    .cxp-cli-banner--done .cxp-cli-banner-icon { border-color: var(--cxp-success); color: var(--cxp-success); }
+    .cxp-cli-banner--nudge { animation: cxp-cli-nudge 0.5s var(--cxp-ease); }
+    @keyframes cxp-cli-nudge { 0%, 100% { transform: none; } 25% { transform: translateX(-3px); } 75% { transform: translateX(3px); } }
+    .cxp-cli-banner-text { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
     .cxp-cli-banner-title {
       font-size: var(--cxp-fs-md); font-weight: 600;
       color: var(--cxp-text);
     }
-    .cxp-cli-banner-body {
+    .cxp-cli-banner-body,
+    .cxp-cli-banner-note,
+    .cxp-cli-banner-step {
       font-size: var(--cxp-fs-sm);
       color: var(--cxp-text-2);
-      word-break: break-word;
+      overflow-wrap: anywhere;
     }
-    .cxp-cli-banner-body code {
-      padding: 1px 4px;
+    .cxp-cli-banner-command { display: flex; align-items: flex-start; gap: 6px; }
+    .cxp-cli-banner-command code,
+    .cxp-cli-banner-error code {
+      flex: 1;
+      min-width: 0;
+      padding: 3px 6px;
       background: var(--cxp-surface-2);
       border-radius: var(--cxp-radius-sm);
       font-family: var(--cxp-mono);
       font-size: var(--cxp-fs-sm);
       color: var(--cxp-text);
+      white-space: pre-wrap;
+      word-break: break-all;
+      user-select: text;
     }
-    .cxp-cli-banner-actions { display: flex; gap: 6px; }
-    .cxp-cli-banner-link, .cxp-cli-banner-recheck {
-      display: inline-flex; align-items: center; gap: 4px;
-      padding: 4px 9px;
+    .cxp-cli-banner-error code { display: block; max-height: 96px; overflow: auto; }
+    .cxp-cli-banner-copy {
+      flex-shrink: 0;
+      height: 22px;
+      padding: 0 8px;
+      border: 1px solid var(--cxp-border-strong);
+      border-radius: var(--cxp-radius-sm);
+      background: transparent;
+      color: var(--cxp-text-2);
+      font-family: inherit;
       font-size: var(--cxp-fs-sm);
+      cursor: pointer;
+    }
+    .cxp-cli-banner-copy:hover { color: var(--cxp-text); background: var(--cxp-surface-2); }
+    .cxp-cli-banner-progress { display: flex; flex-direction: column; gap: 4px; }
+    .cxp-cli-banner-bar { height: 3px; border-radius: 2px; background: var(--cxp-surface-2); overflow: hidden; }
+    .cxp-cli-banner-bar > span { display: block; height: 100%; width: 0; background: var(--cxp-running); transition: width var(--cxp-dur-fast) var(--cxp-ease); }
+    .cxp-cli-banner-log {
+      margin: 0;
+      max-height: 84px;
+      overflow: auto;
+      padding: 4px 6px;
+      background: var(--cxp-surface-1);
+      border-radius: var(--cxp-radius-sm);
+      font-family: var(--cxp-mono);
+      font-size: var(--cxp-fs-xs);
+      line-height: 1.45;
+      color: var(--cxp-text-3);
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .cxp-cli-banner-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+    .cxp-cli-banner-install,
+    .cxp-cli-banner-link,
+    .cxp-cli-banner-path, .cxp-cli-banner-recheck,
+    .cxp-cli-banner-dismiss {
+      display: inline-flex; align-items: center; gap: 4px;
+      height: 24px;
+      padding: 0 10px;
+      font-size: var(--cxp-fs-md);
       font-weight: 500;
+      line-height: 1;
       border-radius: var(--cxp-radius-md);
       border: 1px solid var(--cxp-border-strong);
       background: transparent;
@@ -1192,10 +1165,27 @@ export function injectStyles() {
       font-family: inherit;
       transition: background var(--cxp-dur-fast);
     }
-    .cxp-cli-banner-link:hover, .cxp-cli-banner-recheck:hover {
+    .cxp-cli-banner-install {
+      background: var(--cxp-solid);
+      border-color: var(--cxp-solid);
+      color: var(--cxp-on-solid);
+    }
+    .cxp-cli-banner-install:hover:not(:disabled) { background: var(--cxp-solid-hover); border-color: var(--cxp-solid-hover); }
+    .cxp-cli-banner-link:hover,
+    .cxp-cli-banner-path:hover:not(:disabled), .cxp-cli-banner-recheck:hover:not(:disabled),
+    .cxp-cli-banner-dismiss:hover {
       background: var(--cxp-surface-2);
     }
-    .cxp-cli-banner-recheck:disabled { opacity: 0.5; cursor: default; }
+    .cxp-cli-banner-install:disabled,
+    .cxp-cli-banner-path:disabled, .cxp-cli-banner-recheck:disabled { opacity: 0.5; cursor: default; }
+    .cxp-cli-banner button:focus-visible,
+    .cxp-cli-banner a:focus-visible { outline: 2px solid var(--cxp-focus); outline-offset: 2px; }
+    @media (prefers-reduced-motion: reduce) {
+      .cxp-cli-banner--installing .cxp-cli-banner-icon,
+      .cxp-cli-banner--nudge { animation: none; }
+      .cxp-cli-banner--nudge { box-shadow: inset 2px 0 0 var(--cxp-warning), 0 0 0 1px var(--cxp-warning); }
+      .cxp-cli-banner-bar > span { transition: none; }
+    }
     .codex-panel.cxp-cli-blocked .cxp-send { opacity: 0.4 !important; cursor: not-allowed !important; }
     .codex-panel.cxp-cli-blocked .cxp-input { opacity: 0.7; }
 
@@ -2947,6 +2937,37 @@ export function injectStyles() {
       opacity: 0.4;
       cursor: default;
     }
+    /* Codex Settings: scoped compact groups and consistent native controls. */
+    .cxp-settings-panel { display: flex; flex-direction: column; overflow: hidden; }
+    .cxp-settings-body { overflow-y: auto; min-height: 0; }
+    .cxp-settings-header { flex: none; font-size: var(--cxp-fs-md); padding: 12px 14px; }
+    .cxp-settings-section { padding: 12px 0; margin: 0; }
+    .cxp-settings-section .cxp-settings-section { border: 0; }
+    .cxp-settings-section[hidden], .cxp-settings-features[hidden] { display: none; }
+    .cxp-settings-section-title { font-size: var(--cxp-fs-sm); text-transform: none; letter-spacing: 0; color: var(--cxp-text-2); margin: 0 0 8px; }
+    details.cxp-settings-section > summary, .cxp-settings-features > summary { cursor: pointer; }
+    .cxp-settings-section:not([open]) > summary { margin-bottom: 0; }
+    .cxp-settings-subtitle { font-size: var(--cxp-fs-xs); font-weight: 500; color: var(--cxp-text-3); margin: 10px 0 6px; }
+    .cxp-config-row { border: 0; padding: 4px 0; min-width: 0; }
+    .cxp-config-label { text-align: left; flex-basis: 42%; font-size: var(--cxp-fs-sm); color: var(--cxp-text-2); overflow-wrap: anywhere; }
+    .cxp-settings-panel .cxp-config-input { min-height: 26px; padding: 3px 6px; border-radius: var(--cxp-radius-sm); background: var(--cxp-surface-1); }
+    .cxp-settings-panel .cxp-config-input option { background: var(--cxp-pop); color: var(--cxp-text); }
+    .cxp-settings-scope { gap: 12px; }
+    .cxp-settings-scope-hint { margin-bottom: 8px; }
+    .cxp-settings-footer { flex: none; border-top: 1px solid var(--cxp-border); padding: 10px 14px; background: var(--cxp-pop); }
+    .cxp-settings-footer .cxp-config-save { margin: 0; width: 100%; text-transform: none; letter-spacing: 0; padding: 6px 10px; }
+    .cxp-settings-result { font-size: var(--cxp-fs-xs); color: var(--cxp-text-3); overflow-wrap: anywhere; }
+    .cxp-settings-result:not(:empty) { padding-top: 6px; }
+    .cxp-settings-result[data-error=true] { color: var(--cxp-danger); }
+    .cxp-settings-unit { font-size: var(--cxp-fs-xs); color: var(--cxp-text-3); }
+    .cxp-settings-toggle { margin-left: auto; min-width: 70px; padding: 3px 8px; border: 1px solid var(--cxp-border-input); border-radius: var(--cxp-radius-sm); color: var(--cxp-text-3); background: var(--cxp-surface-1); font: inherit; cursor: pointer; }
+    .cxp-settings-toggle[data-enabled=true] { color: var(--cxp-text); background: var(--cxp-surface-3); border-color: var(--cxp-text-3); }
+    .cxp-settings-toggle:disabled { opacity: .45; cursor: default; }
+    .cxp-settings-features { margin-top: 10px; }
+    .cxp-settings-features .cxp-config-label { flex-basis: auto; }
+    .cxp-settings-runtime { margin-top: 12px; }
+    .cxp-settings-panel .cxp-mcp-row { flex-wrap: wrap; border: 0; padding: 4px 0; }
+    .cxp-config-warning { padding: 8px 12px; color: var(--cxp-warning); font-size: var(--cxp-fs-xs); white-space: pre-wrap; }
     .cxp-config-layer {
       font-size: var(--cxp-fs-xs);
       color: var(--cxp-text-3);

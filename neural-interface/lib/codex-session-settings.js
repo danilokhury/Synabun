@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileS
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
-export const CODEX_SESSION_SETTING_KEYS = Object.freeze(['model', 'effort', 'summary', 'personality', 'serviceTier', 'approvalPolicy', 'approvalsReviewer', 'disabledPluginIds']);
+export const CODEX_SESSION_SETTING_KEYS = Object.freeze(['model', 'effort', 'summary', 'personality', 'serviceTier', 'approvalPolicy', 'sandboxPolicy', 'approvalsReviewer', 'disabledPluginIds']);
 const own = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
 
 /** Session choices are scoped to account/thread and never written to config.toml. */

@@ -119,6 +119,9 @@ export function createCodexBrain({ session, sink, deps = {}, persona = '' } = {}
   });
   const socket = createVirtualSocket({
     name: `codex-brain-${session.id}`,
+    // A WhatsApp conversation's brain credential rides on the socket object, never in a message: the skin
+    // handler gives it to this app-server's SynaBun MCP child through its environment (whatsapp_send_file).
+    credential: deps.brainCredential || null,
     onSend: (packet) => {
       if (disposed || !packet || typeof packet !== 'object') return;
       if (packet.type === 'ready') readyResolve?.();

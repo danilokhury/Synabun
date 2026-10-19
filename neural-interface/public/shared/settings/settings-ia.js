@@ -29,6 +29,7 @@ export const SETTINGS_GROUPS = [
   { id: 'tools',       labelKey: k('group.tools') },
   { id: 'automations', labelKey: k('group.automations') },
   { id: 'personalize', labelKey: k('group.personalize') },
+  { id: 'app',         labelKey: k('group.app') },
 ];
 
 /** `key` is the i18n slug under settings.redesign.{nav,page,section}; `icon` names a TAB_ICONS entry. */
@@ -183,6 +184,17 @@ export const SETTINGS_PAGES = [
       { id: 'stg-sec-2d-graph',      key: 'd2_graph',               state: 'advanced', variant: 'graphics' },
     ],
   },
+  {
+    // The last page: version, links, system and dependencies (settings-about-pane.js, GET /api/system/about).
+    // Its header (icon, version, Check for updates, Copy info) is not a section: it is always shown.
+    id: 'about', key: 'about', group: 'app', icon: 'about',
+    panes: [{ id: 'about' }],
+    sections: [
+      { id: 'stg-sec-about-links',        key: 'links',        state: 'open' },
+      { id: 'stg-sec-about-system',       key: 'system',       state: 'open' },
+      { id: 'stg-sec-about-dependencies', key: 'dependencies', state: 'open' },
+    ],
+  },
 ];
 
 export const DEFAULT_SETTINGS_PAGE = 'ai-connections';
@@ -278,11 +290,13 @@ export const SETTINGS_CONTROLS = {
   'stg-sec-visual-tuning': 'UI003 UI004 UI005 UI006 UI007 UI008 UI009 UI010',
   'stg-sec-file-icons': 'ICO001 ICO003 ICO002 ICO004 ICO005',
   'stg-sec-2d-graph': 'GFX001 GFX002 GFX003 GFX004 GFX005 GFX006 GFX007 GFX008',
+  'stg-sec-about-dependencies': 'ABT003',
 };
 /** Controls of a page that sit outside its sections (a pane's save bar, the tabs of a pane). */
 export const SETTINGS_PAGE_CONTROLS = {
   browser: 'BRW081 BRW082 BRW085',
   'connected-tools': 'MCP001',
+  about: 'ABT001 ABT002',
 };
 /** The window's own controls (dim the background, close, the page list): not settings, so never search results. */
 export const SETTINGS_SHELL_CONTROLS = 'SH002 SH003 SH005';
@@ -306,6 +320,7 @@ export const homeOfControl = (controlId) => CONTROL_HOME.get(controlId) || null;
 // ── Deep-link aliases ──────────────────────────────────────────────────────
 // Old tab id → the page that took it over, and the section a link to that tab
 // should land on. Old callers keep working; new code uses the page ids.
+// A page that never had an old tab needs no entry: `{ tab: 'about' }` names the About page itself.
 
 export const SETTINGS_TAB_ALIASES = {
   server:        { page: 'memory-backups',  section: 'stg-sec-database' },

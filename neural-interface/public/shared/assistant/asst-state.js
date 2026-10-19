@@ -181,7 +181,7 @@ export function resolveBrainDefaults(brain, catalog = {}) {
 
   if (ACCOUNT_PROVIDERS.has(b.provider)) {
     const accounts = catalog.accounts?.[b.provider] || [];
-    if (!b.accountId || (accounts.length && !accounts.some(a => a?.id === b.accountId))) {
+    if (!b.accountId || (b.accountId !== 'auto' && accounts.length && !accounts.some(a => a?.id === b.accountId))) {
       b.accountId = accounts.find(a => a?.isDefault)?.id || accounts[0]?.id || 'default';
     }
   } else {

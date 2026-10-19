@@ -18,6 +18,7 @@ import { createTerminalModel } from './snapshot.js';
 import { evaluateFlow } from './flow.js';
 import { EV, OP, HOST_DEFAULTS } from './protocol.js';
 import { createEventLoopMonitor } from '../event-loop-monitor.js';
+import { withPathEnv } from '../augmented-path.js';
 
 const IS_WIN = process.platform === 'win32';
 const IS_LINUX = process.platform === 'linux';
@@ -74,7 +75,7 @@ export function createPtyHostCore({ send, config = {}, pty: injectedPty = null }
     }
     const cols = clampInt(spec.cols, 2, 1000) || 120;
     const rows = clampInt(spec.rows, 1, 500) || 30;
-    const env = { ...(spec.env || {}) };
+    const env = withPathEnv(spec.env || {});
     for (const k of Object.keys(env)) if (k.startsWith('NODE_CHANNEL_') || k === 'NODE_UNIQUE_ID') delete env[k];
 
     let file = spec.file;

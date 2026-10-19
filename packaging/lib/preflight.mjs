@@ -168,16 +168,13 @@ export function findNsis(env = process.env) {
 /** The tools a build of this target uses on this host: { name, path, required, purpose }. */
 export function toolsFor(target, { env = process.env, natives = [], cross = false } = {}) {
   const tool = (name, purpose, { required = true, path = which(name, env) } = {}) => ({ name, path: path || null, required, purpose });
+  // electron-builder (installed from packaging/desktop's lockfile into the build cache), the pinned Electron,
+  // NSIS and the AppImage tools are downloaded by the build itself: none of them is a tool to install first.
   if (cross) {
     return [
       tool('zig', 'compiles the native entry and the terminal module for the target', { path: env.ZIG || which('zig', env) }),
-      tool('tar', 'unpacks the Node runtimes'),
-      ...(target.platform === 'linux' ? [
-        tool('mksquashfs', 'creates the AppImage; without it the build is a portable archive', { required: false, path: env.MKSQUASHFS || which('mksquashfs', env) }),
-      ] : [
-        tool('makensis', 'creates the installer; without it the build is a zip', { required: false, path: findNsis(env) }),
-        tool('sips', 'renders the icon of the executable', { required: false }),
-      ]),
+      tool('tar', 'unpacks the Node runtimes and the AppImage tools'),
+      ...(target.platform === 'win32' ? [tool('sips', 'renders the icons of the executables', { required: false })] : []),
     ];
   }
   if (target.platform === 'darwin') {
@@ -185,17 +182,17 @@ export function toolsFor(target, { env = process.env, natives = [], cross = fals
       tool('clang', 'compiles the native entry'),
       tool('tar', 'unpacks the Node runtime'),
       tool('hdiutil', 'creates the disk image'),
-      tool('ditto', 'creates the zip archive'),
+      tool('ditto', 'creates the zip archive the updater installs'),
+      tool('codesign', 'signs the app (ad hoc without a Developer ID: Apple Silicon runs nothing unsigned)'),
       tool('sips', 'renders the application icon', { required: false }),
       tool('iconutil', 'renders the application icon', { required: false }),
-      tool('codesign', 'signs the application when an identity is given', { required: false }),
     ];
   }
   if (target.platform === 'linux') {
     const compile = natives.some(native => native.status === 'source-build');
     return [
       tool('cc', 'compiles the native entry'),
-      tool('tar', 'unpacks the Node runtime, creates the portable archive'),
+      tool('tar', 'unpacks the Node runtime and the AppImage tools'),
       tool('python3', 'node-gyp, for the terminal module', { required: compile }),
       tool('make', 'node-gyp, for the terminal module', { required: compile }),
       tool('g++', 'node-gyp, for the terminal module', { required: compile }),
@@ -207,8 +204,6 @@ export function toolsFor(target, { env = process.env, natives = [], cross = fals
   return [
     tool('C compiler', 'compiles the native entry (Visual Studio C++ tools, or MinGW-w64 for this processor)', { path: msvc || mingw?.gcc || null }),
     tool('tar.exe', 'unpacks the Node runtime', { path: existsSync(systemTar) ? systemTar : null }),
-    tool('makensis', 'creates the installer; without it the build is a zip', { required: false, path: findNsis(env) }),
-    tool('signtool', 'signs the executable and the installer when a certificate is given', { required: false }),
   ];
 }
 
@@ -295,7 +290,7 @@ export function formatVerdict(verdict, { verbose = false } = {}) {
     `  status   ${STATUS_TEXT[verdict.status]}${crossed && verdict.status === 'ready' ? ' as a cross build (checked, never run)' : ''}`,
     `  command  npm run ${verdict.npmScript}${crossed ? ' -- --cross' : ''}`,
   ];
-  lines.push(`  produces ${verdict.artifacts.join(' or ')}; CI runner ${verdict.runner}`);
+  lines.push(`  produces ${verdict.artifacts.join(' + ')}; CI runner ${verdict.runner}`);
   for (const blocker of verdict.blockers) lines.push(`  blocker  ${blocker}`);
   if (verdict.hostProblem) lines.push(`  host     ${verdict.hostProblem}`);
   for (const item of verdict.missingTools) lines.push(`  missing  ${item}`);

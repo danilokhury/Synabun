@@ -138,7 +138,8 @@ export function validateCodexConfigRequirements(config, result) {
     throw error;
   }
   for (const [name, required] of Object.entries(requirements.featureRequirements || {})) {
-    if (config.features?.[name] !== undefined && config.features[name] !== required) {
+    const value = config.features?.[name] ?? config[`features.${name}`];
+    if (value !== undefined && value !== required) {
       const error = new Error(`Feature ${name} is restricted by managed requirements.`);
       error.code = 'MANAGED_REQUIREMENT';
       throw error;

@@ -1,7 +1,8 @@
 /**
  * Jev in the SynaBun Assistant: the prompt-urgency judgment of the per-turn
- * recall gate, and the worker-outcome / worker-claim judgments of dispatched
- * runs (docs/judgments.md). Everything is injected by server.js, which imports
+ * recall gate, the worker-outcome / worker-claim judgments of dispatched
+ * runs, and the budget-split judgment that divides a session's budget across
+ * the providers (docs/judgments.md). Everything is injected by server.js, which imports
  * it from mcp-server/dist in its own try/catch: a stale dist leaves the
  * Assistant working without Jev (this wrapper is then simply not created).
  *
@@ -18,6 +19,7 @@ const num = (value, fallback) => (value !== null && value !== undefined && value
 export function createAssistantJev({
   judgePrompt = null,
   judgeWorkerOutcome = null,
+  judgeBudgetSplit = null,
   surfaceConfig = () => null,
   enabled = () => true,
   retryAfterMs = () => 0,
@@ -107,11 +109,32 @@ export function createAssistantJev({
     return out;
   }
 
+  /**
+   * How much of a session's remaining spend lands on each provider (surface budget-split, one
+   * Score per provider in `input.ask`). Jev answers a share of the work, never an amount: the
+   * caller turns the scores into dollars (assistant-budget-split.js).
+   * → null (not asked, or no usable answer) | { scores: { [provider]: { score, confidence, probabilities } }, logId }
+   */
+  async function budgetSplit(input = {}, { sessionId = null, project = null } = {}) {
+    if (typeof judgeBudgetSplit !== 'function' || !available()) return null;
+    if (!settingsOf('budget-split')?.enabled) return null;
+    let logId = null;
+    let verdict = null;
+    try {
+      verdict = await judgeBudgetSplit(input, {
+        origin: 'assistant', sessionId: sessionId || null, project: project && project !== 'global' ? project : null,
+        onLogged: (id) => { logId = id ?? null; },
+      });
+    } catch { verdict = null; }
+    if (!verdict || typeof verdict !== 'object' || !verdict.scores || typeof verdict.scores !== 'object') return null;
+    return { scores: verdict.scores, logId };
+  }
+
   /** Record what the caller did with a judgment on its log row. Never throws. */
   function annotateLog(logId, outcome) {
     if (!logId) return;
     try { annotate(logId, outcome); } catch { /* diagnostics */ }
   }
 
-  return { available, retryAfterMs: waitMs, promptUrgency, workerOutcome, annotate: annotateLog };
+  return { available, retryAfterMs: waitMs, promptUrgency, workerOutcome, budgetSplit, annotate: annotateLog };
 }

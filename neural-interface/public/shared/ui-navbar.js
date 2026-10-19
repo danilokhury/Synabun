@@ -24,6 +24,7 @@ import { toggleScheduleQueue } from './ui-schedule-queue.js';
 import { initUpdate } from './ui-update.js';
 import { initToolUpdates } from './ui-tool-updates.js';
 import { initSidepanelTrayPlaceholders } from './ui-sidepanel-tray.js';
+import { initDesktopTitleBar } from './desktop-titlebar.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -304,7 +305,8 @@ export function initNavbar() {
 
   // ── Window Controls Overlay (PWA standalone) ──
   // Toggles body.wco-active when the overlay chevron is clicked (traffic lights move into content).
-  if ('windowControlsOverlay' in navigator) {
+  // Inside the SynaBun desktop app the bar is the window's title bar, and desktop-titlebar.js does this and more.
+  if (!initDesktopTitleBar() && 'windowControlsOverlay' in navigator) {
     const wco = navigator.windowControlsOverlay;
     const updateWco = () => document.body.classList.toggle('wco-active', wco.visible);
     updateWco();

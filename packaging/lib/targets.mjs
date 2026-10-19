@@ -1,5 +1,7 @@
 /**
  * The targets a packaged SynaBun can be built for, and what each one needs.
+ * Each one is the desktop app (lib/desktop.mjs): SynaBun's server and runtime
+ * as a payload, in an Electron window, with the update function's files.
  *
  * A build is native unless it is asked to be otherwise: it runs on the target's
  * own operating system, with the target's own Node, so that npm picks that
@@ -36,6 +38,7 @@ export const TARGETS = Object.freeze({
     nodeDist: 'darwin-arm64',
     nodeArchive: 'tar.gz',
     bundle: 'macos-app',
+    // Both, always: the disk image installs, the zip is what the app's updater swaps in.
     artifacts: ['dmg', 'zip'],
     hosts: [{ platform: 'darwin', arch: 'arm64' }],
     runner: 'macos-15',
@@ -64,7 +67,7 @@ export const TARGETS = Object.freeze({
     nodeDist: 'linux-x64',
     nodeArchive: 'tar.gz',
     bundle: 'linux-appdir',
-    artifacts: ['appimage', 'portable'],
+    artifacts: ['appimage'],
     hosts: [{ platform: 'linux', arch: 'x64', libc: 'glibc' }],
     // glibc 2.28 is what the Node 22 binaries need themselves: nothing compiled here asks for more.
     cross: { zigTarget: 'x86_64-linux-gnu.2.28', glibc: '2.28' },
@@ -79,7 +82,7 @@ export const TARGETS = Object.freeze({
     nodeDist: 'win-x64',
     nodeArchive: 'zip',
     bundle: 'windows-dir',
-    artifacts: ['installer', 'zip'],
+    artifacts: ['installer'],
     hosts: [{ platform: 'win32', arch: 'x64' }],
     cross: { zigTarget: 'x86_64-windows-gnu' },
     runner: 'windows-2022',
@@ -93,7 +96,7 @@ export const TARGETS = Object.freeze({
     nodeDist: 'win-x86',
     nodeArchive: 'zip',
     bundle: 'windows-dir',
-    artifacts: ['installer', 'zip'],
+    artifacts: ['installer'],
     // A 64-bit Windows runs the 32-bit Node and the 32-bit MSVC tools natively
     // (WOW64); what comes out is a real 32-bit application either way.
     hosts: [{ platform: 'win32', arch: 'ia32' }, { platform: 'win32', arch: 'x64' }],
@@ -140,6 +143,5 @@ export function artifactNames(targetDefinition, version) {
     zip: `${base}.zip`,
     installer: `${base}-setup.exe`,
     appimage: `${base}.AppImage`,
-    portable: `${base}-portable.tar.gz`,
   };
 }

@@ -228,6 +228,7 @@ export function updateRunCard(card, run, opts = {}) {
       const r = run.route;
       const routeBits = [r.taskClassLabel || r.taskClass || t('assistant.routes.task', 'task')];
       if (r.status === 'pending') routeBits.push(t('assistant.routes.state.pending', 'waiting for your choice'));
+      else if (r.decidedBy === 'budget' || r.source === 'budget') routeBits.push(t('assistant.routes.budgetDecision', 'budget re-route'));
       else if (r.decidedBy === 'user') routeBits.push(t('assistant.routes.youChose', 'you chose'));
       else if (r.remembered || r.decidedBy === 'remembered') routeBits.push(t('assistant.routes.remembered', 'your saved choice'));
       else if (Number.isFinite(Number(r.confidence))) routeBits.push(`${Math.round(Number(r.confidence) <= 1 ? Number(r.confidence) * 100 : Number(r.confidence))}%`);
@@ -548,8 +549,10 @@ export function createRenderer(transcriptEl, hooks = {}) {
 
   /** A menu opened from the empty state's project picker does not outlive it. */
   function closeEmptyMenu() {
-    const btn = emptyEl?.querySelector('.asst-empty-project-btn');
-    if (btn && isMenuOpen(btn)) closeMenu();
+    for (const btn of emptyEl?.querySelectorAll('.asst-empty-project-btn') || []) {
+      if (isMenuOpen(btn)) closeMenu();
+    }
+    hooks.unmountEmptyControls?.();
   }
 
   // ── The hero ──
@@ -2689,7 +2692,12 @@ export function createRenderer(transcriptEl, hooks = {}) {
 
   function upsertRunCard(run, { result = null } = {}) {
     if (!run?.runId) return null;
-    runInfo.set(run.runId, { ...runInfo.get(run.runId), title: run.title || run.task || runInfo.get(run.runId)?.title, state: run.status || runInfo.get(run.runId)?.state, provider: run.provider });
+    const prev = runInfo.get(run.runId);
+    const status = run.status || prev?.state;
+    const tone = status ? runTone({ ...run, status }) : '';
+    const routeId = run.route?.routeId || prev?.routeId || '';
+    runInfo.set(run.runId, { ...prev, title: run.title || run.task || prev?.title, state: status, provider: run.provider, routeId, working: tone === 'running' || tone === 'queued' });
+    if (routeId) syncRouteLive(routeId);
     const cardOpts = runCardOpts(result);
     let card = runCards.get(run.runId);
     if (card && card.isConnected) {
@@ -2745,21 +2753,42 @@ export function createRenderer(transcriptEl, hooks = {}) {
     return { phase, t: hooks.t, providerIcon: hooks.providerIcon, brainLabel: hooks.brainLabel, onChangeRoutes: hooks.onChangeRoutes };
   }
 
-  /** Create or update the line for `route.routeId` in place. */
+  /** Create or update the line for `route.routeId` in place. Only a new line enters (never on replay). */
   function upsertRouteLine(route, phase = 'decided') {
     const routeId = route?.routeId;
     if (!routeId) return null;
     const existing = routeLines.get(routeId);
-    if (existing && existing.el.isConnected) { existing.update(route, phase); return existing; }
+    if (existing && existing.el.isConnected) { existing.update(route, phase); syncRouteLive(routeId); return existing; }
     const line = createRouteLine(route, routeLineOpts(phase));
     routeLines.set(routeId, line);
     append(line.el);
+    syncRouteLive(routeId);
+    enterRow(line.el);
     return line;
   }
 
   /** Adopt a line created by a collapsing route card so later events update it. */
   function registerRouteLine(routeId, line) {
-    if (routeId && line) routeLines.set(routeId, line);
+    if (!routeId || !line) return;
+    const fresh = routeLines.get(routeId) !== line;
+    routeLines.set(routeId, line);
+    syncRouteLive(routeId);
+    if (fresh && line.el?.isConnected) enterRow(line.el);
+  }
+
+  /** The line is live while a run it dispatched is queued or working (run cards keep runInfo current). */
+  function syncRouteLive(routeId) {
+    const line = routeLines.get(routeId);
+    if (!line?.setRunning) return;
+    let working = false;
+    for (const info of runInfo.values()) if (info.routeId === routeId && info.working) { working = true; break; }
+    line.setRunning(working);
+  }
+
+  /** A new row's entrance: the rack ledger's (4px rise and fade, --asst-dur-fast, --asst-ease-enter); none when calm. */
+  function enterRow(node) {
+    if (calm() || typeof node?.animate !== 'function') return;
+    node.animate([{ opacity: 0, transform: 'translateY(4px)' }, { opacity: 1, transform: 'none' }], { duration: 140, easing: cssEase('--asst-ease-enter', 'cubic-bezier(0,0,.38,.9)') });
   }
 
   function removeRouteLine(routeId) {
@@ -2899,7 +2928,9 @@ export function createRenderer(transcriptEl, hooks = {}) {
     const projectSlot = emptyEl.querySelector('.asst-empty-project');
     let picker = null;
     try { picker = typeof hooks.mountEmptyProject === 'function' ? hooks.mountEmptyProject(projectSlot) : null; } catch { picker = null; }
-    projectSlot.hidden = !picker;
+    let budget = null;
+    try { budget = hooks.mountEmptyBudget?.(projectSlot); } catch { /* unavailable */ }
+    projectSlot.hidden = !picker && !budget;
     renderSuggestions();
     $msgs.appendChild(emptyEl);
     // The host's "Starting…" character flies into place (not on replay or reduced motion).

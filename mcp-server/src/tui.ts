@@ -27,6 +27,7 @@ import { ensureCollection, scrollMemories, searchMemories, getMemory, deleteMemo
 import { getAllCategories, getCategories, getCustomCategories, getCategoryDescription, validateCategoryName, addCategory, removeCategory } from './services/categories.js';
 import { generateEmbedding } from './services/local-embeddings.js';
 import { detectProject } from './config.js';
+import { SERVER_VERSION } from './version.js';
 import type { MemoryPayload, MemorySource } from './types.js';
 
 // ── Box drawing characters ────────────────────────────────────────
@@ -228,7 +229,7 @@ function printLogo(): void {
   console.log(dboxRow(W, ''));
 
   // Tagline (centered)
-  const tagline = accent2('Vector-Powered') + dim(' \u2022 ') + info('SQLite') + dim(' \u2022 ') + chalk.white('v2.0.0');
+  const tagline = accent2('Vector-Powered') + dim(' \u2022 ') + info('SQLite') + dim(' \u2022 ') + chalk.white(`v${SERVER_VERSION}`);
   console.log(dboxRow(W, tagline));
 
   console.log(dim(BOX.dbl + BOX.dh.repeat(W) + BOX.dbr));

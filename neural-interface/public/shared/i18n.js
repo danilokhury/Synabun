@@ -175,10 +175,28 @@ export function getLocaleChoice() {
 }
 
 /**
+ * The locale the page address asks for with `?lang=<tag>`, matched like a stored choice
+ * ('pt' → 'pt-BR'), or null (no tag, or one no locale answers). It holds for this page
+ * load only and is never stored: showcase captures use it to get an English UI without
+ * touching the user's own choice.
+ */
+export function getAddressLocale() {
+  const search = globalThis.window?.location?.search;
+  if (!search) return null;
+  try {
+    return matchLocale(new URLSearchParams(search).get('lang'));
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Detect the user's preferred locale.
- * Priority: stored explicit choice → system language → 'en'
+ * Priority: the page address (?lang=) → stored explicit choice → system language → 'en'
  */
 function detectLocale() {
+  const address = getAddressLocale();
+  if (address) return address;
   const choice = getLocaleChoice();
   return choice === SYSTEM_LOCALE ? getSystemLocale() : choice;
 }

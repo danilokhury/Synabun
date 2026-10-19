@@ -3567,6 +3567,124 @@ const PARITY_CSS = `
 .ocpv2-help-name { flex-shrink: 0; color: rgba(232,224,220,0.95); font-family: 'JetBrains Mono', ui-monospace, monospace; }
 .ocpv2-help-text { flex: 1; min-width: 0; color: rgba(255,255,255,0.62); overflow-wrap: anywhere; }
 .ocpv2-help-row .ocpv2-session-item-meta { flex-shrink: 0; margin-left: 0; }
+
+/* ── CLI banner (ui-cli-banner.js): OpenCode not installed / installing / failed to start ── */
+/* Mono like the rest of the panel; the panel's own amber, error red and green. */
+.ocp-cli-banner {
+  flex-shrink: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  margin: 6px 8px 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(232,180,80,0.32);
+  border-radius: 8px;
+  background: rgba(232,180,80,0.04);
+  color: rgba(255,255,255,0.86);
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  position: relative;
+  z-index: 5;
+}
+.ocp-cli-banner [hidden] { display: none !important; }
+.ocp-cli-banner--broken, .ocp-cli-banner--failed { border-color: rgba(220,100,100,0.32); background: rgba(220,100,100,0.05); }
+.ocp-cli-banner--done { border-color: rgba(140,210,170,0.32); background: rgba(140,210,170,0.05); }
+.ocp-cli-banner-icon {
+  width: 22px; height: 22px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  background: rgba(232,180,80,0.14);
+  border: 1px solid rgba(232,180,80,0.28);
+  color: rgba(255,200,120,0.95);
+  font-weight: 700;
+}
+.ocp-cli-banner--broken .ocp-cli-banner-icon, .ocp-cli-banner--failed .ocp-cli-banner-icon { background: rgba(220,100,100,0.12); border-color: rgba(220,100,100,0.3); color: rgba(255,166,166,0.92); }
+.ocp-cli-banner--done .ocp-cli-banner-icon { background: rgba(140,210,170,0.14); border-color: rgba(140,210,170,0.28); color: rgba(180,230,200,0.92); }
+.ocp-cli-banner--installing .ocp-cli-banner-icon { animation: ocpv2-abort-sweep 1.2s ease-in-out infinite; }
+.ocp-cli-banner--nudge { animation: ocp-cli-nudge 0.5s ease; }
+@keyframes ocp-cli-nudge { 0%, 100% { transform: none; } 25% { transform: translateX(-3px); } 75% { transform: translateX(3px); } }
+.ocp-cli-banner-text { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.ocp-cli-banner-title { font-size: 11.5px; font-weight: 600; color: rgba(255,200,120,0.95); }
+.ocp-cli-banner--broken .ocp-cli-banner-title, .ocp-cli-banner--failed .ocp-cli-banner-title { color: rgba(255,166,166,0.92); }
+.ocp-cli-banner--done .ocp-cli-banner-title { color: rgba(180,230,200,0.92); }
+.ocp-cli-banner-body, .ocp-cli-banner-note, .ocp-cli-banner-step { color: rgba(255,255,255,0.62); overflow-wrap: anywhere; }
+.ocp-cli-banner-command { display: flex; align-items: flex-start; gap: 6px; }
+.ocp-cli-banner-command code, .ocp-cli-banner-error code {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 6px;
+  background: rgba(0,0,0,0.3);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 4px;
+  font: inherit;
+  font-size: 10.5px;
+  color: rgba(232,224,220,0.95);
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: text;
+}
+.ocp-cli-banner-error code { display: block; max-height: 96px; overflow: auto; color: rgba(255,166,166,0.92); }
+.ocp-cli-banner-copy {
+  flex-shrink: 0;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 5px;
+  background: transparent;
+  color: rgba(255,255,255,0.62);
+  font: inherit;
+  font-size: 10.5px;
+  cursor: pointer;
+}
+.ocp-cli-banner-copy:hover { color: rgba(252,246,240,0.98); border-color: rgba(232,224,220,0.3); }
+.ocp-cli-banner-progress { display: flex; flex-direction: column; gap: 4px; }
+.ocp-cli-banner-bar { height: 3px; border-radius: 2px; background: rgba(255,255,255,0.08); overflow: hidden; }
+.ocp-cli-banner-bar > span { display: block; height: 100%; width: 0; background: rgba(232,224,220,0.7); transition: width 0.2s ease; }
+.ocp-cli-banner-log {
+  margin: 0;
+  max-height: 84px;
+  overflow: auto;
+  padding: 4px 6px;
+  background: rgba(0,0,0,0.25);
+  border-radius: 4px;
+  font: inherit;
+  font-size: 10px;
+  line-height: 1.45;
+  color: rgba(255,255,255,0.5);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.ocp-cli-banner-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+.ocp-cli-banner-install, .ocp-cli-banner-link, .ocp-cli-banner-path, .ocp-cli-banner-recheck, .ocp-cli-banner-dismiss {
+  display: inline-flex; align-items: center; gap: 4px;
+  height: 22px;
+  padding: 0 10px;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1;
+  border-radius: 5px;
+  border: 1px solid rgba(255,255,255,0.14);
+  background: rgba(255,255,255,0.04);
+  color: rgba(255,255,255,0.86);
+  text-decoration: none;
+  cursor: pointer;
+  user-select: none;
+}
+.ocp-cli-banner-install { background: rgba(232,224,220,0.15); border-color: rgba(232,224,220,0.3); color: rgba(245,239,232,0.95); }
+.ocp-cli-banner-install:hover:not(:disabled) { background: rgba(232,224,220,0.25); border-color: rgba(232,224,220,0.45); }
+.ocp-cli-banner-link:hover, .ocp-cli-banner-path:hover:not(:disabled), .ocp-cli-banner-recheck:hover:not(:disabled), .ocp-cli-banner-dismiss:hover { background: rgba(255,255,255,0.08); border-color: rgba(255,255,255,0.26); }
+.ocp-cli-banner-install:disabled, .ocp-cli-banner-path:disabled, .ocp-cli-banner-recheck:disabled { opacity: 0.5; cursor: default; }
+.ocp-cli-banner button:focus-visible, .ocp-cli-banner a:focus-visible { outline: 2px solid rgba(255,255,255,0.7); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) {
+  .ocp-cli-banner--installing .ocp-cli-banner-icon, .ocp-cli-banner--nudge { animation: none; }
+  .ocp-cli-banner--nudge { box-shadow: 0 0 0 1px rgba(232,180,80,0.6); }
+  .ocp-cli-banner-bar > span { transition: none; }
+}
+.ocpv2-panel.ocp-cli-blocked .ocpv2-compose-btn:not(.ocpv2-compose-abort) { opacity: 0.4; cursor: not-allowed; }
+.ocpv2-panel.ocp-cli-blocked .ocpv2-compose-input { opacity: 0.7; }
 `;
 
 export function injectStyles() {

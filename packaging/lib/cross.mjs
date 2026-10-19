@@ -302,12 +302,12 @@ export function checkAppImage(image, offset, entries) {
 
 /**
  * An AppImage is its runtime followed by a squashfs image of the AppDir.
- * appimagetool, which puts the two together, only runs on Linux; mksquashfs
- * runs anywhere and does the same.
+ * mksquashfs (electron-builder's own, from the pinned AppImage toolset, for
+ * this machine) makes the image on macOS and Linux alike.
  */
-export function writeAppImage(ctx, { appDir, runtime, image }) {
-  const tool = process.env.MKSQUASHFS || which('mksquashfs');
-  if (!tool) throw new BuildError('mksquashfs was not found: a cross-built AppImage is made with it.');
+export function writeAppImage(ctx, { appDir, runtime, image, mksquashfs = null }) {
+  const tool = mksquashfs || process.env.MKSQUASHFS || which('mksquashfs');
+  if (!tool) throw new BuildError('mksquashfs was not found: the AppImage is made with it.');
   const offset = statSync(runtime).size;
   // -root-owned and -no-xattrs: nothing of the build machine's user or file system goes in.
   run(tool, [appDir, image, '-offset', String(offset), '-comp', 'zstd', '-root-owned', '-no-xattrs', '-noappend', '-no-progress'], {

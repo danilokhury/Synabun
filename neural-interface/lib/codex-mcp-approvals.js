@@ -18,7 +18,11 @@ export function buildCodexConfigEdits(config, prefix = []) {
   const edits = [];
   for (const [key, value] of Object.entries(config)) {
     if (value === undefined) continue;
-    const path = [...prefix, key];
+    // Settings uses dotted feature paths. Quoting the entire path creates an
+    // ignored top-level literal key ("features.apps"), rather than [features].
+    // Keep quoting nested MCP server identities such as "team.docs".
+    const path = !prefix.length && /^features\.[A-Za-z0-9_-]+$/.test(key)
+      ? key.split('.') : [...prefix, key];
     if (value && typeof value === 'object' && !Array.isArray(value)) {
       edits.push(...buildCodexConfigEdits(value, path));
       continue;

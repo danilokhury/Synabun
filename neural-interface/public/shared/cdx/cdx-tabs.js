@@ -1,8 +1,17 @@
+import { mountCodexSettings } from './cdx-settings.js';
+import { t } from '../i18n.js';
+import { getCliState, isCliInstalling } from '../cli-status.js';
+import { cliInstallText } from '../cli-install-view.js';
 // ═══════════════════════════════════════════
 // SynaBun — Codex Panel: State, Tabs & Sessions
 // ═══════════════════════════════════════════
 
 import { storage } from '../storage.js';
+import { providerAuthSnapshot } from '../ui-provider-auth.js';
+import { mountProviderTerminalAuth, providerApiKeyRequest, startProviderTerminalLogin } from '../ui-provider-terminal-auth.js';
+import { accountName, accountSummary, accountSwitchPlan, accountText, serverAccountId } from '../account-view.js';
+import { mountAccountMenu } from '../account-menu.js';
+import '../account-i18n.js';
 import { restoreMcpAppCards, teardownMcpApps, retireMcpAppNode, stripMcpAppRuntime } from './cdx-mcp-app-host.js';
 import { renderTurnDiff, completeTurnOutputs } from './cdx-render.js';
 import { hydrateOutputControls } from './cdx-output.js';
@@ -29,14 +38,14 @@ import { fileLinkText } from '../ui-file-links.js';
 import { WORKER_END_CLASS, backToAssistant, buildWorkerEndCard, endWorkerRunOnClose, forgetWorkerEnd } from '../ui-worker-end.js';
 import {
   CODEX_COMMANDS, CODEX_COMMAND_BY_NAME, parseCodexCommand, codexCommandHints,
-  capabilityAvailability, latestCompletedCodexText, configValue, configRestriction,
-  configChanges, SESSION_CONFIG_FIELDS, sessionSettings, flattenNativeCatalog, modelServiceTiers, fastServiceTier,
+  capabilityAvailability, latestCompletedCodexText, configValue,
+  SESSION_CONFIG_FIELDS, flattenNativeCatalog, fastServiceTier,
 } from './cdx-commands.js';
 import {
   knownCodexCapabilities, storeCodexCapabilities, dropCodexCapabilities, invalidateCodexCapabilities,
   currentCodexCapabilities, requestWithCodexCapability,
 } from './cdx-capabilities.js';
-import { openCodexCatalog, openCodexReview, openCodexGoal, openCodexFeedback, openCodexDiff, refreshCodexDiff, refreshCodexAttachments, mountCodexAccountSecurity, updateCodexGateway } from './cdx-features.js';
+import { openCodexCatalog, openCodexReview, openCodexGoal, openCodexFeedback, openCodexDiff, refreshCodexDiff, refreshCodexAttachments, updateCodexGateway } from './cdx-features.js';
 export { refreshCodexDiff } from './cdx-features.js';
 import {
   STOR, EFFORT_LEVELS, MAX_THREAD_SNAPSHOTS, MAX_THREAD_SNAPSHOT_CHARS,
@@ -412,6 +421,7 @@ function buildWsCallbacks(tab, options = {}) {
       }
       restoreMcpAppCards(_messagesEl, { tab: _boundTab, items: _items, request: requestSocketPayloadForTab, draft: setMcpAppDraft });
       if (_boundTab) _boundTab.bootstrapped = true;
+      ensureCodexTerminalAuth(tab);
       if (msg.mcpProfile && _boundTab) {
         _boundTab.mcpProfile = msg.mcpProfile;
         if (activeTab() === _boundTab) _onActiveTabChanged?.(_boundTab);
@@ -642,7 +652,8 @@ function buildWsCallbacks(tab, options = {}) {
         return;
       }
       if (msg.type === 'codex_config_repaired') {
-        appendSystem(msg.message || 'Codex configuration repaired.', 'muted');
+        clearCodexConfigWarnings();
+        appendSystem(t('codexSettings.configRepaired'), 'muted');
         return;
       }
       resolveGenericRequest(msg);
@@ -1253,6 +1264,7 @@ function writeThreadSnapshot(tab, { force = false } = {}) {
   const snapshotNodes = [...messagesEl.children].filter((node) => (
     !node.classList?.contains('cxp-empty') && !node.classList?.contains('cxp-thinking')
     && !node.classList?.contains(WORKER_END_CLASS)
+    && !node.hasAttribute('data-provider-auth-card')
   ));
   const ownsEveryNode = codexTranscriptNodesHaveOwnership(snapshotNodes, { threadId, accountId });
   if (!ownsEveryNode) {
@@ -1265,7 +1277,7 @@ function writeThreadSnapshot(tab, { force = false } = {}) {
   stripMcpAppRuntime(snapshotEl);
   // A worker's end card is drawn again from its run, never restored from markup.
   snapshotEl.querySelectorAll(`.${WORKER_END_CLASS}`).forEach((node) => node.remove());
-  const html = snapshotEl.innerHTML || '';
+  const html = providerAuthSnapshot(snapshotEl);
   if (!html.trim()) return;
   const ownedItemNodes = snapshotNodes.filter((node) => node.dataset?.itemId);
   const itemCount = normalizeSnapshotItemCount(tab?.transcriptItemCount)
@@ -2044,6 +2056,8 @@ export function syncLegacyState() {
   else storage.removeItem(STOR.project);
   if (tab.threadId) storage.setItem(STOR.threadId, tab.threadId);
   else storage.removeItem(STOR.threadId);
+  if (tab.threadId) storage.setItem(STOR.threadAccount, tab.accountId || 'default');
+  else storage.removeItem(STOR.threadAccount);
   if (tab.threadId && tab.sessionLabel) storage.setItem(STOR.title, tab.sessionLabel);
   else storage.removeItem(STOR.title);
 }
@@ -2585,6 +2599,8 @@ function disposeDiscardedTab(tab) {
   if (!tab) return;
   flushThreadSnapshotSave(tab);
   disconnectTab(tab);
+  tab.authView?.dispose();
+  tab.terminalAuthView?.dispose();
   tab.closed = true;
   if (tab.snapshotTimer) {
     clearTimeout(tab.snapshotTimer);
@@ -3121,10 +3137,14 @@ export function restoreTabs() {
     }
   } catch {}
 
+  // A window with no tabs of its own reopens the last thread, under the account it belongs to: its rollout
+  // lives in that account's CODEX_HOME, never Default's.
+  const lastThreadId = storage.getItem(STOR.threadId) || null;
   createTab({
     project: storage.getItem(STOR.project) || '',
-    threadId: storage.getItem(STOR.threadId) || null,
+    threadId: lastThreadId,
     title: storage.getItem(STOR.title) || '',
+    ...(lastThreadId ? { accountId: storage.getItem(STOR.threadAccount) || 'default' } : {}),
   }, { autoSwitch: false });
   _activeTabIdx = 0;
   updateActiveTabView();
@@ -3886,12 +3906,24 @@ export function cxpSessRebuildList(menu, listEl, tab) {
 }
 
 // ═══════════════════════════════════════════
-//  Multi-account (per-tab ChatGPT account)
+//  Codex accounts (per tab): the header account menu
 // ═══════════════════════════════════════════
+// Every account and its state come from the server (lib/codex-accounts.js
+// describe(): its mode, whether it is signed in, its identity: an email or a
+// masked key, never a key); account-view.js decides the words, account-menu.js
+// draws the menu (the same component as the Claude panel's). /account, /login,
+// the sign-in screen's "Other accounts…" and the Context settings popover's
+// Account row open it. A conversation belongs to the account it started under
+// (its thread lives in that account's CODEX_HOME): a tab with one opens another
+// account in a new tab; before its first message the tab itself switches.
+
+let _codexAccountsError = '';
+let _codexAccountsLoad = null;
+let _accountMenu = null;
 
 function accountLabelFor(id) {
   const acct = _codexAccounts.find((a) => a.id === id);
-  return acct ? (acct.label || acct.email || (acct.isDefault ? 'Default' : 'account')) : (id === 'default' ? 'Default' : 'account');
+  return acct ? accountName(acct, 'codex') : (id === 'default' ? accountText('defaultName', {}, 'codex') : 'account');
 }
 
 // The tab's account as the Context settings popover names it: the label, and
@@ -3900,29 +3932,35 @@ function accountView(tab) {
   const acctId = tab?.accountId || _accountId || 'default';
   const acct = _codexAccounts.find((a) => a.id === acctId);
   return {
-    label: acct
-      ? (acct.label || acct.email || (acct.isDefault ? 'Default' : 'Account'))
-      : (acctId === 'default' ? 'Default' : 'Account'),
-    tip: acct?.email
-      ? `Account: ${acct.email}${acct.planType ? ` (${acct.planType})` : ''} — click to switch`
-      : 'Switch ChatGPT account for this tab',
+    label: acct ? accountName(acct, 'codex') : accountLabelFor(acctId),
+    tip: acct ? accountSummary(acct, 'codex') : accountText('menuTitle', {}, 'codex'),
   };
 }
 
-// The account is a row of the Context settings popover.
+// The account is a row of the Context settings popover and the header menu's trigger.
 export function syncAccountChip() {
   syncContextMenu();
+  _accountMenu?.render();
 }
 
-export function refreshCodexAccounts() {
-  requestSocketPayload('account_list', {})
-    .then((msg) => {
-      if (Array.isArray(msg?.accounts)) {
-        _codexAccounts = msg.accounts;
-        syncAccountChip();
-      }
-    })
-    .catch(() => {});
+/** Read every account with its state (GET /api/codex/accounts); `refresh` asks Codex about each first. */
+export function refreshCodexAccounts({ refresh = false } = {}) {
+  if (_codexAccountsLoad && !refresh) return _codexAccountsLoad;
+  const load = fetch(`/api/codex/accounts${refresh ? '?refresh=true' : ''}`, { cache: 'no-store' })
+    .then((response) => response.json().catch(() => ({})).then((data) => {
+      if (!response.ok || !Array.isArray(data?.accounts)) throw new Error(data?.error || accountText('readFailed', {}, 'codex'));
+      _codexAccounts = data.accounts;
+      _codexAccountsError = '';
+      return _codexAccounts;
+    }))
+    .catch((error) => { _codexAccountsError = accountText('readFailed', {}, 'codex'); throw error; })
+    .finally(() => {
+      if (_codexAccountsLoad === load) _codexAccountsLoad = null;
+      syncAccountChip();
+    });
+  _codexAccountsLoad = load;
+  load.catch(() => {});
+  return load;
 }
 
 function resetViewForAccountChange(label) {
@@ -3948,29 +3986,33 @@ function resetViewForAccountChange(label) {
   }
   setSessionLabel('New session', { persist: false });
   clearTranscript(freshThreadText());
+  if (_boundTab) ensureCodexTerminalAuth(_boundTab);
   if (label) setStatus(label, 'ready');
 }
 
-function applyAccountReadToCache(accountId, readResult) {
-  const info = readResult?.account || readResult || {};
-  const acct = _codexAccounts.find((a) => a.id === accountId);
-  if (acct && info.email) {
-    acct.email = info.email;
-    acct.planType = info.planType || acct.planType;
-    if (!acct.label || acct.label === 'New account') acct.label = info.email;
-  }
+// What the server says an account holds, for the sign-in screen: { loggedIn } (true / false / unknown).
+function signInStateOf(row) {
+  return row && typeof row.signedIn === 'boolean' ? { loggedIn: row.signedIn } : null;
 }
 
 function handleAccountMessage(msg) {
+  const ownsAccount = (!msg.accountId || msg.accountId === _boundTab?.accountId)
+    && (!msg.state?.accountId || msg.state.accountId === _boundTab?.accountId);
   if (Array.isArray(msg.accounts)) _codexAccounts = msg.accounts;
-  if (msg.type === 'account_info' && msg.account) {
-    applyAccountReadToCache(msg.accountId || _accountId || 'default', msg.account);
-    if (!msg.error && (!msg.accountId || msg.accountId === _accountId)) refreshModelCatalog(_boundTab);
+  // The server's reading of the account (accountState / account_state) is what every surface shows.
+  const state = msg.type === 'account_state' ? msg.account : msg.accountState;
+  if (state?.id) {
+    const index = _codexAccounts.findIndex((a) => a.id === state.id);
+    if (index >= 0) _codexAccounts[index] = state; else _codexAccounts.push(state);
   }
+  if (ownsAccount && !msg.error) {
+    const signIn = signInStateOf(state);
+    if (signIn) _boundTab?.terminalAuthView?.update(signIn);
+    if (msg.type === 'account_logged_out' && !state) _boundTab?.terminalAuthView?.update({ loggedIn: false });
+  }
+  if (msg.type === 'account_info' && !msg.error && (!msg.accountId || msg.accountId === _accountId)) refreshModelCatalog(_boundTab);
   if (msg.type === 'account_logged_out' && !msg.error) refreshModelCatalog(_boundTab);
-  if (msg.type === 'account_switched' && msg.account) {
-    applyAccountReadToCache(msg.accountId || _accountId || 'default', msg.account);
-  }
+  if (msg.type === 'account_state' && ownsAccount) { invalidateCodexFeatureCaches(_boundTab); refreshModelCatalog(_boundTab); }
   if (msg.type === 'account_switched' && msg.accountId) {
     _accountId = msg.accountId;
     if (_boundTab) _boundTab.accountId = msg.accountId;
@@ -3978,139 +4020,118 @@ function handleAccountMessage(msg) {
     resetViewForAccountChange(`Switched to ${accountLabelFor(msg.accountId)}`);
     refreshModelCatalog(_boundTab);
   }
-  if (msg.type === 'account_add_started') {
-    if (msg.accountId) {
-      _accountId = msg.accountId;
-      if (_boundTab) _boundTab.accountId = msg.accountId;
-      saveTabs();
-    }
+  if (msg.type === 'account_add_started' && msg.accountId) {
+    _accountId = msg.accountId;
+    if (_boundTab) _boundTab.accountId = msg.accountId;
+    saveTabs();
     resetViewForAccountChange('');
-    appendSystem('Opening ChatGPT login in your browser… complete sign-in, then return here. The account name updates automatically once you finish.', 'working');
   }
   syncAccountChip();
-  const menu = panelEl('#cxp-account-menu');
-  if (menu?.classList.contains('open')) renderAccountMenu();
 }
 
+// The header account menu (mounted by cdx-panel.js into the header's actions).
+export function mountCodexAccountMenu(actionsEl, panelEl) {
+  if (_accountMenu || !actionsEl) return _accountMenu;
+  const path = (id) => `/api/codex/accounts/${encodeURIComponent(id)}`;
+  _accountMenu = mountAccountMenu({
+    provider: 'codex', container: actionsEl, before: actionsEl.firstChild, layer: () => panelEl,
+    read: () => {
+      const tab = activeTab();
+      return {
+        rows: _codexAccounts, currentId: tab?.accountId || 'default', hasConversation: !!tab?.threadId,
+        available: !!tab && !tab.automationRunId, busy: !!(tab?.running || tab?.automationActive),
+        loading: !_codexAccounts.length && !_codexAccountsError, error: _codexAccountsError,
+      };
+    },
+    actions: {
+      load: ({ refresh }) => refreshCodexAccounts({ refresh }),
+      pick: (id) => { const tab = activeTab(); if (tab) pickCodexAccount(tab, id); },
+      add: async () => (await codexAccountRequest('/api/codex/accounts', { method: 'POST', body: '{}' })).account,
+      signIn: (id) => startProviderTerminalLogin('codex', id, `Codex sign-in · ${accountLabelFor(id)}`),
+      saveKey: (id, key) => providerApiKeyRequest('codex', id, key),
+      setMode: (id, mode) => codexAccountRequest(path(id), { method: 'PATCH', body: JSON.stringify({ mode }) }),
+      signOut: (id, credential) => codexAccountRequest(`${path(id)}/auth/logout`, { method: 'POST', body: JSON.stringify({ credential }) }),
+      rename: (id, label) => codexAccountRequest(path(id), { method: 'PATCH', body: JSON.stringify({ label }) }),
+      remove: (id) => removeCodexAccount(id),
+    },
+  });
+  refreshCodexAccounts().catch(() => {});
+  return _accountMenu;
+}
+
+/** Open the header account menu (`manage`: one account's management). */
+export function openAccountMenu({ manage = '' } = {}) {
+  if (!_accountMenu) return;
+  _accountMenu.open(manage ? { manage } : {});
+}
+// The Context settings popover's Account row and older callers.
 export function toggleAccountMenu() {
-  const menu = panelEl('#cxp-account-menu');
-  if (!menu) return;
-  const isOpen = menu.classList.toggle('open');
-  if (isOpen) { renderAccountMenu(); refreshCodexAccounts(); }
+  if (_accountMenu?.isOpen()) _accountMenu.close({ restore: true });
+  else openAccountMenu();
 }
 
-function renderAccountMenu() {
-  const menu = panelEl('#cxp-account-menu');
-  if (!menu) return;
-  const tab = activeTab();
-  const activeAcctId = tab?.accountId || _accountId || 'default';
-  menu.innerHTML = '';
-
-  const list = document.createElement('div');
-  list.className = 'cxp-account-list';
-  if (!_codexAccounts.length) {
-    const empty = document.createElement('div');
-    empty.className = 'cxp-account-empty';
-    empty.textContent = 'Loading accounts…';
-    list.appendChild(empty);
-  }
-  for (const acct of _codexAccounts) {
-    const row = document.createElement('div');
-    row.className = 'cxp-account-row' + (acct.id === activeAcctId ? ' active' : '');
-    const main = document.createElement('button');
-    main.className = 'cxp-account-row-main';
-    main.type = 'button';
-    const sub = acct.email && acct.email !== acct.label
-      ? `<span class="cxp-account-row-sub">${esc(acct.email)}${acct.planType ? ` · ${esc(acct.planType)}` : ''}</span>`
-      : (acct.planType ? `<span class="cxp-account-row-sub">${esc(acct.planType)}</span>` : '');
-    main.innerHTML = `
-      <span class="cxp-account-check">${acct.id === activeAcctId ? '&#x2713;' : ''}</span>
-      <span class="cxp-account-row-text">
-        <span class="cxp-account-row-label">${esc(acct.label || acct.email || (acct.isDefault ? 'Default' : 'Account'))}</span>
-        ${sub}
-      </span>`;
-    main.addEventListener('click', () => { menu.classList.remove('open'); switchToAccount(acct.id); });
-    row.appendChild(main);
-    if (!acct.isDefault) {
-      const removeBtn = document.createElement('button');
-      removeBtn.className = 'cxp-account-row-remove';
-      removeBtn.type = 'button';
-      removeBtn.title = 'Remove account';
-      removeBtn.innerHTML = '&#x2715;';
-      removeBtn.addEventListener('click', (e) => { e.stopPropagation(); removeCodexAccount(acct.id); });
-      row.appendChild(removeBtn);
-    }
-    list.appendChild(row);
-  }
-  menu.appendChild(list);
-
-  const addBtn = document.createElement('button');
-  addBtn.className = 'cxp-account-add';
-  addBtn.type = 'button';
-  addBtn.textContent = '+ Add ChatGPT account…';
-  addBtn.addEventListener('click', () => { menu.classList.remove('open'); addCodexAccount(); });
-  menu.appendChild(addBtn);
+async function codexAccountRequest(url, options = {}) {
+  const response = await fetch(url, { ...options, cache: 'no-store', headers: { 'Content-Type': 'application/json' } });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.error) throw new Error(data.error || 'Codex account request failed.');
+  return data;
 }
 
-async function switchToAccount(accountId) {
-  const tab = activeTab();
-  if (!tab) return;
-  if ((tab.accountId || 'default') === accountId) return;
-  if (tab.running) { appendSystem('Finish or stop the current turn before switching accounts.', 'error'); return; }
-  try {
-    setStatus('Switching account…', 'working');
-    await requestSocketPayloadForTab(tab, 'account_switch', { accountId });
-    // account_switched push (handled in handleAccountMessage) updates the view.
-  } catch (err) {
-    if (!tab.closed) withTab(tab, () => {
-      appendSystem(err.message || 'Could not switch account', 'error');
-      setStatus(err.message || 'Switch failed', 'error');
-    });
+// Pick an account for a tab: the tab switches before its first message; a tab with a conversation keeps it
+// and the other account opens in a new tab.
+function pickCodexAccount(tab, id) {
+  const plan = accountSwitchPlan({ rows: _codexAccounts, currentId: tab.accountId || 'default', targetId: id, hasConversation: !!tab.threadId, provider: 'codex' });
+  if (plan.effect === 'missing' || plan.effect === 'same') { withTab(tab, () => appendSystem(plan.message, 'muted')); return; }
+  if (plan.effect === 'next-chat') {
+    const fresh = createTab({ project: tab.project || '', accountId: id });
+    if (fresh) withTab(fresh, () => appendSystem(accountText('newChatUnder', { label: accountLabelFor(id) }, 'codex'), 'muted'));
+    return;
   }
-}
-
-async function addCodexAccount() {
-  const tab = activeTab();
-  if (!tab) return;
-  if (tab.running) { appendSystem('Finish or stop the current turn before adding an account.', 'error'); return; }
-  try {
-    setStatus('Starting ChatGPT login…', 'working');
-    const result = await requestSocketPayloadForTab(tab, 'account_add_start', {});
-    if (Array.isArray(result?.accounts)) _codexAccounts = result.accounts;
-    const authUrl = result?.login?.login?.authUrl || result?.login?.authUrl;
-    if (authUrl) window.open(authUrl, '_blank', 'noopener,noreferrer');
-    if (isActiveTab(tab)) syncAccountChip();
-  } catch (err) {
-    if (!tab.closed) withTab(tab, () => {
-      appendSystem(err.message || 'Could not start login', 'error');
-      setStatus(err.message || 'Login failed', 'error');
-    });
-  }
-}
-
-async function removeCodexAccount(accountId) {
-  if (accountId === 'default') return;
-  if (!window.confirm('Remove this ChatGPT account from SynaBun? You can re-add it later by signing in again.')) return;
-  const tab = activeTab();
-  if (!tab) return;
-  const wasActive = tab && (tab.accountId || 'default') === accountId;
-  try {
-    const result = await requestSocketPayloadForTab(tab, 'account_remove', { accountId });
-    if (Array.isArray(result?.accounts)) _codexAccounts = result.accounts;
-    if (wasActive && !tab.closed) {
-      withTab(tab, () => {
-        _accountId = 'default';
-        tab.accountId = 'default';
-        saveTabs();
-        resetViewForAccountChange('Switched to Default');
+  if (tab.running) { withTab(tab, () => appendSystem(accountText('busyTurn', {}, 'codex'), 'error')); return; }
+  setStatus('Switching account…', 'working');
+  requestSocketPayloadForTab(tab, 'account_switch', { accountId: id })
+    .then(() => { if (!tab.closed) withTab(tab, () => appendSystem(plan.message, 'muted')); })
+    .catch((err) => {
+      if (!tab.closed) withTab(tab, () => {
+        appendSystem(err.message || 'Could not switch account', 'error');
+        setStatus(err.message || 'Switch failed', 'error');
       });
-    }
-    if (isActiveTab(tab)) syncAccountChip();
-    const menu = panelEl('#cxp-account-menu');
-    if (menu?.classList.contains('open')) renderAccountMenu();
-  } catch (err) {
-    if (!tab.closed) withTab(tab, () => appendSystem(err.message || 'Could not remove account', 'error'));
-  }
+    });
+}
+
+// Remove an account. The server refuses while a tab (this window's or another's), the Assistant or a run
+// uses it, with what to do: the menu says it. A conversation is never reset to free an account.
+async function removeCodexAccount(accountId) {
+  await codexAccountRequest(`/api/codex/accounts/${encodeURIComponent(accountId)}`, { method: 'DELETE' });
+}
+
+function ensureCodexTerminalAuth(tab) {
+  const accountId = tab.accountId || 'default';
+  if (tab.closed || !tab.messagesEl) return;
+  if (tab.terminalAuthView && tab.terminalAuthAccount === accountId) { void tab.terminalAuthView.refresh(); return; }
+  tab.terminalAuthView?.dispose();
+  tab.terminalAuthAccount = accountId;
+  const named = accountId !== 'default' ? _codexAccounts.find((a) => a.id === accountId) : null;
+  tab.terminalAuthView = mountProviderTerminalAuth({
+    host: tab.messagesEl, provider: 'codex', accountId, logo: OPENAI_ICON,
+    ...(named ? { message: `Sign in to Codex to use ${accountName(named, 'codex')}.` } : {}),
+    // Another account (or a new one) is one click away from the sign-in screen: the header account menu.
+    moreAction: { label: accountText('otherAccounts', {}, 'codex'), run: () => { if (isActiveTab(tab)) openAccountMenu(); } },
+    isCurrent: () => !tab.closed && (tab.accountId || 'default') === accountId,
+    // The account as the server reads it (its ChatGPT sign-in and the key it holds), not one app-server's view.
+    readAccount: async () => {
+      const result = await codexAccountRequest(`/api/codex/accounts/${encodeURIComponent(accountId)}/auth?refresh=true`);
+      const row = result.account;
+      if (row?.id) {
+        const index = _codexAccounts.findIndex((a) => a.id === row.id);
+        if (index >= 0) _codexAccounts[index] = row; else _codexAccounts.push(row);
+        if (isActiveTab(tab)) syncAccountChip();
+      }
+      return signInStateOf(row);
+    },
+    requestApiKey: (provider, id, key) => providerApiKeyRequest(provider, id, key),
+    onSignedIn: () => { invalidateCodexFeatureCaches(tab); refreshModelCatalog(tab); refreshCodexAccounts().catch(() => {}); },
+  });
 }
 
 export async function renderSessionMenu() {
@@ -4970,7 +4991,7 @@ export function syncInputEnabled() {
   if (send) {
     const isStopMode = !!(tab?.running || _running);
     send.classList.toggle('cxp-send-stopping', !!isStopMode);
-    send.title = actionBlockedByCli ? 'Codex CLI not installed' : (isStopMode ? 'Stop' : 'Send');
+    send.title = actionBlockedByCli ? codexCliBlockedText() : (isStopMode ? 'Stop' : 'Send');
     send.disabled = actionBlockedByCli || (isStopMode ? false : (!_connected || !_bootstrapped || _running || _startingThread || blockedByRequest || (!hasText && !hasImages && !hasPaths && !hasMentions)));
   }
   if (fresh) {
@@ -5268,6 +5289,12 @@ function noteCodexRevert(event) {
 
 // ── Notification handler (lines 7538-7698) ──
 export function handleNotify(method, params) {
+  // Codex's own account changed: the server's reading of the account (its ChatGPT sign-in and the
+  // key SynaBun holds) decides what the tab shows, so the sign-in screen and the menu ask it again.
+  if (method === 'account/updated') {
+    void _boundTab?.terminalAuthView?.refresh();
+    refreshCodexAccounts().catch(() => {});
+  }
   if (['skills/changed', 'app/list/updated', 'account/updated', 'account/rateLimits/updated', 'config/updated', 'thread/attachment/updated', 'thread/settings/updated', 'account/gatewayOAuth/changed'].includes(method)) {
     invalidateCodexFeatureCaches(_boundTab);
   }
@@ -5632,7 +5659,7 @@ export function handleNotify(method, params) {
       break;
     }
     case 'configWarning': {
-      appendSystem(formatCodexConfigWarning(params, method), 'error');
+      showCodexConfigWarning(params);
       break;
     }
     case 'deprecationNotice':
@@ -6339,7 +6366,7 @@ function formatStatusSnapshotMarkdown(snapshot, tab = activeTab()) {
     `- Protocol baseline: \`${runtime.protocolBaseline || 'not reported'}\``,
   ];
   if (account) {
-    lines.push(`- Account: \`${account.email || account.name || account.type || 'signed in'}\`${account.planType ? ` (${account.planType})` : ''}`);
+    lines.push(`- Account: \`${account.type === 'apiKey' ? 'API key' : account.email || account.name || account.type || 'signed in'}\`${account.planType ? ` (${account.planType})` : ''}`);
   } else {
     lines.push('- Account: signed out');
   }
@@ -6742,6 +6769,15 @@ async function handleLocalSlashCommand(payload = currentComposerPayload()) {
       invalidateCodexFeatureCaches(tab);
       appendMarkdown('Logged out of Codex.');
       break;
+    case 'login':
+      // Sign-in lives in the header account menu: this tab's account, its two ways to sign in.
+      consumeComposer(input, tab, { clearAttachments: false });
+      openAccountMenu({ manage: serverAccountId(tab.accountId) });
+      break;
+    case 'account':
+      consumeComposer(input, tab, { clearAttachments: false });
+      openAccountMenu();
+      break;
     case 'diff':
       consumeComposer(input, tab, { clearAttachments: false });
       if (!tab.project) {
@@ -6802,6 +6838,13 @@ async function handleLocalSlashCommand(payload = currentComposerPayload()) {
   return true;
 }
 
+// Why Send is off while the CLI banner shows (ui-cli-banner.js): the banner's own title, in the page's
+// language — not installed, being installed, or failed to start.
+function codexCliBlockedText() {
+  const key = isCliInstalling('codex') ? 'titleInstalling' : getCliState('codex') === 'broken' ? 'titleBroken' : 'titleMissing';
+  return cliInstallText(key, { label: 'Codex' });
+}
+
 // ── Send prompt & queue (lines 8165-8320) ──
 export function sendPrompt() {
   const payload = currentComposerPayload();
@@ -6811,7 +6854,7 @@ export function sendPrompt() {
   // Block when CLI binary missing — banner already informs user.
   const panel = document.getElementById('codex-panel');
   if (panel?.classList.contains('cxp-cli-blocked')) {
-    appendSystem('Codex CLI not installed. Install it first, then click Re-check.', 'error');
+    appendSystem(`${codexCliBlockedText()}.`, 'error');
     return;
   }
   handleLocalSlashCommand(payload).then((handled) => {
@@ -7053,6 +7096,13 @@ export function renderImageStrip() {
 }
 
 // ── Whiteboard "Send to Panel" — receive image via event bus ──
+// Any window or surface changed a Codex account (signed in or out, a key, its mode, renamed, added,
+// removed): the menu re-reads the list, and the tabs on that account re-check sign-in.
+appOn('sync:codex:accounts-changed', (msg = {}) => {
+  refreshCodexAccounts().catch(() => {});
+  for (const tab of _tabs) if (!msg.accountId || serverAccountId(tab.accountId) === msg.accountId) void tab.terminalAuthView?.refresh();
+});
+
 appOn('wb:send-to-panel', ({ dataUrl }) => {
   if (!dataUrl) return;
   if (appState.lastActivePanel !== 'codex' || isHostedSessionFocused()) return;
@@ -7447,512 +7497,59 @@ export function confirmSlashHint() {
 }
 
 // ── Phase 6: Settings panel ──
-export async function openSettingsPanel({ section = '' } = {}) {
+function clearCodexConfigWarnings({ obsoleteOnly = false } = {}) {
+  _getPanelEl()?.querySelectorAll('.cxp-config-warning').forEach(node => {
+    if (!obsoleteOnly || /features\.personality/.test(node.textContent || '')) node.remove();
+  });
+  // Remove historical copies of the obsolete Settings warning as well.
+  _getPanelEl()?.querySelectorAll('.cxp-system.error').forEach(node => {
+    if (/features\.personality.*ignored/s.test(node.textContent || '')) node.remove();
+  });
+}
 
-// ── Settings panel & compaction (lines 8588-8844) ──
+function showCodexConfigWarning(params) {
+  clearCodexConfigWarnings();
+  const warning = document.createElement('div'); warning.className = 'cxp-config-warning'; warning.setAttribute('role', 'status');
+  const text = document.createElement('div'); text.textContent = formatCodexConfigWarning(params);
+  const hint = document.createElement('div'); hint.textContent = t('codexSettings.warningHelp');
+  const settings = document.createElement('button'); settings.className = 'cxp-btn cxp-btn-sm'; settings.textContent = t('codexSettings.openSettings'); settings.onclick = () => openSettingsPanel();
+  const dismiss = document.createElement('button'); dismiss.className = 'cxp-btn cxp-btn-sm'; dismiss.textContent = t('codexSettings.dismiss'); dismiss.onclick = () => warning.remove();
+  warning.append(text, hint, settings, dismiss);
+  _getPanelEl()?.querySelector('.cxp-input-wrap')?.before(warning);
+}
+
+export async function openSettingsPanel({ section = '' } = {}) {
   const settingsTab = activeTab();
   if (!settingsTab) return;
   const settingsOwner = { accountId: settingsTab.accountId, threadId: settingsTab.threadId, connectionEpoch: settingsTab.connectionEpoch };
-  const requestForSettings = (type, data = {}) => requestForCodexOwner(settingsTab, settingsOwner, type, data,
-    'This conversation changed. Reopen Settings to continue.');
-  const appendSettingsError = (text) => {
-    if (!settingsTab.closed) withTab(settingsTab, () => appendSystem(text, 'error'));
-  };
-  if (_getPanelEl()?.querySelector('.cxp-settings-overlay')) return;
-  const overlay = document.createElement('div');
-  overlay.className = 'cxp-settings-overlay';
-  overlay.innerHTML = `
-    <div class="cxp-settings-panel">
-      <div class="cxp-settings-header">
-        <span>Codex Settings</span>
-        <button class="cxp-settings-close">&times;</button>
-      </div>
-      <div class="cxp-settings-body">
-        <div class="cxp-settings-section">
-          <div class="cxp-settings-section-title">Account</div>
-          <div class="cxp-settings-loading" id="cxp-settings-account">Loading…</div>
-        </div>
-        <div class="cxp-settings-section">
-          <div class="cxp-settings-section-title">Runtime and features</div>
-          <div class="cxp-settings-loading" id="cxp-settings-runtime">Loading…</div>
-          <div id="cxp-settings-features"></div>
-        </div>
-        <div class="cxp-settings-section">
-          <div class="cxp-settings-section-title">MCP Servers</div>
-          <div class="cxp-settings-loading" id="cxp-settings-mcp">Loading…</div>
-        </div>
-        <div class="cxp-settings-section">
-          <div class="cxp-settings-section-title">Always Allowed Folders</div>
-          <div class="cxp-settings-loading" id="cxp-settings-permissions">Loading…</div>
-        </div>
-        <div class="cxp-settings-section">
-          <div class="cxp-settings-section-title">Configuration</div>
-          <div class="cxp-settings-loading" id="cxp-settings-config">Loading…</div>
-        </div>
-      </div>
-    </div>
-  `;
-  _getPanelEl().appendChild(overlay);
-  overlay.querySelector('.cxp-settings-close')?.addEventListener('click', () => overlay.remove());
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
-
-  // Fetch data in parallel
-  try {
-    const [accountData, mcpData, configData, rateLimitData, permissionData, requirementsData, capabilityData] = await Promise.allSettled([
-      requestForSettings('account_read', {}),
-      requestForSettings('mcp_status', {}),
-      requestForSettings('config_read', { cwd: settingsTab.project || null, threadId: settingsTab.threadId || null }),
-      requestForSettings('rate_limits_read', {}),
-      requestForSettings('permission_roots_list', {}),
-      requestForSettings('config_requirements', {}),
-      getCodexCapabilities(settingsTab),
-    ]);
-    if (settingsTab.closed) {
-      overlay.remove();
-      return;
-    }
-    const capabilities = capabilityData.status === 'fulfilled' ? capabilityData.value : {};
-    const runtime = settingsTab.codexRuntime || {};
-    const runtimeEl = overlay.querySelector('#cxp-settings-runtime');
-    runtimeEl.className = 'cxp-settings-hint';
-    runtimeEl.textContent = `CLI ${runtime.cliVersion || 'unknown'} · Automation SDK ${runtime.sdkVersion || 'not installed'} · Protocol ${runtime.protocolBaseline || 'unknown'}\n${runtime.codexBin || 'Executable path not reported'}\nAccount: ${runtime.accountId || settingsTab.accountId || 'default'}`;
-    const featureEl = overlay.querySelector('#cxp-settings-features');
-    for (const kind of ['skills', 'mcp', 'apps', 'plugins', 'hooks', 'ps', 'experimental', 'goal', 'feedback']) {
-      const command = CODEX_COMMAND_BY_NAME.get(kind);
-      const available = capabilityAvailability(capabilities, command.capability);
-      const btn = document.createElement('button');
-      btn.className = 'cxp-btn cxp-btn-sm';
-      btn.textContent = `${command.name}${available.experimental ? ' · Experimental' : ''}`;
-      btn.disabled = !available.supported || (['goal', 'ps'].includes(kind) && !settingsTab.threadId);
-      btn.title = !available.supported ? available.reason : command.desc;
-      btn.addEventListener('click', async () => {
-        const context = {
-          host: _getPanelEl(), request: requestForSettings, tab: settingsTab, capabilities,
-          authenticate: (name) => startMcpOAuthLogin(settingsTab, name),
-          onChanged: () => invalidateCodexFeatureCaches(settingsTab),
-        };
-        try {
-          if (kind === 'goal') await openCodexGoal(context);
-          else if (kind === 'feedback') await openCodexFeedback(context);
-          else await openCodexCatalog({ ...context, kind });
-        } catch (error) { appendSettingsError(error.message); }
-      });
-      featureEl.append(btn);
-      if (!available.supported) {
-        const reason = document.createElement('div'); reason.className = 'cxp-settings-hint';
-        reason.textContent = `${command.name}: ${available.reason || 'Unavailable in this runtime'}`; featureEl.append(reason);
+  const requestForSettings = (type, data = {}) => requestForCodexOwner(settingsTab, settingsOwner, type, data, t('codexSettings.changedConversation'));
+  const capabilities = await getCodexCapabilities(settingsTab);
+  if (settingsTab.closed || !isActiveTab(settingsTab)) return;
+  const view = await mountCodexSettings({
+    host: _getPanelEl(), tab: settingsTab,
+    request: requestForSettings,
+    capabilities,
+    account: _codexAccounts.find(a => a.id === (settingsTab.accountId || 'default')),
+    models: async () => (await requestModelList(settingsTab)) || [],
+    normalizeConfig: normalizeConfigResult,
+    manageAccount: () => { if (isActiveTab(settingsTab)) openAccountMenu({ manage: settingsTab.accountId || 'default' }); },
+    authenticate: name => startMcpOAuthLogin(settingsTab, name),
+    onSaved: ({ scope, patch, overrides }) => {
+      settingsTab.sessionConfigOverrides = overrides;
+      if (scope === 'session') {
+        if (Object.hasOwn(patch, 'model')) settingsTab.model = patch.model;
+        if (Object.hasOwn(patch, 'model_reasoning_effort')) settingsTab.effort = patch.model_reasoning_effort || 'off';
+        if (Object.hasOwn(patch, 'approval_policy')) settingsTab.autoAccept = patch.approval_policy === 'never';
+        syncToolbarState(); saveTabs();
       }
-    }
-
-    // Account
-    const accountEl = overlay.querySelector('#cxp-settings-account');
-    if (accountEl) {
-      const acctResult = accountData.status === 'fulfilled' ? (accountData.value?.account || {}) : {};
-      const acct = acctResult?.account || null;
-      const acctName = acct?.email || acct?.name || acct?.type;
-      const limitLines = rateLimitData.status === 'fulfilled'
-        ? rateLimitLines(rateLimitData.value?.rateLimits || {})
-        : [];
-      if (acctName) {
-        accountEl.innerHTML = '';
-        accountEl.className = '';
-        const value = document.createElement('div');
-        value.className = 'cxp-settings-value';
-        value.textContent = acctName;
-        accountEl.appendChild(value);
-        if (acct?.planType) {
-          const plan = document.createElement('div');
-          plan.className = 'cxp-settings-hint';
-          plan.textContent = `Plan: ${acct.planType}`;
-          accountEl.appendChild(plan);
-        }
-        if (limitLines.length) {
-          const limits = document.createElement('div');
-          limits.className = 'cxp-settings-hint';
-          limits.innerHTML = limitLines.map((line) => `<div>${esc(line.replace(/^- /, ''))}</div>`).join('');
-          accountEl.appendChild(limits);
-        }
-        const logoutBtn = document.createElement('button');
-        logoutBtn.className = 'cxp-settings-login-btn';
-        logoutBtn.textContent = 'Logout';
-        logoutBtn.addEventListener('click', async () => {
-          logoutBtn.disabled = true;
-          try {
-            await requestForSettings('account_logout', {});
-            invalidateCodexFeatureCaches(settingsTab);
-            overlay.remove();
-            if (isActiveTab(settingsTab)) openSettingsPanel();
-          } catch (err) {
-            logoutBtn.disabled = false;
-            appendSettingsError(err.message || 'Logout failed');
-          }
-        });
-        accountEl.appendChild(logoutBtn);
-      } else {
-        accountEl.innerHTML = '';
-        accountEl.className = '';
-        const hint = document.createElement('div');
-        hint.className = 'cxp-settings-hint';
-        hint.textContent = 'Not signed in';
-        const loginBtn = document.createElement('button');
-        loginBtn.className = 'cxp-settings-login-btn';
-        loginBtn.textContent = 'Login';
-        loginBtn.addEventListener('click', async () => {
-          loginBtn.disabled = true;
-          loginBtn.textContent = 'Opening…';
-          try {
-            const result = await requestForSettings('codex_login', {});
-            const authUrl = result?.login?.login?.authUrl || result?.login?.authUrl;
-            if (authUrl) window.open(authUrl, '_blank', 'noopener,noreferrer');
-            loginBtn.textContent = authUrl ? 'Browser opened' : 'Waiting…';
-          } catch {
-            loginBtn.textContent = 'Login';
-            loginBtn.disabled = false;
-          }
-        });
-        accountEl.append(hint, loginBtn);
-      }
-    }
-
-    await mountCodexAccountSecurity({ host: accountEl, request: requestForSettings, tab: settingsTab, capabilities });
-
-    // MCP Servers
-    const mcpEl = overlay.querySelector('#cxp-settings-mcp');
-    if (mcpEl) {
-      const servers = mcpData.status === 'fulfilled' ? (mcpData.value?.servers || []) : [];
-      if (!servers.length) {
-        mcpEl.innerHTML = '';
-        mcpEl.className = '';
-        const hint = document.createElement('div');
-        hint.className = 'cxp-settings-hint';
-        hint.textContent = 'Configure in ~/.codex/config.toml under [mcp_servers]';
-        mcpEl.appendChild(hint);
-      } else {
-        mcpEl.innerHTML = '';
-        for (const server of servers) {
-          const row = document.createElement('div');
-          row.className = 'cxp-mcp-row';
-          const name = document.createElement('span');
-          name.className = 'cxp-mcp-name';
-          name.textContent = server.name || 'Unknown';
-          const status = document.createElement('span');
-          status.className = 'cxp-mcp-status';
-          status.textContent = server.status || 'unknown';
-          status.dataset.status = server.status || 'unknown';
-          const trusted = document.createElement('span');
-          trusted.className = 'cxp-mcp-status';
-          trusted.dataset.status = 'running';
-          trusted.textContent = 'always allowed';
-          trusted.hidden = !server.alwaysAllowed;
-          const refreshBtn = document.createElement('button');
-          refreshBtn.className = 'cxp-btn cxp-btn-sm';
-          refreshBtn.textContent = 'Refresh';
-          refreshBtn.addEventListener('click', async () => {
-            try {
-              await requestForSettings('mcp_refresh', { name: server.name });
-              refreshBtn.textContent = 'Done';
-              setTimeout(() => { refreshBtn.textContent = 'Refresh'; }, 2000);
-            } catch (err) {
-              appendSettingsError(`MCP refresh failed: ${err.message}`);
-            }
-          });
-          row.append(name, status, trusted, refreshBtn);
-          if (server.alwaysAllowed) {
-            const revokeBtn = document.createElement('button');
-            revokeBtn.className = 'cxp-btn cxp-btn-sm';
-            revokeBtn.textContent = 'Revoke';
-            revokeBtn.title = 'Require approval for this MCP server again';
-            revokeBtn.addEventListener('click', async () => {
-              revokeBtn.disabled = true;
-              try {
-                await requestForSettings('mcp_approval_set', {
-                  name: server.name,
-                  approvalMode: 'prompt',
-                });
-                server.approvalMode = 'prompt';
-                server.alwaysAllowed = false;
-                trusted.hidden = true;
-                revokeBtn.remove();
-              } catch (err) {
-                revokeBtn.disabled = false;
-                appendSettingsError(`MCP approval update failed: ${err.message}`);
-              }
-            });
-            row.appendChild(revokeBtn);
-          }
-          if (server.requiresOAuth) {
-            const loginBtn = document.createElement('button');
-            loginBtn.className = 'cxp-btn cxp-btn-sm cxp-mcp-oauth-btn';
-            loginBtn.dataset.mcpServer = server.name;
-            loginBtn.textContent = 'Authenticate';
-            loginBtn.addEventListener('click', async () => {
-              try {
-                await startMcpOAuthLogin(settingsTab, server.name);
-              } catch (err) {
-                appendSettingsError(`MCP OAuth failed: ${err.message}`);
-              }
-            });
-            row.appendChild(loginBtn);
-          }
-          mcpEl.appendChild(row);
-        }
-      }
-    }
-
-    const permissionsEl = overlay.querySelector('#cxp-settings-permissions');
-    if (permissionsEl) {
-      const stored = permissionData.status === 'fulfilled'
-        ? permissionData.value?.permissions?.filesystem || {}
-        : {};
-      const roots = ['write', 'read'].flatMap((access) => (
-        (Array.isArray(stored[access]) ? stored[access] : []).map((path) => ({ access, path }))
-      ));
-      permissionsEl.innerHTML = '';
-      permissionsEl.className = '';
-      if (!roots.length) {
-        const hint = document.createElement('div');
-        hint.className = 'cxp-settings-hint';
-        hint.textContent = 'None';
-        permissionsEl.appendChild(hint);
-      } else {
-        for (const root of roots) {
-          const row = document.createElement('div');
-          row.className = 'cxp-mcp-row';
-          const path = document.createElement('span');
-          path.className = 'cxp-mcp-name cxp-permission-root-path';
-          path.textContent = root.path;
-          path.title = root.path;
-          const access = document.createElement('span');
-          access.className = 'cxp-mcp-status';
-          access.textContent = root.access;
-          const remove = document.createElement('button');
-          remove.type = 'button';
-          remove.className = 'cxp-bar-action';
-          remove.innerHTML = ICON_X;
-          remove.title = 'Revoke folder access';
-          remove.setAttribute('aria-label', `Revoke access to ${root.path}`);
-          remove.addEventListener('click', async () => {
-            remove.disabled = true;
-            try {
-              await requestForSettings('permission_root_remove', root);
-              row.remove();
-              if (!permissionsEl.querySelector('.cxp-mcp-row')) {
-                const hint = document.createElement('div');
-                hint.className = 'cxp-settings-hint';
-                hint.textContent = 'None';
-                permissionsEl.appendChild(hint);
-              }
-            } catch (err) {
-              remove.disabled = false;
-              appendSettingsError(err.message || 'Could not revoke folder access');
-            }
-          });
-          row.append(path, access, remove);
-          permissionsEl.appendChild(row);
-        }
-      }
-    }
-
-    // Config — editable fields
-    const configEl = overlay.querySelector('#cxp-settings-config');
-    if (configEl) {
-      const rawCfg = configData.status === 'fulfilled' ? (configData.value?.config || configData.value || {}) : {};
-      const { effective: cfg, layers } = normalizeConfigResult(rawCfg);
-      if (configData.status === 'fulfilled' && configData.value?.sessionOverrides) {
-        settingsTab.sessionConfigOverrides = Object.fromEntries(Object.entries(SESSION_CONFIG_FIELDS)
-          .filter(([, field]) => Object.hasOwn(configData.value.sessionOverrides, field))
-          .map(([key, field]) => [key, configData.value.sessionOverrides[field]]));
-      }
-      const requirements = requirementsData.status === 'fulfilled' ? requirementsData.value : {};
-
-      // Get dynamic model list (fall back to hardcoded defaults)
-      let models;
-      try { models = await requestModelList(settingsTab); } catch { models = null; }
-      const modelList = mergeCodexModelList(models);
-
-      configEl.innerHTML = '';
-      const fieldDefs = [
-        { key: 'model', label: 'Model', type: 'select', options: modelList.map(m => ({ value: getCodexModelName(m), label: m?.label || getCodexModelName(m) })) },
-        { key: 'review_model', label: 'Review Model', type: 'select', options: [{ value: '', label: '(none)' }, ...modelList.map(m => ({ value: getCodexModelName(m), label: m?.label || getCodexModelName(m) }))] },
-        { key: 'model_provider', label: 'Provider', type: 'text', placeholder: 'openai, ollama…' },
-        { key: 'approval_policy', label: 'Approval Policy', type: 'select', options: [
-          { value: 'never', label: 'Never (No prompts)' },
-          { value: 'untrusted', label: 'Untrusted' },
-          { value: 'on-request', label: 'On Request' },
-        ]},
-        { key: 'sandbox_mode', label: 'Sandbox Mode', type: 'select', options: [
-          { value: 'workspace-write', label: 'Workspace Write' },
-          { value: 'read-only', label: 'Read Only' },
-          { value: 'danger-full-access', label: 'Full Access (Dangerous)' },
-        ]},
-        { key: 'personality', label: 'Personality', type: 'select', options: [
-          { value: '', label: '(default)' },
-          { value: 'pragmatic', label: 'Pragmatic' },
-          { value: 'friendly', label: 'Friendly' },
-        ]},
-        { key: 'service_tier', label: 'Service Tier', type: 'select', options: [
-          { value: '', label: '(default)' },
-        ]},
-        { key: 'model_reasoning_effort', label: 'Reasoning Effort', type: 'select', options: [
-          { value: '', label: '(default)' },
-          { value: 'minimal', label: 'Minimal' },
-          { value: 'low', label: 'Low' },
-          { value: 'medium', label: 'Medium' },
-          { value: 'high', label: 'High' },
-          { value: 'xhigh', label: 'Extra High' },
-          { value: 'max', label: 'Maximum' },
-          { value: 'ultra', label: 'Ultra' },
-        ]},
-        { key: 'model_reasoning_summary', label: 'Reasoning Summary', type: 'select', options: [
-          { value: '', label: '(default)' },
-          { value: 'auto', label: 'Auto' },
-          { value: 'concise', label: 'Concise' },
-          { value: 'detailed', label: 'Detailed' },
-          { value: 'none', label: 'None' },
-        ]},
-        { key: 'model_verbosity', label: 'Response Verbosity', type: 'select', options: [
-          { value: '', label: '(default)' },
-          { value: 'low', label: 'Low' },
-          { value: 'medium', label: 'Medium' },
-          { value: 'high', label: 'High' },
-        ]},
-        { key: 'model_context_window', label: 'Context Window', type: 'number', placeholder: 'tokens' },
-        { key: 'model_auto_compact_token_limit', label: 'Auto-Compact', type: 'number', placeholder: 'token limit' },
-        { key: 'web_search', label: 'Web Search', type: 'select', options: [
-          { value: '', label: '(default)' },
-          { value: 'disabled', label: 'Disabled' },
-          { value: 'cached', label: 'Cached' },
-          { value: 'indexed', label: 'Indexed' },
-          { value: 'live', label: 'Live' },
-        ] },
-        { key: 'features.fast_mode', label: 'Enable Fast Toggle', type: 'checkbox' },
-        { key: 'features.personality', label: 'Enable Personality', type: 'checkbox' },
-        { key: 'features.apps', label: 'Enable Apps', type: 'checkbox' },
-        { key: 'features.unified_exec', label: 'Unified Exec', type: 'checkbox' },
-      ];
-      const effortDefinition = fieldDefs.find((def) => def.key === 'model_reasoning_effort');
-      const modelMetadata = selectedModelOption(modelList, cfg.model || settingsTab.model);
-      if (modelMetadata) effortDefinition.options = normalizeReasoningEfforts(modelMetadata).map((option) => ({ value: option.id === 'off' ? '' : option.id, label: option.label || option.id }));
-      fieldDefs.find((def) => def.key === 'service_tier').options.push(...modelServiceTiers(modelMetadata));
-      const form = document.createElement('div');
-      form.className = 'cxp-config-form';
-      const scopeLabel = document.createElement('label');
-      scopeLabel.className = 'cxp-config-row';
-      scopeLabel.textContent = 'Apply to ';
-      const scope = document.createElement('select');
-      scope.className = 'cxp-config-input';
-      const savedOption = document.createElement('option'); savedOption.value = 'saved'; savedOption.textContent = 'Saved defaults';
-      const sessionOption = document.createElement('option'); sessionOption.value = 'session'; sessionOption.textContent = 'Current thread';
-      sessionOption.disabled = !settingsTab.threadId || !capabilityAvailability(capabilities, 'thread_settings_update').supported;
-      scope.append(savedOption, sessionOption); scopeLabel.append(scope); form.append(scopeLabel);
-      const scopeHint = document.createElement('div'); scopeHint.className = 'cxp-settings-hint';
-      scopeHint.textContent = 'Saved defaults affect future sessions. Current thread settings apply to subsequent turns.';
-      form.append(scopeHint);
-      const inputs = {};
-      const restrictions = {};
-      for (const def of fieldDefs) {
-        const row = document.createElement('div');
-        row.className = 'cxp-config-row';
-        const label = document.createElement('label');
-        label.className = 'cxp-config-label';
-        label.textContent = def.label;
-        row.appendChild(label);
-        const val = configValue(cfg, def.key);
-        const restriction = configRestriction(requirements, def.key);
-        restrictions[def.key] = restriction;
-        if (def.type === 'select') {
-          const sel = document.createElement('select');
-          sel.className = 'cxp-config-input';
-          for (const opt of def.options) {
-            const o = document.createElement('option');
-            o.value = opt.value;
-            o.textContent = opt.label;
-            if (String(val ?? '') === opt.value) o.selected = true;
-            if (restriction.allowed && opt.value && !restriction.allowed.some((allowed) => JSON.stringify(allowed) === JSON.stringify(opt.value))) o.disabled = true;
-            sel.appendChild(o);
-          }
-          if (val != null && !def.options.some((opt) => opt.value === String(val))) {
-            const unknown = document.createElement('option');
-            unknown.value = typeof val === 'object' ? JSON.stringify(val) : String(val);
-            unknown.textContent = `${unknown.value} (configured)`; unknown.selected = true;
-            sel.appendChild(unknown);
-            sel.dataset.originalValue = JSON.stringify(val);
-          }
-          row.appendChild(sel);
-          inputs[def.key] = sel;
-        } else if (def.type === 'checkbox') {
-          const cb = document.createElement('input');
-          cb.type = 'checkbox';
-          cb.className = 'cxp-config-checkbox';
-          cb.checked = typeof restriction.fixed === 'boolean' ? restriction.fixed : !!val;
-          row.appendChild(cb);
-          inputs[def.key] = cb;
-        } else {
-          const inp = document.createElement('input');
-          inp.type = def.type === 'number' ? 'number' : 'text';
-          inp.className = 'cxp-config-input';
-          inp.value = val != null ? val : '';
-          inp.placeholder = def.placeholder || '';
-          row.appendChild(inp);
-          inputs[def.key] = inp;
-        }
-        // Config layer badge
-        if (layers[def.key] || restriction.reason) {
-          const badge = document.createElement('span');
-          badge.className = 'cxp-config-layer';
-          badge.textContent = `(${restriction.reason || layers[def.key]})`;
-          row.appendChild(badge);
-        }
-        form.appendChild(row);
-      }
-      const saveBtn = document.createElement('button');
-      saveBtn.className = 'cxp-btn cxp-config-save';
-      const refreshScope = () => {
-        const visibleConfig = scope.value === 'session' ? { ...cfg, ...(settingsTab.sessionConfigOverrides || {}) } : cfg;
-        for (const def of fieldDefs) {
-          inputs[def.key].disabled = Object.hasOwn(restrictions[def.key], 'fixed') || (scope.value === 'session' && !SESSION_CONFIG_FIELDS[def.key]);
-          const value = configValue(visibleConfig, def.key);
-          if (def.type === 'checkbox') inputs[def.key].checked = typeof restrictions[def.key].fixed === 'boolean' ? restrictions[def.key].fixed : !!value;
-          else inputs[def.key].value = value != null ? (typeof value === 'object' ? JSON.stringify(value) : String(value)) : '';
-        }
-        saveBtn.textContent = scope.value === 'session' ? 'Apply to Current Thread' : 'Save Defaults';
-      };
-      scope.addEventListener('change', refreshScope);
-      refreshScope();
-      saveBtn.addEventListener('click', async () => {
-        saveBtn.disabled = true;
-        saveBtn.textContent = 'Saving…';
-        try {
-          const currentConfig = scope.value === 'session' ? { ...cfg, ...(settingsTab.sessionConfigOverrides || {}) } : cfg;
-          const newCfg = configChanges(fieldDefs, inputs, currentConfig);
-          if (scope.value === 'session') {
-            if (settingsTab.running) throw new Error('Wait for the active turn to finish before applying thread settings.');
-            await requestForSettings('thread_settings_update', { threadId: settingsTab.threadId, ...sessionSettings(newCfg) });
-            settingsTab.sessionConfigOverrides = { ...(settingsTab.sessionConfigOverrides || {}), ...newCfg };
-            if (Object.hasOwn(newCfg, 'model')) settingsTab.model = newCfg.model;
-            if (Object.hasOwn(newCfg, 'model_reasoning_effort')) settingsTab.effort = newCfg.model_reasoning_effort || 'off';
-            if (Object.hasOwn(newCfg, 'approval_policy')) settingsTab.autoAccept = newCfg.approval_policy === 'never';
-            syncToolbarState(); saveTabs();
-          } else if (Object.keys(newCfg).length) {
-            await requestForSettings('config_write', { config: newCfg });
-            Object.assign(cfg, newCfg);
-          }
-          invalidateCodexFeatureCaches(settingsTab);
-          saveBtn.textContent = 'Saved!';
-          refreshModelCatalog(settingsTab);
-          setTimeout(() => { refreshScope(); saveBtn.disabled = false; }, 1500);
-        } catch (err) {
-          saveBtn.textContent = 'Save Failed';
-          appendSettingsError(`Config save failed: ${err.message}`);
-          setTimeout(() => { refreshScope(); saveBtn.disabled = false; }, 1500);
-        }
-      });
-      form.appendChild(saveBtn);
-      configEl.appendChild(form);
-    }
-    // Opened for one section (the Context settings popover's "Manage"): bring it into view.
-    if (section) overlay.querySelector(`#cxp-settings-${section}`)?.closest('.cxp-settings-section')?.scrollIntoView({ block: 'start' });
-  } catch (error) { appendSettingsError(error.message || 'Could not load Codex settings.'); }
+      invalidateCodexFeatureCaches(settingsTab); refreshModelCatalog(settingsTab);
+      clearCodexConfigWarnings({ obsoleteOnly: true });
+    },
+  });
+  if (section && view) {
+    const target = section === 'mcp' ? view.sections.tools : view.sections[section];
+    target?.scrollIntoView({ block: 'start' });
+  }
 }
 
 export function startCompaction() {

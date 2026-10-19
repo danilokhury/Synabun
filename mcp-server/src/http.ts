@@ -28,9 +28,11 @@ import {
   type CallerIdentity,
   markHttpMode,
   obtainIdentity,
+  sanitizeBrainCredential,
   sanitizeDesktopGrant,
   sanitizePin,
   sanitizeRole,
+  runWithBrainCredential,
   runWithIdentity,
   releaseIdentity,
   startIdentitySweeper,
@@ -134,6 +136,19 @@ function deriveIdentity(req: Request, sid: string | undefined): CallerIdentity {
   return identity;
 }
 
+/** The X-Synabun-Brain-Token of one request (whatsapp_send_file); none for a tunnel caller (a remote MCP-key holder). */
+export function requestBrainCredential(req: Pick<Request, 'get'>): string | null {
+  return req.get('cf-connecting-ip') ? null : sanitizeBrainCredential(req.get('x-synabun-brain-token'));
+}
+
+/**
+ * Handle one request inside its caller identity and its own brain-credential context: the
+ * X-Synabun-Brain-Token of THIS request, never one another request left on a shared identity.
+ */
+function runRequest<T>(req: Request, sid: string | undefined, fn: () => T): T {
+  return runWithBrainCredential(requestBrainCredential(req), () => runWithIdentity(deriveIdentity(req, sid), fn));
+}
+
 function jsonRpcError(res: express.Response, status: number, code: number, message: string): void {
   res.status(status).json({ jsonrpc: '2.0', error: { code, message }, id: null });
 }
@@ -181,7 +196,7 @@ export function createMcpRoutes(): Router {
           return jsonRpcError(res, 404, -32001, 'Session not found');
         }
         entry.lastSeen = Date.now();
-        await runWithIdentity(deriveIdentity(req, sid), () =>
+        await runRequest(req, sid, () =>
           entry.transport.handleRequest(req, res, req.body)
         );
         return;
@@ -231,7 +246,7 @@ export function createMcpRoutes(): Router {
       };
 
       await server.connect(transport);
-      await runWithIdentity(deriveIdentity(req, undefined), () =>
+      await runRequest(req, undefined, () =>
         transport.handleRequest(req, res, req.body)
       );
     } catch (error) {
@@ -252,7 +267,7 @@ export function createMcpRoutes(): Router {
     }
     entry.lastSeen = Date.now();
     try {
-      await runWithIdentity(deriveIdentity(req, sid), () =>
+      await runRequest(req, sid, () =>
         entry.transport.handleRequest(req, res)
       );
     } catch (error) {

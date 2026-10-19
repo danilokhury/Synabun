@@ -6289,6 +6289,23 @@ export function openTerminalPanel(profile) {
   emit('terminal:open', { profile });
 }
 
+// Attach only: the guarded provider-auth route has already chosen and started
+// the CLI. No command text is accepted from either panel.
+export async function openProviderLoginTerminal(sessionId, label) {
+  if (!/^[a-f0-9]{32}$/.test(sessionId || '')) throw new Error('Invalid sign-in terminal session.');
+  await _whenOpenIdle();
+  let session = _sessions.find(s => s.id === sessionId);
+  if (!session) session = await openSession('shell', null, sessionId, { label });
+  if (!session) throw new Error('Could not attach the sign-in terminal. Try again.');
+  showPanel();
+  const index = _sessions.indexOf(session);
+  if (_detachedTabs.has(sessionId)) {
+    bringTabToFront(sessionId);
+  } else if (index >= 0) switchToSession(index);
+  session.term?.focus();
+  return session;
+}
+
 // ── Diagnostics (no UI) ──
 // window.__synabunTermStats(): keystroke → echo-parsed latency, bytes handed
 // to xterm but not yet parsed, flow-control acks pending, renderer state and

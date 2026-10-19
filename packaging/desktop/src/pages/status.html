@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' file:; style-src 'self' file:; script-src 'self' file:">
+  <title>SynaBun</title>
+  <link rel="stylesheet" href="status.css">
+</head>
+<body>
+  <!-- The window has no native title bar (src/titlebar.mjs): this strip drags it, under the system's buttons. -->
+  <div class="titlebar" aria-hidden="true"></div>
+  <main class="status" id="status" data-state="starting">
+    <img class="mark" id="mark" src="../../assets/logo.png" alt="" width="72" height="36">
+    <h1 class="heading" id="heading">SynaBun</h1>
+    <p class="line" id="line" role="status" aria-live="polite"></p>
+    <p class="hint" id="hint"></p>
+    <div class="bar" id="bar" aria-hidden="true"><span></span></div>
+    <p class="elapsed" id="elapsed"></p>
+    <pre class="detail" id="detail" hidden></pre>
+    <div class="actions" id="actions"></div>
+    <details class="log" id="log" hidden>
+      <summary id="log-label">Details</summary>
+      <pre class="log-lines" id="log-lines" role="log" aria-live="off" tabindex="0"></pre>
+    </details>
+  </main>
+  <script src="status.js"></script>
+</body>
+</html>

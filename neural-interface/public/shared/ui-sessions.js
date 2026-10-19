@@ -9,7 +9,7 @@
 // ═══════════════════════════════════════════
 
 import { emit, on } from './state.js';
-import { getSynabunUpdateData, openSynabunUpdateModal, forceCheckSynabunUpdate } from './ui-update.js';
+import { getSynabunUpdateData, openSynabunUpdateModal, syncSynabunUpdateData, synabunUpdateMeta } from './ui-update.js';
 import { getToolUpdateData, runToolUpdate, TOOL_LABELS } from './ui-tool-updates.js';
 import { openSettingsModal } from './ui-settings.js';
 import { getProviderMeta } from './provider-icons.js';
@@ -222,7 +222,7 @@ function computeUpdates() {
       key: 'synabun',
       title: 'SynaBun',
       subtitle: `v${synabun.current} → v${synabun.latest}`,
-      meta: synabun.source ? `Source: ${synabun.source}` : '',
+      meta: synabunUpdateMeta(synabun),
       action: 'Open updater',
       severity: 'normal',
     });
@@ -307,6 +307,12 @@ async function refreshRulesStatus() {
   _rulesStatus = await fetchRulesStatus();
   emitNotificationsUpdate();
 }
+
+// Inside the desktop app its updater reports on its own schedule (ui-update.js): the drawer and its count follow.
+on('synabun-update:changed', () => {
+  emitNotificationsUpdate();
+  if (_panel) render();
+});
 
 // Settings > Setup re-reads the status after every rules action and passes it on.
 on('rules:changed', (status) => {
@@ -894,7 +900,7 @@ async function refreshSessions() {
     emitLoopsUpdate();
     // Refresh notification feed alongside session/loop data
     refreshRulesStatus().then(() => render()).catch(() => {});
-    forceCheckSynabunUpdate().then(() => render()).catch(() => {});
+    syncSynabunUpdateData().then(() => render()).catch(() => {});
     render();
   } catch {}
 }

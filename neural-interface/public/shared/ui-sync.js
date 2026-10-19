@@ -118,7 +118,13 @@ const SYNC_HANDLERS = {
   'assistant:permission-resolved': (msg) => emit('sync:assistant:permission-resolved', msg),
   'assistant:focus':               (msg) => emit('sync:assistant:focus', msg),
   'assistant:accounts-changed':    (msg) => emit('sync:assistant:accounts-changed', msg),
+  // Claude accounts (lib/claude-accounts.js): any account's state changed — signed in or out, a key saved or removed, its mode, renamed, added, removed
+  'claude:accounts-changed':       (msg) => emit('sync:claude:accounts-changed', msg),
+  // Codex accounts (lib/codex-accounts.js): the same, for every Codex account
+  'codex:accounts-changed':        (msg) => emit('sync:codex:accounts-changed', msg),
   'assistant:mailbox':             (msg) => emit('sync:assistant:mailbox', msg),
+  'assistant:budget':              (msg) => emit('sync:assistant:budget', msg),
+  'assistant:budget-changed':      (msg) => emit('sync:assistant:budget-changed', msg),
   'assistant:cost':                (msg) => emit('sync:assistant:cost', msg),
   'assistant:desktop':             (msg) => emit('sync:assistant:desktop', msg),
   'assistant:desktop-setup':       (msg) => emit('sync:assistant:desktop-setup', msg),

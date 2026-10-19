@@ -1,3 +1,4 @@
+import { withPathEnv } from './augmented-path.js';
 import { query as claudeQuery } from '@anthropic-ai/claude-agent-sdk';
 import { CLAUDE_EFFORT_LEVELS } from './claude-model-catalog.js';
 import {
@@ -94,7 +95,7 @@ async function generateClaudeTitle(input, deps) {
         includePartialMessages: false,
         abortController,
         ...(executable?.path ? { pathToClaudeCodeExecutable: executable.path } : {}),
-        env: cleanClaudeEnv(deps.env || process.env),
+        env: typeof deps.childEnv === 'function' ? deps.childEnv(cleanClaudeEnv(deps.env || process.env)) : cleanClaudeEnv(deps.env || process.env),
         canUseTool: async () => ({ behavior: 'deny', message: 'Session title generation cannot use tools.' }),
       },
     });
@@ -123,11 +124,11 @@ async function generateCodexTitle(input, deps) {
   const effort = codexReasoningEffort(input.effort);
   if (effort) args.push('-c', `model_reasoning_effort="${effort}"`);
   args.push(titlePrompt(input));
-  const env = {
+  let env = {
     ...(deps.env || process.env),
     CODEX_HOME: deps.getCodexAccountHome?.(input.accountId || 'default'),
   };
-  if (typeof deps.getAugmentedPath === 'function') env.PATH = deps.getAugmentedPath();
+  if (typeof deps.getAugmentedPath === 'function') env = withPathEnv(env, deps.getAugmentedPath());
   const { stdout } = await deps.execFile(deps.getCodexBin(), args, {
     cwd: input.cwd || process.cwd(),
     env,

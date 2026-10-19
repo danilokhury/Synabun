@@ -108,7 +108,7 @@ export async function listCodexPages(request, method, params = {}, key = 'data')
   throw new Error(`${method} exceeded the catalog pagination limit.`);
 }
 
-export function buildCodexCompatParams(message, { activeThreadId, cwd } = {}) {
+export function buildCodexCompatParams(message, { activeThreadId, cwd, sandboxPolicyForMode } = {}) {
   const threadId = owns(message, 'threadId') ? message.threadId : (activeThreadId || null);
   const params = threadActions.has(message.type) ? { threadId: required(threadId, 'Thread') } : {};
   switch (message.type) {
@@ -183,6 +183,10 @@ export function buildCodexCompatParams(message, { activeThreadId, cwd } = {}) {
           && Object.values(message.tags).every(value => typeof value === 'string') ? { tags: message.tags } : {}),
       };
     case 'thread_settings_update':
+      if (owns(message, 'sandboxMode')) {
+        if (!sandboxPolicyForMode) invalid('Sandbox settings are unavailable.');
+        params.sandboxPolicy = message.sandboxMode === null ? null : sandboxPolicyForMode(message.sandboxMode, message.cwd || cwd);
+      }
       if (owns(message, 'disabledPluginIds')) {
         if (!Array.isArray(message.disabledPluginIds) || message.disabledPluginIds.some(id => typeof id !== 'string' || !id.trim())) invalid('Disabled plugins must be a list of plugin ids.');
         params.disabledPluginIds = [...new Set(message.disabledPluginIds)];
@@ -223,7 +227,9 @@ export async function handleCodexCompatMessage(message, context) {
     }
     if (message.type === 'thread_settings_update' && context.activeTurnId) invalid('Wait for the current turn before changing session settings.');
     await context.beforeRequest?.(message.type, params);
-    const run = () => context.request(route[0], params, /^verification_(enroll|delete|verify)$/.test(message.type) ? 120000 : message.type === 'feedback_upload' ? 30000 : 10000);
+    const run = () => message.type === 'experimental_features_set' && context.setFeatureEnablement
+      ? context.setFeatureEnablement(params.enablement)
+      : context.request(route[0], params, /^verification_(enroll|delete|verify)$/.test(message.type) ? 120000 : message.type === 'feedback_upload' ? 30000 : 10000);
     const result = mutations.has(message.type) ? await context.withWriterOperation(message.type, run) : await run();
     if (message.type === 'mcp_app_resource_read') {
       validateAppResources(result);

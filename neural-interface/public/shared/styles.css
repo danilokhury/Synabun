@@ -146,17 +146,19 @@
     height: var(--fs-locked-height);
   }
 
-  /* ── Window Controls Overlay (PWA standalone on macOS / Windows / Linux) ──
+  /* ── Window Controls Overlay (PWA standalone on macOS / Windows / Linux, and the SynaBun desktop app) ──
        Uses body.wco-active (toggled by JS via navigator.windowControlsOverlay)
-       for higher specificity than base #title-bar rules.
+       for higher specificity than base #title-bar rules. The --desktop-titlebar-*
+       variables stand in for the env() ones only inside the desktop app when its
+       window has no overlay API (desktop-titlebar.js); the PWA never sets them.
        ── */
   body.wco-active #title-bar {
     -webkit-app-region: drag;
-    padding-left: calc(env(titlebar-area-x, 0px) + 10px);
-    padding-right: max(18px, calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw) + 10px));
+    padding-left: calc(env(titlebar-area-x, var(--desktop-titlebar-x, 0px)) + 10px);
+    padding-right: max(18px, calc(100vw - env(titlebar-area-x, var(--desktop-titlebar-x, 0px)) - env(titlebar-area-width, var(--desktop-titlebar-width, 100vw)) + 10px));
     padding-top: 0;
     padding-bottom: 0;
-    height: env(titlebar-area-height, 48px);
+    height: env(titlebar-area-height, var(--desktop-titlebar-height, 48px));
     transition: padding 0.2s ease;
   }
   body.wco-active #title-bar button,
@@ -167,7 +169,9 @@
   body.wco-active #title-bar .bar-right {
     -webkit-app-region: no-drag;
   }
-  body.wco-active #title-bar .bar-right {
+  /* The installed PWA's overlay is thinner than the toolbar's pill: the pill's glass goes. The desktop app's bar is
+     the pill's height and keeps it (below). */
+  html:not(.desktop-titlebar) body.wco-active #title-bar .bar-right {
     background: transparent;
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
@@ -176,6 +180,19 @@
   }
   body.wco-active #titlebar-logo {
     transform: translateY(1px);
+  }
+
+  /* ── The SynaBun desktop app (packaging/desktop): this bar is the window's title bar ──
+       html.desktop-titlebar comes from desktop-titlebar.js, only inside the app's main window, which also toggles
+       body.wco-active (off in full screen, where the system hides its buttons). Whatever in the bar takes a click
+       stays out of the drag region; the empty parts drag the window, and the system maximizes and restores it on
+       a double-click. While something is drawn over the bar (a dialog, the tour), the bar drags nothing, so that
+       thing gets its clicks. Windows and Linux: the app's menu opens from .desktop-app-menu-btn (a .bar-icon). */
+  html.desktop-titlebar body.wco-active #title-bar :is(#titlebar-logo, #search-container, select, label, [role="button"], [tabindex]:not([tabindex="-1"])) {
+    -webkit-app-region: no-drag;
+  }
+  html.desktop-titlebar body.wco-active.desktop-titlebar-covered #title-bar {
+    -webkit-app-region: no-drag;
   }
 
   ::-webkit-scrollbar { width: 6px; }
@@ -1474,18 +1491,31 @@
     z-index: 1;
   }
 
+  /* The memory search: a slot of its own between the menubar and the pill, centred in what the menu leaves (its auto
+     margins) and up to 340px of it. It never lies under the menu, whatever the labels' language or the window's
+     width: where the space runs short it shrinks, and below 200px the field is a search icon that opens over the
+     menu while it has the focus ("SEARCH BAR"). Its box is the field's width only, so the empty bar beside it still
+     drags the desktop app's window. With the visualization off it takes no room at all. */
   #title-bar .bar-center {
-    position: absolute;
-    left: 50%;
-    transform: translateX(-50%);
-    width: max-content;
-    max-width: calc(100% - 360px);
+    position: relative;
+    flex: 0 1 340px;
+    min-width: 30px;
+    margin-inline: auto;
+    container-type: inline-size;
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 8px;
-    min-width: 0;
     pointer-events: auto;
+  }
+  #title-bar .bar-center:has(> #search-wrapper.viz-hidden) {
+    flex-basis: 0;
+    min-width: 0;
+  }
+  #title-bar .bar-center:focus-within {
+    z-index: 2;   /* the opened field draws over the menubar (.bar-left, z-index 1) */
+  }
+  #title-bar .bar-center + .bar-right {
+    margin-left: 0;   /* the slot's auto margins push the pill to the right edge */
   }
 
   /* ── Unified frosted glass pill ── */
@@ -5105,6 +5135,54 @@
     vertical-align: -2px;
     margin-right: 6px;
   }
+  /* Inside the desktop app (ui-update.js openDesktopUpdateModal): the release notes, written as text, and the
+     download's progress. The surfaces and the green of the rest of this dialog. */
+  .update-notes-label {
+    font-size: 11px;
+    color: var(--t-muted);
+    margin: 4px 0 6px;
+  }
+  .update-notes {
+    max-height: 168px;
+    overflow: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    background: rgba(0,0,0,0.35);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: var(--r-card);
+    padding: 10px 14px;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--t-secondary);
+  }
+  .update-notes:focus-visible {
+    outline: 2px solid var(--stg-focus, #93c5fd);
+    outline-offset: 2px;
+  }
+  .update-progress {
+    height: 6px;
+    margin: 16px 0 8px;
+    border-radius: 999px;
+    background: rgba(255,255,255,0.12);
+    overflow: hidden;
+  }
+  .update-progress-bar {
+    height: 100%;
+    border-radius: inherit;
+    background: #34c759;
+    transition: width 0.2s ease;
+  }
+  /* The size is not known: the bar is full and quiet, the words say how much came. */
+  .update-progress-bar--unknown { opacity: 0.45; }
+  .update-progress-text {
+    font-family: var(--ff-mono);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    color: var(--t-muted);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .update-progress-bar { transition: none; }
+  }
   .tag-delete-overlay.closing {
     opacity: 0;
     transition: opacity 0.15s ease;
@@ -7112,25 +7190,22 @@
   /* ═══════════════════════════════════════════
      SEARCH BAR (inline in top bar)
      ═══════════════════════════════════════════ */
-  #search-container {
-    display: contents;
-  }
-
+  /* #search-container is the navbar slot (#title-bar .bar-center, "TOP MENU BAR"); the field fills it up to 340px. */
   #search-wrapper {
     position: relative;
     width: 340px;
-    max-width: 40vw;
+    max-width: 100%;
     border-radius: 8px;
     padding: 1px;
-    background: rgba(255,255,255,0.06);
+    background: var(--s-light);   /* the 1px edge around the field */
     overflow: hidden;
     opacity: 1;
     transition: width 0.35s cubic-bezier(0.4, 0, 0.2, 1),
                 max-width 0.35s cubic-bezier(0.4, 0, 0.2, 1),
                 padding 0.35s cubic-bezier(0.4, 0, 0.2, 1),
                 opacity 0.25s ease,
-                background 0.3s,
-                box-shadow 0.3s;
+                background 0.2s ease,
+                box-shadow 0.2s ease;
   }
 
   #search-wrapper.viz-hidden {
@@ -7141,34 +7216,86 @@
     pointer-events: none;
   }
 
-  #search-wrapper.focused {
-    background: rgba(255, 255, 255, 0.12);
-    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.1), 0 0 12px rgba(255, 255, 255, 0.04);
-    animation: searchGlow 2.5s ease-in-out infinite;
+  #search-wrapper:hover {
+    background: var(--s-medium);
   }
 
-  @keyframes searchGlow {
-    0%, 100% { box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.1), 0 0 12px rgba(255, 255, 255, 0.04); }
-    50% { box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.18), 0 0 16px rgba(255, 255, 255, 0.07); }
+  #search-wrapper.focused {
+    background: var(--b-hover);
+    box-shadow: 0 0 0 3px var(--s-subtle);
   }
+
+  #search-wrapper .search-icon {
+    position: absolute;
+    left: 9px;
+    top: 50%;
+    width: 13px;
+    height: 13px;
+    transform: translateY(-50%);
+    color: var(--t-secondary);
+    pointer-events: none;
+    transition: color 0.2s ease;
+  }
+  #search-wrapper:hover .search-icon { color: var(--t-primary); }
+  #search-wrapper.focused .search-icon { color: var(--t-bright); }
 
   #search-input {
     width: 100%;
-    padding: 6px 36px 6px 12px;
+    padding: 6px 36px 6px 30px;
     background: rgba(28, 28, 30, 0.7);
     border: none;
     border-radius: 7px;
-    color: rgba(255, 255, 255, 0.9);
+    color: var(--t-bright);
+    font-family: inherit;
     font-size: 12px;
     font-weight: 400;
     outline: none;
     letter-spacing: 0.01em;
+    text-overflow: ellipsis;
   }
 
   #search-input::placeholder {
-    color: rgba(255,255,255,0.2);
-    letter-spacing: 0.04em;
+    color: var(--t-secondary);
+    letter-spacing: 0.01em;
     font-weight: 400;
+  }
+
+  /* ── Not enough room in the bar: a search icon, opened over the menubar while it has the focus ── */
+  @container (max-width: 199px) {
+    #search-wrapper {
+      width: 30px;
+      transition: opacity 0.25s ease, background 0.2s ease, box-shadow 0.2s ease;   /* opens and closes at once */
+    }
+    #search-wrapper:not(:focus-within) #search-input {
+      padding-right: 0;
+      color: transparent;
+      cursor: pointer;
+    }
+    #search-wrapper:not(:focus-within) #search-input::placeholder {
+      color: transparent;
+    }
+    #search-wrapper:not(:focus-within) :is(#search-badge, #search-clear) {
+      visibility: hidden;   /* ui-search.js shows and hides them with inline display */
+    }
+    /* A search is on: the icon says so. */
+    #search-wrapper:not(:focus-within):has(#search-input:not(:placeholder-shown)) {
+      background: var(--b-visible);
+    }
+    #search-wrapper:not(:focus-within):has(#search-input:not(:placeholder-shown)) .search-icon {
+      color: var(--t-bright);
+    }
+    #search-wrapper:focus-within:not(.viz-hidden) {
+      position: absolute;
+      right: 0;
+      top: 50%;
+      transform: translateY(-50%);
+      width: min(340px, 60vw);
+      max-width: none;
+      box-shadow: 0 0 0 3px var(--s-subtle), var(--shadow-md);
+    }
+    #search-wrapper:focus-within:not(.viz-hidden) #search-input {
+      background: rgb(28, 28, 30);   /* opaque: the menu labels under it don't show through */
+    }
   }
 
   #search-badge {
@@ -15649,6 +15776,102 @@
   .settings-nav-item[data-tab="notifications"]   { --stg-tile: #bd5a52; }
   .settings-nav-item[data-tab="appearance"]      { --stg-tile: #6c717a; }
   /* <<< settings-redesign:nav-polish */
+  /* >>> settings-redesign:spacing */
+  /* ═══════════════════════════════════════════
+     SETTINGS — room between the rows of the right column, on every page
+     The elegance pass packed the rows at 8px. This loosens the whole rhythm one step and touches no size, weight or wiring:
+     the row padding is the one lever (--stg-row-y), the gaps around it keep their proportions.
+     Scoped to the settings panel; the command runner and the style guide keep the elegance values.
+     ═══════════════════════════════════════════ */
+  .settings-panel { --stg-row-y: 13px; }
+  /* page head, product headings, sections */
+  .stg-page-head { margin-bottom: 26px; }
+  .settings-panel .stg-pane-title { margin: 32px 0 14px; }
+  .settings-panel .stg-card { margin-bottom: 22px; }
+  .settings-panel .stg-card.stg-acc[data-collapsible] { margin-bottom: 14px; }
+  .settings-panel .stg-card.stg-acc[data-collapsible] > .stg-card-head { min-height: 44px; padding-top: 10px; padding-bottom: 10px; }
+  /* what a group holds that is not a row of its own (a note, a list, a preview) */
+  .settings-panel .stg-card-body > * { margin-top: 14px; margin-bottom: 14px; }
+  /* a row that opens (an assistant, a model) was fixed at 7px */
+  .settings-panel .stg-card-body > .stg-card[data-collapsible] { padding-top: var(--stg-row-y); padding-bottom: var(--stg-row-y); }
+  /* the Browser fields kept a margin of their own under the row, which doubled the gap next to the row padding */
+  .settings-panel .stg-card-body > .stg-field.bc-card-row { margin-bottom: 0; }
+  /* label, control, help */
+  .settings-panel .stg-field > label { margin-bottom: 8px; }
+  .settings-panel .stg-help { margin-top: 5px; }
+  .settings-panel .stg-toggle-text .stg-help { margin-top: 4px; }
+  /* <<< settings-redesign:spacing */
+  /* >>> settings-about */
+  /* Settings → About (shared/settings/settings-about-pane.js): the header (icon, name, version, the two buttons),
+     the links, the facts of System and the dependency lists. Text weight and the panel's --stg-* roles; every row
+     wraps instead of widening the panel, down to the 320px panel. Its tile is the palette's neutral graphite. */
+  .settings-nav-item[data-tab="about"] { --stg-tile: #6b7078; }
+  .settings-panel .stg-about-hero {
+    display: flex; flex-direction: column; align-items: center; text-align: center;
+    margin: 0 0 18px; padding: 20px 16px 16px; border-radius: 9px; background: var(--stg-group);
+  }
+  .settings-panel .stg-about-hero [hidden] { display: none; }
+  .settings-panel .stg-about-logo { display: block; width: 64px; height: 64px; margin: 0 0 10px; border-radius: 14px; box-shadow: 0 1px 3px rgba(0,0,0,0.35); }
+  .settings-panel .stg-about-name { margin: 0; font-size: 20px; font-weight: 600; line-height: 1.25; color: var(--stg-text); }
+  .settings-panel .stg-about-version { margin: 2px 0 0; font-size: 12.5px; color: var(--stg-body); }
+  .settings-panel .stg-about-line { margin: 2px 0 0; max-width: 52ch; font-size: 12px; color: var(--stg-help); overflow-wrap: anywhere; }
+  .settings-panel .stg-about-desc { margin-top: 8px; }
+  .settings-panel .stg-about-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin: 14px 0 0; }
+  .settings-panel .stg-about-note { max-width: 52ch; margin: 10px 0 0; }
+
+  /* Links: the name on the left, the address on the right; the address gives way first */
+  .settings-panel .stg-about-links { margin: 0; padding: 0; list-style: none; }
+  .settings-panel .stg-about-links > li + li { border-top: 1px solid var(--stg-sep); }
+  .settings-panel .stg-about-link { display: flex; align-items: center; gap: 10px; min-height: 32px; padding: 6px 0; box-sizing: border-box; font-size: 13px; color: var(--stg-text); text-decoration: none; }
+  .settings-panel .stg-about-link:hover .stg-about-link-label { color: var(--stg-link); }
+  .settings-panel .stg-about-link:focus-visible { outline: 2px solid var(--stg-focus); outline-offset: 2px; border-radius: 4px; }
+  .settings-panel .stg-about-link-label { flex: 0 0 auto; }
+  .settings-panel .stg-about-link-url { flex: 1 1 auto; min-width: 0; overflow: hidden; text-align: right; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--stg-help); }
+  .settings-panel .stg-about-arrow { flex: 0 0 auto; width: 10px; height: 10px; fill: none; stroke: var(--stg-help); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+
+  /* System: label and value on one row; a long value (the data folder) wraps under its label */
+  .settings-panel .stg-about-facts { margin: 0; }
+  .settings-panel .stg-about-fact { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px 16px; min-height: 32px; padding: 7px 0; box-sizing: border-box; }
+  .settings-panel .stg-about-fact + .stg-about-fact { border-top: 1px solid var(--stg-sep); }
+  .settings-panel .stg-about-fact dt { flex: 0 0 auto; font-size: 13px; color: var(--stg-text); }
+  .settings-panel .stg-about-fact dd { flex: 1 1 12em; min-width: 0; margin: 0; text-align: right; font-size: 12.5px; color: var(--stg-body); overflow-wrap: anywhere; user-select: text; }
+  .settings-panel .stg-about-fact dd.stg-about-mono { font-family: var(--stg-mono); font-size: 12px; }
+  .settings-panel .stg-about-empty { margin: 8px 0; list-style: none; }
+
+  /* Dependencies: a heading per package, then one row per dependency: name, version, then range and license,
+     which move under the name when the row is narrow */
+  .settings-panel .stg-about-filter { display: flex; }
+  .settings-panel .stg-about-filter[hidden] { display: none; }
+  .settings-panel .settings-content .stg-about-filter-input { width: 100%; max-width: 240px; }
+  .settings-panel .stg-about-group + .stg-about-group,
+  .settings-panel .stg-about-bundled { margin-top: 12px; }
+  .settings-panel .stg-card-body .stg-about-group-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; min-height: 0; margin: 0; padding: 8px 0 4px; font-size: 13px; color: var(--stg-text); }
+  .settings-panel .stg-about-group-sub { min-width: 0; overflow-wrap: anywhere; font-family: var(--stg-mono); font-size: 11.5px; font-weight: 400; color: var(--stg-help); }
+  .settings-panel .stg-about-count { margin-left: auto; font-size: 12px; font-weight: 400; color: var(--stg-help); font-variant-numeric: tabular-nums; }
+  .settings-panel .stg-about-group-note { margin: 0 0 4px; }
+  .settings-panel .stg-about-dep-list { margin: 0; padding: 0; list-style: none; }
+  .settings-panel .stg-about-dep { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 10px; padding: 5px 0; border-top: 1px solid var(--stg-sep); font-size: 12.5px; }
+  .settings-panel .stg-about-dep-name { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; color: var(--stg-text); text-decoration: none; }
+  .settings-panel a.stg-about-dep-name:hover { color: var(--stg-link); text-decoration: underline; }
+  .settings-panel a.stg-about-dep-name:focus-visible { outline: 2px solid var(--stg-focus); outline-offset: 2px; border-radius: 3px; }
+  .settings-panel .stg-about-dep-version { flex: 0 0 auto; font-family: var(--stg-mono); font-size: 12px; color: var(--stg-body); font-variant-numeric: tabular-nums; }
+  .settings-panel .stg-about-dep-version[data-state="missing"] { color: var(--stg-warn); }
+  .settings-panel .stg-about-dep-meta { flex: 1 0 100%; min-width: 0; overflow-wrap: anywhere; font-size: 11.5px; color: var(--stg-help); }
+  .settings-panel .stg-about-dev { margin-top: 12px; }
+
+  /* The foot of the page: the license and the copyright, quiet and centred */
+  .settings-panel .stg-about-footer { margin: 8px 0 4px; text-align: center; font-size: 11.5px; color: var(--stg-help); }
+  .settings-panel .stg-about-footer p { margin: 2px 0; }
+  .settings-panel .stg-about-builtwith { margin: 0; padding: 0; border: 0; background: none; font: inherit; color: var(--stg-link); cursor: pointer; }
+  .settings-panel .stg-about-builtwith:hover { text-decoration: underline; }
+  .settings-panel .stg-about-builtwith:focus-visible { outline: 2px solid var(--stg-focus); outline-offset: 2px; border-radius: 3px; }
+  @container stg (max-width: 480px) {
+    .settings-panel .stg-about-hero { padding: 16px 12px 14px; }
+    .settings-panel .stg-about-link-url { display: none; }
+    .settings-panel .stg-about-arrow { margin-left: auto; }
+    .settings-panel .stg-about-fact dd { text-align: left; flex-basis: 100%; }
+  }
+  /* <<< settings-about */
   .tag-add-input {
     font-size: var(--fs-sm);
     font-weight: 500;
@@ -28640,6 +28863,30 @@
 }
 .update-check-toast .utc-sub  { color: var(--t-muted); }
 .update-check-toast .utc-hint { color: var(--t-muted); opacity: 0.7; margin-top: 6px; font-size: 11px; }
+/* The desktop app's update notice (ui-update.js renderDesktopNotice): the same toast, with its own answers. */
+.update-notice .utc-sub { overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.update-notice-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+.update-notice-actions .action-btn { padding: 4px 12px; }
+.update-notice-link {
+  color: var(--t-primary);
+  font-size: 11px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  margin-right: auto;
+}
+.update-notice-link:hover { color: var(--t-bright); }
+.update-notice-link:focus-visible,
+.update-notice .action-btn:focus-visible {
+  outline: 2px solid var(--stg-focus, #93c5fd);
+  outline-offset: 2px;
+}
 
 .update-channel-pill {
   display: inline-block;

@@ -1,0 +1,242 @@
+/* The app's own status page, in SynaBun's dark tokens (DESIGN.md: background #050505, surface #1c1c1ed9,
+   text #ffffffe6, muted #ffffff8c, border #ffffff1a, primary #636363 / hover #717171, focus #93c5fd,
+   danger #fca5a5, warning #fbbf24; control radius 5px, card radius 9px; Inter and Space Grotesk with the
+   system fallbacks of the type tokens; nothing is loaded from the network). */
+
+:root {
+  color-scheme: dark;
+  --bg: #050505;
+  --surface: #1c1c1ed9;
+  --text: #ffffffe6;
+  --muted: #ffffff8c;
+  --quiet: #ffffff4d;
+  --border: #ffffff1a;
+  --border-hover: #ffffff29;
+  --primary: #636363;
+  --primary-hover: #717171;
+  --on-primary: #ffffff;
+  --focus: #93c5fd;
+  --danger: #fca5a5;
+  --warning: #fbbf24;
+  --accent: #cccccc;
+  --heading-font: "Space Grotesk", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --body-font: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --mono-font: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font: 400 13px/1.45 var(--body-font);
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* The window's title bar: no native one (src/titlebar.mjs). The strip along the top drags the window and takes the
+   system's double-click; the caption buttons (Windows, Linux) or the traffic lights (macOS) sit over it. */
+.titlebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: env(titlebar-area-height, 48px);
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+button, details, pre { -webkit-app-region: no-drag; app-region: no-drag; }
+
+.status {
+  width: min(520px, 100%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 8px;
+}
+
+.mark {
+  height: 36px;
+  width: auto;
+  margin-bottom: 16px;
+  opacity: .9;
+}
+
+.heading {
+  margin: 0;
+  font: 600 20px/1.25 var(--heading-font);
+  letter-spacing: 0;
+}
+
+.line {
+  margin: 4px 0 0;
+  min-height: 19px;
+  color: var(--text);
+  max-width: 68ch;
+}
+
+.hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  max-width: 68ch;
+}
+
+.hint:empty, .line:empty, .elapsed:empty { display: none; }
+
+.bar {
+  position: relative;
+  width: 160px;
+  height: 2px;
+  margin: 16px 0 4px;
+  border-radius: 999px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.bar span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 40%;
+  border-radius: inherit;
+  background: var(--accent);
+  animation: travel 1.6s cubic-bezier(.4, .14, .3, 1) infinite;
+}
+
+[data-state="failed"] .bar,
+[data-state="conflict"] .bar,
+[data-state="stopped"] .bar,
+[data-state="incomplete"] .bar { display: none; }
+
+@keyframes travel {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(250%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bar span { animation: none; width: 100%; opacity: .35; }
+}
+
+.elapsed {
+  margin: 0;
+  color: var(--quiet);
+  font: 400 12px/1.45 var(--mono-font);
+}
+
+.detail {
+  margin: 12px 0 0;
+  width: 100%;
+  max-height: 160px;
+  overflow: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--muted);
+  font: 400 12px/1.5 var(--mono-font);
+  text-align: left;
+  white-space: pre-wrap;
+  word-break: break-word;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+[data-state="failed"] .heading,
+[data-state="incomplete"] .heading { color: var(--danger); }
+[data-state="conflict"] .heading { color: var(--warning); }
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.actions:empty { display: none; }
+
+.actions button {
+  height: 28px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text);
+  font: 500 12px/1 var(--body-font);
+  cursor: pointer;
+  transition: background-color 150ms ease, border-color 150ms ease;
+}
+
+.actions button:hover { background: #ffffff14; border-color: var(--border-hover); }
+.actions button.primary { background: var(--primary); border-color: transparent; color: var(--on-primary); }
+.actions button.primary:hover { background: var(--primary-hover); }
+.actions button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.actions button:disabled { opacity: .5; cursor: default; }
+
+/* The start's live log (start-log.mjs): every step as it happens, in a box like the error detail's. */
+.log {
+  width: 100%;
+  margin-top: 16px;
+  text-align: left;
+}
+
+.log summary {
+  width: max-content;
+  margin: 0 auto;
+  padding: 4px 8px;
+  border-radius: 5px;
+  color: var(--muted);
+  font: 500 12px/1.45 var(--body-font);
+  cursor: pointer;
+  list-style: none;
+}
+
+.log summary::-webkit-details-marker { display: none; }
+.log summary::before {
+  content: '';
+  display: inline-block;
+  width: 0;
+  height: 0;
+  margin-right: 6px;
+  border-left: 4px solid currentColor;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  vertical-align: 1px;
+  transition: transform 150ms ease;
+}
+.log[open] summary::before { transform: rotate(90deg); }
+.log summary:hover { color: var(--text); }
+.log summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+.log-lines {
+  margin: 8px 0 0;
+  max-height: 220px;
+  overflow: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--muted);
+  font: 400 12px/1.5 var(--mono-font);
+  white-space: pre-wrap;
+  word-break: break-word;
+  -webkit-user-select: text;
+  user-select: text;
+}
+.log-lines:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .log summary::before { transition: none; }
+}

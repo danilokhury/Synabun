@@ -99,7 +99,9 @@ function show(entry) {
     entry.unregister = registerSidepanel({ owner: entry.id, layoutKey: entry.id, provider: entry.provider,
       element, header, actions, buttonClass: 'sp-session-button', applyVisibility: () => renderPill(entry) });
     if (!storage.getItem(`synabun-sidepanel-layout-${entry.id}`)) detachSidepanel(entry.id);
-    frame.src = `/sidepanel-session.html?provider=${entry.provider}`;
+    // A language the page address forces (?lang=, showcase captures) holds in the session's frame too.
+    const lang = new URLSearchParams(window.location.search).get('lang');
+    frame.src = `/sidepanel-session.html?provider=${entry.provider}${lang ? `&lang=${encodeURIComponent(lang)}` : ''}`;
   }
   setSidepanelVisible(entry.id, true);
 }

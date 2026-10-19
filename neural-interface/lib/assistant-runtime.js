@@ -8,7 +8,7 @@
 // rehydration, per-turn auto-recall, dispatch mailbox delivery, and the memory
 // obligation nudges. All server dependencies are injected.
 
-import { randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { createClaudeBrain } from './assistant-brains/claude.js';
@@ -16,14 +16,16 @@ import { createCodexBrain } from './assistant-brains/codex.js';
 import { createOpenCodeBrain } from './assistant-brains/opencode.js';
 import { buildAssistantPersona, formatMailbox, reconcileRouteItems } from './assistant-persona.js';
 import { normalizeTestDensity, testDensityStamp } from './assistant-test-density.js';
-import { codexUsageCostUsd } from './assistant-budget.js';
+import { codexUsageCostUsd, floorCents } from './assistant-budget.js';
+import { MIN_SPEND_USD } from './assistant-budget-split.js';
 import { CLAUDE_ESTIMATE_SOURCE, createClaudeMeter, createCodexMeter, createOpenCodeMeter, totalTokens, withTotal, zeroTokens } from './assistant-usage.js';
 import { claudeTokensCostUsd } from './assistant-pricing.js';
 import { normalizeRouteMode } from './assistant-config.js';
 import { TASK_CLASS_META } from './assistant-router.js';
+import { chooseUsageAccount } from './account-usage.js';
 import { defaultIsHidden, enabledStandIn, findModel, providerAllHidden, selectSheetModels } from './assistant-catalog.js';
 import { normalizeEffort } from './effort-levels.js';
-import { claudeRouteAvailability, createRouteGate, mcpStatusRouteAvailability, ROUTE_GATE_LOOP_MESSAGE } from './assistant-route-gate.js';
+import { claudeRouteAvailability, createRouteGate, isReplyTool, mcpStatusRouteAvailability, ROUTE_GATE_LOOP_MESSAGE } from './assistant-route-gate.js';
 import { claudeReadOnlyPermission, planDenyMessage, planToolDecision, readOnlyDenyMessage, readOnlyToolDecision } from './assistant-plan-permissions.js';
 import { codexRouteGateBootstrap } from './assistant-route-gate-codex.js';
 import { proposedPlanText } from './assistant-envelope.js';
@@ -37,17 +39,49 @@ export const DEFAULT_SESSION_TITLE = 'SynaBun';
 export function isDefaultSessionTitle(title) { return !title || /^(?:SynaBun|Assistant(?: \d+)?)$/.test(String(title).trim()); }
 const MAILBOX_REASONS = new Set(['turn_completed', 'needs_input', 'permission_request', 'failed', 'interrupted', 'stalled', 'budget_warning', 'budget_exceeded', 'budget_unpriced', 'queue_started', 'user_intervened', 'stopped']);
 // A stopped run reaches the brain when the user stopped it or it ran out of money.
-const MAILBOX_STOP_REASONS = new Set(['user', 'budget_cap', 'session_budget_cap', 'budget_unpriced']);
+const MAILBOX_STOP_REASONS = new Set(['user', 'budget_cap', 'session_budget_cap', 'budget_unpriced', 'budget_share']);
+/** The `[SynaBun Budget]` line: a change of the session budget reaches the brain as one line before its next turn. */
+export const BUDGET_HEADER = '[SynaBun Budget]';
+/**
+ * What the brain is told when the budget changed after its prompt was built (setting: { unlimited,
+ * amountUsd }; money: the session's budget view, for what is spent and left). The key changes only
+ * with the setting, so spending never repeats the line.
+ */
+export function budgetStamp(setting, money = null) {
+  if (!setting) return { key: null, text: '' };
+  const usdText = (value) => `$${(Number(value) || 0).toFixed(2)}`;
+  if (setting.unlimited === true) {
+    return { key: 'unlimited', text: `${BUDGET_HEADER} The user switched this session to No limit: there is no budget now, no provider shares and no stops for spend. Do not pass budget_usd; tasks route by the saved routes as before. Spend is still metered (agent_usage).` };
+  }
+  const amount = Number(setting.amountUsd) || 0;
+  const spent = money && Number.isFinite(Number(money.totalUsd)) ? Number(money.totalUsd) : null;
+  const status = spent === null ? '' : ` ${usdText(spent)} spent, ${usdText(Math.max(0, amount - spent))} left.`;
+  return {
+    key: `limited:${amount.toFixed(2)}`,
+    text: `${BUDGET_HEADER} The user set this session's budget to ${usdText(amount)} (your own turns plus every run, at list price; one warning at 80%).${status} SynaBun divides what is left across the providers: each provider's runs draw from its share and your turns from your provider's share (agent_usage shows the split). When a share is used up, agent_route moves a task to a provider with money left, so saved routes yield to the budget. budget_usd is optional: a ceiling for one run inside its share.`,
+  };
+}
 const usd = (value) => `$${(Number(value) || 0).toFixed(2)}`;
 const TRANSCRIPT_EVENT_TYPES = new Set(['assistant', 'user', 'result', 'system']);
 // Below the autonomous level a remote session's brain asks before any tool the
 // read-only classifier would refuse. These stay unasked: questions and plans (they reach
 // the user anyway), in-session bookkeeping, subagent launches (their own calls
-// are asked), memory writes, and agent_dispatch (its route card is the approval).
-const REMOTE_ASK_EXEMPT = new Set([
+// are asked), memory writes, agent_dispatch (its route card is the approval), and
+// whatsapp_send_file: delivering a file the user asked for is a reply, like the final text
+// (any host's name for it: isReplyTool).
+export const REMOTE_ASK_EXEMPT = new Set([
   'AskUserQuestion', 'ExitPlanMode', 'EnterPlanMode', 'TodoWrite', 'TodoRead', 'ToolSearch', 'Task', 'Agent',
   'mcp__SynaBun__remember', 'mcp__SynaBun__reflect', 'mcp__SynaBun__category', 'mcp__SynaBun__agent_dispatch',
+  'mcp__SynaBun__whatsapp_send_file',
 ]);
+/**
+ * The credential of one brain launch of a WhatsApp conversation (whatsapp_send_file): it reaches
+ * that brain's SynaBun MCP server only (Claude: an MCP header; Codex and OpenCode: the MCP child's
+ * environment), which sends it on POST /api/assistant/whatsapp/send-file and nowhere else. Random,
+ * in memory only (never on the record, in a log, the persona or a transcript), gone with the brain.
+ */
+export const BRAIN_CREDENTIAL_RE = /^sbb_[A-Za-z0-9_-]{43}$/;
+export function mintBrainCredential() { return `sbb_${randomBytes(32).toString('base64url')}`; }
 // An OpenCode brain of a remote session reaches the web through these on its own
 // (no SynaBun browser, no approval): the gate plugin refuses them.
 const REMOTE_OPENCODE_WEB_TOOLS = new Set(['webfetch', 'websearch', 'codesearch']);
@@ -156,6 +190,9 @@ export function mergeHooks(a, b) {
 export function createAssistantRuntime({
   dispatcher = null,
   claudeAccounts = null,
+  // lib/codex-accounts.js: a Codex brain whose account cannot run is refused before it starts.
+  codexAccounts = null,
+  accountUsage = null,
   ClaudeSession = null,
   sdkVersion = null,
   handleCodexSkinWebSocket = null,
@@ -184,8 +221,11 @@ export function createAssistantRuntime({
   codexBin = () => 'codex',
   codexGateBootstrap = codexRouteGateBootstrap,
   // Codex list prices (assistant-budget.js createModelPricing). When given, a
-  // brain whose spend cannot be priced is refused (the caps fail closed).
+  // brain whose spend cannot be priced is refused under a budget (it fails closed).
   pricing = null,
+  // The session budget (assistant-budget-planner.js): the setting, the provider shares, the
+  // checkpoints. Defaults to the dispatcher's own planner.
+  budget: budgetPlanner = null,
   usage = null,
   // The meters of assistant-usage.js, by provider (tests swap one in).
   meterFactories = null,
@@ -220,7 +260,6 @@ export function createAssistantRuntime({
     retention: 200,
     defaultBrain: config.defaultBrain || {},
     personaExtra: config.persona?.extra || '',
-    maxBudgetUsd: Number(config.brains?.claude?.maxBudgetUsd) || 10,
     // A brain's approval or question card waits this long, then it is declined
     // (0 = wait forever). A pending card holds the turn and the mailbox.
     approvalTimeoutMs: Math.max(0, Number(config.approvalTimeoutMinutes ?? 10) * 60_000) || 0,
@@ -301,7 +340,9 @@ export function createAssistantRuntime({
     return {
       record, brain: null, brainProvider: null, brainMeter: null, brainMeterProvider: null, turnTaskId: null, turnTasks: [], sockets: new Set(), buffer: [], running: false, pendingControls: new Map(), controlTimers: new Map(),
       mailbox: [], mailboxTimer: null, obligations: new Set(), rememberedThisTurn: false, disposeTimer: null, personaText: '',
-      lastPrompt: '', mailboxTurn: false, nudgedRuns: new Set(),
+      // The last human prompt and where it came from ('ui', 'whatsapp', 'api'): a route continuation
+      // answers there (lastPromptOrigin; the transcript's after a restart).
+      lastPrompt: '', lastPromptOrigin: null, mailboxTurn: false, nudgedRuns: new Set(),
       // The provider's usage limit as last reported (limitNotice), or null: one state, never a list.
       limit: null,
       // Human prompts so far: one request cycle each (assistant-clarify.js briefs).
@@ -309,6 +350,8 @@ export function createAssistantRuntime({
       // Claude brains: the turns sent, keyed by their final text, for the in-process recall hook.
       turnMeta: new Map(),
       desktopGrant: null,
+      // A WhatsApp conversation's brain credential (mintBrainCredential): this launch only, never persisted.
+      brainCredential: null,
       // Route gate (assistant-route-gate.js): one per session while routing is wired.
       // gatePluginAt: when the OpenCode serve loaded the gate plugin (until then, reactive).
       // gateNudge: { reason, gen } while a reactive refusal waits for its turn to end.
@@ -1142,7 +1185,7 @@ export function createAssistantRuntime({
       fidelity: row.fidelity || settled?.fidelity, reason: row.reason ?? settled?.reason ?? null, source: row.source || settled?.source,
     });
     if (estimate && costUsd > 0) {
-      live.record.costUsd = Number(((Number(live.record.costUsd) || 0) + costUsd).toFixed(4));
+      addBrainCost(live, costUsd, 'claude-code');
       try { dispatcher?.checkSession?.(id); } catch {}
       sendCost(live);
     }
@@ -1200,10 +1243,10 @@ export function createAssistantRuntime({
           // session restarted (resume, brain switch), so it counts in full.
           const last = Number(live.record.lastReportedCost) || 0;
           const delta = cost >= last ? cost - last : cost;
-          live.record.costUsd = Number(((Number(live.record.costUsd) || 0) + delta).toFixed(4));
+          addBrainCost(live, delta, live.brainProvider || live.record.brain?.provider || null);
           live.record.lastReportedCost = cost;
           live.record.costBasis = event.cost_basis || 'reported';
-          // The brain's spend counts toward the session caps: warn, or stop the session's runs.
+          // The brain's spend counts toward the session budget: warn, or stop the session's runs.
           try { dispatcher?.checkSession?.(id); } catch {}
           sendCost(live);
         }
@@ -1680,13 +1723,54 @@ export function createAssistantRuntime({
   }
   /** The brain's own spend in a session (the dispatcher adds it to the session total). */
   function brainSpend(sessionId) { return Number(sessions.get(sessionId)?.record.costUsd) || 0; }
-  /** Brain cap (USD per session): the Budget tab's value, read live. */
-  function brainCapUsd() {
-    try { const value = Number(configStore?.budget?.().brainUsd); if (value > 0) return value; } catch {}
-    return settings.maxBudgetUsd;
+  /**
+   * Book the brain's spend: its session total and the provider it ran on (the budget counts the
+   * brain's turns in that provider's share).
+   */
+  function addBrainCost(live, usdAmount, provider) {
+    const added = Number(usdAmount);
+    if (!Number.isFinite(added) || added <= 0) return;
+    live.record.costUsd = Number(((Number(live.record.costUsd) || 0) + added).toFixed(4));
+    const key = BRAIN_PROVIDERS.has(provider) ? provider : (live.record.brain?.provider || 'claude-code');
+    const rows = live.record.costByProvider && typeof live.record.costByProvider === 'object' ? live.record.costByProvider : {};
+    rows[key] = Number(((Number(rows[key]) || 0) + added).toFixed(8));
+    live.record.costByProvider = rows;
+  }
+  /**
+   * The brain's spend by the provider it ran on. A session recorded before this was kept books what
+   * no provider holds on the brain's provider.
+   */
+  function brainSpendByProvider(sessionId) {
+    const record = sessions.get(sessionId)?.record;
+    if (!record) return {};
+    const rows = record.costByProvider && typeof record.costByProvider === 'object' ? { ...record.costByProvider } : {};
+    const known = Object.values(rows).reduce((sum, value) => sum + (Number(value) || 0), 0);
+    const rest = (Number(record.costUsd) || 0) - known;
+    if (rest > 0.00005) {
+      const key = BRAIN_PROVIDERS.has(record.brain?.provider) ? record.brain.provider : 'claude-code';
+      rows[key] = (Number(rows[key]) || 0) + rest;
+    }
+    return rows;
+  }
+  /** The session budget: the injected planner, else the dispatcher's. */
+  function planner() { return budgetPlanner || dispatcher?.budget || null; }
+  /** The budget setting now ({ unlimited, amountUsd, version }), or null when nothing keeps one. */
+  function budgetSettingNow() {
+    try { const value = planner()?.setting?.() || configStore?.budget?.() || null; return value ? { unlimited: value.unlimited === true, amountUsd: Number(value.amountUsd) || 0, version: Number(value.version) || 0 } : null; } catch { return null; }
+  }
+  /** The "[SynaBun Budget]" line when the setting changed since the brain last saw it (then marked seen), else ''. */
+  function budgetLine(live) {
+    try {
+      const stamp = budgetStamp(budgetSettingNow(), sessionMoney(live.record.id));
+      if (!stamp.key) return '';
+      if (live.budgetStampKey === undefined) { live.budgetStampKey = stamp.key; return ''; }
+      if (live.budgetStampKey === stamp.key) return '';
+      live.budgetStampKey = stamp.key;
+      return stamp.text;
+    } catch { return ''; }
   }
   function sessionMoney(sessionId) {
-    try { return dispatcher?.sessionBudget?.(sessionId) || null; } catch { return null; }
+    try { return dispatcher?.sessionBudget?.(sessionId) || planner()?.view?.(sessionId) || null; } catch { return null; }
   }
   /**
    * How the brain's spend is known: 'reported' (Claude; OpenCode with a list
@@ -1711,34 +1795,91 @@ export function createAssistantRuntime({
   function sendCost(live) {
     const budget = sessionMoney(live.record.id);
     const basis = brainCostBasis(live);
-    sendToSockets(live, { type: 'assistant:cost', sessionUsd: live.record.costUsd, dispatchUsd: dispatchSpend(live.record.id), budget, brainCapUsd: brainCapUsd(), brainMetered: basis !== null, brainCostBasis: basis });
+    sendToSockets(live, { type: 'assistant:cost', sessionUsd: live.record.costUsd, dispatchUsd: dispatchSpend(live.record.id), budget, brainMetered: basis !== null, brainCostBasis: basis });
   }
   /**
-   * Why the brain may not start a turn: the session's hard cap (brain + agents)
-   * or the brain cap, checked before every turn. A turn already running
-   * finishes; the Claude CLI also gets the remaining brain budget as its own cap.
+   * The session's budget as it is now, live: `assistant:budget` to the session's sockets and the sync
+   * channel (every window), after a split or a change of the budget. `reason`: what made it.
+   */
+  function sendBudget(sessionId, budget = null, { reason = null } = {}) {
+    const live = sessions.get(String(sessionId || ''));
+    if (!live) return;
+    const view = budget || sessionMoney(live.record.id);
+    if (!view) return;
+    const packet = { type: 'assistant:budget', sessionId: live.record.id, reason: reason || null, budget: view };
+    // A view, not an event (like usage): the open sockets only, never buffered (attach sends a fresh one).
+    const raw = JSON.stringify(packet);
+    for (const ws of [...live.sockets]) { if (ws.readyState === 1) { try { ws.send(raw); } catch {} } }
+    try { broadcastSync({ ...packet, assistantSessionId: live.record.id }); } catch {}
+  }
+  /**
+   * Why the brain may not start a turn, checked before every turn (a turn already running finishes):
+   * an unpriced brain model, the session's budget spent, or no money left in the brain's provider
+   * share (runTurn divides the session's unspent budget again first). Nothing under No limit.
    */
   function brainBudgetBlock(live) {
-    // Fail closed: a brain whose spend has no price could spend past every cap.
+    const money = sessionMoney(live.record.id);
+    if (!money || money.unlimited) return null;
+    // Fail closed: a brain whose spend has no price could spend past the budget.
     if (pricing && brainCostBasis(live) === null) {
       const model = live.record.brain?.model || brainCapabilities(live.record)?.id || 'its default model';
-      return { code: 'BRAIN_UNPRICED', message: `No price is known for the ${live.record.brain?.provider || ''} brain model ${model}, so the budget caps cannot hold its spend. Pick a priced or free model for the brain.` };
+      return { code: 'BRAIN_UNPRICED', message: `No price is known for the ${live.record.brain?.provider || ''} brain model ${model}, so the session budget cannot hold its spend. Pick a priced or free model for the brain, or switch the budget to No limit.` };
     }
-    const money = sessionMoney(live.record.id);
-    if (money && money.totalUsd >= money.hardUsd) {
-      return { code: 'SESSION_BUDGET_EXCEEDED', message: `This session spent ${usd(money.totalUsd)} (brain ${usd(money.brainUsd)} + agents ${usd(money.dispatchUsd)}), at its hard cap of ${usd(money.hardUsd)}. Raise the cap in ⋯ → Budget… to continue.` };
+    if (money.exceeded) {
+      return { code: 'SESSION_BUDGET_EXCEEDED', message: `This session spent ${usd(money.totalUsd)} of its ${usd(money.amountUsd)} budget (brain ${usd(money.brainUsd)} + agents ${usd(money.dispatchUsd)}). Raise the budget or switch to No limit in ⋯ → Budget… to continue.` };
     }
-    const cap = brainCapUsd();
-    const spent = Number(live.record.costUsd) || 0;
-    if (spent >= cap) return { code: 'BRAIN_BUDGET_EXCEEDED', message: `The brain spent ${usd(spent)} in this session, at its cap of ${usd(cap)}. Raise the brain cap in ⋯ → Budget… to continue.` };
+    const provider = live.record.brain?.provider || null;
+    const covered = planner()?.covers?.(live.record.id, { provider, forBrain: true });
+    if (covered === false) {
+      return { code: 'BRAIN_SHARE_EXHAUSTED', share: true, message: `The ${provider} share of this session's budget is used up, so the brain cannot take another turn (${usd(money.leftUsd)} of the ${usd(money.amountUsd)} budget left in other providers' shares). Raise the budget or switch to No limit in ⋯ → Budget… to continue.` };
+    }
     return null;
   }
-  /** The Budget tab saved new caps: held mailbox items may go now, and every open panel refreshes its chip. */
+  /**
+   * The planner divided a session's budget again (budget planner `emit`): the panels hear it, and a
+   * mailbox the brain's empty share held goes now.
+   */
+  function onBudgetSplit(sessionId, budget = null, { reason = null } = {}) {
+    sendBudget(sessionId, budget, { reason });
+    const live = sessions.get(String(sessionId || ''));
+    if (live && live.mailbox.length && !brainBudgetBlock(live)) { live.budgetHoldNotified = false; live.budgetShareTriedAt = 0; scheduleMailbox(live, 0); }
+  }
+  /**
+   * Before a brain turn: when the brain's provider share is used up but the session has money left,
+   * the session's unspent budget is divided again (its reserve comes back with the new split).
+   */
+  async function coverBrainTurn(live) {
+    const budget = planner();
+    if (!budget?.ensureCovered || !budget.limited?.()) return true;
+    try { return await budget.ensureCovered(live.record.id, { provider: live.record.brain?.provider || null, forBrain: true, reason: 'brain_turn' }); }
+    catch { return false; }
+  }
+  /**
+   * The Claude brain CLI's own stop (--max-budget-usd): what its provider's share has left for it when
+   * it starts, never more than the session has left. null under No limit (no CLI cap at all).
+   */
+  function brainCliCap(live) {
+    const money = sessionMoney(live.record.id);
+    if (!money || money.unlimited) return null;
+    let left = Number(money.leftUsd) || 0;
+    try {
+      const cov = planner()?.coverage?.(live.record.id);
+      if (cov && Number.isFinite(Number(cov.brainLeftUsd))) left = Math.min(left, Number(cov.brainLeftUsd));
+    } catch { /* the session's own left */ }
+    return Math.max(MIN_SPEND_USD, floorCents(left) / 100);
+  }
+  /**
+   * The budget changed (Assistant → Budget): the planner divides each open session's budget again,
+   * held mailbox items may go now, and every open panel refreshes its chip and split.
+   */
   function onBudgetChanged() {
+    try { planner()?.onBudgetChanged?.(); } catch {}
     for (const live of sessions.values()) {
       if (live.record.status === 'ended') continue;
+      live.budgetShareTriedAt = 0;
       try { dispatcher?.checkSession?.(live.record.id); } catch {}
       sendCost(live);
+      sendBudget(live.record.id, null, { reason: 'budget_changed' });
       if (live.mailbox.length && !brainBudgetBlock(live)) { live.budgetHoldNotified = false; scheduleMailbox(live, 0); }
     }
   }
@@ -1754,6 +1895,10 @@ export function createAssistantRuntime({
     try { setupState = desktop?.setupState?.() || null; } catch {}
     // This prompt states the level: a "[SynaBun Tests]" line follows only a later change.
     live.testDensityStamp = testDensityStamp(testDensityOf(live.record));
+    // …and the budget: a "[SynaBun Budget]" line follows only a later change of the setting.
+    const budgetSetting = budgetSettingNow();
+    const money = sessionMoney(live.record.id);
+    live.budgetStampKey = budgetStamp(budgetSetting, money).key;
     return buildAssistantPersona({
       assistantSessionId: live.record.id,
       brain,
@@ -1773,6 +1918,8 @@ export function createAssistantRuntime({
       computer: { available: computerSupported(), enabled: computerEffective(live.record), setupState, remote: computerDecision(live, { untrusted: false }) },
       taskClasses: TASK_CLASS_META,
       testDensity: testDensityOf(live.record),
+      // The session budget as the brain starts: the setting and, with a budget, the split so far.
+      budget: budgetSetting ? { ...budgetSetting, view: money } : null,
       clarify: !!clarifier,
       channel: live.record.channel || live.record.remote?.channel || null,
     });
@@ -1823,11 +1970,15 @@ export function createAssistantRuntime({
         live.computerGrantLive = false;
       } catch (error) { log('assistant:desktop-grant-error', error?.message || String(error)); }
     }
+    // whatsapp_send_file: one credential per brain launch of a WhatsApp conversation (BRAIN_CREDENTIAL_RE),
+    // for that brain's SynaBun MCP server alone. Every other session's brain gets none.
+    live.brainCredential = (live.record.channel || live.record.remote?.channel) === 'whatsapp' ? mintBrainCredential() : null;
+    const cliCap = brain.provider === 'claude-code' ? brainCliCap(live) : null;
     const deps = {
       ClaudeSession, sdkVersion, PACKAGE_ROOT, handleCodexSkinWebSocket, ensureIsolatedServe, stopIsolatedServe, setupOpencodeSidepanelConfig,
       claudeAccountEnv: (accountId) => (claudeAccounts?.envFor?.(accountId) || {}),
-      // The Claude CLI caps this process at what the session's brain budget has left.
-      maxBudgetUsd: Math.max(0.1, Math.round((brainCapUsd() - (Number(live.record.costUsd) || 0)) * 100) / 100),
+      // The Claude CLI caps this process at what the brain's provider share has left (none under No limit).
+      maxBudgetUsd: cliCap ?? undefined,
       // A Codex brain reports tokens: priced at the list price of its model (estimated).
       priceCodexUsage: (usage) => {
         const price = codexBrainPrice(live);
@@ -1843,6 +1994,7 @@ export function createAssistantRuntime({
       // Also a resume into another session: what the meter counts as the main loop follows it.
       onOpenCodeRoot: (sessionId) => { live.record.providerSessionId = sessionId; metered('meter-state', () => live.brainMeter?.setRoot?.(sessionId)); saveMeter(live); },
       desktopGrant: live.desktopGrant || null,
+      brainCredential: live.brainCredential || null,
       // A remote session's level (lib/remote-policy.js): the Claude brain allows
       // bypass only at autonomous. null for a desktop session.
       remoteLevel: remote ? effectiveLevel(remote, { now: now() }) : null,
@@ -1881,6 +2033,9 @@ export function createAssistantRuntime({
     const claude = brain.provider === 'claude-code';
     const hooks = mergeHooks(mergeHooks(mergeHooks(memoryHooks, claude && gate ? gateHooks(live) : null), claude ? browserHooks(live) : null), claude && (remote || live.record.remote) ? remoteHooks(live) : null);
     live.brainProvider = brain.provider;
+    // What the CLI cap was sized from: a later change of the budget restarts a Claude brain (runTurn).
+    live.brainCliCap = cliCap;
+    live.brainBudgetVersion = budgetSettingNow()?.version ?? null;
     startMeter(live, brain.provider);
     const created = factory({ session: live.record, sink, deps, persona, hooks });
     live.brain = created;
@@ -1912,6 +2067,8 @@ export function createAssistantRuntime({
       if (identity.providerThreadId) live.record.providerThreadId = identity.providerThreadId;
     } catch {}
     live.brain = null;
+    // Its credential dies with it: a file send presenting it is refused from here on.
+    live.brainCredential = null;
     if (live.brainProvider === 'codex') pollCodex(live, { force: true });
     // No further turn will book them: a Claude brain's provisional tokens are booked as an estimate,
     // any other brain's go (Codex was just polled, OpenCode settled at its turn's end).
@@ -2054,8 +2211,10 @@ export function createAssistantRuntime({
     }
   }
   // `authority`: the WhatsApp bridge's capability; it alone makes a prompt count as the owner's own
-  // plain message from the phone (fromPhone). `origin` below is audit text and decides nothing.
-  // `origin`: who wrote a human prompt ('ui', 'whatsapp', 'api'); `untrusted`: its
+  // plain message from the phone (fromPhone). `origin` below is audit text and where an answer goes
+  // (a continuation's, to the chat its prompt came from); it grants nothing.
+  // `origin`: who wrote a human prompt ('ui', 'whatsapp', 'api'), or for a route continuation
+  // (`work.kind` 'continuation') who wrote the prompt it carries on; `untrusted`: its
   // text carries content the owner did not write (a remote session caps it at ask).
   // `offerPlan`: a system turn that revises a plan still ends with a plan card.
   // `work`: the scheduler entry this system turn is; `request`: { id, reply } of a
@@ -2082,13 +2241,26 @@ export function createAssistantRuntime({
       try { await catalog.full(); } catch {}
       if (cancelled()) return dropTurn(live, request);
     }
-    const budgetBlock = brainBudgetBlock(live);
+    let budgetBlock = brainBudgetBlock(live);
+    // The brain's provider share is used up but the session has money left: it is divided again first.
+    if (budgetBlock?.share && await coverBrainTurn(live)) {
+      if (cancelled()) return dropTurn(live, request);
+      budgetBlock = brainBudgetBlock(live);
+    }
     if (budgetBlock) return refuse(live, budgetBlock.code, budgetBlock.message, { request });
+    // A Claude brain whose account cannot run (signed out, its key unreadable, removed) is refused with
+    // why, before a process starts under it: the CLI would only answer "not logged in" mid-turn.
+    if (!live.brain && ['claude-code', 'codex'].includes(live.record.brain?.provider)) {
+      const unusable = live.record.brain.provider === 'codex' ? codexAccountUnusable(live.record.brain.accountId) : claudeAccountUnusable(live.record.brain.accountId);
+      if (unusable) return refuse(live, 'ACCOUNT_SIGNED_OUT', `${unusable} Pick another account in the brain picker, or sign it in from its Account menu → Manage….`, { request });
+    }
     // A remote session: a human prompt sets the trust of this turn and the ones it leads to.
     const remote = remotePolicyFor(live);
     if (!system) live.turnUntrusted = untrusted === true;
-    // A Claude brain its CLI cap stopped restarts with the budget it has now.
-    if (live.brainCapHit && live.brain && !live.running) {
+    // A Claude brain its CLI cap stopped restarts with the budget it has now, and so does one whose
+    // budget setting changed since it started (a raise, a cut, No limit: no CLI cap at all).
+    const budgetMoved = live.brainProvider === 'claude-code' && live.brainBudgetVersion !== undefined && live.brainBudgetVersion !== (budgetSettingNow()?.version ?? null);
+    if ((live.brainCapHit || budgetMoved) && live.brain && !live.running) {
       live.brainCapHit = false;
       await disposeBrain(live, 'budget');
       if (cancelled()) return dropTurn(live, request);
@@ -2123,6 +2295,7 @@ export function createAssistantRuntime({
     let turnRecalled = null;
     if (!system) {
       live.lastPrompt = prompt;
+      live.lastPromptOrigin = origin ? String(origin) : null;
       // A prompt from elsewhere (WhatsApp, the API) is news to the panel: it goes live too.
       const promptPacket = { type: 'event', event: { type: 'synabun.user_prompt', text: prompt, images: images.length, ...(origin && origin !== 'ui' ? { origin: String(origin) } : {}) } };
       appendTranscript(live.record.id, { at: iso(now()), packet: promptPacket });
@@ -2170,6 +2343,9 @@ export function createAssistantRuntime({
           live.testDensityStamp = tests;
         }
       } catch {}
+      // The budget changed since the brain last saw it: one "[SynaBun Budget]" line, in the same place.
+      const budgetNote = budgetLine(live);
+      if (budgetNote) finalText = finalText.endsWith(prompt) ? `${finalText.slice(0, finalText.length - prompt.length)}${budgetNote}\n\n${prompt}` : `${budgetNote}\n\n${finalText}`;
       // A new request cycle. Open clarify questions make this message the
       // user's reply (assistant-clarify.js); otherwise the last brief retires.
       live.promptCycle += 1;
@@ -2206,6 +2382,14 @@ export function createAssistantRuntime({
     }
     // The last check: from here on the turn is the brain's.
     if (cancelled()) return dropTurn(live, request);
+    // A route continuation starts: before any of its output, every host and observer hears where the
+    // prompt it carries on came from (the WhatsApp bridge answers the chat that started the task).
+    // It stays a system turn: no user_prompt, no new request cycle, nothing granted (computer use asks).
+    if (system && work?.kind === 'continuation') {
+      const continued = { type: 'event', event: { type: 'synabun.continuation', origin: origin ? String(origin) : null } };
+      appendTranscript(live.record.id, { at: iso(now()), packet: continued });
+      sendToSockets(live, continued);
+    }
     if (usage) {
       taskId ||= live.record.taskId || ensureTaskId(live.record.id);
       // record.taskId is the latest human task: a system turn that carries its own names only its turn.
@@ -2215,8 +2399,8 @@ export function createAssistantRuntime({
       else live.turnTaskId = taskId;
       scheduleUsage(live.record.id);
     }
-    // A remote session runs every turn at what its level allows now (an expired
-    // autonomous window, an untrusted prompt): the modes go to the brain with the turn.
+    // A remote session runs every turn at what its level allows now (a pause, an
+    // untrusted prompt): the modes go to the brain with the turn.
     if (remote) live.record.brain = clampedBrain(live, live.record.brain);
     // A Codex / OpenCode plan turn ends with the plan, not an approval request: the runtime asks.
     // (runQuery already closed the plan card this turn replaces.)
@@ -2353,10 +2537,24 @@ export function createAssistantRuntime({
     try { mark = dispatcher?.deliveryState?.(item.run.runId) || null; } catch { mark = null; }
     return !!mark && Number(mark.turn) >= turn;
   }
-  /** Out of money: the events wait (the Budget tab re-schedules them after a raise), said once. */
+  /**
+   * Out of money: the events wait (a raise or No limit re-schedules them), said once. The brain's
+   * provider share used up while the session has money left: the budget is divided again, then the
+   * mailbox goes.
+   */
   function mailboxAllowed(live) {
     const budgetBlock = brainBudgetBlock(live);
     if (!budgetBlock) return true;
+    if (budgetBlock.share && !live.budgetCovering && !(live.budgetShareTriedAt && now() - live.budgetShareTriedAt < 10_000)) {
+      live.budgetCovering = true;
+      coverBrainTurn(live).then((covered) => {
+        live.budgetCovering = false;
+        live.budgetShareTriedAt = covered ? 0 : now();
+        if (live.mailbox.length) scheduleMailbox(live, 0);
+      }).catch(() => { live.budgetCovering = false; live.budgetShareTriedAt = now(); });
+      return false;
+    }
+    if (live.budgetCovering) return false;
     if (!live.budgetHoldNotified) {
       live.budgetHoldNotified = true;
       sendToSockets(live, { type: 'error', code: budgetBlock.code, message: `${budgetBlock.message} ${live.mailbox.length} agent event${live.mailbox.length === 1 ? '' : 's'} will reach the brain after that.` });
@@ -2387,7 +2585,9 @@ export function createAssistantRuntime({
     let sessionRuns = [];
     try { sessionRuns = unread.some((item) => item?.kind === 'route_decided') ? (dispatcher?.list?.({ assistantSessionId: live.record.id, limit: 500 }) || []) : []; } catch { sessionRuns = []; }
     const items = reconcileRouteItems(unread, sessionRuns);
-    const text = formatMailbox(items);
+    // A budget change since the brain last saw it rides first (a raise is what released a held mailbox).
+    const budgetNote = budgetLine(live);
+    const text = budgetNote ? `${budgetNote}\n\n${formatMailbox(items)}` : formatMailbox(items);
     sendToSockets(live, { type: 'event', event: { type: 'synabun.mailbox', items } });
     appendTranscript(live.record.id, { at: iso(now()), packet: { type: 'event', event: { type: 'synabun.mailbox', items } } });
     live.mailboxTurn = true;
@@ -2480,15 +2680,25 @@ export function createAssistantRuntime({
    * `fallback`: the UI's start path — a disabled model starts on its enabled stand-in (reported back) instead of refusing.
    * `channel`: where the conversation happens ('whatsapp'); the persona adapts to it.
    * `internal.remote` ({ channel, level, strictWorkerApprovals, autonomousUntil, computerUse }): an in-process
-   * caller (the WhatsApp bridge) starts a remote session. REST callers pass only the body, so
+   * caller (the WhatsApp bridge) starts a remote session (`autonomousUntil` limits Autonomous on a channel
+   * other than WhatsApp only: on WhatsApp it has no time limit). REST callers pass only the body, so
    * they cannot. The record is flagged before it is persisted: after a restart without a new
    * registration the session reads as read-only.
    */
+  async function resolveAutoAccount(brain) {
+    if (brain.accountId !== 'auto' || !['claude-code', 'codex'].includes(brain.provider)) return brain;
+    await accountUsage?.refresh(brain.provider);
+    const rows = accountUsage?.list()?.[brain.provider] || [];
+    const key = brain.provider === 'codex' ? 'codexAccount' : 'claudeAccount';
+    const { row } = chooseUsageAccount(rows, 'auto', configStore?.workers?.()?.[key] || 'default');
+    if (!row) throw Object.assign(new Error('Auto requires a signed-in subscription account.'), { code: 'ACCOUNT_NO_SUBSCRIPTION', status: 409 });
+    return { ...brain, accountId: row.id };
+  }
   async function createSession({ brain = {}, label = null, cwd = null, windowId = null, fallback = false, channel = null } = {}, internal = {}) {
     const id = `assistant-${randomUUID()}`;
     const requested = normalizeBrain({ ...brain, cwd: brain?.cwd || cwd || settings.defaultBrain.cwd || PACKAGE_ROOT }, settings.defaultBrain, { catalog: catalog?.peek?.() || null });
     const enabled = await enabledBrain(requested, { fallback: fallback === true, named: !!brain?.model });
-    const normalized = enabled.brain;
+    const normalized = await resolveAutoAccount(enabled.brain);
     const record = {
       id, brain: normalized, title: label ? clip(label, 60) : DEFAULT_SESSION_TITLE, project: detectProject(normalized.cwd) || 'global',
       createdAt: iso(now()), updatedAt: iso(now()), lastActiveAt: null, status: 'idle', providerSessionId: null, providerThreadId: null,
@@ -2556,12 +2766,13 @@ export function createAssistantRuntime({
       const switching = BRAIN_PROVIDERS.has(patch.brain.provider) && patch.brain.provider !== live.record.brain.provider;
       const base = switching && !patch.brain.model ? { ...live.record.brain, model: null } : live.record.brain;
       let next = normalizeBrain({ ...base, ...patch.brain, model: patch.brain.model || base.model }, base, { catalog: catalog?.peek?.() || null });
+      next = await resolveAutoAccount(next);
       const modelChanged = next.model !== live.record.brain.model || next.provider !== live.record.brain.provider;
       if (modelChanged) next = (await enabledBrain(next)).brain;
       // A remote session keeps what was asked for and runs what its level allows.
       if ('permissionMode' in patch.brain || 'planMode' in patch.brain) next = clampModeWrite(live, next);
       else next = clampedBrain(live, next);
-      const providerChanged = next.provider !== live.record.brain.provider || next.accountId !== live.record.brain.accountId || next.cwd !== live.record.brain.cwd || next.mcpProfile !== live.record.brain.mcpProfile;
+      const providerChanged = patch.restartBrain === true || next.provider !== live.record.brain.provider || next.accountId !== live.record.brain.accountId || next.cwd !== live.record.brain.cwd || next.mcpProfile !== live.record.brain.mcpProfile;
       // A usage limit is the account's: another provider or account starts without the notice.
       if (next.provider !== live.record.brain.provider || next.accountId !== live.record.brain.accountId) setLimit(live, null);
       live.record.brain = next;
@@ -2661,6 +2872,13 @@ export function createAssistantRuntime({
     }
     return null;
   }
+  // Why the Claude account a brain names cannot run now ('' when it can, or when that is not known yet).
+  function claudeAccountUnusable(accountId) {
+    try { return claudeAccounts?.unusableReason?.(accountId || 'default') || ''; } catch { return ''; }
+  }
+  function codexAccountUnusable(accountId) {
+    try { return codexAccounts?.unusableReason?.(accountId || 'default') || ''; } catch { return ''; }
+  }
   function accountInUse(provider, accountId) {
     for (const live of sessions.values()) {
       if (live.brain && live.record.brain?.provider === provider && (live.record.brain?.accountId || 'default') === accountId) return true;
@@ -2687,6 +2905,23 @@ export function createAssistantRuntime({
   }
   /** Something runs, or the approved plan's turn or a compact is waiting to (a prompt would be refused). */
   function isBusy(id) { const live = sessions.get(String(id || '')); return sessionBusy(live) || (!!live && !!workReserved(live)); }
+  /**
+   * The session whose live brain holds this credential (whatsapp_send_file's caller identity:
+   * BRAIN_CREDENTIAL_RE), or null. Only a well-formed value is compared, in constant time and
+   * against every live brain, so neither a match nor its position shows in the time taken.
+   */
+  function sessionForBrainCredential(value) {
+    const text = typeof value === 'string' ? value.trim() : '';
+    if (!BRAIN_CREDENTIAL_RE.test(text)) return null;
+    const given = createHash('sha256').update(text).digest();
+    let found = null;
+    for (const [id, live] of sessions) {
+      if (!live.brain || typeof live.brainCredential !== 'string') continue;
+      const held = createHash('sha256').update(live.brainCredential).digest();
+      if (timingSafeEqual(given, held) && found === null) found = id;
+    }
+    return found;
+  }
   /** The session's remote policy (lib/remote-policy.js), or null. */
   function sessionPolicy(id) { const live = sessions.get(String(id || '')); return live ? remotePolicyFor(live) : null; }
   /** Where the session's conversation happens: 'whatsapp' (WhatsApp Link), or null for the panel. */
@@ -2904,6 +3139,8 @@ export function createAssistantRuntime({
     try { ws.send(JSON.stringify(engine)); } catch {}
     try { ws.send(JSON.stringify({ type: 'assistant:session', session: view(live), reason: 'attached' })); } catch {}
     if (usage) try { ws.send(JSON.stringify({ type: 'assistant:usage', ...usageView(live.record.id) })); } catch {}
+    // The session budget and its split as they are now.
+    try { const budgetNow = sessionMoney(live.record.id); if (budgetNow) ws.send(JSON.stringify({ type: 'assistant:budget', sessionId: live.record.id, reason: 'attached', budget: budgetNow })); } catch {}
     // The limit notice as it is now (null clears one this panel still shows from before).
     sendLimit(live, [ws]);
     const replay = live.buffer.splice(0, live.buffer.length);
@@ -3056,6 +3293,13 @@ export function createAssistantRuntime({
   }
 
   // ── router sinks (wired lazily in server.js; see assistant-router.js) ──────
+  /** What the budget planner needs of a session: its brain, project, and whether it is still open. */
+  function budgetSession(id) {
+    const live = sessions.get(String(id || ''));
+    if (!live) return null;
+    const brain = live.record.brain || {};
+    return { provider: brain.provider || null, model: brain.model || null, accountId: brain.accountId || null, project: live.record.project || null, open: live.record.status !== 'ended' };
+  }
   function routerSession(id) {
     const live = sessions.get(id);
     if (!live) return null;
@@ -3130,7 +3374,8 @@ export function createAssistantRuntime({
     const label = row?.label || target.model || 'the chosen model';
     const summary = route?.summary || '';
     const text = `[SynaBun Router] The user chose to run ${summary ? `"${summary}"` : 'this task'} here on ${label}${target.effort ? ` (effort ${target.effort})` : ''}. Continue that task now on this model, from where the conversation left off.`;
-    queueWork(live, { kind: 'continuation', gen, options: { text, turnModel: target.model || null, turnEffort: target.effort || null, gateOpen: true } });
+    // `origin`: where the prompt this task came from was written, so the continuation answers there.
+    queueWork(live, { kind: 'continuation', gen, options: { text, turnModel: target.model || null, turnEffort: target.effort || null, gateOpen: true, origin: lastPromptOrigin(live) } });
     return true;
   }
   function routerSinks() {
@@ -3156,6 +3401,19 @@ export function createAssistantRuntime({
       if (event?.type === 'synabun.user_prompt' && event.text) return String(event.text);
     }
     return '';
+  }
+  /**
+   * Where the last human prompt came from ('ui', 'whatsapp', 'api'): the transcript's after a restart
+   * (a prompt journaled without an origin was typed in the panel). null when there is none.
+   */
+  function lastPromptOrigin(live) {
+    if (live.lastPromptOrigin) return live.lastPromptOrigin;
+    const entries = readTranscript(live.record.id, 200);
+    for (let i = entries.length - 1; i >= 0; i -= 1) {
+      const event = entries[i]?.packet?.event;
+      if (event?.type === 'synabun.user_prompt') return event.origin ? String(event.origin) : 'ui';
+    }
+    return null;
   }
   function clarifySession(id) {
     const live = sessions.get(id);
@@ -3372,7 +3630,7 @@ export function createAssistantRuntime({
               ? { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', permissionDecisionReason: 'Computer use is on for this WhatsApp turn.' } }
               : { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: 'The user is asked once per task before the Mac is controlled from WhatsApp.' } };
           }
-          if (remoteLevel(live) === 'autonomous' || REMOTE_ASK_EXEMPT.has(tool)) return {};
+          if (remoteLevel(live) === 'autonomous' || REMOTE_ASK_EXEMPT.has(tool) || isReplyTool(tool)) return {};
           if (claudeReadOnlyPermission(tool, toolInput) !== 'deny') return {};
           return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: `This session is driven from ${live.record.remote?.channel === 'whatsapp' || !live.record.remote?.channel ? 'WhatsApp' : live.record.remote.channel}: the user approves ${tool} first.` } };
         }],
@@ -3498,9 +3756,11 @@ export function createAssistantRuntime({
     testDensityFor, routerSession, routerSend, routerEvent, routerMailbox, routerContinue, routerSinks, routerRouted, routerRouteFailed, routerComputerApproved, gateCheck, isPlanning, isPlanReadOnly,
     clarifySession, clarifyEvent, clarifyGate, clarifySinks,
     getComputerUse, getComputerTurn, supersedeComputerApproval, abortTurn, notifySession,
-    brainSpend, brainCapUsd, onBudgetChanged, currentTask, usageView,
+    brainSpend, brainSpendByProvider, budgetSession, onBudgetChanged, onBudgetSplit, sendBudget, currentTask, usageView,
     // Programmatic surface (the WhatsApp bridge) and remote sessions.
     observe, submit, stopTurn, answerControl, answerDispatchControl, pendingControls, isBusy, sessionPolicy, sessionChannel,
+    // whatsapp_send_file's caller identity (POST /api/assistant/whatsapp/send-file).
+    sessionForBrainCredential,
     _internals: { sessions, ensureBrain, disposeBrain, runQuery, enqueueMailbox, deliverMailbox, settings, ensureGate, onBrainPacket, onTurnFinished, remoteHooks, packetObservers, userContext },
   };
 }

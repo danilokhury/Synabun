@@ -4,7 +4,7 @@
 //
 // The assistant's user-editable knobs live in one JSON file: `defaultBrain`,
 // `persona`, `limits`, `memory` (read by the other assistant modules),
-// `routing`, the budget caps (owned here; see assistant-budget.js) and
+// `routing`, `budget` (owned here; see assistant-budget.js) and
 // `userContext` (the three layers of assistant-user-context.js). Knobs
 // are data: the file is re-read when its mtime changes, so a PUT from the
 // routes or budget editor, or a hand edit, applies without a restart. Writes
@@ -12,7 +12,7 @@
 
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { effectiveBudget, validateBudgetPatch, writeBudgetInto } from './assistant-budget.js';
+import { effectiveBudget, needsBudgetMigration, validateBudgetPatch, writeBudgetInto } from './assistant-budget.js';
 import { normalizeUserContext, USER_CONTEXT_DEFAULTS } from './assistant-user-context-budgets.js';
 
 export const ROUTE_MODES = ['always-ask', 'ask-unsure', 'never'];
@@ -55,6 +55,10 @@ function cleanTarget(field, target) {
   const provider = String(target.provider || '').trim();
   if (!ROUTE_PROVIDERS.includes(provider)) throw routingError(`${field}.provider`, `routing.${field}.provider must be one of ${ROUTE_PROVIDERS.join(', ')}`);
   const out = { kind, provider, model: target.model ? String(target.model).slice(0, 200) : null, effort: target.effort ? String(target.effort).slice(0, 40) : null };
+  if (target.accountId != null && target.accountId !== '') {
+    if (typeof target.accountId !== 'string' || !/^[a-z0-9-]{1,64}$/.test(target.accountId)) throw routingError(`${field}.accountId`, 'Invalid route account id');
+    if (provider !== 'opencode') out.accountId = target.accountId;
+  }
   if (target.label) out.label = String(target.label).slice(0, 120);
   if (target.at) out.at = String(target.at).slice(0, 40);
   if (target.by) out.by = String(target.by).slice(0, 20);
@@ -210,30 +214,46 @@ export function createAssistantConfigStore({ path, log = () => {}, now = Date.no
     return { routing: effectiveRouting(nextRouting), version: nextRouting.version };
   }
 
-  /** Effective budget caps (assistant-budget.js effectiveBudget) + the file's budget version. */
+  /**
+   * The budget every session runs under (assistant-budget.js effectiveBudget):
+   * { unlimited, amountUsd, version, updatedAt, source }. A file that still
+   * holds the old five caps is migrated the first time it is read here: the
+   * session hard cap becomes the amount (else the default), the old keys go,
+   * and the version moves on so a client holding the old shape gets a 409.
+   * A file that cannot be written keeps working on the migrated values.
+   */
   function budget() {
     const raw = read();
-    return { ...effectiveBudget(raw), version: Number(raw.limits?.budgetVersion) || 0 };
+    if (!needsBudgetMigration(raw)) return effectiveBudget(raw);
+    const migrated = effectiveBudget(raw);
+    try {
+      const version = migrated.version + 1;
+      write(writeBudgetInto(raw, migrated, { version, at: new Date(now()).toISOString() }));
+      log('config:budget-migrated', `amountUsd ${migrated.amountUsd} (from the session hard cap) · version ${version}`);
+      return { ...effectiveBudget(read()), source: 'migrated' };
+    } catch (error) {
+      log('config:budget-migration-failed', error?.message || String(error));
+      return migrated;
+    }
   }
-  function budgetVersion() { return Number(read().limits?.budgetVersion) || 0; }
+  function budgetVersion() { return budget().version; }
 
   /**
-   * Validate and save budget caps (a partial patch; `null` resets a field).
+   * Validate and save the budget (a partial patch: unlimited, amountUsd).
    * `expectedVersion` (when given) must match. Readers pick it up on their next
-   * read: the dispatcher per dispatch / turn, the runtime per brain turn.
+   * read: the dispatcher per dispatch / turn / metered step, the runtime per brain turn.
    */
   function patchBudget(patch = {}, { expectedVersion = null } = {}) {
-    const current = read();
-    const currentVersion = Number(current.limits?.budgetVersion) || 0;
-    if (expectedVersion !== null && expectedVersion !== undefined && Number(expectedVersion) !== currentVersion) {
+    const current = budget();
+    if (expectedVersion !== null && expectedVersion !== undefined && Number(expectedVersion) !== current.version) {
       const error = new Error('Budget settings changed elsewhere; reload and try again.');
       error.code = 'VERSION_CONFLICT';
       error.status = 409;
-      error.version = currentVersion;
+      error.version = current.version;
       throw error;
     }
-    const next = validateBudgetPatch(patch, effectiveBudget(current));
-    write(writeBudgetInto(current, next, { version: currentVersion + 1, at: new Date(now()).toISOString() }));
+    const next = validateBudgetPatch(patch, current);
+    write(writeBudgetInto(read(), next, { version: current.version + 1, at: new Date(now()).toISOString() }));
     return budget();
   }
 
@@ -253,9 +273,37 @@ export function createAssistantConfigStore({ path, log = () => {}, now = Date.no
     return userContext();
   }
 
+  /**
+   * Defaults for dispatched workers, read live. `claudeAccount` / `codexAccount`:
+   * the account a Claude Code / Codex worker runs under when its dispatch names
+   * none (null = Default).
+   */
+  const WORKER_ACCOUNT_KEYS = { claudeAccount: 'Claude', codexAccount: 'Codex' };
+  const accountIdOf = (id) => (typeof id === 'string' && /^[a-z0-9-]{1,64}$/.test(id) && id !== 'default' ? id : null);
+  function workers() {
+    const raw = read().workers;
+    const stored = raw && typeof raw === 'object' ? raw : {};
+    return { claudeAccount: accountIdOf(stored.claudeAccount), codexAccount: accountIdOf(stored.codexAccount) };
+  }
+  /** Save worker defaults (a partial patch; null or 'default' for an account is Default). Unknown keys stay. */
+  function patchWorkers(patch = {}) {
+    const current = read();
+    const stored = current.workers && typeof current.workers === 'object' && !Array.isArray(current.workers) ? current.workers : {};
+    const next = { ...stored };
+    for (const [key, provider] of Object.entries(WORKER_ACCOUNT_KEYS)) {
+      if (!Object.prototype.hasOwnProperty.call(patch || {}, key)) continue;
+      const id = patch[key];
+      if (id === null || id === '' || id === 'default') delete next[key];
+      else if (typeof id === 'string' && /^[a-z0-9-]{1,64}$/.test(id)) next[key] = id;
+      else throw Object.assign(new Error(`That is not a ${provider} account id.`), { code: 'INVALID_ACCOUNT', status: 400 });
+    }
+    write({ ...current, workers: { ...next, updatedAt: new Date(now()).toISOString() } });
+    return workers();
+  }
+
   function onChange(fn) { listeners.add(fn); return () => listeners.delete(fn); }
 
-  return { read, routing, version, patchRouting, setPreference, budget, budgetVersion, patchBudget, userContext, patchUserContext, onChange, path };
+  return { read, routing, version, patchRouting, setPreference, budget, budgetVersion, patchBudget, userContext, patchUserContext, workers, patchWorkers, onChange, path };
 }
 
 export function fileExists(path) { try { return existsSync(path); } catch { return false; } }

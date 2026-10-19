@@ -1180,9 +1180,11 @@ const LOOP_STALE_INACTIVITY_MS = 45 * 60 * 1000; // 45 min — browser iteration
  * Scan loop directory and delete stale/inactive loop files.
  * No history keeping — ended loops are removed immediately.
  *
- * A loop is stale if:
- * 1. active + exceeded its maxMinutes + 5min grace
- * 2. active + no iteration activity for 10 minutes (session died)
+ * A loop is stale if it is active with no iteration activity for 45 minutes
+ * (session died). A dispatched worker's file (runMode 'task') is never swept
+ * here: its one iteration lasts the whole run, which idles warm between turns
+ * for far longer, and the server ends it (work-time cap, idle timeout, and
+ * marks it inactive after a restart).
  *
  * @param {string} loopDir - path to data/loop/
  * @returns {{ deactivated: string[], deleted: string[] }}
@@ -1201,6 +1203,7 @@ export function cleanupStaleLoops(loopDir) {
         const loop = JSON.parse(readFileSync(fp, 'utf-8'));
 
         if (loop.active) {
+          if (loop.runMode === 'task') continue;
           const lastActivity = new Date(loop.lastIterationAt || loop.startedAt || 0).getTime();
           const noRecentActivity = (now - lastActivity) >= LOOP_STALE_INACTIVITY_MS;
 

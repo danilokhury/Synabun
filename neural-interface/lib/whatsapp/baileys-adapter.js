@@ -7,7 +7,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { CONN, ERR, LIMITS } from './protocol.js';
+import { CONN, CONN_WARNINGS, ERR, LIMITS, VOICE_MARKER } from './protocol.js';
 import { parseJid, sameAccount } from './identity.js';
 import { redactWa } from './redact.js';
 
@@ -18,7 +18,7 @@ export const RUNTIME_EXPORTS = Object.freeze([
 ]);
 
 const QUOTED_MAX = 1000;
-const DOWNLOAD_TIMEOUT_MS = 30_000;
+export const DOWNLOAD_TIMEOUT_MS = 30_000;
 const VERSION_RECHECK_MS = 6 * 3600_000;
 
 function adapterError(code, message, cause) {
@@ -235,68 +235,103 @@ export function disconnectCode(err) {
   return null;
 }
 
+// Baileys 7.0.0-rc14 (the pinned connector) closes with 500 for more than a
+// bad session: 500 is DisconnectReason.badSession, but it is also the code
+// getErrorCodeFromStreamError (Utils/generics.js) gives any <stream:error>
+// without a code of its own ("Stream Errored (<first child tag>)", the child
+// node in `data`), the code getCodeFromWSError gives a WebSocket error it
+// cannot place ("WebSocket Error (…)"), and the default of a <failure> without
+// a reason ("Connection Failure"). Baileys itself never names a bad session:
+// only WhatsApp's own stream-error child tag can, and only that wipes the
+// saved credentials. Every other 500 is transport noise and is retried.
+const STREAM_ERROR = /^Stream Errored \(/;
+const INVALID_SESSION_TAG = /\b(?:bad[-_ ]?session|not[-_ ]?authori[sz]ed|invalid[-_ ]?session)\b/i;
+
+/** WhatsApp said the saved session is invalid: a stream error whose reason tag names it (`<not-authorized/>`). */
+export function invalidSessionSignal(err) {
+  const message = typeof err?.message === 'string' ? err.message : '';
+  if (!STREAM_ERROR.test(message)) return false;
+  const tag = typeof err?.data?.tag === 'string' ? err.data.tag : '';
+  return INVALID_SESSION_TAG.test(`${message} ${tag}`);
+}
+
+/** Which kind of generic 500 this is (the reason a log line and lastDisconnect carry). */
+function transportReason(err) {
+  const message = typeof err?.message === 'string' ? err.message : '';
+  if (STREAM_ERROR.test(message)) return 'stream_error';
+  if (/^WebSocket Error \(/.test(message)) return 'websocket_error';
+  if (/^Connection Failure\b/.test(message)) return 'connection_failure';
+  return 'status_500';
+}
+
 /**
  * Map a lastDisconnect error to what the host does next, by DisconnectReason
  * NAME (408 is both connectionLost and timedOut; the enum's reverse map says
- * timedOut).
- * @returns {{action:'reconnect_now'|'refresh_version'|'backoff'|'stop', state:string, wipe:boolean, reason:string, code:number|null}}
+ * timedOut). A saved session never gives up on its own: only 401 (logged out)
+ * and an explicitly invalid session stop it, and both wipe the credentials.
+ * 440 and 403 retry from the longest delay (`delay: 'long'`) and carry a
+ * `warning` the service shows (CONN_WARNINGS). While linking (no saved
+ * session) anything but 515, 405, 401 and 403 means the QR or code ran out.
+ * @returns {{action:'reconnect_now'|'refresh_version'|'backoff'|'stop', state:string, wipe:boolean, reason:string, code:number|null,
+ *   delay?:'long', warning?:'replaced'|'forbidden'}}
  */
 export function classifyDisconnect(err, { linking = false, DisconnectReason = {} } = {}) {
   const code = disconnectCode(err);
   const name = code !== null && typeof DisconnectReason[code] === 'string' ? DisconnectReason[code] : null;
-  const out = (action, state, wipe, reason) => ({ action, state, wipe, reason, code });
+  const out = (action, state, wipe, reason, extra = null) => ({ action, state, wipe, reason, code, ...(extra || {}) });
+  // 500: an explicit bad session, or noise (a generic stream / WebSocket / failure error).
+  const reason = name === 'badSession' ? (invalidSessionSignal(err) ? 'badSession' : transportReason(err)) : name;
   if (code === 405) return out('refresh_version', linking ? CONN.CONNECTING : CONN.RECONNECTING, false, 'outdated_version');
-  switch (name) {
-    case 'restartRequired':
-      return out('reconnect_now', CONN.CONNECTING, false, name);
-    case 'loggedOut':
-      return out('stop', CONN.LOGGED_OUT, true, name);
-    case 'connectionReplaced':
-      return out('stop', CONN.REPLACED, false, name);
-    case 'forbidden':
-      return out('stop', CONN.FORBIDDEN, false, name);
-    case 'badSession':
-    case 'multideviceMismatch':
-      return out('stop', CONN.ERROR, false, name);
-    default:
-      // timedOut / connectionLost / connectionClosed / unavailableService /
-      // anything unknown. While linking that means the QR or code ran out:
-      // stop instead of looping through fresh QR codes.
-      if (linking) return out('stop', CONN.LINK_EXPIRED, true, name || 'link_failed');
-      return out('backoff', CONN.RECONNECTING, false, name || (code === null ? 'closed' : `status_${code}`));
+  if (name === 'restartRequired') return out('reconnect_now', CONN.CONNECTING, false, name);
+  if (name === 'loggedOut') return out('stop', CONN.LOGGED_OUT, true, name);
+  if (linking) {
+    if (name === 'forbidden') return out('stop', CONN.FORBIDDEN, false, name);
+    // A timeout or a closed stream means the QR / code ran out: stop instead of looping through fresh QR codes.
+    return out('stop', CONN.LINK_EXPIRED, true, reason || 'link_failed');
   }
+  if (reason === 'badSession') return out('stop', CONN.LOGGED_OUT, true, reason);
+  const warning = CONN_WARNINGS[code];
+  if (warning) {
+    // Two copies of one session would kick each other every few seconds, and a refused account is not hammered.
+    return out('backoff', CONN.RECONNECTING, false, name || `status_${code}`, { delay: 'long', warning });
+  }
+  // timedOut / connectionLost / connectionClosed / unavailableService / multideviceMismatch /
+  // a generic 500 / anything unknown: keep the credentials and try again.
+  return out('backoff', CONN.RECONNECTING, false, reason || (code === null ? 'closed' : `status_${code}`));
 }
 
 /**
- * Reconnect delays 2/5/15/30/60/120/300 s ±20%; the ladder resets after 10
- * minutes connected; more than 10 reconnects inside 10 minutes gives up.
+ * Reconnect delays 2/4/8/16/32/64/128/256/300 s, each ±20% and never above
+ * 300 s; the ladder starts over after 10 minutes connected (noteStable). It
+ * never gives up. `next({ long: true })` (440, 403) goes to the top at once and
+ * stays there until that stable connection: after a session another copy took
+ * or an account WhatsApp refused, any drop waits the long delay (a refused
+ * account may fail in other ways too, and two copies must not trade quick
+ * retries), the same 10 minutes that end the warning Settings shows.
  */
 export function createReconnectPolicy({
-  now = () => Date.now(),
   rng = Math.random,
-  scheduleSec = [2, 5, 15, 30, 60, 120, 300],
+  scheduleSec = [2, 4, 8, 16, 32, 64, 128, 256, 300],
   jitter = 0.2,
-  limit = 10,
-  windowMs = 10 * 60_000,
+  maxMs = 300_000,
 } = {}) {
   let idx = 0;
-  let attempts = [];
+  let attempts = 0;
   return {
-    /** @returns {{delayMs:number} | {giveUp:true}} */
-    next() {
-      const t = now();
-      attempts = attempts.filter((a) => t - a < windowMs);
-      if (attempts.length >= limit) return { giveUp: true };
-      attempts.push(t);
+    /** @returns {{delayMs:number}} */
+    next({ long = false } = {}) {
+      if (long) idx = Math.max(idx, scheduleSec.length - 1);
       const base = scheduleSec[Math.min(idx, scheduleSec.length - 1)] * 1000;
       idx += 1;
+      attempts += 1;
       const factor = 1 + (rng() * 2 - 1) * jitter;
-      return { delayMs: Math.max(0, Math.round(base * factor)) };
+      return { delayMs: Math.min(maxMs, Math.max(0, Math.round(base * factor))) };
     },
     /** Connected long enough: start the ladder over. */
     noteStable() { idx = 0; },
-    reset() { idx = 0; attempts = []; },
-    get attempts() { return attempts.length; },
+    reset() { idx = 0; attempts = 0; },
+    /** Retries scheduled since the last reset (an explicit connect). */
+    get attempts() { return attempts; },
   };
 }
 
@@ -323,8 +358,8 @@ const DROP_TYPES = Object.freeze({
   stickerPackMessage: 'sticker',
 });
 
+// audioMessage (voice notes and audio files) is kind 'audio': transcribed on this computer (transcription.js).
 const UNSUPPORTED = Object.freeze({
-  audioMessage: 'audio',
   videoMessage: 'video',
   ptvMessage: 'video',
   documentMessage: 'document',
@@ -347,7 +382,7 @@ function captionOf(inner) {
 
 /**
  * Classify the content of one message without downloading anything.
- * @returns {{drop:string} | {type:string, kind:'text'|'image'|'unsupported', inner:object|null,
+ * @returns {{drop:string} | {type:string, kind:'text'|'image'|'audio'|'unsupported', inner:object|null,
  *   contextInfo:object|null, text:string, unsupportedType:string|null}}
  */
 export function describeContent(msg, mod) {
@@ -369,6 +404,9 @@ export function describeContent(msg, mod) {
   }
   if (type === 'imageMessage') {
     return { type, kind: 'image', inner, contextInfo, text: captionOf(inner), unsupportedType: null };
+  }
+  if (type === 'audioMessage') {
+    return { type, kind: 'audio', inner, contextInfo, text: captionOf(inner), unsupportedType: null };
   }
   return { type, kind: 'unsupported', inner, contextInfo, text: captionOf(inner), unsupportedType: UNSUPPORTED[type] || 'other' };
 }
@@ -401,13 +439,65 @@ function withTimeout(promise, ms, label) {
 
 const MSG_ID_RE = /^[A-Za-z0-9._:+/=-]{1,128}$/;
 
+/** A size or duration a message declares about itself (a number, a protobuf Long, a string), or null when it says none. */
+function declared(value) {
+  if (value === null || value === undefined || value === '') return null;
+  let n = NaN;
+  if (typeof value === 'number') n = value;
+  else if (typeof value === 'bigint' || typeof value === 'string') n = Number(value);
+  else if (typeof value?.toNumber === 'function') { try { n = value.toNumber(); } catch { n = NaN; } }
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+/**
+ * A voice note or audio file (kind 'audio'), only for a message host-core already accepted:
+ * → { transcript, recorded } or { unsupported: { type: 'audio', reason } }. `recorded`: a voice note
+ * the sender recorded in WhatsApp (ptt), not an audio file attached to the chat. Nothing is downloaded while
+ * transcription is off or cannot run here, or when the message says it is over a limit.
+ *   transcriber  transcription.js createTranscriber() (enabled, available(), transcribe())
+ *   stale        sent so long ago that the bridge will skip it anyway: not worth transcribing
+ */
+async function readAudio(msg, { mod, sock, logger, inner, transcriber, stale }) {
+  const refuse = (reason) => ({ unsupported: { type: 'audio', reason } });
+  if (!transcriber || !transcriber.enabled) return refuse('transcription_disabled');
+  let ready = false;
+  try { ready = transcriber.available() === true; } catch { ready = false; }
+  if (!ready) return refuse('transcription_unavailable');
+  if ((declared(inner?.fileLength) ?? 0) > LIMITS.MAX_AUDIO_BYTES) return refuse('too_large');
+  if ((declared(inner?.seconds) ?? 0) > LIMITS.MAX_AUDIO_SECONDS) return refuse('too_long');
+  if (stale) return refuse('stale');
+  let bytes;
+  try {
+    const buf = await withTimeout(
+      mod.downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock?.updateMediaMessage }),
+      DOWNLOAD_TIMEOUT_MS,
+      'audio download',
+    );
+    bytes = Buffer.isBuffer(buf) ? buf : Buffer.from(buf || []);
+  } catch {
+    return refuse('transcription_failed');
+  }
+  if (bytes.length > LIMITS.MAX_AUDIO_BYTES) return refuse('too_large');
+  if (!bytes.length) return refuse('transcription_failed');
+  let result = null;
+  try { result = await transcriber.transcribe(bytes); } catch { result = null; }
+  if (result?.ok && typeof result.text === 'string' && result.text.trim()) return { transcript: result.text.trim(), recorded: inner?.ptt === true };
+  // Turned off while the note waited its turn: said as such, not as a failure.
+  return refuse(['too_long', 'too_large', 'transcription_disabled'].includes(result?.reason) ? result.reason : 'transcription_failed');
+}
+
 /**
  * Turn an accepted message into the parts of an InboundMessage (never a JID).
- * @returns {Promise<{text:string, images:Array, unsupported:null|{type:string, reason?:string}, forwarded:boolean, quoted:null|{id:string,text:string,fromBot:boolean}}>}
+ * A transcribed voice note: `text` is VOICE_MARKER + the transcript, then "\n" + the caption when
+ * there is one (the transcript first when the text is cut), and `voice: true`; `audioFile: true` when
+ * it is an audio file rather than a note recorded in WhatsApp (its words may be anyone's: the bridge
+ * treats it like a picture).
+ * @returns {Promise<{text:string, images:Array, unsupported:null|{type:string, reason?:string}, forwarded:boolean,
+ *   quoted:null|{id:string,text:string,fromBot:boolean}, voice:boolean, audioFile:boolean}>}
  */
-export async function extractInbound(msg, { mod, sock, logger, sentIds, described, text }) {
+export async function extractInbound(msg, { mod, sock, logger, sentIds, described, text, transcriber = null, audioStale = false }) {
   const d = described;
-  const body = String(text ?? d.text ?? '').slice(0, LIMITS.MAX_INBOUND_TEXT);
+  let body = String(text ?? d.text ?? '').slice(0, LIMITS.MAX_INBOUND_TEXT);
   const ctx = d.contextInfo;
   const forwarded = !!(ctx && (ctx.isForwarded || Number(ctx.forwardingScore) > 0));
   let quoted = null;
@@ -420,7 +510,21 @@ export async function extractInbound(msg, { mod, sock, logger, sentIds, describe
   }
   const images = [];
   let unsupported = null;
+  let voice = false;
+  let audioFile = false;
   if (d.kind === 'unsupported') unsupported = { type: d.unsupportedType };
+  if (d.kind === 'audio') {
+    const audio = await readAudio(msg, { mod, sock, logger, inner: d.inner, transcriber, stale: audioStale });
+    if (audio.transcript) {
+      const caption = String(text ?? d.text ?? '');
+      body = `${VOICE_MARKER} ${audio.transcript}${caption.trim() ? `\n${caption}` : ''}`.slice(0, LIMITS.MAX_INBOUND_TEXT);
+      voice = true;
+      audioFile = !audio.recorded;
+    } else {
+      // The same unsupported-audio shape as before, with why; a caption still gets through.
+      unsupported = audio.unsupported;
+    }
+  }
   if (d.kind === 'image') {
     const mime = String(d.inner?.mimetype || '').split(';')[0].trim().toLowerCase();
     const declared = Number(d.inner?.fileLength ?? 0);
@@ -443,7 +547,23 @@ export async function extractInbound(msg, { mod, sock, logger, sentIds, describe
       }
     }
   }
-  return { text: body, images, unsupported, forwarded, quoted };
+  return { text: body, images, unsupported, forwarded, quoted, voice, audioFile };
+}
+
+/**
+ * The sendMessage content for a file prepared by local-file.js (prepareLocalFile): a document
+ * (mimetype + fileName, the caption when there is one), a photo or a video (the caption), or audio
+ * (never a caption, never a voice note). `jpegThumbnail: null` keeps Baileys from building a preview,
+ * which for a video means running FFmpeg through a shell: SynaBun never decodes the file it sends.
+ */
+export function fileMessage(file) {
+  const caption = typeof file?.caption === 'string' && file.caption ? { caption: file.caption } : {};
+  switch (file?.type) {
+    case 'image': return { image: file.data, mimetype: file.mimetype, jpegThumbnail: null, ...caption };
+    case 'video': return { video: file.data, mimetype: file.mimetype, jpegThumbnail: null, ...caption };
+    case 'audio': return { audio: file.data, mimetype: file.mimetype, ptt: false };
+    default: return { document: file.data, mimetype: file.mimetype, fileName: file.fileName || 'file', ...caption };
+  }
 }
 
 /** The minimal message Baileys needs to quote an owner message in a reply. */

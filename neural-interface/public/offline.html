@@ -511,6 +511,12 @@
   const hasBridge = typeof createStartBridge === 'function';
   const windows = hasBridge ? isWindowsPlatform(navigator) : /Win/.test(navigator.platform);
   const mac = hasBridge ? isMacPlatform(navigator) : /Mac/.test(navigator.platform);
+  // Inside the SynaBun desktop app (its preload puts window.synabunDesktop on every page of its server) the app
+  // starts and restarts the server itself: no Start button and no command to type, one sentence instead, and the
+  // page reconnects when the server is back. The sentence is DESKTOP_COPY.offline.hint of
+  // shared/desktop-update-view.js, written out here because this page can load nothing.
+  const desktopApp = !!(window.synabunDesktop && window.synabunDesktop.updates);
+  const DESKTOP_HINT = 'The SynaBun app restarts its server by itself. If it stays offline, quit SynaBun and open it again.';
 
   // --- Commands to type instead ---
   const commands = hasBridge
@@ -578,7 +584,16 @@
     setTimeout(() => location.reload(), delay);
   }
 
-  if (!hasBridge) {
+  if (desktopApp) {
+    $('start').hidden = true;
+    $('manual').hidden = true;
+    $('subtext').textContent = DESKTOP_HINT;
+    const interval = setInterval(async () => {
+      if (!(await serverAnswers())) return;
+      clearInterval(interval);
+      reconnect(150);
+    }, 3000);
+  } else if (!hasBridge) {
     // An older server served this page without the bridge: commands and reconnect only.
     const interval = setInterval(async () => {
       if (!(await serverAnswers())) return;

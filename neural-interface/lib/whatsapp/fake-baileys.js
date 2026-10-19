@@ -1,14 +1,16 @@
 // Fake Baileys runtime for tests and SYNABUN_WHATSAPP_FAKE=1. Exports the same
 // names as connector/entry.mjs, with a socket that implements exactly the
 // surface baileys-adapter.js and host-core.js use, plus `fake`: a controller
-// that plays the phone side (scan, inbound from the owner or a stranger, text
-// or image, disconnect by reason name, forbidden, crash) and records every
-// outgoing call so tests can assert who the host talked to.
+// that plays the phone side (scan, inbound from the owner or a stranger, text,
+// image or voice note, disconnect by reason name, forbidden, crash), closes the socket
+// with the errors Baileys 7.0.0-rc14 builds (a stream error, a WebSocket
+// error, a connection failure), can make socket construction throw, and
+// records every outgoing call so tests can assert who the host talked to.
 //
 // Module state is per process: call fake.reset() between tests.
 
 import { EventEmitter } from 'node:events';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { FALLBACK_CODEC } from './auth-store.js';
 
 export const BAILEYS_VERSION = 'fake';
@@ -102,13 +104,17 @@ export function getContentType(content) {
 }
 
 export async function downloadMediaMessage(message, _type, _options, ctx) {
-  const img = normalizeMessageContent(message?.message)?.imageMessage;
-  if (!img) throw new Error('not a media message');
-  if (img.fakeFail) {
+  const content = normalizeMessageContent(message?.message);
+  const media = content?.imageMessage || content?.audioMessage;
+  if (!media) throw new Error('not a media message');
+  state.downloads += 1;
+  // A download that never answers (the adapter's 30 s timeout).
+  if (media.fakeHang) return new Promise(() => {});
+  if (media.fakeFail) {
     if (ctx?.reuploadRequest) await ctx.reuploadRequest(message);
     throw Object.assign(new Error('fake download failed'), { status: 404 });
   }
-  return Buffer.from(img.fakeData || []);
+  return Buffer.from(media.fakeData || []);
 }
 
 export async function fetchLatestBaileysVersion() {
@@ -137,6 +143,9 @@ const state = {
   ignoredByJid: 0,
   latestVersion: [2, 3000, 1027934701],
   failNextSend: false,
+  failSockets: 0,           // makeWASocket throws this many more times
+  socketFailures: 0,
+  downloads: 0,             // downloadMediaMessage calls (a refused voice note is never downloaded)
   seq: 0,
   account: { pn: '15550001111', lid: '99887766554433', name: 'Fake Account' },
   people: {
@@ -145,10 +154,11 @@ const state = {
   },
 };
 
-function boom(statusCode, message = 'fake disconnect') {
+function boom(statusCode, message = 'fake disconnect', data = undefined) {
   const err = new Error(message);
   err.isBoom = true;
   err.output = { statusCode, payload: { statusCode, message } };
+  if (data !== undefined) err.data = data;
   return err;
 }
 
@@ -199,16 +209,32 @@ function makeSocket(config) {
         throw new Error('fake send failure');
       }
       const id = `FAKEOUT${++state.seq}`;
+      // A file (whatsapp_send_file): what Baileys would upload, recorded by size and hash, never the bytes.
+      const media = ['document', 'image', 'video', 'audio'].find((key) => content && Buffer.isBuffer(content[key])) || null;
       state.sent.push({
         jid,
-        kind: content?.react ? 'react' : content?.text !== undefined ? 'text' : 'other',
+        kind: content?.react ? 'react' : content?.text !== undefined ? 'text' : media || 'other',
         text: content?.text,
         react: content?.react ? { text: content.react.text, keyId: content.react.key?.id, keyJid: content.react.key?.remoteJid } : undefined,
         linkPreview: content?.linkPreview,
         quotedId: options?.quoted?.key?.id ?? null,
+        ...(media ? {
+          file: {
+            bytes: content[media].length,
+            sha256: createHash('sha256').update(content[media]).digest('hex'),
+            mimetype: content.mimetype ?? null,
+            fileName: content.fileName ?? null,
+            caption: content.caption ?? null,
+            ptt: content.ptt ?? null,
+            keys: Object.keys(content).sort(),
+            jpegThumbnail: Object.hasOwn(content, 'jpegThumbnail') ? content.jpegThumbnail : 'absent',
+          },
+        } : {}),
         at: Date.now(),
       });
-      const message = content?.react ? { reactionMessage: content.react } : { extendedTextMessage: { text: content?.text ?? '' } };
+      const message = content?.react ? { reactionMessage: content.react }
+        : media ? { [`${media}Message`]: { mimetype: content.mimetype ?? null, fileLength: content[media].length, ...(content.fileName ? { fileName: content.fileName } : {}), ...(content.caption ? { caption: content.caption } : {}) } }
+          : { extendedTextMessage: { text: content?.text ?? '' } };
       return { key: { remoteJid: jid, fromMe: true, id }, message, messageTimestamp: Math.floor(Date.now() / 1000) };
     },
     requestPairingCode: async (phone) => {
@@ -263,6 +289,11 @@ function makeSocket(config) {
 }
 
 export function makeWASocket(config) {
+  if (state.failSockets > 0) {
+    state.failSockets -= 1;
+    state.socketFailures += 1;
+    throw new Error('fake socket construction failure');
+  }
   const sock = makeSocket(config);
   state.sockets.push(sock);
   return sock;
@@ -274,13 +305,32 @@ function current() {
   return sock;
 }
 
-function buildContent({ text, image, forwarded, quoted }) {
+function buildContent({ text, image, audio, forwarded, quoted }) {
   const contextInfo = forwarded || quoted
     ? {
       ...(forwarded ? { isForwarded: true, forwardingScore: 1 } : {}),
       ...(quoted ? { stanzaId: quoted.id, quotedMessage: { conversation: quoted.text ?? '' } } : {}),
     }
     : undefined;
+  if (audio) {
+    // A voice note (ptt, OGG/Opus) or an audio file; `seconds` / `fileLength` are what the message declares
+    // (null leaves it out). A caption is not something WhatsApp offers on audio: `text` plays one anyway.
+    const data = Buffer.isBuffer(audio.data) ? audio.data : Buffer.from(audio.base64 || '', 'base64');
+    return {
+      audioMessage: {
+        mimetype: audio.mimetype || 'audio/ogg; codecs=opus',
+        ptt: audio.ptt !== false,
+        ...(audio.seconds === null ? {} : { seconds: audio.seconds ?? 3 }),
+        ...(audio.fileLength === null ? {} : { fileLength: audio.fileLength ?? data.length }),
+        ...(text ? { caption: text } : {}),
+        url: 'https://fake.invalid/media',
+        fakeData: data,
+        fakeFail: !!audio.fail,
+        fakeHang: !!audio.hang,
+        ...(contextInfo ? { contextInfo } : {}),
+      },
+    };
+  }
   if (image) {
     const data = Buffer.isBuffer(image.data) ? image.data : Buffer.from(image.base64 || '', 'base64');
     return {
@@ -315,6 +365,9 @@ export const fake = {
     state.versionFetches = 0;
     state.ignoredByJid = 0;
     state.failNextSend = false;
+    state.failSockets = 0;
+    state.socketFailures = 0;
+    state.downloads = 0;
     state.latestVersion = [2, 3000, 1027934701];
     state.seq = 0;
     state.account = { pn: '15550001111', lid: '99887766554433', name: 'Fake Account' };
@@ -346,7 +399,7 @@ export const fake = {
    * (epoch ms, default now) is when the phone sent it.
    */
   inbound({
-    from = 'self', text, image = null, device = 0, type = 'notify', addressing = 'pn', id, forwarded = false, quoted = null,
+    from = 'self', text, image = null, audio = null, device = 0, type = 'notify', addressing = 'pn', id, forwarded = false, quoted = null,
     requestId, noStanza = false, stanzaFrom, content, stub, at = null, offline = null,
   } = {}) {
     const sock = current();
@@ -364,7 +417,7 @@ export const fake = {
       key: { remoteJid: chatJid, remoteJidAlt: fromMe ? undefined : chatAlt, fromMe, id: msgId, addressingMode: lid ? 'lid' : 'pn' },
       messageTimestamp: ts,
       pushName: 'fake',
-      message: stub ? undefined : content || buildContent({ text, image, forwarded, quoted }),
+      message: stub ? undefined : content || buildContent({ text, image, audio, forwarded, quoted }),
       ...(stub ? { messageStubType: 1 } : {}),
     };
     const stanzaSender = stanzaFrom || senderJid;
@@ -395,6 +448,32 @@ export const fake = {
   forbidden() {
     return fake.disconnect('forbidden');
   },
+  /**
+   * A <stream:error> the way Baileys rc14 closes on it (getErrorCodeFromStreamError + the
+   * CB:stream:error handler): "Stream Errored (<first child tag>)", the code from the node's
+   * own `code` attribute, else 440 for <conflict>, else 500; the child node in `data`.
+   */
+  streamError({ tag = 'unknown', code = null } = {}) {
+    const statusCode = Number(code) || (tag === 'conflict' ? DisconnectReason.connectionReplaced : DisconnectReason.badSession);
+    const reason = statusCode === DisconnectReason.restartRequired ? 'restart required' : tag;
+    current().end(boom(statusCode, `Stream Errored (${reason})`, { tag, attrs: code ? { code: String(code) } : {} }));
+    return { ok: true };
+  },
+  /** A WebSocket error the way mapWebSocketError wraps it: 500 unless getCodeFromWSError places it. */
+  wsError({ message = 'socket hang up', code = 500 } = {}) {
+    current().end(boom(Number(code) || 500, `WebSocket Error (${message})`, { message }));
+    return { ok: true };
+  },
+  /** A <failure> node (CB:failure): "Connection Failure", its `reason` attribute or 500. */
+  connectionFailure({ reason = null } = {}) {
+    current().end(boom(Number(reason) || 500, 'Connection Failure', reason ? { reason: String(reason) } : {}));
+    return { ok: true };
+  },
+  /** The next `n` makeWASocket calls throw (a socket that cannot even be built). */
+  failNextSocket(n = 1) {
+    state.failSockets = Math.max(0, Number(n) || 0);
+    return { ok: true };
+  },
   crash() {
     setImmediate(() => { throw new Error('fake runtime crash'); });
     return { ok: true };
@@ -412,6 +491,8 @@ export const fake = {
       reads: state.reads.map((r) => ({ ...r })),
       pairingRequests: [...state.pairingRequests],
       logouts: state.logouts,
+      socketFailures: state.socketFailures,
+      downloads: state.downloads,
       versionFetches: state.versionFetches,
       ignoredByJid: state.ignoredByJid,
       account: { ...state.account },
@@ -427,6 +508,10 @@ export const fake = {
       inbound: () => fake.inbound(args),
       disconnect: () => fake.disconnect(args.reason),
       forbidden: () => fake.forbidden(),
+      streamError: () => fake.streamError(args),
+      wsError: () => fake.wsError(args),
+      connectionFailure: () => fake.connectionFailure(args),
+      failNextSocket: () => fake.failNextSocket(args.n ?? 1),
       crash: () => fake.crash(),
       failNextSend: () => fake.failNextSend(),
       snapshot: () => fake.snapshot(),

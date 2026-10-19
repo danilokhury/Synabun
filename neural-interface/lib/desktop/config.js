@@ -446,6 +446,9 @@ export const DESKTOP_DEFAULTS = Object.freeze({
         bundleIds: ['com.apple.Terminal', 'com.googlecode.iterm2', 'dev.warp.Warp-Stable', 'com.mitchellh.ghostty', 'net.kovidgoyal.kitty', 'com.github.wez.wezterm', 'org.alacritty', 'co.zeit.hyper'],
         reason: 'Terminal emulators are off-limits (your other agents run there); use your own shell tool instead',
       },
+      // The SynaBun desktop app (packaging/desktop): every window it has is SynaBun's own interface, as the
+      // synabun-ui rule below says of SynaBun in a browser or a web app.
+      { id: 'synabun-app', bundleIds: ['ai.synabun.app'], reason: "SynaBun's own interface" },
     ],
     // Arrays replace wholesale (mergeConfig): a user's own protectedWindows (or
     // blockedApps) list drops every default rule below, including the localized

@@ -71,12 +71,14 @@ export function writerUsage(event = {}, fallbackModel = null) {
  * @param {() => object} [deps.accountEnv]  the Claude account's environment (config dir)
  * @param {string} [deps.cwd]
  * @param {object} [deps.env]
+ * @param {(env: object) => object} [deps.childEnv]  the host's last word on the environment (on Windows the Git Bash it names)
  * @param {string} [deps.label]             what timed out or was refused a tool, in the messages
  * @param {object} [deps.queryOptions]      more query options of the caller's own (the greeting writer turns
  *                                          thinking off); they never replace the isolation below
  */
-export function createOneShot({ claudeQuery = null, claudeExecutable = null, model = () => WRITER.fallbackModel, accountEnv = () => ({}), cwd = process.cwd(), env = process.env, timeoutMs = WRITER.timeoutMs, log = () => {}, label = 'statement writer', logTag = 'user-context:writer-error', queryOptions = null } = {}) {
+export function createOneShot({ claudeQuery = null, claudeExecutable = null, model = () => WRITER.fallbackModel, accountEnv = () => ({}), cwd = process.cwd(), env = process.env, childEnv = null, timeoutMs = WRITER.timeoutMs, log = () => {}, label = 'statement writer', logTag = 'user-context:writer-error', queryOptions = null } = {}) {
   function available() { return typeof claudeQuery === 'function'; }
+  const oneShotEnv = (built) => { try { return typeof childEnv === 'function' ? childEnv(built) : built; } catch { return built; } };
 
   /**
    * → { text, model, tokens, costUsd, ms } | { text: '', error, model?, tokens?, costUsd?, ms? }
@@ -115,7 +117,7 @@ export function createOneShot({ claudeQuery = null, claudeExecutable = null, mod
           includePartialMessages: false,
           abortController,
           ...(executable?.path ? { pathToClaudeCodeExecutable: executable.path } : {}),
-          env: { ...cleanEnv(env), ...account, SYNABUN_TEMPORARY_CHAT: '1', SYNABUN_TYPESAFE: 'off' },
+          env: oneShotEnv({ ...cleanEnv(env), ...account, SYNABUN_TEMPORARY_CHAT: '1', SYNABUN_TYPESAFE: 'off' }),
           canUseTool: async () => ({ behavior: 'deny', message: `The ${label} cannot use tools.` }),
         },
       });

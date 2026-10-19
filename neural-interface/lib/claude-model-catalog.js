@@ -14,7 +14,7 @@ import { spawn } from 'node:child_process';
 import { dirname, join, sep } from 'node:path';
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { getAugmentedPath } from './augmented-path.js';
+import { withPathEnv, getAugmentedPath } from './augmented-path.js';
 
 // Effort ladder the Claude Code CLI accepts for --effort. Models advertise their
 // own subset via supportedEffortLevels; this is the superset used as a fallback
@@ -240,7 +240,7 @@ export function queryClaudeCliModels(claudeBin, { cwd, timeoutMs = DISCOVERY_TIM
     try {
       child = spawnImpl(shellCommand(bin, useShell), args, {
         cwd: cwd || process.cwd(),
-        env: { ...process.env, PATH: getAugmentedPath(), CLAUDE_CODE_ENTRYPOINT: 'sdk-cli' },
+        env: { ...withPathEnv(process.env, getAugmentedPath()), CLAUDE_CODE_ENTRYPOINT: 'sdk-cli' },
         stdio: ['pipe', 'pipe', 'ignore'],
         shell: useShell,
       });
@@ -400,7 +400,7 @@ export function queryClaudeCliVersion(claudeBin, { timeoutMs = 10000 } = {}) {
 
     try {
       child = spawn(shellCommand(bin, useShell), args, {
-        env: { ...process.env, PATH: getAugmentedPath() },
+        env: withPathEnv(process.env, getAugmentedPath()),
         stdio: ['ignore', 'pipe', 'ignore'],
         shell: useShell,
       });

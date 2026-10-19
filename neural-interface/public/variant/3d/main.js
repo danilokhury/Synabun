@@ -7,7 +7,7 @@
 // explorer, cards, tooltips) hydrates right behind it.
 
 // ── Storage (self-hydrating — importing it populates the cache) ──
-import { storage } from '../../shared/storage.js';
+import { storage, isShowcaseMode } from '../../shared/storage.js';
 import { posStore } from '../../shared/node-positions-store.js';
 
 // ── Shared foundation ──
@@ -73,6 +73,15 @@ registerVariant({ variant: '3d', capabilities: ['memory-map'] });
 // 2. TRANSLATIONS, SHARED HTML, HELP
 // ═══════════════════════════════════════════
 
+// Showcase mode (?showcase): the user's own content is blurred for product captures,
+// before anything is drawn. Without it window.__synabunShowcase is missing and a capture stops.
+if (isShowcaseMode()) {
+  try {
+    (await import('../../shared/showcase-privacy.js')).installShowcasePrivacy();
+  } catch (err) {
+    console.warn('[showcase] privacy blur unavailable:', err);
+  }
+}
 await initI18n();
 injectSharedHTML();
 

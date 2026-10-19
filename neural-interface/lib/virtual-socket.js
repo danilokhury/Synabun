@@ -15,7 +15,17 @@ export const OPEN = 1;
 export const CLOSING = 2;
 export const CLOSED = 3;
 
-export function createVirtualSocket({ onSend = () => {}, name = 'virtual' } = {}) {
+// A brain's credential (assistant-runtime.js mintBrainCredential), kept beside the socket object
+// that server code built: a client's WebSocket never has one, and nothing a client sends can set
+// it. The Codex skin handler reads it here (brainCredentialOf), never from a message.
+const credentials = new WeakMap();
+
+/** The credential the server attached to this in-process socket, or null (always null for a client's socket). */
+export function brainCredentialOf(socket) {
+  return (socket && credentials.get(socket)) || null;
+}
+
+export function createVirtualSocket({ onSend = () => {}, name = 'virtual', credential = null } = {}) {
   const emitter = new EventEmitter();
   emitter.setMaxListeners(50);
   const socket = {
@@ -56,5 +66,6 @@ export function createVirtualSocket({ onSend = () => {}, name = 'virtual' } = {}
     emit: (...args) => emitter.emit(...args),
     listenerCount: (type) => emitter.listenerCount(type),
   };
+  if (typeof credential === 'string' && credential) credentials.set(socket, credential);
   return socket;
 }

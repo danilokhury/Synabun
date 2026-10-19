@@ -862,7 +862,7 @@ export function wireJudgmentsTab(overlay, { toast = () => {}, initial = null } =
     const outcome = row.outcome && typeof row.outcome === 'object' ? row.outcome : null;
     const summary = `${clock(row.created_at)} · <code>${escapeHtml(row.surface)}</code>${riders.map(x => ` <span style="${CHIP}">+${escapeHtml(x)}</span>`).join('')} ${kit.th('settings.redesign.judgments.qMs', { origin: escapeHtml(row.origin), model: escapeHtml(row.model || ''), num: num(row.question_count), num2: num(row.latency_ms), num3: num(row.input_tokens) })}${num(row.output_tokens)}${row.cached ? ' · <span style="color:var(--accent)">' + kit.te('settings.redesign.judgments.cached') + '</span>' : ''}${row.error ? ` · <span style="color:#f66">${escapeHtml(row.error)}</span>` : ''}${row.entity_id ? ` · ${memLink(row.entity_id)}` : ''}${row.session_id ? ` · <a href="#" class="jv-session-link" data-session="${attr(row.session_id)}" title="${attr(row.session_id)}${kit.te('settings.redesign.judgments.thisSessionSJudgments')}" style="${LINK};font-family:monospace">${kit.te('settings.redesign.judgments.session')} ${escapeHtml(shortId(row.session_id))}</a>` : ''}${row.project ? ` · ${escapeHtml(row.project)}` : ''}`;
     return `<details class="jv-log-row" data-id="${attr(row.id)}"${state.openLogIds.has(String(row.id)) ? ' open' : ''} style="font-size:12px;border:1px solid var(--s-medium);border-radius:6px;padding:4px 8px;background:var(--s-darker)">
-      <summary style="cursor:pointer;list-style:none" title="${attr(row.created_at)}">${summary}</summary>
+      <summary style="cursor:pointer;list-style:none" title="${attr(row.created_at)}">${summary}${row.surface === 'budget-split' && budgetSplitLine(row, row.answers || {}).line ? ' · ' + budgetSplitLine(row, row.answers || {}).line : ''}</summary>
       <div class="settings-hint" style="margin:6px 0 2px">${kit.te('settings.redesign.judgments.state')}</div><pre style="margin:0;white-space:pre-wrap;font-size:11px;max-height:160px;overflow:auto">${escapeHtml(row.state_preview || '')}</pre>
       <div class="settings-hint" style="margin:6px 0 2px">${kit.te('settings.redesign.judgments.answers')}</div><pre style="margin:0;white-space:pre-wrap;font-size:11px;max-height:200px;overflow:auto">${escapeHtml(answers || '—')}</pre>
       ${outcome ? `<div class="settings-hint" style="margin:6px 0 2px">${kit.te('settings.redesign.judgments.outcome')}</div><pre style="${PRE}">${escapeHtml(JSON.stringify(outcome, null, 2))}</pre>` : ''}
@@ -1029,7 +1029,16 @@ export function wireJudgmentsTab(overlay, { toast = () => {}, initial = null } =
     const p = prob(a.goal_met);
     return { line: p == null ? '' : flagged(kit.tx('settings.redesign.judgments.pGoalMet', { pct: pct(p) }), p >= knob('loop-goal', 'minConfidence', 0.8)) };
   }
+  function budgetSplitLine(row, answers) {
+    const names = { share_claude_code: 'Claude Code', share_codex: 'Codex', share_opencode: 'OpenCode' };
+    const parts = Object.entries(names).filter(([key]) => answers[key]?.type === 'score').map(([key, label]) => {
+      const a = answers[key];
+      return escapeHtml(kit.tx('settings.redesign.judgments.budgetShareScore', { provider: label, score: num(a.score ?? a.value), confidence: pct(a.confidence) }));
+    });
+    return { line: parts.join(' · ') };
+  }
   const TIMELINE = {
+    'budget-split': budgetSplitLine,
     'prompt-urgency': urgencyLine, 'rerank': rankLine, 'brief-rank': rankLine,
     'agent-message': stopLine, 'turn-worth': stopLine, 'claim-check': stopLine,
     'edit-stale': staleLine, 'stale-check': staleLine, 'plan-conflict': planLine, 'compact-digest': digestLine, 'loop-goal': loopLine,

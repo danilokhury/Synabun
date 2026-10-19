@@ -1,19 +1,22 @@
 // ═══════════════════════════════════════════
-// SynaBun — Assistant budgets (caps · list prices · Codex usage)
+// SynaBun — Assistant budget (the one setting · list prices · Codex usage)
 // ═══════════════════════════════════════════
 //
-// The money rails of the central assistant, in one place:
+// One setting for every Assistant session: { unlimited, amountUsd, version }.
+// It lives in assistant-config.json under `budget` and is read live. Every new
+// session starts with it; a change applies to the open sessions at once.
 //
-//   defaultRunUsd   per-run cap a dispatch gets when the brain names none
-//   maxRunUsd       largest per-run cap a brain may ask for (budget_usd)
-//   sessionWarnUsd  one warning to the brain and the user at this session spend
-//   sessionHardUsd  session spend (brain + every run) that stops everything
-//   brainUsd        the central brain's own spend in one session
+//   unlimited false  the session may spend `amountUsd` (brain + every run, at
+//                    list price). The warning is fixed at 80 %; at 100 % the
+//                    session stops. assistant-budget-split.js divides what is
+//                    left across the providers (Jev or a fixed heuristic).
+//   unlimited true   No limit: no caps, no shares, no Jev call. Spend is still
+//                    metered.
 //
-// They live where the dispatcher and the runtime always read them, so a hand
-// edit keeps working: `limits.defaultBudgetUsd`, `limits.maxBudgetUsd`,
-// `limits.sessionWarnUsd` (older files: 80 % of `limits.sessionSoftBudgetUsd`),
-// `limits.sessionHardBudgetUsd`, `brains.claude.maxBudgetUsd`.
+// Older files kept five caps in `limits` (default/largest per run, session
+// warning, session hard cap) and `brains.claude.maxBudgetUsd`. They are read
+// once (migrateBudget): the session hard cap becomes the amount, the rest is
+// dropped.
 //
 // Prices: Claude and OpenCode report what a turn cost. Codex reports tokens
 // only, so its runs are priced from the list-price table (assistant-pricing.js,
@@ -28,17 +31,15 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { PRICING_SOURCES, PRICING_VERIFIED, listPrice, pricingRows } from './assistant-pricing.js';
 
-export const BUDGET_FIELDS = Object.freeze(['defaultRunUsd', 'maxRunUsd', 'sessionWarnUsd', 'sessionHardUsd', 'brainUsd']);
-export const BUDGET_DEFAULTS = Object.freeze({ defaultRunUsd: 5, maxRunUsd: 25, sessionWarnUsd: 8, sessionHardUsd: 25, brainUsd: 10 });
 export const BUDGET_MIN_USD = 0.1;
 export const BUDGET_MAX_USD = 1000;
-export const BUDGET_LABELS = Object.freeze({
-  defaultRunUsd: 'Default per-run cap',
-  maxRunUsd: 'Largest per-run cap',
-  sessionWarnUsd: 'Session warning',
-  sessionHardUsd: 'Session hard cap',
-  brainUsd: 'Brain cap',
-});
+export const BUDGET_DEFAULT_USD = 25;
+/** The one warning comes at this share of the budget. */
+export const BUDGET_WARN_RATIO = 0.8;
+export const BUDGET_FIELDS = Object.freeze(['unlimited', 'amountUsd']);
+export const BUDGET_DEFAULTS = Object.freeze({ unlimited: false, amountUsd: BUDGET_DEFAULT_USD });
+/** The keys of the old five-cap budget (`limits.*`, `brains.claude.maxBudgetUsd`), dropped by the migration. */
+export const LEGACY_LIMIT_KEYS = Object.freeze(['defaultBudgetUsd', 'maxBudgetUsd', 'sessionWarnUsd', 'sessionSoftBudgetUsd', 'sessionHardBudgetUsd', 'budgetVersion', 'budgetUpdatedAt']);
 
 function num(value) {
   if (value === null || value === undefined || value === '' || typeof value === 'boolean') return null;
@@ -47,6 +48,8 @@ function num(value) {
 }
 function obj(value) { return value && typeof value === 'object' && !Array.isArray(value) ? value : {}; }
 export function roundUsd(value) { return Math.round(Number(value) * 100) / 100; }
+/** Whole cents, never more than `value` (a budget never rounds up). */
+export function floorCents(value) { return Math.max(0, Math.floor(Number(value) * 100 + 1e-6)); }
 
 function budgetError(field, message) {
   const error = new Error(message);
@@ -55,109 +58,105 @@ function budgetError(field, message) {
   error.status = 400;
   return error;
 }
+const inRange = (n) => n !== null && n >= BUDGET_MIN_USD && n <= BUDGET_MAX_USD;
 
-/** The raw values a config file holds (null = not set). */
-export function storedBudget(raw = {}) {
+/** Whether a config file still carries the old five-cap budget and no `budget` of its own. */
+export function needsBudgetMigration(raw = {}) {
+  if (raw?.budget && typeof raw.budget === 'object' && !Array.isArray(raw.budget)) return false;
   const limits = obj(raw?.limits);
-  const soft = num(limits.sessionSoftBudgetUsd);
-  const warn = num(limits.sessionWarnUsd);
+  return LEGACY_LIMIT_KEYS.some((key) => Object.hasOwn(limits, key)) || Object.hasOwn(obj(obj(raw?.brains).claude), 'maxBudgetUsd');
+}
+
+/**
+ * The budget a config file holds: its `budget` when it has one, else what an
+ * older file says (the saved session hard cap, else the default).
+ * → { unlimited, amountUsd, version, updatedAt, source: 'saved' | 'migrated' | 'default' }
+ */
+export function effectiveBudget(raw = {}) {
+  const stored = raw?.budget && typeof raw.budget === 'object' && !Array.isArray(raw.budget) ? raw.budget : null;
+  if (stored) {
+    const amount = num(stored.amountUsd);
+    return {
+      unlimited: stored.unlimited === true,
+      amountUsd: inRange(amount) ? roundUsd(amount) : BUDGET_DEFAULT_USD,
+      version: Math.max(0, Math.floor(num(stored.version) || 0)),
+      updatedAt: typeof stored.updatedAt === 'string' ? stored.updatedAt : null,
+      source: 'saved',
+    };
+  }
+  const limits = obj(raw?.limits);
+  const hard = num(limits.sessionHardBudgetUsd);
+  const migrated = needsBudgetMigration(raw);
   return {
-    defaultRunUsd: num(limits.defaultBudgetUsd),
-    maxRunUsd: num(limits.maxBudgetUsd),
-    sessionWarnUsd: warn ?? (soft !== null ? roundUsd(soft * 0.8) : null),
-    sessionHardUsd: num(limits.sessionHardBudgetUsd),
-    brainUsd: num(obj(obj(raw?.brains).claude).maxBudgetUsd),
+    unlimited: false,
+    // The saved session hard cap is the amount (a hand edit outside the bounds is brought inside them).
+    amountUsd: hard !== null && hard > 0 ? roundUsd(Math.min(BUDGET_MAX_USD, Math.max(BUDGET_MIN_USD, hard))) : BUDGET_DEFAULT_USD,
+    version: Math.max(0, Math.floor(num(limits.budgetVersion) || 0)),
+    updatedAt: typeof limits.budgetUpdatedAt === 'string' ? limits.budgetUpdatedAt : null,
+    source: migrated ? 'migrated' : 'default',
   };
 }
 
-/**
- * The invariant that fails first, or null: default ≤ largest ≤ hard,
- * warning < hard, brain ≤ hard.
- */
-export function budgetInvariantError(b) {
-  if (b.maxRunUsd > b.sessionHardUsd) return { field: 'maxRunUsd', message: `${BUDGET_LABELS.maxRunUsd} ($${b.maxRunUsd}) cannot exceed the ${BUDGET_LABELS.sessionHardUsd.toLowerCase()} ($${b.sessionHardUsd}).` };
-  if (b.defaultRunUsd > b.maxRunUsd) return { field: 'defaultRunUsd', message: `${BUDGET_LABELS.defaultRunUsd} ($${b.defaultRunUsd}) cannot exceed the ${BUDGET_LABELS.maxRunUsd.toLowerCase()} ($${b.maxRunUsd}).` };
-  if (b.sessionWarnUsd >= b.sessionHardUsd) return { field: 'sessionWarnUsd', message: `${BUDGET_LABELS.sessionWarnUsd} ($${b.sessionWarnUsd}) must be below the ${BUDGET_LABELS.sessionHardUsd.toLowerCase()} ($${b.sessionHardUsd}).` };
-  if (b.brainUsd > b.sessionHardUsd) return { field: 'brainUsd', message: `${BUDGET_LABELS.brainUsd} ($${b.brainUsd}) cannot exceed the ${BUDGET_LABELS.sessionHardUsd.toLowerCase()} ($${b.sessionHardUsd}).` };
-  return null;
+/** A config object without the old five-cap keys (every other key kept). */
+export function withoutLegacyBudget(raw = {}) {
+  const base = { ...obj(raw) };
+  if (base.limits && typeof base.limits === 'object') {
+    const limits = { ...base.limits };
+    for (const key of LEGACY_LIMIT_KEYS) delete limits[key];
+    base.limits = limits;
+  }
+  const brains = obj(base.brains);
+  if (brains.claude && typeof brains.claude === 'object' && Object.hasOwn(brains.claude, 'maxBudgetUsd')) {
+    const { maxBudgetUsd: _cap, ...claude } = brains.claude;
+    base.brains = { ...brains, claude };
+  }
+  return base;
 }
 
 /**
- * What applies now: each saved value in range, else its default; a hand edit
- * that breaks an invariant is repaired (and listed in `repairs`), never trusted.
- */
-export function effectiveBudget(raw = {}) {
-  const stored = storedBudget(raw);
-  const out = {};
-  const sources = {};
-  for (const field of BUDGET_FIELDS) {
-    const value = stored[field];
-    const ok = value !== null && value >= BUDGET_MIN_USD && value <= BUDGET_MAX_USD;
-    out[field] = ok ? roundUsd(value) : BUDGET_DEFAULTS[field];
-    sources[field] = !ok ? 'default' : (field === 'sessionWarnUsd' && num(obj(raw?.limits).sessionWarnUsd) === null ? 'legacy' : 'saved');
-  }
-  const repairs = [];
-  for (let guard = 0; guard < BUDGET_FIELDS.length; guard += 1) {
-    const broken = budgetInvariantError(out);
-    if (!broken) break;
-    repairs.push(broken.field);
-    if (broken.field === 'maxRunUsd') out.maxRunUsd = out.sessionHardUsd;
-    else if (broken.field === 'defaultRunUsd') out.defaultRunUsd = out.maxRunUsd;
-    else if (broken.field === 'sessionWarnUsd') out.sessionWarnUsd = roundUsd(out.sessionHardUsd * 0.8);
-    else if (broken.field === 'brainUsd') out.brainUsd = out.sessionHardUsd;
-  }
-  return { ...out, sources, repairs };
-}
-
-/**
- * Validate a patch against the current values and return the full next set.
- * `null` resets a field to its default. Throws BUDGET_INVALID (status 400,
- * `field`) on a bad value or a broken invariant.
+ * Validate a patch ({ unlimited?, amountUsd? }) against the current budget and
+ * return the full next one. Throws BUDGET_INVALID (status 400, `field`) on an
+ * unknown field, a bad value or an empty patch. Amounts are kept in cents.
  */
 export function validateBudgetPatch(patch = {}, current = BUDGET_DEFAULTS) {
   if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw budgetError('budget', 'budget must be an object');
-  const next = {};
-  for (const field of BUDGET_FIELDS) next[field] = num(current?.[field]) ?? BUDGET_DEFAULTS[field];
+  const next = { unlimited: current?.unlimited === true, amountUsd: inRange(num(current?.amountUsd)) ? roundUsd(current.amountUsd) : BUDGET_DEFAULT_USD };
+  let changed = 0;
   for (const [field, value] of Object.entries(patch)) {
-    if (!BUDGET_FIELDS.includes(field)) throw budgetError(field, `Unknown budget field "${field}"`);
-    if (value === null) { next[field] = BUDGET_DEFAULTS[field]; continue; }
+    if (!BUDGET_FIELDS.includes(field)) throw budgetError(field, `Unknown budget field "${field}". Send unlimited and/or amountUsd.`);
+    changed += 1;
+    if (field === 'unlimited') {
+      if (typeof value !== 'boolean') throw budgetError('unlimited', 'unlimited must be true or false');
+      next.unlimited = value;
+      continue;
+    }
     const n = typeof value === 'number' || (typeof value === 'string' && value.trim() !== '') ? Number(value) : NaN;
-    if (!Number.isFinite(n)) throw budgetError(field, `${BUDGET_LABELS[field]} must be an amount in US dollars`);
-    if (n < BUDGET_MIN_USD || n > BUDGET_MAX_USD) throw budgetError(field, `${BUDGET_LABELS[field]} must be between $${BUDGET_MIN_USD.toFixed(2)} and $${BUDGET_MAX_USD}`);
-    next[field] = roundUsd(n);
+    if (!Number.isFinite(n)) throw budgetError('amountUsd', 'The budget must be an amount in US dollars');
+    if (n < BUDGET_MIN_USD || n > BUDGET_MAX_USD) throw budgetError('amountUsd', `The budget must be between $${BUDGET_MIN_USD.toFixed(2)} and $${BUDGET_MAX_USD}`);
+    next.amountUsd = roundUsd(n);
   }
-  const broken = budgetInvariantError(next);
-  if (broken) throw budgetError(broken.field, broken.message);
+  if (!changed) throw budgetError('budget', 'Nothing to change: send unlimited and/or amountUsd');
   return next;
 }
 
-/** A config object with `budget` written into the keys its readers use (every other key kept). */
+/** A config object with `budget` written (the old caps dropped, every other key kept). */
 export function writeBudgetInto(raw = {}, budget, { version = 0, at = new Date().toISOString() } = {}) {
-  const base = obj(raw);
-  const brains = obj(base.brains);
   return {
-    ...base,
-    limits: {
-      ...obj(base.limits),
-      defaultBudgetUsd: budget.defaultRunUsd,
-      maxBudgetUsd: budget.maxRunUsd,
-      sessionWarnUsd: budget.sessionWarnUsd,
-      sessionHardBudgetUsd: budget.sessionHardUsd,
-      budgetVersion: version,
-      budgetUpdatedAt: at,
-    },
-    brains: { ...brains, claude: { ...obj(brains.claude), maxBudgetUsd: budget.brainUsd } },
+    ...withoutLegacyBudget(raw),
+    budget: { unlimited: budget.unlimited === true, amountUsd: roundUsd(budget.amountUsd), version, updatedAt: at },
   };
 }
 
-/** The dispatcher's limit keys for a budget. */
-export function budgetLimits(budget) {
+/** What the Assistant's budget limits at `spentUsd` (null amounts under No limit). */
+export function budgetLimitsAt(budget, spentUsd = 0) {
+  if (!budget || budget.unlimited) return { unlimited: true, amountUsd: null, warnAtUsd: null, leftUsd: null, warned: false, exceeded: false };
+  const amount = Number(budget.amountUsd) || 0;
+  const spent = Math.max(0, Number(spentUsd) || 0);
+  const warnAt = roundUsd(amount * BUDGET_WARN_RATIO);
   return {
-    defaultBudgetUsd: budget.defaultRunUsd,
-    maxBudgetUsd: budget.maxRunUsd,
-    sessionWarnUsd: budget.sessionWarnUsd,
-    sessionHardBudgetUsd: budget.sessionHardUsd,
-    brainBudgetUsd: budget.brainUsd,
+    unlimited: false, amountUsd: amount, warnAtUsd: warnAt,
+    leftUsd: Math.max(0, Number((amount - spent).toFixed(8))),
+    warned: spent >= warnAt, exceeded: spent >= amount,
   };
 }
 

@@ -10,6 +10,9 @@
  *                           already answers, otherwise starts one in the background
  *   SynaBun start           the supervisor (setup.js) in the foreground, nothing else
  *   SynaBun launcher ...    the synabun:// handler (lib/start-launcher.js)
+ *   SynaBun app-backend     for the desktop app's window: find or start this
+ *                           install's server, each step a JSON line on stdout
+ *                           (lib/desktop-app.js)
  *   SynaBun diagnostics     what this build is and where it keeps things
  *   SynaBun claude-hook <s> one Claude Code hook handler, for the command the
  *                           application registers (lib/claude-hooks.js); silent
@@ -41,6 +44,8 @@ const USAGE = `SynaBun (packaged application)
   SynaBun mcp              the MCP server on stdio, for an AI tool
   SynaBun diagnostics      what this build is and where it keeps its data
                            (--json, --natives to load the native modules)
+  SynaBun app-backend      find or start the server for the desktop window
+                           (one JSON line per step)
   SynaBun version | doctor | profile | migrate-data | restore-backup
                            the same commands as the npm install
 `;
@@ -51,16 +56,22 @@ export function isTranslocated(path) {
 }
 
 async function runtimeFacts() {
-  const { readPackagedRuntime, withPackagedPath } = await load('lib/packaged-runtime.js');
+  const { readPackagedRuntime, packagedChildEnv } = await load('lib/packaged-runtime.js');
   const runtime = readPackagedRuntime({ packageRoot: APP_ROOT });
   if (!runtime) throw new Error(`this is not a packaged SynaBun (no ${join(RESOURCES, 'synabun-package.json')})`);
-  return { runtime, withPackagedPath };
+  return { runtime, packagedChildEnv };
 }
 
-/** The environment every child of a packaged start gets. */
+/**
+ * The environment every child of a packaged start gets: PATH as the user's
+ * own, then npm's global bin, then the bundled runtime last
+ * (lib/packaged-runtime.js packagedChildEnv). SynaBun's own processes never
+ * depend on it: the supervisor and the server are started by the absolute
+ * path of this Node (process.execPath, here and in setup.js).
+ */
 export async function packagedEnv(env = process.env) {
-  const { runtime, withPackagedPath } = await runtimeFacts();
-  const next = { ...withPackagedPath(env, runtime) };
+  const { runtime, packagedChildEnv } = await runtimeFacts();
+  const next = { ...packagedChildEnv(env, runtime) };
   // A handler registered from a path that changes on every launch would point
   // at nothing by the next one.
   if (isTranslocated(runtime.entry)) next.SYNABUN_LAUNCHER_REGISTER = '0';
@@ -183,6 +194,30 @@ async function runProtocolLauncher(argv) {
   process.exit(result.code);
 }
 
+/**
+ * The desktop app's window asks for its server here. Every step is one JSON
+ * line on stdout ({ type: 'plan' | 'existing' | 'step' | 'supervisor' |
+ * 'ready' | 'conflict' | 'failed', ... }); nothing else is written there. The
+ * server is started in the background, through the entry executable, and
+ * outlives this process. Exit code: 0 ready, 2 another SynaBun uses this data
+ * home, 1 failed.
+ */
+export async function runAppBackendMode(args, { write = (line) => process.stdout.write(line) } = {}) {
+  const { env, runtime } = await packagedEnv();
+  const launcher = await load('lib/start-launcher.js');
+  const { backgroundCommand } = await load('lib/desktop-pwa.js');
+  const { getDataHome } = await load('lib/paths.js');
+  const { runAppBackend, requestServerShutdown } = await load('lib/desktop-app.js');
+  const at = args.indexOf('--prefer-port');
+  const preferPort = at >= 0 ? launcher.normalizePort(args[at + 1]) : null;
+  const result = await runAppBackend({
+    env, runtime, packageRoot: APP_ROOT, dataHome: getDataHome({ env }), preferPort,
+    emit: (event) => write(JSON.stringify(event) + '\n'),
+    launcher, backgroundCommand, spawn, shutdown: requestServerShutdown,
+  });
+  return result.type === 'ready' ? 0 : result.type === 'conflict' ? 2 : 1;
+}
+
 function isExecutable(path) {
   if (process.platform === 'win32') return existsSync(path);
   try { accessSync(path, constants.X_OK); return true; } catch { return false; }
@@ -258,6 +293,7 @@ async function probeNatives() {
 export async function collectDiagnostics({ natives = false } = {}) {
   const { runtime } = await runtimeFacts();
   const { getDataHome } = await load('lib/paths.js');
+  const { packagedNpmPrefix } = await load('lib/packaged-runtime.js');
   const manifest = JSON.parse(readFileSync(runtime.manifestPath, 'utf8'));
   const model = join(APP_ROOT, 'mcp-server', 'node_modules', '@huggingface', 'transformers', '.cache', 'Xenova', 'all-MiniLM-L6-v2', 'onnx', 'model.onnx');
   const facts = {
@@ -273,7 +309,12 @@ export async function collectDiagnostics({ natives = false } = {}) {
     application: APP_ROOT,
     dataHome: getDataHome(),
     embeddingModel: existsSync(model) ? 'bundled' : 'absent',
-    updates: 'install a newer build over this one; the in-app updater does not change a packaged application',
+    shell: manifest.shell || null,
+    // Where `npm i -g` through the bundled npm puts packages: the same prefix the PATH of everything SynaBun starts is built from.
+    npmGlobal: packagedNpmPrefix(runtime),
+    updates: manifest.shell
+      ? 'from the SynaBun app itself (Check for Updates), fed by the GitHub releases of danilokhury/Synabun'
+      : 'install a newer build over this one; the in-app updater does not change a packaged application',
   };
   if (natives) facts.natives = await probeNatives();
   return facts;
@@ -290,6 +331,7 @@ async function printDiagnostics(args) {
     console.log(`  Application   ${facts.application}`);
     console.log(`  Data          ${facts.dataHome}`);
     console.log(`  Local model   ${facts.embeddingModel}`);
+    if (facts.npmGlobal?.prefix) console.log(`  npm -g        ${facts.npmGlobal.prefix} (commands in ${facts.npmGlobal.bin}; ${facts.npmGlobal.source === 'builtin' ? 'SynaBun\'s folder' : `set in ${facts.npmGlobal.from}`})`);
     console.log(`  Updates       ${facts.updates}`);
     if (facts.translocated) console.log('  Note          macOS is running this copy from a temporary path. Move SynaBun to Applications and open it again.');
     for (const [name, result] of Object.entries(facts.natives || {})) {
@@ -312,6 +354,10 @@ export async function runHook(argv, { appRoot = APP_ROOT } = {}) {
   const [script, ...rest] = argv;
   const { HOOK_SCRIPTS } = await import(pathToFileURL(join(appRoot, 'lib', 'claude-hooks.js')).href);
   if (!HOOK_SCRIPTS.some(hook => hook.script === script)) throw new Error(`unknown hook "${script ?? ''}"`);
+  // What the handler starts (git, a CLI) inherits this process's PATH: the
+  // user's own first, npm's global bin, the bundled runtime last.
+  const { readPackagedRuntime, applyPackagedChildPath } = await import(pathToFileURL(join(appRoot, 'lib', 'packaged-runtime.js')).href);
+  applyPackagedChildPath(process.env, readPackagedRuntime({ packageRoot: appRoot }));
   process.argv = [process.argv[0], script, ...rest];
   await import(pathToFileURL(join(appRoot, 'hooks', 'claude-code', script)).href);
 }
@@ -325,6 +371,7 @@ export async function main(argv = process.argv.slice(2)) {
     return finish(await superviseForeground([], { ...env, SYNABUN_OPEN_BROWSER: '0', SYNABUN_DESKTOP_BACKGROUND: '1' }));
   }
   if (mode === 'launcher') return runProtocolLauncher(rest);
+  if (mode === 'app-backend') return runAppBackendMode(rest);
   if (mode === 'diagnostics') return printDiagnostics(rest);
   if (mode === 'help' || mode === '--help' || mode === '-h') { process.stdout.write(USAGE); return 0; }
   // version, doctor, profile, migrate-data, restore-backup: setup.js owns them.

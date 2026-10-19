@@ -2,6 +2,7 @@ import { mountMemoryMaintenance } from './ui-memory-maintenance.js';
 import { buildJudgmentsTab, wireJudgmentsTab } from './ui-judgments.js';
 import { buildWhatsAppTab, wireWhatsAppTab } from './ui-whatsapp.js';
 import { buildCodeEditorTab, wireCodeEditorTab } from './settings/settings-code-editor-pane.js';
+import { buildAboutTab, wireAboutTab } from './settings/settings-about-pane.js';
 import { SETTINGS_GROUPS, SETTINGS_PAGES, DEFAULT_SETTINGS_PAGE, pageKeys, getSettingsPage, resolveSettingsTarget, homeOfControl } from './settings/settings-ia.js';
 import * as kit from './settings/settings-kit.js';
 import { RULES_HOST_LABELS, describeRulesHost, describeRulesInstall, describeRulesInstallAll } from './settings/settings-rules.js';
@@ -10,6 +11,12 @@ import { readGreetingStatus, describeGreeting, describeGreetingSaveFailure } fro
 import { renderGreeting, clearGreeting } from './greeting/greeting-card.js';
 import { createTunnelCard, drawInto, mcpKeyNeededText, readTunnel } from './ui-tunnel.js';
 import { remoteMcpAddress } from './tunnel-view.js';
+import { recheckCliStatus, getCliStatus, addCliToPath } from './cli-status.js';
+import { cliInstallText, setCliInstallTranslator } from './cli-install-view.js';
+setCliInstallTranslator((key, params) => kit.tx(`cliInstall.${key}`, params));
+import { setGitBashTranslator } from './git-bash-view.js';
+import { gitBashRowHtml, wireGitBashRow } from './ui-git-bash.js';
+setGitBashTranslator((key, params) => kit.tx(`gitBash.${key}`, params));
 import { initI18n, isReady as i18nReady, SUPPORTED_LOCALES, LOCALE_NAMES, SYSTEM_LOCALE, getLocale, getLocaleChoice, setLocaleChoice, getSystemLocale, englishTranslator, loadEnglishTranslator } from './i18n.js';
 import { wireSettingsShell, wireSettingsSearch, collectSearchRows, revealSettingsTarget, followSettingsTarget, onSettingsTakeover, applyStoredSections, storeSectionState } from './settings/settings-shell.js';
 import { buildSettingsSearchIndex } from './settings/settings-search.js';
@@ -18,7 +25,7 @@ import { buildSettingsSearchIndex } from './settings/settings-search.js';
 // ═══════════════════════════════════════════
 //
 // The most complex shared UI module. Builds a floating settings panel with
-// twelve task pages in five groups (./settings/settings-ia.js). A page is a
+// thirteen task pages in six groups (./settings/settings-ia.js). A page is a
 // title, a one-line purpose and section cards (./settings/settings-kit.js);
 // each builder below owns one pane of a page. Variant-registered tabs (the 2D
 // Graphics tab) join the Appearance page. Old tab ids still open the right page.
@@ -69,6 +76,7 @@ const TAB_ICONS = {
   whatsapp: '<svg viewBox="0 0 24 24"><path d="M3.5 20.5l1.3-3.9A8.5 8.5 0 1 1 8 19.6z"/><path d="M9.5 8.5c.4 2.6 2.9 5.2 5.5 5.6l1-1.2 1.6.8c-.3 1-1.1 1.6-2.1 1.5-2.9-.3-5.8-3.2-6.1-6.1-.1-1 .5-1.8 1.5-2.1l.8 1.6z"/></svg>',
   morelogin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M12 11.5a1 1 0 0 0-1 1c0 1.8-.3 3.6-1.2 5.2"/><path d="M7.8 14.5a8 8 0 0 0-.6 4.3"/><path d="M12 7.5a4.5 4.5 0 0 1 4.5 4.5c0 .6 0 1.2-.1 1.8"/><path d="M5 9.2a7 7 0 0 1 11-1.9"/><path d="M15 13a3 3 0 0 1-3 3"/></svg>',
   editor: '<svg viewBox="0 0 24 24"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/><line x1="13.5" y1="5" x2="10.5" y2="19"/></svg>',
+  about: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="11"/><line x1="12" y1="7.5" x2="12.01" y2="7.5"/></svg>',
 };
 
 // ── Shared icon constants ──
@@ -1105,6 +1113,7 @@ function buildTerminalTab(cliConfig) {
                     <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
                     ${kit.L('CLI002')}
                   </button>
+                  ${p.id === 'gemini' ? '' : `<button type="button" class="cli-detect-btn" data-cli-add-path="${p.id}" hidden>${escapeHtml(cliInstallText('addPath'))}</button>`}
                   <span class="cli-path-status${isDefault ? '' : ' custom'}" id="cli-status-${p.id}" ${kit.inv('CLI007')}>${kit.te(isDefault ? 'settings.redesign.terminal.cliStatus.default' : 'settings.redesign.terminal.cliStatus.custom')}</span>
                 </div>
                 <div class="stg-help" id="cli-path-${p.id}-help">${kit.H(p.inv)}</div>
@@ -1129,9 +1138,11 @@ function buildTerminalTab(cliConfig) {
           <p class="stg-help">${kit.th('settings.redesign.terminal.pathsIntro', { code: '<code class="stg-code">wsl</code>' })}</p>
           ${kit.help('CLI002', { forId: 'cli-paths-detect' })}
           ${cliProfiles.map(pathRow).join('')}
+          ${gitBashRowHtml()}
           <button type="button" class="stg-action-btn stg-save-btn" id="cli-paths-save" ${kit.inv('CLI006')} aria-describedby="cli-paths-save-help">
             ${kit.L('CLI006')}
           </button>
+          <button type="button" class="cli-detect-btn" id="cli-path-diagnostics">${escapeHtml(cliInstallText('copyPathDiagnostics'))}</button>
           ${kit.help('CLI006', { forId: 'cli-paths-save' })}
 
           ${kit.subhead(kit.te('settings.redesign.terminal.examples'))}
@@ -3309,6 +3320,7 @@ export async function openSettingsModal(options = {}) {
             skins: buildSkinsTab(skinsData.skins, skinsData.active),
             interface: buildInterfaceTab(),
             icons: buildIconsTab(customIconsData),
+            about: buildAboutTab(),
           }, variantTabs, initialPage)}
         </div>
       </div>
@@ -4398,6 +4410,9 @@ export async function openSettingsModal(options = {}) {
   // ── Code editor: AI autocomplete (loads and saves itself) ──
   wireCodeEditorTab(overlay);
 
+  // ── About: version, links, system and dependencies (loads itself the first time its page is shown) ──
+  wireAboutTab(overlay, { toast: showCCToast });
+
   // ── Discord tab handlers ──
   {
     // Token save
@@ -4539,6 +4554,36 @@ export async function openSettingsModal(options = {}) {
     const cliDefaults = { 'claude-code': 'claude', 'codex': 'codex', 'gemini': 'gemini', 'opencode': 'opencode' };
     const cliProfileIds = Object.keys(cliDefaults);
 
+    const pathButtons = overlay.querySelectorAll('[data-cli-add-path]');
+    const showPathAction = (tool, info) => {
+      const button = overlay.querySelector(`[data-cli-add-path="${tool}"]`);
+      if (button) button.hidden = !(info?.state === 'installed' && info.pathStatus?.canAdd === true);
+    };
+    pathButtons.forEach(button => {
+      const tool = button.dataset.cliAddPath;
+      getCliStatus(tool).then(info => showPathAction(tool, info)).catch(() => {});
+      button.addEventListener('click', async () => {
+        button.disabled = true; button.textContent = cliInstallText('addingPath');
+        try {
+          const result = await addCliToPath(tool);
+          showCCToast(cliInstallText('doneAddedToPath', { dir: result.dir }) + (result.warning ? ` ${result.warning}` : ''));
+          for (const pathButton of pathButtons) getCliStatus(pathButton.dataset.cliAddPath).then(info => showPathAction(pathButton.dataset.cliAddPath, info)).catch(() => {});
+        } catch (error) { showCCToast(cliInstallText('pathFailed', { error: error.message })); }
+        finally { button.disabled = false; button.textContent = cliInstallText('addPath'); }
+      });
+    });
+    // Windows: the Git Bash every Claude Code SynaBun starts gets (ui-git-bash.js; hidden on macOS and Linux).
+    wireGitBashRow(overlay.querySelector('#cli-git-bash'));
+    overlay.querySelector('#cli-path-diagnostics')?.addEventListener('click', async () => {
+      try {
+        const response = await fetch('/api/cli/path');
+        const diagnostics = await response.json();
+        if (!response.ok) throw new Error(diagnostics.error || `HTTP ${response.status}`);
+        await navigator.clipboard.writeText(JSON.stringify(diagnostics, null, 2));
+        showCCToast(cliInstallText('copied'));
+      } catch (error) { showCCToast(error.message); }
+    });
+
     // Detect buttons
     overlay.querySelectorAll('.cli-detect-btn[data-cli-detect]').forEach(btn => {
       btn.addEventListener('click', async () => {
@@ -4552,9 +4597,13 @@ export async function openSettingsModal(options = {}) {
             body: '{}',
           });
           const data = await res.json();
-          if (data.ok && data.found && data.path) {
+          showPathAction(profileId, data);
+          if (data.ok && data.found && data.path && data.state === 'broken') {
+            // Found, but it does not start: not put in the field, so a broken path is never saved by accident.
+            showCCToast(kit.tx('settings.redesign.terminal.detectionFailed', { message: data.error ? `${data.path}: ${data.error}` : data.path }));
+          } else if (data.ok && data.found && data.path) {
             input.value = data.path;
-            showCCToast(kit.tx('settings.redesign.terminal.found', { path: data.path }));
+            showCCToast(kit.tx('settings.redesign.terminal.found', { path: data.version ? `${data.path} (${data.version})` : data.path }));
           } else {
             showCCToast(kit.tx('settings.redesign.terminal.cliNotFoundInPath'));
           }
@@ -4594,6 +4643,9 @@ export async function openSettingsModal(options = {}) {
               }
             });
             showCCToast(kit.tx('settings.redesign.terminal.cliPathsSaved'));
+            // The panels' CLI banners and the update badges follow the paths just saved (one forced
+            // re-check answers for every CLI).
+            recheckCliStatus('claude-code').catch(() => {});
           } else {
             alert(data.error || kit.tx('settings.redesign.terminal.failedToSave'));
           }

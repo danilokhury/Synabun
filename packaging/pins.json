@@ -11,25 +11,40 @@
       "node-v22.19.0-win-x86.zip": "708b8a297a19e9ac433e32ac0fc496755757c5e00bd5a0683917e73cae5fe8ea"
     }
   },
+  "electron": {
+    "version": "44.9.0",
+    "baseUrl": "https://github.com/electron/electron/releases/download/v44.9.0/",
+    "origin": "SHA-256 from the release's own SHASUMS256.txt, equal to checksums.json of the electron npm package. Keep the version equal to packaging/desktop/package.json.",
+    "files": {
+      "electron-v44.9.0-darwin-arm64.zip": "12d873a5ae98a6598e730402e9278c5d132e97ea1a4405a7713bec2a3e83921f",
+      "electron-v44.9.0-darwin-x64.zip": "fd9d60a1d6cbe98105c3cdd345f7dcca0961364650e6fbbf49d13e58b0f34786",
+      "electron-v44.9.0-linux-x64.zip": "ecced7ecb55697f92ca870939c5988557faa8acd8c222c232cae5913d318c8b9",
+      "electron-v44.9.0-win32-x64.zip": "88e08039d0ef359bab9f674e8051fa103bd8628ea7c5a5e1daaa610a8a0c6931"
+    }
+  },
   "tools": {
-    "appimagetool": {
-      "version": "1.9.1",
-      "file": "appimagetool-x86_64.AppImage",
-      "url": "https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage",
-      "sha256": "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0",
-      "origin": "SHA-256 of the release asset as published by GitHub."
-    },
     "appimage-runtime": {
       "version": "20251108",
       "file": "runtime-x86_64",
       "url": "https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64",
       "sha256": "2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d",
       "origin": "SHA-256 of the release asset as published by GitHub."
+    },
+    "appimage-tools": {
+      "version": "1.0.3",
+      "file": "appimage-tools-runtime-20251108.tar.gz",
+      "url": "https://github.com/electron-userland/electron-builder-binaries/releases/download/appimage@1.0.3/appimage-tools-runtime-20251108.tar.gz",
+      "sha256": "84021a78ee214ae6fd33a2d62a92ba25542dd10bc86bf117a9b2d0bba44e7665",
+      "origin": "electron-builder's own AppImage toolset (the checksum app-builder-lib 26.15.3 checks): mksquashfs for macOS and Linux, the type 2 runtime (the same file as appimage-runtime) and the libraries every Electron AppImage carries."
     }
   },
   "cloudflared": {
     "pins": "neural-interface/lib/cloudflared/pins.json",
     "origin": "Not pinned here: the application fetches cloudflared itself after an npm install, so its pins ship with it. A build reads that same file from the application it stages (lib/stage.mjs provisionCloudflared) and its audit checks the bundle against it."
+  },
+  "gitBash": {
+    "pins": "neural-interface/lib/git-bash/pins.json",
+    "origin": "Not pinned here: an npm install on Windows fetches Git for Windows itself, so its pins ship with the application. A Windows build reads that same file from the application it stages (lib/git-bash.mjs provisionGitBash) and its audit checks the bundle against it; no other target carries it."
   },
   "embeddingModel": {
     "id": "Xenova/all-MiniLM-L6-v2",

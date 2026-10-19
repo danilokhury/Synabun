@@ -110,11 +110,22 @@ export function detectInstallSource(binPath) {
   if (p.includes('/.bun/')) return 'bun';
   if (p.includes('/pnpm/') || p.includes('/.local/share/pnpm/')) return 'pnpm';
   if (p.includes('/.yarn/') || p.includes('/yarn/global/')) return 'yarn';
-  if (p.includes('/.volta/')) return 'volta';
+  if (p.includes('/.volta/') || p.includes('/appdata/local/volta/')) return 'volta';
 
-  // Tool-owned installers.
+  // Version managers that install tools themselves (`mise use -g
+  // github:anomalyco/opencode`, an asdf plugin). A package npm installed
+  // under a Node they manage is still npm's: the npm of that Node updates it.
+  if ((p.includes('/mise/') || p.includes('/.asdf/')) && !p.includes('/node_modules/')) {
+    return p.includes('/.asdf/') ? 'asdf' : 'mise';
+  }
+
+  // Tool-owned installers. The native installer's launcher (~/.local/bin/claude)
+  // is a link into ~/.local/share/claude/versions/, and the Codex installer's
+  // into ~/.codex/packages/standalone/ (on Windows behind
+  // %LOCALAPPDATA%\Programs\OpenAI\Codex\bin): the followed path is what arrives here.
   if (p.includes('/.opencode/')) return 'standalone';
-  if (p.includes('/.claude/local/') || p.includes('/anthropicclaude/')) return 'native';
+  if (p.includes('/.codex/packages/standalone/') || p.includes('/programs/openai/codex/')) return 'standalone';
+  if (p.includes('/.claude/local/') || p.includes('/anthropicclaude/') || p.includes('/.local/share/claude/')) return 'native';
 
   // Windows package managers — before the Program Files native rule, since
   // scoop/choco shims can live under a user profile that also matches.
@@ -126,10 +137,37 @@ export function detectInstallSource(binPath) {
   if (/\/\.local\/bin\//.test(p)) return 'native';
   if (/\/program files( \(x86\))?\//.test(p)) return 'native';
 
-  // Generic npm global — LAST.
+  // Generic npm global — LAST of the package managers.
   if (p.includes('/node_modules/')) return 'npm';
 
+  // Built from source with cargo, a snap, and a Linux package (apt, dnf, rpm,
+  // pacman, apk), which lives in the system's own folders and is updated by
+  // that package manager with the system's other software.
+  if (p.includes('/.cargo/bin/')) return 'cargo';
+  if (p.startsWith('/snap/')) return 'snap';
+  if (/^\/(?:usr\/(?:bin|lib|lib64|libexec|share)|bin)\//.test(p)) return 'system';
+
   return 'other';
+}
+
+/**
+ * The install source of a found CLI, from the path it was found at and the
+ * path that link leads to. A version manager's shim (mise, asdf), Volta's,
+ * Scoop's, Chocolatey's and WinGet's links say who owns the tool only by where
+ * they are: what they lead to is the manager's own program (a mise shim is a
+ * link to mise) or a copy somewhere else.
+ */
+export function detectInstallSourceOf({ path: found = null, realPath = null } = {}) {
+  const p = String(found || '').replace(/\\/g, '/').toLowerCase();
+  if (p) {
+    if (p.includes('/mise/shims/')) return 'mise';
+    if (p.includes('/.asdf/shims/')) return 'asdf';
+    if (p.includes('/.volta/bin/') || p.includes('/appdata/local/volta/bin/')) return 'volta';
+    if (p.includes('/scoop/shims/')) return 'scoop';
+    if (p.includes('/chocolatey/bin/')) return 'choco';
+    if (p.includes('/winget/links/')) return 'winget';
+  }
+  return detectInstallSource(realPath || found);
 }
 
 /**
@@ -153,14 +191,52 @@ export function resolveBrewToken(toolKey, binPath) {
   return brewTokenFromPath(binPath) || BREW_FALLBACK_TOKENS[toolKey] || toolKey;
 }
 
+/** The command each tool is started with, as its self-updater names it. */
+const TOOL_COMMANDS = {
+  'claude-code': 'claude',
+  'codex': 'codex',
+  'opencode': 'opencode',
+  'gemini': 'gemini',
+};
+
+/**
+ * A file path as one word of a command typed into a terminal tab: single
+ * quotes for a POSIX shell, double quotes for cmd.exe (a Windows file name
+ * cannot hold a double quote). A path that needs no quoting is left as it is.
+ */
+export function quoteCommandPath(file, platform = process.platform) {
+  const value = String(file || '');
+  if (platform === 'win32') return /[\s&()^%!;,=]/.test(value) ? `"${value}"` : value;
+  return /^[\w@%+=:,./-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
 /**
  * Build the command that actually updates a tool, given how it was installed.
  * Returns null when there is no safe automated path (e.g. winget with no
  * self-updater) — the caller should show a "use your installer" hint instead.
+ *
+ * `binPath`: the CLI SynaBun found (lib/cli-resolver.js). A self-updater is
+ * then started by that path rather than by name, so the update reaches the
+ * very installation the panels use, also when a terminal's PATH does not name
+ * its folder (a Windows server started before the CLI was installed, a folder
+ * found among the known install locations).
  */
-export function buildUpdateCommand(toolKey, installSource, { brewToken = null } = {}) {
+export function buildUpdateCommand(toolKey, installSource, { brewToken = null, binPath = null, platform = null } = {}) {
+  const command = planUpdateCommand(toolKey, installSource, { brewToken, platform });
+  const name = TOOL_COMMANDS[toolKey];
+  if (!command || !binPath || !name) return command;
+  if (command !== name && !command.startsWith(`${name} `)) return command;
+  return `${quoteCommandPath(binPath, platform || process.platform)}${command.slice(name.length)}`;
+}
+
+function planUpdateCommand(toolKey, installSource, { brewToken = null, platform = null } = {}) {
   const npmPkg = NPM_PKGS[toolKey];
   const selfUpdate = SELF_UPDATERS[toolKey] || null;
+
+  // A version manager, cargo, a snap or the system's package manager owns the
+  // binary: only it can replace it, and SynaBun does not drive any of them
+  // (the system's needs an administrator). The caller shows a hint.
+  if (['mise', 'asdf', 'cargo', 'snap', 'system'].includes(installSource)) return null;
 
   // A package manager owns the binary — only that manager can replace it.
   if (isBrewSource(installSource)) {
@@ -193,7 +269,11 @@ export function buildUpdateCommand(toolKey, installSource, { brewToken = null } 
       return null;
     case 'standalone':
       // The tool's own installer put it here, so its own updater is right.
-      return toolKey === 'opencode' ? 'opencode upgrade --method curl' : selfUpdate;
+      // OpenCode's `curl` method runs its bash install script, which Windows
+      // does not have: a copy in %USERPROFILE%\.opencode\bin there came from
+      // the release archive (lib/cli-install.js) and has no updater to call.
+      if (toolKey === 'opencode') return platform === 'win32' ? null : 'opencode upgrade --method curl';
+      return selfUpdate;
     case 'native':
       return selfUpdate;
     default:
@@ -281,7 +361,36 @@ export function installSourceLabel(source) {
     case 'winget': return 'winget';
     case 'scoop': return 'Scoop';
     case 'choco': return 'Chocolatey';
+    case 'mise': return 'mise';
+    case 'asdf': return 'asdf';
+    case 'cargo': return 'cargo';
+    case 'snap': return 'snap';
+    case 'system': return 'your system\'s package manager';
     default: return 'your installer';
+  }
+}
+
+/**
+ * The install command each vendor documents first for an operating system
+ * (checked 2026-10-17): Anthropic's native installer (code.claude.com/docs/en/setup),
+ * OpenAI's standalone installer (learn.chatgpt.com/docs/codex/cli), OpenCode's
+ * install script (opencode.ai/docs; on Windows, where the script does not run,
+ * npm, the first method its docs list that works in any terminal). These are
+ * the same official sources the Install button runs (lib/cli-install.js).
+ */
+export function vendorInstallCommand(toolKey, platform = process.platform) {
+  const windows = platform === 'win32';
+  switch (toolKey) {
+    case 'claude-code':
+      return windows ? 'irm https://claude.ai/install.ps1 | iex' : 'curl -fsSL https://claude.ai/install.sh | bash';
+    case 'codex':
+      return windows
+        ? 'powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"'
+        : 'curl -fsSL https://chatgpt.com/codex/install.sh | sh';
+    case 'opencode':
+      return windows ? `npm install -g ${NPM_PKGS.opencode}` : 'curl -fsSL https://opencode.ai/install | bash';
+    default:
+      return NPM_PKGS[toolKey] ? `npm install -g ${NPM_PKGS[toolKey]}` : '';
   }
 }
 
@@ -289,9 +398,19 @@ export function installSourceLabel(source) {
  * The command that INSTALLS a tool that is missing. Mirrors the update
  * matrix so a Homebrew user is not told to `npm install -g`, which would
  * create a second, conflicting install.
+ *
+ * With `platform`, a machine that shows no package manager of its own (and,
+ * for Claude Code, one that uses npm: Anthropic recommends its native
+ * installer over the npm package) is told the vendor's own installer for
+ * that system (vendorInstallCommand), and a Windows machine that uses Scoop,
+ * Chocolatey or WinGet is told the one each vendor publishes there.
  */
-export function buildInstallCommand(toolKey, installSource = 'unknown') {
+export function buildInstallCommand(toolKey, installSource = 'unknown', { platform = null } = {}) {
   const npmPkg = NPM_PKGS[toolKey];
+  if (platform && !isBrewSource(installSource)) {
+    const own = platformInstallCommand(toolKey, installSource, platform);
+    if (own) return own;
+  }
   if (isBrewSource(installSource)) {
     const token = BREW_FALLBACK_TOKENS[toolKey] || toolKey;
     // Use the package's OWN flavour, not the one inferred from sibling tools:
@@ -309,4 +428,21 @@ export function buildInstallCommand(toolKey, installSource = 'unknown') {
     case 'volta': return `volta install ${npmPkg}`;
     default:      return `npm install -g ${npmPkg}`;
   }
+}
+
+/** buildInstallCommand's answer for one operating system, or null to use its package-manager table. */
+function platformInstallCommand(toolKey, installSource, platform) {
+  const windows = platform === 'win32';
+  const vendor = vendorInstallCommand(toolKey, platform);
+  if (toolKey === 'claude-code') {
+    if (windows && installSource === 'winget') return 'winget install Anthropic.ClaudeCode';
+    return vendor;
+  }
+  if (toolKey === 'opencode' && windows) {
+    if (installSource === 'scoop') return 'scoop install opencode';
+    if (installSource === 'choco') return 'choco install opencode';
+  }
+  // A JavaScript package manager this machine already uses: keep to it.
+  if (['npm', 'bun', 'pnpm', 'yarn', 'volta'].includes(installSource)) return null;
+  return vendor || null;
 }

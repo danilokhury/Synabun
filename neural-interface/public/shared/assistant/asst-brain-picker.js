@@ -19,6 +19,8 @@ import {
   getCachedCodexAccounts,
   getCachedMcpProfilePresets,
   getCachedOpencodeAgents,
+  getClaudeWorkerAccountId,
+  getCodexWorkerAccountId,
   getEffortLevelsForModel,
   getModelsForProfile,
   modelEffortIds,
@@ -27,8 +29,11 @@ import {
 import { getHiddenModels, HIDDEN_MODELS_EVENT, hiddenModelMatch } from '../ocp-hidden-models.js';
 import { getProviderMeta } from '../provider-icons.js';
 import { on } from '../state.js';
-import { fetchAssistantCatalog, fetchProjects } from './asst-api.js';
+import { fetchAssistantCatalog, fetchProjects, patchClaudeAccount, patchCodexAccount, setClaudeWorkerAccount, setCodexWorkerAccount } from './asst-api.js';
+import { accountBadge, accountCompactMode, accountIdentity, accountName, accountUsable, modeChoices } from '../account-view.js';
+import { accountUsageText, autoAccountLabel } from '../account-usage.js';
 import { closeMenu, currentMenu, isMenuOpen, openMenu } from './asst-menu.js';
+import { createMascotControl } from './asst-mascot.js';
 import {
   ACCOUNT_PROVIDERS,
   brainRequiresSwitch,
@@ -438,6 +443,9 @@ export async function openModelMenu(anchor, opts = {}) {
   if (!anchor.isConnected || (loading && currentMenu() !== loading.el)) return null;
   const metadata = modelCatalogStatus();
   const items = [];
+  if (Array.isArray(opts.accountItems) && opts.accountItems.length) {
+    items.push({ kind: 'header', label: tr('assistant.brain.account', 'Account profile') }, ...opts.accountItems, { kind: 'separator' });
+  }
   if (includeHere) {
     items.push({ kind: 'radio', id: '__here', label: hereLabel || tr('assistant.routes.brainDecides', 'Let the brain decide'), selected: !current, onSelect: () => onSelect?.({ here: true }) });
   }
@@ -498,7 +506,7 @@ export async function openModelMenu(anchor, opts = {}) {
     role: 'menu',
     className: `asst-model-menu${opts.routingEditor ? ' asst-route-model-menu' : ''}`,
     zIndex: opts.zIndex ?? null,
-    repositionOnResize: opts.routingEditor === true,
+    repositionOnResize: true,
     filterEmptyLabel: tr('assistant.routes.menu.noMatches', 'No matching models. Check Models for hidden choices.'),
   });
   if (opts.routingEditor && menu) {
@@ -582,6 +590,7 @@ export function createBrainPicker(host, hooks = {}) {
   let loading = null;
   // The empty state's "Choose a project" (mountEmptyProject): the project field's second button.
   let heroProject = null;
+  let heroProjectMascot = null;
 
   function currentBrain() {
     return normalizeBrain(hooks.getBrain?.());
@@ -621,9 +630,16 @@ export function createBrainPicker(host, hooks = {}) {
     return accounts.find(a => a.id === brain.accountId) || null;
   }
 
+  const accountProvider = (brain) => (brain.provider === 'codex' ? 'codex' : 'claude');
   function accountLabel(brain) {
     const acc = accountOf(brain);
-    return acc ? (acc.label || acc.email || acc.id) : (brain.accountId || t('assistant.brain.accountDefault', 'Default'));
+    const name = acc ? accountName(acc, accountProvider(brain)) : (brain.accountId || t('assistant.brain.accountDefault', 'Default'));
+    // An account says what it runs on (its subscription or its API key), or that it is signed out.
+    if (acc && acc.mode !== undefined) {
+      const badge = accountBadge(acc, accountProvider(brain));
+      return badge.text ? `${name} · ${badge.text}` : name;
+    }
+    return name;
   }
 
   function modelLabel(brain = currentBrain()) {
@@ -679,6 +695,13 @@ export function createBrainPicker(host, hooks = {}) {
     const v = values(brain);
     const modelTip = [v.meta.label, brain.model || t('assistant.brain.modelDefault', 'Default model'), v.account ? t('assistant.brain.asAccount', 'as {account}', { account: v.account }) : ''].filter(Boolean).join(' · ');
     setBtn('model', { label: v.model, icon: v.meta.icon, color: v.meta.color, tooltip: modelTip, aria: `${t('assistant.brain.model', 'Model')}: ${modelTip}` });
+    if (ACCOUNT_PROVIDERS.has(brain.provider)) {
+      const acc = accountOf(brain);
+      const label = buttons.model.querySelector('.asst-dd-label');
+      label.classList.add('asst-model-account-label');
+      const mode = acc ? accountCompactMode(acc, accountProvider(brain)) : t('accounts.checking', 'Checking…');
+      label.replaceChildren(el('span', 'asst-model-name', v.model), el('span', '', '·'), el('span', 'asst-model-account', acc ? accountName(acc, accountProvider(brain)) : brain.accountId || t('assistant.brain.accountDefault', 'Default')), el('span', '', '·'), el('span', 'asst-model-mode', mode));
+    } else buttons.model.querySelector('.asst-dd-label').classList.remove('asst-model-account-label');
     // A display name ("Sonnet 5") reads in sans; a raw id nothing names ("opus[1m]") stays mono.
     buttons.model?.toggleAttribute('data-raw', /^[a-z0-9][\w.\-[\]:/]*$/.test(String(v.model || '')));
 
@@ -688,9 +711,12 @@ export function createBrainPicker(host, hooks = {}) {
       setBtn('effort', { label: v.effort, icon: ICON_EFFORT, hidden: !v.effortSupported, tooltip: `${t('assistant.brain.effort', 'Thinking effort')}: ${v.effort}` });
     }
     setBtn('variant', { label: v.variant, icon: ICON_EFFORT, hidden: !v.variantSupported, tooltip: `${t('assistant.brain.variant', 'Model variant')}: ${v.variant}` });
-    // Inline only when there is a choice to make; the "⋯" menu always has it (add / manage).
-    const accountChoices = ACCOUNT_PROVIDERS.has(brain.provider) ? (brain.provider === 'codex' ? getCachedCodexAccounts() : getCachedClaudeAccounts()).length : 0;
-    setBtn('account', { label: v.account, icon: ICON_ACCOUNT, hidden: accountChoices < 2, tooltip: `${t('assistant.brain.account', 'Account profile')}: ${v.account}` });
+    // A Claude or Codex brain always shows it: which account and which credential (its subscription or
+    // its API key) it runs on, or that the account is signed out.
+    const brainAcc = ACCOUNT_PROVIDERS.has(brain.provider) ? accountOf(brain) : null;
+    const accountTip = [v.account, brainAcc ? accountIdentity(brainAcc) : ''].filter(Boolean).join(' · ');
+    setBtn('account', { label: v.account, icon: ICON_ACCOUNT, hidden: true, tooltip: `${t('assistant.brain.account', 'Account profile')}: ${accountTip}` });
+    buttons.account?.classList.toggle('asst-dd-warn', !!brainAcc && brainAcc.signedIn === false);
     setBtn('project', { label: v.project, icon: ICON_FOLDER, tooltip: brain.project || t('assistant.brain.projectNoneTip', 'Working project: home directory'), aria: `${t('assistant.brain.project', 'Working project')}: ${brain.project || v.project}` });
     setBtn('mode', { label: v.mode, icon: ICON_SHIELD, tooltip: `${t('assistant.brain.mode', 'Permission mode')}: ${v.mode}` });
     const tests = testDensity();
@@ -721,10 +747,13 @@ export function createBrainPicker(host, hooks = {}) {
    * sends focus back to it. A new slot replaces the last one; null removes it.
    */
   function mountEmptyProject(slot) {
+    if (heroProject && isMenuOpen(heroProject)) closeMenu();
+    heroProjectMascot?.destroy();
+    heroProjectMascot = null;
     heroProject?.remove();
     heroProject = null;
     if (destroyed || !slot || typeof slot.appendChild !== 'function') return null;
-    const btn = el('button', 'asst-dd asst-empty-project-btn');
+    const btn = el('button', 'asst-dd asst-empty-control-btn asst-empty-project-btn');
     btn.type = 'button';
     btn.dataset.field = 'project';
     btn.setAttribute('aria-haspopup', 'menu');
@@ -743,6 +772,7 @@ export function createBrainPicker(host, hooks = {}) {
     });
     slot.appendChild(btn);
     heroProject = btn;
+    heroProjectMascot = createMascotControl(btn, { director: hooks.mascot, pose: 'project' });
     renderEmptyProject();
     return btn;
   }
@@ -818,12 +848,14 @@ export function createBrainPicker(host, hooks = {}) {
     const anchor = anchorFor(field, anchorOverride);
     const brain = currentBrain();
     if (field === 'model') {
+      if (ACCOUNT_PROVIDERS.has(brain.provider)) await ensureLoaded(brain.provider);
       await openModelMenu(anchor, {
         brain,
         t: hooks.t,
         placement,
         current: { provider: brain.provider, model: brain.model },
         warnSwitch: true,
+        accountItems: ACCOUNT_PROVIDERS.has(brain.provider) ? accountItems(brain, { composer: true }) : [],
         onToast: hooks.onToast,
         onManageModels: hooks.onManageModels,
         onSelect: (target) => {
@@ -888,29 +920,23 @@ export function createBrainPicker(host, hooks = {}) {
 
     if (field === 'account') {
       if (!ACCOUNT_PROVIDERS.has(brain.provider)) return;
-      const accounts = brain.provider === 'codex' ? getCachedCodexAccounts() : getCachedClaudeAccounts();
-      const items = accounts.map((a) => ({
-        kind: 'radio',
-        id: a.id,
-        label: a.label || a.email || a.id,
-        desc: a.email && a.email !== a.label ? a.email : (a.isDefault ? t('assistant.accounts.ambient', 'ambient config') : ''),
-        selected: a.id === brain.accountId,
-        onSelect: () => commit({ accountId: a.id }, 'account'),
-      }));
-      items.push({ kind: 'separator' });
-      items.push({ id: '__add', label: t('assistant.accounts.add', 'Add account…'), onSelect: () => hooks.onAddAccount?.(brain.provider) });
-      items.push({ id: '__manage', label: t('assistant.accounts.manage', 'Manage…'), onSelect: () => hooks.onManageAccounts?.(brain.provider) });
-      menu(t('assistant.brain.account', 'Account profile'), items);
+      menu(t('assistant.brain.account', 'Account profile'), accountItems(brain), { width: 300 });
       return;
     }
 
     if (field === 'project') {
+      const actor = anchor === heroProject ? heroProjectMascot : null;
+      const pick = project => {
+        const changed = (currentBrain().project || null) !== (project || null);
+        commit({ project }, 'project');
+        actor?.commit(changed ? 'hop' : 'nod');
+      };
       const projects = _projectsCache || [];
-      const items = [{ kind: 'radio', id: '', label: t('assistant.brain.projectNone', 'Home directory'), desc: t('assistant.brain.projectNoneDesc', 'no project'), selected: !brain.project, restoreFocus, onSelect: () => commit({ project: null }, 'project') }];
-      for (const p of projects) items.push({ kind: 'radio', id: p.path, label: p.label || basename(p.path), desc: p.path, selected: p.path === brain.project, restoreFocus, onSelect: () => commit({ project: p.path }, 'project') });
+      const items = [{ kind: 'radio', id: '', label: t('assistant.brain.projectNone', 'Home directory'), desc: t('assistant.brain.projectNoneDesc', 'no project'), selected: !brain.project, restoreFocus, onSelect: () => pick(null) }];
+      for (const p of projects) items.push({ kind: 'radio', id: p.path, label: p.label || basename(p.path), desc: p.path, selected: p.path === brain.project, restoreFocus, onSelect: () => pick(p.path) });
       items.push({ kind: 'separator' });
-      items.push({ kind: 'input', placeholder: t('assistant.brain.projectCustom', 'Type a directory path…'), value: brain.project && !projects.some(p => p.path === brain.project) ? brain.project : '', restoreFocus, onSubmit: (v) => commit({ project: v }, 'project') });
-      menu(t('assistant.brain.project', 'Working project'), items, { width: 280, filter: projects.length > 8, filterPlaceholder: t('assistant.brain.filterProjects', 'Filter projects…') });
+      items.push({ kind: 'input', placeholder: t('assistant.brain.projectCustom', 'Type a directory path…'), value: brain.project && !projects.some(p => p.path === brain.project) ? brain.project : '', restoreFocus, onSubmit: pick });
+      menu(t('assistant.brain.project', 'Working project'), items, { width: 280, filter: projects.length > 8, filterPlaceholder: t('assistant.brain.filterProjects', 'Filter projects…'), onOpen: node => actor?.open(node), onClose: () => actor?.close() });
       return;
     }
 
@@ -953,6 +979,69 @@ export function createBrainPicker(host, hooks = {}) {
     }
   }
 
+  // The brain's account menu (Claude or Codex): every account with what it runs on and who it is (a
+  // signed-out one is listed, not offered), the mode of the brain's account when it holds both credentials,
+  // and the account dispatched workers of that provider use when a dispatch names none.
+  function accountItems(brain, { composer = false } = {}) {
+    const codex = brain.provider === 'codex';
+    const p = codex ? 'codex' : 'claude';
+    const accounts = codex ? getCachedCodexAccounts() : getCachedClaudeAccounts();
+    const refetch = () => (codex ? fetchCodexAccounts(true) : fetchClaudeAccounts(true));
+    const items = accounts.map((a) => {
+      const badge = accountBadge(a, p);
+      const usable = accountUsable(a);
+      return {
+        kind: 'radio', id: a.id, label: accountName(a, p),
+        desc: [accountIdentity(a), accountUsageText(a, hooks.t), !usable ? t('assistant.accounts.signInFirst', 'Signed out: sign it in from Manage…') : composer && a.id !== brain.accountId ? t('assistant.brain.newConversation', 'starts a new conversation') : ''].filter(Boolean).join(' · '),
+        tag: badge.text, disabled: !usable,
+        selected: a.id === brain.accountId,
+        onSelect: () => commit({ accountId: a.id }, 'account'),
+      };
+    });
+    items.unshift({ kind: 'radio', id: 'auto', label: autoAccountLabel(hooks.t), desc: t('assistant.accountUsage.composerHint', 'Pick the subscription with most usage left and start a new conversation.'), onSelect: () => commit({ accountId: 'auto' }, 'account') });
+    if (composer) for (const a of accounts.filter(a => !accountUsable(a))) items.push({ id: `signin:${a.id}`, label: t('assistant.accounts.signInAccount', 'Sign in to {label}…', { label: accountName(a, p) }), onSelect: () => hooks.onManageAccounts?.(brain.provider, a.id) });
+    const current = accounts.find((a) => a.id === brain.accountId);
+    const modes = modeChoices(current, p);
+    if (modes.length) {
+      items.push({ kind: 'separator' });
+      items.push({ kind: 'header', label: t('assistant.accounts.usesHeader', '{label} uses (every session on it)', { label: accountName(current, p) }) });
+      for (const m of modes) {
+        items.push({
+          kind: 'radio', id: `mode:${m.mode}`, label: m.label, desc: [m.detail, !m.current ? t('assistant.brain.newConversation', 'starts a new conversation') : ''].filter(Boolean).join(' · '), selected: m.current, disabled: hooks.getRunning?.() === true,
+          onSelect: async () => {
+            if (m.current) return;
+            try {
+              await (codex ? patchCodexAccount : patchClaudeAccount)(current.id, { mode: m.mode }); await refetch();
+              hooks.onChange?.(currentBrain(), { requiresSwitch: true, restartBrain: true, field: 'accountMode', previous: brain }); render();
+            }
+            catch (err) { hooks.onToast?.(err?.message || String(err)); }
+          },
+        });
+      }
+    }
+    const worker = codex ? getCodexWorkerAccountId() : getClaudeWorkerAccountId();
+    if (!composer) {
+    items.push({ kind: 'separator' });
+    items.push({ kind: 'header', label: codex ? t('assistant.accounts.codexWorkersHeader', 'Codex workers use') : t('assistant.accounts.workersHeader', 'Claude Code workers use') });
+    for (const a of accounts) {
+      const usable = accountUsable(a);
+      items.push({
+        kind: 'radio', id: `worker:${a.id}`, label: accountName(a, p), tag: accountBadge(a, p).text,
+        disabled: !usable && a.id !== worker, selected: a.id === worker,
+        onSelect: async () => {
+          if (a.id === worker) return;
+          try { await (codex ? setCodexWorkerAccount : setClaudeWorkerAccount)(a.id); await refetch(); render(); }
+          catch (err) { hooks.onToast?.(err?.message || String(err)); }
+        },
+      });
+    }
+    }
+    items.push({ kind: 'separator' });
+    items.push({ id: '__add', label: t('assistant.accounts.add', 'Add account…'), onSelect: () => hooks.onAddAccount?.(brain.provider) });
+    items.push({ id: '__manage', label: t('assistant.accounts.manage', 'Manage…'), onSelect: () => hooks.onManageAccounts?.(brain.provider) });
+    return items;
+  }
+
   async function switchProvider(provider, model = '') {
     const before = currentBrain();
     if (provider === before.provider) return;
@@ -976,6 +1065,16 @@ export function createBrainPicker(host, hooks = {}) {
 
   render();
   refresh().catch(() => {});
+  // Any window changed a Claude or Codex account (signed in or out, a key, its mode, the worker choice,
+  // added, removed): its list is read again and the picker re-drawn, so it never shows a stale state.
+  const accountsChanged = (provider) => (msg) => {
+    const which = provider || (msg?.provider === 'codex' ? 'codex' : msg?.provider === 'claude-code' ? 'claude-code' : null);
+    const jobs = [];
+    if (!which || which === 'claude-code') jobs.push(fetchClaudeAccounts(true));
+    if (!which || which === 'codex') jobs.push(fetchCodexAccounts(true));
+    Promise.all(jobs).then(() => { if (!destroyed) render(); }).catch(() => {});
+  };
+  const offAccounts = [on('sync:claude:accounts-changed', accountsChanged('claude-code')), on('sync:codex:accounts-changed', accountsChanged('codex')), on('sync:assistant:accounts-changed', accountsChanged(null))];
 
   return {
     el: root,
@@ -989,6 +1088,6 @@ export function createBrainPicker(host, hooks = {}) {
     mountEmptyProject,
     setBrain() { render(); },
     close: closeMenu,
-    destroy() { destroyed = true; closeMenu(); Object.values(buttons).forEach((b) => b.remove()); heroProject?.remove(); heroProject = null; root.remove(); },
+    destroy() { destroyed = true; for (const off of offAccounts) { try { off?.(); } catch {} } closeMenu(); heroProjectMascot?.destroy(); Object.values(buttons).forEach((b) => b.remove()); heroProject?.remove(); heroProject = null; root.remove(); },
   };
 }

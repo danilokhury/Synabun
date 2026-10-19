@@ -173,6 +173,33 @@ export function callerDesktopGrant(): string | null {
   return sanitizeDesktopGrant(process.env.SYNABUN_DESKTOP_GRANT);
 }
 
+/** WhatsApp brain credentials look exactly like the ones the Neural Interface mints (assistant-runtime.js mintBrainCredential). */
+export function sanitizeBrainCredential(v: string | undefined | null): string | null {
+  return typeof v === 'string' && /^sbb_[A-Za-z0-9_-]{43}$/.test(v.trim()) ? v.trim() : null;
+}
+
+// The brain credential of the request being handled (whatsapp_send_file). Its own context per HTTP
+// request, never a field of the CallerIdentity: identities are shared by every request that names the
+// same X-Synabun-Terminal pin (not a secret), so a credential kept there could be read by a concurrent
+// request that only forged the pin.
+const credentialAls = new AsyncLocalStorage<string | null>();
+
+/** Run `fn` with this request's brain credential (http.ts, around every transport.handleRequest). */
+export function runWithBrainCredential<T>(credential: string | null, fn: () => T): T {
+  return credentialAls.run(credential, fn);
+}
+
+/**
+ * The WhatsApp brain credential of the current caller (whatsapp_send_file sends it on its one request
+ * and nowhere else): the request's own header over HTTP (X-Synabun-Brain-Token, the Claude brain),
+ * SYNABUN_BRAIN_TOKEN for stdio children (the Codex and OpenCode brains). Never the host process's
+ * env for an HTTP caller.
+ */
+export function callerBrainCredential(): string | null {
+  if (httpMode) return credentialAls.getStore() ?? null;
+  return sanitizeBrainCredential(process.env.SYNABUN_BRAIN_TOKEN);
+}
+
 /**
  * Role of the current caller: the ALS identity's role over HTTP (derived from
  * X-Synabun-Role on every request), or SYNABUN_ROLE for stdio children —

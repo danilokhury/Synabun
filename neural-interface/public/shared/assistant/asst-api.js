@@ -75,9 +75,9 @@ export function putRouting(patch, version) {
   return jsonFetch('/api/assistant/routing', jsonBody({ version, routing: patch || {} }, 'PUT'));
 }
 
-// ── Budget (money caps) ─────────────────────
+// ── Budget (one saved per-session amount) ─────────────────────
 
-/** → { ok, version, budget, defaults, sources, repairs, bounds, session|null, pricing, enforcement } */
+/** → { ok, version, budget, defaults, bounds, session|null, pricing, enforcement } */
 export function getBudget(sessionId = null) {
   return jsonFetch(`/api/assistant/budget${sessionId ? `?sessionId=${enc(sessionId)}` : ''}`);
 }
@@ -255,8 +255,23 @@ export function loginClaudeAccount(id) {
   return jsonFetch(`/api/assistant/claude/accounts/${enc(id)}/login`, jsonBody({}));
 }
 
+/** The account a Claude Code worker uses when its dispatch names none ('default' or null = Default). */
+export function setClaudeWorkerAccount(accountId) {
+  return jsonFetch('/api/assistant/claude/worker-account', jsonBody({ accountId: accountId || null }, 'PUT'));
+}
+
+/** Remove one of an account's credentials: 'subscription' (Claude Code's own sign-out) or 'apiKey'. */
+export function signOutClaudeAccount(id, credential) {
+  return jsonFetch(`/api/claude/accounts/${enc(id)}/auth/logout`, jsonBody({ credential }));
+}
+
 // ── Codex accounts ───────────────────────────
 
+export function createCodexAccount(label) {
+  return jsonFetch('/api/assistant/codex/accounts', jsonBody({ label }));
+}
+
+/** Older callers: create the account and open its ChatGPT sign-in at once. */
 export function startCodexAccountAdd(label) {
   return jsonFetch('/api/assistant/codex/accounts/add-start', jsonBody({ label }));
 }
@@ -267,4 +282,19 @@ export function patchCodexAccount(id, patch) {
 
 export function deleteCodexAccount(id) {
   return jsonFetch(`/api/assistant/codex/accounts/${enc(id)}`, { method: 'DELETE' });
+}
+
+/** `codex login` under the account's CODEX_HOME, in a SynaBun terminal. */
+export function loginCodexAccount(id) {
+  return jsonFetch(`/api/assistant/codex/accounts/${enc(id)}/login`, jsonBody({}));
+}
+
+/** The account a Codex worker uses when its dispatch names none ('default' or null = Default). */
+export function setCodexWorkerAccount(accountId) {
+  return jsonFetch('/api/assistant/codex/worker-account', jsonBody({ accountId: accountId || null }, 'PUT'));
+}
+
+/** Remove one of an account's credentials: 'subscription' (Codex's own sign-out) or 'apiKey'. */
+export function signOutCodexAccount(id, credential) {
+  return jsonFetch(`/api/codex/accounts/${enc(id)}/auth/logout`, jsonBody({ credential }));
 }

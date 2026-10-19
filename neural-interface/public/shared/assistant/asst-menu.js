@@ -288,7 +288,8 @@ export function openMenu(anchor, opts = {}) {
     closeMenu({ restoreFocus: !!item.restoreFocus });
     item.onSelect?.(item, node);
   };
-  buildItems(list, items, { role, onActivate: activate });
+  if (opts.content) list.appendChild(opts.content);
+  else buildItems(list, items, { role, onActivate: activate });
   if (width) menu.style.minWidth = opts.repositionOnResize ? `min(${width}px, calc(100vw - 16px))` : `${width}px`;
   if (width && opts.repositionOnResize) menu.style.width = `min(${width}px, calc(100vw - 16px))`;
   document.body.appendChild(menu);
@@ -311,6 +312,15 @@ export function openMenu(anchor, opts = {}) {
     const nodes = focusables(menu);
     const idx = nodes.indexOf(document.activeElement);
     if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeMenu({ restoreFocus: true }); return; }
+    if (role === 'dialog') {
+      if (e.key === 'Tab') {
+        const fields = [...menu.querySelectorAll('button, input')].filter(node => !node.disabled && !node.hidden);
+        const index = fields.indexOf(document.activeElement);
+        if (e.shiftKey && index <= 0) { e.preventDefault(); fields.at(-1)?.focus(); }
+        else if (!e.shiftKey && (index < 0 || index === fields.length - 1)) { e.preventDefault(); fields[0]?.focus(); }
+      }
+      return; // native number/switch keys and Enter belong to the form
+    }
     if (e.key === 'Tab') { closeMenu(); return; }
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault(); e.stopPropagation();
@@ -347,12 +357,13 @@ export function openMenu(anchor, opts = {}) {
   const onResize = () => opts.repositionOnResize ? positionMenu(menu, anchor, placement) : closeMenu();
   const onBlur = () => closeMenu();
   document.addEventListener('mousedown', onDocDown, true);
-  document.addEventListener('keydown', onKey, true);
+  const keyTarget = role === 'dialog' ? window : document;
+  keyTarget.addEventListener('keydown', onKey, true);
   window.addEventListener('resize', onResize);
   window.addEventListener('blur', onBlur);
   const cleanup = () => {
     document.removeEventListener('mousedown', onDocDown, true);
-    document.removeEventListener('keydown', onKey, true);
+    keyTarget.removeEventListener('keydown', onKey, true);
     window.removeEventListener('resize', onResize);
     window.removeEventListener('blur', onBlur);
   };
@@ -360,6 +371,7 @@ export function openMenu(anchor, opts = {}) {
   _open = { menu, anchor, onClose, cleanup };
   if (anchor.getAttribute('aria-haspopup')) anchor.setAttribute('aria-expanded', 'true');
   anchor.setAttribute('aria-controls', menu.id);
+  opts.onOpen?.(menu);
 
   const selected = list.querySelector('.asst-dd-item[data-checked="1"]:not([disabled])');
   const first = focusables(menu).find(n => n.classList.contains('asst-dd-item')) || focusables(menu)[0];

@@ -201,12 +201,14 @@ function handleSocketMessage(msg, tab, callbacks) {
     case 'verification_canceled':
     case 'account_info':
     case 'account_login_started':
+    case 'account_login_state':
     case 'account_logged_out':
     case 'account_list':
     case 'account_switched':
     case 'account_add_started':
     case 'account_removed':
     case 'account_renamed':
+    case 'account_state':
     case 'config_data':
     case 'config_requirements':
     case 'experimental_features':

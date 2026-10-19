@@ -29,6 +29,9 @@ import { emit, on, state as appState } from '../state.js';
 import { storage } from '../storage.js';
 import { KEYS } from '../constants.js';
 import { t } from '../i18n.js';
+// The account words of the brain picker and the accounts manager (account-view.js) in the page's language.
+// Here, not in those modules: node tests load them, and i18n.js reads the page's storage.
+import '../account-i18n.js';
 import { forgetGreeting, mountGreeting } from '../greeting/greeting-card.js';
 import { notify, NOTIF_TYPE } from '../ui-notifications.js';
 import { getProviderMeta } from '../provider-icons.js';
@@ -51,7 +54,7 @@ import { createAgentsDock } from './asst-agents-dock.js';
 import { createUsageGauge } from './asst-usage.js';
 import { closeMenu, isMenuOpen, openMenu } from './asst-menu.js';
 import { createRouteModeControl, openModelsManager, openRoutesEditor, refreshModelsManager, renderRouteCard, routeModeLabel } from './asst-route.js';
-import { budgetChipText, budgetTone, openBudgetEditor } from './asst-budget.js';
+import { budgetChipText, budgetSpendText, budgetTone, closeBudgetEditor, createBudgetController, mountBudgetChip, openBudgetEditor } from './asst-budget.js';
 import { computerRemoteView, createComputerPanel, createComputerToggle, normalizeComputerRemote, openFrameLightbox, closeFrameLightbox, requestDesktopStop } from './asst-computer.js';
 import {
   applyLimit, applyLimitPacket, applyUsagePacket, brainLabel, createRenameWriter, createTabState, DEFAULT_ROUTE_MODE, deserializeTabState, fmtCost, fmtRunLine, limitExpiresIn, limitNoticeText, modelShortName,
@@ -365,11 +368,11 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
   }
 
   function renderCost() {
-    // The server's budget view (brain + agents, the caps) when it sends one.
-    const budget = st.budget && Number.isFinite(Number(st.budget.totalUsd)) ? st.budget : null;
-    const total = budget ? Number(budget.totalUsd) : totalCost();
-    costEl.textContent = fmtCost(total);
-    costEl.hidden = !(total > 0);
+    // The confirmed SessionBudget includes both brain and worker spend.
+    const budget = st.budget && Number.isFinite(Number(st.budget.spentUsd)) ? st.budget : null;
+    const total = budget ? Number(budget.spentUsd) : totalCost();
+    costEl.textContent = budget ? budgetSpendText(budget, { t }) : fmtCost(total);
+    costEl.hidden = !budget && !(total > 0);
     const tone = budgetTone(budget);
     if (tone && tone !== 'ok') costEl.dataset.tone = tone;
     else delete costEl.dataset.tone;
@@ -379,6 +382,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
         ? tt('assistant.topbar.costSplit', 'Session {session} · agents {agents}', { session: fmtCost(st.costUsd || 0), agents: fmtCost(st.dispatchUsd) })
         : tt('assistant.topbar.cost', 'Session cost');
     costEl.setAttribute('data-tooltip', tip);
+    costEl.setAttribute('aria-label', `${tt('assistant.budget.title', 'Budget')}: ${tip}`);
   }
 
   function brainModelLabel() {
@@ -441,6 +445,12 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
   });
 
   // ── Renderer ──
+  let emptyBudgetChip = null;
+  const budgetController = createBudgetController({ t, sessionId, onSaved: (data) => {
+    if (destroyed) return;
+    if (data?.session) st.budget = data.session;
+    renderCost();
+  } });
   const renderer = createRenderer(transcriptEl, {
     t,
     providerIcon,
@@ -463,6 +473,16 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     emptySuggestions: () => emptySuggestions(),
     // "Choose a project" in the empty state is the toolbar's Working project field (asst-brain-picker.js).
     mountEmptyProject: (slot) => picker.mountEmptyProject(slot),
+    mountEmptyBudget: (slot) => {
+      emptyBudgetChip?.destroy();
+      emptyBudgetChip = mountBudgetChip(slot, budgetController, { t, mascot: () => director });
+      return emptyBudgetChip.el;
+    },
+    unmountEmptyControls: () => {
+      picker.mountEmptyProject(null);
+      emptyBudgetChip?.destroy();
+      emptyBudgetChip = null;
+    },
     onSuggestion: (template) => composer.fillTemplate(template),
     heroOrigin: () => { try { return host.takeHeroOrigin?.() || null; } catch { return null; } },
     onMascotChange: () => director?.retarget(),
@@ -549,7 +569,9 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
   // Model · effort · permission mode · account sit in the composer row next to attach; project and MCP in the toolbar.
   const picker = createBrainPicker({ brain: composer.el.querySelector('.asst-composer-brain'), context: barGroups.context }, {
     t,
+    mascot: () => director,
     getBrain: () => st.brain,
+    getRunning: () => st.running,
     onChange: (next, meta) => applyBrain(next, meta),
     onAddAccount: (provider) => openAccountsManager({ provider, ...accountHooks() }).openAdd(),
     onManageAccounts: (provider) => openAccountsManager({ provider, ...accountHooks() }),
@@ -625,7 +647,10 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
   function fetchUsage() {
     const seq = ++usageFetchSeq;
     getAssistantSessionUsage(sessionId).then((data) => {
-      if (!destroyed && seq === usageFetchSeq && data?.ok && data.usage) applyUsage(data.usage);
+      if (!destroyed && seq === usageFetchSeq && data?.ok) {
+        if (data.budget) budgetController.receiveSession(data.budget);
+        if (data.usage) applyUsage(data.usage);
+      }
     }).catch(() => { /* older servers do not expose usage */ });
   }
   function applyUsage(packet) {
@@ -813,6 +838,9 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
       case 'assistant:mailbox':
         renderer.appendMailbox(packet.items || packet.events || packet.mailbox || []);
         return;
+      case 'assistant:budget':
+        budgetController.receiveSession(packet.budget);
+        return;
       case 'assistant:cost':
         applyCost(packet);
         return;
@@ -885,7 +913,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     if (session != null) st.costUsd = session;
     else if (!packet?.runId && num(packet?.costUsd) != null) st.costUsd = num(packet.costUsd);
     if (num(packet?.dispatchUsd) != null) st.dispatchUsd = num(packet.dispatchUsd);
-    if (packet?.budget && typeof packet.budget === 'object') st.budget = packet.budget;
+    if (packet?.budget && typeof packet.budget === 'object') budgetController.receiveSession(packet.budget);
     if (typeof packet?.brainMetered === 'boolean') st.brainMetered = packet.brainMetered;
     if (packet?.runId && num(packet.costUsd) != null) dock.patchRun(packet.runId, { costUsd: num(packet.costUsd) });
     if (session != null) st.serverCost = true;
@@ -905,7 +933,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
       const next = normalizeBrain({ ...st.brain, provider: meta.brain, model: meta.model ?? st.brain.model, effort: meta.effort ?? st.brain.effort, accountId: meta.accountId ?? st.brain.accountId, mcpProfile: meta.mcpProfile ?? st.brain.mcpProfile, project: meta.cwd ?? st.brain.project });
       if (JSON.stringify(next) !== JSON.stringify(st.brain)) { st.brain = next; picker.render(); host.setBrain?.(next); persist(); }
     }
-    if (meta.budget && typeof meta.budget === 'object') st.budget = meta.budget;
+    if (meta.budget && typeof meta.budget === 'object') budgetController.receiveSession(meta.budget);
     if (Number.isFinite(Number(meta.costUsd))) { st.costUsd = Number(meta.costUsd); renderCost(); }
     if (meta.providerSessionId) st.providerSessionId = meta.providerSessionId;
     if (meta.routing && typeof meta.routing === 'object') {
@@ -1468,13 +1496,13 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     if (meta.silent) return;
     if (meta.requiresSwitch) {
       const b = st.brain;
-      sock.send({ type: 'switch_brain', brain: b.provider, model: b.model || undefined, effort: b.effort || undefined, accountId: b.accountId || undefined, mcpProfile: b.mcpProfile || undefined, cwd: b.project || undefined, agent: b.agent || undefined, permissionMode: b.permissionMode, planMode: b.planMode === true });
+      if (!meta.restartBrain) sock.send({ type: 'switch_brain', brain: b.provider, model: b.model || undefined, effort: b.effort || undefined, accountId: b.accountId || undefined, mcpProfile: b.mcpProfile || undefined, cwd: b.project || undefined, agent: b.agent || undefined, permissionMode: b.permissionMode, planMode: b.planMode === true });
       renderer.appendDivider(`${tt('assistant.status.brain', 'brain')} → ${brainLabel(b)}`);
       renderer.forgetSeen(); // the new brain's ids start over
     } else if (before.permissionMode !== st.brain.permissionMode || !!before.planMode !== !!st.brain.planMode) {
       sock.send({ type: 'set_permission_mode', mode: st.brain.permissionMode, planMode: st.brain.planMode === true });
     }
-    patchAssistantSession(sessionId, { brain: st.brain }).catch((err) => {
+    patchAssistantSession(sessionId, { brain: st.brain, ...(meta.restartBrain ? { restartBrain: true } : {}) }).catch((err) => {
       // Refused (a model disabled in Assistant → Models): undo, so the refused
       // brain is neither shown nor saved as the last used one — the next start
       // would ask for it again. A brain switch already got the error on the socket.
@@ -1653,7 +1681,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     items.push({ id: 'compact', label: tt('assistant.topbar.compact', 'Compact context'), onSelect: () => compact() });
     if (routingAvailable()) items.push({ id: 'routes', label: tt('assistant.routes.editor', 'Model routes…'), icon: ICON_ROUTE, onSelect: () => openRoutes() });
     items.push({ id: 'models', label: tt('assistant.models.menu', 'Models…'), onSelect: () => openModels() });
-    items.push({ id: 'budget', label: tt('assistant.budget.menu', 'Budget…'), desc: st.budget ? `${fmtCost(st.budget.totalUsd) || '$0.00'} / ${fmtCost(st.budget.hardUsd)}` : '', onSelect: () => openBudget() });
+    items.push({ id: 'budget', label: tt('assistant.budget.menu', 'Budget…'), desc: budgetSpendText(st.budget, { t }), onSelect: () => openBudget() });
     items.push({ id: 'clear', label: tt('assistant.topbar.clear', 'Clear transcript'), onSelect: () => clearTranscript() });
     items.push({ id: 'help', label: tt('assistant.topbar.helpShortcuts', 'Help & shortcuts'), onSelect: () => openHelp() });
     items.push({ kind: 'separator' });
@@ -1707,12 +1735,12 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     }
   }
 
-  // Assistant → Budget: the money caps (applied live by the server).
+  // Assistant → Budget: one saved amount plus the current session's live split.
   function openBudget() {
     openBudgetEditor({
       t,
       sessionId,
-      brainMetered: st.brainMetered !== false && st.brain?.provider !== 'codex',
+      controller: budgetController,
       onToast: toast,
       onSaved: (res) => { if (res?.session) { st.budget = res.session; renderCost(); } },
     }).catch(() => {});
@@ -1821,6 +1849,8 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
 
   // ── Bus ──
   unsubs.push(on('sync:assistant:session-updated', (msg) => { const s = msg?.session || msg; if (s?.id === sessionId) applySessionMeta(s); }));
+  unsubs.push(on('sync:assistant:budget', (msg) => { if ((msg?.assistantSessionId || msg?.sessionId) === sessionId) budgetController.receiveSession(msg.budget); }));
+  unsubs.push(on('sync:assistant:budget-changed', () => budgetController.load()));
   unsubs.push(on('sync:assistant:cost', (msg) => { if (!msg?.assistantSessionId || msg.assistantSessionId === sessionId) applyCost(msg); }));
   unsubs.push(on('sync:assistant:mailbox', (msg) => { if (msg?.assistantSessionId === sessionId) renderer.appendMailbox(msg.items || msg.events || []); }));
   unsubs.push(on('sync:assistant:permission-request', (msg) => {
@@ -1891,6 +1921,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     sock.connect();
   });
   fetchUsage();
+  budgetController.load();
 
   const controller = {
     sessionId,
@@ -1934,6 +1965,9 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
       if (persistTimer) { clearTimeout(persistTimer); persistTimer = null; }
       clearTimeout(announceTimer);
       if (replay) { clearTimeout(replay.timer); replay = null; }
+      closeBudgetEditor(budgetController);
+      emptyBudgetChip?.destroy();
+      budgetController.destroy();
       director.destroy();
       usage.destroy();
       clearTimeout(limitTimer);

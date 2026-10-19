@@ -4,7 +4,8 @@
 // terminal happened to launch the SynaBun server.
 
 import { readFileSync } from 'node:fs';
-import { basename } from 'node:path';
+import { basename, win32 } from 'node:path';
+import { pathEnvValue, withPathEnv } from './augmented-path.js';
 
 // Identity/session variables that belong to the terminal or IDE the SERVER was
 // started from. Leaking them makes CLIs believe they run inside VS Code, tmux,
@@ -62,7 +63,9 @@ export function buildTerminalEnv({
   if (platform !== 'win32' && !env.LANG && !env.LC_ALL && !env.LC_CTYPE) {
     env.LANG = localeFallback;
   }
-  return { ...env, ...(profileEnv || {}), ...(extraEnv || {}) };
+  const merged = { ...env, ...(profileEnv || {}), ...(extraEnv || {}) };
+  const pathValue = [extraEnv, profileEnv, base].find(layer => Object.keys(layer || {}).some(key => key.toUpperCase() === 'PATH'));
+  return withPathEnv(merged, pathEnvValue(pathValue || {}), platform);
 }
 
 export function shellSupportsLoginCommand(shellPath) {
@@ -80,7 +83,12 @@ export function interactiveShellArgs(platform = process.platform) {
  * (PATH from .zprofile, brew shellenv) before the CLI starts.
  */
 export function cliWrapperArgs(shellPath, cmd, platform = process.platform) {
-  if (platform === 'win32') return ['/k', cmd];
+  if (platform === 'win32') {
+    const name = win32.basename(shellPath).toLowerCase();
+    if (/^(powershell|pwsh)(\.exe)?$/.test(name)) return ['-NoExit', '-Command', cmd];
+    if (/^(ba|z|fi)?sh(\.exe)?$/.test(name)) return ['-lc', `${cmd}; exec "${shellPath.replace(/\\/g, '/')}" -l`];
+    return ['/d', '/s', '/k', cmd];
+  }
   if (shellSupportsLoginCommand(shellPath)) return ['-lc', `${cmd}; exec $SHELL -l`];
   return ['-c', `${cmd}; exec $SHELL`];
 }

@@ -27,12 +27,14 @@ export function claudeSdkMode(approvalMode, planMode) {
 }
 
 // Never gate these behind a permission card: routing must not wait on an
-// approval prompt, and computer use is fully autonomous (its guards live in
-// the desktop service, not in the host's permission layer).
+// approval prompt, computer use is fully autonomous (its guards live in
+// the desktop service, not in the host's permission layer), and a file the
+// user asked for on WhatsApp is the turn's reply (the WhatsApp host checks it).
 export const CLAUDE_BRAIN_ALLOWED_TOOLS = Object.freeze([
   'mcp__SynaBun__agent_route', 'mcp__SynaBun__agent_catalog', 'mcp__SynaBun__agent_status', 'mcp__SynaBun__agent_read',
   'mcp__SynaBun__agent_list', 'mcp__SynaBun__agent_wait', 'mcp__SynaBun__agent_usage',
   'mcp__SynaBun__computer', 'mcp__SynaBun__computer_apps', 'mcp__SynaBun__computer_ax', 'mcp__SynaBun__computer_status',
+  'mcp__SynaBun__whatsapp_send_file',
 ]);
 
 /**
@@ -85,6 +87,10 @@ export function createClaudeBrain({ session, sink, deps = {}, persona = '', hook
   const inner = new deps.ClaudeSession(socket, {
     ownerKey: session.id,
     windowId,
+    // The Claude account the brain runs under: the bridge gives its process that
+    // account's credential (lib/claude-accounts.js launchFor(): its subscription
+    // login or its API key, nothing inherited), and refuses an account that is gone.
+    claudeAccountId: brain.accountId || 'default',
     sessionId: providerSessionId,
     model: brain.model || null,
     effort: brain.effort || null,
@@ -117,6 +123,11 @@ export function createClaudeBrain({ session, sink, deps = {}, persona = '', hook
       'X-Synabun-Role': 'assistant', 'X-Synabun-Terminal': session.id, 'X-Synabun-Memory-Session': session.id,
       ...(deps.desktopGrant ? { 'X-Synabun-Desktop-Grant': deps.desktopGrant } : {}),
       ...mcpHeaders,
+      // A WhatsApp conversation's brain credential (whatsapp_send_file). The header names the variable and
+      // the CLI expands it from its own environment (below): the MCP config is on its command line, which every
+      // account of the computer can read, an environment only this user's processes. The in-process MCP server
+      // keeps the value for the request it arrived with, and sends it on the file route alone. Last, so nothing replaces it.
+      ...(deps.brainCredential ? { 'X-Synabun-Brain-Token': '${SYNABUN_BRAIN_TOKEN}' } : {}),
     },
     // A remote (WhatsApp) session never pre-approves computer use: its PreToolUse hook refuses, asks or allows each call.
     allowedTools,
@@ -132,6 +143,8 @@ export function createClaudeBrain({ session, sink, deps = {}, persona = '', hook
       ...(typeof deps.claudeAccountEnv === 'function' ? deps.claudeAccountEnv(brain.accountId) : {}),
       SYNABUN_ASSISTANT_SESSION: String(session.id),
       ...(deps.userContextThreads === true ? { SYNABUN_ASSISTANT_THREADS: '1' } : {}),
+      // The value of the X-Synabun-Brain-Token header above (a WhatsApp conversation's brain only).
+      ...(deps.brainCredential ? { SYNABUN_BRAIN_TOKEN: deps.brainCredential } : {}),
     },
     maxBudgetUsd: Number(deps.maxBudgetUsd) > 0 ? Number(deps.maxBudgetUsd) : undefined,
   });

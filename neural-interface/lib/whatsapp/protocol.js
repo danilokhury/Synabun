@@ -9,12 +9,14 @@
 //                 'inbound'|'ignored'|'throttled'|'fatal'|'log', ...}
 //
 // Addressing: no op that makes the host talk to WhatsApp carries an address.
-// send/react/presence/read always reach the bound owner (sendToOwner in
-// host-core.js is the only sendMessage call site) and validateOp rejects any
+// send/send_file/react/presence/read always reach the bound owner (sendToOwner
+// in host-core.js is the only sendMessage call site) and validateOp rejects any
 // address-shaped key on them. Events never carry a JID or a phone number: the
 // schemas below are closed, so a stray field fails validation instead of
 // leaking. The single exception is the claim_start reply, whose wa.me link
 // holds the dedicated account's own number for the local settings tab.
+
+import path from 'node:path';
 
 export const PROTOCOL_VERSION = 1;
 
@@ -28,6 +30,8 @@ export const OP = Object.freeze({
   CLAIM_CANCEL: 'claim_cancel',
   OWNER_RESET: 'owner_reset',
   SEND: 'send',
+  // A local file to the owner as a WhatsApp attachment (local-file.js reads and checks it in the host).
+  SEND_FILE: 'send_file',
   REACT: 'react',
   PRESENCE: 'presence',
   READ: 'read',
@@ -52,7 +56,12 @@ export const EV = Object.freeze({
   LOG: 'log',
 });
 
-/** conn.state values. `held` is set by the manager (crash breaker), never by the host. */
+/**
+ * conn.state values. `held` is set by the manager (a host speaking another
+ * IPC protocol: an update installed while SynaBun ran), never by the host.
+ * The host no longer stops in `replaced` or `forbidden` for a saved session
+ * (440 and 403 are retried: CONN_WARNINGS); only a link attempt still ends there.
+ */
 export const CONN = Object.freeze({
   IDLE: 'idle',
   UNLINKED: 'unlinked',
@@ -91,6 +100,10 @@ export const ERR = Object.freeze({
   PAUSED: 'PAUSED',
   THROTTLED: 'THROTTLED',
   TOO_LONG: 'TOO_LONG',
+  // send_file (local-file.js): a protected location, over the size limit, or not a readable regular file.
+  FILE_FORBIDDEN: 'FILE_FORBIDDEN',
+  FILE_TOO_LARGE: 'FILE_TOO_LARGE',
+  FILE_INVALID: 'FILE_INVALID',
   BAD_TARGET: 'BAD_TARGET',
   BAD_PHONE: 'BAD_PHONE',
   CLAIM_INACTIVE: 'CLAIM_INACTIVE',
@@ -103,15 +116,46 @@ export const ERR = Object.freeze({
   INTERNAL: 'INTERNAL',
 });
 
+/**
+ * Disconnect codes a saved session keeps retrying at the longest delay while
+ * Settings shows a warning: 440 connectionReplaced (another copy uses the
+ * session) and 403 forbidden (the account is refused). The host picks the
+ * delay by this table (baileys-adapter.js classifyDisconnect), the service the
+ * warning, from conn.lastDisconnect.code.
+ */
+export const CONN_WARNINGS = Object.freeze({ 440: 'replaced', 403: 'forbidden' });
+
 export const LIMITS = Object.freeze({
   MAX_TEXT: 3500,
   MAX_INBOUND_TEXT: 8192,
   MAX_IMAGE_BYTES: 5242880,
   MAX_IMAGES: 4,
   MAX_READ_IDS: 20,
+  // Voice notes (transcription.js): declared and actual size, declared and decoded duration.
+  MAX_AUDIO_BYTES: 20 * 1024 * 1024,
+  MAX_AUDIO_SECONDS: 600,
+  // send_file (local-file.js): the path and caption the op takes; a photo, video or audio file above
+  // MAX_FILE_MEDIA_BYTES goes as a document; nothing above MAX_FILE_BYTES is read.
+  MAX_FILE_PATH: 2048,
+  MAX_FILE_CAPTION: 1024,
+  MAX_FILE_MEDIA_BYTES: 16 * 1024 * 1024,
+  MAX_FILE_BYTES: 100 * 1024 * 1024,
 });
 
-/** Keys that name a WhatsApp recipient. None may appear on send/react/presence/read. */
+/** send_file `as`: auto (by extension), or the form asked for (a native form must match the extension). */
+export const FILE_SEND_AS = Object.freeze(['auto', 'document', 'image', 'video', 'audio']);
+
+/**
+ * The text of a transcribed voice note starts with this marker, then the
+ * transcript (one line), then "\n" and the caption when there is one. The
+ * inbound message also carries `voice: true`: spoken words are an ordinary
+ * message, never a command, an ALLOW code or the answer to an approval.
+ */
+export const VOICE_MARKER = '[Voice note transcript]';
+/** transcriptionLanguage: 'auto' (whisper.cpp detects it) or a 2-3 letter lowercase language code. */
+export const TRANSCRIPTION_LANGUAGE_RE = /^(?:auto|[a-z]{2,3})$/;
+
+/** Keys that name a WhatsApp recipient. None may appear on send/send_file/react/presence/read. */
 export const ADDRESS_KEYS = Object.freeze(['jid', 'to', 'remoteJid', 'chat', 'number', 'participant', 'recipient']);
 
 /** Status reactions the bridge may set on an owner message (null clears it). */
@@ -127,7 +171,7 @@ export const MODES = Object.freeze(['self', 'dedicated']);
 export const SELF_TRIGGERS = Object.freeze(['all', 'prefix']);
 export const DEFAULT_PREFIX = 'sb';
 
-const ADDRESSLESS_OPS = new Set([OP.SEND, OP.REACT, OP.PRESENCE, OP.READ]);
+const ADDRESSLESS_OPS = new Set([OP.SEND, OP.SEND_FILE, OP.REACT, OP.PRESENCE, OP.READ]);
 const MSG_ID_RE = /^[A-Za-z0-9._:+/=-]{1,128}$/;
 const PREFIX_RE = /^[^\s]{1,16}$/;
 
@@ -180,10 +224,21 @@ function checkObject(v, spec) {
 
 // ── Prefs (configure) ──
 
+// A tool path the user set in Settings: '' (found by itself) or an absolute path. Whether the file
+// exists and runs is checked where it is used (transcription.js), right before it runs.
+const toolPath = () => (v, p) => (!p || v === undefined ? null
+  : typeof v !== 'string' || v.length > 4096 || /[\u0000-\u001f]/.test(v) || (v !== '' && !path.isAbsolute(v)) ? "must be '' or an absolute path" : null);
+
 const PREFS_SPEC = {
   mode: t.optOneOf(MODES),
   selfTrigger: t.optOneOf(SELF_TRIGGERS),
   prefix: (v, p) => (!p || v === undefined ? null : typeof v !== 'string' || !PREFIX_RE.test(v) ? 'must be 1-16 non-space characters' : null),
+  // Voice notes (transcription.js); a host that was never configured transcribes nothing.
+  transcriptionEnabled: t.optBool(),
+  transcriptionLanguage: (v, p) => (!p || v === undefined ? null : typeof v !== 'string' || !TRANSCRIPTION_LANGUAGE_RE.test(v) ? "must be 'auto' or a 2-3 letter language code" : null),
+  transcriptionEnginePath: toolPath(),
+  transcriptionModelPath: toolPath(),
+  transcriptionFfmpegPath: toolPath(),
 };
 export const PREF_KEYS = Object.freeze(Object.keys(PREFS_SPEC));
 
@@ -212,6 +267,7 @@ const OP_SPECS = {
   [OP.CLAIM_CANCEL]: {},
   [OP.OWNER_RESET]: {},
   [OP.SEND]: { text: t.str(LIMITS.MAX_TEXT * 4), replyTo: (v, p) => (!p || v === undefined || v === null ? null : typeof v !== 'string' || !MSG_ID_RE.test(v) ? 'must be a message id' : null) },
+  [OP.SEND_FILE]: { path: t.str(LIMITS.MAX_FILE_PATH), caption: t.optStr(LIMITS.MAX_FILE_CAPTION), as: t.optOneOf(FILE_SEND_AS) },
   [OP.REACT]: { id: t.msgId(), reaction: (v, p) => (!p ? 'is required' : v === null || Object.hasOwn(REACTIONS, v) ? null : `must be one of ${Object.keys(REACTIONS).join('|')} or null`) },
   [OP.PRESENCE]: { state: t.oneOf(['composing', 'paused']) },
   [OP.READ]: {
@@ -294,6 +350,10 @@ export const INBOUND_SPEC = {
   owner: (v, p) => (!p ? 'is required' : v === true ? null : 'must be true'),
   // Delivered after an offline spell (messages.upsert 'append'); `ts` says when it was sent.
   backlog: t.optBool(),
+  // A voice note transcribed on this computer: `text` is VOICE_MARKER + the transcript (+ "\n" + the caption).
+  voice: t.optBool(),
+  // …of an audio file, not a note recorded in WhatsApp: its words may be anyone's (the turn is capped like a picture's).
+  audioFile: t.optBool(),
 };
 
 const EVENT_SPECS = {

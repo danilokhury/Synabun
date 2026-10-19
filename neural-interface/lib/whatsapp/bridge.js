@@ -13,6 +13,14 @@
 // owner's messages; a synabun.mailbox event is RUNNING(mailbox), a turn the
 // CLI starts itself RUNNING(background), and a turn nobody here submitted (a
 // prompt typed on the desktop) RUNNING(external) — tracked, never forwarded.
+// A task the router continues on another model (a synabun.continuation event:
+// a route decided automatically, by a remembered route, or on a card) answers
+// where its prompt came from: RUNNING(followup) for a prompt from the phone,
+// whose answer is sent once as the reply (not an update, whatever "Forward
+// background results" says), RUNNING(external) for any other. A follow-up is
+// how a turn's answer is delivered, nothing more: what may run unasked or be
+// approved is the runtime's (a continuation is its own turn, never the owner's
+// message: computer use asks once in it) and the owner's typed answers.
 // The turn object exists before submit is called: brain events can arrive
 // before it resolves.
 //
@@ -23,8 +31,9 @@
 // closes WITHOUT being granted (denied, cancelled) and the message goes to the
 // Assistant as the next prompt. An approval is only ever granted by a "yes"
 // the bridge matched on a message the owner typed, aimed at that request while
-// it is open: never by the model, by a forwarded message, by a reply that
-// quotes something else or by anything that merely looks like an answer.
+// it is open: never by the model, by a forwarded message, by a voice note (its
+// transcript is an ordinary message, `voice: true`), by a reply that quotes
+// something else or by anything that merely looks like an answer.
 // Messages that arrive while a turn runs wait as one merged prompt and go in
 // as soon as it ends; a queue watch lets go of a turn whose end never came.
 // A request that appears while such a message waits closes at once, unseen and
@@ -87,14 +96,28 @@ export const BRIDGE_LIMITS = Object.freeze({
   policyTickMs: 30_000,
 });
 
+/**
+ * Why a voice note was not transcribed (the host's unsupported.reason), told to the phone once per
+ * reason every unsupportedEveryMs. Anything else unsupported gets the generic line.
+ */
+export const AUDIO_NOT_TRANSCRIBED = Object.freeze({
+  transcription_disabled: 'Voice notes are not transcribed: that is turned off in Settings → WhatsApp on your computer. Type your message instead.',
+  transcription_unavailable: 'I can\'t transcribe voice notes yet: this computer needs whisper.cpp, its speech model and FFmpeg (Settings → WhatsApp says what is missing). Type your message instead.',
+  too_large: 'That voice note is too large for me to transcribe (20 MB at most). Send a shorter one, or type it.',
+  too_long: 'That voice note is too long for me to transcribe (10 minutes at most). Send a shorter one, or type it.',
+  stale: 'That voice note was sent a while ago, so I did not transcribe it. Send it again if you still need it.',
+  transcription_failed: 'I couldn\'t transcribe that voice note. Try again, or type your message.',
+});
+
 /** Send refusals that mean "not now": the reply waits in the outbox for the next connect. */
 const RESEND_ON_CONNECT = /DISCONNECT|NOT_CONNECTED|OFFLINE|RECONNECT|CLOSED|TIMEOUT|HOST_UNAVAILABLE/i;
 /**
  * What happens to a reply the transport refused: 'connect' (it waits for the
  * next connect), 'later' (THROTTLED: sent again after its retryAfterMs) or
- * 'drop'. PAUSED (an owner anomaly paused sending) and HELD (the connector
- * kept crashing) drop it: the service records why in the activity log and the
- * Settings tab shows the state.
+ * 'drop'. PAUSED (an owner anomaly paused sending) and HELD (a connector
+ * process of another SynaBun version, down until a restart; a crash is not
+ * HELD: it reads HOST_UNAVAILABLE and the reply waits) drop it: the service
+ * records why in the activity log and the Settings tab shows the state.
  */
 export function outboxPlan(code) {
   const value = String(code || '');
@@ -104,7 +127,7 @@ export function outboxPlan(code) {
 
 const DEFAULT_CONFIG = Object.freeze({
   enabled: true, level: 'ask', progress: 'key', forwardBackground: true, replyLabel: null, maxMessages: 3,
-  rotation: 'idle6h', strictWorkerApprovals: false, computerUse: false, mode: 'self', paused: false, pausedBy: null, autonomousUntil: null,
+  rotation: 'idle6h', strictWorkerApprovals: false, computerUse: false, mode: 'self', paused: false, pausedBy: null,
 });
 const ALREADY_ANSWERED = new Set(['CONTROL_UNKNOWN', 'ROUTE_ALREADY_DECIDED', 'ROUTE_NOT_FOUND', 'CLARIFY_ALREADY_ANSWERED', 'CLARIFY_NOT_FOUND', 'PERMISSION_ALREADY_RESOLVED', 'NO_PENDING_REQUEST', 'RUN_NOT_FOUND']);
 const ROUTE_DONE_PHASES = new Set(['decided', 'auto', 'expired', 'declined', 'cancelled']);
@@ -191,6 +214,8 @@ export function createWhatsAppBridge({
     outboxTimer: null,            // a THROTTLED reply's retry
     staleSkipped: 0,
     staleTimer: null,
+    stoppedAt: 0,                 // when the owner's last /stop was sent (its message time)
+    stopLateNoted: false,         // one note per /stop for what was sent before it and arrived after it
     unsupportedAt: new Map(),
     minuteWindow: { start: 0, count: 0, noticed: false },
     dayWindow: { start: 0, count: 0, noticed: false },
@@ -435,14 +460,16 @@ export function createWhatsAppBridge({
     state.brainApplied = { sessionId, signature };
     persistBridgeState();
   }
+  // Autonomous has no time limit on WhatsApp: the policy carries no autonomousUntil (lib/remote-policy.js effectiveLevel).
+  // WhatsApp turned off on this computer (`enabled: false`, which also stops the connector) ends computer use like the switch.
   function remoteFromConfig(cfg = readConfig()) {
-    return { channel: 'whatsapp', level: cfg.level || 'ask', strictWorkerApprovals: cfg.strictWorkerApprovals === true, autonomousUntil: cfg.autonomousUntil || null, paused: state.paused, computerUse: cfg.computerUse === true && state.computerEnded !== true };
+    return { channel: 'whatsapp', level: cfg.level || 'ask', strictWorkerApprovals: cfg.strictWorkerApprovals === true, paused: state.paused, computerUse: cfg.computerUse === true && cfg.enabled !== false && state.computerEnded !== true };
   }
   /** The policy of one of our sessions: computer use is the current conversation's alone. */
   function remoteFor(id, base = remoteFromConfig()) {
     return id === state.sessionId ? base : { ...base, computerUse: false };
   }
-  const policySignature = (remote) => JSON.stringify([remote.level, remote.strictWorkerApprovals, remote.autonomousUntil, remote.paused, remote.computerUse]);
+  const policySignature = (remote) => JSON.stringify([remote.level, remote.strictWorkerApprovals, remote.paused, remote.computerUse]);
   async function createSession() {
     const rt = runtime();
     if (!rt?.createSession) throw Object.assign(new Error('The Assistant is not available right now.'), { code: 'RUNTIME_UNAVAILABLE' });
@@ -500,9 +527,8 @@ export function createWhatsAppBridge({
   // ── policy ─────────────────────────────────────────────────────────────────
   /**
    * Keep the level of every WhatsApp session in line with the config (level,
-   * strict approvals, the autonomous window, pause). A change — or an
-   * autonomous window that just ran out — re-registers, which makes the
-   * runtime re-apply the clamp and stop runs above it.
+   * strict approvals, pause, computer use). A change re-registers, which makes
+   * the runtime re-apply the clamp and stop runs above it.
    */
   function syncPolicies() {
     const cfg = readConfig();
@@ -652,7 +678,8 @@ export function createWhatsAppBridge({
       if (turn.kind === 'followup') state.followUp = null;
       else { presence('paused'); state.inflight = null; persistBridgeState(); react(turn.sourceIds, 'done'); }
     } else if (turn.kind === 'followup') {
-      // The task the phone decided on a card: its answer is a reply, not an update.
+      // The task the phone decided on a card, or that its prompt carried on to another model: its answer
+      // is a reply, not an update. Said once: the turn is gone already, a repeated end finds nothing.
       state.followUp = null;
       const text = finalText(turn);
       if (outcome === 'failed') await say(`Something went wrong: ${String(message || turn.resultError || 'the turn failed').slice(0, 400)}`, { maxChunks: 1 });
@@ -766,6 +793,12 @@ export function createWhatsAppBridge({
       case 'synabun.user_prompt':
         // Our own prompt (the WhatsApp turn exists already); any other is someone else's turn.
         if (ev.origin !== 'whatsapp' && !state.turns.has(sessionId)) makeTurn(sessionId, 'external');
+        return;
+      case 'synabun.continuation':
+        // The router carries a task on (another model, the same conversation), before any of its output.
+        // A prompt from the phone: its answer is the reply to the phone. Anything else stays as before:
+        // someone else's turn, unless a card the phone saw was just decided (ensureTurn).
+        if (!state.turns.has(sessionId)) ensureTurn(sessionId, ev.origin === 'whatsapp' ? 'followup' : 'external');
         return;
       case 'synabun.mailbox': {
         const items = Array.isArray(ev.items) ? ev.items : [];
@@ -1031,6 +1064,10 @@ export function createWhatsAppBridge({
       case 'help': await say(HELP_TEXT, { maxChunks: 2 }); return;
       case 'status': await say(statusText(statusSnapshot()), { maxChunks: 1 }); return;
       case 'stop': {
+        // What was sent before this /stop and arrives after it (a voice note still being transcribed, and
+        // what waited behind it) is not acted on, as /stop clears what already waits in line.
+        state.stoppedAt = Math.max(state.stoppedAt, tsMs(message.ts, now()));
+        state.stopLateNoted = false;
         const { stoppedRuns, clearedQueue } = await stopEverything({ reason: 'phone' });
         const n = stoppedRuns + clearedQueue;
         await say(`Stopped. Cancelled ${n} task${n === 1 ? '' : 's'}.`, { maxChunks: 1 });
@@ -1067,18 +1104,14 @@ export function createWhatsAppBridge({
   function statusSnapshot() {
     const view = state.sessionId ? sessionView(state.sessionId) : null;
     const turn = state.sessionId ? state.turns.get(state.sessionId) : null;
-    const rt = runtime();
-    let brainCapUsd = null;
-    try { brainCapUsd = rt?.brainCapUsd?.() ?? null; } catch { brainCapUsd = null; }
     const cfg = readConfig();
     const current = currentCard();
     return {
       connected: isConnected(), sessionId: state.sessionId, title: view?.title || null, brain: view?.brain || null,
       running: !!turn || !!view?.running, turnKind: turn?.kind || null, queued: state.queue.length,
       pendingCards: state.cards.size, currentCard: current ? (current.kind === 'route' ? 'where to run a task' : current.kind === 'computer' ? 'controlling your Mac' : current.kind) : null,
-      budget: view?.budget || null, brainUsd: view?.costUsd ?? null, brainCapUsd,
+      budget: view?.budget || null, brainUsd: view?.costUsd ?? null,
       level: state.sessionId ? levelOf(state.sessionId) : cfg.level, paused: state.paused, pausedBy: state.pausedBy,
-      autonomousUntil: cfg.autonomousUntil || null,
     };
   }
   /** /stop and stopAll: the turn, the session's runs, open cards and the queue. */
@@ -1168,6 +1201,16 @@ export function createWhatsAppBridge({
     // `backlog`): never acted on, only counted for one note. Checked first, so a
     // backlog neither uses up the rate limits nor counts as activity.
     if (now() - tsMs(message.ts, now()) > L.staleMs) { noteStale(); return; }
+    // Sent before the owner's last /stop, delivered after it (a typed /stop does not wait for a voice note
+    // being transcribed): /stop already stopped it. A command still runs. What WhatsApp held while SynaBun was
+    // offline arrives in order and is never overtaken (a backlog is never sent ahead), so it is not affected.
+    if (state.stoppedAt && message.backlog !== true && tsMs(message.ts, now()) < state.stoppedAt && !parseCommand(message)) {
+      if (!state.stopLateNoted) {
+        state.stopLateNoted = true;
+        await say('A message you sent before /stop arrived after it, so I did not act on it. Send it again if you still need it.', { maxChunks: 1 });
+      }
+      return;
+    }
     if (rateLimited()) return;
     const activityBefore = state.lastActivityAt;
     state.lastActivityAt = now();
@@ -1178,10 +1221,12 @@ export function createWhatsAppBridge({
     const images = Array.isArray(message.images) ? message.images : [];
     if (message.unsupported && !text.trim() && !images.length) {
       const type = String(message.unsupported.type || 'this kind of');
-      const last = state.unsupportedAt.get(type) || 0;
+      const audio = type === 'audio' && Object.hasOwn(AUDIO_NOT_TRANSCRIBED, String(message.unsupported.reason)) ? AUDIO_NOT_TRANSCRIBED[message.unsupported.reason] : null;
+      const key = audio ? `audio:${message.unsupported.reason}` : type;
+      const last = state.unsupportedAt.get(key) || 0;
       if (now() - last >= L.unsupportedEveryMs) {
-        state.unsupportedAt.set(type, now());
-        await say(`I can read text and pictures for now; ${type} messages are not supported yet.`, { maxChunks: 1 });
+        state.unsupportedAt.set(key, now());
+        await say(audio || `I can read text and pictures for now; ${type} messages are not supported yet.`, { maxChunks: 1 });
       }
       return;
     }
@@ -1198,8 +1243,8 @@ export function createWhatsAppBridge({
     }
     // Something is waiting for the owner: a clear answer answers it; anything else closes it
     // without a grant and carries on as the next prompt. Only words the owner typed can answer:
-    // never a forwarded message, a picture or "//text".
-    const answerable = !images.length && command?.kind !== 'literal' && message.forwarded !== true;
+    // never a forwarded message, a picture, a voice note (its transcript) or "//text".
+    const answerable = !images.length && command?.kind !== 'literal' && message.forwarded !== true && message.voice !== true;
     if (await replyToPending(message, { answerable })) return;
     if (rotationDue(activityBefore)) state.rotateOnNextSubmit = true;
     // A request raised between that look and here is older than this message too (onCard only sees
@@ -1271,7 +1316,7 @@ export function createWhatsAppBridge({
     if (!list.length) return;
     let composed = null;
     try { composed = inbound?.composePrompt ? inbound.composePrompt(list, { rng }) : null; } catch (error) { log('whatsapp:bridge', `compose: ${error?.message || error}`); }
-    if (!composed) composed = { text: list.map((part) => String(part.text || '')).filter(Boolean).join('\n\n'), images: list.flatMap((part) => part.images || []), sourceIds: list.map((part) => part.id).filter(Boolean), untrusted: list.some((part) => part.forwarded || part.quoted) };
+    if (!composed) composed = { text: list.map((part) => String(part.text || '')).filter(Boolean).join('\n\n'), images: list.flatMap((part) => part.images || []), sourceIds: list.map((part) => part.id).filter(Boolean), untrusted: list.some((part) => part.forwarded || part.quoted || part.audioFile === true) };
     const images = Array.isArray(composed.images) ? composed.images.filter(Boolean) : [];
     const job = {
       text: String(composed.text || ''), images,
@@ -1402,22 +1447,21 @@ export function createWhatsAppBridge({
     }
     persistBridgeState();
     react(job.sourceIds, 'failed');
-    if (code === 'SESSION_BUDGET_EXCEEDED' || code === 'BRAIN_BUDGET_EXCEEDED') { await say(budgetText(code, sessionId, result.message), { maxChunks: 1 }); return; }
+    if (code === 'SESSION_BUDGET_EXCEEDED' || code === 'BRAIN_SHARE_EXHAUSTED') { await say(budgetText(code, sessionId, result.message), { maxChunks: 1 }); return; }
     if (code === 'EMPTY_PROMPT') return;
     await say(`Could not start that: ${String(result.message || code).slice(0, 400)}`, { maxChunks: 1 });
   }
-  /** Spend against the cap, and the two ways on: /new or a higher cap. Never a silent new session. */
+  /** Spend against the budget, and the two ways on: /new or a higher budget. Never a silent new session. */
   function budgetText(code, sessionId, fallback) {
     const view = sessionView(sessionId);
+    const budget = view?.budget || null;
     let line = '';
-    if (code === 'SESSION_BUDGET_EXCEEDED' && view?.budget && Number.isFinite(Number(view.budget.hardUsd))) {
-      line = `This conversation spent ${usd(view.budget.totalUsd)} of its ${usd(view.budget.hardUsd)} cap.`;
-    } else if (code === 'BRAIN_BUDGET_EXCEEDED') {
-      let cap = null;
-      try { cap = runtime()?.brainCapUsd?.() ?? null; } catch { cap = null; }
-      line = cap !== null ? `The Assistant spent ${usd(view?.costUsd)} of its ${usd(cap)} cap in this conversation.` : '';
+    if (code === 'SESSION_BUDGET_EXCEEDED' && budget && Number.isFinite(Number(budget.amountUsd))) {
+      line = `This conversation spent ${usd(budget.totalUsd)} of its ${usd(budget.amountUsd)} budget.`;
+    } else if (code === 'BRAIN_SHARE_EXHAUSTED' && budget && Number.isFinite(Number(budget.amountUsd))) {
+      line = `The Assistant's share of this conversation's ${usd(budget.amountUsd)} budget is used up.`;
     }
-    return `${line || String(fallback || 'This conversation reached its budget cap.')} Send /new to start a fresh conversation, or raise the cap in SynaBun.`;
+    return `${line || String(fallback || 'This conversation reached its budget.')} Send /new to start a fresh conversation, or raise the budget (or choose No limit) in SynaBun.`;
   }
 
   // ── lifecycle ──────────────────────────────────────────────────────────────
@@ -1484,14 +1528,14 @@ export function createWhatsAppBridge({
     persistBridgeState();
   }
 
-  // Keep the level in line with the config (Settings edits, the autonomous window running out).
+  // Keep the level in line with the config (a change that reached it without a refresh).
   state.policyTimer = T.setInterval(() => { try { runtime(); syncPolicies(); } catch {} }, L.policyTickMs);
   state.policyTimer?.unref?.();
   runtime();
 
   return {
     onInbound, onConnection, status, newSession, pause, resume, stopAll, shutdown,
-    // Settings changed (level, strict approvals, autonomous window): re-apply now instead of at the next tick.
+    // Settings changed (level, strict approvals, computer use): re-apply now instead of at the next tick.
     refresh: () => { state.policySeen.clear(); runtime(); syncPolicies(); return status(); },
     endComputerUse,
     _internals: { state, finalText, syncPolicies, drain, onPacket, brainTarget, moveOn },

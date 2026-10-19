@@ -248,6 +248,9 @@ export async function createCodexNativeLoopAdapter(options = {}) {
     collectMedia = null,
     // Assistant task runs: the browser policy's hook and the run's notes (a function: never in the state file).
     runMode = 'loop', onNote = null, browserPolicyTrust = null,
+    // Inherited variables to remove before extraEnv applies (the Codex account's launch:
+    // lib/codex-accounts.js launchFor() — inherited OpenAI/Codex credentials never reach the run).
+    unsetEnv = [],
   } = options;
   const permissionPolicy = normalizePermissionPolicy(rawPolicy);
   const capability = normalizeCapability(rawCapability);
@@ -281,7 +284,9 @@ export async function createCodexNativeLoopAdapter(options = {}) {
     // Computer-use workers: the grant unlocks the `computer` group in the MCP child.
     SYNABUN_DESKTOP_GRANT: typeof desktopGrantProvider === 'function' ? desktopGrantProvider() || undefined : undefined,
   });
-  const env = stringEnv({ ...process.env, ...pins, CODEX_HOME: codexHome, ...(browserPolicy ? { SYNABUN_BROWSER_POLICY_CWD: cwd || process.cwd() } : {}), ...stringEnv(extraEnv) });
+  const inherited = { ...process.env };
+  for (const key of Array.isArray(unsetEnv) ? unsetEnv : []) delete inherited[key];
+  const env = stringEnv({ ...inherited, ...pins, CODEX_HOME: codexHome, ...(browserPolicy ? { SYNABUN_BROWSER_POLICY_CWD: cwd || process.cwd() } : {}), ...stringEnv(extraEnv) });
   const config = {};
   if (Object.keys(pins).length) config.mcp_servers = { SynaBun: { env: pins } };
   if (extended) config.model_context_window = Math.floor(Number(modelContextWindow));
@@ -423,6 +428,11 @@ export async function createClaudeNativeLoopAdapter(options = {}) {
     extraEnv = {}, permissionPolicy: rawPolicy = 'auto', permissionBroker = null,
     capability: rawCapability = 'full', maxBudgetUsd = null, outputSchema = null, runMode = 'loop',
     desktopGrantProvider = null,
+    // Inherited variables to remove before extraEnv applies (the Claude account's launch:
+    // credentials the server was started with never reach a worker).
+    unsetEnv = [],
+    // The host's last word on the environment: on Windows the Git Bash it names (lib/git-bash/).
+    childEnv = null,
   } = options;
   const permissionPolicy = normalizePermissionPolicy(rawPolicy);
   const capability = normalizeCapability(rawCapability);
@@ -432,8 +442,10 @@ export async function createClaudeNativeLoopAdapter(options = {}) {
   let alive = true;
   let sessionId = null;
   let activeTurn = null;
-  const env = stringEnv({
-    ...cleanClaudeEnvironment(),
+  const inherited = cleanClaudeEnvironment();
+  for (const key of Array.isArray(unsetEnv) ? unsetEnv : []) delete inherited[key];
+  const ownEnv = stringEnv({
+    ...inherited,
     SYNABUN_TERMINAL_SESSION: runId,
     SYNABUN_PROJECT: cwd ? memoryProject(cwd) : 'global',
     SYNABUN_PROFILE: 'full',
@@ -442,6 +454,7 @@ export async function createClaudeNativeLoopAdapter(options = {}) {
     SYNABUN_RUN_MODE: runMode === 'task' ? 'task' : undefined,
     ...stringEnv(extraEnv),
   });
+  const env = typeof childEnv === 'function' ? stringEnv(childEnv(ownEnv)) : ownEnv;
   const brokerRequest = async (request) => {
     try {
       const reply = await permissionBroker.request({

@@ -20,6 +20,8 @@ const definitions = [
   ['hooks', 'Inspect configured hooks', 'hooks_list'],
   ['init', 'Create or update AGENTS.md guidance', null, true],
   ['logout', 'Sign out of Codex', 'account_logout'],
+  ['login', 'Sign in with ChatGPT'],
+  ['account', 'Choose an account or sign in'],
   ['mcp', 'Search MCP servers and tools', 'mcp_status'],
   ['mention', 'Add a structured file mention', null, true],
   ['model', 'Choose model'],
@@ -146,10 +148,11 @@ export function configChanges(definitions, inputs, original) {
 export const SESSION_CONFIG_FIELDS = Object.freeze({
   model: 'model', model_reasoning_effort: 'effort', model_reasoning_summary: 'summary',
   personality: 'personality', service_tier: 'serviceTier', approval_policy: 'approvalPolicy',
+  sandbox_mode: 'sandboxPolicy',
 });
 
 export function sessionSettings(config) {
-  return Object.fromEntries(Object.entries(config).filter(([key]) => SESSION_CONFIG_FIELDS[key]).map(([key, value]) => [SESSION_CONFIG_FIELDS[key], value]));
+  return Object.fromEntries(Object.entries(config).filter(([key]) => SESSION_CONFIG_FIELDS[key]).map(([key, value]) => [key === 'sandbox_mode' ? 'sandboxMode' : SESSION_CONFIG_FIELDS[key], value]));
 }
 
 export function modelServiceTiers(model) {

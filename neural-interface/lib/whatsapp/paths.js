@@ -9,8 +9,16 @@
 //               session to a second machine (that ends in connectionReplaced).
 //   runtimeDir  the Baileys runtime, installed on demand from the pinned
 //               lockfile in ./connector (never in a SynaBun package.json).
+//   transcriptionDir  voice notes (transcription.js): where the user puts
+//               whisper.cpp (bin/), FFmpeg (bin/) and the model, plus the
+//               private scratch folder of each note. A sibling of runtimeDir:
+//               outside every backup. SynaBun never downloads anything here.
 //   stagingDir  where the installer builds the next runtime before swapping.
 //   logsDir     SynaBun's shared log folder.
+//   dataHome    DATA_HOME itself: a file the Assistant sends from WhatsApp is
+//               never taken from it or from waHome, save SynaBun's generated
+//               media (local-file.js protectedPlaces); SynaBun's backup
+//               archives are refused by name wherever the backup folder is.
 //
 // Pure: no filesystem access, so callers and tests can resolve any platform.
 
@@ -31,7 +39,7 @@ export function isInside(candidate, parent, platform = process.platform) {
 /**
  * @param {{dataHome: string, env?: Record<string,string|undefined>, platform?: string, extraBackupRoots?: string[]}} opts
  *   `extraBackupRoots`: folders a backup copies besides BACKUP_DATA_DIRS (server.js' additional entries).
- * @returns {{waHome:string, defaultWaHome:string, authDir:string, runtimeDir:string, stagingDir:string, logsDir:string,
+ * @returns {{dataHome:string, waHome:string, defaultWaHome:string, authDir:string, runtimeDir:string, transcriptionDir:string, stagingDir:string, logsDir:string,
  *   installLogPath:string, installLockPath:string, npmCacheDir:string, backupRoots:string[], warnings:string[]}}
  */
 export function resolveWhatsAppPaths({ dataHome, env = process.env, platform = process.platform, extraBackupRoots = [] } = {}) {
@@ -66,10 +74,12 @@ export function resolveWhatsAppPaths({ dataHome, env = process.env, platform = p
 
   const runtimeRoot = p.join(home, 'runtime');
   return {
+    dataHome: home,
     waHome,
     defaultWaHome,
     authDir: p.join(waHome, 'auth'),
     runtimeDir: p.join(runtimeRoot, 'whatsapp'),
+    transcriptionDir: p.join(runtimeRoot, 'whatsapp-transcription'),
     stagingDir: p.join(runtimeRoot, 'whatsapp.staging'),
     logsDir: p.join(dataDir, 'logs'),
     installLogPath: p.join(dataDir, 'whatsapp', 'install.log'),

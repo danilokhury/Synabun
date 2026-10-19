@@ -14,6 +14,7 @@ import {
 // Imported with the app, not when it is needed: once the server is down
 // nothing more can be fetched, and that is exactly when the overlay wants it.
 import { createMascot } from './synabun-mascot.js';
+import { isDesktopApp } from './desktop-bridge.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -48,6 +49,22 @@ function stored(key) {
   try { return localStorage.getItem(key); } catch { return null; }
 }
 
+// Inside the desktop app the app starts and restarts its server itself: no
+// Start button, no command to type. The sentences of a start that point at
+// them say what to do in the app instead (desktop.offline.* in i18n).
+const DESKTOP_LINES = { stalled: 'stalled', restartStalled: 'stalled', gaveUp: 'stalled', failedHint: 'failedHint' };
+
+function desktopLine(line) {
+  const key = isDesktopApp() ? DESKTOP_LINES[line.key] : null;
+  return key ? t(`desktop.offline.${key}`) : '';
+}
+
+/** The command box under the overlay: a terminal command, which the desktop app has no use for. */
+function showStartCommand(show) {
+  const $box = $('loading-server-cmd-box');
+  if ($box) $box.style.display = show ? '' : 'none';
+}
+
 // ═══════════════════════════════════════════
 // PUBLIC API
 // ═══════════════════════════════════════════
@@ -76,8 +93,10 @@ export function showLoadingError(title, sub, canStart, serverOffline) {
   if (serverOffline) _offlineTitle = title;
 
   // Offline, the button asks the OS to start the server (synabun://start); it
-  // is left out only when that launcher is known not to be registered.
-  const offlineStart = !!serverOffline && startButtonUsable(stored(START_STORAGE.launcher));
+  // is left out only when that launcher is known not to be registered, and in
+  // the desktop app, which starts its server itself.
+  const desktopApp = isDesktopApp();
+  const offlineStart = !!serverOffline && !desktopApp && startButtonUsable(stored(START_STORAGE.launcher));
   const $action = $('loading-action');
   const $btn = $('loading-action-btn');
   if (canStart || offlineStart) {
@@ -94,7 +113,8 @@ export function showLoadingError(title, sub, canStart, serverOffline) {
 
   if (serverOffline) {
     const $hint = $('loading-server-cmd-hint');
-    if ($hint) $hint.textContent = offlineStart ? t('loading.runCommandOr') : t('loading.runCommandSetup');
+    if ($hint) $hint.textContent = desktopApp ? t('desktop.offline.hint') : offlineStart ? t('loading.runCommandOr') : t('loading.runCommandSetup');
+    if (desktopApp) showStartCommand(false);
     watchForServer();
   } else {
     stopWatchingForServer();
@@ -275,7 +295,7 @@ function poseMascot(state) {
 function renderStart(snap) {
   const platform = isWindowsPlatform(navigator) ? 'windows' : isMacPlatform(navigator) ? 'mac' : 'linux';
   const view = startStatusView(snap, { platform });
-  const say = (line) => (line ? t(`loading.start.${line.key}`, line.params) : '');
+  const say = (line) => (line ? desktopLine(line) || t(`loading.start.${line.key}`, line.params) : '');
   // A restart this page asked for or was told of, while it runs.
   const restarting = !!snap.restart && (view.busy || view.state === 'online');
 
@@ -315,7 +335,8 @@ function renderStart(snap) {
     // No dead button: when a restart did not bring the server back, Start is
     // offered only if its launcher is there (the command below always is).
     const startOffered = view.button === 'start' || view.button === 'retry';
-    btn.style.display = _restartShown && startOffered && !startButtonUsable(stored(START_STORAGE.launcher)) ? 'none' : '';
+    // The desktop app keeps only the way back from a refused restart.
+    btn.style.display = (isDesktopApp() ? view.button !== 'back' : _restartShown && startOffered && !startButtonUsable(stored(START_STORAGE.launcher))) ? 'none' : '';
   }
   if ($label) {
     $label.textContent = view.button === 'starting' ? t('loading.starting')
@@ -465,7 +486,10 @@ function beginRestart({ request = null, announced = false, boot = '' } = {}) {
   const $action = $('loading-action');
   if ($action) $action.style.display = 'block';
   const $hint = $('loading-server-cmd-hint');
-  if ($hint) $hint.textContent = startButtonUsable(stored(START_STORAGE.launcher)) ? t('loading.runCommandOr') : t('loading.runCommandSetup');
+  if (isDesktopApp()) {
+    if ($hint) $hint.textContent = t('desktop.offline.hint');
+    showStartCommand(false);
+  } else if ($hint) $hint.textContent = startButtonUsable(stored(START_STORAGE.launcher)) ? t('loading.runCommandOr') : t('loading.runCommandSetup');
   const $retry = $('loading-retry-status');
   if ($retry) $retry.textContent = '';
   clearStartStatus();

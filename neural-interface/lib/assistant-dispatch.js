@@ -9,7 +9,8 @@
 // attach) through the per-launch buildPrompt/wrapAdapter overrides, so the
 // existing router shows it as an automation tab in the matching sidepanel.
 //
-// This module owns: validation + rails (concurrency, budgets, quarantine),
+// This module owns: validation + rails (concurrency, the session budget and
+// its provider shares through the budget planner, quarantine),
 // the task adapter wrapper (turn loop), result capture, the permission broker
 // for 'ask' dispatches, waits, transcripts, the dispatch registry, the
 // auto-remember hook, and the runs' usage meters (assistant-usage.js: exact
@@ -18,6 +19,7 @@
 // injected.
 
 import { randomBytes } from 'node:crypto';
+import { chooseUsageAccount } from './account-usage.js';
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import {
@@ -32,7 +34,9 @@ import { loadStyleGuideForRun } from './style-guide/store.js';
 import { claimCheckWaived, normalizeTestDensity, testingApplies } from './assistant-test-density.js';
 import { normalizeEffort } from './effort-levels.js';
 import { createTurnEvidence, recordProviderEvent, evidenceSnapshot, claimEvidenceLine } from './assistant-evidence.js';
-import { codexUsageCostUsd } from './assistant-budget.js';
+import { BUDGET_MAX_USD, codexUsageCostUsd, floorCents } from './assistant-budget.js';
+import { MIN_SPEND_USD, PROVIDER_LABELS, isFreePrice } from './assistant-budget-split.js';
+import { createBudgetPlanner } from './assistant-budget-planner.js';
 import { CLAUDE_ESTIMATE_SOURCE, CODEX_USAGE_KEYS, TOKEN_KEYS, addTokens, codexUsageTokens, createClaudeMeter, createCodexMeter, createOpenCodeMeter, totalTokens, withTotal, zeroTokens } from './assistant-usage.js';
 import { claudeTokensCostUsd } from './assistant-pricing.js';
 import { RemotePolicyError, clampDispatchSpec, getSessionPolicy, readRegisteredProjects } from './remote-policy.js';
@@ -58,6 +62,12 @@ export function runStatusFromState(state) {
   return ACTIVE_STATES.has(value) ? 'running' : null;
 }
 
+/**
+ * The least work time a run gets: a max_minutes below it is raised to it, never refused. A run's
+ * max_minutes counts work only (the work clock below), so a short cap would only cut a turn off.
+ */
+export const MIN_MAX_MINUTES = 20;
+
 export const DEFAULT_LIMITS = Object.freeze({
   perProvider: Object.freeze({ 'claude-code': 3, codex: 4, opencode: 3 }),
   perCodexAccount: 2,
@@ -65,16 +75,13 @@ export const DEFAULT_LIMITS = Object.freeze({
   queuedPerSession: 20,
   heldPerSession: 10,
   maxFanOut: 6,
+  // max_minutes: the work time a run gets (MIN_MAX_MINUTES at least), not the wall clock.
   defaultMaxMinutes: 45,
   maxMaxMinutes: 240,
-  // Budget caps (USD). The live values come from assistant-config.json through
-  // `readLimits` (assistant-budget.js); these are the defaults.
-  defaultBudgetUsd: 5,
-  maxBudgetUsd: 25,
-  sessionSoftBudgetUsd: 10,
-  sessionWarnUsd: 8,
-  sessionHardBudgetUsd: 25,
-  brainBudgetUsd: 10,
+  // The money is the session budget (assistant-budget.js, read live by the budget planner): a
+  // dispatch's budget_usd is only an optional ceiling for that run, inside its provider's share.
+  minRunBudgetUsd: MIN_SPEND_USD,
+  maxRunBudgetUsd: BUDGET_MAX_USD,
   permissionTimeoutMs: 10 * 60_000,
   questionTimeoutMs: 30 * 60_000,
   idleTimeoutMs: 20 * 60_000,
@@ -275,15 +282,15 @@ export function summarizeProviderEvent(payload = {}) {
   return null;
 }
 
+// The old five-cap keys a config file may still hold: never limits (the budget planner owns the money).
+const LEGACY_BUDGET_LIMITS = new Set(['defaultBudgetUsd', 'maxBudgetUsd', 'sessionWarnUsd', 'sessionSoftBudgetUsd', 'sessionHardBudgetUsd', 'brainBudgetUsd', 'budgetVersion', 'budgetUpdatedAt']);
 function mergeLimits(overrides = {}) {
   const limits = { ...DEFAULT_LIMITS, perProvider: { ...DEFAULT_LIMITS.perProvider } };
   for (const [key, value] of Object.entries(overrides || {})) {
+    if (LEGACY_BUDGET_LIMITS.has(key)) continue;
     if (key === 'perProvider' && value && typeof value === 'object') Object.assign(limits.perProvider, value);
     else if (value !== undefined && value !== null) limits[key] = value;
   }
-  // Older configs name a soft budget and warned at 80 % of it.
-  const soft = Number(overrides?.sessionSoftBudgetUsd);
-  if ((overrides?.sessionWarnUsd === undefined || overrides?.sessionWarnUsd === null) && Number.isFinite(soft) && soft > 0) limits.sessionWarnUsd = Math.round(soft * 80) / 100;
   return limits;
 }
 
@@ -332,6 +339,12 @@ export function createAssistantDispatcher({
   getCodexAccount = () => null,
   CODEX_DEFAULT_HOME = null,
   claudeAccounts = null,
+  // The Claude account a Claude Code worker uses when its dispatch names none (the user's choice, read live).
+  claudeWorkerAccount = () => null,
+  // lib/codex-accounts.js (unusableReason) and the Codex account a worker gets when a dispatch names none.
+  codexAccounts = null,
+  accountUsage = null,
+  codexWorkerAccount = () => null,
   isValidMcpProfileValue = () => true,
   normalizeMcpProfileName = (value) => value,
   readActiveMcpProfile = () => 'full',
@@ -342,6 +355,8 @@ export function createAssistantDispatcher({
   detectProject = () => 'global',
   limits: limitOverrides = {},
   now = Date.now,
+  // The timer that stops a turn when its run's work time reaches max_minutes (tests fire it by hand).
+  workTimers = { set: (fn, ms) => { const timer = setTimeout(fn, ms); timer.unref?.(); return timer; }, clear: (timer) => clearTimeout(timer) },
   randomId = () => randomBytes(16).toString('hex'),
   strictResult = true,
   // Routing (assistant-router.js) and the model catalog (assistant-catalog.js);
@@ -357,12 +372,17 @@ export function createAssistantDispatcher({
   // Clarification (assistant-clarify.js): { forDispatch(sessionId, { briefId, independent }) }.
   // A brain's dispatch waits while its questions are open and carries the user's brief.
   clarifier = null,
-  // Budget: live limit overrides (assistant-config.json, re-read on every
-  // check), the brain's own spend per assistant session (the runtime) and list
+  // Live limit overrides (assistant-config.json `limits`, re-read on every check), the brain's own
+  // spend per assistant session (the runtime: its total, and by the provider it ran on) and list
   // prices for Codex usage (assistant-budget.js createModelPricing).
   readLimits = null,
   brainSpend = () => 0,
+  brainSpendByProvider = null,
   pricing = null,
+  // The session budget (assistant-budget-planner.js createBudgetPlanner): the setting, each
+  // session's provider shares, the checkpoints that divide what is left again. Without one the
+  // dispatcher keeps a planner of its own on the default budget ($25, no Jev).
+  budget: budgetPlanner = null,
   // Exact token accounting (assistant-usage.js): the ledger (createUsageLedger) and the task of
   // the brain turn in progress, (assistantSessionId) => taskId | null. Both optional: without
   // them the meters still run for cost and the run's own numbers, and nothing is written.
@@ -411,6 +431,10 @@ export function createAssistantDispatcher({
   // Usage meters (assistant-usage.js), apart from the live state: a Claude result can arrive
   // after its turn was aborted or its run left the list.
   const meters = new Map();           // runId → { claude, codex, opencode }
+  // The session budget: the injected planner, else one of the dispatcher's own on the default budget.
+  const budget = budgetPlanner || createBudgetPlanner({ spendOf: (id) => providerSpend(id) });
+  // `${sessionId}:${provider}` → a share check in flight (a re-split may take Jev's timeout).
+  const shareChecks = new Map();
   let persistTimer = null;
   let stalledTimer = null;
   let unsubscribeRuntime = null;
@@ -431,6 +455,11 @@ export function createAssistantDispatcher({
         entry.pending = [];
         entry.turnState = 'terminal';
         closeUsageState(entry);
+      }
+      // A turn cut off by the restart worked until the run was last updated (as far as anything shows).
+      if (entry.workingSince) {
+        entry.workMs = workUsedMs(entry, Math.max(Date.parse(entry.workingSince) || 0, Date.parse(entry.updatedAt || '') || 0));
+        entry.workingSince = null;
       }
       entries.set(entry.runId, entry);
     }
@@ -465,16 +494,19 @@ export function createAssistantDispatcher({
   function peek(runId) {
     const entry = entries.get(String(runId || '')) || null;
     if (!entry) return null;
+    const at = now();
     return {
       runId: entry.runId, title: entry.title || null, state: entry.state, turnState: entry.turnState || null,
       taskId: entry.taskId || null, turnTaskId: turnTaskOf(entry), provider: entry.provider || null, model: entry.model || null,
+      maxMinutes: entry.maxMinutes ?? null, workMs: workUsedMs(entry, at), workLeftMs: workLeftMs(entry, at),
     };
   }
   function view(entry) {
     if (!entry) return null;
     const runtimeRun = safeRuntime()?.get?.(entry.runId) || null;
+    const at = now();
     const startedAt = entry.startedAt || entry.createdAt;
-    const end = entry.finishedAt ? new Date(entry.finishedAt).getTime() : now();
+    const end = entry.finishedAt ? new Date(entry.finishedAt).getTime() : at;
     const elapsedMs = startedAt ? Math.max(0, end - new Date(startedAt).getTime()) : 0;
     // The brief goes to the worker's prompt; views name it only. The meters' state stays inside.
     const { rawSpec: _rawSpec, brief: _brief, usageState: _usageState, ...rest } = entry;
@@ -498,7 +530,13 @@ export function createAssistantDispatcher({
       active: ACTIVE_STATES.has(entry.state),
       terminal: TERMINAL_STATES.has(entry.state),
       outcome: entry.lastResult?.status || null,
+      // The wall clock since the run started (reports use it); max_minutes counts work time only.
       elapsedMs,
+      // Work time used and left of max_minutes; workingSince is when the turn in progress started
+      // working (null while the run is queued, idle between turns or waiting on a permission).
+      workMs: workUsedMs(entry, at),
+      workLeftMs: workLeftMs(entry, at),
+      workingSince: entry.workingSince || null,
       turnCount: Array.isArray(entry.turns) ? entry.turns.length : 0,
       // The turn whose result this view carries: what a brain has read once it sees it.
       resultTurn: (Array.isArray(entry.turns) ? entry.turns.at(-1)?.n : null) ?? 0,
@@ -513,6 +551,44 @@ export function createAssistantDispatcher({
     };
   }
   function safeRuntime() { try { return getRuntime(); } catch { return null; } }
+
+  // ── work clock (max_minutes) ───────────────────────────────────────────────
+  // A run's max_minutes counts the time it works: a turn, from its start to its end (result,
+  // failure, stop, cap), the result-retry turn included. Time queued before the start, idle between
+  // turns and blocked on a relayed permission or question (those waits have their own timeouts)
+  // does not count. entry.workMs holds the closed stretches; entry.workingSince the start of the
+  // open one. While a turn works, a timer on the work time left stops a turn that hangs.
+  function workUsedMs(entry, at = now()) {
+    const since = entry.workingSince ? Date.parse(entry.workingSince) : NaN;
+    return (Number(entry.workMs) || 0) + (Number.isFinite(since) ? Math.max(0, at - since) : 0);
+  }
+  function workLeftMs(entry, at = now()) {
+    const capMs = (Number(entry.maxMinutes) || limits.defaultMaxMinutes) * 60_000;
+    return Math.max(0, capMs - workUsedMs(entry, at));
+  }
+  function startWork(entry, liveState) {
+    if (!liveState || liveState.dead || entry.workingSince) return;
+    entry.workingSince = iso(now());
+    armWorkCap(entry, liveState);
+  }
+  function pauseWork(entry, liveState = live.get(entry.runId)) {
+    if (liveState?.workTimer) { workTimers.clear(liveState.workTimer); liveState.workTimer = null; }
+    if (!entry.workingSince) return;
+    entry.workMs = workUsedMs(entry);
+    entry.workingSince = null;
+  }
+  function armWorkCap(entry, liveState) {
+    if (liveState.workTimer) workTimers.clear(liveState.workTimer);
+    liveState.workTimer = workTimers.set(() => {
+      liveState.workTimer = null;
+      if (!entry.workingSince || liveState.dead || TERMINAL_STATES.has(entry.state)) return;
+      if (workLeftMs(entry) > 0) { armWorkCap(entry, liveState); return; }
+      pauseWork(entry, liveState);
+      entry.notes.push(`stopped: its ${entry.maxMinutes} minutes of work time were used up`);
+      stop(entry.runId, 'time_cap').catch(() => {});
+    }, workLeftMs(entry));
+  }
+
   function touch(entry) { entry.version = (Number(entry.version) || 0) + 1; entry.updatedAt = iso(now()); }
   function emit(entry, reason, extra = {}) {
     touch(entry);
@@ -685,15 +761,44 @@ export function createAssistantDispatcher({
     let claudeAccount = null;
     const accountId = spec.accountId || spec.codexAccountId || spec.claudeAccountId || null;
     if (provider === 'codex') {
-      codexAccount = accountId ? findCodexAccount(accountId) : getCodexAccount(null);
-      if (!codexAccount) throw new DispatchError('ACCOUNT_NOT_FOUND', `Codex account not found: ${accountId || 'default'}`);
+      // The account the dispatch names, else the user's Codex worker account, else Default. A signed-out
+      // account (or one whose key cannot be read) is refused here, with why: the worker would only fail at
+      // its first turn. Its credential is added when the worker starts (lib/codex-accounts.js launchFor()).
+      let wanted = accountId;
+      if (!wanted) { try { wanted = codexWorkerAccount?.() || null; } catch { wanted = null; } }
+      wanted = wanted || 'default';
+      codexAccount = wanted === 'default' ? (findCodexAccount('default') || getCodexAccount(null)) : findCodexAccount(wanted);
+      if (!codexAccount || (wanted !== 'default' && codexAccount.id !== wanted)) throw new DispatchError('ACCOUNT_NOT_FOUND', `Codex account not found: ${wanted}. Pick one from agent_catalog's Codex accounts.`);
+      const unusable = typeof codexAccounts?.unusableReason === 'function' ? codexAccounts.unusableReason(wanted) : '';
+      if (unusable) throw new DispatchError('ACCOUNT_SIGNED_OUT', unusable);
     }
-    if (provider === 'claude-code' && accountId && accountId !== 'default') {
-      claudeAccount = claudeAccounts?.find?.(accountId) || null;
-      if (!claudeAccount) throw new DispatchError('ACCOUNT_NOT_FOUND', `Claude account not found: ${accountId}`);
+    if (provider === 'claude-code') {
+      // The account the dispatch names, else the user's worker account, else Default. A signed-out
+      // account (or one whose key cannot be read) is refused here, with why: the worker would only
+      // fail at its first turn. Its credential is added when the worker starts (launchFor()).
+      let wanted = accountId;
+      if (!wanted) { try { wanted = claudeWorkerAccount?.() || null; } catch { wanted = null; } }
+      wanted = wanted || 'default';
+      claudeAccount = typeof claudeAccounts?.describe === 'function'
+        ? claudeAccounts.describe(wanted)
+        : (wanted === 'default' ? { id: 'default' } : claudeAccounts?.find?.(wanted) || null);
+      if (!claudeAccount || claudeAccount.id !== wanted) throw new DispatchError('ACCOUNT_NOT_FOUND', `Claude account not found: ${wanted}. Pick one from agent_catalog's Claude accounts.`);
+      const unusable = typeof claudeAccounts?.unusableReason === 'function' ? claudeAccounts.unusableReason(wanted) : '';
+      if (unusable) throw new DispatchError('ACCOUNT_SIGNED_OUT', unusable);
+      if (claudeAccount.id === 'default') claudeAccount = null;
     }
-    const maxMinutes = Math.min(Math.max(Number(spec.maxMinutes) || limits.defaultMaxMinutes, 1), limits.maxMaxMinutes);
-    const budgetUsd = Math.min(Math.max(Number(spec.budgetUsd) || limits.defaultBudgetUsd, 0.1), limits.maxBudgetUsd);
+    const askedMinutes = Number(spec.maxMinutes) || limits.defaultMaxMinutes;
+    const maxMinutes = Math.max(MIN_MAX_MINUTES, Math.min(askedMinutes, limits.maxMaxMinutes));
+    // A configured default (assistant-config.json limits.defaultMaxMinutes) under the minimum is raised the same way, with its own note.
+    if (askedMinutes < MIN_MAX_MINUTES) notes.push(`${Number(spec.maxMinutes) ? 'max_minutes' : 'the default max_minutes'} ${askedMinutes} raised to the ${MIN_MAX_MINUTES}-minute minimum`);
+    // budget_usd: an optional ceiling for this one run, inside its provider's share of the session budget.
+    // None: the run may use what its share has left.
+    const askedBudget = Number(spec.budgetUsd);
+    const budgetUsd = Number.isFinite(askedBudget) && askedBudget > 0
+      ? Math.min(Math.max(askedBudget, Number(limits.minRunBudgetUsd) || MIN_SPEND_USD), Number(limits.maxRunBudgetUsd) || BUDGET_MAX_USD)
+      : null;
+    // A free model (the catalog says so) needs no share of the budget.
+    const freeModel = provider === 'opencode' && isFreePrice(modelInfo?.price || null);
     const idleTimeoutMs = Math.min(Math.max(Number(spec.idleTimeoutMs) || limits.idleTimeoutMs, limits.minIdleTimeoutMs), limits.maxIdleTimeoutMs);
     const maxTurns = Math.min(Math.max(Number(spec.maxTurns) || limits.maxTurns, 1), limits.maxMaxTurns);
     const outputSchema = spec.outputSchema && typeof spec.outputSchema === 'object' ? spec.outputSchema : null;
@@ -710,7 +815,7 @@ export function createAssistantDispatcher({
       claudeAccountId: claudeAccount?.id || (provider === 'claude-code' ? 'default' : null),
       claudeConfigDir: claudeAccount ? (claudeAccounts?.homeFor?.(claudeAccount.id) || null) : null,
       accountId: provider === 'codex' ? (codexAccount?.id || 'default') : provider === 'claude-code' ? (claudeAccount?.id || 'default') : null,
-      maxMinutes, budgetUsd, idleTimeoutMs, maxTurns, outputSchema, title, tags,
+      maxMinutes, budgetUsd, freeModel, idleTimeoutMs, maxTurns, outputSchema, title, tags,
       focus: spec.focus === true,
       workflowId: spec.workflowId ? String(spec.workflowId) : null,
       parentRunId: spec.parentRunId ? String(spec.parentRunId) : null,
@@ -751,49 +856,68 @@ export function createAssistantDispatcher({
     if (!assistantSessionId) return 0;
     try { return Math.max(0, Number(brainSpend(assistantSessionId)) || 0); } catch { return 0; }
   }
-  /** The session's whole spend: the central brain plus every run. The hard cap is checked against this. */
+  /** The session's whole spend: the central brain plus every run. */
   function sessionTotal(assistantSessionId) { return sessionSpend(assistantSessionId) + sessionBrainSpend(assistantSessionId); }
-  function runRemaining(entry) { return Math.max(0, (Number(entry.budgetUsd) || 0) - (Number(entry.costUsd) || 0)); }
-  /**
-   * What the session's started runs may still spend: each live run's cap minus
-   * its spend. A new run only gets what the hard cap leaves after this, so the
-   * runs together cannot pass the cap (up to one provider step; see docs).
-   */
-  function sessionReserved(assistantSessionId, { except = null } = {}) {
-    if (!assistantSessionId) return 0;
-    let total = 0;
-    for (const entry of entries.values()) {
-      if (entry.assistantSessionId !== assistantSessionId || entry.runId === except) continue;
-      if (!ACTIVE_STATES.has(entry.state) || WAITING_STATES.has(entry.state)) continue;
-      total += runRemaining(entry);
+  /** The brain's spend by the provider it ran on; an older runtime (one total) books it all on Claude Code. */
+  function brainByProvider(assistantSessionId) {
+    if (typeof brainSpendByProvider === 'function') {
+      try {
+        const rows = brainSpendByProvider(assistantSessionId);
+        if (rows && typeof rows === 'object') return rows;
+      } catch { /* fall through */ }
     }
-    return total;
+    const total = sessionBrainSpend(assistantSessionId);
+    return total > 0 ? { 'claude-code': total } : {};
   }
-  /** The session's money view (Budget tab, cost chip, agent_list totals). */
+  /** What a Claude turn in progress has spent so far (its calls at list price), not booked yet. */
+  function pendingRunUsd(entry) {
+    const liveState = live.get(entry.runId);
+    return liveState && liveState.turnOpen ? Math.max(0, Number(liveState.claudePendingUsd) || 0) : 0;
+  }
+  /**
+   * The session's spend by provider, for the budget planner: { providers: { [p]: { brainUsd, runsUsd,
+   * liveRuns, runningRuns } }, unpricedRuns, liveRuns: [{ provider, model, taskClass }] }. A run's
+   * spend counts on its provider (removed runs included), with what a Claude turn in progress has
+   * spent so far; the brain's on the provider it ran on.
+   */
+  function providerSpend(assistantSessionId) {
+    const providers = {};
+    for (const provider of NATIVE_PROVIDERS) providers[provider] = { brainUsd: 0, runsUsd: 0, liveRuns: 0, runningRuns: 0 };
+    const liveRuns = [];
+    let unpricedRuns = 0;
+    if (!assistantSessionId) return { providers, unpricedRuns, liveRuns };
+    for (const entry of entries.values()) {
+      if (entry.assistantSessionId !== assistantSessionId) continue;
+      const row = providers[entry.provider];
+      if (Number(entry.unpricedTurns) > 0) unpricedRuns += 1;
+      if (!row) continue;
+      row.runsUsd += (Number(entry.costUsd) || 0) + pendingRunUsd(entry);
+      if (ACTIVE_STATES.has(entry.state) && !WAITING_STATES.has(entry.state)) {
+        row.liveRuns += 1;
+        if (entry.state === 'running' || entry.state === 'starting' || entry.state === 'awaiting_permission') row.runningRuns += 1;
+        liveRuns.push({ provider: entry.provider, model: entry.model || null, taskClass: entry.taskClass || null });
+      }
+    }
+    for (const [provider, usd] of Object.entries(brainByProvider(assistantSessionId))) {
+      if (providers[provider]) providers[provider].brainUsd += Math.max(0, Number(usd) || 0);
+    }
+    for (const row of Object.values(providers)) { row.runsUsd = r4(row.runsUsd); row.brainUsd = r4(row.brainUsd); }
+    return { providers, unpricedRuns, liveRuns };
+  }
+  /** The session's money view (the Budget modal, the spend chip, agent_list / agent_usage): budget-planner's view. */
   function sessionBudget(assistantSessionId) {
     refreshLimits();
-    const dispatchUsd = sessionSpend(assistantSessionId);
-    const brainUsd = sessionBrainSpend(assistantSessionId);
-    const totalUsd = dispatchUsd + brainUsd;
-    const reservedUsd = sessionReserved(assistantSessionId);
-    let unpricedRuns = 0;
-    for (const entry of entries.values()) if (entry.assistantSessionId === assistantSessionId && Number(entry.unpricedTurns) > 0) unpricedRuns += 1;
-    return {
-      brainUsd: r4(brainUsd), dispatchUsd: r4(dispatchUsd), totalUsd: r4(totalUsd), reservedUsd: r4(reservedUsd),
-      availableUsd: r4(Math.max(0, limits.sessionHardBudgetUsd - totalUsd - reservedUsd)),
-      warnUsd: limits.sessionWarnUsd, hardUsd: limits.sessionHardBudgetUsd,
-      defaultRunUsd: limits.defaultBudgetUsd, maxRunUsd: limits.maxBudgetUsd, brainCapUsd: limits.brainBudgetUsd,
-      warned: totalUsd >= limits.sessionWarnUsd, exceeded: totalUsd >= limits.sessionHardBudgetUsd, unpricedRuns,
-    };
+    try { return budget.view(assistantSessionId); } catch { return null; }
   }
+  /** Whether the session runs under a budget now (No limit: false). */
+  function limitedNow() { try { return budget.limited(); } catch { return true; } }
   /**
-   * Why a run's spend could not be held to the dollar caps (no price for its
-   * model), else null. Enforced only with a price source (`pricing`): Claude
-   * reports cost, Codex needs a list price, OpenCode a catalog price (a free
-   * model is fine).
+   * Why a run's spend could not be held to the budget (no price for its model), else null. Enforced
+   * only with a budget and a price source (`pricing`): Claude reports cost, Codex needs a list price,
+   * OpenCode a catalog price (a free model is fine).
    */
   function unpricedReason(entry) {
-    if (!pricing || entry.provider === 'claude-code') return null;
+    if (!pricing || entry.provider === 'claude-code' || !limitedNow()) return null;
     const model = entry.pricingModel || entry.model || null;
     if (entry.provider === 'codex') {
       let price = null;
@@ -805,65 +929,93 @@ export function createAssistantDispatcher({
   function refuseUnpriced(entry) {
     const why = unpricedReason(entry);
     if (!why) return;
-    throw new DispatchError('BUDGET_UNPRICED', `Not dispatched: ${why}, so the budget caps could not hold its spend. Pick a priced model or a free one (agent_catalog shows prices).`, { status: 409, provider: entry.provider, model: entry.pricingModel || entry.model || null });
+    throw new DispatchError('BUDGET_UNPRICED', `Not dispatched: ${why}, so the session budget could not hold its spend. Pick a priced model or a free one (agent_catalog shows prices).`, { status: 409, provider: entry.provider, model: entry.pricingModel || entry.model || null });
   }
-  /** Why this run may not spend more (unpriced usage, its own cap, or the session's hard cap), else null. */
+  const providerName = (provider) => PROVIDER_LABELS[provider] || provider;
+  /** The session budget's words for a provider whose share is used up ("codex share used up: $4.00 of $4.00 spent"). */
+  function shareText(sessionId, provider) {
+    const cov = budget.coverage(sessionId);
+    const row = cov?.providers?.[provider];
+    if (!row) return `the ${provider} share is used up`;
+    return `the ${provider} share of the session budget is used up (${usd(row.spentUsd)} spent of its ${usd(row.shareUsd ?? row.spentUsd)} share; ${usd(cov.leftUsd)} of the ${usd(cov.amountUsd)} budget left in the session)`;
+  }
+  /** The providers whose share is used up, named for an error ("codex, opencode"). */
+  function dryText(sessionId) {
+    let dry = [];
+    try { dry = budget.dry(sessionId) || []; } catch { dry = []; }
+    return dry.length ? dry.join(', ') : 'none';
+  }
+  /**
+   * Why this run may not spend more, else null:
+   *   BUDGET_UNPRICED         its usage could not be priced (the budget cannot hold it)
+   *   RUN_BUDGET_EXCEEDED     it reached its own ceiling (budget_usd)
+   *   BUDGET_EXCEEDED         the session reached its budget
+   *   BUDGET_SHARE_EXHAUSTED  its provider's share is used up (a re-split may still move money to it)
+   * Under No limit: never anything.
+   */
   function budgetBlock(entry) {
+    if (!limitedNow()) return null;
     if (pricing && Number(entry.unpricedTurns) > 0) {
-      return { code: 'BUDGET_UNPRICED', reason: 'budget_unpriced', message: `its usage could not be priced (${entry.unpricedReason || 'no price'}), so the budget caps cannot hold it`, detail: { unpricedTurns: entry.unpricedTurns } };
+      return { code: 'BUDGET_UNPRICED', reason: 'budget_unpriced', message: `its usage could not be priced (${entry.unpricedReason || 'no price'}), so the session budget cannot hold it`, detail: { unpricedTurns: entry.unpricedTurns } };
     }
     const cap = Number(entry.budgetUsd) || 0;
     const cost = Number(entry.costUsd) || 0;
-    if (cap > 0 && cost >= cap) {
-      return { code: 'RUN_BUDGET_EXCEEDED', reason: 'budget_cap', message: `run spent ${usd(cost)} of its ${usd(cap)} cap`, detail: { runSpent: r4(cost), runCap: cap } };
+    if (cap > 0 && cost + pendingRunUsd(entry) >= cap) {
+      return { code: 'RUN_BUDGET_EXCEEDED', reason: 'budget_cap', message: `run spent ${usd(cost + pendingRunUsd(entry))} of its ${usd(cap)} ceiling`, detail: { runSpent: r4(cost), runCap: cap } };
     }
     const sessionId = entry.assistantSessionId;
-    if (sessionId) {
-      const total = sessionTotal(sessionId);
-      if (total >= limits.sessionHardBudgetUsd) {
-        return { code: 'BUDGET_EXCEEDED', reason: 'session_budget_cap', message: `assistant session spent ${usd(total)} (brain + agents), at or above its hard cap of ${usd(limits.sessionHardBudgetUsd)}`, detail: { sessionSpent: r4(total), sessionCap: limits.sessionHardBudgetUsd } };
-      }
+    if (!sessionId) return null;
+    const cov = budget.coverage(sessionId);
+    if (!cov) return null;
+    if (cov.leftUsd < MIN_SPEND_USD) {
+      return { code: 'BUDGET_EXCEEDED', reason: 'session_budget_cap', message: `assistant session spent ${usd(cov.spentUsd)} (brain + agents), its whole budget of ${usd(cov.amountUsd)}`, detail: { sessionSpent: r4(cov.spentUsd), sessionBudget: cov.amountUsd } };
+    }
+    if (!entry.freeModel && (cov.providers[entry.provider]?.workerLeftUsd ?? 0) < MIN_SPEND_USD) {
+      return { code: 'BUDGET_SHARE_EXHAUSTED', reason: 'budget_share', provider: entry.provider, message: shareText(sessionId, entry.provider), detail: { provider: entry.provider, sessionLeft: r4(cov.leftUsd), dry: budget.dry(sessionId) } };
     }
     return null;
   }
   /**
-   * Fit a run's cap into what the session has left (hard cap − spend − the
-   * live runs' reservations). Throws BUDGET_EXCEEDED when not a cent is left.
+   * Can the run's provider pay for its next step? When its share is used up the session's unspent
+   * budget is divided again first (budget planner: Jev or the fallback). → true, or false when no
+   * money could move to it.
    */
-  function fitBudget(entry) {
+  async function coverShare(entry, { reason = 'share_used_up' } = {}) {
     const sessionId = entry.assistantSessionId;
-    if (!sessionId) return;
-    const spent = sessionTotal(sessionId);
-    const reserved = sessionReserved(sessionId, { except: entry.runId });
-    const hard = limits.sessionHardBudgetUsd;
-    // Whole cents: a run never gets a fraction of a cent the session does not have.
-    const available = Math.floor((hard - spent - reserved) * 100 + 1e-6) / 100;
-    if (available <= 0) {
-      throw new DispatchError('BUDGET_EXCEEDED', `No session budget left for another run: ${usd(spent)} spent (brain + agents) and ${usd(reserved)} reserved by live runs, against the hard cap of ${usd(hard)}. Complete finished runs (agent_complete) to release their reservation, or ask the user to raise the cap (Assistant → Budget).`, { status: 409, sessionSpent: r4(spent), sessionReserved: r4(reserved), sessionCap: hard });
-    }
-    if ((Number(entry.budgetUsd) || 0) > available) {
-      const from = Number(entry.budgetUsd);
-      entry.budgetUsd = available;
-      entry.budgetClamped = { from, to: entry.budgetUsd, at: iso(now()) };
-      entry.notes.push(`budget lowered from ${usd(from)} to ${usd(entry.budgetUsd)}: the session hard cap ${usd(hard)} minus ${usd(spent)} spent and ${usd(reserved)} reserved by live runs`);
-    }
+    if (!sessionId || !limitedNow() || entry.freeModel) return true;
+    try { return await budget.ensureCovered(sessionId, { provider: entry.provider, reason, task: { taskClass: entry.taskClass || null, summary: entry.title || null, provider: entry.provider, model: entry.model || null } }); }
+    catch { return false; }
   }
   /**
-   * After money moved in a session: one warning at the warning threshold, and
-   * at the hard cap every live, queued and held run of the session stops.
+   * The Claude CLI's own stop (--max-budget-usd) for a Claude worker under a budget: the run's ceiling,
+   * never more than the session has left when it starts. A backstop: the dispatcher stops the run at its
+   * provider's share between model calls. null under No limit (no CLI cap at all).
+   */
+  function claudeBackstop(entry) {
+    if (!limitedNow()) return null;
+    const cap = Number(entry.budgetUsd) || 0;
+    const left = entry.assistantSessionId ? (budget.coverage(entry.assistantSessionId)?.leftUsd ?? null) : null;
+    const value = Math.min(cap > 0 ? cap : Infinity, left === null ? Infinity : left);
+    if (!Number.isFinite(value)) return cap > 0 ? cap : null;
+    return Math.max(MIN_SPEND_USD, floorCents(value) / 100);
+  }
+  /**
+   * After money moved in a session: one warning at 80 % of the budget (per budget amount), and at
+   * the budget every live, queued and held run of the session stops. Nothing under No limit.
    * Returns the session's budget view.
    */
   function checkSession(assistantSessionId, { source = null } = {}) {
     if (!assistantSessionId) return null;
     const money = sessionBudget(assistantSessionId);
+    if (!money || money.unlimited) return money;
     const anchor = source || [...entries.values()].filter((e) => e.assistantSessionId === assistantSessionId)
       .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))[0] || null;
-    if (money.warned && !money.exceeded && sessionBudgetWarned.get(assistantSessionId) !== money.warnUsd) {
-      sessionBudgetWarned.set(assistantSessionId, money.warnUsd);
+    if (money.warned && !money.exceeded && sessionBudgetWarned.get(assistantSessionId) !== money.amountUsd) {
+      sessionBudgetWarned.set(assistantSessionId, money.amountUsd);
       if (anchor) {
         emit(anchor, 'budget_warning', {
-          sessionSpent: money.totalUsd, warnAt: money.warnUsd, softCap: money.warnUsd, hardCap: money.hardUsd,
-          text: `session budget warning: ${usd(money.totalUsd)} spent (brain ${usd(money.brainUsd)} + agents ${usd(money.dispatchUsd)}), warning at ${usd(money.warnUsd)}, hard cap ${usd(money.hardUsd)}. Ask the user before spending more.`,
+          sessionSpent: money.totalUsd, warnAt: money.warnAtUsd, budgetUsd: money.amountUsd, leftUsd: money.leftUsd,
+          text: `session budget warning: ${usd(money.totalUsd)} spent of the ${usd(money.amountUsd)} budget (brain ${usd(money.brainUsd)} + agents ${usd(money.dispatchUsd)}), ${usd(money.leftUsd)} left. Ask the user before spending more.`,
         });
       }
     }
@@ -871,18 +1023,33 @@ export function createAssistantDispatcher({
       const victims = [...entries.values()].filter((e) => e.assistantSessionId === assistantSessionId && ACTIVE_STATES.has(e.state));
       for (const victim of victims) {
         victim.completionReason = victim.completionReason || 'session_budget_cap';
-        if (!(victim.notes || []).some((note) => note.startsWith('stopped: session hard cap'))) victim.notes.push(`stopped: session hard cap ${usd(money.hardUsd)} reached (${usd(money.totalUsd)} spent)`);
+        if (!(victim.notes || []).some((note) => note.startsWith('stopped: session budget'))) victim.notes.push(`stopped: session budget ${usd(money.amountUsd)} reached (${usd(money.totalUsd)} spent)`);
         stop(victim.runId, 'session_budget_cap').catch(() => {});
       }
-      if (anchor && sessionBudgetExceeded.get(assistantSessionId) !== money.hardUsd) {
-        sessionBudgetExceeded.set(assistantSessionId, money.hardUsd);
+      if (anchor && sessionBudgetExceeded.get(assistantSessionId) !== money.amountUsd) {
+        sessionBudgetExceeded.set(assistantSessionId, money.amountUsd);
         emit(anchor, 'budget_exceeded', {
-          sessionSpent: money.totalUsd, hardCap: money.hardUsd, stopped: victims.map((e) => e.runId),
-          text: `session hard cap reached: ${usd(money.totalUsd)} spent of ${usd(money.hardUsd)}; ${victims.length} run${victims.length === 1 ? '' : 's'} stopped and new dispatches are refused until the user raises the cap (Assistant → Budget).`,
+          sessionSpent: money.totalUsd, budgetUsd: money.amountUsd, stopped: victims.map((e) => e.runId),
+          text: `session budget reached: ${usd(money.totalUsd)} spent of ${usd(money.amountUsd)}; ${victims.length} run${victims.length === 1 ? '' : 's'} stopped, and dispatches, follow-ups and brain turns are refused until the user raises the budget or switches to No limit (Assistant → Budget).`,
         });
       }
     }
     return money;
+  }
+  /**
+   * Stop the working runs of `provider` in the session: its share is used up and no money could move
+   * to it (budget planner). Idle runs hold no money and are left alone (a follow-up re-splits first and
+   * is refused when nothing moves); queued and held ones are checked when they start.
+   */
+  function stopProviderRuns(assistantSessionId, provider, text) {
+    const working = new Set(['starting', 'running', 'awaiting_permission']);
+    const victims = [...entries.values()].filter((e) => e.assistantSessionId === assistantSessionId && e.provider === provider && working.has(e.state) && !e.freeModel);
+    for (const victim of victims) {
+      victim.completionReason = victim.completionReason || 'budget_share';
+      if (!(victim.notes || []).some((note) => note.startsWith('stopped: the'))) victim.notes.push(`stopped: ${text}; no unspent budget could be moved to it`);
+      stop(victim.runId, 'budget_share').catch(() => {});
+    }
+    return victims.map((e) => e.runId);
   }
 
   // ── dispatch ───────────────────────────────────────────────────────────────
@@ -894,7 +1061,7 @@ export function createAssistantDispatcher({
       cwd: spec.cwd, project: spec.project, mcpProfile: spec.mcpProfile,
       permissionPolicy: spec.permissionPolicy, capability: spec.capability, usesBrowser: spec.usesBrowser, usesComputer: !!spec.usesComputer,
       title: spec.title, task: spec.task, context: spec.context, tags: spec.tags,
-      maxMinutes: spec.maxMinutes, budgetUsd: spec.budgetUsd, idleTimeoutMs: spec.idleTimeoutMs, maxTurns: spec.maxTurns,
+      maxMinutes: spec.maxMinutes, budgetUsd: spec.budgetUsd ?? null, freeModel: spec.freeModel === true, idleTimeoutMs: spec.idleTimeoutMs, maxTurns: spec.maxTurns,
       outputSchema: spec.outputSchema, focus: spec.focus, workflowId: spec.workflowId, parentRunId: spec.parentRunId,
       idempotencyKey: spec.idempotencyKey, requestedBrowserSessionId: spec.requestedBrowserSessionId,
       modelInfo: spec.modelInfo || null, modelContextWindow: spec.modelContextWindow || null, pricingModel: spec.pricingModel || spec.model || null,
@@ -905,6 +1072,7 @@ export function createAssistantDispatcher({
       runId, assistantSessionId: sessionId, origin,
       state: 'queued', turnState: null, turns: [], lastResult: null, costUsd: 0, usage: null, costBasis: 'none',
       pending: [], notes: [], createdAt: iso(now()), startedAt: null, finishedAt: null, completionReason: null,
+      workMs: 0, workingSince: null,
       memoryId: null, memoryStored: false, browserSessionId: null, browserTabId: null, version: 0, updatedAt: iso(now()),
       runtime: null, providerSessionId: null, providerThreadId: null, degraded: null,
       route: null, escalation: null, escalationDepth: 0,
@@ -974,10 +1142,7 @@ export function createAssistantDispatcher({
       }
     }
     refreshLimits();
-    const spent = sessionTotal(sessionId);
-    if (sessionId && spent >= limits.sessionHardBudgetUsd) {
-      throw new DispatchError('BUDGET_EXCEEDED', `Assistant session spent $${spent.toFixed(2)} (brain + agents), at or above the hard cap of $${limits.sessionHardBudgetUsd}. Ask the user to raise it (Assistant → Budget) before dispatching more.`, { status: 409, sessionSpent: r4(spent), sessionCap: limits.sessionHardBudgetUsd });
-    }
+    refuseSessionOver(sessionId);
     // "true" (a string) is computer use too: normalizeSpec reads it so, and so must the gate.
     rawSpec = { ...rawSpec, usesComputer: rawSpec.usesComputer === true || rawSpec.usesComputer === 'true' };
     // A design dispatch's defaults fill what it leaves out, before any clamp; any dispatch's own browser
@@ -1016,7 +1181,21 @@ export function createAssistantDispatcher({
     try {
       // An approved route may have moved it to another provider: clamp for that one
       // (a route approved for design brings design's defaults).
-      const input = routed?.spec ? clampRemote(withClassDefaults(routed.spec, knownClass(routed.route?.taskClass)), sessionId, remoteNotes) : rawSpec;
+      let input = routed?.spec ? clampRemote(withClassDefaults(routed.spec, knownClass(routed.route?.taskClass)), sessionId, remoteNotes) : rawSpec;
+      // UI / callers without an Assistant session bypass the router, but may
+      // still ask for Auto. A routed concrete account is never picked again here.
+      if (!routed?.route && accountUsage && ['codex', 'claude-code'].includes(input.provider)) {
+        await accountUsage.refresh(input.provider);
+        const worker = input.provider === 'codex' ? codexWorkerAccount() : claudeWorkerAccount();
+        const choice = input.accountId || input.codexAccountId || input.claudeAccountId || worker || 'default';
+        const { row, reason } = chooseUsageAccount(accountUsage.list()[input.provider] || [], choice, worker || 'default');
+        if (choice === 'auto' && !row) throw new DispatchError('ACCOUNT_NO_SUBSCRIPTION', 'Auto requires a signed-in subscription account.');
+        if (row && reason) {
+          input = { ...input, accountId: row.id, codexAccountId: null, claudeAccountId: null };
+          const message = `${reason === 'accounts_all_limited' ? 'All subscription accounts limited; soonest reset' : reason === 'account_limited' ? `Account ${choice} out of usage` : 'Auto · most usage left'} → ${row.label || row.id}, ${row.usage?.remainingPercent == null ? 'usage unknown' : `${Math.round(row.usage.remainingPercent)}% left`}${row.usage?.resetsAt ? ` (resets ${row.usage.resetsAt})` : ''}.`;
+          routed = { ...routed, route: { status: 'auto', target: { kind: 'dispatch', provider: input.provider, model: input.model || null, accountId: row.id, account: { id: row.id, label: row.label || row.id, mode: row.mode, usage: { remainingPercent: row.usage?.remainingPercent ?? null, limited: row.usage?.limited ?? null, resetsAt: row.usage?.resetsAt || null } } }, corrections: [{ reason, from: choice, to: row.id, message }] } };
+        }
+      }
       // A route approved for other work cannot carry image / video creation or design, nor the other way round:
       // the class decides the model's capability check, the worker's media block or rules and what is collected.
       const declaredClass = knownClass(rawSpec.taskClass);
@@ -1039,19 +1218,63 @@ export function createAssistantDispatcher({
       if (brief) { entry.brief = brief; entry.notes.push(`carries the user's brief ${brief.briefId || ''}`.trim()); }
       if (routed?.route) entry.route = routed.route;
       entries.set(runId, entry);
-      try { refuseUnpriced(entry); fitBudget(entry); } catch (error) { entries.delete(runId); throw error; }
-      entry.taskId = taskAtDispatch(sessionId);
+      // Before the budget check awaits (it may re-split): a retry with the same key replays this run.
       if (spec.idempotencyKey && sessionId) idempotency.set(`${sessionId}:${spec.idempotencyKey}`, { runId, at: now() });
+      let budgetCorrections = [];
+      try { budgetCorrections = await fitBudget(entry, { routed: !!routed?.route }); } catch (error) { entries.delete(runId); throw error; }
+      entry.taskId = taskAtDispatch(sessionId);
       const launched = await launchOrQueue(entry, spec, { queuedCount, strict: true });
+      const withCorrections = budgetCorrections.length ? { ...launched, corrections: budgetCorrections } : launched;
       // The route's own "decided" event (it had no run attached) still tells the brain to dispatch.
       return routed?.approvedMeanwhile
-        ? { ...launched, next: 'The user picked this route while the dispatch was on its way, so this run started on it. Do not dispatch it again when the route_decided event for this route arrives.' }
-        : launched;
+        ? { ...withCorrections, next: 'The user picked this route while the dispatch was on its way, so this run started on it. Do not dispatch it again when the route_decided event for this route arrives.' }
+        : withCorrections;
     } catch (error) {
       // A run that exists (it failed or stopped at start) used the route; a refusal before one did not.
       if (routed?.claimed && !(runId && entries.has(runId))) router.releaseRoute?.(routed.route?.routeId);
       throw error;
     }
+  }
+
+  /** BUDGET_EXCEEDED (409) when the session has spent its whole budget (No limit: never). */
+  function refuseSessionOver(sessionId) {
+    if (!sessionId || !limitedNow()) return;
+    const cov = budget.coverage(sessionId);
+    if (cov && cov.leftUsd < MIN_SPEND_USD) {
+      throw new DispatchError('BUDGET_EXCEEDED', `Assistant session spent ${usd(cov.spentUsd)} (brain + agents), its whole budget of ${usd(cov.amountUsd)}. Ask the user to raise the budget or switch to No limit (Assistant → Budget) before dispatching more.`, { status: 409, sessionSpent: r4(cov.spentUsd), sessionBudget: cov.amountUsd, reason: 'session_budget' });
+    }
+  }
+  /**
+   * A new run under the session budget. No limit: its budget_usd is dropped, with a note and a
+   * correction. With a budget: an unpriced model is refused (BUDGET_UNPRICED), the session's split is
+   * made when it has none (its first dispatch), and the run's provider must have share left, a re-split
+   * first, unless its model is free; else BUDGET_SHARE_EXHAUSTED (409), which names the dry providers
+   * and tells the brain to route again. Nothing is reserved: every run draws on its provider's share
+   * as it spends. `routed`: the router already noted the task. → the corrections for the answer.
+   */
+  async function fitBudget(entry, { routed = false } = {}) {
+    const corrections = [];
+    if (!limitedNow()) {
+      if (entry.budgetUsd) {
+        const text = `budget_usd ${usd(entry.budgetUsd)} ignored: this session has no budget (No limit)`;
+        entry.notes.push(text);
+        corrections.push({ field: 'budget_usd', from: entry.budgetUsd, to: null, reason: 'no_limit', text });
+        entry.budgetIgnoredUsd = entry.budgetUsd;
+        entry.budgetUsd = null;
+      }
+      return corrections;
+    }
+    refuseUnpriced(entry);
+    const sessionId = entry.assistantSessionId;
+    if (!sessionId) return corrections;
+    const task = { taskClass: entry.taskClass || null, summary: entry.title || null, provider: entry.provider, model: entry.model || null };
+    await budget.ensureSplit(sessionId, { task: routed ? null : task });
+    refuseSessionOver(sessionId);
+    if (entry.freeModel) return corrections;
+    if (!(await budget.ensureCovered(sessionId, { provider: entry.provider, task: routed ? null : task }))) {
+      throw new DispatchError('BUDGET_SHARE_EXHAUSTED', `Not dispatched: ${shareText(sessionId, entry.provider)}, and no unspent budget could be moved to it. Route the task again with agent_route (it moves the task to a provider with money left; providers out of share now: ${dryText(sessionId)}), pick a free model, or ask the user to raise the budget (Assistant → Budget).`, { status: 409, provider: entry.provider, dry: budget.dry(sessionId), reason: 'budget_share' });
+    }
+    return corrections;
   }
 
   /** The router decided this route as approved, for this session (after a hold was returned on its card). */
@@ -1151,7 +1374,7 @@ export function createAssistantDispatcher({
     const entry = entries.get(runId);
     if (!entry || entry.state !== 'awaiting_route' || !target?.provider) return { ok: false, code: 'NOT_HELD' };
     const catalogValue = await catalogSnapshot();
-    let input = { ...(entry.rawSpec || {}), provider: target.provider, model: target.model || null, effort: target.effort ?? entry.rawSpec?.effort ?? null };
+    let input = { ...(entry.rawSpec || {}), provider: target.provider, model: target.model || null, effort: target.effort ?? entry.rawSpec?.effort ?? null, ...(target.accountId ? { accountId: target.accountId, codexAccountId: null, claudeAccountId: null } : {}) };
     let spec;
     // The picked provider may need another clamp (Codex under strict worker approvals), or the level fell meanwhile.
     const remoteNotes = [];
@@ -1201,6 +1424,7 @@ export function createAssistantDispatcher({
     const context = [entry.context, note].filter(Boolean).join('\n\n');
     const result = await dispatch({
       provider: to.provider, model: to.model || null, effort: to.effort || null, task: entry.task, cwd: entry.cwd, context,
+      accountId: to.accountId || (to.provider === entry.provider ? entry.accountId : null),
       title: clip(`${entry.title} ${retry ? '↻' : '↑'}`, 80), tags: entry.tags, workflowId: entry.workflowId, parentRunId: runId,
       mcpProfile: entry.provider === to.provider ? entry.mcpProfile : undefined, capability: entry.capability,
       permissionPolicy: to.provider === 'codex' && entry.permissionPolicy === 'ask' ? 'restricted' : entry.permissionPolicy,
@@ -1295,7 +1519,7 @@ export function createAssistantDispatcher({
    */
   function emitFailed(entry, evidenceAcc = null) {
     const done = () => { delete entry.judging; entry.escalation = computeEscalation(entry); emit(entry, 'failed'); };
-    if (!judge?.workerOutcome || entry.completionReason === 'budget_cap') { done(); return Promise.resolve(); }
+    if (!judge?.workerOutcome || budgetStopReason(entry.completionReason)) { done(); return Promise.resolve(); }
     entry.judging = true;
     const evidence = evidenceSnapshot(evidenceAcc);
     const error = [entry.error, ...(entry.notes || []).slice(-3)].filter(Boolean).map((line) => String(line)).join('\n');
@@ -1328,10 +1552,12 @@ export function createAssistantDispatcher({
   async function start(entry) {
     const runtime = safeRuntime();
     if (!runtime) throw new DispatchError('RUNTIME_UNAVAILABLE', 'Native loop runtime is not available', { status: 503 });
-    // A queued or held run starts under the caps that apply now.
+    // A queued or held run starts under the budget as it is now (its provider's share included).
     refreshLimits();
-    try { refuseUnpriced(entry); fitBudget(entry); } catch (error) {
-      entry.state = 'stopped'; entry.completionReason = error?.code === 'BUDGET_UNPRICED' ? 'budget_unpriced' : 'session_budget_cap'; entry.finishedAt = iso(now()); entry.turnState = 'terminal'; entry.pending = [];
+    try { await fitBudget(entry, { routed: true }); } catch (error) {
+      entry.state = 'stopped';
+      entry.completionReason = error?.code === 'BUDGET_UNPRICED' ? 'budget_unpriced' : error?.code === 'BUDGET_SHARE_EXHAUSTED' ? 'budget_share' : 'session_budget_cap';
+      entry.finishedAt = iso(now()); entry.turnState = 'terminal'; entry.pending = [];
       entry.notes.push(`not started: ${error?.message || error}`);
       emit(entry, 'stopped');
       throw error;
@@ -1378,7 +1604,8 @@ export function createAssistantDispatcher({
       claudeAccountId: entry.claudeAccountId, claudeConfigDir: entry.claudeConfigDir,
       driverType: 'native', runtimeType: 'native', surface: 'sidepanel', runId: entry.runId, cwd: entry.cwd,
       runMode: 'task', assistantSessionId: entry.assistantSessionId, permissionPolicy: entry.permissionPolicy,
-      capability: entry.capability, budgetUsd: entry.budgetUsd, maxBudgetUsd: entry.provider === 'claude-code' ? entry.budgetUsd : null,
+      // A Claude worker's CLI stop (--max-budget-usd): a backstop under a budget, none under No limit.
+      capability: entry.capability, budgetUsd: entry.budgetUsd, maxBudgetUsd: entry.provider === 'claude-code' ? claudeBackstop(entry) : null,
       idleTimeoutMs: entry.idleTimeoutMs, maxTurns: entry.maxTurns, outputSchema: entry.outputSchema, project: entry.project,
       title: entry.title, tags: entry.tags, workflowId: entry.workflowId, parentRunId: entry.parentRunId,
       // The user's brief after a clarification (assistant-task-prompt.js briefBlock).
@@ -1499,6 +1726,8 @@ export function createAssistantDispatcher({
         entry.pending = [...(entry.pending || []), pending];
         entry.state = 'awaiting_permission';
         entry.turnState = 'awaiting_permission';
+        // Waiting on the answer is not work: the request's own timeout bounds it.
+        pauseWork(entry, liveState);
         liveState.ctx?.setTurnState?.('awaiting_permission');
         liveState.ctx?.emit?.({ type: 'synabun.permission_request', requestId, kind, toolName: pending.toolName, input: pending.input, questions: pending.questions });
         const timer = setTimeout(() => finishPending(runId, requestId, { behavior: 'deny', message: `No decision within ${Math.round(timeoutMs / 60000)} minutes.`, resolvedBy: 'timeout' }), timeoutMs);
@@ -1526,6 +1755,7 @@ export function createAssistantDispatcher({
     if (entry.state === 'awaiting_permission' && entry.pending.length === 0) {
       entry.state = 'running';
       entry.turnState = 'running';
+      startWork(entry, liveState);
       liveState.ctx?.setTurnState?.('running');
     }
     const reply = { behavior: response?.behavior === 'allow' ? 'allow' : 'deny', ...response };
@@ -1581,6 +1811,8 @@ export function createAssistantDispatcher({
       startUsagePolling(entry, liveState);
       entry.state = 'running';
       entry.turnState = 'running';
+      // The work clock runs from here to the turn's end (its result-retry turn included).
+      startWork(entry, liveState);
       ctx.setTurnState('running');
       emit(entry, 'turn_started', { turn: turnNumber });
       // What this turn runs (commands, tool results, edited files): the evidence behind a "done".
@@ -1607,7 +1839,8 @@ export function createAssistantDispatcher({
         parsed.judged = { status: judged.status, confidence: judged.statusConfidence };
         if (judged.status === 'needs_input') parsed.question = clip(lastParagraph(text), 500);
         if (evidence.files.length) { parsed.files = [...evidence.files]; parsed.changes = evidence.files.map((path) => ({ path, note: '' })); }
-      } else if (noBlock && !liveState.dead) {
+      } else if (noBlock && !liveState.dead && !liveState.abortReason) {
+        // Never after a stop (user, cap): the turn ends as aborted instead (handleTurnError).
         retried = true;
         try {
           const retry = await inner.runTurn(buildResultRetryPrompt(), { ...meta, turn: turnNumber, retry: true });
@@ -1617,6 +1850,9 @@ export function createAssistantDispatcher({
           retryCost = accumulateCost(entry, retry);
           if (entry.provider === 'codex') settleCodexTurn(entry, liveState, retry);
         } catch (error) {
+          // Stopped during the retry: the run ends here (handleTurnError books the retry), with no
+          // turn_completed or follow-up after it. The first provider turn was paid for: book it first.
+          if (liveState.abortReason) { accumulateCost(entry, raw); throw error; }
           retryCost = accumulateCost(entry, error);
           if (entry.provider === 'codex') settleCodexTurn(entry, liveState, error);
           entry.notes.push(`result retry failed: ${error?.message || error}`);
@@ -1659,6 +1895,8 @@ export function createAssistantDispatcher({
       entry.turns = [...(entry.turns || []), turn].slice(-50);
       entry.lastResult = parsed;
       entry.lastText = text.slice(0, 20_000);
+      // The turn has ended: its result is in. Idle time from here on is not work.
+      pauseWork(entry, liveState);
       // Blocked or contract-less turns offer a one-tier escalation (the run
       // itself stays warm for follow-ups; the brain or the user decides). A
       // status Jev read from the message is a usable result.
@@ -1689,13 +1927,17 @@ export function createAssistantDispatcher({
         try {
           await runInnerTurn(prompt, meta, { origin: 'dispatch' });
         } catch (error) {
+          pauseWork(entry, liveState);
           return handleTurnError(error, liveState, entry, ctx);
         }
         for (;;) {
-          // Out of money (the run's cap or the session's): stop instead of idling warm.
+          // Stopped while the turn ran (a stop that did not fail it): never idle, never take a queued follow-up.
+          if (liveState.abortReason) { entry.completionReason = entry.completionReason || liveState.abortReason; return { providerSessionId: inner.identity?.()?.providerSessionId }; }
+          // Out of money (its own ceiling, the session's budget, unpriced usage): stop instead of idling
+          // warm. A provider share that is used up holds nothing from an idle run: it waits like any other.
           refreshLimits();
           const spentOut = budgetBlock(entry);
-          if (spentOut) return budgetStop(entry, spentOut);
+          if (spentOut && spentOut.code !== 'BUDGET_SHARE_EXHAUSTED') return budgetStop(entry, spentOut);
           entry.state = 'idle';
           entry.turnState = 'idle';
           ctx.setTurnState('idle');
@@ -1710,15 +1952,24 @@ export function createAssistantDispatcher({
             return { providerSessionId: inner.identity?.()?.providerSessionId };
           }
           refreshLimits();
-          const blocked = budgetBlock(entry);
+          let blocked = budgetBlock(entry);
+          // Its provider's share is used up: the unspent budget is divided again first.
+          if (blocked?.code === 'BUDGET_SHARE_EXHAUSTED' && await coverShare(entry)) blocked = budgetBlock(entry);
           if (blocked) {
-            entry.notes.push(`follow-up dropped: ${blocked.message}`);
+            entry.notes.push(`follow-up dropped: ${blocked.message}${blocked.code === 'BUDGET_SHARE_EXHAUSTED' ? '; no unspent budget could be moved to it' : ''}`);
             return budgetStop(entry, blocked);
+          }
+          // No work time left: a turn started now would only be cut off.
+          if (workLeftMs(entry) <= 0) {
+            entry.completionReason = 'time_cap';
+            entry.notes.push(`follow-up dropped: its ${entry.maxMinutes} minutes of work time are used up`);
+            return { providerSessionId: inner.identity?.()?.providerSessionId };
           }
           try {
             const followPrompt = buildFollowUpPrompt(next.text, state, { turn: liveState.turnCounter + 1, maxTurns: entry.maxTurns, origin: next.origin, testDensity: changedTestDensity(entry) });
             await runInnerTurn(followPrompt, meta, { origin: next.origin, label: clip(next.text, 80), followUp: next.text, taskId: next.taskId || entry.taskId || null });
           } catch (error) {
+            pauseWork(entry, liveState);
             return handleTurnError(error, liveState, entry, ctx);
           }
         }
@@ -1817,7 +2068,7 @@ export function createAssistantDispatcher({
     if (budgetStopReason(entry.completionReason)) return { providerSessionId: null };
     if (error?.code === 'BUDGET_CAP') {
       entry.completionReason = 'budget_cap';
-      entry.notes.push('stopped: per-run budget cap reached');
+      entry.notes.push('stopped: the Claude CLI reached the budget it started with (the run\'s ceiling, or what the session had left when it started)');
       const runtime = safeRuntime();
       runtime?.stop?.(entry.runId, 'budget_cap').catch(() => {});
       return { providerSessionId: null };
@@ -1832,7 +2083,7 @@ export function createAssistantDispatcher({
     entry.notes.push(`provider error: ${error?.message || error}`);
     throw error;
   }
-  function budgetStopReason(reason) { return reason === 'budget_cap' || reason === 'session_budget_cap' || reason === 'budget_unpriced'; }
+  function budgetStopReason(reason) { return reason === 'budget_cap' || reason === 'session_budget_cap' || reason === 'budget_unpriced' || reason === 'budget_share'; }
   /** Stop a run that is out of money; the runtime ends it as stopped with this reason. */
   function budgetStop(entry, block) {
     entry.completionReason = block.reason;
@@ -1863,7 +2114,7 @@ export function createAssistantDispatcher({
   function announceUnpriced(entry) {
     if (!(Number(entry.unpricedTurns) > 0) || entry.unpricedAnnounced) return;
     entry.unpricedAnnounced = true;
-    emit(entry, 'budget_unpriced', { text: `this run's usage could not be priced (${entry.unpricedReason}); its tokens are recorded but the dollar caps cannot meter it.` });
+    emit(entry, 'budget_unpriced', { text: `this run's usage could not be priced (${entry.unpricedReason}); its tokens are recorded but the session budget cannot meter it.` });
   }
   function codexThreadId(entry) {
     try { return entry.providerThreadId || live.get(entry.runId)?.inner?.identity?.()?.providerThreadId || null; } catch { return entry.providerThreadId || null; }
@@ -2046,6 +2297,13 @@ export function createAssistantDispatcher({
     if (TERMINAL_STATES.has(entry.state)) meter.clearPending();
     const pending = meter.pending();
     setPendingUsage(entry, pending.tokens, pending.byModel[0]?.model || null);
+    // The calls of the turn in progress at list price: the budget sees them between model calls (the
+    // turn's reported cost replaces them at its result).
+    const liveState = live.get(entry.runId);
+    if (liveState) {
+      liveState.claudePendingUsd = pending.byModel.reduce((sum, row) => sum + (Number(claudeTokensCostUsd(row.model, row.tokens)) || 0), 0);
+      if (pendingChanged && !settled && liveState.turnOpen) enforceMidTurn(entry, liveState);
+    }
   }
 
   // Codex: the rollout files of the run's thread and its sub-agent threads.
@@ -2368,18 +2626,42 @@ export function createAssistantDispatcher({
     const held = meters.get(entry.runId);
     if (held) { held.codex = null; held.opencode = null; }
   }
-  /** Caps checked between provider steps: the run stops as soon as it is out of money. */
+  /**
+   * The budget checked between provider steps (Claude model calls, OpenCode steps, Codex rollout
+   * records): the run stops as soon as it reaches its ceiling or the session its budget. Its
+   * provider's share running dry divides the unspent budget again first (shareRanDry).
+   */
   function enforceMidTurn(entry, liveState) {
     if (TERMINAL_STATES.has(entry.state) || liveState.budgetStopping) return;
     refreshLimits();
     const block = budgetBlock(entry);
-    if (block) {
+    if (block?.code === 'BUDGET_SHARE_EXHAUSTED') shareRanDry(entry);
+    else if (block) {
       liveState.budgetStopping = true;
       entry.completionReason = block.reason;
       entry.notes.push(`stopped mid-turn: ${block.message}`);
       safeRuntime()?.stop?.(entry.runId, block.reason).catch(() => {});
     }
     checkSession(entry.assistantSessionId, { source: entry });
+  }
+  /**
+   * A provider's share ran dry while a run of it works: the session's unspent budget is divided again
+   * (budget planner). Only when no money could move to it are that provider's runs of the session
+   * stopped (completion reason budget_share). One check per session and provider at a time.
+   */
+  function shareRanDry(entry) {
+    const sessionId = entry.assistantSessionId;
+    if (!sessionId) return;
+    const key = `${sessionId}:${entry.provider}`;
+    if (shareChecks.has(key)) return;
+    const check = coverShare(entry).then((covered) => {
+      if (covered || TERMINAL_STATES.has(entry.state)) return;
+      // Spent again meanwhile: the share as it is now decides.
+      const still = budgetBlock(entry);
+      if (still?.code !== 'BUDGET_SHARE_EXHAUSTED') return;
+      stopProviderRuns(sessionId, entry.provider, still.message);
+    }).catch(() => {}).finally(() => { if (shareChecks.get(key) === check) shareChecks.delete(key); });
+    shareChecks.set(key, check);
   }
 
   // ── run ↔ memory ───────────────────────────────────────────────────────────
@@ -2421,7 +2703,16 @@ export function createAssistantDispatcher({
     refreshLimits();
     const blocked = budgetBlock(entry);
     if (blocked) {
-      throw new DispatchError(blocked.code, `Run ${runId} cannot take a follow-up: ${blocked.message}. ${blocked.reason === 'budget_cap' ? 'Dispatch a new run with its result as context.' : 'Ask the user to raise the cap (Assistant → Budget).'}`, { status: 409, ...blocked.detail });
+      const next = blocked.reason === 'budget_cap' ? 'Dispatch a new run with its result as context.'
+        : blocked.reason === 'budget_share' ? 'No unspent budget could be moved to it. Route the follow-up as a new task with agent_route (it moves the task to a provider with money left), or ask the user to raise the budget (Assistant → Budget).'
+          : blocked.reason === 'budget_unpriced' ? 'Dispatch a new run on a priced or free model with its result as context.'
+            : 'Ask the user to raise the budget or switch to No limit (Assistant → Budget).';
+      throw new DispatchError(blocked.code, `Run ${runId} cannot take a follow-up: ${blocked.message}. ${next}`, { status: 409, reason: blocked.reason, ...blocked.detail });
+    }
+    // No work time left: the turn loop would drop the follow-up, so refuse it here (a follow-up
+    // queued while a turn still works is checked again when that turn ends).
+    if (workLeftMs(entry) <= 0) {
+      throw new DispatchError('TIME_CAP', `Run ${runId} cannot take a follow-up: its ${entry.maxMinutes} minutes of work time are used up. Dispatch a new run with its result as context.`, { status: 409, reason: 'time_cap', maxMinutes: entry.maxMinutes ?? null, workMs: workUsedMs(entry) });
     }
     // A follow-up works for the task in progress when it is sent, which may be a later one than the run's.
     const item = { kind: 'follow-up', text: message, origin, at: iso(now()), taskId: taskNow(entry.assistantSessionId) || entry.taskId || null };
@@ -2431,6 +2722,18 @@ export function createAssistantDispatcher({
     liveState.followUps.push(item);
     emit(entry, 'follow_up_queued', { queued: liveState.followUps.length });
     return { ok: true, queued: true, position: liveState.followUps.length, run: view(entry) };
+  }
+  /**
+   * Before a follow-up: when the run's provider share is used up, the session's unspent budget is
+   * divided again (Jev or the fallback), so sendTurn decides on the share as it is after that.
+   * Never throws; resolves to whether the provider can pay now.
+   */
+  async function coverFollowUp(runId) {
+    const entry = entries.get(String(runId || ''));
+    if (!entry || TERMINAL_STATES.has(entry.state)) return true;
+    const blocked = budgetBlock(entry);
+    if (blocked?.code !== 'BUDGET_SHARE_EXHAUSTED') return !blocked;
+    return coverShare(entry);
   }
   function complete(runId, { reason = 'complete' } = {}) {
     const entry = requireEntry(runId);
@@ -2489,6 +2792,7 @@ export function createAssistantDispatcher({
   function finalize(entry, runtimeRun) {
     if (TERMINAL_STATES.has(entry.state)) return;
     const liveState = live.get(entry.runId);
+    pauseWork(entry, liveState);
     let status = runtimeRun?.status || 'completed';
     // A completed worker whose loop file was swept meanwhile (a stale-file cleanup) reaches the
     // runtime's next check as "stopped": its turn loop had already ended on the completion.
@@ -2507,7 +2811,9 @@ export function createAssistantDispatcher({
     }
     entry.pending = [];
     releaseDesktop(entry);
-    if (entry.state === 'failed' && entry.completionReason !== 'budget_cap' && judge?.workerOutcome) {
+    // A run that ended gives back what it did not spend: the session's split is made again (debounced).
+    if (entry.assistantSessionId) { try { budget.onRunEnded(entry.assistantSessionId); } catch { /* the split stays as it is */ } }
+    if (entry.state === 'failed' && !budgetStopReason(entry.completionReason) && judge?.workerOutcome) {
       // State, queue and desktop move on now; the 'failed' event waits for its cause.
       emitFailed(entry, liveState?.evidence || null);
       processQueue().catch(() => {});
@@ -2764,6 +3070,7 @@ export function createAssistantDispatcher({
     if (unsubscribeRuntime) { try { unsubscribeRuntime(); } catch {} unsubscribeRuntime = null; }
     for (const entry of entries.values()) {
       if (ACTIVE_STATES.has(entry.state)) {
+        pauseWork(entry);
         entry.state = 'interrupted'; entry.completionReason = reason; entry.finishedAt = iso(now()); entry.turnState = 'terminal'; entry.pending = [];
         delete entry.rawSpec;
         // What the run's meter can still read is booked now; nothing provisional outlives the process.
@@ -2782,7 +3089,7 @@ export function createAssistantDispatcher({
   return {
     dispatch, sendTurn, complete, completeClosedTab, stop, killAll, get, peek, list, totals, wait, transcript, pendingPermissions,
     respondPermission, subscribe, shutdown, limits,
-    sessionBudget, checkSession, refreshLimits,
+    sessionBudget, checkSession, refreshLimits, providerSpend, coverFollowUp, budget,
     resolveRoute, declineRoute, heldRouteRefusal, escalate,
     markDelivered, deliveryState,
     remove, removeFinished,

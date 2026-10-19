@@ -1,3 +1,8 @@
+import { providerAuthSnapshot } from './ui-provider-auth.js';
+import { mountProviderTerminalAuth, providerApiKeyRequest, startProviderTerminalLogin } from './ui-provider-terminal-auth.js';
+import { accountName, accountSwitchPlan, accountText, tabAccountId, serverAccountId } from './account-view.js';
+import { mountAccountMenu } from './account-menu.js';
+import './account-i18n.js';
 import { hostedSidepanelId, sidepanelHost } from './ui-sidepanel-runtime.js';
 // ═══════════════════════════════════════════
 // SynaBun — Claude Code Panel (Main Area)
@@ -12,7 +17,7 @@ import { fetchClaudeSessions, fetchBrowserSessions, searchSessions } from './api
 import { createFrameRenderer } from './utils.js';
 import { notify, NOTIF_TYPE } from './ui-notifications.js';
 import { registerSidepanel, setSidepanelVisible, syncSidepanelLayout, focusSidepanel, openAnotherSidepanelSession, isHostedSessionFocused } from './ui-sidepanel-windows.js';
-import { subscribeCliStatus, recheckCliStatus, getCliDocUrl, getCliInstallCommand, getCliLabel } from './cli-status.js';
+import { mountCliBanner } from './ui-cli-banner.js';
 import { nativeLoopWindowId } from './ui-native-window-id.js';
 import { createStickyScrollController } from './ui-scroll-follow.js';
 import { requestGeneratedSessionTitle } from './session-title.js';
@@ -166,9 +171,8 @@ function activeTab() { return _tabs[_activeTabIdx] || null; }
 let _browserEmbed = null;   // { sessionId, ws, canvas, ctx, urlBar, container }
 let _browserEmbedVisible = false;
 
-// ── CLI-installed status (claude binary detection) ──
-let _cliInstalled = null;   // null = unknown / missing, version string = installed
-let _cliUnsub = null;
+// ── CLI status (claude binary detection): the banner controller, ui-cli-banner.js ──
+let _cliBanner = null;
 
 // Marked.js (lazy loaded)
 let _marked = null;
@@ -308,7 +312,7 @@ const SLASH_COMMANDS = [
   { name: 'plugin', desc: 'List active plugins and skills', kind: 'info' },
   { name: 'status', desc: 'Show session status summary', kind: 'info' },
   { name: 'cost', desc: 'Toggle the cost widget', kind: 'action' },
-  { name: 'login', desc: 'Open Claude account login', kind: 'action' },
+  { name: 'login', desc: 'Sign this tab\'s Claude account in (opens the account menu)', kind: 'action' },
   { name: 'logout', desc: 'Open Claude account sign-out', kind: 'action' },
   { name: 'plan', desc: 'Toggle plan mode', kind: 'action' },
   { name: 'btw', desc: 'Add context while Claude is processing (Shift+Enter)', kind: 'info' },
@@ -322,7 +326,7 @@ const SLASH_COMMANDS = [
   { name: 'reload-plugins', desc: 'Reload plugins without restarting the session', kind: 'action', needs: 'reload_plugins' },
   { name: 'tasks', desc: 'Background work of this tab: running tasks (with stop) and scheduled wakeups', kind: 'info' },
   { name: 'usage', desc: 'This session\'s cost and the plan\'s usage limits', kind: 'info', needs: 'session_requests' },
-  { name: 'account', desc: 'Choose the Claude account this tab runs under', kind: 'action', needs: 'accounts' },
+  { name: 'account', desc: 'Choose and manage the Claude account of this tab (the header account menu)', kind: 'action', needs: 'accounts' },
   { name: 'effective-settings', desc: 'The Claude Code settings in effect here, and the file each comes from', kind: 'info', needs: 'settings_view' },
 ];
 
@@ -544,72 +548,7 @@ function injectStyles() {
     .cp-messages:has(.msg) .cp-empty,
     .cp-messages:has(.msg-status) .cp-empty { display: none; }
 
-    /* ── CLI-not-installed banner (sticky top of messages container) ── */
-    .cp-cli-banner {
-      flex-shrink: 0;
-      display: grid;
-      grid-template-columns: auto 1fr auto;
-      gap: 10px;
-      align-items: center;
-      margin: 6px 8px 0;
-      padding: 10px 12px;
-      border: 1px solid rgba(255,180,80,0.45);
-      border-radius: 8px;
-      background: rgba(255,180,80,0.08);
-      color: rgba(255,235,200,0.92);
-      font-size: 11px;
-      line-height: 1.4;
-      pointer-events: auto;
-      position: relative;
-      z-index: 5;
-    }
-    .cp-cli-banner-icon {
-      width: 22px; height: 22px;
-      display: flex; align-items: center; justify-content: center;
-      border-radius: 50%;
-      background: rgba(255,180,80,0.25);
-      color: rgba(255,210,140,1);
-      font-weight: 700;
-    }
-    .cp-cli-banner-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-    .cp-cli-banner-title {
-      font-size: 12px; font-weight: 600;
-      color: rgba(255,210,140,0.95);
-    }
-    .cp-cli-banner-body {
-      font-size: 11px;
-      color: rgba(255,255,255,0.7);
-      word-break: break-word;
-    }
-    .cp-cli-banner-body code {
-      padding: 1px 5px;
-      background: rgba(0,0,0,0.35);
-      border-radius: 3px;
-      font-size: 10.5px;
-      color: rgba(255,255,255,0.85);
-    }
-    .cp-cli-banner-actions { display: flex; gap: 6px; }
-    .cp-cli-banner-link, .cp-cli-banner-recheck {
-      display: inline-flex; align-items: center; gap: 4px;
-      padding: 4px 9px;
-      font-size: 11px;
-      font-weight: 500;
-      border-radius: 4px;
-      border: 1px solid rgba(255,255,255,0.2);
-      background: rgba(255,255,255,0.05);
-      color: rgba(255,255,255,0.9);
-      text-decoration: none;
-      cursor: pointer;
-      user-select: none;
-      font-family: inherit;
-    }
-    .cp-cli-banner-link:hover, .cp-cli-banner-recheck:hover {
-      background: rgba(255,255,255,0.12);
-      border-color: rgba(255,255,255,0.4);
-    }
-    .cp-cli-banner-recheck:disabled { opacity: 0.5; cursor: default; }
-    .claude-panel.cp-cli-blocked .cp-send { opacity: 0.4 !important; cursor: not-allowed !important; }
-    .claude-panel.cp-cli-blocked .cp-input { opacity: 0.7; }
+    /* ── CLI banner (ui-cli-banner.js): its rules are in cp/cp-styles.js ── */
 
     /* ── Browser embed (live screencast inside panel) ── */
     .cp-browser-embed {
@@ -2975,6 +2914,7 @@ function connectTab(tab) {
   ws.addEventListener('open', () => {
     if (tab.ws !== ws) return;
     clearTimeout(tab.reconnectTimer);
+    _ensureClaudeTerminalAuth(tab);
     connectionOpened(tab); // no statement of the tab's mode was made on this socket yet
     // Reclaim this tab's server session if it outlived the old socket — a turn in
     // flight, a permission card, background agents or a scheduled wakeup. The
@@ -3046,6 +2986,7 @@ function switchTab(idx) {
   tab.messagesEl._exitToken = (tab.messagesEl._exitToken || 0) + 1; // cancel pending exits
   _attachMessagesEl(tab);
   tab.messagesEl.style.display = '';
+  _ensureClaudeTerminalAuth(tab);
   tab.scrollController?.setActive(true);
   tab.messagesEl.classList.remove('cp-tab-exit');
   tab.messagesEl.classList.add('cp-tab-enter');
@@ -3127,6 +3068,7 @@ function switchTab(idx) {
   _setCompactingUI(!!tab.compacting);
   populateViewDropdown(_panel?.querySelector('#cp-view'), tab);
   populateModeDropdown(_panel?.querySelector('#cp-mode'), tab);
+  _renderAccountMenu();
   _paintTemporary(tab);
   saveTabs();
 }
@@ -3149,6 +3091,8 @@ function closeTab(idx, { detachAutomation = false } = {}) {
   if (tab.automationRunId) forgetWorkerEnd(tab.automationRunId);
   flushSessionSnapshotSave(tab);
   recordHookEvent(tab, 'SessionEnd', tab.sessionId || '(new)');
+  tab.authView?.dispose();
+  tab.terminalAuthView?.dispose();
   tab.closed = true;
   tab.titleRequestController?.abort();
   tab.titleRequestController = null;
@@ -4479,7 +4423,7 @@ function writeSessionSnapshot(tab) {
   const sid = tab?.sessionId || null;
   const $msgs = tab?.messagesEl || null;
   if (!sid || !$msgs) return;
-  const html = $msgs.innerHTML || '';
+  const html = providerAuthSnapshot($msgs);
   if (!html.trim()) return;
   // Skip snapshot if the transcript only contains the empty-state placeholder
   if ($msgs.children.length === 1 && $msgs.firstElementChild?.classList?.contains('cp-empty')) return;
@@ -5134,7 +5078,7 @@ function _contextMenuData(tab, { full = false } = {}) {
     folder: tab.init?.cwd || tab.project || '',
     // The mode as the project bar words it (it knows Bypass and "from settings").
     mode: ($mode && !$mode.hidden && $mode.querySelector('.cp-dd-label')?.textContent) || tab.permissionMode || '',
-    account: [tab.accountInfo?.email, tab.accountInfo?.organization].filter(Boolean).join(' · '),
+    account: [tab.accountInfo?.authMethod === 'apiKey' ? 'API key' : tab.accountInfo?.email, tab.accountInfo?.organization].filter(Boolean).join(' · '),
     flags: sessionFlags(tab.session, { toolPolicy: tab.toolPolicy, fastModeState: tab.fastModeState, account: tab.accountId }),
     limit: tab.rateLimit?.text || '',
     backgroundTasks: (tab.backgroundWork || []).length,
@@ -5323,6 +5267,7 @@ function _processTabMsg(tab, msg) {
       if (tab === activeTab()) {
         renderStatusline(tab);
         populateModeDropdown(_panel?.querySelector('#cp-mode'), tab);
+        _renderAccountMenu();
       }
       break;
     }
@@ -5546,6 +5491,8 @@ function _processTabMsg(tab, msg) {
         break;
       }
       appendError(tab, msg.message);
+      // The tab's account is gone, or belongs to another conversation: the accounts card is where to choose.
+      if (msg.code === 'account_unavailable' || msg.code === 'account_change_refused') _showAccounts(tab);
       notify('panel', NOTIF_TYPE.ERROR, tab.label || 'Claude Code', { tabId: tab.id });
       if (typeof msg.message === 'string' && /Claude CLI not found|ENOENT/i.test(msg.message)) {
         flagClaudeCliInstallFailure(msg.message);
@@ -7567,6 +7514,7 @@ function _afterTemporary(tab, sid, label) {
   for (const waiting of tab._sessionRequests?.values() || []) { clearTimeout(waiting.timer); try { waiting.reject(new Error('The temporary chat has ended.')); } catch {} }
   // An open history search lists its prompts.
   if (tab === activeTab()) _panel?.querySelector('.cp-rsearch')?.remove();
+  tab.terminalAuthView?.dispose();
   tabAfterTemporary(tab, newTabState(sid, label || 'New chat', tab.id));
 }
 
@@ -8617,47 +8565,149 @@ function _showUsage(tab) {
   }).catch(err => appendInfoCard(tab, { title: 'Usage', kind: 'info', body: err.message }));
 }
 
-// /account: the Claude accounts set up in SynaBun, and which one this tab uses.
+// ── Claude accounts ──
+// Every account and its state come from the server (lib/claude-accounts.js
+// describe(): its mode, whether it is signed in, its identity: an email or a
+// masked key, never a key); account-view.js decides the words. One list for
+// every tab, and one place to choose and manage accounts: the account menu in
+// the header (account-menu.js, the same component as the Codex panel's).
+// /account, /login and the sign-in screen's "Other accounts…" open it.
+// `claude:accounts-changed` (any window, any surface) reloads the list.
 // A conversation belongs to the account it started under (its transcript lives
-// in that account's config directory), so the account is chosen before the
-// first message of a tab.
-function _showAccounts(tab, wanted = '') {
-  if (!hasCapability(tab, 'accounts')) { appendStatus(tab, 'Choosing an account needs a newer SynaBun server: restart it to enable this.'); return; }
-  fetch('/api/claude/accounts').then(r => r.json()).then((d) => {
-    const accounts = Array.isArray(d?.accounts) ? d.accounts : [];
-    const pick = (account) => {
-      const id = account.isDefault ? '' : account.id;
-      if (id === (tab.accountId || '')) { appendStatus(tab, `This tab already uses ${account.label}.`); return; }
-      if (tab.sessionId) { appendStatus(tab, 'This conversation belongs to the account it started under. Start a new chat (or a new tab) to use another account.'); return; }
-      if (!account.loggedIn) { appendStatus(tab, `${account.label} is not signed in yet. Sign it in from Settings first.`); return; }
-      tab.accountId = id;
-      saveTabs();
-      if (tab === activeTab()) renderStatusline(tab);
-      appendStatus(tab, `This tab runs under ${account.label}${account.email ? ` (${account.email})` : ''}.`);
-    };
-    if (wanted) {
+// in that account's config directory): a tab with one opens another account in
+// a new chat, and the tab's own account changes only before its first message.
+let _claudeAccountRows = null;
+let _claudeAccountsLoad = null;
+let _claudeAccountsError = '';
+let _accountMenu = null;
+function _loadClaudeAccounts({ force = false, refresh = false } = {}) {
+  if (!force && !refresh && _claudeAccountRows) return Promise.resolve(_claudeAccountRows);
+  if (_claudeAccountsLoad && !refresh) return _claudeAccountsLoad;
+  const load = fetch(`/api/claude/accounts${refresh ? '?refresh=true' : ''}`, { cache: 'no-store' })
+    .then(r => r.ok ? r.json() : Promise.reject(new Error(accountText('readFailed'))))
+    .then((d) => {
+      _claudeAccountRows = Array.isArray(d?.accounts) ? d.accounts : [];
+      _claudeAccountsError = '';
+      _claudeAccountsChanged();
+      return _claudeAccountRows;
+    })
+    .catch((error) => { _claudeAccountsError = accountText('readFailed'); _claudeAccountsChanged(); throw error; })
+    .finally(() => { if (_claudeAccountsLoad === load) _claudeAccountsLoad = null; });
+  _claudeAccountsLoad = load;
+  return load;
+}
+function _claudeAccountRow(id) {
+  return (_claudeAccountRows || []).find(row => row.id === serverAccountId(id)) || null;
+}
+function _claudeAccountsChanged() {
+  _renderAccountMenu();
+}
+
+// The header account menu: the active tab's account and what it runs on, every account, and their
+// management (add, sign in with Claude, an API key, the "Uses" switch, sign out, rename, remove).
+function _mountAccountMenu() {
+  if (_accountMenu || !_panel) return _accountMenu;
+  const actions = _panel.querySelector('.cp-header-actions');
+  if (!actions) return null;
+  const path = id => `/api/claude/accounts/${encodeURIComponent(id)}`;
+  _accountMenu = mountAccountMenu({
+    provider: 'claude', container: actions, before: actions.firstChild, layer: () => _panel,
+    read: () => {
+      const tab = activeTab();
+      return {
+        rows: _claudeAccountRows || [], currentId: tab?.accountId || '', hasConversation: !!tab?.sessionId,
+        available: !!tab && hasCapability(tab, 'accounts') && !tab.automationActive,
+        busy: !!(tab?.running || tab?.automationActive), loading: !_claudeAccountRows, error: _claudeAccountsError,
+      };
+    },
+    actions: {
+      load: ({ refresh }) => _loadClaudeAccounts({ force: true, refresh }),
+      pick: (id) => { const tab = activeTab(); if (tab) _pickAccount(tab, id); },
+      add: async () => (await _claudeAuthRequest('/api/claude/accounts', { method: 'POST', body: '{}' })).account,
+      signIn: (id) => startProviderTerminalLogin('claude', id, `Claude sign-in · ${_claudeAccountRow(id)?.label || id}`),
+      saveKey: (id, key) => providerApiKeyRequest('claude', id, key),
+      setMode: (id, mode) => _claudeAuthRequest(path(id), { method: 'PATCH', body: JSON.stringify({ mode }) }),
+      signOut: (id, credential) => _claudeAuthRequest(`${path(id)}/auth/logout`, { method: 'POST', body: JSON.stringify({ credential }) }),
+      rename: (id, label) => _claudeAuthRequest(path(id), { method: 'PATCH', body: JSON.stringify({ label }) }),
+      remove: (id) => _claudeAuthRequest(path(id), { method: 'DELETE' }),
+    },
+  });
+  return _accountMenu;
+}
+function _renderAccountMenu() {
+  if (!_accountMenu) return;
+  const tab = activeTab();
+  if (tab && hasCapability(tab, 'accounts') && !_claudeAccountRows && !_claudeAccountsLoad) _loadClaudeAccounts().catch(() => {});
+  _accountMenu.render();
+}
+
+// Pick an account for a tab: now when it has no conversation yet, else in a new chat (a new tab).
+function _pickAccount(tab, id) {
+  const rows = _claudeAccountRows || [];
+  const plan = accountSwitchPlan({ rows, currentId: tab.accountId || '', targetId: id, hasConversation: !!tab.sessionId });
+  const target = _claudeAccountRow(id);
+  if (plan.effect === 'missing' || plan.effect === 'same') { appendStatus(tab, plan.message); return; }
+  if (plan.effect === 'next-chat') {
+    if (_tabs.length >= MAX_TABS) { appendStatus(tab, `${plan.message} ${accountText('tooManyTabs')}`); return; }
+    const fresh = createTab(null, 'New chat');
+    fresh.accountId = tabAccountId(id);
+    _ensureClaudeTerminalAuth(fresh);
+    saveTabs();
+    if (fresh === activeTab()) _renderAccountMenu();
+    appendStatus(fresh, accountText('newChatUnder', { label: target ? accountName(target) : id }));
+    return;
+  }
+  tab.accountId = tabAccountId(id);
+  _ensureClaudeTerminalAuth(tab);
+  saveTabs();
+  if (tab === activeTab()) { renderStatusline(tab); _renderAccountMenu(); }
+  appendStatus(tab, plan.message);
+}
+
+// /account (and /login, and the sign-in screen's "Other accounts…"): the header account menu.
+// `/account <name>` picks that account at once; `manage` opens one account's management.
+function _showAccounts(tab, wanted = '', { manage = '' } = {}) {
+  if (!hasCapability(tab, 'accounts')) { appendStatus(tab, accountText('needsServer')); return; }
+  if (wanted) {
+    _loadClaudeAccounts({ force: true }).then((accounts) => {
       const w = wanted.trim().toLowerCase();
-      const match = accounts.find(a => a.id.toLowerCase() === w || String(a.label || '').toLowerCase() === w || String(a.email || '').toLowerCase() === w);
+      const match = accounts.find(a => a.id.toLowerCase() === w || String(a.label || '').toLowerCase() === w || String(a.subscription?.email || '').toLowerCase() === w);
       if (!match) { appendStatus(tab, `No account "${wanted}". Use /account to list them.`); return; }
-      pick(match);
-      return;
-    }
-    const current = tab.accountId || 'default';
-    const html = accounts.map(a => `<div class="cp-task-row" data-account="${esc(a.id)}"><div class="cp-task-head">
-        <span class="cp-task-title">${esc(a.label)}${a.id === current ? ' ✓' : ''}</span>
-        <span class="cp-chip ${a.loggedIn ? 'cp-chip-ok' : 'cp-chip-warn'}">${a.loggedIn ? 'signed in' : 'not signed in'}</span>
-        ${a.id !== current ? '<button type="button" class="cp-engine-retry" data-use>Use for this tab</button>' : ''}</div>
-        <div class="cp-task-stats">${esc([a.email, a.organization].filter(Boolean).join(' · ') || 'no identity yet')}</div></div>`).join('')
-      + '<div class="cp-info-row muted">Accounts are added and signed in from Settings. The default account is what Claude Code uses in a terminal.</div>';
-    const card = appendInfoCard(tab, { title: 'Claude accounts', kind: 'info', html });
-    card?.querySelectorAll('[data-use]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const id = btn.closest('[data-account]')?.dataset.account;
-        const account = accounts.find(a => a.id === id);
-        if (account) pick(account);
-      });
-    });
-  }).catch(() => appendStatus(tab, 'Could not read the accounts.'));
+      _pickAccount(tab, match.id);
+    }).catch(() => appendStatus(tab, accountText('readFailed')));
+    return;
+  }
+  if (tab !== activeTab()) return;
+  _mountAccountMenu()?.open(manage ? { manage } : {});
+}
+
+async function _claudeAuthRequest(url, options = {}) {
+  const response = await fetch(url, { ...options, cache: 'no-store', headers: { 'Content-Type': 'application/json' } });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.error) throw new Error(data.error || 'Claude authentication request failed.');
+  return data;
+}
+
+function _ensureClaudeTerminalAuth(tab) {
+  const accountId = tab.accountId || 'default';
+  if (tab.closed || !tab.messagesEl) return;
+  if (tab.terminalAuthView && tab.terminalAuthAccount === accountId) { void tab.terminalAuthView.refresh(); return; }
+  tab.terminalAuthView?.dispose();
+  tab.terminalAuthAccount = accountId;
+  const named = accountId !== 'default' ? _claudeAccountRow(accountId) : null;
+  tab.terminalAuthView = mountProviderTerminalAuth({
+    host: tab.messagesEl, provider: 'claude', accountId, logo: CLAUDE_ICON,
+    ...(named ? { message: `Sign in to Claude to use ${named.label}.` } : {}),
+    // Another account (or a new one) is one click away from the sign-in screen: the header account menu.
+    moreAction: { label: accountText('otherAccounts'), run: () => _showAccounts(tab) },
+    isCurrent: () => !tab.closed && (tab.accountId || 'default') === accountId,
+    readAccount: async () => {
+      const account = (await _claudeAuthRequest(`/api/claude/accounts/${encodeURIComponent(accountId)}/auth?refresh=true`)).account;
+      if (!tab.closed && (tab.accountId || 'default') === accountId) tab.accountInfo = account;
+      return account;
+    },
+    onSignedIn: () => { _loadClaudeAccounts({ force: true }).catch(() => {}); },
+  });
 }
 
 // /mcp: every server of the session with its state, and what can be done about it.
@@ -9176,8 +9226,15 @@ function runSlashCommand(tab, raw) {
       return true;
     }
     case 'cost': { clearInput(); emit('cost:toggle'); return true; }
-    case 'login': { clearInput(); window.open('https://claude.ai/login', '_blank'); return true; }
-    case 'logout': { clearInput(); window.open('https://claude.ai/logout', '_blank'); return true; }
+    case 'login': { clearInput(); _showAccounts(tab, '', { manage: serverAccountId(tab.accountId) }); return true; }
+    case 'logout': {
+      clearInput();
+      if (tab.running || tab.automationActive) { appendStatus(tab, 'Finish or stop the current turn before signing out.'); return true; }
+      void _claudeAuthRequest(`/api/claude/accounts/${encodeURIComponent(tab.accountId || 'default')}/auth/logout`, { method: 'POST', body: '{}' })
+        .then(() => { tab.accountInfo = null; tab.terminalAuthView?.update({ loggedIn: false }); })
+        .catch(() => appendStatus(tab, 'Could not sign out. Try again.'));
+      return true;
+    }
     case 'plan': {
       clearInput();
       // The one path for plan mode: on is the user's pick of Plan, off goes back
@@ -9199,8 +9256,9 @@ function runSlashCommand(tab, raw) {
 function send({ shift = false } = {}) {
   const tab = activeTab();
   if (!tab) return;
-  if ((_cliInstalled === null || _cliInstallFailureForced) && !tab.automationActive) {
-    notify({ type: NOTIF_TYPE.WARN, title: 'Claude CLI not installed', body: 'Install the Claude Code CLI before sending a message.' });
+  if (_cliBlocked() && !tab.automationActive) {
+    // The banner above the transcript says why, and offers the way out.
+    _cliBanner?.nudge();
     return;
   }
   const $input = _panel?.querySelector('#cp-input');
@@ -10094,116 +10152,50 @@ function syncReservedWidth(knownWidth) {
 }
 
 // ── CLI installation status (banner + send-block) ──
-let _cliInstallFailureForced = false;
-let _cliFailureReason = null;
-
-function _ensureCliBannerEl() {
-  if (!_panel) return null;
-  const container = _panel.querySelector('#cp-messages-container');
-  if (!container || !container.parentNode) return null;
-  let banner = container.parentNode.querySelector(':scope > .cp-cli-banner');
-  if (banner) { _renderCliBannerContent(banner); return banner; }
-  const url = getCliDocUrl('claude-code');
-  banner = document.createElement('div');
-  banner.className = 'cp-cli-banner';
-  banner.innerHTML = `
-    <div class="cp-cli-banner-icon">!</div>
-    <div class="cp-cli-banner-text">
-      <div class="cp-cli-banner-title"></div>
-      <div class="cp-cli-banner-body"></div>
-    </div>
-    <div class="cp-cli-banner-actions">
-      <a class="cp-cli-banner-link" href="${esc(url || '#')}" target="_blank" rel="noopener noreferrer">Install guide</a>
-      <button class="cp-cli-banner-recheck" type="button">Re-check</button>
-    </div>
-  `;
-  container.parentNode.insertBefore(banner, container);
-  const btn = banner.querySelector('.cp-cli-banner-recheck');
-  btn?.addEventListener('click', async () => {
-    btn.disabled = true;
-    btn.textContent = 'Checking…';
-    try { await recheckCliStatus('claude-code'); }
-    finally {
-      if (btn.isConnected) {
-        btn.disabled = false;
-        btn.textContent = 'Re-check';
-      }
-    }
-  });
-  _renderCliBannerContent(banner);
-  return banner;
+// One controller (ui-cli-banner.js) draws the banner above the transcript while
+// Claude Code is not usable: not installed (with Install, which runs Anthropic's
+// own installer on the server), being installed, failed to install, or found but
+// failed to start (with the error it gave). It also holds the class that keeps
+// sending off. What it says is cli-install-view.js (`cliInstall.*` strings).
+function _cliBannerController() {
+  if (!_cliBanner) {
+    _cliBanner = mountCliBanner({
+      toolKey: 'claude-code',
+      prefix: 'cp',
+      panel: () => _panel,
+      anchor: () => _panel?.querySelector('#cp-messages-container'),
+      onBlockedChange: (blocked) => {
+        const $send = _panel?.querySelector('#cp-send');
+        if (!$send) return;
+        if (blocked) { $send.disabled = true; return; }
+        const tab = activeTab();
+        const $input = _panel?.querySelector('#cp-input');
+        if (tab?.running) $send.disabled = false;
+        else $send.disabled = !$input?.value.trim() && !tab?.attachedImages?.length && !tab?.attachedFiles?.length;
+      },
+    });
+  }
+  return _cliBanner;
 }
 
-// Distinguish "never installed" from "installed but would not launch" —
-// telling the user to install something already present sends them chasing a
-// reinstall they do not need.
-function _renderCliBannerContent(banner) {
-  const titleEl = banner.querySelector('.cp-cli-banner-title');
-  const bodyEl = banner.querySelector('.cp-cli-banner-body');
-  if (!titleEl || !bodyEl) return;
-  const label = getCliLabel('claude-code');
-  bodyEl.replaceChildren();
-
-  if (_cliInstalled === null) {
-    titleEl.textContent = `${label} CLI not installed`;
-    bodyEl.append('Run ');
-    const code = document.createElement('code');
-    code.textContent = getCliInstallCommand('claude-code');
-    bodyEl.append(code, ' or follow the install guide.');
-    return;
-  }
-
-  titleEl.textContent = `${label} CLI failed to start`;
-  bodyEl.append(`${label} v${_cliInstalled} is installed, but it could not be launched. `);
-  if (_cliFailureReason) {
-    const code = document.createElement('code');
-    code.textContent = _cliFailureReason;
-    bodyEl.append(code);
-  } else {
-    bodyEl.append('Check the CLI path in Settings, then re-check.');
-  }
-}
-
-function _removeCliBannerEl() {
-  if (!_panel) return;
-  const banner = _panel.querySelector(':scope > .cp-cli-banner');
-  banner?.remove();
+/** Sending is held back: Claude Code is missing, broken, failed to install, or being installed. */
+function _cliBlocked() {
+  return !!_cliBanner?.blocked();
 }
 
 function _refreshCliBanners() {
   if (!_panel) return;
-  const missing = _cliInstalled === null || _cliInstallFailureForced;
-  _panel.classList.toggle('cp-cli-blocked', missing);
-  if (missing) _ensureCliBannerEl();
-  else _removeCliBannerEl();
-  const $send = _panel.querySelector('#cp-send');
-  if ($send && missing) $send.disabled = true;
+  _cliBannerController().refresh();
 }
 
+// A session could not start Claude Code: "failed to start" with its words at
+// once, then the server is asked again and its answer decides what stays.
 export function flagClaudeCliInstallFailure(reason = null) {
-  _cliInstallFailureForced = true;
-  _cliFailureReason = reason ? String(reason).slice(0, 300) : null;
-  _refreshCliBanners();
-  // Clear from the RETURNED value, not the subscriber callback: the callback
-  // only fires when the version string changes, and a launch failure does not
-  // change it, so the banner would otherwise latch permanently.
-  recheckCliStatus('claude-code')
-    .then((info) => {
-      if (!info?.installed) return;
-      _cliInstallFailureForced = false;
-      _cliFailureReason = null;
-      _refreshCliBanners();
-    })
-    .catch(() => {});
+  _cliBannerController().flagFailure(reason);
 }
 
 function _ensureCliSubscription() {
-  if (_cliUnsub) return;
-  _cliUnsub = subscribeCliStatus('claude-code', (info) => {
-    _cliInstalled = info?.installed || null;
-    if (_cliInstalled) { _cliInstallFailureForced = false; _cliFailureReason = null; }
-    _refreshCliBanners();
-  });
+  _cliBannerController();
 }
 
 // ── Delegated transcript actions ──
@@ -11192,6 +11184,13 @@ function wireEvents() {
   const $close = _panel.querySelector('.cp-close-btn');
   const $minimize = _panel.querySelector('.cp-minimize-btn');
   const $slide = _panel.querySelector('.cp-slide-btn');
+  _mountAccountMenu();
+  // Any window or surface changed an account (signed in, a key saved, its mode, renamed, added,
+  // removed): the account menu re-reads the list, and the tabs on it re-check sign-in.
+  on('sync:claude:accounts-changed', (msg) => {
+    _loadClaudeAccounts({ force: true }).catch(() => {});
+    for (const t of _tabs) if (!msg?.accountId || serverAccountId(t.accountId) === msg.accountId) void t.terminalAuthView?.refresh();
+  });
   const $new = _panel.querySelector('.cp-new-btn');
 
   const $brand = _panel.querySelector('.cp-brand');

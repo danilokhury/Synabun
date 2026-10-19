@@ -9,6 +9,12 @@ import { createSessionListOverlay, overlaySessions, matchesSessionFilter } from 
 import { findSessionTranscript, sessionProjects, confineArtifact, confineSubPath, confineToRoot, staysInside, isInsideReal, isInside, isPlainName, PathConfineError } from './lib/path-confine.js';
 import { readConfinedFile, writeConfinedFile, makeConfinedDir, removeConfinedEntry, listConfined, openConfinedStream } from './lib/confined-fs.js';
 import { createClaudeAccounts as createPanelClaudeAccounts } from './lib/claude-accounts.js';
+import { createClaudePanelAuth } from './lib/claude-panel-auth.js';
+import { createCodexPanelAuth } from './lib/codex-panel-auth.js';
+import { createCodexAccounts, applyCodexLaunchEnv, codexAppServerArgs, codexExecEnv } from './lib/codex-accounts.js';
+import { createCodexAccountAuth } from './lib/codex-account-auth.js';
+import { registerProviderPanelApiKeyAuthRoutes, redactProviderSecrets, providerApiKeyBodyError, providerDiagnosticSink } from './lib/provider-panel-api-key-auth.js';
+import { createProviderPanelTerminalAuth, providerLoginSpec, registerProviderPanelTerminalAuthRoutes } from './lib/provider-panel-terminal-auth.js';
 import { claudeLegacyPricing, claudeUsageCostUsd } from './lib/assistant-pricing.js';
 import { HOOK_SCRIPTS, hookDefinitionsForEvent, hookCommandString, hookInstallBlocker, hookInstallPlan, isSynaBunHookCommand, sweepSettingsHooks, ensureHookRoot } from '../lib/claude-hooks.js';
 import { browserV2Enabled, browserRequestMiddleware, assertBrowserRequestActive, browserActionTimeout, markBrowserActionStarted, runBrowserRequest, cancellableBrowserDelay, measureBrowserPhase, createEngagementScheduler, engagementTargetSelector, isEngagementWriteSelector, isXShortcutPublish, isXScriptedWrite } from './lib/browser-execution.js';
@@ -34,8 +40,9 @@ import { createPtyHostManager } from './lib/pty-host/manager.js';
 import { hostNameOf, isAllowedHost, isAllowedWebSocketOrigin, parseCookies, refuseUpgrade } from './lib/http-guards.js';
 import { createRequestGates, extraHostNames, hostsOf, savedValueOf, startedValueOf } from './lib/request-gate.js';
 import { createGitDiffRouter } from './lib/git-diff-api.js';
-import { gitRead, gitReadSync } from './lib/git-read.js';
+import { gitRead, gitReadSync, setGitFallbackFolder, withGitFallback } from './lib/git-read.js';
 import { createPhoneAuthority } from './lib/remote-policy.js';
+import { brainCredentialOf } from './lib/virtual-socket.js';
 import { buildTerminalEnv, interactiveShellArgs, cliWrapperArgs } from './lib/terminal-env.js';
 import { startJudgeBackfill, stopJudgeBackfill } from '../mcp-server/dist/services/memory-judge-backfill.js';
 import { judgeLoopGoal } from '../mcp-server/dist/services/memory-judgments.js';
@@ -106,12 +113,18 @@ import { loopLog, loopLogPath, flushLoopLogs } from './lib/loop-logger.js';
 import {
   buildInstallCommand,
   buildUpdateCommand,
-  detectInstallSource,
   isBrewSource,
   parseBrewOutdated,
+  quoteCommandPath,
   resolveBrewToken,
   resolveLatest,
 } from './lib/cli-update-planner.js';
+import { createCliResolver, spawnArgsFor } from './lib/cli-resolver.js';
+import { osPath } from './lib/os-path.js';
+import { createCliInstaller, CLI_INSTALL_GUIDES } from './lib/cli-install.js';
+import { createCliInstallApi, createCliPathApi, createGitBashApi } from './lib/cli-install-api.js';
+import { createCliPathManager } from './lib/cli-path.js';
+import { composeTerminalPath, terminalLaunchCommand, terminalArgument } from './lib/terminal-path.js';
 import {
   applyBackupRetention,
   createVerifiedBackup,
@@ -145,11 +158,6 @@ import {
   createCodexNativeLoopAdapter,
   createOpenCodeNativeLoopAdapter,
 } from './lib/native-loop-providers.js';
-import {
-  resolveTrustedWindowsCodexBinary,
-  selectWindowsCodexLauncher,
-  windowsCodexPackageJsonCandidates,
-} from './lib/codex-runtime-path.js';
 import {
   mergeCodexModelContextCapabilities,
   resolveCodexExtendedContext,
@@ -233,10 +241,14 @@ import {
   onClaudeModelsChanged,
   shellCommand,
 } from './lib/claude-model-catalog.js';
-import { resolveClaudeLauncher, resolveClaudeSdkExecutable } from './lib/claude-executable.js';
-import { getAugmentedPath } from './lib/augmented-path.js';
+import { resolveClaudeSdkExecutable } from './lib/claude-executable.js';
+import { collectInstallDetails } from './lib/install-details.js';
+import { withPathEnv, pathEnvValue, getAugmentedPath, rememberedOsPath, rememberPackagedPath, rememberedPackagedPath, withPackagedPathLast } from './lib/augmented-path.js';
+import { readCodexSettingsSchema, readCodexFeatureSupport, validateCodexSettings } from './lib/codex-settings-schema.js';
 import { semverNewer, synabunReleaseChannel } from './lib/synabun-version.js';
 import { selectSynabunUpdate, buildSynabunInstallPlan, refuseStaleUpdateClick } from './lib/synabun-update-plan.js';
+import { collectActivity, countWhere, recentCliSessions } from './lib/system-activity.js';
+import { createSystemAbout } from './lib/system-about.js';
 import {
   listCodexSessionsFromAccounts,
   mergeCodexSessionSummaries,
@@ -264,7 +276,10 @@ import { ensureProjectCategories } from '../hooks/claude-code/shared.mjs';
 import { getDataHome, getDataHomeDiagnostics, isGlobalInstall, pathIsInside } from '../lib/paths.js';
 import { launcherLogPath } from '../lib/first-launch-protection.js';
 import { registerStartLauncher, startLauncherState } from '../lib/start-launcher.js';
-import { durableEntry, mcpStdioCommand, packagedRuntime } from '../lib/packaged-runtime.js';
+import { effectiveNpmPrefix } from '../lib/child-path.js';
+import { redactDeep, redactSecrets } from '../lib/log-redact.js';
+import { applyPackagedChildPath, durableEntry, mcpStdioCommand, npmGlobalBinFor, packagedNpmPrefix, packagedPathFolders, packagedRuntime } from '../lib/packaged-runtime.js';
+import { dataHomeId } from '../lib/desktop-app.js';
 import { pruneExternalTools } from '../lib/external-tools.js';
 import { renderOfflinePage } from './lib/offline-page.js';
 import {
@@ -346,6 +361,11 @@ let _greetingError = null;
 let _assistantDispatcher = null;
 // The Assistant's model catalog (lib/assistant-catalog.js): Settings → WhatsApp checks its brain choice against it.
 let _assistantCatalog = null;
+// The Claude account the Assistant's Claude Code workers use when a dispatch names none (assistant-config.json
+// `workers.claudeAccount`); a function once the Assistant is wired. An account it names cannot be removed.
+let _assistantClaudeWorkerAccount = null;
+// The same for Codex workers (`workers.codexAccount`).
+let _assistantCodexWorkerAccount = null;
 // Who may ask, in front of every route (lib/request-gate.js). A request for the owner's data must name this
 // server: everything under /api and /mcp, the invite sign-in, the rendered offline page and the uploaded icons
 // answer 403 BAD_HOST to any other Host (a page whose name was re-pointed at this machine sends its own); the
@@ -371,6 +391,7 @@ app.use(express.json({ limit: '25mb' }));
 // exceed the JSON limit. Default Express handler dumps a 10-line raw-body stack with no
 // URL — this logs one line with context and responds 413 instead.
 app.use((err, req, res, next) => {
+  if (/^\/api\/provider-panel-auth\/[^/]+\/[^/]+\/api-key(?:\?|$)/.test(req.originalUrl || req.url || '')) return providerApiKeyBodyError(err, req, res, next);
   if (err && (err.type === 'entity.too.large' || err.type === 'entity.parse.failed')) {
     const len = req.headers['content-length'] || '?';
     console.warn(`[body-parser] ${err.type} ${req.method} ${req.originalUrl || req.url} content-length=${len} limit=${err.limit || '?'}`);
@@ -435,6 +456,8 @@ import { createEndpointCompletionEngine } from './lib/editor-completion-endpoint
 import { ownerRouteGuard } from './lib/http-guards.js';
 import { createCloudflaredManager } from './lib/cloudflared/manager.js';
 import { createQuickTunnel } from './lib/cloudflared/tunnel.js';
+import { createGitBashManager } from './lib/git-bash/manager.js';
+import { settingsGitBashValue, syncClaudeSettingsGitBash } from './lib/git-bash/claude-settings.js';
 
 const PORT = process.env.NEURAL_PORT || 3344;
 // SQLite database is used directly via lib/db.js
@@ -754,6 +777,26 @@ const INSTALL_KIND = PACKAGED_RUNTIME ? 'app' : isGlobalInstall() ? 'npm' : 'git
 // What a person types to start a packaged application: its entry executable,
 // when that is a path that will still be there once this run is over.
 const START_ENTRY = durableEntry(PACKAGED_RUNTIME) || '';
+// What the desktop app's window asks /api/health (lib/desktop-app.js): the version this server runs and which
+// data home it uses, as a hash and never the path, so it can tell its own server from another installation's.
+const SERVER_VERSION = (() => { try { return String(JSON.parse(readFileSync(resolve(PACKAGE_ROOT, 'package.json'), 'utf-8')).version || ''); } catch { return ''; } })();
+const DATA_HOME_ID = dataHomeId(DATA_HOME);
+// The entry this install runs from, even when it does not outlive the run (START_ENTRY is then empty): how the
+// desktop app tells its own server from another install's (lib/desktop-app.js classifyServer).
+const INSTALL_ENTRY = PACKAGED_RUNTIME?.entry || '';
+// A packaged application's own Node runtime, and the global bin of the npm that came with it (where `npm i -g`
+// through it puts commands: the prefix as npm settles it from npm_config_prefix, the user's config file and the
+// global one, else SynaBun's per-user folder its builtin npmrc names, never the application: lib/child-path.js,
+// lib/packaged-runtime.js packagedNpmPrefix). On the PATH of everything this server starts, after everything of
+// the user's: the user's own Node and npm stay first, these are the fallback on a machine without. The bin is asked
+// for each PATH (cached for seconds), so a prefix set later counts without a restart. This process's own environment
+// gets the same order, for every child that simply inherits it (an npm install, git, a CLI); the server's own
+// Node children are started by process.execPath, never through PATH.
+rememberPackagedPath({
+  last: packagedPathFolders(PACKAGED_RUNTIME).last,
+  npmBin: PACKAGED_RUNTIME ? () => packagedNpmPrefix(PACKAGED_RUNTIME)?.bin || null : null,
+});
+applyPackagedChildPath(process.env, PACKAGED_RUNTIME);
 
 // Serve offline.html with what it needs once we are down: the install path,
 // how it was installed, the launcher's state and the bridge code itself.
@@ -2142,6 +2185,10 @@ async function runGracefulShutdown(reason) {
   // The public address: its cloudflared is ended with the server that owns the address (killed when it does not
   // end by itself; never waited for more than a moment).
   try { await tunnel.shutdown({ timeoutMs: 1500 }); } catch (err) { console.warn('  tunnel stop err:', err?.message); }
+  // A CLI install under way (lib/cli-install.js): its installer and what it started are stopped.
+  try { cliInstaller.stopAll(); } catch (err) { console.warn('  cli install stop err:', err?.message); }
+  // A Git for Windows download under way (lib/git-bash/): stopped; its work folder goes with the next attempt.
+  try { gitBash.cancel(); } catch (err) { console.warn('  git bash stop err:', err?.message); }
 
   // 1. opencode sidecar — has its own teardown that handles managed PID + ollama.
   try { stopOpencodeServer(); } catch (err) { console.warn('  opencode stop err:', err?.message); }
@@ -2462,6 +2509,13 @@ app.post('/api/system/run-update', async (req, res) => {
     // Nothing is ever installed into the resources of a packaged application.
     if (PACKAGED_RUNTIME) {
       const openUrl = `${SYNABUN_GITHUB_REPO_URL}/releases`;
+      // The desktop app updates itself, through its window's update function (packaging/desktop).
+      if (PACKAGED_RUNTIME.shell) {
+        return res.status(409).json({
+          error: 'This copy of SynaBun is the desktop app, and it updates itself: use Check for updates in its menu. Nothing was installed.',
+          packaged: true, desktopManaged: true, openUrl,
+        });
+      }
       return res.status(409).json({
         error: `This copy of SynaBun is a packaged application. It is updated by installing a newer build over it, not from inside the app. Nothing was installed. Releases: ${openUrl}`,
         packaged: true,
@@ -3247,36 +3301,88 @@ function _heartbeatLock(sessionId, windowId) {
   }
 }
 
-// Cache resolved claude binary path (avoids a PATH walk on every query)
-let _claudeBinPath = null;
-// A tool that was not found is looked for again after a moment: installing it
-// is what a user does next, and that must not take a restart of SynaBun.
-const MISSING_TOOL_RECHECK_MS = 15_000;
-let _claudeBinMissingAt = 0;
+// ── Where the user's CLIs are (lib/cli-resolver.js) ──
+// One resolver for every lookup and launch of Claude Code, Codex and OpenCode:
+// the version check behind the side panels' banner and the update badges,
+// Settings' Detect, the one-click install (lib/cli-install.js) and the
+// launchers below. The path in Settings > Terminal first, then PATH with the OS
+// PATH read afresh (lib/os-path.js: the registry on Windows, the login shell on
+// macOS and Linux), then the folders each install method uses; never a copy
+// inside SynaBun. A CLI installed while SynaBun runs is found by the next
+// lookup: nothing here is remembered for more than a few seconds, and Re-check
+// forgets everything.
+const cliResolver = createCliResolver({
+  isInsideSynabun: (file) => isInsideSynabun(file),
+  configured: (toolKey) => loadCliConfig()[toolKey]?.command ?? null,
+});
+// The first read of the OS PATH starts now, so the first lookups already have it.
+osPath.refresh().catch(() => {});
 
-// The Claude Code a terminal would start: the command from cli-config.json
-// (Settings > Terminal), else the first `claude` on the augmented PATH. Always
-// the user's own installation: never a file inside SynaBun, never a command
-// from a node_modules/.bin folder (lib/claude-executable.js).
+// ── Git Bash for Claude Code on Windows (lib/git-bash/) ──
+// Claude Code on Windows runs its Bash tool and every hook through Git Bash and
+// falls back to PowerShell without one, where SynaBun's own hooks of an
+// installed app do not even parse. Which Git Bash a Claude Code started by
+// SynaBun gets: CLAUDE_CODE_GIT_BASH_PATH (this environment, or the user's
+// settings), a Git for Windows of the PC's own, then SynaBun's copy
+// (<resources>\git in the installer; DATA_HOME/runtime/git/<version>, fetched
+// once, on an npm install). claudeChildEnv() is the last word on the
+// environment of every Claude Code process SynaBun starts. Nothing changes on
+// macOS and Linux, or where the PC has a Git Bash Claude Code finds by itself;
+// the system's PATH and registry are never changed.
+const gitBash = createGitBashManager({
+  dataHome: DATA_HOME,
+  pathValue: () => [pathEnvValue(process.env), ...rememberedOsPath()].join(';'),
+  settingsValue: () => settingsGitBashValue({ settingsPath: getGlobalClaudeSettingsPath(), read: readClaudeSettingsForWrite }),
+  log: (line) => console.log(line),
+});
+function claudeChildEnv(env = process.env) {
+  // A packaged application's runtime and npm after the user's own on PATH (rememberPackagedPath above).
+  const ordered = withPackagedPathLast(env);
+  try { return gitBash.childEnv(ordered); } catch { return ordered; }
+}
+// SynaBun's own git features (the terminal's branch and checkout, the File Explorer's and the code editor's git,
+// the git routes) run the copy's git.exe on a PC without git: its path for spawnGit, its folder for every read.
+setGitFallbackFolder(() => { const git = gitBash.gitExecutable(); return git ? dirname(git) : null; });
+// The user's own `claude`, started in another terminal: ~/.claude/settings.json names SynaBun's copy while it is
+// the one in use and loses that value when it is not; a value of the user's own is never touched. Windows only.
+function syncGitBashSettings(resolution = gitBash.resolution()) {
+  const settingsPath = getGlobalClaudeSettingsPath();
+  const result = syncClaudeSettingsGitBash({ resolution, settingsPath, read: readClaudeSettingsForWrite, write: writeClaudeSettings, ownRoots: gitBash.ownRoots });
+  gitBash.noteSettings(result);
+  if (result.state === 'written') console.log(`[git-bash] ${settingsPath}: CLAUDE_CODE_GIT_BASH_PATH set to ${result.value} (SynaBun's Git Bash, for a claude started outside SynaBun)`);
+  else if (result.state === 'removed') console.log(`[git-bash] ${settingsPath}: CLAUDE_CODE_GIT_BASH_PATH removed (SynaBun's Git Bash is not the one in use)`);
+  else if (result.state === 'error') console.warn(`[git-bash] ${settingsPath} was not changed: ${result.message}`);
+  return result;
+}
+gitBash.onChange((resolution) => { syncGitBashSettings(resolution); });
+const _cliMissingLogged = new Set();
+function _noteCliLookup(toolKey, found, label) {
+  if (!found?.path) {
+    if (!_cliMissingLogged.has(toolKey)) {
+      _cliMissingLogged.add(toolKey);
+      console.warn(`[cli] ${label} not found (Settings path, PATH, the OS PATH and the known install folders). The side panel offers to install it.`);
+    }
+    return;
+  }
+  if (_cliMissingLogged.delete(toolKey)) console.log(`[cli] ${label} found: ${found.path}`);
+}
+
+/** The Settings > Terminal value of a tool when it is a command line ("wsl codex") that a shell runs as written. */
+function configuredCommandLine(toolKey) {
+  let value = '';
+  try { value = String(loadCliConfig()[toolKey]?.command || '').trim(); } catch {}
+  if (!value || !/\s/.test(value) || existsSync(value.replace(/^"(.*)"$/, '$1'))) return null;
+  return value;
+}
+
+// The Claude Code a terminal would start: the resolver's answer (Settings'
+// path, PATH, the OS PATH, the known install folders), always the user's own
+// installation. The bare 'claude' when there is none, which
+// resolveClaudeSdkExecutable and every caller read as "not installed".
 function getClaudeBin() {
-  if (_claudeBinPath && _claudeBinPath !== 'claude') return _claudeBinPath;
-  if (_claudeBinPath && Date.now() - _claudeBinMissingAt < MISSING_TOOL_RECHECK_MS) return _claudeBinPath;
-  let configured = '';
-  try { configured = loadCliConfig()['claude-code']?.command?.trim() || ''; } catch {}
-  const found = resolveClaudeLauncher({ configured, isInsideSynabun });
-  for (const rejected of found.rejected) {
-    console.warn(`[claude-skin] Ignoring Claude CLI inside the SynaBun install: ${rejected}`);
-  }
-  if (!found.path) {
-    if (!_claudeBinMissingAt) console.warn('[claude-skin] Claude CLI not found. Install: npm install -g @anthropic-ai/claude-code');
-    _claudeBinMissingAt = Date.now();
-    _claudeBinPath = 'claude'; // last resort — will fail at spawn time with a clear error
-    return _claudeBinPath;
-  }
-  if (_claudeBinMissingAt) console.log(`[claude-skin] Claude CLI found: ${found.path}`);
-  _claudeBinMissingAt = 0;
-  _claudeBinPath = found.path;
-  return _claudeBinPath;
+  const found = cliResolver.launcher('claude-code');
+  _noteCliLookup('claude-code', found, 'Claude Code');
+  return found.path || 'claude';
 }
 
 // The executable every Agent SDK call is given (pathToClaudeCodeExecutable):
@@ -3291,131 +3397,63 @@ function getClaudeSdkExecutable() {
   });
 }
 
-let _codexBinPath = null;
+// Codex: what the SDK and the app-server start. On Windows the native codex.exe
+// an npm command file leads to (the SDK spawns without a shell); the file found
+// otherwise. SynaBun carries no Codex (lib/external-tools.js): without one,
+// Codex is reported as not installed. 'codex' when there is none.
 let _codexBinSource = 'missing';
-let _codexBinMissingAt = 0;
-let _nativeCodexBinPath = null;
 // The SDK is statically imported at module load; reaching this point is the
 // authoritative capability check. Its package.json is intentionally not an
 // exported subpath, so resolving that file reports a false negative.
 const _codexSdkInstalled = true;
 
-function resolveWindowsGlobalCodexRuntime() {
-  const globalPath = getAugmentedPath().split(delimiter)
-    .filter((entry) => !/[\\/]node_modules[\\/]\.bin[\\/]?$/i.test(entry))
-    .join(delimiter);
-  const env = { ...process.env, PATH: globalPath };
-  const whereExecutable = process.env.SystemRoot
-    ? join(process.env.SystemRoot, 'System32', 'where.exe')
-    : 'where.exe';
-  const lookup = spawnSync(whereExecutable, ['codex'], {
-    encoding: 'utf-8',
-    env,
-    windowsHide: true,
-  });
-  const launchers = lookup.status === 0
-    ? String(lookup.stdout || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
-    : [];
-
-  const npmRootProbe = spawnSync(
-    process.env.ComSpec || process.env.COMSPEC || 'cmd.exe',
-    ['/d', '/s', '/c', 'npm root -g'],
-    { encoding: 'utf-8', env, windowsHide: true, timeout: 5000 },
-  );
-  const npmRoots = npmRootProbe.status === 0
-    ? String(npmRootProbe.stdout || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
-    : [];
-  const codexPackageJsonPaths = windowsCodexPackageJsonCandidates({
-    npmRoots,
-    appData: process.env.APPDATA,
-    npmConfigPrefix: process.env.NPM_CONFIG_PREFIX || process.env.npm_config_prefix,
-    synabunPackageRoot: PACKAGE_ROOT,
-    nodeExecutable: process.execPath,
-  });
-  const resolved = resolveTrustedWindowsCodexBinary({
-    launchers,
-    codexPackageJsonPaths,
-    arch: process.arch,
-    acceptBinary: (candidate) => !isInsideSynabun(candidate),
-  });
-  return { ...resolved, launchers, codexPackageJsonPaths, npmRoots };
-}
-
 function getCodexBin() {
-  // (Not found is looked for again after a moment, like Claude Code above.)
-  if (_codexBinPath && (_codexBinSource !== 'missing' || Date.now() - _codexBinMissingAt < MISSING_TOOL_RECHECK_MS)) return _codexBinPath;
-  // All Codex surfaces follow the user's trusted global install. SynaBun
-  // carries no Codex of its own (lib/external-tools.js): the SDK is always
-  // handed this path, and without one Codex is reported as not installed.
-  const globalPath = getAugmentedPath().split(delimiter)
-    .filter((entry) => !/[\\/]node_modules[\\/]\.bin[\\/]?$/i.test(entry))
-    .join(delimiter);
-  const envWithPath = { ...process.env, PATH: globalPath };
-  if (process.platform === 'win32') {
-    const resolution = resolveWindowsGlobalCodexRuntime();
-    if (resolution.path) {
-      _codexBinPath = resolution.path;
-      _nativeCodexBinPath = resolution.path;
-    } else {
-      _codexBinPath = selectWindowsCodexLauncher(
-        resolution.launchers,
-        (launcher) => !isInsideSynabun(launcher),
-      );
-    }
-  } else {
-    try { _codexBinPath = execSync('which codex', { encoding: 'utf-8', env: envWithPath }).trim(); }
-    catch { _codexBinPath = null; }
-  }
-  if (_codexBinPath && _codexBinPath !== 'codex' && !isInsideSynabun(_codexBinPath)) {
-    if (_codexBinMissingAt) console.log(`[codex-skin] Codex CLI found: ${_codexBinPath}`);
-    _codexBinMissingAt = 0;
-    _codexBinSource = 'global';
-    return _codexBinPath;
-  }
-  if (!_codexBinMissingAt) {
-    if (_codexBinPath && _codexBinPath !== 'codex') console.warn(`[codex-skin] Ignoring Codex CLI inside the SynaBun install: ${_codexBinPath}`);
-    console.warn('[codex-skin] Codex CLI not found. Install: npm install -g @openai/codex');
-  }
-  _codexBinMissingAt = Date.now();
-  _codexBinPath = 'codex';
-  _codexBinSource = 'missing';
-  return _codexBinPath;
+  const found = cliResolver.launcher('codex');
+  _noteCliLookup('codex', found, 'Codex');
+  _codexBinSource = found.path ? 'global' : 'missing';
+  return found.launchPath || found.path || 'codex';
 }
 
+// Native Codex schedules hand the SDK a program it can start without a shell:
+// on Windows a codex.exe, never a command file.
 function getNativeCodexBin() {
-  if (_nativeCodexBinPath) return _nativeCodexBinPath;
-
+  const found = cliResolver.launcher('codex');
+  _codexBinSource = found.path ? 'global' : 'missing';
   if (process.platform === 'win32') {
-    const resolved = resolveWindowsGlobalCodexRuntime();
-    if (resolved.path) {
-      _nativeCodexBinPath = resolved.path;
-      _codexBinPath = resolved.path;
-      _codexBinSource = 'global';
-      console.log(`[codex-native] Resolved Windows runtime (${resolved.source}): ${resolved.path}`);
-      return _nativeCodexBinPath;
-    }
-    if (resolved.reason) {
-      console.warn(`[codex-native] ${resolved.reason}`);
-    }
-    if (resolved.checked?.length) {
-      console.warn(`[codex-native] Checked: ${resolved.checked.slice(0, 16).join(' | ')}`);
-    }
-    const globalPackageFound = resolved.codexPackageJsonPaths.some((candidate) => existsSync(candidate));
-    throw new Error(
-      globalPackageFound
-        ? 'The global Codex package was found, but its Windows runtime is missing. Reinstall it with: npm install -g @openai/codex@latest --include=optional, then restart SynaBun.'
-        : 'Codex is not installed globally or could not be located. Install it with: npm install -g @openai/codex@latest --include=optional, then restart SynaBun.',
-    );
+    if (found.launchPath && /\.exe$/i.test(found.launchPath)) return found.launchPath;
+    throw new Error(found.path
+      ? `Codex was found at ${found.path}, but not the codex.exe it runs. Reinstall Codex (the Codex panel's Install button, or npm install -g @openai/codex@latest --include=optional), then try again.`
+      : 'Codex is not installed. Install it with the Codex panel\'s Install button, or run: powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"');
   }
+  if (!found.path) {
+    throw new Error('Codex schedules need Codex installed. Install it with the Codex panel\'s Install button, or run: curl -fsSL https://chatgpt.com/codex/install.sh | sh');
+  }
+  return found.launchPath || found.path;
+}
 
-  const codexBin = getCodexBin();
-  if (_codexBinSource !== 'global' || !codexBin || codexBin === 'codex') {
-    throw new Error(
-      'Codex schedules require a trusted global Codex CLI. Install it with: npm install -g @openai/codex',
-    );
+// How `opencode serve --port N` starts, for the shared serve, the isolated
+// serves of sessions and loops and the editor's completion serve. On macOS and
+// Linux through the user's login shell, as a terminal starts it (OpenCode gets
+// the provider keys exported in .zshrc), naming the CLI the resolver found by
+// its full path; on Windows the opencode.exe found, started directly with the
+// PATH a new terminal has (a command file that leads nowhere: through cmd.exe,
+// every word escaped). A command line in Settings is run as written.
+function opencodeServeLaunch(port, { env = process.env } = {}) {
+  const found = cliResolver.launcher('opencode');
+  _noteCliLookup('opencode', found, 'OpenCode');
+  const line = configuredCommandLine('opencode');
+  if (IS_WIN) {
+    const spawnEnv = withPathEnv(env, getAugmentedPath());
+    if (!line && found.spec) {
+      const launch = spawnArgsFor(found.spec, ['serve', '--port', String(port)], { env: spawnEnv });
+      return { command: launch.command, args: launch.args, options: { ...launch.options, env: spawnEnv, windowsHide: true }, label: `${found.launchPath} serve --port ${port}` };
+    }
+    const text = `${line || 'opencode'} serve --port ${port}`;
+    return { command: DEFAULT_SHELL, args: ['/d', '/s', '/c', text], options: { env: spawnEnv, windowsHide: true }, label: text };
   }
-  _nativeCodexBinPath = codexBin;
-  return _nativeCodexBinPath;
+  const cmd = line || (found.path ? shellSingleQuote(found.path) : 'opencode');
+  // A packaged application's runtime and npm after the user's own (the login shell adds the user's profile on top).
+  return { command: DEFAULT_SHELL, args: ['-lc', `exec ${cmd} serve --port ${port}`], options: { env: withPackagedPathLast(env) }, label: `${cmd} serve --port ${port}` };
 }
 
 function extractCodexConfigValues(result) {
@@ -3455,10 +3493,10 @@ function buildCodexWritableRoots(cwd = PACKAGE_ROOT) {
   return [...roots];
 }
 
-function getCodexSidepanelApprovalPolicy() {
+function getCodexSidepanelApprovalPolicy(config = {}) {
   // The sidepanel is interactive; Auto Accept decides which emitted requests
   // can be approved without presenting a card.
-  return CODEX_SIDEPANEL_APPROVAL_POLICY;
+  return config.approval_policy ?? CODEX_SIDEPANEL_APPROVAL_POLICY;
 }
 
 function buildCodexSandboxPolicy(cwd = PACKAGE_ROOT, sandboxMode) {
@@ -3654,7 +3692,7 @@ async function resolveOpenCodeMcpDirectory(entry, sessionIds) {
 // auth.json + sessions/ + state DB, while config.toml and prompts/ are
 // symlinked back to the canonical ~/.codex so model/MCP/tool-permission config
 // and custom prompts stay shared. The "default" account IS ~/.codex itself.
-const CODEX_DEFAULT_HOME = resolve(getHomePath(), '.codex');
+const CODEX_DEFAULT_HOME = resolve(process.env.CODEX_HOME || resolve(getHomePath(), '.codex'));
 const CODEX_ACCOUNTS_ROOT = resolve(getHomePath(), '.codex-accounts');
 
 function readCodexRuntimeModelCatalog(codexHome = CODEX_DEFAULT_HOME) {
@@ -3670,78 +3708,62 @@ function readCodexRuntimeModelCatalog(codexHome = CODEX_DEFAULT_HOME) {
 }
 const CODEX_ACCOUNTS_PATH = resolve(DATA_HOME, 'data', 'codex-accounts.json');
 
-function loadCodexAccounts() {
-  let data = { accounts: [], defaultId: 'default' };
-  try {
-    if (existsSync(CODEX_ACCOUNTS_PATH)) {
-      const parsed = JSON.parse(readFileSync(CODEX_ACCOUNTS_PATH, 'utf-8'));
-      if (parsed && Array.isArray(parsed.accounts)) data = parsed;
-    }
-  } catch (err) {
-    console.warn('[codex-accounts] Failed to read registry:', err.message);
-  }
-  // Auto-seed the Default account (the existing ~/.codex)
-  if (!data.accounts.some((a) => a && a.id === 'default')) {
-    data.accounts.unshift({
-      id: 'default',
-      label: 'Default',
-      email: '',
-      planType: '',
-      type: 'chatgpt',
-      home: CODEX_DEFAULT_HOME,
-      createdAt: new Date().toISOString(),
+// The Codex accounts registry (lib/codex-accounts.js): one instance for the
+// sidepanel, the Assistant (brain, workers, catalog), loops and every route, so
+// one account state is shown everywhere. Its ChatGPT half is Codex's own
+// `account/read` for each account (codexAccountAuth().nativeStatus); a change
+// of any account reaches every window as `codex:accounts-changed`.
+let _assistantAccountUsage = null;
+let _codexAccountsInstance = null;
+function _codexAccounts() {
+  if (!_codexAccountsInstance) {
+    _codexAccountsInstance = createCodexAccounts({
+      dataHome: DATA_HOME, homeDir: getHomePath(), accountsRoot: CODEX_ACCOUNTS_ROOT,
+      readNativeStatus: (accountId) => codexAccountAuth().nativeStatus(accountId),
+      prepareDefaultConfig: () => ensureCanonicalCodexConfig({ strict: true }),
+      log: (tag, message) => console.log(`[${tag}]`, message),
     });
-    data.defaultId = 'default';
+    _codexAccountsInstance.subscribe((event) => {
+      try {
+        broadcastSync({ type: 'codex:accounts-changed', accountId: event.accountId || null, removed: !!event.removed, created: !!event.created });
+        broadcastSync({ type: 'assistant:accounts-changed', provider: 'codex', accountId: event.accountId || null, removed: !!event.removed });
+        _assistantCatalog?.invalidate?.();
+      } catch {}
+    });
   }
-  return data;
+  return _codexAccountsInstance;
 }
 
-function saveCodexAccounts(data) {
-  try {
-    const dir = dirname(CODEX_ACCOUNTS_PATH);
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    writeFileSync(CODEX_ACCOUNTS_PATH, JSON.stringify(data, null, 2), 'utf-8');
-  } catch (err) {
-    console.warn('[codex-accounts] Failed to write registry:', err.message);
-  }
+// The registry rows (id, label, home, …) for readers that only need where an account lives.
+function loadCodexAccounts() {
+  return { accounts: _codexAccounts().registryRows(), defaultId: 'default' };
 }
 
+// The account, or Default when none is named or it is gone (launch selectors, session catalogs).
 function getCodexAccount(accountId) {
-  const data = loadCodexAccounts();
-  return data.accounts.find((a) => a.id === accountId)
-    || data.accounts.find((a) => a.id === data.defaultId)
-    || data.accounts[0]
-    || null;
+  const accounts = _codexAccounts();
+  return (accountId ? accounts.profileFor(accountId) : null) || accounts.profileFor('default');
 }
 
+// The account a request names, or null: never another account in its place.
 function findCodexAccount(accountId) {
   if (!accountId) return null;
-  return loadCodexAccounts().accounts.find((account) => account?.id === accountId) || null;
+  return _codexAccounts().profileFor(accountId);
 }
 
 function getCodexAccountHome(accountId) {
   return getCodexAccount(accountId)?.home || CODEX_DEFAULT_HOME;
 }
 
-function sanitizeCodexAccountForClient(a) {
-  return {
-    id: a.id,
-    label: a.label || a.email || 'Account',
-    email: a.email || '',
-    planType: a.planType || '',
-    type: a.type || 'chatgpt',
-    isDefault: a.id === 'default',
-  };
-}
-
+// Every account with its state (mode, signed in, identity: an email or a masked key, never a key).
 function listCodexAccountsForClient() {
-  return loadCodexAccounts().accounts.map(sanitizeCodexAccountForClient);
+  return _codexAccounts().listForClient();
 }
 
-function ensureCanonicalCodexConfig({ strict = false } = {}) {
+function ensureCanonicalCodexConfig({ strict = false, codexHome = CODEX_DEFAULT_HOME } = {}) {
   try {
-    if (!existsSync(CODEX_DEFAULT_HOME)) mkdirSync(CODEX_DEFAULT_HOME, { recursive: true });
-    const cfg = resolve(CODEX_DEFAULT_HOME, 'config.toml');
+    if (!existsSync(codexHome)) mkdirSync(codexHome, { recursive: true });
+    const cfg = resolve(codexHome, 'config.toml');
     if (!existsSync(cfg)) writeFileSync(cfg, '', 'utf-8');
     const repair = healCodexConfig(cfg);
     if (repair.healed) {
@@ -3751,50 +3773,83 @@ function ensureCanonicalCodexConfig({ strict = false } = {}) {
       if (strict) throw error;
       console.warn(`[codex-config] ${error.message}`);
     }
+    // Env/tool CLI overrides require a transport, even after a fresh CLI install
+    // or when setup never connected Codex. Reuse Connect Codex's canonical writer;
+    // leave an already connected transport and all unrelated settings alone.
+    const health = inspectCodexConfig(cfg);
+    if (!health.connected || health.issues.includes('missing_transport')) {
+      const inspection = upsertCodexMcpConfig(cfg, buildCodexMcpDefinition());
+      if (!inspection.valid) throw new Error(`Could not register SynaBun in ${cfg}`);
+      return { healed: true, reason: 'registered_missing_transport', inspection };
+    }
+    if (!health.valid) throw new Error(`Invalid SynaBun MCP configuration in ${cfg}: ${health.issues.join(', ')}`);
     return repair;
   } catch (err) {
-    console.warn(`[codex-config] Could not prepare ${CODEX_DEFAULT_HOME}/config.toml: ${err.message}`);
+    console.warn(`[codex-config] Could not prepare ${codexHome}/config.toml: ${err.message}`);
     if (strict) throw err;
     return null;
   }
 }
 
-function pathOrLinkExists(p) {
-  try { lstatSync(p); return true; } catch { return false; }
+// Live Codex connections (panel tabs, the Assistant's brain): their account,
+// whether a turn is running, and how they restart under a changed credential.
+const _codexLiveConnections = new Set();
+
+// A Codex account's credential or mode changes: refused while one of its
+// connections is mid-turn; afterwards its idle app-servers restart, so the next
+// message runs under the new credential. Other accounts are not touched.
+async function withCodexAccountCredentialChange(accountId, change) {
+  const connections = [..._codexLiveConnections].filter((connection) => connection.accountId() === accountId);
+  if (connections.some((connection) => connection.busy())) {
+    throw Object.assign(new Error('Finish or stop this account’s Codex work before changing its sign-in.'), { status: 409 });
+  }
+  const result = await change();
+  for (const connection of connections) { try { connection.credentialsChanged(); } catch {} }
+  return result;
 }
 
-function linkSharedCodexResource(linkPath, targetPath, kind) {
-  // kind: 'file' | 'dir'
-  try {
-    if (pathOrLinkExists(linkPath)) return;
-    if (!existsSync(targetPath)) {
-      if (kind === 'dir') mkdirSync(targetPath, { recursive: true });
-      else writeFileSync(targetPath, '', 'utf-8');
-    }
-    symlinkSync(targetPath, linkPath, kind === 'dir' ? 'dir' : 'file');
-  } catch (err) {
-    console.warn('[codex-accounts] Failed to link', linkPath, '→', targetPath, err.message);
+// Codex's own store changed outside a request (a terminal sign-in ended): idle connections restart.
+function codexAccountStoreChanged(accountId) {
+  for (const connection of [..._codexLiveConnections]) {
+    if (connection.accountId() === accountId && !connection.busy()) { try { connection.credentialsChanged(); } catch {} }
   }
 }
 
-function createCodexAccountHome(id) {
-  const home = resolve(CODEX_ACCOUNTS_ROOT, id);
-  mkdirSync(home, { recursive: true });
-  mkdirSync(resolve(home, 'sessions'), { recursive: true });
-  ensureCanonicalCodexConfig();
-  // Share config + prompts with the canonical ~/.codex; isolate auth + sessions.
-  linkSharedCodexResource(resolve(home, 'config.toml'), resolve(CODEX_DEFAULT_HOME, 'config.toml'), 'file');
-  linkSharedCodexResource(resolve(home, 'prompts'), resolve(CODEX_DEFAULT_HOME, 'prompts'), 'dir');
-  // Global instructions (and SynaBun's rules block in them) reach every account.
-  // Only when the file exists: the rules installer links it later otherwise,
-  // and an empty ~/.codex/AGENTS.md is not ours to create.
-  if (existsSync(resolve(CODEX_DEFAULT_HOME, 'AGENTS.md'))) {
-    linkSharedCodexResource(resolve(home, 'AGENTS.md'), resolve(CODEX_DEFAULT_HOME, 'AGENTS.md'), 'file');
+let _codexAccountAuthInstance = null;
+function codexAccountAuth() {
+  if (!_codexAccountAuthInstance) {
+    _codexAccountAuthInstance = createCodexAccountAuth({
+      accounts: _codexAccounts(), codexBin: () => getCodexBin(),
+      prepareConfig: (codexHome) => ensureCanonicalCodexConfig({ strict: true, codexHome }),
+      env: () => (withPathEnv(process.env, getAugmentedPath())),
+      changeCredentials: withCodexAccountCredentialChange,
+    });
   }
-  return home;
+  return _codexAccountAuthInstance;
+}
+
+// Why a Codex account cannot be removed now ('' when it can): a live connection
+// (a panel tab, the Assistant's brain) other than `except`, a native loop, a
+// dispatched run, an Assistant session, or the Assistant's worker choice.
+function codexAccountInUse(accountId, { except = null } = {}) {
+  if ([..._codexLiveConnections].some((connection) => connection !== except && connection.accountId() === accountId)) {
+    return 'A Codex tab or the Assistant is running under this account. Switch it or close it first.';
+  }
+  try { if (_nativeLoopRuntime?.list({ activeOnly: true }).some((run) => run.provider === 'codex' && run.accountId === accountId)) return 'Stop native Codex automations using this account before removing it.'; } catch {}
+  try { if (_assistantDispatcher?.accountInUse?.('codex', accountId)) return 'Dispatched runs are using this account. Stop them first.'; } catch {}
+  try { if (_assistantRuntime?.accountInUse?.('codex', accountId)) return 'An Assistant session uses this account. Close it first.'; } catch {}
+  try { if (_assistantCodexWorkerAccount?.() === accountId) return 'This is the Assistant\'s Codex worker account. Choose another one first.'; } catch {}
+  return '';
 }
 
 function handleCodexSkinWebSocket(ws) {
+  // In API-key mode with a key SynaBun holds, the app-server starts with an ephemeral
+  // credential store and this key is its first request over stdin (lib/codex-accounts.js).
+  // Spawn-only: never logged, sent or kept after that request.
+  let childApiKeyLogin = null;
+  let childUsesHeldKey = false;
+  // Which credential the running app-server started with (launchFor().credential).
+  let childCredential = null;
   const CODEX_GREETING_MARKER_START = '[SYNABUN_CODEX_GREETING_START]';
   const CODEX_GREETING_MARKER_END = '[SYNABUN_CODEX_GREETING_END]';
   const CODEX_PLAN_MODE_PREFIXES = [
@@ -3843,7 +3898,27 @@ CRITICAL — When you need clarification during planning:
   // Per-tab Codex account → drives CODEX_HOME of the spawned app-server.
   let activeAccountId = 'default';
   let activeCodexHome = CODEX_DEFAULT_HOME;
-  let _codexLoginWatcher = null;
+  const panelAuth = createCodexPanelAuth({
+    request: (...args) => request(...args), accountId: () => activeAccountId,
+    onChange: state => sendToClient({ type: 'account_login_state', state }),
+    onSuccess: async id => {
+      const acct = await request('account/read', { refreshToken: false }, 10000);
+      if (id !== activeAccountId) return;
+      // What Codex now holds is the account's state everywhere (lib/codex-accounts.js).
+      if (acct?.account?.type === 'chatgpt') _codexAccounts().noteSubscriptionSignIn(id, acct);
+      else _codexAccounts().noteNativeStatus(id, acct || {});
+      sendToClient({ type: 'account_info', accountId: id, account: acct, accountState: _codexAccounts().describeForClient(id) });
+      sendToClient({ type: 'account_list', accounts: listCodexAccountsForClient(), activeAccountId });
+    },
+  });
+  // This connection in the live set: account changes ask it whether it is busy and restart it when idle.
+  const liveConnection = {
+    accountId: () => activeAccountId,
+    readRateLimits: () => initialized && !childUsesHeldKey ? request('account/rateLimits/read', {}, 2500) : null,
+    busy: () => !!activeTurnId || pendingServerRequests.size > 0 || panelAuth.active(),
+    credentialsChanged: () => retireForCredentialChange(),
+  };
+  _codexLiveConnections.add(liveConnection);
   let codexMcpRuntimeId = `codex-sp-${randomUUID()}`;
   let codexMcpRuntimeBinding = null;
   // 'assistant' when this connection is the main assistant's brain: the MCP
@@ -3852,6 +3927,12 @@ CRITICAL — When you need clarification during planning:
   // The assistant brain's computer-use grant (lib/desktop/grants.js): unlocks
   // the capability-gated `computer` group in this app-server's MCP child.
   let codexDesktopGrant = null;
+  // A WhatsApp conversation brain's credential (whatsapp_send_file): taken from the in-process
+  // brain's own socket object (lib/virtual-socket.js brainCredentialOf), never from a message a
+  // client sends; it reaches the MCP child through the environment only (SYNABUN_BRAIN_TOKEN,
+  // forwarded by name with env_vars), never argv. A name with TOKEN in it stays out of the
+  // brain's own shell commands under Codex's default shell_environment_policy.
+  let codexBrainCredential = null;
   // The assistant brain's route gate (lib/assistant-route-gate-codex.js): a
   // trusted session-flag PreToolUse hook plus the env it reads. Assistant only.
   let codexRouteGate = null;
@@ -3880,8 +3961,10 @@ CRITICAL — When you need clarification during planning:
 
   async function beforeCodexCompatRequest(type, params) {
     if (type === 'thread_settings_update') {
-      validateCodexConfigRequirements({ approval_policy: params.approvalPolicy, approvals_reviewer: params.approvalsReviewer }, await readCodexRequirements());
+      validateCodexConfigRequirements({ approval_policy: params.approvalPolicy, approvals_reviewer: params.approvalsReviewer, sandbox_mode: ({ readOnly: 'read-only', workspaceWrite: 'workspace-write', dangerFullAccess: 'danger-full-access' })[params.sandboxPolicy?.type] }, await readCodexRequirements());
     } else if (type === 'experimental_features_set') {
+      const metadata = await readSettingsMetadata();
+      validateCodexSettings({ features: params.enablement }, metadata, metadata.features);
       validateCodexConfigRequirements({ features: params.enablement }, await readCodexRequirements());
     } else if (type === 'feedback_upload') {
       await readCodexRequirements();
@@ -3997,9 +4080,47 @@ CRITICAL — When you need clarification during planning:
       ...details,
     }));
   }
+  // A tab names its account; one that is no longer set up runs as Default, and says so
+  // (every answer carries activeAccountId), never under Default's home with another name.
   function setActiveCodexAccount(id) {
-    activeAccountId = id || 'default';
-    activeCodexHome = getCodexAccountHome(activeAccountId);
+    const account = getCodexAccount(id || 'default');
+    activeAccountId = account?.id || 'default';
+    activeCodexHome = account?.home || CODEX_DEFAULT_HOME;
+  }
+
+  function sendAccountState() {
+    sendToClient({ type: 'account_state', accountId: activeAccountId, account: _codexAccounts().describeForClient(activeAccountId), accounts: listCodexAccountsForClient() });
+  }
+
+  // The account's credential or mode changed (withCodexAccountCredentialChange): an idle
+  // app-server is retired, and the next request starts one under the new credential; the
+  // conversation resumes from its thread then. The transcript stays.
+  function retireForCredentialChange() {
+    const next = _codexAccounts().launchFor(activeAccountId);
+    if (child && !activeTurnId && !pendingServerRequests.size && (!next.ok || next.credential !== childCredential)) {
+      const old = child;
+      const oldHome = activeCodexHome;
+      const oldThreadIds = ownedWriterThreadIds();
+      panelAuth.reset();
+      initialized = false;
+      bootPromise = null;
+      activeThreadId = null;
+      appBoundary.invalidate();
+      activeThreadRuntimeFingerprint = null;
+      subscribedThreadIds.clear();
+      threadOwnerRoots.clear();
+      activeTurnAutoAccept = false;
+      for (const [, entry] of pending) {
+        try { clearTimeout(entry.timer); entry.reject(new Error('Codex account sign-in changed')); } catch {}
+      }
+      pending.clear();
+      childStdoutBuf = '';
+      unregisterCodexMcpProfileRuntime();
+      child = null;
+      childCredential = null;
+      retireCodexProcess(old, { codexHome: oldHome, threadIds: oldThreadIds, reason: 'Codex account sign-in changed' });
+    }
+    sendAccountState();
   }
 
   async function withCodexWriterOperation(operation, action) {
@@ -4022,6 +4143,7 @@ CRITICAL — When you need clarification during planning:
   })();
 
   function sendToClient(data) {
+    data = redactProviderSecrets(data);
     if (data?.type === 'error') {
       // Some legacy catch paths forward only a prefixed RPC message.
       const rpcError = { ...data, code: data.code ?? (/Invalid request: unknown variant/i.test(data.message || '') ? -32600 : null) };
@@ -4146,6 +4268,7 @@ CRITICAL — When you need clarification during planning:
     const codexHome = activeCodexHome;
     const threadIds = ownedWriterThreadIds();
     shuttingDown = true;
+    panelAuth.interrupted();
     unregisterCodexMcpProfileRuntime({ cleanup: true });
     childRetirementPromise = (async () => {
       if (unsubscribe) await unsubscribeAllThreadsBeforeRetirement();
@@ -4364,6 +4487,19 @@ CRITICAL — When you need clarification during planning:
     return result || {};
   }
 
+  async function readSettingsMetadata() {
+    const schema = readCodexSettingsSchema(getCodexBin());
+    const features = await listCodexPages(request, 'experimentalFeature/list', { limit: 100 });
+    const featureSupport = readCodexFeatureSupport(getCodexBin(), features.data);
+    // The catalog's enabled field is a process-start snapshot. config/read is
+    // authoritative for saved defaults after reloadUserConfig writes.
+    return { ...schema, features: features.data.map(feature => ({ ...feature,
+      configurable: featureSupport[feature.name] === true,
+      enabled: typeof _cachedConfig.features?.[feature.name] === 'boolean'
+        ? _cachedConfig.features[feature.name] : feature.enabled,
+    })) };
+  }
+
   async function setCodexMcpServerApprovalMode(serverName, approvalMode) {
     const name = String(serverName || '').trim();
     if (!name) throw new Error('MCP approval request is missing its server identity');
@@ -4408,7 +4544,7 @@ CRITICAL — When you need clarification during planning:
           rejected: isolationStats.rejected,
           reasons: { ...isolationStats.reasons },
         },
-        approvalPolicy: getCodexSidepanelApprovalPolicy(),
+        approvalPolicy: getCodexSidepanelApprovalPolicy(_cachedConfig),
         sessionOverrides: codexSessionSettings.get(activeAccountId, activeThreadId),
         cwd,
       },
@@ -4498,7 +4634,7 @@ CRITICAL — When you need clarification during planning:
   function getDefaultThreadParams(cwd = PACKAGE_ROOT, runtime = {}) {
     const params = {
       cwd,
-      approvalPolicy: getCodexSidepanelApprovalPolicy(),
+      approvalPolicy: getCodexSidepanelApprovalPolicy(_cachedConfig),
       sandbox: getCachedConfigValue('sandbox_mode', 'workspace-write'),
       personality: getCachedConfigValue('personality', 'pragmatic'),
     };
@@ -4513,16 +4649,19 @@ CRITICAL — When you need clarification during planning:
       threadId,
       cwd,
       excludeTurns: true,
-      approvalPolicy: getCodexSidepanelApprovalPolicy(),
+      approvalPolicy: getCodexSidepanelApprovalPolicy(_cachedConfig),
       sandbox: getCachedConfigValue('sandbox_mode', 'workspace-write'),
       personality: getCachedConfigValue('personality', 'pragmatic'),
     };
     const sessionSettings = codexSessionSettings.get(activeAccountId, threadId);
+    const sessionSandboxMode = ({ readOnly: 'read-only', workspaceWrite: 'workspace-write', dangerFullAccess: 'danger-full-access' })[sessionSettings.sandboxPolicy?.type];
+    if (sessionSandboxMode) params.sandbox = sessionSandboxMode;
     for (const key of ['approvalPolicy', 'approvalsReviewer', 'personality', 'serviceTier']) {
       if (Object.prototype.hasOwnProperty.call(sessionSettings, key)) params[key] = sessionSettings[key];
     }
     if (runtime.model) params.model = runtime.model;
     else if (getCachedConfigValue('model')) params.model = getCachedConfigValue('model');
+    if (sessionSettings.model != null) params.model = sessionSettings.model;
     if (runtime.config) params.config = runtime.config;
     return params;
   }
@@ -5011,6 +5150,12 @@ CRITICAL — When you need clarification during planning:
 
   function startChild() {
     if (child) return child;
+    // The account decides the credential (lib/codex-accounts.js launchFor()): inherited
+    // OpenAI/Codex credentials out, its CODEX_HOME in, and in API-key mode the key it
+    // holds, given over stdin after initialize to an app-server with an ephemeral store.
+    const launch = _codexAccounts().launchFor(activeAccountId);
+    if (!launch.ok) throw new Error(launch.message);
+    activeCodexHome = launch.home;
     let codexBin = getCodexBin();
     const runtimeProfilePath = writeCodexRuntimeProfile(codexMcpRuntimeId, codexMcpProfileState.value);
     const args = [
@@ -5031,24 +5176,30 @@ CRITICAL — When you need clarification during planning:
     // (lib/browser-tool-policy.js), so Codex's own web search stays off, as for its workers.
     if (codexRole === 'assistant') args.splice(args.length - 1, 0, '-c', 'web_search="disabled"');
     if (codexDesktopGrant) args.splice(args.length - 1, 0, '-c', `mcp_servers.SynaBun.env.SYNABUN_DESKTOP_GRANT=${JSON.stringify(codexDesktopGrant)}`);
+    // The variable's name on the command line, its value only in the app-server's environment (below).
+    if (codexRole === 'assistant' && codexBrainCredential) args.splice(args.length - 1, 0, '-c', 'mcp_servers.SynaBun.env_vars=["SYNABUN_BRAIN_TOKEN"]');
     if (codexRole === 'assistant' && codexRouteGate?.flags?.length) args.splice(args.length - 1, 0, ...codexRouteGate.flags);
     if (/\.js$/i.test(codexBin)) {
       args.unshift(codexBin);
       codexBin = process.execPath;
     }
+    // API-key mode with a key SynaBun holds: an ephemeral credential store, before the subcommand.
+    args.splice(args.length - 1, 0, ...codexAppServerArgs(launch));
     const useShell = !codexBin.includes(sep)
       || (process.platform === 'win32' && /\.(cmd|bat)$/i.test(codexBin));
     const env = {
-      ...process.env,
+      ...applyCodexLaunchEnv(process.env, launch),
       NO_COLOR: '1',
-      CODEX_HOME: activeCodexHome,
       SYNABUN_PROFILE: codexMcpProfileState.value,
       SYNABUN_TERMINAL_SESSION: codexMcpRuntimeId,
       SYNABUN_RUNTIME_PROFILE_PATH: runtimeProfilePath,
       SYNABUN_TOOL_CATALOG_MODE: 'deferred',
       ...(codexDesktopGrant ? { SYNABUN_DESKTOP_GRANT: codexDesktopGrant } : {}),
       ...(codexRole === 'assistant' && codexRouteGate?.env ? codexRouteGate.env : {}),
+      ...(codexRole === 'assistant' && codexBrainCredential ? { SYNABUN_BRAIN_TOKEN: codexBrainCredential } : {}),
     };
+    // Never one inherited from the launching shell: only this brain's own credential reaches its MCP child.
+    if (!(codexRole === 'assistant' && codexBrainCredential)) delete env.SYNABUN_BRAIN_TOKEN;
     delete env.FORCE_COLOR;
     delete env.CLICOLOR_FORCE;
     const proc = spawn(shellCommand(codexBin, useShell, { isFile: existsSync }), args, {
@@ -5058,10 +5209,13 @@ CRITICAL — When you need clarification during planning:
       shell: useShell,
     });
     child = proc;
+    childApiKeyLogin = launch.apiKey || null;
+    childUsesHeldKey = !!launch.apiKey;
+    childCredential = launch.credential;
     childRetirementPromise = null;
     writerLifecycleState.releaseRequested = false;
     registerCodexMcpProfileRuntime();
-    console.log(`[codex-skin] Spawned app-server pid ${proc.pid || '?'} account=${activeAccountId} profile=${codexMcpProfileState.value} runtime=${codexMcpRuntimeId} CODEX_HOME=${activeCodexHome}`);
+    console.log(`[codex-skin] Spawned app-server pid ${proc.pid || '?'} account=${activeAccountId} mode=${launch.mode || 'none'} profile=${codexMcpProfileState.value} runtime=${codexMcpRuntimeId} CODEX_HOME=${activeCodexHome}`);
     proc.stdout.setEncoding('utf-8');
     proc.stdout.on('data', (chunk) => {
       if (child !== proc) return; // stale process from a previous account
@@ -5073,9 +5227,9 @@ CRITICAL — When you need clarification during planning:
         if (!line) continue;
         let msg;
         try {
-          msg = JSON.parse(line);
+          msg = redactProviderSecrets(JSON.parse(line));
         } catch (err) {
-          console.warn('[codex-skin] Invalid JSON from app-server:', err.message, line.slice(0, 160));
+          console.warn('[codex-skin] Invalid JSON from app-server');
           continue;
         }
 
@@ -5188,6 +5342,9 @@ CRITICAL — When you need clarification during planning:
         if (msg.method) {
           const method = msg.method;
           const params = msg.params || {};
+          if (method === 'account/rateLimits/updated') _assistantAccountUsage?.note('codex', activeAccountId, params);
+          if (method === 'account/login/completed') void panelAuth.complete(params);
+          if (method === 'account/updated' && params.authMode === null && !panelAuth.active()) panelAuth.reset();
           const scopedThreadId = notificationThreadId(method, params);
           const scopedTurnId = notificationTurnId(method, params);
           const expectedThreadId = displayedThreadId;
@@ -5262,11 +5419,11 @@ CRITICAL — When you need clarification during planning:
       }
     });
     proc.stderr.setEncoding('utf-8');
-    proc.stderr.on('data', (chunk) => {
-      const text = chunk.toString().trim();
-      if (!text) return;
-      console.log('[codex-skin][stderr]', text);
+    const recordNativeDiagnostic = providerDiagnosticSink(text => {
+      // Key-login attempts expose only structured, filtered errors to the UI.
+      if (!childUsesHeldKey && !panelAuth.active()) console.log('[codex-skin][stderr]', text);
     });
+    proc.stderr.on('data', recordNativeDiagnostic);
     proc.on('error', (err) => {
       if (child !== proc) return;
       console.error('[codex-skin] app-server spawn error:', err.message);
@@ -5279,6 +5436,7 @@ CRITICAL — When you need clarification during planning:
     });
     proc.on('close', (code) => {
       if (child !== proc) return; // a newer process replaced this one (e.g. account switch)
+      panelAuth.interrupted();
       unregisterCodexMcpProfileRuntime();
       const wasShuttingDown = shuttingDown;
       child = null;
@@ -5310,7 +5468,7 @@ CRITICAL — When you need clarification during planning:
     // Repair SynaBun's legacy duplicate-env config before Codex parses it.
     // Doing this at the sidepanel boundary avoids the circular failure where
     // Codex rejects config.toml before it can launch SynaBun's MCP process.
-    const repair = ensureCanonicalCodexConfig();
+    const repair = ensureCanonicalCodexConfig({ strict: true, codexHome: activeCodexHome });
     if (repair?.healed) {
       sendToClient({
         type: 'codex_config_repaired',
@@ -5319,7 +5477,7 @@ CRITICAL — When you need clarification during planning:
       });
     }
     // Sync tool approvals only after the base transport is known to be valid.
-    syncCodexToolPermissions([..._codexPermittedTools]);
+    syncCodexToolPermissions([..._codexPermittedTools], activeCodexHome);
     const codexBin = getCodexBin();
     let cliVersion = null;
     let sdkVersion = null;
@@ -5339,9 +5497,27 @@ CRITICAL — When you need clarification during planning:
       capabilities: {
         experimentalApi: true,
       },
-    }, 15000).then((result) => {
-      initialized = true;
+    }, 15000).then(async (result) => {
       writeRpc({ jsonrpc: '2.0', method: 'initialized' });
+      // API-key mode: the key SynaBun holds signs this app-server in before anything else
+      // runs; its ephemeral store keeps nothing and leaves the account's ChatGPT login alone.
+      if (childApiKeyLogin) {
+        let apiKey = childApiKeyLogin;
+        childApiKeyLogin = null;
+        try {
+          const login = await request('account/login/start', { type: 'apiKey', apiKey }, 15000);
+          if (login?.type !== 'apiKey') throw new Error('unexpected login answer');
+        } catch {
+          // A half-started app-server is not reused: the next request starts a fresh one.
+          const failed = child;
+          child = null;
+          childCredential = null;
+          unregisterCodexMcpProfileRuntime();
+          try { failed?.kill('SIGTERM'); } catch {}
+          throw new Error('Codex could not start on this account\'s API key. Save the key again, or switch the account to its ChatGPT sign-in.');
+        } finally { apiKey = null; }
+      }
+      initialized = true;
       codexCapabilities.runtime.serverInfo = result || {};
       codexCapabilities.runtime.cliVersion ||= parseCodexVersion(result?.userAgent);
       sendToClient({ type: 'capabilities', ...codexCapabilitySnapshot() });
@@ -5412,9 +5588,11 @@ CRITICAL — When you need clarification during planning:
   // The close handler's `child !== proc` guard prevents the dying process from
   // clobbering the freshly-spawned one. Callers must ensure no turn is active.
   async function switchCodexAccount(id) {
+    if (panelAuth.active()) throw new Error('Cancel or finish sign-in before switching accounts');
     const oldHome = activeCodexHome;
     const oldThreadIds = ownedWriterThreadIds();
     setActiveCodexAccount(id);
+    panelAuth.reset();
     for (const key of Object.keys(_cachedConfig)) delete _cachedConfig[key];
     const old = child;
     initialized = false;
@@ -5496,45 +5674,6 @@ CRITICAL — When you need clarification during planning:
     if (resumeId) await resumeThread(resumeId, cwd, { model, contextMode });
     else sendToClient({ type: 'ready', threadId: null });
     return { profile: normalized, restarted: true, threadId: resumeId };
-  }
-
-  // After account/login/start opens the OAuth browser, watch the new home's
-  // auth.json. Once Codex writes credentials, read the account and persist its
-  // email/plan as the account label, then push the update to the client.
-  function watchCodexLogin(id, home) {
-    try { _codexLoginWatcher?.close?.(); } catch {}
-    _codexLoginWatcher = null;
-    let finished = false;
-    const finalize = async () => {
-      if (finished) return;
-      finished = true;
-      try { _codexLoginWatcher?.close?.(); } catch {}
-      _codexLoginWatcher = null;
-      try {
-        const acct = await safeAccountRead(false);
-        const info = acct?.account || acct || {};
-        const data = loadCodexAccounts();
-        const entry = data.accounts.find((a) => a.id === id);
-        if (entry) {
-          entry.email = info.email || entry.email || '';
-          entry.planType = info.planType || entry.planType || '';
-          entry.label = info.email || entry.label || 'ChatGPT account';
-          saveCodexAccounts(data);
-        }
-        sendToClient({ type: 'account_info', accountId: id, account: acct || {} });
-        sendToClient({ type: 'account_list', accounts: listCodexAccountsForClient(), activeAccountId });
-      } catch (err) {
-        console.warn('[codex-accounts] login finalize failed:', err.message);
-      }
-    };
-    try {
-      _codexLoginWatcher = fsWatch(home, (_evt, fname) => {
-        if (fname === 'auth.json') setTimeout(finalize, 500);
-      });
-      setTimeout(() => { try { _codexLoginWatcher?.close?.(); } catch {} _codexLoginWatcher = null; }, 5 * 60 * 1000);
-    } catch (err) {
-      console.warn('[codex-accounts] auth.json watch failed:', err.message);
-    }
   }
 
   async function bootstrapThread(threadId, cwd = PACKAGE_ROOT) {
@@ -5889,7 +6028,7 @@ CRITICAL — When you need clarification during planning:
     const turnParams = {
       threadId,
       cwd,
-      approvalPolicy: getCodexSidepanelApprovalPolicy(),
+      approvalPolicy: getCodexSidepanelApprovalPolicy(_cachedConfig),
       personality: getCachedConfigValue('personality', 'pragmatic'),
       // opts.sandboxMode 'read-only': the Assistant brain of a WhatsApp session (lib/assistant-brains/codex.js).
       sandboxPolicy: buildCodexSandboxPolicy(cwd, isPlanModeTurn || opts.sandboxMode === 'read-only' ? 'read-only' : getCachedConfigValue('sandbox_mode')),
@@ -5898,8 +6037,8 @@ CRITICAL — When you need clarification during planning:
     if (Object.prototype.hasOwnProperty.call(_cachedConfig, 'service_tier')) turnParams.serviceTier = _cachedConfig.service_tier;
     if (getCachedConfigValue('model_reasoning_summary')) turnParams.summary = getCachedConfigValue('model_reasoning_summary');
     const sessionSettings = codexSessionSettings.get(activeAccountId, threadId);
-    for (const key of ['personality', 'summary', 'serviceTier', 'approvalPolicy', 'approvalsReviewer', 'disabledPluginIds']) {
-      if (Object.prototype.hasOwnProperty.call(sessionSettings, key)) turnParams[key] = sessionSettings[key];
+    for (const key of ['personality', 'summary', 'serviceTier', 'approvalPolicy', 'sandboxPolicy', 'approvalsReviewer', 'disabledPluginIds']) {
+      if (Object.prototype.hasOwnProperty.call(sessionSettings, key) && sessionSettings[key] !== null) turnParams[key] = sessionSettings[key];
     }
     if (Array.isArray(opts.localImages) && opts.localImages.length) {
       turnParams.local_images = opts.localImages;
@@ -5908,10 +6047,13 @@ CRITICAL — When you need clarification during planning:
     else if (getCachedConfigValue('model')) turnParams.model = getCachedConfigValue('model');
     if (opts.effort) turnParams.effort = opts.effort;
     else if (getCachedConfigValue('model_reasoning_effort')) turnParams.effort = getCachedConfigValue('model_reasoning_effort');
+    if (isPlanModeTurn || opts.sandboxMode === 'read-only') turnParams.sandboxPolicy = buildCodexSandboxPolicy(cwd, 'read-only');
+    if (sessionSettings.model != null) turnParams.model = sessionSettings.model;
+    if (sessionSettings.effort != null) turnParams.effort = sessionSettings.effort;
     const collaborationMode = buildCodexCollaborationMode({
       mode: isPlanModeTurn ? 'plan' : 'default',
       model: turnParams.model,
-      effort: opts.effort || (isPlanModeTurn
+      effort: sessionSettings.effort || opts.effort || (isPlanModeTurn
         ? getCachedConfigValue('plan_mode_reasoning_effort', turnParams.effort)
         : turnParams.effort),
       developerInstructions: opts.developerInstructions || null,
@@ -6140,6 +6282,8 @@ CRITICAL — When you need clarification during planning:
         if (msg.windowId) wsWindowId = msg.windowId;
         if (!child && msg.role === 'assistant') codexRole = 'assistant';
         if (!child && msg.role === 'assistant' && typeof msg.desktopGrant === 'string' && /^sbd_[A-Za-z0-9_-]{43}$/.test(msg.desktopGrant)) codexDesktopGrant = msg.desktopGrant;
+        // Only the in-process brain's socket carries one (a client's WebSocket never does); no message field is read.
+        if (!child && msg.role === 'assistant' && brainCredentialOf(ws)) codexBrainCredential = brainCredentialOf(ws);
         if (!child && msg.role === 'assistant' && msg.routeGate && Array.isArray(msg.routeGate.flags) && msg.routeGate.flags.every((f) => typeof f === 'string')) {
           codexRouteGate = { flags: [...msg.routeGate.flags], env: Object.fromEntries(Object.entries(msg.routeGate.env || {}).filter(([k, v]) => /^SYNABUN_ROUTE_GATE_[A-Z_]+$/.test(k) && typeof v === 'string')) };
         }
@@ -6231,10 +6375,21 @@ CRITICAL — When you need clarification during planning:
       if (await handleCodexCompatMessage(msg, {
         activeThreadId, activeTurnId, cwd: PACKAGE_ROOT,
         role: codexRole, getActiveThreadId: () => activeThreadId,
+        sandboxPolicyForMode: (mode, cwd) => {
+          validateCodexSettings({ sandbox_mode: mode }, readCodexSettingsSchema(getCodexBin()));
+          return buildCodexSandboxPolicy(cwd, mode);
+        },
         limitAppCall: message => appBoundary.consume(activeThreadId, message.originCallId),
         resolveAppCard: (callId, threadId) => appBoundary.resolve(threadId, callId,
           () => request('thread/read', { threadId, includeTurns: true }, 10000)),
         ensureInitialized, request, send: sendToClient,
+        setFeatureEnablement: async enablement => {
+          await request('config/batchWrite', {
+            edits: buildCodexConfigEdits({ features: enablement }), reloadUserConfig: true,
+          }, 10000);
+          await readConfigState();
+          return { enablement };
+        },
         registry: codexCapabilities, capabilities: codexCapabilitySnapshot,
         withWriterOperation: withCodexWriterOperation,
         beforeRequest: beforeCodexCompatRequest, afterRequest: afterCodexCompatRequest,
@@ -6397,30 +6552,54 @@ CRITICAL — When you need clarification during planning:
         return;
       }
       if (msg.type === 'account_read') {
+        // `accountState` is the account as every surface shows it (lib/codex-accounts.js describe()):
+        // its mode, whether it is signed in and its identity. `account` is the running app-server's
+        // own answer, kept for older pages; an account that is signed out is not started for it.
+        const accounts = _codexAccounts();
+        const known = accounts.describeForClient(activeAccountId);
+        if (known?.signedIn === false && !child) {
+          sendToClient({ type: 'account_info', requestId: msg.requestId || null, accountId: activeAccountId, account: { account: null }, accountState: known, state: panelAuth.snapshot() });
+          return;
+        }
         try {
           await ensureInitialized();
           const result = await request('account/read', { refreshToken: !!msg.refreshToken }, 10000);
-          sendToClient({ type: 'account_info', requestId: msg.requestId || null, account: result || {} });
+          // The running app-server answers for its own store only while it runs on it (not on a held key).
+          if (!childUsesHeldKey && result && Object.hasOwn(result, 'account')) accounts.noteNativeStatus(activeAccountId, result);
+          sendToClient({ type: 'account_info', requestId: msg.requestId || null, accountId: activeAccountId, account: result || {}, accountState: accounts.describeForClient(activeAccountId), state: panelAuth.snapshot() });
         } catch (err) {
-          sendToClient({ type: 'account_info', requestId: msg.requestId || null, account: {}, error: err.message });
+          sendToClient({ type: 'account_info', requestId: msg.requestId || null, accountId: activeAccountId, account: {}, accountState: accounts.describeForClient(activeAccountId), error: err.message });
         }
         return;
       }
       if (msg.type === 'codex_login') {
         try {
+          if (activeTurnId || pendingServerRequests.size) throw new Error('Finish or stop the current turn before signing in');
           await ensureInitialized();
-          const result = await request('account/login/start', { type: msg.loginType || 'chatgpt' }, 10000);
-          sendToClient({ type: 'account_login_started', requestId: msg.requestId || null, login: result || {} });
+          const state = await panelAuth.start(msg.loginType || 'chatgpt');
+          sendToClient({ type: 'account_login_started', requestId: msg.requestId || null, state });
         } catch (err) {
           sendToClient({ type: 'error', requestId: msg.requestId || null, message: `Login failed: ${err.message}` });
         }
         return;
       }
-      if (msg.type === 'account_logout') {
+      if (msg.type === 'account_login_status' || msg.type === 'account_login_cancel') {
         try {
-          await ensureInitialized();
-          const result = await request('account/logout', {}, 10000);
-          sendToClient({ type: 'account_logged_out', requestId: msg.requestId || null, result: result || {} });
+          if (msg.type === 'account_login_cancel') await panelAuth.cancel();
+          sendToClient({ type: 'account_login_state', requestId: msg.requestId || null, state: panelAuth.snapshot() });
+        } catch (err) { sendToClient({ type: 'error', requestId: msg.requestId || null, message: err.message }); }
+        return;
+      }
+      if (msg.type === 'account_logout') {
+        // An older page's Logout: the credential the account uses now is signed out, the
+        // same way as the account menu's per-credential sign-out (lib/codex-account-auth.js).
+        try {
+          if (activeTurnId || pendingServerRequests.size) throw new Error('Finish or stop the current turn before signing out');
+          await panelAuth.cancel();
+          const row = _codexAccounts().describe(activeAccountId);
+          const account = await codexAccountAuth().signOut(activeAccountId, row?.mode === 'apiKey' ? 'apiKey' : 'subscription');
+          panelAuth.reset();
+          sendToClient({ type: 'account_logged_out', requestId: msg.requestId || null, result: {}, accountState: account });
         } catch (err) {
           sendToClient({ type: 'error', requestId: msg.requestId || null, message: `Logout failed: ${err.message}` });
         }
@@ -6437,7 +6616,7 @@ CRITICAL — When you need clarification during planning:
       }
       if (msg.type === 'account_switch') {
         try {
-          const target = getCodexAccount(msg.accountId);
+          const target = findCodexAccount(msg.accountId);
           if (!target) throw new Error('Unknown account');
           if (target.id === activeAccountId) {
             const acct = await safeAccountRead();
@@ -6456,22 +6635,15 @@ CRITICAL — When you need clarification during planning:
       if (msg.type === 'account_add_start') {
         try {
           if (activeTurnId) throw new Error('Finish or stop the current turn before adding an account');
-          const id = `acct-${Date.now().toString(36)}`;
-          const home = createCodexAccountHome(id);
-          const data = loadCodexAccounts();
-          data.accounts.push({
-            id, label: 'New account', email: '', planType: '',
-            type: 'chatgpt', home, createdAt: new Date().toISOString(),
-          });
-          saveCodexAccounts(data);
+          if (panelAuth.active()) throw new Error('Cancel or finish sign-in before adding an account');
+          const { id } = _codexAccounts().create({});
           await withCodexWriterOperation('account_add_switch', () => switchCodexAccount(id));
-          const result = await request('account/login/start', { type: 'chatgpt' }, 15000);
-          watchCodexLogin(id, home);
+          const state = await panelAuth.start('chatgpt');
           sendToClient({
             type: 'account_add_started',
             requestId: msg.requestId || null,
             accountId: id,
-            login: result || {},
+            state,
             accounts: listCodexAccountsForClient(),
             activeAccountId,
           });
@@ -6483,28 +6655,14 @@ CRITICAL — When you need clarification during planning:
       if (msg.type === 'account_remove') {
         try {
           if (msg.accountId === 'default') throw new Error('The Default account cannot be removed');
-          const data = loadCodexAccounts();
-          const idx = data.accounts.findIndex((a) => a.id === msg.accountId);
-          if (idx === -1) throw new Error('Unknown account');
-          const nativeAccountInUse = _nativeLoopRuntime?.list({ activeOnly: true })
-            .some((run) => run.provider === 'codex' && run.accountId === msg.accountId)
-            || _assistantRuntime?.accountInUse?.('codex', msg.accountId)
-            || _assistantDispatcher?.accountInUse?.('codex', msg.accountId);
-          if (nativeAccountInUse) {
-            throw new Error('Stop native Codex automations using this account before removing it');
-          }
-          const removed = data.accounts[idx];
+          if (!findCodexAccount(msg.accountId)) throw new Error('Unknown account');
+          const reason = codexAccountInUse(msg.accountId, { except: liveConnection });
+          if (reason) throw new Error(reason);
           if (activeAccountId === msg.accountId) {
             if (activeTurnId) throw new Error('Finish or stop the current turn before removing the active account');
             await withCodexWriterOperation('account_remove_switch', () => switchCodexAccount('default'));
           }
-          data.accounts.splice(idx, 1);
-          saveCodexAccounts(data);
-          try {
-            if (removed.home && removed.home !== CODEX_DEFAULT_HOME && removed.home.startsWith(CODEX_ACCOUNTS_ROOT)) {
-              rmSync(removed.home, { recursive: true, force: true });
-            }
-          } catch (e) { console.warn('[codex-accounts] Failed to delete home:', e.message); }
+          _codexAccounts().remove(msg.accountId, { inUse: (id) => codexAccountInUse(id, { except: liveConnection }) });
           sendToClient({
             type: 'account_removed',
             requestId: msg.requestId || null,
@@ -6519,12 +6677,9 @@ CRITICAL — When you need clarification during planning:
       }
       if (msg.type === 'account_rename') {
         try {
-          const data = loadCodexAccounts();
-          const acct = data.accounts.find((a) => a.id === msg.accountId);
-          if (!acct) throw new Error('Unknown account');
-          const label = String(msg.label || '').trim().slice(0, 60);
-          if (label) acct.label = label;
-          saveCodexAccounts(data);
+          const label = String(msg.label || '').trim().slice(0, 80);
+          const acct = label ? _codexAccounts().rename(msg.accountId, label) : _codexAccounts().describe(msg.accountId);
+          if (!acct || acct.id !== msg.accountId) throw new Error('Unknown account');
           sendToClient({
             type: 'account_renamed',
             requestId: msg.requestId || null,
@@ -6551,7 +6706,8 @@ CRITICAL — When you need clarification during planning:
         try {
           await ensureInitialized();
           const result = await readConfigState(msg.cwd || PACKAGE_ROOT);
-          sendToClient({ type: 'config_data', requestId: msg.requestId || null, config: result || {}, sessionOverrides: codexSessionSettings.get(activeAccountId, msg.threadId || activeThreadId) });
+          const settingsSchema = await readSettingsMetadata();
+          sendToClient({ type: 'config_data', requestId: msg.requestId || null, config: result || {}, settingsSchema, sessionOverrides: codexSessionSettings.get(activeAccountId, msg.threadId || activeThreadId) });
         } catch (err) {
           sendToClient({ type: 'config_data', requestId: msg.requestId || null, config: {}, error: err.message });
         }
@@ -6560,12 +6716,14 @@ CRITICAL — When you need clarification during planning:
       if (msg.type === 'config_write') {
         try {
           await ensureInitialized();
-          const nextConfig = validateCodexConfigRequirements(msg.config || {}, await readCodexRequirements());
+          const metadata = await readSettingsMetadata();
+          const supported = validateCodexSettings(msg.config || {}, metadata, metadata.features);
+          const nextConfig = validateCodexConfigRequirements(supported, await readCodexRequirements());
           const edits = buildCodexConfigEdits(nextConfig);
           await request('config/batchWrite', { edits, reloadUserConfig: true }, 10000);
-          await readConfigState(msg.cwd || PACKAGE_ROOT);
+          const config = await readConfigState(msg.cwd || PACKAGE_ROOT);
           codexContextModels = [];
-          sendToClient({ type: 'config_saved', requestId: msg.requestId || null });
+          sendToClient({ type: 'config_saved', requestId: msg.requestId || null, config });
           sendToClient({ type: 'catalogs_changed', catalogs: ['models', 'skills', 'apps', 'mcp', 'features', 'config'] });
         } catch (err) {
           sendToClient({ type: 'error', requestId: msg.requestId || null, message: `Config save failed: ${err.message}` });
@@ -6671,7 +6829,11 @@ CRITICAL — When you need clarification during planning:
       if (msg.type === 'experimental_features') {
         try {
           await ensureInitialized();
+          await readConfigState(msg.cwd || PACKAGE_ROOT);
           const result = await request('experimentalFeature/list', codexPagination(msg), 10000);
+          for (const feature of result?.data || []) {
+            if (typeof _cachedConfig.features?.[feature.name] === 'boolean') feature.enabled = _cachedConfig.features[feature.name];
+          }
           sendToClient({ type: 'experimental_features', requestId: msg.requestId || null, features: result || {} });
         } catch (err) {
           sendToClient({ type: 'experimental_features', requestId: msg.requestId || null, features: {}, error: err.message });
@@ -7207,15 +7369,20 @@ CRITICAL — When you need clarification during planning:
     }
     void retireCurrentCodexChild('WebSocket closed without a reattach identity', { unsubscribe: false });
   };
+  ws.on('close', () => _codexLiveConnections.delete(liveConnection));
   ws.on('close', handleCodexSocketClose);
 }
 
 const _codexModelListCache = new Map();
 const CODEX_MODEL_LIST_CACHE_MS = 60_000;
 
-async function queryCodexAppServerModels(codexHome = CODEX_DEFAULT_HOME) {
-  let codexBin = loadCliConfig()?.codex?.command?.trim() || getCodexBin();
-  const args = ['app-server'];
+// `launch` (lib/codex-accounts.js launchFor()): the list is read under the account's own credential,
+// with no inherited one, as its sessions would run (in API-key mode, the key it holds over stdin).
+async function queryCodexAppServerModels(codexHome = CODEX_DEFAULT_HOME, launch = null) {
+  ensureCanonicalCodexConfig({ strict: true, codexHome: launch?.home || codexHome });
+  // The Codex the resolver found (Settings' path first); a command line in Settings ("wsl codex") as written.
+  let codexBin = configuredCommandLine('codex') || getCodexBin();
+  const args = [...(launch?.ok ? codexAppServerArgs(launch) : []), 'app-server'];
   if (!/\s/.test(codexBin) && /\.js$/i.test(codexBin)) {
     args.unshift(codexBin);
     codexBin = process.execPath;
@@ -7223,9 +7390,12 @@ async function queryCodexAppServerModels(codexHome = CODEX_DEFAULT_HOME) {
   const useShell = /\s/.test(codexBin)
     || !codexBin.includes(sep)
     || (process.platform === 'win32' && /\.(cmd|bat)$/i.test(codexBin));
-  const env = { ...process.env, CODEX_HOME: codexHome, NO_COLOR: '1' };
+  const env = launch?.ok
+    ? { ...applyCodexLaunchEnv(process.env, launch), NO_COLOR: '1' }
+    : { ...process.env, CODEX_HOME: codexHome, NO_COLOR: '1' };
   delete env.FORCE_COLOR;
   delete env.CLICOLOR_FORCE;
+  let apiKey = launch?.ok ? launch.apiKey : null;
 
   return new Promise((resolve, reject) => {
     // (A configured command may be a command line; a file with a space in its path is one word.)
@@ -7311,6 +7481,10 @@ async function queryCodexAppServerModels(codexHome = CODEX_DEFAULT_HOME) {
           clientInfo: { name: 'synabun-codex-models', title: 'SynaBun Codex Models', version: '0.0.1' },
           capabilities: { experimentalApi: true },
         }, 15000);
+        if (apiKey) {
+          child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'initialized' }) + '\n');
+          try { await request('account/login/start', { type: 'apiKey', apiKey }, 15000); } finally { apiKey = null; }
+        }
         const result = await request('model/list', { includeHidden: false }, 10000);
         cleanup();
         resolve(Array.isArray(result?.models) ? result.models : (Array.isArray(result?.data) ? result.data : []));
@@ -7334,7 +7508,7 @@ app.get('/api/codex/models', async (req, res) => {
       return res.json({ ok: true, source: 'cache', models: cached.models });
     }
     const models = mergeCodexModelContextCapabilities(
-      await queryCodexAppServerModels(codexHome),
+      await queryCodexAppServerModels(codexHome, _codexAccounts().launchFor(account.id)),
       readCodexRuntimeModelCatalog(codexHome),
     );
     // The Assistant's catalog is built from the default account's list: when that list
@@ -7348,12 +7522,20 @@ app.get('/api/codex/models', async (req, res) => {
   }
 });
 
-// GET /api/codex/accounts — list saved ChatGPT/Codex accounts for launch selectors
-// (Automation Studio + Schedules). Mirrors the per-tab account registry used by
-// the Codex sidepanel; each account maps to its own CODEX_HOME.
-app.get('/api/codex/accounts', (_req, res) => {
+// GET /api/codex/accounts — every Codex account with its state (mode, signed in,
+// identity: an email or a masked key, never a key) for the Codex panel's account
+// menu and the launch selectors (Automation Studio, Schedules). Emails are
+// personal data: not for invite guests. `?refresh=true` asks Codex about every
+// account's own store first; otherwise an old answer is asked again in the
+// background and announced (`codex:accounts-changed`) when it changes.
+app.get('/api/codex/accounts', async (req, res) => {
+  if (isGuestRequest(req)) return res.status(403).json({ ok: false, error: 'Admin only' });
+  res.setHeader('Cache-Control', 'no-store');
   try {
-    res.json({ ok: true, accounts: listCodexAccountsForClient() });
+    const accounts = _codexAccounts();
+    if (req.query?.refresh === 'true') await accounts.refreshStatus(null, { force: true });
+    else accounts.refreshStatus().catch(() => {});
+    res.json({ ok: true, accounts: accounts.listForClient() });
   } catch (err) {
     res.json({ ok: false, error: err.message, accounts: [] });
   }
@@ -7779,7 +7961,7 @@ function updateOpencodeRuntimeProfileConfig(xdgRoot, profile) {
   return true;
 }
 
-async function ensureIsolatedServe(termId, { xdgRoot: requestedXdgRoot = null, keepAlive = false, mcpProfile = null } = {}) {
+async function ensureIsolatedServe(termId, { xdgRoot: requestedXdgRoot = null, keepAlive = false, mcpProfile = null, brainCredential = null } = {}) {
   if (_ocpHistoryClearInProgress) throw new Error('OpenCode history is being cleared');
   const requestedProfile = normalizeMcpProfileName(mcpProfile || readActiveMcpProfile());
   let entry = _ocpIsoServes.get(termId);
@@ -7804,11 +7986,6 @@ async function ensureIsolatedServe(termId, { xdgRoot: requestedXdgRoot = null, k
   entry = { termId, port, xdgRoot, mcpProfile: requestedProfile, mcpProfileRefreshFailed: false, proc: null, client: null, ready: false, starting: true, keepAlive: !!keepAlive, unsub: null, sessions: new Set(), lastUsed: Date.now() };
   _ocpIsoServes.set(termId, entry);
   try {
-    const config = loadCliConfig();
-    const cmd = config.opencode?.command || 'opencode';
-    const shellArgs = IS_WIN
-      ? ['/d', '/s', '/c', `${cmd} serve --port ${port}`]
-      : ['-lc', `exec ${cmd} serve --port ${port}`];
     const isolatedEnv = {
       ...process.env,
       XDG_CONFIG_HOME: xdgRoot,
@@ -7820,11 +7997,16 @@ async function ensureIsolatedServe(termId, { xdgRoot: requestedXdgRoot = null, k
       // Keep this above the script's own deadlines while retaining a hard cap.
       OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS:
         process.env.OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS || '300000',
+      // A WhatsApp conversation's brain credential: the config names it ({env:SYNABUN_BRAIN_TOKEN}), only this
+      // serve's environment holds it (a fresh serve per brain launch: the brain stops its serve when it ends).
+      ...(brainCredential ? { SYNABUN_BRAIN_TOKEN: brainCredential } : {}),
     };
     delete isolatedEnv.CLAUDECODE;
-    const proc = spawn(DEFAULT_SHELL, shellArgs, {
+    if (!brainCredential) delete isolatedEnv.SYNABUN_BRAIN_TOKEN;
+    const launch = opencodeServeLaunch(port, { env: isolatedEnv });
+    const proc = spawn(launch.command, launch.args, {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: isolatedEnv,
+      ...launch.options,
       detached: false, shell: false,
     });
     entry.proc = proc;
@@ -8490,15 +8672,11 @@ async function ensureOpencodeServer({ allowDuringHistoryClear = false } = {}) {
 
   // 2. Spawn opencode serve
   try {
-    const config = loadCliConfig();
-    const cmd = config.opencode?.command || 'opencode';
-    console.log(`[opencode] Spawning: ${cmd} serve --port ${_ocpPort}`);
-    const shellArgs = IS_WIN
-      ? ['/d', '/s', '/c', `${cmd} serve --port ${_ocpPort}`]
-      : ['-lc', `exec ${cmd} serve --port ${_ocpPort}`];
-    _ocpProc = spawn(DEFAULT_SHELL, shellArgs, {
+    const launch = opencodeServeLaunch(_ocpPort, { env: { ...process.env, FORCE_COLOR: '0', OPENCODE_DISABLE_CLAUDE_CODE: '1' } });
+    console.log(`[opencode] Spawning: ${launch.label}`);
+    _ocpProc = spawn(launch.command, launch.args, {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, FORCE_COLOR: '0', OPENCODE_DISABLE_CLAUDE_CODE: '1' },
+      ...launch.options,
       detached: false,
       shell: false,
     });
@@ -8786,7 +8964,7 @@ app.post('/api/ollama/configure', async (req, res) => {
     } catch {}
     if (needsInstall) {
       console.log('[ollama] Installing @ai-sdk/openai-compatible…');
-      execSync('npm install @ai-sdk/openai-compatible --save', { cwd: configDir, timeout: 60000, stdio: 'pipe' });
+      execSync('npm install @ai-sdk/openai-compatible --save', { cwd: configDir, timeout: 60000, stdio: 'pipe', env: withPackagedPathLast(process.env) });
       console.log('[ollama] Package installed');
     }
 
@@ -8885,6 +9063,7 @@ app.post('/api/sidepanel/session-title', async (req, res) => {
     }
     const result = await generateSessionTitle(input, {
       claudeExecutable: getClaudeSdkExecutable,
+      childEnv: claudeChildEnv,
       execFile: execFileAsync,
       getCodexBin,
       getCodexAccountHome,
@@ -9516,6 +9695,7 @@ const _claudeBridgeReady = (async () => {
   try {
     _claudeBridge = await import('./lib/claude-agent-bridge.js');
     _claudeBridge.configureClaudeBridge({
+      accountRateLimit: (id, info) => _assistantAccountUsage?.note('claude-code', id, info),
       // The greeting a panel conversation opened with, as the one note its model gets (lib/greeting/).
       greetingNote: (id, opts) => _greeting?.consumeNote(id, opts) || '',
       // A prompt typed in the panel: when the person was last here (a temporary chat is named to nobody).
@@ -9556,9 +9736,16 @@ const _claudeBridgeReady = (async () => {
       // a session without one is refused with the install hint. Lazy, so the
       // (memoized) resolution happens on demand, not at boot.
       claudeExecutable: () => getClaudeSdkExecutable(),
+      // On Windows, the Git Bash every session's Claude Code gets (lib/git-bash/): SynaBun's copy where the PC has
+      // none, so the Bash tool exists and the hooks run in bash. Panel tabs and the Assistant's brain.
+      childEnv: (env) => claudeChildEnv(env),
       // Sidepanel tabs can run under another Claude account (its own config
       // directory). The default account adds nothing to the environment.
       claudeAccountEnv: (accountId) => _panelClaudeAccounts().envFor(accountId),
+      // How a session runs under an account: inherited credentials removed, the
+      // account's directory and, in API-key mode, its key added (launchFor() in
+      // lib/claude-accounts.js). Panel tabs and the Assistant's brain.
+      claudeAccountLaunch: (accountId) => _panelClaudeAccounts().launchFor(accountId),
       // This server has the session routes (rename, tag, fork, delete, subagent
       // transcripts): the panel offers those actions only when told so.
       sessionOps: true,
@@ -9591,12 +9778,40 @@ const _claudeBridgeReady = (async () => {
   }
 })();
 
-// The Claude accounts registry, as the sidepanel reads it (the Assistant keeps
-// its own instance over the same file; both only read here).
+// The Claude accounts registry: one instance for the sidepanel, the Assistant
+// (brain, workers, catalog) and every route, so one account state is shown
+// everywhere (lib/claude-accounts.js describe()). Its subscription half is
+// Claude Code's own `auth status --json` for each account; a change of any
+// account reaches every window as `claude:accounts-changed`.
 let _panelClaudeAccountsInstance = null;
 function _panelClaudeAccounts() {
-  if (!_panelClaudeAccountsInstance) _panelClaudeAccountsInstance = createPanelClaudeAccounts({ dataHome: DATA_HOME, homeDir: getHomePath() });
+  if (!_panelClaudeAccountsInstance) {
+    _panelClaudeAccountsInstance = createPanelClaudeAccounts({
+      dataHome: DATA_HOME, homeDir: getHomePath(),
+      readNativeStatus: (accountId) => panelClaudeAuth().nativeStatus(accountId),
+      log: (tag, message) => console.log(`[${tag}]`, message),
+    });
+    _panelClaudeAccountsInstance.subscribe((event) => {
+      try {
+        broadcastSync({ type: 'claude:accounts-changed', accountId: event.accountId || null, removed: !!event.removed, created: !!event.created });
+        // The Assistant's account list and catalog listen to their own event.
+        broadcastSync({ type: 'assistant:accounts-changed', provider: 'claude-code', accountId: event.accountId || null, removed: !!event.removed });
+        _assistantCatalog?.invalidate?.();
+      } catch {}
+    });
+  }
   return _panelClaudeAccountsInstance;
+}
+
+// Why a Claude account cannot be removed now ('' when it can): a live session
+// (a panel tab, the Assistant's brain), a dispatched run, or the Assistant's
+// choice of worker account names it.
+function claudeAccountInUse(accountId) {
+  try { if (_claudeBridge?.accountInUse?.(accountId)) return 'A Claude tab or the Assistant is running under this account. End that session first.'; } catch {}
+  try { if (_assistantDispatcher?.accountInUse?.('claude-code', accountId)) return 'Dispatched runs are using this account. Stop them first.'; } catch {}
+  try { if (_assistantRuntime?.accountInUse?.('claude-code', accountId)) return 'An Assistant session uses this account. Close it first.'; } catch {}
+  try { if (_assistantClaudeWorkerAccount?.() === accountId) return 'This is the Assistant\'s Claude worker account. Choose another one first.'; } catch {}
+  return '';
 }
 
 // The config directory of the Claude account a sidepanel request names: '' for
@@ -9611,12 +9826,157 @@ function panelAccountHome(value) {
   return home;
 }
 
-// GET /api/claude/accounts — the accounts a sidepanel tab can run under. Emails
-// are personal data: not for invite guests.
-app.get('/api/claude/accounts', (req, res) => {
+// GET /api/claude/accounts — every Claude account with its state (mode,
+// signed in, identity: an email or a masked key, never a key). Emails are
+// personal data: not for invite guests. `?refresh=true` asks Claude Code about
+// every account's subscription first; otherwise an answer older than a few
+// minutes is asked again in the background and announced when it changes.
+app.get('/api/claude/accounts', async (req, res) => {
   if (isGuestRequest(req)) return res.status(403).json({ ok: false, error: 'Admin only' });
-  try { res.json({ ok: true, accounts: _panelClaudeAccounts().listForClient() }); }
+  res.setHeader('Cache-Control', 'no-store');
+  try {
+    const accounts = _panelClaudeAccounts();
+    if (req.query.refresh === 'true') await accounts.refreshStatus(null, { force: true });
+    else accounts.refreshStatus().catch(() => {});
+    res.json({ ok: true, accounts: accounts.listForClient() });
+  }
   catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+let _panelClaudeAuthInstance = null;
+const panelAuthOwnerGuard = ownerRouteGuard({ isGuestRequest, port: PORT, allowedOrigins: publicWebOrigins, refuseCrossSite: true });
+function panelClaudeAuth() {
+  if (!_panelClaudeAuthInstance) {
+    _panelClaudeAuthInstance = createClaudePanelAuth({ accounts: _panelClaudeAccounts(), executable: getClaudeSdkExecutable, env: () => (withPathEnv(process.env, getAugmentedPath())), changeCredentials: (id, change) => _claudeBridge?.withPanelAccountAuthChange ? _claudeBridge.withPanelAccountAuthChange(id, change) : change() });
+    process.once('exit', () => _panelClaudeAuthInstance?.close());
+  }
+  return _panelClaudeAuthInstance;
+}
+
+// Admin-only account auth; OAuth stays native and pasted keys are profile-scoped.
+app.get('/api/claude/accounts/:id/auth', panelAuthOwnerGuard, async (req, res) => {
+  if (isGuestRequest(req)) return res.status(403).json({ error: 'Admin only' });
+  res.setHeader('Cache-Control', 'no-store');
+  try {
+    panelAccountHome(req.params.id);
+    const result = req.query.refresh === 'true' ? await panelClaudeAuth().read(req.params.id) : { state: panelClaudeAuth().snapshot(req.params.id) };
+    res.json(result);
+  } catch (error) { res.status(error.status || 500).json({ error: error.message }); }
+});
+app.post('/api/claude/accounts/:id/auth/:action', panelAuthOwnerGuard, async (req, res) => {
+  if (isGuestRequest(req)) return res.status(403).json({ error: 'Admin only' });
+  res.setHeader('Cache-Control', 'no-store');
+  try {
+    panelAccountHome(req.params.id);
+    const auth = panelClaudeAuth();
+    if (req.params.action === 'start') return res.json({ state: auth.start(req.params.id) });
+    if (req.params.action === 'cancel') return res.json({ state: auth.cancel(req.params.id, req.body?.operationId) });
+    if (req.params.action === 'code') return res.json({ state: auth.submitCode(req.params.id, req.body?.operationId, req.body?.code) });
+    if (req.params.action === 'logout') {
+      // `credential`: 'apiKey', 'subscription', or both when left out (the older /logout).
+      const credential = typeof req.body?.credential === 'string' ? req.body.credential : 'all';
+      await auth.signOut(req.params.id, credential);
+      return res.json({ ok: true, account: _panelClaudeAccounts().describeForClient(req.params.id) });
+    }
+    res.status(404).json({ error: 'Unknown authentication action' });
+  } catch (error) { res.status(error.status || 500).json({ error: error.message }); }
+});
+
+registerProviderPanelApiKeyAuthRoutes(app, {
+  guard: panelAuthOwnerGuard,
+  claude: (id, key) => panelClaudeAuth().signInApiKey(id, key),
+  // A Codex key is checked with OpenAI and kept by SynaBun for that account (lib/codex-account-auth.js);
+  // the account's idle Codex processes restart on it. Codex's own store (its ChatGPT login) is not touched.
+  codex: (id, key) => codexAccountAuth().signInApiKey(id, key),
+});
+
+// Codex accounts: the same model and routes as Claude's (lib/codex-accounts.js describe(), launchFor()).
+// Everything but the list carries the owner guard; a credential or mode change restarts the
+// account's idle panel processes and is refused while one of them is mid-turn.
+app.post('/api/codex/accounts', panelAuthOwnerGuard, (req, res) => {
+  if (isGuestRequest(req)) return res.status(403).json({ error: 'Admin only' });
+  res.setHeader('Cache-Control', 'no-store');
+  try {
+    const created = _codexAccounts().create({ label: req.body?.label });
+    res.json({ account: _codexAccounts().describeForClient(created.id) });
+  } catch (error) { res.status(error.status || 500).json({ code: error.code || null, error: error.message }); }
+});
+// Rename (`label`) and/or choose what the account's sessions use (`mode`: 'subscription' (ChatGPT) | 'apiKey').
+app.patch('/api/codex/accounts/:id', panelAuthOwnerGuard, async (req, res) => {
+  if (isGuestRequest(req)) return res.status(403).json({ error: 'Admin only' });
+  res.setHeader('Cache-Control', 'no-store');
+  try {
+    const accounts = _codexAccounts();
+    if (accounts.describe(req.params.id)?.id !== req.params.id) return res.status(404).json({ code: 'ACCOUNT_NOT_FOUND', error: 'That Codex account is no longer set up in SynaBun.' });
+    const { label, mode } = req.body || {};
+    if (label === undefined && mode === undefined) return res.status(400).json({ code: 'NOTHING_TO_CHANGE', error: 'Send a label or a mode.' });
+    if (label !== undefined) accounts.rename(req.params.id, label);
+    if (mode !== undefined) await codexAccountAuth().setMode(req.params.id, mode);
+    res.json({ ok: true, account: accounts.describeForClient(req.params.id) });
+  } catch (error) { res.status(error.status || 500).json({ code: error.code || null, error: error.message }); }
+});
+// Remove an added account and its folder. Default stays; an account something uses stays.
+app.delete('/api/codex/accounts/:id', panelAuthOwnerGuard, (req, res) => {
+  if (isGuestRequest(req)) return res.status(403).json({ error: 'Admin only' });
+  res.setHeader('Cache-Control', 'no-store');
+  try { res.json(_codexAccounts().remove(req.params.id, { inUse: (id) => codexAccountInUse(id) })); }
+  catch (error) { res.status(error.status || 500).json({ code: error.code || null, error: error.message }); }
+});
+// `?refresh=true` asks Codex what the account's own store holds first.
+app.get('/api/codex/accounts/:id/auth', panelAuthOwnerGuard, async (req, res) => {
+  if (isGuestRequest(req)) return res.status(403).json({ error: 'Admin only' });
+  res.setHeader('Cache-Control', 'no-store');
+  try {
+    if (_codexAccounts().describe(req.params.id)?.id !== req.params.id) return res.status(404).json({ code: 'ACCOUNT_NOT_FOUND', error: 'That Codex account is no longer set up in SynaBun.' });
+    if (req.query.refresh === 'true') return res.json(await codexAccountAuth().read(req.params.id));
+    res.json({ accountId: req.params.id, account: _codexAccounts().describeForClient(req.params.id) });
+  } catch (error) { res.status(error.status || 500).json({ code: error.code || null, error: error.message }); }
+});
+// `credential`: 'apiKey' (the account's key), 'subscription' (Codex's own logout in its home), or both when left out.
+app.post('/api/codex/accounts/:id/auth/logout', panelAuthOwnerGuard, async (req, res) => {
+  if (isGuestRequest(req)) return res.status(403).json({ error: 'Admin only' });
+  res.setHeader('Cache-Control', 'no-store');
+  try {
+    if (_codexAccounts().describe(req.params.id)?.id !== req.params.id) return res.status(404).json({ code: 'ACCOUNT_NOT_FOUND', error: 'That Codex account is no longer set up in SynaBun.' });
+    const credential = typeof req.body?.credential === 'string' ? req.body.credential : 'all';
+    const account = await codexAccountAuth().signOut(req.params.id, credential);
+    res.json({ ok: true, account });
+  } catch (error) { res.status(error.status || 500).json({ code: error.code || null, error: error.message }); }
+});
+
+app.post('/api/claude/accounts', panelAuthOwnerGuard, (req, res) => {
+  if (isGuestRequest(req)) return res.status(403).json({ error: 'Admin only' });
+  try {
+    const created = _panelClaudeAccounts().create({ label: req.body?.label });
+    const row = _panelClaudeAccounts().listForClient().find(a => a.id === created.id);
+    res.json({ account: row });
+  } catch (error) { res.status(error.status || 500).json({ error: error.message }); }
+});
+
+// Rename an account (`label`) or choose what its sessions use (`mode`:
+// 'subscription' | 'apiKey'; the chosen credential must be there). A mode
+// change ends the account's idle sessions so the next message starts under it.
+app.patch('/api/claude/accounts/:id', panelAuthOwnerGuard, async (req, res) => {
+  if (isGuestRequest(req)) return res.status(403).json({ error: 'Admin only' });
+  res.setHeader('Cache-Control', 'no-store');
+  try {
+    const accounts = _panelClaudeAccounts();
+    if (!accounts.describe(req.params.id) || accounts.describe(req.params.id).id !== req.params.id) return res.status(404).json({ code: 'ACCOUNT_NOT_FOUND', error: 'That Claude account is no longer set up in SynaBun.' });
+    const { label, mode } = req.body || {};
+    if (label === undefined && mode === undefined) return res.status(400).json({ code: 'NOTHING_TO_CHANGE', error: 'Send a label or a mode.' });
+    if (label !== undefined) accounts.rename(req.params.id, label);
+    if (mode !== undefined) await panelClaudeAuth().setMode(req.params.id, mode);
+    res.json({ ok: true, account: accounts.describeForClient(req.params.id) });
+  } catch (error) { res.status(error.status || 500).json({ code: error.code || null, error: error.message }); }
+});
+
+// Remove an added account and its config directory. Default stays; an account
+// a live session, a dispatched run or the Assistant's worker choice uses stays.
+app.delete('/api/claude/accounts/:id', panelAuthOwnerGuard, (req, res) => {
+  if (isGuestRequest(req)) return res.status(403).json({ error: 'Admin only' });
+  res.setHeader('Cache-Control', 'no-store');
+  try { res.json(_panelClaudeAccounts().remove(req.params.id, { inUse: claudeAccountInUse })); }
+  catch (error) { res.status(error.status || 500).json({ code: error.code || null, error: error.message }); }
 });
 
 function _readClaudeSkinConfig() {
@@ -10806,8 +11166,9 @@ app.post('/api/youtube/download', async (req, res) => {
 
     // A GUI-launched NI may not inherit the user's shell PATH, so yt-dlp can't find
     // node/deno/ffmpeg. Prepend the running node's dir + the common Homebrew/local bins.
+    // A packaged application's own runtime still goes last (withPackagedPathLast): the user's node first when there is one.
     const extraPath = [dirname(process.execPath), '/opt/homebrew/bin', '/usr/local/bin', join(os.homedir(), '.local/bin')].join(delimiter);
-    const childEnv = { ...process.env, PATH: `${extraPath}${delimiter}${process.env.PATH || ''}` };
+    const childEnv = withPackagedPathLast(withPathEnv(process.env, `${extraPath}${delimiter}${pathEnvValue(process.env)}`));
 
     const runYtDlp = (finalArgs) => new Promise((done) => {
       const child = spawn(yd.cmd, finalArgs, { windowsHide: true, env: childEnv });
@@ -12767,8 +13128,10 @@ app.get('/api/loop/active', (req, res) => {
         if (data?.active) {
           const elapsed = Date.now() - new Date(data.startedAt).getTime();
           const maxMs = ((data.maxMinutes || 30) + 5) * 60 * 1000;
-          // Stale loop — past time cap + grace, delete it
-          if (elapsed >= maxMs) {
+          // Stale loop — past time cap + grace, delete it. Not a dispatched worker's (runMode
+          // 'task'): its maxMinutes is work time, which the dispatcher enforces, and a warm run
+          // idles for a follow-up far past it; a dead one goes with the check below.
+          if (data.runMode !== 'task' && elapsed >= maxMs) {
             try { unlinkSync(filePath); } catch { /* ok */ }
             continue;
           }
@@ -12780,6 +13143,10 @@ app.get('/api/loop/active', (req, res) => {
               continue;
             }
           }
+          // A dispatched worker's time left is its work time left (the dispatcher's work clock); null
+          // while the dispatcher does not know the run (right after a restart): never the wall clock.
+          const isTaskRun = data.runMode === 'task';
+          const work = isTaskRun && data.runId ? (_assistantDispatcher?.peek?.(data.runId) || null) : null;
           activeLoops.push({
             sessionId: f.replace('.json', ''),
             task: data.task,
@@ -12788,7 +13155,9 @@ app.get('/api/loop/active', (req, res) => {
             totalIterations: data.totalIterations || 10,
             maxMinutes: data.maxMinutes || 30,
             elapsedMinutes: Math.round(elapsed / 60000),
-            remainingMinutes: Math.max(0, Math.round(((data.maxMinutes || 30) * 60 * 1000 - elapsed) / 60000)),
+            remainingMinutes: work && Number.isFinite(work.workLeftMs)
+              ? Math.round(work.workLeftMs / 60000)
+              : isTaskRun ? null : Math.max(0, Math.round(((data.maxMinutes || 30) * 60 * 1000 - elapsed) / 60000)),
             startedAt: data.startedAt,
             lastIterationAt: data.lastIterationAt,
             browserSessionId: data.browserSessionId || null,
@@ -15454,7 +15823,7 @@ function spawnAgentProcess(agent, prompt, extraEnv = {}) {
 
     const child = spawn(shellCommand(claudeBin, AGENT_IS_WIN), args, {
       cwd: agent.cwd,
-      env: { ...cleanEnv, FORCE_COLOR: '0', NO_COLOR: '1', TERM: 'dumb', ...extraEnv },
+      env: claudeChildEnv({ ...cleanEnv, FORCE_COLOR: '0', NO_COLOR: '1', TERM: 'dumb', ...extraEnv }),
       stdio: ['ignore', 'pipe', 'pipe'],
       shell: AGENT_IS_WIN,
       windowsHide: true,
@@ -16129,6 +16498,18 @@ async function checkSynabunUpdate() {
   // stable releases with a suffix.
   const installedChannel = synabunReleaseChannel(current);
 
+  // The desktop app updates itself (packaging/desktop: its window's update function, fed by the GitHub
+  // releases' desktop files). Nothing here offers it an npm or GitHub update; there is nothing to check.
+  if (PACKAGED_RUNTIME?.shell) {
+    _synabunUpdateCache = {
+      ..._synabunUpdateCache,
+      current, installedChannel, latest: null, npmUpdateAvailable: false, gitUpdateAvailable: false, updateAvailable: false,
+      source: null, installPlan: null, checkedAt: new Date().toISOString(), npmError: null, gitError: null, desktopManaged: true,
+    };
+    console.log(`  Updates:   from the SynaBun app (v${current})`);
+    return;
+  }
+
   const fetchJsonWithTimeout = async (url, ms = 5000) => {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), ms);
@@ -16224,6 +16605,72 @@ app.get('/api/system/version', async (req, res) => {
   res.json(_synabunUpdateCache);
 });
 
+// GET /api/system/about — Settings → About (lib/system-about.js): the app, the runtime, the project's links and
+// every dependency of the product's packages with the version installed, read from the files on disk on the first
+// request and kept for the life of the process. No environment, no token, no setting. Owner only (/api/system is
+// in ADMIN_ONLY_PREFIXES).
+const systemAbout = createSystemAbout({
+  packageRoot: PACKAGE_ROOT,
+  dataHome: DATA_HOME,
+  port: PORT,
+  install: PACKAGED_RUNTIME?.shell ? 'desktop' : INSTALL_KIND,
+  // The WhatsApp connector is installed on demand, into the data folder (lib/whatsapp/paths.js runtimeDir).
+  installDirs: { 'whatsapp-connector': [join(DATA_HOME, 'runtime', 'whatsapp')] },
+  vendorDir: join(__dirname, 'public', 'vendor'),
+});
+app.get('/api/system/about', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try {
+    res.json(systemAbout.get());
+  } catch (err) {
+    res.status(500).json({ error: 'about_failed', detail: String(err?.message || err).slice(0, 200) });
+  }
+});
+
+// GET /api/system/activity — whether anything runs that a restart would end. The
+// desktop app installs a downloaded update only while this says idle
+// (packaging/desktop/src/updater/controller.mjs); lib/system-activity.js adds the
+// counters up, and one that throws makes the answer "not idle". Terminals are not
+// counted: nothing here can tell a command that runs from a shell that waits.
+function systemActivitySources() {
+  const nativeRuns = () => _nativeLoopRuntime?.list?.({ activeOnly: true }) || [];
+  return {
+    assistant: () => {
+      const runtime = _assistantRuntime;
+      const sessions = runtime?._internals?.sessions;
+      const brains = sessions ? countWhere(sessions.keys(), (id) => runtime.isBusy(id)) : 0;
+      const runs = _assistantDispatcher ? _assistantDispatcher.list({ activeOnly: true, limit: 500 }).length : 0;
+      const agents = countWhere(agentRegistry, (agent) => agent?.status === 'running');
+      return brains + runs + agents;
+    },
+    'claude-panel': () => _claudeBridge?.panelSessionsWorking?.() || 0,
+    'codex-panel': () => countWhere(_codexLiveConnections, (connection) => !!connection?.busy?.())
+      + countWhere(_codexOrphanedProcs, (orphan) => orphan?.isIdle?.() !== true),
+    'opencode-panel': () => {
+      const blockers = getOpenCodeHistoryBlockers();
+      return blockers.activeTurns + blockers.startingTurns;
+    },
+    'claude-cli': () => recentCliSessions(sessionRegistry),
+    loop: () => {
+      // A dispatched worker also runs in the native runtime: it is counted under assistant.
+      const native = countWhere(nativeRuns(), (run) => run?.runMode !== 'task' && run?.source !== 'assistant');
+      const files = countWhere(readLoopStateFiles(), ({ data }) => !!data?.active && (!data.terminalSessionId || isLoopRuntimeAlive(data)));
+      const terminals = countWhere(terminalSessions, (session) => !!session?._loopTerminalSessionId);
+      return Math.max(native + terminals, files);
+    },
+    schedule: () => _scheduleQueue.length + (_scheduleQueueRunning ? 1 : 0),
+    backup: () => (_backupOperationActive ? 1 : 0) + (_autoBackupPromise ? 1 : 0),
+    maintenance: () => (_reindexJob?.running ? 1 : 0) + (_indexingJob && !_indexingJob.done ? 1 : 0)
+      + countWhere(Object.values(cliInstaller.jobs()), (job) => job?.state === 'running')
+      + (_projectStorageClearInProgress ? 1 : 0) + (_ocpHistoryClearInProgress ? 1 : 0),
+  };
+}
+
+app.get('/api/system/activity', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json(collectActivity(systemActivitySources(), { log: (line) => console.warn(`[activity] ${line}`) }));
+});
+
 // ═══════════════════════════════════════════
 // EXTERNAL CLI TOOL VERSION CHECK
 // ═══════════════════════════════════════════
@@ -16236,6 +16683,7 @@ const TOOL_DEFS = [
 ];
 
 let _toolVersionCache = { checkedAt: null, tools: {} };
+let _toolVersionGeneration = 0;
 
 // Backwards-compat helper — returns a "MAJOR.MINOR.PATCH" string (no pre).
 // Kept because legacy callers expect a string for display purposes only.
@@ -16255,35 +16703,7 @@ function parseVersion(raw) {
 // parseSemver / compareSemver / semverNewer live in lib/synabun-version.js, with
 // the rules that order SynaBun's own date-style and semver-era releases.
 
-function resolveBinPath(cmd, env) {
-  try {
-    const isWin = process.platform === 'win32';
-    const finder = isWin ? `where ${cmd}` : `command -v ${cmd}`;
-    const opts = { encoding: 'utf-8', timeout: 2000, stdio: ['pipe', 'pipe', 'pipe'], env };
-    if (!isWin) opts.shell = '/bin/sh';
-    const raw = execSync(finder, opts).trim();
-    const first = raw.split(/\r?\n/)[0] || null;
-    if (!first) return null;
-    // Follow symlinks so install-source detection sees the real install dir
-    // (e.g. /usr/local/bin/claude → /usr/local/lib/node_modules/.../bin/claude).
-    try { return realpathSync(first); } catch { return first; }
-  } catch { return null; }
-}
-
-// Async twin of resolveBinPath — version checks run these probes for every
-// tool; the sync variant blocks the event loop for the full subprocess time.
-async function resolveBinPathAsync(cmd, env) {
-  try {
-    const isWin = process.platform === 'win32';
-    const finder = isWin ? `where ${cmd}` : `command -v ${cmd}`;
-    const opts = { encoding: 'utf-8', timeout: 2000, env, windowsHide: true };
-    if (!isWin) opts.shell = '/bin/sh';
-    const { stdout } = await execAsync(finder, opts);
-    const first = (stdout || '').trim().split(/\r?\n/)[0] || null;
-    if (!first) return null;
-    try { return realpathSync(first); } catch { return first; }
-  } catch { return null; }
-}
+// Where each CLI is: lib/cli-resolver.js (cliResolver, near getClaudeBin).
 
 // detectInstallSource / buildUpdateCommand / NPM_PKGS now live in
 // ./lib/cli-update-planner.js so they can be unit tested away from this file.
@@ -16340,13 +16760,6 @@ function isInsideSynabun(binPath) {
   }
 }
 
-// Versions of @anthropic-ai/claude-code that SynaBun has historically shipped
-// as a bundled dependency. If a `claude --version` probe returns one of these,
-// it's almost certainly the stale bundle (a real user-global install would be
-// the current 2.1.116+). Reject hard regardless of where the binary path looks
-// to come from. Add new versions here if SynaBun ever ships claude-code again.
-const KNOWN_STALE_CLAUDE_VERSIONS = new Set(['2.1.71', '2.1.89', '2.1.91']);
-
 // Remove any external tool that ended up in our own node_modules: Claude Code,
 // Codex, OpenCode and Gemini CLI are installed by the user, never by SynaBun,
 // and the agent SDKs are installed without the executables they would carry
@@ -16367,52 +16780,25 @@ function pruneBundledCliTools() {
   }
 }
 
-async function checkToolVersions() {
-  // Strip node_modules/.bin entries so the version check reflects the user's
-  // global install rather than any copy bundled with SynaBun itself.
-  const augPath = getAugmentedPath()
-    .split(delimiter)
-    .filter(p => !/[\\/]node_modules[\\/]\.bin[\\/]?$/i.test(p))
-    .join(delimiter);
-  const cleanEnv = { ...process.env, PATH: augPath };
-  const execOpts = { encoding: 'utf-8', timeout: 5000, env: cleanEnv, windowsHide: true };
+async function checkToolVersions({ force = false } = {}) {
+  const generation = ++_toolVersionGeneration;
+  // Every CLI exactly as the panels and launchers find it (lib/cli-resolver.js):
+  // the path in Settings first, then PATH with the OS PATH read afresh, then the
+  // known install folders; installed (with its version), missing, or broken
+  // (found, but `--version` failed: the real error). Never a copy inside
+  // SynaBun, so the badge reflects the CLI the user would run in a terminal.
+  // `force` is Re-check: the OS PATH is read again and every --version asked again.
+  const statuses = await cliResolver.resolveAll(TOOL_DEFS.map((tool) => tool.key), { force });
+  const cleanEnv = withPathEnv(process.env, getAugmentedPath());
 
-  // Probe all tools concurrently with async subprocesses — the sequential
-  // execSync version blocked the event loop for the sum of every probe
-  // (worst case: N tools × 5s timeout with nothing else able to run).
-  // probedBinPath is resolved by the caller (below) so the brew probe can be
-  // skipped entirely when no brew-managed tool is installed. If the binary
-  // lives inside SynaBun's own install dir (stale bundled copy), treat the
-  // tool as not installed — do NOT run --version against it, since that would
-  // report the bundled version and trigger a false-positive update badge.
-  const checkOneTool = async (tool, probedBinPath) => {
-    const isStaleBundle = isInsideSynabun(probedBinPath);
+  // Only pay for the brew probe when a brew-managed tool is actually present.
+  const brewOutdated = Object.values(statuses).some((status) => status.state === 'installed' && isBrewSource(status.installSource))
+    ? await probeBrewOutdated(cleanEnv)
+    : null;
 
-    let installed = null;
-    if (!isStaleBundle) {
-      try {
-        const { stdout } = await execAsync(`${tool.cmd} ${tool.versionArg}`, execOpts);
-        installed = parseVersion(stdout.trim());
-      } catch { /* not installed or errored */ }
-    }
-
-    // Nuclear safety net for the recurring claude phantom-version bug:
-    // only reject when binary path detection failed (truly phantom). If we
-    // resolved a path AND it's outside SynaBun's own dirs, trust the version
-    // — Anthropic ships these versions in the native installer too, so a
-    // version-only blacklist hits legit installs at ~/.local/bin/claude.exe.
-    if (
-      tool.key === 'claude-code' &&
-      installed &&
-      KNOWN_STALE_CLAUDE_VERSIONS.has(installed) &&
-      !probedBinPath
-    ) {
-      console.warn(
-        `  [version-guard] Rejected claude v${installed} from (unknown path)` +
-        ` — matches known-stale SynaBun bundle and no binary path could be resolved.`
-      );
-      installed = null;
-    }
+  const checkOneTool = async (tool) => {
+    const status = statuses[tool.key];
+    const installed = status.state === 'installed' ? status.version : null;
 
     // Upstream (npm) version. For a brew install this is NOT the yardstick —
     // Homebrew routinely trails npm by a few releases, so comparing against it
@@ -16433,9 +16819,8 @@ async function checkToolVersions() {
       }
     } catch { /* network error */ }
 
-    const binPath = installed ? probedBinPath : null;
-    const installSource = detectInstallSource(binPath);
-    const brewToken = isBrewSource(installSource) ? resolveBrewToken(tool.key, binPath) : null;
+    const installSource = status.installSource;
+    const brewToken = isBrewSource(installSource) ? resolveBrewToken(tool.key, status.realPath || status.path) : null;
     const latest = resolveLatest({
       installSource,
       brewToken,
@@ -16443,8 +16828,10 @@ async function checkToolVersions() {
       npmLatest: upstreamLatest,
       installed,
     });
+    // A self-updater is started by the path found, so the update reaches this
+    // very installation even where a terminal's PATH does not name its folder.
     const updateCommand = installed
-      ? buildUpdateCommand(tool.key, installSource, { brewToken })
+      ? buildUpdateCommand(tool.key, installSource, { brewToken, binPath: status.path, platform: process.platform })
       : null;
 
     return [tool.key, {
@@ -16454,32 +16841,33 @@ async function checkToolVersions() {
       updateAvailable: !!(installed && latest && semverNewer(installed, latest)),
       installSource,
       brewToken,
-      binPath,
+      binPath: status.path,
       updateCommand,
       canUpdate: !!updateCommand,
+      state: status.state,
+      version: status.version,
+      error: status.error,
+      foundBy: status.foundBy,
+      realPath: status.realPath,
+      launchPath: status.launchPath,
+      configured: status.configured,
+      checked: status.candidates,
+      guideUrl: CLI_INSTALL_GUIDES[tool.key] || null,
+      install: cliInstaller.describe(tool.key),
+      pathStatus: cliPathManager.inspect(status),
     }];
   };
 
-  // Resolve every binary path first so we only pay for the brew probe when a
-  // brew-managed tool is actually present.
-  const probedPaths = await Promise.all(
-    TOOL_DEFS.map((tool) => resolveBinPathAsync(tool.cmd, cleanEnv).catch(() => null)),
-  );
-  const brewOutdated = probedPaths.some((p) => isBrewSource(detectInstallSource(p)))
-    ? await probeBrewOutdated(cleanEnv)
-    : null;
-
-  const entries = await Promise.all(
-    TOOL_DEFS.map((tool, i) => checkOneTool(tool, probedPaths[i])),
-  );
+  const entries = await Promise.all(TOOL_DEFS.map((tool) => checkOneTool(tool)));
   const results = Object.fromEntries(entries);
 
-  // Tell a missing tool's install banner to use the channel this machine
-  // actually uses. A tool that isn't installed has no path to classify, so
-  // infer it from the siblings that ARE installed — otherwise a Homebrew
-  // user is told to `npm install -g`, creating a second conflicting install
-  // that may not even win PATH.
+  // Tell a missing tool's install banner the command that fits this machine:
+  // the vendor's own installer for this system (Anthropic's native installer
+  // for Claude Code always), unless the CLIs that ARE installed show a package
+  // manager this machine uses (Homebrew, bun, pnpm …), which is kept to, so
+  // that the manual command never creates a second, conflicting install.
   const siblingSources = Object.values(results)
+    .filter((v) => v.state === 'installed')
     .map((v) => v.installSource)
     .filter((s) => s && s !== 'unknown' && s !== 'other');
   const dominantSource = siblingSources
@@ -16488,23 +16876,40 @@ async function checkToolVersions() {
     || 'unknown';
   for (const [key, info] of Object.entries(results)) {
     const source = info.installed ? info.installSource : dominantSource;
-    info.installCommand = buildInstallCommand(key, source);
+    info.installCommand = buildInstallCommand(key, source, { platform: process.platform });
   }
 
+  // A check started before a newer refresh must never publish its stale answer.
+  if (generation !== _toolVersionGeneration) return;
   _toolVersionCache = { checkedAt: new Date().toISOString(), tools: results };
 
   const updates = Object.entries(results).filter(([, v]) => v.updateAvailable);
+  const broken = Object.entries(results).filter(([, v]) => v.state === 'broken');
   if (updates.length) {
     console.log(`  CLI Tools: ${updates.map(([k, v]) => `${k} v${v.installed}→v${v.latest}`).join(', ')}`);
   } else {
     console.log('  CLI Tools: all up to date');
   }
+  for (const [key, info] of broken) console.warn(`  CLI Tools: ${key} at ${info.binPath} does not start: ${info.error}`);
 }
 
 // Single-flight: concurrent requests share one refresh instead of each
 // spawning their own set of subprocess probes.
 let _toolVersionInFlight = null;
-function refreshToolVersions() {
+let _toolVersionForced = null;
+function refreshToolVersions({ force = false, fresh = false } = {}) {
+  // A Re-check never takes the answer of a plain check already under way: it
+  // reads the OS PATH and asks every --version again.
+  if (force) {
+    if (fresh || !_toolVersionForced) {
+      const refresh = checkToolVersions({ force: true })
+        .catch(() => {})
+        .finally(() => { if (_toolVersionForced === refresh) _toolVersionForced = null; });
+      _toolVersionForced = refresh;
+    }
+    return _toolVersionForced;
+  }
+  if (_toolVersionForced) return _toolVersionForced;
   if (!_toolVersionInFlight) {
     _toolVersionInFlight = checkToolVersions()
       .catch(() => {})
@@ -16516,8 +16921,9 @@ function refreshToolVersions() {
 app.get('/api/system/tool-versions', async (req, res) => {
   const force = req.query.force === '1';
   if (force || !_toolVersionCache.checkedAt) {
-    // force=1 callers (post-update badge refresh) need fresh data — await.
-    await refreshToolVersions();
+    // force=1 (Re-check, the post-update badge refresh, the panels' poll while
+    // a CLI is missing) needs fresh data: await it.
+    await refreshToolVersions({ force });
   } else {
     const age = Date.now() - new Date(_toolVersionCache.checkedAt).getTime();
     // Stale-while-revalidate: serve the cached value now, refresh in background.
@@ -16525,6 +16931,40 @@ app.get('/api/system/tool-versions', async (req, res) => {
   }
   res.json(_toolVersionCache);
 });
+
+// ── One-click install of a missing CLI (lib/cli-install.js, lib/cli-install-api.js) ──
+// The side panels' Install button: the vendor's official installer for this
+// system (or OpenCode's release archive on Windows), never a source a request
+// names, guarded like the other local mutating endpoints, its progress streamed
+// as NDJSON. Its last step is the resolver looking again (force); the tool
+// versions are then refreshed, so every panel's next check shows the CLI.
+const cliPathManager = createCliPathManager({
+  onChanged: () => { _toolVersionCache = { ..._toolVersionCache, checkedAt: null }; },
+});
+app.use('/api/cli/path', createCliPathApi({
+  pathManager: cliPathManager, resolver: cliResolver, isGuestRequest, port: () => PORT,
+  diagnostics: async () => {
+    const fresh = await freshTerminalPath();
+    const statuses = await cliResolver.resolveAll(['claude-code', 'codex', 'opencode']);
+    return { platform: process.platform, pathKey: Object.keys(fresh.env).find(key => key.toUpperCase() === 'PATH'),
+      entries: fresh.entries, os: fresh.os, pathext: fresh.env.PATHEXT || fresh.env.PathExt || null,
+      tools: Object.fromEntries(Object.entries(statuses).map(([tool, status]) => [tool, { path: status.path, launchPath: status.launchPath, ...cliPathManager.inspect(status) }])) };
+  },
+}));
+const cliInstaller = createCliInstaller({
+  resolver: cliResolver,
+  addToPath: status => cliPathManager.add(status),
+  readOsPath: async () => (await osPath.refresh({ force: true })).entries,
+  onFinished: () => {
+    _toolVersionCache = { ..._toolVersionCache, checkedAt: null };
+    // The install changes the disk: even a Re-check already running predates it.
+    refreshToolVersions({ force: true, fresh: true });
+  },
+  log: (line) => console.log(line),
+});
+app.use('/api/cli/install', createCliInstallApi({ installer: cliInstaller, isGuestRequest, port: () => PORT, log: (line) => console.warn(line) }));
+// Settings beside the CLIs: the Git Bash Claude Code gets on Windows, its download and a new look (lib/git-bash/).
+app.use('/api/cli/git-bash', createGitBashApi({ manager: gitBash, isGuestRequest, port: () => PORT, onRecheck: async () => { syncGitBashSettings(); } }));
 
 // ═══════════════════════════════════════════
 // FULL SYSTEM BACKUP & RESTORE
@@ -16713,9 +17153,9 @@ app.post('/api/system/restore', async (req, res) => {
         // Ensure dev deps are installed for TypeScript
         const mcpDir = resolve(PACKAGE_ROOT, 'mcp-server');
         if (!existsSync(resolve(mcpDir, 'node_modules', 'typescript'))) {
-          execSync('npm install', { cwd: mcpDir, stdio: 'pipe', timeout: 180_000, env: { ...process.env, NODE_ENV: 'development' } });
+          execSync('npm install', { cwd: mcpDir, stdio: 'pipe', timeout: 180_000, env: withPackagedPathLast({ ...process.env, NODE_ENV: 'development' }) });
         }
-        execSync('npm run build', { cwd: mcpDir, stdio: 'pipe', timeout: 60_000 });
+        execSync('npm run build', { cwd: mcpDir, stdio: 'pipe', timeout: 60_000, env: withPackagedPathLast(process.env) });
         results.files.push('(auto-built MCP server)');
       } catch (buildErr) {
         results.errors.push(`MCP server auto-build failed: ${buildErr.message}`);
@@ -16992,13 +17432,10 @@ const editorCompletionServe = createOpencodeCompletionEngine({
   // A provider's {file:./key} is relative to that configuration: it is written whole for the serve's own folder.
   userConfigDir: () => dirname(getOpencodeConfigPath()),
   allocPort: allocOpencodeIsoPort,
-  // As the isolated serves are started: through the login shell, so the CLI is found where a terminal finds it.
+  // As the isolated serves are started (opencodeServeLaunch): the CLI the resolver found, through the login shell.
   spawnServe: ({ port, env, cwd }) => {
-    const cmd = loadCliConfig().opencode?.command || 'opencode';
-    const shellArgs = IS_WIN
-      ? ['/d', '/s', '/c', `${cmd} serve --port ${port}`]
-      : ['-lc', `exec ${cmd} serve --port ${port}`];
-    const proc = spawn(DEFAULT_SHELL, shellArgs, { stdio: ['ignore', 'ignore', 'pipe'], env, cwd, detached: false, shell: false, windowsHide: true });
+    const launch = opencodeServeLaunch(port, { env });
+    const proc = spawn(launch.command, launch.args, { stdio: ['ignore', 'ignore', 'pipe'], ...launch.options, cwd, detached: false, shell: false, windowsHide: true });
     proc.stderr?.on('data', (d) => console.log(`[editor-complete:err] ${String(d).trim().slice(0, 500)}`));
     return proc;
   },
@@ -17856,7 +18293,7 @@ app.get('/api/setup/check-deps', async (req, res) => {
 
   // npm
   try {
-    const { stdout } = await execAsync('npm --version', { timeout: 5000 });
+    const { stdout } = await execAsync('npm --version', { timeout: 5000, env: withPackagedPathLast(process.env) });
     deps.push({ id: 'npm', name: 'npm', ok: true, version: `v${stdout.trim()}`, detail: `v${stdout.trim()}`, url: 'https://nodejs.org/' });
   } catch {
     deps.push({ id: 'npm', name: 'npm', ok: false, version: null, detail: 'Not found', url: 'https://nodejs.org/' });
@@ -17865,6 +18302,38 @@ app.get('/api/setup/check-deps', async (req, res) => {
   // Docker no longer required — SQLite is built-in
 
   res.json({ deps });
+});
+
+// GET /api/setup/install-details — what this install has (lib/install-details.js), for the Details areas of the
+// setup wizard inside the desktop app: the Node.js and the npm and npx SynaBun runs (each asked for its version),
+// where `npm i -g` puts packages, the user's own npm, every part's dependencies and versions, the MCP build, and
+// what a packaged application came with. Read only; the owner's only (/api/setup is admin-only for guests).
+app.get('/api/setup/install-details', async (req, res) => {
+  try {
+    // The one prefix PATH is built from (packagedNpmPrefix; for an npm or Git install, the one the user set).
+    const npm = PACKAGED_RUNTIME ? packagedNpmPrefix(PACKAGED_RUNTIME) : effectiveNpmPrefix();
+    const prefix = npm?.prefix || null;
+    let manifest = null;
+    if (PACKAGED_RUNTIME) { try { manifest = JSON.parse(readFileSync(PACKAGED_RUNTIME.manifestPath, 'utf8')); } catch {} }
+    let browserExecutable = null;
+    try { browserExecutable = chromium.executablePath(); } catch {}
+    let osEntries = [];
+    try { osEntries = (await osPath.refresh()).entries || []; } catch {}
+    res.json(await collectInstallDetails({
+      packageRoot: PACKAGE_ROOT,
+      packaged: PACKAGED_RUNTIME,
+      manifest,
+      osPath: osEntries,
+      npmPrefix: prefix,
+      npmPrefixSource: !prefix ? null : npm.source === 'builtin' || npm.source === 'default' ? 'synabun' : 'user',
+      npmPrefixFrom: prefix && npm.source !== 'builtin' && npm.source !== 'default' ? npm.from || null : null,
+      npmGlobalBin: prefix ? npmGlobalBinFor(prefix) : null,
+      browserExecutable,
+    }));
+  } catch (err) {
+    console.error('GET /api/setup/install-details error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // GET /api/setup/onboarding — Check what's configured (onboarding wizard)
@@ -17937,9 +18406,11 @@ app.post('/api/setup/build', async (req, res) => {
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders();
 
+  // What npm wrote, as the wizard shows it: secrets out first (lib/log-redact.js), then the last 500 characters.
   function send(event, data) {
-    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    res.write(`event: ${event}\ndata: ${JSON.stringify(redactDeep(data))}\n\n`);
   }
+  const tail = (text) => redactSecrets(String(text || '')).slice(-500);
 
   const dirs = [
     { name: 'Neural Interface', path: resolve(PACKAGE_ROOT, 'neural-interface') },
@@ -17963,14 +18434,15 @@ app.post('/api/setup/build', async (req, res) => {
 
     send('install', { dir: dir.name, status: 'start' });
     try {
+      // The user's own npm when they have one, a packaged application's after it (withPackagedPathLast).
       const { stdout, stderr } = await execAsync('npm install', {
         cwd: dir.path,
         timeout: 180_000,
-        env: { ...process.env, NODE_ENV: 'development' },
+        env: withPackagedPathLast({ ...process.env, NODE_ENV: 'development' }),
       });
-      send('install', { dir: dir.name, status: 'done', output: (stdout || '').slice(-500) });
+      send('install', { dir: dir.name, status: 'done', output: tail(stdout) });
     } catch (err) {
-      send('install', { dir: dir.name, status: 'error', output: (err.stderr || err.message || '').slice(-500) });
+      send('install', { dir: dir.name, status: 'error', output: tail(err.stderr || err.message) });
       send('complete', { ok: false, error: `npm install failed for ${dir.name}` });
       return res.end();
     }
@@ -17991,10 +18463,11 @@ app.post('/api/setup/build', async (req, res) => {
       const { stdout, stderr } = await execAsync('npm run build', {
         cwd: resolve(PACKAGE_ROOT, 'mcp-server'),
         timeout: 60_000,
+        env: withPackagedPathLast(process.env),
       });
-      send('build', { status: 'done', output: (stdout || '').slice(-500) });
+      send('build', { status: 'done', output: tail(stdout) });
     } catch (err) {
-      send('build', { status: 'error', output: (err.stderr || err.message || '').slice(-500) });
+      send('build', { status: 'error', output: tail(err.stderr || err.message) });
       send('complete', { ok: false, error: 'MCP server build failed' });
       return res.end();
     }
@@ -18562,7 +19035,7 @@ function injectClaudeMemoryPerms() {
 
 function injectCodexMemoryPerms() {
   try {
-    const configPath = join(getHomePath(), '.codex', 'config.toml');
+    const configPath = join(CODEX_DEFAULT_HOME, 'config.toml');
     if (!existsSync(configPath)) return { scope: 'none', paths: [] };
     let content = readFileSync(configPath, 'utf-8');
     if (!tomlHasSection(content, 'mcp_servers.SynaBun')) return { scope: 'none', paths: [] };
@@ -20729,9 +21202,9 @@ function tomlRemoveAllToolSections(content, prefix) {
  *   - If disabled → remove that section
  * Preserves all non-tool config (model, projects, mcp_servers.SynaBun base, notices).
  */
-function syncCodexToolPermissions(allowedKeys) {
+function syncCodexToolPermissions(allowedKeys, codexHome = CODEX_DEFAULT_HOME) {
   try {
-    const configPath = join(getHomePath(), '.codex', 'config.toml');
+    const configPath = join(codexHome, 'config.toml');
     if (!existsSync(configPath)) return;
     healCodexConfig(configPath);
     const health = inspectCodexConfig(configPath);
@@ -20875,7 +21348,7 @@ app.delete('/api/setup/gemini/mcp', (req, res) => {
 
 app.get('/api/setup/codex/mcp', (req, res) => {
   try {
-    const configPath = join(getHomePath(), '.codex', 'config.toml');
+    const configPath = join(CODEX_DEFAULT_HOME, 'config.toml');
     const toml = buildCodexMcpToml();
     const health = inspectCodexConfig(configPath);
     res.json({ ok: true, ...health, toml });
@@ -20886,7 +21359,7 @@ app.get('/api/setup/codex/mcp', (req, res) => {
 
 app.post('/api/setup/codex/mcp', (req, res) => {
   try {
-    const dir = join(getHomePath(), '.codex');
+    const dir = CODEX_DEFAULT_HOME;
     const configPath = join(dir, 'config.toml');
     mkdirSync(dir, { recursive: true });
     ensureMcpProfileDefault('codex-browser');
@@ -20901,7 +21374,7 @@ app.post('/api/setup/codex/mcp', (req, res) => {
 
 app.delete('/api/setup/codex/mcp', (req, res) => {
   try {
-    const configPath = join(getHomePath(), '.codex', 'config.toml');
+    const configPath = join(CODEX_DEFAULT_HOME, 'config.toml');
     if (!existsSync(configPath)) return res.json({ ok: true, rules: syncRulesWithMcp('codex', 'remove') });
     const health = removeCodexMcpConfig(configPath);
     res.json({ ok: true, ...health, message: 'SynaBun MCP removed from Codex CLI.', rules: syncRulesWithMcp('codex', 'remove') });
@@ -20936,7 +21409,7 @@ app.get('/api/setup/status', (req, res) => {
     // Codex
     let codex = { connected: false, valid: false, repairable: false, issues: [] };
     try {
-      codex = inspectCodexConfig(join(home, '.codex', 'config.toml'));
+      codex = inspectCodexConfig(join(CODEX_DEFAULT_HOME, 'config.toml'));
     } catch {}
     codex.cliCommand = buildCodexMcpCliCommand();
 
@@ -22211,6 +22684,7 @@ app.get('/api/health', (req, res) => {
     const count = countMemories();
     res.json({
       ok: true, storage: 'sqlite', memories: count, projectDir: PACKAGE_ROOT, install: INSTALL_KIND, startLauncher: getStartLauncherState(), entry: START_ENTRY,
+      version: SERVER_VERSION, dataHomeId: DATA_HOME_ID, installEntry: INSTALL_ENTRY,
       // Which server this is, and whether it is on its way out for a restart: a
       // page showing the restart tells this one from the one that replaces it.
       bootId: SERVER_BOOT_ID,
@@ -22587,14 +23061,15 @@ const SYNABUN_TOOL_GROUPS = {
   sync:              { label: 'Sync',       tools: 1, alwaysOn: true },
   loop:              { label: 'Loop',       tools: 1, alwaysOn: true },
   profile:           { label: 'Profile',    tools: 1, alwaysOn: true },
+  choice:            { label: 'Choice',     tools: 1, alwaysOn: true },
   git:               { label: 'Git',        tools: 1  },
   image:             { label: 'Images',     tools: 1  },
   whiteboard:        { label: 'Whiteboard', tools: 5  },
   card:              { label: 'Cards',      tools: 5  },
   tictactoe:         { label: 'TicTacToe',  tools: 1  },
-  browser:           { label: 'Browser',    tools: 18 },
-  browser_twitter:   { label: 'Twitter/X',  tools: 1  },
-  browser_facebook:  { label: 'Facebook',   tools: 3  },
+  browser:           { label: 'Browser',    tools: 21 },
+  browser_twitter:   { label: 'Twitter/X',  tools: 2  },
+  browser_facebook:  { label: 'Facebook',   tools: 4  },
   browser_tiktok:    { label: 'TikTok',     tools: 4  },
   browser_whatsapp:  { label: 'WhatsApp',   tools: 2  },
   browser_instagram: { label: 'Instagram',  tools: 5  },
@@ -23754,12 +24229,10 @@ function saveCliConfig(config) {
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   writeFileSync(CLI_CONFIG_PATH, JSON.stringify(config, null, 2), 'utf-8');
   _cliConfigCache = null;
-  // Clear cached binaries so getClaudeBin()/getCodexBin() re-resolve with the
-  // new config. Codex was previously left stale, so a corrected Codex path in
-  // Settings did nothing until the server was restarted.
-  _claudeBinPath = null;
-  _codexBinPath = null;
-  _nativeCodexBinPath = null;
+  // A path saved in Settings counts at once, for the version check and every
+  // launcher alike (lib/cli-resolver.js), with no restart.
+  cliResolver.invalidate();
+  _toolVersionCache = { ..._toolVersionCache, checkedAt: null };
 }
 
 // Interactive shell tabs start as login shells, like Terminal.app / iTerm2.
@@ -23781,14 +24254,16 @@ function getTerminalProfile(profileId, opts = {}) {
 
   let cmd = entry.command.trim();
   if (!cmd) return SHELL_PROFILE;
+  const found = cliResolver.launcher(profileId);
+  if (!configuredCommandLine(profileId)) cmd = terminalLaunchCommand(found, DEFAULT_SHELL) || cmd;
 
   // Append resume flag for supported CLIs (mutually exclusive with model)
   if (opts.resume && profileId === 'claude-code') {
-    cmd = `${cmd} --resume ${opts.resume}`;
+    cmd = `${cmd} --resume ${terminalArgument(opts.resume, DEFAULT_SHELL)}`;
   } else if (opts.resume && profileId === 'codex') {
-    cmd = `${cmd} resume ${opts.resume}`;
+    cmd = `${cmd} resume ${terminalArgument(opts.resume, DEFAULT_SHELL)}`;
   } else if (opts.resume && profileId === 'opencode') {
-    cmd = `${cmd} -s ${opts.resume}`;
+    cmd = `${cmd} -s ${terminalArgument(opts.resume, DEFAULT_SHELL)}`;
   }
   // Append model flag for CLIs that support it
   else if (opts.model) {
@@ -23802,7 +24277,7 @@ function getTerminalProfile(profileId, opts = {}) {
     // suffix `[1m]` contains `[ ]`, which zsh parses as a glob character class —
     // unquoted it aborts with "no matches found" and the CLI never launches.
     // Mirror the IS_WIN-aware quoting used for --mcp-config below.
-    const quotedModel = IS_WIN ? `"${cleanModel}"` : shellSingleQuote(cleanModel);
+    const quotedModel = terminalArgument(cleanModel, DEFAULT_SHELL);
     const modelMap = {
       'claude-code': (m) => `${cmd} --model ${m}`,
       'codex':       (m) => `${cmd} --model ${m}`,
@@ -23841,7 +24316,7 @@ function getTerminalProfile(profileId, opts = {}) {
   // collisions invisibly. Trade-off: project-scope .mcp.json servers are not
   // loaded inside loops (user-scope servers ARE — they're merged into the file).
   if (opts.mcpConfigPath && profileId === 'claude-code') {
-    const quoted = IS_WIN ? `"${opts.mcpConfigPath}"` : `'${opts.mcpConfigPath.replace(/'/g, `'\\''`)}'`;
+    const quoted = terminalArgument(opts.mcpConfigPath, DEFAULT_SHELL);
     cmd = `${cmd} --strict-mcp-config --mcp-config ${quoted}`;
   }
 
@@ -23854,19 +24329,24 @@ function getTerminalProfile(profileId, opts = {}) {
   };
 }
 
+// Read for every spawn, including a tab restored/split by the client and
+// provider sign-in terminals. The desktop app uses this same server/PTY host.
+async function freshTerminalPath(base = process.env) {
+  const os = await osPath.refresh({ force: true });
+  const launchers = ['claude-code', 'codex', 'opencode', 'gemini'].map(tool => cliResolver.launcher(tool));
+  // A packaged application's runtime and npm's global bin (rememberPackagedPath above), after the user's own.
+  const { last: synabunDirs, extra: extraDirs } = rememberedPackagedPath();
+  return { ...composeTerminalPath({ env: base, os, launchers, synabunDirs, extraDirs }), os, launchers };
+}
+
 function createTerminalSession(profile, cols, rows, cwd, opts = {}) {
   if (terminalHost.ready && !terminalHost.ptyAvailable) {
     throw new Error('Terminal not available: node-pty failed to load. Run: cd neural-interface && npm run postinstall');
   }
   const sessionId = opts.sessionId || randomBytes(16).toString('hex');
-  const profileCfg = getTerminalProfile(profile, opts);
+  let profileCfg = opts.launch || getTerminalProfile(profile, opts);
   const initialCols = cols || 120;
   const initialRows = rows || 30;
-
-  // Native-terminal environment: SynaBun's own TERM_PROGRAM identity,
-  // truecolor, a UTF-8 locale, and none of the launching terminal's or IDE's
-  // session variables (VS Code, tmux, iTerm2, a parent Claude Code session…).
-  const env = buildTerminalEnv({ profileEnv: profileCfg.env, extraEnv: opts.extraEnv });
 
   const isLoopOwned = !!(opts.extraEnv && opts.extraEnv.SYNABUN_TERMINAL_SESSION === sessionId);
   if (isLoopOwned) {
@@ -23886,6 +24366,7 @@ function createTerminalSession(profile, cols, rows, cwd, opts = {}) {
     profile, cwd,
     createdAt: Date.now(),
     graceTimer: null,
+    onProviderAuthClosed: opts.onClosed,
     claudeSessionId: opts.resume || null,  // known Claude session ID (from resume or detect)
   };
   terminalSessions.set(sessionId, session);
@@ -23942,6 +24423,7 @@ function createTerminalSession(profile, cols, rows, cwd, opts = {}) {
     // The host already delivered the final output (to clients and the tap)
     // before reporting the exit.
     session.pty.exited = true;
+    opts.onExit?.({ exitCode });
 
     // Clear grace timer if set
     if (session.graceTimer) { clearTimeout(session.graceTimer); session.graceTimer = null; }
@@ -24020,7 +24502,6 @@ function createTerminalSession(profile, cols, rows, cwd, opts = {}) {
     file: profileCfg.shell,
     args: profileCfg.args,
     cwd: cwd || process.env.USERPROFILE || process.env.HOME || process.cwd(),
-    env,
     cols: initialCols,
     rows: initialRows,
     name: 'xterm-256color',
@@ -24036,6 +24517,12 @@ function createTerminalSession(profile, cols, rows, cwd, opts = {}) {
     onResized: ({ cols: c, rows: r }) => { session.pty.cols = c; session.pty.rows = r; },
     onClients: ({ total }) => { session.clients.size = total; },
     onExit,
+  }, async () => {
+    const fresh = await freshTerminalPath(opts.baseEnv || process.env);
+    profileCfg = opts.launch || getTerminalProfile(profile, opts);
+    // On Windows, the Git Bash a claude started in this tab gets (lib/git-bash/): any tab can start one.
+    const env = claudeChildEnv(buildTerminalEnv({ base: fresh.env, profileEnv: profileCfg.env, extraEnv: opts.extraEnv }));
+    return { file: profileCfg.shell, args: profileCfg.args, env };
   });
 
   return sessionId;
@@ -24665,8 +25152,17 @@ _nativeLoopRuntime = new NativeLoopRuntime({
   providerFactories: {
     'claude-code': (state) => {
       const config = _readClaudeSkinConfig();
+      // The account decides the credential (lib/claude-accounts.js launchFor()): inherited credentials out,
+      // its directory and, in API-key mode, its key in. Built here, never stored: the loop state file only
+      // names the account. A run whose account is gone does not start under another identity.
+      const launch = _panelClaudeAccounts().launchFor(state.claudeAccountId || 'default');
+      if (!launch.ok) throw new Error(`${launch.message} The run did not start.`);
       return createClaudeNativeLoopAdapter({
         ...state,
+        extraEnv: { ...(state.extraEnv || {}), ...launch.env },
+        unsetEnv: launch.unset,
+        // On Windows, the Git Bash the worker's Claude Code gets (lib/git-bash/), never stored in the loop state.
+        childEnv: claudeChildEnv,
         model: state.contextMode === '1m' && state.model
           ? `${state.model}[1m]`
           : state.model && state.model.includes(':') ? toCliModelName(state.model) : state.model,
@@ -24686,10 +25182,18 @@ _nativeLoopRuntime = new NativeLoopRuntime({
       // path, so repair the shared config before the SDK can parse it. Without
       // this, legacy inline + table SynaBun env definitions surface as a
       // configWarning and the unattended turn never becomes active.
-      ensureCanonicalCodexConfig({ strict: true });
+      // The account decides the credential (lib/codex-accounts.js launchFor()): inherited OpenAI/Codex
+      // credentials out, its CODEX_HOME in and, in API-key mode, the key SynaBun holds as CODEX_API_KEY
+      // (which `codex exec` prefers over auth.json). Built here, never stored: the loop state file only
+      // names the account. A run whose account is gone does not start under another identity.
+      const launch = _codexAccounts().launchFor(state.codexAccountId || 'default');
+      if (!launch.ok) throw new Error(`${launch.message} The run did not start.`);
+      ensureCanonicalCodexConfig({ strict: true, codexHome: launch.home });
       return createCodexNativeLoopAdapter({
         ...state,
-        codexHome: state.codexHome || getCodexAccountHome(state.codexAccountId || 'default'),
+        extraEnv: { ...(state.extraEnv || {}), ...codexExecEnv(launch) },
+        unsetEnv: launch.unset,
+        codexHome: launch.home,
         // Native schedules use the same trusted global CLI as the interactive
         // sidepanel; SynaBun carries no Codex for the SDK to find by itself.
         codexPath: getNativeCodexBin(),
@@ -24755,7 +25259,8 @@ _nativeLoopRuntime = new NativeLoopRuntime({
       import('../mcp-server/dist/tools/remember.js'), import('../mcp-server/dist/services/categories.js'),
       import('./lib/assistant-catalog.js'), import('./lib/assistant-config.js'), import('./lib/assistant-router.js'),
     ]);
-    const { budgetLimits, createModelPricing } = await import('./lib/assistant-budget.js');
+    const { createModelPricing } = await import('./lib/assistant-budget.js');
+    const { createBudgetPlanner } = await import('./lib/assistant-budget-planner.js');
     const { createAssistantClarifier } = await import('./lib/assistant-clarify.js');
     const { createAttachmentStore } = await import('./lib/assistant-attachments.js');
     const assistantConfigPath = resolve(LOOP_DATA_DIR, 'assistant-config.json');
@@ -24763,7 +25268,25 @@ _nativeLoopRuntime = new NativeLoopRuntime({
     // One store for assistant-config.json: routing knobs re-read on change.
     const assistantConfigStore = createAssistantConfigStore({ path: assistantConfigPath, log: (tag, message) => assistantLog(tag, message) });
     const assistantConfig = assistantConfigStore.read();
-    const claudeAccounts = createClaudeAccounts({ dataHome: DATA_HOME, homeDir: getHomePath(), log: (tag, message) => assistantLog(tag, message) });
+    // The one Claude accounts instance (the sidepanel's): one account state for the brain picker, the catalog,
+    // worker dispatch and the panel. `createClaudeAccounts` stays imported for older callers of this block.
+    void createClaudeAccounts;
+    const claudeAccounts = _panelClaudeAccounts();
+    const { createAccountUsage } = await import('./lib/account-usage.js');
+    const accountUsage = createAccountUsage({ accounts: { 'claude-code': claudeAccounts, codex: _codexAccounts() }, readCodex: async (id, opts) => {
+      for (const connection of _codexLiveConnections) {
+        if (opts.signal?.aborted) return null;
+        if (connection.accountId() !== id) continue;
+        try { const value = await connection.readRateLimits(); if (value && connection.accountId() === id) return value; } catch {}
+      }
+      if (opts.signal?.aborted) return null;
+      return codexAccountAuth().rateLimits(id, opts);
+    } });
+    _assistantAccountUsage = accountUsage;
+    claudeAccounts.subscribe(({ accountId }) => accountUsage.invalidate('claude-code', accountId));
+    _codexAccounts().subscribe(({ accountId }) => accountUsage.invalidate('codex', accountId));
+    // A Claude Code worker whose dispatch names no account runs under this one (Assistant → accounts).
+    _assistantClaudeWorkerAccount = () => assistantConfigStore.workers().claudeAccount;
     const memoryStoredForRun = (runId) => {
       try { return !!assistantGetDb().prepare('SELECT 1 FROM memory_metadata WHERE source_ref = ? LIMIT 1').get(String(runId)); } catch { return false; }
     };
@@ -24797,8 +25320,10 @@ _nativeLoopRuntime = new NativeLoopRuntime({
         import('../mcp-server/dist/services/typesafe.js'), import('../mcp-server/dist/services/typesafe-config.js'),
         import('./lib/assistant-jev.js'),
       ]);
+      // The budget split's questions (surface budget-split): a dist without them leaves the split on its fixed rule.
+      const budgetJudgments = await import('../mcp-server/dist/services/budget-judgments.js').catch(() => null);
       assistantJev = createAssistantJev({
-        judgePrompt, judgeWorkerOutcome,
+        judgePrompt, judgeWorkerOutcome, judgeBudgetSplit: budgetJudgments?.judgeBudgetSplit || null,
         surfaceConfig: typesafeKnobs.surfaceConfig,
         enabled: typesafeClient.typesafeEnabled,
         retryAfterMs: typesafeClient.typesafeRetryAfterMs,
@@ -24845,7 +25370,7 @@ _nativeLoopRuntime = new NativeLoopRuntime({
     const assistantCatalog = createAssistantCatalog({
       fetchJson: catalogFetch,
       codexPrice: (model) => assistantPricing.codexPrice(model),
-      listAccounts: () => ({ codex: listCodexAccountsForClient(), 'claude-code': claudeAccounts.listForClient() }),
+      listAccounts: () => accountUsage.list(),
       readFilter: () => assistantConfigStore.routing().catalogFilter || {},
       readHidden: () => assistantHiddenModels.all(),
       // A hidden alias ("haiku") hides the model it named when it was hidden: each build settles that.
@@ -24931,6 +25456,7 @@ _nativeLoopRuntime = new NativeLoopRuntime({
           accountEnv: () => claudeAccounts.envFor?.('default') || {},
           cwd: DATA_HOME,
           env: process.env,
+          childEnv: claudeChildEnv,
           log: (tag, message) => assistantLog(tag, message),
         }),
         usage: assistantUsage,
@@ -24990,6 +25516,7 @@ _nativeLoopRuntime = new NativeLoopRuntime({
             accountEnv: () => claudeAccounts.envFor?.('default') || {},
             cwd: DATA_HOME,
             env: process.env,
+            childEnv: claudeChildEnv,
             label: 'greeting writer',
             logTag: 'greeting:writer-error',
             log: greetingLog,
@@ -25022,7 +25549,7 @@ _nativeLoopRuntime = new NativeLoopRuntime({
     app.use('/api/assistant/hidden-models', createAssistantHiddenModelsRouter({
       hiddenModels: assistantHiddenModels, catalog: assistantCatalog, opencodeStore: opencodeHiddenModels, isGuestRequest, broadcastSync,
     }));
-    const buildCatalog = (opts = {}) => assistantCatalog.get(opts);
+    const buildCatalog = async (opts = {}) => { await accountUsage.refresh(); return { ...(await assistantCatalog.get(opts)), accounts: accountUsage.list() }; };
     // Clarification: a materially ambiguous request gets 1-3 questions before it
     // is routed; the user's words and answers become the brief every worker of
     // that request receives. Knobs: assistant-config.json `clarify` (read live).
@@ -25041,10 +25568,41 @@ _nativeLoopRuntime = new NativeLoopRuntime({
       },
       log: (tag, message) => assistantLog(tag, message),
     });
+    // The session budget (lib/assistant-budget-planner.js): one setting for every session, divided
+    // across the providers per session by Jev (surface budget-split) or a fixed rule, at the first
+    // route and at checkpoints. The dispatcher, the runtime and the router read it; it reaches them lazily.
+    const assistantBudget = createBudgetPlanner({
+      setting: () => assistantConfigStore.budget(),
+      spendOf: (sessionId) => _assistantDispatcher?.providerSpend?.(sessionId) || { providers: {}, unpricedRuns: 0, liveRuns: [] },
+      brainOf: (sessionId) => _assistantRuntime?.budgetSession?.(sessionId) || null,
+      isOpen: (sessionId) => _assistantRuntime?.budgetSession?.(sessionId)?.open !== false,
+      catalog: () => assistantCatalog.peek?.() || null,
+      refreshCatalog: () => assistantCatalog.full(),
+      accounts: () => accountUsage.list(),
+      routing: () => assistantConfigStore.routing(),
+      routeMode: (sessionId) => { try { return assistantRouter.modeFor(sessionId); } catch { return null; } },
+      workers: () => assistantConfigStore.workers(),
+      pricing: assistantPricing,
+      // This session's spend by provider from the usage ledger (every model row it booked).
+      recentSpend: (sessionId) => {
+        try {
+          const out = {};
+          for (const row of assistantUsage.sessionView(sessionId)?.models || []) if (row?.provider) out[row.provider] = (out[row.provider] || 0) + (Number(row.costUsd) || 0);
+          return out;
+        } catch { return null; }
+      },
+      judge: assistantJev,
+      emit: (sessionId, view, meta) => { try { _assistantRuntime?.onBudgetSplit?.(sessionId, view, meta); } catch {} },
+      statePath: resolve(LOOP_DATA_DIR, 'assistant-budget-splits.json'),
+      log: (tag, message) => assistantLog(tag, message),
+    });
     // DeepSeek-Harness-style routing: the brain proposes, the router enforces the
     // session's route mode. Sinks reach the runtime/dispatcher lazily.
     const assistantRouter = createAssistantRouter({
+      accountUsage,
+      budget: assistantBudget,
       catalog: assistantCatalog,
+      listAccounts: () => accountUsage.list(),
       configStore: assistantConfigStore,
       getSession: (id) => _assistantRuntime?.routerSession?.(id) || null,
       sinks: {
@@ -25124,20 +25682,25 @@ _nativeLoopRuntime = new NativeLoopRuntime({
       assistantDesktop = null;
     }
     _assistantDispatcher = createAssistantDispatcher({
+      accountUsage,
       getRuntime: () => _nativeLoopRuntime,
       dataDir: LOOP_DATA_DIR,
       loopDir: LOOP_DIR,
       broadcastSync: (message) => { broadcastSync(message); try { _assistantRuntime?.observeBroadcast?.(message); } catch {} },
       log: (runId, tag, message, meta) => { try { loopLog(runId, tag, message, meta); } catch {} },
       PACKAGE_ROOT,
-      findCodexAccount, getCodexAccount, CODEX_DEFAULT_HOME, claudeAccounts,
+      findCodexAccount, getCodexAccount, CODEX_DEFAULT_HOME, claudeAccounts, codexAccounts: _codexAccounts(),
+      claudeWorkerAccount: () => assistantConfigStore.workers().claudeAccount,
+      codexWorkerAccount: () => assistantConfigStore.workers().codexAccount,
       isValidMcpProfileValue, normalizeMcpProfileName, readActiveMcpProfile,
       acquireLoopBrowserAndTab, releaseSharedBrowserTab, reconcileKeepAwake,
       memory: assistantMemory, detectProject: assistantDetectProject,
-      // Limits and budget caps are read live from assistant-config.json (the Budget tab): no restart.
+      // Limits are read live from assistant-config.json `limits`; the money is the session budget (the planner).
       limits: {},
-      readLimits: () => ({ ...(assistantConfigStore.read().limits || {}), ...budgetLimits(assistantConfigStore.budget()) }),
+      readLimits: () => ({ ...(assistantConfigStore.read().limits || {}) }),
+      budget: assistantBudget,
       brainSpend: (sessionId) => _assistantRuntime?.brainSpend?.(sessionId) || 0,
+      brainSpendByProvider: (sessionId) => _assistantRuntime?.brainSpendByProvider?.(sessionId) || null,
       currentTask: (sessionId) => _assistantRuntime?.currentTask?.(sessionId) || null,
       pricing: assistantPricing,
       usage: assistantUsage,
@@ -25148,9 +25711,11 @@ _nativeLoopRuntime = new NativeLoopRuntime({
       testDensity: (sessionId) => _assistantRuntime?.testDensityFor?.(sessionId) ?? null,
     });
     _assistantRuntime = createAssistantRuntime({
+      accountUsage,
       dispatcher: _assistantDispatcher,
       phoneAuthority: _phoneAuthority.verify, // the verifier only
-      claudeAccounts,
+      claudeAccounts, codexAccounts: _codexAccounts(),
+      codexHomeForAccount: (accountId) => _codexAccounts().homeFor(accountId),
       ClaudeSession: claudeBridgeModule.ClaudeSession,
       sdkVersion: claudeBridgeModule.SDK_VERSION,
       handleCodexSkinWebSocket, ensureIsolatedServe, stopIsolatedServe, setupOpencodeSidepanelConfig,
@@ -25167,6 +25732,7 @@ _nativeLoopRuntime = new NativeLoopRuntime({
       gateUrl: `http://127.0.0.1:${PORT}/api/assistant/route-gate/check`,
       codexBin: () => getCodexBin(),
       pricing: assistantPricing,
+      budget: assistantBudget,
       usage: assistantUsage,
       clarifier: assistantClarifier,
       userContext: assistantUserContext,
@@ -25189,39 +25755,30 @@ _nativeLoopRuntime = new NativeLoopRuntime({
       if (unverified && attempt < 3) setTimeout(() => { repairRouteEfforts(attempt + 1).catch(() => {}); }, 60_000).unref?.();
     };
     repairRouteEfforts().catch(() => {});
-    const codexAccounts = {
-      listForClient: listCodexAccountsForClient,
-      rename: (id, label) => {
-        const data = loadCodexAccounts();
-        const acct = data.accounts.find((a) => a.id === id);
-        if (!acct) throw Object.assign(new Error('Unknown Codex account'), { code: 'ACCOUNT_NOT_FOUND', status: 404 });
-        const next = String(label || '').trim().slice(0, 60);
-        if (next) acct.label = next;
-        saveCodexAccounts(data);
-        return acct;
-      },
-      remove: (id, { inUse = () => null } = {}) => {
-        if (id === 'default') throw Object.assign(new Error('The Default account cannot be removed'), { code: 'DEFAULT_ACCOUNT', status: 409 });
-        const data = loadCodexAccounts();
-        const idx = data.accounts.findIndex((a) => a.id === id);
-        if (idx === -1) throw Object.assign(new Error('Unknown Codex account'), { code: 'ACCOUNT_NOT_FOUND', status: 404 });
-        const reason = inUse(id);
-        if (reason) throw Object.assign(new Error(reason), { code: 'ACCOUNT_IN_USE', status: 409 });
-        const [removed] = data.accounts.splice(idx, 1);
-        saveCodexAccounts(data);
-        try {
-          if (removed.home && removed.home !== CODEX_DEFAULT_HOME && removed.home.startsWith(CODEX_ACCOUNTS_ROOT)) rmSync(removed.home, { recursive: true, force: true });
-        } catch (e) { console.warn('[codex-accounts] Failed to delete home:', e.message); }
-        return { removed: id };
-      },
-    };
+    // The one Codex accounts instance (the sidepanel's, lib/codex-accounts.js): the brain picker, the
+    // catalog, worker dispatch and the panel show one account state.
+    const codexAccounts = _codexAccounts();
+    // A Codex worker whose dispatch names no account runs under this one (Assistant → accounts).
+    _assistantCodexWorkerAccount = () => assistantConfigStore.workers().codexAccount;
     const createLoginTerminal = async ({ env = {}, cwd = null, profile = 'claude-code' } = {}) => {
       const terminalSessionId = createTerminalSession(profile, 120, 30, cwd || getHomePath(), { extraEnv: env });
       broadcastSync({ type: 'terminal:session-created', sessionId: terminalSessionId, profile });
       return { terminalSessionId, profile };
     };
     app.use('/api/assistant', createAssistantApi({
+      accountUsage,
       dispatcher: _assistantDispatcher, runtime: _assistantRuntime, claudeAccounts, codexAccounts, buildCatalog, createLoginTerminal,
+      // Claude accounts are the sidepanel's: sign-in is Claude Code's own `auth login` in a SynaBun terminal
+      // under the account's config directory, a mode change ends the account's idle sessions first, and an
+      // account a panel tab, the brain, a run or the worker choice uses cannot be removed.
+      claudeSignIn: (accountId) => providerPanelTerminalAuth.start('claude', accountId),
+      claudeSetMode: (accountId, mode) => panelClaudeAuth().setMode(accountId, mode),
+      claudeAccountInUse,
+      // Codex accounts are the sidepanel's too: sign-in is `codex login` in a SynaBun terminal under the
+      // account's CODEX_HOME, a mode change restarts its idle panel processes, and an account something uses stays.
+      codexSignIn: (accountId) => providerPanelTerminalAuth.start('codex', accountId),
+      codexSetMode: (accountId, mode) => codexAccountAuth().setMode(accountId, mode),
+      codexAccountInUse: (accountId) => codexAccountInUse(accountId),
       broadcastSync, isGuestRequest, log: (tag, message) => assistantLog(tag, message),
       assistantRouter, catalog: assistantCatalog, configStore: assistantConfigStore, taskClasses: TASK_CLASS_META,
       pricing: assistantPricing,
@@ -25233,6 +25790,10 @@ _nativeLoopRuntime = new NativeLoopRuntime({
       userContext: assistantUserContext,
       userContextError: () => assistantUserContextError,
       defaultProject: () => assistantDetectProject(assistantConfigStore.read().defaultBrain?.cwd || PACKAGE_ROOT) || 'global',
+      // whatsapp_send_file (POST /api/assistant/whatsapp/send-file): the WhatsApp service, built after this
+      // router (startWhatsAppLink), and the port for that route's localhost Host check.
+      whatsapp: () => _whatsapp,
+      port: () => Number(PORT),
     }));
     const shutdownAssistant = () => {
       try { assistantRouter.shutdown(); } catch {}
@@ -25241,6 +25802,8 @@ _nativeLoopRuntime = new NativeLoopRuntime({
       try { _assistantRuntime?.shutdown?.(); } catch {}
       try { _assistantDispatcher?.shutdown?.(); } catch {}
       try { _greeting?.shutdown?.(); } catch {}
+      // The sessions' budget splits, written now (the planner debounces its writes).
+      try { assistantBudget.flush(); } catch {}
       // Usage rows whose append failed get their last try (synchronous: an 'exit' handler runs it too).
       try { assistantUsage.flush(); } catch {}
     };
@@ -25472,6 +26035,7 @@ function buildExecMcpEnvOverrides(loopState) {
 function prepareExecWrapperFile(terminalSessionId, loopState, taskFile, sentinel) {
   const config = loadCliConfig();
   const profile = loopState.profile;
+  if (profile === 'codex') ensureCanonicalCodexConfig({ strict: true });
   const mcpEnvOverrides = buildExecMcpEnvOverrides(loopState);
 
   // Surface the exact pins being injected per exec iteration so a stripped/missing
@@ -26212,6 +26776,38 @@ function handleSessionMonitorWebSocket(ws) {
   ws.on('error', () => sessionMonitorClients.delete(ws));
 }
 
+const providerPanelTerminalAuth = createProviderPanelTerminalAuth({
+  resolveSpec: (provider, accountId) => providerLoginSpec({
+    provider, accountId, claudeAccounts: _panelClaudeAccounts(), codexAccount: findCodexAccount,
+    claudeExecutable: getClaudeSdkExecutable, codexExecutable: getCodexBin,
+    env: withPathEnv(process.env, getAugmentedPath()),
+  }),
+  createSession: createTerminalSession,
+  whenSpawned: id => terminalHost.whenSpawned(id),
+  killSession: id => { try { terminalSessions.get(id)?.pty.kill(); } catch {} },
+  // A sign-in that ended: ask the CLI what the account now holds. A subscription it confirms is what the
+  // account uses from now on (every window hears it through claude:accounts-changed / codex:accounts-changed).
+  // A Codex app-server reads its login only when it starts: the account's idle ones restart.
+  onSettled: async (provider, accountId, status) => {
+    if (provider === 'codex') {
+      try {
+        const accounts = _codexAccounts();
+        await accounts.refreshStatus([accountId], { force: true });
+        if (status === 'exited' && accounts.describe(accountId)?.subscription?.signedIn === true) accounts.noteSubscriptionSignIn(accountId);
+        codexAccountStoreChanged(accountId);
+      } catch {}
+      return;
+    }
+    if (provider !== 'claude') return;
+    try {
+      const accounts = _panelClaudeAccounts();
+      await accounts.refreshStatus([accountId], { force: true });
+      if (status === 'exited' && accounts.describe(accountId)?.subscription?.signedIn === true) accounts.noteSubscriptionSignIn(accountId);
+    } catch {}
+  },
+});
+registerProviderPanelTerminalAuthRoutes(app, { guard: panelAuthOwnerGuard, auth: providerPanelTerminalAuth });
+
 // ── Terminal REST endpoints ──
 
 app.get('/api/terminal/sessions', (req, res) => {
@@ -26272,6 +26868,7 @@ app.delete('/api/terminal/sessions/:id', (req, res) => {
   const session = terminalSessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'Session not found' });
   const wasClaudeCode = session.profile === 'claude-code';
+  session.onProviderAuthClosed?.();
   session.pty.kill();
   // Clean up temp files from image paste
   if (session.tempFiles) {
@@ -26284,7 +26881,7 @@ app.delete('/api/terminal/sessions/:id', (req, res) => {
 });
 
 app.get('/api/terminal/profiles', (req, res) => {
-  const profileIds = ['claude-code', 'codex', 'gemini', 'shell'];
+  const profileIds = ['claude-code', 'codex', 'gemini', 'opencode', 'shell'];
   const profiles = profileIds.map(id => {
     const p = getTerminalProfile(id);
     return { id, shell: p.shell, args: p.args };
@@ -26343,8 +26940,10 @@ let _gitResolved = false;
 
 // Resolve git's absolute path at first use. On Windows, `where git` lists all matches;
 // prefer .exe so spawnSync works without cmd.exe quoting issues. On Unix, use `command -v`.
+// A Windows PC without git: the git.exe of SynaBun's copy of Git for Windows (lib/git-bash/), asked each time,
+// since a copy that is still being fetched at the first call arrives later.
 function resolveGitPath() {
-  if (_gitResolved) return _gitExePath;
+  if (_gitResolved) return _gitExePath || gitBash.gitExecutable();
   _gitResolved = true;
   try {
     const cmd = IS_WINDOWS ? 'where git' : 'command -v git';
@@ -26361,7 +26960,7 @@ function resolveGitPath() {
     console.warn('[git] resolution failed:', err?.message || String(err));
     _gitExePath = null;
   }
-  return _gitExePath;
+  return _gitExePath || gitBash.gitExecutable();
 }
 
 // Cross-platform git invocation. Uses resolved absolute path when possible (spawnable
@@ -26820,16 +27419,16 @@ app.post('/api/git/commit', editorOwnerGuard, (req, res) => {
       for (const f of files) {
         if (typeof f !== 'string' || f.includes('..')) return res.status(400).json({ error: 'Invalid file path' });
       }
-      const result = spawnSync('git', ['add', '--', ...files], { cwd: dir, stdio: 'pipe', timeout: 10000 });
+      const result = spawnSync('git', ['add', '--', ...files], { cwd: dir, env: withGitFallback(process.env), stdio: 'pipe', timeout: 10000 });
       if (result.status !== 0) return res.status(500).json({ error: result.stderr?.toString?.()?.trim() || 'Stage failed' });
     } else {
       // Stage all changes
-      const result = spawnSync('git', ['add', '-A'], { cwd: dir, stdio: 'pipe', timeout: 10000 });
+      const result = spawnSync('git', ['add', '-A'], { cwd: dir, env: withGitFallback(process.env), stdio: 'pipe', timeout: 10000 });
       if (result.status !== 0) return res.status(500).json({ error: result.stderr?.toString?.()?.trim() || 'Stage failed' });
     }
 
     // Commit
-    const result = spawnSync('git', ['commit', '-m', message.trim()], { cwd: dir, stdio: 'pipe', timeout: 15000 });
+    const result = spawnSync('git', ['commit', '-m', message.trim()], { cwd: dir, env: withGitFallback(process.env), stdio: 'pipe', timeout: 15000 });
     if (result.status !== 0) {
       const stderr = result.stderr?.toString?.()?.trim() || '';
       const stdout = result.stdout?.toString?.()?.trim() || '';
@@ -26985,14 +27584,10 @@ app.post('/api/git/generate-message', editorOwnerGuard, async (req, res) => {
     return res.json({ ok: true, message: '', source: 'heuristic', summary: 'No changes to commit' });
   }
 
-  // Try Claude CLI
-  let claudeAvailable = false;
-  try {
-    execSync(process.platform === 'win32' ? 'where claude' : 'which claude', { stdio: 'pipe', timeout: 3000 });
-    claudeAvailable = true;
-  } catch {}
+  // Try Claude CLI: the one the panels use (lib/cli-resolver.js), started without a shell.
+  const claudeLaunch = cliResolver.launcher('claude-code');
 
-  if (claudeAvailable) {
+  if (claudeLaunch.spec && claudeLaunch.state !== 'broken') {
     try {
       const prompt = [
         'Generate a single-line git commit message for these changes.',
@@ -27007,14 +27602,16 @@ app.post('/api/git/generate-message', editorOwnerGuard, async (req, res) => {
         untrackedList ? '\n## New untracked files\n' + untrackedList.split('\n').slice(0, 20).join('\n') : '',
       ].join('\n');
 
-      const { spawnSync: spawnS } = require('child_process');
-      const result = spawnS('claude', ['-p', '--model', 'sonnet'], {
+      const launch = spawnArgsFor(claudeLaunch.spec, ['-p', '--model', 'sonnet']);
+      const result = spawnSync(launch.command, launch.args, {
+        ...launch.options,
         input: prompt,
         cwd: dir,
         timeout: 30000,
         maxBuffer: 64 * 1024,
         stdio: ['pipe', 'pipe', 'pipe'],
-        shell: true,
+        env: withPathEnv(process.env, getAugmentedPath()),
+        windowsHide: true,
       });
 
       const output = (result.stdout || '').toString().trim();
@@ -27104,27 +27701,25 @@ app.put('/api/cli/config', (req, res) => {
   }
 });
 
-app.post('/api/cli/detect/:profileId', (req, res) => {
+// Settings > Terminal > Detect: what is installed, whatever Settings says now
+// (the button fills the field with it), found the way every launcher finds it
+// (lib/cli-resolver.js), with the OS PATH read afresh.
+app.post('/api/cli/detect/:profileId', async (req, res) => {
   try {
     const { profileId } = req.params;
-    const defaults = { 'claude-code': 'claude', 'codex': 'codex', 'gemini': 'gemini', 'opencode': 'opencode' };
-    const cmdName = defaults[profileId];
-    if (!cmdName) return res.status(400).json({ ok: false, error: 'Unknown profile' });
-
-    const detectCmd = IS_WIN ? `where ${cmdName}` : `which ${cmdName}`;
-    try {
-      const result = execSync(detectCmd, {
-        encoding: 'utf-8',
-        timeout: 5000,
-        windowsHide: true,
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: { ...process.env, PATH: getAugmentedPath() },
-      }).trim();
-      const foundPath = result.split(/\r?\n/)[0].trim();
-      res.json({ ok: true, found: true, path: foundPath });
-    } catch {
-      res.json({ ok: true, found: false, path: null });
-    }
+    if (!['claude-code', 'codex', 'gemini', 'opencode'].includes(profileId)) return res.status(400).json({ ok: false, error: 'Unknown profile' });
+    const status = await cliResolver.resolve(profileId, { force: true, configured: null });
+    res.json({
+      ok: true,
+      found: status.state !== 'missing',
+      path: status.path,
+      version: status.version,
+      state: status.state,
+      foundBy: status.foundBy,
+      pathStatus: cliPathManager.inspect(status),
+      installSource: status.installSource,
+      error: status.error,
+    });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -27297,9 +27892,13 @@ function spawnSidecarProcess(linkId, sessionId, message) {
   const command = (cliConfig[profile]?.command || '').trim();
   if (!command) throw new Error(`No CLI command configured for ${profile}`);
 
-  let spawnCmd = command;
+  // Named by its plain name in Settings: the CLI the panels use (lib/cli-resolver.js), a program started
+  // without a shell; otherwise the Settings value as written.
+  const found = CLI_DEFAULTS[profile] && command === CLI_DEFAULTS[profile].command ? cliResolver.launcher(profile) : null;
+  const direct = found?.spec?.kind === 'direct' ? found.launchPath : null;
+  let spawnCmd = direct || command;
   let spawnArgs = [...sidecarConfig.args];
-  let useShell = IS_WIN;
+  let useShell = IS_WIN && !direct;
   let tmpFile = null;
 
   if (sidecarConfig.stdin) {
@@ -27313,7 +27912,7 @@ function spawnSidecarProcess(linkId, sessionId, message) {
     const flag = spawnArgs[0]; // e.g. '-p', '-q'
     spawnCmd = 'powershell.exe';
     spawnArgs = ['-NoProfile', '-NonInteractive', '-Command',
-      `$msg = Get-Content -Raw '${tmpFile}'; & '${command}' ${flag} $msg`];
+      `$msg = Get-Content -Raw '${tmpFile}'; & '${String(direct || command).replace(/'/g, "''")}' ${flag} $msg`];
     useShell = false;
   } else {
     // Unix: pass directly as the flag's value arg (no shell quoting issues)
@@ -27324,7 +27923,7 @@ function spawnSidecarProcess(linkId, sessionId, message) {
 
   const child = spawn(spawnCmd, spawnArgs, {
     cwd: session.cwd || process.cwd(),
-    env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' },
+    env: { ...withPathEnv(process.env, getAugmentedPath()), FORCE_COLOR: '0', NO_COLOR: '1' },
     stdio: ['pipe', 'pipe', 'pipe'],
     shell: useShell,
     timeout: LINK_SIDECAR_TIMEOUT_MS,
@@ -32868,6 +33467,17 @@ const httpServer = app.listen(PORT, async () => {
   // first session runs on it (checkClaudeCliSkew in lib/claude-model-catalog.js).
   setTimeout(() => { checkClaudeCliSkew(getClaudeBin()).catch(() => {}); }, 1000);
 
+  // Windows: the Git Bash every Claude Code gets (lib/git-bash/). Looked for now (the settings of the user's own
+  // claude follow it); a PC with none, and an app that carries none, gets SynaBun's copy, fetched in the background.
+  setTimeout(() => {
+    try {
+      gitBash.refresh();
+      if (gitBash.status().state === 'missing') gitBash.ensure({ reason: 'first run' });
+      // What an earlier run left in the data home (a stopped attempt's work folder, an older version), off the event loop.
+      gitBash.housekeep().catch(() => {});
+    } catch (err) { console.warn('[git-bash] start check failed:', err?.message || err); }
+  }, 2500);
+
   // Warm the session_cache + session_fts tables so the hybrid search has data
   // on first keystroke. Each pass is synchronous and holds the main thread, so
   // they run one per tick (requests are answered in between), and each only
@@ -33815,6 +34425,7 @@ process.on('exit', () => {
   try { terminalHost.killNow(); } catch {}
   try { _whatsapp?.killNow(); } catch {}
   try { tunnel.killNow(); } catch {}
+  try { gitBash.cancel(); } catch {}
   try { stopOpencodeServer(); } catch {}
   try { editorCompletionServe.stop('exit'); } catch {}
   try { _claudeBridge?.shutdownAllBridges?.(); } catch {}

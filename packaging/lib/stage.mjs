@@ -22,7 +22,7 @@
  * is then the build machine's own pinned one (lib/cross.mjs has the rest).
  */
 
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { externalToolsInLock, pruneExternalTools, stripExternalToolsFromLock } from '../../lib/external-tools.js';
@@ -148,7 +148,8 @@ export function stageApplication(ctx) {
   });
   let info;
   try { [info] = JSON.parse(packed.stdout); } catch { throw new BuildError('npm pack did not describe what it packed', { details: [packed.stdout.slice(0, 400)] }); }
-  if (info.version !== ctx.version) throw new BuildError(`npm pack produced version ${info.version}, expected ${ctx.version}`);
+  const expected = ctx.sourceVersion || ctx.version;
+  if (info.version !== expected) throw new BuildError(`npm pack produced version ${info.version}, expected ${expected}`);
 
   const listed = info.files.map(file => file.path);
   const selection = publicPackageSelection(listed);
@@ -162,6 +163,14 @@ export function stageApplication(ctx) {
   ctx.app = join(ctx.work, 'app');
   renameSync(join(packDir, 'package'), ctx.app);
   removeTree(packDir);
+  if (ctx.version !== expected) {
+    // A test build of another version (--version): only the staged copy says so.
+    const manifestPath = join(ctx.app, 'package.json');
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    manifest.version = ctx.version;
+    writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
+    note(`staged as version ${ctx.version} (the source says ${expected})`);
+  }
   ctx.report.packedFiles = selection.files.length;
   ctx.report.sourceExclusions = selection.excluded;
   note(`${selection.files.length} files, none private; ${selection.excluded.length} local instruction files excluded in staging`);
@@ -327,6 +336,30 @@ function pruneForeign(ctx, packageDir) {
   return removed;
 }
 
+/**
+ * Source maps and TypeScript declarations in the bundled dependencies: never
+ * loaded at run time (SynaBun runs no step with --enable-source-maps, and a
+ * .d.ts is only read by a compiler). They are the largest safe thing to drop —
+ * about 120 MB and ~7,000 files in the application's node_modules — so the
+ * installer writes fewer files and the virus scanner reads fewer on Windows.
+ * Only the application's own node_modules: the Node runtime, cloudflared and the
+ * pinned Git for Windows tree are never touched. Returns the removed paths.
+ */
+export function trimDevArtifacts(ctx, packageDir) {
+  const nodeModules = join(packageDir, 'node_modules');
+  if (!existsSync(nodeModules)) return [];
+  const sourceMap = /\.(?:js|cjs|mjs|d\.ts|d\.mts|d\.cts)\.map$/i;
+  const declaration = /\.d\.(?:ts|mts|cts)$/i;
+  const removed = [];
+  for (const file of walk(nodeModules)) {
+    if (file.link) continue;
+    if (sourceMap.test(file.relative) || declaration.test(file.relative)) {
+      try { rmSync(file.path, { force: true }); removed.push(file.relative); } catch {}
+    }
+  }
+  return removed;
+}
+
 /** Compile, repair and trim the native modules of the staged application. */
 export async function prepareNatives(ctx) {
   step('Native modules');
@@ -352,6 +385,10 @@ export async function prepareNatives(ctx) {
   const pruned = [...pruneForeign(ctx, neural), ...pruneForeign(ctx, join(ctx.app, 'mcp-server'))];
   note(`removed ${pruned.length} folders and files built for other platforms`);
   ctx.report.prunedForeign = pruned;
+
+  const trimmed = [...trimDevArtifacts(ctx, neural), ...trimDevArtifacts(ctx, join(ctx.app, 'mcp-server'))];
+  note(`removed ${trimmed.length} source maps and type declarations the application never loads`);
+  ctx.report.trimmedDevArtifacts = trimmed.length;
 
   if (platform !== 'win32') {
     // The application's own sweep: the PTY helper of every prebuild that is left.

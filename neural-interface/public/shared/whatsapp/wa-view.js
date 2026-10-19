@@ -69,7 +69,7 @@ export const MODE_CARDS = Object.freeze([
 export const LEVEL_CARDS = Object.freeze([
   { id: 'read-only', title: 'Read-only', body: 'SynaBun answers, researches and plans. It never changes files, runs commands or starts agents from WhatsApp; a plan can only be approved on this computer.' },
   { id: 'ask', title: 'Ask on my phone', badge: 'Default', body: 'Before anything that would change your files, run a command or start an agent, SynaBun asks on WhatsApp and acts only on your yes. Any other message approves nothing: the conversation just carries on.' },
-  { id: 'autonomous', title: 'Autonomous', body: 'SynaBun acts without asking, like the Assistant on this computer. Turning it on takes a second click here and an ALLOW code sent from your phone within 5 minutes. It turns back to Ask after 8 hours. Autonomous can read any file your computer account can, including SynaBun\'s WhatsApp login. Use it only with a locked phone, ideally on a second number.' },
+  { id: 'autonomous', title: 'Autonomous', body: 'SynaBun acts without asking, like the Assistant on this computer. Turning it on takes a second click here and an ALLOW code sent from your phone within 5 minutes. It stays on until you turn it off. Autonomous can read any file your computer account can, including SynaBun\'s WhatsApp login. Use it only with a locked phone, ideally on a second number.' },
 ]);
 
 /** Ask and Autonomous need a Claude brain: the Safety warning when the WhatsApp conversation runs on another one (status.brainLimit). */
@@ -155,8 +155,34 @@ export const ROTATION_OPTIONS = Object.freeze([
 ]);
 export const TRIGGER_OPTIONS = Object.freeze([
   { value: 'all', label: 'Every message in "Message yourself"', hint: 'Everything you write in your own chat goes to SynaBun.' },
-  { value: 'prefix', label: 'Only messages that start with sb', hint: 'Keep using "Message yourself" for notes; start a message with sb (or sb:) to talk to SynaBun. Commands like /stop, the ALLOW code and replies to SynaBun\'s own messages always reach it.' },
+  { value: 'prefix', label: 'Only messages that start with sb', hint: 'Keep using "Message yourself" for notes; start a message with sb (or sb:) to talk to SynaBun, or say "sb" first in a voice note. Commands like /stop, the ALLOW code and replies to SynaBun\'s own messages always reach it.' },
 ]);
+
+/** Voice notes (status.transcription): what each missing part is called. */
+export const VOICE_PARTS = Object.freeze({
+  engine: 'whisper.cpp (whisper-cli)',
+  model: 'the speech model (ggml-small.bin)',
+  ffmpeg: 'FFmpeg',
+});
+/**
+ * The line under the voice-note switch: transcribed here, set up but off, or what is missing
+ * ('' for a server without voice notes).
+ */
+export function transcriptionLine(status) {
+  const t = status?.transcription;
+  if (!t || typeof t !== 'object') return '';
+  if (t.available === true) {
+    return t.enabled === false
+      ? say('voice.readyOff', 'Voice notes can be transcribed on this computer; turned off.')
+      : say('voice.ready', 'Voice notes are transcribed on this computer.');
+  }
+  const invalid = Array.isArray(t.invalid) ? t.invalid : [];
+  const parts = (Array.isArray(t.missing) ? t.missing : []).filter((id) => Object.prototype.hasOwnProperty.call(VOICE_PARTS, id)).map((id) => {
+    const name = pick('voice.part', VOICE_PARTS, id);
+    return invalid.includes(id) ? say('voice.partInvalid', '{name}: the path set for it does not work', { name }) : name;
+  });
+  return say('voice.notSetUp', 'Voice notes: not set up — missing {missing}.', { missing: parts.length ? parts.join(', ') : say('voice.part.tools', 'the transcription tools') });
+}
 
 export const COMMANDS = Object.freeze([
   { name: '/status', text: 'what SynaBun is doing, its spend and level' },
@@ -170,12 +196,13 @@ export const COMMANDS = Object.freeze([
 ]);
 
 export const LIMITS = Object.freeze([
-  'Text and pictures (up to 4 per message, 5 MB each). Voice notes, videos, documents and stickers are not read yet.',
+  'Text and pictures (up to 4 per message, 5 MB each), and voice notes transcribed on this computer (up to 10 minutes and 20 MB each). Videos, documents and stickers are not read yet.',
   'At most 20 messages a minute and 300 a day; 5 messages can wait in line while SynaBun works.',
   'Messages older than 10 minutes when SynaBun comes back online are skipped (it tells you how many).',
   'Answers are split into messages of 3,500 characters; the rest stays in SynaBun.',
   'Computer use from WhatsApp is off until you turn it on above. Then: never at Read-only or while paused, after one yes per task at Ask on my phone, and without asking while Autonomous is active. Agents started from WhatsApp never get it.',
   'Levels, models and settings change only here, never from the phone.',
+  'A voice note is an ordinary message: it never approves anything and never runs a command. Approvals take a typed yes.',
 ]);
 
 export const PRIVACY_STAYS = Object.freeze([
@@ -213,6 +240,7 @@ export const HELP = Object.freeze({
     'With "Only messages that start with sb", a note without sb never reaches SynaBun and is not logged; commands, the ALLOW code and replies to SynaBun\'s messages always get through.',
     'The QR code expires after about a minute. Press "Show a new code" and scan faster, or link with your phone number instead.',
     'Stuck on "Reconnecting"? Check this computer\'s internet connection, then press Reconnect now.',
+    'Voice notes not transcribed? This computer needs whisper.cpp, its speech model and FFmpeg, which you install yourself; the line under "Transcribe voice notes" says what is missing.',
   ],
   browserTools: 'Not the same as the WhatsApp browser tools. The whatsapp MCP profile lets agents read WhatsApp Web in SynaBun\'s browser; this tab is you chatting with SynaBun from your phone. They do not share a session.',
   uninstall: 'Uninstalling SynaBun does not unlink WhatsApp. Use Unlink or Remove here first, or log SynaBun out under WhatsApp → Settings → Linked devices.',
@@ -252,8 +280,11 @@ export const INSTALL_ERRORS = Object.freeze({
   UNKNOWN: 'Something unexpected happened. The install log has the details.',
 });
 
+// RECONNECT_LIMIT and REPLACED only come from a server older than this page (the link now retries
+// forever, and a 440 is retried with a warning: WARNING_TEXT); HOST_HELD is a connector process of
+// another SynaBun version (crashes are always retried).
 export const ERROR_TEXT = Object.freeze({
-  HOST_HELD: 'The WhatsApp connector kept crashing, so SynaBun stopped it. Reconnect to try again; the install log may help.',
+  HOST_HELD: 'The WhatsApp connector does not match this SynaBun version (it was updated while SynaBun ran), so SynaBun stopped it. Restart SynaBun to load the matching one.',
   HOST_UNAVAILABLE: 'The WhatsApp connector did not start.',
   REPLACED: 'Another copy of this WhatsApp link connected from somewhere else and took over. Reconnect here to take it back.',
   LOCKED: 'Another SynaBun is using the WhatsApp session files. Close it, then reconnect.',
@@ -272,7 +303,20 @@ export const LOGOUT_TEXT = Object.freeze({
   removed: { title: 'Logged out from the phone', sub: 'SynaBun was removed under Linked devices, or WhatsApp ended the session. Link again to keep chatting.' },
   inactive: { title: 'Logged out after a long time offline', sub: 'WhatsApp logs out linked devices that stay offline for a long time. Link again to keep chatting.' },
   banned: { title: 'WhatsApp refused this account', sub: 'WhatsApp blocked the account from linking devices, possibly a temporary or permanent ban. Check the WhatsApp app on the phone.' },
+  invalid_session: { title: 'The saved WhatsApp session is invalid', sub: 'WhatsApp rejected this device session (badSession). Link again to pair it; automatic retries cannot repair the credentials.' },
 });
+
+/** Why a saved session keeps retrying (status.warning: 440 another copy, 403 a refused account). */
+export const WARNING_TEXT = Object.freeze({
+  replaced: 'Another copy is using this WhatsApp session. SynaBun retries every 5 minutes; close the other copy or unlink and link again.',
+  forbidden: 'WhatsApp refused this account; it may be restricted or banned. SynaBun retries every 5 minutes; check WhatsApp on the phone.',
+});
+/** The warning Settings shows while the link retries a 440 / 403 ('' for none, or once the link is not up or retrying). */
+export function connectionWarningText(status) {
+  if (!Object.prototype.hasOwnProperty.call(WARNING_TEXT, status?.warning)) return '';
+  if (!['connected', 'reconnecting', 'paused'].includes(status?.state)) return '';
+  return pick('warning', WARNING_TEXT, status.warning);
+}
 
 export const ACTIVITY_KINDS = Object.freeze({
   inbound: 'Received', reply: 'Sent', ignored: 'Ignored', state: 'Status', security: 'Security', error: 'Problem', settings: 'Settings',
@@ -355,9 +399,8 @@ export function waView(status, { now = Date.now() } = {}) {
     }
     case 'connected': {
       const who = accountLine(s);
-      const until = s.level === 'autonomous' && s.levelExpiresAt ? ` ${say('view.connected.until', 'until {time}', { time: clockTime(s.levelExpiresAt) })}` : '';
       // A Codex / OpenCode brain holds the conversation at read-only whatever the level.
-      const applies = s.brainLimit?.provider ? say('view.connected.readOnlyBrain', 'Read-only ({brain} brain)', { brain: s.brainLimit.label || s.brainLimit.provider }) : `${level}${until}`;
+      const applies = s.brainLimit?.provider ? say('view.connected.readOnlyBrain', 'Read-only ({brain} brain)', { brain: s.brainLimit.label || s.brainLimit.provider }) : level;
       return view('ok', say('view.connected.title', 'Connected'), [mode, who, applies].filter(Boolean).join(' · '), { primary: button('open-conversation', say('button.openConversation', 'Open conversation')), secondary: button('test', say('button.test', 'Send a test message')), step: 'done', pane: 'connected', nav: 'connected' });
     }
     case 'reconnecting': {
@@ -404,8 +447,8 @@ export function localizedCopy() {
     COMMANDS: localize('commands', COMMANDS), LIMITS: localize('limits', LIMITS),
     PRIVACY_STAYS: localize('privacyStays', PRIVACY_STAYS), PRIVACY_NEVER: localize('privacyNever', PRIVACY_NEVER),
     HELP: localize('help', HELP), STAGE_TEXT: localize('stage', STAGE_TEXT), INSTALL_ERRORS: localize('installError', INSTALL_ERRORS),
-    ERROR_TEXT: localize('error', ERROR_TEXT), LOGOUT_TEXT: localize('logout', LOGOUT_TEXT), ACTIVITY_KINDS: localize('activity', ACTIVITY_KINDS),
+    ERROR_TEXT: localize('error', ERROR_TEXT), LOGOUT_TEXT: localize('logout', LOGOUT_TEXT), WARNING_TEXT: localize('warning', WARNING_TEXT), ACTIVITY_KINDS: localize('activity', ACTIVITY_KINDS),
     LEVEL_LABELS: localize('levelLabel', LEVEL_LABELS), PHONE_HINT: localize('phoneHint', PHONE_HINT), TEST_HINT: localize('testHint', TEST_HINT),
-    BRAIN_COPY: localize('brainCopy', BRAIN_COPY),
+    BRAIN_COPY: localize('brainCopy', BRAIN_COPY), VOICE_PARTS: localize('voice.part', VOICE_PARTS),
   };
 }

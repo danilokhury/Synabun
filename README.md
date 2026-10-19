@@ -98,6 +98,7 @@ Your AI tool ── MCP ──▶ SynaBun MCP server ──▶ memory.db (SQLite
 - **Workspace.** Terminals, a file explorer and a whiteboard next to your memories.
 - **Settings you can search**, in English and Brazilian Portuguese.
 - **A workspace tour** behind the **?** button.
+- **Showcase mode for screenshots.** Open the interface with `?showcase=1` and it loads your layout without saving any change to it, and blurs your own content: memories, session titles, transcripts, terminal output, account names and anything that looks private (emails, home folder paths, ids, keys, phone numbers, the names of your other projects). `?lang=en` or `?lang=pt-BR` sets the language for that page only. Map labels drawn on the canvas cannot be blurred one by one, and the whiteboard and memory positions you drag still save.
 
 ### Coding agents
 
@@ -158,7 +159,7 @@ Everything SynaBun stores is in one folder outside the app: `~/.synabun` on macO
 
 ## Links
 
-- [Changelog](./CHANGELOG.md): what is new in 2.0.5 and before
+- [Changelog](./CHANGELOG.md): what is new in 2.0.7 and before
 - [Security](./SECURITY.md): security model and how to report a vulnerability
 - [Contributing](./CONTRIBUTING.md): bug reports and feature requests are welcome as [issues](https://github.com/danilokhury/Synabun/issues); pull requests are not accepted
 - [Website](https://synabun.ai), [docs](https://synabun.ai/docs) and [blog](https://synabun.ai/blog)

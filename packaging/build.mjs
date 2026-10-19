@@ -8,7 +8,15 @@
  *   node packaging/build.mjs preflight --target <id> [--json] [--cross]
  *       the same question for one target; the exit code is the answer
  *   node packaging/build.mjs build --target <id> [options]
- *       build that target's application and its installable artifact
+ *       build that target's desktop app (the Electron window around SynaBun's
+ *       server and runtime) and its installable artifacts with their update files
+ *   node packaging/build.mjs feed [--out <dir>]
+ *       the update feed (latest-mac.yml, latest.yml, latest-linux.yml) and
+ *       SHA256SUMS for every build in that folder, e.g. after CI collected them
+ *   node packaging/build.mjs release-plan [--out <dir>] [--tag <tag>] [--installed <version>] [--json]
+ *       a dry run of a release of that folder: which files go up to which
+ *       release, in which order, what each feed file says, and whether it all
+ *       agrees. It uploads, tags and publishes nothing
  *
  * --cross allows a Linux or Windows target to be built on macOS or Linux. Such
  * a build is checked file by file and never run; without the flag a machine
@@ -34,6 +42,8 @@ const USAGE = `SynaBun application builder
   node packaging/build.mjs targets [--json] [--verbose] [--cross]
   node packaging/build.mjs preflight --target <id> [--json] [--cross]
   node packaging/build.mjs build --target <id> [options]
+  node packaging/build.mjs feed [--out <dir>]
+  node packaging/build.mjs release-plan [--out <dir>] [--tag <tag>] [--installed <version>] [--json]
 
 Targets: ${Object.keys(TARGETS).join(', ')}
 
@@ -43,8 +53,11 @@ Build options:
   --out <dir>             where the artifacts go            (default build/out)
   --work <dir>            staging folder, emptied first     (default build/stage)
   --cache <dir>           downloads and the npm cache, kept (default build/cache)
-  --artifact <kinds>      comma-separated, from the target's list (default: its first)
-  --no-fallback           fail when the first-choice artifact cannot be made
+  --artifact <kinds>      comma-separated, from the target's list (default: all of them)
+  --release-notes <file>  text for the update feed's release notes (the release's description)
+  --version <x.y.z>       test builds only: the version written into the staged application
+                          (the source package.json is never changed)
+  --no-fallback           accepted for older command lines; there is no fallback artifact any more
   --no-embedding-model    leave the local embedding model out (keyword recall only)
   --update-model-pins     record the downloaded model's checksums in packaging/pins.json
   --no-tool-downloads     never download a packaging tool, even a pinned one
@@ -55,7 +68,7 @@ Build options:
 function parse(argv) {
   const [command, ...rest] = argv;
   const options = { command, flags: new Set(), values: {} };
-  const takesValue = new Set(['--target', '--out', '--work', '--cache', '--artifact']);
+  const takesValue = new Set(['--target', '--out', '--work', '--cache', '--artifact', '--release-notes', '--version', '--tag', '--installed']);
   for (let i = 0; i < rest.length; i++) {
     const arg = rest[i];
     if (takesValue.has(arg)) {
@@ -100,6 +113,12 @@ function sourceCommit(repoRoot) {
   return head.status === 0 ? head.stdout.trim() : null;
 }
 
+/** True when the checkout has changes that are not committed: the build then is of the working tree, not of the commit. */
+function sourceDirty(repoRoot) {
+  const status = spawnSync('git', ['-C', repoRoot, 'status', '--porcelain', '--untracked-files=no'], { encoding: 'utf8', windowsHide: true });
+  return status.status === 0 ? status.stdout.trim().length > 0 : null;
+}
+
 async function build(options) {
   const target = targetFrom(options);
   const verdict = evaluateTarget(target, { cross: options.flags.has('cross') });
@@ -111,10 +130,15 @@ async function build(options) {
 
   // Loaded only now: a listing or a refusal needs none of it.
   const { fetchRuntime, stageApplication, installDependencies, prepareNatives, provisionEmbeddingModel, provisionCloudflared } = await import('./lib/stage.mjs');
+  const { provisionGitBash } = await import('./lib/git-bash.mjs');
   const { assembleBundle, createArtifacts } = await import('./lib/bundle.mjs');
+  const releaseNotes = options.values['release-notes'] ? readFileSync(resolve(options.values['release-notes']), 'utf8').trim() || null : null;
   const { auditBundle, smokeTest } = await import('./lib/verify.mjs');
 
-  const version = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8')).version;
+  const sourceVersion = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8')).version;
+  const override = options.values.version || null;
+  if (override && !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(override)) throw new BuildError(`--version needs a version like 2.0.6, not "${override}"`, { exitCode: EXIT.usage });
+  const version = override || sourceVersion;
   const root = resolve(REPO_ROOT, 'build');
   const ctx = {
     repoRoot: REPO_ROOT,
@@ -124,6 +148,7 @@ async function build(options) {
     version,
     pins: readPins(),
     sourceCommit: sourceCommit(REPO_ROOT),
+    sourceVersion,
     work: resolve(options.values.work || join(root, 'stage'), target.id),
     cache: resolve(options.values.cache || join(root, 'cache')),
     out: resolve(options.values.out || join(root, 'out')),
@@ -131,10 +156,9 @@ async function build(options) {
       embeddingModel: !options.flags.has('no-embedding-model'),
       updateModelPins: options.flags.has('update-model-pins'),
       toolDownloads: !options.flags.has('no-tool-downloads'),
-      portableFallback: !options.flags.has('no-fallback'),
       artifacts: options.values.artifact ? options.values.artifact.split(',').map(kind => kind.trim()).filter(Boolean) : null,
     },
-    report: { target: target.id, version, mode: verdict.mode, startedAt: new Date().toISOString() },
+    report: { target: target.id, version, ...(override ? { versionOverride: `staged only; the source says ${sourceVersion}` } : {}), mode: verdict.mode, startedAt: new Date().toISOString(), sourceDirty: sourceDirty(REPO_ROOT) },
   };
 
   step(`SynaBun ${version} for ${target.id} (${target.label})${ctx.cross ? `, cross-built on ${process.platform}-${process.arch}` : ''}`);
@@ -150,7 +174,8 @@ async function build(options) {
   await prepareNatives(ctx);
   await provisionEmbeddingModel(ctx);
   await provisionCloudflared(ctx);
-  assembleBundle(ctx);
+  await provisionGitBash(ctx);
+  await assembleBundle(ctx);
   await auditBundle(ctx);
   if (ctx.cross) {
     ctx.report.smoke = `not run: cross-built on ${process.platform}-${process.arch}, which cannot run a ${target.platform}-${target.arch} application`;
@@ -162,7 +187,7 @@ async function build(options) {
     await smokeTest(ctx);
   }
 
-  const artifacts = await createArtifacts(ctx);
+  const artifacts = await createArtifacts(ctx, { releaseNotes });
   const sums = [];
   for (const artifact of artifacts) {
     artifact.sha256 = await sha256File(artifact.path);
@@ -190,12 +215,40 @@ async function build(options) {
   return EXIT.ok;
 }
 
+/** The update feed and SHA256SUMS for every build in a folder (each build also writes them for what it finds). */
+async function feed(options) {
+  const out = resolve(options.values.out || join(REPO_ROOT, 'build', 'out'));
+  const { writeFeeds } = await import('./lib/desktop.mjs');
+  const written = await writeFeeds(out);
+  if (!written.feeds.length) throw new BuildError(`No build in ${out} has update files (*.feed.json). Build a target first.`);
+  console.log(JSON.stringify({ out, feeds: written.feeds, sums: written.sums }));
+  return EXIT.ok;
+}
+
+/**
+ * A release of the builds in a folder, as a dry run: what would be uploaded to
+ * which release and what each feed file says. Exit 0 when everything agrees,
+ * 1 when it does not. Nothing is uploaded, tagged or published.
+ */
+async function releasePlanCommand(options) {
+  const out = resolve(options.values.out || join(REPO_ROOT, 'build', 'out'));
+  const { formatReleasePlan, releasePlan } = await import('./lib/desktop.mjs');
+  const { synabunVersionNewer } = await import('./desktop/src/updater/synabun-version.mjs');
+  const installed = options.values.installed || null;
+  const plan = await releasePlan(out, { tag: options.values.tag || null, newerThan: installed ? { version: installed, isNewer: synabunVersionNewer } : null });
+  if (options.flags.has('json')) console.log(JSON.stringify({ ...plan, feeds: plan.feeds.map(({ text, ...feed }) => feed) }, null, 2));
+  else process.stdout.write(formatReleasePlan(plan));
+  return plan.problems.length ? EXIT.failed : EXIT.ok;
+}
+
 async function main(argv) {
   const options = parse(argv);
   switch (options.command) {
     case 'targets': return listTargets(options);
     case 'preflight': return preflight(options);
     case 'build': return build(options);
+    case 'feed': return feed(options);
+    case 'release-plan': return releasePlanCommand(options);
     case undefined: case 'help': case '--help': case '-h':
       process.stdout.write(USAGE);
       return options.command === undefined ? EXIT.usage : EXIT.ok;
