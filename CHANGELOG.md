@@ -1,3 +1,19 @@
+# SynaBun v.2.0.8
+
+2.0.8 fixes the Windows installer of 2.0.7, which could not finish on any Windows PC. It now installs in a few minutes, and when something does go wrong it says what and where to look. macOS, Linux and npm installs were not affected.
+
+## 🛠 Fixed
+
+- **The Windows installer of 2.0.7 never finished** — On every Windows PC, the 2.0.7 installer unpacked SynaBun, could not check the files it had unpacked, unpacked everything again several times over more than ten minutes and then showed a box that blamed the disk space. One of its scripts could not be read by the PowerShell that comes with Windows, so the check never ran. The 2.0.8 installer finishes. If the 2.0.7 installer is still open on your PC, click **Cancel** in its box before you start the new one.
+- **Clear errors when an install cannot finish** — The installer never unpacks again by itself. If files are missing or incomplete, it names them and shows how much space the disk has left and where the installation log is: **Retry** unpacks once more, and **Cancel** stops and puts back the SynaBun you had. The installation log now also shows what the installer did to close SynaBun and to check the files.
+- **Leftovers of a failed install** — A copy that a failed 2.0.7 install left on your PC is replaced cleanly by the new version.
+
+## ⚙️ Changed
+
+- **Faster Windows installs** — Installing over an earlier version moves the old copy aside in one step instead of uninstalling it file by file, the check of the unpacked files takes about a second, and the app carries about 2,300 fewer files for Windows to write and scan.
+
+---
+
 # SynaBun v.2.0.7
 
 2.0.7 brings the SynaBun desktop app for macOS, Windows and Linux, with updates that install themselves and a Windows installer that shows every step. SynaBun now finds every installed Claude Code, Codex and OpenCode the same way and installs a missing one with one click, you can sign in from the Claude and Codex panels, and the WhatsApp Assistant can send you files and understand voice notes.

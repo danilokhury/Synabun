@@ -194,32 +194,58 @@ export function buildResources(ctx, { iconTools }) {
 // ── The Windows installer's install page ──
 
 /** What the Windows installer includes from packaging/desktop/build (the facts file is written per build). */
-export const INSTALLER_INCLUDES = Object.freeze(['installer.nsh', 'synabun-extract.nsh', 'synabun-stop.ps1', 'synabun-verify.ps1']);
+export const INSTALLER_INCLUDES = Object.freeze(['installer.nsh', 'synabun-extract.nsh', 'synabun-upgrade.nsh', 'synabun-stop.ps1', 'synabun-verify.ps1']);
 /** The facts of one build the install page names (included by installer.nsh, written beside it). */
 export const INSTALLER_FACTS = 'synabun-installer-facts.nsh';
 /** The manifest the installer checks the unpacked payload against (relative path + size per line, written into the payload). */
 export const PAYLOAD_MANIFEST = join('resources', 'synabun-payload.manifest');
+/**
+ * The files SynaBun starts, install-relative: when the installer's full check of the payload cannot run, it checks
+ * these at their sizes from the build instead (installer.nsh SynaKeyFilesCheck). One a build does not carry is left out.
+ */
+export const INSTALLER_KEY_FILES = Object.freeze([
+  'SynaBun.exe', 'synabun-cli.exe', 'resources\\app.asar', 'resources\\synabun-package.json', 'resources\\bootstrap.mjs',
+  'resources\\synabun-payload.manifest', 'resources\\runtime\\node.exe', 'resources\\app\\neural-interface\\server.js',
+  'resources\\app\\mcp-server\\dist\\index.js', 'resources\\cloudflared\\cloudflared.exe', 'resources\\git\\bin\\bash.exe',
+  'resources\\git\\usr\\bin\\msys-2.0.dll',
+]);
 
 /**
  * Write the payload manifest into the bundle: one `<install-relative path (\\)>\t<bytes>` line per file, so the
  * installer can confirm after unpacking that every file landed at its full size (a locked file or a full disk
  * otherwise leaves an incomplete install that only checks SynaBun.exe). The manifest lists every file except
- * itself. Returns its install-relative path. Links never appear (walk skips them; a Windows payload has none).
+ * itself. Returns its install-relative path, the number of files and their bytes. Links never appear (walk skips
+ * them; a Windows payload has none).
  */
 export function writePayloadManifest(bundleRoot) {
   const manifestRel = PAYLOAD_MANIFEST.replace(/\//g, '\\');
   const manifestPath = join(bundleRoot, PAYLOAD_MANIFEST);
   const lines = [];
+  let bytes = 0;
   for (const file of walk(bundleRoot)) {
     if (file.link) continue;
     const rel = file.relative.replace(/\//g, '\\');
     if (rel.toLowerCase() === manifestRel.toLowerCase()) continue;
-    lines.push(`${rel}\t${statSync(file.path).size}`);
+    const size = statSync(file.path).size;
+    bytes += size;
+    lines.push(`${rel}\t${size}`);
   }
   lines.sort();
   mkdirSync(dirname(manifestPath), { recursive: true });
   writeFileSync(manifestPath, lines.join('\r\n') + '\r\n');
-  return { path: manifestPath, rel: manifestRel, count: lines.length };
+  return { path: manifestPath, rel: manifestRel, count: lines.length, bytes };
+}
+
+/** INSTALLER_KEY_FILES a bundle carries, each with its size: [{ rel, size }] (what installerFacts writes for the installer). */
+export function installerKeyFiles(bundleRoot) {
+  const found = [];
+  for (const rel of INSTALLER_KEY_FILES) {
+    try {
+      const info = lstatSync(join(bundleRoot, ...rel.split('\\')));
+      if (info.isFile()) found.push({ rel, size: info.size });
+    } catch { /* not in this build */ }
+  }
+  return found;
 }
 
 const nsisString = (value) => String(value ?? '').replace(/\$/g, '$$$$').replace(/"/g, '$\\"').replace(/[\r\n]+/g, ' ');
@@ -228,9 +254,11 @@ const grouped = (number) => (Number.isFinite(number) ? Math.round(number).toLoca
 /**
  * The install page's facts for one build, as NSIS defines: what it installs (files, size), the Node.js, npm and
  * npx it carries, the native modules and packages, the window's Electron, the embedding model, cloudflared and
- * Git for Windows, and where global npm packages go. Pure (packaging/tests/desktop-build.test.mjs).
+ * Git for Windows, and where global npm packages go. With `keyFiles` ([{ rel, size }], installerKeyFiles), also
+ * the SynaKeyFiles macro: the files SynaBun starts at their sizes, which the installer checks when its full check of
+ * the payload cannot run. Pure (packaging/tests/desktop-build.test.mjs).
  */
-export function installerFacts({ target, audit = {}, node, electron, embeddingModel = '', cloudflared = null, gitBash = null, packages = {} }) {
+export function installerFacts({ target, audit = {}, node, electron, embeddingModel = '', cloudflared = null, gitBash = null, packages = {}, keyFiles = [] }) {
   const natives = [...new Set((audit.natives || []).map(item => String(item.label || '').replace(/\s*\(.*\)$/, '')).filter(Boolean))].sort();
   const facts = {
     SYNABUN_TARGET: target?.label || target?.id || 'Windows x64',
@@ -247,9 +275,16 @@ export function installerFacts({ target, audit = {}, node, electron, embeddingMo
     SYNABUN_GIT_VERSION: gitBash || '?',
     SYNABUN_NPM_PREFIX: '%APPDATA%\\synabun\\runtime\\npm-global',
   };
+  const keys = keyFiles.filter(file => /^[\w.\\@-]+$/.test(file.rel) && Number.isSafeInteger(file.size) && file.size >= 0);
   return [
     '; What this build carries, for the install page (written by packaging/lib/desktop.mjs; included by installer.nsh).',
     ...Object.entries(facts).map(([name, value]) => `!define ${name} "${nsisString(value)}"`),
+    ...(keys.length ? [
+      '; The files SynaBun starts, at their sizes: checked when the full check of the payload cannot run.',
+      '!macro SynaKeyFiles',
+      ...keys.map(file => `  !insertmacro SynaKeyFile "${file.rel}" "${file.size}"`),
+      '!macroend',
+    ] : []),
     '',
   ].join('\r\n');
 }
@@ -283,6 +318,42 @@ export function extractMacroMatches(templateText, oursText) {
   if (!theirs.includes(EXTRACT_CALL.plain)) return { ok: false, reason: 'electron-builder no longer unpacks the app with Nsis7z::Extract: review synabun-extract.nsh against its new macro' };
   if (!ours.includes(EXTRACT_CALL.details)) return { ok: false, reason: 'synabun-extract.nsh does not call Nsis7z::ExtractWithDetails' };
   if (/\$PLUGINSDIR|CopyFiles/.test(ours)) return { ok: false, reason: 'synabun-extract.nsh should unpack straight into the install folder (no temporary folder, no CopyFiles)' };
+  return { ok: true, reason: null };
+}
+
+const squeeze = (text) => String(text || '').replace(/[ \t]+/g, ' ').replace(/ ?\r?\n ?/g, '\n').trim();
+
+/**
+ * Whether synabun-upgrade.nsh is a safe replacement for electron-builder's uninstallOldVersion macro: theirs must
+ * still be the two lines that run their function (installUtil.nsh), installSection.nsh must still follow it with
+ * handleUninstallResult, and that function must still read the error flag and $R0, which ours leaves as a finished
+ * uninstall would when the installed copy was moved aside. Ours must move the copy aside first and fall back to
+ * their function, unchanged, when it did not. { ok, reason }.
+ */
+export function uninstallMacroMatches(installUtilText, installSectionText, oursText) {
+  const theirs = nsisMacro(installUtilText, 'uninstallOldVersion');
+  const ours = nsisMacro(oursText, 'uninstallOldVersion');
+  if (!theirs) return { ok: false, reason: 'electron-builder\'s installUtil.nsh has no uninstallOldVersion macro any more' };
+  if (!ours) return { ok: false, reason: 'packaging/desktop/build/synabun-upgrade.nsh has no uninstallOldVersion macro' };
+  if (squeeze(theirs) !== '!macro uninstallOldVersion ROOT_KEY\nPush "${ROOT_KEY}"\nCall uninstallOldVersion\n!macroend') {
+    return { ok: false, reason: 'electron-builder\'s uninstallOldVersion macro changed: review synabun-upgrade.nsh against it' };
+  }
+  if (!/!insertmacro uninstallOldVersion SHELL_CONTEXT\s*\n\s*!insertmacro handleUninstallResult SHELL_CONTEXT/.test(String(installSectionText))) {
+    return { ok: false, reason: 'installSection.nsh no longer follows uninstallOldVersion with handleUninstallResult: review synabun-upgrade.nsh' };
+  }
+  const handle = String(installUtilText).slice(String(installUtilText).indexOf('Function handleUninstallResult'));
+  const body = handle.slice(0, handle.indexOf('FunctionEnd'));
+  if (!body || !/IfErrors 0 \+3/.test(body) || !/\$\{if\} \$R0 != 0/.test(body)) {
+    return { ok: false, reason: 'handleUninstallResult no longer decides by the error flag and $R0: review synabun-upgrade.nsh' };
+  }
+  if (!/^!macroundef uninstallOldVersion$/m.test(String(oursText))) return { ok: false, reason: 'synabun-upgrade.nsh does not replace the macro (!macroundef)' };
+  const order = ['Call SynaMoveAside', '${if} $SynaAside == ""', 'Push "${ROOT_KEY}"', 'Call uninstallOldVersion', '${else}', 'ClearErrors', 'StrCpy $R0 0', '${endIf}'];
+  let at = -1;
+  for (const line of order) {
+    const next = ours.indexOf(line, at + 1);
+    if (next < 0) return { ok: false, reason: `synabun-upgrade.nsh does not ${line.startsWith('Push') || line.startsWith('Call uninstall') ? 'fall back to electron-builder\'s own function' : 'move the installed copy aside first'} (${line})` };
+    at = next;
+  }
   return { ok: true, reason: null };
 }
 
@@ -590,7 +661,7 @@ function macArtifacts(ctx, names, wanted) {
 }
 
 /** The install page's facts of this build, beside installer.nsh in the build resources (installerFacts). */
-function writeInstallerFacts(ctx) {
+function writeInstallerFacts(ctx, { keyFiles = [] } = {}) {
   const folder = ctx.desktop.config.directories.buildResources;
   const lockOf = (part) => { try { return JSON.parse(readFileSync(join(ctx.bundle.resources, 'app', part, 'node_modules', '.package-lock.json'), 'utf8')); } catch { return null; } };
   const text = installerFacts({
@@ -602,6 +673,7 @@ function writeInstallerFacts(ctx) {
     cloudflared: ctx.report.cloudflared?.version,
     gitBash: ctx.report.gitBash?.packaged ? ctx.report.gitBash.version : null,
     packages: { neuralInterface: packagesInLock(lockOf('neural-interface')), mcpServer: packagesInLock(lockOf('mcp-server')) },
+    keyFiles,
   });
   writeFileSync(join(folder, INSTALLER_FACTS), text);
   return text;
@@ -612,17 +684,24 @@ function windowsArtifacts(ctx, names) {
   const output = join(ctx.work, 'electron-out-installer');
   removeTree(output);
   // The install page's unpacking runs electron-builder's own macro with the details call only: refuse anything else.
-  const template = join(ctx.desktop.tools.root, 'node_modules', 'app-builder-lib', 'templates', 'nsis', 'include', 'extractAppPackage.nsh');
+  const templates = join(ctx.desktop.tools.root, 'node_modules', 'app-builder-lib', 'templates', 'nsis');
+  const template = join(templates, 'include', 'extractAppPackage.nsh');
   const extract = extractMacroMatches(readFileSync(template, 'utf8'), readFileSync(join(DESKTOP_ROOT, 'build', 'synabun-extract.nsh'), 'utf8'));
   if (!extract.ok) throw new BuildError(`The installer's unpacking cannot be shown step by step: ${extract.reason}. No artifact was created.`, { details: [template] });
-  const facts = writeInstallerFacts(ctx);
-  note(`install page: ${facts.split(/\r?\n/).filter(line => line.startsWith('!define')).length} facts of this build, every step listed`);
-  const config = { ...ctx.desktop.config, directories: { ...ctx.desktop.config.directories, output } };
+  // The installed copy is moved aside instead of uninstalled file by file: only while electron-builder's macro is the one replaced.
+  const installUtil = join(templates, 'include', 'installUtil.nsh');
+  const upgrade = uninstallMacroMatches(readFileSync(installUtil, 'utf8'), readFileSync(join(templates, 'installSection.nsh'), 'utf8'),
+    readFileSync(join(DESKTOP_ROOT, 'build', 'synabun-upgrade.nsh'), 'utf8'));
+  if (!upgrade.ok) throw new BuildError(`The installer cannot replace an installed copy in one step: ${upgrade.reason}. No artifact was created.`, { details: [installUtil] });
   // The payload manifest, written into the bundle before the audit snapshot so it packs with everything else and
   // does not trip the "unchanged" guard: the installer checks the unpacked payload against it (synabun-verify.ps1).
   const manifest = writePayloadManifest(ctx.bundle.root);
-  ctx.report.payloadManifest = { rel: manifest.rel, files: manifest.count };
-  note(`payload manifest: ${manifest.count} files the installer checks after unpacking (${manifest.rel})`);
+  ctx.report.payloadManifest = { rel: manifest.rel, files: manifest.count, bytes: manifest.bytes };
+  note(`payload manifest: ${manifest.count} files, ${manifest.bytes} bytes, the installer checks after unpacking (${manifest.rel})`);
+  const keyFiles = installerKeyFiles(ctx.bundle.root);
+  const facts = writeInstallerFacts(ctx, { keyFiles });
+  note(`install page: ${facts.split(/\r?\n/).filter(line => line.startsWith('!define')).length} facts of this build, every step listed; ${keyFiles.length} files SynaBun starts, checked by size when the full check cannot run`);
+  const config = { ...ctx.desktop.config, directories: { ...ctx.desktop.config.directories, output } };
   // The installer packs this folder as it is when NSIS runs: it must still be the folder the audit read.
   const audited = treeMarks(ctx.bundle.root);
   runElectronBuilder(ctx, ctx.desktop.tools, config, ['--win', 'nsis', '--x64', '--prepackaged', ctx.bundle.root], `${ctx.target.id} installer`);

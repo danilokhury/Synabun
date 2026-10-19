@@ -159,6 +159,10 @@ removed.
 5. **Native modules.** `node-pty` is compiled where it has no prebuilt binary
    (Linux), so the terminal works. Binaries for other platforms are removed.
    Execute permissions are restored on the bundled executables and `bin` scripts.
+   Files in the application's `node_modules` that never run are left out
+   (`stage.mjs` `trimDevArtifacts`, `NEVER_RUN_PATTERNS`): source maps, type
+   declarations, TypeScript, Flow and C sources, change logs and tool settings,
+   about 9,000 files that every Windows install would otherwise write and scan.
 6. **Embedding model.** The public `Xenova/all-MiniLM-L6-v2` files are fetched by
    the application's own installer and checked against their pins.
 7. **cloudflared, and on Windows Git for Windows.** Cloudflare's release file
@@ -322,17 +326,46 @@ global bin before it (`lib/packaged-runtime.js` `packagedChildEnv`).
   elevated SynaBun, or an unrelated holder: reported, never killed), and
   compares folder and process paths by their real filesystem path
   (`GetFinalPathNameByHandle`), so a short name or a junction cannot hide a
-  running install. The application unpacks straight into the install folder
-  (`desktop/build/synabun-extract.nsh`: `Nsis7z::ExtractWithDetails` into
-  `$OUTDIR`, no temporary copy — the running copy is already closed, so a second
-  full write of the payload is avoided), checked by `extractMacroMatches` in
-  `lib/desktop.mjs`, and then verified against a build-time manifest
+  running install. The copy installed in the folder is then moved aside in one
+  rename (`desktop/build/synabun-upgrade.nsh` replaces electron-builder's
+  `uninstallOldVersion` macro, guarded by `uninstallMacroMatches` in
+  `lib/desktop.mjs`; `installer.nsh` `SynaMoveAside`): into the installer's
+  `$PLUGINSDIR`, which Windows removes when the installer closes, instead of
+  running its uninstaller, which renames ~25,000 files one by one and deletes
+  them. Only a SynaBun copy is moved: the one the registry records in this very
+  folder, with its `SynaBun.exe` there, or, when nothing is registered, a
+  complete desktop copy an unfinished install left there (it stopped before its
+  uninstaller, as 2.0.5's and 2.0.7's failed checks did on the owner's PC);
+  anything else (a folder the rename cannot move, a copy recorded elsewhere, the
+  app's own update, which moved the copy aside itself) takes electron-builder's
+  own way. The `synabun-desktop` folder of earlier test builds is among the
+  folders the close looks in. The application unpacks straight into
+  the install folder (`desktop/build/synabun-extract.nsh`:
+  `Nsis7z::ExtractWithDetails` into `$OUTDIR`, no temporary copy, and no line per
+  file: the plugin updates the status line and the bar), checked by
+  `extractMacroMatches`, and then verified against a build-time manifest
   (`writePayloadManifest` → `resources\synabun-payload.manifest`,
-  `desktop/build/synabun-verify.ps1`): the install is "done" only when the whole
-  payload is present at its size, not on `SynaBun.exe` alone, so a locked file or
-  a full disk cannot leave an incomplete install (silent runs exit non-zero and
-  the updater keeps the old version). It removes an earlier SynaBun installer's
-  copy in the same folder; the uninstaller leaves the data home alone.
+  `desktop/build/synabun-verify.ps1`, one pass: a dictionary from the manifest and
+  one .NET listing of the folder): the install is "done" only when the whole
+  payload is present at its size, not on `SynaBun.exe` alone. Nothing is unpacked
+  again by itself (2.0.7 unpacked a complete folder four more times, about
+  150 s each). Files missing or short: silently exit 2; interactively a box
+  naming them, the free disk space and the log, whose Retry unpacks once more,
+  and after a second failure a box that only stops. A check that did not run (a
+  PowerShell error, a timeout) runs once more, never the unpacking; still
+  nothing, and the files SynaBun starts are checked at their build sizes instead
+  (`installerKeyFiles` → `SynaKeyFiles` in the facts), and the install goes on
+  when they are right. The installation log is closed while a helper runs
+  (`SynaLogPause` / `SynaLogResume`: NSIS opens it without sharing writes, so in
+  2.0.7 the helpers' appends failed and none of their lines ever reached it),
+  and what each helper answered is written into it (`SynaLogLine`). Cancel and a silent failure put the earlier copy back
+  (`SynaRestoreEarlier`) before exit 2, so the updater keeps the old version. It
+  removes an earlier SynaBun installer's copy in the same folder; the uninstaller
+  leaves the data home alone. Every PowerShell, NSIS and batch file the installer
+  or the app ships is ASCII (`lib/windows-scripts.mjs`,
+  `tests/windows-scripts.test.mjs`, and the release audit): Windows PowerShell
+  5.1 reads a script without a byte order mark as Windows-1252, and 2.0.7's
+  `synabun-verify.ps1` never parsed because of an em dash in a string.
 - **The window's title bar** is the app's own (`desktop/src/titlebar.mjs`): the
   native title bar is hidden (`titleBarStyle: 'hidden'`), the Window Controls
   Overlay is on (`titleBarOverlay`, 48 px: DESIGN.md's nav-bar), the caption

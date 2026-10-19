@@ -23,7 +23,7 @@
  */
 
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, isAbsolute, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { externalToolsInLock, pruneExternalTools, stripExternalToolsFromLock } from '../../lib/external-tools.js';
 import { compilePty, crossNpmEnv, fetchEmbeddingModel, linksIn, verifySelection, writeWindowsShims } from './cross.mjs';
@@ -337,23 +337,43 @@ function pruneForeign(ctx, packageDir) {
 }
 
 /**
- * Source maps and TypeScript declarations in the bundled dependencies: never
- * loaded at run time (SynaBun runs no step with --enable-source-maps, and a
- * .d.ts is only read by a compiler). They are the largest safe thing to drop —
- * about 120 MB and ~7,000 files in the application's node_modules — so the
- * installer writes fewer files and the virus scanner reads fewer on Windows.
- * Only the application's own node_modules: the Node runtime, cloudflared and the
- * pinned Git for Windows tree are never touched. Returns the removed paths.
+ * Files in the bundled dependencies that never run. Every file is one more the
+ * Windows installer writes and the virus scanner reads, so they are left out:
+ *
+ *   source maps and TypeScript declarations (*.js.map, *.d.ts, ...): SynaBun
+ *       runs no step with --enable-source-maps, and a .d.ts is only read by a
+ *       compiler. About 120 MB and ~7,000 files
+ *   TypeScript and Flow sources (*.ts, *.mts, *.cts, *.tsx, *.js.flow): Node
+ *       never runs TypeScript inside node_modules; a package that names one
+ *       does so under an export condition SynaBun never sets ("source")
+ *   C and C++ sources and their gyp files: the native modules are prebuilt or
+ *       compiled by the build; nothing is compiled on the user's machine
+ *   change logs and contribution notes (CHANGELOG.md, History.md, ...), by
+ *       their names only, never another .md (a README can hold the license)
+ *   tool configuration: linters, formatters, CI, tsconfig*.json
+ *
+ * About 2,300 more files. A license, a notice, a README, package.json and
+ * everything Node can load stay. Only the application's own node_modules: the
+ * Node runtime (its npm), cloudflared and the pinned Git for Windows tree are
+ * never touched. Returns the removed paths.
  */
+export const NEVER_RUN_PATTERNS = Object.freeze([
+  /\.(?:js|cjs|mjs|d\.ts|d\.mts|d\.cts)\.map$/i,
+  /\.(?:ts|mts|cts|tsx)$/i,
+  /\.(?:js\.)?flow$/i,
+  /\.(?:c|cc|cpp|cxx|h|hh|hpp|hxx|gyp|gypi)$/i,
+  /^(?:changelog|changes|history|contributing|code_of_conduct)(?:\.(?:md|markdown|txt|rst|adoc))?$/i,
+  /^(?:\.eslintrc(?:\.(?:js|cjs|json|ya?ml))?|\.eslintignore|\.prettierrc(?:\.(?:js|cjs|json|ya?ml))?|\.prettierignore|\.editorconfig|\.npmignore|\.gitattributes|\.travis\.yml|\.nycrc(?:\.json)?|\.jshintrc|\.taprc|appveyor\.yml|\.airtap\.yml|tsconfig(?:\.[\w-]+)?\.json|.+\.tsbuildinfo)$/i,
+]);
+
 export function trimDevArtifacts(ctx, packageDir) {
   const nodeModules = join(packageDir, 'node_modules');
   if (!existsSync(nodeModules)) return [];
-  const sourceMap = /\.(?:js|cjs|mjs|d\.ts|d\.mts|d\.cts)\.map$/i;
-  const declaration = /\.d\.(?:ts|mts|cts)$/i;
   const removed = [];
   for (const file of walk(nodeModules)) {
     if (file.link) continue;
-    if (sourceMap.test(file.relative) || declaration.test(file.relative)) {
+    const name = basename(file.relative);
+    if (NEVER_RUN_PATTERNS.some(pattern => pattern.test(name))) {
       try { rmSync(file.path, { force: true }); removed.push(file.relative); } catch {}
     }
   }
@@ -387,7 +407,7 @@ export async function prepareNatives(ctx) {
   ctx.report.prunedForeign = pruned;
 
   const trimmed = [...trimDevArtifacts(ctx, neural), ...trimDevArtifacts(ctx, join(ctx.app, 'mcp-server'))];
-  note(`removed ${trimmed.length} source maps and type declarations the application never loads`);
+  note(`removed ${trimmed.length} files the application never runs (source maps, declarations, TypeScript and C sources, change logs, tool settings)`);
   ctx.report.trimmedDevArtifacts = trimmed.length;
 
   if (platform !== 'win32') {

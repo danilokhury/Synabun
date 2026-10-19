@@ -1,4 +1,9 @@
-# SynaBun — the Windows installer's "close the running SynaBun" helper.
+# SynaBun - the Windows installer's "close the running SynaBun" helper.
+#
+# Keep this file ASCII: Windows PowerShell 5.1 reads a script without a byte
+# order mark in the ANSI code page, where a UTF-8 character outside ASCII turns
+# into other characters and can end a string (synabun-verify.ps1 in 2.0.7).
+# packaging/tests/windows-scripts.test.mjs refuses one.
 #
 # The installer (and the previous version's uninstaller it runs) include this
 # through installer.nsh and run it once before any file is written or removed.
@@ -9,18 +14,18 @@
 # leaves the server running.
 #
 # What it does, in order:
-#   1. graceful  — ask every SynaBun server (a loopback port owned by one of our
+#   1. graceful  - ask every SynaBun server (a loopback port owned by one of our
 #                  processes) to shut down through POST /api/server/shutdown, so
 #                  SQLite and the server's children close cleanly and the
 #                  supervisor exits by itself (it exits on a clean stop; it never
 #                  respawns one we did not ask it to restart).
-#   2. force     — end whatever still runs from the folder(s), whole process
+#   2. force     - end whatever still runs from the folder(s), whole process
 #                  trees (taskkill /T), in a loop that defeats a respawn and
 #                  catches a process that started while we were killing.
-#   3. wait free — until nothing runs from the folder(s) AND the window
+#   3. wait free - until nothing runs from the folder(s) AND the window
 #                  executable can be opened for exclusive write (a handle can
 #                  linger a moment after the process ends, and a file can be held
-#                  by a process we cannot see — an elevated one, or an unrelated
+#                  by a process we cannot see: an elevated one, or an unrelated
 #                  holder; the file-free check runs even when no process is
 #                  visible, so a locked file is never mistaken for a clean state).
 #
@@ -273,6 +278,6 @@ if ($left.Count -eq 0 -and $free) {
 }
 $desc = (($left | ForEach-Object { "$($_.name)($($_.pid)) $($_.path)" }) -join ' ; ')
 if (-not $desc) { $desc = "a file in $probe is still in use (by a process not under the install folder)" }
-Write-StopLog ('stop: still busy — ' + $desc)
+Write-StopLog ('stop: still busy: ' + $desc)
 Write-Output ('SYNABUN_STOP busy: ' + $desc)
 exit 3

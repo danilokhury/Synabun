@@ -2,7 +2,7 @@
 setlocal enableextensions
 title SynaBun Updater
 
-rem ───────────────────────────────────────────────────────
+rem -------------------------------------------------------
 rem Windows shim for the cross-platform updater (updater.mjs).
 rem Invoked by the running SynaBun server via:
 rem   start "" "<install>\updater.cmd" --payload payload.json
@@ -11,7 +11,7 @@ rem We use a shim instead of spawning node directly so cmd's
 rem quoting rules don't mangle the command line, and so the
 rem window stays open for the user to read npm output even
 rem if node exits unexpectedly.
-rem ───────────────────────────────────────────────────────
+rem -------------------------------------------------------
 
 set "SCRIPT_DIR=%~dp0"
 set "EXIT_CODE=0"
