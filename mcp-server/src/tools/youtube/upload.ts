@@ -14,12 +14,12 @@
  * look successful).
  */
 
-import { z } from 'zod';
+import { z } from 'zod/v3';
 import { v4 as uuidv4 } from 'uuid';
 import * as ni from '../../services/neural-interface.js';
 import { generateEmbedding } from '../../services/local-embeddings.js';
 import { upsertMemory } from '../../services/sqlite.js';
-import { categoryExists, addCategory } from '../../services/categories.js';
+import { ensureCategory, FEATURE_CATEGORIES } from '../../services/categories.js';
 import { detectProject } from '../../config.js';
 import type { MemoryPayload } from '../../types.js';
 import { text } from '../response.js';
@@ -63,17 +63,9 @@ async function ensureOnStudio(r: Resolved): Promise<string | null> {
   return ensureAuth(r);
 }
 
-/** Ensure the dedup-ledger category exists (so it shows in the UI and routing). */
+/** Ensure the dedup-ledger category exists (so it shows in the UI and routing): made on the first upload, under "social" when that exists. */
 function ensureTrailerCategory(): void {
-  try {
-    if (!categoryExists(TRAILER_CATEGORY)) {
-      addCategory(
-        TRAILER_CATEGORY,
-        'One memory per uploaded YouTube trailer — the dedup ledger. Written automatically by youtube_upload; tagged with canonical source ids (igdb:/appid:/ytid:/name:) that youtube_source reads to skip already-posted trailers. Do not store anything else here.',
-        categoryExists('social') ? 'social' : undefined,
-      );
-    }
-  } catch { /* non-fatal — upsertMemory does not require a registered category */ }
+  ensureCategory(TRAILER_CATEGORY, FEATURE_CATEGORIES[TRAILER_CATEGORY].description, { parent: 'social' });
 }
 
 /** Write the dedup-ledger memory for a just-uploaded trailer. Returns the memory id, or null on failure. */

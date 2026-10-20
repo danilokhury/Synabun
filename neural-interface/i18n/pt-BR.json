@@ -6307,6 +6307,12 @@
       "left": "{percent}% disponível",
       "resets": "renova em {time}"
     },
+    "accountMenu": {
+      "uses": "{label} usa",
+      "workers": "Workers usam",
+      "workersHint": "Usada quando o despacho não indica uma conta.",
+      "switchNote": "Outra conta inicia uma nova conversa."
+    },
     "usage": {
       "task": "Tarefa atual",
       "tokens": "tokens",
@@ -7267,6 +7273,8 @@
       "variant": "Variante do modelo",
       "variantDefault": "variante padrão",
       "account": "Perfil da conta",
+      "accountShort": "Conta",
+      "accountAutoShort": "Auto",
       "accountHint": "como",
       "project": "Projeto de trabalho",
       "projectHint": "entrada",
@@ -7316,6 +7324,16 @@
         "standard": "Adiciona testes focados e executa a suíte da área uma vez.",
         "thorough": "Cobertura completa, suíte inteira, verificações ao vivo."
       }
+    },
+    "adminSandbox": {
+      "group": "Todos os agentes",
+      "label": "Sandbox de administrador",
+      "on": "Ativado",
+      "off": "Desativado",
+      "hint": "Só muda algo quando o SynaBun roda no Windows. Ativado: o Codex pode configurar seu sandbox mais forte, que pede aprovação de administrador uma vez por conta. Desativado: nenhum pedido de administrador; o Codex usa um sandbox que não precisa de administrador, com isolamento mais fraco.",
+      "aria": "{label}: {value}. Só muda algo quando o SynaBun roda no Windows.",
+      "statusOn": "Sandbox de administrador: ativado. No Windows, o Codex pode pedir aprovação de administrador uma vez por conta para configurar seu sandbox.",
+      "statusOff": "Sandbox de administrador: desativado. Nenhum agente iniciado pelo SynaBun pede aprovação de administrador para um sandbox."
     },
     "accounts": {
       "signInAccount": "Entrar em {label}…",

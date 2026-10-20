@@ -227,9 +227,10 @@ export async function startIndexing(options = {}) {
  * Uses vectors already stored in SQLite — no re-embedding needed.
  * Skips chunks that already exist in memories (same UUID) or have dedup_memory_id.
  * @param {function} [onProgress] - Progress callback
+ * @param {{ ensureCategory?: () => void }} [options] - ensureCategory creates "conversations" before the first write (a fresh install has none)
  * @returns {Promise<{ mirrored: number, skipped: number, errors: number }>}
  */
-export async function mirrorExistingChunks(onProgress) {
+export async function mirrorExistingChunks(onProgress, { ensureCategory = null } = {}) {
   const emit = onProgress || (() => {});
   const d = getDb();
 
@@ -296,6 +297,7 @@ export async function mirrorExistingChunks(onProgress) {
   // Batch upsert to memories
   if (mirrorPoints.length > 0) {
     try {
+      if (typeof ensureCategory === 'function') ensureCategory();
       for (let i = 0; i < mirrorPoints.length; i += UPSERT_BATCH_SIZE) {
         const batch = mirrorPoints.slice(i, i + UPSERT_BATCH_SIZE);
         upsertMemories(batch);

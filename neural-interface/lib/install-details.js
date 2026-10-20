@@ -26,15 +26,29 @@ export function packagesInLock(lock) {
   return entries.filter(key => /(?:^|\/)node_modules\//.test(key)).length;
 }
 
+/** How many packages of a lockfile are on disk under `root` (npm-shrinkwrap.json of an npm install). */
+export function installedFromLock(lock, root, { exists = existsSync } = {}) {
+  const entries = lock && typeof lock.packages === 'object' ? Object.keys(lock.packages) : [];
+  return entries.filter(key => /(?:^|\/)node_modules\//.test(key) && exists(path.join(root, ...key.split('/')))).length;
+}
+
 /**
- * A part's own dependencies (its package.json), each with the version installed in its node_modules, or null
- * when it is not installed. Sorted by name.
+ * A part's own dependencies (its package.json), each with the version Node finds for it, or null when it is not
+ * installed. Sorted by name. Found in the part's node_modules, and with `stopAt` (the package root) in each folder
+ * up to it too: `npm i -g synabun` installs every part's dependencies at the package root.
  */
-export function directDependencies(dir, { readJson = readJsonFile } = {}) {
+export function directDependencies(dir, { readJson = readJsonFile, stopAt = null } = {}) {
   const manifest = readJson(path.join(dir, 'package.json')) || {};
   const wanted = { ...(manifest.optionalDependencies || {}), ...(manifest.dependencies || {}) };
+  const limit = stopAt ? path.resolve(stopAt) : null;
+  const find = (name) => {
+    for (let folder = path.resolve(dir); ; folder = path.dirname(folder)) {
+      const found = readJson(path.join(folder, 'node_modules', ...name.split('/'), 'package.json'));
+      if (found || !limit || folder === limit || path.dirname(folder) === folder) return found;
+    }
+  };
   return Object.keys(wanted).sort().map((name) => {
-    const installed = readJson(path.join(dir, 'node_modules', ...name.split('/'), 'package.json'));
+    const installed = find(name);
     return { name, wanted: String(wanted[name]), installed: installed?.version ? String(installed.version) : null };
   });
 }
@@ -112,10 +126,14 @@ export async function collectInstallDetails({
   const userNpmPath = firstOnPath('npm', osPath, { platform, exists, skip: runtimeBin ? [runtimeBin, impl.dirname(execPath)] : [] });
   const userNpm = userNpmPath && userNpmPath !== ownNpm ? { path: userNpmPath, ...(await version(userNpmPath, { platform, env })) } : null;
 
+  // A part's own install record when it has one (a development checkout, a desktop build); an npm install keeps
+  // both parts' dependencies at the package root instead, pinned by npm-shrinkwrap.json.
+  const shrinkwrap = readJson(path.join(packageRoot, 'npm-shrinkwrap.json'));
   const parts = [['Neural Interface', 'neural-interface'], ['MCP server', 'mcp-server']].map(([name, folder]) => {
     const dir = path.join(packageRoot, folder);
     const installed = readJson(path.join(dir, 'node_modules', '.package-lock.json'));
-    return { name, folder, packages: packagesInLock(installed), dependencies: directDependencies(dir, { readJson }) };
+    const packages = installed ? packagesInLock(installed) : installedFromLock(shrinkwrap, packageRoot, { exists });
+    return { name, folder, packages, dependencies: directDependencies(dir, { readJson, stopAt: packageRoot }) };
   });
   const mcpBuilt = exists(path.join(packageRoot, 'mcp-server', 'dist', 'index.js'));
 

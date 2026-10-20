@@ -1441,6 +1441,8 @@ export function initExplorer() {
   if (selectAllBtn) {
     selectAllBtn.addEventListener('click', () => {
       Object.keys(state.categoryMetadata).forEach(c => state.activeCategories.add(c));
+      // and the categories memories use without a registered one ("uncategorized" included), as the sidebar does
+      (state.allNodes || []).forEach(n => { if (n.payload?.category) state.activeCategories.add(n.payload.category); });
       cancelScheduledRemoval();
       emit('graph:refresh');
       emit('categories-changed');

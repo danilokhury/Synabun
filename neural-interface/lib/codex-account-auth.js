@@ -9,7 +9,7 @@
 import { spawn } from 'node:child_process';
 import { verifyOpenAiApiKey } from './claude-profile-api-key.js';
 import { validateProviderApiKey } from './provider-panel-api-key-auth.js';
-import { applyCodexLaunchEnv } from './codex-accounts.js';
+import { applyCodexLaunchEnv, codexLaunchArgs } from './codex-accounts.js';
 
 const fail = (message, status = 409, code = null) => Object.assign(new Error(message), { status, ...(code ? { code } : {}) });
 
@@ -32,13 +32,15 @@ export function createCodexAccountAuth({
   }
   // Codex run under the account's own store: inherited credentials out, its
   // CODEX_HOME in, never the key SynaBun holds (that is not Codex's store).
-  function launch(id, args) {
+  // The launch's overrides (the Windows sandbox of the Admin sandbox setting) follow the subcommand.
+  function launch(id, words) {
     account(id);
     const plan = accounts.launchFor(id);
     if (!plan.ok) throw fail(plan.message, 404);
     prepareConfig(plan.home);
     let file = codexBin();
     if (!file) throw fail('Codex CLI not found. Install Codex to sign in.', 503);
+    const args = [...words, ...codexLaunchArgs(plan)];
     const script = /\.[cm]?js$/i.test(file);
     const shell = process.platform === 'win32' && /\.(cmd|bat)$/i.test(file);
     const proc = spawnProcess(script ? process.execPath : file, script ? [file, ...args] : args, {

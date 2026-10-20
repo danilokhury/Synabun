@@ -69,7 +69,8 @@ export const WHOLESALE_SELECTORS = [
   '.resume-project-badge', '.resume-branch',
   // Account emails and names
   '.acct-menu-trigger-name', '.acct-menu-item-name', '.acct-menu-item-id', '.acct-menu-avatar', '.acct-menu-note', '.acct-menu-v',
-  '.asst-account-label', '.asst-account-sub', '.asst-account-cred', '.asst-model-account', '.as-launch-account-name',
+  '.asst-account-label', '.asst-account-sub', '.asst-account-cred', '.as-launch-account-name',
+  '.asst-acct-name', '.asst-acct-line', '.asst-acct-avatar', '.asst-acct-value-text',
   '.invite-key-box', '.invite-url-text', '.invite-key-status',
   // Toast text
   '.notif-toast-msg', '.term-toast', '#fe-toast', '.as-toast', '.ss-toast', '.cc-toast', '.asp-toast',

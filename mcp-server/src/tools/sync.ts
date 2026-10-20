@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { z } from 'zod/v3';
 import { scrollMemories } from '../services/sqlite.js';
 import { hashFile, resolveStoredPath } from '../services/file-checksums.js';
 import { fileExcerpt } from '../services/file-excerpt.js';

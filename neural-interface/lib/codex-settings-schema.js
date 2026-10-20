@@ -2,6 +2,8 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+// The probes run no command: always the Windows sandbox that needs no administrator (lib/agent-sandbox-elevation.js).
+import { CODEX_PROBE_SANDBOX_ARGS } from './agent-sandbox-elevation.js';
 
 const cache = new Map();
 const featureCache = new Map();
@@ -45,7 +47,7 @@ export function readCodexSettingsSchema(codexBin) {
   const home = mkdtempSync(join(tmpdir(), 'synabun-codex-schema-'));
   try {
     const out = join(home, 'schema');
-    const run = spawnSync(codexBin, ['app-server', 'generate-json-schema', '--experimental', '--out', out], {
+    const run = spawnSync(codexBin, ['app-server', 'generate-json-schema', '--experimental', '--out', out, ...CODEX_PROBE_SANDBOX_ARGS], {
       env: { ...process.env, CODEX_HOME: home }, encoding: 'utf8', timeout: 15000, windowsHide: true,
     });
     if (run.error || run.status !== 0) throw new Error('Codex could not report its settings schema');
@@ -56,7 +58,7 @@ export function readCodexSettingsSchema(codexBin) {
     // `features list` validates config locally and never runs a model or tool.
     for (const [fieldKey, field] of Object.entries(schema.fields)) {
       field.values = field.values.filter(value => {
-        const check = spawnSync(codexBin, ['-c', `${fieldKey}=${JSON.stringify(value)}`, 'features', 'list'], {
+        const check = spawnSync(codexBin, [...CODEX_PROBE_SANDBOX_ARGS, '-c', `${fieldKey}=${JSON.stringify(value)}`, 'features', 'list'], {
           env: { ...process.env, CODEX_HOME: home }, encoding: 'utf8', timeout: 5000, windowsHide: true,
         });
         return !check.error && check.status === 0;
@@ -105,7 +107,7 @@ export function readCodexFeatureSupport(codexBin, features) {
   const home = mkdtempSync(join(tmpdir(), 'synabun-feature-support-'));
   try {
     const states = [false, true].map(value => {
-      const check = spawnSync(codexBin, ['-c', `features={${names.map(name => `${name}=${value}`).join(',')}}`, 'features', 'list'], {
+      const check = spawnSync(codexBin, [...CODEX_PROBE_SANDBOX_ARGS, '-c', `features={${names.map(name => `${name}=${value}`).join(',')}}`, 'features', 'list'], {
         env: { ...process.env, CODEX_HOME: home }, encoding: 'utf8', timeout: 10000, windowsHide: true,
       });
       if (check.error || check.status !== 0) throw new Error('Codex could not validate feature switches');

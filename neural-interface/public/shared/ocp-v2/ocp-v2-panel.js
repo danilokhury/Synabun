@@ -671,10 +671,13 @@ function syncHeader() {
   // The footer row gives the text only the room that is left: the tooltip
   // says it in full when just the dot fits.
   _statusEl.setAttribute('data-tooltip', status.text);
+  const title = sessionTitleFor(s);
   // Skip label update while user is mid-rename (input is mounted in the label).
   if (_sessionLabelEl && !_sessionLabelEl.querySelector('.ocpv2-rename-input')) {
-    _sessionLabelEl.textContent = sessionTitleFor(s);
+    _sessionLabelEl.textContent = title;
   }
+  // The whole name, for when the header shows only part of it.
+  if (_sessionBtnEl) _sessionBtnEl.title = title;
   if (_renameBtnEl) {
     _renameBtnEl.disabled = !s.sessionId;
   }

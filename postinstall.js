@@ -3,17 +3,21 @@
 /**
  * SynaBun — NPM postinstall script
  *
- * Runs automatically after `npm install -g synabun`.
- * Installs subdependencies and builds the MCP server.
+ * Runs after `npm i -g synabun` (and after `npm install` in a checkout). npm
+ * has already installed every runtime dependency at the package root, at the
+ * versions npm-shrinkwrap.json pins, so nothing is installed here: this only
+ * finishes what npm cannot (node-pty's binary, the MCP build of a fresh
+ * checkout, the synabun:// handler, the updater shim's executable bit).
  * Does NOT start the server — that's setup.js / `synabun` command.
  */
 
-import { execSync } from 'node:child_process';
-import { existsSync, chmodSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { existsSync, chmodSync, lstatSync, readlinkSync, unlinkSync } from 'node:fs';
+import { resolve, dirname, basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { platform } from 'node:os';
 import { registerStartLauncher } from './lib/start-launcher.js';
+import { mcpCompiler } from './lib/runtime-dependencies.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -28,44 +32,22 @@ const c = {
   red:    '\x1b[31m',
 };
 
-function ok(msg)   { console.log(`  ${c.green}\u2713${c.reset} ${msg}`); }
+function ok(msg)   { console.log(`  ${c.green}✓${c.reset} ${msg}`); }
 function warn(msg) { console.log(`  ${c.yellow}!${c.reset} ${msg}`); }
-function fail(msg) { console.log(`  ${c.red}\u2717${c.reset} ${msg}`); }
-function info(msg) { console.log(`  ${c.cyan}\u2192${c.reset} ${msg}`); }
-
-// ── Dependency installation ──
-
-function needsInstall(dir) {
-  return !existsSync(resolve(dir, 'node_modules', '.package-lock.json'));
-}
-
-function installDeps(name, dir, { includeDev = false } = {}) {
-  if (!needsInstall(dir)) {
-    ok(`${name} dependencies already installed`);
-    return;
-  }
-
-  info(`Installing ${name} dependencies...`);
-  try {
-    const omitFlag = includeDev ? '' : ' --omit=dev';
-    execSync(`npm install${omitFlag} --ignore-scripts`, {
-      cwd: dir,
-      stdio: 'inherit',
-      timeout: 300_000,
-    });
-    ok(`${name} dependencies installed`);
-  } catch (err) {
-    fail(`Failed to install ${name} dependencies`);
-    console.error(err.stderr?.toString() || err.message);
-    process.exit(1);
-  }
-}
-
-function needsBuild() {
-  return !existsSync(resolve(__dirname, 'mcp-server', 'dist', 'index.js'));
-}
+function fail(msg) { console.log(`  ${c.red}✗${c.reset} ${msg}`); }
+function info(msg) { console.log(`  ${c.cyan}→${c.reset} ${msg}`); }
 
 // ── node-pty native rebuild ──
+//
+// On an install or an update npm runs no dependency's install script
+// (npm-shrinkwrap.json keeps them off: lib/root-dependencies.mjs
+// withoutInstallScript), so node-pty is this script's: its prebuilt binary on
+// macOS and Windows, with the execute bit of its spawn helper restored; a
+// compile where it has none (Linux) or the one it has does not start. Never
+// fatal: without it only the terminal is missing. A bare `npm rebuild -g`
+// reads each package's own package.json and runs those scripts after all:
+// SynaBun never runs one, and its repair is `npm i -g synabun@<version>` or
+// `npm rebuild -g synabun --ignore-scripts` followed by this script.
 
 function rebuildPty() {
   const rebuildScript = resolve(__dirname, 'neural-interface', 'scripts', 'rebuild-pty.js');
@@ -74,20 +56,23 @@ function rebuildPty() {
     return;
   }
 
-  info('Rebuilding node-pty native addon...');
+  info('Checking node-pty native addon...');
   try {
-    execSync(`node "${rebuildScript}"`, {
+    execFileSync(process.execPath, [rebuildScript], {
       cwd: resolve(__dirname, 'neural-interface'),
       stdio: 'inherit',
       timeout: 120_000,
     });
-    ok('node-pty rebuilt');
+    ok('node-pty ready');
   } catch (err) {
     warn('node-pty rebuild failed (terminal features may not work)');
   }
 }
 
 // ── MCP server build ──
+//
+// A published package carries mcp-server/dist; a fresh checkout compiles it,
+// with the TypeScript of the root's devDependencies.
 
 function buildMcpServer() {
   const distIndex = resolve(__dirname, 'mcp-server', 'dist', 'index.js');
@@ -97,8 +82,13 @@ function buildMcpServer() {
   }
 
   info('Building MCP server from source...');
+  const tsc = mcpCompiler(__dirname);
+  if (!tsc) {
+    fail('MCP server build failed: TypeScript is not installed (run npm install in the package root)');
+    return;
+  }
   try {
-    execSync('npx tsc', {
+    execFileSync(process.execPath, [tsc, '-p', resolve(__dirname, 'mcp-server')], {
       cwd: resolve(__dirname, 'mcp-server'),
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 120_000,
@@ -111,6 +101,31 @@ function buildMcpServer() {
     if (stdout) console.error(stdout);
     if (stderr) console.error(stderr);
     if (!stdout && !stderr) console.error(err.message);
+  }
+}
+
+// ── Links an older postinstall left ──
+//
+// Up to 2.0.8 this script ran `npm install` in mcp-server/ and neural-interface/
+// itself. Inside `npm i -g`, npm sets npm_config_global for its scripts, so each
+// of those installs put its folder in the global packages as a link of its own,
+// beside SynaBun: claude-memory-mcp -> synabun/mcp-server and
+// neural-memory-interface -> synabun/neural-interface. Only such a link, pointing
+// at this package's own folder, is removed.
+
+function removeStalePartLinks() {
+  const parent = dirname(__dirname);
+  if (basename(parent) !== 'node_modules') return;
+  const same = (a, b) => (platform() === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b);
+  for (const [name, folder] of [['claude-memory-mcp', 'mcp-server'], ['neural-memory-interface', 'neural-interface']]) {
+    const link = join(parent, name);
+    try {
+      if (!lstatSync(link).isSymbolicLink()) continue;
+      const target = readlinkSync(link).replace(/^\\\\\?\\/, '');
+      if (!same(resolve(parent, target), resolve(__dirname, folder))) continue;
+      unlinkSync(link);
+      ok(`Removed ${name}, a link an older SynaBun left in the global packages`);
+    } catch {}
   }
 }
 
@@ -151,14 +166,13 @@ function ensureUpdaterShExecutable() {
 function main() {
   console.log(`\n  ${c.cyan}SynaBun${c.reset} ${c.dim}postinstall${c.reset}\n`);
 
-  installDeps('Neural Interface', resolve(__dirname, 'neural-interface'));
-  installDeps('MCP Server', resolve(__dirname, 'mcp-server'), { includeDev: needsBuild() });
+  removeStalePartLinks();
   rebuildPty();
   buildMcpServer();
   registerProtocolHandler();
   ensureUpdaterShExecutable();
 
-  console.log(`\n  ${c.green}\u2713${c.reset} Setup complete. Run ${c.cyan}synabun${c.reset} to start.\n`);
+  console.log(`\n  ${c.green}✓${c.reset} Setup complete. Run ${c.cyan}synabun${c.reset} to start.\n`);
 }
 
 main();

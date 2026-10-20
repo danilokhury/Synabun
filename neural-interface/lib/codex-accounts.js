@@ -32,6 +32,7 @@ import { dirname, join, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { readProfileApiKey, saveProfileApiKey, clearProfileApiKey } from './claude-profile-api-key.js';
 import { apiKeyHint, resolveClaudeAuth } from './claude-accounts.js';
+import { normalizeAdminSandbox, sandboxElevationFor } from './agent-sandbox-elevation.js';
 
 export const CODEX_DEFAULT_ACCOUNT_ID = 'default';
 export const CODEX_AUTH_MODES = Object.freeze(['subscription', 'apiKey']);
@@ -123,9 +124,13 @@ export function applyCodexLaunchEnv(base, launch) {
 export function codexExecEnv(launch) {
   return { ...(launch?.env || {}), ...(launch?.apiKey ? { CODEX_API_KEY: launch.apiKey } : {}) };
 }
+/** The `-c` overrides every Codex process of the launch starts with: the Windows sandbox the Admin sandbox setting allows. */
+export function codexLaunchArgs(launch) {
+  return [...(launch?.configArgs || [])];
+}
 /** The `-c` overrides an app-server of the account starts with (before the subcommand). */
 export function codexAppServerArgs(launch) {
-  return launch?.apiKey ? [...CODEX_EPHEMERAL_STORE_ARGS] : [];
+  return [...codexLaunchArgs(launch), ...(launch?.apiKey ? CODEX_EPHEMERAL_STORE_ARGS : [])];
 }
 
 export function createCodexAccounts({
@@ -141,6 +146,8 @@ export function createCodexAccounts({
   statusTimeoutMs = 20_000,
   // Called before a new account links Default's config.toml (server.js repairs it there).
   prepareDefaultConfig = () => {},
+  // () => the Admin sandbox setting (lib/agent-sandbox-setting.js): which Windows sandbox every launch may use.
+  adminSandbox = () => false,
 } = {}) {
   if (!dataHome) throw new Error('createCodexAccounts requires dataHome');
   const registryPath = resolve(dataHome, 'data', 'codex-accounts.json');
@@ -273,11 +280,17 @@ export function createCodexAccounts({
     }
     const { row, key } = describeProfile(profile, data);
     const apiKey = row.mode === 'apiKey' && row.apiKey.source === 'synabun' && key ? key : null;
+    // A launch override, never written into config.toml: Default's home is the user's own ~/.codex.
+    let on = false;
+    try { on = normalizeAdminSandbox(adminSandbox()); } catch { on = false; }
+    const sandbox = sandboxElevationFor('codex', on);
     return {
       ok: true, accountId: wanted, label: row.label, mode: row.mode, signedIn: row.signedIn, identity: row.identity, home: row.home,
       env: { CODEX_HOME: row.home }, unset: [...CODEX_CREDENTIAL_ENV], apiKey,
       // Which credential a process started with: a change means the account's idle processes restart.
       credential: [row.mode || 'none', row.apiKey.source || '', row.apiKey.hint || '', row.subscription.email || ''].join(':'),
+      // The Windows sandbox it may use ('elevated' | 'unelevated'): a change restarts idle app-servers too.
+      windowsSandbox: sandbox.value, configArgs: sandbox.args,
     };
   }
 

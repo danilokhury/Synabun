@@ -26727,7 +26727,9 @@
   body .term-float-tab.term-float-tab > .term-float-tab-header .term-float-tab-title { font-size: var(--fs-xs); }
   body :is(.sched-header-icon, .sm-header-icon, .ig-icon),
   body :is(.sched-header-icon, .sm-header-icon, .ig-icon) svg { width: 16px; height: 16px; }
-  body .sp-sidepanel.sp-floating > :is(.cp-header, .cxp-header, .ocpv2-header, .asp-header) { flex-wrap: wrap; }
+  /* The Claude Code, Codex and OpenCode headers stay one row: their session name gives way
+     instead (the panels' own header styles). */
+  body .sp-sidepanel.sp-floating > .asp-header { flex-wrap: wrap; }
 
   body .term-float-tab-title { flex: 1 1 100px; }
   body .term-float-tab-actions { flex-wrap: wrap; max-width: 100%; }

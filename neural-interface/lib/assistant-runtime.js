@@ -246,6 +246,8 @@ export function createAssistantRuntime({
   // (capability) → boolean, the verifier of lib/remote-policy.js createPhoneAuthority(): is this the
   // capability of the one WhatsApp bridge? Without a verifier nothing can grant computer use remotely.
   phoneAuthority = null,
+  // The Admin sandbox setting (lib/agent-sandbox-setting.js): global, shown in every session view.
+  adminSandbox = null,
 } = {}) {
   if (!dataDir) throw new Error('createAssistantRuntime requires dataDir');
   const settings = {
@@ -906,7 +908,9 @@ export function createAssistantRuntime({
       out.testDensity = testDensityOf(record);
       out.testDensityExplicit = normalizeTestDensity(record.testDensity, null);
       // `rename`: this server keeps a rename on the record (userRenamed), so a panel writes it here.
-      out.features = { routing: !!router, computer: computerSupported(), testDensity: true, rename: true };
+      // `adminSandbox`: the global setting is served here (PUT /api/assistant/admin-sandbox).
+      out.features = { routing: !!router, computer: computerSupported(), testDensity: true, rename: true, adminSandbox: !!adminSandbox };
+      if (adminSandbox) { try { out.adminSandbox = adminSandbox.enabled() === true; } catch { out.adminSandbox = false; } }
       out.budget = sessionMoney(record.id);
       out.remoteLevel = policy ? effectiveLevel(policy, { untrusted: live.turnUntrusted === true, now: now() }) : null;
     }

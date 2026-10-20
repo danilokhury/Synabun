@@ -21,7 +21,7 @@
  * reloading the tab once) and only then reports "not logged in" — when the page
  * really holds no session.
  */
-import { z } from 'zod';
+import { z } from 'zod/v3';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import * as ni from '../services/neural-interface.js';
 import { text } from './response.js';

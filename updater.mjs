@@ -19,10 +19,17 @@
 // Keeping the updater outside the installed package is intentional. On Windows,
 // running from node_modules/synabun can hold locks on the directory npm needs to
 // rename during a global update.
+//
+// On Windows the processes that still run from the package folder after the
+// server is gone (the MCP servers AI clients started, their embedding workers)
+// are stopped before npm runs, and again before each retry when npm still finds
+// the folder in use (lib/package-processes.js, staged in lib/ next to this file).
 
 import { spawn, spawnSync } from 'node:child_process';
 import { closeSync, fstatSync, openSync, readFileSync, readSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const args = parseArgs(process.argv.slice(2));
 const payload = loadPayload(args.payload);
@@ -99,26 +106,87 @@ try {
     console.log('  Cleanup complete.\n');
   }
 
+  // Windows: what the server did not start (MCP servers of AI clients) still runs from the folder npm replaces.
+  const processStop = isWin ? await loadProcessStop() : null;
+  // Every form of the folder the server knew (as it resolved it, as it was started), else this file's own folder.
+  const knownRoots = [...(Array.isArray(payload.packageRoots) ? payload.packageRoots : []), payload.packageRoot].filter(Boolean);
+  const stopRoots = processStop ? processStop.packageRootsToStop(knownRoots.length ? knownRoots : ownPackageFolder()) : [];
+  const stoppedPids = new Set();
+  // One limit for the whole stop step, every pass included, counted only while a pass runs (never npm's time):
+  // generous, never endless.
+  const stopLimitMs = processStop?.STOP_DEADLINE_MS ?? 180_000;
+  const stopBudget = processStop?.createStopBudget({ totalMs: stopLimitMs });
+  const stopOwnProcesses = async () => {
+    console.log(`Stopping SynaBun processes that still run from ${stopRoots[0]}...`);
+    const result = await stopBudget.run(deadline => processStop.stopPackageProcesses({ roots: stopRoots, selfPid: process.pid, deadline, log: line => console.log(line) }));
+    for (const target of result.stopped) stoppedPids.add(target.pid);
+    if (result.timedOut) console.warn(`  Stopping SynaBun's processes reached its ${Math.round(stopLimitMs / 60_000)}-minute limit${result.remaining.length ? `; still running: ${result.remaining.map(target => `PID ${target.pid}`).join(', ')}` : ''}. Going on without stopping more.\n`);
+    else if (!result.listed) console.warn('  The running processes could not be listed (PowerShell). Continuing.\n');
+    else if (result.remaining.length) console.warn(`  Still running after ${processStop.STOP_WAIT_MS / 1000}s: ${result.remaining.map(target => `PID ${target.pid}`).join(', ')}\n`);
+    else console.log(result.stopped.length ? `  Stopped ${result.stopped.length}.\n` : '  None running.\n');
+    return result;
+  };
+  if (processStop && stopRoots.length) await stopOwnProcesses();
+  else if (processStop) console.log('No npm-installed SynaBun folder was named, so no SynaBun process started by an AI client was stopped.\n');
+
   console.log(`Running: ${displayCommand}\n`);
   console.log(HR);
-  const installRes = spawnSync(NPM_BIN, ['i', '-g', installSpec], {
+  // The spec is always a registry one (sanitizeInstallSpec), so npm reads SynaBun's npm-shrinkwrap.json, which keeps
+  // the dependencies' install scripts off for this install. Two settings stay as a second guard for the two scripts
+  // that would do work SynaBun never uses: onnxruntime-node downloads its CUDA libraries on Linux x64 (several
+  // hundred MB), and sharp tries to compile itself when a system libvips is installed. A value the user set wins.
+  // On Windows npm's debug log goes to a folder of this update (in the environment, never on cmd.exe's command
+  // line), so a failure can name it and say whether the folder was in use.
+  const npmLogsDir = stopRoots.length ? (process.env.npm_config_logs_dir || join(args.payload ? dirname(args.payload) : tmpdir(), 'npm-logs')) : null;
+  const runNpm = () => spawnSync(NPM_BIN, ['i', '-g', installSpec], {
     cwd: safeCwd,
     stdio: 'inherit',
     shell: isWin,
+    env: {
+      ...process.env,
+      ONNXRUNTIME_NODE_INSTALL_CUDA: process.env.ONNXRUNTIME_NODE_INSTALL_CUDA || 'skip',
+      SHARP_IGNORE_GLOBAL_LIBVIPS: process.env.SHARP_IGNORE_GLOBAL_LIBVIPS || '1',
+      ...(npmLogsDir ? { npm_config_logs_dir: npmLogsDir } : {}),
+    },
   });
+  let installRes;
+  let installOutcome = null;
+  if (processStop && stopRoots.length) {
+    installOutcome = await processStop.installWithLockRetries({
+      install: (attempt) => {
+        if (attempt > 1) console.log(`${HR}\n\nRunning again: ${displayCommand}\n\n${HR}`);
+        const startedAt = Date.now();
+        installRes = runNpm();
+        return processStop.npmOutcome(installRes, { logsDir: npmLogsDir, startedAt });
+      },
+      stop: () => stopOwnProcesses(),
+      log: line => console.log(line),
+    });
+  } else {
+    installRes = runNpm();
+  }
   console.log(HR);
 
   if (installRes.error) throw installRes.error;
   if (installRes.status !== 0) {
-    console.error(`\nnpm update command failed with exit code ${installRes.status}.\n`);
+    if (installOutcome?.locked) {
+      reportLockedFolder(installOutcome);
+    } else {
+      console.error(`\nnpm update command failed with exit code ${installRes.status}.\n`);
+      if (installOutcome?.logFile) console.error(`npm log: ${installOutcome.logFile}\n`);
+    }
     markHandoff('failed', { failedAt: new Date().toISOString(), reason: `npm exited with code ${installRes.status}` });
-    printFixTips(displayCommand);
+    if (!installOutcome?.locked) printFixTips(displayCommand);
     await maybeHoldOpen(noHold);
     process.exit(installRes.status || 1);
   }
 
   console.log(`\nSynaBun update installed.\n`);
   markHandoff('installed', { installedAt: new Date().toISOString() });
+  if (stoppedPids.size) {
+    console.log(`Before installing, the updater stopped ${stoppedPids.size} SynaBun process${stoppedPids.size === 1 ? '' : 'es'} that ran from the old version, such as the SynaBun MCP servers of your AI clients.`);
+    console.log('Reconnect SynaBun in each AI client that uses it, or restart its SynaBun MCP server (in Claude Code: /mcp).\n');
+  }
 
   if (autoRestart) {
     console.log('Relaunching SynaBun...\n');
@@ -143,6 +211,32 @@ try {
   printFixTips(displayCommand);
   await maybeHoldOpen(noHold);
   process.exit(1);
+}
+
+// The Windows stop step (lib/package-processes.js), or null: an updater staged by
+// a server from before it has no lib/ next to it, and updates as it always did.
+async function loadProcessStop() {
+  try {
+    return await import('./lib/package-processes.js');
+  } catch (error) {
+    console.warn(`The step that stops SynaBun's MCP servers could not be loaded (${error.message}). Continuing without it.\n`);
+    return null;
+  }
+}
+
+// Where this file is: the package folder itself when the updater runs from the
+// installed package (the legacy invocation), never a staged copy's folder.
+function ownPackageFolder() {
+  return dirname(fileURLToPath(import.meta.url));
+}
+
+// npm still found the package folder in use after every stop and retry.
+function reportLockedFolder(outcome) {
+  console.error(`\nnpm could not replace the SynaBun folder (${outcome.lockCode}): something still runs from it. Tried ${outcome.attempts} time${outcome.attempts === 1 ? '' : 's'}${outcome.timedOut ? ', and stopping SynaBun\'s processes reached its time limit' : ''}.`);
+  console.error(`  npm exit code: ${outcome.status ?? outcome.signal ?? '?'}`);
+  console.error(`  npm log:       ${outcome.logFile || 'see the path npm printed above'}`);
+  console.error('\nClose every AI client that uses SynaBun (Claude Code, Codex, Cursor, OpenCode, ...) and every SynaBun window or terminal, then run:');
+  console.error(`  ${displayCommand}\n`);
 }
 
 // The handoff marker tells the launcher what this update did. `installed` lets

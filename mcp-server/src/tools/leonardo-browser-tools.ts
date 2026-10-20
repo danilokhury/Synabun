@@ -6,7 +6,7 @@
  * Tools: leonardo_browser_navigate, leonardo_browser_generate, leonardo_browser_library, leonardo_browser_download, leonardo_browser_reference
  */
 
-import { z } from 'zod';
+import { z } from 'zod/v3';
 import * as ni from '../services/neural-interface.js';
 import { text } from './response.js';
 

@@ -6355,6 +6355,12 @@
       "left": "{percent}% left",
       "resets": "resets {time}"
     },
+    "accountMenu": {
+      "uses": "{label} uses",
+      "workers": "Workers use",
+      "workersHint": "Used when a dispatch names no account.",
+      "switchNote": "Another account starts a new conversation."
+    },
     "usage": {
       "task": "Current task",
       "tokens": "tokens",
@@ -7315,6 +7321,8 @@
       "variant": "Model variant",
       "variantDefault": "default variant",
       "account": "Account profile",
+      "accountShort": "Account",
+      "accountAutoShort": "Auto",
       "accountHint": "as",
       "project": "Working project",
       "projectHint": "in",
@@ -7364,6 +7372,16 @@
         "standard": "Adds focused tests and runs the area's suite once.",
         "thorough": "Full coverage, whole suite, live checks."
       }
+    },
+    "adminSandbox": {
+      "group": "Every agent",
+      "label": "Admin sandbox",
+      "on": "On",
+      "off": "Off",
+      "hint": "Only changes anything when SynaBun runs on Windows. On: Codex can set up its strongest sandbox, which asks for administrator approval once per account. Off: no admin prompt; Codex uses a sandbox that needs no admin, with weaker isolation.",
+      "aria": "{label}: {value}. Only changes anything when SynaBun runs on Windows.",
+      "statusOn": "Admin sandbox: on. On Windows, Codex may ask for administrator approval once per account to set up its sandbox.",
+      "statusOff": "Admin sandbox: off. No agent SynaBun starts asks for administrator approval for a sandbox."
     },
     "accounts": {
       "signInAccount": "Sign in to {label}…",

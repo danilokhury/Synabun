@@ -1031,15 +1031,21 @@ export function buildCategoryTree(categories) {
 }
 
 // --- Auto-category creation ---
+// A fresh install has no categories. The only ones made without being asked are a
+// project's defaults (when the project is added) and a feature's own category (the
+// first time that feature saves into it).
 
 /**
- * Standalone categories required by hooks. Always created regardless of projects.
+ * Categories features save into by name, created on first save, never earlier.
+ * The hooks' and the Neural Interface's share of mcp-server/src/services/categories.ts
+ * FEATURE_CATEGORIES: keep the descriptions the same.
  */
-const STANDALONE_DEFAULTS = [
-  { name: 'conversations', description: 'Session summaries and conversation indexing' },
-  { name: 'communication-style', description: 'User communication patterns and preferences' },
-  { name: 'plans', description: 'Implementation plans stored after plan mode approval', is_parent: true, color: '#06d6a0' },
-];
+export const FEATURE_CATEGORIES = {
+  conversations: { description: 'Indexed conversation sessions with compacted summaries for cross-session recall: session metadata (date, branch, session id) and topic summaries, so past conversations can be found by asking for them.' },
+  'communication-style': { description: 'How the user communicates and works: patterns in how they give instructions, correct, decide and signal frustration, and their stated preferences.' },
+  plans: { description: 'Implementation plans stored after plan mode approval, one child category per project.', is_parent: true },
+  uncategorized: { description: 'Fallback for memories stored without a category.' },
+};
 
 /**
  * Default child categories for every registered project.
@@ -1052,90 +1058,118 @@ const PROJECT_CHILDREN = [
   { suffix: 'config', description: 'Configuration, deployment, environment, and infrastructure' },
 ];
 
+/** A project's parent category name: the label normalized, cut to 16 so children stay within 30 chars (16 + 1 + 12 = 29). */
+export function projectCategoryLabel(label) {
+  let name = normalizeLabel(String(label || ''));
+  if (name.length > 16) name = name.slice(0, 16).replace(/-$/, '');
+  return name;
+}
+
 /**
- * Ensure all registered projects have a parent category with default children,
- * and that standalone hook-required categories exist.
+ * Add the categories in `defs` that are missing, in order (parents first), to the
+ * MCP server's categories file (no connection suffix), whose watcher refreshes the
+ * tool schemas. A missing file is an empty list; an unreadable one is left alone.
+ * `mutate(categories, now)` may push more entries and return the names it created.
  *
- * Writes to the MCP server's categories file (no connection suffix) so the
- * MCP server's file watcher picks up changes and refreshes tool schemas.
- *
- * Idempotent: only adds missing categories, never modifies or removes existing ones.
+ * Idempotent: only adds missing categories, never modifies or removes existing ones
+ * (a project parent that exists without the flag is marked `is_parent` so its
+ * children can sit under it).
  *
  * @returns {{ created: string[], total: number }}
  */
-export function ensureProjectCategories() {
-  const projects = loadRegisteredProjects();
+function addMissingCategories(mutate) {
   const catPath = getMcpCategoriesPath();
-
-  let data;
-  try {
-    data = JSON.parse(readFileSync(catPath, 'utf-8'));
-  } catch {
-    data = { version: 1, categories: [] };
+  let data = { version: 1, categories: [] };
+  if (existsSync(catPath)) {
+    try { data = JSON.parse(readFileSync(catPath, 'utf-8')); } catch { return { created: [], total: 0 }; }
+    if (!data || !Array.isArray(data.categories)) return { created: [], total: 0 };
   }
-
-  const categories = data.categories || [];
-  const existingNames = new Set(categories.map((c) => c.name));
-  const created = [];
-  const now = new Date().toISOString();
-
-  // 1. Ensure standalone defaults exist
-  for (const def of STANDALONE_DEFAULTS) {
-    if (!existingNames.has(def.name)) {
-      const cat = { name: def.name, description: def.description, created_at: now };
-      if (def.is_parent) cat.is_parent = true;
-      if (def.color) cat.color = def.color;
-      categories.push(cat);
-      existingNames.add(def.name);
-      created.push(def.name);
-    }
-  }
-
-  // 2. Ensure project parents + children exist
-  for (const proj of projects) {
-    let label = normalizeLabel(proj.label);
-    // Truncate to 16 chars so children stay within 30-char limit (16 + 1 + 12 = 29)
-    if (label.length > 16) label = label.slice(0, 16).replace(/-$/, '');
-
-    // Ensure parent exists
-    if (!existingNames.has(label)) {
-      categories.push({
-        name: label,
-        description: `Knowledge and context for the ${proj.label} project`,
-        is_parent: true,
-        created_at: now,
-      });
-      existingNames.add(label);
-      created.push(label);
-    } else {
-      // Parent exists — ensure it has is_parent flag
-      const existing = categories.find((c) => c.name === label);
-      if (existing && !existing.is_parent) existing.is_parent = true;
-    }
-
-    // Ensure each default child exists
-    for (const child of PROJECT_CHILDREN) {
-      const childName = `${label}-${child.suffix}`;
-      if (!existingNames.has(childName)) {
-        categories.push({
-          name: childName,
-          description: `${child.description} for ${proj.label}`,
-          parent: label,
-          created_at: now,
-        });
-        existingNames.add(childName);
-        created.push(childName);
-      }
-    }
-  }
-
-  // Only write if we created something new
+  const categories = data.categories;
+  const created = mutate(categories, new Date().toISOString());
   if (created.length > 0) {
-    data.categories = categories;
+    data.version = data.version || 1;
+    mkdirSync(dirname(catPath), { recursive: true });
     writeFileSync(catPath, JSON.stringify(data, null, 2), 'utf-8');
   }
-
   return { created, total: categories.length };
+}
+
+/**
+ * Create categories the first time something saves into them.
+ * `defs`: [{ name, description, parent?, is_parent?, color? }], parents first. A
+ * parent is attached only when it exists (or is created by an earlier def).
+ *
+ * @returns {{ created: string[], total: number }}
+ */
+export function ensureCategories(defs) {
+  return addMissingCategories((categories, now) => {
+    const names = new Set(categories.map((c) => c.name));
+    const created = [];
+    for (const def of defs || []) {
+      if (!def?.name || names.has(def.name)) continue;
+      const cat = { name: def.name, description: def.description || def.name, created_at: now };
+      if (def.parent && names.has(def.parent)) cat.parent = def.parent;
+      else if (def.is_parent) cat.is_parent = true;
+      if (def.color) cat.color = def.color;
+      categories.push(cat);
+      names.add(def.name);
+      created.push(def.name);
+    }
+    return created;
+  });
+}
+
+/**
+ * Create a project's parent category with the default children, once: at the moment
+ * the project is registered (the Neural Interface's add-project route, the only
+ * writer of the registry). Never called for a project that was already registered,
+ * so a default category the user deleted stays deleted.
+ *
+ * @param {Array<{ label: string }>} projects — the project(s) just registered
+ * @returns {{ created: string[], total: number }}
+ */
+export function ensureProjectCategories(projects) {
+  return addMissingCategories((categories, now) => {
+    const existingNames = new Set(categories.map((c) => c.name));
+    const created = [];
+    for (const proj of projects || []) {
+      if (!proj?.label) continue;
+      const label = projectCategoryLabel(proj.label);
+      if (!label) continue;
+
+      // Ensure parent exists
+      if (!existingNames.has(label)) {
+        categories.push({
+          name: label,
+          description: `Knowledge and context for the ${proj.label} project`,
+          is_parent: true,
+          created_at: now,
+        });
+        existingNames.add(label);
+        created.push(label);
+      } else {
+        // Parent exists — ensure it has is_parent flag
+        const existing = categories.find((c) => c.name === label);
+        if (existing && !existing.is_parent && !existing.parent) existing.is_parent = true;
+      }
+
+      // Ensure each default child exists
+      for (const child of PROJECT_CHILDREN) {
+        const childName = `${label}-${child.suffix}`;
+        if (!existingNames.has(childName)) {
+          categories.push({
+            name: childName,
+            description: `${child.description} for ${proj.label}`,
+            parent: label,
+            created_at: now,
+          });
+          existingNames.add(childName);
+          created.push(childName);
+        }
+      }
+    }
+    return created;
+  });
 }
 
 /**

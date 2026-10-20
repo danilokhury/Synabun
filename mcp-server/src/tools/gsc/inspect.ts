@@ -3,7 +3,7 @@
  * gsc_inspect_url, gsc_inspect_test_live, gsc_inspect_request_indexing, gsc_inspect_view_crawled
  */
 
-import { z } from 'zod';
+import { z } from 'zod/v3';
 import * as ni from '../../services/neural-interface.js';
 import { text } from '../response.js';
 import { GSC_BASE, encodeProperty, currentProperty, ensureAuth, resolve, wait, pollFor, safeNavigate } from './helpers.js';

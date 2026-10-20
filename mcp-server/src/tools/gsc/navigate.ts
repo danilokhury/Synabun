@@ -3,7 +3,7 @@
  * Tools: gsc_navigate, gsc_property
  */
 
-import { z } from 'zod';
+import { z } from 'zod/v3';
 import * as ni from '../../services/neural-interface.js';
 import { text } from '../response.js';
 import { GSC_BASE, encodeProperty, currentProperty, ensureAuth, resolve, wait, pollFor, safeNavigate } from './helpers.js';

@@ -1,3 +1,25 @@
+# SynaBun v.2.0.9
+
+2.0.9 makes npm installs and updates more reliable, especially on Windows: SynaBun's dependencies are installed in one place at pinned versions, none of them runs its own install script, and the Windows updater closes the SynaBun processes your AI clients started before it replaces the package. A fresh install now starts with no memory categories, Codex on Windows no longer asks for administrator approval when SynaBun starts it, and the Assistant's account menu is easier to read.
+
+## ✨ New
+
+- **Admin sandbox** — When SynaBun started Codex on Windows, Codex could ask Windows for administrator approval (a UAC prompt) to set up its elevated sandbox, once for every Codex account, and a scheduled or background run waited on a prompt nobody saw. Codex started by SynaBun now uses the Windows sandbox that needs no administrator approval, which isolates commands less strictly. To use the elevated one, turn on **Admin sandbox** at the end of the Assistant's permission menu, under **Every agent**. It is off by default, applies to every agent SynaBun starts and never changes your own Codex settings; Claude Code and OpenCode are not affected.
+
+## 🛠 Fixed
+
+- **npm installs and updates that failed on Windows** — An install or update could stop with "Failed to install MCP Server dependencies", or fail because a SynaBun MCP server that an AI client had started still held files of the package open. All of SynaBun's dependencies are now installed together with the package, at the versions the release pins, and SynaBun no longer runs npm when it starts. On Windows the updater first closes the SynaBun processes that AI clients started from the install folder, and tries again when Windows still holds a file.
+- **Installs that downloaded or compiled extra parts** — No dependency runs its own install script during an install or update any more. On Linux x64 an install could download CUDA libraries SynaBun never uses, and on a computer with its own libvips the image library tried to compile itself and failed.
+
+## ⚙️ Changed
+
+- **No memory categories until you need them** — A fresh install starts with no categories, so categories you never used, such as the YouTube one, no longer appear. Adding a project creates its five default categories once: a default you delete stays deleted, and starting a session no longer brings it back. A feature such as conversations, plans or ideas creates its own category the first time it saves something. Categories you already have are not changed.
+- **The Assistant's account menu** — ⚙ → **Account** shows each account on one row with its plan or API key, who is signed in and how much usage is left, with the reset time in words. A signed-out account opens its sign-in, and the account your workers use is in the same menu. The composer's **Model** menu shows the same rows, and the model chip shows the model with the account's initial, with the account's name in its tooltip.
+- **Side panel headers stay on one row** — In a narrow Claude Code, Codex or OpenCode panel, the session name gets shorter instead of the header wrapping onto a second row, and the whole name shows when you point at it.
+- **Repairing an npm install** — When an npm install needs repairing, the launcher names the command: close SynaBun and every AI client that uses it, then run `npm i -g synabun@<version>` with your version. A plain `npm rebuild -g` runs the dependencies' install scripts again, so do not use it.
+
+---
+
 # SynaBun v.2.0.8
 
 2.0.8 fixes the Windows installer of 2.0.7, which could not finish on any Windows PC. It now installs in a few minutes, and when something does go wrong it says what and where to look. macOS, Linux and npm installs were not affected.

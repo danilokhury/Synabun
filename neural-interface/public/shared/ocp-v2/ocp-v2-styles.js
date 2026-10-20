@@ -98,8 +98,12 @@ const CSS = `
   padding: 5px 10px;
   border-radius: 8px 0 0 8px;
   transition: background 0.15s, color 0.15s;
-  max-width: 100%;
-  min-width: 0;
+  /* The session name gives way first: it starts from nothing and takes only
+     the room the pencil and the actions leave, up to its own width, so a long
+     name can never push them. 32px keeps the caret in view. */
+  flex: 1 1 0;
+  min-width: 32px;
+  max-width: max-content;
   overflow: hidden;
 }
 .ocpv2-session-btn:hover {
@@ -135,6 +139,7 @@ const CSS = `
 .ocpv2-rename-input:focus { border-color: rgba(100,160,255,0.5); }
 .ocpv2-rename-input::placeholder { color: rgba(255,255,255,0.3); }
 .ocpv2-session-btn .ocpv2-dd-arrow {
+  flex-shrink: 0;
   font-size: 9px;
   padding: 4px 6px;
   margin: -4px -6px -4px 0;
@@ -164,6 +169,8 @@ const CSS = `
   -webkit-tap-highlight-color: transparent;
   touch-action: manipulation;
   flex-shrink: 0;
+  /* The actions' own gap, kept when the name fills the row. */
+  margin-right: 3px;
 }
 .ocpv2-header-rename:hover:not(:disabled) {
   color: rgba(100,160,255,0.95);
@@ -359,6 +366,8 @@ const CSS = `
   margin-left: auto;
   flex-shrink: 0;
 }
+/* The header buttons never shrink, whatever the session name's length. */
+.ocpv2-actions > * { flex-shrink: 0; }
 .ocpv2-btn {
   display: flex;
   align-items: center;
@@ -2718,16 +2727,56 @@ const CHILD_CSS = `
      set inline via --right-panel-offset-{owner}. */
   border: 0.5px dashed rgba(180, 200, 255, 0.18);
 }
+/* A query container measured in controls: 1em is one header button (24px
+   docked, the window's control size when detached, which follows the font
+   scale), so the thresholds below hold at any scale. Nothing in this row
+   inherits it: the crumbs and the title set their own sizes. */
+.ocpv2-panel-child > .ocpv2-header {
+  container: ocpv2-child-header / inline-size;
+  font-size: 24px;
+}
+.ocpv2-panel-child.sp-floating > .ocpv2-header { font-size: var(--fw-header-control-size); }
+/* The sub-agent's name keeps a readable 88px (or its own width if shorter):
+   the chain of parents gives way first. */
+.ocpv2-panel-child .ocpv2-session-btn { flex: 1 0 88px; }
+/* The chain of parents: at most 40% of the row, and it gives way before the
+   name. When it is cut, it is cut from the left, so the nearest parent (the
+   last crumb, which keeps its own width, at most 140px) stays readable. */
 .ocpv2-panel-child .ocpv2-child-crumbs {
   display: inline-flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 3px;
   min-width: 0;
+  max-width: 40%;
   flex-shrink: 1;
   overflow: hidden;
   margin-right: 6px;
 }
 .ocpv2-panel-child .ocpv2-child-crumbs:empty { display: none; }
+.ocpv2-panel-child .ocpv2-child-crumbs > .ocpv2-child-crumb:last-child { flex-shrink: 0; }
+/* Narrow headers, in order: with less than 140px for the chain, only the
+   nearest parent shows, truncated; with less than 64px, the chain is hidden
+   and the name goes down to its caret. Room counted in controls (em) plus px:
+   docked, the pencil and six buttons are 7em with 18px of gaps; detached, the
+   move handle makes 8em and the window's 6px gaps 42px. Thresholds: the
+   name's 88px + the chain's 6px margin + 140px or 64px + that row. */
+@container ocpv2-child-header (width < calc(7em + 252px)) {
+  .ocpv2-panel-child:not(.sp-floating) .ocpv2-child-crumbs > :not(:last-child) { display: none; }
+  .ocpv2-panel-child:not(.sp-floating) .ocpv2-child-crumbs > .ocpv2-child-crumb:last-child { flex-shrink: 1; min-width: 0; }
+}
+@container ocpv2-child-header (width < calc(7em + 176px)) {
+  .ocpv2-panel-child:not(.sp-floating) .ocpv2-child-crumbs { display: none; }
+  .ocpv2-panel-child:not(.sp-floating) .ocpv2-session-btn { flex: 1 1 0; }
+}
+@container ocpv2-child-header (width < calc(8em + 276px)) {
+  .ocpv2-panel-child.sp-floating .ocpv2-child-crumbs > :not(:last-child) { display: none; }
+  .ocpv2-panel-child.sp-floating .ocpv2-child-crumbs > .ocpv2-child-crumb:last-child { flex-shrink: 1; min-width: 0; }
+}
+@container ocpv2-child-header (width < calc(8em + 200px)) {
+  .ocpv2-panel-child.sp-floating .ocpv2-child-crumbs { display: none; }
+  .ocpv2-panel-child.sp-floating .ocpv2-session-btn { flex: 1 1 0; }
+}
 .ocpv2-panel-child .ocpv2-child-crumb-sep {
   flex-shrink: 0;
   color: rgba(180, 200, 255, 0.4);

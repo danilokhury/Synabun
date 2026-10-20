@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { z } from 'zod/v3';
 import * as discord from '../services/discord.js';
 import { coerceStringArray } from './utils.js';
 import { text } from './response.js';

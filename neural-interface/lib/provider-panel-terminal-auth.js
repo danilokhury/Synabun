@@ -4,7 +4,8 @@ import { claudeAuthEnv } from './claude-panel-auth.js';
 import { applyCodexLaunchEnv } from './codex-accounts.js';
 
 // Only server-owned account records and resolved executables enter the PTY.
-export function providerLoginSpec({ provider, accountId, claudeAccounts, codexAccount, claudeExecutable, codexExecutable, env }) {
+// `codexConfigArgs`: the `-c` words every Codex SynaBun starts gets (the Admin sandbox setting's Windows sandbox).
+export function providerLoginSpec({ provider, accountId, claudeAccounts, codexAccount, claudeExecutable, codexExecutable, env, codexConfigArgs = [] }) {
   if (!['claude', 'codex'].includes(provider) || typeof accountId !== 'string' || !/^[a-z0-9-]{1,64}$/.test(accountId)) {
     throw Object.assign(new Error('Unknown provider account'), { status: 404 });
   }
@@ -24,7 +25,7 @@ export function providerLoginSpec({ provider, accountId, claudeAccounts, codexAc
     if (!account.home) throw new Error('This Claude account has no isolated home.');
     baseEnv = claudeAuthEnv(baseEnv, { CLAUDE_CONFIG_DIR: account.home });
   }
-  const args = provider === 'claude' ? ['auth', 'login', '--claudeai'] : ['login'];
+  const args = provider === 'claude' ? ['auth', 'login', '--claudeai'] : ['login', ...codexConfigArgs];
   return { launch: /\.[cm]?js$/i.test(file) ? { shell: process.execPath, args: [file, ...args] } : { shell: file, args }, baseEnv };
 }
 

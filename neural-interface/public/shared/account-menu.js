@@ -332,7 +332,10 @@ export function mountAccountMenu({ provider = 'claude', container, before = null
 
   function place() {
     if (!open) return;
-    const rect = trigger.getBoundingClientRect();
+    let rect = trigger.getBoundingClientRect();
+    // A header too narrow for the trigger hides it (the panels' container queries); the menu,
+    // opened from the cog's Account row, then hangs from the row the trigger sits in.
+    if (!rect.width && !rect.height && trigger.parentElement) rect = trigger.parentElement.getBoundingClientRect();
     const owner = layer?.() || trigger.closest('[class*="panel"]');
     const ownerWidth = owner?.getBoundingClientRect?.().width;
     popup.style.width = `${Math.max(0, Math.min(320, ownerWidth > 240 ? ownerWidth - 16 : 320, window.innerWidth - 16))}px`;

@@ -33,7 +33,7 @@ import { execSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
-import { getHookFeatures, detectProject, ensureProjectCategories, cleanupStaleLoops, cleanupStalePendingRemember, cleanupStaleFiles, appendCapped, DATA_DIR, isTemporaryChat, niUrl, greetingSurface, greetingOff, GREETING_NOTE_DIR } from './shared.mjs';
+import { getHookFeatures, detectProject, cleanupStaleLoops, cleanupStalePendingRemember, cleanupStaleFiles, appendCapped, DATA_DIR, isTemporaryChat, niUrl, greetingSurface, greetingOff, GREETING_NOTE_DIR } from './shared.mjs';
 
 // CC updates (especially when installer runs as root) can wipe ~/.claude.json
 // or strip mcpServers.SynaBun, leaving the side panel/CLI with MCP disabled
@@ -227,9 +227,6 @@ async function main() {
       }).catch(() => { /* NI may not be running */ });
     } catch { /* ok */ }
   }
-
-  // Ensure all registered projects have their default category trees
-  try { withStateLock(() => ensureProjectCategories()); } catch { /* non-critical */ }
 
   // Self-heal SynaBun MCP registration (CC updates can strip it)
   healSynaBunMcp();

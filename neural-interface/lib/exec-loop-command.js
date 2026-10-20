@@ -82,6 +82,8 @@ export function buildExecInvocation({
   model,
   effort,
   mcpEnvOverrides = [],
+  // Codex: launch overrides as `-c` words (the Windows sandbox of the Admin sandbox setting).
+  codexConfigArgs = [],
   platform = process.platform,
   commandExists = existsSync,
 } = {}) {
@@ -94,7 +96,7 @@ export function buildExecInvocation({
 
   switch (profile) {
     case 'codex': {
-      args.push('exec', '--dangerously-bypass-approvals-and-sandbox');
+      args.push('exec', '--dangerously-bypass-approvals-and-sandbox', ...codexConfigArgs);
       for (const [key, value] of mcpEnvOverrides) {
         args.push('-c', `mcp_servers.SynaBun.env.${key}=${codexConfigString(value)}`);
       }

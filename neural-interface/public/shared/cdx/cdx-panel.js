@@ -261,7 +261,7 @@ function buildPanel() {
   panel.innerHTML = `
     <div class="cxp-resize-handle"></div>
     <div class="cxp-header">
-      <button class="cxp-session-btn" id="cxp-session-btn" type="button">
+      <button class="cxp-session-btn" id="cxp-session-btn" type="button" title="${esc(_sessionLabel)}">
         <span class="cxp-session-label" id="cxp-session-label">${esc(_sessionLabel)}</span>
         <span class="cxp-dd-arrow">&#x25BE;</span>
       </button>

@@ -407,6 +407,10 @@ async function editMemory(id: string, payload: MemoryPayload): Promise<void> {
     console.log(success(`  ${ICONS.check} Content updated & re-embedded.`));
   } else if (field === 'category') {
     const cats = getAllCategories();
+    if (cats.length === 0) {
+      console.log(warn(`  ${ICONS.cross} No categories yet. Create one under Categories first.`));
+      return;
+    }
     const val = await safePrompt(() =>
       select({
         message: '  Category:',
@@ -608,6 +612,13 @@ async function searchScreen(): Promise<void> {
 async function createScreen(): Promise<void> {
   printScreenHeader(`${ICONS.plus} Create Memory`, 'Store a new piece of knowledge');
 
+  // A fresh install has no categories until a project is added or one is created.
+  const cats = getAllCategories();
+  if (cats.length === 0) {
+    console.log(warn(`  ${ICONS.cross} No categories yet. Create one under Categories first.`));
+    return;
+  }
+
   // Content
   const content = await safePrompt(() =>
     input({
@@ -618,7 +629,6 @@ async function createScreen(): Promise<void> {
   if (content === null) return;
 
   // Category
-  const cats = getAllCategories();
   const category = await safePrompt(() =>
     select({
       message: accent(`  ${ICONS.folder} Category:`),
@@ -793,12 +803,15 @@ async function categoriesScreen(): Promise<void> {
         );
         if (reassign === null || !reassign) continue;
 
+        const others = getAllCategories().filter(c => c !== name);
+        if (others.length === 0) {
+          console.log(warn(`  ${ICONS.cross} No other category to move them to. Create one first.`));
+          continue;
+        }
         const target = await safePrompt(() =>
           select({
             message: accent('  Reassign to:'),
-            choices: getAllCategories()
-              .filter(c => c !== name)
-              .map(c => ({ name: `  ${colorCategory(c)}`, value: c })),
+            choices: others.map(c => ({ name: `  ${colorCategory(c)}`, value: c })),
           })
         );
         if (target === null) continue;

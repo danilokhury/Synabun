@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { z } from 'zod/v3';
 import { text } from './response.js';
 import { VALID_GROUPS, getProfilePresets, persistRuntimeProfile, type ProfileRuntime } from '../services/profiles.js';
 import { reportRuntimeMcpProfile, type RuntimeMcpProfileReport } from '../services/neural-interface.js';

@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { z } from 'zod/v3';
 import { restoreMemory, getMemory } from '../services/sqlite.js';
 import type { MemoryPayload } from '../types.js';
 import { text } from './response.js';

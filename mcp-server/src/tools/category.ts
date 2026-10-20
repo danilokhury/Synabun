@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { z } from 'zod/v3';
 import {
   validateCategoryName,
   addCategory,
@@ -84,6 +84,11 @@ async function handleCreate(args: {
 
   if (args.color && !/^#[0-9a-f]{6}$/i.test(args.color)) {
     return text('Invalid color format. Use hex format: #rrggbb (e.g., #3b82f6)');
+  }
+
+  // A child under a parent that does not exist would be dangling (a fresh install has no categories at all).
+  if (args.parent && !categoryExists(args.parent)) {
+    return text(`Parent category "${args.parent}" does not exist. Create "${args.name}" with no parent, or create the parent first. Available: ${getAllCategories().join(', ') || '(none)'}`);
   }
 
   addCategory(args.name, args.description.trim(), args.parent, args.color, args.is_parent);

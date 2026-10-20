@@ -36,7 +36,7 @@ jobs:
           registry-url: https://registry.npmjs.org
           cache: npm
           cache-dependency-path: |
-            package-lock.json
+            npm-shrinkwrap.json
             mcp-server/package-lock.json
             neural-interface/package-lock.json
 
@@ -53,7 +53,11 @@ jobs:
           process.exit(1);
           }"
 
-      - name: Install root package metadata
+      # What npm i -g synabun installs (root dependencies, npm-shrinkwrap.json) must be what the two parts give.
+      - name: Check root dependencies
+        run: node lib/root-dependencies.mjs --check
+
+      - name: Install root dependencies
         run: npm ci --ignore-scripts
 
       - name: Install MCP server dependencies

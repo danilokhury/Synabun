@@ -18,7 +18,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { z } from 'zod';
+import { z } from 'zod/v3';
 import type { JudgeUsage } from './typesafe.js';
 import { typesafeConfig, mutateTypeSafeConfig, type TypeSafeConfig } from './typesafe-config.js';
 import {

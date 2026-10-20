@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { writeMemory, IdempotencyConflict, type WriteMemoryResult } from '../services/memory-writer.js';
-import { z } from 'zod';
-import { categoryExists, getAllCategories, getCategories } from '../services/categories.js';
+import { z } from 'zod/v3';
+import { categoryExists, ensureCategory, ensureFeatureCategory, getCategories, projectCategoryLabel } from '../services/categories.js';
 import { coerceStringArray } from './utils.js';
 import type { MemoryPayload, MemorySource } from '../types.js';
 import { detectProject, projectRoot } from '../config.js';
@@ -112,22 +112,23 @@ export const rememberDescription =
 
 /**
  * Resolve the category to store under. If the caller supplied a valid category,
- * use it verbatim. Otherwise fall back to a project default so a memory is never
- * lost just because the required field was omitted or misspelled.
+ * use it verbatim. A feature's category (conversations, communication-style, …)
+ * is created the first time it is asked for: a fresh install has none. Anything
+ * else falls back to the project's default child, created if it is missing, so a
+ * memory is never lost just because the required field was omitted or misspelled.
  * Returns the chosen category and whether a fallback was applied.
  */
 function resolveCategory(requested: string | undefined, project: string): { category: string; fallback: boolean } {
   if (requested && categoryExists(requested)) {
     return { category: requested, fallback: false };
   }
-  const all = getAllCategories();
-  const projectDefault = `${project}-project`;
-  const chosen =
-    (all.includes(projectDefault) && projectDefault) ||
-    (all.includes('conversations') && 'conversations') ||
-    all[0] ||
-    'conversations';
-  return { category: chosen, fallback: true };
+  if (requested && ensureFeatureCategory(requested)) {
+    return { category: requested, fallback: false };
+  }
+  const label = projectCategoryLabel(project);
+  const projectDefault = `${label}-project`;
+  ensureCategory(projectDefault, `General project knowledge, decisions, and milestones for ${project}`, { parent: label });
+  return { category: projectDefault, fallback: true };
 }
 
 export async function handleRemember(args: {

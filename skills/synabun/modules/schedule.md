@@ -139,7 +139,7 @@ Rules baked in: `model`/`profile` **top level**; `{iterations,maxMinutes}` in `o
 
 ## Phase 5 — Remember (one MCP call)
 
-`remember` `category:"schedules"` (if missing, `category` action `create` child under parent `synabun`), `project:"synabun"`, `importance:6`, `tags:["schedule","<platform/topic>","conversational-created"]`, content = 4–6 lines: name, template id, schedule id, cron, group, profile/model, date.
+`remember` `category:"schedules"` (SynaBun creates it on the first save, with no parent; if the runtime still reports it unknown, `category` action `create` it first, under parent `synabun` only when that category exists in `category` action `list`, otherwise with no parent), `project:"synabun"`, `importance:6`, `tags:["schedule","<platform/topic>","conversational-created"]`, content = 4–6 lines: name, template id, schedule id, cron, group, profile/model, date.
 
 ## Phase 6 — Done (one line)
 

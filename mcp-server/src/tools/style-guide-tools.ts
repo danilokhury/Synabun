@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { z } from 'zod/v3';
 import { resolve } from 'path';
 import { existsSync, lstatSync, readFileSync } from 'fs';
 import * as ni from '../services/neural-interface.js';

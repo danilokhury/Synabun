@@ -8,17 +8,18 @@
  * 1. Checks Node.js version (>=22)
  * 2. Ensures data directory exists (~/.synabun or %APPDATA%/synabun)
  * 3. Migrates data from old scaffolded installs if detected
- * 4. Installs npm deps for neural-interface/ and mcp-server/
- * 5. Builds the MCP server TypeScript (if dist/ is missing or stale)
+ * 4. Checks that the runtime dependencies resolve (npm installs them with the
+ *    package); runs npm only for a checkout nobody installed or a missing module
+ * 5. Builds the MCP server TypeScript (if dist/ is missing)
  * 6. Takes a verified snapshot of user state before a new version first runs
  *    (lib/first-launch-protection.js). If it cannot, the launch stops here.
  * 7. Starts the Neural Interface Express server
  * 8. Auto-opens browser to onboarding wizard (or main page if setup complete)
  */
 
-import { execFileSync, execSync, spawn, exec } from 'node:child_process';
+import { execFileSync, spawn, exec } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync, cpSync, readdirSync, mkdirSync, unlinkSync, createWriteStream, statSync, renameSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { platform } from 'node:os';
 import {
@@ -48,6 +49,9 @@ import {
   RESTART_REPORT_ENV, noteSupervisorFailure, openRestartReport, openSupervisorRecord, registerStartLauncher, resolvePort,
 } from './lib/start-launcher.js';
 import { packagedRuntime } from './lib/packaged-runtime.js';
+import {
+  OPTIONAL_AT_ROOT, checkRuntimeDependencies, findInstalled, installAtPackageRoot, installKind, mcpCompiler,
+} from './lib/runtime-dependencies.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -288,44 +292,67 @@ function checkNodeVersion() {
   ok(`Node.js v${process.versions.node}`);
 }
 
-// ── Phase 2: Dependency installation ──
+// ── Phase 2: Runtime dependencies ──
+//
+// `npm i -g synabun` installed them at the package root, at the versions
+// npm-shrinkwrap.json pins; a desktop build and a development checkout carry
+// them in each part's node_modules. This step only checks that Node finds them
+// (lib/runtime-dependencies.js). npm runs here only for what is really missing,
+// a checkout nobody installed or a module that disappeared: once, at the
+// package root, and never inside a packaged application.
 
-function needsInstall(dir) {
-  const nm = resolve(dir, 'node_modules');
-  if (!existsSync(resolve(nm, '.package-lock.json'))) return true;
-  // Guard against a corrupted/partially-wiped node_modules where
-  // .package-lock.json survived but the actual packages didn't.
-  try {
-    const pkg = JSON.parse(readFileSync(resolve(dir, 'package.json'), 'utf8'));
-    const dep = Object.keys(pkg.dependencies || {})[0];
-    if (dep && !existsSync(resolve(nm, dep))) return true;
-  } catch {
-    return true;
-  }
-  return false;
+// The repair of an npm install: this version again, from the registry, which keeps the dependencies' install
+// scripts off as every install and update does. Never a bare `npm rebuild -g`: it reads each dependency's own
+// package.json and runs those scripts (onnxruntime-node's CUDA download, sharp's source build).
+function npmRepairCommand() {
+  let version = null;
+  try { version = JSON.parse(readFileSync(resolve(PACKAGE_ROOT, 'package.json'), 'utf-8')).version; } catch {}
+  return `npm i -g synabun${version ? `@${version}` : ''}`;
 }
 
-function installDeps(name, dir, { includeDev = false } = {}) {
-  if (!needsInstall(dir)) {
-    ok(`${name} dependencies already installed`);
+function ensureRuntimeDependencies() {
+  const report = checkRuntimeDependencies({ packageRoot: PACKAGE_ROOT });
+  // A fresh checkout compiles the MCP server, with the TypeScript of the root's devDependencies.
+  const compilerMissing = needsBuild() && !mcpCompiler(PACKAGE_ROOT);
+  if (report.ok && !compilerMissing) {
+    ok('Runtime dependencies present');
+    for (const part of report.parts) for (const name of part.optional) warn(`${name} is not installed: ${OPTIONAL_AT_ROOT[name]}`);
     return;
   }
 
-  info(`Installing ${name} dependencies...`);
-  startPhase('dependencies', { name });
-  try {
-    const omitFlag = includeDev ? '' : ' --omit=dev';
-    execSync(`npm install${omitFlag} --ignore-scripts`, {
-      cwd: dir,
-      stdio: 'inherit',
-      timeout: 300_000,
-    });
-    ok(`${name} dependencies installed`);
-  } catch (err) {
-    fail(`Failed to install ${name} dependencies`);
-    console.error(err.stderr?.toString() || err.message);
-    startFailed('DEPENDENCIES_FAILED', `npm could not install the ${name} dependencies`);
+  for (const part of report.parts) if (part.error) fail(part.error);
+  const names = [...report.missing.map(item => item.name), ...(compilerMissing ? ['typescript (builds the MCP server)'] : [])];
+  if (names.length) warn(`Missing: ${names.slice(0, 8).join(', ')}${names.length > 8 ? ` and ${names.length - 8} more` : ''}`);
+  const kind = installKind({ packageRoot: PACKAGE_ROOT, packaged: !!packagedRuntime() });
+  if (kind === 'packaged') {
+    fail('This SynaBun application is incomplete. Reinstall it from https://synabun.ai');
+    startFailed('DEPENDENCIES_MISSING', 'the application is incomplete: reinstall it');
     process.exit(1);
+  }
+
+  info(`Installing them with npm in ${PACKAGE_ROOT}...`);
+  startPhase('dependencies', { name: 'SynaBun' });
+  const logsDir = resolve(DATA_HOME, 'data', 'npm-logs');
+  const result = installAtPackageRoot({ packageRoot: PACKAGE_ROOT, includeDev: needsBuild(), logsDir });
+  const after = result.ok ? checkRuntimeDependencies({ packageRoot: PACKAGE_ROOT }) : null;
+  if (!result.ok || !after.ok) {
+    fail('npm could not install the runtime dependencies');
+    info(`Command:   ${result.command}`);
+    info(`Folder:    ${result.cwd}`);
+    info(`Exit code: ${result.status ?? 'none'}${result.signal ? `, signal ${result.signal}` : ''}${result.timedOut ? ' (stopped after 20 minutes)' : result.error ? ` (${result.error})` : ''}`);
+    info(`npm log:   ${result.logFile || `none written (folder ${logsDir})`}`);
+    if (after && !after.ok) info(`Still missing: ${after.missing.map(item => item.name).join(', ')}`);
+    if (kind === 'npm') info(`To repair: close SynaBun and every AI client that uses it, then run  ${npmRepairCommand()}`);
+    startFailed('DEPENDENCIES_FAILED', `npm could not install the runtime dependencies (exit ${result.status ?? result.signal ?? result.error})`, { exitCode: result.status ?? undefined });
+    process.exit(1);
+  }
+  ok(`Runtime dependencies installed (${result.seconds} s)`);
+  // That install ran no package scripts: node-pty still needs building where it has no prebuilt binary.
+  const rebuild = resolve(PACKAGE_ROOT, 'neural-interface', 'scripts', 'rebuild-pty.js');
+  try {
+    execFileSync(process.execPath, [rebuild], { cwd: resolve(PACKAGE_ROOT, 'neural-interface'), stdio: 'inherit', timeout: 180_000, windowsHide: true });
+  } catch {
+    warn('node-pty could not be prepared: terminal features may not work');
   }
 }
 
@@ -348,10 +375,11 @@ function installPlaywrightChromium() {
   info('Installing Playwright Chromium (for browser automation)...');
   startPhase('browser');
   try {
-    const cli = resolve(niDir, 'node_modules', 'playwright', 'cli.js');
-    const options = { cwd: niDir, stdio: 'inherit', timeout: 120_000 };
-    if (existsSync(cli)) execFileSync(process.execPath, [cli, 'install', 'chromium'], options);
-    else execSync('npx playwright install chromium', options);
+    // SynaBun's own Playwright (the package root's in an npm install, the part's in a checkout), never `npx`:
+    // npx would fetch the newest Playwright, whose Chromium is not the one this version drives.
+    const playwright = findInstalled(niDir, 'playwright', { stopAt: PACKAGE_ROOT });
+    if (!playwright) throw new Error('playwright is not installed');
+    execFileSync(process.execPath, [join(playwright.path, 'cli.js'), 'install', 'chromium'], { cwd: niDir, stdio: 'inherit', timeout: 120_000 });
     ok('Playwright Chromium installed');
   } catch (err) {
     console.log('  (optional) Playwright Chromium install failed — system Chrome will be used');
@@ -373,8 +401,13 @@ function buildMcpServer() {
 
   info('Building MCP server from source...');
   startPhase('build');
+  const tsc = mcpCompiler(PACKAGE_ROOT);
+  if (!tsc) {
+    fail('MCP server build failed: TypeScript is not installed (npm install at the package root installs it)');
+    return;
+  }
   try {
-    execSync('npx tsc', {
+    execFileSync(process.execPath, [tsc, '-p', resolve(PACKAGE_ROOT, 'mcp-server')], {
       cwd: resolve(PACKAGE_ROOT, 'mcp-server'),
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: !!packagedRuntime(),
@@ -841,11 +874,10 @@ async function main() {
   checkNodeVersion();
   console.log('');
 
-  // Dependencies (installed in global package location)
+  // Dependencies (npm installed them with the package; this only checks)
   // A slow step names itself when it begins (startPhase inside each); between
   // them the record goes back to 'checking', so it never names a finished one.
-  installDeps('Neural Interface', resolve(PACKAGE_ROOT, 'neural-interface'));
-  installDeps('MCP Server', resolve(PACKAGE_ROOT, 'mcp-server'), { includeDev: needsBuild() });
+  ensureRuntimeDependencies();
   startPhase('checking');
   console.log('');
 

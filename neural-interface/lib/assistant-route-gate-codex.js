@@ -19,6 +19,7 @@ import { mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { CODEX_PROBE_SANDBOX_ARGS } from './agent-sandbox-elevation.js';
 
 export const CODEX_GATE_HOOK_PATH = resolve(dirname(fileURLToPath(import.meta.url)), 'assistant-brains', 'codex-route-gate-hook.mjs');
 export const CODEX_BROWSER_POLICY_HOOK_PATH = resolve(dirname(fileURLToPath(import.meta.url)), 'assistant-brains', 'codex-browser-policy-hook.mjs');
@@ -80,7 +81,8 @@ function probe({ codexBin, command, timeoutMs, spawnImpl }) {
     if (codexNeedsShell(bin)) { done(null); return; }
     const home = resolve(tmpdir(), 'synabun-codex-gate-probe');
     try { mkdirSync(home, { recursive: true }); } catch {}
-    const args = [...codexGateHookFlags(command), 'app-server'];
+    // A probe runs no command: the Windows sandbox that needs no administrator (lib/agent-sandbox-elevation.js).
+    const args = [...codexGateHookFlags(command), ...CODEX_PROBE_SANDBOX_ARGS, 'app-server'];
     if (/\.js$/i.test(bin)) { args.unshift(bin); bin = process.execPath; }
     let proc;
     try {

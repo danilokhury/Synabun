@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { z } from 'zod/v3';
 import { softDeleteMemory, getMemory } from '../services/sqlite.js';
 import type { MemoryPayload } from '../types.js';
 import { invalidateCache } from '../services/neural-interface.js';

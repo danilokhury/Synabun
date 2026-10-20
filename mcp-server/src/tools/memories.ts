@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { z } from 'zod/v3';
 import { scrollMemories, getMemoryStats, getMemory, rowToSessionChunkPayload } from '../services/sqlite.js';
 import { validateCategory } from '../services/categories.js';
 import type { MemoryPayload } from '../types.js';

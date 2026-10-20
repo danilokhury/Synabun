@@ -16,10 +16,16 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ensureVendoredExecutables } from '../lib/native-binary-runtime.js';
 import { pruneExternalTools } from '../../lib/external-tools.js';
+import { findInstalled } from '../../lib/runtime-dependencies.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const neuralRoot = resolve(__dirname, '..');
-const ptyDir = resolve(neuralRoot, 'node_modules', 'node-pty');
+const packageRoot = resolve(neuralRoot, '..');
+// node-pty where Node finds it from the Neural Interface: the package root's
+// node_modules after `npm i -g synabun`, neural-interface/node_modules in a
+// development checkout or a desktop build.
+const ptyDir = findInstalled(neuralRoot, 'node-pty', { stopAt: packageRoot })?.path
+  || resolve(neuralRoot, 'node_modules', 'node-pty');
 
 // Step 0: Claude Code, Codex, OpenCode and Gemini CLI are installed by the user,
 // never by SynaBun. The lockfile holds none of them; an `npm install` that
@@ -40,7 +46,13 @@ for (const item of pruneExternalTools(resolve(neuralRoot, 'node_modules')).remov
 // linux dirs that do not exist here while missing ones that do). The sweep
 // below enumerates instead.
 function sweepVendoredBinaries(label) {
-  const sweep = ensureVendoredExecutables({ root: neuralRoot, log: console.log });
+  // Both node_modules an install can have: the package root's and the Neural Interface's own.
+  const sweep = { repaired: [], failed: [] };
+  for (const root of new Set([neuralRoot, packageRoot])) {
+    const found = ensureVendoredExecutables({ root, log: console.log });
+    sweep.repaired.push(...found.repaired);
+    sweep.failed.push(...found.failed);
+  }
   for (const failure of sweep.failed) {
     console.warn(`[rebuild-pty] ${failure.path} is not launchable (${failure.state}).`
       + (failure.repairCommand ? ` Try: ${failure.repairCommand}` : ''));

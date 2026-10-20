@@ -31,7 +31,7 @@ import { dirname, join, basename } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { withStateLock, writeJsonAtomic, planMemoryKey } from './state.mjs';
-import { detectProject, getMcpCategoriesPath, MCP_DATA_DIR, DATA_DIR, readStdin, hookBudget, hookJudge, clipForJudge, isTemporaryChat } from './shared.mjs';
+import { detectProject, ensureCategories, FEATURE_CATEGORIES, DATA_DIR, readStdin, hookBudget, hookJudge, clipForJudge, isTemporaryChat } from './shared.mjs';
 
 // Cross-platform safety: catch uncaught errors and output valid hook JSON
 process.on('uncaughtException', () => { try { process.stdout.write('{}'); } catch {} process.exit(0); });
@@ -356,38 +356,14 @@ function findLatestPlan() {
 
 // ─── Category management ───
 
+// "plans" and "plans-<project>" are made by the first plan stored (a fresh install has neither).
 function ensureProjectCategory(project) {
   const categoryName = `plans-${project}`;
-  const catPath = getMcpCategoriesPath();
-
   try {
-    const data = JSON.parse(readFileSync(catPath, 'utf-8'));
-    const categories = data.categories || [];
-
-    if (categories.some((c) => c.name === categoryName)) {
-      return categoryName;
-    }
-
-    if (!categories.some((c) => c.name === 'plans')) {
-      categories.push({
-        name: 'plans',
-        description: 'Implementation plans stored after plan mode approval. Sub-categorized by project name.',
-        is_parent: true,
-        color: '#06d6a0',
-        created_at: new Date().toISOString(),
-      });
-    }
-
-    categories.push({
-      name: categoryName,
-      description: `Implementation plans for ${project} project`,
-      parent: 'plans',
-      created_at: new Date().toISOString(),
-    });
-
-    data.categories = categories;
-    writeFileSync(catPath, JSON.stringify(data, null, 2), 'utf-8');
-
+    ensureCategories([
+      { name: 'plans', description: FEATURE_CATEGORIES.plans.description, is_parent: true, color: '#06d6a0' },
+      { name: categoryName, description: `Implementation plans for ${project} project`, parent: 'plans' },
+    ]);
     return categoryName;
   } catch {
     return 'plans';

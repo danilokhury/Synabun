@@ -4,7 +4,7 @@
  *        gsc_sitemap, gsc_removals, gsc_removals_cancel
  */
 
-import { z } from 'zod';
+import { z } from 'zod/v3';
 import * as ni from '../../services/neural-interface.js';
 import { text } from '../response.js';
 import { GSC_BASE, encodeProperty, currentProperty, ensureAuth, resolve, wait, pollFor, safeNavigate, TABLE_EXTRACTOR_SCRIPT, readMetricTileScript } from './helpers.js';

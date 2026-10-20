@@ -64,7 +64,7 @@ import {
 import {
   closeAssistantSession, dispatchAssistantRun, escalateAssistantRun, focusAssistantRun, getAssistantRun,
   fetchManageCatalog, getAssistantRunResult, getAssistantSession, getAssistantSessionUsage, getDesktopStatus, getRouting, killAllAssistantRuns, removeAssistantRun, clearFinishedAssistantRuns,
-  listAssistantSessions, patchAssistantSession, patchHiddenModels, stopAssistantRun, uploadAssistantAttachment,
+  listAssistantSessions, patchAssistantSession, patchHiddenModels, setAdminSandbox, stopAssistantRun, uploadAssistantAttachment,
 } from './asst-api.js';
 
 const ICON_SESSIONS = '<svg viewBox="0 0 24 24"><path d="M3 6h18M3 12h18M3 18h12"/></svg>';
@@ -154,8 +154,9 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     engine: '',
     sdkVersion: '',
     routing: null,                                 // server view { mode, effectiveMode, defaultMode, askBelow }
-    features: { routing: null, computer: null, testDensity: null, rename: null },   // null = unknown yet
+    features: { routing: null, computer: null, testDensity: null, rename: null, adminSandbox: null },   // null = unknown yet
     testDensityEffective: null,                    // server view: the level in effect
+    adminSandbox: null,                            // server view: the global Admin sandbox setting (every agent)
     brainCapabilities: null,
     computerEffective: st.computerUse === true,
     desktopSupported: null,
@@ -583,6 +584,9 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     // Test density sits right after the permission mode; hidden on a server that does not know it.
     getTestDensity: () => testDensityView(),
     onTestDensity: (level) => setTestDensity(level),
+    // The global Admin sandbox switch, in the permission menu; hidden on a server that does not serve it.
+    getAdminSandbox: () => adminSandboxView(),
+    onAdminSandbox: (enabled) => changeAdminSandbox(enabled),
     // The registered projects arrived: their labels name the project in the fields and the "Fix … in" suggestion.
     onProjects: () => { picker.render(); renderer.refreshEmpty(); },
   });
@@ -950,7 +954,9 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
       if (typeof meta.features.computer === 'boolean') st.features.computer = meta.features.computer;
       if (typeof meta.features.testDensity === 'boolean') st.features.testDensity = meta.features.testDensity;
       if (typeof meta.features.rename === 'boolean') st.features.rename = meta.features.rename;
+      if (typeof meta.features.adminSandbox === 'boolean') st.features.adminSandbox = meta.features.adminSandbox;
     }
+    if (typeof meta.adminSandbox === 'boolean') st.adminSandbox = meta.adminSandbox;
     if ('testDensityExplicit' in meta) st.testDensity = normalizeTestDensity(meta.testDensityExplicit, null);
     if (meta.testDensity) st.testDensityEffective = normalizeTestDensity(meta.testDensity);
     if (typeof meta.computerUse === 'boolean') st.computerEffective = meta.computerUse;
@@ -1064,6 +1070,31 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     sock.send({ type: 'set_test_density', level: next });
     try { storage.setItem(KEYS.ASSISTANT_TEST_DENSITY, next); } catch { /* storage unavailable */ }
     if (!quiet) renderer.appendStatus(tt('assistant.status.testDensity', 'Test density: {level}', { level: testDensityLabel(next, t) }));
+  }
+
+  /** The global Admin sandbox setting (true / false), or null while the server does not serve it. */
+  function adminSandboxView() {
+    if (st.features.adminSandbox !== true || typeof st.adminSandbox !== 'boolean') return null;
+    return st.adminSandbox;
+  }
+
+  /** Every agent SynaBun starts follows it; every window hears the change (sync:agents:admin-sandbox-changed). */
+  async function changeAdminSandbox(enabled) {
+    const before = st.adminSandbox;
+    st.adminSandbox = enabled === true;
+    picker.render();
+    try {
+      const view = await setAdminSandbox(st.adminSandbox);
+      if (typeof view?.adminSandbox === 'boolean') st.adminSandbox = view.adminSandbox;
+      picker.render();
+      renderer.appendStatus(st.adminSandbox
+        ? tt('assistant.adminSandbox.statusOn', 'Admin sandbox: on. On Windows, Codex may ask for administrator approval once per account to set up its sandbox.')
+        : tt('assistant.adminSandbox.statusOff', 'Admin sandbox: off. No agent SynaBun starts asks for administrator approval for a sandbox.'));
+    } catch (err) {
+      st.adminSandbox = before;
+      picker.render();
+      toast(err?.message || String(err));
+    }
   }
 
   /** Fresh tabs inherit the last-used test density (like the route mode). */
@@ -1878,6 +1909,12 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     if (!def) return;
     st.routing = { ...(st.routing || {}), defaultMode: def, effectiveMode: st.routeMode || def };
     routeChip.render();
+  }));
+  // The global Admin sandbox setting changed in some window (this one included): every panel shows it.
+  unsubs.push(on('sync:agents:admin-sandbox-changed', (msg) => {
+    if (typeof msg?.adminSandbox !== 'boolean' || msg.adminSandbox === st.adminSandbox) return;
+    st.adminSandbox = msg.adminSandbox;
+    picker.render();
   }));
   unsubs.push(on('session:info', () => updateGuest()));
   unsubs.push(on('permissions:changed', () => updateGuest()));

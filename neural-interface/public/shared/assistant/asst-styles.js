@@ -1108,13 +1108,21 @@ export function injectAssistantStyles() {
     /* Fields (toolbar and composer): glyph · seam · value ▾ */
     .asst-dd { flex: 0 1 auto; justify-content: flex-start; max-width: calc(18ch + 60px); }
     .asst-dd .asst-dd-label { min-width: 0; max-width: 18ch; overflow: hidden; text-overflow: ellipsis; }
-    .asst-dd-model .asst-dd-label.asst-model-account-label { display: flex; gap: 4px; max-width: 34ch; }
-    .asst-model-account-label :is(.asst-model-name, .asst-model-account) { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-    .asst-model-account-label .asst-model-name { flex: 1 1 auto; }
-    .asst-model-account-label .asst-model-account { flex: 0 1 auto; min-width: 4ch; max-width: 12ch; }
-    .asst-model-account-label .asst-model-mode { flex-shrink: 0; }
-    /* A display name ("Sonnet 5", a project) is sans; a raw model id (opus[1m]) is mono. */
-    .asst-dd.asst-dd-model[data-raw] .asst-dd-label { font-family: var(--asst-mono); font-weight: 400; }
+    /* The model chip: name · context tag · account cue · API (asst-model-chip.js). The picker
+       draws the longest form that fits the row, so no part shrinks or ends in an ellipsis; the
+       cue and the API badge are the account menu's avatar and badge at the row's xs size. */
+    .asst-dd.asst-dd-model { max-width: calc(30ch + 60px); }
+    .asst-dd-model .asst-dd-label.asst-model-label { display: inline-flex; align-items: center; gap: 4px; max-width: none; }
+    .asst-model-label > * { flex: none; }
+    .asst-model-label > [hidden] { display: none; }
+    .asst-model-tag { color: var(--asst-text-3); font-family: var(--asst-mono); font-size: 10.5px; font-weight: 400; }
+    .asst-model-label > .asst-acct-avatar { flex: 0 0 auto; min-width: 16px; width: auto; height: 16px; padding: 0 4px; font-size: 10px; }
+    .asst-model-label > .asst-acct-avatar[data-tone="warn"] { box-shadow: inset 0 0 0 1px var(--asst-pill-warn-ring); color: var(--asst-warn); }
+    .asst-model-label > .asst-acct-badge { margin: 0; }
+    /* Even the shortest form does not fit (a row narrower than 320px that cannot wrap): the name gives. */
+    .asst-dd-model[data-squeezed] .asst-model-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    /* A display name ("Sonnet 5", a project) is sans; a raw model id (opus) is mono. */
+    .asst-dd.asst-dd-model[data-raw] .asst-model-name { font-family: var(--asst-mono); font-weight: 400; }
     .asst-dd-caret {
       display: inline-flex;
       flex-shrink: 0;
@@ -1420,8 +1428,9 @@ export function injectAssistantStyles() {
       z-index: 100030; /* above modals (100020): the routes editor opens model menus */
       display: flex;
       flex-direction: column;
-      min-width: 200px;
-      max-width: min(380px, calc(100vw - 16px));
+      /* --asst-dd-room: the width of the box the menu stays inside, less its margins (asst-menu.js positionMenu). */
+      min-width: min(200px, var(--asst-dd-room, 200px));
+      max-width: min(380px, calc(100vw - 16px), var(--asst-dd-room, 100vw));
       max-height: 380px;
       overflow: hidden;
       padding: 4px;
@@ -1468,6 +1477,8 @@ export function injectAssistantStyles() {
     .asst-dd-item-desc { color: var(--asst-text-3); font-size: 11px; }
     /* Test density: each level's description is a sentence, so it wraps instead of truncating. */
     .asst-tests-menu .asst-dd-item-desc { white-space: normal; }
+    /* Admin sandbox (permission menu): its note is a sentence too. */
+    .asst-dd-item.asst-admin-sandbox-item .asst-dd-item-desc { white-space: normal; }
     .asst-dd-item-tag { flex-shrink: 0; margin-left: auto; color: var(--asst-text-3); font-size: 11px; }
     .asst-dd-kbd { flex-shrink: 0; margin-left: auto; color: var(--asst-text-3); font-family: var(--asst-mono); font-size: 10.5px; }
     .asst-dd-sep { flex-shrink: 0; height: 1px; margin: 4px 6px; background: var(--asst-line); }
@@ -1497,6 +1508,45 @@ export function injectAssistantStyles() {
     .asst-dd-input::placeholder { color: var(--asst-text-3); }
     .asst-dd-filter { margin: 2px 0 4px; }
     .asst-dd-empty { padding: 8px 10px; color: var(--asst-text-3); }
+    /* A footer stays under a scrolling list; a button row is one line of compact items. */
+    .asst-dd-foot { flex-shrink: 0; margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--asst-line); }
+    .asst-dd-btnrow { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; }
+    .asst-dd-btnrow-label { flex: 1 1 auto; min-width: 0; padding: 5px 10px; color: var(--asst-text-2); overflow-wrap: anywhere; }
+    .asst-dd-btnrow .asst-dd-item { flex: 0 1 auto; width: auto; }
+
+    /* ── Account menu (asst-account-menu.js) ────────────────────────
+       Every account once: initial · name ✓ · plan or credential badge, then who it is and its
+       usage in full (lines wrap, nothing is cut). Kept inside the panel by asst-menu.js. The
+       composer's Model menu lists the same rows: the rules follow the rows' own classes. */
+    .asst-dd-item.asst-acct-item { gap: 8px; padding: 6px 8px; }
+    :is(.asst-account-menu .asst-dd-item, .asst-dd-item:is(.asst-acct-item, .asst-acct-choice))[data-checked="1"] { background: var(--asst-fill-1); }
+    :is(.asst-account-menu .asst-dd-item, .asst-dd-item:is(.asst-acct-item, .asst-acct-choice)):is(:hover, .focused) { background: var(--asst-fill-2); }
+    .asst-acct-avatar { display: inline-flex; flex: 0 0 24px; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: var(--asst-pill-r-xs); background: var(--asst-fill-2); color: var(--asst-text-2); font-size: 11px; font-weight: 600; line-height: 1; }
+    .asst-acct-avatar svg { width: 14px; height: 14px; }
+    .asst-acct-main { display: flex; flex: 1 1 auto; flex-direction: column; gap: 1px; min-width: 0; }
+    /* A long name wraps; its check and badge stay on its first line. */
+    .asst-acct-head { display: flex; align-items: flex-start; gap: 6px; min-width: 0; }
+    .asst-acct-name { min-width: 0; font-weight: 500; overflow-wrap: anywhere; }
+    .asst-acct-check { display: inline-flex; flex: none; margin-top: 3px; color: var(--asst-text); }
+    .asst-acct-check svg { width: 12px; height: 12px; }
+    .asst-acct-badge { flex: none; margin: 1px 0 0 auto; padding: 0 var(--asst-pill-px-xs); border-radius: var(--asst-pill-r-xs); background: var(--asst-fill-1); box-shadow: inset 0 0 0 1px var(--asst-line); color: var(--asst-text-2); font-size: 10.5px; font-weight: 500; line-height: 16px; white-space: nowrap; }
+    .asst-acct-line { color: var(--asst-text-3); font-size: 11px; line-height: 1.35; overflow-wrap: anywhere; }
+    .asst-dd-item:is(:hover, .focused) .asst-acct-line:not([data-tone="warn"]) { color: var(--asst-text-2); }
+    :is(.asst-acct-badge, .asst-acct-line, .asst-acct-value-text)[data-tone="warn"] { color: var(--asst-warn); }
+    /* The note under the accounts lines up with their names. */
+    .asst-dd-info.asst-acct-note { padding: 3px 8px 5px 40px; font-size: 11px; }
+    .asst-dd-item.asst-acct-value { gap: 6px; }
+    /* Footer rows read "label … value": the label muted, as the button row's. */
+    .asst-acct-value-label { flex: 1 1 auto; min-width: 0; color: var(--asst-text-2); overflow-wrap: anywhere; }
+    .asst-acct-value-text { flex: 0 1 auto; min-width: 0; text-align: right; overflow-wrap: anywhere; }
+    .asst-acct-next { display: inline-flex; flex: none; color: var(--asst-text-3); }
+    .asst-acct-next svg { width: 12px; height: 12px; }
+    .asst-dd-item.asst-acct-back { gap: 6px; color: var(--asst-text-2); }
+    .asst-dd-item.asst-acct-choice { gap: 4px; padding: 5px 8px; }
+    .asst-dd-btnrow[data-id="manage-row"] .asst-dd-item { flex: 1 1 0; }
+    @media (pointer: coarse) {
+      :is(.asst-account-menu .asst-dd-item, .asst-dd-item:is(.asst-acct-item, .asst-acct-choice), .asst-dd-btnrow[data-id="manage-row"] .asst-dd-item) { min-height: 44px; }
+    }
 
     /* ── Modals (help, accounts, model routes) ──────────────────────── */
     .asst-modal-overlay {
@@ -1723,7 +1773,7 @@ export function injectAssistantStyles() {
     .asst-routes-catalog-note { padding: 8px; color: var(--asst-warn); font-size: 12px; line-height: 1.45; background: var(--asst-fill-1); border-radius: var(--asst-pill-r-xs); }
     .asst-routes-modal .asst-routes-error { flex-wrap: wrap; }
     .asst-routes-modal .asst-routes-error span { min-width: 0; overflow-wrap: anywhere; }
-    .asst-routes-overlay :is(.asst-route-model-menu, .asst-route-field-menu) { max-width: min(440px, calc(100vw - 16px)); font-family: inherit; font-size: 12px; }
+    .asst-routes-overlay :is(.asst-route-model-menu, .asst-route-field-menu) { max-width: min(440px, calc(100vw - 16px), var(--asst-dd-room, 100vw)); font-family: inherit; font-size: 12px; }
     .asst-routes-overlay :is(.asst-route-model-menu, .asst-route-field-menu) .asst-dd-item { height: var(--asst-pill-h-sm); min-height: var(--asst-pill-h-sm); padding: 0 8px; border-radius: var(--asst-pill-r-xs); }
     .asst-routes-overlay :is(.asst-route-model-menu, .asst-route-field-menu) .asst-dd-item-main { flex-direction: row; align-items: center; gap: 8px; }
     .asst-routes-overlay :is(.asst-route-model-menu, .asst-route-field-menu) .asst-dd-item-label { flex-shrink: 0; max-width: 60%; }
@@ -1827,8 +1877,9 @@ export function injectAssistantStyles() {
        density is its gauge alone. A capsule that runs out of
        room drops its label half first and stays a glyph (its words remain in
        aria-label and the tooltip): route mode and Computer ≤960px, the mode
-       ≤540px, every composer field but the model ≤440px. Model, history, new
-       and "⋯" never hide; whatever hides stays in "⋯". A toolbar placed
+       ≤540px, every composer field but the model ≤440px, where the model
+       drops its caret and keeps its name (its form fits the row: see the
+       model chip above). Model, history, new and "⋯" never hide; whatever hides stays in "⋯". A toolbar placed
        outside the root (the sidepanel header) is out of reach of these rules:
        its host sizes it (asst-sidepanel-styles.js).
        Glyph only is the same three rules everywhere (see Capsules): the
@@ -1854,13 +1905,13 @@ export function injectAssistantStyles() {
       .asst-composer-brain .asst-dd.asst-dd-mode { display: grid; place-content: center; place-items: center; padding: 0; }
       .asst-composer-brain .asst-dd.asst-dd-mode > :is(.asst-dd-label, .asst-dd-caret) { display: none; }
       .asst-composer-brain .asst-dd.asst-dd-mode > .asst-icon:not([hidden]) { margin: 0; padding: 0 var(--cap-glyph-pad); box-shadow: none; }
-      .asst-dd-model .asst-dd-label { max-width: 14ch; }
       .asst-route-badge { display: none; }
     }
     @container asst (max-width: 440px) {
       .asst-composer-brain .asst-dd:is(.asst-dd-effort, .asst-dd-variant, .asst-dd-mode, .asst-dd-account) { display: grid; place-content: center; place-items: center; padding: 0; }
       .asst-composer-brain .asst-dd:is(.asst-dd-effort, .asst-dd-variant, .asst-dd-mode, .asst-dd-account) > :is(.asst-dd-label, .asst-dd-caret) { display: none; }
       .asst-composer-brain .asst-dd:is(.asst-dd-effort, .asst-dd-variant, .asst-dd-mode, .asst-dd-account) > .asst-icon:not([hidden]) { margin: 0; padding: 0 var(--cap-glyph-pad); box-shadow: none; }
+      .asst-composer-brain .asst-dd.asst-dd-model > .asst-dd-caret { display: none; }
     }
     @container asst (max-width: 400px) {
       .asst-root > * { --asst-inline: 6px; }
@@ -1871,16 +1922,14 @@ export function injectAssistantStyles() {
       .asst-dd.asst-empty-control-btn { flex: 1 1 auto; justify-content: flex-start; max-width: none; }
       .asst-empty-control-btn .asst-dd-label { flex: 1 1 auto; max-width: none; text-align: start; }
       .asst-msg.msg-user .asst-msg-content { max-width: 92%; }
-      .asst-dd-model .asst-dd-label { max-width: 9ch; }
       .asst-route-opt-sub { display: none; }
       .asst-run-main { flex-wrap: wrap; row-gap: 2px; }
       .asst-run-title { flex-basis: 100%; }
     }
     @container asst (max-width: 320px) {
       .asst-bar-group[data-group="computer"] { display: none !important; }
-      /* The model keeps a readable name (at least 5ch): the composer row wraps instead of truncating it. */
-      .asst-dd-model .asst-dd-label { min-width: 5ch; max-width: 14ch; }
-      /* A tighter gap keeps attach · model · effort · variant · mode · tests · send on one row at 320px. */
+      /* A tighter gap keeps attach · model · effort · variant · mode · tests · send on one row at 320px;
+         narrower, the row wraps rather than cut the model chip. */
       .asst-composer-actions { flex-wrap: wrap; gap: 6px 4px; }
       .asst-composer-brain { flex-wrap: wrap; gap: 6px 4px; }
     }

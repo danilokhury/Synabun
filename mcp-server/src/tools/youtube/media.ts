@@ -4,7 +4,7 @@
  * Both operate on the Studio video editor pages.
  */
 
-import { z } from 'zod';
+import { z } from 'zod/v3';
 import * as ni from '../../services/neural-interface.js';
 import { text } from '../response.js';
 import { STUDIO_BASE, resolve, ensureAuth, wait, pollFor, safeNavigate, clickStudio, type Resolved } from './helpers.js';

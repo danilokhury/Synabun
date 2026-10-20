@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { z } from 'zod/v3';
 import { text } from './response.js';
 
 const PLATFORMS = ['twitter', 'facebook', 'tiktok', 'whatsapp', 'instagram', 'linkedin', 'bluesky'] as const;

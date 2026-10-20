@@ -8,7 +8,7 @@
  * and read the picker back so a mis-parsed date is visible, not silent.
  */
 
-import { z } from 'zod';
+import { z } from 'zod/v3';
 import * as ni from '../../services/neural-interface.js';
 import { text } from '../response.js';
 import { STUDIO_BASE, resolve, ensureAuth, wait, pollFor, safeNavigate, clickStudio, fillStudio } from './helpers.js';

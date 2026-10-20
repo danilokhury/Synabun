@@ -168,7 +168,15 @@ export function injectStyles() {
       align-items: center;
       background: var(--cxp-surface-1);
       z-index: 3;
+      /* A query container measured in controls: 1em is one header button (24px
+         docked, the window's control size when detached, which follows the font
+         scale), so the thresholds at the end of this section hold at any scale.
+         Nothing in the row inherits it; the session menu takes the panel's back. */
+      container: cxp-header / inline-size;
+      font-size: 24px;
     }
+    .sp-sidepanel.sp-floating > .cxp-header { font-size: var(--fw-header-control-size); }
+    .cxp-header > .cxp-session-menu { font-size: 1rem; }
     .cxp-session-btn {
       background: var(--cxp-surface-1);
       border: none;
@@ -182,10 +190,14 @@ export function injectStyles() {
       padding: 5px 10px;
       border-radius: var(--cxp-radius-md) 0 0 var(--cxp-radius-md);
       transition: background var(--cxp-dur-fast), color var(--cxp-dur-fast);
-      max-width: 100%;
+      /* The session name keeps a readable 88px (about 8 characters, or its own
+         width if shorter) and gives way first above that: it grows only into the
+         room the pencil and the actions leave, so a long name never pushes them.
+         Narrower, the container queries let it go down to 32px (the caret). */
+      flex: 1 0 88px;
+      min-width: 32px;
+      max-width: max-content;
       overflow: hidden;
-      flex-shrink: 1;
-      min-width: 0;
     }
     .cxp-session-btn:hover {
       background: var(--cxp-surface-2);
@@ -231,6 +243,8 @@ export function injectStyles() {
       cursor: pointer;
       transition: background var(--cxp-dur-fast), color var(--cxp-dur-fast);
       flex-shrink: 0;
+      /* The actions' own gap, kept when the name fills the row. */
+      margin-right: 3px;
     }
     .cxp-header-rename:hover:not(:disabled) {
       color: var(--cxp-text);
@@ -256,8 +270,34 @@ export function injectStyles() {
       margin-left: auto;
       flex-shrink: 0;
     }
-    /* The header account menu's trigger (account-menu.js) gives way before the session name does. */
+    /* The header buttons never shrink. The account menu's trigger (account-menu.js)
+       is the one piece of the actions that gives way, once the session name is at
+       its readable 88px, down to its compact 64px, and truncates. */
+    .cxp-actions > * { flex-shrink: 0; }
     .cxp-actions:has(> .acct-menu-trigger) { flex-shrink: 1; min-width: 0; }
+    .cxp-actions > .acct-menu-trigger { flex-shrink: 1; }
+    /* Narrow headers, in order: the trigger stays at its compact 64px and the name
+       goes from 88px down to its caret; then the trigger is hidden (the cog's
+       Account row still opens its menu). Room counted in controls (em) plus px:
+       docked, the pencil and six buttons are 7em with 21px of gaps; detached, the
+       move handle makes 8em, the window's 6px gaps 39px, the name's floor is 1em.
+       Thresholds: name + 64px trigger + that row. */
+    @container cxp-header (width < calc(7em + 173px)) {
+      .codex-panel:not(.sp-floating) > .cxp-header .cxp-session-btn { flex: 1 1 0; }
+      .codex-panel:not(.sp-floating) > .cxp-header > .cxp-actions { flex-shrink: 0; }
+      .codex-panel:not(.sp-floating) > .cxp-header .acct-menu-trigger { flex: 0 0 64px; width: 64px; }
+    }
+    @container cxp-header (width < calc(7em + 117px)) {
+      .codex-panel:not(.sp-floating) > .cxp-header .acct-menu-trigger { display: none; }
+    }
+    @container cxp-header (width < calc(8em + 191px)) {
+      .codex-panel.sp-floating > .cxp-header .cxp-session-btn { flex: 1 1 0; }
+      .codex-panel.sp-floating > .cxp-header > .cxp-actions { flex-shrink: 0; }
+      .codex-panel.sp-floating > .cxp-header .acct-menu-trigger { flex: 0 0 64px; width: 64px; }
+    }
+    @container cxp-header (width < calc(9em + 103px)) {
+      .codex-panel.sp-floating > .cxp-header .acct-menu-trigger { display: none; }
+    }
     .cxp-btn {
       width: 24px;
       height: 24px;

@@ -419,9 +419,12 @@ export function createChildPanel({
         _statusEl.removeAttribute('data-tooltip');
       }
     }
+    const title = sessionTitleFor(store);
     if (_titleEl && !_titleEl.querySelector('.ocpv2-rename-input')) {
-      _titleEl.textContent = sessionTitleFor(store);
+      _titleEl.textContent = title;
     }
+    // The whole name, for when the header shows only part of it.
+    if (_titleEl?.parentElement) _titleEl.parentElement.title = title;
     if (_renameBtn) _renameBtn.disabled = !s.sessionId;
     renderCrumbs();
     renderPill();

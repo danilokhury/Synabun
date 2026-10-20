@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { z } from 'zod/v3';
 import * as ni from '../services/neural-interface.js';
 import { text, image } from './response.js';
 import { SHAPE_TYPES, SECTION_TYPE_NAMES, ELEMENT_TYPES, DEFAULT_VIEWPORT, type WbElement, type WbViewport } from '../services/whiteboard-geometry.js';

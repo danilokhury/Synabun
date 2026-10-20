@@ -5,7 +5,7 @@
  * used by the autopilot to dedupe against what's already posted.
  */
 
-import { z } from 'zod';
+import { z } from 'zod/v3';
 import * as ni from '../../services/neural-interface.js';
 import { text } from '../response.js';
 import { STUDIO_BASE, resolve, ensureAuth, wait, pollFor, safeNavigate, type Resolved } from './helpers.js';

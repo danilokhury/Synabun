@@ -150,6 +150,8 @@ export function createAssistantApi({
   // after this router), and the port the server listens on (the Host check of that route).
   whatsapp = null,
   port = 3344,
+  // The Admin sandbox setting (lib/agent-sandbox-setting.js): one global value for every agent SynaBun starts.
+  adminSandbox = null,
 } = {}) {
   if (!dispatcher) throw new Error('createAssistantApi requires a dispatcher');
   const router = Router();
@@ -1228,6 +1230,23 @@ export function createAssistantApi({
       broadcastSync({ type: 'assistant:accounts-changed', provider: 'codex', accountId: wanted, worker: true });
       res.json({ ok: true, workerAccountId: workers.codexAccount });
     } catch (error) { sendError(res, error); }
+  });
+
+  // ── Admin sandbox (lib/agent-sandbox-setting.js) ───────────────────────────
+  // Whether an agent SynaBun starts may use a sandbox whose setup needs Windows administrator
+  // approval. Global, not per session. The user's setting: an agent cannot change it.
+  router.get('/admin-sandbox', (req, res) => {
+    if (!adminSandbox) return res.status(503).json({ ok: false, code: 'ADMIN_SANDBOX_UNAVAILABLE', error: 'The Admin sandbox setting is not available on this server' });
+    res.json({ ok: true, ...adminSandbox.view() });
+  });
+  router.put('/admin-sandbox', requireJson, (req, res) => {
+    if (!adminSandbox) return res.status(503).json({ ok: false, code: 'ADMIN_SANDBOX_UNAVAILABLE', error: 'The Admin sandbox setting is not available on this server' });
+    if (callerContext(req).kind !== 'ui' || req.get('x-synabun-desktop-grant')) {
+      return res.status(403).json({ ok: false, code: 'UI_ONLY', error: 'Only the user can change the Admin sandbox.' });
+    }
+    const value = req.body?.adminSandbox;
+    if (typeof value !== 'boolean') return res.status(400).json({ ok: false, code: 'INVALID_VALUE', error: 'adminSandbox must be true or false.' });
+    try { res.json({ ok: true, ...adminSandbox.set(value) }); } catch (error) { sendError(res, error); }
   });
 
   // ── sidepanel tab registry (UI heartbeat) ──────────────────────────────────

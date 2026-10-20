@@ -11,7 +11,7 @@
  * recall-then-eyeball flow did, and can never re-pick a posted trailer.
  */
 
-import { z } from 'zod';
+import { z } from 'zod/v3';
 import * as ni from '../../services/neural-interface.js';
 import { getPostedTrailerKeys } from '../../services/sqlite.js';
 import { candidateDedupKeys } from './dedup.js';

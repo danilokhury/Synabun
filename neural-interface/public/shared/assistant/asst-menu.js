@@ -4,14 +4,23 @@
 // One body-level popover for every assistant menu (brain fields, model menu,
 // sessions, "⋯", route mode). Appended to <body> so it escapes the viewport's
 // paint containment; positioned with fixed coordinates next to its anchor and
-// clamped to the window. Only one menu is open at a time.
+// kept inside the Assistant that holds the anchor (the sidepanel, or a tab's own
+// root) and the window. Only one menu is open at a time.
 //
 // openMenu(anchor, { title, items, placement:'auto'|'above'|'below'|'prefer-below', filter,
 //                    width, role:'menu'|'listbox', label, className, onClose,
-//                    zIndex (a menu opened from a layer above the panel's own, e.g. Settings) })
+//                    zIndex (a menu opened from a layer above the panel's own, e.g. Settings),
+//                    footer, bounds, onEscape })
 // 'prefer-below' opens under the anchor whenever a usable list fits there (the
 // menu scrolls inside that room), even when more room is above: a menu opened
 // from Settings must not cover the Settings header. The panel's menus use 'auto'.
+// `footer`: items under the list that stay in view while the list scrolls.
+// Every menu is measured at the width it is shown at, never wider than its box less the margins,
+// and opens where that box has room (the list scrolls inside it). The box is the Assistant
+// panel or root around the anchor, else the window.
+// `bounds`: an element (or () => DOMRect) to use as that box instead: the menu is then exactly
+// `width` wide (or the box's room) and follows the box on resize.
+// `onEscape`: returns true when it handled Esc (e.g. went back a view): the menu stays open.
 // Item kinds:
 //   item (default)  { label, desc, icon, tag, disabled, danger, keywords, onSelect }
 //   radio           { ...item, selected }            → menuitemradio / option
@@ -21,10 +30,15 @@
 //   info            { label, value }                 → non-interactive row
 //   tag             { label }                        → non-interactive badge row
 //   input           { placeholder, value, onSubmit } → inline text field
+//   buttons         { label, buttons: [item…] }      → one row of compact items (a group)
+// `render(button, { checked })` on an item draws its content instead of label/desc/tag.
+// `className` on an item or an info row adds its own class.
+// `keepOpen` on an item leaves the menu open when it is chosen.
 // `restoreFocus` on an item or input sends focus back to the anchor once it is chosen.
 // Keys: ↑/↓ move, Home/End jump, Enter/Space activate, Esc closes (focus back
 // to the anchor), Tab closes. The optional filter hides non-matching items and
-// any group left empty.
+// any group left empty. The handle's update({ title, items, footer, focus }) redraws
+// an open menu in place (focus: the data-id to land on).
 
 let _open = null;
 let _uid = 0;
@@ -87,11 +101,64 @@ export function currentMenu() {
   return _open?.menu || null;
 }
 
+function itemButton(item, kind, { role, list, onActivate }) {
+  const btn = el('button', `asst-dd-item${item.danger ? ' danger' : ''}${item.className ? ` ${item.className}` : ''}`);
+  btn.type = 'button';
+  btn.tabIndex = -1;
+  btn.dataset.kind = kind;
+  if (item.id != null) btn.dataset.id = String(item.id);
+  btn.dataset.search = `${item.label || ''} ${item.desc || ''} ${item.keywords || ''}`.toLowerCase();
+  const checked = kind === 'radio' ? !!item.selected : kind === 'check' ? !!item.checked : false;
+  if (role === 'listbox') {
+    btn.setAttribute('role', 'option');
+    btn.setAttribute('aria-selected', checked ? 'true' : 'false');
+  } else if (kind === 'radio') {
+    btn.setAttribute('role', 'menuitemradio');
+    btn.setAttribute('aria-checked', checked ? 'true' : 'false');
+  } else if (kind === 'check') {
+    btn.setAttribute('role', 'menuitemcheckbox');
+    btn.setAttribute('aria-checked', checked ? 'true' : 'false');
+  } else {
+    btn.setAttribute('role', role === 'listbox' ? 'option' : 'menuitem');
+  }
+  if (item.disabled) btn.disabled = true;
+  if (typeof item.render === 'function') {
+    item.render(btn, { checked });
+  } else {
+    const lead = kind === 'radio' || kind === 'check'
+      ? `<span class="asst-dd-check" aria-hidden="true">${checked ? ICON_CHECK : ''}</span>`
+      : '';
+    btn.innerHTML = `${lead}${item.icon ? `<span class="asst-icon" aria-hidden="true"${item.color ? ` style="color:${esc(item.color)}"` : ''}>${item.icon}</span>` : ''}<span class="asst-dd-item-main"><span class="asst-dd-item-label">${esc(item.label)}</span>${item.desc ? `<span class="asst-dd-item-desc">${esc(item.desc)}</span>` : ''}</span>${item.tag ? `<span class="asst-dd-item-tag">${esc(item.tag)}</span>` : ''}${item.shortcut ? `<kbd class="asst-dd-kbd">${esc(item.shortcut)}</kbd>` : ''}`;
+  }
+  if (item.title) btn.title = item.title;
+  if (item.ariaLabel) btn.setAttribute('aria-label', item.ariaLabel);
+  btn.addEventListener('click', (e) => { e.stopPropagation(); if (!btn.disabled) onActivate(item, btn); });
+  btn.addEventListener('mousemove', () => {
+    if (btn.classList.contains('focused') || btn.disabled) return;
+    const menu = list.closest('.asst-dd-menu');
+    menu?.querySelectorAll('.asst-dd-item.focused').forEach(n => n.classList.remove('focused'));
+    btn.classList.add('focused');
+    // Hover never steals focus from the filter / inline input.
+    if (!document.activeElement?.classList?.contains('asst-dd-input')) { try { btn.focus({ preventScroll: true }); } catch { /* ignore */ } }
+  });
+  if (checked) btn.dataset.checked = '1';
+  return btn;
+}
+
 function buildItems(list, items, { role, onActivate }) {
-  const itemRole = role === 'listbox' ? 'option' : 'menuitem';
   for (const item of items || []) {
     const kind = itemKind(item);
     if (kind === 'separator') { list.appendChild(el('div', 'asst-dd-sep')).setAttribute('role', 'separator'); continue; }
+    if (kind === 'buttons') {
+      const row = el('div', 'asst-dd-btnrow');
+      row.setAttribute('role', 'group');
+      if (item.id != null) row.dataset.id = String(item.id);
+      if (item.ariaLabel || item.label) row.setAttribute('aria-label', item.ariaLabel || item.label);
+      if (item.label) row.appendChild(el('span', 'asst-dd-btnrow-label', item.label)).setAttribute('aria-hidden', 'true');
+      for (const button of item.buttons || []) row.appendChild(itemButton(button, itemKind(button), { role, list, onActivate }));
+      list.appendChild(row);
+      continue;
+    }
     if (kind === 'header') {
       const h = el('div', 'asst-dd-group');
       h.setAttribute('role', 'presentation');
@@ -100,7 +167,7 @@ function buildItems(list, items, { role, onActivate }) {
       continue;
     }
     if (kind === 'info' || kind === 'tag') {
-      const row = el('div', kind === 'tag' ? 'asst-dd-tagrow' : 'asst-dd-info');
+      const row = el('div', `${kind === 'tag' ? 'asst-dd-tagrow' : 'asst-dd-info'}${item.className ? ` ${item.className}` : ''}`);
       row.setAttribute('role', 'presentation');
       row.innerHTML = kind === 'tag'
         ? `<span class="asst-dd-tag">${esc(item.label)}</span>`
@@ -121,42 +188,7 @@ function buildItems(list, items, { role, onActivate }) {
       list.appendChild(input);
       continue;
     }
-    const btn = el('button', `asst-dd-item${item.danger ? ' danger' : ''}`);
-    btn.type = 'button';
-    btn.tabIndex = -1;
-    btn.dataset.kind = kind;
-    if (item.id != null) btn.dataset.id = String(item.id);
-    btn.dataset.search = `${item.label || ''} ${item.desc || ''} ${item.keywords || ''}`.toLowerCase();
-    const checked = kind === 'radio' ? !!item.selected : kind === 'check' ? !!item.checked : false;
-    if (role === 'listbox') {
-      btn.setAttribute('role', 'option');
-      btn.setAttribute('aria-selected', checked ? 'true' : 'false');
-    } else if (kind === 'radio') {
-      btn.setAttribute('role', 'menuitemradio');
-      btn.setAttribute('aria-checked', checked ? 'true' : 'false');
-    } else if (kind === 'check') {
-      btn.setAttribute('role', 'menuitemcheckbox');
-      btn.setAttribute('aria-checked', checked ? 'true' : 'false');
-    } else {
-      btn.setAttribute('role', itemRole);
-    }
-    if (item.disabled) btn.disabled = true;
-    const lead = kind === 'radio' || kind === 'check'
-      ? `<span class="asst-dd-check" aria-hidden="true">${checked ? ICON_CHECK : ''}</span>`
-      : '';
-    btn.innerHTML = `${lead}${item.icon ? `<span class="asst-icon" aria-hidden="true"${item.color ? ` style="color:${esc(item.color)}"` : ''}>${item.icon}</span>` : ''}<span class="asst-dd-item-main"><span class="asst-dd-item-label">${esc(item.label)}</span>${item.desc ? `<span class="asst-dd-item-desc">${esc(item.desc)}</span>` : ''}</span>${item.tag ? `<span class="asst-dd-item-tag">${esc(item.tag)}</span>` : ''}${item.shortcut ? `<kbd class="asst-dd-kbd">${esc(item.shortcut)}</kbd>` : ''}`;
-    if (item.title) btn.title = item.title;
-    btn.addEventListener('click', (e) => { e.stopPropagation(); if (!btn.disabled) onActivate(item, btn); });
-    btn.addEventListener('mousemove', () => {
-      if (btn.classList.contains('focused') || btn.disabled) return;
-      const menu = list.closest('.asst-dd-menu');
-      menu?.querySelectorAll('.asst-dd-item.focused').forEach(n => n.classList.remove('focused'));
-      btn.classList.add('focused');
-      // Hover never steals focus from the filter / inline input.
-      if (!document.activeElement?.classList?.contains('asst-dd-input')) { try { btn.focus({ preventScroll: true }); } catch { /* ignore */ } }
-    });
-    if (checked) btn.dataset.checked = '1';
-    list.appendChild(btn);
+    list.appendChild(itemButton(item, kind, { role, list, onActivate }));
   }
   if (!list.querySelector('.asst-dd-item, .asst-dd-input, .asst-dd-info, .asst-dd-tagrow')) list.appendChild(el('div', 'asst-dd-empty', '—'));
 }
@@ -167,6 +199,8 @@ export function applyMenuFilter(list, query, emptyLabel = 'No matches') {
   const rows = [...list.children];
   for (const row of rows) {
     if (row.classList.contains('asst-dd-item')) row.hidden = !!q && !row.dataset.search.includes(q);
+    // A button row stays whole: shown while one of its buttons matches.
+    else if (row.classList.contains('asst-dd-btnrow')) row.hidden = !!q && ![...row.querySelectorAll('.asst-dd-item')].some(b => b.dataset.search.includes(q));
     else if (row.classList.contains('asst-dd-info') || row.classList.contains('asst-dd-tagrow')) row.hidden = !!q;
   }
   // Group headers: visible only when an item until the next header/separator is visible.
@@ -192,7 +226,7 @@ export function applyMenuFilter(list, query, emptyLabel = 'No matches') {
   const last = visible[visible.length - 1];
   if (last?.classList.contains('asst-dd-sep')) last.hidden = true;
   let empty = list.querySelector('.asst-dd-empty.asst-dd-noresults');
-  const hasItem = rows.some(r => !r.hidden && (r.classList.contains('asst-dd-item') || r.classList.contains('asst-dd-input')));
+  const hasItem = rows.some(r => !r.hidden && (r.classList.contains('asst-dd-item') || r.classList.contains('asst-dd-btnrow') || r.classList.contains('asst-dd-input')));
   if (q && !hasItem) {
     if (!empty) { empty = el('div', 'asst-dd-empty asst-dd-noresults', emptyLabel); list.appendChild(empty); }
     empty.hidden = false;
@@ -204,7 +238,8 @@ const PREFER_BELOW_MIN = 220;
 
 /**
  * Whether a menu opens above its anchor (pure; sizes in px). `above` / `below`:
- * the room on each side of the anchor.
+ * the room on each side of the anchor; `anchorTop` / `viewportHeight`: the anchor's
+ * top in the box the menu stays inside, and that box's height.
  */
 export function menuOpensAbove(placement, { anchorTop, anchorHeight, menuHeight, above, below, viewportHeight }) {
   if (placement === 'above') return menuHeight <= above || above >= below;
@@ -214,37 +249,101 @@ export function menuOpensAbove(placement, { anchorTop, anchorHeight, menuHeight,
   return !(menuHeight <= below || below >= above);
 }
 
-function positionMenu(menu, anchor, placement) {
-  const margin = 8;
-  const gap = 6;
+// A menu: never narrower than this while the window allows it; never shorter than these
+// (a bounded menu holds a title and a footer around its list).
+const BOUNDED_MIN_WIDTH = 248;
+const MENU_MIN_HEIGHT = 96;
+const BOUNDED_MIN_HEIGHT = 140;
+
+/** The box a menu stays inside: its bounds clipped to the window (the window when it has none). */
+function boundsBox(bounds) {
   const vw = window.innerWidth;
   const vh = window.innerHeight;
-  const r = anchor.getBoundingClientRect();
-  menu.style.maxHeight = '';
+  let r = null;
+  try { r = typeof bounds === 'function' ? bounds() : bounds?.getBoundingClientRect?.(); } catch { r = null; }
+  if (!r || !(r.width > 0) || !(r.height > 0)) return { left: 0, top: 0, right: vw, bottom: vh };
+  return { left: Math.max(0, r.left), top: Math.max(0, r.top), right: Math.min(vw, r.right), bottom: Math.min(vh, r.bottom) };
+}
+
+/** Where a menu without `bounds` stays: the Assistant around its anchor (the sidepanel, or a tab's own root). */
+function assistantOf(anchor) {
+  return anchor.closest?.('.assistant-panel') || anchor.closest?.('.asst-root') || null;
+}
+
+/** The widest a menu may be in its box (pure; px): the box less the margins, never under the minimum the window allows. */
+export function menuRoomWidth({ box, viewportWidth, margin = 8 }) {
+  return Math.round(Math.max(box.right - box.left - margin * 2, Math.min(BOUNDED_MIN_WIDTH, viewportWidth - margin * 2)));
+}
+
+/** A bounded menu's width (pure; px): `width` at most, its box less the margins, never under the minimum the window allows. */
+export function boundedMenuWidth({ box, viewportWidth, width, margin = 8 }) {
+  return Math.round(Math.max(Math.min(width || 320, box.right - box.left - margin * 2), Math.min(BOUNDED_MIN_WIDTH, viewportWidth - margin * 2)));
+}
+
+/**
+ * Where a menu goes (pure; px; rects as getBoundingClientRect gives them): under the anchor or
+ * above it as `placement` decides from the room inside the box (menuOpensAbove), as tall as that
+ * room; right-aligned with `alignX` (default: the anchor's right edge), or starting at the anchor's
+ * left edge with `alignLeft`; always inside the box and the window.
+ * → { left, top, maxHeight (null: its own height fits), up }.
+ */
+export function boundedMenuPlacement({ anchor, box, viewportWidth, viewportHeight, width, menuHeight, placement = 'below', alignX = null, alignLeft = false, minHeight = BOUNDED_MIN_HEIGHT, margin = 8, gap = 6 }) {
+  const below = box.bottom - margin - (anchor.bottom + gap);
+  const above = anchor.top - gap - (box.top + margin);
+  const up = menuOpensAbove(placement, { anchorTop: anchor.top - box.top, anchorHeight: anchor.bottom - anchor.top, menuHeight, above, below, viewportHeight: box.bottom - box.top });
+  const room = Math.max(minHeight, Math.floor(up ? above : below));
+  const height = Math.min(menuHeight, room);
+  let top = up ? anchor.top - gap - height : anchor.bottom + gap;
+  top = Math.max(margin, Math.min(top, viewportHeight - margin - height));
+  let left = alignLeft ? anchor.left : (alignX ?? anchor.right) - width;
+  left = Math.min(left, box.right - margin - width);
+  left = Math.max(left, box.left + margin);
+  left = Math.max(margin, Math.min(left, viewportWidth - margin - width));
+  return { left: Math.round(left), top: Math.round(top), maxHeight: menuHeight > room ? room : null, up };
+}
+
+/**
+ * Place a menu inside its box: its width is final before it is measured (the CSS caps read the
+ * box's room through --asst-dd-room; a bounded menu is set to its width), so what is shown is what
+ * was placed; then boundedMenuPlacement. The list scrolls inside, title and footer stay.
+ */
+function positionMenu(menu, anchor, { placement, bounds, width }) {
+  const viewportWidth = window.innerWidth;
+  const viewportHeight = window.innerHeight;
+  const box = boundsBox(bounds || assistantOf(anchor));
+  if (bounds) {
+    menu.style.minWidth = '0';
+    menu.style.maxWidth = 'none';
+    menu.style.width = `${boundedMenuWidth({ box, viewportWidth, width })}px`;
+    menu.style.maxHeight = 'none';
+  } else {
+    menu.style.setProperty('--asst-dd-room', `${menuRoomWidth({ box, viewportWidth })}px`);
+    menu.style.maxHeight = '';
+  }
   menu.style.left = '0px';
   menu.style.top = '0px';
-  const mw = Math.min(menu.offsetWidth, vw - margin * 2);
-  let mh = menu.offsetHeight;
-  const above = r.top - gap - margin;
-  const below = vh - r.bottom - gap - margin;
-  const up = menuOpensAbove(placement, { anchorTop: r.top, anchorHeight: r.height, menuHeight: mh, above, below, viewportHeight: vh });
-  const room = Math.max(96, up ? above : below);
-  if (mh > room) { menu.style.maxHeight = `${Math.floor(room)}px`; mh = Math.floor(room); }
-  let top = up ? r.top - gap - mh : r.bottom + gap;
-  top = Math.max(margin, Math.min(top, vh - margin - mh));
-  let left = r.left;
-  if (anchor.closest('.assistant-panel')) {
-    // Sidepanel hugs the right screen edge: grow leftward from the click point
-    // (or the anchor's right edge for keyboard opens).
-    const x = _lastDown && anchor.contains(_lastDown.target) && performance.now() - _lastDown.at < 1500 ? _lastDown.x : r.right;
-    left = x - mw;
+  // The sidepanel hugs the right screen edge: its menus grow leftward from the click point (or the
+  // anchor's right edge for keyboard opens), as a bounded menu does; elsewhere a menu starts at its anchor.
+  const inSidepanel = !!anchor.closest?.('.assistant-panel');
+  const clicked = inSidepanel && _lastDown && anchor.contains(_lastDown.target) && performance.now() - _lastDown.at < 1500;
+  const spot = boundedMenuPlacement({
+    anchor: anchor.getBoundingClientRect(), box, viewportWidth, viewportHeight,
+    width: menu.offsetWidth, menuHeight: menu.offsetHeight, placement,
+    alignX: clicked ? _lastDown.x : null, alignLeft: !bounds && !inSidepanel,
+    minHeight: bounds ? BOUNDED_MIN_HEIGHT : MENU_MIN_HEIGHT,
+  });
+  if (spot.maxHeight != null) menu.style.maxHeight = `${spot.maxHeight}px`;
+  menu.style.left = `${spot.left}px`;
+  menu.style.top = `${spot.top}px`;
+  menu.dataset.placement = spot.up ? 'above' : 'below';
+}
+
+/** A row its menu's width cuts short (one-line label or description) keeps its words in a tooltip. */
+function titleCutRows(menu) {
+  for (const btn of menu.querySelectorAll('.asst-dd-item:not([title])')) {
+    const parts = [...btn.querySelectorAll('.asst-dd-item-label, .asst-dd-item-desc')];
+    if (parts.some(n => n.scrollWidth > n.clientWidth + 1)) btn.title = parts.map(n => n.textContent).filter(Boolean).join(' · ');
   }
-  if (left + mw > vw - margin) left = vw - margin - mw;
-  left = Math.max(margin, left);
-  menu.style.left = `${Math.round(left)}px`;
-  menu.style.top = `${Math.round(top)}px`;
-  menu.style.maxWidth = `${vw - margin * 2}px`;
-  menu.dataset.placement = up ? 'above' : 'below';
 }
 
 /**
@@ -262,8 +361,9 @@ export function openMenu(anchor, opts = {}) {
   menu.setAttribute('role', role);
   menu.id = `asst-menu-${++_uid}`;
   menu.tabIndex = -1;
+  let heading = null;
   if (title) {
-    const heading = el('div', 'asst-dd-menu-title', title);
+    heading = el('div', 'asst-dd-menu-title', title);
     heading.id = `${menu.id}-title`;
     menu.setAttribute('aria-labelledby', heading.id);
     menu.appendChild(heading);
@@ -290,13 +390,25 @@ export function openMenu(anchor, opts = {}) {
   };
   if (opts.content) list.appendChild(opts.content);
   else buildItems(list, items, { role, onActivate: activate });
-  if (width) menu.style.minWidth = opts.repositionOnResize ? `min(${width}px, calc(100vw - 16px))` : `${width}px`;
-  if (width && opts.repositionOnResize) menu.style.width = `min(${width}px, calc(100vw - 16px))`;
+  // The footer stays under the list: only the list scrolls.
+  let foot = null;
+  const fillFooter = (footer) => {
+    if (!foot) { foot = el('div', 'asst-dd-foot'); menu.appendChild(foot); }
+    foot.replaceChildren();
+    if (Array.isArray(footer) && footer.length) buildItems(foot, footer, { role, onActivate: activate });
+    foot.hidden = !(Array.isArray(footer) && footer.length);
+  };
+  if (Array.isArray(opts.footer)) fillFooter(opts.footer);
+  // `width`: at least that wide (exactly, with repositionOnResize), never wider than the room positionMenu sets.
+  const capped = `min(${width}px, var(--asst-dd-room, calc(100vw - 16px)))`;
+  if (width) menu.style.minWidth = capped;
+  if (width && opts.repositionOnResize) menu.style.width = capped;
   document.body.appendChild(menu);
-  positionMenu(menu, anchor, placement);
+  const place = () => { positionMenu(menu, anchor, { placement, bounds: opts.bounds || null, width }); titleCutRows(menu); };
+  place();
 
   if (filterInput) {
-    filterInput.addEventListener('input', () => { applyMenuFilter(list, filterInput.value, opts.filterEmptyLabel); positionMenu(menu, anchor, placement); });
+    filterInput.addEventListener('input', () => { applyMenuFilter(list, filterInput.value, opts.filterEmptyLabel); place(); });
   }
 
   const onDocDown = (e) => {
@@ -311,7 +423,12 @@ export function openMenu(anchor, opts = {}) {
     const inInput = target?.classList?.contains('asst-dd-input');
     const nodes = focusables(menu);
     const idx = nodes.indexOf(document.activeElement);
-    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeMenu({ restoreFocus: true }); return; }
+    if (e.key === 'Escape') {
+      e.preventDefault(); e.stopPropagation();
+      if (typeof opts.onEscape === 'function' && opts.onEscape() === true) return;
+      closeMenu({ restoreFocus: true });
+      return;
+    }
     if (role === 'dialog') {
       if (e.key === 'Tab') {
         const fields = [...menu.querySelectorAll('button, input')].filter(node => !node.disabled && !node.hidden);
@@ -354,7 +471,7 @@ export function openMenu(anchor, opts = {}) {
     // Keep single-letter global keybinds out of an open menu.
     e.stopPropagation();
   };
-  const onResize = () => opts.repositionOnResize ? positionMenu(menu, anchor, placement) : closeMenu();
+  const onResize = () => (opts.repositionOnResize || opts.bounds ? place() : closeMenu());
   const onBlur = () => closeMenu();
   document.addEventListener('mousedown', onDocDown, true);
   const keyTarget = role === 'dialog' ? window : document;
@@ -381,7 +498,17 @@ export function openMenu(anchor, opts = {}) {
   } else {
     setFocused(menu, selected || first || null);
   }
-  return { el: menu, list, close: closeMenu, reposition: () => positionMenu(menu, anchor, placement) };
+  // Redraw in place (another view of the same menu): the anchor, the listeners and the focus stay in it.
+  const update = (next = {}) => {
+    if (!_open || _open.menu !== menu) return;
+    if (typeof next.title === 'string' && heading) heading.textContent = next.title;
+    if (Array.isArray(next.items)) { list.replaceChildren(); buildItems(list, next.items, { role, onActivate: activate }); list.scrollTop = 0; }
+    if ('footer' in next) fillFooter(next.footer);
+    place();
+    const wanted = next.focus != null ? [...menu.querySelectorAll('.asst-dd-item')].find(n => n.dataset.id === String(next.focus) && !n.disabled) : null;
+    setFocused(menu, wanted || list.querySelector('.asst-dd-item[data-checked="1"]:not([disabled])') || focusables(menu)[0] || null);
+  };
+  return { el: menu, list, close: closeMenu, reposition: place, update };
 }
 
 /** Toggle helper for anchor buttons: closes when this anchor's menu is open. */

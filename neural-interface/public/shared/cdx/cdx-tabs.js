@@ -2437,6 +2437,9 @@ export function setSessionLabel(label, { persist = true } = {}) {
   if (isActiveTab(_boundTab)) {
     const labelEl = panelEl('#cxp-session-label');
     if (labelEl) labelEl.replaceChildren(document.createTextNode(_sessionLabel));
+    // The whole name, for when the header shows only part of it.
+    const sessionBtn = panelEl('#cxp-session-btn');
+    if (sessionBtn) sessionBtn.title = _sessionLabel;
     syncLegacyState();
   }
   updateTrayPillLabel();

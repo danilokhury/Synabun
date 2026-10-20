@@ -30,10 +30,12 @@ import { getHiddenModels, HIDDEN_MODELS_EVENT, hiddenModelMatch } from '../ocp-h
 import { getProviderMeta } from '../provider-icons.js';
 import { on } from '../state.js';
 import { fetchAssistantCatalog, fetchProjects, patchClaudeAccount, patchCodexAccount, setClaudeWorkerAccount, setCodexWorkerAccount } from './asst-api.js';
-import { accountBadge, accountCompactMode, accountIdentity, accountName, accountUsable, modeChoices } from '../account-view.js';
-import { accountUsageText, autoAccountLabel } from '../account-usage.js';
+import { accountBadge, accountIdentity, accountName, accountText } from '../account-view.js';
+import { autoAccountLabel } from '../account-usage.js';
+import { accountChoiceItems, accountManageItem, accountMenuRow, accountModeItem, openAccountMenu } from './asst-account-menu.js';
 import { closeMenu, currentMenu, isMenuOpen, openMenu } from './asst-menu.js';
 import { createMascotControl } from './asst-mascot.js';
+import { modelChipForms, modelChipName, modelChipTag } from './asst-model-chip.js';
 import {
   ACCOUNT_PROVIDERS,
   brainRequiresSwitch,
@@ -78,6 +80,10 @@ const TEST_DENSITY_COPY = {
   standard: ['Standard', 'Adds focused tests and runs the area\'s suite once.'],
   thorough: ['Thorough', 'Full coverage, whole suite, live checks.'],
 };
+
+// English copy of the Admin sandbox row (i18n: assistant.adminSandbox.hint). Names only Codex: the
+// one provider it changes (lib/agent-sandbox-elevation.js; Claude Code and OpenCode are no-ops).
+export const ADMIN_SANDBOX_HINT = 'Only changes anything when SynaBun runs on Windows. On: Codex can set up its strongest sandbox, which asks for administrator approval once per account. Off: no admin prompt; Codex uses a sandbox that needs no admin, with weaker isolation.';
 
 /** "Light" — the level's name (a missing or unknown level is the default one). */
 export function testDensityLabel(level, t) {
@@ -416,7 +422,8 @@ function tierTag(m, tr) {
  * opts: { brain, onSelect(target), includeHere, hereLabel, title, t, placement,
  *         current:{provider, model}|null, warnSwitch, providers, onToast(text),
  *         accept(provider, model) → bool (only those models), emptyLabel (when none
- *         passes), allowCustom (default true), zIndex (see asst-menu.js) }
+ *         passes), allowCustom (default true), zIndex (see asst-menu.js),
+ *         accountItems (menu items listed first, under accountTitle) }
  * target: { provider, model, label, tier, vision, outputs, efforts, price } | { here: true }
  */
 export async function openModelMenu(anchor, opts = {}) {
@@ -444,7 +451,7 @@ export async function openModelMenu(anchor, opts = {}) {
   const metadata = modelCatalogStatus();
   const items = [];
   if (Array.isArray(opts.accountItems) && opts.accountItems.length) {
-    items.push({ kind: 'header', label: tr('assistant.brain.account', 'Account profile') }, ...opts.accountItems, { kind: 'separator' });
+    items.push({ kind: 'header', label: opts.accountTitle || tr('assistant.brain.account', 'Account profile') }, ...opts.accountItems, { kind: 'separator' });
   }
   if (includeHere) {
     items.push({ kind: 'radio', id: '__here', label: hereLabel || tr('assistant.routes.brainDecides', 'Let the brain decide'), selected: !current, onSelect: () => onSelect?.({ here: true }) });
@@ -642,9 +649,37 @@ export function createBrainPicker(host, hooks = {}) {
     return name;
   }
 
+  // The "⋯" item's value, in the account menu's words: the name and its plan, "API key" or "Signed out" ("Default · Max").
+  function accountValue(brain) {
+    const acc = accountOf(brain);
+    if (!acc) return brain.accountId === 'auto' ? autoAccountLabel(hooks.t) : (brain.accountId || t('assistant.brain.accountDefault', 'Default'));
+    const row = accountMenuRow(acc, { provider: accountProvider(brain), t: hooks.t });
+    return [row.name, row.badge.text].filter(Boolean).join(' · ');
+  }
+
+  // The model menu's own row first: it also names the "[1m]" / "[extended]" variants the provider list lacks.
+  function modelRow(brain) {
+    return catalogModelRow(brain.provider, brain.model) || modelOf(brain);
+  }
+
   function modelLabel(brain = currentBrain()) {
-    const model = modelOf(brain);
+    const model = modelRow(brain);
     return model ? (model.label || modelShortName(model.id)) : (brain.model ? modelShortName(brain.model) : t('assistant.brain.modelDefault', 'Default model'));
+  }
+
+  // The composer chip's account cue: the account menu's initial avatar when the provider has more than one
+  // account (or the account is signed out), "Auto" for Auto; null otherwise. Its full words are the tooltip's.
+  function accountCue(brain) {
+    if (!ACCOUNT_PROVIDERS.has(brain.provider)) return null;
+    if (brain.accountId === 'auto') return { text: t('assistant.brain.accountAutoShort', 'Auto'), tone: 'muted' };
+    const accounts = brain.provider === 'codex' ? getCachedCodexAccounts() : getCachedClaudeAccounts();
+    const acc = accountOf(brain);
+    const signedOut = acc?.signedIn === false;
+    if (accounts.length < 2 && !signedOut) return null;
+    const initial = acc
+      ? accountMenuRow(acc, { provider: accountProvider(brain), t: hooks.t }).initial
+      : Array.from(String(brain.accountId || t('assistant.brain.accountDefault', 'Default')).trim())[0]?.toLocaleUpperCase();
+    return { text: initial || '?', tone: signedOut ? 'warn' : 'muted' };
   }
 
   function values(brain = currentBrain()) {
@@ -669,6 +704,26 @@ export function createBrainPicker(host, hooks = {}) {
     };
   }
 
+  /**
+   * The permission menu's Admin sandbox row (a check: the global setting, every agent SynaBun starts),
+   * or null while the host has none to show (a server that does not serve it). Its tooltip and
+   * aria-label say the value in effect.
+   */
+  function adminSandboxItem() {
+    const on = typeof hooks.getAdminSandbox === 'function' ? hooks.getAdminSandbox() : null;
+    if (typeof on !== 'boolean') return null;
+    const label = t('assistant.adminSandbox.label', 'Admin sandbox');
+    const value = on ? t('assistant.adminSandbox.on', 'On') : t('assistant.adminSandbox.off', 'Off');
+    const hint = t('assistant.adminSandbox.hint', ADMIN_SANDBOX_HINT);
+    return {
+      kind: 'check', id: 'admin-sandbox', label, desc: hint, checked: on,
+      className: 'asst-admin-sandbox-item',
+      title: `${label}: ${value}. ${hint}`,
+      ariaLabel: t('assistant.adminSandbox.aria', '{label}: {value}. Only changes anything when SynaBun runs on Windows.', { label, value }),
+      onSelect: () => hooks.onAdminSandbox?.(!on),
+    };
+  }
+
   /** The session's Test density, or null while the host has none to show (a server that does not know it). */
   function testDensity() {
     const level = typeof hooks.getTestDensity === 'function' ? hooks.getTestDensity() : null;
@@ -689,21 +744,117 @@ export function createBrainPicker(host, hooks = {}) {
     btn.setAttribute('aria-label', aria || tooltip || label || field);
   }
 
+  // The composer's model chip (asst-model-chip.js): the model's short name, a context tag for a variant,
+  // the account cue and "API" on an API key, never the credential's name (the provider icon says it).
+  // Model label, id, account, who it is and what it runs on are the tooltip and aria-label.
+  // fitModelChip() draws the longest form that fits the row.
+  let chipForms = [];
+  let chipParts = null;
+  let chipCatalog = null;
+  function renderModelChip(brain, v) {
+    const btn = buttons.model;
+    // The catalog was dropped (a model hidden, a provider's list changed): read it again, then the label.
+    if (!cachedModelCatalog() && !chipCatalog) {
+      chipCatalog = loadModelCatalog().catch(() => null).then(() => {
+        chipCatalog = null;
+        if (!destroyed && cachedModelCatalog()) render();
+      });
+    }
+    const row = modelRow(brain);
+    const id = brain.model || row?.id || '';
+    const { name, raw } = id ? modelChipName(row?.label, id) : { name: v.model, raw: false };
+    const tag = modelChipTag(id, { contextWindow: row?.contextWindow, label: row?.label });
+    const cue = accountCue(brain);
+    const p = accountProvider(brain);
+    const acc = ACCOUNT_PROVIDERS.has(brain.provider) ? accountOf(brain) : null;
+    const api = acc && acc.signedIn !== false && acc.mode === 'apiKey' ? accountText('apiShort', {}, p) : '';
+    const names = (cachedModelCatalog()?.[brain.provider] || []).map(m => modelChipName(m.label, m.id).name);
+    chipForms = modelChipForms({ name, names, tag: !!tag, cue: !!cue, api: !!api });
+
+    const who = !ACCOUNT_PROVIDERS.has(brain.provider) ? ''
+      : brain.accountId === 'auto' ? autoAccountLabel(hooks.t)
+        : acc ? accountName(acc, p) : (brain.accountId || t('assistant.brain.accountDefault', 'Default'));
+    const model = brain.model && v.model !== brain.model ? `${v.model} · ${brain.model}` : (brain.model || v.model);
+    const tip = [
+      v.meta.label, model, who ? t('assistant.brain.asAccount', 'as {account}', { account: who }) : '',
+      acc ? accountIdentity(acc) : '', acc ? accountBadge(acc, p).text : '',
+    ].filter(Boolean).join(' · ');
+    setBtn('model', { label: '', icon: v.meta.icon, color: v.meta.color, tooltip: tip, aria: `${t('assistant.brain.model', 'Model')}: ${tip}` });
+
+    const label = btn.querySelector('.asst-dd-label');
+    label.classList.add('asst-model-label');
+    chipParts = {
+      name: el('span', 'asst-model-name', name),
+      tag: el('span', 'asst-model-tag', tag),
+      cue: el('span', 'asst-acct-avatar asst-model-cue', cue?.text || ''),
+      api: el('span', 'asst-acct-badge asst-model-api', api),
+    };
+    if (cue) chipParts.cue.dataset.tone = cue.tone;
+    label.replaceChildren(chipParts.name, chipParts.tag, chipParts.cue, chipParts.api);
+    // A display name ("Sonnet 5") reads in sans; a raw id nothing names ("opus") stays mono.
+    btn.toggleAttribute('data-raw', raw);
+    fitModelChip();
+  }
+
+  function drawChipForm(form) {
+    chipParts.name.textContent = form.name;
+    chipParts.tag.hidden = !form.tag;
+    chipParts.cue.hidden = !form.cue;
+    chipParts.api.hidden = !form.api;
+  }
+
+  // The first form, longest first, that leaves the row as the shortest one does: no part cut, no other
+  // field narrower, the row no taller (it wraps below 320px). None does: the shortest, its name squeezed.
+  function fitModelChip() {
+    const btn = buttons.model;
+    if (destroyed || !btn || !chipParts || !chipForms.length) return;
+    btn.removeAttribute('data-squeezed');
+    const label = btn.querySelector('.asst-dd-label');
+    const slot = btn.parentElement;
+    // Nothing to measure (not on screen, no layout): the whole chip, until the row has a width.
+    if (chipForms.length === 1 || !isRendered(btn) || !slot || typeof label?.getBoundingClientRect !== 'function') { drawChipForm(chipForms[0]); return; }
+    const row = slot.parentElement || null;
+    const others = [...slot.querySelectorAll('.asst-dd-label')].filter(n => n !== label && n.getClientRects().length > 0);
+    const width = n => n.getBoundingClientRect().width;
+    const cut = () => {
+      const right = label.getBoundingClientRect().right + 0.5;
+      return Object.values(chipParts).some(n => !n.hidden && n.getBoundingClientRect().right > right);
+    };
+    const shortest = chipForms[chipForms.length - 1];
+    drawChipForm(shortest);
+    const base = { height: row?.offsetHeight || 0, widths: others.map(width) };
+    const fits = () => !cut()
+      && (row?.offsetHeight || 0) <= base.height + 0.5
+      && others.every((n, i) => width(n) >= base.widths[i] - 0.5)
+      && !(slot.scrollWidth > slot.clientWidth + 1);
+    for (const form of chipForms.slice(0, -1)) {
+      drawChipForm(form);
+      if (fits()) return;
+    }
+    drawChipForm(shortest);
+    btn.toggleAttribute('data-squeezed', cut());
+  }
+
+  // The row's width decides the form (a panel resized, a tab shown, the fields that collapse to glyphs).
+  const fitHost = buttons.model.parentElement?.parentElement || buttons.model.parentElement;
+  let fitFrame = 0;
+  let fitWidth = -1;
+  const scheduleFit = () => {
+    if (fitFrame || destroyed || typeof requestAnimationFrame !== 'function') return;
+    fitFrame = requestAnimationFrame(() => { fitFrame = 0; fitModelChip(); });
+  };
+  const fitObserver = typeof ResizeObserver === 'function' && fitHost ? new ResizeObserver((entries) => {
+    const w = Math.round(entries[entries.length - 1]?.contentRect?.width || 0);
+    if (w !== fitWidth) { fitWidth = w; scheduleFit(); }
+  }) : null;
+  fitObserver?.observe(fitHost);
+  if (typeof document !== 'undefined') document.fonts?.ready?.then(scheduleFit).catch(() => {});
+
   function render() {
     if (destroyed) return;
     const brain = currentBrain();
     const v = values(brain);
-    const modelTip = [v.meta.label, brain.model || t('assistant.brain.modelDefault', 'Default model'), v.account ? t('assistant.brain.asAccount', 'as {account}', { account: v.account }) : ''].filter(Boolean).join(' · ');
-    setBtn('model', { label: v.model, icon: v.meta.icon, color: v.meta.color, tooltip: modelTip, aria: `${t('assistant.brain.model', 'Model')}: ${modelTip}` });
-    if (ACCOUNT_PROVIDERS.has(brain.provider)) {
-      const acc = accountOf(brain);
-      const label = buttons.model.querySelector('.asst-dd-label');
-      label.classList.add('asst-model-account-label');
-      const mode = acc ? accountCompactMode(acc, accountProvider(brain)) : t('accounts.checking', 'Checking…');
-      label.replaceChildren(el('span', 'asst-model-name', v.model), el('span', '', '·'), el('span', 'asst-model-account', acc ? accountName(acc, accountProvider(brain)) : brain.accountId || t('assistant.brain.accountDefault', 'Default')), el('span', '', '·'), el('span', 'asst-model-mode', mode));
-    } else buttons.model.querySelector('.asst-dd-label').classList.remove('asst-model-account-label');
-    // A display name ("Sonnet 5") reads in sans; a raw id nothing names ("opus[1m]") stays mono.
-    buttons.model?.toggleAttribute('data-raw', /^[a-z0-9][\w.\-[\]:/]*$/.test(String(v.model || '')));
+    renderModelChip(brain, v);
 
     if (brain.provider === 'opencode') {
       setBtn('effort', { label: v.effort, icon: ICON_AGENT, tooltip: `${t('assistant.brain.agent', 'OpenCode agent')}: ${v.effort}` });
@@ -791,7 +942,7 @@ export function createBrainPicker(host, hooks = {}) {
       { field: 'mode', label: t('assistant.brain.mode', 'Permission mode'), value: v.mode, icon: ICON_SHIELD, hidden: false },
       { field: 'tests', label: t('assistant.tests.title', 'Test density'), value: testDensity() ? testDensityLabel(testDensity(), hooks.t) : '', icon: testsIcon(testDensityBars(testDensity())), hidden: !testDensity() },
       { field: 'mcp', label: t('assistant.brain.mcp', 'MCP tool profile'), value: v.mcp, icon: ICON_PLUG, hidden: false },
-      { field: 'account', label: t('assistant.brain.account', 'Account profile'), value: v.account, icon: ICON_ACCOUNT, hidden: !ACCOUNT_PROVIDERS.has(brain.provider) },
+      { field: 'account', label: t('assistant.brain.accountShort', 'Account'), value: accountValue(brain), icon: ICON_ACCOUNT, hidden: !ACCOUNT_PROVIDERS.has(brain.provider) },
     ];
   }
 
@@ -855,7 +1006,8 @@ export function createBrainPicker(host, hooks = {}) {
         placement,
         current: { provider: brain.provider, model: brain.model },
         warnSwitch: true,
-        accountItems: ACCOUNT_PROVIDERS.has(brain.provider) ? accountItems(brain, { composer: true }) : [],
+        accountItems: ACCOUNT_PROVIDERS.has(brain.provider) ? accountItems(brain) : [],
+        accountTitle: accountText('menuTitle', {}, accountProvider(brain)),
         onToast: hooks.onToast,
         onManageModels: hooks.onManageModels,
         onSelect: (target) => {
@@ -920,7 +1072,8 @@ export function createBrainPicker(host, hooks = {}) {
 
     if (field === 'account') {
       if (!ACCOUNT_PROVIDERS.has(brain.provider)) return;
-      menu(t('assistant.brain.account', 'Account profile'), accountItems(brain), { width: 300 });
+      // Kept inside the panel that holds the anchor (the sidepanel, or the tab's own root).
+      openAccountMenu(anchor, accountMenu(brain, anchor.closest?.('.assistant-panel') || anchor.closest?.('.asst-root') || null));
       return;
     }
 
@@ -975,70 +1128,74 @@ export function createBrainPicker(host, hooks = {}) {
           onSelect: () => commit({ permissionMode: m.id }, 'mode'),
         });
       }
+      // The global Admin sandbox switch (every agent SynaBun starts, not this conversation), under its own header.
+      const adminSandbox = adminSandboxItem();
+      if (adminSandbox) items.push({ kind: 'separator' }, { kind: 'header', label: t('assistant.adminSandbox.group', 'Every agent') }, adminSandbox);
       menu(t('assistant.brain.mode', 'Permission mode'), items);
     }
   }
 
-  // The brain's account menu (Claude or Codex): every account with what it runs on and who it is (a
-  // signed-out one is listed, not offered), the mode of the brain's account when it holds both credentials,
-  // and the account dispatched workers of that provider use when a dispatch names none.
-  function accountItems(brain, { composer = false } = {}) {
+  // The cog's account menu (asst-account-menu.js): every account once, the conversation's and the
+  // workers' choice, kept inside `bounds`. What each choice does is the same as the composer's.
+  function accountMenu(brain, bounds) {
+    const codex = brain.provider === 'codex';
+    const refetch = () => (codex ? fetchCodexAccounts(true) : fetchClaudeAccounts(true));
+    return {
+      provider: codex ? 'codex' : 'claude',
+      t: hooks.t,
+      placement,
+      bounds,
+      read: () => ({
+        accounts: codex ? getCachedCodexAccounts() : getCachedClaudeAccounts(),
+        currentId: currentBrain().accountId,
+        workerId: codex ? getCodexWorkerAccountId() : getClaudeWorkerAccountId(),
+        running: hooks.getRunning?.() === true,
+      }),
+      onAuto: () => commit({ accountId: 'auto' }, 'account'),
+      onPick: (id) => commit({ accountId: id }, 'account'),
+      onSetWorker: async (id) => { await (codex ? setCodexWorkerAccount : setClaudeWorkerAccount)(id); await refetch(); render(); },
+      onSetMode: async (id, mode) => {
+        const before = currentBrain();
+        try {
+          await (codex ? patchCodexAccount : patchClaudeAccount)(id, { mode }); await refetch();
+          hooks.onChange?.(currentBrain(), { requiresSwitch: true, restartBrain: true, field: 'accountMode', previous: before }); render();
+        }
+        catch (err) { hooks.onToast?.(err?.message || String(err)); }
+      },
+      onAdd: () => hooks.onAddAccount?.(brain.provider),
+      onManage: (id) => (id ? hooks.onManageAccounts?.(brain.provider, id) : hooks.onManageAccounts?.(brain.provider)),
+      onError: (err) => hooks.onToast?.(err?.message || String(err)),
+    };
+  }
+
+  // The composer's Model menu lists the brain's accounts too (Claude or Codex), as the cog's account menu
+  // does (asst-account-menu.js): Auto, every account once (a signed-out one opens its sign-in), the Uses
+  // switch of an account holding both credentials, Add account… and Manage….
+  function accountItems(brain) {
     const codex = brain.provider === 'codex';
     const p = codex ? 'codex' : 'claude';
     const accounts = codex ? getCachedCodexAccounts() : getCachedClaudeAccounts();
     const refetch = () => (codex ? fetchCodexAccounts(true) : fetchClaudeAccounts(true));
-    const items = accounts.map((a) => {
-      const badge = accountBadge(a, p);
-      const usable = accountUsable(a);
-      return {
-        kind: 'radio', id: a.id, label: accountName(a, p),
-        desc: [accountIdentity(a), accountUsageText(a, hooks.t), !usable ? t('assistant.accounts.signInFirst', 'Signed out: sign it in from Manage…') : composer && a.id !== brain.accountId ? t('assistant.brain.newConversation', 'starts a new conversation') : ''].filter(Boolean).join(' · '),
-        tag: badge.text, disabled: !usable,
-        selected: a.id === brain.accountId,
-        onSelect: () => commit({ accountId: a.id }, 'account'),
-      };
+    const items = accountChoiceItems({
+      t: hooks.t,
+      rows: accounts.map((a) => accountMenuRow(a, { provider: p, t: hooks.t })),
+      currentId: brain.accountId,
+      onAuto: () => commit({ accountId: 'auto' }, 'account'),
+      onPick: (id) => commit({ accountId: id }, 'account'),
+      onSignIn: (id) => hooks.onManageAccounts?.(brain.provider, id),
     });
-    items.unshift({ kind: 'radio', id: 'auto', label: autoAccountLabel(hooks.t), desc: t('assistant.accountUsage.composerHint', 'Pick the subscription with most usage left and start a new conversation.'), onSelect: () => commit({ accountId: 'auto' }, 'account') });
-    if (composer) for (const a of accounts.filter(a => !accountUsable(a))) items.push({ id: `signin:${a.id}`, label: t('assistant.accounts.signInAccount', 'Sign in to {label}…', { label: accountName(a, p) }), onSelect: () => hooks.onManageAccounts?.(brain.provider, a.id) });
-    const current = accounts.find((a) => a.id === brain.accountId);
-    const modes = modeChoices(current, p);
-    if (modes.length) {
-      items.push({ kind: 'separator' });
-      items.push({ kind: 'header', label: t('assistant.accounts.usesHeader', '{label} uses (every session on it)', { label: accountName(current, p) }) });
-      for (const m of modes) {
-        items.push({
-          kind: 'radio', id: `mode:${m.mode}`, label: m.label, desc: [m.detail, !m.current ? t('assistant.brain.newConversation', 'starts a new conversation') : ''].filter(Boolean).join(' · '), selected: m.current, disabled: hooks.getRunning?.() === true,
-          onSelect: async () => {
-            if (m.current) return;
-            try {
-              await (codex ? patchCodexAccount : patchClaudeAccount)(current.id, { mode: m.mode }); await refetch();
-              hooks.onChange?.(currentBrain(), { requiresSwitch: true, restartBrain: true, field: 'accountMode', previous: brain }); render();
-            }
-            catch (err) { hooks.onToast?.(err?.message || String(err)); }
-          },
-        });
-      }
-    }
-    const worker = codex ? getCodexWorkerAccountId() : getClaudeWorkerAccountId();
-    if (!composer) {
-    items.push({ kind: 'separator' });
-    items.push({ kind: 'header', label: codex ? t('assistant.accounts.codexWorkersHeader', 'Codex workers use') : t('assistant.accounts.workersHeader', 'Claude Code workers use') });
-    for (const a of accounts) {
-      const usable = accountUsable(a);
-      items.push({
-        kind: 'radio', id: `worker:${a.id}`, label: accountName(a, p), tag: accountBadge(a, p).text,
-        disabled: !usable && a.id !== worker, selected: a.id === worker,
-        onSelect: async () => {
-          if (a.id === worker) return;
-          try { await (codex ? setCodexWorkerAccount : setClaudeWorkerAccount)(a.id); await refetch(); render(); }
-          catch (err) { hooks.onToast?.(err?.message || String(err)); }
-        },
-      });
-    }
-    }
-    items.push({ kind: 'separator' });
-    items.push({ id: '__add', label: t('assistant.accounts.add', 'Add account…'), onSelect: () => hooks.onAddAccount?.(brain.provider) });
-    items.push({ id: '__manage', label: t('assistant.accounts.manage', 'Manage…'), onSelect: () => hooks.onManageAccounts?.(brain.provider) });
+    const uses = accountModeItem({
+      provider: p, t: hooks.t, account: accounts.find((a) => a.id === brain.accountId), running: hooks.getRunning?.() === true,
+      onSetMode: async (id, mode) => {
+        try {
+          await (codex ? patchCodexAccount : patchClaudeAccount)(id, { mode }); await refetch();
+          hooks.onChange?.(currentBrain(), { requiresSwitch: true, restartBrain: true, field: 'accountMode', previous: brain }); render();
+        }
+        catch (err) { hooks.onToast?.(err?.message || String(err)); }
+      },
+    });
+    if (uses) items.push(uses);
+    items.push(accountManageItem({ t: hooks.t, onAdd: () => hooks.onAddAccount?.(brain.provider), onManage: () => hooks.onManageAccounts?.(brain.provider) }));
     return items;
   }
 
@@ -1088,6 +1245,6 @@ export function createBrainPicker(host, hooks = {}) {
     mountEmptyProject,
     setBrain() { render(); },
     close: closeMenu,
-    destroy() { destroyed = true; for (const off of offAccounts) { try { off?.(); } catch {} } closeMenu(); heroProjectMascot?.destroy(); Object.values(buttons).forEach((b) => b.remove()); heroProject?.remove(); heroProject = null; root.remove(); },
+    destroy() { destroyed = true; fitObserver?.disconnect(); if (fitFrame && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(fitFrame); for (const off of offAccounts) { try { off?.(); } catch {} } closeMenu(); heroProjectMascot?.destroy(); Object.values(buttons).forEach((b) => b.remove()); heroProject?.remove(); heroProject = null; root.remove(); },
   };
 }

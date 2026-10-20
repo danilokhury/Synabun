@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { z } from 'zod/v3';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { callerDesktopGrant } from '../services/identity.js';
 import { desktopAct, desktopApps, desktopAx, desktopStatus, type DesktopResponse } from '../services/desktop-client.js';

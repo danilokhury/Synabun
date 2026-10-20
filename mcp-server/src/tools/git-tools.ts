@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { z } from 'zod/v3';
 import * as ni from '../services/neural-interface.js';
 import { text } from './response.js';
 

@@ -10,6 +10,7 @@ import { codexReasoningEffort } from './effort-levels.js';
 import { codexStreamMedia, collectCodexMedia, openCodeMediaPart, ownCodexImages } from './assistant-media.js';
 import { browserToolDenial } from './browser-tool-policy.js';
 import { CODEX_BROWSER_POLICY_UNTRUSTED_NOTE, codexBrowserPolicyHook } from './assistant-route-gate-codex.js';
+import { codexWindowsSandbox, codexWindowsSandboxConfig } from './agent-sandbox-elevation.js';
 
 function stringEnv(source) {
   const out = {};
@@ -251,6 +252,9 @@ export async function createCodexNativeLoopAdapter(options = {}) {
     // Inherited variables to remove before extraEnv applies (the Codex account's launch:
     // lib/codex-accounts.js launchFor() — inherited OpenAI/Codex credentials never reach the run).
     unsetEnv = [],
+    // The Admin sandbox setting when the run started (lib/agent-sandbox-elevation.js): the Windows
+    // sandbox every `codex exec` of the thread may use. The run keeps it while it lives.
+    adminSandbox = false,
   } = options;
   const permissionPolicy = normalizePermissionPolicy(rawPolicy);
   const capability = normalizeCapability(rawCapability);
@@ -287,7 +291,7 @@ export async function createCodexNativeLoopAdapter(options = {}) {
   const inherited = { ...process.env };
   for (const key of Array.isArray(unsetEnv) ? unsetEnv : []) delete inherited[key];
   const env = stringEnv({ ...inherited, ...pins, CODEX_HOME: codexHome, ...(browserPolicy ? { SYNABUN_BROWSER_POLICY_CWD: cwd || process.cwd() } : {}), ...stringEnv(extraEnv) });
-  const config = {};
+  const config = { ...codexWindowsSandboxConfig(adminSandbox) };
   if (Object.keys(pins).length) config.mcp_servers = { SynaBun: { env: pins } };
   if (extended) config.model_context_window = Math.floor(Number(modelContextWindow));
   if (browserPolicy) Object.assign(config, browserPolicy.config);
@@ -334,6 +338,7 @@ export async function createCodexNativeLoopAdapter(options = {}) {
     isAlive: () => alive,
     describe: () => ({
       provider: 'codex', permissionPolicy, capability, sandboxMode: codexSandboxModeFor({ permissionPolicy, capability }),
+      windowsSandbox: codexWindowsSandbox(adminSandbox),
       ...(task ? { browserPolicy: browserPolicy ? 'hook' : 'instructions' } : {}),
     }),
     async runTurn(prompt, meta = {}) {

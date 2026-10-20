@@ -1905,9 +1905,43 @@ function injectStyles() {
       background: rgba(22, 22, 26, 0.95);
       z-index: 3;
       box-shadow: var(--shadow-sm), 0 0 0 1px rgba(255,255,255,0.06);
+      /* A query container measured in controls: 1em is one header button (24px docked, the
+         window's control size when detached, which follows the font scale), so the thresholds
+         below hold at any scale. Nothing in the row inherits it; the session menu takes the
+         panel's back. */
+      container: cp-header / inline-size;
+      font-size: 24px;
     }
+    .sp-sidepanel.sp-floating > .cp-header { font-size: var(--fw-header-control-size); }
+    .cp-header > .cp-session-menu { font-size: 1rem; }
     .cp-header-actions {
       display: flex; align-items: center; gap: 3px; margin-left: auto; flex-shrink: 0;
+    }
+    /* The header buttons never shrink. The account menu's trigger (account-menu.js) is the one
+       piece of the actions that gives way, once the session name is at its readable 88px, down to
+       its compact 64px, and truncates. */
+    .cp-header-actions > * { flex-shrink: 0; }
+    .cp-header-actions:has(> .acct-menu-trigger) { flex-shrink: 1; min-width: 0; }
+    .cp-header-actions > .acct-menu-trigger { flex-shrink: 1; }
+    /* Narrow headers, in order: the trigger stays at its compact 64px and the name goes from 88px
+       down to its caret; then the trigger is hidden. Room counted in controls (em) plus px: docked,
+       the pencil and six buttons are 7em with 21px of gaps; detached, the move handle makes 8em,
+       the window's 6px gaps 39px, the name's floor is 1em. Thresholds: name + 64px trigger + that row. */
+    @container cp-header (width < calc(7em + 173px)) {
+      .claude-panel:not(.sp-floating) > .cp-header .cp-session-btn { flex: 1 1 0; }
+      .claude-panel:not(.sp-floating) > .cp-header > .cp-header-actions { flex-shrink: 0; }
+      .claude-panel:not(.sp-floating) > .cp-header .acct-menu-trigger { flex: 0 0 64px; width: 64px; }
+    }
+    @container cp-header (width < calc(7em + 117px)) {
+      .claude-panel:not(.sp-floating) > .cp-header .acct-menu-trigger { display: none; }
+    }
+    @container cp-header (width < calc(8em + 191px)) {
+      .claude-panel.sp-floating > .cp-header .cp-session-btn { flex: 1 1 0; }
+      .claude-panel.sp-floating > .cp-header > .cp-header-actions { flex-shrink: 0; }
+      .claude-panel.sp-floating > .cp-header .acct-menu-trigger { flex: 0 0 64px; width: 64px; }
+    }
+    @container cp-header (width < calc(9em + 103px)) {
+      .claude-panel.sp-floating > .cp-header .acct-menu-trigger { display: none; }
     }
     .cp-header-btn {
       display: flex; align-items: center; justify-content: center;
@@ -1934,14 +1968,18 @@ function injectStyles() {
       font-size: 11px; font-family: 'JetBrains Mono', monospace;
       cursor: pointer; padding: 5px 10px; border-radius: 8px 0 0 8px;
       transition: background 0.15s, color 0.15s;
-      max-width: 100%; overflow: hidden;
+      /* The session name keeps a readable 88px (about 8 characters, or its own width if shorter)
+         and gives way first above that: it grows only into the room the pencil and the actions
+         leave, so a long name never pushes them. Narrower, the container queries above let it go
+         down to 32px (the caret). */
+      flex: 1 0 88px; min-width: 32px; max-width: max-content; overflow: hidden;
     }
     .cp-session-btn:hover { background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.75); }
     .cp-session-btn .cp-session-label {
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
     .cp-session-btn .cp-dd-arrow {
-      font-size: 9px; padding: 4px 6px; margin: -4px -6px -4px 0;
+      flex-shrink: 0; font-size: 9px; padding: 4px 6px; margin: -4px -6px -4px 0;
       border-radius: 0 6px 6px 0; cursor: pointer;
       transition: background 0.15s, color 0.2s, transform 0.2s;
     }
@@ -1956,6 +1994,7 @@ function injectStyles() {
       -webkit-tap-highlight-color: transparent;
       touch-action: manipulation;
       flex-shrink: 0;
+      margin-right: 3px; /* the actions' own gap, kept when the name fills the row */
     }
     .cp-header-rename-btn:hover { color: rgba(100,160,255,0.95); background: rgba(100,160,255,0.14); }
     .cp-header-rename-btn:active { transform: scale(0.92); transition-duration: 0.06s; }
@@ -11605,6 +11644,13 @@ function wireEvents() {
   const $sessMenu = _panel.querySelector('#cp-session-menu');
   const $sessLabel = _panel.querySelector('.cp-session-label');
   let _sessClickTimer = null;
+  // The whole name as the chip's tooltip, for when the header shows only part of it. The label is
+  // written from many places (switch, rename, title, reset), so it follows the label itself.
+  const syncSessionTooltip = () => {
+    if (!$sessLabel.querySelector('.cp-rename-input')) $sessBtn.title = $sessLabel.textContent;
+  };
+  syncSessionTooltip();
+  new MutationObserver(syncSessionTooltip).observe($sessLabel, { childList: true, characterData: true, subtree: true });
 
   $sessBtn.addEventListener('click', (e) => {
     // Block menu toggle while rename input is active

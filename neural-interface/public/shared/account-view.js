@@ -145,7 +145,8 @@ export function accountBadge(row, provider = null) {
   return { text: accountText('checking', {}, p), tone: 'muted', mode: row.mode || null };
 }
 
-function planName(plan) {
+/** A subscription plan as its name ("max" → "Max"); '' for none. */
+export function planName(plan) {
   const value = String(plan || '').trim();
   return value ? value.charAt(0).toUpperCase() + value.slice(1) : '';
 }

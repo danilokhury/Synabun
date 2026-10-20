@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { z } from 'zod/v3';
 import * as ni from '../services/neural-interface.js';
 import * as navigate from './browser-navigate.js';
 import * as interact from './browser-interact.js';

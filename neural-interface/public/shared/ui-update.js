@@ -1076,12 +1076,14 @@ function openUpdateModal() {
         failure.code = code;
         throw failure;
       }
-      await res.json();
+      const launched = await res.json();
+      // On Windows the updater also stops the SynaBun MCP servers AI clients started (updater.mjs).
+      const onWindows = launched?.platform === 'win32';
 
       icon.className = 'update-backup-icon';
       icon.textContent = '✓';
       icon.style.color = '#34c759';
-      text.innerHTML = `<strong>Updater terminal launched</strong><span class="update-run-detail">SynaBun is shutting down so npm can replace the package. Watch the terminal for install progress; SynaBun will relaunch automatically when it finishes.</span><span class="update-run-hint">If no terminal window appears, run <code>${esc(installPlan.displayCommand || 'npm i -g synabun@latest')}</code> manually.</span>`;
+      text.innerHTML = `<strong>Updater terminal launched</strong><span class="update-run-detail">SynaBun is shutting down so npm can replace the package. Watch the terminal for install progress; SynaBun will relaunch automatically when it finishes.</span>${onWindows ? '<span class="update-run-detail">It also stops the SynaBun MCP servers your AI clients started. Reconnect them afterwards (in Claude Code: /mcp).</span>' : ''}<span class="update-run-hint">If no terminal window appears, ${onWindows ? 'close your AI clients, then ' : ''}run <code>${esc(installPlan.displayCommand || 'npm i -g synabun@latest')}</code> manually.</span>`;
       runBtn.innerHTML = 'Updater running…';
 
       // Server is shutting down. Optionally redirect to a friendly offline

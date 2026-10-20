@@ -167,38 +167,11 @@ function saveCategoriesToDisk(categories: CustomCategory[]): void {
 }
 
 /**
- * Built-in categories that must always exist (created if missing on startup).
- * youtube-videos is the trailer dedup ledger that youtube_upload writes and
- * youtube_source reads — pre-seeding it means manual remember / the UI / routing
- * all see it, not just the validation-bypassing auto-record path.
- */
-const BUILTIN_CATEGORIES: Array<{ name: string; description: string; parent?: string }> = [
-  {
-    name: 'youtube-videos',
-    description: 'One memory per uploaded YouTube trailer — the dedup ledger. Written automatically by youtube_upload; tagged with canonical source ids (igdb:/appid:/ytid:/name:) that youtube_source reads to skip already-posted trailers. Do not store anything else here.',
-    parent: 'social',
-  },
-];
-
-/** Append any missing built-in categories and persist. Idempotent. */
-function ensureBuiltinCategories(): void {
-  const cats = loadCategoriesFromDisk();
-  const have = new Set(cats.map((c) => c.name));
-  let changed = false;
-  for (const b of BUILTIN_CATEGORIES) {
-    if (have.has(b.name)) continue;
-    const cat: CustomCategory = { name: b.name, description: b.description, created_at: new Date().toISOString() };
-    if (b.parent && have.has(b.parent)) cat.parent = b.parent; // only attach the parent if it exists
-    cats.push(cat);
-    changed = true;
-  }
-  if (changed) saveCategoriesToDisk(cats);
-}
-
-/**
  * Initialize the local category cache for the active connection.
- * Seeds the cache file from SQLite (source of truth) or empty, then ensures the
- * built-in categories exist — even when the cache file already existed.
+ * Seeds the cache file from SQLite (source of truth), or empty when the DB has none.
+ * No category is created here: a fresh install has none. A project's defaults are
+ * made when the project is added, a feature's category the first time it saves
+ * (ensureCategory / ensureFeatureCategory).
  */
 export async function initCategoryCache(): Promise<void> {
   const filePath = getCategoriesPath();
@@ -214,8 +187,80 @@ export async function initCategoryCache(): Promise<void> {
     fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
   }
 
-  ensureBuiltinCategories();
   invalidateCategoryCache();
+}
+
+/**
+ * Categories that features save into by name. None exists on a fresh install:
+ * each is created the first time something is stored in it (ensureFeatureCategory),
+ * whether the writer is SynaBun itself or a model told to use that name by a hook.
+ * Keep the descriptions in step with hooks/claude-code/shared.mjs FEATURE_CATEGORIES.
+ */
+export const FEATURE_CATEGORIES: Record<string, { description: string; is_parent?: boolean }> = {
+  conversations: {
+    description: 'Indexed conversation sessions with compacted summaries for cross-session recall: session metadata (date, branch, session id) and topic summaries, so past conversations can be found by asking for them.',
+  },
+  'communication-style': {
+    description: 'How the user communicates and works: patterns in how they give instructions, correct, decide and signal frustration, and their stated preferences.',
+  },
+  plans: {
+    description: 'Implementation plans stored after plan mode approval, one child category per project.',
+    is_parent: true,
+  },
+  uncategorized: {
+    description: 'Fallback for memories stored without a category.',
+  },
+  ideas: {
+    description: 'Brainstormed features, experiments, and creative explorations (the /synabun idea skill).',
+  },
+  schedules: {
+    description: 'One memory per schedule created from a conversation (the /synabun schedule skill): name, template, schedule id, cron, group, profile and model.',
+  },
+  'youtube-videos': {
+    description: 'One memory per uploaded YouTube trailer — the dedup ledger. Written automatically by youtube_upload; tagged with canonical source ids (igdb:/appid:/ytid:/name:) that youtube_source reads to skip already-posted trailers. Do not store anything else here.',
+  },
+};
+
+/**
+ * Create a category the first time something saves into it. Idempotent: an existing
+ * category is left exactly as it is. The parent is attached only when it already
+ * exists. Returns true when the category exists afterwards.
+ */
+export function ensureCategory(name: string, description: string, options: { parent?: string; is_parent?: boolean } = {}): boolean {
+  try {
+    if (categoryExists(name)) return true;
+    const parent = options.parent && categoryExists(options.parent) ? options.parent : undefined;
+    addCategory(name, description, parent, undefined, options.is_parent && !parent);
+    return true;
+  } catch (err) {
+    console.error(`Failed to create category "${name}":`, err instanceof Error ? err.message : err);
+    return categoryExists(name);
+  }
+}
+
+/**
+ * ensureCategory for a name of FEATURE_CATEGORIES, or a project's plan category
+ * `plans-<project>` (made under "plans", as hooks/claude-code/post-plan.mjs does);
+ * false for any other name.
+ */
+export function ensureFeatureCategory(name: string): boolean {
+  const feature = Object.prototype.hasOwnProperty.call(FEATURE_CATEGORIES, name) ? FEATURE_CATEGORIES[name] : null;
+  if (feature) return ensureCategory(name, feature.description, { is_parent: feature.is_parent });
+  if (/^plans-[a-z0-9][a-z0-9-]*$/.test(name) && name.length <= MAX_LENGTH && ensureFeatureCategory('plans')) {
+    return ensureCategory(name, `Implementation plans for ${name.slice('plans-'.length)} project`, { parent: 'plans' });
+  }
+  return false;
+}
+
+/**
+ * The name of a project's default parent category, as the project's defaults
+ * are created (hooks/claude-code/shared.mjs projectCategoryLabel): the label
+ * normalized and cut to 16 characters, so `<label>-architecture` stays within 30.
+ */
+export function projectCategoryLabel(project: string): string {
+  let label = String(project || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  if (label.length > 16) label = label.slice(0, 16).replace(/-$/, '');
+  return label || 'global';
 }
 
 /**

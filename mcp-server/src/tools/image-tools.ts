@@ -5,7 +5,7 @@
  * Any skill or tool can use staged images (Leonardo references, social posts, etc.).
  */
 
-import { z } from 'zod';
+import { z } from 'zod/v3';
 import * as ni from '../services/neural-interface.js';
 import { text } from './response.js';
 

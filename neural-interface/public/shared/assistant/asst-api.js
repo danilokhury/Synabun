@@ -294,6 +294,13 @@ export function setCodexWorkerAccount(accountId) {
   return jsonFetch('/api/assistant/codex/worker-account', jsonBody({ accountId: accountId || null }, 'PUT'));
 }
 
+// ── Admin sandbox (global, every agent SynaBun starts) ──
+
+/** PUT { adminSandbox } → { ok, adminSandbox, providers }. Agents get 403 UI_ONLY. */
+export function setAdminSandbox(enabled) {
+  return jsonFetch('/api/assistant/admin-sandbox', jsonBody({ adminSandbox: enabled === true }, 'PUT'));
+}
+
 /** Remove one of an account's credentials: 'subscription' (Codex's own sign-out) or 'apiKey'. */
 export function signOutCodexAccount(id, credential) {
   return jsonFetch(`/api/codex/accounts/${enc(id)}/auth/logout`, jsonBody({ credential }));

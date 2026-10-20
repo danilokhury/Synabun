@@ -78,50 +78,23 @@ async function tryGracefulServerShutdown() {
 // keep file handles inside the install dir open, causing EBUSY when npm
 // tries to rename it.
 //
-// We nuke any process whose command line references the SynaBun install
-// path. This catches every orphan regardless of how they got that way.
+// Windows: lib/package-processes.js, the same step the updater runs (node
+// processes with an argument inside the install path, anything whose program
+// file is inside it; never this process, its parents or its children).
+// Elsewhere: any process whose command line references the install path.
 // Skips the current PID (we are the preuninstall process itself).
 
-killOrphansInsideInstall();
+await killOrphansInsideInstall();
 
-function killOrphansInsideInstall() {
+async function killOrphansInsideInstall() {
   const installPath = __dirname;
   const selfPid = process.pid;
   const plat = platform();
 
   if (plat === 'win32') {
-    // PowerShell: Get-CimInstance returns every process with CommandLine.
-    // Pass the install path via env so this PowerShell command line does not
-    // itself contain the path we are trying to match and kill.
-    // Stop-Process -Force kills synchronously; -ErrorAction SilentlyContinue
-    // suppresses "process already exited" noise.
-    const ps = `
-$ErrorActionPreference = 'SilentlyContinue';
-$installPath = $env:SYNABUN_INSTALL_PATH;
-$selfPid = [int]$env:SYNABUN_PREUNINSTALL_PID;
-Get-CimInstance Win32_Process |
-  Where-Object {
-    $_.ProcessId -ne $selfPid -and
-    $_.ProcessId -ne $PID -and (
-      ($_.CommandLine -and $_.CommandLine -like "*$installPath*") -or
-      ($_.ExecutablePath -and $_.ExecutablePath -like "$installPath*")
-    )
-  } |
-  ForEach-Object {
-    Write-Host ('  Killing orphan PID ' + $_.ProcessId + ' (' + $_.Name + ')');
-    Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
-  }
-	`.trim();
     try {
-      execSync(`powershell -NoProfile -ExecutionPolicy Bypass -Command "${ps.replace(/"/g, '\\"').replace(/\n/g, ' ')}"`, {
-        stdio: 'inherit',
-        timeout: 8000,
-        env: {
-          ...process.env,
-          SYNABUN_INSTALL_PATH: installPath,
-          SYNABUN_PREUNINSTALL_PID: String(selfPid),
-        },
-      });
+      const { stopPackageProcesses } = await import('./lib/package-processes.js');
+      await stopPackageProcesses({ roots: [installPath], selfPid, log: line => console.log(line) });
     } catch {
       // PowerShell unavailable, blocked, or timed out. Fall through.
     }

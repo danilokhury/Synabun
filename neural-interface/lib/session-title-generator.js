@@ -118,6 +118,8 @@ async function generateCodexTitle(input, deps) {
   const args = [
     'exec', '--ephemeral', '--skip-git-repo-check', '--ignore-rules',
     '--sandbox', 'read-only', '--color', 'never', '--json',
+    // The Windows sandbox the Admin sandbox setting allows (lib/agent-sandbox-elevation.js).
+    ...(typeof deps.codexConfigArgs === 'function' ? deps.codexConfigArgs() : []),
   ];
   if (input.cwd) args.push('-C', input.cwd);
   if (input.model) args.push('-m', input.model);

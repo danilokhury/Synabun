@@ -12,6 +12,8 @@ import { createClaudeAccounts as createPanelClaudeAccounts } from './lib/claude-
 import { createClaudePanelAuth } from './lib/claude-panel-auth.js';
 import { createCodexPanelAuth } from './lib/codex-panel-auth.js';
 import { createCodexAccounts, applyCodexLaunchEnv, codexAppServerArgs, codexExecEnv } from './lib/codex-accounts.js';
+import { codexWindowsSandbox, codexWindowsSandboxArgs } from './lib/agent-sandbox-elevation.js';
+import { createAdminSandboxSetting } from './lib/agent-sandbox-setting.js';
 import { createCodexAccountAuth } from './lib/codex-account-auth.js';
 import { registerProviderPanelApiKeyAuthRoutes, redactProviderSecrets, providerApiKeyBodyError, providerDiagnosticSink } from './lib/provider-panel-api-key-auth.js';
 import { createProviderPanelTerminalAuth, providerLoginSpec, registerProviderPanelTerminalAuthRoutes } from './lib/provider-panel-terminal-auth.js';
@@ -272,11 +274,12 @@ import {
   clampPointsToRect as wbClampPointsToRect,
   convertPctInPlace as wbConvertPctInPlace,
 } from '../mcp-server/dist/services/whiteboard-geometry.js';
-import { ensureProjectCategories } from '../hooks/claude-code/shared.mjs';
+import { ensureProjectCategories as ensureProjectCategoriesInFile, ensureCategories as ensureCategoriesInFile, FEATURE_CATEGORIES } from '../hooks/claude-code/shared.mjs';
 import { getDataHome, getDataHomeDiagnostics, isGlobalInstall, pathIsInside } from '../lib/paths.js';
 import { launcherLogPath } from '../lib/first-launch-protection.js';
 import { registerStartLauncher, startLauncherState } from '../lib/start-launcher.js';
 import { effectiveNpmPrefix } from '../lib/child-path.js';
+import { checkRuntimeDependencies, fallbackInstallArgs, fallbackInstallEnv, findInstalled, mcpCompiler, npmCommand, npmInvocation } from '../lib/runtime-dependencies.js';
 import { redactDeep, redactSecrets } from '../lib/log-redact.js';
 import { applyPackagedChildPath, durableEntry, mcpStdioCommand, npmGlobalBinFor, packagedNpmPrefix, packagedPathFolders, packagedRuntime } from '../lib/packaged-runtime.js';
 import { dataHomeId } from '../lib/desktop-app.js';
@@ -328,11 +331,15 @@ const __dirname = dirname(__filename);
 // This sweeps ALL platform directories, not just this host's: a vendored
 // checkout can carry several, and repairing only the current one left e.g.
 // prebuilds/darwin-x64/spawn-helper broken for Intel Macs.
+// Both node_modules an install can have: the package root's (`npm i -g synabun` puts every dependency there) and
+// the Neural Interface's own (a development checkout, a desktop build).
 try {
-  const sweep = ensureVendoredExecutables({ root: __dirname, log: (msg) => console.log(msg) });
-  for (const failure of sweep.failed) {
-    console.warn(`[binaries] ${failure.path} is not launchable (${failure.state}).`
-      + (failure.repairCommand ? ` Try: ${failure.repairCommand}` : ''));
+  for (const root of new Set([__dirname, resolve(__dirname, '..')])) {
+    const sweep = ensureVendoredExecutables({ root, log: (msg) => console.log(msg) });
+    for (const failure of sweep.failed) {
+      console.warn(`[binaries] ${failure.path} is not launchable (${failure.state}).`
+        + (failure.repairCommand ? ` Try: ${failure.repairCommand}` : ''));
+    }
   }
 } catch (err) {
   console.warn('[binaries] Could not verify vendored binary permissions:', err.message);
@@ -538,49 +545,31 @@ const GLOBAL_CATEGORIES_PATH = resolve(CATEGORIES_DATA_DIR, 'custom-categories.j
 const NAME_PATTERN = /^[a-z][a-z0-9-]*$/;
 const CATEGORIES_POINT_ID = '00000000-0000-0000-0000-000000000000';
 
-// Default categories seeded on first startup (new connection)
-// Must stay in sync with hooks/claude-code/shared.mjs STANDALONE_DEFAULTS
-const DEFAULT_CATEGORIES = [
-  {
-    name: 'uncategorized',
-    description: 'Fallback category for memories stored without an explicit category. Any memory whose category is null, undefined, or empty is automatically assigned here during data normalization. Ensures every memory is always categorized for filtering, sidebar visibility toggling, and graph rendering.',
-    color: '#6b7280',
-  },
-  {
-    name: 'conversations',
-    description: 'Indexed conversation sessions with compacted summaries for cross-session recall. Stores session metadata (date, branch, session ID, file path) and topic summaries so users can search and retrieve past conversations naturally — e.g. "what did we work on yesterday?" or "remember that conversation about auth?"',
-    color: '#a855f7',
-    is_parent: true,
-  },
-  {
-    name: 'communication-style',
-    description: 'User communication patterns and preferences.',
-  },
-  {
-    name: 'plans',
-    description: 'Implementation plans stored after plan mode approval.',
-    color: '#06d6a0',
-    is_parent: true,
-  },
-  {
-    name: 'ideas',
-    description: 'Feature ideas, product concepts, brainstorms, and future plans. A general-purpose category for capturing forward-looking thoughts that haven\'t been implemented yet — new features to build, architectural experiments to try, UX improvements to explore, or any creative concept worth revisiting later.',
-    color: '#f59e0b',
-  },
-];
-
+// No default categories: a fresh install has none. A project's defaults are made
+// when the project is added (ensureProjectCategories), a feature's category the
+// first time the feature saves into it.
 function getCategoriesPath() {
   // Single categories file — no per-connection paths needed with SQLite
-  if (!existsSync(GLOBAL_CATEGORIES_PATH)) {
-    const dir = resolve(GLOBAL_CATEGORIES_PATH, '..');
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    writeFileSync(GLOBAL_CATEGORIES_PATH, JSON.stringify({ version: 1, categories: DEFAULT_CATEGORIES }, null, 2), 'utf-8');
-  }
-
   return GLOBAL_CATEGORIES_PATH;
 }
 
+// The file not written yet: what SQLite (the source of truth) holds, which is nothing on a fresh install.
+function categoriesFromDb() {
+  try {
+    return dbGetCategories().map((row) => {
+      const category = { name: row.name, description: row.description || '', created_at: row.created_at };
+      if (row.parent) category.parent = row.parent;
+      if (row.color) category.color = row.color;
+      if (row.is_parent) category.is_parent = true;
+      return category;
+    });
+  } catch {
+    return [];
+  }
+}
+
 function loadCategories() {
+  if (!existsSync(GLOBAL_CATEGORIES_PATH)) return categoriesFromDb();
   try {
     const raw = readFileSync(getCategoriesPath(), 'utf-8');
     const data = JSON.parse(raw);
@@ -591,6 +580,27 @@ function loadCategories() {
   } catch {
     return [];
   }
+}
+
+// The categories file is written by the hooks' helpers (the file the MCP server watches); SQLite gets a copy, as with every other category write.
+function syncCategoriesToDb(created) {
+  if (!created?.length) return created || [];
+  try { dbSaveCategories(loadCategories()); } catch (err) { console.error('Failed to sync categories to SQLite:', err.message); }
+  return created;
+}
+
+// A project's default categories (parent + project / architecture / bugs / config), made once, when the project is
+// registered; never for a project already in the registry. Adds what is missing only.
+function ensureProjectCategories(projects) {
+  return syncCategoriesToDb(ensureProjectCategoriesInFile(projects).created);
+}
+
+// A feature's own category (FEATURE_CATEGORIES: conversations, communication-style, plans, uncategorized), made the
+// first time the feature saves into it; a fresh install has none. Adds it only when it is missing.
+function ensureFeatureCategory(name) {
+  const feature = Object.prototype.hasOwnProperty.call(FEATURE_CATEGORIES, name) ? FEATURE_CATEGORIES[name] : null;
+  if (!feature) return [];
+  return syncCategoriesToDb(ensureCategoriesInFile([{ name, description: feature.description, is_parent: feature.is_parent }]).created);
 }
 
 function saveCategories(categories) {
@@ -2391,6 +2401,18 @@ function cleanupOldUpdaterStages(baseDir) {
   } catch {}
 }
 
+// lib/package-processes.js and the module it imports (only node: modules in either).
+const UPDATER_STAGED_LIBS = ['package-processes.js', 'runtime-dependencies.js'];
+
+// The forms of the package folder this server knows: as it resolved it, and as it was started
+// (`node <prefix>\node_modules\synabun\neural-interface\server.js` through a junction or a link).
+function updaterPackageRoots() {
+  const roots = [PACKAGE_ROOT];
+  const started = process.argv[1] ? resolve(process.argv[1]) : '';
+  if (basename(started) === 'server.js' && basename(dirname(started)) === 'neural-interface') roots.push(resolve(started, '..', '..'));
+  return [...new Set(roots)];
+}
+
 function stageSynabunUpdater({ installPlan, serverPid, autoRestart, cleanupPids = [], safetySnapshot = null, handoffPath = null }) {
   const sourceUpdater = resolve(PACKAGE_ROOT, 'updater.mjs');
   if (!existsSync(sourceUpdater)) {
@@ -2408,6 +2430,16 @@ function stageSynabunUpdater({ installPlan, serverPid, autoRestart, cleanupPids 
   const payloadPath = resolve(stageDir, 'payload.json');
   const runnerPath = resolve(stageDir, process.platform === 'win32' ? 'run-update.cmd' : 'run-update.sh');
   copyFileSync(sourceUpdater, stagedUpdater);
+  // What updater.mjs imports on Windows to stop the processes AI clients started from this folder: staged as lib/
+  // next to it, with a package.json that makes those .js files ES modules on every Node SynaBun runs on. One that
+  // cannot be copied leaves the updater without that step, never without the update.
+  try {
+    mkdirSync(resolve(stageDir, 'lib'), { recursive: true });
+    writeFileSync(resolve(stageDir, 'lib', 'package.json'), '{ "type": "module" }\n', 'utf8');
+    for (const file of UPDATER_STAGED_LIBS) copyFileSync(resolve(PACKAGE_ROOT, 'lib', file), resolve(stageDir, 'lib', file));
+  } catch (err) {
+    console.warn(`[server] could not stage lib/ for the updater: ${err?.message}`);
+  }
 
   const payload = {
     serverPid,
@@ -2419,6 +2451,9 @@ function stageSynabunUpdater({ installPlan, serverPid, autoRestart, cleanupPids 
     target: installPlan.target,
     channel: installPlan.channel,
     cleanupPids,
+    // The folder `npm i -g` replaces, in every form known here: on Windows the updater stops what still runs from it.
+    packageRoot: PACKAGE_ROOT,
+    packageRoots: updaterPackageRoots(),
     safetySnapshot,
     handoffPath,
     // Where the relaunched launcher leaves its reason if it stops.
@@ -3708,6 +3743,25 @@ function readCodexRuntimeModelCatalog(codexHome = CODEX_DEFAULT_HOME) {
 }
 const CODEX_ACCOUNTS_PATH = resolve(DATA_HOME, 'data', 'codex-accounts.json');
 
+// Admin sandbox (lib/agent-sandbox-setting.js, lib/agent-sandbox-elevation.js): one global value,
+// off by default, for every agent SynaBun starts: may it use a sandbox whose setup needs Windows
+// administrator approval. Codex is the provider it changes (windows.sandbox, a launch override on
+// every Codex process, never written into config.toml). Changed from the Assistant panel only; idle
+// Codex app-servers (panel tabs, the Assistant's brain) restart under it, busy ones keep theirs.
+const _agentSandbox = createAdminSandboxSetting({
+  path: resolve(DATA_HOME, 'data', 'agent-sandbox.json'),
+  broadcast: (message) => broadcastSync(message),
+  log: (tag, message) => console.log(`[${tag}]`, message),
+});
+function adminSandboxOn() { return _agentSandbox.enabled(); }
+/** The `-c` words every Codex SynaBun starts gets for the setting (outside an account's launch plan). */
+function codexSandboxArgs() { return codexWindowsSandboxArgs(adminSandboxOn()); }
+_agentSandbox.subscribe(() => {
+  for (const connection of [..._codexLiveConnections]) {
+    if (!connection.busy()) { try { connection.credentialsChanged(); } catch {} }
+  }
+});
+
 // The Codex accounts registry (lib/codex-accounts.js): one instance for the
 // sidepanel, the Assistant (brain, workers, catalog), loops and every route, so
 // one account state is shown everywhere. Its ChatGPT half is Codex's own
@@ -3721,6 +3775,8 @@ function _codexAccounts() {
       dataHome: DATA_HOME, homeDir: getHomePath(), accountsRoot: CODEX_ACCOUNTS_ROOT,
       readNativeStatus: (accountId) => codexAccountAuth().nativeStatus(accountId),
       prepareDefaultConfig: () => ensureCanonicalCodexConfig({ strict: true }),
+      // Every launch plan carries the Windows sandbox the Admin sandbox setting allows.
+      adminSandbox: () => adminSandboxOn(),
       log: (tag, message) => console.log(`[${tag}]`, message),
     });
     _codexAccountsInstance.subscribe((event) => {
@@ -3850,6 +3906,8 @@ function handleCodexSkinWebSocket(ws) {
   let childUsesHeldKey = false;
   // Which credential the running app-server started with (launchFor().credential).
   let childCredential = null;
+  // Which Windows sandbox it started with (launchFor().windowsSandbox, the Admin sandbox setting).
+  let childWindowsSandbox = null;
   const CODEX_GREETING_MARKER_START = '[SYNABUN_CODEX_GREETING_START]';
   const CODEX_GREETING_MARKER_END = '[SYNABUN_CODEX_GREETING_END]';
   const CODEX_PLAN_MODE_PREFIXES = [
@@ -4092,12 +4150,12 @@ CRITICAL — When you need clarification during planning:
     sendToClient({ type: 'account_state', accountId: activeAccountId, account: _codexAccounts().describeForClient(activeAccountId), accounts: listCodexAccountsForClient() });
   }
 
-  // The account's credential or mode changed (withCodexAccountCredentialChange): an idle
-  // app-server is retired, and the next request starts one under the new credential; the
-  // conversation resumes from its thread then. The transcript stays.
+  // The account's credential or mode changed (withCodexAccountCredentialChange), or the Admin
+  // sandbox setting did: an idle app-server is retired, and the next request starts one under
+  // the new launch plan; the conversation resumes from its thread then. The transcript stays.
   function retireForCredentialChange() {
     const next = _codexAccounts().launchFor(activeAccountId);
-    if (child && !activeTurnId && !pendingServerRequests.size && (!next.ok || next.credential !== childCredential)) {
+    if (child && !activeTurnId && !pendingServerRequests.size && (!next.ok || next.credential !== childCredential || next.windowsSandbox !== childWindowsSandbox)) {
       const old = child;
       const oldHome = activeCodexHome;
       const oldThreadIds = ownedWriterThreadIds();
@@ -4118,6 +4176,7 @@ CRITICAL — When you need clarification during planning:
       unregisterCodexMcpProfileRuntime();
       child = null;
       childCredential = null;
+      childWindowsSandbox = null;
       retireCodexProcess(old, { codexHome: oldHome, threadIds: oldThreadIds, reason: 'Codex account sign-in changed' });
     }
     sendAccountState();
@@ -5183,7 +5242,8 @@ CRITICAL — When you need clarification during planning:
       args.unshift(codexBin);
       codexBin = process.execPath;
     }
-    // API-key mode with a key SynaBun holds: an ephemeral credential store, before the subcommand.
+    // The Windows sandbox the Admin sandbox setting allows and, in API-key mode with a key SynaBun
+    // holds, an ephemeral credential store: before the subcommand.
     args.splice(args.length - 1, 0, ...codexAppServerArgs(launch));
     const useShell = !codexBin.includes(sep)
       || (process.platform === 'win32' && /\.(cmd|bat)$/i.test(codexBin));
@@ -5212,10 +5272,11 @@ CRITICAL — When you need clarification during planning:
     childApiKeyLogin = launch.apiKey || null;
     childUsesHeldKey = !!launch.apiKey;
     childCredential = launch.credential;
+    childWindowsSandbox = launch.windowsSandbox;
     childRetirementPromise = null;
     writerLifecycleState.releaseRequested = false;
     registerCodexMcpProfileRuntime();
-    console.log(`[codex-skin] Spawned app-server pid ${proc.pid || '?'} account=${activeAccountId} mode=${launch.mode || 'none'} profile=${codexMcpProfileState.value} runtime=${codexMcpRuntimeId} CODEX_HOME=${activeCodexHome}`);
+    console.log(`[codex-skin] Spawned app-server pid ${proc.pid || '?'} account=${activeAccountId} mode=${launch.mode || 'none'} windowsSandbox=${launch.windowsSandbox} profile=${codexMcpProfileState.value} runtime=${codexMcpRuntimeId} CODEX_HOME=${activeCodexHome}`);
     proc.stdout.setEncoding('utf-8');
     proc.stdout.on('data', (chunk) => {
       if (child !== proc) return; // stale process from a previous account
@@ -5485,7 +5546,7 @@ CRITICAL — When you need clarification during planning:
       const versionResult = spawnSync(codexBin, ['--version'], { encoding: 'utf-8', timeout: 5000, windowsHide: true });
       cliVersion = parseCodexVersion(versionResult.stdout);
     } catch {}
-    try { sdkVersion = JSON.parse(readFileSync(join(__dirname, 'node_modules', '@openai', 'codex-sdk', 'package.json'), 'utf-8')).version; } catch {}
+    sdkVersion = findInstalled(__dirname, '@openai/codex-sdk', { stopAt: PACKAGE_ROOT })?.version || null;
     codexCapabilities.reset({ codexBin, codexBinSource: _codexBinSource, cliVersion, sdkVersion });
     startChild();
     bootPromise = request('initialize', {
@@ -7382,7 +7443,8 @@ async function queryCodexAppServerModels(codexHome = CODEX_DEFAULT_HOME, launch 
   ensureCanonicalCodexConfig({ strict: true, codexHome: launch?.home || codexHome });
   // The Codex the resolver found (Settings' path first); a command line in Settings ("wsl codex") as written.
   let codexBin = configuredCommandLine('codex') || getCodexBin();
-  const args = [...(launch?.ok ? codexAppServerArgs(launch) : []), 'app-server'];
+  // Without an account's launch plan, still the Windows sandbox the Admin sandbox setting allows.
+  const args = [...(launch?.ok ? codexAppServerArgs(launch) : codexSandboxArgs()), 'app-server'];
   if (!/\s/.test(codexBin) && /\.js$/i.test(codexBin)) {
     args.unshift(codexBin);
     codexBin = process.execPath;
@@ -9067,6 +9129,7 @@ app.post('/api/sidepanel/session-title', async (req, res) => {
       execFile: execFileAsync,
       getCodexBin,
       getCodexAccountHome,
+      codexConfigArgs: codexSandboxArgs,
       getAugmentedPath,
       ensureOpenCode: ensureOpencodeServer,
       openCodeClient: opencodeV2Client,
@@ -13497,6 +13560,8 @@ app.post('/api/loop/launch', async (req, res) => {
       mcpProfile: cliMcpProfile,
       codexAccountId: codexAccount?.id || null,
       codexHome: codexAccount ? (codexAccount.home || CODEX_DEFAULT_HOME) : null,
+      // A Codex exec loop keeps the Admin sandbox setting it started with (every iteration is its own `codex exec`).
+      adminSandbox: cliProfile === 'codex' ? adminSandboxOn() : undefined,
       // Continuation mechanism. 'hook': Claude Code ONLY — the Stop/UserPromptSubmit hooks in
       // .claude/ set awaitingNext and attachLoopDriver() drives /clear + re-prompt; if those
       // hooks are absent (e.g. a claude-code task run under a hookless harness) the loop STALLS.
@@ -14495,6 +14560,8 @@ async function launchScheduledLoop(schedule) {
       mcpProfile: cliMcpProfile || null,
       codexAccountId: codexAccount?.id || null,
       codexHome: codexAccount ? (codexAccount.home || CODEX_DEFAULT_HOME) : null,
+      // A Codex exec loop keeps the Admin sandbox setting it started with (every iteration is its own `codex exec`).
+      adminSandbox: cliProfile === 'codex' ? adminSandboxOn() : undefined,
       driverType: nativeRuntime ? 'native' : (cliProfile === 'claude-code' ? 'hook' : 'exec'),
       runtimeType: nativeRuntime ? 'native' : 'pty',
       surface: nativeRuntime ? 'sidepanel' : 'terminal',
@@ -17150,12 +17217,13 @@ app.post('/api/system/restore', async (req, res) => {
     const mcpDistCheck = resolve(PACKAGE_ROOT, 'mcp-server', 'dist', 'index.js');
     if (!existsSync(mcpDistCheck)) {
       try {
-        // Ensure dev deps are installed for TypeScript
+        // TypeScript is a devDependency of the package root (a development checkout also has it in mcp-server/).
         const mcpDir = resolve(PACKAGE_ROOT, 'mcp-server');
-        if (!existsSync(resolve(mcpDir, 'node_modules', 'typescript'))) {
-          execSync('npm install', { cwd: mcpDir, stdio: 'pipe', timeout: 180_000, env: withPackagedPathLast({ ...process.env, NODE_ENV: 'development' }) });
+        if (!mcpCompiler(PACKAGE_ROOT)) {
+          const npm = npmCommand(npmInvocation(), fallbackInstallArgs({ includeDev: true }));
+          await execFileAsync(npm.file, npm.args, { cwd: PACKAGE_ROOT, timeout: 600_000, maxBuffer: 16 * 1024 * 1024, shell: npm.shell, windowsHide: true, env: withPackagedPathLast(fallbackInstallEnv({ ...process.env, NODE_ENV: 'development' })) });
         }
-        execSync('npm run build', { cwd: mcpDir, stdio: 'pipe', timeout: 60_000, env: withPackagedPathLast(process.env) });
+        await execFileAsync(process.execPath, [mcpCompiler(PACKAGE_ROOT), '-p', mcpDir], { cwd: mcpDir, timeout: 120_000, maxBuffer: 16 * 1024 * 1024, windowsHide: true });
         results.files.push('(auto-built MCP server)');
       } catch (buildErr) {
         results.errors.push(`MCP server auto-build failed: ${buildErr.message}`);
@@ -18421,29 +18489,34 @@ app.post('/api/setup/build', async (req, res) => {
   const mcpDist = resolve(PACKAGE_ROOT, 'mcp-server', 'dist', 'index.js');
   const mcpNeedsBuild = !existsSync(mcpDist);
 
-  // Phase 1: npm install for each directory
-  for (const dir of dirs) {
-    const hasModules = existsSync(resolve(dir.path, 'node_modules'));
-    // If MCP server needs building, reinstall with dev deps even if node_modules exists
-    const isMcp = dir.name === 'MCP Server';
-    const needsDevDeps = isMcp && mcpNeedsBuild && !existsSync(resolve(dir.path, 'node_modules', 'typescript'));
-    if (hasModules && !needsDevDeps) {
-      send('install', { dir: dir.name, status: 'skipped', output: 'node_modules already present' });
-      continue;
-    }
-
-    send('install', { dir: dir.name, status: 'start' });
+  // Phase 1: the dependencies. `npm i -g synabun` installed them at the package root (lib/runtime-dependencies.js
+  // checks that Node finds them from both parts); only what is missing is installed, once, at the package root,
+  // and never inside a packaged application. A fresh checkout also needs the TypeScript that builds the MCP server.
+  const report = checkRuntimeDependencies({ packageRoot: PACKAGE_ROOT });
+  const compilerMissing = mcpNeedsBuild && !mcpCompiler(PACKAGE_ROOT);
+  if (report.ok && !compilerMissing) {
+    for (const dir of dirs) send('install', { dir: dir.name, status: 'skipped', output: 'dependencies already installed' });
+  } else if (PACKAGED_RUNTIME) {
+    for (const dir of dirs) send('install', { dir: dir.name, status: 'error', output: 'This application is incomplete: reinstall SynaBun.' });
+    send('complete', { ok: false, error: 'The application is incomplete' });
+    return res.end();
+  } else {
+    for (const dir of dirs) send('install', { dir: dir.name, status: 'start' });
     try {
-      // The user's own npm when they have one, a packaged application's after it (withPackagedPathLast).
-      const { stdout, stderr } = await execAsync('npm install', {
-        cwd: dir.path,
-        timeout: 180_000,
-        env: withPackagedPathLast({ ...process.env, NODE_ENV: 'development' }),
+      // The npm that started SynaBun, else the user's own on PATH, else the one next to this Node (npmInvocation).
+      const npm = npmCommand(npmInvocation(), fallbackInstallArgs({ includeDev: mcpNeedsBuild }));
+      const { stdout } = await execFileAsync(npm.file, npm.args, {
+        cwd: PACKAGE_ROOT,
+        timeout: 600_000,
+        maxBuffer: 16 * 1024 * 1024,
+        shell: npm.shell,
+        windowsHide: true,
+        env: withPackagedPathLast(fallbackInstallEnv({ ...process.env, NODE_ENV: 'development' })),
       });
-      send('install', { dir: dir.name, status: 'done', output: tail(stdout) });
+      for (const dir of dirs) send('install', { dir: dir.name, status: 'done', output: tail(stdout) });
     } catch (err) {
-      send('install', { dir: dir.name, status: 'error', output: tail(err.stderr || err.message) });
-      send('complete', { ok: false, error: `npm install failed for ${dir.name}` });
+      for (const dir of dirs) send('install', { dir: dir.name, status: 'error', output: tail(err.stderr || err.message) });
+      send('complete', { ok: false, error: 'npm install failed in the package root' });
       return res.end();
     }
   }
@@ -18460,10 +18533,14 @@ app.post('/api/setup/build', async (req, res) => {
   } else {
     send('build', { status: 'start' });
     try {
-      const { stdout, stderr } = await execAsync('npm run build', {
+      // The TypeScript Node finds from mcp-server/ (the root's devDependency in a fresh checkout), by this Node.
+      const tsc = mcpCompiler(PACKAGE_ROOT);
+      if (!tsc) throw new Error('TypeScript is not installed: npm install in the package root installs it');
+      const { stdout } = await execFileAsync(process.execPath, [tsc, '-p', resolve(PACKAGE_ROOT, 'mcp-server')], {
         cwd: resolve(PACKAGE_ROOT, 'mcp-server'),
-        timeout: 60_000,
-        env: withPackagedPathLast(process.env),
+        timeout: 120_000,
+        maxBuffer: 16 * 1024 * 1024,
+        windowsHide: true,
       });
       send('build', { status: 'done', output: tail(stdout) });
     } catch (err) {
@@ -20547,7 +20624,7 @@ app.post('/api/session-indexing/mirror', async (req, res) => {
   try {
     await mirrorExistingChunks((event) => {
       try { broadcastSync(event); } catch {}
-    });
+    }, { ensureCategory: () => ensureFeatureCategory('conversations') });
   } catch (err) {
     console.error('Mirror error:', err);
     try { broadcastSync({ type: 'mirror:error', error: err.message }); } catch {}
@@ -20686,15 +20763,14 @@ app.post('/api/claude-code/integrations', (req, res) => {
         writeClaudeSettings(filePath, settings);
       }
 
-      // Save to registered projects list
+      // Save to registered projects list, and create the new project's default category tree (parent + children)
+      // then, once: a project already registered gets nothing, so a default the user deleted stays deleted
       const projectLabel = label || basename(normalized);
       if (!registered) {
         projects.push({ path: normalized, label: projectLabel });
         saveHookProjects(projects);
+        try { ensureProjectCategories([{ path: normalized, label: projectLabel }]); } catch {}
       }
-
-      // Create default category tree for the project (parent + children)
-      try { ensureProjectCategories(); } catch {}
 
       // Probe for git "dubious ownership" — signals the UI to show an explicit trust prompt.
       // Only relevant on Windows when the project dir is owned by a different SID than the
@@ -24299,6 +24375,11 @@ function getTerminalProfile(profileId, opts = {}) {
       cmd = `${cmd} -c model_reasoning_effort="${codexEffort}"`;
     }
   }
+  // Every Codex terminal: the Windows sandbox the Admin sandbox setting allows. A bare value
+  // (Codex reads one that is not TOML as a string), so no shell can strip a quote from it.
+  if (profileId === 'codex') {
+    cmd = `${cmd} -c ${terminalArgument(`windows.sandbox=${codexWindowsSandbox(adminSandboxOn())}`, DEFAULT_SHELL)}`;
+  }
 
   // Loop-only: bypass permission prompts for unattended Claude Code loops.
   // The loop runs in a PTY with no human to answer prompts, so accessing
@@ -25194,6 +25275,8 @@ _nativeLoopRuntime = new NativeLoopRuntime({
         extraEnv: { ...(state.extraEnv || {}), ...codexExecEnv(launch) },
         unsetEnv: launch.unset,
         codexHome: launch.home,
+        // The Admin sandbox setting as the run starts: it keeps that Windows sandbox while it lives.
+        adminSandbox: adminSandboxOn(),
         // Native schedules use the same trusted global CLI as the interactive
         // sidepanel; SynaBun carries no Codex for the SDK to find by itself.
         codexPath: getNativeCodexBin(),
@@ -25738,6 +25821,8 @@ _nativeLoopRuntime = new NativeLoopRuntime({
       userContext: assistantUserContext,
       // The greeting a conversation opened with (told to the brain once) and when the person was last here.
       greeting: _greeting,
+      // The Admin sandbox setting: every session view shows it (features.adminSandbox gates the panel's control).
+      adminSandbox: _agentSandbox,
     });
     assistantDesktop?.attach?.({ runtime: _assistantRuntime, dispatcher: _assistantDispatcher });
     // Warm the catalog so brain capabilities (vision, tier) are known on first attach,
@@ -25794,6 +25879,8 @@ _nativeLoopRuntime = new NativeLoopRuntime({
       // router (startWhatsAppLink), and the port for that route's localhost Host check.
       whatsapp: () => _whatsapp,
       port: () => Number(PORT),
+      // GET / PUT /api/assistant/admin-sandbox (the PUT answers UI_ONLY to agents).
+      adminSandbox: _agentSandbox,
     }));
     const shutdownAssistant = () => {
       try { assistantRouter.shutdown(); } catch {}
@@ -26056,6 +26143,8 @@ function prepareExecWrapperFile(terminalSessionId, loopState, taskFile, sentinel
     model: loopState.model,
     effort: loopState.effort,
     mcpEnvOverrides,
+    // The Admin sandbox setting the loop started with (a loop file from before it: the current one).
+    codexConfigArgs: codexWindowsSandboxArgs(typeof loopState.adminSandbox === 'boolean' ? loopState.adminSandbox : adminSandboxOn()),
   });
   const wrapperFile = join(
     os.tmpdir(),
@@ -26781,6 +26870,7 @@ const providerPanelTerminalAuth = createProviderPanelTerminalAuth({
     provider, accountId, claudeAccounts: _panelClaudeAccounts(), codexAccount: findCodexAccount,
     claudeExecutable: getClaudeSdkExecutable, codexExecutable: getCodexBin,
     env: withPathEnv(process.env, getAugmentedPath()),
+    codexConfigArgs: codexSandboxArgs(),
   }),
   createSession: createTerminalSession,
   whenSpawned: id => terminalHost.whenSpawned(id),
@@ -26855,7 +26945,8 @@ app.post('/api/terminal/sessions', async (req, res) => {
   } catch (err) {
     let msg = err.message;
     if (process.platform !== 'win32' && (msg.includes('posix_spawn') || msg.includes('EACCES'))) {
-      msg = `Terminal failed: spawn-helper lacks execute permission. Try: chmod +x neural-interface/node_modules/node-pty/prebuilds/${process.platform}-${process.arch}/spawn-helper`;
+      const ptyDir = findInstalled(__dirname, 'node-pty', { stopAt: PACKAGE_ROOT })?.path || join(__dirname, 'node_modules', 'node-pty');
+      msg = `Terminal failed: spawn-helper lacks execute permission. Try: chmod +x "${join(ptyDir, 'prebuilds', `${process.platform}-${process.arch}`, 'spawn-helper')}"`;
     }
     return res.status(500).json({ error: msg });
   }
@@ -27897,7 +27988,9 @@ function spawnSidecarProcess(linkId, sessionId, message) {
   const found = CLI_DEFAULTS[profile] && command === CLI_DEFAULTS[profile].command ? cliResolver.launcher(profile) : null;
   const direct = found?.spec?.kind === 'direct' ? found.launchPath : null;
   let spawnCmd = direct || command;
-  let spawnArgs = [...sidecarConfig.args];
+  // Codex: the Windows sandbox the Admin sandbox setting allows, before its flag (a bare value: no quote for a shell to lose).
+  const leadArgs = profile === 'codex' ? ['-c', `windows.sandbox=${codexWindowsSandbox(adminSandboxOn())}`] : [];
+  let spawnArgs = [...leadArgs, ...sidecarConfig.args];
   let useShell = IS_WIN && !direct;
   let tmpFile = null;
 
@@ -27909,10 +28002,11 @@ function spawnSidecarProcess(linkId, sessionId, message) {
     // Use PowerShell which correctly passes $msg as a single argument value.
     tmpFile = join(os.tmpdir(), `synabun-relay-${randomBytes(4).toString('hex')}.txt`);
     writeFileSync(tmpFile, message, 'utf-8');
-    const flag = spawnArgs[0]; // e.g. '-p', '-q'
+    const flag = sidecarConfig.args[0]; // e.g. '-p', '-q'
+    const lead = leadArgs.map((word) => ` '${word}'`).join('');
     spawnCmd = 'powershell.exe';
     spawnArgs = ['-NoProfile', '-NonInteractive', '-Command',
-      `$msg = Get-Content -Raw '${tmpFile}'; & '${String(direct || command).replace(/'/g, "''")}' ${flag} $msg`];
+      `$msg = Get-Content -Raw '${tmpFile}'; & '${String(direct || command).replace(/'/g, "''")}'${lead} ${flag} $msg`];
     useShell = false;
   } else {
     // Unix: pass directly as the flag's value arg (no shell quoting issues)

@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { z } from 'zod/v3';
 import { getMemory, updatePayload, upsertMemory, getDb, memoryVectors } from '../services/sqlite.js';
 import { generateEmbedding } from '../services/local-embeddings.js';
 import { validateCategory } from '../services/categories.js';

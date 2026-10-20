@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { z } from 'zod/v3';
 import * as ni from '../services/neural-interface.js';
 import { getMemory } from '../services/sqlite.js';
 import { cleanName, parseSeedQueue, regionForSeed, resolveClassification } from '../services/fb-regions.js';
