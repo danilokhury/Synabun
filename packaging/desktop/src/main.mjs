@@ -24,7 +24,13 @@
  *             launch and every 6 hours, downloaded at once, installed by itself
  *             when SynaBun is idle (after a countdown the user can postpone),
  *             when the app quits, or at the next start before the server;
- *             the window comes back as it was, and says once that it updated
+ *             the window comes back as it was, and says once that it updated.
+ *             With automatic updates off it checks and offers, and installs
+ *             when the user asks
+ *   settings  Settings > App (app-prefs.mjs, read before anything starts):
+ *             automatic updates, open at login (login-item.mjs) and a start
+ *             at login without a window, what the close button does, and
+ *             hardware acceleration (read once, at start)
  *
  * Test-only switches, read from the environment at start and never settable
  * from a page: SYNABUN_DESKTOP_UPDATE_FEED (a local update feed),
@@ -55,9 +61,14 @@ import { createUpdateController, RELEASES_URL } from './updater/controller.mjs';
 import { feedFromEnv, isNewer } from './updater/feed.mjs';
 import { cleanupStagedUpdates, createMacAdapter, folderWritable } from './updater/mac.mjs';
 import { createElectronUpdaterAdapter } from './updater/electron-updater-adapter.mjs';
-import { recordAppImageSwap, relaunchAfterExit, replaceAppImage } from './updater/linux.mjs';
+import { recordAppImageSwap, relaunchAfterExit, reopenAfterExit, replaceAppImage } from './updater/linux.mjs';
 import { finishPendingSwap, relaunchWindow, updateStateFiles } from './updater/state.mjs';
 import { cleanupWindowsSwap, startWindowsSwap } from './updater/windows.mjs';
+import { prefsPathFor, readPrefChange, readPrefs, writePrefs } from './app-prefs.mjs';
+import {
+  applyLoginArguments, createLoginItem, findNpmLoginEntry, LOGIN_DATA_FLAG, LOGIN_ENV, LOGIN_FLAG, LOGIN_PORT_FLAG, loginCarry, loginSupport,
+  MAC_LOGIN_ITEMS_URL, openedAtLogin, removeNpmLoginEntry,
+} from './login-item.mjs';
 
 const APP_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
 const STATUS_PAGE = join(APP_DIR, 'src', 'pages', 'status.html');
@@ -121,6 +132,9 @@ function runCommandLine(args) {
 
 function startApp() {
   const env = process.env;
+  // Windows: a start at login carries a data folder and a port of their own as arguments (login-item.mjs): they are
+  // the environment from here, before the data folder is decided.
+  if (platform === 'win32') applyLoginArguments({ argv: process.argv, env });
   const resources = resourcesDir();
   const manifest = readManifest(resources);
   const entry = entryFor(resources, manifest);
@@ -138,6 +152,15 @@ function startApp() {
   app.setPath('userData', profileDir);
   app.setPath('sessionData', profileDir);
   if (platform === 'win32') app.setAppUserModelId('ai.synabun.app');
+
+  // Settings > App: read now, before the app is ready (hardware acceleration can only be turned off before).
+  const prefsPath = prefsPathFor(profileDir);
+  let prefs = readPrefs(prefsPath);
+  const hardwareAcceleration = prefs.hardwareAcceleration;
+  if (!hardwareAcceleration) app.disableHardwareAcceleration();
+  // The macOS and Linux login entries say "at login" in the environment: nothing this app starts inherits it.
+  const loginEnvAtStart = env[LOGIN_ENV] === '1';
+  delete env[LOGIN_ENV];
 
   const logPath = join(logsDir, 'desktop.log');
   const log = (line) => {
@@ -331,9 +354,16 @@ function startApp() {
 
   const windowStatePath = join(profileDir, 'window-state.json');
   let saveTimer = null;
+  // Maximized or full screen, for a window that starts hidden: done at its first show (Electron's maximize() and
+  // setFullScreen() show a hidden window).
+  let pendingBounds = null;
   const saveWindowState = () => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
-    const saved = boundsToSave({ normalBounds: mainWindow.getNormalBounds(), maximized: mainWindow.isMaximized(), fullScreen: mainWindow.isFullScreen() });
+    const saved = boundsToSave({
+      normalBounds: mainWindow.getNormalBounds(),
+      maximized: mainWindow.isMaximized() || !!pendingBounds?.maximized,
+      fullScreen: mainWindow.isFullScreen() || !!pendingBounds?.fullScreen,
+    });
     if (saved) { try { writeFileSync(windowStatePath, JSON.stringify(saved) + '\n'); } catch {} }
   };
   const saveWindowStateSoon = () => { clearTimeout(saveTimer); saveTimer = setTimeout(saveWindowState, 500); };
@@ -360,8 +390,12 @@ function startApp() {
     if (testDir) mainWindow.webContents.setBackgroundThrottling(false);
     // The menu bar of Windows and Linux never shows (the bar's menu button opens the same menu); its shortcuts stay.
     if (platform !== 'darwin') mainWindow.setMenuBarVisibility(false);
-    if (bounds.maximized) mainWindow.maximize();
-    if (bounds.fullScreen) mainWindow.setFullScreen(true);
+    pendingBounds = null;
+    if (!show && (bounds.maximized || bounds.fullScreen)) pendingBounds = { maximized: !!bounds.maximized, fullScreen: !!bounds.fullScreen };
+    else {
+      if (bounds.maximized) mainWindow.maximize();
+      if (bounds.fullScreen) mainWindow.setFullScreen(true);
+    }
     // After an update the window comes back as it was: shown, minimized, or only in the tray / Dock.
     mainWindow.once('ready-to-show', () => {
       if (!show) return;
@@ -373,6 +407,8 @@ function startApp() {
       saveWindowState();
       if (quitting) return;
       event.preventDefault();
+      // Settings > App: on Windows and Linux the close button can quit instead (macOS keeps an app in the Dock).
+      if (platform !== 'darwin' && !prefs.closeToTray) { app.quit(); return; }
       hideMainWindow();
     });
     for (const name of ['resize', 'move', 'maximize', 'unmaximize', 'enter-full-screen', 'leave-full-screen']) mainWindow.on(name, saveWindowStateSoon);
@@ -409,6 +445,12 @@ function startApp() {
     if (mainWindow.isMinimized()) mainWindow.restore();
     windowOpen = true;
     mainWindow.show();
+    if (pendingBounds) {
+      const { maximized, fullScreen } = pendingBounds;
+      pendingBounds = null;
+      if (maximized) mainWindow.maximize();
+      if (fullScreen) mainWindow.setFullScreen(true);
+    }
     mainWindow.focus();
     if (platform === 'darwin') app.dock?.show();
   }
@@ -640,7 +682,7 @@ function startApp() {
 
   // The pages that carry the update notice (ui-update.js, through the navbar): the 3D and 2D maps. On any other
   // page (onboarding, a status page), or with the window out of sight, a system notification says it instead.
-  const NOTICE_PAGES = /^\/(?:index\.html|index2d\.html|index2d-legacy\.html)?$/;
+  const NOTICE_PAGES = /^\/(?:index\.html|index2d\.html)?$/;
   const interfaceShown = () => {
     if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.isVisible() || mainWindow.isMinimized() || !backendShown || !backend) return false;
     const url = mainWindow.webContents.getURL();
@@ -654,6 +696,8 @@ function startApp() {
     const host = {
       current: version,
       log,
+      // Settings > App: off, an update waits for the user's Install now.
+      autoUpdate: () => prefs.autoUpdate,
       updated: pendingSwap.started ? { version, previous: pendingSwap.plan?.previous || null } : null,
       attempts: updateFiles.attempts,
       activity: activityNow,
@@ -763,13 +807,18 @@ function startApp() {
       await dialog.showMessageBox(parent, { type: 'info', buttons: [t('ok')], message: t('upToDate'), detail: t('upToDateDetail', { version }) });
     } else if (state.status === 'available' && state.install === 'move-to-applications') {
       await updater.install();
+    } else if (state.status === 'available' && state.autoUpdate === false && state.install === 'restart') {
+      // Automatic updates off: one click downloads it and installs it once nothing runs.
+      const answer = await dialog.showMessageBox(parent, { type: 'info', buttons: [t('installNow'), t('later')], defaultId: 0, cancelId: 1, message: t('updateAvailable', { version: state.latest }), detail: t('updateAvailableOffDetail') });
+      if (answer.response === 0) updater.installNow().catch(() => {});
     } else if (state.status === 'available') {
       const answer = await dialog.showMessageBox(parent, { type: 'info', buttons: [t('download'), t('later')], defaultId: 0, cancelId: 1, message: t('updateAvailable', { version: state.latest }), detail: t('updateAvailableManualDetail') });
       if (answer.response === 0) updater.download();
     } else if (state.status === 'downloading') {
-      await dialog.showMessageBox(parent, { type: 'info', buttons: [t('ok')], message: t('updateDownloading', { version: state.latest }), detail: t('updateAutoDetail') });
+      await dialog.showMessageBox(parent, { type: 'info', buttons: [t('ok')], message: t('updateDownloading', { version: state.latest }), detail: state.autoUpdate === false ? '' : t('updateAutoDetail') });
     } else if (state.status === 'downloaded') {
-      const answer = await dialog.showMessageBox(parent, { type: 'info', buttons: [t('installNow'), t('later')], defaultId: 0, cancelId: 1, message: t('updateReady', { version: state.latest }), detail: t('updateAutoDetail') });
+      const off = state.autoUpdate === false && !state.auto?.now;
+      const answer = await dialog.showMessageBox(parent, { type: 'info', buttons: [t('installNow'), t('later')], defaultId: 0, cancelId: 1, message: t('updateReady', { version: state.latest }), detail: off ? t('updateReadyOffDetail') : t('updateAutoDetail') });
       if (answer.response === 0) updater.installNow().catch(() => {});
       else updater.later();
     } else if (state.status === 'error') {
@@ -797,6 +846,160 @@ function startApp() {
     if (!fromBackend(event)) throw new Error('not allowed');
     setImmediate(() => app.quit());
     return true;
+  });
+
+  // ── Settings > App (app-prefs.mjs, login-item.mjs) ──
+
+  // The entry starts this data folder and port (when they are not the usual ones), so the npm entry it replaces is
+  // the one for the folder a start at login really opens.
+  const loginItem = createLoginItem({ platform, app, execPath: process.execPath, env, home: homedir(), log, carry: loginCarry({ env, dataHome }) });
+  // What the last change met: the system's refusal of the login item, or a settings file that could not be written.
+  let lastError = null;
+  // The npm install's start at login that turning this one on replaced (said once, by the answer to that change).
+  let loginReplaced = null;
+  let startedAtLogin = false;
+  let relaunching = false;
+
+  const temporaryCopy = () => {
+    if (platform !== 'darwin' || !app.isPackaged) return false;
+    const bundle = macBundleFor(process.execPath);
+    return !!bundle && (isTranslocated(bundle) || isOnMountedVolume(bundle));
+  };
+  const loginSupportNow = () => loginSupport({ platform, packaged: app.isPackaged, env, temporary: temporaryCopy() });
+
+  /** Save settings; throws { code: 'save-failed' } and keeps the old ones when the file cannot be written. */
+  function savePrefs(patch) {
+    try {
+      prefs = writePrefs(prefsPath, { ...prefs, ...patch });
+    } catch (error) {
+      log(`the app's settings could not be saved (${prefsPath}): ${error.message}`);
+      throw Object.assign(new Error(error.message), { code: 'save-failed' });
+    }
+    return prefs;
+  }
+
+  /** What Settings > App shows: the settings, and the login item as the system has it now. */
+  function appState() {
+    const support = loginSupportNow();
+    let login = { enabled: false, status: 'off' };
+    if (support.supported) { try { login = loginItem.read(); } catch {} }
+    const { autoUpdate, openAtLogin, startHidden, closeToTray } = prefs;
+    return {
+      version, platform, packaged: app.isPackaged,
+      prefs: { autoUpdate, openAtLogin, startHidden, hardwareAcceleration: prefs.hardwareAcceleration, closeToTray },
+      login: { supported: support.supported, reason: support.reason, enabled: login.enabled, status: login.status, openedAtLogin: startedAtLogin, replaced: loginReplaced },
+      // Read once, at start: a change waits for a restart.
+      hardwareAcceleration: { active: hardwareAcceleration, restartNeeded: prefs.hardwareAcceleration !== hardwareAcceleration },
+      tray: !!tray,
+      error: lastError,
+    };
+  }
+
+  function sendAppChanged() {
+    const state = appState();
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (backend && !win.isDestroyed() && isBackendUrl(win.webContents.getURL(), backend.port)) win.webContents.send('synabun:app:changed', state);
+    }
+  }
+
+  async function setLogin(on) {
+    const support = loginSupportNow();
+    if (!support.supported) { lastError = support.reason; return; }
+    try {
+      await loginItem.set(on);
+    } catch (error) {
+      lastError = error.code || 'refused';
+      log(`open at login could not be turned ${on ? 'on' : 'off'}: ${error.message}`);
+      // The setting follows what the system has now.
+      try { savePrefs({ openAtLogin: loginItem.read().enabled }); } catch {}
+      return;
+    }
+    // One start at login per data folder: this app's replaces the npm install's (two would start two servers). All
+    // or nothing: when the npm install's stays, this one goes again.
+    if (on) {
+      const npm = findNpmLoginEntry({ platform, home: homedir(), env, dataHome });
+      if (npm) {
+        try {
+          removeNpmLoginEntry(npm, { platform, env });
+          loginReplaced = npm.kind;
+          log(`open at login: replaced the npm install's start at login (${npm.where})`);
+        } catch (error) {
+          lastError = 'npm-entry';
+          log(`open at login: the npm install's start at login (${npm.where}) could not be removed (${error.message}): turned off again`);
+          try { await loginItem.set(false); } catch (undo) { log(`open at login: could not be turned off again: ${undo.message}`); }
+          try { savePrefs({ openAtLogin: loginItem.read().enabled }); } catch {}
+          return;
+        }
+      }
+    }
+    try { savePrefs({ openAtLogin: on }); } catch (error) { lastError = error.code; }
+  }
+
+  async function applyPref({ key, value }) {
+    lastError = null;
+    loginReplaced = null;
+    if (key === 'openAtLogin') return setLogin(value);
+    try { savePrefs({ [key]: value }); } catch (error) { lastError = error.code; return; }
+    log(`setting ${key}: ${value}`);
+    if (key === 'autoUpdate') updater?.autoChanged();
+  }
+
+  /** On every start while open at login is on: the item is put back in place, or the setting follows the system. */
+  function healLogin() {
+    if (!prefs.openAtLogin || !loginSupportNow().supported) return;
+    loginItem.heal().then((result) => {
+      try {
+        if (!result.keep) {
+          log(`open at login: the system has it ${result.status}; the setting follows`);
+          savePrefs({ openAtLogin: false });
+        }
+      } catch {}
+      sendAppChanged();
+    }).catch((error) => log(`open at login: the check failed: ${error?.message || error}`));
+  }
+
+  async function openFolder(which) {
+    const dir = which === 'data' ? dataHome : which === 'logs' ? logsDir : null;
+    if (!dir) throw new Error('unknown folder');
+    try { mkdirSync(dir, { recursive: true }); } catch {}
+    const error = await shell.openPath(dir);
+    if (error) log(`could not open the ${which} folder: ${error}`);
+    return { ok: !error, error: error || null };
+  }
+
+  /** The system's own list of login items, where a login item that waits for approval is allowed. */
+  function openLoginSettings() {
+    const url = platform === 'darwin' ? MAC_LOGIN_ITEMS_URL : platform === 'win32' ? 'ms-settings:startupapps' : null;
+    if (url) shell.openExternal(url).catch(() => {});
+    return !!url;
+  }
+
+  /** Quit and open again (a setting read at start). Never installs a downloaded update on the way. */
+  function relaunchApp() {
+    if (quitting) return;
+    relaunching = true;
+    log('restarting the app (Settings > App)');
+    if (platform === 'linux' && app.isPackaged && env.APPIMAGE) reopenAfterExit({ image: env.APPIMAGE, env, cwd: dataHome });
+    // Not a start at login (the data folder and port it carried are in the environment the new copy inherits).
+    else app.relaunch({ args: process.argv.slice(1).filter(arg => ![LOGIN_FLAG, '--synabun-updated', '--updated'].includes(arg) && !arg.startsWith(LOGIN_DATA_FLAG) && !arg.startsWith(LOGIN_PORT_FLAG)) });
+    app.quit();
+  }
+
+  ipcMain.handle('synabun:app', async (event, action, payload) => {
+    if (!fromBackend(event)) throw new Error('not allowed');
+    if (action === 'state') return appState();
+    if (action === 'set') {
+      const change = readPrefChange(payload);
+      if (!change) throw new Error('a known setting and true or false');
+      await applyPref(change);
+      const state = appState();
+      sendAppChanged();
+      return state;
+    }
+    if (action === 'open-folder') return openFolder(payload?.which);
+    if (action === 'login-settings') return openLoginSettings();
+    if (action === 'relaunch') { setImmediate(relaunchApp); return true; }
+    throw new Error('unknown action');
   });
 
   // The main window's title bar, for its own pages only (a window.open child has a native frame and no say).
@@ -849,7 +1052,8 @@ function startApp() {
     if (quitWork) return;
     quitWork = (async () => {
       updater?.stop();
-      const installOnQuit = updater?.state.status === 'downloaded' && updater.state.install === 'restart' && !updater.state.manualFile;
+      // A downloaded update installs on the way out (never on a restart Settings asked for: that opens this copy again).
+      const installOnQuit = !relaunching && !!updater?.willInstallOnQuit();
       if (backend && (backend.owned || installOnQuit)) {
         if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) {
           showStatus({ state: 'quitting', busy: true, heading: t('headingQuitting'), line: t('quitting'), startedAt: Date.now(), elapsedLabel: t('elapsedLabel') });
@@ -926,8 +1130,17 @@ function startApp() {
     });
     session.defaultSession.setPermissionCheckHandler((contents, permission, origin) => permissionDecision(permission, origin, backend?.port));
 
-    createMainWindow(relaunch ? { show: relaunch.visible, minimized: relaunch.minimized } : {});
+    // A start by the login item (login-item.mjs): with "Start in the background" on, no window until the user asks
+    // for it (the Dock, the tray, or opening SynaBun again).
+    // The entry says so itself (the flag on Windows, the variable elsewhere); any other start shows the window, and
+    // so does a second start that reaches this one (second-instance, activate).
+    startedAtLogin = app.isPackaged && !relaunch && !updatedStart
+      && openedAtLogin({ platform, argv: process.argv, env: { [LOGIN_ENV]: loginEnvAtStart ? '1' : '' } });
+    const hidden = startedAtLogin && prefs.startHidden;
+    if (startedAtLogin) log(`opened at login${hidden ? ': no window until it is asked for' : ''}`);
+    createMainWindow(relaunch ? { show: relaunch.visible, minimized: relaunch.minimized } : { show: !hidden });
     showStatus(startingStatus());
+    healLogin();
 
     // A copy macOS runs from a temporary place, or from its disk image, cannot
     // keep its registrations or update itself: offer the move before anything starts.

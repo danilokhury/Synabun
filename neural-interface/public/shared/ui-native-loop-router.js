@@ -404,6 +404,8 @@ export function initNativeLoopRouter() {
   on('sync:sidepanel:run-failed', route);
   on('sync:sidepanel:run-stopped', route);
   on('sync:sidepanel:provider-event', (message) => {
+    // An OpenCode worker's panel streams from its own serve: the sync copy of its tool calls is the Assistant's.
+    if (message?.event?.provider === 'opencode') return;
     const run = descriptorFrom(message);
     if (_suspended || !run?.runId || _dismissed.has(run.runId)) return;
     const claimAge = run.claimedAt ? Date.now() - new Date(run.claimedAt).getTime() : Infinity;

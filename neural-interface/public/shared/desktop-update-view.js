@@ -24,6 +24,7 @@ export const DESKTOP_COPY = Object.freeze({
     tooltip: 'SynaBun update available: v{current} → v{latest}',
     tooltipDownloading: 'Downloading SynaBun v{latest}',
     tooltipReady: 'SynaBun v{latest} is ready: it installs when SynaBun is idle',
+    tooltipReadyOff: 'SynaBun v{latest} is ready to install',
     titleAvailable: 'Update available',
     titleDownloading: 'Downloading the update',
     titleDownloaded: 'Update ready',
@@ -46,6 +47,9 @@ export const DESKTOP_COPY = Object.freeze({
     hide: 'Hide',
     hideHint: 'The download continues while this is hidden. SynaBun installs the update by itself when nothing is running.',
     readyBody: 'SynaBun v{version} is downloaded. It installs by itself once nothing is running: SynaBun shows a one-minute notice, then restarts into it. It also installs when you quit SynaBun.',
+    // Automatic updates off (Settings > App): it waits for Install now.
+    offBody: 'Automatic updates are off. Install now downloads it and restarts SynaBun into it once nothing is running.',
+    readyBodyOff: 'SynaBun v{version} is downloaded. Automatic updates are off: it installs when you choose Install now.',
     waitingBody: 'Waiting for: {list}.',
     countdownBody: 'SynaBun restarts into v{version} in {seconds} s.',
     postponedBody: 'Postponed until {time}. It also installs when you quit SynaBun.',
@@ -62,12 +66,14 @@ export const DESKTOP_COPY = Object.freeze({
     errorFallback: 'SynaBun could not check for updates. Check the connection and try again.',
     errorNext: 'SynaBun keeps the version it runs and tries again at its next check. You can try now, or download the new version yourself.',
     manualLink: 'Download it yourself',
+    settingsLink: 'Update settings',
     close: 'Close',
     retry: 'Try again',
     testFeed: 'test feed',
     metaAvailable: 'From the SynaBun app',
     metaDownloading: 'Downloading: {percent}%',
     metaDownloaded: 'Ready: installs when SynaBun is idle',
+    metaReadyOff: 'Ready to install',
     metaCountdown: 'Restarting to install it',
     metaPostponed: 'Postponed: installs on quit or later',
   }),
@@ -193,6 +199,8 @@ export function readDesktopUpdateState(state) {
     manualFile: text(s.manualFile, 4096),
     testFeed: s.testFeed === true,
     auto: readAuto(s.auto),
+    // Settings > App; an app from before the setting says nothing: on.
+    autoUpdate: s.autoUpdate !== false,
     updated: readUpdated(s.updated),
     releasesUrl: readReleasesUrl(s.releasesUrl),
   };
@@ -236,6 +244,7 @@ export function versionDataFromDesktop(state) {
     testFeed: s.testFeed,
     checkedAt: s.checkedAt,
     auto: s.auto,
+    autoUpdate: s.autoUpdate,
   };
 }
 
@@ -311,11 +320,12 @@ export function desktopUpdateView(state, {
     case 'available':
       view.dot = 1;
       view.title = say('titleAvailable');
-      view.body = [say('snapshot', { version })];
+      view.body = s.autoUpdate ? [say('snapshot', { version })] : [say('offBody'), say('snapshot', { version })];
       view.notesLabel = say('notesLabel');
       view.notes = s.notes || say('notesEmpty');
       view.backup = { id: 'backup', label: say('backup') };
-      view.actions = [action('later', 'ghost', 'later'), action('download', 'primary', 'download')];
+      // Automatic updates off: one click downloads and installs it (no download on its own to wait for).
+      view.actions = [action('later', 'ghost', 'later'), s.autoUpdate ? action('download', 'primary', 'download') : action('install-now', 'primary', 'installNow')];
       break;
     case 'downloading':
       view.dot = 2;
@@ -328,8 +338,8 @@ export function desktopUpdateView(state, {
     case 'downloaded': {
       view.dot = 3;
       view.title = say('titleDownloaded');
-      view.body = [say('readyBody', { version })];
       const auto = s.auto;
+      view.body = [s.autoUpdate || auto?.now ? say('readyBody', { version }) : say('readyBodyOff', { version })];
       if (auto?.phase === 'countdown' && auto.installAt) {
         view.body.push(say('countdownBody', { version, seconds: secondsUntil(auto.installAt, now) }));
         view.ticking = true;
@@ -395,7 +405,7 @@ export function desktopUpdateMeta(state, { t = fillDesktopCopy } = {}) {
     case 'downloaded':
       if (s.auto?.phase === 'countdown') return t('update.metaCountdown');
       if (s.auto?.phase === 'postponed') return t('update.metaPostponed');
-      return t('update.metaDownloaded');
+      return s.autoUpdate || s.auto?.now ? t('update.metaDownloaded') : t('update.metaReadyOff');
     case 'installing': return t('update.titleInstalling');
     case 'available': case 'move': case 'manual': return t('update.metaAvailable');
     default: return '';
@@ -408,7 +418,7 @@ export function desktopUpdateTooltip(state, { t = fillDesktopCopy } = {}) {
   const params = { current: s.current, latest: s.latest || '' };
   const step = desktopUpdateStep(s);
   if (step === 'downloading') return t('update.tooltipDownloading', params);
-  if (step === 'downloaded') return t('update.tooltipReady', params);
+  if (step === 'downloaded') return t(s.autoUpdate || s.auto?.now ? 'update.tooltipReady' : 'update.tooltipReadyOff', params);
   return t('update.tooltip', params);
 }
 

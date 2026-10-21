@@ -2,9 +2,15 @@ import { storage } from './storage.js';
 import { state, emit } from './state.js';
 import { hostedSidepanelId } from './ui-sidepanel-runtime.js';
 import { registerSidepanel, setSidepanelVisible, focusSidepanel, detachSidepanel, getSidepanelPresentation, sendToFocusedSession } from './ui-sidepanel-windows.js';
+import { getProviderMeta } from './provider-icons.js';
+import { normalizeSessionWindowStatus } from './sidepanel-session-status.js';
+import { savedTabsStatus } from './ui-sidepanel-tray.js';
 
 let manifestKey;
 const PROVIDERS = { claude: 'Claude', codex: 'Codex', opencode: 'OpenCode' };
+// provider-icons.js ids: the window's pill wears its provider's icon and colour.
+const PROVIDER_IDS = { claude: 'claude-code', codex: 'codex', opencode: 'opencode' };
+const STATUS_WORDS = { working: 'working', action: 'needs you' };
 const entries = new Map();
 const editorOwners = new Map();
 let initialized = false;
@@ -38,6 +44,11 @@ function pillFor(entry) {
   const pill = document.createElement('div');
   pill.className = 'term-minimized-pill sp-session-pill';
   pill.dataset.sessionWindow = entry.id;
+  const meta = getProviderMeta(PROVIDER_IDS[entry.provider]);
+  pill.style.setProperty('--sp-pill-color', meta.color);
+  const icon = document.createElement('span');
+  icon.className = 'term-minimized-pill-icon';
+  icon.innerHTML = meta.icon; // provider-icons.js's own SVG
   const label = document.createElement('span');
   label.className = 'term-minimized-pill-label';
   const close = document.createElement('button');
@@ -45,7 +56,7 @@ function pillFor(entry) {
   close.textContent = '×';
   close.title = 'End detached session';
   close.addEventListener('click', event => { event.stopPropagation(); end(entry).catch(showError.bind(null, entry)); });
-  pill.append(label, close);
+  pill.append(icon, label, close);
   pill.addEventListener('click', () => show(entry));
   tray.append(pill);
   entry.pill = pill;
@@ -55,16 +66,25 @@ function pillFor(entry) {
 function renderPill(entry) {
   const pill = pillFor(entry);
   if (!pill) return;
-  pill.querySelector('.term-minimized-pill-label').textContent = entry.title || `${PROVIDERS[entry.provider]} session`;
+  const name = entry.title || `${PROVIDERS[entry.provider]} session`;
+  pill.querySelector('.term-minimized-pill-label').textContent = name;
   // Visible session pills also act as a window switcher when windows overlap.
   pill.classList.toggle('active', !!getSidepanelPresentation(entry.id)?.visible);
+  // What its sessions do, as the window's own tray pills say it (ui-sidepanel-session-entry.js): working
+  // like a tray pill, or needing you (a session in it waits on an answer).
+  const status = normalizeSessionWindowStatus(entry.status);
+  pill.classList.toggle('sp-pill-running', status === 'working');
+  pill.classList.toggle('sp-pill-attention', status === 'action');
+  pill.dataset.status = status;
+  pill.title = STATUS_WORDS[status] ? `${name} · ${STATUS_WORDS[status]}` : name;
 }
 
 function showError(entry, error) {
   if (entry.loading) entry.loading.textContent = `Could not open session: ${error?.message || error}`;
 }
 
-function show(entry) {
+/** The window and its session's frame, made once. Whether it shows is setSidepanelVisible's: show(). */
+function mount(entry) {
   if (!entry.element) {
     const element = document.createElement('section');
     element.className = 'sp-session-window';
@@ -103,6 +123,10 @@ function show(entry) {
     const lang = new URLSearchParams(window.location.search).get('lang');
     frame.src = `/sidepanel-session.html?provider=${entry.provider}${lang ? `&lang=${encodeURIComponent(lang)}` : ''}`;
   }
+}
+
+function show(entry) {
+  mount(entry);
   setSidepanelVisible(entry.id, true);
 }
 
@@ -167,6 +191,15 @@ export function initDetachedAgentSessions() {
     .sp-session-button:hover { color:white; background:#ffffff18; }
     .sp-session-window iframe { border:0; width:100%; flex:1; min-height:0; border-radius:0 0 15px 15px; }
     .sp-session-loading { padding:12px; font:12px sans-serif; color:#cbd5e1; }
+    .sp-session-pill .term-minimized-pill-icon { color: color-mix(in srgb, var(--sp-pill-color, #fff) 45%, transparent); transition: color .2s; }
+    .sp-session-pill.sp-pill-running { border-color: color-mix(in srgb, var(--sp-pill-color, #fff) 42%, transparent); }
+    .sp-session-pill.sp-pill-running .term-minimized-pill-icon { color: var(--sp-pill-color, #fff); }
+    .sp-session-pill.sp-pill-running .term-minimized-pill-label::before { content: ''; display: inline-block; width: 6px;
+      height: 6px; margin-right: 6px; border-radius: 50%; background: var(--sp-pill-color, #fff); vertical-align: middle;
+      animation: sp-pill-pulse 1.2s ease-in-out infinite; }
+    .sp-session-pill.sp-pill-attention { border-color: color-mix(in srgb, var(--accent-orange, #FFB74D) 42%, transparent); }
+    .sp-session-pill.sp-pill-attention .term-minimized-pill-icon { color: var(--accent-orange, #FFB74D); }
+    @keyframes sp-pill-pulse { 0%, 100% { opacity: .4; } 50% { opacity: 1; } }
     .sp-session-pill.active { border-color:#3b82f680; }
   `;
   document.head.append(style);
@@ -189,6 +222,15 @@ export function initDetachedAgentSessions() {
       entry.title = next; if (entry.label) entry.label.textContent = next; renderPill(entry); save();
     },
     fail: (id, error) => { const entry = entries.get(id); if (entry) showError(entry, error); },
+    // What the window's sessions do, sent by the window when it changes (sidepanel-session-status.js).
+    status(id, status) {
+      const entry = entries.get(id);
+      if (!entry) return;
+      const next = normalizeSessionWindowStatus(status);
+      if (entry.status === next) return;
+      entry.status = next;
+      renderPill(entry);
+    },
     send(id, kind, data) {
       const entry = entries.get(id);
       if (!entry) return;
@@ -217,7 +259,16 @@ export function initDetachedAgentSessions() {
   try {
     for (const record of JSON.parse(storage.getItem(manifestKey) || '[]')) {
       if (!/^session-[a-f0-9-]+$/.test(record.id) || !PROVIDERS[record.provider]) continue;
-      entries.set(record.id, record); renderPill(record);
+      entries.set(record.id, record);
+      // A window whose session was working, or waiting on the user, when the page went away (its saved tabs say
+      // so, read as the tray's placeholders read them) says it at once, and its panel loads, hidden, to say what
+      // the session does now.
+      const saved = savedTabsStatus(record.provider, record.id);
+      if (saved !== 'idle') {
+        record.status = saved;
+        try { mount(record); } catch (error) { console.warn('[sidepanel-sessions] could not load a working window', error); }
+      }
+      renderPill(record);
     }
   } catch { /* Missing or invalid saved manifest starts with no extra windows. */ }
 }

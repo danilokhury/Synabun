@@ -184,11 +184,16 @@ export function capitalize(text) {
 /**
  * Cut `text` in the middle so it fits `max` chars, keeping at least `minTail`
  * tail chars and cutting at token boundaries (spaces, slashes) when one is near.
+ * One cut, shorter than the text: never a head and a tail that overlap, and a
+ * token the text already shortened ("…/name") that the cut meets goes with it.
  */
 export function middleEllipsis(text, max = 96, minTail = 24) {
   const s = str(text);
   if (s.length <= max) return s;
   const budget = Math.max(max - 1, minTail + 6);
+  // A cut that keeps this much removes nothing: under a small `max` the budget rises to minTail + 6,
+  // past a short text's end, and the head and the tail overlapped ("$ np…npm test" of "$ npm test").
+  if (s.length <= budget + 1) return s;
   let tailStart = s.length - minTail;
   // Pull the tail back to the token boundary before it, within a third of the budget.
   const floor = s.length - Math.max(minTail, Math.floor(budget / 3) + minTail);
@@ -201,7 +206,14 @@ export function middleEllipsis(text, max = 96, minTail = 24) {
   let head = s.slice(0, Math.max(1, budget - tail.length));
   const cut = Math.max(head.lastIndexOf(' '), head.lastIndexOf('/'));
   if (cut >= head.length * 0.6) head = head.slice(0, head[cut] === '/' ? cut + 1 : cut);
-  return `${head.trimEnd()}…${tail.trimStart()}`;
+  return joinCut(head, tail);
+}
+
+/** `head…tail`, one "…": a shortened token's own "…" beside the cut is dropped ("…/…/x.js" read as two cuts). */
+export function joinCut(head, tail) {
+  const h = str(head).trimEnd().replace(/\/?…\/?$/, '').trimEnd();
+  const t = str(tail).trimStart().replace(/^\/?…/, '');
+  return `${h}…${t}`;
 }
 
 /** A path's last two folders and its basename: `shared/assistant/asst-render.js`. */

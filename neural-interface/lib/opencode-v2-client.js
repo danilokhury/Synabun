@@ -25,12 +25,21 @@
 //   • describeSdkError() — the message for an SDK error body. 1.18 errors come
 //     as `{ name, data: { message } }` or `{ _tag, message }`; a body with
 //     neither used to surface as the literal "opencode SDK error".
+//
+// OpenCode 2 (a different API: /api/*, a password per launch) gets the same
+// wrapper: `connect` and `createClientInstance` take `{ protocol: 2, password }`
+// and build lib/opencode2-client.js instead of the SDK client. It has the
+// SDK client's methods and answers in OpenCode 1's shapes, so nothing below
+// (and nothing that uses this module) changes with the major.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { createOpencodeClient } from '@opencode-ai/sdk/v2';
+import { createOpencode2Client } from './opencode2-client.js';
 
 let _client = null;
 let _port = null;
+let _protocol = 1;
+let _password = null;
 let _abort = null;
 let _running = false;
 let _stopRequested = false;
@@ -58,16 +67,26 @@ export const event = {
   },
 };
 
-export async function connect({ port }) {
+/** The SDK client for an OpenCode 1 serve, the OpenCode 2 client for an OpenCode 2 serve. */
+function clientFor({ port, protocol, password, version, clientFactory = createOpencodeClient, fetchImpl }) {
+  const baseUrl = `http://127.0.0.1:${port}`;
+  if (protocol === 2) return createOpencode2Client({ baseUrl, password, version, ...(fetchImpl ? { fetchImpl } : {}) });
+  return clientFactory({ baseUrl });
+}
+
+export async function connect({ port, protocol = 1, password = null, version = '' }) {
   if (!port) throw new Error('opencode-v2-client.connect: port required');
-  if (_client && _port === port && _running) {
+  const wanted = protocol === 2 ? 2 : 1;
+  if (_client && _port === port && _running && _protocol === wanted && _password === (wanted === 2 ? password : null)) {
     logv('connect: already connected to', port);
     return;
   }
   await disconnect();
   _stopRequested = false;
   _port = port;
-  _client = createOpencodeClient({ baseUrl: `http://127.0.0.1:${port}` });
+  _protocol = wanted;
+  _password = wanted === 2 ? password : null;
+  _client = clientFor({ port, protocol: wanted, password, version });
   _attempt = 0;
   startSubscribeLoop().catch((err) => {
     console.error('[ocp-v2-client] subscribe loop crashed:', err);
@@ -82,6 +101,8 @@ export async function disconnect() {
   _abort = null;
   _client = null;
   _port = null;
+  _protocol = 1;
+  _password = null;
   _connected = false;
   _running = false;
 }
@@ -89,6 +110,8 @@ export async function disconnect() {
 export function getClient() { return _client; }
 export function isConnected() { return _connected; }
 export function getPort() { return _port; }
+/** 1 or 2: the OpenCode major the shared client speaks. */
+export function getProtocol() { return _protocol; }
 
 async function startSubscribeLoop() {
   _running = true;
@@ -386,9 +409,10 @@ export const extra = extraGroups(requireClient);
 // completely untouched — it remains the shared-serve default, so the common path
 // carries zero risk from this addition. Reuses the module-level unwrap()/clean().
 // ─────────────────────────────────────────────────────────────────────────────
-export function createClientInstance({ port, clientFactory = createOpencodeClient }) {
+export function createClientInstance({ port, clientFactory = createOpencodeClient, protocol = 1, password = null, version = '', fetchImpl = null }) {
   if (!port) throw new Error('createClientInstance: port required');
-  let client = clientFactory({ baseUrl: `http://127.0.0.1:${port}` });
+  const wanted = protocol === 2 ? 2 : 1;
+  let client = clientFor({ port, protocol: wanted, password, version, clientFactory, fetchImpl });
   let abort = null;
   let stopRequested = false;
   let connected = false;
@@ -429,6 +453,9 @@ export function createClientInstance({ port, clientFactory = createOpencodeClien
 
   const instance = {
     port,
+    protocol: wanted,
+    /** The client underneath (the SDK's, or the OpenCode 2 one): raw requests the wrapper has no method for. */
+    getClient: () => client,
     onEvent(fn) { listeners.add(fn); return () => listeners.delete(fn); },
     start() { subscribeLoop().catch((e) => console.error('[ocp-v2-iso] subscribe crashed:', e)); },
     async waitUntilConnected(timeoutMs = 10000) {
@@ -479,7 +506,7 @@ export function createClientInstance({ port, clientFactory = createOpencodeClien
 }
 
 export default {
-  connect, disconnect, getClient, isConnected, getPort,
+  connect, disconnect, getClient, isConnected, getPort, getProtocol,
   event, session, permission, question, mcp, createClientInstance,
   extra, describeSdkError, isCompactUnavailable, EXTRA_SDK_METHODS,
   compactOrSummarize, lastModelOf,

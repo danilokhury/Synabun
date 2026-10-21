@@ -35,6 +35,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { compactOrSummarize, lastModelOf } from './opencode-v2-client.js';
+import { sessionTablesFor } from './opencode-db-schema.js';
 
 export { lastModelOf };
 
@@ -277,7 +278,10 @@ export const SESSION_LIST_MAX = 500;
  *   search    case-insensitive match on title, slug or directory
  * Un-archiving writes time_archived = 0, so "live" is NULL or 0.
  */
-export function buildSessionListQuery(options = {}) {
+// `flavor` 'v2' reads OpenCode 2's tables (session_v2, session_message; the
+// columns this query names are the same), anything else OpenCode 1's.
+export function buildSessionListQuery(options = {}, { flavor = 'v1' } = {}) {
+  const tables = sessionTablesFor(flavor);
   const where = [];
   const params = [];
   where.push(options.archived === true
@@ -295,8 +299,8 @@ export function buildSessionListQuery(options = {}) {
   const sql = `
     SELECT s.id, s.title, s.directory, s.slug, s.project_id, s.parent_id, s.share_url,
            s.time_created, s.time_updated, s.time_archived,
-           (SELECT COUNT(*) FROM message m WHERE m.session_id = s.id) AS message_count
-    FROM session s
+           ${tables.messageCount} AS message_count
+    FROM ${tables.session} s
     WHERE ${where.join(' AND ')}
     ORDER BY s.time_updated DESC${limit ? '\n    LIMIT ?' : ''}
   `;
@@ -922,8 +926,18 @@ export function opencodeSdkVersion() {
 }
 
 // Everything this server answers, for the panel's feature gating.
-export function opencodeV2WsCapabilities() {
-  return [...OPENCODE_V2_WS_INLINE_TYPES, ...OPENCODE_V2_WS_MODULE_TYPES, ...OPENCODE_V2_WS_FEATURES];
+// What an OpenCode 2 serve has no counterpart for (lib/opencode2-client.js
+// answers them with "not available"): the panel hides them, as it hides a
+// feature an older SynaBun server lacks.
+export const OPENCODE2_UNSUPPORTED_TYPES = Object.freeze([
+  'session:share', 'session:unshare', 'session:share:policy', 'message:delete',
+  'worktree:create', 'worktree:remove', 'mcp:authenticate',
+]);
+
+/** `protocol`: the OpenCode major the shared serve speaks (2 leaves out OPENCODE2_UNSUPPORTED_TYPES). */
+export function opencodeV2WsCapabilities({ protocol = null } = {}) {
+  const all = [...OPENCODE_V2_WS_INLINE_TYPES, ...OPENCODE_V2_WS_MODULE_TYPES, ...OPENCODE_V2_WS_FEATURES];
+  return protocol === 2 ? all.filter((type) => !OPENCODE2_UNSUPPORTED_TYPES.includes(type)) : all;
 }
 
 export function ownsOpencodeV2Request(type) {

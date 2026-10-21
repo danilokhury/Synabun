@@ -429,6 +429,20 @@ export function runTone(run) {
   return 'running';
 }
 
+/**
+ * What a session's status is (the tray pill, the sidepanel header, the terminal tab's badge):
+ * 'action' while anything waits on you (a card of its own, or a worker's permission, question or
+ * model choice), 'working' while its own turn runs or any worker it dispatched works (queued for a
+ * free slot, starting, in a turn), else what its own last turn left ('done' when it ended out of
+ * sight, else 'idle'). A worker outlives the turn that dispatched it, and so does the gold.
+ * `own` is the brain's own status; `workers` the agents tray's counts (asst-agents-dock.js counts()).
+ */
+export function sessionStatus(own, workers = {}) {
+  if (own === 'action' || Number(workers?.waiting) > 0) return 'action';
+  if (own === 'working' || Number(workers?.working) > 0) return 'working';
+  return own === 'done' ? 'done' : 'idle';
+}
+
 function toMs(value) {
   if (value == null || value === '') return 0;
   if (typeof value === 'number') return Number.isFinite(value) ? value : 0;

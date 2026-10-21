@@ -6,6 +6,7 @@
 export {
   toggleCodexPanel,
   isCodexPanelOpen,
+  bootCodexPanel,
   attachCodexAutomation,
   detachCodexAutomation,
   handleCodexAutomationEvent,

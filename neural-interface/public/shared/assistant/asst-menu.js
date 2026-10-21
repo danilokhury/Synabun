@@ -31,6 +31,10 @@
 //   tag             { label }                        → non-interactive badge row
 //   input           { placeholder, value, onSubmit } → inline text field
 //   buttons         { label, buttons: [item…] }      → one row of compact items (a group)
+// `action: { icon, label, tooltip, id, onSelect }` on an item (or radio / check) adds one icon button at the
+// row's end, shown on hover and keyboard focus (the Sessions menu's Remove). It is not a stop of ↑/↓: → from
+// its row reaches it, ← goes back, Delete on the row presses it; choosing it never chooses the row and leaves
+// the menu open (its onSelect usually redraws it with update()).
 // `render(button, { checked })` on an item draws its content instead of label/desc/tag.
 // `className` on an item or an info row adds its own class.
 // `keepOpen` on an item leaves the menu open when it is chosen.
@@ -38,7 +42,7 @@
 // Keys: ↑/↓ move, Home/End jump, Enter/Space activate, Esc closes (focus back
 // to the anchor), Tab closes. The optional filter hides non-matching items and
 // any group left empty. The handle's update({ title, items, footer, focus }) redraws
-// an open menu in place (focus: the data-id to land on).
+// an open menu in place (focus: the data-id to land on; the filter's text still applies).
 
 let _open = null;
 let _uid = 0;
@@ -101,6 +105,11 @@ export function currentMenu() {
   return _open?.menu || null;
 }
 
+/** The element the open menu belongs to (null when none is open). */
+export function currentMenuAnchor() {
+  return _open?.anchor || null;
+}
+
 function itemButton(item, kind, { role, list, onActivate }) {
   const btn = el('button', `asst-dd-item${item.danger ? ' danger' : ''}${item.className ? ` ${item.className}` : ''}`);
   btn.type = 'button';
@@ -145,12 +154,28 @@ function itemButton(item, kind, { role, list, onActivate }) {
   return btn;
 }
 
+/** A row's own action (item.action): an icon button beside the row, outside the ↑/↓ cycle. */
+function actionButton(action, item, { role }) {
+  const btn = el('button', `asst-iconbtn asst-dd-item-action${action.className ? ` ${action.className}` : ''}`);
+  btn.type = 'button';
+  btn.tabIndex = -1;
+  btn.setAttribute('role', role === 'listbox' ? 'option' : 'menuitem');
+  if (action.id != null) btn.dataset.id = String(action.id);
+  const label = String(action.label || '');
+  if (label) btn.setAttribute('aria-label', label);
+  if (action.tooltip || label) btn.dataset.tooltip = action.tooltip || label;
+  btn.innerHTML = action.icon || '';
+  btn.querySelector('svg')?.setAttribute('aria-hidden', 'true');
+  btn.addEventListener('click', (e) => { e.stopPropagation(); action.onSelect?.(item, btn); });
+  return btn;
+}
+
 function buildItems(list, items, { role, onActivate }) {
   for (const item of items || []) {
     const kind = itemKind(item);
     if (kind === 'separator') { list.appendChild(el('div', 'asst-dd-sep')).setAttribute('role', 'separator'); continue; }
     if (kind === 'buttons') {
-      const row = el('div', 'asst-dd-btnrow');
+      const row = el('div', `asst-dd-btnrow${item.className ? ` ${item.className}` : ''}`);
       row.setAttribute('role', 'group');
       if (item.id != null) row.dataset.id = String(item.id);
       if (item.ariaLabel || item.label) row.setAttribute('aria-label', item.ariaLabel || item.label);
@@ -188,6 +213,14 @@ function buildItems(list, items, { role, onActivate }) {
       list.appendChild(input);
       continue;
     }
+    if (item.action && typeof item.action === 'object' && !item.disabled) {
+      const row = el('div', 'asst-dd-itemrow');
+      row.setAttribute('role', 'none');
+      row.appendChild(itemButton(item, kind, { role, list, onActivate }));
+      row.appendChild(actionButton(item.action, item, { role }));
+      list.appendChild(row);
+      continue;
+    }
     list.appendChild(itemButton(item, kind, { role, list, onActivate }));
   }
   if (!list.querySelector('.asst-dd-item, .asst-dd-input, .asst-dd-info, .asst-dd-tagrow')) list.appendChild(el('div', 'asst-dd-empty', '—'));
@@ -199,6 +232,8 @@ export function applyMenuFilter(list, query, emptyLabel = 'No matches') {
   const rows = [...list.children];
   for (const row of rows) {
     if (row.classList.contains('asst-dd-item')) row.hidden = !!q && !row.dataset.search.includes(q);
+    // A row with its own action: shown while its item matches.
+    else if (row.classList.contains('asst-dd-itemrow')) row.hidden = !!q && !(row.querySelector('.asst-dd-item')?.dataset.search || '').includes(q);
     // A button row stays whole: shown while one of its buttons matches.
     else if (row.classList.contains('asst-dd-btnrow')) row.hidden = !!q && ![...row.querySelectorAll('.asst-dd-item')].some(b => b.dataset.search.includes(q));
     else if (row.classList.contains('asst-dd-info') || row.classList.contains('asst-dd-tagrow')) row.hidden = !!q;
@@ -226,7 +261,7 @@ export function applyMenuFilter(list, query, emptyLabel = 'No matches') {
   const last = visible[visible.length - 1];
   if (last?.classList.contains('asst-dd-sep')) last.hidden = true;
   let empty = list.querySelector('.asst-dd-empty.asst-dd-noresults');
-  const hasItem = rows.some(r => !r.hidden && (r.classList.contains('asst-dd-item') || r.classList.contains('asst-dd-btnrow') || r.classList.contains('asst-dd-input')));
+  const hasItem = rows.some(r => !r.hidden && (r.classList.contains('asst-dd-item') || r.classList.contains('asst-dd-itemrow') || r.classList.contains('asst-dd-btnrow') || r.classList.contains('asst-dd-input')));
   if (q && !hasItem) {
     if (!empty) { empty = el('div', 'asst-dd-empty asst-dd-noresults', emptyLabel); list.appendChild(empty); }
     empty.hidden = false;
@@ -422,7 +457,9 @@ export function openMenu(anchor, opts = {}) {
     const target = e.target;
     const inInput = target?.classList?.contains('asst-dd-input');
     const nodes = focusables(menu);
-    const idx = nodes.indexOf(document.activeElement);
+    // On a row's action (item.action) the keys move from its row.
+    const onAction = document.activeElement?.classList?.contains('asst-dd-item-action') && menu.contains(document.activeElement) ? document.activeElement : null;
+    const idx = nodes.indexOf(onAction ? onAction.previousElementSibling : document.activeElement);
     if (e.key === 'Escape') {
       e.preventDefault(); e.stopPropagation();
       if (typeof opts.onEscape === 'function' && opts.onEscape() === true) return;
@@ -447,6 +484,18 @@ export function openMenu(anchor, opts = {}) {
       setFocused(menu, nodes[next]);
       return;
     }
+    if (!inInput && (e.key === 'ArrowRight' || e.key === 'ArrowLeft' || e.key === 'Delete')) {
+      const row = onAction ? null : document.activeElement?.closest?.('.asst-dd-item');
+      const action = onAction || (row?.parentElement?.classList.contains('asst-dd-itemrow') ? row.nextElementSibling : null);
+      if (action?.classList.contains('asst-dd-item-action')) {
+        e.preventDefault(); e.stopPropagation();
+        const main = action.previousElementSibling;
+        if (e.key === 'ArrowLeft') { if (onAction) setFocused(menu, main); return; }
+        if (!onAction) { setFocused(menu, main); try { action.focus({ preventScroll: true }); } catch { action.focus(); } }
+        if (e.key === 'Delete') action.click();
+        return;
+      }
+    }
     if ((e.key === 'Home' || e.key === 'End') && !inInput) {
       e.preventDefault(); e.stopPropagation();
       if (nodes.length) setFocused(menu, nodes[e.key === 'Home' ? 0 : nodes.length - 1]);
@@ -464,6 +513,7 @@ export function openMenu(anchor, opts = {}) {
       return;
     }
     if ((e.key === 'Enter' || e.key === ' ') && !inInput) {
+      if (onAction) { e.preventDefault(); e.stopPropagation(); onAction.click(); return; }
       const current = document.activeElement?.closest?.('.asst-dd-item');
       if (current && menu.contains(current)) { e.preventDefault(); e.stopPropagation(); current.click(); }
       return;
@@ -499,14 +549,35 @@ export function openMenu(anchor, opts = {}) {
     setFocused(menu, selected || first || null);
   }
   // Redraw in place (another view of the same menu): the anchor, the listeners and the focus stay in it.
+  // `keepPlace` (fresher data for the same view, read in the background): the scroll position, the row the
+  // keyboard is on and the filter's text and focus are left where the user had them.
   const update = (next = {}) => {
     if (!_open || _open.menu !== menu) return;
+    const keep = next.keepPlace === true;
+    const scrollBefore = list.scrollTop;
+    const active = document.activeElement;
+    const typing = !!active && active.classList?.contains('asst-dd-input') && menu.contains(active);
+    const onRowId = !typing ? (menu.querySelector('.asst-dd-item.focused')?.dataset?.id ?? null) : null;
     if (typeof next.title === 'string' && heading) heading.textContent = next.title;
-    if (Array.isArray(next.items)) { list.replaceChildren(); buildItems(list, next.items, { role, onActivate: activate }); list.scrollTop = 0; }
+    if (Array.isArray(next.items)) {
+      list.replaceChildren();
+      buildItems(list, next.items, { role, onActivate: activate });
+      if (filterInput?.value) applyMenuFilter(list, filterInput.value, opts.filterEmptyLabel);
+      list.scrollTop = keep ? scrollBefore : 0;
+    }
     if ('footer' in next) fillFooter(next.footer);
     place();
-    const wanted = next.focus != null ? [...menu.querySelectorAll('.asst-dd-item')].find(n => n.dataset.id === String(next.focus) && !n.disabled) : null;
+    if (keep && typing) {
+      // The input keeps the caret; the row highlight follows the selection as it did when it opened.
+      menu.querySelectorAll('.asst-dd-item.focused').forEach(n => n.classList.remove('focused'));
+      list.querySelector('.asst-dd-item[data-checked="1"]:not([disabled])')?.classList.add('focused');
+      return;
+    }
+    const keptRow = keep && onRowId != null ? [...menu.querySelectorAll('.asst-dd-item')].find(n => n.dataset.id === onRowId && !n.disabled) : null;
+    const wanted = keptRow || (next.focus != null ? [...menu.querySelectorAll('.asst-dd-item')].find(n => n.dataset.id === String(next.focus) && !n.disabled) : null);
+    if (keep && !keptRow && !menu.contains(document.activeElement)) return; // focus is elsewhere: not taken back
     setFocused(menu, wanted || list.querySelector('.asst-dd-item[data-checked="1"]:not([disabled])') || focusables(menu)[0] || null);
+    if (keep) list.scrollTop = scrollBefore;
   };
   return { el: menu, list, close: closeMenu, reposition: place, update };
 }

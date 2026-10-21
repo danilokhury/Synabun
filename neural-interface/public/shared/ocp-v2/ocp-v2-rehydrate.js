@@ -41,16 +41,27 @@ export const ANCESTRY_MAX_DEPTH = 12;
  *                 anything that is not a string means "unknown"
  * Unknown is false: ancestry that cannot be established is not ancestry.
  */
-export async function verifyDescendant(sessionId, ancestorId, { parentOf, roots, fetchParent } = {}) {
+export async function verifyDescendant(sessionId, ancestorId, options = {}) {
+  return (await descendantState(sessionId, ancestorId, options)) === true;
+}
+
+/**
+ * The same walk, with "could not be read" kept apart from "no": true, false
+ * (the chain ends, or loops, without `ancestorId`), or null when a link could
+ * not be read (no `fetchParent`, a failed or odd reply). For a caller that
+ * must not take an unread link for an answer (readOpenAsks).
+ */
+export async function descendantState(sessionId, ancestorId, { parentOf, roots, fetchParent } = {}) {
   if (!sessionId || !ancestorId || sessionId === ancestorId) return false;
   const seen = new Set([sessionId]);
   let cursor = sessionId;
   for (let depth = 0; depth < ANCESTRY_MAX_DEPTH; depth++) {
     let parent = parentOf?.get(cursor);
     if (parent === undefined) {
-      if (roots?.has(cursor) || typeof fetchParent !== 'function') return false;
-      try { parent = await fetchParent(cursor); } catch { return false; }
-      if (typeof parent !== 'string') return false;
+      if (roots?.has(cursor)) return false;
+      if (typeof fetchParent !== 'function') return null;
+      try { parent = await fetchParent(cursor); } catch { return null; }
+      if (typeof parent !== 'string') return null;
       if (parent) parentOf?.set(cursor, parent);
       else roots?.add(cursor);
     }

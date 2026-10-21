@@ -259,11 +259,11 @@ async function _showSetupView() {
       <div class="link-setup-sessions">${sessions.map(s => {
         const meta = PROFILE_META[s.profile] || { label: s.profile, color: '#888' };
         return `
-          <label class="link-setup-session" data-id="${s.id}">
-            <input type="checkbox" value="${s.id}" />
+          <label class="link-setup-session" data-id="${_escapeHtml(s.id).replace(/"/g, '&quot;')}">
+            <input type="checkbox" value="${_escapeHtml(s.id).replace(/"/g, '&quot;')}" />
             <span class="link-setup-dot" style="background:${meta.color}"></span>
-            <span class="link-setup-label">${meta.label}</span>
-            <span class="link-setup-cwd">${s.cwd ? s.cwd.split(/[/\\]/).pop() : ''}</span>
+            <span class="link-setup-label">${_escapeHtml(meta.label)}</span>
+            <span class="link-setup-cwd">${s.cwd ? _escapeHtml(s.cwd.split(/[/\\]/).pop()) : ''}</span>
           </label>
         `;
       }).join('')}</div>
@@ -350,12 +350,12 @@ function _renderAgents(link) {
     return `
       <div class="link-agent ${active ? 'active' : ''}" data-idx="${i}">
         <span class="link-agent-dot" style="background:${meta.color}"></span>
-        <span class="link-agent-name">${meta.label}</span>
+        <span class="link-agent-name">${_escapeHtml(meta.label)}</span>
         ${active ? '<span class="link-agent-typing">typing...</span>' : ''}
       </div>
     `;
   }).join('<span class="link-agent-arrow">⇄</span>')
-    + `<span class="link-mode-badge ${link.mode || 'sidecar'}">${(link.mode || 'sidecar').toUpperCase()}</span>`;
+    + `<span class="link-mode-badge ${_escapeHtml(link.mode || 'sidecar').replace(/"/g, '&quot;')}">${_escapeHtml((link.mode || 'sidecar').toUpperCase())}</span>`;
 }
 
 function _renderControls(link) {
@@ -421,7 +421,7 @@ function _renderTargetSelector(link) {
   el.innerHTML = `<span class="link-target-label">Send to:</span>` +
     link.sessions.map((s, i) => {
       const meta = PROFILE_META[s.profile] || { label: s.profile, color: '#888' };
-      return `<button class="link-target-btn ${i === 0 ? 'selected' : ''}" data-idx="${i}" style="--agent-color:${meta.color}">${meta.label}</button>`;
+      return `<button class="link-target-btn ${i === 0 ? 'selected' : ''}" data-idx="${i}" style="--agent-color:${meta.color}">${_escapeHtml(meta.label)}</button>`;
     }).join('');
 
   el.querySelectorAll('.link-target-btn').forEach(btn => {
@@ -452,7 +452,7 @@ function _renderMessages() {
       <div class="link-msg ${isUser ? 'link-msg-user' : 'link-msg-agent'}">
         <div class="link-msg-header">
           <span class="link-msg-dot" style="background:${meta.color}"></span>
-          <span class="link-msg-name">${meta.label}</span>
+          <span class="link-msg-name">${_escapeHtml(meta.label)}</span>
           <span class="link-msg-time">${time}</span>
         </div>
         <div class="link-msg-content">${_escapeHtml(msg.content)}</div>
@@ -505,7 +505,7 @@ function _onSyncChunk(msg) {
     streamEl.innerHTML = `
       <div class="link-msg-header">
         <span class="link-msg-dot" style="background:${meta.color}"></span>
-        <span class="link-msg-name">${meta.label}</span>
+        <span class="link-msg-name">${_escapeHtml(meta.label)}</span>
         <span class="link-msg-time">streaming...</span>
       </div>
       <div class="link-msg-content"></div>

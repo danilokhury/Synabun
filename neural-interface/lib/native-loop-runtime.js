@@ -49,6 +49,9 @@ function cleanDescriptor(record) {
     // existing consumers (router, sidepanels, schedules) are unaffected.
     runMode: record.runMode || 'loop',
     turnState: record.turnState || null,
+    // What the last turn's result said (task mode: done, blocked or needs_input; the dispatcher's
+    // lastResult.status): an idle warm worker whose turn ended asking waits on the user.
+    outcome: record.outcome || null,
     assistantSessionId: record.assistantSessionId || null,
   };
 }
@@ -159,6 +162,21 @@ export class NativeLoopRuntime {
     if (record.turnState === next) return cleanDescriptor(record);
     record.turnState = next;
     return this._emit('sidepanel:run-updated', record, { reason: 'turn-state' });
+  }
+
+  /**
+   * Task-mode helper: records what the wrapper's last turn reported ('done' |
+   * 'blocked' | 'needs_input', the dispatcher's lastResult.status) and
+   * broadcasts it, so a panel can tell a warm worker that rests from one whose
+   * turn ended asking the user. No-op for unknown runs.
+   */
+  setOutcome(runId, outcome) {
+    const record = this.records.get(runId);
+    if (!record) return null;
+    const next = outcome ? String(outcome) : null;
+    if ((record.outcome || null) === next) return cleanDescriptor(record);
+    record.outcome = next;
+    return this._emit('sidepanel:run-updated', record, { reason: 'outcome' });
   }
 
   _loadLedger() {
@@ -461,6 +479,7 @@ export class NativeLoopRuntime {
               runId,
               emit: (event) => this._emitProviderEvent(record, event),
               setTurnState: (turnState) => this.setTurnState(runId, turnState),
+              setOutcome: (outcome) => this.setOutcome(runId, outcome),
               readState: () => this._readState(runId),
             })
           : adapter;

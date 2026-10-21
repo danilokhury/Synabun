@@ -6,6 +6,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { fetchProvidersFull } from './ocp-v2-providers.js';
+import { opencodeProviders } from '../opencode-providers.js';
 import { modelRowMeta } from './ocp-v2-status-logic.js';
 import { openProviderSettings } from './ocp-v2-settings-link.js';
 import { getDefaultStore } from './ocp-v2-state.js';
@@ -49,6 +50,7 @@ let _unsubscribe = null;
 let _outsideHandler = null;
 let _providersChangedHandler = null;
 let _hiddenModelsChangedHandler = null;
+let _providersCacheStop = null;
 
 let _providers = [];               // [{ id, name, models: [...] }]
 let _connected = new Set();
@@ -88,7 +90,15 @@ export function mountModelPicker(rootEl, store = getDefaultStore()) {
   _dd.addEventListener('click', async (event) => {
     if (event.target.closest('.ocpv2-dd-menu')) return;
     if (_dd.classList.contains('open')) { closeMenu(); return; }
-    if (!_loaded) { try { await ensureLoaded(); } catch {} }
+    // The kept list opens the menu at once; only a list never read shows "Loading…" until it arrives.
+    if (!_loaded) adoptKeptProviders();
+    if (!_loaded) {
+      paintMenu('');
+      openMenu();
+      try { await ensureLoaded(); } catch {}
+      repaintOpenMenu();
+      return;
+    }
     paintMenu('');
     openMenu();
   });
@@ -101,11 +111,11 @@ export function mountModelPicker(rootEl, store = getDefaultStore()) {
   document.addEventListener('mousedown', _outsideHandler);
 
   _providersChangedHandler = () => { refreshProviders(); };
-  _hiddenModelsChangedHandler = () => {
-    if (_dd?.classList.contains('open')) paintMenu(_searchInput?.value || '');
-  };
+  _hiddenModelsChangedHandler = () => { repaintOpenMenu(); };
   document.addEventListener('ocp-providers-changed', _providersChangedHandler);
   document.addEventListener('ocp-hidden-models-changed', _hiddenModelsChangedHandler);
+  // A background read of the kept list brought another one: the open menu follows in place.
+  _providersCacheStop = opencodeProviders.subscribe(() => { refreshProviders(); });
 
   _unsubscribe = subscribe((event) => {
     if (event?.type === 'config:model') applyLabelFromState();
@@ -120,6 +130,8 @@ export function unmountModelPicker() {
   if (_outsideHandler) document.removeEventListener('mousedown', _outsideHandler);
   if (_providersChangedHandler) document.removeEventListener('ocp-providers-changed', _providersChangedHandler);
   if (_hiddenModelsChangedHandler) document.removeEventListener('ocp-hidden-models-changed', _hiddenModelsChangedHandler);
+  try { _providersCacheStop?.(); } catch {}
+  _providersCacheStop = null;
   _outsideHandler = null;
   _providersChangedHandler = null;
   _hiddenModelsChangedHandler = null;
@@ -134,6 +146,26 @@ export function unmountModelPicker() {
 
 // ── Loading providers ──────────────────────────────────────────────────────
 
+function applyProviders(res) {
+  if (res?.ok === false) throw new Error(res.error || 'provider metadata unavailable');
+  const data = res?.data || {};
+  _providers = data.all || data.providers || (Array.isArray(data) ? data : []);
+  _connected = new Set(data.connected || []);
+  // If the server didn't tell us which providers are "connected", assume all
+  // returned providers are connected so the menu isn't empty.
+  if (!_connected.size && _providers.length) {
+    _connected = new Set(_providers.map((p) => p.id).filter(Boolean));
+  }
+  _loaded = true;
+}
+
+// The list the page already holds (data cache, read at launch or by another module): no request.
+function adoptKeptProviders() {
+  const kept = opencodeProviders.peek('');
+  if (!kept || kept.ok === false) return;
+  try { applyProviders(kept); } catch { /* not a list: read it */ }
+}
+
 async function ensureLoaded() {
   if (_loaded) return;
   if (_loadInflight) return _loadInflight;
@@ -142,16 +174,7 @@ async function ensureLoaded() {
     try {
       const res = await fetchProvidersFull();
       if (generation !== _loadGeneration) return;
-      if (res?.ok === false) throw new Error(res.error || 'provider metadata unavailable');
-      const data = res?.data || {};
-      _providers = data.all || data.providers || (Array.isArray(data) ? data : []);
-      _connected = new Set(data.connected || []);
-      // If the server didn't tell us which providers are "connected", assume all
-      // returned providers are connected so the menu isn't empty.
-      if (!_connected.size && _providers.length) {
-        _connected = new Set(_providers.map((p) => p.id).filter(Boolean));
-      }
-      _loaded = true;
+      applyProviders(res);
     } catch (err) {
       console.warn('[ocp-v2-modelpicker] providers fetch failed', err);
     } finally {
@@ -165,9 +188,23 @@ function refreshProviders() {
   _loaded = false;
   _loadInflight = null;
   _loadGeneration += 1;
-  return ensureLoaded().finally(() => {
-    if (_dd?.classList.contains('open')) paintMenu(_searchInput?.value || '');
-  });
+  return ensureLoaded().finally(() => { repaintOpenMenu(); });
+}
+
+// The open menu drawn again from the current list: the search text, its caret and the scroll position stay,
+// and focus is put back only where it was.
+function repaintOpenMenu() {
+  if (!_dd?.classList.contains('open') || !_menu) return;
+  const input = _searchInput;
+  const typing = !!input && document.activeElement === input;
+  const caret = typing ? [input.selectionStart, input.selectionEnd] : null;
+  const scrollTop = _menu.scrollTop;
+  paintMenu(input?.value || '');
+  _menu.scrollTop = scrollTop;
+  if (typing && _searchInput) {
+    try { _searchInput.focus({ preventScroll: true }); } catch { _searchInput.focus(); }
+    try { if (caret) _searchInput.setSelectionRange(caret[0], caret[1]); } catch { /* not a text field */ }
+  }
 }
 
 // ── Label sync ─────────────────────────────────────────────────────────────

@@ -12,6 +12,7 @@ import { captureBinding, latestOnly } from './ocp-v2-binding.js';
 import { setSessionMcpProfile } from './ocp-v2-session-actions.js';
 import { storage } from '../storage.js';
 import { on } from '../state.js';
+import { escapeHtml } from '../utils.js';
 
 let _currentStore = getDefaultStore();
 const getState = () => _currentStore.getState();
@@ -507,7 +508,7 @@ function paintProfileMenu() {
     const opt = document.createElement('div');
     opt.className = 'ocpv2-dd-option' + (p.id === _currentProfile ? ' selected' : '');
     opt.style.gap = '6px';
-    opt.innerHTML = `<span>${p.label}</span><span class="ocpv2-dd-hint">${p.hint}</span>`;
+    opt.innerHTML = `<span>${escapeHtml(p.label)}</span><span class="ocpv2-dd-hint">${escapeHtml(p.hint)}</span>`;
     opt.addEventListener('click', async (event) => {
       event.stopPropagation();
       ddClose(_profileDd);
@@ -603,7 +604,7 @@ function paintRecallMenu() {
     const opt = document.createElement('div');
     opt.className = 'ocpv2-dd-option' + (p.id === _recallProfile ? ' selected' : '');
     opt.style.gap = '6px';
-    opt.innerHTML = `<span>${p.label}</span><span class="ocpv2-dd-hint">${p.hint}</span>`;
+    opt.innerHTML = `<span>${escapeHtml(p.label)}</span><span class="ocpv2-dd-hint">${escapeHtml(p.hint)}</span>`;
     opt.addEventListener('click', async (event) => {
       event.stopPropagation();
       ddClose(_recallDd);

@@ -75,9 +75,13 @@ runtime dependencies in the published package.
 | `@codemirror/search` | `6.7.2` | 6.7.2 | MIT | [npm](https://www.npmjs.com/package/@codemirror/search) |
 | `@codemirror/state` | `6.7.6` | 6.7.6 | MIT | [npm](https://www.npmjs.com/package/@codemirror/state) |
 | `@codemirror/view` | `6.43.14` | 6.43.14 | MIT | [npm](https://www.npmjs.com/package/@codemirror/view) |
+| `@highlightjs/cdn-assets` | `11.12.0` | 11.12.0 | BSD-3-Clause | [npm](https://www.npmjs.com/package/@highlightjs/cdn-assets) |
 | `@lezer/highlight` | `1.2.5` | 1.2.5 | MIT | [npm](https://www.npmjs.com/package/@lezer/highlight) |
 | `@replit/codemirror-indentation-markers` | `6.5.3` | 6.5.3 | MIT | [npm](https://www.npmjs.com/package/@replit/codemirror-indentation-markers) |
 | `esbuild` | `^0.28.1` | 0.28.1 | MIT | [npm](https://www.npmjs.com/package/esbuild) |
+| `html2canvas` | `1.4.1` | 1.4.1 | MIT | [npm](https://www.npmjs.com/package/html2canvas) |
+| `marked` | `14.1.4` | 14.1.4 | MIT | [npm](https://www.npmjs.com/package/marked) |
+| `mermaid` | `11.17.2` | 11.17.2 | MIT | [npm](https://www.npmjs.com/package/mermaid) |
 | `three` | `0.169.0` | 0.169.0 | MIT | [npm](https://www.npmjs.com/package/three) |
 
 ## Browser-Delivered and Bundled Components
@@ -86,10 +90,10 @@ runtime dependencies in the published package.
 | --- | --- | --- | --- | --- |
 | xterm.js | 6.0.0 | Bundled browser asset and npm dependency | MIT | [GitHub](https://github.com/xtermjs/xterm.js) |
 | three.js | 0.169.0 | Bundled browser asset (`neural-interface/public/vendor/three/`) built from the npm development dependency | MIT | [GitHub](https://github.com/mrdoob/three.js) |
-| marked | 14.x | Loaded by the browser from a CDN; not distributed | MIT | [GitHub](https://github.com/markedjs/marked) |
-| highlight.js | 11.x | Loaded by the browser from a CDN; not distributed | BSD-3-Clause | [GitHub](https://github.com/highlightjs/highlight.js) |
-| Mermaid | 11.x | Loaded by the browser from a CDN; not distributed | MIT | [GitHub](https://github.com/mermaid-js/mermaid) |
-| html2canvas | 1.4.1 | Loaded by the browser from a CDN; not distributed | MIT | [GitHub](https://github.com/niklasvh/html2canvas) |
+| marked | 14.1.4 | Bundled browser asset (`neural-interface/public/vendor/marked/`) copied from the npm development dependency | MIT | [GitHub](https://github.com/markedjs/marked) |
+| highlight.js | 11.12.0 | Bundled browser asset (`neural-interface/public/vendor/highlight/`) copied from the npm development dependency `@highlightjs/cdn-assets` | BSD-3-Clause | [GitHub](https://github.com/highlightjs/highlight.js) |
+| Mermaid | 11.17.2 | Bundled browser asset (`neural-interface/public/vendor/mermaid/`) copied from the npm development dependency | MIT | [GitHub](https://github.com/mermaid-js/mermaid) |
+| html2canvas | 1.4.1 | Bundled browser asset (`neural-interface/public/vendor/html2canvas/`) copied from the npm development dependency | MIT | [GitHub](https://github.com/niklasvh/html2canvas) |
 
 ### CodeMirror 6
 
@@ -113,6 +117,44 @@ Brought in by those, and in the bundle too (MIT, Copyright (C) Marijn Haverbeke 
 - the languages `@codemirror/language-data` loads on demand: `@codemirror/lang-angular`, `@codemirror/lang-cpp`, `@codemirror/lang-css`, `@codemirror/lang-go`, `@codemirror/lang-html`, `@codemirror/lang-java`, `@codemirror/lang-javascript`, `@codemirror/lang-jinja`, `@codemirror/lang-json`, `@codemirror/lang-less`, `@codemirror/lang-liquid`, `@codemirror/lang-markdown`, `@codemirror/lang-php`, `@codemirror/lang-python`, `@codemirror/lang-rust`, `@codemirror/lang-sass`, `@codemirror/lang-sql`, `@codemirror/lang-vue`, `@codemirror/lang-wast`, `@codemirror/lang-xml`, `@codemirror/lang-yaml`, and `@codemirror/streamparser`
 - the Lezer parser runtime and grammars: `@lezer/common`, `@lezer/lr`, `@lezer/cpp`, `@lezer/css`, `@lezer/go`, `@lezer/html`, `@lezer/java`, `@lezer/javascript`, `@lezer/json`, `@lezer/markdown`, `@lezer/php`, `@lezer/python`, `@lezer/rust`, `@lezer/sass`, `@lezer/xml`, `@lezer/yaml`
 - `style-mod`, `w3c-keyname`, `crelt` and `@marijn/find-cluster-break`
+
+### marked
+
+The Markdown parser of the Assistant and the Claude, Codex and OpenCode panels. Its own browser build (`lib/marked.esm.js`), copied by `neural-interface/scripts/build-vendor.mjs` into `neural-interface/public/vendor/marked/` with the package's `LICENSE.md`.
+
+- **Version:** 14.1.4
+- **License:** MIT (the license file also carries the BSD-style notice of the original Markdown.pl, Copyright © 2004 John Gruber)
+- **Copyright:** Copyright (c) 2018+, MarkedJS; Copyright (c) 2011-2018, Christopher Jeffrey
+- **URL:** https://github.com/markedjs/marked
+
+### mermaid
+
+The diagrams of the Skills preview. Its own browser build (`dist/mermaid.esm.min.mjs` and the chunks it imports), copied by `neural-interface/scripts/build-vendor.mjs` into `neural-interface/public/vendor/mermaid/` with the package's `LICENSE`.
+
+- **Version:** 11.17.2
+- **License:** MIT
+- **Copyright:** Copyright (c) 2014 - 2022 Knut Sveidqvist
+- **URL:** https://github.com/mermaid-js/mermaid
+
+Mermaid's build bundles its own dependencies, each under its own license: MIT (`@braintree/sanitize-url`, `@iconify/utils`, `@mermaid-js/parser`, `@upsetjs/venn.js`, `cytoscape`, `cytoscape-cose-bilkent`, `cytoscape-fcose`, `cose-base`, `layout-base`, `dagre-d3-es`, `dayjs`, `es-toolkit`, `katex`, `khroma`, `lodash-es`, `marked` 16, `roughjs` and its path helpers, `stylis`, `ts-dedent`, `uuid`), ISC (`d3` 7 and its `d3-*` modules, `internmap`, `delaunator`), BSD-3-Clause (`d3-sankey`, `d3-ease`, `rw` and the older `d3-array`, `d3-shape`, `d3-path` it brings), Apache-2.0 (`@chevrotain/types`), MPL-2.0 or Apache-2.0 (`dompurify`, used here under Apache-2.0) and the Unlicense (`robust-predicates`).
+
+### highlight.js
+
+The Codex panel's code-block highlighting. The official browser build of the version whose stylesheet the panel loaded before (`@highlightjs/cdn-assets`: `highlight.min.js` and `styles/github-dark-dimmed.min.css`; the `highlight.js` package itself ships no browser build), copied by `neural-interface/scripts/build-vendor.mjs` into `neural-interface/public/vendor/highlight/` with the package's `LICENSE`.
+
+- **Version:** 11.12.0
+- **License:** BSD-3-Clause
+- **Copyright:** Copyright (c) 2006, Ivan Sagalaev; Josh Goebel and other contributors
+- **URL:** https://github.com/highlightjs/highlight.js
+
+### html2canvas
+
+The card screenshot tool of the 3D map (`index.html`). Its own browser build (`dist/html2canvas.min.js`, which bundles `base64-arraybuffer`, `css-line-break`, `text-segmentation` and `utrie`, all MIT, by the same author), copied by `neural-interface/scripts/build-vendor.mjs` into `neural-interface/public/vendor/html2canvas/` with the package's `LICENSE`.
+
+- **Version:** 1.4.1
+- **License:** MIT
+- **Copyright:** Copyright (c) 2012 Niklas von Hertzen
+- **URL:** https://github.com/niklasvh/html2canvas
 
 ## Vendored Code
 

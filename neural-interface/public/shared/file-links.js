@@ -36,20 +36,54 @@ const SCHEME_RE = /^([a-z][a-z0-9+.-]*):/i;
 const PLACE_ONLY_RE = /^\d+(?::\d+)?(?:#.*)?$/;
 const LINE_SUFFIX_RE = /:(\d+)(?::(\d+))?$/;
 const LINE_HASH_RE = /^#L(\d+)(?:C(\d+))?(?:-L?\d+(?:C\d+)?)?$/i;
+// Schemes a browser runs or draws content from: never a file's name, not even before a line number.
+const ACTIVE_SCHEMES = new Set(['javascript', 'vbscript', 'livescript', 'data', 'blob', 'filesystem', 'about', 'view-source']);
+// What a scheme can hide behind: a browser drops tabs and line breaks anywhere in a URL and controls at its
+// ends; format characters show nothing; an entity can be left over from a second escape.
+const HIDDEN_RE = /[\u0000-\u001f\u007f-\u009f\u00ad\u200b-\u200f\u2028\u2029\u2060-\u2064\ufeff]/g;
+const ENTITY_RE = /&(?:#(\d+)|#x([0-9a-f]+)|([a-z]+));?/gi;
+const NAMED_ENTITIES = { colon: ':', tab: '\t', newline: '\n', nbsp: ' ', sol: '/', bsol: '\\', num: '#', quest: '?', period: '.', amp: '&', semi: ';', lpar: '(', rpar: ')' };
 
 const slashes = (path) => String(path ?? '').replace(/\\/g, '/');
+
+function decodeEntities(text) {
+  let out = text;
+  for (let round = 0; round < 4; round += 1) { // `&amp;#106;` is `&#106;` once more
+    const next = out.replace(ENTITY_RE, (whole, dec, hex, name) => {
+      if (name) return NAMED_ENTITIES[name.toLowerCase()] ?? whole;
+      const code = dec ? Number(dec) : parseInt(hex, 16);
+      return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : '';
+    });
+    if (next === out) break;
+    out = next;
+  }
+  return out;
+}
+
+/** A target as its scheme is read: entities decoded, hidden characters dropped, no spaces at the ends, lower case. */
+function schemeView(value) {
+  return decodeEntities(value).replace(HIDDEN_RE, '').trim().toLowerCase();
+}
+
+// An active scheme, read with its spaces squeezed out too: `java script:` is no URL to a browser, and no file either.
+const isActive = (seen) => ACTIVE_SCHEMES.has(SCHEME_RE.exec(seen.replace(/\s+/g, ''))?.[1]);
 
 /** How a target reads: a `path`, a `file` URL, a `web` address (http, https), or null for anything else. */
 function kindOf(value) {
   if (!value || value.length > MAX_TARGET_LENGTH) return null;
-  if (value.startsWith('#') || value.startsWith('?') || value.startsWith('//')) return null;
+  const seen = schemeView(value);
+  if (!seen || seen.startsWith('#') || seen.startsWith('?') || seen.startsWith('//') || isActive(seen)) return null;
   if (DRIVE_RE.test(value)) return 'path';
-  const scheme = SCHEME_RE.exec(value);
+  const scheme = SCHEME_RE.exec(seen);
   if (!scheme) return 'path';
-  const name = scheme[1].toLowerCase();
+  // A scheme put together from hidden characters or entities (`JaVa\tScript:`, `&#106;avascript:`) is no
+  // file's and no address of this app.
+  const written = SCHEME_RE.exec(value);
+  if (!written || written[1].toLowerCase() !== scheme[1]) return null;
+  const name = scheme[1];
   if (name === 'file') return 'file';
   if (name === 'http' || name === 'https') return 'web';
-  const rest = value.slice(scheme[0].length);
+  const rest = value.slice(written[0].length);
   if (rest.startsWith('//')) return null;
   return PLACE_ONLY_RE.test(rest) ? 'path' : null;
 }
@@ -232,6 +266,33 @@ export function fillFileLinkCopy(key, params = {}) {
 // ── The click ──
 
 /**
+ * Whether a link would run a script or draw data when the browser follows it: its `href` (or an SVG link's
+ * `xlink:href`) read the way kindOf reads a target (entities decoded, controls and invisible characters dropped,
+ * lower case), and the scheme the browser itself resolved. Nothing else an anchor carries is asked.
+ * @param {Element} anchor
+ */
+export function isActiveLink(anchor) {
+  for (const name of ['href', 'xlink:href']) {
+    const value = anchor.getAttribute?.(name);
+    if (value != null && isActive(schemeView(String(value)))) return true;
+  }
+  const resolved = typeof anchor.protocol === 'string' ? anchor.protocol.replace(/:$/, '').toLowerCase() : '';
+  return ACTIVE_SCHEMES.has(resolved);
+}
+
+// A kept target is the sanitiser's note of the href as written (safeHref resolved it against the page, or dropped
+// it). It counts only while it is a file's and the href says the same thing; anything else is the href's to say.
+function keptTarget(anchor, href) {
+  const kept = anchor.getAttribute('data-file-target');
+  if (!kept || localFileHref(kept) == null) return null;
+  if (href == null) return kept; // file:, C:\…, name.ext:12: the sanitiser writes no href for them
+  try {
+    const base = anchor.baseURI || `${new URL(href).origin}/`;
+    return new URL(kept.trim(), base).href === new URL(href, base).href ? kept : null;
+  } catch { return null; }
+}
+
+/**
  * What a link points at, as the agent wrote it.
  * @param {Element} anchor
  * @param {{ textLinks?: string }} [options] `textLinks`: the selector of the panel's own path links, the ones
@@ -239,9 +300,9 @@ export function fillFileLinkCopy(key, params = {}) {
  * @returns {{ raw: string, text: boolean } | null}
  */
 export function readFileLink(anchor, { textLinks = '' } = {}) {
-  const kept = anchor.getAttribute('data-file-target');
-  if (kept) return { raw: kept, text: false };
   const href = anchor.getAttribute('href');
+  const kept = keptTarget(anchor, href);
+  if (kept) return { raw: kept, text: false };
   if (textLinks && anchor.matches(textLinks) && (!href || href === '#')) return { raw: anchor.textContent || '', text: true };
   return href ? { raw: href, text: false } : null;
 }
@@ -255,7 +316,8 @@ export function readFileLink(anchor, { textLinks = '' } = {}) {
  * @param {() => string} page.origin the page's origin
  * @param {(key: string, params?: object) => string} page.say a `fileLinks.*` sentence
  * @param {(message: string) => void} page.notify shows a short message
- * @param {(anchor: Element) => void} page.follow goes where a link of this app leads, as the browser would
+ * @param {(anchor: Element) => void} page.follow goes where a link of this app leads, as the browser would (only
+ *   ever for an http(s) address of this app that is the anchor's own href: never a script link)
  */
 export function createFileLinkHandlers(page) {
   const whereOf = (anchor, options) => {
@@ -302,12 +364,15 @@ export function createFileLinkHandlers(page) {
    * @param {(message: string) => void} [options.notify] shows the reason a link was not opened
    * @returns {Promise<string> | null} null when the click is not this handler's (the browser follows the
    *   link as before); else the click is taken and the promise says how it ended: 'opened', 'copied',
-   *   'followed', or the reason the user was told
+   *   'followed', 'blocked' (a script or data link), or the reason the user was told
    */
   function handleClick(event, options = {}) {
     if (event.defaultPrevented || event.button > 0) return null;
     const anchor = event.target?.closest?.('a');
     if (!anchor || (options.within && !options.within.contains(anchor))) return null;
+    // A script or data link in an agent's message goes nowhere, however it is spelled and whatever else the anchor
+    // says (a kept target, a download): the Codex panel's Markdown is not sanitised, so its href can still be one.
+    if (isActiveLink(anchor)) { event.preventDefault(); return Promise.resolve('blocked'); }
     if (anchor.hasAttribute?.('download')) return null; // a file the app itself offers
     const link = readFileLink(anchor, options);
     if (!link) return null;

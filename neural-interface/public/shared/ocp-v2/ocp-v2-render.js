@@ -49,7 +49,7 @@ let _markedLoading = false;
 function ensureMarked() {
   if (_marked || _markedLoading || typeof window === 'undefined') return;
   _markedLoading = true;
-  import('https://cdn.jsdelivr.net/npm/marked@14/lib/marked.esm.js')
+  import('/vendor/marked/marked-14.1.4.esm.js')
     .then((mod) => {
       _marked = mod?.marked || mod?.default || null;
       if (_marked?.setOptions) _marked.setOptions({ breaks: true, gfm: true });

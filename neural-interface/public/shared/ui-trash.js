@@ -200,10 +200,17 @@ function openTrashPanel() {
     renderTrashList();
   });
 
-  // Fetch and render
+  // The trash as last read (at start-up, after every change) paints at once; the read below brings it up to
+  // date in place, at the list's scroll position, and only when it changed.
+  const kept = trashItems.length ? JSON.stringify(trashItems) : null;
+  if (kept) { renderTrashFilters(); renderTrashList(); }
   fetchTrashItems().then(() => {
+    if (kept && JSON.stringify(trashItems) === kept) return;
+    const list = $('tw-list');
+    const scroll = list ? list.scrollTop : 0;
     renderTrashFilters();
     renderTrashList();
+    if (kept && list && list.isConnected) list.scrollTop = scroll;
   });
 }
 

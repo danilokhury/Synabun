@@ -1894,6 +1894,9 @@ export function createAssistantDispatcher({
       liveState.turnTokens = null;
       entry.turns = [...(entry.turns || []), turn].slice(-50);
       entry.lastResult = parsed;
+      // The run's own descriptor (lib/native-loop-runtime.js) carries it too, for the surfaces that read that one
+      // (the OpenCode panel's pill): a warm worker whose turn ended asking waits on the user, it does not rest.
+      ctx.setOutcome?.(parsed.status || null);
       entry.lastText = text.slice(0, 20_000);
       // The turn has ended: its result is in. Idle time from here on is not work.
       pauseWork(entry, liveState);

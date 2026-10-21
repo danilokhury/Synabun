@@ -10,6 +10,7 @@ import { createStickyScrollController, getStickyScrollController } from '../ui-s
 import { wireFileLinks } from '../ui-file-links.js';
 import { trackWorkerEnd } from '../ui-worker-end.js';
 import { isDispatchedRun } from '../worker-end.js';
+import { runAwaitsAnswer } from '../sidepanel-session-status.js';
 import { injectStyles } from './cdx-styles.js';
 import { mountContextMenu } from './cdx-context-menu.js';
 import { teardownMcpApps } from './cdx-mcp-app-host.js';
@@ -1204,6 +1205,15 @@ export function isCodexPanelOpen() {
   return _visible;
 }
 
+/**
+ * Boot the panel without showing it (ui-sidepanel-tray.js, when a tab saved while it worked comes back
+ * after a reload): the tabs that were working reattach at once (restoreTabs), so their pills say what
+ * the threads do now.
+ */
+export function bootCodexPanel() {
+  ensurePanel();
+}
+
 export async function toggleCodexPanel() {
   ensurePanel();
   if (_visible) {
@@ -1252,10 +1262,12 @@ export async function attachCodexAutomation(run, {
     }, { autoSwitch: false });
   }
   if (!tab) return { ok: false, reason: 'tab_limit' };
-  // A task-mode worker between turns (waiting for a follow-up) is alive, not working.
+  // A task-mode worker between turns (waiting for a follow-up) is alive, not working; one whose turn ended
+  // on a question needs you, like one with an approval card up (setRunning and renderPills repaint).
   const working = running && run.turnState !== 'idle' && run.turnState !== 'terminal';
   tab.automationRunId = run.runId;
   tab.automationActive = running;
+  tab.automationAwaits = runAwaitsAnswer(run);
   tab.automationOwnerId = nativeLoopWindowId;
   tab.threadId = threadId;
   tab.project = run.cwd || tab.project;

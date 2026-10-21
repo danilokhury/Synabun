@@ -116,6 +116,19 @@ export function relaunchAfterExit({ image, previous = '', stateDir, pid = proces
   return child.pid;
 }
 
+/**
+ * Open `image` again once `pid` has ended (Settings > App: a restart after a
+ * setting that applies at start). Electron's own relaunch runs from the mount,
+ * which ends with this process; this runs the image file itself.
+ */
+export function reopenAfterExit({ image, pid = process.pid, env = process.env, spawn = nodeSpawn, cwd }) {
+  const child = spawn('/bin/sh', ['-c', 'while kill -0 "$1" 2>/dev/null; do sleep 0.1; done; exec "$2" >/dev/null 2>&1', 'synabun-reopen', String(pid), image], {
+    detached: true, stdio: 'ignore', env: cleanAppImageEnv(env), cwd: cwd || dirname(image),
+  });
+  child.unref();
+  return child.pid;
+}
+
 /** The plan and the marker of an AppImage that is in place, for the next start (state.mjs). */
 export function recordAppImageSwap({ stateDir, image, previous, version, from, relaunch, now = () => new Date() }) {
   mkdirSync(stateDir, { recursive: true });

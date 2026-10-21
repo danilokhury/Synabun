@@ -46,6 +46,7 @@ import { initGames, clearGameOnLoad } from '../../shared/ui-games.js';
 import { initWorkspaces } from '../../shared/ui-workspaces.js';
 import { initInvite } from '../../shared/ui-invite.js';
 import { initSync, isGuest } from '../../shared/ui-sync.js';
+import { startLaunchPrefetch } from '../../shared/launch-prefetch.js';
 import { initKeybinds, registerAction } from '../../shared/ui-keybinds.js';
 import { initTutorial } from '../../shared/ui-tutorial.js';
 import { initImageGallery } from '../../shared/ui-image-gallery.js';
@@ -465,6 +466,8 @@ async function boot() {
     try { emit('trash:refresh'); } catch {}
     hideLoading(400);
     _bootComplete = true;
+    // Painted: what the windows, menus and Settings wait for is read now, in idle time (launch-prefetch.js).
+    startLaunchPrefetch({ isGuest });
   } catch (err) {
     console.error('Init error:', err);
     const isNetworkError = err.message === 'Failed to fetch' || err.name === 'TypeError';

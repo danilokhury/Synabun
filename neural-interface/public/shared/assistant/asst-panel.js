@@ -51,15 +51,16 @@ import { cachedProjects, createBrainPicker, testDensityLabel } from './asst-brai
 import { createRovingToolbar } from './asst-roving.js';
 import { openAccountsManager } from './asst-accounts.js';
 import { createAgentsDock } from './asst-agents-dock.js';
+import { activityOf } from './asst-scenes.js';
 import { createUsageGauge } from './asst-usage.js';
-import { closeMenu, isMenuOpen, openMenu } from './asst-menu.js';
+import { closeMenu, currentMenuAnchor, isMenuOpen, openMenu } from './asst-menu.js';
 import { createRouteModeControl, openModelsManager, openRoutesEditor, refreshModelsManager, renderRouteCard, routeModeLabel } from './asst-route.js';
 import { budgetChipText, budgetSpendText, budgetTone, closeBudgetEditor, createBudgetController, mountBudgetChip, openBudgetEditor } from './asst-budget.js';
 import { computerRemoteView, createComputerPanel, createComputerToggle, normalizeComputerRemote, openFrameLightbox, closeFrameLightbox, requestDesktopStop } from './asst-computer.js';
 import {
   applyLimit, applyLimitPacket, applyUsagePacket, brainLabel, createRenameWriter, createTabState, DEFAULT_ROUTE_MODE, deserializeTabState, fmtCost, fmtRunLine, limitExpiresIn, limitNoticeText, modelShortName,
   brainModePatch, normalizeBrain, normalizeComputerMode, permissionModeLabel, normalizeRouteMode, normalizeTestDensity, projectLabel, providerShortLabel, readStoredBrain, runFromPayload,
-  serializeTabState, tabStorageKey, userSessionTitle,
+  serializeTabState, sessionStatus, tabStorageKey, userSessionTitle,
 } from './asst-state.js';
 import {
   closeAssistantSession, dispatchAssistantRun, escalateAssistantRun, focusAssistantRun, getAssistantRun,
@@ -74,6 +75,7 @@ const ICON_COG = '<svg viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v
 const ICON_ROUTE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h13l-3-3M20 17H7l3 3"/></svg>';
 const ICON_COMPUTER = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>';
 const ICON_CLOSE = '<svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+const ICON_TRASH = '<svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4.5A1.5 1.5 0 0 1 9.5 3h5A1.5 1.5 0 0 1 16 4.5V6M18.5 6l-.8 13a2 2 0 0 1-2 1.9H8.3a2 2 0 0 1-2-1.9L5.5 6M10 11v6M14 11v6"/></svg>';
 const REPLAY_WAIT_MS = 1500; // a replay that stops short of its count is drawn after this long
 
 function el(tag, className, text) {
@@ -148,7 +150,9 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     usageView: saved?.usageView || null,
   });
   Object.assign(st, {
-    status: 'idle',
+    status: 'idle',                                // the brain's own: its turn, its cards (setStatus)
+    workers: { working: 0, waiting: 0 },           // its dispatched agents, from the agents tray (sessionStatus)
+    shownStatus: 'idle',                           // what the host shows: both together (pushStatus)
     dispatchUsd: 0,
     serverCost: false,
     engine: '',
@@ -165,6 +169,9 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     desktopProbe: false,
     routingProbe: false,
     sessionTitle: String(session?.title || ''),  // the server's name (the user's rename, else the first prompt): history + notifications
+    // Whether this session holds a chat (a prompt was sent): until then the server keeps it as a draft,
+    // New reuses it, and leaving it for another session closes it (nothing of it is stored).
+    chatStarted: !!session?.chatStartedAt || Number(session?.turns) > 0,
   });
   let recordName = userSessionTitle(session); // the name the session record holds as the user's ('' = never renamed)
   const controls = new Map(); // requestId → { card, origin, kind }
@@ -315,18 +322,33 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     notify(host.notifySource || 'cli', type, notifyLabel(), { sessionId, provider: 'assistant', panel: 'assistant' });
   }
 
-  /** root[data-status] and data-computer drive status styling (the live dot, the Computer switch). */
+  /** root[data-status] (the session's status, sessionStatus) and data-computer drive status styling (the live dot, the Computer switch). */
   function renderStatus() {
-    root.dataset.status = st.status || 'idle';
+    root.dataset.status = st.shownStatus || 'idle';
     if (st.desktopActive) root.dataset.computer = 'active';
     else delete root.dataset.computer;
   }
 
+  /** The brain's own status: its turn ('working', 'done', 'idle') and its cards ('action'). */
   function setStatus(status) {
     st.status = status || 'idle';
-    renderStatus();
+    pushStatus(true);
     syncBlocked();
-    try { host.setStatus?.(st.status); } catch { /* ignore */ }
+  }
+
+  /**
+   * What the host shows (tray pill, header, terminal badge) is the session's status: the brain's own and
+   * its dispatched agents' together (asst-state.js sessionStatus), so the gold stays while a worker works
+   * after the turn that dispatched it ended, and a worker that waits on you makes the session need you.
+   * The brain's own changes always reach the host; a change of the agents' counts only when the status moved.
+   */
+  function pushStatus(always = false) {
+    if (destroyed) return;
+    const next = sessionStatus(st.status, st.workers);
+    if (!always && next === st.shownStatus) return;
+    st.shownStatus = next;
+    renderStatus();
+    try { host.setStatus?.(next); } catch { /* ignore */ }
   }
 
   /**
@@ -632,13 +654,24 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     onStopAll: () => stopAll(),
     onRemove: (runId) => removeRun(runId),
     onClearFinished: () => clearFinished(),
+    // A mini scene or a lane: that run's card in the transcript (drawn first when this window never got it).
+    onReveal: (runId) => {
+      if (renderer.revealRun(runId)) return;
+      const run = dock.getRun(runId);
+      if (run) { renderer.restoreRuns([run]); renderer.revealRun(runId); }
+    },
+    // Whatever told the tray (the sync bus, its fetch), the transcript's card and route line follow.
+    onRunChange: (run) => renderer.syncRun(run),
     onToggle: (open) => { st.dockOpen = open; agentsBtn.setAttribute('aria-pressed', open ? 'true' : 'false'); persist(); },
     onShowAllChange: (showAll) => { st.dockShowAll = showAll; persist(); },
-    onCountChange: ({ total, active, attention, visible: shown }) => {
+    onCountChange: ({ total, active, attention, working = 0, waiting = 0, visible: shown }) => {
       agentsCount.textContent = String(active || total);
       agentsCount.classList.toggle('attention', attention > 0);
       agentsBtn.hidden = !shown;
       agentsBtn.classList.toggle('attention', attention > 0);
+      // Whatever told the tray (this socket, the sync bus, its fetch after a reload): the session's status follows.
+      st.workers = { working, waiting };
+      pushStatus();
     },
   });
   agentsBtn.setAttribute('aria-pressed', st.dockOpen ? 'true' : 'false');
@@ -777,6 +810,8 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
         lockControl(packet.request_id, resolvedLabel(packet.origin, tt('assistant.control.state.answered', 'Answered')));
         return;
       case 'reattach_result':
+        // Whether a turn runs now: a route the journal left open is that turn's, or nobody's.
+        renderer.reattached(!!(packet.ok && packet.running));
         if (packet.ok) {
           if (packet.sessionId) st.providerSessionId = packet.sessionId;
           if (packet.resynced) rehydrate({ force: true });
@@ -805,6 +840,8 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
         finishTurn({ aborted: true });
         return;
       case 'error': {
+        // The server no longer has this session: no error row and no retry loop; the host closes the tab.
+        if (packet.code === 'SESSION_NOT_FOUND') { sessionGone(); return; }
         // A rejected route answer keeps its card open with the message.
         const routeCard = packet.request_id ? routeCardByRequest(packet.request_id) : null;
         if (routeCard) { routeCard.fail(packet.message); return; }
@@ -930,6 +967,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     if (meta.id && meta.id !== sessionId) return;
     // The server's title names the conversation (history, notifications); the tab's name is the host's.
     applyRecordName(meta);
+    if (meta.chatStartedAt || Number(meta.turns) > 0) st.chatStarted = true;
     if (meta.brain && typeof meta.brain === 'object') {
       const next = normalizeBrain({ ...st.brain, ...meta.brain, provider: meta.brain.provider || meta.brain.brain || st.brain.provider });
       if (JSON.stringify(next) !== JSON.stringify(st.brain)) { st.brain = next; picker.render(); host.setBrain?.(next); persist(); }
@@ -1343,6 +1381,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     st.turnStartedAt = Date.now();
     setRunning(true);
     sock.send(msg);
+    st.chatStarted = true; // the server stores the session with this prompt
     // Name the conversation like the server will (its first prompt) — not the tab.
     if (!st.userRenamed && (!st.sessionTitle || /^(?:SynaBun|Assistant(?: \d+)?)$/.test(st.sessionTitle))) {
       const guess = String(payload.text || '').split('\n')[0].trim().slice(0, 60);
@@ -1504,15 +1543,34 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     if (!st.running) setRunning(true, { label: tt('assistant.compacting', 'compacting…') });
   }
 
+  /** Nobody chatted in this session yet (and nothing runs in it): New reuses it, leaving it closes it. */
+  function unused() {
+    return !st.chatStarted && !st.running;
+  }
+
   function newSession(provider) {
     const b = provider ? normalizeBrain({ ...st.brain, provider, model: '', effort: null, agent: null, accountId: null }) : st.brain;
+    // This one is still empty: it is the new session (the server keeps one draft, not a pile of them).
+    // /new <provider> switches its brain as the picker does; what only this page showed (/help) is cleared.
+    if (unused() && !destroyed) {
+      if (provider && provider !== st.brain.provider) applyBrain(b, { requiresSwitch: true, field: 'provider' });
+      if (!renderer.isEmpty()) clearTranscript();
+      composer.focus();
+      return;
+    }
     emit('assistant:new', { brain: b, host: hostId });
+  }
+
+  /** Open another assistant session; this one goes with it when nobody chatted in it (`replaces`). */
+  function openOther(id) {
+    emit('assistant:resume', { sessionId: id, host: hostId, replaces: unused() ? sessionId : null });
   }
 
   function resume(id) {
     if (!id) return;
-    if (String(id).startsWith('assistant-')) { emit('assistant:resume', { sessionId: id, host: hostId }); return; }
+    if (String(id).startsWith('assistant-')) { if (id !== sessionId) openOther(id); return; }
     sock.send({ type: 'resume', providerSessionId: id });
+    st.chatStarted = true; // a provider conversation: the server stores the session with it
     renderer.appendDivider(tt('assistant.status.resuming', 'resuming {id}', { id: String(id).slice(0, 8) }));
   }
 
@@ -1634,35 +1692,109 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
   }
 
   // ── Menus ──
+  /**
+   * The Sessions menu: New, then every session that holds a chat (the server lists no other). Each row
+   * opens its session; its Remove (hover / focus, → from the row, Delete) asks in the row itself, then
+   * removes the session for good: its running turn and agents stop (the question says so), every host
+   * drops its tab, and the session showing here is replaced by a fresh one, as New does.
+   */
   function showSessionsMenu(list) {
-    const sessions = (Array.isArray(list) ? list : []).filter(s => s?.id);
-    const items = [
-      { id: 'new', label: tt('assistant.topbar.new', 'New assistant session'), desc: brainLabel(st.brain), icon: ICON_NEW, onSelect: () => newSession(null) },
-      { kind: 'separator' },
-    ];
-    if (!sessions.length) items.push({ kind: 'info', label: tt('assistant.sessions.empty', 'No other sessions') });
-    else items.push({ kind: 'header', label: tt('assistant.sessions.recent', 'Recent') });
-    for (const s of sessions.slice(0, 30)) {
-      const isCurrent = s.id === sessionId;
-      const b = s.brain && typeof s.brain === 'object' ? s.brain : { provider: s.brain, model: s.model, effort: s.effort };
-      items.push({
-        kind: 'radio',
-        id: s.id,
-        label: s.title || s.label || s.id,
-        desc: [brainLabel(b), relativeTime(s.updatedAt || s.createdAt), s.status].filter(Boolean).join(' · '),
-        selected: isCurrent,
-        onSelect: () => { if (!isCurrent) emit('assistant:resume', { sessionId: s.id, host: hostId }); },
-      });
-    }
-    openMenu(sessionsBtn, {
+    let sessions = (Array.isArray(list) ? list : []).filter(s => s?.id);
+    let asking = null; // the id of the row that asks "Remove …?"
+    const nameOf = (s) => s.title || s.label || s.id;
+    const build = () => {
+      const items = [
+        { id: 'new', label: tt('assistant.topbar.new', 'New assistant session'), desc: brainLabel(st.brain), icon: ICON_NEW, onSelect: () => newSession(null) },
+        { kind: 'separator' },
+      ];
+      if (!sessions.length) items.push({ kind: 'info', label: tt('assistant.sessions.empty', 'No other sessions') });
+      else items.push({ kind: 'header', label: tt('assistant.sessions.recent', 'Recent') });
+      for (const s of sessions.slice(0, 30)) {
+        const isCurrent = s.id === sessionId;
+        const name = nameOf(s);
+        if (s.id === asking) { items.push(removeQuestion(s, name, isCurrent)); continue; }
+        const b = s.brain && typeof s.brain === 'object' ? s.brain : { provider: s.brain, model: s.model, effort: s.effort };
+        items.push({
+          kind: 'radio',
+          id: s.id,
+          label: name,
+          desc: [brainLabel(b), relativeTime(s.updatedAt || s.createdAt), s.status].filter(Boolean).join(' · '),
+          selected: isCurrent,
+          onSelect: () => { if (!isCurrent) openOther(s.id); },
+          action: {
+            id: `remove:${s.id}`,
+            icon: ICON_TRASH,
+            label: tt('assistant.sessions.removeNamed', 'Remove “{title}”', { title: name }),
+            tooltip: tt('assistant.sessions.remove', 'Remove session'),
+            onSelect: () => ask(s.id),
+          },
+        });
+      }
+      return items;
+    };
+    /** "Remove “name”? …" with Remove and Cancel, in place of the row (it still matches the filter by name). */
+    const removeQuestion = (s, name, isCurrent) => {
+      const runs = Math.max(0, Number(s.activeRuns) || 0);
+      const running = isCurrent ? st.running : s.running === true;
+      const question = [
+        tt('assistant.sessions.removeAsk', 'Remove “{title}” for good?', { title: name }),
+        running ? tt('assistant.sessions.removeStopsTurn', 'Its running turn stops.') : '',
+        runs ? tt('assistant.sessions.removeStopsAgents', 'Its running agents stop ({count}).', { count: runs }) : '',
+      ].filter(Boolean).join(' ');
+      return {
+        kind: 'buttons',
+        id: `ask:${s.id}`,
+        className: 'asst-dd-confirm',
+        label: question,
+        buttons: [
+          { id: `remove-yes:${s.id}`, label: tt('assistant.sessions.removeConfirm', 'Remove'), danger: true, keywords: name, keepOpen: true, onSelect: () => confirmRemove(s, isCurrent) },
+          { id: `remove-no:${s.id}`, label: tt('common.cancel', 'Cancel'), keywords: name, keepOpen: true, onSelect: () => cancel() },
+        ],
+      };
+    };
+    const handle = openMenu(sessionsBtn, {
       title: tt('assistant.topbar.sessions', 'Sessions'),
-      items,
+      items: build(),
       role: 'menu',
       placement: 'below',
       width: 300,
       filter: sessions.length > 8,
       filterPlaceholder: tt('assistant.sessions.filter', 'Filter sessions…'),
+      // Esc while a row asks: back to the row, the menu stays open.
+      onEscape: () => { if (!asking) return false; cancel(); return true; },
     });
+    function ask(id) {
+      asking = id;
+      handle?.update({ items: build(), focus: `remove-no:${id}` });
+    }
+    function cancel() {
+      const id = asking;
+      asking = null;
+      handle?.update({ items: build(), focus: id });
+    }
+    function confirmRemove(s, isCurrent) {
+      asking = null;
+      const name = nameOf(s);
+      const done = (result) => {
+        if (result?.ok) return;
+        const text = tt('assistant.sessions.removeFailed', 'Could not remove “{title}”: {error}', { title: name, error: result?.error || tt('assistant.errorGeneric', 'Something went wrong') });
+        if (destroyed) return;
+        renderer.appendError(text);
+        announce(text);
+      };
+      if (isCurrent) {
+        // This panel's own session: a fresh one takes its place (as New), then this one goes.
+        closeMenu();
+        emit('assistant:remove', { sessionId: s.id, fresh: true, brain: st.brain, done });
+        return;
+      }
+      // Another session (open elsewhere or not): its row goes now, and focus stays in the list.
+      const at = sessions.findIndex((row) => row.id === s.id);
+      sessions = sessions.filter((row) => row.id !== s.id);
+      const next = sessions[Math.min(at, sessions.length - 1)];
+      handle?.update({ items: build(), focus: next ? next.id : 'new' });
+      emit('assistant:remove', { sessionId: s.id, fresh: false, done });
+    }
   }
 
   function engineText() {
@@ -1898,6 +2030,18 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     const requestId = msg?.request_id || msg?.requestId;
     if (requestId) lockControl(requestId, resolvedLabel(msg.resolvedBy));
   }));
+  // What this session's workers do right now (Claude and Codex workers stream their events to the page,
+  // OpenCode workers a compact copy of their tool calls: lib/opencode-worker-activity.js):
+  // their stages and the tray's scenes follow the current call.
+  unsubs.push(on('sync:sidepanel:provider-event', (msg) => {
+    const runId = msg?.run?.runId;
+    if (!runId || !dock.getRun(runId)) return;
+    const activity = activityOf(msg.event);
+    if (!activity) return;
+    const stamped = { ...activity, at: Date.now() };
+    renderer.setRunActivity(runId, stamped);
+    dock.setRunActivity(runId, stamped);
+  }));
   unsubs.push(on('sync:assistant:desktop', (msg) => computerPanel.applyDesktop(msg)));
   unsubs.push(on('sync:assistant:desktop-setup', (msg) => computerPanel.applySetup(msg)));
   // Models switched on/off elsewhere: the open Models manager reloads (the menus drop their cache on their own).
@@ -1924,6 +2068,19 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
   }
 
   // ── Rehydration ──
+  /**
+   * The server no longer has this session: a draft it dropped (a restart before its first prompt, a
+   * page away too long) or one removed while this page missed the broadcast. The tab closes; one that
+   * was showing with no chat in it is replaced by a fresh session (asst-hosts.js gone), never left dead.
+   */
+  let gone = false;
+  function sessionGone() {
+    if (gone || destroyed) return;
+    gone = true;
+    sock.close();
+    emit('assistant:gone', { sessionId, fresh: visible() && unused(), brain: st.brain });
+  }
+
   async function rehydrate({ force = false } = {}) {
     try {
       const data = await getAssistantSession(sessionId);
@@ -1936,7 +2093,11 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
       // A conversation with nothing in it yet may be greeted; a restored one never is.
       if (Array.isArray(transcript) && !transcript.length && !(Number(meta?.turns) > 0)) renderer.offerGreeting();
       for (const run of (Array.isArray(data?.runs) ? data.runs : [])) dock.upsertRun(run);
+      // Run cards are not journaled: the runs the tray fetched come back into the transcript, next to the
+      // calls that dispatched them, and a worker that still works is live at once (its stage, its route line).
+      dock.ready.then(() => { if (!destroyed) renderer.restoreRuns(dock.getRuns()); });
     } catch (err) {
+      if (err?.status === 404) { sessionGone(); return; }
       console.warn('[assistant] could not restore the conversation', err);
       renderer.showEmpty();
     }
@@ -1951,7 +2112,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
   if (session && typeof session === 'object') applySessionMeta(session);
   else applyFeatures();
   rehydrate().finally(() => {
-    if (destroyed) return;
+    if (destroyed || gone) return;
     probeFeatures();
     applyLastUsedRouteMode();
     applyLastUsedTestDensity();
@@ -1991,7 +2152,8 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     attachPath: (path) => { if (path) { composer.insertText(`\`${path}\` `); composer.focus(); } },
     /** The server's name for the conversation (the user's rename, else the first prompt): tooltips. */
     getConversationTitle: () => st.sessionTitle || '',
-    getStatus: () => st.status || 'idle',
+    /** The session's status as its host shows it: the brain's own with its dispatched agents' (sessionStatus). */
+    getStatus: () => st.shownStatus || 'idle',
     focus: () => composer.focus(),
     onShown: () => { syncTabLabel(); renderer.scrollEnd(true); if (visible()) composer.focus(); director.touch(); },
     onHidden: () => { closeMenu(); picker.close(); director.stopTyping(); },
@@ -2012,7 +2174,9 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
       unsubs.forEach(off => { try { off(); } catch { /* ignore */ } });
       document.removeEventListener('keydown', onEscCapture, true);
       surfaces.forEach((node) => { node.removeEventListener('keydown', onRootKey); node.removeEventListener('focusin', onFocusIn); });
-      closeMenu();
+      // Its own menu closes; another panel's stays open (its Sessions menu may be what removed this session).
+      const menuAnchor = currentMenuAnchor();
+      if (!menuAnchor || !menuAnchor.isConnected || root.contains(menuAnchor) || barEl.contains(menuAnchor)) closeMenu();
       closeFrameLightbox();
       if (helpModal) { helpModal.remove(); helpModal = null; }
       for (const card of routeCards.values()) card.destroy();

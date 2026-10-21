@@ -84,6 +84,8 @@ export function buildExecInvocation({
   mcpEnvOverrides = [],
   // Codex: launch overrides as `-c` words (the Windows sandbox of the Admin sandbox setting).
   codexConfigArgs = [],
+  // OpenCode: the major of the CLI (lib/opencode-protocol.js); 2 has other `run` flags.
+  opencodeMajor = 1,
   platform = process.platform,
   commandExists = existsSync,
 } = {}) {
@@ -111,7 +113,12 @@ export function buildExecInvocation({
       if (model) args.push('--model', String(model));
       break;
     case 'opencode':
-      args.push('run', '--dangerously-skip-permissions');
+      // OpenCode 2: a private server for this run (`--standalone`; without it the
+      // CLI uses the machine's background service, which has none of the loop's
+      // configuration) and `--auto` (approve what is not denied) for the flag
+      // OpenCode 1 took.
+      if (Number(opencodeMajor) >= 2) args.push('run', '--standalone', '--auto');
+      else args.push('run', '--dangerously-skip-permissions');
       if (model) args.push('--model', String(model));
       args.push('--format', 'default');
       break;

@@ -1,6 +1,7 @@
 // Shared launch/runtime metadata for Automation Studio, Schedules Studio,
 // and agent sidepanels.
 import { normalizeAutomationSelection } from './automation-context.js';
+import { fetchOpencodeProviders, opencodeProviders } from './opencode-providers.js';
 
 export const CLI_PROFILES = [
   { id: 'claude-code', label: 'Claude Code', desc: 'Anthropic' },
@@ -145,6 +146,27 @@ let _opencodeModelsLoading = null;
 let _claudeModelsCache = null;
 let _claudeModelsLoading = null;
 let _mcpProfilePresets = null;
+let _mcpProfilePresetsLoading = null;
+
+// The verified Claude and Codex lists are also kept in sessionStorage (this tab only): after a reload the
+// pickers paint from them at once (a list read back is due, so the first load still asks the server).
+const LIST_STORE_PREFIX = 'synabun:runtime-models:v1:';
+function keepList(key, list) {
+  try { if (typeof sessionStorage !== 'undefined') sessionStorage.setItem(LIST_STORE_PREFIX + key, JSON.stringify(list)); } catch { /* full or unavailable */ }
+}
+function keptList(key) {
+  try {
+    if (typeof sessionStorage === 'undefined') return null;
+    const list = JSON.parse(sessionStorage.getItem(LIST_STORE_PREFIX + key) || 'null');
+    return Array.isArray(list) && list.length ? list : null;
+  } catch { return null; }
+}
+(() => {
+  const claude = keptList('claude-code');
+  if (claude && !_claudeModelsCache) _claudeModelsCache = claude;
+  const codex = keptList('codex:default');
+  if (codex && !_codexModelsCache.has('default')) _codexModelsCache.set('default', codex);
+})();
 
 function localJsonArray(key) {
   try {
@@ -287,6 +309,7 @@ export async function fetchCodexModels(force = false, accountId = 'default') {
       const normalized = mergeCodexModelOptions(models, { fallback: false });
       _codexModelsCache.set(account, normalized);
       _modelListAt.set(`codex:${account}`, Date.now());
+      if (normalized.length) keepList(`codex:${account}`, normalized);
       return normalized;
     } catch {
       const previous = _codexModelsCache.get(account) || [];
@@ -466,8 +489,8 @@ export async function fetchOpencodeModels(force = false) {
   if (_opencodeModelsLoading) return _opencodeModelsLoading;
   _opencodeModelsLoading = (async () => {
     try {
-      const resp = await fetch('/api/opencode/providers/full');
-      const data = await resp.json().catch(() => ({}));
+      // The connected providers, from the page's one kept read (opencode-providers.js).
+      const data = await fetchOpencodeProviders({ force }).catch(() => ({}));
       if (!data || data.ok === false) return [];
       const out = parseOpencodeProviderModels(data);
       if (out.length) _opencodeModelsCache = out;
@@ -497,6 +520,7 @@ export async function fetchClaudeModels(force = false) {
       if (models.length && data?.source !== 'fallback') {
         _claudeModelsCache = models.map(model => ({ ...model, catalogSource: data?.source || 'cli' }));
         _modelListAt.set('claude-code', Date.now());
+        keepList('claude-code', _claudeModelsCache);
       } else {
         _claudeModelsCache = verified() || (models.length ? models.map(model => ({ ...model, catalogSource: 'fallback' })) : [...CLAUDE_FALLBACK_MODELS]);
       }
@@ -524,9 +548,19 @@ export async function ensureModelsForProfile(profileId, force = false, accountId
   return getModelsForProfile(profileId, accountId);
 }
 
+// OpenCode's list parsed from the provider list the page already holds (read at launch, kept across a reload,
+// or by another module): no request, and the hidden models of this window are applied as it is parsed.
+function keptOpencodeModels() {
+  const kept = opencodeProviders.peek('');
+  if (!kept || kept.ok === false) return null;
+  const out = parseOpencodeProviderModels(kept);
+  if (out.length) _opencodeModelsCache = out;
+  return out;
+}
+
 export function getModelsForProfile(profileId, accountId = 'default') {
   if (profileId === 'codex') return _codexModelsCache.get(String(accountId || 'default')) || [];
-  if (profileId === 'opencode') return _opencodeModelsCache || [];
+  if (profileId === 'opencode') return _opencodeModelsCache || keptOpencodeModels() || [];
   if (profileId === 'claude-code') return _claudeModelsCache || [];
   return STATIC_MODELS[profileId] || [];
 }
@@ -601,14 +635,21 @@ export function normalizeEffortForProfile(profileId, effort) {
 
 export async function fetchMcpProfilePresets(force = false) {
   if (!force && _mcpProfilePresets) return _mcpProfilePresets;
-  try {
-    const resp = await fetch('/api/mcp/profile');
-    const data = await resp.json().catch(() => ({}));
-    _mcpProfilePresets = data?.ok && data.presets ? data.presets : {};
-    return _mcpProfilePresets;
-  } catch {
-    return {};
-  }
+  // Callers asking at the same time share one request.
+  if (_mcpProfilePresetsLoading) return _mcpProfilePresetsLoading;
+  _mcpProfilePresetsLoading = (async () => {
+    try {
+      const resp = await fetch('/api/mcp/profile');
+      const data = await resp.json().catch(() => ({}));
+      _mcpProfilePresets = data?.ok && data.presets ? data.presets : {};
+      return _mcpProfilePresets;
+    } catch {
+      return {};
+    } finally {
+      _mcpProfilePresetsLoading = null;
+    }
+  })();
+  return _mcpProfilePresetsLoading;
 }
 
 export function getCachedMcpProfilePresets() {
@@ -619,6 +660,7 @@ export function clearRuntimeOptionCaches() {
   _codexModelsCache.clear();
   _codexModelsLoading.clear();
   _opencodeModelsCache = null;
+  opencodeProviders.invalidate('');
   _claudeModelsCache = null;
   _modelListAt.clear();
   _mcpProfilePresets = null;
@@ -630,3 +672,5 @@ if (typeof document !== 'undefined') {
   document.addEventListener('ocp-hidden-models-changed', () => { _opencodeModelsCache = null; });
   document.addEventListener('ocp-providers-changed', () => { _opencodeModelsCache = null; });
 }
+// A background read of the provider list brought another one: the parsed copy is made again from it.
+opencodeProviders.subscribe(() => { _opencodeModelsCache = null; });

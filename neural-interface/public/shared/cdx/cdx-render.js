@@ -16,7 +16,8 @@ import { bindExpandableCard, setCardExpanded } from './cdx-cards.js';
 import { mountMcpAppCard } from './cdx-mcp-app-host.js';
 import { OUTPUT_LIMITS, boundedText, jsonAnswer, prettyJsonFences, readableStructuredValue, fileChangeDiffs, parseUnifiedDiff, deduplicateTurnDiff } from './cdx-output-model.js';
 import { renderReadableOutput, renderReadableBlock, cleanOutputBlocks, hydrateOutputControls, observeOutputBlocks, renderDiffView, restoreDiffViews } from './cdx-output.js';
-import { fileLinkTitle, fillFileLinkCopy, isInsideRoots, parseFileLinkTarget } from '../file-links.js';
+import { fileLinkTitle, fillFileLinkCopy, isInsideRoots, parseFileLinkTarget, readFileLink } from '../file-links.js';
+import { sanitizeHtmlString } from '../assistant/asst-sanitize.js';
 export { setCardExpanded } from './cdx-cards.js';
 
 // ── Shared context (set by cdx-tabs via setRenderContext) ──
@@ -98,6 +99,11 @@ export function esc(s) {
 // streaming delta tick. Memoize so identical text — unchanged messages
 // elsewhere in the transcript that get re-rendered anyway — returns cached
 // HTML without re-parsing.
+//
+// What a model writes is not ours, and marked passes raw HTML through: an
+// `<img onerror>` in a reply would run in SynaBun's origin with no click. Every
+// Markdown sink of the panel takes md()'s output, so it goes through the
+// allowlist sanitiser the Assistant, Claude and OpenCode panels use, here, once.
 const _mdCache = new Map();
 const _MD_CACHE_LIMIT = 512;
 let _mdRenderer = null;
@@ -134,6 +140,9 @@ export function md(text) {
     try { html = parser.call(renderer, prettyJsonFences(key)); }
     catch { html = markdownFallback(key); }
   }
+  // A page with no DOM to sanitise in, or a sanitiser that fails, gets escaped text: never raw HTML.
+  try { html = sanitizeHtmlString(html); }
+  catch { html = markdownFallback(key); }
   if (_mdCache.size >= _MD_CACHE_LIMIT) {
     const firstKey = _mdCache.keys().next().value;
     if (firstKey !== undefined) _mdCache.delete(firstKey);
@@ -409,8 +418,11 @@ function openInEditorTitle(target) {
 
 export function markProjectFileAnchors(container) {
   if (!container) return;
-  container.querySelectorAll('a[href]').forEach((link) => {
-    const target = projectFileTarget(link.getAttribute('href'));
+  // A path the sanitiser kept as written (data-file-target) is the link's target: its href, when it has one, is
+  // that path resolved against the page.
+  container.querySelectorAll('a[href], a[data-file-target]').forEach((link) => {
+    const read = readFileLink(link);
+    const target = read && projectFileTarget(read.raw);
     if (!target) return;
     link.classList.add('cxp-file-link');
     link.dataset.projectFilePath = target.path;

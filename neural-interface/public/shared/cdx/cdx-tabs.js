@@ -15,6 +15,7 @@ import '../account-i18n.js';
 import { restoreMcpAppCards, teardownMcpApps, retireMcpAppNode, stripMcpAppRuntime } from './cdx-mcp-app-host.js';
 import { renderTurnDiff, completeTurnOutputs } from './cdx-render.js';
 import { hydrateOutputControls } from './cdx-output.js';
+import { sanitizeStoredHtml } from '../assistant/asst-sanitize.js';
 import {
   beginPlanTurn, capturePlanItem, finishPlanTurn, getPlanMarkdown, syncPlanMirrors, recordPlanTurn,
   migrateLegacyPlan, recoverPlanFromHistory, planBelongsToTab, useMessageAsPlan,
@@ -378,6 +379,9 @@ function buildWsCallbacks(tab, options = {}) {
           if (_boundTab) _boundTab.running = true;
           setStatus('Resuming…', 'working');
           resetStallTimer();
+          // The turn it found is still at work: so is the tab's pill (the panel may be hidden, the tab in the background).
+          updateTrayPillRunning();
+          renderPills();
         } else if (msg.running === false && (!msg.threadId || String(msg.threadId) === String(_threadId || ''))) {
           // A plan can finish while disconnected. The server's idle reply
           // releases the stale running/query state before history recovery.
@@ -589,20 +593,17 @@ function buildWsCallbacks(tab, options = {}) {
     },
 
     onInterruptAck(msg) {
-      _running = false;
-      _activeTurnId = null;
-      if (_boundTab) {
-        _boundTab.running = false;
-        _boundTab.activeTurnId = null;
-        if (_boundTab._abortRetry) {
-          clearTimeout(_boundTab._abortRetry);
-          _boundTab._abortRetry = null;
-        }
+      if (_boundTab?._abortRetry) {
+        clearTimeout(_boundTab._abortRetry);
+        _boundTab._abortRetry = null;
       }
       clearInterruptTimer();
-      stopStallTimer();
+      // A prompt sent after the Stop has a turn of its own: the ack is not about it.
+      if (!interruptAckEndsTurn(_boundTab)) return;
+      // The stopped turn is over: the tab, its pill and the saved tabs say so (setRunning), even
+      // when something marked it working again before the ack came back.
+      setRunning(false);
       setStatus('Interrupted', 'muted');
-      syncInputEnabled();
       syncSessionControls();
       releaseInactiveIdleTab(_boundTab);
     },
@@ -959,6 +960,7 @@ function rememberBlockingServerRequest(requestId, method, params = {}) {
   if (_boundTab) _boundTab.blockingServerRequests = _blockingServerRequests;
   syncWorkStatus();
   syncInputEnabled();
+  updateTrayPillRunning(); // the pill needs you
   saveTabs();
 }
 
@@ -968,6 +970,7 @@ function clearBlockingServerRequest(requestId, { flushBuffered = true } = {}) {
   if (_boundTab) _boundTab.blockingServerRequests = _blockingServerRequests;
   syncWorkStatus();
   syncInputEnabled();
+  updateTrayPillRunning();
   saveTabs();
   if (flushBuffered && !hasBlockingServerRequests()) flushBufferedSocketMessages();
   releaseInactiveIdleTab(_boundTab);
@@ -985,6 +988,7 @@ function clearAllBlockingServerRequests() {
   }
   syncWorkStatus();
   syncInputEnabled();
+  updateTrayPillRunning();
 }
 
 function shouldBufferSocketMessage(kind, payload) {
@@ -1064,6 +1068,11 @@ function applySocketError(msg) {
 
 function applySocketClosed() {
   appendSystem('Codex session closed', 'muted');
+  // The app-server ran the turn: it exited, the turn went with it (the server forgot it too).
+  if (_running) {
+    setRunning(false);
+    setStatus('Codex session closed', 'muted');
+  }
 }
 
 function applyBufferedSocketMessage(entry) {
@@ -1459,7 +1468,7 @@ let _hljs = null;
 
 (async () => {
   try {
-    const mod = await import('https://cdn.jsdelivr.net/npm/marked@14/lib/marked.esm.js').catch(() => null);
+    const mod = await import('/vendor/marked/marked-14.1.4.esm.js').catch(() => null);
     if (mod) {
       _marked = mod.marked || mod.default;
       if (_marked?.setOptions) _marked.setOptions({ breaks: true, gfm: true });
@@ -1471,10 +1480,10 @@ let _hljs = null;
   try {
     const link = document.createElement('link');
     link.rel = 'stylesheet';
-    link.href = 'https://cdn.jsdelivr.net/npm/highlight.js@11/styles/github-dark-dimmed.min.css';
+    link.href = '/vendor/highlight/github-dark-dimmed-11.12.0.min.css';
     document.head.appendChild(link);
     const script = document.createElement('script');
-    script.src = 'https://cdn.jsdelivr.net/npm/highlight.js@11/lib/highlight.min.js';
+    script.src = '/vendor/highlight/highlight-11.12.0.min.js';
     script.onload = () => { _hljs = window.hljs || null; };
     document.head.appendChild(script);
   } catch {}
@@ -2417,14 +2426,26 @@ export function restoreActiveBinding(fallbackState) {
   else restoreBoundState(fallbackState);
 }
 
+// How many withTab calls are under way. The outermost one hands the binding back to the active tab; a
+// nested one hands it back to the tab the call around it bound, with what that call had done so far
+// written to it first. (The history of a tab in the background renders while another tab is shown, and
+// a nested withTab in it used to leave the rest of that history to the shown tab: its held approvals
+// were looked up there and never came back.)
+let _withTabDepth = 0;
+
 export function withTab(tab, fn) {
   const prev = snapshotBoundState();
+  const outer = _withTabDepth > 0 ? _boundTab : null;
+  if (outer) commitBoundState();
+  _withTabDepth += 1;
   bindTabState(tab);
   try {
     return fn();
   } finally {
     commitBoundState();
-    restoreActiveBinding(prev);
+    _withTabDepth -= 1;
+    if (outer) bindTabState(outer);
+    else restoreActiveBinding(prev);
   }
 }
 
@@ -2676,12 +2697,16 @@ function createTrayPill(tab) {
 export function renderPills() {
   const active = activeTab();
   for (const tab of _tabs) {
-    if (!tab.pillEl?.isConnected) tab.pillEl = createTrayPill(tab);
+    if (!tab.pillEl?.isConnected) {
+      tab.pillEl = createTrayPill(tab);
+      // The bound tab's own reference too, or its running state would go on reaching the old node.
+      if (tab === _boundTab) _trayPill = tab.pillEl;
+    }
     if (!tab.pillEl) continue;
     // Read directly from tab to avoid nested withTab clobbering uncommitted state
     const label = tab.pillEl.querySelector('.term-minimized-pill-label');
     if (label) label.textContent = tab.sessionLabel || 'New session';
-    tab.pillEl.classList.toggle('cxp-pill-running', !!(tab.running || tab.startingThread));
+    paintTrayPill(tab.pillEl, tab);
     const shouldShow = hasMeaningfulTrayState(tab) && (!_getVisible() || tab !== active);
     tab.pillEl.style.display = shouldShow ? '' : 'none';
   }
@@ -2874,6 +2899,7 @@ export function createTab(saved = {}, { autoSwitch = true } = {}) {
     ownedThreadIds: new Set(),
     automationRunId,
     automationActive: !!saved.automationActive,
+    automationAwaits: false, // the run's turn ended asking the user (runAwaitsAnswer, set by its attach): the pill needs you
     automationOwnerId: saved.automationOwnerId || null,
     releasedRunId: automationRunId ? null : (saved.releasedRunId || null),
   };
@@ -3039,6 +3065,13 @@ export function saveTabs() {
           automationActive: !!tab.automationActive,
           automationOwnerId: tab.automationOwnerId || null,
           releasedRunId: tab.releasedRunId || null,
+          // Whether it was working when this was written: after a reload its placeholder pill says so and
+          // the panel boots to ask (ui-sidepanel-tray.js), and the tab reattaches at once (restoreTabs).
+          // Never restored as running: only the reattach's answer says that. `needsYou`: an approval or a
+          // question card waited on the user; the reattach replays the request the bridge still holds.
+          running: !!tab.running,
+          startingThread: !!tab.startingThread,
+          needsYou: tab.blockingServerRequests?.size > 0 || !!tab.automationAwaits,
         };
       });
     const localRunIds = new Set(localTabs.map((tab) => tab.automationRunId).filter(Boolean));
@@ -3125,9 +3158,11 @@ export function restoreTabs() {
     if (raw) {
       const data = JSON.parse(raw);
       if (Array.isArray(data?.tabs) && data.tabs.length) {
+        const wereWorking = [];
         for (const saved of data.tabs) {
           if (saved.automationActive && saved.automationOwnerId !== nativeLoopWindowId) continue;
-          createTab(saved, { autoSwitch: false });
+          const tab = createTab(saved, { autoSwitch: false });
+          if (tab && !tab.automationRunId && (saved.running || saved.startingThread || saved.needsYou)) wereWorking.push(tab);
         }
         if (!_tabs.length) throw new Error('No restorable Codex tabs');
         _activeTabIdx = Math.min(Math.max(Number(data.activeIdx) || 0, 0), _tabs.length - 1);
@@ -3135,6 +3170,11 @@ export function restoreTabs() {
         if (!_tabs.length) throw new Error('No restorable Codex tabs');
         updateActiveTabView();
         saveTabs();
+        // A tab that was working when the page went away asks after its turn now, hidden or in the
+        // background (a restored tab reattaches first: its turn outlives the page on the server), so
+        // its pill says what the thread does. An idle one is let go again once it is ready
+        // (releaseInactiveIdleTab); idle tabs stay unconnected until they are shown.
+        for (const tab of wereWorking) if (_tabs.includes(tab) && !tab.ws) connectTab(tab);
         return;
       }
     }
@@ -3158,8 +3198,47 @@ export function updateTrayPillLabel() {
   if (label) label.textContent = _sessionLabel;
 }
 
+/**
+ * What a tab's tray pill says: it needs you while an approval or a question card waits on your answer
+ * (its blocking server requests), or, for a dispatched worker, while its turn ended asking you something
+ * (the run's outcome: automationAwaits), else it works while a turn runs or a thread is being made.
+ * sidepanel-session-status.js reads the same classes for a detached window's pill.
+ */
+function paintTrayPill(pill, { running, startingThread, blockingServerRequests, automationAwaits }) {
+  if (!pill) return;
+  const needsYou = blockingServerRequests?.size > 0 || !!automationAwaits;
+  pill.classList.toggle('cxp-pill-attention', needsYou);
+  pill.classList.toggle('cxp-pill-running', !needsYou && !!(running || startingThread));
+}
+
 export function updateTrayPillRunning() {
-  _trayPill?.classList.toggle('cxp-pill-running', !!(_running || _startingThread));
+  paintTrayPill(_trayPill, {
+    running: _running, startingThread: _startingThread, blockingServerRequests: _blockingServerRequests, automationAwaits: _boundTab?.automationAwaits,
+  });
+}
+
+/**
+ * The bound tab's work ended (or began) outside setRunning: the tab, its pill and the saved tabs say
+ * so now. The tab is written first: renderPills and saveTabs read it, never the bound copy, and a
+ * nested withTab binds the tab again from it (withTab itself writes it back only when it returns).
+ */
+function publishWorkState() {
+  if (_boundTab) {
+    _boundTab.running = _running;
+    _boundTab.startingThread = _startingThread;
+  }
+  updateTrayPillRunning();
+  renderPills();
+  saveTabs();
+}
+
+/**
+ * Whether a Stop's ack ends the tab's running state: not once a prompt was sent after that Stop
+ * (dispatchPrompt counts them, interruptTab notes the count it stopped at), whose turn is its own.
+ */
+function interruptAckEndsTurn(tab) {
+  if (!tab || tab.interruptedAtPrompt == null) return true;
+  return (tab.promptCount || 0) === tab.interruptedAtPrompt;
 }
 
 
@@ -3258,6 +3337,7 @@ export function clearTranscript(emptyText = freshThreadText()) {
   showEmpty(emptyText);
   setCompactingUI(false);
   renderStatusChrome();
+  updateTrayPillRunning(); // (its request cards went with the transcript)
 }
 
 export function renderStoredTranscript(snapshot, emptyText = freshThreadText()) {
@@ -3267,7 +3347,10 @@ export function renderStoredTranscript(snapshot, emptyText = freshThreadText()) 
 
   clearTranscript(emptyText);
   _messagesEl.querySelectorAll(':scope > .cxp-empty').forEach(node => node.remove());
-  _messagesEl.insertAdjacentHTML('beforeend', normalized.html);
+  // A snapshot is the transcript's own markup, saved and read back from storage, and a build before the panel
+  // sanitised its Markdown saved model HTML in it as it was: it is rebuilt from the stored-transcript allowlist
+  // (asst-sanitize.js, the sanitiser live output goes through) before it reaches the page.
+  _messagesEl.append(sanitizeStoredHtml(normalized.html));
   const acceptedItemIds = new Set(normalized.acceptedItemIds);
   const acceptedTurnIds = new Set(normalized.acceptedTurnIds);
   const restoredNodes = [..._messagesEl.children].filter((node) => (
@@ -3365,6 +3448,11 @@ export function resetThreadState({ tone = 'ready', preserveStatus = false } = {}
   _running = false;
   _startingThread = false;
   if (_boundTab) {
+    // On the tab at once: clearPlanHandoffState below binds the tab again (updatePostPlanTranscriptMeta's
+    // withTab), which read its old running state back over these and saved the reset tab as working.
+    _boundTab.running = false;
+    _boundTab.startingThread = false;
+    _boundTab.activeTurnId = null;
     _boundTab.ownedThreadIds = new Set();
     _boundTab.expectedThreadId = null;
     _boundTab.expectedThreadRequestId = null;
@@ -3385,8 +3473,7 @@ export function resetThreadState({ tone = 'ready', preserveStatus = false } = {}
   clearTranscript();
   syncInputEnabled();
   syncSessionControls();
-  renderPills();
-  saveTabs();
+  publishWorkState();
 }
 
 export function setActiveProject(projectPath, { reset = true, preserveStatus = false, tone = 'ready' } = {}) {
@@ -3577,12 +3664,12 @@ async function startNewThread(tab = activeTab()) {
   } finally {
     if (!tab.closed) withTab(tab, () => {
       _startingThread = false;
+      // The tab first, then what reads it (the pill, the saved tabs, the toolbar): renderPills
+      // used to find it still starting and put the running class back on the pill.
+      publishWorkState();
       syncInputEnabled();
       syncToolbarState();
       syncSessionControls();
-      updateTrayPillRunning();
-      renderPills();
-      saveTabs();
       releaseInactiveIdleTab(tab);
     });
   }
@@ -4438,7 +4525,7 @@ export function promptNameNewSession() {
       <div class="cxp-name-modal-row">
         <label class="cxp-name-modal-label">Project</label>
         <select class="cxp-name-modal-select" data-role="project">
-          ${projectOptions.map(p => `<option value="${String(p.value).replace(/"/g, '&quot;')}">${p.label}</option>`).join('')}
+          ${projectOptions.map(p => `<option value="${esc(p.value)}">${esc(p.label)}</option>`).join('')}
         </select>
       </div>
       <div class="cxp-name-modal-row">
@@ -4476,7 +4563,8 @@ export function promptNameNewSession() {
       branchSel.innerHTML = '<option value="">(none)</option>';
       branchSel.disabled = true;
     } else {
-      branchSel.innerHTML = branches.map(b => `<option value="${b.replace(/"/g, '&quot;')}">${b}</option>`).join('');
+      // A branch name is the repository's (an agent can make one): text, never markup.
+      branchSel.innerHTML = branches.map(b => `<option value="${esc(b)}">${esc(b)}</option>`).join('');
       if (branchOriginal) branchSel.value = branchOriginal;
       branchSel.disabled = false;
     }
@@ -5078,6 +5166,8 @@ export function dispatchPrompt(prompt, { tab = activeTab(), images = null, paths
   }
   if (tab) {
     tab.extendedContextVerificationArmed = normalizeCodexContextMode(tab.contextMode) === 'extended';
+    // A Stop's late ack must not end this prompt's turn (interruptAckEndsTurn).
+    tab.promptCount = (tab.promptCount || 0) + 1;
   }
   requestCodexSessionTitle(tab, inputText, {
     paths: [...pathList, ...mentionList.map((mention) => mention.path).filter(Boolean)],
@@ -5417,7 +5507,8 @@ export function handleNotify(method, params) {
           flushPostCompactionPrompt(_boundTab);
         }
         if (_boundTab?.providerTitleDirty) scheduleCodexTitleReassert(_boundTab);
-        if (!shouldHoldForPlanApproval(_boundTab)) advanceQueue();
+        // The queue of the tab whose turn this was, never the one on screen.
+        if (!shouldHoldForPlanApproval(tab)) advanceQueue(tab);
         releaseInactiveIdleTab(tab);
       }
       break;
@@ -6130,6 +6221,7 @@ export function interruptTab(tab = activeTab()) {
       clearTimeout(tab._abortRetry);
       tab._abortRetry = null;
     }
+    tab.interruptedAtPrompt = tab.promptCount || 0;
     sendSocket({ type: 'interrupt', sessionId: tab.id, threadId });
     tab._abortRetry = setTimeout(() => {
       tab._abortRetry = null;
@@ -6160,6 +6252,7 @@ export function interruptAllTabs() {
     const ws = tab.ws;
     const threadId = tab.threadId || null;
     if (ws && ws.readyState === 1) {
+      tab.interruptedAtPrompt = tab.promptCount || 0;
       try {
         ws.send(JSON.stringify({
           type: 'interrupt',
@@ -6935,6 +7028,14 @@ export function steerActiveTurn() {
   return true;
 }
 
+/**
+ * Whether `tab` has a turn running. The bound tab's is the module's own state (the freshest: withTab
+ * writes it back to the tab only when it returns); any other tab's is its own.
+ */
+function tabTurnRunning(tab) {
+  return tab === _boundTab ? _running : !!tab?.running;
+}
+
 export function syncQueueTray() {
   const tab = activeTab();
   if (!tab) return;
@@ -6952,7 +7053,8 @@ export function syncQueueTray() {
   if (hint) {
     hint.textContent = count > 0
       ? `${count} message${count > 1 ? 's' : ''} queued${tab.queuePaused ? ' (paused)' : ''}. Enter steers. Tab queues the next turn.`
-      : _running
+      // The tab on screen's turn, not the bound tab's (a tab working in the background is bound while its events run).
+      : tabTurnRunning(tab)
         ? 'Enter steers the active turn. Tab queues the next turn. Shift+Enter inserts a newline.'
         : 'Enter sends. Shift+Enter inserts a newline.';
   }
@@ -7012,7 +7114,7 @@ export function toggleQueuePause() {
   if (!tab) return;
   tab.queuePaused = !tab.queuePaused;
   syncQueueTray();
-  if (!tab.queuePaused) advanceQueue();
+  if (!tab.queuePaused) advanceQueue(tab);
   saveTabs();
 }
 
@@ -7024,11 +7126,17 @@ export function clearQueue() {
   saveTabs();
 }
 
-export function advanceQueue() {
-  const tab = activeTab();
-  if (!tab || _running || tab.queuePaused || !tab.queue.length || hasBlockingServerRequests() || shouldHoldForPlanApproval(tab)) return;
+/**
+ * Send the next prompt queued in `tab`, the tab it was typed in, on that tab's own connection and
+ * thread: a background tab whose turn ends advances its own queue, never the one on screen (the
+ * module state is the bound tab's, so the tab is bound first).
+ */
+export function advanceQueue(tab = activeTab()) {
+  if (!tab || tab.closed) return false;
+  if (_boundTab !== tab) return withTab(tab, () => advanceQueue(tab));
+  if (_running || tab.queuePaused || !tab.queue?.length || hasBlockingServerRequests() || shouldHoldForPlanApproval(tab)) return false;
   const next = tab.queue.shift();
-  if (!next) return;
+  if (!next) return false;
   if (tab.planMode) {
     preparePlanModeTurn(tab);
   }
@@ -7040,13 +7148,19 @@ export function advanceQueue() {
     mentions: next.mentions || [],
     forcePlanModePrefix: tab.planMode,
   });
-  if (!sent) return;
+  if (!sent) {
+    // Not sent: it stays first in its tab's queue.
+    tab.queue.unshift(next);
+    syncQueueTray();
+    return false;
+  }
   // Render queued user message immediately with images
   if (queueImages?.length) {
     appendLocalUserMessage(next.text || '', queueImages);
     tab._pendingSendImages = queueImages;
   }
   syncQueueTray();
+  return true;
 }
 
 // ── Phase 2: Image attachments ──

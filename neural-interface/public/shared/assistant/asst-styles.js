@@ -1513,6 +1513,28 @@ export function injectAssistantStyles() {
     .asst-dd-btnrow { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; }
     .asst-dd-btnrow-label { flex: 1 1 auto; min-width: 0; padding: 5px 10px; color: var(--asst-text-2); overflow-wrap: anywhere; }
     .asst-dd-btnrow .asst-dd-item { flex: 0 1 auto; width: auto; }
+    /* A row with its own action (asst-menu.js item.action: the Sessions menu's Remove): a sm icon button at
+       the row's end, over the room the row keeps free for it; shown on hover and keyboard focus, neutral at
+       rest, red on hover (a destructive action). Touch screens have no hover: it always shows there. */
+    .asst-dd-itemrow { position: relative; }
+    .asst-dd-itemrow > .asst-dd-item { padding-right: calc(var(--asst-pill-h-sm) + 12px); }
+    .asst-dd-item-action.asst-iconbtn {
+      --cap-h: var(--asst-pill-h-sm);
+      --cap-r: var(--asst-pill-r-sm);
+      --cap-icon: 13px;
+      position: absolute;
+      top: calc(50% - var(--cap-h) / 2);
+      right: 6px;
+      opacity: 0;
+      pointer-events: none;
+    }
+    .asst-dd-itemrow:is(:hover, :focus-within) > .asst-dd-item-action,
+    .asst-dd-itemrow > .asst-dd-item.focused + .asst-dd-item-action { opacity: 1; pointer-events: auto; }
+    .asst-dd-item-action.asst-iconbtn:is(:hover, :focus-visible):not(:disabled) { color: var(--asst-live); }
+    @media (hover: none) { .asst-dd-item-action.asst-iconbtn { opacity: 1; pointer-events: auto; } }
+    /* The Sessions menu's "Remove …?" row: the question, then Remove and Cancel, set off from the list. */
+    .asst-dd-btnrow.asst-dd-confirm { justify-content: flex-end; margin: 2px 0; padding: 2px; border-radius: calc(var(--asst-r-card) - 4px); background: var(--asst-fill-1); box-shadow: inset 0 0 0 1px var(--asst-line); }
+    .asst-dd-btnrow.asst-dd-confirm .asst-dd-btnrow-label { flex-basis: 100%; color: var(--asst-text); }
 
     /* ── Account menu (asst-account-menu.js) ────────────────────────
        Every account once: initial · name ✓ · plan or credential badge, then who it is and its
@@ -1827,6 +1849,27 @@ export function injectAssistantStyles() {
     .asst-lightbox-img { display: block; width: auto; height: auto; max-width: 92vw; max-height: 86vh; }
     .asst-lightbox-caption { max-width: 92vw; color: var(--asst-text-2); font-size: 12.5px; text-align: center; }
     .asst-lightbox-close { position: absolute; top: 14px; right: 14px; background: var(--asst-popover); box-shadow: 0 0 0 1px var(--asst-popover-ring); color: var(--asst-text); }
+
+    /* ── Tray pill (#term-minimized-tray, outside the component) ─────────
+       What a session minimises to, in either host: the sidepanel's tab
+       (asst-sidepanel.js) and the terminal's floating tab (ui-terminal.js)
+       both draw the shared .term-minimized-pill of styles.css, exactly like
+       the Claude, Codex and OpenCode pills: 32px, 8px corners, a 1px
+       hairline, icon · name · ✕, no geometry of its own. Only the identity is
+       SynaBun's: the two-pill mark, and the cameo in its place while the
+       session works (gold, with a gold hairline: its own turn or a worker it
+       dispatched, asst-state.js sessionStatus); a session that needs you
+       tints the mark and the hairline. The sidepanel's is a button
+       (Enter/Space) with the panel's focus ring; its ✕ keeps the tray's 24px
+       target. Paused while the UI is dragged and still under reduced motion
+       (Motion, below): the state stays, only the glance stops. */
+    .asp-session-pill .term-minimized-pill-icon .syna-cameo { display: none; }
+    .asp-session-pill.asp-pill-running { border-color: var(--asst-pill-on-ring); }
+    .asp-session-pill.asp-pill-running .term-minimized-pill-icon { color: var(--asst-brand); }
+    .asp-session-pill.asp-pill-running .term-minimized-pill-icon > svg:not(.syna-cameo) { display: none; }
+    .asp-session-pill.asp-pill-running .term-minimized-pill-icon .syna-cameo { display: inline-flex; }
+    .asp-session-pill.asp-pill-attention { border-color: var(--asst-pill-warn-ring); }
+    .asp-session-pill.asp-pill-attention .term-minimized-pill-icon { color: var(--asst-warn); }
 
     /* ── Float header brain chip (lives in ui-terminal's float window) ─ */
     .term-float-brain-chip {

@@ -49,6 +49,7 @@
     "graph": "Grafo",
     "skills": "Skills",
     "automations": "Automações",
+    "schedules": "Agendamentos",
     "games": "Jogos",
     "apps": "Aplicativos",
     "bookmarks": "Favoritos",
@@ -96,6 +97,7 @@
       "openCode": "OpenCode",
       "shell": "Terminal shell",
       "browser": "Navegador",
+      "browserApps": "Apps do navegador",
       "youtube": "YouTube",
       "showTerminal": "Mostrar terminal"
     }
@@ -1357,6 +1359,10 @@
         "about": {
           "label": "Sobre",
           "help": "Versão, links e licenças"
+        },
+        "app": {
+          "label": "App",
+          "help": "Atualizações, inicialização e janela"
         }
       },
       "page": {
@@ -1411,6 +1417,10 @@
         "about": {
           "title": "Sobre",
           "purpose": "A versão que você usa, onde ela roda e o software de código aberto com que o SynaBun é feito."
+        },
+        "app": {
+          "title": "App",
+          "purpose": "Como o SynaBun se atualiza, inicia e funciona neste computador."
         }
       },
       "section": {
@@ -1750,6 +1760,24 @@
           "dependencies": {
             "title": "Dependências",
             "purpose": "Cada pacote que acompanha o SynaBun, a versão instalada aqui e a licença dele."
+          }
+        },
+        "app": {
+          "updates": {
+            "title": "Atualizações",
+            "purpose": "A versão que você usa e como o SynaBun recebe as novas."
+          },
+          "startup": {
+            "title": "Inicialização",
+            "purpose": "Se o SynaBun inicia quando você entra na sua conta."
+          },
+          "window": {
+            "title": "Janela",
+            "purpose": "O que a janela do app SynaBun faz."
+          },
+          "maintenance": {
+            "title": "Manutenção",
+            "purpose": "As pastas do SynaBun e um reinício quando algo precisar."
           }
         }
       },
@@ -3411,6 +3439,50 @@
         "abt003": {
           "label": "Filtrar dependências",
           "help": "Mostra só os pacotes cujo nome contém o que você digitar."
+        },
+        "sys001": {
+          "label": "Procurar atualizações",
+          "help": "Procura agora uma versão mais nova do SynaBun."
+        },
+        "sys002": {
+          "label": "Atualizações automáticas",
+          "help": "Procura novas versões sozinho. No app para desktop, também as instala quando o SynaBun está ocioso."
+        },
+        "sys003": {
+          "label": "Instalar atualização",
+          "help": "Abre a atualização com as notas da versão e, se você quiser, um backup antes."
+        },
+        "sys004": {
+          "label": "Iniciar ao entrar",
+          "help": "Inicia o SynaBun quando você entra na sua conta neste computador."
+        },
+        "sys005": {
+          "label": "Iniciar em segundo plano",
+          "help": "Ao entrar, o SynaBun inicia sem abrir a janela. Abra o SynaBun para mostrá-la."
+        },
+        "sys006": {
+          "label": "Continuar em execução ao fechar a janela",
+          "help": "Fechar a janela deixa o SynaBun na bandeja, e suas ferramentas de IA mantêm a memória. Desligado: fechar a janela encerra o SynaBun."
+        },
+        "sys007": {
+          "label": "Aceleração de hardware",
+          "help": "Desenha a janela com a placa de vídeo. Desligue se a janela piscar ou ficar em branco. Vale depois de reiniciar."
+        },
+        "sys008": {
+          "label": "Reiniciar agora",
+          "help": "Fecha o SynaBun e o abre de novo."
+        },
+        "sys009": {
+          "label": "Abrir pasta de dados",
+          "help": "Mostra a pasta com suas memórias, configurações e backups."
+        },
+        "sys010": {
+          "label": "Abrir pasta de logs",
+          "help": "Mostra a pasta com os logs do SynaBun, para relatar um problema."
+        },
+        "sys011": {
+          "label": "Reiniciar o SynaBun",
+          "help": "Reinicia o servidor do SynaBun: o mesmo que Restart Server no menu Apps."
         }
       },
       "pane": {
@@ -5661,7 +5733,8 @@
             "notifications": "alertas, som, volume, banner, toast, silenciar, notificação do sistema",
             "appearance": "tema, modo escuro, dark mode, skin, cor, fonte, tamanho do texto, idioma, ícones, zoom, visual",
             "code_editor": "editor, código, fonte, tamanho do texto, quebra de linha, minimapa, espaços em branco, indentação, tabulações, autocompletar, completar, sugestões, copilot, texto fantasma, inline, ia, modelo, ollama, arquivo",
-            "about": "versão, GitHub, licença, dependências, Node, Electron, Chromium, sistema, atualização, créditos, copyright, notas de versão, changelog"
+            "about": "versão, GitHub, licença, dependências, Node, Electron, Chromium, sistema, atualização, créditos, copyright, notas de versão, changelog",
+            "app": "atualizações, atualização automática, inicialização, iniciar ao entrar, iniciar com o sistema, itens de início, boot, autostart, segundo plano, bandeja, barra de menus, fechar janela, sair, aceleração de hardware, GPU, pasta de dados, logs, reiniciar, versão"
           },
           "section": {
             "ai_connections": {
@@ -5767,6 +5840,12 @@
               "links": "GitHub, repositório, versões publicadas, changelog, problema, relatar bug, site, documentação, npm, licença, Discord, comunidade",
               "system": "versão, Node, Node.js, Electron, Chromium, SQLite, sistema operacional, SO, macOS, Windows, Linux, arquitetura, pasta de dados, porta, instalação, diagnóstico",
               "dependencies": "pacotes, bibliotecas, npm, licenças, código aberto, terceiros, versões, node_modules"
+            },
+            "app": {
+              "updates": "atualizar, atualização automática, automático, procurar, versão, upgrade, lançamento, baixar, instalar, selo",
+              "startup": "iniciar ao entrar, inicialização, boot, itens de início, autostart, abrir, segundo plano, oculto, bandeja, minimizado, LaunchAgent, systemd",
+              "window": "fechar, bandeja, barra de menus, sair, continuar em execução, aceleração de hardware, GPU, gráficos, piscar, janela em branco",
+              "maintenance": "pasta de dados, logs, arquivos de log, reiniciar, solução de problemas, diagnóstico, pasta, Finder, Explorer"
             }
           },
           "control": {
@@ -5953,6 +6032,70 @@
           "builtWith": "Feito com software de código aberto"
         },
         "afterRestart": "Aparece depois que o SynaBun reiniciar."
+      },
+      "app": {
+        "version": "SynaBun {version}",
+        "update": {
+          "checking": "Procurando atualizações…",
+          "upToDate": "Atualizado",
+          "available": "A versão {version} está disponível",
+          "downloading": "Baixando a versão {version} ({percent}%)",
+          "ready": "A versão {version} está pronta para instalar",
+          "installing": "Instalando a versão {version}",
+          "failed": "A última verificação falhou",
+          "notChecked": "Ainda não verificado",
+          "unsupported": "Esta cópia não se atualiza sozinha",
+          "checkedAt": "verificado às {time}",
+          "autoHelpDesktop": "Baixa as novas versões e as instala quando o SynaBun está ocioso, depois de um aviso de um minuto. Desligado: o SynaBun continua verificando e avisa, e você instala com um clique.",
+          "autoHelpServer": "Procura novas versões quando o SynaBun inicia e a cada meia hora, e mostra o selo de atualização. Desligado: só procura quando você pedir. A instalação sempre pergunta antes."
+        },
+        "startup": {
+          "helpDesktop": "Abre o SynaBun quando você entra na sua conta, para que o servidor esteja pronto para suas ferramentas de IA.",
+          "helpServer": "Inicia o servidor do SynaBun em segundo plano quando você entra na sua conta, sem janela nem terminal.",
+          "hiddenNeedsLogin": "Vale quando o SynaBun inicia ao entrar.",
+          "requiresApproval": "O macOS espera que você permita o SynaBun em Ajustes do Sistema > Geral > Itens de Início.",
+          "disabledInSystem": {
+            "darwin": "Desligado em Ajustes do Sistema > Geral > Itens de Início.",
+            "win32": "Desligado em Configurações do Windows > Aplicativos > Inicialização.",
+            "linux": "Desligado nos aplicativos de inicialização do seu ambiente."
+          },
+          "openSettings": {
+            "darwin": "Abrir Itens de Início",
+            "win32": "Abrir Inicialização"
+          },
+          "reason": {
+            "unpackaged": "Só uma cópia instalada do SynaBun pode iniciar ao entrar.",
+            "move-to-applications": "Mova o SynaBun para a pasta Aplicativos antes.",
+            "no-appimage": "Inicie o SynaBun pelo arquivo AppImage para usar isto.",
+            "not-here": "Indisponível em uma execução de teste ou em uma pasta de dados temporária.",
+            "unsupported": "Indisponível neste sistema.",
+            "desktop": "O app SynaBun cuida disto. Atualize o app para mudar aqui."
+          },
+          "owner": "O app SynaBun abre ao entrar com esta pasta de dados. Desligue no app antes.",
+          "replaced": "A instalação npm não inicia mais ao entrar: agora quem inicia é este app.",
+          "error": {
+            "refused": "O sistema não aceitou a mudança.",
+            "write-failed": "O SynaBun não conseguiu gravar a entrada de inicialização.",
+            "no-wscript": "O Windows Script Host (wscript.exe) não está disponível, então o SynaBun não consegue iniciar sem janela.",
+            "bad-path": "O SynaBun não consegue iniciar ao entrar a partir de uma pasta cujo nome tem %.",
+            "desktop-app": "O app SynaBun abre ao entrar com esta pasta de dados. Desligue no app antes.",
+            "npm-entry": "Não foi possível remover a inicialização da instalação npm. Desligue lá e tente de novo.",
+            "save-failed": "O SynaBun não conseguiu salvar esta configuração.",
+            "network": "O SynaBun não respondeu. Tente de novo."
+          }
+        },
+        "window": {
+          "desktopOnly": "Só no app SynaBun para desktop.",
+          "macDock": "No macOS, o SynaBun fica no Dock quando a janela fecha. Saia pelo menu.",
+          "noTray": "Este ambiente não mostra o ícone na bandeja: abra o SynaBun de novo para mostrar a janela.",
+          "restartNeeded": "Vale depois que o SynaBun reiniciar."
+        },
+        "maintenance": {
+          "openFailed": "Não foi possível abrir a pasta."
+        },
+        "remote": "Abra o SynaBun no computador em que ele roda para mudar isto.",
+        "serverOld": "Estes controles chegam com um reinício do servidor do SynaBun.",
+        "saveFailed": "Não foi possível salvar a configuração."
       }
     }
   },
@@ -6444,7 +6587,14 @@
     "sessions": {
       "empty": "Nenhuma outra sessão",
       "recent": "Recentes",
-      "filter": "Filtrar sessões…"
+      "filter": "Filtrar sessões…",
+      "remove": "Remover sessão",
+      "removeNamed": "Remover “{title}”",
+      "removeAsk": "Remover “{title}” de vez?",
+      "removeStopsTurn": "O turno em andamento será interrompido.",
+      "removeStopsAgents": "Os agentes em execução serão interrompidos ({count}).",
+      "removeConfirm": "Remover",
+      "removeFailed": "Não foi possível remover “{title}”: {error}"
     },
     "work": {
       "agents": "{count} agentes",
@@ -7097,6 +7247,7 @@
       "awaitingRoute": "aguardando sua escolha de modelo",
       "needsApproval": "precisa de aprovação",
       "needsInput": "precisa de informações",
+      "waitingInput": "aguardando sua resposta",
       "queued": "na fila",
       "strongerModel": "um modelo mais capaz",
       "escalateTo": "Transferir para {label}",
@@ -7130,12 +7281,65 @@
       "showAll": "Mostrar tudo",
       "stopAll": "Parar tudo",
       "empty": "Ainda não há agentes despachados. Experimente /dispatch codex \"…\"",
-      "running": "{n} em execução",
-      "needsApproval": "{n} precisam de aprovação",
-      "done": "{n} concluídos",
+      "running": {
+        "one": "{count} em execução",
+        "other": "{count} em execução"
+      },
+      "needsApproval": {
+        "one": "{count} precisa de aprovação",
+        "other": "{count} precisam de aprovação"
+      },
+      "needsAnswer": {
+        "one": "{count} aguardando sua resposta",
+        "other": "{count} aguardando sua resposta"
+      },
+      "done": {
+        "one": "{count} concluído",
+        "other": "{count} concluídos"
+      },
       "emptyShort": "Ainda não há agentes despachados.",
       "clearFinished": "Limpar concluídos",
-      "idle": "{n} ociosos"
+      "idle": {
+        "one": "{count} ocioso",
+        "other": "{count} ociosos"
+      },
+      "reveal": "{label}. Mostrar na conversa",
+      "working": "Agentes trabalhando",
+      "more": {
+        "one": "Mais {count} agente trabalhando: mostrar a lista",
+        "other": "Mais {count} agentes trabalhando: mostrar a lista"
+      }
+    },
+    "stage": {
+      "scene": {
+        "quick": "Ajuste rápido",
+        "code": "Programando",
+        "complex": "Tarefa complexa",
+        "review": "Revisando",
+        "research": "Pesquisando",
+        "browser": "Navegando",
+        "computer": "Usando o computador",
+        "automation": "Automatizando",
+        "design": "Criando o design",
+        "image_gen": "Gerando uma imagem",
+        "video_gen": "Gerando um vídeo",
+        "generic": "Trabalhando"
+      },
+      "doing": "{scene}…",
+      "queued": "Na fila",
+      "queuedAt": "Na fila · posição {n}",
+      "starting": "Iniciando…",
+      "waitingApproval": "Aguardando sua aprovação",
+      "waitingInput": "Aguardando sua resposta",
+      "waitingRoute": "Aguardando sua escolha de modelo",
+      "done": "Concluído",
+      "failed": "Falhou",
+      "stopped": "Parado",
+      "underMinute": "menos de um minuto",
+      "minutes": {
+        "one": "{count} min",
+        "other": "{count} min"
+      }
     },
     "composer": {
       "aria": "Enviar mensagem ao assistente",
@@ -8485,7 +8689,7 @@
     "selectionMissing": "Escolha primeiro uma CLI e um projeto: Voltar leva você até eles.",
     "names": {
       "explorer": "Memory Explorer",
-      "schedules": "Schedules",
+      "schedules": "Agendamentos",
       "keybinds": "Keybinds"
     },
     "chapters": {
@@ -8531,7 +8735,7 @@
       },
       "explain-graph": {
         "title": "Veja sua memória como um mapa",
-        "body": "Cada memória é um ponto no mapa, e as categorias formam ilhas. O menu {menu} enquadra o mapa, mostra os vizinhos de uma memória e reconstrói o layout.",
+        "body": "Cada memória é um ponto no mapa, e as categorias formam ilhas. O submenu {menu} de {apps} enquadra o mapa, mostra os vizinhos de uma memória e reconstrói o layout.",
         "body2d": "Cada memória é um nó, com vínculos para as memórias relacionadas. O menu {menu} escolhe quais vínculos aparecem e quantas memórias carregam, e redefine o layout."
       },
       "explain-focus": {
@@ -8561,7 +8765,7 @@
       },
       "explain-schedules": {
         "title": "Rode o trabalho na hora certa",
-        "body": "{schedules} roda suas automações com um timer ou uma agenda cron. Cada execução abre sua própria sessão de agente."
+        "body": "Em {schedules}, suas automações rodam com um timer ou uma agenda cron. Cada execução abre sua própria sessão de agente."
       },
       "assistant-start": {
         "title": "Conheça o Assistente SynaBun",
@@ -8758,6 +8962,7 @@
       "tooltip": "Atualização do SynaBun disponível: v{current} → v{latest}",
       "tooltipDownloading": "Baixando o SynaBun v{latest}",
       "tooltipReady": "O SynaBun v{latest} está pronto: ele é instalado quando o SynaBun estiver ocioso",
+      "tooltipReadyOff": "O SynaBun v{latest} está pronto para instalar",
       "titleAvailable": "Atualização disponível",
       "titleDownloading": "Baixando a atualização",
       "titleDownloaded": "Atualização pronta",
@@ -8780,6 +8985,8 @@
       "hide": "Ocultar",
       "hideHint": "O download continua com esta janela oculta. O SynaBun instala a atualização sozinho quando nada estiver em execução.",
       "readyBody": "O SynaBun v{version} foi baixado. Ele é instalado sozinho quando nada estiver em execução: o SynaBun mostra um aviso de um minuto e reinicia já atualizado. Ele também é instalado quando você sai do SynaBun.",
+      "offBody": "As atualizações automáticas estão desligadas. Instalar agora baixa a versão e reinicia o SynaBun nela assim que nada estiver em execução.",
+      "readyBodyOff": "O SynaBun v{version} foi baixado. As atualizações automáticas estão desligadas: ele é instalado quando você escolher Instalar agora.",
       "waitingBody": "Aguardando: {list}.",
       "countdownBody": "O SynaBun reinicia na v{version} em {seconds} s.",
       "postponedBody": "Adiado até {time}. Ele também é instalado quando você sai do SynaBun.",
@@ -8796,12 +9003,14 @@
       "errorFallback": "O SynaBun não conseguiu procurar atualizações. Verifique a conexão e tente novamente.",
       "errorNext": "O SynaBun mantém a versão em execução e tenta de novo na próxima verificação. Você pode tentar agora ou baixar a nova versão manualmente.",
       "manualLink": "Baixar manualmente",
+      "settingsLink": "Configurações de atualização",
       "close": "Fechar",
       "retry": "Tentar novamente",
       "testFeed": "feed de teste",
       "metaAvailable": "Pelo app do SynaBun",
       "metaDownloading": "Baixando: {percent}%",
       "metaDownloaded": "Pronta: é instalada quando o SynaBun estiver ocioso",
+      "metaReadyOff": "Pronta para instalar",
       "metaCountdown": "Reiniciando para instalá-la",
       "metaPostponed": "Adiada: é instalada ao sair ou mais tarde"
     },
@@ -8848,6 +9057,8 @@
       "updateAvailableManualDetail": "Esta cópia não consegue se substituir onde está. Baixe a nova imagem de disco e instale-a do jeito que você instalou o SynaBun.",
       "updateDownloading": "O SynaBun v{version} está sendo baixado",
       "updateAutoDetail": "O SynaBun a instala sozinho assim que nada estiver em execução, depois de um aviso de um minuto que você pode adiar. Ela também é instalada quando você sai do SynaBun.",
+      "updateAvailableOffDetail": "As atualizações automáticas estão desligadas. Instalar agora baixa a versão e reinicia o SynaBun nela assim que nada estiver em execução.",
+      "updateReadyOffDetail": "As atualizações automáticas estão desligadas: ela é instalada quando você escolher Instalar agora.",
       "installNow": "Instalar agora",
       "downloadYourself": "Baixar manualmente",
       "countdownTitle": "Atualizando o SynaBun para a v{version}",

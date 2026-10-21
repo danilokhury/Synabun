@@ -8,6 +8,7 @@ import { state, emit, on } from './state.js';
 import { KEYS } from './constants.js';
 import { storage } from './storage.js';
 import { catColor } from './colors.js';
+import { escapeHtml } from './utils.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -120,7 +121,7 @@ export function renderBookmarks() {
     item.innerHTML = `
       <div class="dropdown-item-dot" style="background:${color}"></div>
       <div class="dropdown-item-text">
-        <div class="dropdown-item-title">${b.title}</div>
+        <div class="dropdown-item-title">${escapeHtml(String(b.title ?? ''))}</div>
         <div class="dropdown-item-sub">${b.category}</div>
       </div>
       <button class="icon-btn icon-btn--danger" style="width:22px;height:22px;font-size:13px;border:none" data-tooltip="Remove">&times;</button>

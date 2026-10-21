@@ -8,7 +8,9 @@
 // its ends. desktop-titlebar.js does the page's part; this file decides, from
 // plain values: the colours the caption buttons get, whether the bar makes room
 // for them now, where they are when the page has no Window Controls Overlay API,
-// and whether something drawn over the bar has to get its clicks.
+// whether something drawn over the bar has to get its clicks, and which changes
+// of the page can put something there (changedClasses, styleChange,
+// drawnUnderBar).
 //
 // No imports and no DOM: `node --test` loads this file as it is
 // (tests/desktop-titlebar-view.test.mjs).
@@ -120,3 +122,78 @@ export function barCovered(samples) {
 
 /** A stable key for a pair of colours: unchanged colours are never sent twice. */
 export const colorsKey = (colors) => (colors ? `${colors.color}/${colors.symbolColor}` : '');
+
+/** The class names one of two class attributes has and the other has not (none: the same classes, in any order). */
+export function changedClasses(before, after) {
+  const was = new Set(String(before ?? '').split(/\s+/).filter(Boolean));
+  const is = new Set(String(after ?? '').split(/\s+/).filter(Boolean));
+  return [...[...was].filter(name => !is.has(name)), ...[...is].filter(name => !was.has(name))];
+}
+
+// Inline style properties a tooltip that follows the pointer, a window being dragged or a panel being resized
+// changes on every frame: they move, size or paint a box, and never show or hide one.
+const MOVES_OR_PAINTS = /^(?:--.+|top|left|right|bottom|inset(?:-[a-z-]+)?|(?:min-|max-)?(?:width|height)|margin(?:-[a-z-]+)?|padding(?:-[a-z-]+)?|transform(?:-origin)?|translate|scale|rotate|opacity|color|background(?:-[a-z-]+)?|border(?:-[a-z-]+)?|box-shadow|outline(?:-[a-z-]+)?|filter|(?:-webkit-)?backdrop-filter|transition(?:-[a-z-]+)?|animation(?:-[a-z-]+)?|cursor|font(?:-[a-z-]+)?|line-height|letter-spacing|text-[a-z-]+|white-space)$/;
+
+/** An inline style attribute as property → value. */
+function declarations(text) {
+  const out = new Map();
+  for (const part of String(text ?? '').split(';')) {
+    const at = part.indexOf(':');
+    const name = at < 0 ? '' : part.slice(0, at).trim().toLowerCase();
+    if (name) out.set(name, part.slice(at + 1).trim());
+  }
+  return out;
+}
+
+/**
+ * What a change of an inline style attribute (`before` → `after`) did: 'none' (the same declarations), 'move' (only
+ * properties that move, size or paint a box: MOVES_OR_PAINTS) or 'other' (display, visibility, pointer-events,
+ * z-index, position or anything else, which can show, hide or restack it).
+ */
+export function styleChange(before, after) {
+  const was = declarations(before);
+  const is = declarations(after);
+  let kind = 'none';
+  for (const name of new Set([...was.keys(), ...is.keys()])) {
+    if (was.get(name) === is.get(name)) continue;
+    if (!MOVES_OR_PAINTS.test(name)) return 'other';
+    kind = 'move';
+  }
+  return kind;
+}
+
+/** The z-index a box is stacked at from its computed style, when it is positioned and has one; null otherwise. */
+export function stackLevel(style) {
+  const z = Number.parseInt(style?.zIndex, 10);
+  return style?.position && style.position !== 'static' && Number.isFinite(z) ? z : null;
+}
+
+const isSet = (value) => !!value && value !== 'none';
+
+/**
+ * Whether nothing inside an element can be drawn over the bar, from the element's computed style, for an element
+ * that is the bar's sibling (both children of <body>, the bar stacked at `barLevel`): it draws nothing (display:
+ * none), or it is a stacking context of its own (a z-index on a positioned box, position fixed or sticky, a
+ * transform, a filter, opacity, isolation, a blend mode, paint or layout containment) stacked under the bar. Whatever
+ * its descendants' z-index, they are drawn inside it. Only the top layer escapes (a modal dialog, a popover), which
+ * the caller watches by itself; and a rule can restyle the element from what it holds (`:has()`), so the answer holds
+ * only until something inside it changes. Anything it cannot tell is false.
+ */
+export function drawnUnderBar(style, barLevel) {
+  if (!style || !Number.isFinite(barLevel)) return false;
+  if (style.display === 'none') return true;
+  if (style.display === 'contents') return false;
+  const z = Number.parseInt(style.zIndex, 10);
+  const positioned = !!style.position && style.position !== 'static';
+  const ownContext = (positioned && Number.isFinite(z))
+    || style.position === 'fixed' || style.position === 'sticky'
+    || isSet(style.transform) || isSet(style.filter) || isSet(style.backdropFilter) || isSet(style.webkitBackdropFilter)
+    || Number.parseFloat(style.opacity) < 1
+    || style.isolation === 'isolate'
+    || (!!style.mixBlendMode && style.mixBlendMode !== 'normal')
+    || /\b(?:paint|layout|strict|content)\b/.test(String(style.contain || ''));
+  if (!ownContext) return false;
+  // A z-index on a box that is not positioned counts only on a flex or grid item: read as at least 0 there.
+  const level = Number.isFinite(z) ? (positioned ? z : Math.max(z, 0)) : 0;
+  return level < barLevel;
+}

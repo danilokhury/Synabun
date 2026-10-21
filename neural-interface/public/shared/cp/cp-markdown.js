@@ -1,5 +1,4 @@
-// Markdown → HTML for every Markdown sink of the Claude panel, and the scrub a
-// stored transcript snapshot goes through before it is put back on the page.
+// Markdown → HTML for every Markdown sink of the Claude panel, and the panel's one escaper.
 //
 // What a model writes, what a command prints and what a transcript replays is
 // not ours: marked passes raw HTML through, so `<img onerror>` or a
@@ -47,58 +46,6 @@ export function renderMarkdown(text, { parse = null, sanitize = sanitizeHtmlStri
   }
 }
 
-// ── Stored snapshots ──
-// A snapshot is the transcript's own innerHTML, saved to be shown again on a
-// reopen. It is the panel's markup (cards, icons, buttons, data attributes),
-// so the Markdown allowlist would destroy it; but it may have been written by
-// a build that did not sanitise, and it comes back from storage. It is parsed
-// into an inert <template> and stripped of everything that can run or load
-// code before it reaches the page.
-
-const STORED_DROPPED = new Set(['script', 'iframe', 'frame', 'frameset', 'object', 'embed', 'applet', 'base', 'meta', 'link', 'style', 'template', 'noscript', 'foreignobject', 'animate', 'set', 'animatetransform', 'animatemotion']);
-const URL_ATTRS = new Set(['href', 'src', 'xlink:href', 'action', 'formaction', 'poster', 'data', 'background', 'ping']);
-const REMOVED_ATTRS = new Set(['srcdoc', 'srcset']);
-const SAFE_URL_SCHEMES = new Set(['http', 'https', 'mailto']);
-
-/** The scheme of a URL attribute as a browser reads it (whitespace and control characters ignored), or ''. */
-function schemeOf(value) {
-  const m = /^([a-z][a-z0-9+.-]*):/i.exec(String(value ?? '').replace(/[\u0000- ]/g, ''));
-  return m ? m[1].toLowerCase() : '';
-}
-
-function storedImageAllowed(src) {
-  const compact = String(src ?? '').replace(/[\u0000- ]/g, '');
-  if (!compact) return false;
-  if (/^data:image\//i.test(compact) || /^blob:/i.test(compact)) return true;
-  // A path on this server; a remote image is not loaded again from storage.
-  return !schemeOf(compact) && !compact.startsWith('//');
-}
-
-function scrubNode(parent) {
-  for (const node of [...parent.childNodes]) {
-    if (node.nodeType === 3) continue;
-    if (node.nodeType !== 1) { parent.removeChild(node); continue; }
-    const tag = String(node.localName || '').toLowerCase();
-    if (STORED_DROPPED.has(tag) || (tag === 'img' && !storedImageAllowed(node.getAttribute('src')))) { parent.removeChild(node); continue; }
-    for (const name of node.getAttributeNames()) {
-      const lower = name.toLowerCase();
-      if (lower.startsWith('on') || REMOVED_ATTRS.has(lower)) { node.removeAttribute(name); continue; }
-      if (!URL_ATTRS.has(lower)) continue;
-      const scheme = schemeOf(node.getAttribute(name));
-      if (!scheme || SAFE_URL_SCHEMES.has(scheme)) continue;
-      if (tag === 'img' && lower === 'src') continue; // data:image / blob, checked above
-      node.removeAttribute(name);
-    }
-    scrubNode(node);
-  }
-}
-
-/** A stored snapshot's markup → a DocumentFragment with nothing executable left in it. */
-export function scrubStoredHtml(html, doc = globalThis.document) {
-  const tpl = doc.createElement('template');
-  tpl.innerHTML = String(html ?? '');
-  scrubNode(tpl.content);
-  const out = doc.createDocumentFragment();
-  for (const node of [...tpl.content.childNodes]) out.appendChild(node);
-  return out;
-}
+// A stored transcript snapshot is not scrubbed here: the panel puts it back through
+// sanitizeStoredHtml() of assistant/asst-sanitize.js, the stored-transcript allowlist
+// every panel uses.

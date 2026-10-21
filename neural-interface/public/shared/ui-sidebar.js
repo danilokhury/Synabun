@@ -18,7 +18,7 @@
 import { state, emit, on } from './state.js';
 import { KEYS, COLOR_PALETTE } from './constants.js';
 import { storage } from './storage.js';
-import { normalizeNodes } from './utils.js';
+import { normalizeNodes, escapeHtml } from './utils.js';
 import { catColor, upgradeSelect } from './colors.js';
 import { isGuest, hasPermission, showGuestToast } from './ui-sync.js';
 import {
@@ -212,7 +212,7 @@ function openDescEditor(cat, chipEl) {
   const currentDesc = state.categoryDescriptions[cat] || '';
   editor.innerHTML = `
     <label>Description for "${cat}"</label>
-    <textarea class="desc-textarea">${currentDesc}</textarea>
+    <textarea class="desc-textarea">${escapeHtml(currentDesc)}</textarea>
     <div class="category-desc-actions">
       <button class="action-btn action-btn--ghost desc-cancel-btn">Cancel</button>
       <button class="action-btn action-btn--primary desc-save-btn">Save</button>
@@ -277,7 +277,7 @@ export function openCategoryChangeModal(node) {
       <div class="cat-modal-option${isActive ? ' active' : ''}" data-cat="${cat}">
         <div class="cat-opt-dot" style="color:${catColor(cat)}; background:${catColor(cat)}"></div>
         <span class="cat-opt-name">${cat}</span>
-        ${desc ? `<span class="cat-opt-desc">${desc}</span>` : ''}
+        ${desc ? `<span class="cat-opt-desc">${escapeHtml(desc)}</span>` : ''}
       </div>`;
   });
 
@@ -476,7 +476,7 @@ async function editCategoryUI(name) {
 
         <div class="ecm-field">
           <label>Description</label>
-          <textarea class="edit-cat-desc ecm-input ecm-textarea" rows="4" placeholder="What this category is for...">${currentDesc}</textarea>
+          <textarea class="edit-cat-desc ecm-input ecm-textarea" rows="4" placeholder="What this category is for...">${escapeHtml(currentDesc)}</textarea>
         </div>
 
         <div class="ecm-divider"></div>

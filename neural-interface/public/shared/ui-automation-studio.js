@@ -9,6 +9,7 @@ import { storage } from './storage.js';
 import { initI18n, isReady as i18nReady, t } from './i18n.js';
 import { fetchStyleGuideProjects, fetchStyleGuideSummary } from './api.js';
 import { isGuest, hasPermission, showGuestToast } from './ui-sync.js';
+import { registerLaunchPrefetch } from './launch-prefetch.js';
 import {
   getNativeLoopRouterClaimToken,
   getNativeLoopRouterWindowId,
@@ -90,6 +91,9 @@ let _prevLoopActive = false;
 
 // Cleanup: stored references for document-level listeners so closePanel() can remove them
 let _docListeners = [];
+// What the last read found (templates, folders, the active loop, agents): a later open paints from it at once
+// and reads it again behind it.
+let _keptData = null;
 
 // Detail/editor state
 let _metaDirty = false;
@@ -283,9 +287,9 @@ function renderMcpProfileChips(presets, selected) {
     return renderLaunchSelect('mcp', options, selected);
   }
   return entries.map(([id, p]) => `
-    <button class="as-launch-mcp-profile${id === selected ? ' active' : ''}" data-mcp-profile="${id}">
-      <span class="as-launch-mcp-profile-name">${p.label || id}</span>
-      <span class="as-launch-mcp-profile-tools">${p.tools} tools</span>
+    <button class="as-launch-mcp-profile${id === selected ? ' active' : ''}" data-mcp-profile="${_escLaunch(id)}">
+      <span class="as-launch-mcp-profile-name">${_escLaunch(p.label || id)}</span>
+      <span class="as-launch-mcp-profile-tools">${_escLaunch(p.tools)} tools</span>
     </button>
   `).join('');
 }
@@ -1187,9 +1191,9 @@ function renderModelChips(profileId, selectedModel) {
     return renderLaunchSelect('model', models, selectedModel, { groupByDesc: profileId === 'opencode' });
   }
   return models.map(m => `
-    <button class="as-launch-model${modelMatchesSelector(m, selectedModel) ? ' active' : ''}${m.tier ? ` as-launch-model--${m.tier}` : ''}" data-model="${modelSelectorValue(m)}">
-      <span class="as-launch-model-name">${m.label}</span>
-      <span class="as-launch-model-desc">${m.desc}</span>
+    <button class="as-launch-model${modelMatchesSelector(m, selectedModel) ? ' active' : ''}${m.tier ? ` as-launch-model--${m.tier}` : ''}" data-model="${_escLaunch(modelSelectorValue(m))}">
+      <span class="as-launch-model-name">${_escLaunch(m.label)}</span>
+      <span class="as-launch-model-desc">${_escLaunch(m.desc)}</span>
     </button>
   `).join('');
 }
@@ -1299,7 +1303,10 @@ function wireLaunchSelect(root, type, onChange) {
       });
     });
 
-    document.addEventListener('click', e => { if (!sel.contains(e.target)) close(); });
+    // Outside click closes it; removed with the panel (closePanel) like the studio's other document listeners.
+    const onOutside = e => { if (!sel.contains(e.target)) close(); };
+    document.addEventListener('click', onOutside);
+    _docListeners.push(['click', onOutside]);
   });
 }
 
@@ -1721,6 +1728,8 @@ function buildTemplateCommand(template) {
 // ═══════════════════════════════════════════
 
 export function initAutomationStudio() {
+  // Launch: the studio's lists are read once the page has painted (launch-prefetch.js), so the first open paints at once.
+  registerLaunchPrefetch('automation-studio', prefetchAutomationStudio, { order: 72 });
   on('automations:open', (opts) => openPanel(opts || {}));
   on('automations:open-wizard', () => { openPanel(); });
   on('automations:import', () => { openPanel().then(() => triggerImport()); });
@@ -1759,15 +1768,44 @@ async function openPanel(opts = {}) {
   _panel.style.top = Math.max(48, (window.innerHeight - 520) / 2) + 'px';
 
   wirePanel();
-  await loadData();
+  const kept = _keptData;
+  if (kept) {
+    // The studio as last read paints at once; it is read again behind it and the sidebar follows in place.
+    _templates = kept.templates; _folders = kept.folders; _activeLoop = kept.activeLoop; _agents = kept.agents;
+    updateSidebarFooter();
+  } else {
+    await loadData();
+  }
   if (opts.templateId) {
     const tpl = _templates.find(t => t.id === opts.templateId);
     if (tpl) switchToDetail(tpl); else renderView();
   } else {
     renderView();
   }
-  requestAnimationFrame(() => { _backdrop.classList.add('open'); _panel.classList.add('open'); });
+  requestAnimationFrame(() => { _backdrop?.classList.add('open'); _panel?.classList.add('open'); });
   startPolling();
+  if (kept) refreshDataInPlace();
+}
+
+// The data read again behind a studio painted from the kept one: the sidebar list is redrawn when the templates
+// or folders changed (an open template, the wizard and the editors keep what the user is doing).
+async function refreshDataInPlace() {
+  const before = JSON.stringify([_templates, _folders]);
+  await loadData();
+  if (!_panel) return;
+  if (JSON.stringify([_templates, _folders]) === before) return;
+  const list = $('as-template-list');
+  const scroll = list ? list.scrollTop : 0;
+  renderSidebar();
+  const count = $('as-total-count');
+  if (count) count.textContent = `${PRESET_TEMPLATES.length + _templates.length}`;
+  if (list && list.isConnected) list.scrollTop = scroll;
+}
+
+/** Launch prefetch: the studio's data read once, so the first open paints at once (nothing is drawn here). */
+export function prefetchAutomationStudio() {
+  if (_keptData || _panel || (isGuest() && !hasPermission('automations'))) return Promise.resolve();
+  return loadData().catch(() => {});
 }
 
 function closePanel() {
@@ -2326,11 +2364,15 @@ async function promptCreateFolder() {
 // ═══════════════════════════════════════════
 
 async function loadData() {
-  try { _templates = await fetchLoopTemplates(); } catch { _templates = []; }
-  try { _folders = await fetchLoopFolders(); } catch { _folders = []; }
-  try { _activeLoop = await fetchActiveLoop(); } catch { _activeLoop = null; }
+  // One round trip for the three lists (they were asked one after another), then the agents.
+  const [templates, folders, active] = await Promise.allSettled([fetchLoopTemplates(), fetchLoopFolders(), fetchActiveLoop()]);
+  _templates = templates.status === 'fulfilled' ? templates.value : [];
+  _folders = folders.status === 'fulfilled' ? folders.value : [];
+  _activeLoop = active.status === 'fulfilled' ? active.value : null;
   await refreshAgents();
-  updateSidebarFooter();
+  if (_panel) updateSidebarFooter();
+  // Kept only when the templates answered (a failed read must not paint an empty studio next time).
+  if (templates.status === 'fulfilled') _keptData = { templates: _templates, folders: _folders, activeLoop: _activeLoop, agents: _agents };
 }
 
 function startPolling() {
@@ -3754,16 +3796,14 @@ async function refreshAgents() {
   try {
     const data = await fetchAgents();
     _agents = data?.agents || [];
-    // Update local output buffers with any text we haven't captured via WebSocket
-    for (const a of _agents) {
-      if (!_agentOutputs[a.id] && a.textLength > 0) {
-        // Fetch full details to get textOutput
-        try {
-          const full = await fetchAgent(a.id);
-          if (full?.textOutput) _agentOutputs[a.id] = full.textOutput;
-        } catch {}
-      }
-    }
+    // Update local output buffers with any text we haven't captured via WebSocket (together, not one by one)
+    await Promise.all(_agents.filter(a => !_agentOutputs[a.id] && a.textLength > 0).map(async (a) => {
+      // Fetch full details to get textOutput
+      try {
+        const full = await fetchAgent(a.id);
+        if (full?.textOutput) _agentOutputs[a.id] = full.textOutput;
+      } catch {}
+    }));
   } catch {}
 }
 
@@ -4742,9 +4782,9 @@ function renderSchedulesMain() {
     ? (qtModels.length > LAUNCH_CHIP_MAX
         ? renderLaunchSelect('qt-model', qtModels, qtCurrentModel, { groupByDesc: qtProfile === 'opencode' })
         : qtModels.map(m => `
-        <button class="as-launch-model${modelMatchesSelector(m, qtCurrentModel) ? ' active' : ''}${m.tier ? ` as-launch-model--${m.tier}` : ''}" data-action="qt-model" data-model="${modelSelectorValue(m)}">
-          <span class="as-launch-model-name">${m.label}</span>
-          <span class="as-launch-model-desc">${m.desc}</span>
+        <button class="as-launch-model${modelMatchesSelector(m, qtCurrentModel) ? ' active' : ''}${m.tier ? ` as-launch-model--${m.tier}` : ''}" data-action="qt-model" data-model="${_escLaunch(modelSelectorValue(m))}">
+          <span class="as-launch-model-name">${_escLaunch(m.label)}</span>
+          <span class="as-launch-model-desc">${_escLaunch(m.desc)}</span>
         </button>
       `).join(''))
     : `<span class="as-launch-no-models">${esc(dynamicModelEmptyText(qtProfile))}</span>`;
@@ -4942,7 +4982,7 @@ function renderScheduleEditorMain() {
     </div>`).join('');
 
   const templateOptions = allTemplates.map(t =>
-    `<option value="${t.id}"${(s?.templateId === t.id) ? ' selected' : ''}>${esc(t.name)} (${t.category})</option>`
+    `<option value="${esc(t.id)}"${(s?.templateId === t.id) ? ' selected' : ''}>${esc(t.name)} (${esc(t.category)})</option>`
   ).join('');
 
   // Reorder: Mon(1)–Sat(6) then Sun(0) so 2-column grid pairs weekdays nicely

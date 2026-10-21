@@ -3,6 +3,7 @@ import { buildJudgmentsTab, wireJudgmentsTab } from './ui-judgments.js';
 import { buildWhatsAppTab, wireWhatsAppTab } from './ui-whatsapp.js';
 import { buildCodeEditorTab, wireCodeEditorTab } from './settings/settings-code-editor-pane.js';
 import { buildAboutTab, wireAboutTab } from './settings/settings-about-pane.js';
+import { buildAppTab, wireAppTab } from './settings/settings-app-pane.js';
 import { SETTINGS_GROUPS, SETTINGS_PAGES, DEFAULT_SETTINGS_PAGE, pageKeys, getSettingsPage, resolveSettingsTarget, homeOfControl } from './settings/settings-ia.js';
 import * as kit from './settings/settings-kit.js';
 import { RULES_HOST_LABELS, describeRulesHost, describeRulesInstall, describeRulesInstallAll } from './settings/settings-rules.js';
@@ -20,12 +21,14 @@ setGitBashTranslator((key, params) => kit.tx(`gitBash.${key}`, params));
 import { initI18n, isReady as i18nReady, SUPPORTED_LOCALES, LOCALE_NAMES, SYSTEM_LOCALE, getLocale, getLocaleChoice, setLocaleChoice, getSystemLocale, englishTranslator, loadEnglishTranslator } from './i18n.js';
 import { wireSettingsShell, wireSettingsSearch, collectSearchRows, revealSettingsTarget, followSettingsTarget, onSettingsTakeover, applyStoredSections, storeSectionState } from './settings/settings-shell.js';
 import { buildSettingsSearchIndex } from './settings/settings-search.js';
+import { prefetchSettingsData, readSettingsData, refreshSettingsData } from './settings/settings-data.js';
+import { registerLaunchPrefetch } from './launch-prefetch.js';
 // ═══════════════════════════════════════════
 // UI-SETTINGS — Settings modal with shared tabs + variant tab injection
 // ═══════════════════════════════════════════
 //
 // The most complex shared UI module. Builds a floating settings panel with
-// thirteen task pages in six groups (./settings/settings-ia.js). A page is a
+// fourteen task pages in six groups (./settings/settings-ia.js). A page is a
 // title, a one-line purpose and section cards (./settings/settings-kit.js);
 // each builder below owns one pane of a page. Variant-registered tabs (the 2D
 // Graphics tab) join the Appearance page. Old tab ids still open the right page.
@@ -76,6 +79,8 @@ const TAB_ICONS = {
   whatsapp: '<svg viewBox="0 0 24 24"><path d="M3.5 20.5l1.3-3.9A8.5 8.5 0 1 1 8 19.6z"/><path d="M9.5 8.5c.4 2.6 2.9 5.2 5.5 5.6l1-1.2 1.6.8c-.3 1-1.1 1.6-2.1 1.5-2.9-.3-5.8-3.2-6.1-6.1-.1-1 .5-1.8 1.5-2.1l.8 1.6z"/></svg>',
   morelogin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M12 11.5a1 1 0 0 0-1 1c0 1.8-.3 3.6-1.2 5.2"/><path d="M7.8 14.5a8 8 0 0 0-.6 4.3"/><path d="M12 7.5a4.5 4.5 0 0 1 4.5 4.5c0 .6 0 1.2-.1 1.8"/><path d="M5 9.2a7 7 0 0 1 11-1.9"/><path d="M15 13a3 3 0 0 1-3 3"/></svg>',
   editor: '<svg viewBox="0 0 24 24"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/><line x1="13.5" y1="5" x2="10.5" y2="19"/></svg>',
+  // Settings > App: the software's own controls (a window with its title bar)
+  app: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="6.5" y1="6.5" x2="6.51" y2="6.5"/><line x1="9.5" y1="6.5" x2="9.51" y2="6.5"/></svg>',
   about: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="11"/><line x1="12" y1="7.5" x2="12.01" y2="7.5"/></svg>',
 };
 
@@ -1665,17 +1670,17 @@ function buildSkillsTab(ccSkills) {
     const anyOn = targets.some(t => installed[t.id]);
     const chips = targets.map(t => `
               <button type="button" class="cc-skill-target${installed[t.id] ? ' on' : ''}"
-                      data-cc-skill="${skill.dirName}"
+                      data-cc-skill="${kit.esc(skill.dirName)}"
                       data-cc-target="${t.id}"
                       data-state="${installed[t.id] ? 'on' : 'off'}"
                       ${kit.inv('SKL001')} data-stg-pressed="on" aria-pressed="${installed[t.id] ? 'true' : 'false'}"
                       title="${kit.te('settings.redesign.skills.installFor', { skill: skill.name, assistant: t.label })}">${t.label}</button>
           `).join('');
     return `
-          <div class="cc-skill-row${anyOn ? ' installed' : ''}" data-skill-name="${skill.dirName}">
+          <div class="cc-skill-row${anyOn ? ' installed' : ''}" data-skill-name="${kit.esc(skill.dirName)}">
             <div class="cc-skill-info">
-              <span class="cc-skill-name">/${skill.name}</span>
-              <span class="cc-skill-desc">${skill.description || ''}</span>
+              <span class="cc-skill-name">/${kit.esc(skill.name)}</span>
+              <span class="cc-skill-desc">${kit.esc(skill.description || '')}</span>
             </div>
             <div class="cc-skill-targets" role="group" aria-label="${kit.te('settings.redesign.skills.targets', { skill: skill.name })}">${chips}</div>
           </div>`;
@@ -3168,10 +3173,45 @@ function landOnSearchEntry(overlay, entry, { focus = false, watch = true } = {})
 }
 
 // ═══════════════════════════════════════════
+// The search index of a locale (and of the variant tabs the page registered): what the strings are, not what
+// the panes hold, so it is made once (at launch idle, or by the first open) and every open reuses it.
+let _searchIndexMemo = null;
+function memoSearchIndex(en, variantTabs, build) {
+  const key = JSON.stringify([getLocale(), typeof en === 'function', (variantTabs || []).map(tab => [tab.id, tab.label || ''])]);
+  if (_searchIndexMemo?.key !== key) _searchIndexMemo = { key, index: build() };
+  return _searchIndexMemo.index;
+}
+
+/** Make the index now (launch idle), with the English names when the locale is another (loaded once, here). */
+function prebuildSettingsSearchIndex() {
+  const variantTabs = getSettingsTabs();
+  const make = (en) => memoSearchIndex(en, variantTabs, () => buildSettingsSearchIndex({ t: kit.tx, en, variants: variantTabs.map(tab => ({ id: tab.id, label: tab.label })) }));
+  if (getLocale() === 'en') { make(null); return undefined; }
+  const english = englishTranslator();
+  if (english) { make(english); return undefined; }
+  make(null);
+  return loadEnglishTranslator().then((en) => { if (en) make(en); }).catch(() => {});
+}
+
 // MAIN ENTRY — openSettingsModal
 // ═══════════════════════════════════════════
 
-export async function openSettingsModal(options = {}) {
+// An open that comes while another is still reading its data joins it: one panel, the later options applied.
+let _settingsOpening = null;
+export function openSettingsModal(options = {}) {
+  if (_settingsOpening) {
+    return _settingsOpening.then(() => {
+      const panel = document.getElementById('settings-panel');
+      if (panel) { panel.style.zIndex = '300001'; applySettingsOpenOptions(panel, options); }
+    });
+  }
+  const opening = openSettingsModalNow(options);
+  const guarded = opening.catch(() => {}).finally(() => { if (_settingsOpening === guarded) _settingsOpening = null; });
+  _settingsOpening = guarded;
+  return opening;
+}
+
+async function openSettingsModalNow(options = {}) {
   // If already open, just bring it to front
   const existing = document.getElementById('settings-panel');
   if (existing) {
@@ -3207,26 +3247,17 @@ export async function openSettingsModal(options = {}) {
   let userContextReading = readUserContextResponse({ status: 0 });
 
   try {
-    const [settingsRes, connRes, ccRes, skillsRes, tunnelRes, keyRes, bridgeRes, greetRes, setupRes, cliRes, toolPermsRes, toolCatsRes, discordRes, skinsRes, iconsRes, youtubeRes, typesafeRes, userContextRes] = await Promise.allSettled([
-      fetch('/api/settings').then(r => r.json()),
-      fetch('/api/connections').then(r => r.json()),
-      fetch('/api/claude-code/integrations').then(r => r.json()),
-      fetch('/api/claude-code/skills').then(r => r.json()),
-      fetch('/api/tunnel/status').then(r => r.json()),
-      fetch('/api/mcp-key').then(r => r.json()),
-      fetch('/api/bridges/openclaw').then(r => r.json()),
-      loadGreetingReading(),
-      fetch('/api/setup/status').then(r => r.json()),
-      fetch('/api/cli/config').then(r => r.json()),
-      fetch('/api/claude-code/tool-permissions').then(r => r.json()),
-      fetch('/api/claude-code/tool-categories').then(r => r.json()),
-      fetch('/api/discord/config').then(r => r.json()),
-      fetch('/api/skins').then(r => r.json()),
-      fetch('/api/file-icons').then(r => r.json()),
-      fetch('/api/youtube/config').then(r => r.json()),
-      fetch('/api/typesafe/config').then(r => r.json()),
-      loadUserContextReading(),
-    ]);
+    // Read through the page's data cache (settings/settings-data.js): kept answers at once (each open its own
+    // copy; read again in the background when old), so Settings waits only the first time.
+    const reads = await readSettingsData();
+    // The greeting and the user context are readings of what their endpoints answered (no answer is a reading too).
+    const readingOf = (entry, make) => ({ status: 'fulfilled', value: entry?.status === 'fulfilled' ? make(entry.value) : make({ status: 0, error: entry?.reason?.message }) });
+    const greetRes = readingOf(reads.greeting, readGreetingStatus);
+    const userContextRes = readingOf(reads.userContext, readUserContextResponse);
+    const settingsRes = reads.settings, connRes = reads.connections, ccRes = reads.integrations, skillsRes = reads.skills;
+    const tunnelRes = reads.tunnel, keyRes = reads.mcpKey, bridgeRes = reads.openclaw, setupRes = reads.setup, cliRes = reads.cli;
+    const toolPermsRes = reads.toolPermissions, toolCatsRes = reads.toolCategories, discordRes = reads.discord, skinsRes = reads.skins;
+    const iconsRes = reads.icons, youtubeRes = reads.youtube, typesafeRes = reads.typesafe;
     if (typesafeRes.status === 'fulfilled' && typesafeRes.value.ok) typesafeConfig = typesafeRes.value;
     if (userContextRes.status === 'fulfilled') userContextReading = userContextRes.value;
     if (settingsRes.status === 'fulfilled') settings = settingsRes.value;
@@ -3256,6 +3287,8 @@ export async function openSettingsModal(options = {}) {
     || getSettingsPage(storage.getItem(KEYS.SETTINGS_LAST_PAGE))?.id
     || DEFAULT_SETTINGS_PAGE;
   const openerEl = document.activeElement;
+  // Listeners on document and window that belong to this panel end with it (close aborts it).
+  const panelLife = new AbortController();
 
   // ── Panel ──
   const overlay = document.createElement('div');
@@ -3320,6 +3353,7 @@ export async function openSettingsModal(options = {}) {
             skins: buildSkinsTab(skinsData.skins, skinsData.active),
             interface: buildInterfaceTab(),
             icons: buildIconsTab(customIconsData),
+            app: buildAppTab(),
             about: buildAboutTab(),
           }, variantTabs, initialPage)}
         </div>
@@ -3361,10 +3395,14 @@ export async function openSettingsModal(options = {}) {
   // ── Close helper ──
   const close = () => {
     document.removeEventListener('keydown', onSettingsEsc);
+    const first = !panelLife.signal.aborted;
+    panelLife.abort();
     // Tabs that poll (Judgments) clear their timers on this event.
     overlay.dispatchEvent(new CustomEvent('settings-close'));
     backdrop.remove();
     overlay.remove();
+    // What was changed here is what the next open shows: its reads are asked for again now, in the background.
+    if (first) refreshSettingsData();
     // Give the keyboard back to whatever opened Settings.
     if (openerEl && openerEl !== document.body && document.body.contains(openerEl)) { try { openerEl.focus({ preventScroll: true }); } catch {} }
   };
@@ -3525,12 +3563,12 @@ export async function openSettingsModal(options = {}) {
           + '</div>';
         html += '<div style="padding:4px 0">';
         if (data.parent) {
-          html += `<div class="cc-browse-item" data-path="${escapeHtml(data.parent)}" style="padding:4px 10px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:6px;color:var(--t-muted)">`
+          html += `<div class="cc-browse-item" data-path="${kit.esc(data.parent)}" style="padding:4px 10px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:6px;color:var(--t-muted)">`
             + '<svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2"><polyline points="15 18 9 12 15 6"/></svg>'
             + '' + kit.te('settings.redesign.server.parent') + '</div>';
         }
         for (const d of data.directories) {
-          html += `<div class="cc-browse-item" data-path="${escapeHtml(data.current + '/' + d)}" style="padding:4px 10px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:6px">`
+          html += `<div class="cc-browse-item" data-path="${kit.esc(data.current + '/' + d)}" style="padding:4px 10px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:6px">`
             + '<svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>'
             + escapeHtml(d) + '</div>';
         }
@@ -3914,7 +3952,7 @@ export async function openSettingsModal(options = {}) {
       container.querySelectorAll('.stg-dropdown.open').forEach(dd => {
         if (!dd.contains(e.target)) dd.classList.remove('open');
       });
-    });
+    }, { signal: panelLife.signal });
   }
 
   function syncStgDropdown(container, hiddenId) {
@@ -4410,6 +4448,9 @@ export async function openSettingsModal(options = {}) {
   // ── Code editor: AI autocomplete (loads and saves itself) ──
   wireCodeEditorTab(overlay);
 
+  // ── App: updates, start at login, the window, maintenance (loads itself when its page is shown) ──
+  wireAppTab(overlay, { toast: showCCToast });
+
   // ── About: version, links, system and dependencies (loads itself the first time its page is shown) ──
   wireAboutTab(overlay, { toast: showCCToast });
 
@@ -4788,7 +4829,7 @@ export async function openSettingsModal(options = {}) {
 
     // Re-poll when tab regains visibility (covers Permissions API gaps on Safari).
     const visHandler = () => { if (!document.hidden) refreshNotifPermRow(); };
-    document.addEventListener('visibilitychange', visHandler);
+    document.addEventListener('visibilitychange', visHandler, { signal: panelLife.signal });
 
     // Request permission
     if (requestPermBtn) {
@@ -5591,7 +5632,7 @@ export async function openSettingsModal(options = {}) {
       overlay.querySelectorAll('.bc-dropdown.open').forEach(dd => {
         if (!dd.contains(e.target)) dd.classList.remove('open');
       });
-    });
+    }, { signal: panelLife.signal });
 
     // Sync dropdown display from hidden input value (for applyBrowserConfig)
     function syncBcDropdowns() {
@@ -6091,12 +6132,12 @@ export async function openSettingsModal(options = {}) {
             + '</div>';
           html += '<div style="padding:4px 0">';
           if (data.parent) {
-            html += `<div class="cc-browse-item" data-path="${escapeHtml(data.parent)}" style="padding:4px 10px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:6px;color:var(--t-muted)">`
+            html += `<div class="cc-browse-item" data-path="${kit.esc(data.parent)}" style="padding:4px 10px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:6px;color:var(--t-muted)">`
               + '<svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2"><polyline points="15 18 9 12 15 6"/></svg>'
               + '' + kit.te('settings.redesign.browser.parent') + '</div>';
           }
           for (const d of data.directories) {
-            html += `<div class="cc-browse-item" data-path="${escapeHtml(data.current + '/' + d)}" style="padding:4px 10px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:6px">`
+            html += `<div class="cc-browse-item" data-path="${kit.esc(data.current + '/' + d)}" style="padding:4px 10px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:6px">`
               + '<svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>'
               + escapeHtml(d) + '</div>';
           }
@@ -7274,7 +7315,7 @@ export async function openSettingsModal(options = {}) {
     const ocpToolsEl = overlay.querySelector('#stg-ocp-tools');
     const ocpHistoryMetaEl = overlay.querySelector('#stg-ocp-history-meta');
     const ocpHistoryClearBtn = overlay.querySelector('#stg-ocp-clear-history');
-    const esc = s => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const esc = s => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
     // ── Helpers ──
     let _ocpConnected = new Set();
@@ -8181,7 +8222,8 @@ export async function openSettingsModal(options = {}) {
                 attempts++;
                 if (attempts > 60) { clearInterval(poll); if (waitEl) waitEl.style.display = 'none'; return; }
                 try {
-                  const pr = await fetch('/api/opencode/providers/full');
+                  // Only `connected` is read: the compact view (connected providers), not the whole catalog every 2 s.
+                  const pr = await fetch('/api/opencode/providers/full?view=compact');
                   const pd = await pr.json();
                   const connected = pd.data?.connected || [];
                   if (connected.includes(provId)) {
@@ -9382,7 +9424,7 @@ export async function openSettingsModal(options = {}) {
   // ── Search: the index is built from the strings of the active locale; what the panes load is read at query time ──
   // In another locale the English names are searched too (someone who learned the settings in English still finds
   // them): from the bundle i18n already holds as its fallback, or, when it has none, loaded once as the field is first used.
-  const searchIndex = (en) => buildSettingsSearchIndex({ t: kit.tx, en, variants: variantTabs.map(tab => ({ id: tab.id, label: tab.label })) });
+  const searchIndex = (en) => memoSearchIndex(en, variantTabs, () => buildSettingsSearchIndex({ t: kit.tx, en, variants: variantTabs.map(tab => ({ id: tab.id, label: tab.label })) }));
   const english = getLocale() === 'en' ? null : englishTranslator();
   wireSettingsSearch(overlay, {
     index: searchIndex(english),
@@ -9579,6 +9621,15 @@ export function initSettings() {
   // A language change reloaded the app: open Settings again where the user was, once the rest of the app has started.
   const reopenPage = takeSettingsReopen();
   if (reopenPage) setTimeout(() => openSettingsModal({ tab: reopenPage, expand: ['stg-sec-language'] }), 0);
+
+  // Launch: what Settings is built from, and its search index (the English names too), read and made once the
+  // page has painted, so the first open and the first search wait for nothing.
+  registerLaunchPrefetch('settings-data', () => prefetchSettingsData(), { order: 60, owner: true });
+  registerLaunchPrefetch('settings-search-index', () => prebuildSettingsSearchIndex(), { order: 62 });
+  // Changes other windows announce: the next open shows them.
+  on('sync:skin:changed', () => refreshSettingsData(['skins']));
+  on('sync:greeting:changed', () => refreshSettingsData(['greeting']));
+  on('sync:assistant:user-context-changed', () => refreshSettingsData(['userContext']));
 
   // Expose sync functions for inline onclick attributes (if any remain)
   window.checkSyncStatus = checkSyncStatus;

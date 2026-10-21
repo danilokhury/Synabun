@@ -6,7 +6,7 @@
 // instance for back-compat with shared bindings.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { api, supports, capabilities, onEvent } from './ocp-v2-ws.js';
+import { api, supports, capabilities, onEvent, sessionWaitsOnUser, onAsksChanged } from './ocp-v2-ws.js';
 import { getDefaultStore, agentForMode } from './ocp-v2-state.js';
 import { mountModelPicker } from './ocp-v2-modelpicker.js';
 import { mountVariantPicker } from './ocp-v2-variantpicker.js';
@@ -30,6 +30,7 @@ import {
 } from './ocp-v2-plan.js';
 import {
   trackOptimisticMessage, beginTurn, currentTurn, endTurn, settleFailedSend, TRANSCRIPT_SAFETY_POLL_MS,
+  createTurnClock, TURN_LIMIT_MS,
 } from './ocp-v2-send-logic.js';
 import { hydrateTranscript } from './ocp-v2-rehydrate.js';
 import { captureBinding, trackBinding, isBindingToken, searchOnBinding } from './ocp-v2-binding.js';
@@ -1512,7 +1513,7 @@ export function mountCompose(rootEl, store = getDefaultStore(), opts = {}) {
   async function waitForAsyncTurn({ stopPolling, drainOnce, isPlanTurn, planTurn, turn, run }) {
     let done = false;
     let cleanup = null;
-    let timer = null;
+    let clock = null;
 
     await new Promise((resolve) => {
       // The composer was unmounted: nobody waits for the end of this turn any
@@ -1521,7 +1522,7 @@ export function mountCompose(rootEl, store = getDefaultStore(), opts = {}) {
         if (done) return;
         done = true;
         _turnWatches.delete(abandon);
-        if (timer) clearTimeout(timer);
+        clock?.cancel();
         stopPolling();
         if (unsubInner) unsubInner();
         resolve();
@@ -1530,7 +1531,7 @@ export function mountCompose(rootEl, store = getDefaultStore(), opts = {}) {
         if (done) return;
         done = true;
         _turnWatches.delete(abandon);
-        if (timer) clearTimeout(timer);
+        clock?.cancel();
         stopPolling();
         if (unsubInner) unsubInner();
         await drainOnce(true);
@@ -1544,11 +1545,17 @@ export function mountCompose(rootEl, store = getDefaultStore(), opts = {}) {
       const unsubInner = store.subscribe((event, state) => {
         if ((event?.type === 'running:set' && !state.running) || !turn.isCurrent()) cleanup();
       });
-      timer = setTimeout(() => {
-        if (run.isCurrent()) store.pushError({ message: 'OpenCode turn timed out waiting for session.idle.' });
-        endTurn(store, run);
-        cleanup();
-      }, 30 * 60 * 1000);
+      // Working time only: the clock stops while the session waits on the user (a permission, a question).
+      clock = createTurnClock({
+        ms: TURN_LIMIT_MS,
+        paused: () => sessionWaitsOnUser(turn.sessionId),
+        subscribe: onAsksChanged,
+        onExpire: () => {
+          if (run.isCurrent()) store.pushError({ message: 'OpenCode turn timed out waiting for session.idle.' });
+          endTurn(store, run);
+          cleanup();
+        },
+      });
       _turnWatches.add(abandon);
       if (!store.getState().running) cleanup();
     });

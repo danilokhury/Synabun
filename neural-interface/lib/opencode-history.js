@@ -15,6 +15,13 @@ import { isMainThread, parentPort, Worker, workerData } from 'node:worker_thread
 
 export const OPENCODE_HISTORY_CONFIRMATION = 'DELETE OPENCODE HISTORY';
 
+// OpenCode 2 keeps its sessions in other tables of the same file (session_v2,
+// session_message, its event log): the OpenCode 1 list below would delete its
+// messages and events and leave its sessions, which breaks that database. So an
+// OpenCode 2 database is never cleared here.
+export const OPENCODE2_HISTORY_REFUSAL = 'This OpenCode data belongs to OpenCode 2, whose history SynaBun does not clear. Delete OpenCode 2 sessions from OpenCode itself.';
+const isOpencode2Database = (tables) => tables.has('session_v2');
+
 const HISTORY_TABLES_CHILD_FIRST = [
   'part',
   'message',
@@ -111,7 +118,14 @@ export function getOpenCodeHistoryStats({ dbPath, dataRoot = dirname(dbPath) }) 
     db = new DatabaseSync(database, { readOnly: true });
     db.exec('PRAGMA busy_timeout = 2000');
     const tables = tableNames(db);
-    stats.sessions = countRows(db, 'session', tables);
+    if (isOpencode2Database(tables)) {
+      stats.sessions = countRows(db, 'session_v2', tables);
+      stats.opencode2 = true;
+      stats.clearable = false;
+      stats.reason = OPENCODE2_HISTORY_REFUSAL;
+    } else {
+      stats.sessions = countRows(db, 'session', tables);
+    }
   } finally {
     try { db?.close(); } catch {}
   }
@@ -174,6 +188,7 @@ export function clearOpenCodeHistory({ dbPath, dataRoot = dirname(dbPath), vacuu
       db.exec('PRAGMA foreign_keys = ON');
       db.exec('PRAGMA busy_timeout = 10000');
       const tables = tableNames(db);
+      if (isOpencode2Database(tables)) throw new Error(OPENCODE2_HISTORY_REFUSAL);
       result.sessionsDeleted = countRows(db, 'session', tables);
       result.messagesDeleted = countRows(db, 'message', tables);
       result.partsDeleted = countRows(db, 'part', tables);

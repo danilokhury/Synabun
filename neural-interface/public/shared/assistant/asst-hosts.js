@@ -54,7 +54,7 @@ export function describeBrainFallback(fallback) {
 }
 
 /**
- * deps: { api: { list(), get(id), create({brain,label,fallback}) },
+ * deps: { api: { list(), get(id), create({brain,label,fallback,draft}), remove?(id) },
  *         isBlocked() → bool, toast(text), storedBrain() → brain|null,
  *         fallbackText(session.fallback) → text, defaultHost: 'terminal' }
  */
@@ -149,7 +149,9 @@ export function createAssistantHosts({
       try {
         // A model disabled since it was picked (Assistant → Models) must not
         // lock the Assistant out: the server starts on its enabled stand-in.
-        res = await api.create({ brain: b, label: label || undefined, fallback: true });
+        // A draft: the server stores and lists it from its first prompt on (a prompt
+        // given here is that prompt); closed or left unused, nothing of it remains.
+        res = await api.create({ brain: b, label: label || undefined, fallback: true, draft: true });
       } catch (err) {
         say(`Assistant unavailable: ${err?.message || err}`);
         return null;
@@ -245,6 +247,48 @@ export function createAssistantHosts({
     return true;
   }
 
+  /**
+   * A session nobody chatted in that the user left (they picked another one in its Sessions menu):
+   * its tab closes the way the user closes one, and the server removes it (it holds no conversation).
+   */
+  function discard(sessionId) {
+    const owner = ownerOf(sessionId);
+    if (last?.sessionId === sessionId) last = null;
+    if (!owner) return false;
+    adapters.get(owner).close(sessionId, { closeServer: true });
+    return true;
+  }
+
+  /**
+   * The Sessions menu's Remove: the server stops the session's running turn and workers and purges it,
+   * then its tab closes wherever it is open (other windows: the session-ended broadcast). `fresh`: it is
+   * the session showing where the user asked, and the host that has it gets a new one first, as New does
+   * (a host is never left empty in between). → { ok: true, stoppedRuns } | { ok: false, error }
+   */
+  async function remove(sessionId, { host = null, fresh = false, brain = null } = {}) {
+    if (!sessionId || !api.remove) return { ok: false, error: 'unavailable' };
+    if (isBlocked()) return { ok: false, error: 'blocked' };
+    if (fresh) { try { await open({ host: host || ownerOf(sessionId), brain }); } catch { /* the removal goes on */ } }
+    let res = null;
+    try { res = await api.remove(sessionId); }
+    catch (err) { return { ok: false, error: err?.message || String(err) }; }
+    ended(sessionId);
+    return { ok: true, stoppedRuns: Array.isArray(res?.stoppedRuns) ? res.stoppedRuns : [] };
+  }
+
+  /**
+   * The server no longer has a session a host shows (a draft it dropped, a restart before its first
+   * prompt, a removal this page missed): its tab closes, and with `fresh` (it was showing and had
+   * no conversation) a new session takes its place in the host that had it, so the user never sees a dead tab.
+   */
+  async function gone(sessionId, { host = null, fresh = false, brain = null } = {}) {
+    if (!sessionId) return null;
+    let opened = null;
+    if (fresh && !isBlocked()) { try { opened = await open({ host: host || ownerOf(sessionId), brain }); } catch { opened = null; } }
+    ended(sessionId);
+    return opened;
+  }
+
   return {
     register,
     ownerOf,
@@ -253,6 +297,9 @@ export function createAssistantHosts({
     toggle,
     show,
     ended,
+    discard,
+    remove,
+    gone,
     noteFocus,
     fetchLive,
     isLive: isAssistantSessionLive,

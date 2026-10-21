@@ -152,6 +152,23 @@ async function generateOpenCodeTitle(input, deps) {
   const timer = setTimeout(() => controller.abort(new Error('Session title request timed out')), SESSION_TITLE_TIMEOUT_MS);
   timer.unref?.();
   let sessionId = null;
+  // OpenCode 2 (lib/opencode2-client.js): its one-shot generator when the model
+  // allows it (OpenCode's free tier answers it 503), else a temporary session
+  // whose permissions deny every tool: OpenCode 2 has no tool switch per prompt.
+  const opencode2 = deps.openCodeClient.getProtocol?.() === 2;
+  if (opencode2) {
+    const raw = deps.openCodeClient.getClient?.();
+    try {
+      const generated = await raw?.generate?.({
+        prompt: `${TITLE_SYSTEM_PROMPT}\n\n${titlePrompt(input)}`,
+        model: input.model || undefined,
+        directory: input.cwd || undefined,
+        signal: controller.signal,
+      });
+      const text = String(generated?.data?.text || '').trim();
+      if (!generated?.error && text) { clearTimeout(timer); return text; }
+    } catch { /* the session below */ }
+  }
   try {
     const toolIds = new Set([
       'bash', 'edit', 'write', 'patch', 'apply_patch', 'multiedit', 'read',
@@ -170,6 +187,7 @@ async function generateOpenCodeTitle(input, deps) {
     const created = await deps.openCodeClient.session.create({
       directory: input.cwd || undefined,
       title: 'SessionTitleDraft',
+      ...(opencode2 ? { permission: [{ permission: '*', pattern: '*', action: 'deny' }] } : {}),
     });
     sessionId = created?.data?.id || created?.data?.sessionID || created?.id || created?.sessionID;
     if (!sessionId) throw new Error('OpenCode did not create a temporary title session');

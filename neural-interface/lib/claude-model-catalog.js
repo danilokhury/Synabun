@@ -43,7 +43,39 @@ const DISCOVERY_TIMEOUT_MS = 15000;
 const CACHE_TTL_MS = 10 * 60 * 1000;
 
 let _cache = { at: 0, key: '', models: [] };
-let _inflight = null;
+const _inflight = new Map(); // cache key → the discovery running for it
+// Where the last verified list is kept across restarts ({ read(), write(entry) },
+// lib/launch-cache.js createSnapshotStore): a start answers with it at once and
+// asks the CLI again in the background.
+let _store = null;
+let _storeRead = false;
+
+export function setClaudeModelStore(store) {
+  _store = store && typeof store.read === 'function' && typeof store.write === 'function' ? store : null;
+  _storeRead = false;
+}
+
+// The list the last run verified, for this very binary and account: given at once
+// after a restart (as an old answer, so the first read asks the CLI again).
+function adoptStoredModels(key) {
+  if (_storeRead || !_store) return;
+  _storeRead = true;
+  if (_cache.models.length) return;
+  try {
+    const saved = _store.read();
+    const models = saved?.key === key && Array.isArray(saved.models)
+      ? saved.models.filter(m => m && typeof m === 'object' && typeof m.id === 'string' && m.id)
+      : [];
+    if (models.length) _cache = { at: 0, key, models };
+  } catch { /* nothing kept: the first read asks the CLI */ }
+}
+
+// What the list depends on: the binary (an update changes it, binaryIdentity) and
+// the account it was read under (another account can be entitled to other models).
+function cacheKeyOf(bin, account) {
+  const who = String(account || '');
+  return who ? `${binaryIdentity(bin)}#${who}` : binaryIdentity(bin);
+}
 
 // Who else keeps a copy of this list (the Assistant's model catalog). Told when a
 // discovery returns a list that differs from the one before it, so a copy is
@@ -286,37 +318,55 @@ export function queryClaudeCliModels(claudeBin, { cwd, timeoutMs = DISCOVERY_TIM
 }
 
 // Cached discovery. `source` lets the UI distinguish a verified list from the
-// baked-in fallback. Cache is keyed on the binary's identity, so switching the
-// configured CLI (Settings > Terminal) or updating it re-discovers.
-export async function discoverClaudeModels(claudeBin, { force = false, cwd, query = queryClaudeCliModels } = {}) {
+// baked-in fallback. Cache is keyed on the binary's identity (and the account
+// the list was read under, `account`), so switching the configured CLI
+// (Settings > Terminal), updating it or signing in to another account
+// re-discovers. A list that is merely old is still given at once, and the CLI is
+// asked again in the background (one discovery at a time): only a first read, a
+// changed key or `force` waits for the CLI.
+export async function discoverClaudeModels(claudeBin, { force = false, cwd, query = queryClaudeCliModels, account = '' } = {}) {
   const bin = String(claudeBin || '');
-  const key = binaryIdentity(bin);
-  const fresh = _cache.models.length
-    && _cache.key === key
-    && Date.now() - _cache.at < CACHE_TTL_MS;
-  if (!force && fresh) return { source: 'cache', models: _cache.models };
-  if (_inflight) return _inflight;
+  const key = cacheKeyOf(bin, account);
+  adoptStoredModels(key);
+  const known = _cache.models.length && _cache.key === key;
+  if (!force && known) {
+    if (Date.now() - _cache.at >= CACHE_TTL_MS) discover(bin, key, cwd, query).catch(() => {});
+    return { source: 'cache', models: _cache.models };
+  }
+  return discover(bin, key, cwd, query);
+}
 
-  _inflight = (async () => {
+function discover(bin, key, cwd, query) {
+  if (_inflight.has(key)) return _inflight.get(key);
+  const job = (async () => {
     try {
       const raw = await query(bin, { cwd });
       const models = normalizeClaudeModels(raw);
       if (models.length) {
         const changed = claudeModelsSignature(models) !== claudeModelsSignature(_cache.models);
         _cache = { at: Date.now(), key, models };
+        try { _store?.write({ key, at: _cache.at, models }); } catch { /* kept in memory still */ }
         if (changed) notifyModelsChanged(models);
         return { source: 'cli', models };
       }
       return { source: 'fallback', models: [...CLAUDE_FALLBACK_MODELS] };
     } finally {
-      _inflight = null;
+      if (_inflight.get(key) === job) _inflight.delete(key);
     }
   })();
-  return _inflight;
+  _inflight.set(key, job);
+  return job;
+}
+
+/** The kept list is due again: the next read still answers with it and asks the CLI in the background. */
+export function markClaudeModelsStale() {
+  _cache = { ..._cache, at: 0 };
 }
 
 export function clearClaudeModelCache() {
   _cache = { at: 0, key: '', models: [] };
+  _inflight.clear();
+  _storeRead = !!_store;
   _skewCache = { key: null, result: undefined };
   _skewInflight.clear();
 }

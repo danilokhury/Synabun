@@ -14,8 +14,8 @@ import { t } from './i18n.js';
 import { registerAction } from './ui-keybinds.js';
 import { isGuest, hasPermission, showGuestToast } from './ui-sync.js';
 import { createAssistantHosts, describeBrainFallback } from './assistant/asst-hosts.js';
-import { createAssistantSession, getAssistantSession, listAssistantSessions } from './assistant/asst-api.js';
-import { providerShortLabel, readStoredBrain } from './assistant/asst-state.js';
+import { createAssistantSession, getAssistantSession, listAssistantSessions, removeAssistantSession } from './assistant/asst-api.js';
+import { providerShortLabel, readStoredBrain, tabStorageKey } from './assistant/asst-state.js';
 
 /** Guests need the terminal permission for the Assistant, in either host. */
 export function assistantBlocked() {
@@ -30,7 +30,7 @@ function brainFallbackText(fallback) {
 }
 
 const hosts = createAssistantHosts({
-  api: { list: listAssistantSessions, get: getAssistantSession, create: createAssistantSession },
+  api: { list: listAssistantSessions, get: getAssistantSession, create: createAssistantSession, remove: removeAssistantSession },
   isBlocked: assistantBlocked,
   toast: (text) => showGuestToast(text),
   storedBrain: () => readStoredBrain(storage),
@@ -48,6 +48,11 @@ export const noteAssistantFocus = (sessionId, hostId) => hosts.noteFocus(session
 
 let _initialized = false;
 
+/** A removed session's per-tab UI state (composer draft, dock, route mode): written by its tab as it closes, then dropped. */
+function forgetTabState(sessionId) {
+  try { storage.removeItem(tabStorageKey(sessionId)); } catch { /* storage unavailable */ }
+}
+
 /** Bus events + keybinds for both hosts. Idempotent: initNavbar and initTerminal both call it. */
 export function initAssistant() {
   if (_initialized) return;
@@ -60,8 +65,24 @@ export function initAssistant() {
     floating: data?.floating,
     prompt: data?.prompt,
   }));
-  on('assistant:resume', (data) => {
-    if (data?.sessionId) hosts.open({ resume: data.sessionId, host: data?.host || null, floating: data?.floating });
+  // `replaces`: the session the user left by picking this one, when nobody chatted in it: it goes.
+  on('assistant:resume', async (data) => {
+    if (!data?.sessionId) return;
+    const res = await hosts.open({ resume: data.sessionId, host: data?.host || null, floating: data?.floating });
+    if (res && data.replaces && data.replaces !== data.sessionId) hosts.discard(data.replaces);
+  });
+  // Sessions menu → Remove. `done(result)` tells the menu that asked how it went.
+  on('assistant:remove', (data) => {
+    if (!data?.sessionId) return;
+    hosts.remove(data.sessionId, { host: data.host || null, fresh: data.fresh === true, brain: data.brain || null })
+      .then((result) => {
+        if (result?.ok) forgetTabState(data.sessionId);
+        try { data.done?.(result); } catch { /* the menu is gone */ }
+      });
+  });
+  // A session the server no longer has: its tab closes (a fresh one in its place when it was showing unused).
+  on('assistant:gone', (data) => {
+    if (data?.sessionId) hosts.gone(data.sessionId, { host: data.host || null, fresh: data.fresh === true, brain: data.brain || null }).finally(() => forgetTabState(data.sessionId));
   });
   on('assistant:toggle', () => hosts.toggle());
   // Notification clicks (toasts and OS banners) — see ui-notifications _getNotifMeta.
@@ -71,6 +92,7 @@ export function initAssistant() {
   on('sync:assistant:session-ended', (msg) => {
     const id = msg?.sessionId || msg?.session?.id || msg?.id;
     if (id) hosts.ended(id);
+    if (id && msg?.destroyed) forgetTabState(id); // removed for good: its tab's UI state goes too
   });
   registerAction('launch-assistant', () => hosts.openOrFocus());
   registerAction('toggle-assistant', () => hosts.toggle());

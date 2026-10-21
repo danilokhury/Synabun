@@ -2737,11 +2737,11 @@ const CHILD_CSS = `
 }
 .ocpv2-panel-child.sp-floating > .ocpv2-header { font-size: var(--fw-header-control-size); }
 /* The sub-agent's name keeps a readable 88px (or its own width if shorter):
-   the chain of parents gives way first. */
+   the parents between the way back and the nearest parent give way first. */
 .ocpv2-panel-child .ocpv2-session-btn { flex: 1 0 88px; }
-/* The chain of parents: at most 40% of the row, and it gives way before the
-   name. When it is cut, it is cut from the left, so the nearest parent (the
-   last crumb, which keeps its own width, at most 140px) stays readable. */
+/* The chain of parents: at most 40% of the row. Its first crumb is the way
+   back to the main panel (.ocpv2-child-parent-link) and is on screen at every
+   width; the crumbs after it give way before it does. */
 .ocpv2-panel-child .ocpv2-child-crumbs {
   display: inline-flex;
   align-items: center;
@@ -2754,28 +2754,53 @@ const CHILD_CSS = `
   margin-right: 6px;
 }
 .ocpv2-panel-child .ocpv2-child-crumbs:empty { display: none; }
+/* The nearest parent keeps its own width (at most 140px); the ones between
+   it and the way back shrink first. */
 .ocpv2-panel-child .ocpv2-child-crumbs > .ocpv2-child-crumb:last-child { flex-shrink: 0; }
-/* Narrow headers, in order: with less than 140px for the chain, only the
-   nearest parent shows, truncated; with less than 64px, the chain is hidden
-   and the name goes down to its caret. Room counted in controls (em) plus px:
-   docked, the pencil and six buttons are 7em with 18px of gaps; detached, the
-   move handle makes 8em and the window's 6px gaps 42px. Thresholds: the
-   name's 88px + the chain's 6px margin + 140px or 64px + that row. */
+.ocpv2-panel-child .ocpv2-child-crumbs > .ocpv2-child-crumb:not(:first-child):not(:last-child) { flex-shrink: 100; min-width: 0; }
+.ocpv2-panel-child .ocpv2-child-crumbs > .ocpv2-child-parent-link { flex-shrink: 1; }
+/* Narrow headers, in order: with less than 140px for the chain, the way back
+   and the nearest parent show, truncated; with less than 64px, the way back is
+   its arrow alone (a header control, named by its tooltip) and the name takes
+   the rest; detached, when the name would get less than its 32px, Slide (which
+   does what Minimize does here) and then "New session in main panel" give way.
+   Room counted in controls (em) plus px: docked, the pencil and six buttons are
+   7em with 18px of gaps; detached, the move handle makes 8em and the window's
+   6px gaps 42px. Thresholds: the name's 88px + the chain's 6px margin + 140px
+   or 64px + that row. Detached with the arrow alone, the move handle, the
+   arrow, the pencil and six buttons are 9em with 48px of gaps and margins:
+   + 32px for the name, and one button (1em + 3px) less once Slide is gone. */
 @container ocpv2-child-header (width < calc(7em + 252px)) {
-  .ocpv2-panel-child:not(.sp-floating) .ocpv2-child-crumbs > :not(:last-child) { display: none; }
-  .ocpv2-panel-child:not(.sp-floating) .ocpv2-child-crumbs > .ocpv2-child-crumb:last-child { flex-shrink: 1; min-width: 0; }
+  .ocpv2-panel-child:not(.sp-floating) .ocpv2-child-crumbs > :not(:first-child):not(:last-child):not(:nth-last-child(2)) { display: none; }
+  .ocpv2-panel-child:not(.sp-floating) .ocpv2-child-crumbs > .ocpv2-child-crumb:last-child:not(.ocpv2-child-parent-link) { flex-shrink: 1; min-width: 0; }
 }
 @container ocpv2-child-header (width < calc(7em + 176px)) {
-  .ocpv2-panel-child:not(.sp-floating) .ocpv2-child-crumbs { display: none; }
+  .ocpv2-panel-child:not(.sp-floating) .ocpv2-child-crumbs > :not(:first-child) { display: none; }
+  .ocpv2-panel-child:not(.sp-floating) .ocpv2-child-crumbs { flex-shrink: 0; max-width: none; }
   .ocpv2-panel-child:not(.sp-floating) .ocpv2-session-btn { flex: 1 1 0; }
+  .ocpv2-panel-child:not(.sp-floating) .ocpv2-child-parent-label { display: none; }
+  .ocpv2-panel-child:not(.sp-floating) .ocpv2-child-parent-link { width: 24px; height: 24px; min-width: 0; padding: 0; }
+  .ocpv2-panel-child:not(.sp-floating) .ocpv2-child-parent-arrow { width: auto; height: auto; font-size: 13px; line-height: 1; }
 }
 @container ocpv2-child-header (width < calc(8em + 276px)) {
-  .ocpv2-panel-child.sp-floating .ocpv2-child-crumbs > :not(:last-child) { display: none; }
-  .ocpv2-panel-child.sp-floating .ocpv2-child-crumbs > .ocpv2-child-crumb:last-child { flex-shrink: 1; min-width: 0; }
+  .ocpv2-panel-child.sp-floating .ocpv2-child-crumbs > :not(:first-child):not(:last-child):not(:nth-last-child(2)) { display: none; }
+  .ocpv2-panel-child.sp-floating .ocpv2-child-crumbs > .ocpv2-child-crumb:last-child:not(.ocpv2-child-parent-link) { flex-shrink: 1; min-width: 0; }
 }
 @container ocpv2-child-header (width < calc(8em + 200px)) {
-  .ocpv2-panel-child.sp-floating .ocpv2-child-crumbs { display: none; }
+  .ocpv2-panel-child.sp-floating .ocpv2-child-crumbs > :not(:first-child) { display: none; }
+  .ocpv2-panel-child.sp-floating .ocpv2-child-crumbs { flex-shrink: 0; max-width: none; }
   .ocpv2-panel-child.sp-floating .ocpv2-session-btn { flex: 1 1 0; }
+  .ocpv2-panel-child.sp-floating .ocpv2-child-parent-label { display: none; }
+  .ocpv2-panel-child.sp-floating .ocpv2-child-parent-link {
+    width: var(--fw-header-control-size); height: var(--fw-header-control-size); min-width: 0; padding: 0;
+  }
+  .ocpv2-panel-child.sp-floating .ocpv2-child-parent-arrow { width: auto; height: auto; font-size: 13px; line-height: 1; }
+}
+@container ocpv2-child-header (width < calc(9em + 80px)) {
+  .ocpv2-panel-child.sp-floating .ocpv2-btn-slide { display: none; }
+}
+@container ocpv2-child-header (width < calc(8em + 77px)) {
+  .ocpv2-panel-child.sp-floating .ocpv2-btn-new { display: none; }
 }
 .ocpv2-panel-child .ocpv2-child-crumb-sep {
   flex-shrink: 0;
@@ -2785,6 +2810,7 @@ const CHILD_CSS = `
 .ocpv2-panel-child .ocpv2-child-crumb {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 4px;
   background: transparent;
   border: 1px solid rgba(255,255,255,0.06);
@@ -2890,12 +2916,15 @@ const CHILD_CSS = `
   color: #ffd591;
   border-color: rgba(245, 165, 36, 0.55);
 }
-/* Waiting for an answer: the one state that needs the user. */
-.ocpv2-session-pill-child.ocpv2-pill-waiting {
+/* Waiting for an answer: the one state that needs the user. A sub-agent's pill, and a session tab's (an
+   automation whose turn waits on a permission or a question). */
+.ocpv2-session-pill-child.ocpv2-pill-waiting,
+.ocpv2-session-pill.ocpv2-pill-waiting {
   border-color: rgba(245, 165, 36, 0.85) !important;
   animation: ocpv2-pill-waiting 1.6s ease-in-out infinite;
 }
-.ocpv2-session-pill-child.ocpv2-pill-waiting .term-minimized-pill-icon { color: #f5a524; }
+.ocpv2-session-pill-child.ocpv2-pill-waiting .term-minimized-pill-icon,
+.ocpv2-session-pill.ocpv2-pill-waiting .term-minimized-pill-icon { color: #f5a524; }
 @keyframes ocpv2-pill-waiting {
   0%, 100% { box-shadow: 0 0 0 1px rgba(245, 165, 36, 0.25), 0 0 8px rgba(245, 165, 36, 0.2); }
   50%      { box-shadow: 0 0 0 1px rgba(245, 165, 36, 0.5), 0 0 16px rgba(245, 165, 36, 0.5); }

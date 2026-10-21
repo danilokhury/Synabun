@@ -125,6 +125,8 @@ import { createCliResolver, spawnArgsFor } from './lib/cli-resolver.js';
 import { osPath } from './lib/os-path.js';
 import { createCliInstaller, CLI_INSTALL_GUIDES } from './lib/cli-install.js';
 import { createCliInstallApi, createCliPathApi, createGitBashApi } from './lib/cli-install-api.js';
+import { createAppControlsApi, createAppSettingsStore } from './lib/app-controls-api.js';
+import { createLoginStart } from './lib/login-start.js';
 import { createCliPathManager } from './lib/cli-path.js';
 import { composeTerminalPath, terminalLaunchCommand, terminalArgument } from './lib/terminal-path.js';
 import {
@@ -145,6 +147,11 @@ import {
 } from './lib/backup-zip-reader.js';
 import { planRestoreWrites, removeRestoreUpload, saveRestoreUpload } from './lib/system-restore.js';
 import * as opencodeV2Client from './lib/opencode-v2-client.js';
+import { basicAuthHeader, checkOpencodeServer, opencodeProblemText, protocolForVersion, serveSpecFor } from './lib/opencode-protocol.js';
+import { SERVE_TOKEN_ENV } from './lib/process-identity.js';
+import { createServeRecords } from './lib/opencode-serve-records.js';
+import { opencode2Proxy } from './lib/opencode2-proxy.js';
+import { opencodeDbFlavor, sessionTablesFor } from './lib/opencode-db-schema.js';
 import {
   handleOpencodeV2Request, opencodeV2WsCapabilities, opencodeSdkVersion, buildOpencodeRuntimeMcpConfig, shouldRelayOpencodeV2Message,
   buildSessionListQuery, mapSessionListRow, OPENCODE_V2_WS_MUTATION_TYPES, guardOpencodeV2Request,
@@ -160,6 +167,7 @@ import {
   createCodexNativeLoopAdapter,
   createOpenCodeNativeLoopAdapter,
 } from './lib/native-loop-providers.js';
+import { createOpenCodeActivityRelay } from './lib/opencode-worker-activity.js';
 import {
   mergeCodexModelContextCapabilities,
   resolveCodexExtendedContext,
@@ -238,15 +246,20 @@ import { generateSessionTitle } from './lib/session-title-generator.js';
 import {
   CLAUDE_EFFORT_LEVELS,
   CLAUDE_FALLBACK_MODELS,
+  binaryIdentity,
   checkClaudeCliSkew,
   discoverClaudeModels,
+  markClaudeModelsStale,
   onClaudeModelsChanged,
+  setClaudeModelStore,
   shellCommand,
 } from './lib/claude-model-catalog.js';
+import { createLaunchCache, createLimiter, createSnapshotStore, launchCacheDir } from './lib/launch-cache.js';
+import { compactProviderCatalog, isProviderCatalog, providerCatalogSignature } from './lib/opencode-provider-view.js';
 import { resolveClaudeSdkExecutable } from './lib/claude-executable.js';
 import { collectInstallDetails } from './lib/install-details.js';
 import { withPathEnv, pathEnvValue, getAugmentedPath, rememberedOsPath, rememberPackagedPath, rememberedPackagedPath, withPackagedPathLast } from './lib/augmented-path.js';
-import { readCodexSettingsSchema, readCodexFeatureSupport, validateCodexSettings } from './lib/codex-settings-schema.js';
+import { cachedCodexSettingsSchema, readCodexSettingsSchema, readCodexFeatureSupport, setCodexSettingsStore, validateCodexSettings } from './lib/codex-settings-schema.js';
 import { semverNewer, synabunReleaseChannel } from './lib/synabun-version.js';
 import { selectSynabunUpdate, buildSynabunInstallPlan, refuseStaleUpdateClick } from './lib/synabun-update-plan.js';
 import { collectActivity, countWhere, recentCliSessions } from './lib/system-activity.js';
@@ -277,7 +290,7 @@ import {
 import { ensureProjectCategories as ensureProjectCategoriesInFile, ensureCategories as ensureCategoriesInFile, FEATURE_CATEGORIES } from '../hooks/claude-code/shared.mjs';
 import { getDataHome, getDataHomeDiagnostics, isGlobalInstall, pathIsInside } from '../lib/paths.js';
 import { launcherLogPath } from '../lib/first-launch-protection.js';
-import { registerStartLauncher, startLauncherState } from '../lib/start-launcher.js';
+import { launcherRegistrationAllowed, registerStartLauncher, startLauncherState } from '../lib/start-launcher.js';
 import { effectiveNpmPrefix } from '../lib/child-path.js';
 import { checkRuntimeDependencies, fallbackInstallArgs, fallbackInstallEnv, findInstalled, mcpCompiler, npmCommand, npmInvocation } from '../lib/runtime-dependencies.js';
 import { redactDeep, redactSecrets } from '../lib/log-redact.js';
@@ -307,6 +320,7 @@ import {
   clearOpenCodeHistoryInWorker,
   getOpenCodeHistoryStats,
   OPENCODE_HISTORY_CONFIRMATION,
+  OPENCODE2_HISTORY_REFUSAL,
 } from './lib/opencode-history.js';
 import {
   clearProjectStorageInWorker,
@@ -461,6 +475,8 @@ import {
 import { createOpencodeCompletionEngine } from './lib/editor-completion-opencode.js';
 import { createEndpointCompletionEngine } from './lib/editor-completion-endpoint.js';
 import { ownerRouteGuard } from './lib/http-guards.js';
+import { setUntrustedFileHeaders } from './lib/untrusted-file-headers.js';
+import { BUNDLED_LOGO_FILES, UPLOADED_IMAGE_PATH } from './lib/request-gate.js';
 import { createCloudflaredManager } from './lib/cloudflared/manager.js';
 import { createQuickTunnel } from './lib/cloudflared/tunnel.js';
 import { createGitBashManager } from './lib/git-bash/manager.js';
@@ -471,6 +487,9 @@ const PORT = process.env.NEURAL_PORT || 3344;
 const EMBEDDING_DIMS = getEmbeddingDims();
 const PACKAGE_ROOT = resolve(__dirname, '..');
 const DATA_HOME = getDataHome();
+// Where the slow lists windows and menus wait for (model lists, OpenCode's providers, Codex probes) are kept
+// across restarts (lib/launch-cache.js): disposable, so outside data/ (no backup carries them) and outside the package.
+const LAUNCH_CACHE_DIR = launchCacheDir(DATA_HOME);
 registerCodexPlanRoutes(app, resolve(DATA_HOME, 'data', 'codex-plans'));
 const DATA_HOME_DIAGNOSTICS = getDataHomeDiagnostics(DATA_HOME, PACKAGE_ROOT);
 const CODEX_SIDEPANEL_PERMISSIONS_PATH = resolve(DATA_HOME, 'data', 'codex-sidepanel-permissions.json');
@@ -833,11 +852,19 @@ app.use('/skins', express.static(join(__dirname, 'skins'), {
   lastModified: true,
   setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache'),
 }));
+// The user's own file icons (POST /api/file-icons, SVG among them): an <img> shows them, opened by their address
+// they run nothing and an SVG is a download (lib/untrusted-file-headers.js).
 app.use('/custom-icons', express.static(CUSTOM_ICONS_DIR, {
   etag: true,
   lastModified: true,
-  setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache'),
+  setHeaders: (res, path) => { res.setHeader('Cache-Control', 'no-cache'); setUntrustedFileHeaders(res, path); },
 }));
+// A category's uploaded logo sits beside the app's own files ("/logo-<name>.<ext>"): it gets the same headers.
+app.use(function uploadedLogoHeaders(req, res, next) {
+  const path = String(req.path || '').toLowerCase();
+  if (UPLOADED_IMAGE_PATH.test(path) && (!BUNDLED_LOGO_FILES.includes(path) || isCategoryUpload(path))) setUntrustedFileHeaders(res, path);
+  next();
+});
 app.use(express.static(join(__dirname, 'public'), {
   etag: true,
   lastModified: true,
@@ -3473,22 +3500,60 @@ function getNativeCodexBin() {
 // its full path; on Windows the opencode.exe found, started directly with the
 // PATH a new terminal has (a command file that leads nowhere: through cmd.exe,
 // every word escaped). A command line in Settings is run as written.
-function opencodeServeLaunch(port, { env = process.env } = {}) {
+// `protocol` is the OpenCode major it is (detectOpencodeProtocol): OpenCode 2
+// also gets its loopback host and a fresh password (lib/opencode-protocol.js
+// serveSpecFor), which the answer carries as `password`.
+function opencodeServeLaunch(port, { env = process.env, protocol = 1, password = null } = {}) {
   const found = cliResolver.launcher('opencode');
   _noteCliLookup('opencode', found, 'OpenCode');
   const line = configuredCommandLine('opencode');
+  const spec = serveSpecFor(protocol, port, { env, password });
+  const words = spec.args.join(' ');
   if (IS_WIN) {
-    const spawnEnv = withPathEnv(env, getAugmentedPath());
+    const spawnEnv = withPathEnv(spec.env, getAugmentedPath());
     if (!line && found.spec) {
-      const launch = spawnArgsFor(found.spec, ['serve', '--port', String(port)], { env: spawnEnv });
-      return { command: launch.command, args: launch.args, options: { ...launch.options, env: spawnEnv, windowsHide: true }, label: `${found.launchPath} serve --port ${port}` };
+      const launch = spawnArgsFor(found.spec, spec.args, { env: spawnEnv });
+      return { command: launch.command, args: launch.args, options: { ...launch.options, env: spawnEnv, windowsHide: true }, label: `${found.launchPath} ${words}`, password: spec.password };
     }
-    const text = `${line || 'opencode'} serve --port ${port}`;
-    return { command: DEFAULT_SHELL, args: ['/d', '/s', '/c', text], options: { env: spawnEnv, windowsHide: true }, label: text };
+    const text = `${line || 'opencode'} ${words}`;
+    return { command: DEFAULT_SHELL, args: ['/d', '/s', '/c', text], options: { env: spawnEnv, windowsHide: true }, label: text, password: spec.password };
   }
   const cmd = line || (found.path ? shellSingleQuote(found.path) : 'opencode');
   // A packaged application's runtime and npm after the user's own (the login shell adds the user's profile on top).
-  return { command: DEFAULT_SHELL, args: ['-lc', `exec ${cmd} serve --port ${port}`], options: { env: withPackagedPathLast(env) }, label: `${cmd} serve --port ${port}` };
+  return { command: DEFAULT_SHELL, args: ['-lc', `exec ${cmd} ${words}`], options: { env: withPackagedPathLast(spec.env) }, label: `${cmd} ${words}`, password: spec.password };
+}
+
+// Which OpenCode major the binary SynaBun starts is: the resolver's `--version`
+// of it (cached by the file, so an upgrade in place is read again), then
+// lib/opencode-protocol.js protocolForVersion. `{ protocol: 1 | 2 | null,
+// major, version, supported, reason, path }`; `protocol` null with `supported`
+// false and a `major` is an OpenCode SynaBun does not speak (3 and later). A
+// command line in Settings has no version to read (`protocol` null, `major`
+// null): its serve is told apart by what answers (checkOpencodeServer).
+async function detectOpencodeProtocol({ force = false } = {}) {
+  let found = cliResolver.launcher('opencode');
+  if (configuredCommandLine('opencode')) {
+    return { protocol: null, major: null, version: null, supported: true, reason: null, path: null, commandLine: true };
+  }
+  let version = found.version || null;
+  if (!version || force || found.state === 'unverified') {
+    try {
+      const status = await cliResolver.resolve('opencode', { force });
+      version = status?.version || version;
+      found = cliResolver.launcher('opencode');
+      version = found.version || version;
+    } catch { /* the launch below says what is wrong */ }
+  }
+  if (!found.path) return { protocol: null, major: null, version: null, supported: false, reason: 'OpenCode is not installed.', path: null };
+  return { ...protocolForVersion(version), path: found.path };
+}
+
+// The OpenCode major as far as it is known now, without starting anything (for
+// a command line built at once): the resolver's cached --version, else the
+// major the shared serve answered with, else 1.
+function knownOpencodeMajor() {
+  const fromVersion = protocolForVersion(cliResolver.launcher('opencode').version).protocol;
+  return fromVersion || _ocpProtocol || 1;
 }
 
 function extractCodexConfigValues(result) {
@@ -3784,6 +3849,8 @@ function _codexAccounts() {
         broadcastSync({ type: 'codex:accounts-changed', accountId: event.accountId || null, removed: !!event.removed, created: !!event.created });
         broadcastSync({ type: 'assistant:accounts-changed', provider: 'codex', accountId: event.accountId || null, removed: !!event.removed });
         _assistantCatalog?.invalidate?.();
+        // The account's model list is read again (another sign-in is another key; a removed account's is dropped).
+        codexModelListsChanged(event.accountId || null, { removed: !!event.removed });
       } catch {}
     });
   }
@@ -4036,7 +4103,7 @@ CRITICAL — When you need clarification during planning:
       codexSessionSettings.set(activeAccountId, threadId, settings);
     }
     if (['skills_config_write', 'experimental_features_set'].includes(type)) {
-      if (type === 'experimental_features_set') codexContextModels = [];
+      if (type === 'experimental_features_set') { codexContextModels = []; codexModelListsChanged(null); }
       sendToClient({ type: 'catalogs_changed', catalogs: type === 'skills_config_write' ? ['skills'] : ['models', 'skills', 'apps', 'mcp', 'features'] });
     }
   }
@@ -4547,9 +4614,10 @@ CRITICAL — When you need clarification during planning:
   }
 
   async function readSettingsMetadata() {
-    const schema = readCodexSettingsSchema(getCodexBin());
+    // Both probes start Codex itself, off the event loop, once per binary (kept across restarts).
+    const schema = await readCodexSettingsSchema(getCodexBin());
     const features = await listCodexPages(request, 'experimentalFeature/list', { limit: 100 });
-    const featureSupport = readCodexFeatureSupport(getCodexBin(), features.data);
+    const featureSupport = await readCodexFeatureSupport(getCodexBin(), features.data);
     // The catalog's enabled field is a process-start snapshot. config/read is
     // authoritative for saved defaults after reloadUserConfig writes.
     return { ...schema, features: features.data.map(feature => ({ ...feature,
@@ -5540,12 +5608,12 @@ CRITICAL — When you need clarification during planning:
     // Sync tool approvals only after the base transport is known to be valid.
     syncCodexToolPermissions([..._codexPermittedTools], activeCodexHome);
     const codexBin = getCodexBin();
+    // The version the resolver read (its `--version`, cached per binary and asked off the request): a
+    // blocking spawn here froze the whole server for up to 5 s. Before the first probe of a binary it is
+    // null, and the app-server's own userAgent fills it in at initialize (below).
     let cliVersion = null;
     let sdkVersion = null;
-    try {
-      const versionResult = spawnSync(codexBin, ['--version'], { encoding: 'utf-8', timeout: 5000, windowsHide: true });
-      cliVersion = parseCodexVersion(versionResult.stdout);
-    } catch {}
+    try { cliVersion = parseCodexVersion(cliResolver.launcher('codex').version); } catch {}
     sdkVersion = findInstalled(__dirname, '@openai/codex-sdk', { stopAt: PACKAGE_ROOT })?.version || null;
     codexCapabilities.reset({ codexBin, codexBinSource: _codexBinSource, cliVersion, sdkVersion });
     startChild();
@@ -6433,11 +6501,18 @@ CRITICAL — When you need clarification during planning:
         }
         return;
       }
+      // The sandbox check below is synchronous: the schema it validates against is read first (asynchronously,
+      // once per Codex binary), so the check itself never starts Codex.
+      if (msg.type === 'thread_settings_update' && Object.prototype.hasOwnProperty.call(msg, 'sandboxMode') && msg.sandboxMode !== null) {
+        await readCodexSettingsSchema(getCodexBin()).catch(() => null);
+      }
       if (await handleCodexCompatMessage(msg, {
         activeThreadId, activeTurnId, cwd: PACKAGE_ROOT,
         role: codexRole, getActiveThreadId: () => activeThreadId,
         sandboxPolicyForMode: (mode, cwd) => {
-          validateCodexSettings({ sandbox_mode: mode }, readCodexSettingsSchema(getCodexBin()));
+          const schema = cachedCodexSettingsSchema(getCodexBin());
+          if (!schema) throw new Error('Codex could not report its settings schema');
+          validateCodexSettings({ sandbox_mode: mode }, schema);
           return buildCodexSandboxPolicy(cwd, mode);
         },
         limitAppCall: message => appBoundary.consume(activeThreadId, message.originCallId),
@@ -6784,6 +6859,8 @@ CRITICAL — When you need clarification during planning:
           await request('config/batchWrite', { edits, reloadUserConfig: true }, 10000);
           const config = await readConfigState(msg.cwd || PACKAGE_ROOT);
           codexContextModels = [];
+          // config.toml is every account's (shared): their kept model lists are read again.
+          codexModelListsChanged(null);
           sendToClient({ type: 'config_saved', requestId: msg.requestId || null, config });
           sendToClient({ type: 'catalogs_changed', catalogs: ['models', 'skills', 'apps', 'mcp', 'features', 'config'] });
         } catch (err) {
@@ -7434,8 +7511,63 @@ CRITICAL — When you need clarification during planning:
   ws.on('close', handleCodexSocketClose);
 }
 
-const _codexModelListCache = new Map();
-const CODEX_MODEL_LIST_CACHE_MS = 60_000;
+// The Codex model list of each account (GET /api/codex/models, the Studios' model check, the Assistant's
+// catalog through the route): read from the account's app-server, answered at once from the last good list
+// (lib/launch-cache.js, kept across restarts) and read again in the background once it is old. Keyed on what
+// it depends on: the account and its home, the Codex binary (an update is another binary) and the account's
+// sign-in, so one account's list is never given for another. An empty list is what a failure leaves (Codex
+// missing, signed out): never kept.
+const CODEX_MODEL_LIST_CACHE_MS = 10 * 60_000;
+
+function codexModelListKey(accountId) {
+  const id = String(accountId || 'default');
+  const account = findCodexAccount(id);
+  let signIn = '';
+  try {
+    const row = _codexAccounts().describe(id);
+    signIn = createHash('sha256').update(`${row?.mode || ''}\n${row?.identity || ''}\n${row?.signedIn}`).digest('hex').slice(0, 16);
+  } catch { /* unreadable: keyed on the rest */ }
+  return JSON.stringify([id, account?.home || CODEX_DEFAULT_HOME, binaryIdentity(configuredCommandLine('codex') || getCodexBin()), signIn]);
+}
+
+const _codexModelListCache = createLaunchCache({
+  name: 'codex-models',
+  dir: LAUNCH_CACHE_DIR,
+  ttlMs: CODEX_MODEL_LIST_CACHE_MS,
+  maxEntries: 24,
+  load: async (key) => {
+    const [accountId] = JSON.parse(key);
+    const account = findCodexAccount(accountId);
+    if (!account) throw new Error(`Codex account not found: ${accountId}`);
+    const codexHome = account.home || CODEX_DEFAULT_HOME;
+    return mergeCodexModelContextCapabilities(
+      await queryCodexAppServerModels(codexHome, _codexAccounts().launchFor(account.id)),
+      readCodexRuntimeModelCatalog(codexHome),
+    );
+  },
+  accept: (models) => Array.isArray(models) && models.length > 0,
+  // The Assistant's catalog is built from the default account's list: when that list changes, its copy is
+  // dropped and rebuilt (which tells the open windows).
+  onChange: (key) => {
+    try { if (JSON.parse(key)[0] === 'default') _assistantCatalog?.refresh?.().catch(() => {}); } catch {}
+  },
+  log: (message) => console.warn(message),
+});
+
+/**
+ * A Codex account changed (sign-in, mode, removal) or its config was saved (`accountId` null: every
+ * account): its kept lists are asked for again in the background, a removed account's are dropped.
+ */
+function codexModelListsChanged(accountId = null, { removed = false } = {}) {
+  for (const key of _codexModelListCache.keys()) {
+    let id = null;
+    try { id = JSON.parse(key)[0]; } catch { continue; }
+    if (accountId && id !== accountId) continue;
+    if (removed) _codexModelListCache.invalidate(key);
+    else _codexModelListCache.markStale(key);
+  }
+  if (!removed) scheduleLaunchRefresh('codex-models');
+}
 
 // `launch` (lib/codex-accounts.js launchFor()): the list is read under the account's own credential,
 // with no inherited one, as its sessions would run (in API-key mode, the key it holds over stdin).
@@ -7563,22 +7695,11 @@ app.get('/api/codex/models', async (req, res) => {
     const accountId = String(req.query?.accountId || 'default');
     const account = findCodexAccount(accountId);
     if (!account) return res.status(404).json({ ok: false, error: `Codex account not found: ${accountId}`, models: [] });
-    const codexHome = account.home || CODEX_DEFAULT_HOME;
+    // The kept list at once (read again in the background when old); a first read, another sign-in or
+    // binary, or ?refresh=1 waits for the account's app-server.
     const force = req.query?.refresh === '1';
-    const cached = _codexModelListCache.get(codexHome);
-    if (!force && cached?.models.length && Date.now() - cached.at < CODEX_MODEL_LIST_CACHE_MS) {
-      return res.json({ ok: true, source: 'cache', models: cached.models });
-    }
-    const models = mergeCodexModelContextCapabilities(
-      await queryCodexAppServerModels(codexHome, _codexAccounts().launchFor(account.id)),
-      readCodexRuntimeModelCatalog(codexHome),
-    );
-    // The Assistant's catalog is built from the default account's list: when that list
-    // changes, its copy is dropped and rebuilt (which tells the open windows).
-    const listChanged = codexHome === CODEX_DEFAULT_HOME && !!cached && JSON.stringify(cached.models) !== JSON.stringify(models);
-    _codexModelListCache.set(codexHome, { at: Date.now(), models });
-    if (listChanged) _assistantCatalog?.refresh?.().catch(() => {});
-    res.json({ ok: true, source: 'codex-app-server', models });
+    const { value: models, cached } = await _codexModelListCache.read(codexModelListKey(account.id), { refresh: force });
+    res.json({ ok: true, source: cached ? 'cache' : 'codex-app-server', models: Array.isArray(models) ? models : [] });
   } catch (err) {
     res.json({ ok: false, source: 'fallback', error: err.message, models: [] });
   }
@@ -7614,6 +7735,12 @@ let _ocpBaseUrl = () => `http://127.0.0.1:${_ocpPort}`;
 let _ocpStarting = false;
 let _ocpReady = false;
 let _ocpVersion = null;
+// The OpenCode major the shared serve speaks (1 or 2; null until one answered),
+// the password SynaBun gave the OpenCode 2 serve it started, and the sentence
+// that says why OpenCode cannot be used (shown by the panel and the tray).
+let _ocpProtocol = null;
+let _ocpPassword = null;
+let _ocpProblem = null;
 let _ocpHistoryClearInProgress = false;
 
 // ── OpenCode V2 (clean-slate sidepanel) — client set & bridge ──
@@ -7621,9 +7748,18 @@ const _ocpV2WsClients = new Set();   // all connected /ws/opencode-v2 clients
 let _ocpV2ListenerInstalled = false;
 let _ocpV2ClientSeq = 0;
 const OCP_MANAGED_PID_PATH = resolve(DATA_HOME, 'data', 'opencode-managed.pid');
+// Every OpenCode serve SynaBun starts, on record while it runs (lib/opencode-serve-records.js): what a crash left
+// running is found by these records alone, and stopped only when it is provably SynaBun's and nothing uses it.
+// Process state of this machine, so outside data/ (no backup or restore carries it).
+const opencodeServeRecords = createServeRecords({
+  dir: resolve(DATA_HOME, 'runtime', 'opencode-serves'),
+  log: (message) => console.log(`[opencode] ${message}`),
+});
+migrateOpencodeManagedPid();
 let _ocpBootReconcileTried = false;
 let _ocpLastBootAt = 0;           // Date.now() when serve process last became ready
 let _ocpAuthReconciling = false;  // prevent concurrent reconciliation
+let _ocpAuthStaleNoted = 0;       // the boot whose server SynaBun said it would not restart (once per boot)
 
 // ── Verbose trace logging (opt-in: OCP_VERBOSE=1 to enable) ──
 const OCP_VERBOSE = process.env.OCP_VERBOSE === '1';
@@ -7688,24 +7824,95 @@ function persistMcpToOpencodeConfig(name, mcpConfig) {
   console.log(`[opencode] Persisted MCP server "${name}" to ${configPath}`);
 }
 
-function readOpencodeManagedPid() {
-  try {
-    const pid = Number(readFileSync(OCP_MANAGED_PID_PATH, 'utf8').trim());
-    if (Number.isFinite(pid) && pid > 0) return pid;
-  } catch {}
-  return null;
+// opencode-managed.pid is where an older SynaBun kept its shared serve: a bare pid, or a record without the token,
+// machine, user, boot and owner every record holds now. Neither can ever prove which process it names, so neither
+// is ever acted on: the file goes, and a serve it named that still runs is left running.
+function migrateOpencodeManagedPid() {
+  try { unlinkSync(OCP_MANAGED_PID_PATH); } catch {}
 }
 
-function writeOpencodeManagedPid(pid) {
-  if (!Number.isFinite(pid) || pid <= 0) return;
-  try {
-    mkdirSync(dirname(OCP_MANAGED_PID_PATH), { recursive: true });
-    writeFileSync(OCP_MANAGED_PID_PATH, `${pid}\n`, 'utf8');
-  } catch {}
+// Every serve SynaBun starts is on record from its spawn until its process has ended (lib/opencode-serve-records.js):
+// the process SynaBun spawned at once, under the token SynaBun put in its environment (SERVE_TOKEN_ENV); and, once
+// something answers on its port, the process that answers when the spawned one started it (proved through the
+// parent chain). No other process is ever put on record. `answering()` says whether the serve that answers on the
+// port is this start's: 'ours', 'foreign' (another server took the port: a start collision, which is left running and
+// never recorded) or 'unknown' (the OS could not say who listens: only the spawned process stays on record). The
+// spawned process's record goes with its exit, which Node has seen; a process it started that outlives it stays on
+// record until it has provably ended. Every serve SynaBun starts comes through here: the shared serve, the isolated
+// serves, the completion serve.
+function trackOpencodeServe(proc, { kind, id = null, port, token }) {
+  const pid = Number(proc?.pid) || null;
+  const exited = () => !proc || proc.exitCode != null || proc.signalCode != null;
+  const spawned = pid ? opencodeServeRecords.record({ kind, id, port, pid, token }).catch(() => null) : Promise.resolve(null);
+  let started = Promise.resolve(null);
+  const forget = () => {
+    spawned.then((record) => { if (record) opencodeServeRecords.remove(record); }).catch(() => {});
+    started.then((record) => { if (record && opencodeServeRecords.verifySync(record) === 'gone') opencodeServeRecords.remove(record); }).catch(() => {});
+  };
+  if (exited()) forget();
+  else proc.once?.('exit', forget);
+  return {
+    spawned,
+    async answering() {
+      await spawned;
+      const who = await opencodeServeRecords.answering({ port, pid, exited });
+      if (who.state !== 'ours') return who.state;
+      // Read again now that it answers (its login shell has exec'd OpenCode by now), and the process that answers
+      // when the spawned one started it.
+      if (!exited()) await opencodeServeRecords.record({ kind, id, port, pid, token }).catch(() => null);
+      if (who.pid !== pid) started = opencodeServeRecords.record({ kind, id, port, pid: who.pid, token }).catch(() => null);
+      await started;
+      return 'ours';
+    },
+  };
 }
 
-function clearOpencodeManagedPid() {
-  try { if (existsSync(OCP_MANAGED_PID_PATH)) unlinkSync(OCP_MANAGED_PID_PATH); } catch {}
+// Look for the OpenCode serves an earlier SynaBun left running (lib/opencode-serve-records.js), when SynaBun
+// starts and before a port is picked for a serve: one look at a time, shared by everyone who waits for it.
+function sweepLeftoverOpencodeServes() {
+  return opencodeServeRecords.sweep().then((result) => {
+    if (result.stopped.length) console.log(`[opencode] stopped ${result.stopped.length} serve(s) an earlier SynaBun left running: ${result.stopped.map((r) => `${r.kind} on port ${r.port} (pid ${r.pid})`).join(', ')}`);
+    return result;
+  }, () => null);
+}
+
+// SynaBun's shared serve, on record (kind 'shared'), on `port` when one is named, the newest first: only a record
+// this server may act on (lib/opencode-serve-records.js claimable): written on this machine, for this user, in this
+// boot, and its own or one whose SynaBun has positively ended. Never another live SynaBun's (a data home two servers
+// share), one whose owner was never recorded or cannot be read now, or one of another machine or user: their serves
+// are servers SynaBun did not start, as far as this server is concerned.
+function readOpencodeManagedRecord({ port = null } = {}) {
+  return opencodeServeRecords.list({ kind: 'shared', port }).find((record) => opencodeServeRecords.claimable(record)) || null;
+}
+
+// A record goes once its process has provably ended (or its pid is another process's by now); one that cannot be
+// read now may still run, and stays.
+function clearOpencodeManagedPid(record = readOpencodeManagedRecord()) {
+  if (record && opencodeServeRecords.verifySync(record) === 'gone') opencodeServeRecords.remove(record);
+}
+
+// The recorded serves this server may act on while the OS still reports each as that very process: the same pid
+// and start time, the user's own, the token of its spawn in its environment (and, given a port, while it listens
+// there). Only such a process, or SynaBun's own child, is ever stopped.
+function verifiedOpencodeManagedProcesses({ port = null } = {}) {
+  return opencodeServeRecords.list({ kind: 'shared', port }).filter((record) => record.pid !== process.pid
+    && opencodeServeRecords.claimable(record)
+    && opencodeServeRecords.verifySync(record) === 'same'
+    && (port == null || process.platform === 'win32' || listPortListenerPids(port).includes(record.pid)));
+}
+
+function verifiedOpencodeManagedProcess({ port = null } = {}) {
+  return verifiedOpencodeManagedProcesses({ port })[0] || null;
+}
+
+// Signal SynaBun's recorded serve, checked once more right before: a pid that is another process by now, or one
+// that cannot be read, is left alone. Windows ends the serve's tree with taskkill.
+function signalOwnedOpencodeProcess(record, signal) {
+  if (!record || opencodeServeRecords.verifySync(record) !== 'same') return false;
+  if (process.platform === 'win32') {
+    try { spawn('taskkill', ['/pid', String(record.pid), '/T', '/F'], { shell: true, windowsHide: true, stdio: 'ignore' }); return true; } catch { return false; }
+  }
+  return signalPids([record.pid], signal).length > 0;
 }
 
 function parseOpencodeLogTimestamp(fileName) {
@@ -7748,7 +7955,9 @@ function shouldReconcileOpencodeForStoredAuth() {
   return false;
 }
 
-// Runtime auth reconciliation: restart serve if auth.json changed since last boot
+// Runtime auth reconciliation: restart serve if auth.json changed since last boot. Automatic, so only a serve
+// SynaBun can prove is its own is restarted (its child, or its recorded serve that is still that process); a
+// server someone else runs is used as it is, and said once.
 async function reconcileAuthIfStale() {
   if (_ocpAuthReconciling || !_ocpReady || !_ocpLastBootAt) return false;
   try {
@@ -7756,6 +7965,13 @@ async function reconcileAuthIfStale() {
     if (!existsSync(authPath)) return false;
     const authMtime = statSync(authPath).mtimeMs;
     if (authMtime <= _ocpLastBootAt) return false;
+    if (!_ocpProc && !verifiedOpencodeManagedProcess({ port: _ocpPort })) {
+      if (_ocpAuthStaleNoted !== _ocpLastBootAt) {
+        _ocpAuthStaleNoted = _ocpLastBootAt;
+        console.warn(`[opencode] auth.json changed, but the OpenCode server on port ${_ocpPort} was not started by SynaBun: it is not restarted (it shows the new credentials once whoever runs it restarts it)`);
+      }
+      return false;
+    }
     _ocpAuthReconciling = true;
     console.log('[opencode] auth.json modified after last boot — restarting to pick up new credentials');
     await takeoverOpencodeServer();
@@ -7779,15 +7995,7 @@ function listPortListenerPids(port) {
   return [];
 }
 
-function listOpencodeServePids() {
-  if (process.platform === 'win32') return [];
-  try {
-    const out = execSync('pgrep -f "opencode.*serve"', { encoding: 'utf8' }).trim();
-    return out.split('\n').filter(Boolean).map((pid) => Number(pid)).filter((pid) => Number.isFinite(pid) && pid > 0 && pid !== process.pid);
-  } catch {}
-  return [];
-}
-
+// The raw signal. Only signalOwnedOpencodeProcess calls it, for a process it has just checked is SynaBun's.
 function signalPids(pids, signal) {
   const targeted = [];
   for (const pid of pids) {
@@ -7797,19 +8005,6 @@ function signalPids(pids, signal) {
     } catch {}
   }
   return targeted;
-}
-
-async function waitForOpencodeShutdown(timeoutMs = 6000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const listenerPids = listPortListenerPids(_ocpPort);
-    if (!listenerPids.length) {
-      const healthy = await checkOpencodeHealth();
-      if (!healthy) return true;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-  return false;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -7846,7 +8041,15 @@ const OPENCODE_HISTORY_WRITE_TYPES = new Set([
   ...OPENCODE_V2_WS_MUTATION_TYPES,
 ]);
 
+// Set while the provider cache announces its own change (it is not a reason to read the list again).
+let _announcingOpencodeProviders = false;
+
 function broadcastToOpencodeV2Clients(data, { nativeRunId = null } = {}) {
+  // The kept provider list follows what the panels are told: a credential change, the serve becoming
+  // ready, a catalog event (the same ones the panel re-reads on, ocp-v2-status-logic.js).
+  if (data?.type === 'providers:changed' && !_announcingOpencodeProviders) noteOpencodeProvidersChanged({ announce: true });
+  else if (data?.type === 'server:status' && data.status === 'ready') noteOpencodeProvidersChanged();
+  else if (data?.type === 'event' && /^(?:catalog\.updated|models-dev\.refreshed|integration\.)/.test(String(data.eventType || ''))) noteOpencodeProvidersChanged();
   // OpenCode 1.18 mirrors every bus event as a `sync` envelope; the panel acts
   // on the bus event, so relaying the mirror only doubles the traffic.
   if (!shouldRelayOpencodeV2Message(data)) return;
@@ -7888,6 +8091,7 @@ function installOpencodeV2Listener() {
         type: 'server:status',
         status: event?.status || 'unknown',
         version: _ocpVersion,
+        protocol: _ocpProtocol,
         port: event?.port || _ocpPort,
         managed: !!_ocpProc,
       });
@@ -7922,6 +8126,78 @@ function allocOpencodeIsoPort() {
     if (listPortListenerPids(port).length === 0) return port;
   }
   return null;
+}
+
+// OpenCode 2 cannot open its database while another serve of the same data
+// folder is opening it ("database is locked", and the serve exits): SynaBun
+// starts its OpenCode 2 serves one at a time, each until it answers. Every
+// start goes through here: the shared serve (ensureOpencodeServer), the
+// isolated serves of panel sessions, loops, workers and brains
+// (ensureIsolatedServe) and the editor's completion serve
+// (lib/editor-completion-opencode.js `startOneAtATime`). A start holds its turn
+// from the spawn until its serve answers, or until a failed start's process is
+// gone. OpenCode 1 serves start as they always did, side by side.
+let _ocpStartChain = Promise.resolve();
+function oneOpencodeStartAtATime(protocol, run) {
+  if (protocol === 1) return run();
+  const next = _ocpStartChain.then(run, run);
+  _ocpStartChain = next.then(() => {}, () => {});
+  return next;
+}
+
+// Resolves once a child process has exited (true), or after `timeoutMs` (false): a failed start keeps its turn
+// until its process has let go of the database.
+function opencodeChildExited(proc, timeoutMs = 3000) {
+  if (!proc || proc.exitCode != null || proc.signalCode != null) return Promise.resolve(true);
+  return new Promise((done) => {
+    const timer = setTimeout(() => done(false), timeoutMs);
+    timer.unref?.();
+    proc.once?.('exit', () => { clearTimeout(timer); done(true); });
+  });
+}
+
+// A start that failed ends its own process before its turn is over. It was sent SIGTERM (taskkill /T /F on Windows);
+// one still running after `timeoutMs` gets SIGKILL through its handle, which only ever reaches SynaBun's own child
+// (Node stops signalling a child once it has seen its exit, so never a pid another program has by now), and is
+// waited for once more. True once its exit is seen. Its record stays until then (trackOpencodeServe removes it on
+// that exit): one that outlives even SIGKILL stays on record for the look after this server has ended.
+async function endOpencodeChild(proc, timeoutMs = 3000) {
+  if (await opencodeChildExited(proc, timeoutMs)) return true;
+  console.warn(`[opencode] serve process ${proc.pid} did not end within ${Math.round(timeoutMs / 1000)} s of SIGTERM: SIGKILL`);
+  try {
+    if (IS_WIN && proc.pid) spawn('taskkill', ['/pid', String(proc.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }).on?.('error', () => {});
+    else proc.kill('SIGKILL');
+  } catch {}
+  if (await opencodeChildExited(proc, timeoutMs)) return true;
+  console.warn(`[opencode] serve process ${proc.pid} still runs after SIGKILL: it stays on record`);
+  return false;
+}
+
+function killIsolatedServeProcess(proc) {
+  try {
+    if (proc && !proc.killed && proc.exitCode == null) {
+      if (IS_WIN && proc.pid) {
+        spawn('taskkill', ['/pid', String(proc.pid), '/T', '/F'], {
+          shell: true,
+          windowsHide: true,
+          stdio: 'ignore',
+        });
+      } else {
+        proc.kill('SIGTERM');
+      }
+    }
+  } catch {}
+}
+
+// An isolated start that is no longer wanted ends what it started. While its entry is still the one under its
+// term id, that is a stop like any other; a start that was cancelled (stopIsolatedServe) or replaced (a scoped
+// restart under the same term id) meanwhile ends only its own process and client: the replacement keeps its
+// bindings and its config folder, which has the same path.
+function endIsolatedStart(termId, entry) {
+  if (_ocpIsoServes.get(termId) === entry) { stopIsolatedServe(termId); return; }
+  try { entry.unsub?.(); } catch {}
+  try { entry.client?.stop(); } catch {}
+  killIsolatedServeProcess(entry.proc);
 }
 
 // Sidepanel variant of setupOpencodeLoopConfig: inject the terminal identity and
@@ -8040,13 +8316,18 @@ async function ensureIsolatedServe(termId, { xdgRoot: requestedXdgRoot = null, k
     for (let i = 0; i < 60 && !entry.ready; i++) await new Promise(r => setTimeout(r, 250));
     return entry.ready ? entry : null;
   }
-  const port = allocOpencodeIsoPort();
-  if (port == null) { console.warn('[ocp-iso] no free port for isolated serve'); return null; }
   let xdgRoot;
   try { xdgRoot = requestedXdgRoot || setupOpencodeSidepanelConfig(termId, requestedProfile); }
   catch (err) { console.warn(`[ocp-iso] config setup failed: ${err.message}`); return null; }
-  entry = { termId, port, xdgRoot, mcpProfile: requestedProfile, mcpProfileRefreshFailed: false, proc: null, client: null, ready: false, starting: true, keepAlive: !!keepAlive, unsub: null, sessions: new Set(), lastUsed: Date.now() };
+  // Registered before anything is waited for: a second start for the same term id waits for this one.
+  entry = { termId, port: null, xdgRoot, mcpProfile: requestedProfile, mcpProfileRefreshFailed: false, proc: null, client: null, ready: false, starting: true, keepAlive: !!keepAlive, unsub: null, sessions: new Set(), lastUsed: Date.now() };
   _ocpIsoServes.set(termId, entry);
+  // What an earlier SynaBun left running goes first (its ports with it); then the port is picked.
+  await sweepLeftoverOpencodeServes();
+  if (_ocpIsoServes.get(termId) !== entry) return null;
+  let port = allocOpencodeIsoPort();
+  if (port == null) { console.warn('[ocp-iso] no free port for isolated serve'); endIsolatedStart(termId, entry); return null; }
+  entry.port = port;
   try {
     const isolatedEnv = {
       ...process.env,
@@ -8065,33 +8346,85 @@ async function ensureIsolatedServe(termId, { xdgRoot: requestedXdgRoot = null, k
     };
     delete isolatedEnv.CLAUDECODE;
     if (!brainCredential) delete isolatedEnv.SYNABUN_BRAIN_TOKEN;
-    const launch = opencodeServeLaunch(port, { env: isolatedEnv });
-    const proc = spawn(launch.command, launch.args, {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      ...launch.options,
-      detached: false, shell: false,
-    });
-    entry.proc = proc;
+    // The OpenCode major decides how the serve starts (OpenCode 2: a password of
+    // its own) and how it is spoken to; one SynaBun does not speak never starts.
+    const detected = await detectOpencodeProtocol();
     const tag = termId.slice(-8);
-    proc.stdout?.on('data', (d) => console.log(`[ocp-iso:${tag}:out] ${String(d).trim()}`));
-    proc.stderr?.on('data', (d) => console.log(`[ocp-iso:${tag}:err] ${String(d).trim()}`));
-    proc.on('exit', (code) => {
-      console.log(`[ocp-iso] serve ${tag} exited code=${code}`);
-      if (_ocpIsoServes.get(termId)?.proc === proc) stopIsolatedServe(termId);
-    });
+    if (detected.major != null && !detected.supported) { console.warn(`[ocp-iso] serve ${tag}: ${detected.reason}`); endIsolatedStart(termId, entry); return null; }
+    // This start is wanted while its entry is the one under its term id: a stop cancels it, a scoped restart replaces it.
+    const wanted = () => _ocpIsoServes.get(termId) === entry;
+    let check = null;
+    let started = 'cancelled';
+    // Another server that takes the port while this serve boots is a start collision: it is left running (and never
+    // put on record), this start's own process is ended, and the start tries the next free port (three at most).
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      started = await oneOpencodeStartAtATime(detected.protocol, async () => {
+        // Its turn may come after it was cancelled or replaced: then nothing is started for it.
+        if (!wanted()) return 'cancelled';
+        // A token of this spawn in its environment: what tells its processes from any other (lib/opencode-serve-records.js).
+        const token = opencodeServeRecords.newToken();
+        const launch = opencodeServeLaunch(port, { env: { ...isolatedEnv, [SERVE_TOKEN_ENV]: token }, protocol: detected.protocol });
+        const proc = spawn(launch.command, launch.args, {
+          stdio: ['ignore', 'pipe', 'pipe'],
+          ...launch.options,
+          detached: false, shell: false,
+        });
+        entry.proc = proc;
+        entry.password = launch.password;
+        // On record from its spawn: a crash of SynaBun from here on does not leave it running for good.
+        const tracked = trackOpencodeServe(proc, { kind: 'isolated', id: termId, port, token });
+        // While it boots, its start sees an exit itself (another server on the port is a collision); afterwards
+        // its exit ends the serve.
+        let booting = true;
+        proc.stdout?.on('data', (d) => console.log(`[ocp-iso:${tag}:out] ${String(d).trim()}`));
+        proc.stderr?.on('data', (d) => console.log(`[ocp-iso:${tag}:err] ${String(d).trim()}`));
+        proc.on('exit', (code) => {
+          console.log(`[ocp-iso] serve ${tag} exited code=${code}`);
+          if (!booting && _ocpIsoServes.get(termId)?.proc === proc) stopIsolatedServe(termId);
+        });
 
-    let healthy = false;
-    for (let i = 0; i < 60; i++) {
-      await new Promise(r => setTimeout(r, 250));
-      if (!_ocpIsoServes.has(termId)) return null; // torn down mid-boot
-      try {
-        const resp = await fetch(`http://127.0.0.1:${port}/global/health`, { signal: AbortSignal.timeout(3000) });
-        if (resp.ok) { healthy = true; break; }
-      } catch { /* not up yet */ }
+        // Healthy only when the right API answers JSON (an OpenCode 2 web page never is), and only from this start's
+        // own process (the spawned one, or one it started).
+        let outcome = 'unhealthy';
+        for (let i = 0; i < 60; i++) {
+          await new Promise(r => setTimeout(r, 250));
+          if (!wanted()) { outcome = 'cancelled'; break; } // cancelled or replaced mid-boot
+          check = await checkOpencodeServer({ port, protocol: detected.protocol, password: launch.password, timeoutMs: 3000 });
+          if (check.ok) {
+            if (await tracked.answering() !== 'foreign') { booting = false; return 'ready'; }
+            outcome = 'collision';
+            break;
+          }
+          if (proc.exitCode != null || proc.signalCode != null) { outcome = 'exited'; break; }
+          if (['mismatch', 'html', 'locked'].includes(check.state) && i >= 3) break;
+        }
+        // Not started, no longer wanted, or another server's port: this start's own process is gone before the next
+        // start may open the database (SIGTERM, then SIGKILL), and on record until its exit is seen. Its exit no
+        // longer speaks for the entry.
+        if (entry.proc === proc) entry.proc = null;
+        killIsolatedServeProcess(proc);
+        await endOpencodeChild(proc);
+        return outcome;
+      });
+      if (started !== 'collision' || !wanted() || attempt === 3) break;
+      const taken = port;
+      port = allocOpencodeIsoPort();
+      if (port == null) { console.warn(`[ocp-iso] serve ${tag}: another server answers on port ${taken}, and no other port is free`); break; }
+      entry.port = port;
+      console.warn(`[ocp-iso] serve ${tag}: another server answers on port ${taken}; it is left running, and this serve starts on port ${port}`);
     }
-    if (!healthy) { console.warn(`[ocp-iso] serve ${tag} not healthy within 15s`); stopIsolatedServe(termId); return null; }
+    if (started !== 'ready') {
+      if (started === 'unhealthy') console.warn(`[ocp-iso] serve ${tag} not healthy within 15s${check && check.state !== 'down' ? `: ${opencodeProblemText({ check, port })}` : ''}`);
+      if (started === 'exited') console.warn(`[ocp-iso] serve ${tag} exited before it answered`);
+      if (started === 'collision') console.warn(`[ocp-iso] serve ${tag}: another server took every port it tried`);
+      endIsolatedStart(termId, entry);
+      return null;
+    }
+    if (!wanted()) { endIsolatedStart(termId, entry); return null; }
+    entry.protocol = check.protocol;
+    entry.version = check.version || null;
 
-    const client = opencodeV2Client.createClientInstance({ port });
+    const client = opencodeV2Client.createClientInstance({ port, protocol: entry.protocol, password: entry.password, version: entry.version || '' });
     entry.client = client;
     entry.unsub = client.onEvent((envelope) => {
       if (!envelope) return;
@@ -8119,6 +8452,7 @@ async function ensureIsolatedServe(termId, { xdgRoot: requestedXdgRoot = null, k
     });
     client.start();
     await client.waitUntilConnected?.(10_000);
+    if (!wanted()) { endIsolatedStart(termId, entry); return null; }
     entry.ready = true;
     entry.starting = false;
     entry.lastUsed = Date.now();
@@ -8126,7 +8460,7 @@ async function ensureIsolatedServe(termId, { xdgRoot: requestedXdgRoot = null, k
     return entry;
   } catch (err) {
     console.warn(`[ocp-iso] spawn failed: ${err.message}`);
-    stopIsolatedServe(termId);
+    endIsolatedStart(termId, entry);
     return null;
   }
 }
@@ -8145,19 +8479,7 @@ function stopIsolatedServe(termId, { preserveBindings = false } = {}) {
   }
   try { entry.unsub?.(); } catch {}
   try { entry.client?.stop(); } catch {}
-  try {
-    if (entry.proc && !entry.proc.killed) {
-      if (IS_WIN && entry.proc.pid) {
-        spawn('taskkill', ['/pid', String(entry.proc.pid), '/T', '/F'], {
-          shell: true,
-          windowsHide: true,
-          stdio: 'ignore',
-        });
-      } else {
-        entry.proc.kill('SIGTERM');
-      }
-    }
-  } catch {}
+  killIsolatedServeProcess(entry.proc);
   try { if (entry.xdgRoot && existsSync(entry.xdgRoot)) rmSync(entry.xdgRoot, { recursive: true, force: true }); } catch {}
 }
 
@@ -8380,7 +8702,7 @@ function handleOpencodeV2Ws(ws) {
       }
       if (type === 'identify') {
         // Sent on every (re)connect: the panel gates features on this list.
-        send({ type: 'capabilities', capabilities: opencodeV2WsCapabilities() });
+        send({ type: 'capabilities', capabilities: opencodeV2WsCapabilities({ protocol: _ocpProtocol }) });
         return;
       }
       // Canonical session id first (msg.sessionId is rewritten in place), then
@@ -8406,11 +8728,14 @@ function handleOpencodeV2Ws(ws) {
             id,
             ready,
             version: _ocpVersion,
+            // 1 or 2: the OpenCode API the shared serve speaks; `problem` why OpenCode cannot be used.
+            protocol: _ocpProtocol,
+            ...(ready ? {} : { problem: _ocpProblem || null }),
             sdkVersion: opencodeSdkVersion(),
             port: _ocpPort,
             managed: !!_ocpProc,
             connected: opencodeV2Client.isConnected(),
-            capabilities: opencodeV2WsCapabilities(),
+            capabilities: opencodeV2WsCapabilities({ protocol: _ocpProtocol }),
           });
           break;
         }
@@ -8421,11 +8746,14 @@ function handleOpencodeV2Ws(ws) {
           // registered project. Reading the DB directly returns ALL sessions
           // so the sidepanel resume dropdown and boot tab-restore can
           // surface sessions outside SynaBun (every other registered project).
+          // OpenCode 2 keeps them in other tables of the same file
+          // (lib/opencode-db-schema.js); neither set of tables: the API.
           const db = getOpencodeDb();
-          if (db) {
+          const flavor = db ? opencodeDbFlavor(db, _ocpProtocol) : null;
+          if (db && flavor) {
             try {
               // msg.options: search / archived / roots / limit (see buildSessionListQuery).
-              const query = buildSessionListQuery(msg.options || {});
+              const query = buildSessionListQuery(msg.options || {}, { flavor });
               const rows = db.prepare(query.sql).all(...query.params);
               const sessions = rows.filter((row) => {
                 const run = activeNativeOpenCodeRunForSession(row.id);
@@ -8648,30 +8976,37 @@ function handleOpencodeV2Ws(ws) {
   });
 }
 
+// Healthy only when the API of the shared serve's major answers JSON
+// (lib/opencode-protocol.js checkOpencodeServer): OpenCode 2 answers every
+// OpenCode 1 path with its web app and status 200, which is never healthy.
+// `_ocpLastCheck` keeps the whole answer (what answered, and why it is not usable).
+let _ocpLastCheck = null;
 async function checkOpencodeHealth() {
-  try {
-    const resp = await fetch(`${_ocpBaseUrl()}/global/health`, { signal: AbortSignal.timeout(3000) });
-    if (resp.ok) {
-      const body = await resp.json().catch(() => null);
-      _ocpVersion = body?.version || null;
-      return true;
-    }
-  } catch {}
-  return false;
+  const check = await checkOpencodeServer({ port: _ocpPort, protocol: _ocpProtocol, password: _ocpPassword, timeoutMs: 3000 });
+  _ocpLastCheck = check;
+  if (check.ok) {
+    _ocpVersion = check.version || null;
+    if (check.protocol) _ocpProtocol = check.protocol;
+  }
+  return check.ok;
 }
 
+// At the first start: a server already on the port that is SynaBun's own serve of an earlier run (its recorded
+// process, still that process) is taken over, and so is one SynaBun owns whose credentials are older than
+// auth.json. Automatic, so a server someone else runs is never stopped: it is used as it is.
 async function reconcileOpencodeServerIfStale() {
-  const listenerPids = listPortListenerPids(_ocpPort);
-  const managedPid = readOpencodeManagedPid();
-  const shouldReconcile = !_ocpBootReconcileTried && (
-    (managedPid && listenerPids.includes(managedPid)) ||
-    shouldReconcileOpencodeForStoredAuth()
-  );
-  if (!shouldReconcile) return false;
+  if (_ocpBootReconcileTried) return false;
+  const owned = verifiedOpencodeManagedProcess({ port: _ocpPort });
+  const staleAuth = shouldReconcileOpencodeForStoredAuth();
+  if (!owned && !staleAuth) return false;
   _ocpBootReconcileTried = true;
+  if (!owned) {
+    console.warn(`[opencode] The OpenCode server on port ${_ocpPort} was not started by SynaBun: it is used as it is, not restarted (it may not have the newest provider credentials until whoever runs it restarts it)`);
+    return false;
+  }
   _ocpReady = false;
   _ocpStarting = false;
-  console.log(`[opencode] Existing server on port ${_ocpPort} is stale for current auth; taking over`);
+  console.log(`[opencode] SynaBun's own earlier server (pid ${owned.pid}) holds port ${_ocpPort}; taking it over`);
   await takeoverOpencodeServer();
   return true;
 }
@@ -8703,6 +9038,65 @@ async function prewarmOpencodeMcpServers() {
   }
 }
 
+// Is something listening on 127.0.0.1:port? A TCP connect, so it answers on Windows too (no lsof there).
+function opencodePortAnswers(port, timeoutMs = 500) {
+  return new Promise((resolveAnswer) => {
+    const socket = netConnect({ host: '127.0.0.1', port });
+    const done = (value) => { try { socket.destroy(); } catch {} resolveAnswer(value); };
+    socket.setTimeout(timeoutMs, () => done(false));
+    socket.once('connect', () => done(true));
+    socket.once('error', () => done(false));
+  });
+}
+
+// Stop SynaBun's own recorded serve (verifiedOpencodeManagedProcess) on a port: SIGTERM, then SIGKILL while it
+// is still there, each checked against the record right before (signalOwnedOpencodeProcess). True once the
+// port is free.
+async function stopOwnedOpencodeServe(owned, port) {
+  signalOwnedOpencodeProcess(owned, 'SIGTERM');
+  for (let i = 0; i < 24 && listPortListenerPids(port).length; i++) await new Promise((r) => setTimeout(r, 250));
+  if (listPortListenerPids(port).includes(owned.pid)) signalOwnedOpencodeProcess(owned, 'SIGKILL');
+  for (let i = 0; i < 12 && listPortListenerPids(port).length; i++) await new Promise((r) => setTimeout(r, 250));
+  // Its record goes once it has provably ended; one that still runs, or cannot be read, stays on record for the next look.
+  clearOpencodeManagedPid(owned);
+  return !listPortListenerPids(port).length && !(await opencodePortAnswers(port));
+}
+
+// The shared serve moves to one of the next free ports, never into the isolated serves' range (4120–4400):
+// from 4096, 4097 to 4119. `why` is said with the move. False when no port could be had.
+async function moveSharedOpencodePort(why) {
+  for (let port = _ocpPort + 1; port <= _ocpPort + 23; port++) {
+    if ((port >= 4120 && port <= 4400) || port > 65535) continue;
+    if (listPortListenerPids(port).length || await opencodePortAnswers(port)) continue;
+    console.warn(`[opencode] ${why} The shared OpenCode serve uses port ${port} instead.`);
+    _ocpPort = port;
+    return true;
+  }
+  return false;
+}
+
+// The shared serve's port is held by a server SynaBun cannot use: an OpenCode
+// 2 whose password SynaBun does not hold, a web page, something else. SynaBun's
+// own serve from an earlier run (its recorded process, while the OS still
+// reports that very process) is stopped and the port reused; anything else,
+// and a recorded pid that is another process by now, is left running, and the
+// shared serve moves to another port.
+async function freeSharedOpencodePortIfHeld(check) {
+  const owned = verifiedOpencodeManagedProcess({ port: _ocpPort });
+  if (owned) {
+    console.log(`[opencode] SynaBun's earlier serve (pid ${owned.pid}) holds port ${_ocpPort} and cannot be used (${check?.error || check?.state}); stopping it`);
+    if (await stopOwnedOpencodeServe(owned, _ocpPort)) return true;
+  }
+  return moveSharedOpencodePort(opencodeProblemText({ check, port: _ocpPort }));
+}
+
+// Tell every OpenCode panel that OpenCode cannot be used, and why.
+function reportOpencodeProblem(problem) {
+  _ocpProblem = problem || 'OpenCode could not be started.';
+  console.warn(`[opencode] ${_ocpProblem}`);
+  broadcastToOpencodeV2Clients({ type: 'server:status', status: 'error', error: _ocpProblem, version: _ocpVersion, protocol: _ocpProtocol, port: _ocpPort, managed: !!_ocpProc });
+}
+
 async function ensureOpencodeServer({ allowDuringHistoryClear = false } = {}) {
   if (_ocpHistoryClearInProgress && !allowDuringHistoryClear) return false;
   if (_ocpReady) return true;
@@ -8715,6 +9109,23 @@ async function ensureOpencodeServer({ allowDuringHistoryClear = false } = {}) {
   }
   _ocpStarting = true;
 
+  // 0. Which OpenCode is installed: its major decides how the serve starts and
+  // how SynaBun speaks to it. A major SynaBun does not know is refused here, with
+  // a sentence the panel shows, instead of failing call by call later.
+  const detected = await detectOpencodeProtocol();
+  if (detected.major != null && !detected.supported) {
+    _ocpStarting = false;
+    reportOpencodeProblem(detected.reason);
+    return false;
+  }
+  _ocpProblem = null;
+  // A serve already running is adopted whatever is installed: an OpenCode 1
+  // answers SynaBun as it is, an OpenCode 2 only to the password SynaBun gave it.
+  if (!_ocpProc) _ocpProtocol = null;
+  // A serve an earlier SynaBun left running (on this port or any other it used) goes before anything here is
+  // adopted, and its port with it.
+  await sweepLeftoverOpencodeServes();
+
   // 1. Check if already running externally
   if (await checkOpencodeHealth()) {
     if (await reconcileOpencodeServerIfStale()) return true;
@@ -8725,66 +9136,111 @@ async function ensureOpencodeServer({ allowDuringHistoryClear = false } = {}) {
     // One event stream on this serve: the v2 client's. MCP prewarm runs on
     // the v2 client too.
     installOpencodeV2Listener();
-    await opencodeV2Client.connect({ port: _ocpPort });
-    broadcastToOpencodeV2Clients({ type: 'server:status', status: 'ready', version: _ocpVersion, port: _ocpPort, managed: false });
-    console.log(`[opencode] External server detected on port ${_ocpPort} (v${_ocpVersion || '?'})`);
+    await opencodeV2Client.connect({ port: _ocpPort, protocol: _ocpProtocol, password: _ocpPassword, version: _ocpVersion });
+    broadcastToOpencodeV2Clients({ type: 'server:status', status: 'ready', version: _ocpVersion, protocol: _ocpProtocol, port: _ocpPort, managed: false });
+    console.log(`[opencode] External server detected on port ${_ocpPort} (v${_ocpVersion || '?'}, OpenCode ${_ocpProtocol || '?'} API)`);
+    prewarmOpencodeMcpServers();
+    return true;
+  }
+  if (_ocpLastCheck && _ocpLastCheck.state !== 'down' && !(await freeSharedOpencodePortIfHeld(_ocpLastCheck))) {
+    _ocpStarting = false;
+    reportOpencodeProblem(opencodeProblemText({ check: _ocpLastCheck, port: _ocpPort }));
+    return false;
+  }
+
+  // 2. Spawn opencode serve, and 3. poll until ready (max 15s): one start at a time with every other serve
+  // SynaBun starts (oneOpencodeStartAtATime), its turn held until the serve answers or a failed start's process
+  // is gone. null for a command line in Settings: what answers says which major it is.
+  // Another server that takes the port while SynaBun's serve starts is a start collision: it is left running (and
+  // never put on record), SynaBun's own process is ended, and the shared serve tries the next free port (three at most).
+  let outcome = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    _ocpProtocol = detected.protocol;
+    outcome = await oneOpencodeStartAtATime(detected.protocol, async () => {
+      let proc = null;
+      let tracked = null;
+      try {
+        // A token of this spawn in its environment: what tells its processes from any other (lib/opencode-serve-records.js).
+        const token = opencodeServeRecords.newToken();
+        const launch = opencodeServeLaunch(_ocpPort, { env: { ...process.env, FORCE_COLOR: '0', OPENCODE_DISABLE_CLAUDE_CODE: '1', [SERVE_TOKEN_ENV]: token }, protocol: detected.protocol });
+        _ocpPassword = launch.password;
+        console.log(`[opencode] Spawning: ${launch.label}`);
+        proc = spawn(launch.command, launch.args, {
+          stdio: ['ignore', 'pipe', 'pipe'],
+          ...launch.options,
+          detached: false,
+          shell: false,
+        });
+        _ocpProc = proc;
+        // On record from its spawn: a crash of SynaBun from here on does not leave it running for good.
+        tracked = trackOpencodeServe(proc, { kind: 'shared', id: 'shared', port: _ocpPort, token });
+        proc.stdout?.on('data', (d) => console.log(`[opencode:stdout] ${d.toString().trim()}`));
+        proc.stderr?.on('data', (d) => console.log(`[opencode:stderr] ${d.toString().trim()}`));
+        proc.on('exit', (code) => {
+          console.log(`[opencode] Process exited with code ${code}`);
+          // A serve stopped or replaced meanwhile says nothing about the one running now. (Its record goes with
+          // its process either way: trackOpencodeServe.)
+          if (_ocpProc !== proc) return;
+          _ocpProc = null;
+          _ocpReady = false;
+          opencodeV2Client.disconnect().catch(() => {});
+          broadcastToOpencodeV2Clients({ type: 'server:status', status: 'offline', port: _ocpPort });
+        });
+      } catch (err) {
+        console.error(`[opencode] Failed to spawn: ${err.message}`);
+        return 'not-spawned';
+      }
+      for (let i = 0; i < 30; i++) {
+        await new Promise(r => setTimeout(r, 500));
+        if (await checkOpencodeHealth()) {
+          // Only SynaBun's own process counts (the spawned one, or one it started): another server that took the
+          // port meanwhile answers for itself.
+          if (await tracked.answering() !== 'foreign') return 'ready';
+          if (_ocpProc === proc) _ocpProc = null;
+          killIsolatedServeProcess(proc);
+          await endOpencodeChild(proc);
+          return 'collision';
+        }
+        // Something answers, but not the API SynaBun expects (another major, a web page): no use waiting.
+        if (_ocpLastCheck && ['mismatch', 'html', 'locked'].includes(_ocpLastCheck.state) && i >= 3) break;
+      }
+      stopOpencodeServer();
+      await endOpencodeChild(proc);
+      return 'unhealthy';
+    });
+    if (outcome !== 'collision' || attempt === 3) break;
+    if (!(await moveSharedOpencodePort(`Another server took port ${_ocpPort} while SynaBun's OpenCode serve was starting: it is left running.`))) break;
+  }
+  if (outcome === 'not-spawned') {
+    _ocpStarting = false;
+    return false;
+  }
+  if (outcome === 'ready') {
+    _ocpReady = true;
+    _ocpStarting = false;
+    _ocpBootReconcileTried = true;
+    _ocpLastBootAt = Date.now();
+    installOpencodeV2Listener();
+    await opencodeV2Client.connect({ port: _ocpPort, protocol: _ocpProtocol, password: _ocpPassword, version: _ocpVersion });
+    broadcastToOpencodeV2Clients({ type: 'server:status', status: 'ready', version: _ocpVersion, protocol: _ocpProtocol, port: _ocpPort, managed: true });
+    console.log(`[opencode] Server ready on port ${_ocpPort} (v${_ocpVersion || '?'}, OpenCode ${_ocpProtocol || '?'} API)`);
     prewarmOpencodeMcpServers();
     return true;
   }
 
-  // 2. Spawn opencode serve
-  try {
-    const launch = opencodeServeLaunch(_ocpPort, { env: { ...process.env, FORCE_COLOR: '0', OPENCODE_DISABLE_CLAUDE_CODE: '1' } });
-    console.log(`[opencode] Spawning: ${launch.label}`);
-    _ocpProc = spawn(launch.command, launch.args, {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      ...launch.options,
-      detached: false,
-      shell: false,
-    });
-    _ocpProc.stdout?.on('data', (d) => console.log(`[opencode:stdout] ${d.toString().trim()}`));
-    _ocpProc.stderr?.on('data', (d) => console.log(`[opencode:stderr] ${d.toString().trim()}`));
-    _ocpProc.on('exit', (code) => {
-      console.log(`[opencode] Process exited with code ${code}`);
-      _ocpProc = null;
-      _ocpReady = false;
-      clearOpencodeManagedPid();
-      opencodeV2Client.disconnect().catch(() => {});
-      broadcastToOpencodeV2Clients({ type: 'server:status', status: 'offline', port: _ocpPort });
-    });
-  } catch (err) {
-    console.error(`[opencode] Failed to spawn: ${err.message}`);
-    _ocpStarting = false;
-    return false;
-  }
-
-  // 3. Poll until ready (max 15s)
-  for (let i = 0; i < 30; i++) {
-    await new Promise(r => setTimeout(r, 500));
-    if (await checkOpencodeHealth()) {
-      _ocpReady = true;
-      _ocpStarting = false;
-      _ocpBootReconcileTried = true;
-      _ocpLastBootAt = Date.now();
-      writeOpencodeManagedPid(listPortListenerPids(_ocpPort)[0] || _ocpProc?.pid);
-      installOpencodeV2Listener();
-      await opencodeV2Client.connect({ port: _ocpPort });
-      broadcastToOpencodeV2Clients({ type: 'server:status', status: 'ready', version: _ocpVersion, port: _ocpPort, managed: true });
-      console.log(`[opencode] Server ready on port ${_ocpPort} (v${_ocpVersion || '?'})`);
-      prewarmOpencodeMcpServers();
-      return true;
-    }
-  }
-
-  console.error('[opencode] Server did not become healthy within 15s');
-  stopOpencodeServer();
+  const why = outcome === 'collision'
+    ? `Another server took port ${_ocpPort} while SynaBun's OpenCode serve was starting, on every port it tried; it is left running.`
+    : _ocpLastCheck && _ocpLastCheck.state !== 'down'
+      ? opencodeProblemText({ check: _ocpLastCheck, port: _ocpPort })
+      : 'OpenCode did not start within 15 seconds.';
+  console.error(`[opencode] Server did not become healthy: ${why}`);
   _ocpStarting = false;
+  reportOpencodeProblem(why);
   return false;
 }
 
 function stopOpencodeServer({ stopManagedOllama = true } = {}) {
   opencodeV2Client.disconnect().catch(() => {});
-  const managedPid = readOpencodeManagedPid();
   const procPid = _ocpProc?.pid || null;
   const isWin = process.platform === 'win32';
 
@@ -8810,14 +9266,16 @@ function stopOpencodeServer({ stopManagedOllama = true } = {}) {
     }
     _ocpProc = null;
   }
-  if (managedPid && managedPid !== procPid) {
-    if (isWin) {
-      winKill(managedPid);
-    } else {
-      signalPids([managedPid], 'SIGTERM');
-    }
-  }
-  clearOpencodeManagedPid();
+  // SynaBun's recorded serves (a process its child started that answers on the port; one of an earlier run whose
+  // SynaBun has ended), only while the OS still reports each as that very process: a pid another program has by now,
+  // or one that cannot be read, is never signalled (signalOwnedOpencodeProcess checks once more right before;
+  // taskkill on Windows).
+  const owned = verifiedOpencodeManagedProcesses();
+  for (const record of owned) if (record.pid !== procPid) signalOwnedOpencodeProcess(record, 'SIGTERM');
+  // A record whose process has provably ended goes. One whose serve was just signalled stays until that serve has
+  // ended (its exit removes it, or the next look for leftovers does): a crash meanwhile does not leave it running
+  // unrecorded.
+  if (!owned.length) clearOpencodeManagedPid();
   _ocpReady = false;
   _ocpStarting = false;
   broadcastToOpencodeV2Clients({ type: 'server:status', status: 'offline', port: _ocpPort });
@@ -8827,7 +9285,13 @@ function stopOpencodeServer({ stopManagedOllama = true } = {}) {
   }
 }
 
-// Takeover: kill external server (or restart managed), then spawn managed
+// Takeover: a fresh shared serve that boots from the updated auth/config files. A serve is stopped only when it
+// is SynaBun's own: its child (a plain restart), or its recorded serve of an earlier run while the OS still
+// reports that very process, checked again before each signal. No other process is ever signalled: not every
+// `opencode … serve` of the machine (the user's own, OpenCode 2's background service, SynaBun's isolated serves),
+// not a recorded pid another program has by now. A server SynaBun did not start is left running, and SynaBun
+// starts its own on another port. The automatic callers (reconcileOpencodeServerIfStale, reconcileAuthIfStale)
+// call this only for a serve that is SynaBun's.
 async function takeoverOpencodeServer() {
   if (_ocpHistoryClearInProgress) throw new Error('OpenCode history is being cleared');
   if (_ocpProc) {
@@ -8836,32 +9300,23 @@ async function takeoverOpencodeServer() {
     await new Promise(r => setTimeout(r, 1000));
     return ensureOpencodeServer();
   }
-  // External server — terminate the actual port listener so we can take over with
-  // a managed process that will boot from the updated auth/config files.
   _ocpReady = false;
   _ocpStarting = false;
+  const owned = verifiedOpencodeManagedProcess({ port: _ocpPort });
+  if (!owned) {
+    await opencodeV2Client.disconnect().catch(() => {});
+    if (!(await moveSharedOpencodePort(`The OpenCode server on port ${_ocpPort} was not started by SynaBun: it is left running.`))) {
+      throw new Error(`The OpenCode server on port ${_ocpPort} was not started by SynaBun and is left running; no other port is free for SynaBun's own`);
+    }
+    return ensureOpencodeServer();
+  }
   try {
     await ocpProxy('POST', '/global/dispose');
   } catch {}
-  const initialPortPids = listPortListenerPids(_ocpPort);
-  const commandPids = listOpencodeServePids();
-  const candidatePids = [...new Set([...initialPortPids, ...commandPids])];
-  if (candidatePids.length) {
-    const terminated = signalPids(candidatePids, 'SIGTERM');
-    console.log(`[opencode] Sent SIGTERM to external server PIDs: ${terminated.join(', ') || 'none'}`);
-  } else {
-    console.log(`[opencode] No external listener PIDs found on port ${_ocpPort}; waiting for shutdown`);
-  }
-  if (!(await waitForOpencodeShutdown())) {
-    const stubbornPids = [...new Set([...listPortListenerPids(_ocpPort), ...listOpencodeServePids()])];
-    if (stubbornPids.length) {
-      const killed = signalPids(stubbornPids, 'SIGKILL');
-      console.log(`[opencode] Sent SIGKILL to stubborn external PIDs: ${killed.join(', ') || 'none'}`);
-    }
-    await waitForOpencodeShutdown(4000);
-  }
-  if (await checkOpencodeHealth()) {
-    throw new Error(`External OpenCode server on port ${_ocpPort} survived takeover`);
+  await opencodeV2Client.disconnect().catch(() => {});
+  console.log(`[opencode] Stopping SynaBun's earlier server (pid ${owned.pid}) on port ${_ocpPort}`);
+  if (!(await stopOwnedOpencodeServe(owned, _ocpPort)) && await checkOpencodeHealth()) {
+    throw new Error(`SynaBun's OpenCode server on port ${_ocpPort} survived takeover`);
   }
   await new Promise(r => setTimeout(r, 500));
   return ensureOpencodeServer();
@@ -8897,7 +9352,43 @@ function getOpencodeDb() {
 
 // ── Proxy helper: forward REST calls to opencode serve ──
 
+// The OpenCode 2 serve behind a base URL (the shared one or an isolated one):
+// `{ client, password }`, or null for an OpenCode 1 serve.
+function opencode2ServeFor(baseUrl) {
+  let port = null;
+  try { port = Number(new URL(baseUrl).port) || null; } catch { return null; }
+  if (port === _ocpPort && _ocpProtocol === 2) {
+    const client = opencodeV2Client.getClient();
+    return client ? { client, password: _ocpPassword } : null;
+  }
+  for (const entry of _ocpIsoServes.values()) {
+    if (entry.port === port && entry.protocol === 2 && entry.client) return { client: entry.client.getClient(), password: entry.password };
+  }
+  return null;
+}
+
 async function ocpProxy(method, path, body = null, timeoutMs = 30000, baseUrl = _ocpBaseUrl()) {
+  // OpenCode 2 answers these OpenCode 1 paths with its web app: each is
+  // translated onto its API instead (lib/opencode2-proxy.js), /api/* passes
+  // through with the serve's password.
+  const v2 = opencode2ServeFor(baseUrl);
+  if (v2?.client) {
+    ocpTrace('proxy:req', { tid: _ocpTraceId(), method, path, opencode: 2, timeoutMs });
+    return opencode2Proxy(v2.client, method, path, body, {
+      rawFetch: async (apiPath, init = {}) => {
+        const resp = await fetch(`${baseUrl}${apiPath}`, {
+          method: init.method || method,
+          headers: { 'Content-Type': 'application/json', authorization: basicAuthHeader(v2.password || '') },
+          ...(init.body != null && (init.method || method) !== 'GET' ? { body: JSON.stringify(init.body) } : {}),
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+        const text = await resp.text();
+        let data;
+        try { data = JSON.parse(text); } catch { data = text; }
+        return { status: resp.status, data };
+      },
+    });
+  }
   const url = `${baseUrl}${path}`;
   const opts = {
     method,
@@ -9188,40 +9679,29 @@ async function opencodePortIsAlive(port) {
   }
 }
 
-function opencodeProcessIsAlive(pid) {
-  if (!Number.isFinite(pid) || pid <= 0 || pid === process.pid) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function waitForOpencodeProcessesToStop(ports, pids, timeoutMs = 8000) {
+async function waitForOpencodeProcessesToStop(ports, stopped, timeoutMs = 8000) {
   const uniquePorts = [...new Set(ports.filter((port) => Number.isFinite(port) && port > 0))];
-  const uniquePids = [...new Set(pids.filter((pid) => Number.isFinite(pid) && pid > 0 && pid !== process.pid))];
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const alive = await Promise.all(uniquePorts.map(opencodePortIsAlive));
-    if (!alive.some(Boolean) && !uniquePids.some(opencodeProcessIsAlive)) return true;
+    if (!alive.some(Boolean) && stopped()) return true;
     await new Promise((resolveWait) => setTimeout(resolveWait, 250));
   }
   return false;
 }
 
+// Only what SynaBun started is stopped for a history clear: its children, by their handles (which never signal a
+// process that has exited), and its recorded serve while the OS still reports that very process. A server someone
+// else runs on one of these ports is left running, and the clear then says so instead of killing it.
 async function stopOpenCodeForHistoryClear() {
-  const isolated = [..._ocpIsoServes.values()].map((entry) => ({
-    port: entry.port,
-    pid: entry.proc?.pid || null,
-  }));
+  const isolated = [..._ocpIsoServes.values()].map((entry) => ({ port: entry.port, proc: entry.proc || null }));
   const ports = [_ocpPort, ...isolated.map((entry) => entry.port)];
-  const exactPids = new Set([
-    _ocpProc?.pid,
-    readOpencodeManagedPid(),
-    ...isolated.map((entry) => entry.pid),
-    ...ports.flatMap((port) => listPortListenerPids(port)),
-  ].filter((pid) => Number.isFinite(pid) && pid > 0 && pid !== process.pid));
+  const children = [_ocpProc, ...isolated.map((entry) => entry.proc)].filter(Boolean);
+  const owned = verifiedOpencodeManagedProcess();
+  const gone = (child) => child.exitCode != null || child.signalCode != null;
+  // Still running until it has provably ended: one that cannot be read now counts as running.
+  const ownedRuns = () => !!owned && opencodeServeRecords.verifySync(owned) !== 'gone';
+  const stopped = () => children.every(gone) && !ownedRuns();
 
   await Promise.allSettled(isolated.map(({ port }) => fetch(
     `http://127.0.0.1:${port}/global/dispose`,
@@ -9231,21 +9711,23 @@ async function stopOpenCodeForHistoryClear() {
   stopAllIsolatedServes();
   stopOpencodeServer({ stopManagedOllama: false });
 
-  if (await waitForOpencodeProcessesToStop(ports, [...exactPids])) return;
-  if (process.platform !== 'win32' && exactPids.size) {
-    signalPids([...exactPids], 'SIGKILL');
-    await waitForOpencodeProcessesToStop(ports, [...exactPids], 4000);
+  if (await waitForOpencodeProcessesToStop(ports, stopped)) return;
+  if (process.platform !== 'win32') {
+    for (const child of children) if (!gone(child)) { try { child.kill('SIGKILL'); } catch {} }
+    if (owned) signalOwnedOpencodeProcess(owned, 'SIGKILL');
+    await waitForOpencodeProcessesToStop(ports, stopped, 4000);
   }
   const stillAlive = (await Promise.all(ports.map(async (port) => (
     (await opencodePortIsAlive(port)) ? port : null
   )))).filter(Boolean);
-  const stillRunningPids = [...exactPids].filter(opencodeProcessIsAlive);
+  const stillRunningPids = [...children.filter((child) => !gone(child)).map((child) => child.pid), ...(ownedRuns() ? [owned.pid] : [])];
   if (stillAlive.length || stillRunningPids.length) {
     const details = [
       ...stillAlive.map((port) => `port ${port}`),
       ...stillRunningPids.map((pid) => `process ${pid}`),
     ];
-    throw new Error(`OpenCode did not release ${details.join(', ')}`);
+    const someoneElse = stillAlive.length && !stillRunningPids.length ? ' (an OpenCode server SynaBun did not start answers there: stop it, then clear again)' : '';
+    throw new Error(`OpenCode did not release ${details.join(', ')}${someoneElse}`);
   }
 }
 
@@ -9287,6 +9769,12 @@ app.delete('/api/opencode/history', async (req, res) => {
         error: 'Stop all active OpenCode conversations and automations before clearing history',
         blockers,
       });
+    }
+    // OpenCode 2's database is not cleared here (lib/opencode-history.js): refused before anything is stopped.
+    let historyStats = null;
+    try { historyStats = getOpenCodeHistoryStats({ dbPath: getOpencodeDbPath(), dataRoot: dirname(getOpencodeDbPath()) }); } catch { /* the clear itself says */ }
+    if (historyStats?.opencode2 || _ocpProtocol === 2) {
+      return res.status(409).json({ ok: false, opencode2: true, error: historyStats?.reason || OPENCODE2_HISTORY_REFUSAL });
     }
 
     wasRunning = await checkOpencodeHealth();
@@ -9363,7 +9851,7 @@ app.get('/api/opencode/status', async (req, res) => {
     } else if (!running && _ocpReady) {
       _ocpReady = false;
     }
-    res.json({ ok: true, running, port: _ocpPort, version: _ocpVersion, managed: !!_ocpProc });
+    res.json({ ok: true, running, port: _ocpPort, version: _ocpVersion, protocol: _ocpProtocol, managed: !!_ocpProc, ...(running ? {} : { problem: _ocpProblem || (_ocpLastCheck && _ocpLastCheck.state !== 'down' ? opencodeProblemText({ check: _ocpLastCheck, port: _ocpPort }) : null) }) });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -9420,14 +9908,108 @@ app.post('/api/opencode/snapshot', (req, res) => {
   }
 });
 
+// ── OpenCode's provider list, kept (lib/launch-cache.js) ──
+// The shared serve's /provider is the whole models.dev catalog (about 7 MB, 231 providers on a typical
+// install) and took 1.3-1.5 s on every call. It is read once and kept: answered at once, read again in the
+// background when it is old, when the serve restarts and when a catalog event says it changed. Keyed on what
+// it depends on: the OpenCode major, the binary (an update), its credentials file and its config files (a
+// provider connected or removed rewrites auth.json: another key, so the next read waits for the new list).
+// Only a provider list is kept: a web page (an OpenCode 2 serve answering an OpenCode 1 path) or an error
+// never is. ?view=compact (the connected providers, lib/opencode-provider-view.js) is what the pickers read,
+// and the only part kept across restarts: the whole catalog is megabytes.
+const OPENCODE_PROVIDERS_TTL_MS = 5 * 60_000;
+
+function opencodeFileStamp(file) {
+  try { const stat = statSync(file); return `${Math.round(stat.mtimeMs)}:${stat.size}`; } catch { return '-'; }
+}
+
+function opencodeProvidersKey() {
+  const configDir = dirname(getOpencodeConfigPath());
+  return [
+    knownOpencodeMajor(),
+    configuredCommandLine('opencode') || binaryIdentity(cliResolver.launcher('opencode').path || ''),
+    opencodeFileStamp(getOpencodeAuthPath()),
+    opencodeFileStamp(getOpencodeConfigPath()),
+    opencodeFileStamp(join(configDir, 'opencode.json')),
+    opencodeFileStamp(join(configDir, 'opencode.jsonc')),
+  ].join('|');
+}
+
+const _opencodeProviders = createLaunchCache({
+  name: 'opencode-providers',
+  dir: LAUNCH_CACHE_DIR,
+  ttlMs: OPENCODE_PROVIDERS_TTL_MS,
+  maxEntries: 2,
+  load: async () => {
+    if (!_ocpReady) throw new Error('OpenCode server not running');
+    await reconcileAuthIfStale();
+    const r = await ocpProxy('GET', '/provider');
+    if (r.status !== 200 || !isProviderCatalog(r.data)) {
+      throw Object.assign(new Error(r.status === 200 ? 'OpenCode did not answer with a provider list' : `OpenCode answered ${r.status}`), { status: r.status === 200 ? 502 : r.status, data: r.data });
+    }
+    return { full: r.data, compact: compactProviderCatalog(r.data), signature: providerCatalogSignature(r.data) };
+  },
+  accept: (value) => !!value && (isProviderCatalog(value.full) || isProviderCatalog(value.compact)),
+  equals: (a, b) => !!a?.signature && a.signature === b?.signature && !!a.full === !!b.full,
+  persistValue: (value) => (value?.compact ? { compact: value.compact, signature: value.signature } : undefined),
+  // A refresh found another list than the kept one: every window's pickers read it again.
+  onChange: (_key, value, previous) => { if (value?.signature !== previous?.signature) announceOpencodeProvidersChanged(); },
+  log: (message) => console.warn(message),
+});
+
+// The serialized answer of each view, made once per list (the whole catalog is megabytes of JSON), with an
+// ETag of its own so Express does not hash megabytes for every answer.
+const _opencodeProviderTexts = new WeakMap();
+function sendOpencodeProviders(res, value, view) {
+  let texts = _opencodeProviderTexts.get(value);
+  if (!texts) { texts = {}; _opencodeProviderTexts.set(value, texts); }
+  if (!texts[view]) {
+    const text = `{"ok":true,"data":${JSON.stringify(view === 'compact' ? value.compact : value.full)}}`;
+    texts[view] = { text, etag: `W/"ocp-${view}-${createHash('sha1').update(text).digest('hex').slice(0, 20)}"` };
+  }
+  res.set('ETag', texts[view].etag);
+  res.type('json').send(texts[view].text);
+}
+
+/**
+ * The provider list for a view ('full' | 'compact'): the kept one at once, else the serve's (one read for
+ * every caller). `refresh` waits for a new read. The whole catalog is never kept across a restart, so a
+ * restored entry answers 'compact' only and 'full' reads the serve.
+ */
+async function readOpencodeProviders(view = 'full', { refresh = false } = {}) {
+  const key = opencodeProvidersKey();
+  let { value } = await _opencodeProviders.read(key, { refresh });
+  if (view === 'full' && !value?.full) ({ value } = await _opencodeProviders.read(key, { refresh: true }));
+  if (!value || !(view === 'full' ? value.full : value.compact)) throw new Error('OpenCode did not answer with a provider list');
+  return value;
+}
+
+// Every window learns the list changed (an OpenCode panel's own socket says so only where one is open).
+function announceOpencodeProvidersChanged() {
+  try { broadcastSync({ type: 'opencode:providers-changed' }); } catch {}
+  _announcingOpencodeProviders = true;
+  try { broadcastToOpencodeV2Clients({ type: 'providers:changed' }); } finally { _announcingOpencodeProviders = false; }
+}
+
+// The serve restarted, a credential changed or OpenCode said its catalog changed: the kept list is read
+// again in the background (still answered meanwhile; a credential change is another key anyway). `announce`:
+// the OpenCode panels were told already; every other window is told too.
+function noteOpencodeProvidersChanged({ announce = false } = {}) {
+  try {
+    _opencodeProviders.markStale();
+    scheduleLaunchRefresh('opencode-providers');
+    if (announce) broadcastSync({ type: 'opencode:providers-changed' });
+  } catch { /* before the cache exists (start-up): nothing is kept yet */ }
+}
+
 app.get('/api/opencode/providers', async (req, res) => {
   try {
     if (!_ocpReady) return res.json({ ok: false, error: 'OpenCode server not running', data: [] });
-    await reconcileAuthIfStale();
-    const r = await ocpProxy('GET', '/provider');
-    res.status(r.status).json({ ok: r.status === 200, data: r.data });
+    const value = await readOpencodeProviders('full', { refresh: req.query?.refresh === '1' });
+    sendOpencodeProviders(res, value, 'full');
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    if (err?.status && err.status !== 502) return res.status(err.status).json({ ok: false, data: err.data });
+    res.status(err?.status || 500).json({ ok: false, error: err.message });
   }
 });
 
@@ -9467,8 +10049,10 @@ app.get('/api/opencode-v2/status', async (req, res) => {
       running,
       port: _ocpPort,
       version: _ocpVersion,
+      protocol: _ocpProtocol,
       managed: !!_ocpProc,
       connected: opencodeV2Client.isConnected(),
+      ...(running ? {} : { problem: _ocpProblem || (_ocpLastCheck && _ocpLastCheck.state !== 'down' ? opencodeProblemText({ check: _ocpLastCheck, port: _ocpPort }) : null) }),
     });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
@@ -9500,15 +10084,17 @@ app.post('/api/opencode-v2/serve/stop', (req, res) => {
 // Models disabled in Settings → OpenCode (GET / PUT, broadcasts opencode:hidden-models-changed)
 app.use('/api/opencode/hidden-models', createOpencodeHiddenModelsRouter({ store: opencodeHiddenModels, isGuestRequest, broadcastSync }));
 
-// Full provider data including connected[] array and auth methods
+// Full provider data including connected[] array and auth methods. ?view=compact: only the connected
+// providers, with what the pickers read (lib/opencode-provider-view.js); ?refresh=1 reads the serve again.
 app.get('/api/opencode/providers/full', async (req, res) => {
   try {
     if (!_ocpReady) return res.json({ ok: false, error: 'OpenCode server not running', data: {} });
-    await reconcileAuthIfStale();
-    const r = await ocpProxy('GET', '/provider');
-    res.status(r.status).json({ ok: r.status === 200, data: r.data });
+    const view = req.query?.view === 'compact' ? 'compact' : 'full';
+    const value = await readOpencodeProviders(view, { refresh: req.query?.refresh === '1' });
+    sendOpencodeProviders(res, value, view);
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    if (err?.status && err.status !== 502) return res.status(err.status).json({ ok: false, data: err.data });
+    res.status(err?.status || 500).json({ ok: false, error: err.message });
   }
 });
 
@@ -9860,6 +10446,8 @@ function _panelClaudeAccounts() {
         // The Assistant's account list and catalog listen to their own event.
         broadcastSync({ type: 'assistant:accounts-changed', provider: 'claude-code', accountId: event.accountId || null, removed: !!event.removed });
         _assistantCatalog?.invalidate?.();
+        // The model list is read under the default account: asked again (another sign-in is another key).
+        if (!event.accountId || event.accountId === 'default') { markClaudeModelsStale(); scheduleLaunchRefresh('claude-models'); }
       } catch {}
     });
   }
@@ -10060,6 +10648,31 @@ function handleClaudeSkinWebSocket(ws) {
 
 // Ask the installed CLI which models this account can run. Falls back to a small
 // static list so the picker still renders when the CLI is missing or errors.
+// The sign-in the CLI reads its model list under (the default account: discovery runs with no
+// CLAUDE_CONFIG_DIR of its own), as a hash: another account can be entitled to other models, so the
+// kept list is keyed on it and never given for another account.
+function claudeModelAccountKey() {
+  try {
+    const row = _panelClaudeAccounts().describe('default');
+    if (!row) return '';
+    return createHash('sha256').update(`${row.mode || ''}\n${row.identity || ''}\n${row.signedIn}`).digest('hex').slice(0, 16);
+  } catch { return ''; }
+}
+
+// The last verified Claude list survives a restart (DATA_HOME/cache/launch/claude-models.json).
+setClaudeModelStore(createSnapshotStore({ dir: LAUNCH_CACHE_DIR, name: 'claude-models', log: (message) => console.warn(message) }));
+
+// What Codex said about its settings schema and feature switches (lib/codex-settings-schema.js), per binary
+// (path, mtime, size: an update is another binary), kept across restarts: asking costs a Codex start per value.
+const _codexSettingsProbes = createLaunchCache({
+  name: 'codex-settings',
+  dir: LAUNCH_CACHE_DIR,
+  ttlMs: Number.MAX_SAFE_INTEGER,
+  maxEntries: 8,
+  load: async () => { throw new Error('asked by lib/codex-settings-schema.js'); },
+});
+setCodexSettingsStore({ get: (key) => _codexSettingsProbes.peek(key), set: (key, value) => _codexSettingsProbes.set(key, value) });
+
 async function getClaudeModelsForClient(force = false) {
   try {
     const bin = getClaudeBin();
@@ -10068,7 +10681,9 @@ async function getClaudeModelsForClient(force = false) {
     // installation is worth one line in the log. Cached per binary (a spawn only
     // when the CLI changes).
     checkClaudeCliSkew(bin).catch(() => {});
-    const result = await discoverClaudeModels(bin, { force, cwd: PACKAGE_ROOT });
+    // Answered from the kept list at once (asked again in the background when it is old);
+    // only a first read, another binary or account, or ?refresh=1 waits for the CLI.
+    const result = await discoverClaudeModels(bin, { force, cwd: PACKAGE_ROOT, account: claudeModelAccountKey() });
     if (result?.models?.length) return result;
   } catch (err) {
     console.warn('[claude-models] discovery failed:', err.message);
@@ -10833,11 +11448,15 @@ app.get('/api/images', (req, res) => {
   }
 });
 
-// GET /api/images/file/:filename — serve an image file
+// GET /api/images/file/:filename — serve an image file. These are the user's files (screenshots, pastes,
+// attachments, whiteboard images), and an SVG is a document: opened as a page it runs its own script in this origin.
+// So every answer runs nothing (a CSP with no script source, a sandbox) and is read only as the type it is sent as,
+// and an SVG is a download when it is opened as a page. An <img> in the app ignores all three and shows the image.
 app.get('/api/images/file/:filename', (req, res) => {
   const filename = basename(req.params.filename);
   const fp = join(IMAGES_DIR, filename);
   if (!existsSync(fp)) return res.status(404).json({ error: 'Not found' });
+  setUntrustedFileHeaders(res, filename);
   res.sendFile(fp);
 });
 
@@ -12676,15 +13295,17 @@ function unknownAutomationContextMode(mode) {
   return mode != null && mode !== '' && !['default', 'extended', '1m'].includes(mode);
 }
 
+// The model list of the account that lives in `codexHome` (Default when none does): the one the
+// Codex panel's selector reads, from the same cache as GET /api/codex/models.
 async function codexAutomationModels(codexHome) {
   const home = codexHome || CODEX_DEFAULT_HOME;
-  const cached = _codexModelListCache.get(home);
-  if (cached?.models.length && Date.now() - cached.at < CODEX_MODEL_LIST_CACHE_MS) return cached.models;
-  const models = mergeCodexModelContextCapabilities(
-    await queryCodexAppServerModels(home), readCodexRuntimeModelCatalog(home),
-  );
-  _codexModelListCache.set(home, { at: Date.now(), models });
-  return models;
+  let accountId = 'default';
+  try {
+    const owner = _codexAccounts().list().find((row) => row?.home && samePath(row.home, home));
+    if (owner?.id) accountId = owner.id;
+  } catch { /* the default account */ }
+  const models = await _codexModelListCache.get(codexModelListKey(accountId));
+  return Array.isArray(models) ? models : [];
 }
 
 async function resolveAutomationLaunchChoice(profile, model, contextMode, codexHome) {
@@ -16660,17 +17281,51 @@ async function checkSynabunUpdate() {
 }
 
 app.get('/api/system/version', async (req, res) => {
-  const force = req.query.force === '1';
-  if (force || !_synabunUpdateCache.checkedAt) {
+  // Settings > App: with automatic updates off the server looks only when the user asks (?force=1). A page's own
+  // timer or a drawer that refreshes itself says `passive=1`, and never makes it look then.
+  const auto = automaticUpdateCheck();
+  const force = req.query.force === '1' && (auto || req.query.passive !== '1');
+  if (force || (auto && !_synabunUpdateCache.checkedAt)) {
     try { await checkSynabunUpdate(); } catch {}
-  } else {
+  } else if (auto) {
     const age = Date.now() - new Date(_synabunUpdateCache.checkedAt).getTime();
     if (age > 60 * 60 * 1000) {
       checkSynabunUpdate().catch(() => {});
     }
   }
-  res.json(_synabunUpdateCache);
+  res.json({ ..._synabunUpdateCache, current: _synabunUpdateCache.current || installedSynabunVersion(), autoCheck: auto });
 });
+
+// ── Settings > App (lib/app-controls-api.js): automatic update checks, start at login, the data and logs folders ──
+// The desktop app keeps its own (packaging/desktop/src/app-prefs.mjs): there this only says so.
+const appSettings = createAppSettingsStore({ path: join(DATA_HOME, 'data', 'app-settings.json') });
+/** Does the server look for updates by itself (at start, and when the page asks without ?force=1)? */
+function automaticUpdateCheck() {
+  if (PACKAGED_RUNTIME?.shell) return true;
+  try { return appSettings.get().autoUpdateCheck !== false; } catch { return true; }
+}
+function installedSynabunVersion() {
+  try { return JSON.parse(readFileSync(resolve(PACKAGE_ROOT, 'package.json'), 'utf-8')).version || null; } catch { return null; }
+}
+const loginStart = createLoginStart({
+  packageRoot: PACKAGE_ROOT,
+  home: os.homedir(),
+  dataHome: DATA_HOME,
+  entry: PACKAGED_RUNTIME && !PACKAGED_RUNTIME.shell ? durableEntry(PACKAGED_RUNTIME) : null,
+  desktopShell: !!PACKAGED_RUNTIME?.shell,
+  // Never from a test run or a throwaway data folder (the same rule as the synabun:// handler).
+  allowed: () => launcherRegistrationAllowed({ env: process.env, dataHome: DATA_HOME }),
+  log: (line) => console.log(`[app] ${line}`),
+});
+app.use('/api/system/app', createAppControlsApi({
+  store: appSettings,
+  loginStart,
+  folders: { data: DATA_HOME, logs: join(DATA_HOME, 'data') },
+  install: PACKAGED_RUNTIME?.shell ? 'desktop' : INSTALL_KIND,
+  isGuestRequest,
+  port: () => PORT,
+  log: (line) => console.warn(line),
+}));
 
 // GET /api/system/about — Settings → About (lib/system-about.js): the app, the runtime, the project's links and
 // every dependency of the product's packages with the version installed, read from the files on disk on the first
@@ -17490,6 +18145,8 @@ const editorConfigStore = createEditorConfigStore({
 // the first request, stopped after ten idle minutes and at shutdown, never the shared serve), or a
 // user-configured endpoint is, whose key is SYNABUN_EDITOR_AI_KEY in the data home's .env.
 const editorEndpointKey = createEndpointKeyStore({ envPath: ENV_PATH, parseEnvFile, writeEnvFile });
+// The completion serve's process → its record (trackOpencodeServe), from its spawn until it has ended.
+const editorCompletionServeTracks = new WeakMap();
 const editorCompletionServe = createOpencodeCompletionEngine({
   dataDir: resolve(DATA_HOME, 'data', 'editor-complete'),
   system: COMPLETION_SYSTEM,
@@ -17499,18 +18156,30 @@ const editorCompletionServe = createOpencodeCompletionEngine({
   },
   // A provider's {file:./key} is relative to that configuration: it is written whole for the serve's own folder.
   userConfigDir: () => dirname(getOpencodeConfigPath()),
-  allocPort: allocOpencodeIsoPort,
+  // What an earlier SynaBun left running goes first (lib/opencode-serve-records.js), then a port is picked.
+  allocPort: async () => { await sweepLeftoverOpencodeServes(); return allocOpencodeIsoPort(); },
+  // On record from its spawn (spawnServe), its record gone with its process: a crash of SynaBun does not leave it
+  // running. Once something answers on its port: is it this start's own serve ('foreign': another server took the
+  // port, which the engine leaves running while it tries another)?
+  trackServe: ({ proc }) => editorCompletionServeTracks.get(proc)?.answering(),
   // As the isolated serves are started (opencodeServeLaunch): the CLI the resolver found, through the login shell.
-  spawnServe: ({ port, env, cwd }) => {
-    const launch = opencodeServeLaunch(port, { env });
+  // OpenCode 2 gets the password the engine made for this start, and its start waits its turn among every serve
+  // SynaBun starts (one OpenCode 2 database cannot be opened by two serves at once).
+  detectProtocol: () => detectOpencodeProtocol(),
+  startOneAtATime: oneOpencodeStartAtATime,
+  spawnServe: ({ port, env, cwd, protocol = 1, password = null }) => {
+    const token = opencodeServeRecords.newToken();
+    const launch = opencodeServeLaunch(port, { env: { ...env, [SERVE_TOKEN_ENV]: token }, protocol, password });
     const proc = spawn(launch.command, launch.args, { stdio: ['ignore', 'ignore', 'pipe'], ...launch.options, cwd, detached: false, shell: false, windowsHide: true });
+    editorCompletionServeTracks.set(proc, trackOpencodeServe(proc, { kind: 'completion', id: 'editor-complete', port, token }));
     proc.stderr?.on('data', (d) => console.log(`[editor-complete:err] ${String(d).trim().slice(0, 500)}`));
     return proc;
   },
-  killServe: (proc) => {
+  // SIGTERM to stop it; SIGKILL, through its handle, for a failed start's process that did not end (Windows: taskkill /T /F).
+  killServe: (proc, signal = 'SIGTERM') => {
     try {
       if (IS_WIN && proc.pid) spawn('taskkill', ['/pid', String(proc.pid), '/T', '/F'], { shell: true, windowsHide: true, stdio: 'ignore' });
-      else proc.kill('SIGTERM');
+      else proc.kill(signal);
     } catch { /* already gone */ }
   },
   createClient: opencodeV2Client.createClientInstance,
@@ -17523,8 +18192,8 @@ const editorCompletion = createEditorCompletionService({
   // The model list comes from the shared serve while it runs: listing models starts nothing.
   sharedProviders: async () => {
     if (!_ocpReady) return null;
-    const r = await ocpProxy('GET', '/provider', null, 8000);
-    return r.status === 200 ? r.data : null;
+    // The connected providers, from the kept list (the same read as the pickers').
+    try { return (await readOpencodeProviders('compact')).compact; } catch { return null; }
   },
   isHiddenModel: (id) => opencodeHiddenModels.has(id),
   usage: createUsageStore({
@@ -20077,11 +20746,13 @@ app.get('/api/opencode/sessions', (req, res) => {
 
     let rows;
     try {
+      // OpenCode 1's tables, or OpenCode 2's (lib/opencode-db-schema.js).
+      const tables = sessionTablesFor(opencodeDbFlavor(db, _ocpProtocol));
       const stmt = db.prepare(`
         SELECT s.id, s.title, s.directory, s.time_created, s.time_updated,
                p.worktree as project_worktree,
-               (SELECT COUNT(*) FROM message m WHERE m.session_id = s.id) as message_count
-        FROM session s
+               ${tables.messageCount} as message_count
+        FROM ${tables.session} s
         LEFT JOIN project p ON s.project_id = p.id
         WHERE s.time_archived IS NULL
         ORDER BY s.time_updated DESC
@@ -22386,6 +23057,8 @@ app.get('/api/skills-studio/artifact/:id/icon', (req, res) => {
     const mimeMap = { '.png': 'image/png', '.svg': 'image/svg+xml', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp' };
     res.setHeader('Content-Type', mimeMap[ext] || 'application/octet-stream');
     res.setHeader('Cache-Control', 'no-cache');
+    // A skill's icon is whatever file the skill folder holds: opened by its address it runs nothing.
+    setUntrustedFileHeaders(res, iconPath, mimeMap[ext]);
     res.send(readConfinedFile(resolveArtifactFile(id).realBase, iconPath, { maxBytes: ICON_MAX_BYTES }));
   } catch (err) {
     res.status(skillsStudioStatus(err)).json({ error: err.message });
@@ -24358,7 +25031,8 @@ function getTerminalProfile(profileId, opts = {}) {
       'claude-code': (m) => `${cmd} --model ${m}`,
       'codex':       (m) => `${cmd} --model ${m}`,
       'gemini':      (m) => `${cmd} --model ${m}`,
-      'opencode':    (m) => `${cmd} --model ${m}`,
+      // OpenCode 2's terminal app has no --model (it prints its help and exits): the model is picked in it.
+      'opencode':    (m) => (knownOpencodeMajor() >= 2 ? cmd : `${cmd} --model ${m}`),
     };
     const builder = modelMap[profileId];
     if (builder) cmd = builder(quotedModel);
@@ -25213,6 +25887,9 @@ async function releaseNativeLoopResources(run) {
   reconcileKeepAwake();
 }
 
+// An OpenCode worker's tool calls, for the Assistant's run stages and tray: a compact copy, at a bounded rate.
+const openCodeWorkerActivity = createOpenCodeActivityRelay({ send: (message) => broadcastSync(message) });
+
 _nativeLoopRuntime = new NativeLoopRuntime({
   stateDir: LOOP_DIR,
   ledgerPath: resolve(LOOP_DATA_DIR, 'native-loop-runs.json'),
@@ -25223,11 +25900,10 @@ _nativeLoopRuntime = new NativeLoopRuntime({
   judgeGoal: createLoopGoalJudge({ judgeLoopGoal, surfaceConfig: typesafeSurfaceConfig }),
   log: (runId, tag, message, meta) => loopLog(runId, tag, message, meta),
   onEvent: (message) => {
-    // OpenCode already streams from its isolated serve into the V2 panel. Claude
-    // and Codex SDK events need the shared sync socket to reach their renderers.
-    if (message.type !== 'sidepanel:provider-event' || message.event?.provider !== 'opencode') {
-      broadcastSync(message);
-    }
+    // OpenCode already streams from its isolated serve into the V2 panel: only its
+    // tool calls go to the sync socket, compact (lib/opencode-worker-activity.js).
+    // Claude and Codex SDK events need the shared sync socket to reach their renderers.
+    if (!openCodeWorkerActivity.observe(message)) broadcastSync(message);
   },
   onFinish: releaseNativeLoopResources,
   providerFactories: {
@@ -25366,6 +26042,8 @@ _nativeLoopRuntime = new NativeLoopRuntime({
       return codexAccountAuth().rateLimits(id, opts);
     } });
     _assistantAccountUsage = accountUsage;
+    // The quotas the account menus show, read once now that they can be (the launch warm-up may have run first).
+    scheduleLaunchRefresh('account-usage', 5000);
     claudeAccounts.subscribe(({ accountId }) => accountUsage.invalidate('claude-code', accountId));
     _codexAccounts().subscribe(({ accountId }) => accountUsage.invalidate('codex', accountId));
     // A Claude Code worker whose dispatch names no account runs under this one (Assistant → accounts).
@@ -25433,6 +26111,12 @@ _nativeLoopRuntime = new NativeLoopRuntime({
     });
     const assistantUsage = createUsageLedger({ dataDir: resolve(DATA_HOME, 'data'), log: assistantLog, judgments });
     const catalogFetch = async (path) => {
+      // OpenCode's providers are read in process, the connected ones only (the whole models.dev catalog is
+      // megabytes and the catalog lists connected providers alone): what the route answers for ?view=compact.
+      if (path === '/api/opencode/providers/full') {
+        if (!_ocpReady) return { ok: false, error: 'OpenCode server not running', data: {} };
+        try { return { ok: true, data: (await readOpencodeProviders('compact')).compact }; } catch { return null; }
+      }
       try {
         const response = await fetch(`http://127.0.0.1:${PORT}${path}`, { signal: AbortSignal.timeout(4000) });
         return response.ok ? await response.json() : null;
@@ -25460,9 +26144,13 @@ _nativeLoopRuntime = new NativeLoopRuntime({
       reconcileHidden: (args) => assistantHiddenModels.reconcile(args),
       // A provider lists other models than before: every open window reloads its menus.
       onChange: ({ providers }) => broadcastSync({ type: 'assistant:catalog-changed', providers }),
+      // An old build answers at once while the next is made (its lists are kept by their own caches).
+      staleWhileRevalidate: true,
       log: (tag, message) => assistantLog(tag, message),
     });
     _assistantCatalog = assistantCatalog;
+    // Built once the provider lists are warm (the launch warm-up may have run before the Assistant existed).
+    scheduleLaunchRefresh('assistant-catalog', 8000);
     // A Models toggle or a Settings → OpenCode checkbox reaches routing on the next call.
     assistantHiddenModels.onChange((change) => {
       // What a catalog build settled about a hidden alias is already in that build. When it
@@ -25632,7 +26320,8 @@ _nativeLoopRuntime = new NativeLoopRuntime({
     app.use('/api/assistant/hidden-models', createAssistantHiddenModelsRouter({
       hiddenModels: assistantHiddenModels, catalog: assistantCatalog, opencodeStore: opencodeHiddenModels, isGuestRequest, broadcastSync,
     }));
-    const buildCatalog = async (opts = {}) => { await accountUsage.refresh(); return { ...(await assistantCatalog.get(opts)), accounts: accountUsage.list() }; };
+    // Quotas as last read (read again in the background): a window's menu never waits for the quota probe.
+    const buildCatalog = async (opts = {}) => { accountUsage.refresh().catch(() => {}); return { ...(await assistantCatalog.get(opts)), accounts: accountUsage.list({ stale: true }) }; };
     // Clarification: a materially ambiguous request gets 1-3 questions before it
     // is routed; the user's words and answers become the brief every worker of
     // that request receives. Knobs: assistant-config.json `clarify` (read live).
@@ -26145,6 +26834,7 @@ function prepareExecWrapperFile(terminalSessionId, loopState, taskFile, sentinel
     mcpEnvOverrides,
     // The Admin sandbox setting the loop started with (a loop file from before it: the current one).
     codexConfigArgs: codexWindowsSandboxArgs(typeof loopState.adminSandbox === 'boolean' ? loopState.adminSandbox : adminSandboxOn()),
+    ...(profile === 'opencode' ? { opencodeMajor: knownOpencodeMajor() } : {}),
   });
   const wrapperFile = join(
     os.tmpdir(),
@@ -27028,6 +27718,7 @@ const IS_WINDOWS = process.platform === 'win32';
 let _gitMissingLogged = false;
 let _gitExePath = null;   // Cached absolute path — preferring .exe on Windows
 let _gitResolved = false;
+let _gitResolving = null; // the lookup resolveGitPathInBackground() runs, while it runs
 
 // Resolve git's absolute path at first use. On Windows, `where git` lists all matches;
 // prefer .exe so spawnSync works without cmd.exe quoting issues. On Unix, use `command -v`.
@@ -27093,15 +27784,39 @@ function logGitFailure(where, err) {
   console.warn(`[git] '${where}' failed:`, msg.trim().split('\n')[0]);
 }
 
-// Startup probe — always logs git status so Windows users can see whether git works at all.
+// resolveGitPath()'s lookup without blocking: `where git` (Windows) or `command -v git`, run once in the
+// background at start-up, so the first git call of a request finds the answer kept instead of running the
+// lookup itself (a synchronous spawn through cmd.exe holds every request on a Windows PC without git).
+function resolveGitPathInBackground() {
+  if (_gitResolved) return Promise.resolve(_gitExePath || gitBash.gitExecutable());
+  if (_gitResolving) return _gitResolving;
+  _gitResolving = new Promise((done) => {
+    const [command, args] = IS_WINDOWS ? ['where', ['git']] : ['/bin/sh', ['-c', 'command -v git']];
+    execFile(command, args, { encoding: 'utf8', timeout: 3000, windowsHide: true }, (error, stdout) => {
+      if (!_gitResolved) {
+        _gitResolved = true;
+        const lines = error ? [] : String(stdout || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+        _gitExePath = (IS_WINDOWS ? lines.find((line) => /\.exe$/i.test(line)) : null) || lines[0] || null;
+        if (_gitExePath) console.log(`[git] resolved: ${_gitExePath}`);
+        else console.warn('[git] resolution failed:', error?.message || 'resolver returned no paths');
+      }
+      done(_gitExePath || gitBash.gitExecutable());
+    });
+  }).finally(() => { _gitResolving = null; });
+  return _gitResolving;
+}
+
+// Startup probe — always logs git status so Windows users can see whether git works at all. Asynchronous:
+// after the lookup above, one `git --version` (no folder, no repository's configuration) off the event loop.
 setImmediate(() => {
-  const probe = spawnGit(['--version'], { timeout: 3000 });
-  if (probe.status === 0) {
-    console.log(`[git] ${probe.stdout.toString().trim()} — OK`);
-  } else {
-    const msg = probe.stderr?.toString?.()?.trim() || probe.error?.message || 'unknown error';
-    console.warn(`[git] startup probe FAILED: ${msg}. File explorer git UI will be hidden.`);
-  }
+  resolveGitPathInBackground().then((gitPath) => new Promise((done) => {
+    const shell = IS_WINDOWS && (!gitPath || /\.(cmd|bat)$/i.test(gitPath));
+    execFile(gitPath || 'git', ['--version'], { encoding: 'utf8', timeout: 3000, windowsHide: true, shell }, (error, stdout, stderr) => {
+      if (!error) console.log(`[git] ${String(stdout || '').trim()} — OK`);
+      else console.warn(`[git] startup probe FAILED: ${String(stderr || '').trim() || error.message || 'unknown error'}. File explorer git UI will be hidden.`);
+      done();
+    });
+  })).catch(() => {});
 });
 
 // Git "dubious ownership" detection — CVE-2022-24765 safety check refuses to operate on
@@ -33477,6 +34192,83 @@ app.get('/api/browser/detect-browsers', (req, res) => {
   res.json({ browsers });
 });
 
+// --- Launch warm-up ---
+// After the server listens (never before it, and never in front of the first page), the slow lists the
+// windows, menus and Settings wait for are read once in the background: one step at a time, a pause between
+// two, so a first click finds them kept (lib/launch-cache.js) and nothing competes with the page. Every step
+// is asynchronous: a CLI runs as a child process, never through a synchronous spawn. A step that is not ready
+// yet (the Assistant still starting, OpenCode's serve not up) is skipped: its own ready event runs it again.
+// scheduleLaunchRefresh(name) runs one step again after an event (an account switch, a provider connected,
+// a serve restart), debounced, behind the same one-at-a-time queue.
+const _launchQueue = createLimiter(1);
+const _launchTimers = new Map();
+const LAUNCH_STEP_GAP_MS = 250;
+const LAUNCH_TASKS = {
+  // Where git is: the lookup a first git call would otherwise run synchronously.
+  'git-path': () => resolveGitPathInBackground(),
+  // Claude Code's model list (one CLI start; the kept list answers meanwhile). Only where Claude Code is found.
+  'claude-models': async () => { if (cliFoundForWarmup('claude-code')) await getClaudeModelsForClient(true); },
+  // OpenCode's providers, once its serve answers (the serve's ready event runs this step again).
+  'opencode-providers': async () => { if (_ocpReady) await readOpencodeProviders('compact', { refresh: true }); },
+  // Every signed-in Codex account's model list (one app-server each, one after another).
+  'codex-models': async () => {
+    // Only where Codex is found: listing prepares the account's config.toml, which a machine without Codex never gets.
+    if (!cliFoundForWarmup('codex')) return;
+    let rows = [];
+    try { rows = _codexAccounts().list().filter((row) => row?.signedIn !== false); } catch { rows = [{ id: 'default' }]; }
+    for (const row of rows) {
+      try { await _codexModelListCache.read(codexModelListKey(row.id), { refresh: true }); } catch { /* that account's list stays as kept */ }
+    }
+  },
+  // The Assistant's catalog, from the lists above (every view the windows ask for is made from it).
+  'assistant-catalog': async () => { await _assistantCatalog?.full?.({ force: true }); },
+  // Subscription quotas the account menus show.
+  'account-usage': async () => { await _assistantAccountUsage?.refresh?.(); },
+  // What the Codex panel's settings and cog menu validate against (a Codex start per setting value, once per version).
+  'codex-settings': async () => {
+    const found = cliResolver.launcher('codex');
+    const bin = found.launchPath || found.path;
+    // A file the resolver checked (a bare command name or a command line has no binary identity to key on).
+    if (found.state === 'installed' && bin && /[\\/]/.test(bin)) await readCodexSettingsSchema(bin).catch(() => null);
+  },
+};
+
+// A CLI the resolver found (probed or not yet): the warm-up starts nothing for a tool that is not installed.
+function cliFoundForWarmup(toolKey) {
+  try {
+    const found = cliResolver.launcher(toolKey);
+    return !!found.path && found.state !== 'broken' && found.state !== 'missing';
+  } catch { return false; }
+}
+
+function runLaunchStep(name) {
+  const task = LAUNCH_TASKS[name];
+  if (!task) return Promise.resolve();
+  return _launchQueue(async () => {
+    const started = Date.now();
+    try { await task(); } catch (error) { console.warn(`[launch-cache] ${name}: ${error?.message || error}`); }
+    const took = Date.now() - started;
+    if (took > 2000) console.log(`[launch-cache] ${name} warmed in ${(took / 1000).toFixed(1)} s`);
+    await new Promise((done) => { const timer = setTimeout(done, LAUNCH_STEP_GAP_MS); timer.unref?.(); });
+  });
+}
+
+/** Run one warm-up step again soon (an event changed what it reads); bursts of events run it once. */
+function scheduleLaunchRefresh(name, delayMs = 600) {
+  if (!LAUNCH_TASKS[name] || _launchTimers.has(name)) return;
+  const timer = setTimeout(() => { _launchTimers.delete(name); runLaunchStep(name); }, delayMs);
+  timer.unref?.();
+  _launchTimers.set(name, timer);
+}
+
+function startLaunchWarmup() {
+  if (process.env.SYNABUN_LAUNCH_WARMUP === 'off') return;
+  const timer = setTimeout(() => {
+    for (const name of Object.keys(LAUNCH_TASKS)) runLaunchStep(name);
+  }, 3000);
+  timer.unref?.();
+}
+
 // --- Start ---
 reloadConfig();
 
@@ -33508,6 +34300,15 @@ const httpServer = app.listen(PORT, async () => {
     if (launcher.changed) console.log('[server] Start Server launcher registered (synabun://)');
     else if (!launcher.ok) console.warn(`[server] Start Server launcher not registered: ${launcher.errors[0]}`);
   } catch {}
+
+  // Start at login (Settings > App): while it is on, its entry starts this install (another Node, a moved
+  // install). One that is off, or that the user turned off in the system, is left as it is.
+  try {
+    const healed = loginStart.heal();
+    if (healed.changed) console.log('[server] start at login: the entry now starts this install');
+  } catch (err) {
+    console.warn(`[server] start at login: ${err.message}`);
+  }
 
   // Auto-heal legacy synabun-symlink plugin state and reinstall via CC CLI
   try {
@@ -33556,10 +34357,18 @@ const httpServer = app.listen(PORT, async () => {
   // opencode-<sid> node_modules that never got their per-loop cleanup.
   setTimeout(() => { try { cleanupStaleLoopConfigs(); } catch {} }, 1500);
 
+  // OpenCode serves an earlier SynaBun left running (it crashed, or was killed): found by their records alone and
+  // stopped only when they are provably its own and nothing uses them (lib/opencode-serve-records.js). An
+  // OpenCode start that comes earlier makes the same look first (and this one then finds nothing left).
+  setTimeout(() => { sweepLeftoverOpencodeServes(); }, 1000);
+
   // Compare the installed Claude CLI with the release the Agent SDK was built
   // against, once, so an older installation is named in the log before the
   // first session runs on it (checkClaudeCliSkew in lib/claude-model-catalog.js).
   setTimeout(() => { checkClaudeCliSkew(getClaudeBin()).catch(() => {}); }, 1000);
+
+  // The lists windows, menus and Settings wait for, read once in the background (see LAUNCH_TASKS above).
+  startLaunchWarmup();
 
   // Windows: the Git Bash every Claude Code gets (lib/git-bash/). Looked for now (the settings of the user's own
   // claude follow it); a PC with none, and an app that carries none, gets SynaBun's copy, fetched in the background.
@@ -33595,7 +34404,7 @@ const httpServer = app.listen(PORT, async () => {
       },
       () => {
         try {
-          const oc = rebuildOpencodeCache({ getOpencodeDb });
+          const oc = rebuildOpencodeCache({ getOpencodeDb, protocol: _ocpProtocol });
           if (oc.updated > 0) console.log(`  Session cache (opencode): indexed ${oc.updated}/${oc.sessions}`);
         } catch (err) { console.warn('  Session cache (opencode) error:', err.message); }
       },
@@ -33680,8 +34489,12 @@ const httpServer = app.listen(PORT, async () => {
     }
   } catch { /* ok */ }
 
-  // Check for SynaBun updates (npm + github releases)
-  try { await checkSynabunUpdate(); } catch {}
+  // Check for SynaBun updates (npm + github releases), unless Settings > App turned the automatic check off
+  if (automaticUpdateCheck()) {
+    try { await checkSynabunUpdate(); } catch {}
+  } else {
+    console.log('  Updates:   automatic check off (Settings > App)');
+  }
 
   // Prune any external CLI tool left in our node_modules before the version
   // check runs — defends against `npm install` not auto-pruning packages that

@@ -26,13 +26,22 @@
 // that folder are deleted: every request that arrives meanwhile waits for the
 // same start, so no request's own session is ever taken for a leftover. A start
 // that fails after its process was spawned (the serve never answers, its client
-// cannot be built, a stop is asked for meanwhile) stops that process and fails
-// for everybody who waited for it; stop() ends a start that is under way too.
+// cannot be built, a stop is asked for meanwhile) stops that process (SIGTERM,
+// then SIGKILL when it does not end) and fails for everybody who waited for it;
+// stop() ends a start that is under way too. Another server that took the port
+// (trackServe says 'foreign') is left running while the start tries another.
 // There is no fallback to the shared serve. Everything that touches a process,
 // a port or the network is injected: tests run against a fake.
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, resolve, sep } from 'node:path';
+import { checkOpencodeServer, newServePassword } from './opencode-protocol.js';
+
+// OpenCode 2 (lib/opencode-protocol.js) runs the same way: the serve gets a
+// password of its own, is healthy only when its /api answers JSON, and is
+// spoken to through lib/opencode2-client.js; its configuration is the OpenCode
+// 1 file below, which OpenCode 2 reads (agent → agents, prompt → system,
+// temperature → request body).
 
 export const COMPLETION_AGENT = 'synabun-complete';
 /** Every session of this serve carries this title: no title is generated, and leftovers of a crash are recognisable. */
@@ -41,6 +50,8 @@ export const IDLE_STOP_MS = 10 * 60_000;
 export const START_TIMEOUT_MS = 15_000;
 /** How long a start waits for the sessions a crash left behind to be listed and deleted. */
 export const SWEEP_TIMEOUT_MS = 5000;
+/** How many ports a start tries when another server takes the one it was given. */
+export const START_ATTEMPTS = 3;
 
 // What of the user's OpenCode configuration decides which models can be reached.
 const CARRIED_KEYS = ['provider', 'disabled_providers', 'enabled_providers'];
@@ -196,11 +207,25 @@ function abortError() {
  * @param {() => object | null} deps.readUserConfig the user's OpenCode configuration, read at each start
  * @param {() => string | null} [deps.userConfigDir] the folder that configuration is in (relative {file:…}
  *   references of its providers are resolved against it)
- * @param {() => number | null} deps.allocPort a free port (server.js allocOpencodeIsoPort)
- * @param {(o: { port: number, env: object, cwd: string }) => object} deps.spawnServe starts `opencode serve` on the
- *   port and returns its process (`on('exit')`, `kill()`)
- * @param {(proc: object) => void} [deps.killServe] stops that process (default: SIGTERM)
- * @param {(o: { port: number }) => object} deps.createClient lib/opencode-v2-client.js createClientInstance
+ * @param {() => number | null | Promise<number | null>} deps.allocPort a free port (server.js: what an earlier
+ *   SynaBun left running goes first, then allocOpencodeIsoPort)
+ * @param {(o: { port: number, env: object, cwd: string, protocol: 1 | 2 | null, password: string | null }) => object}
+ *   deps.spawnServe starts `opencode serve` on the port (OpenCode 2: with that password) and returns its process
+ *   (`on('exit')`, `kill()`)
+ * @param {(proc: object, signal?: string) => void} [deps.killServe] stops that process: SIGTERM, or SIGKILL for a
+ *   failed start's process that did not end (default: proc.kill(signal))
+ * @param {(o: { port: number, protocol?: number, password?: string | null, version?: string }) => object}
+ *   deps.createClient lib/opencode-v2-client.js createClientInstance
+ * @param {() => Promise<number | null | { protocol: number | null, major?: number | null, supported?: boolean, reason?: string }>}
+ *   [deps.detectProtocol] the OpenCode major the serve will be (server.js detectOpencodeProtocol); 1 when not given
+ * @param {(protocol: number | null, run: () => Promise<any>) => Promise<any>} [deps.startOneAtATime] runs a start
+ *   in its turn among every serve SynaBun starts (server.js oneOpencodeStartAtATime); by itself when not given
+ * @param {number} [deps.exitWaitMs] how long a failed start waits for its process to exit after SIGTERM, and again
+ *   after SIGKILL, before its turn ends
+ * @param {(o: { port: number, proc: object }) => any} [deps.trackServe] told once something answers on the port
+ *   (server.js keeps the serve on record from its spawn, so that a crash of SynaBun does not leave it running for
+ *   good); 'foreign' (or a promise of it): what answers is not this start's process but another server that took
+ *   the port, which is left running while the start ends its own process and tries another port
  * @param {typeof fetch} [deps.fetchImpl]
  * @param {object} [deps.env] the environment the serve starts from
  * @param {number} [deps.idleMs] the serve is stopped after this long without a request
@@ -210,9 +235,11 @@ function abortError() {
  */
 export function createOpencodeCompletionEngine({
   dataDir, system, readUserConfig = () => null, userConfigDir = () => null, allocPort, spawnServe,
-  killServe = (proc) => { try { proc.kill('SIGTERM'); } catch { /* gone */ } },
+  killServe = (proc, signal = 'SIGTERM') => { try { proc.kill(signal); } catch { /* gone */ } },
   createClient, fetchImpl = (...args) => fetch(...args), env = process.env, now = Date.now,
   idleMs = IDLE_STOP_MS, startTimeoutMs = START_TIMEOUT_MS, sweepTimeoutMs = SWEEP_TIMEOUT_MS, healthPollMs = 100, log = () => {},
+  detectProtocol = async () => 1, newPassword = newServePassword,
+  startOneAtATime = (_protocol, run) => run(), exitWaitMs = 3000, trackServe = () => {},
 } = {}) {
   if (!dataDir || !system) throw new Error('createOpencodeCompletionEngine requires dataDir and system');
   if (typeof allocPort !== 'function' || typeof spawnServe !== 'function' || typeof createClient !== 'function') {
@@ -266,7 +293,7 @@ export function createOpencodeCompletionEngine({
 
   async function start() {
     const mine = epoch;
-    const port = allocPort();
+    let port = await allocPort();
     if (port == null) throw new Error('No free port for the completion server');
     mkdirSync(join(dataDir, 'opencode'), { recursive: true });
     mkdirSync(workDir, { recursive: true });
@@ -276,39 +303,100 @@ export function createOpencodeCompletionEngine({
     try { configDir = userConfigDir() || null; } catch { configDir = null; }
     writeFileSync(join(dataDir, 'opencode', 'config.json'), `${JSON.stringify(buildCompletionServeConfig(userConfig, { system, configDir, log }), null, 2)}\n`, 'utf8');
 
-    const started = { port, proc: null, client: null, variants: new Map(), providers: null, providersAt: 0, exited: false, killed: false, halt: null };
+    // Which OpenCode this is (null: not known, told apart by what answers); a major SynaBun does not speak never starts.
+    const detected = await detectProtocol();
+    const protocol = detected && typeof detected === 'object' ? (detected.protocol ?? null) : (detected ?? null);
+    if (detected && typeof detected === 'object' && detected.supported === false && detected.major != null) {
+      throw new Error(detected.reason || `OpenCode ${detected.major} is not supported`);
+    }
+    if (mine !== epoch) throw new Error('The completion server was stopped while it was starting');
+    const password = protocol === 1 ? null : newPassword();
+
+    // Another server that takes the port while the serve boots is a start collision: it is left running, this start's
+    // own process is ended, and the start tries another port (START_ATTEMPTS ports at most).
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await startOn(port, { mine, protocol, password });
+      } catch (error) {
+        if (!error?.portTaken || attempt >= START_ATTEMPTS || mine !== epoch) throw error;
+        log('editor-complete:serve', `another server answers on port ${port}: it is left running, and the completion server tries another port`);
+        port = await allocPort();
+        if (port == null) throw new Error('No free port for the completion server');
+      }
+    }
+  }
+
+  // A start that failed holds its turn until its process has exited (OpenCode 2 cannot open its database while a
+  // serve that is going holds it). It was sent SIGTERM (end()); one still running after `exitWaitMs` is sent SIGKILL
+  // (killServe, through its handle: SynaBun's own child, never another pid) and waited for once more. One that
+  // outlives even that stays on record (server.js keeps a serve on record until its exit is seen). True once it exited.
+  async function waitForExit(serve) {
+    const exited = async () => {
+      for (let waited = 0; serve.proc && !serve.exited && waited < exitWaitMs; waited += 25) await sleep(25);
+      return !serve.proc || serve.exited;
+    };
+    if (await exited()) return true;
+    log('editor-complete:serve', `the completion server's process did not end within ${Math.round(exitWaitMs / 1000)} s of SIGTERM: SIGKILL`);
+    try { killServe(serve.proc, 'SIGKILL'); } catch { /* already gone */ }
+    if (await exited()) return true;
+    log('editor-complete:serve', 'the completion server\'s process still runs after SIGKILL: it stays on record');
+    return false;
+  }
+
+  async function startOn(port, { mine, protocol, password }) {
+    const started = { port, proc: null, client: null, variants: new Map(), providers: null, providersAt: 0, exited: false, killed: false, halt: null, protocol, password };
     // What a stop wakes: a start that waits (for the serve to answer, for the next look) goes on at once.
     const halted = new Promise((done) => { started.halt = done; });
-    started.proc = spawnServe({ port, env: completionServeEnvironment(env, { configHome: dataDir }), cwd: workDir });
-    starts++;
-    spawned = started;
-    // From here on a process runs. Whatever goes wrong before the serve is ready, it does not stay behind.
+    // Both are checked before and after each wait: a stop may have been asked for, or the process may be gone.
+    const stillWanted = () => {
+      if (mine !== epoch) throw new Error('The completion server was stopped while it was starting');
+      if (started.exited) throw new Error('The completion server stopped while it was starting. Is OpenCode installed?');
+    };
+    // Whatever goes wrong once a process runs, before the serve is ready, it does not stay behind.
     try {
-      started.proc?.on?.('exit', () => {
-        started.exited = true;
-        if (entry === started) { entry = null; if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; } }
-      });
-      started.proc?.on?.('error', () => { started.exited = true; });
-
-      // Both are checked before and after each wait: a stop may have been asked for, or the process may be gone.
-      const stillWanted = () => {
-        if (mine !== epoch) throw new Error('The completion server was stopped while it was starting');
-        if (started.exited) throw new Error('The completion server stopped while it was starting. Is OpenCode installed?');
-      };
-      const deadline = now() + startTimeoutMs;
-      for (;;) {
+      // One start at a time with every other serve SynaBun starts (OpenCode 2 cannot open its database while
+      // another serve is opening it): from the spawn until this serve answers, or until a failed start's process
+      // is gone.
+      const check = await startOneAtATime(protocol, async () => {
         stillWanted();
+        started.proc = spawnServe({ port, env: completionServeEnvironment(env, { configHome: dataDir }), cwd: workDir, protocol, password });
+        starts++;
+        spawned = started;
+        started.proc?.on?.('exit', () => {
+          started.exited = true;
+          if (entry === started) { entry = null; if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; } }
+        });
+        started.proc?.on?.('error', () => { started.exited = true; });
         try {
-          const res = await Promise.race([fetchImpl(`http://127.0.0.1:${port}/global/health`, { signal: AbortSignal.timeout(2000) }), halted]);
-          if (res?.ok) break;
-        } catch { /* not up yet */ }
-        stillWanted();
-        if (now() >= deadline) throw new Error(`The completion server did not answer within ${Math.round(startTimeoutMs / 1000)} seconds`);
-        await Promise.race([sleep(healthPollMs), halted]);
-      }
+          const deadline = now() + startTimeoutMs;
+          for (;;) {
+            stillWanted();
+            // The right API answering JSON, never a web page (lib/opencode-protocol.js).
+            const answer = await Promise.race([checkOpencodeServer({ port, protocol, password, fetchImpl, timeoutMs: 2000 }), halted]);
+            if (answer?.ok) {
+              // Only this start's own process counts: another server that took the port answers for itself.
+              let verdict = null;
+              try { verdict = await trackServe({ port, proc: started.proc }); } catch { /* the record is the caller's */ }
+              if (verdict === 'foreign') throw Object.assign(new Error(`Another server answers on port ${port}`), { portTaken: true });
+              return answer;
+            }
+            stillWanted();
+            if (now() >= deadline) {
+              const what = answer && answer.state && answer.state !== 'down' ? `: ${answer.error}` : '';
+              throw new Error(`The completion server did not answer within ${Math.round(startTimeoutMs / 1000)} seconds${what}`);
+            }
+            await Promise.race([sleep(healthPollMs), halted]);
+          }
+        } catch (error) {
+          end(started);
+          await waitForExit(started);
+          throw error;
+        }
+      });
       stillWanted();
 
-      started.client = createClient({ port });
+      started.protocol = check.protocol || protocol || 1;
+      started.client = createClient({ port, protocol: started.protocol, password, version: check.version || '' });
       // It answers, and takes no request yet. First the sessions a crash left behind go: a sweep that ran beside the
       // first requests would find their sessions in its listing and delete them under the model call. Meanwhile,
       // which lighter reasoning setting each model offers; worth a short wait, as without it the first completions
@@ -335,6 +423,15 @@ export function createOpencodeCompletionEngine({
 
   async function loadProviders(serve, { signal } = {}) {
     if (serve.providers && now() - serve.providersAt < 60_000) return serve.providers;
+    if (serve.protocol === 2) {
+      // OpenCode 2 has no /provider: its client answers in OpenCode 1's shape ({ all, default, connected }).
+      const listed = await serve.client.getClient().provider.list({ directory: workDir });
+      if (listed?.error) throw new Error(`The completion server answered ${listed.response?.status || 'an error'} for its model list`);
+      serve.providers = listed.data;
+      serve.providersAt = now();
+      serve.variants = variantsByModel(serve.providers);
+      return serve.providers;
+    }
     const res = await fetchImpl(serveUrl(serve.port, '/provider'), { signal: signal || AbortSignal.timeout(8000) });
     if (!res.ok) throw new Error(`The completion server answered ${res.status} for its model list`);
     serve.providers = await res.json();

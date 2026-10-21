@@ -23,6 +23,10 @@ const $ = (id) => document.getElementById(id);
 
 let openMenu = null;   // currently open data-menu value, or null
 let hoverMode = false;  // after first click, hovering over labels opens them
+const SUBMENUS = new Map(); // submenu row (.menu-submenu-parent) → its panel (.menubar-submenu)
+let openSub = null;     // { parent, panel } of the submenu showing, or null
+let subTimer = 0;       // a pending hover open, switch or close of a submenu
+let subPending = null;  // the row that pending change is for
 
 // ── Public API ──
 
@@ -73,10 +77,11 @@ export function initMenubar() {
     }
   });
 
-  // Escape closes menu
+  // Escape closes an open submenu (back to its row), then the menu
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && openMenu) {
-      closeAll();
+      if (openSub) closeSubmenu({ focusParent: true });
+      else closeAll();
       e.stopPropagation();
     }
   });
@@ -86,6 +91,8 @@ export function initMenubar() {
     if (!openMenu) return;
     const dropdown = document.querySelector('.menubar-item.open .menubar-dropdown');
     if (!dropdown) return;
+    // The keyboard is in an open submenu: its keys stay there.
+    if (submenuKey(e)) return;
 
     const allItems = [...dropdown.querySelectorAll('.menu-item:not(.disabled):not([hidden])')];
     if (allItems.length === 0) return;
@@ -98,11 +105,22 @@ export function initMenubar() {
       if (focused) focused.classList.remove('focused');
       idx = (idx + 1) % allItems.length;
       allItems[idx].classList.add('focused');
+      allItems[idx].scrollIntoView({ block: 'nearest' });
+      if (openSub && openSub.parent !== allItems[idx]) closeSubmenu();
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
       if (focused) focused.classList.remove('focused');
       idx = (idx - 1 + allItems.length) % allItems.length;
       allItems[idx].classList.add('focused');
+      allItems[idx].scrollIntoView({ block: 'nearest' });
+      if (openSub && openSub.parent !== allItems[idx]) closeSubmenu();
+    } else if (SUBMENUS.has(focused) && (e.key === 'Enter' || e.key === ' ' || e.key === 'ArrowRight')) {
+      e.preventDefault();
+      openSubmenu(focused, { focusFirst: true });
+    } else if (e.key === 'ArrowRight' && !focused && openSub) {
+      // Opened by hover: ArrowRight goes into it
+      e.preventDefault();
+      openSubmenu(openSub.parent, { focusFirst: true });
     } else if (e.key === 'Enter' && focused) {
       e.preventDefault();
       focused.click();
@@ -123,9 +141,11 @@ export function initMenubar() {
   wireGraphMenu();
   wireSkillsMenu();
   wireAutomationsMenu();
+  wireSchedulesButton();
   wireTerminalMenu();
   injectVariantMenuItems();
   populateLinkTypes();
+  wireSubmenus();
 
   // ── Guest permission visual feedback on menu items ──
   const MENU_PERM_MAP = {
@@ -134,9 +154,7 @@ export function initMenubar() {
     'menu-skills-import': 'skills',
     'menu-open-styleguide': 'styleGuide',
     'menu-open-automation-studio': 'automations',
-    'menu-automations-schedule-new': 'automations',
-    'menu-automations-quick-timer': 'automations',
-    'menu-automations-schedule-groups': 'automations',
+    'menubar-schedules-btn': 'automations',
     'menu-automations-new': 'automations',
     'menu-automations-import': 'automations',
     'menu-terminal-assistant': 'terminal',
@@ -172,6 +190,7 @@ export function closeMenubar() {
 function openMenuById(menuId) {
   const menubar = document.querySelector('.menubar');
   if (!menubar) return;
+  closeSubmenu();
 
   // Close all first
   menubar.querySelectorAll('.menubar-item').forEach(item => {
@@ -190,12 +209,29 @@ function openMenuById(menuId) {
     if (menuId === 'bookmarks') emit('bookmarks:render');
     if (menuId === 'layouts') emit('layouts:render');
     if (menuId === 'resume') emit('resume:render');
+    fitDropdown(target);
+  }
+}
+
+// A menu taller than the room under the bar scrolls inside itself (Apps holds the Map and
+// Games sections). Measured from the label, not the dropdown, which is still sliding in.
+function fitDropdown(item) {
+  const dropdown = item.querySelector(':scope > .menubar-dropdown');
+  if (!dropdown || dropdown.classList.contains('menubar-dropdown--resume')) return;
+  dropdown.style.maxHeight = '';
+  dropdown.classList.remove('menubar-dropdown--scroll');
+  const top = item.getBoundingClientRect().bottom + 14;
+  const room = Math.floor(window.innerHeight - top - 12);
+  if (room > 120 && dropdown.scrollHeight > room) {
+    dropdown.style.maxHeight = room + 'px';
+    dropdown.classList.add('menubar-dropdown--scroll');
   }
 }
 
 function closeAll() {
   const menubar = document.querySelector('.menubar');
   if (!menubar) return;
+  closeSubmenu();
   menubar.querySelectorAll('.menubar-item').forEach(item => {
     item.classList.remove('open');
     const focused = item.querySelector('.menu-item.focused');
@@ -203,6 +239,181 @@ function closeAll() {
   });
   openMenu = null;
   hoverMode = false;
+}
+
+// ── Submenus ──
+// A dropdown row with data-submenu (Apps › Browser apps, Map, Games) opens the .menubar-submenu of
+// that name beside the dropdown: on hover after a short intent delay, on click, and on Enter, Space
+// or ArrowRight with its first entry focused. Hovering another row of the dropdown closes it after
+// a grace delay, so the pointer can cross rows on its way in. One is open at a time.
+
+const SUBMENU_OPEN_DELAY = 120;
+const SUBMENU_GRACE = 300;
+const SUBMENU_GAP = 2;       // between the dropdown and the panel
+const VIEWPORT_MARGIN = 8;
+
+function wireSubmenus() {
+  document.querySelectorAll('.menubar-item').forEach(host => {
+    const dropdown = host.querySelector(':scope > .menubar-dropdown');
+    const rows = dropdown ? [...dropdown.querySelectorAll(':scope > .menu-submenu-parent')] : [];
+    if (!rows.length) return;
+    for (const row of rows) {
+      const panel = dropdown.querySelector(`:scope > .menubar-submenu[data-submenu-for="${row.dataset.submenu}"]`);
+      if (!panel) { row.hidden = true; continue; }
+      // Out of the dropdown, whose scroll box (fitDropdown) would clip it.
+      host.appendChild(panel);
+      SUBMENUS.set(row, panel);
+      row.addEventListener('click', () => openSubmenu(row));
+      panel.addEventListener('mouseenter', cancelSubmenuTimer);
+    }
+    dropdown.addEventListener('mouseover', (e) => {
+      const row = e.target.closest('.menu-item');
+      if (row && row.parentElement === dropdown) hoverRow(row);
+    });
+    dropdown.addEventListener('mouseleave', cancelSubmenuTimer);
+    dropdown.addEventListener('scroll', () => { if (openSub) placeSubmenu(openSub.parent, openSub.panel); }, { passive: true });
+    // The rows follow their entries ([hidden], display:none, a guest's blocked items), and the separators the rows.
+    const sync = () => syncSubmenuRows(dropdown);
+    new MutationObserver(sync).observe(host, { subtree: true, attributes: true, attributeFilter: ['hidden', 'style'] });
+    sync();
+  });
+  window.addEventListener('resize', () => { if (openSub) placeSubmenu(openSub.parent, openSub.panel); });
+  // The tour shows a submenu by name (ui-tutorial.js showStage); null closes it.
+  on('menubar:submenu', (name) => {
+    const row = name ? [...SUBMENUS.keys()].find(r => r.dataset.submenu === name) : null;
+    if (row && !row.hidden) openSubmenu(row);
+    else closeSubmenu();
+  });
+}
+
+function openSubmenu(row, { focusFirst = false } = {}) {
+  cancelSubmenuTimer();
+  const panel = SUBMENUS.get(row);
+  if (!panel || row.hidden) return;
+  if (openSub?.parent !== row) {
+    closeSubmenu();
+    openSub = { parent: row, panel };
+    row.classList.add('submenu-open');
+    row.setAttribute('aria-expanded', 'true');
+    panel.classList.add('open');
+    placeSubmenu(row, panel);
+  }
+  if (focusFirst) {
+    panel.querySelectorAll('.menu-item.focused').forEach(el => el.classList.remove('focused'));
+    submenuEntries(panel)[0]?.classList.add('focused');
+  }
+}
+
+function closeSubmenu({ focusParent = false } = {}) {
+  cancelSubmenuTimer();
+  if (!openSub) return;
+  const { parent, panel } = openSub;
+  openSub = null;
+  parent.classList.remove('submenu-open');
+  parent.setAttribute('aria-expanded', 'false');
+  panel.classList.remove('open');
+  panel.querySelectorAll('.menu-item.focused').forEach(el => el.classList.remove('focused'));
+  if (focusParent) {
+    parent.parentElement.querySelectorAll(':scope > .menu-item.focused').forEach(el => el.classList.remove('focused'));
+    parent.classList.add('focused');
+  }
+}
+
+function hoverRow(row) {
+  if (row === subPending) return; // still on the row the pending change is for: let it run
+  const opens = SUBMENUS.has(row) && !row.hidden;
+  if (openSub) {
+    if (row === openSub.parent) { cancelSubmenuTimer(); return; }
+    // The pointer may only be crossing this row on its way into the open submenu.
+    scheduleSubmenu(row, () => (opens ? openSubmenu(row) : closeSubmenu()), SUBMENU_GRACE);
+  } else if (opens) {
+    scheduleSubmenu(row, () => openSubmenu(row), SUBMENU_OPEN_DELAY);
+  } else {
+    cancelSubmenuTimer();
+  }
+}
+
+function scheduleSubmenu(row, fn, ms) {
+  clearTimeout(subTimer);
+  subPending = row;
+  subTimer = setTimeout(() => { subTimer = 0; subPending = null; fn(); }, ms);
+}
+
+function cancelSubmenuTimer() {
+  clearTimeout(subTimer);
+  subTimer = 0;
+  subPending = null;
+}
+
+// Keys for an open submenu the keyboard is in (one of its entries is focused). True when the key was its.
+function submenuKey(e) {
+  const focused = openSub?.panel.querySelector('.menu-item.focused');
+  if (!focused) return false;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    const entries = submenuEntries(openSub.panel);
+    focused.classList.remove('focused');
+    if (!entries.length) return true;
+    const idx = entries.indexOf(focused), dir = e.key === 'ArrowDown' ? 1 : -1;
+    const next = idx < 0 ? (dir > 0 ? 0 : entries.length - 1) : (idx + dir + entries.length) % entries.length;
+    entries[next].classList.add('focused');
+  } else if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault();
+    focused.click();
+  } else if (e.key === 'ArrowLeft') {
+    e.preventDefault();
+    closeSubmenu({ focusParent: true });
+  } else if (e.key === 'ArrowRight') {
+    e.preventDefault(); // no level below this one, and the menubar stays on this menu
+  } else {
+    return false;
+  }
+  return true;
+}
+
+// The entries the keyboard reaches: not [hidden], disabled or display:none (a guest's Rebuild map).
+function submenuEntries(panel) {
+  return [...panel.querySelectorAll('.menu-item')]
+    .filter(el => !el.hidden && !el.classList.contains('disabled') && getComputedStyle(el).display !== 'none');
+}
+
+// Right of the dropdown with its first entry level with the row; on the left when the window has no room
+// on the right, and kept inside the window. The dropdown's laid-out place (offsetTop/Left) is what its
+// drop-in animation does not move, so a submenu opened together with the menu (the tour) lines up too.
+function placeSubmenu(row, panel) {
+  const dropdown = row.parentElement, host = panel.parentElement;
+  const hostBox = host.getBoundingClientRect(), panelBox = panel.getBoundingClientRect();
+  const first = submenuEntries(panel)[0];
+  const lead = first ? first.getBoundingClientRect().top - panelBox.top : 0;
+  const top = dropdown.offsetTop + row.getBoundingClientRect().top - dropdown.getBoundingClientRect().top - lead;
+  let left = dropdown.offsetLeft + dropdown.offsetWidth + SUBMENU_GAP;
+  if (hostBox.left + left + panelBox.width > innerWidth - VIEWPORT_MARGIN) left = dropdown.offsetLeft - SUBMENU_GAP - panelBox.width;
+  const maxTop = innerHeight - VIEWPORT_MARGIN - panelBox.height - hostBox.top;
+  panel.style.left = `${Math.max(VIEWPORT_MARGIN - hostBox.left, left)}px`;
+  panel.style.top = `${Math.max(VIEWPORT_MARGIN - hostBox.top, Math.min(top, maxTop))}px`;
+}
+
+// A row whose entries are all hidden or blocked for a guest is hidden. Then each separator shows only
+// between two groups with something on screen, so none is doubled or left at an end.
+function syncSubmenuRows(dropdown) {
+  for (const row of dropdown.querySelectorAll(':scope > .menu-submenu-parent')) {
+    const panel = SUBMENUS.get(row);
+    const empty = !panel || !submenuEntries(panel).some(el => el.style.pointerEvents !== 'none');
+    if (row.hidden !== empty) row.hidden = empty;
+    if (empty && openSub?.parent === row) closeSubmenu();
+  }
+  const seps = new Map();
+  let shown = false, waiting = null;
+  for (const el of dropdown.children) {
+    if (el.classList.contains('menu-sep')) {
+      seps.set(el, false);
+      if (shown) { waiting = el; shown = false; }
+    } else if (el.matches('.menu-item, .menu-group-label') && getComputedStyle(el).display !== 'none') {
+      if (waiting) { seps.set(waiting, true); waiting = null; }
+      shown = true;
+    }
+  }
+  for (const [sep, show] of seps) if (sep.hidden === show) sep.hidden = !show;
 }
 
 // ── View Menu ──
@@ -323,34 +534,6 @@ function wireAutomationsMenu() {
       emit('automations:open');
     });
   }
-  const schedulesItem = $('menu-automations-schedules');
-  if (schedulesItem) {
-    schedulesItem.addEventListener('click', () => {
-      closeAll();
-      emit('automations:open-schedules');
-    });
-  }
-  const newScheduleItem = $('menu-automations-schedule-new');
-  if (newScheduleItem) {
-    newScheduleItem.addEventListener('click', () => {
-      closeAll();
-      emit('automations:open-schedules', { action: 'new-schedule' });
-    });
-  }
-  const quickTimerItem = $('menu-automations-quick-timer');
-  if (quickTimerItem) {
-    quickTimerItem.addEventListener('click', () => {
-      closeAll();
-      emit('automations:open-schedules', { action: 'quick-timer' });
-    });
-  }
-  const scheduleGroupsItem = $('menu-automations-schedule-groups');
-  if (scheduleGroupsItem) {
-    scheduleGroupsItem.addEventListener('click', () => {
-      closeAll();
-      emit('automations:open-schedules', { tab: 'groups' });
-    });
-  }
   const newItem = $('menu-automations-new');
   if (newItem) {
     newItem.addEventListener('click', () => {
@@ -367,6 +550,22 @@ function wireAutomationsMenu() {
   }
 
   registerAction('open-automations', () => emit('automations:open'));
+}
+
+// ── Schedules (a menubar button: one click opens the window, the next closes it) ──
+
+function wireSchedulesButton() {
+  const btn = $('menubar-schedules-btn');
+  if (!btn) return;
+  btn.addEventListener('click', () => {
+    closeAll();
+    emit('schedules:toggle');
+  });
+  // ui-schedules-studio.js reports the window opening and closing, whoever opened it.
+  on('schedules:window', ({ open } = {}) => {
+    btn.classList.toggle('active', !!open);
+    btn.setAttribute('aria-expanded', String(!!open));
+  });
 }
 
 // ── Apps Menu (formerly Terminal) ──

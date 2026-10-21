@@ -903,7 +903,8 @@ function updateElementDOM(dom, el) {
       svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
       svg.setAttribute('width', w);
       svg.setAttribute('height', h);
-      const sc = el.color || 'rgba(255,255,255,0.8)';
+      // The colour is whatever whiteboard_add / whiteboard_update was given: an attribute value, never markup.
+      const sc = String(el.color || 'rgba(255,255,255,0.8)').replace(/[&"<>]/g, (c) => ({ '&': '&amp;', '"': '&quot;', '<': '&lt;', '>': '&gt;' })[c]);
       if (shape === 'drawn-circle') {
         svg.innerHTML = `<path d="${generateDrawnCirclePath(w, h, el.id)}" fill="none" stroke="${sc}" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>`;
       } else {

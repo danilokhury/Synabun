@@ -65,6 +65,7 @@ const handlers = createFileLinkHandlers({
   say: fileLinkText,
   notify: showFileLinkNotice,
   follow: (anchor) => {
+    if (anchor.protocol !== 'http:' && anchor.protocol !== 'https:') return; // an address of this app, never a script link
     if (anchor.target === '_blank') window.open(anchor.href, '_blank', 'noopener,noreferrer');
     else window.location.assign(anchor.href);
   },

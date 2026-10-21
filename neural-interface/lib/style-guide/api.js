@@ -47,6 +47,7 @@ import { EXPORT_FORMATS, StyleGuideError, renderFormat } from './store.js';
 import { estimateTokens, styleGuideSummaryForClass } from './summary.js';
 import { resolvedTokens } from './tokens.js';
 import { safeLogoFile } from './security.js';
+import { setUntrustedFileHeaders } from '../untrusted-file-headers.js';
 
 const LOGO_TYPES = Object.freeze({ 'image/png': '.png', 'image/svg+xml': '.svg', 'image/jpeg': '.jpg', 'image/webp': '.webp' });
 const SAVE_SOURCE_RE = /^(ui|import:[a-z-]{1,24}|preset:[a-z0-9-]{1,40})$/;
@@ -367,9 +368,9 @@ export function registerStyleGuideRoutes(app, { store, fetchImpl = null, log = (
     if (!full.startsWith(store.assetsDir + sep)) return res.status(403).json({ ok: false, error: 'Forbidden' });
     if (!existsSync(full)) return res.status(404).json({ ok: false, error: 'Not found' });
     store.assertPath(store.assetsDir, full);
-    // An uploaded SVG is served as a file to look at, never as a page that can run script on this origin.
-    res.set('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; sandbox");
-    res.set('X-Content-Type-Options', 'nosniff');
+    // An uploaded SVG is served as a file to look at, never as a page that can run script on this origin
+    // (and opened by its address, a download).
+    setUntrustedFileHeaders(res, file);
     res.sendFile(full);
   }));
 }

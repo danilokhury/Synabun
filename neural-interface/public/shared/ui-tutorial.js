@@ -31,7 +31,7 @@ const NAMES = {
   apps: ['[data-menu="apps"] > .menubar-label', 'nav.apps'],
   browser: ['#menu-terminal-browser', 'menu.apps.browser'],
   studio: ['#menu-open-automation-studio', 'menu.automations.studio'],
-  schedules: ['#menu-automations-schedules', 'tutorial.names.schedules'],
+  schedules: ['#menubar-schedules-btn', 'tutorial.names.schedules'],
   keybinds: ['#topright-keybinds-btn', 'tutorial.names.keybinds'],
   settings: ['#menubar-settings-btn', 'nav.settings'],
   projects: [null, 'settings.redesign.nav.projects.label'],
@@ -81,7 +81,8 @@ function names() {
     // A tooltip may end in its shortcut: "Focus Mode (V)".
     out[name] = label?.replace(/\s*\([^)]*\)\s*$/, '').trim() || t(key);
   }
-  out.menu = document.querySelector('[data-menu="graph"] > .menubar-label')?.textContent.trim()
+  // 2D: the Graph menu's label. 3D: the label of the Map row in Apps, which opens its submenu.
+  out.menu = document.querySelector('[data-menu="graph"] > .menubar-label, #menu-map-label')?.textContent.trim()
     || t(getVariant() === '2d' ? 'nav.graph' : 'nav.map');
   out.view = out.menu.toLocaleLowerCase();
   return out;
@@ -111,10 +112,18 @@ function resolveStep(step) {
 
 // ── What the tour changes to show a step, and puts back ──
 
+// The dropdown a step opens, which can differ per variant ({ '3d': 'apps' }).
+const stepMenu = (step) => (step.menu && typeof step.menu === 'object' ? step.menu[getVariant()] : step.menu) || null;
+// The submenu of that dropdown the step opens, by its data-submenu name ({ '3d': 'map' }).
+const stepSubmenu = (step) => (step.submenu && typeof step.submenu === 'object' ? step.submenu[getVariant()] : step.submenu) || null;
+
 function showStage(step) {
+  const menu = stepMenu(step);
   for (const [el, open] of menuState) {
-    if (el.isConnected) el.classList.toggle('open', step.menu ? el.dataset.menu === step.menu : open);
+    if (el.isConnected) el.classList.toggle('open', menu ? el.dataset.menu === menu : open);
   }
+  // ui-menubar.js opens it beside its row, or closes the one a previous step opened.
+  emit('menubar:submenu', menu ? stepSubmenu(step) : null);
   if (step.panel !== 'assistant') { hidePanelPeek(); return; }
   // With no session tab, opening the Assistant starts a session: its button is annotated instead.
   if (panelPeek || isAssistantPanelOpen() || !assistantPanelPeekable()) return;
@@ -135,6 +144,7 @@ function hidePanelPeek() {
   state.lastActivePanel = peek.lastActivePanel; state.lastActiveSidepanel = peek.lastActiveSidepanel;
 }
 function restoreStage() {
+  emit('menubar:submenu', null);
   for (const [el, open] of menuState) if (el.isConnected) el.classList.toggle('open', open);
   hidePanelPeek();
 }
@@ -352,7 +362,7 @@ function renderStep() {
 }
 // A menu or panel the tour just opened is still moving: draw once the target holds still.
 function settle(step, done) {
-  const staged = !!step.menu || (step.panel === 'assistant' && isAssistantPanelOpen());
+  const staged = !!stepMenu(step) || (step.panel === 'assistant' && isAssistantPanelOpen());
   // Staged, the target is the control inside the menu or panel, not the fallback outside it.
   const inside = step.targets ? step.targets.length - (step.panel ? 1 : 0) : 0;
   const started = performance.now();
@@ -441,7 +451,7 @@ function layout(animate) {
 
   const rects = (selectors) => selectors.flatMap(s => [...document.querySelectorAll(s)])
     .filter(shown).map(el => el.getBoundingClientRect()).filter(r => r.width > 0 && r.height > 0);
-  const avoid = rects(['.menubar-item.open .menubar-dropdown']), keep = rects(KEEP_CLEAR);
+  const avoid = rects(['.menubar-item.open .menubar-dropdown', '.menubar-item.open .menubar-submenu.open']), keep = rects(KEEP_CLEAR);
   const key = (...values) => values.map(v => Math.round(v)).join(',');
   const flat = (list) => list.flatMap(r => [r.left, r.top, r.width, r.height]);
   // The app redraws itself all the time: nothing the note depends on moved, nothing to do.

@@ -6,7 +6,9 @@
 
 import { emit, on } from './state.js';
 import { storage } from './storage.js';
+import { safeHref } from './assistant/asst-sanitize.js';
 import { isGuest, hasPermission, showGuestToast } from './ui-sync.js';
+import { registerLaunchPrefetch } from './launch-prefetch.js';
 import {
   fetchSkillsLibrary, fetchSkillsArtifact, saveSkillsArtifact,
   fetchSkillsSubFile, saveSkillsSubFile, createSkillsSubFile, deleteSkillsSubFile,
@@ -22,6 +24,9 @@ const $ = (id) => document.getElementById(id);
 let _panel = null;
 let _backdrop = null;
 let _library = [];
+let _libraryLoaded = false;  // the library was read once: later opens paint from it and read it again behind
+let _panelLife = null;       // document listeners of the open panel end with it
+let _toolsMenuLife = null;   // the tools dropdown's outside-click listener (one at a time)
 let _projects = [];
 let _selected = null;      // currently selected artifact
 let _selectedContent = null; // loaded content of selected artifact
@@ -242,6 +247,8 @@ function toast(msg, type = 'info') {
 // ═══════════════════════════════════════════
 
 export function initSkillsStudio() {
+  // Launch: the library is read once the page has painted (launch-prefetch.js), so the first open paints at once.
+  registerLaunchPrefetch('skills-library', prefetchSkillsLibrary, { order: 70 });
   on('skills:open', () => openPanel());
   on('skills:open-wizard', () => { openPanel(); switchToWizard(); });
   on('skills:import', () => { openPanel(); triggerImport(); });
@@ -276,6 +283,16 @@ async function openPanel() {
   _panel.style.top = Math.max(48, (window.innerHeight - 520) / 2) + 'px';
 
   wirePanel();
+  if (_libraryLoaded) {
+    // The library as last read paints at once; it is read again behind it and the list follows in place.
+    const countEl = $('ss-total-count');
+    if (countEl) countEl.textContent = _library.length;
+    renderLibrary();
+    renderView();
+    requestAnimationFrame(() => { _backdrop?.classList.add('open'); _panel?.classList.add('open'); });
+    refreshLibraryInPlace();
+    return;
+  }
   await loadLibrary();
   renderView();
 
@@ -284,6 +301,10 @@ async function openPanel() {
 
 function closePanel() {
   if (!_panel) return;
+  _panelLife?.abort();
+  _panelLife = null;
+  _toolsMenuLife?.abort();
+  _toolsMenuLife = null;
   if (_backdrop) { _backdrop.remove(); _backdrop = null; }
   _panel.remove();
   _panel = null;
@@ -340,6 +361,8 @@ function buildPanelHTML() {
 }
 
 function wirePanel() {
+  _panelLife?.abort();
+  _panelLife = new AbortController();
   // Close button
   $('ss-close')?.addEventListener('click', closePanel);
 
@@ -376,10 +399,10 @@ function wirePanel() {
       if (_view === 'editor' && _tabs.length > 0) { closeTab(_activeTabIdx); return; }
       if (_view === 'wizard') { switchToLibrary(); return; }
       closePanel();
-      document.removeEventListener('keydown', onEsc);
     }
   };
-  document.addEventListener('keydown', onEsc);
+  // Removed with the panel, however it closes (the close button too).
+  document.addEventListener('keydown', onEsc, { signal: _panelLife.signal });
 
   // Drag/resize are handled by the shared panel system via drag-handle/resize-handle.
 }
@@ -393,6 +416,7 @@ async function loadLibrary() {
     const data = await fetchSkillsLibrary();
     _library = data.artifacts || [];
     _projects = data.projects || [];
+    _libraryLoaded = true;
     const countEl = $('ss-total-count');
     if (countEl) countEl.textContent = _library.length;
     renderLibrary();
@@ -400,6 +424,35 @@ async function loadLibrary() {
     console.error('Skills Studio: failed to load library', err);
     toast('Failed to load skills library', 'error');
   }
+}
+
+// The library read again behind a panel painted from the kept one: the list is redrawn only when it changed,
+// at the scroll position it had (a failed read leaves the kept library as it is).
+async function refreshLibraryInPlace() {
+  const before = JSON.stringify([_library, _projects]);
+  try {
+    const data = await fetchSkillsLibrary();
+    const next = [data.artifacts || [], data.projects || []];
+    if (!_panel || JSON.stringify(next) === before) return;
+    [_library, _projects] = next;
+    const list = $('ss-library');
+    const scroll = list ? list.scrollTop : 0;
+    const countEl = $('ss-total-count');
+    if (countEl) countEl.textContent = _library.length;
+    renderLibrary();
+    if (list) list.scrollTop = scroll;
+  } catch { /* the kept library stays */ }
+}
+
+/** Launch prefetch: the library read once, so the first open paints at once (nothing is drawn here). */
+export function prefetchSkillsLibrary() {
+  if (_libraryLoaded || (isGuest() && !hasPermission('skills'))) return Promise.resolve();
+  return fetchSkillsLibrary().then((data) => {
+    if (_libraryLoaded) return;
+    _library = data.artifacts || [];
+    _projects = data.projects || [];
+    _libraryLoaded = true;
+  }).catch(() => { /* the first open reads it */ });
 }
 
 // ═══════════════════════════════════════════
@@ -795,7 +848,7 @@ function buildMetadataForm(artifact, fm) {
 
     html += `<div class="ss-field">
       <label>Max Turns</label>
-      <input type="number" class="ss-input" id="ss-f-max-turns" value="${fm.maxTurns || ''}" min="0" data-fm="maxTurns" placeholder="0 = unlimited">
+      <input type="number" class="ss-input" id="ss-f-max-turns" value="${esc(String(fm.maxTurns || ''))}" min="0" data-fm="maxTurns" placeholder="0 = unlimited">
     </div>`;
 
     html += `<div class="ss-field">
@@ -1291,15 +1344,17 @@ function wireToolsDropdown() {
     updateDirtyState();
   });
 
-  // Close on outside click
+  // Close on outside click. Every editor render wires a new dropdown: the previous one's listener ends here,
+  // and the last one with the panel.
   const closeMenu = (e) => {
     if (!trigger.contains(e.target) && !menu.contains(e.target)) {
       menu.classList.remove('open');
       trigger.classList.remove('open');
     }
   };
-  document.addEventListener('click', closeMenu);
-  // Clean up when panel is destroyed (captured via MutationObserver is overkill — just leave it)
+  _toolsMenuLife?.abort();
+  _toolsMenuLife = new AbortController();
+  document.addEventListener('click', closeMenu, { signal: _toolsMenuLife.signal });
 }
 
 // ── Metadata ↔ Frontmatter helpers ──
@@ -1598,8 +1653,8 @@ function renderMarkdown(md) {
   // Strip YAML frontmatter
   let text = md.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, '');
 
-  // Escape HTML first
-  text = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  // Escape HTML first (quotes too: a link's target lands in an attribute)
+  text = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
   // Code blocks (``` ... ```)
   text = text.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
@@ -1626,8 +1681,11 @@ function renderMarkdown(md) {
   // Inline code
   text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
 
-  // Links
-  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+  // Links: http(s) and mailto only, checked as the Markdown sanitiser checks them; any other target stays text
+  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (whole, label, target) => {
+    const href = safeHref(target.replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&'));
+    return href ? `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${label}</a>` : label;
+  });
 
   // Blockquotes
   text = text.replace(/^&gt;\s?(.*)$/gm, '<blockquote>$1</blockquote>');
@@ -1663,7 +1721,7 @@ function renderMarkdown(md) {
   return text;
 }
 
-// ── Mermaid support (lazy-loaded from CDN) ──
+// ── Mermaid support (lazy-loaded, vendored in public/vendor/mermaid/) ──
 let _mermaidLoaded = false;
 let _mermaidLoading = false;
 let _mermaidId = 0;
@@ -1679,7 +1737,7 @@ async function loadMermaid() {
   }
   _mermaidLoading = true;
   try {
-    const mod = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+    const mod = await import('/vendor/mermaid/mermaid-11.17.2.esm.min.mjs');
     mod.default.initialize({ startOnLoad: false, theme: 'dark', themeVariables: {
       darkMode: true, background: 'transparent', primaryColor: '#1e3a5f',
       primaryTextColor: '#e0e0e0', lineColor: '#94a3b8', secondaryColor: '#2a2a4a',

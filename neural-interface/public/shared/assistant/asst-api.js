@@ -123,9 +123,12 @@ export async function fetchProjects() {
 
 // ── Sessions ─────────────────────────────────
 
-/** `fallback`: a model disabled in Assistant → Models starts on its enabled stand-in (session.fallback says which) instead of a 400. */
-export function createAssistantSession({ brain, label, fallback = false } = {}) {
-  return jsonFetch('/api/assistant/sessions', jsonBody({ brain, label, fallback: fallback === true || undefined }));
+/**
+ * `fallback`: a model disabled in Assistant → Models starts on its enabled stand-in (session.fallback says which) instead of a 400.
+ * `draft`: the server keeps it in memory, out of every list, until its first prompt stores it; closed or left unused, it is gone.
+ */
+export function createAssistantSession({ brain, label, fallback = false, draft = false } = {}) {
+  return jsonFetch('/api/assistant/sessions', jsonBody({ brain, label, fallback: fallback === true || undefined, draft: draft === true || undefined }));
 }
 
 export async function listAssistantSessions() {
@@ -147,6 +150,11 @@ export function patchAssistantSession(id, patch) {
 
 export function closeAssistantSession(id) {
   return jsonFetch(`/api/assistant/sessions/${enc(id)}/close`, jsonBody({}));
+}
+
+/** Remove for good (Sessions menu): its running turn and workers stop, then the record and transcript go → { removed, stoppedRuns }. */
+export function removeAssistantSession(id) {
+  return jsonFetch(`/api/assistant/sessions/${enc(id)}`, { method: 'DELETE' });
 }
 
 // ── Attachments ──────────────────────────────

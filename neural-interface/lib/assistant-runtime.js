@@ -9,7 +9,7 @@
 // obligation nudges. All server dependencies are injected.
 
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { createClaudeBrain } from './assistant-brains/claude.js';
 import { createCodexBrain } from './assistant-brains/codex.js';
@@ -252,6 +252,8 @@ export function createAssistantRuntime({
   if (!dataDir) throw new Error('createAssistantRuntime requires dataDir');
   const settings = {
     idleDisposeMs: Math.max(60_000, Number(config.idleDisposeMinutes || 120) * 60_000),
+    // A draft (a session the panel opened, before its first prompt) with no socket attached goes after this.
+    draftIdleMs: Math.max(60_000, Number(config.draftIdleMinutes || 10) * 60_000),
     // A remote session on OpenCode waits this long for its gate plugin's hello before a turn (else refused).
     remoteGateHelloMs: Math.max(0, Number(config.remoteGateHelloMs ?? 5000)),
     // An OpenCode turn's end waits this long for the serve's stored messages (the usage meter's
@@ -295,11 +297,30 @@ export function createAssistantRuntime({
 
   // ── persistence ────────────────────────────────────────────────────────────
   function transcriptPath(id) { return resolve(dataDir, 'assistant', id, 'transcript.jsonl'); }
+  function transcriptHasEntries(id) { try { return statSync(transcriptPath(id)).size > 0; } catch { return false; } }
+  function transcriptHasPrompt(id) { try { return readFileSync(transcriptPath(id), 'utf8').includes('"synabun.user_prompt"'); } catch { return false; } }
+  /**
+   * A record from before `chatStartedAt`: its chat started when it ran a turn, adopted a provider
+   * conversation or holds a human prompt (the time is its best guess). One that never did is listed
+   * nowhere; with nothing in it at all (no transcript, no runs, not remote, no spend) it is dropped.
+   */
+  function settleLegacyRow(row) {
+    if (row.chatStartedAt) return 'started';
+    if (Number(row.turns) > 0 || row.providerSessionId || row.providerThreadId || transcriptHasPrompt(row.id)) {
+      row.chatStartedAt = row.lastActiveAt || row.updatedAt || row.createdAt || iso(now());
+      return 'started';
+    }
+    const holds = transcriptHasEntries(row.id) || (Array.isArray(row.dispatchRunIds) && row.dispatchRunIds.length > 0)
+      || !!row.remote || !!row.channel || Number(row.costUsd) > 0;
+    return holds ? 'unstarted' : 'empty';
+  }
   function loadIndex() {
     const rows = readJson(indexPath, []);
     if (!Array.isArray(rows)) return;
+    let dropped = 0;
     for (const row of rows) {
       if (!row?.id) continue;
+      if (settleLegacyRow(row) === 'empty') { dropped += 1; continue; }
       sessions.set(row.id, makeLive({ ...row, status: row.status === 'ended' ? 'ended' : 'idle', windowIds: [] }));
       // A remote session nobody registered again since the restart reads as read-only.
       if (row.remote) {
@@ -307,11 +328,14 @@ export function createAssistantRuntime({
         try { remotePolicy?.setSessionBrain?.(row.id, row.brain?.provider || null); } catch {}
       }
     }
+    // The index is written again without them (and with the started marks).
+    if (dropped) { log('assistant:index', `${dropped} session record(s) without a conversation dropped`); persist(); }
   }
   let persistTimer = null;
   function persist({ force = false } = {}) {
     const write = () => {
-      const rows = [...sessions.values()].map((live) => publicRecord(live.record, { withLive: false, persisted: true }))
+      // A draft is never written: it exists on disk only once its first prompt was sent (startChat).
+      const rows = [...sessions.values()].filter((live) => !live.draft).map((live) => publicRecord(live.record, { withLive: false, persisted: true }))
         .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))
         .slice(0, settings.retention);
       try { writeJsonAtomic(indexPath, rows); } catch (error) { log('assistant:index-error', error?.message || String(error)); }
@@ -341,6 +365,9 @@ export function createAssistantRuntime({
   function makeLive(record) {
     return {
       record, brain: null, brainProvider: null, brainMeter: null, brainMeterProvider: null, turnTaskId: null, turnTasks: [], sockets: new Set(), buffer: [], running: false, pendingControls: new Map(), controlTimers: new Map(),
+      // A draft: opened by a panel and not chatted in yet. Kept in memory only, listed nowhere, and
+      // gone when it is closed or left without a socket (draftTimer); its first prompt stores it (startChat).
+      draft: false, draftTimer: null,
       mailbox: [], mailboxTimer: null, obligations: new Set(), rememberedThisTurn: false, disposeTimer: null, personaText: '',
       // The last human prompt and where it came from ('ui', 'whatsapp', 'api'): a route continuation
       // answers there (lastPromptOrigin; the transcript's after a restart).
@@ -909,7 +936,9 @@ export function createAssistantRuntime({
       out.testDensityExplicit = normalizeTestDensity(record.testDensity, null);
       // `rename`: this server keeps a rename on the record (userRenamed), so a panel writes it here.
       // `adminSandbox`: the global setting is served here (PUT /api/assistant/admin-sandbox).
-      out.features = { routing: !!router, computer: computerSupported(), testDensity: true, rename: true, adminSandbox: !!adminSandbox };
+      // `drafts`: a session is stored and listed from its first prompt on; `remove`: DELETE stops its work and purges it.
+      out.features = { routing: !!router, computer: computerSupported(), testDensity: true, rename: true, adminSandbox: !!adminSandbox, drafts: true, remove: true };
+      out.draft = live.draft === true;
       if (adminSandbox) { try { out.adminSandbox = adminSandbox.enabled() === true; } catch { out.adminSandbox = false; } }
       out.budget = sessionMoney(record.id);
       out.remoteLevel = policy ? effectiveLevel(policy, { untrusted: live.turnUntrusted === true, now: now() }) : null;
@@ -2302,6 +2331,8 @@ export function createAssistantRuntime({
       live.lastPromptOrigin = origin ? String(origin) : null;
       // A prompt from elsewhere (WhatsApp, the API) is news to the panel: it goes live too.
       const promptPacket = { type: 'event', event: { type: 'synabun.user_prompt', text: prompt, images: images.length, ...(origin && origin !== 'ui' ? { origin: String(origin) } : {}) } };
+      // The chat starts with its first human prompt: from here on the session is stored and listed.
+      startChat(live);
       appendTranscript(live.record.id, { at: iso(now()), packet: promptPacket });
       if (origin && origin !== 'ui') sendToSockets(live, promptPacket);
       if (live.brainProvider !== 'claude-code' && memory?.recallForPrompt) {
@@ -2672,8 +2703,56 @@ export function createAssistantRuntime({
   }
 
   // ── public API ─────────────────────────────────────────────────────────────
+  /**
+   * Every session list (REST, the socket's list_sessions, the catalog view) reads this: only sessions
+   * whose chat started. A draft, or a record nobody ever prompted, is in none of them. `activeRuns`:
+   * the workers it dispatched that still run (a removal stops them, and its question says so).
+   */
   function listSessions() {
-    return [...sessions.values()].map((live) => view(live)).sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+    const runs = new Map();
+    try {
+      for (const run of dispatcher?.list?.({ activeOnly: true, limit: 500 }) || []) {
+        if (run?.assistantSessionId) runs.set(run.assistantSessionId, (runs.get(run.assistantSessionId) || 0) + 1);
+      }
+    } catch {}
+    return [...sessions.values()].filter((live) => !live.draft && !!live.record.chatStartedAt)
+      .map((live) => ({ ...view(live), activeRuns: runs.get(live.record.id) || 0 }))
+      .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+  }
+  /**
+   * The first human prompt (or a provider conversation adopted with `resume`) starts the chat: the
+   * record is marked, and a draft becomes a stored session (written now, listed from now on).
+   */
+  function startChat(live) {
+    if (live.record.chatStartedAt && !live.draft) return;
+    live.record.chatStartedAt ||= iso(now());
+    const wasDraft = live.draft;
+    live.draft = false;
+    if (live.draftTimer) { clearTimeout(live.draftTimer); live.draftTimer = null; }
+    persist({ force: true });
+    if (wasDraft) broadcast('assistant:session-created', live);
+  }
+  /** A draft with no socket attached is removed after settings.draftIdleMs (a page that went and never came back). */
+  function armDraftExpiry(live) {
+    if (live.draftTimer) { clearTimeout(live.draftTimer); live.draftTimer = null; }
+    if (!live.draft || live.sockets.size || shuttingDown || sessions.get(live.record.id) !== live) return;
+    live.draftTimer = setTimeout(() => {
+      live.draftTimer = null;
+      if (!live.draft || live.sockets.size || sessions.get(live.record.id) !== live || sessionBusy(live) || live.closing) return;
+      destroySession(live.record.id).catch((error) => log('assistant:draft-expiry', error?.message || String(error)));
+    }, settings.draftIdleMs);
+    live.draftTimer.unref?.();
+  }
+  /**
+   * Whether closing a session keeps its record (ended, reopenable) or removes it: a session that
+   * never held a conversation (no prompt, no turn, no runs, nothing in its transcript, not remote,
+   * no work under way) leaves nothing behind.
+   */
+  function holdsConversation(live) {
+    const r = live.record;
+    return !!r.chatStartedAt || Number(r.turns) > 0 || (Array.isArray(r.dispatchRunIds) && r.dispatchRunIds.length > 0)
+      || !!r.providerSessionId || !!r.providerThreadId || !!r.remote || !!r.channel || Number(r.costUsd) > 0
+      || sessionBusy(live) || !!workReserved(live) || transcriptHasEntries(r.id);
   }
   function getSession(id, { transcript = true, limit = 400 } = {}) {
     const live = sessions.get(id);
@@ -2698,7 +2777,7 @@ export function createAssistantRuntime({
     if (!row) throw Object.assign(new Error('Auto requires a signed-in subscription account.'), { code: 'ACCOUNT_NO_SUBSCRIPTION', status: 409 });
     return { ...brain, accountId: row.id };
   }
-  async function createSession({ brain = {}, label = null, cwd = null, windowId = null, fallback = false, channel = null } = {}, internal = {}) {
+  async function createSession({ brain = {}, label = null, cwd = null, windowId = null, fallback = false, channel = null, draft = false } = {}, internal = {}) {
     const id = `assistant-${randomUUID()}`;
     const requested = normalizeBrain({ ...brain, cwd: brain?.cwd || cwd || settings.defaultBrain.cwd || PACKAGE_ROOT }, settings.defaultBrain, { catalog: catalog?.peek?.() || null });
     const enabled = await enabledBrain(requested, { fallback: fallback === true, named: !!brain?.model });
@@ -2729,8 +2808,16 @@ export function createAssistantRuntime({
       live.creating = false;
       record.brain = clampedBrain(live, record.brain);
     }
-    persist({ force: true });
-    broadcast('assistant:session-created', live);
+    // `draft` (a panel's new session, POST /sessions): stored and announced by its first prompt
+    // (startChat); until then it lives here only, and is removed when it is closed or left (armDraftExpiry).
+    // A remote session is never one: its bridge sends the prompt it was made for.
+    if (draft === true && !remote && !record.channel) {
+      live.draft = true;
+      armDraftExpiry(live);
+    } else {
+      persist({ force: true });
+      broadcast('assistant:session-created', live);
+    }
     return enabled.fallback ? { ...view(live), fallback: enabled.fallback } : view(live);
   }
   function applyRouteMode(live, mode) {
@@ -2830,6 +2917,12 @@ export function createAssistantRuntime({
   }
   async function closeSession(id) {
     const live = requireLive(id);
+    // Never chatted in (a draft, a record nobody prompted): closing it leaves nothing behind.
+    if (!holdsConversation(live)) {
+      const gone = { ...view(live), status: 'destroyed', removed: true };
+      await destroySession(id);
+      return gone;
+    }
     const closed = await endSessionWork(live);
     try {
       await disposeBrain(live, 'closed');
@@ -2847,6 +2940,9 @@ export function createAssistantRuntime({
     if (!live) return false;
     const closed = await endSessionWork(live);
     try {
+      if (sessions.get(id) !== live) return false; // another removal got there first
+      if (live.draftTimer) { clearTimeout(live.draftTimer); live.draftTimer = null; }
+      if (live.disposeTimer) { clearTimeout(live.disposeTimer); live.disposeTimer = null; }
       await disposeBrain(live, 'closed');
       for (const ws of live.sockets) { try { ws.close(1000, 'session destroyed'); } catch {} }
       sessions.delete(id);
@@ -2862,6 +2958,24 @@ export function createAssistantRuntime({
       broadcast('assistant:session-ended', live, { destroyed: true });
     } finally { closed(); }
     return true;
+  }
+  /**
+   * The Sessions menu's Remove (DELETE /api/assistant/sessions/:id): the session goes for good, in
+   * every host and list, and its work goes with it: the workers it dispatched that still run are
+   * stopped (no orphaned run is left), then the running turn and the brain (destroySession). Only
+   * the record, its transcript and its usage journal are removed: memories made from it (its
+   * assistant-threads record included) stay, and so do the dispatcher's records of its runs.
+   */
+  async function removeSession(id) {
+    const live = sessions.get(String(id || ''));
+    if (!live) return { removed: false, stoppedRuns: [] };
+    let stoppedRuns = [];
+    try {
+      const result = await dispatcher?.killAll?.({ assistantSessionId: live.record.id, reason: 'session_removed' });
+      stoppedRuns = Array.isArray(result?.stopped) ? result.stopped : [];
+    } catch (error) { log('assistant:remove', `${live.record.id}: stopping its runs failed (${error?.message || error})`); }
+    const removed = await destroySession(live.record.id);
+    return { removed, stoppedRuns };
   }
   /**
    * MCP terminal pin → assistant session id. Claude brains pin the session id
@@ -3127,6 +3241,7 @@ export function createAssistantRuntime({
     ws.on('close', () => {
       live.sockets.delete(ws);
       scheduleDispose(live);
+      armDraftExpiry(live);
     });
     if (held) {
       while (live.closing) await live.closing;
@@ -3137,6 +3252,7 @@ export function createAssistantRuntime({
       if (ws.readyState !== 1) return; // gone while it waited
     }
     if (live.disposeTimer) { clearTimeout(live.disposeTimer); live.disposeTimer = null; }
+    if (live.draftTimer) { clearTimeout(live.draftTimer); live.draftTimer = null; }
     live.sockets.add(ws);
     live.record.status = live.record.status === 'ended' ? 'idle' : live.record.status;
     const engine = live.brain ? { type: 'engine', engine: live.brainProvider === 'claude-code' ? 'sdk' : live.brainProvider, brain: live.brainProvider, sdkVersion } : { type: 'engine', engine: 'assistant', brain: live.record.brain.provider, sdkVersion };
@@ -3268,6 +3384,8 @@ export function createAssistantRuntime({
         if (msg.providerSessionId) {
           const moved = msg.providerSessionId !== live.record.providerSessionId;
           live.record.providerSessionId = msg.providerSessionId;
+          // A provider conversation adopted (/resume <id>): the session holds a chat now.
+          startChat(live);
           // Another provider session: the meter's baseline was the old one's.
           if (moved) resetMeterIdentity(live, msg.providerSessionId);
           // …and so was the frozen user-context digest.
@@ -3728,6 +3846,7 @@ export function createAssistantRuntime({
     for (const live of sessions.values()) {
       if (live.mailboxTimer) clearTimeout(live.mailboxTimer);
       if (live.disposeTimer) clearTimeout(live.disposeTimer);
+      if (live.draftTimer) clearTimeout(live.draftTimer);
       if (live.workTimer) clearTimeout(live.workTimer);
       await disposeBrain(live, 'shutdown').catch(() => {});
       live.record.status = 'idle';
@@ -3754,7 +3873,7 @@ export function createAssistantRuntime({
   broadcastSync = (message) => { try { originalBroadcast(message); } catch {} if (message?.type === 'assistant:permission-request' || message?.type === 'assistant:permission-resolved') onPermissionBroadcast(message); };
 
   return {
-    handleWebSocket, listSessions, getSession, createSession, updateSession, closeSession, destroySession,
+    handleWebSocket, listSessions, getSession, createSession, updateSession, closeSession, destroySession, removeSession,
     resolveTerminal, accountInUse, ownsIsolatedServe, noteDispatch, subscribe, shutdown,
     observeBroadcast: onPermissionBroadcast,
     testDensityFor, routerSession, routerSend, routerEvent, routerMailbox, routerContinue, routerSinks, routerRouted, routerRouteFailed, routerComputerApproved, gateCheck, isPlanning, isPlanReadOnly,

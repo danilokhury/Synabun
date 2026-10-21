@@ -12,9 +12,10 @@ import { state, emit, on } from '../state.js';
 import { storage } from '../storage.js';
 import { fetchProjects } from '../api.js';
 import { injectStyles } from './ocp-v2-styles.js';
-import { connect, api, hasSessionStore, onSessionCompacted, onEvent, supports, isDescendantSession } from './ocp-v2-ws.js';
+import { connect, api, hasSessionStore, onSessionCompacted, onEvent, onReconnect, supports, isDescendantSession } from './ocp-v2-ws.js';
 import {
   menuSessions, pickReusableEmptySession, shareView, SHARE_CONFIRM_TEXT, createPendingRenames, createStoppedShares,
+  sessionBusyFromEvent, sessionBusyFromStatus, tabPillState, automationTurnPhase,
 } from './ocp-v2-sessions-logic.js';
 import {
   forkSession, shareSession, unshareSession, undoLastTurn, restoreReverted,
@@ -82,6 +83,9 @@ let OCP_WINDOW_ID = (() => {
 let STOR_TABS = `opencode-v2-tabs-${OCP_WINDOW_ID}`;
 let STOR_AUTOMATIONS = `opencode-v2-automations-${OCP_WINDOW_ID}`;
 let STOR_TITLE_STATES = `opencode-v2-title-states-${OCP_WINDOW_ID}`;
+// The tabs whose session was working when last seen: after a reload their placeholder pills say so and
+// the panel boots to ask OpenCode (ui-sidepanel-tray.js). Never read as the truth: OpenCode's answer is.
+let STOR_BUSY = `opencode-v2-busy-${OCP_WINDOW_ID}`;
 const STOR_WINDOW_REGISTRY = 'opencode-v2-windows';
 const HEAL_DEBOUNCE_MS = 800;
 const HEAL_RETRY_MAX_MS = 30000;
@@ -94,6 +98,13 @@ let _tabPills = new Map();      // sessionId -> pill element
 let _tabInfoCache = new Map();  // sessionId -> last-known session info (title, etc.)
 const _automationRunIds = new Map(); // sessionId -> native loop runId
 const _automationRunning = new Set();
+// sessionId → what a live automation run's turn does ('working', 'waiting' on the user, 'idle' between turns:
+// automationTurnPhase of the run's descriptor): its pill follows the turn, not the run.
+const _automationTurn = new Map();
+// sessionId → working (true) or idle (false), for the tabs that are not on screen: OpenCode's run events
+// and session:status answers say it (noteSessionBusy); the session on screen leaves its own run state
+// here when the user moves on (renderPill), so its pill keeps moving while its turn goes on.
+const _sessionBusy = new Map();
 const _automationContinuedManually = new Set();
 const _automationManualSendInFlight = new Set();
 const _foreignActiveAutomationSessions = new Set();
@@ -173,6 +184,7 @@ function forkClonedOpenCodePersistence() {
     STOR_TABS = `opencode-v2-tabs-${OCP_WINDOW_ID}`;
     STOR_AUTOMATIONS = `opencode-v2-automations-${OCP_WINDOW_ID}`;
     STOR_TITLE_STATES = `opencode-v2-title-states-${OCP_WINDOW_ID}`;
+    STOR_BUSY = `opencode-v2-busy-${OCP_WINDOW_ID}`;
     if (transferableTabs.length) storage.setItem(STOR_TABS, JSON.stringify(transferableTabs));
     if (transferableRows.length) storage.setItem(STOR_AUTOMATIONS, JSON.stringify(transferableRows));
     if (Object.keys(transferableTitleStates).length) storage.setItem(STOR_TITLE_STATES, JSON.stringify(transferableTitleStates));
@@ -188,6 +200,7 @@ function cleanStaleOpenCodeWindows() {
       storage.removeItem(`opencode-v2-tabs-${windowId}`);
       storage.removeItem(`opencode-v2-automations-${windowId}`);
       storage.removeItem(`opencode-v2-title-states-${windowId}`);
+      storage.removeItem(`opencode-v2-busy-${windowId}`);
       delete registry[windowId];
     }
     registry[OCP_WINDOW_ID] = now;
@@ -243,6 +256,8 @@ function saveAutomationTabs() {
       sessionId,
       runId,
       running: _automationRunning.has(sessionId),
+      // What its turn did when this was written (automationTurnPhase): a reload's placeholder pill follows it.
+      turn: _automationTurn.get(sessionId) || null,
       ownerId: nativeLoopWindowId,
       continuedManually: _automationContinuedManually.has(sessionId),
     }));
@@ -262,6 +277,44 @@ function saveAutomationTabs() {
     else storage.removeItem(STOR_AUTOMATIONS);
     touchOpenCodeWindow();
   } catch {}
+}
+
+// ── What the tabs that are not on screen are doing (_sessionBusy) ──
+
+function saveBusySessions() {
+  try {
+    const busy = _tabSessionIds.filter((sid) => _sessionBusy.get(sid) === true);
+    if (busy.length) storage.setItem(STOR_BUSY, JSON.stringify(busy));
+    else storage.removeItem(STOR_BUSY);
+  } catch {}
+}
+
+/** Record what a session is doing; true when that changed. */
+function rememberBusy(sessionId, busy) {
+  if (!sessionId || _sessionBusy.get(sessionId) === !!busy) return false;
+  _sessionBusy.set(sessionId, !!busy);
+  saveBusySessions();
+  return true;
+}
+
+/** A tab's session started or ended a turn while another one is on screen: its pill follows. */
+function noteSessionBusy(sessionId, busy) {
+  if (rememberBusy(sessionId, busy) && _tabSessionIds.includes(sessionId)) renderPill();
+}
+
+/**
+ * Ask OpenCode what every tab that is not on screen is doing: after a boot (only the session on screen
+ * is read back by its rehydrate) and after the socket came back (their events of the outage reached no
+ * one). A server that does not answer session:status leaves what is known.
+ */
+async function probeTabStatuses() {
+  const activeSid = getState().sessionId;
+  await Promise.all(_tabSessionIds.filter((sid) => sid && sid !== activeSid).map(async (sid) => {
+    let res = null;
+    try { res = await api.sessionStatus({ sessionId: sid, cwd: _tabInfoCache.get(sid)?.directory || undefined }); } catch { res = null; }
+    const busy = sessionBusyFromStatus(res);
+    if (busy !== null && sid !== getState().sessionId && _tabSessionIds.includes(sid)) noteSessionBusy(sid, busy);
+  }));
 }
 
 try {
@@ -608,6 +661,9 @@ function buildPanel() {
   // Sessions change outside this panel too (another window, the CLI, a title
   // OpenCode generated): keep the open menu and the tab list in step.
   onEvent((eventType, ev) => {
+    // A tab that is not on screen goes on running its turn: its pill says what OpenCode says it does.
+    const run = sessionBusyFromEvent(eventType, ev);
+    if (run && run.sessionId !== getState().sessionId && _tabSessionIds.includes(run.sessionId)) noteSessionBusy(run.sessionId, run.busy);
     if (eventType !== 'session.updated' && eventType !== 'session.deleted' && eventType !== 'session.created') return;
     if (eventType === 'session.deleted') {
       const sid = ev?.info?.id || ev?.sessionID || ev?.sessionId;
@@ -625,6 +681,11 @@ function buildPanel() {
     if (store !== getDefaultStore()) return;
     const sid = getState().sessionId;
     if (sid) refreshSessionMessages(sid).catch((err) => console.warn('[ocp-v2-panel] post-compaction refresh failed', err));
+  });
+
+  // Back after an outage: what the other tabs did meanwhile reached no one (the session on screen heals itself).
+  onReconnect(() => {
+    if (_booted) probeTabStatuses().catch((err) => console.warn('[ocp-v2-panel] tab status probe failed', err));
   });
 }
 
@@ -1672,6 +1733,10 @@ async function boot() {
           create: (nav) => startFreshSession({ cwd: lastProject || undefined, nav }),
         });
       }
+      // The other tabs: their turns may have outlived the page too. Asked before the placeholders go
+      // (a short wait at most), so a working tab's pill does not blink idle in between.
+      const probed = probeTabStatuses().catch((err) => console.warn('[ocp-v2-panel] tab status probe failed', err));
+      await Promise.race([probed, new Promise((resolveWait) => setTimeout(resolveWait, 600))]);
       _booted = true;
       // Tell ui-sidepanel-tray we own opencode pills now — it drops any
       // placeholder pills it was rendering from storage.
@@ -2388,9 +2453,11 @@ function removeTab(sessionId, { byUser = false } = {}) {
   _automationRunIds.delete(sessionId);
   unregisterAutomationSession(sessionId);
   _automationRunning.delete(sessionId);
+  _automationTurn.delete(sessionId);
   _automationContinuedManually.delete(sessionId);
   _automationManualSendInFlight.delete(sessionId);
   saveAutomationTabs();
+  if (_sessionBusy.delete(sessionId)) saveBusySessions();
   const pill = _tabPills.get(sessionId);
   if (pill?.isConnected) pill.remove();
   _tabPills.delete(sessionId);
@@ -2481,6 +2548,8 @@ function renderPill() {
   if (!tray) return;
   const activeSid = getState().sessionId;
   if (activeSid) ensureTab(activeSid, getState().sessionInfo);
+  // What the session on screen is doing stays known for its tab once the user moves on.
+  if (activeSid) rememberBusy(activeSid, !!getState().running);
 
   // Drop pills for sessions no longer in the tab list
   for (const [sid, pill] of Array.from(_tabPills.entries())) {
@@ -2501,7 +2570,14 @@ function renderPill() {
     if (labelEl) labelEl.textContent = tabLabelFor(sid);
     const isActive = sid === activeSid;
     pill.classList.toggle('ocpv2-pill-active', isActive);
-    pill.classList.toggle('ocpv2-pill-running', _automationRunning.has(sid) || (isActive && !!getState().running));
+    // One pill per session, each with its own state: a tab the user left goes on showing its turn, an
+    // automation its turn (not its run), and a session that waits on the user says so.
+    const state = tabPillState({
+      sessionId: sid, activeSessionId: activeSid, running: !!getState().running,
+      busy: _sessionBusy.get(sid) === true, automation: _automationTurn.get(sid) || null,
+    });
+    pill.classList.toggle('ocpv2-pill-running', state === 'working');
+    pill.classList.toggle('ocpv2-pill-waiting', state === 'waiting');
     pill.style.display = (isActive && _visible) ? 'none' : '';
   }
   // The sub-agent pills of the session on screen sit under its pill.
@@ -2624,6 +2700,16 @@ export async function endHostedOpenCodeSessions() {
 
 export function isOpencodePanelOpen() { return _visible || isChildPanelOpen(); }
 
+/**
+ * Boot the panel without showing it (ui-sidepanel-tray.js, when a tab saved while it worked comes back
+ * after a reload): its tabs come back and OpenCode is asked what each session does, so their pills say it.
+ */
+export async function bootOpencodePanel() {
+  if (!_panelEl) buildPanel();
+  await connect();
+  await boot();
+}
+
 export async function toggleOpencodePanel() {
   if (_visible || isChildPanelOpen()) {
     requestOpencodeView({ hideAll: true });
@@ -2653,6 +2739,10 @@ export async function attachOpenCodeAutomation(run, { focus = !!run?.focus, isCa
   }
   if (running) _automationRunning.add(sessionId);
   else _automationRunning.delete(sessionId);
+  // Every update of the run (its turn starts, waits on you, ends) comes through here: the pill follows it.
+  const phase = automationTurnPhase(run);
+  if (phase) _automationTurn.set(sessionId, phase);
+  else _automationTurn.delete(sessionId);
   saveAutomationTabs();
   const info = {
     id: sessionId,
@@ -2711,6 +2801,7 @@ export async function detachOpenCodeAutomation(runId) {
   const [sessionId] = entry;
   _automationRunIds.delete(sessionId);
   _automationRunning.delete(sessionId);
+  _automationTurn.delete(sessionId);
   _automationContinuedManually.delete(sessionId);
   _automationManualSendInFlight.delete(sessionId);
   saveAutomationTabs();

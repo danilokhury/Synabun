@@ -7,6 +7,7 @@
 import { emit, on } from './state.js';
 import { fetchImages, toggleImageFavorite, deleteImage } from './api.js';
 import { addImageToWhiteboard } from './ui-whiteboard.js';
+import { escapeHtml } from './utils.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -153,9 +154,9 @@ function buildPanelHTML() {
 
 function buildCard(img) {
   return `
-    <div class="ig-card" data-filename="${img.filename}">
+    <div class="ig-card" data-filename="${escapeHtml(img.filename).replace(/"/g, '&quot;')}">
       <div class="ig-thumb-wrap">
-        <img class="ig-thumb" src="${imageUrl(img.filename)}" loading="lazy" alt="${img.filename}">
+        <img class="ig-thumb" src="${imageUrl(img.filename)}" loading="lazy" alt="${escapeHtml(img.filename).replace(/"/g, '&quot;')}">
         <div class="ig-card-actions">
           <button class="ig-card-btn ig-card-fav${img.favorite ? ' active' : ''}" data-action="fav" data-tooltip="${img.favorite ? 'Unfavorite' : 'Favorite'}">${img.favorite ? ICON_HEART_FILL : ICON_HEART}</button>
           <button class="ig-card-btn ig-card-wb" data-action="whiteboard" data-tooltip="Add to Whiteboard">${ICON_WHITEBOARD}</button>
@@ -164,7 +165,7 @@ function buildCard(img) {
         </div>
       </div>
       <div class="ig-card-info">
-        <span class="ig-card-name">${img.filename.length > 30 ? img.filename.slice(0, 27) + '...' : img.filename}</span>
+        <span class="ig-card-name">${escapeHtml(img.filename.length > 30 ? img.filename.slice(0, 27) + '...' : img.filename)}</span>
         <span class="ig-card-meta">${formatSize(img.size)} · ${formatDate(img.modifiedAt)}</span>
       </div>
     </div>`;
@@ -185,9 +186,9 @@ function openLightbox(filename) {
   lb.innerHTML = `
     <div class="ig-lb-overlay" id="ig-lb-overlay"></div>
     <div class="ig-lb-content">
-      <img class="ig-lb-img" src="${imageUrl(filename)}" alt="${filename}">
+      <img class="ig-lb-img" src="${imageUrl(filename)}" alt="${escapeHtml(filename).replace(/"/g, '&quot;')}">
       <div class="ig-lb-bar">
-        <span class="ig-lb-name">${filename}</span>
+        <span class="ig-lb-name">${escapeHtml(filename)}</span>
         ${img ? `<span class="ig-lb-size">${formatSize(img.size)}</span>` : ''}
         <div class="ig-lb-actions">
           <button class="ig-btn" id="ig-lb-fav" data-tooltip="Toggle favorite">${img?.favorite ? ICON_HEART_FILL : ICON_HEART}</button>

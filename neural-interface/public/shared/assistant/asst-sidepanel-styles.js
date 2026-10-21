@@ -450,21 +450,9 @@ export function injectAssistantSidepanelStyles() {
     .assistant-panel .asst-send[data-state="ready"]::before { transform: scaleX(1); }
     .assistant-panel .asst-send[data-state="ready"]:hover { box-shadow: inset 0 0 0 1px var(--asp-gold); }
 
-    /* ── Tray pill (#term-minimized-tray, outside the panel) ─────────────
-       The shared .term-minimized-pill of styles.css, drawn exactly like the
-       Claude, Codex and OpenCode pills: 32px, 8px corners, a 1px hairline,
-       icon · name · ✕, no geometry of its own. Only the identity is
-       SynaBun's: the two-pill mark, and the cameo in its place while working
-       (gold, with a gold hairline); a session that needs you tints the mark
-       and the hairline. It is a button (Enter/Space) with the panel's focus
-       ring, and its ✕ keeps the tray's 24px target. */
-    .asp-session-pill .term-minimized-pill-icon .syna-cameo { display: none; }
-    .asp-session-pill.asp-pill-running { border-color: var(--asst-pill-on-ring); }
-    .asp-session-pill.asp-pill-running .term-minimized-pill-icon { color: var(--asst-brand); }
-    .asp-session-pill.asp-pill-running .term-minimized-pill-icon > svg:not(.syna-cameo) { display: none; }
-    .asp-session-pill.asp-pill-running .term-minimized-pill-icon .syna-cameo { display: inline-flex; }
-    .asp-session-pill.asp-pill-attention { border-color: var(--asst-pill-warn-ring); }
-    .asp-session-pill.asp-pill-attention .term-minimized-pill-icon { color: var(--asst-warn); }
+    /* The tray pill (#term-minimized-tray, outside the panel) is the
+       component's (asst-styles.js "Tray pill"): the terminal tab minimises to
+       the same one, so its states load with the component in either host. */
 
     /* ── Motion ─────────────────────────────────────────────────────── */
     @keyframes asp-sweep { from { transform: translateX(-100%); } to { transform: translateX(270%); } }

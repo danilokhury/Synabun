@@ -143,7 +143,7 @@ Rules baked in: `model`/`profile` **top level**; `{iterations,maxMinutes}` in `o
 
 ## Phase 6 — Done (one line)
 
-> ✓ Schedule **`<name>`** created (`<model>`, `<cron-human>`). The Schedules Studio refreshed — open **Automations → Schedules** to view or change any field; the model is editable per-schedule there.
+> ✓ Schedule **`<name>`** created (`<model>`, `<cron-human>`). The Schedules window refreshed — open **Schedules** in the menubar to view or change any field; the model is editable per-schedule there.
 
 ---
 

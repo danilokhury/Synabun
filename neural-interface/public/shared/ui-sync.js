@@ -66,6 +66,13 @@ const SYNC_HANDLERS = {
 
   // Settings → OpenCode model checkboxes changed in another window: refresh
   // the localStorage mirror (fires ocp-hidden-models-changed when it differs).
+  // OpenCode's provider list changed (a provider connected or removed, a catalog refresh): every window's
+  // pickers read it again, also where no OpenCode panel (and so no OpenCode socket) is open.
+  'opencode:providers-changed': (msg) => {
+    emit('sync:opencode:providers-changed', msg);
+    if (typeof document !== 'undefined') document.dispatchEvent(new CustomEvent('ocp-providers-changed'));
+  },
+
   'opencode:hidden-models-changed': (msg) => {
     applyHiddenModels(msg.models);
     emit('sync:opencode:hidden-models-changed', msg);

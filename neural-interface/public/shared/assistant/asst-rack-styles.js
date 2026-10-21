@@ -4,7 +4,9 @@
 // Injected once by asst-render.js as <style id="asst-rack-styles">, right
 // after the main assistant styles. One rack per burst of agent work: a stage
 // where the mascot acts out the call it is on (live only), a ledger with one
-// row per tool kind, and a receipt once it settles.
+// row per tool kind, and a receipt once it settles. On a direct route the
+// mascot stands over its task class's scene (asst-scenes.js; the motion is
+// asst-scene-styles.js): one column, as wide as the scene.
 //
 // Rules: gold only means live (the awake row's ring and tick, the caret, the
 // sweep); a rack a card holds (data-state="waiting") drops its gold: "Waiting
@@ -81,10 +83,12 @@ export const RACK_CSS = `
     position: relative;
     display: grid;
     grid-template-columns: auto minmax(0, 1fr);
-    grid-template-areas: "face caption" "face bubble";
+    /* The mascot sits level with its bubble (the caption over the bubble), so the notch, near the bubble's top,
+       points at the mascot however tall the bubble grows. */
+    grid-template-areas: ". caption" "face bubble";
     align-items: center;
     column-gap: 8px;
-    row-gap: 6px;
+    row-gap: 0;
     min-height: 0;
     overflow: hidden;
     padding: 0 14px;
@@ -96,12 +100,24 @@ export const RACK_CSS = `
     visibility: visible;
     transition: padding var(--rk-moderate) var(--rk-ease), visibility 0s;
   }
-  .asst-rack-face { grid-area: face; align-self: center; color: var(--rk-text); line-height: 0; }
+  /* The set: the mascot, and under it the direct route's scene (none: the set is the mascot alone). Never between the
+     mascot and the bubble's notch: under the mascot here (the bubble is beside it), after it ≤400 (the bubble is under it). */
+  .asst-rack-set { grid-area: face; align-self: start; display: flex; flex-direction: column; align-items: center; gap: 4px 6px; min-width: 0; line-height: 0; }
+  .asst-rack-face { color: var(--rk-text); line-height: 0; }
   .asst-rack-face svg { display: block; width: 72px; height: 36px; }
+  .asst-rack-scene { color: var(--rk-text-2); line-height: 0; }
+  .asst-rack-scene:empty { display: none; }
+  /* 96×32 (the 120×40 scene at .8, strokes held near the run stage's weight). */
+  .asst-rack-scene .asst-scene { width: 96px; height: 32px; stroke-width: 1.9; }
+  /* Gold only means live: none while a card holds the rack or once it settled (the scene holds its frame, dimmed). */
+  .asst-rack:not(.is-live) .asst-rack-scene,
+  .asst-rack[data-state="waiting"] .asst-rack-scene { --sc-gold: currentColor; }
+  .asst-rack[data-state="waiting"] .asst-rack-scene { opacity: .55; }
   .asst-rack-caption {
     grid-area: caption;
     align-self: end;
     min-width: 0;
+    margin-bottom: 6px; /* the gap over the bubble: an empty caption takes no room */
     overflow: hidden;
     display: -webkit-box;
     -webkit-box-orient: vertical;
@@ -111,7 +127,6 @@ export const RACK_CSS = `
     line-height: 1.45;
   }
   .asst-rack-caption:empty { display: none; }
-  .asst-rack-caption:empty ~ .asst-bubble { grid-row: 1 / span 2; }
 
   .asst-bubble {
     grid-area: bubble;
@@ -528,15 +543,17 @@ export const RACK_CSS = `
 
   /* ── Narrow containers ─────────────────────────────────────────────
      ≤400: the face (still 72×36) sits over the bubble, whose notch points up
-     at it; the rows keep the last 12 ticks and drop the time (the receipt and
+     at it (a direct route's scene goes after the face, never between the two);
+     the rows keep the last 12 ticks and drop the time (the receipt and
      the Timeline carry it). ≤320: only the bubble's meta goes; its subject
      wraps to two lines, cut from the head so the file name survives, and the
-     error keeps two lines. Under a 300px container the face is 56×28. */
+     error keeps two lines. Under a 300px container the face is 56×28 and a
+     direct route's scene beside it 72×24 (96×32 above). */
   @container asst (max-width: 400px) {
-    .asst-rack-stage { grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "face caption" "bubble bubble"; column-gap: 8px; }
+    .asst-rack-stage { grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "face caption" "bubble bubble"; column-gap: 8px; row-gap: 6px; }
+    .asst-rack-set { align-self: center; flex-direction: row; }
     .asst-rack.is-staged > .asst-rack-stage { padding: 10px 10px 10px; }
-    .asst-rack-caption { align-self: center; }
-    .asst-rack-caption:empty ~ .asst-bubble { grid-row: auto; }
+    .asst-rack-caption { align-self: center; margin-bottom: 0; }
     .asst-bubble { justify-self: stretch; max-width: 100%; margin: 4px 0 0; border-radius: 3px 12px 12px 12px; }
     .asst-bubble::before { left: 30px; top: -5.5px; box-shadow: inset 1px 1px 0 var(--rk-line); clip-path: polygon(0 100%, 0 0, 100% 0); }
     .asst-station-hdr { gap: 8px; padding: 0 6px; }
@@ -554,6 +571,7 @@ export const RACK_CSS = `
   }
   @container asst (max-width: 299px) {
     .asst-rack-face svg { width: 56px; height: 28px; }
+    .asst-rack-scene .asst-scene { width: 72px; height: 24px; stroke-width: 2.2; }
     .asst-bubble::before { left: 22px; }
   }
 

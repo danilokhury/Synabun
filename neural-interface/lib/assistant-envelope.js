@@ -449,7 +449,7 @@ export function opencodeControlResponse(pending, response = {}) {
 export function createOpenCodeEnvelopeTranslator({ sessionId, emit, onTurnEnd = () => {}, onUsageEvent = () => {}, brain = {}, planTurn = () => false } = {}) {
   // costUsd is the session's running total: OpenCode reports cost per assistant
   // message, so costs are summed by message id (the runtime takes deltas).
-  const state = { sessionId, roles: new Map(), order: [], textParts: new Map(), reasoningParts: new Map(), tools: new Map(), started: false, announcedInit: false, lastText: '', costUsd: 0, costByMessage: new Map(), usage: null };
+  const state = { sessionId, roles: new Map(), order: [], textParts: new Map(), reasoningParts: new Map(), partKinds: new Map(), tools: new Map(), started: false, announcedInit: false, lastText: '', costUsd: 0, costByMessage: new Map(), usage: null };
   const event = (payload) => emit({ type: 'event', event: payload });
   const belongs = (ev) => {
     const sid = ev?.sessionID || ev?.sessionId || ev?.part?.sessionID || ev?.info?.sessionID || ev?.info?.id || ev?.session?.id || null;
@@ -485,12 +485,15 @@ export function createOpenCodeEnvelopeTranslator({ sessionId, emit, onTurnEnd = 
   function handlePart(part = {}) {
     if (!part.messageID) return;
     if (state.roles.get(part.messageID) === 'user') return;
+    if ((part.type === 'text' || part.type === 'reasoning') && part.id) state.partKinds.set(part.id, { messageID: part.messageID, type: part.type });
     if (part.type === 'text' && typeof part.text === 'string') {
       let parts = state.textParts.get(part.messageID);
       if (!parts) { parts = new Map(); state.textParts.set(part.messageID, parts); }
       const key = part.id || `${parts.size}`;
       const prev = parts.get(key) || '';
       const next = part.text;
+      // An update made before the deltas that already arrived streams nothing again.
+      if (prev.length > next.length && prev.startsWith(next)) return;
       parts.set(key, next);
       const delta = next.startsWith(prev) ? next.slice(prev.length) : next;
       const shown = delta && planTurn() === true ? planTextDelta(`${part.messageID}:${key}`, delta) : delta;
@@ -500,6 +503,7 @@ export function createOpenCodeEnvelopeTranslator({ sessionId, emit, onTurnEnd = 
     if (part.type === 'reasoning' && typeof part.text === 'string') {
       const key = `${part.messageID}:${part.id || 'r'}`;
       const prev = state.reasoningParts.get(key) || '';
+      if (prev.length > part.text.length && prev.startsWith(part.text)) return;
       state.reasoningParts.set(key, part.text);
       const delta = part.text.startsWith(prev) ? part.text.slice(prev.length) : part.text;
       if (delta) { startIfNeeded(); event(thinkingDelta(delta)); }
@@ -520,6 +524,19 @@ export function createOpenCodeEnvelopeTranslator({ sessionId, emit, onTurnEnd = 
         event(toolResult(id, clip(typeof output === 'string' ? output : safeJson(output)), status === 'error'));
       }
     }
+  }
+  // A part's text arrives as `message.part.delta` between the update that announces the part and the one that
+  // ends it (OpenCode 2 streams only this way, through lib/opencode2-translate.js): each delta extends that part,
+  // and streams as an update would. A delta for a part not announced yet is left to the update that ends it,
+  // which carries the whole text.
+  function handleDelta(ev = {}) {
+    if ((ev.field && ev.field !== 'text') || typeof ev.delta !== 'string' || !ev.delta) return;
+    const known = state.partKinds.get(ev.partID);
+    if (!known || (ev.messageID && ev.messageID !== known.messageID)) return;
+    const prev = known.type === 'text'
+      ? state.textParts.get(known.messageID)?.get(ev.partID) || ''
+      : state.reasoningParts.get(`${known.messageID}:${ev.partID}`) || '';
+    handlePart({ id: ev.partID, messageID: known.messageID, type: known.type, text: `${prev}${ev.delta}` });
   }
   return {
     state,
@@ -546,6 +563,7 @@ export function createOpenCodeEnvelopeTranslator({ sessionId, emit, onTurnEnd = 
         return true;
       }
       if (/^message[.:]part[.:]updated$/i.test(eventType)) { handlePart(ev.part || {}); return true; }
+      if (/^message[.:]part[.:]delta$/i.test(eventType)) { handleDelta(ev); return true; }
       if (/^session[.:]idle$/i.test(eventType)) {
         if (state.errored) { state.errored = false; state.started = false; return true; } // error already closed this turn
         const said = latestAssistantText();

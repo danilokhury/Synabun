@@ -74,7 +74,9 @@ export const ONBOARDING_STEPS = [
 //   targets  ordered alternatives, [selector, copyKey = 'body', lastSelector?]. The first one on
 //            screen is annotated and its copy shown; `lastSelector` widens the outline to a run
 //            of controls. None on screen: the note stays, with the navigation.
-//   menu     a menubar dropdown opened while the step shows (closed again after).
+//   menu     a menubar dropdown opened while the step shows (closed again after); an object
+//            names it per variant ({ '3d': 'apps' }: none in the other).
+//   submenu  a submenu of that dropdown opened too, by its data-submenu name, same forms as `menu`.
 //   panel    'assistant' shows the Assistant panel for the step when that starts nothing
 //            (see assistantPanelPeekable); otherwise the last target, its button, is used.
 //   copy     per-variant copy key for the first target ({ '2d': 'body2d' }).
@@ -88,14 +90,16 @@ const TOOLS_TOGGLE = ['#topright-tools-btn'];
 
 export const FEATURE_STEPS = [
   { id: 'explain-memory-explorer', chapter: 'memory', targets: [['#topright-memory-explorer-btn'], TOOLS_TOGGLE] },
-  { id: 'explain-graph', chapter: 'memory', copy: { '2d': 'body2d' }, targets: [['[data-menu="graph"] > .menubar-label']] },
+  // 3D: the Map submenu of Apps. 2D: the Graph menu.
+  { id: 'explain-graph', chapter: 'memory', menu: { '3d': 'apps' }, submenu: { '3d': 'map' }, copy: { '2d': 'body2d' },
+    targets: [['#menu-map-label', 'body', '#menu-map-rebuild'], ['[data-menu="graph"] > .menubar-label', 'body2d']] },
   { id: 'explain-focus', chapter: 'workspace', targets: [['#wb-toolbar'], ['#titlebar-viz-toggle', 'graph']] },
   { id: 'explain-workspaces', chapter: 'workspace', targets: [['#ws-indicator'], TOOLS_TOGGLE] },
   { id: 'explain-terminals', chapter: 'tools', menu: 'apps', targets: [['#menu-terminal-claude', 'body', '#menu-terminal-opencode']] },
   { id: 'explain-browser', chapter: 'tools', menu: 'apps', targets: [['#menu-terminal-browser']] },
   { id: 'explain-side-panel', chapter: 'tools', targets: [['#topright-claude-panel-btn', 'body', '#topright-opencode-panel-btn']] },
   { id: 'explain-automations', chapter: 'automation', menu: 'automations', targets: [['#menu-open-automation-studio']] },
-  { id: 'explain-schedules', chapter: 'automation', menu: 'automations', targets: [['#menu-automations-schedules']] },
+  { id: 'explain-schedules', chapter: 'automation', targets: [['#menubar-schedules-btn']] },
   { id: 'assistant-start', chapter: 'assistant', panel: 'assistant', targets: [[`${ACTIVE_TAB} .asst-input`], ASSISTANT_BUTTON] },
   { id: 'assistant-tools', chapter: 'assistant', panel: 'assistant', targets: [[`${ACTIVE_BAR} .asst-computer-toggle`], ASSISTANT_BUTTON] },
   { id: 'assistant-route', chapter: 'assistant', panel: 'assistant', targets: [[`${ACTIVE_BAR} .asst-route-chip`], ASSISTANT_BUTTON] },

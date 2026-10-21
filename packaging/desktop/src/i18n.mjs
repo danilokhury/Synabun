@@ -110,6 +110,9 @@ export const STRINGS = Object.freeze({
     later: 'Later',
     ok: 'OK',
     downloadYourself: 'Download it yourself',
+    // Automatic updates off (Settings > App): the user installs.
+    updateAvailableOffDetail: 'Automatic updates are off. Install now downloads it and restarts SynaBun into it once nothing is running.',
+    updateReadyOffDetail: 'Automatic updates are off: it installs when you choose Install now.',
     checkFailed: 'SynaBun could not check for updates',
     countdownTitle: 'Updating SynaBun to v{version}',
     countdownBody: 'SynaBun restarts in one minute. Open SynaBun to postpone it.',
@@ -231,6 +234,8 @@ export const STRINGS = Object.freeze({
     later: 'Depois',
     ok: 'OK',
     downloadYourself: 'Baixar manualmente',
+    updateAvailableOffDetail: 'As atualizações automáticas estão desligadas. Instalar agora baixa a versão e reinicia o SynaBun nela assim que nada estiver em execução.',
+    updateReadyOffDetail: 'As atualizações automáticas estão desligadas: ela é instalada quando você escolher Instalar agora.',
     checkFailed: 'O SynaBun não conseguiu procurar atualizações',
     countdownTitle: 'Atualizando o SynaBun para a v{version}',
     countdownBody: 'O SynaBun reinicia em um minuto. Abra o SynaBun para adiar.',

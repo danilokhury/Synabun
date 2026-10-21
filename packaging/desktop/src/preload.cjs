@@ -3,7 +3,8 @@
  *
  *   window.synabunDesktop   on pages of SynaBun's own server: the app's version,
  *                           platform and processor, its update function, Quit,
- *                           and (main window only) its title bar: `window`
+ *                           its own settings (`app`: Settings > App), and (main
+ *                           window only) its title bar: `window`
  *   window.synabunShell     on the app's own status page: its status, the
  *                           start's live log, and the buttons on it
  *
@@ -71,6 +72,8 @@ if (location.protocol === 'http:' && LOOPBACK.includes(location.hostname)) {
   const updates = (action) => ipcRenderer.invoke('synabun:updates', action);
   const onWindowState = titleBar ? channelListeners('synabun:window:state') : null;
   const windowAction = (action, payload) => ipcRenderer.invoke('synabun:window', action, payload);
+  const onAppChange = channelListeners('synabun:app:changed');
+  const appAction = (action, payload) => ipcRenderer.invoke('synabun:app', action, payload);
   if (titleBar) {
     if (document.readyState === 'loading') window.addEventListener('DOMContentLoaded', addDragStrip, { once: true });
     else addDragStrip();
@@ -93,6 +96,17 @@ if (location.protocol === 'http:' && LOOPBACK.includes(location.hostname)) {
       onOpen,
     }),
     quit: () => ipcRenderer.invoke('synabun:quit'),
+    // Settings > App (src/app-prefs.mjs, src/login-item.mjs): the app's own settings, the login item as the system
+    // has it, its folders and a restart. A setting is a known name and true or false; a folder is 'data' or 'logs'.
+    app: Object.freeze({
+      state: () => appAction('state'),
+      set: (key, value) => appAction('set', { key: String(key ?? ''), value: value === true }),
+      openFolder: (which) => appAction('open-folder', { which: which === 'logs' ? 'logs' : 'data' }),
+      // macOS and Windows: the system's own list of login items.
+      openLoginSettings: () => appAction('login-settings'),
+      relaunch: () => appAction('relaunch'),
+      onChange: onAppChange,
+    }),
     // The main window's title bar (src/titlebar.mjs): null in any other window of the app.
     window: titleBar ? Object.freeze({
       titleBar,

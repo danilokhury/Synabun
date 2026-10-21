@@ -26,6 +26,17 @@ export function isDesktopApp(win = globalThis.window) {
 }
 
 /**
+ * The desktop app's own settings (Settings > App: packaging/desktop/src/app-prefs.mjs, login-item.mjs): state(),
+ * set(key, value), openFolder('data' | 'logs'), openLoginSettings(), relaunch(), onChange(listener).
+ * Null in a browser, and in an app from before Settings > App.
+ */
+export function desktopApp(win = globalThis.window) {
+  const api = desktopBridge(win)?.app;
+  if (!api || typeof api !== 'object' || typeof api.state !== 'function' || typeof api.set !== 'function') return null;
+  return api;
+}
+
+/**
  * The title bar of the desktop app's main window (packaging/desktop/src/titlebar.mjs): its facts
  * ({ style, platform, height, controls, appMenu }), its state, the app's menu and the caption buttons' colours.
  * Null in a browser, in the installed PWA, and in any other window of the app (a detached session has a native frame).

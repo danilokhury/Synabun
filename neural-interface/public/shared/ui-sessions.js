@@ -897,6 +897,7 @@ async function refreshSessions() {
     const fetchedAt = Date.now();
     loops = (loopRes.loops || []).map(l => ({ ...l, _fetchedAt: fetchedAt }));
     staleLoopCount = loopRes.staleCount || 0;
+    _sessionsLoaded = true;
     emitLoopsUpdate();
     // Refresh notification feed alongside session/loop data
     refreshRulesStatus().then(() => render()).catch(() => {});
@@ -1015,7 +1016,8 @@ async function loadProviderModels(provider) {
       const r = await fetch('/api/claude/config').then(r => r.json());
       models = (r?.models || []).map(m => ({ id: m.id, label: m.label || m.id }));
     } else if (provider === 'opencode') {
-      const r = await fetch('/api/opencode/providers/full').then(r => r.json()).catch(() => null);
+      // The connected providers (the compact view), not the whole models.dev catalog.
+      const r = await fetch('/api/opencode/providers/full?view=compact').then(r => r.json()).catch(() => null);
       const provs = r?.providers || r?.data || r || [];
       const flat = [];
       for (const p of (Array.isArray(provs) ? provs : Object.values(provs || {}))) {
@@ -1148,6 +1150,9 @@ function formatDuration(ms) {
 
 // ── Panel open/close ──
 
+let _sessionsLoaded = false; // a read of the lists succeeded once: later opens paint from it first
+let _panelLife = null;       // the open panel's document listeners end with it
+
 function openPanel() {
   if (_panel) { _panel.focus(); return; }
 
@@ -1173,13 +1178,17 @@ function openPanel() {
   wirePanel();
   isVisible = true;
   connectWs();
+  // What the last read found paints at once; the read below brings it up to date.
+  if (_sessionsLoaded) render();
   refreshSessions();
 
-  // ESC key to close
+  // ESC key to close (removed with the panel, however it closes)
+  _panelLife?.abort();
+  _panelLife = new AbortController();
   const onEsc = (e) => {
-    if (e.key === 'Escape' && _panel) { closePanel(); document.removeEventListener('keydown', onEsc); }
+    if (e.key === 'Escape' && _panel) closePanel();
   };
-  document.addEventListener('keydown', onEsc);
+  document.addEventListener('keydown', onEsc, { signal: _panelLife.signal });
 
   requestAnimationFrame(() => {
     _backdrop.classList.add('open');
@@ -1189,6 +1198,8 @@ function openPanel() {
 
 function closePanel() {
   if (!_panel) return;
+  _panelLife?.abort();
+  _panelLife = null;
   stopStalledTicker();
   if (_backdrop) { _backdrop.remove(); _backdrop = null; }
   _panel.remove();

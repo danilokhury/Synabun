@@ -13,7 +13,8 @@ import { registerAutomationSession } from './ocp-v2-automation-ownership.js';
 import { applyEvent, resolveEventTargets } from './ocp-v2-events.js';
 import { createCapabilities, gatedRequest } from './ocp-v2-caps.js';
 import { shouldAutoAccept, autoAcceptRequest, autoAcceptInherited } from './ocp-v2-approvals.js';
-import { verifyDescendant, knownDescendant, createReconnectNotifier, requestOwner } from './ocp-v2-rehydrate.js';
+import { verifyDescendant, descendantState, knownDescendant, createReconnectNotifier, requestOwner } from './ocp-v2-rehydrate.js';
+import { createAskTracker, createTurnClock, readOpenAsks, unreadAsksNotice, TURN_LIMIT_MS } from './ocp-v2-send-logic.js';
 
 // Request types the connected server answers. Empty against a server that
 // predates the list; cleared on every disconnect and refilled on reconnect.
@@ -99,6 +100,7 @@ export async function connect() {
       catch (err) { console.warn('[ocp-v2-ws] identify failed', err); }
       _connecting = null;
       _reconnects.opened();
+      asksOpened();
       resolve(ws);
     });
 
@@ -114,7 +116,11 @@ export async function connect() {
       _connecting = null;
       capabilities.clear();
       _reconnects.closed();
-      for (const [, p] of _pending) p.reject(new Error('websocket closed'));
+      for (const [, p] of _pending) { p.timeout.cancel(); p.reject(new Error('websocket closed')); }
+      // What waits on the user is not known again until the server's lists are read after the reconnect
+      // (rebuildAsks): until then no turn's clock counts. A socket that never opened lost nothing.
+      if (opened) _asks.hold();
+      asksClosed();
       _pending.clear();
       broadcastServerStatus({ status: 'reconnecting' });
       setTimeout(() => { connect().catch(() => {}); }, 1500);
@@ -139,6 +145,21 @@ function broadcastServerStatus(payload) {
   for (const store of _allStores) store.setServerStatus(payload);
 }
 
+// Why OpenCode cannot be used, as the server says it (an OpenCode version
+// SynaBun does not speak, a port held by an OpenCode 2 server it did not start,
+// a web page where the API should be): one line in each panel's error list,
+// never a second copy of the same sentence while the panel keeps retrying.
+function broadcastServerProblem(text) {
+  const message = typeof text === 'string' ? text.trim().slice(0, 600) : '';
+  if (!message) return;
+  const stores = _allStores.size ? [..._allStores] : [getDefaultStore()];
+  for (const store of stores) {
+    const errors = store.getState?.().errors || [];
+    if (errors.some((err) => err?.message === message)) continue;
+    store.pushError?.({ message, kind: 'server' });
+  }
+}
+
 export function disconnect() {
   if (_ws) {
     try { _ws.close(); } catch {}
@@ -160,6 +181,7 @@ export function subscribeSession(sessionId, store) {
   let set = _storesBySession.get(sessionId);
   if (!set) { set = new Set(); _storesBySession.set(sessionId, set); }
   set.add(store);
+  readAsksOf(sessionId);
   return () => {
     const s = _storesBySession.get(sessionId);
     if (s) {
@@ -195,6 +217,7 @@ function handleMessage(msg) {
     // Broadcast to every registered store; also poke the default singleton
     // so legacy callers (no panel registered yet) still see status.
     broadcastServerStatus(payload);
+    if (msg.status === 'error' && msg.error) broadcastServerProblem(msg.error);
     return;
   }
 
@@ -206,6 +229,7 @@ function handleMessage(msg) {
   if (msg.type === 'capabilities') {
     capabilities.set(msg.capabilities);
     _reconnects.capabilities();
+    asksReady();
     return;
   }
 
@@ -216,6 +240,7 @@ function handleMessage(msg) {
     if (msg.nativeRunId && msg.nativeRootSessionId) {
       registerAutomationSession(msg.nativeRootSessionId, msg.nativeRunId);
     }
+    _asks.note(msg.eventType, msg.event || {});
     handleEvent(msg.eventType, msg.event || {});
     fanout(msg.eventType, msg.event || {});
     return;
@@ -224,10 +249,12 @@ function handleMessage(msg) {
   if (msg.id != null && _pending.has(msg.id)) {
     const p = _pending.get(msg.id);
     _pending.delete(msg.id);
-    clearTimeout(p.timeout);
+    p.timeout.cancel();
     if (msg.type === 'init:result') {
       capabilities.set(msg.capabilities);
       if (typeof msg.sdkVersion === 'string') _sdkVersion = msg.sdkVersion;
+      if (msg.ready === false && msg.problem) broadcastServerProblem(msg.problem);
+      asksReady();
     }
     p.resolve(msg);
     return;
@@ -265,6 +292,18 @@ function handleEvent(eventType, ev) {
 // Lets a sub-agent's permission or question reach the panel of its parent
 // when no child panel is open for it.
 const _parentOf = new Map();
+
+// Requests that wait on the user, by session (a sub-agent's count for its parent): a turn's send does not
+// count the time they wait (createTurnClock). A permission left open for more than 30 minutes used to end
+// the turn's send with "request timeout: message:send" while the turn went on in OpenCode. Across a lost
+// socket they are held from the close and read again from the server after the reconnect (rebuildAsks); a
+// session a panel is bound to after the page loaded has its own read once (readAsksOf).
+const _asks = createAskTracker({ parentOf: _parentOf });
+/** True while `sessionId`, or a sub-agent below it, waits on a permission or a question. */
+export const sessionWaitsOnUser = (sessionId) => _asks.waits(sessionId);
+/** `listener()` whenever what waits on the user may have changed; returns an unsubscribe. */
+export const onAsksChanged = (listener) => _asks.subscribe(listener);
+
 function rememberParent(ev) {
   const info = ev?.info || ev?.session || ev || {};
   const childId = info.id || ev?.sessionID || ev?.sessionId;
@@ -316,15 +355,19 @@ const _rootSessions = new Set();
  * from the session itself. Anything that cannot be established is false.
  */
 export function isDescendantSession(sessionId, ancestorId) {
-  return verifyDescendant(sessionId, ancestorId, {
-    parentOf: _parentOf,
-    roots: _rootSessions,
-    fetchParent: async (id) => {
-      const res = await api.sessionGet(id);
-      if (!res || res.error || (typeof res.status === 'number' && res.status >= 400) || !res.data?.id) return null;
-      return String(res.data.parentID || res.data.parentId || '');
-    },
-  });
+  return verifyDescendant(sessionId, ancestorId, { parentOf: _parentOf, roots: _rootSessions, fetchParent: fetchSessionParent });
+}
+
+// The same question with "could not be read" kept apart from "no" (true, false or null): what the open
+// requests read from the server need, so that a sub-agent whose place is unknown keeps its parent waiting.
+function sessionAncestry(sessionId, ancestorId) {
+  return descendantState(sessionId, ancestorId, { parentOf: _parentOf, roots: _rootSessions, fetchParent: fetchSessionParent });
+}
+
+async function fetchSessionParent(id) {
+  const res = await api.sessionGet(id);
+  if (!res || res.error || (typeof res.status === 'number' && res.status >= 400) || !res.data?.id) return null;
+  return String(res.data.parentID || res.data.parentId || '');
 }
 
 /**
@@ -336,11 +379,135 @@ export function isKnownDescendantSession(sessionId, ancestorId) {
   return knownDescendant(sessionId, ancestorId, _parentOf);
 }
 
+// ── What waits on the user, read from the server ───────────────────────────
+// The stream says what is asked and answered while the socket is up. What was asked before (the page loaded,
+// a panel was bound to another session, the socket was down) is read from the server (permission:list and
+// question:list, on OpenCode 1 and 2 alike), one session at a time: its clocks wait until then. After a
+// reconnect every bound session is read again (rebuildAsks). A list that cannot be read is read again a few
+// times; then the session's clocks count again and its panel says so (noteUnreadAsks).
+
+// A sub-agent runs on its parent's serve, in its folder: a bound parent's lists hold its requests too.
+function underSession(sessionId, isAncestor) {
+  let cursor = parentSessionOf(sessionId);
+  for (let depth = 0; cursor && depth < 12; depth++) {
+    if (isAncestor(cursor)) return true;
+    cursor = parentSessionOf(cursor);
+  }
+  return false;
+}
+
+// The sessions whose lists were read (or are out) since the socket opened.
+const _asksRead = new Set();
+// Bound sessions waiting for the socket to say what it serves before their lists are read.
+const _asksUnread = new Set();
+let _asksReady = false;
+let _asksReadyTimer = null;
+let _asksFlushTimer = null;
+const asksKnown = (sessionId) => _asksRead.has(sessionId) || underSession(sessionId, (id) => _asksRead.has(id));
+
+function askSession(sessionId, kinds) {
+  const s = [...(_storesBySession.get(sessionId) || [])][0]?.getState?.() || {};
+  return { sessionId, cwd: s.cwd || s.sessionInfo?.directory || undefined, ...(kinds ? { kinds } : {}) };
+}
+
+// `want`: null for every bound session (not one under another), else the sessions (and lists) to read.
+// The first read of sessions bound at a page load (or later) looks up no sub-agent's place: the panel manager
+// reads the session tree right then, for the pills, and the read again a second later finds the links it
+// learned (a list holding a request whose place is not known yet is unresolved meanwhile: its session waits).
+// After a reconnect the tree is known; only a sub-agent spawned during the outage is looked up.
+function readAsks(want, { attempt = 1, partial = false } = {}) {
+  const bound = new Set(_storesBySession.keys());
+  const sessions = want
+    ? want.filter(({ sessionId }) => bound.has(sessionId)).map(({ sessionId, kinds }) => askSession(sessionId, kinds))
+    : [...bound].filter((sessionId) => !underSession(sessionId, (id) => bound.has(id))).map((sessionId) => askSession(sessionId));
+  for (const { sessionId } of sessions) _asksRead.add(sessionId);
+  return readOpenAsks(api, sessions, {
+    ancestry: sessionAncestry,
+    known: (owner, root) => knownDescendant(owner, root, _parentOf),
+    ...(partial && attempt === 1 ? { maxLookups: 0 } : {}),
+  });
+}
+
+// The tracker gave up on some lists: the panels of those sessions say that their clock counts again.
+function noteUnreadAsks(result) {
+  if (!result) return;
+  const lost = result.unread
+    ? [..._storesBySession.keys()].map((sessionId) => ({ sessionId, kinds: undefined }))
+    : result.gaveUp || [];
+  for (const { sessionId, kinds } of lost) {
+    const message = unreadAsksNotice(kinds);
+    for (const store of _storesBySession.get(sessionId) || []) {
+      if ((store.getState?.().errors || []).some((err) => err?.message === message)) continue;
+      store.pushError?.({ message, notice: true });
+    }
+  }
+}
+
+function rebuildAsks() {
+  return _asks.rebuild(readAsks).then(noteUnreadAsks);
+}
+
+// A session a panel was bound to: unless its lists (or a bound parent's) were read since the socket opened,
+// its clocks wait from now and its lists are read once the socket can serve them.
+function readAsksOf(sessionId) {
+  if (!sessionId || asksKnown(sessionId) || _asksUnread.has(sessionId)) return;
+  _asksUnread.add(sessionId);
+  _asks.expect([sessionId]);
+  flushAsksSoon();
+}
+
+function flushAsksSoon() {
+  if (_asksFlushTimer || !_asksReady || !_asksUnread.size) return;
+  _asksFlushTimer = setTimeout(() => {
+    _asksFlushTimer = null;
+    if (!_asksReady) return;
+    // Those no panel is bound to any more are let go by the tracker (not in its answer); those whose lists
+    // were read meanwhile (their own, or a bound parent's) wait for nothing more.
+    // A sub-agent read in the same go as its parent is read with it.
+    const batch = [..._asksUnread];
+    const known = batch.filter((sessionId) => _storesBySession.has(sessionId)
+      && (asksKnown(sessionId) || underSession(sessionId, (id) => id !== sessionId && batch.includes(id) && _storesBySession.has(id))));
+    const sessions = batch.filter((sessionId) => !known.includes(sessionId));
+    _asksUnread.clear();
+    if (known.length) _asks.release(known);
+    if (!sessions.length) return;
+    _asks.rebuild(readAsks, { sessions }).then(noteUnreadAsks)
+      .catch((err) => console.warn('[ocp-v2-ws] reading the open questions failed', err));
+  }, 0);
+}
+
+// The lists can be asked for once the socket said what it serves (capabilities, init:result), or, from a
+// server that does not say, a moment after it opened.
+function asksOpened() {
+  clearTimeout(_asksReadyTimer);
+  _asksReadyTimer = setTimeout(asksReady, 1500);
+}
+
+function asksReady() {
+  clearTimeout(_asksReadyTimer);
+  _asksReadyTimer = null;
+  if (!isConnected()) return;
+  _asksReady = true;
+  flushAsksSoon();
+}
+
+// (A session still to be read stays so: a socket that never opened read nothing, and after a reconnect
+// rebuildAsks reads every bound session anyway.)
+function asksClosed() {
+  clearTimeout(_asksReadyTimer);
+  clearTimeout(_asksFlushTimer);
+  _asksReadyTimer = null;
+  _asksFlushTimer = null;
+  _asksReady = false;
+  _asksRead.clear();
+}
+
 // The socket came back after an outage: whatever was sent meanwhile reached no
 // panel. Listeners re-read their session (the primary panel does it through its
 // auto-heal; the panel manager does it for the sub-agent panel).
 const _reconnectListeners = new Set();
 const _reconnects = createReconnectNotifier(() => {
+  rebuildAsks().catch((err) => console.warn('[ocp-v2-ws] reading the open questions again failed', err));
   for (const fn of _reconnectListeners) {
     try { fn(); } catch (e) { console.warn('[ocp-v2-ws] reconnect listener error', e); }
   }
@@ -462,14 +629,23 @@ function fanout(eventType, ev) {
 
 // ── Request/response (id-correlated, 30s default timeout) ──
 
-function request(payload, timeoutMs = 30000) {
+// `turnOf`: the session whose turn the request waits for (a prompt, a command). Its clock stops while that
+// session waits on the user, so only working time counts toward `timeoutMs` (createTurnClock).
+function request(payload, timeoutMs = 30000, { turnOf = '' } = {}) {
   return new Promise(async (resolve, reject) => {
     try { await connect(); } catch (e) { return reject(e); }
     const id = ++_reqSeq;
-    const timeout = setTimeout(() => {
+    const expire = () => {
       _pending.delete(id);
       reject(new Error(`request timeout: ${payload.type}`));
-    }, timeoutMs);
+    };
+    let timeout;
+    if (turnOf) {
+      timeout = createTurnClock({ ms: timeoutMs, paused: () => sessionWaitsOnUser(turnOf), subscribe: onAsksChanged, onExpire: expire });
+    } else {
+      const timer = setTimeout(expire, timeoutMs);
+      timeout = { cancel: () => clearTimeout(timer) };
+    }
     _pending.set(id, { resolve, reject, timeout });
     _ws.send(JSON.stringify({ ...payload, id }));
   });
@@ -488,7 +664,7 @@ export const api = {
   sessionContext: ({ sessionId, cwd } = {}) => request({ type: 'session:context', sessionId, cwd }),
   // `human` / `greetingId`: lib/greeting/ (a server that does not know them ignores them).
   send: ({ sessionId, parts, model, agent, mode, variant, cwd, mcpProfile, noAbortPrev, human, greetingId }) =>
-    request({ type: 'message:send', sessionId, parts, model, agent, mode, variant, cwd, mcpProfile, noAbortPrev: !!noAbortPrev, ...(human ? { human: true } : {}), ...(greetingId ? { greetingId } : {}) }, 30 * 60 * 1000),
+    request({ type: 'message:send', sessionId, parts, model, agent, mode, variant, cwd, mcpProfile, noAbortPrev: !!noAbortPrev, ...(human ? { human: true } : {}), ...(greetingId ? { greetingId } : {}) }, TURN_LIMIT_MS, { turnOf: sessionId }),
   abort: (sessionId) => request({ type: 'message:abort', sessionId }),
   compact: ({ sessionId, cwd, mcpProfile, model } = {}) => request({ type: 'session:compact', sessionId, cwd, mcpProfile, model }, 5 * 60 * 1000),
   permissionReply: ({ sessionId, permissionId, response, cwd, message }) =>
@@ -515,7 +691,7 @@ export const api = {
   commandList:     ({ cwd } = {}) => gated({ type: 'command:list', cwd }),
   // A command is a turn: it can run as long as a prompt does.
   commandRun:      ({ sessionId, command, arguments: args, agent, model, variant, parts, cwd, mcpProfile } = {}) =>
-    gated({ type: 'command:run', sessionId, command, arguments: args, agent, model, variant, parts, cwd, mcpProfile }, 30 * 60 * 1000),
+    gated({ type: 'command:run', sessionId, command, arguments: args, agent, model, variant, parts, cwd, mcpProfile }, TURN_LIMIT_MS, { turnOf: sessionId }),
   sessionShell:    ({ sessionId, command, agent, model, cwd, mcpProfile } = {}) =>
     gated({ type: 'session:shell', sessionId, command, agent, model, cwd, mcpProfile }, 10 * 60 * 1000),
   findFiles:       ({ query, cwd, dirs } = {}) => gated({ type: 'find:files', query, cwd, dirs }, 10000),
@@ -541,6 +717,6 @@ export const api = {
   envStatus:       ({ sessionId, cwd } = {}) => gated({ type: 'env:status', sessionId, cwd }),
 };
 
-function gated(payload, timeoutMs) {
-  return gatedRequest(capabilities, request, payload, timeoutMs);
+function gated(payload, timeoutMs, options) {
+  return gatedRequest(capabilities, request, payload, timeoutMs, options);
 }

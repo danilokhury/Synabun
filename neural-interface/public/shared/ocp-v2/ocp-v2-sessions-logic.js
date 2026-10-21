@@ -287,6 +287,66 @@ export function createStoppedShares({ load = () => null, save = () => {}, max = 
   };
 }
 
+// ── Tabs that are not on screen ─────────────────────────────────────────────
+// The panel shows one session; its other tabs go on running their turns in
+// OpenCode. What each of them does comes from OpenCode's own run events (every
+// session's reach every window) and from asking it (session:status) after a
+// reload or a reconnect. Their tray pills read it; the session on screen reads
+// its store.
+
+/** `{ sessionId, busy }` for an event about a session's run, else null. */
+export function sessionBusyFromEvent(eventType, ev) {
+  const sessionId = String(ev?.sessionID || ev?.sessionId || '');
+  if (!sessionId) return null;
+  if (eventType === 'session.status') {
+    const type = ev?.status?.type;
+    return { sessionId, busy: type === 'busy' || type === 'retry' };
+  }
+  if (eventType === 'session.idle' || eventType === 'session.error') return { sessionId, busy: false };
+  return null;
+}
+
+/** busy (true) / idle (false) from a session:status reply; null when it did not say. */
+export function sessionBusyFromStatus(res) {
+  const type = res?.data?.status?.type;
+  return typeof type === 'string' && type ? (type === 'busy' || type === 'retry') : null;
+}
+
+/**
+ * What an automation run's tab shows of its turn: 'working' while a turn runs,
+ * 'waiting' while the run waits on the user (a permission, a question: the
+ * dispatcher's awaiting_permission; or a turn that ended asking: an idle warm
+ * worker whose outcome, the result its turn reported, is needs_input), 'idle'
+ * between turns (a warm worker done with its task waits for a follow-up) and
+ * null once the run ended (its tab reads the session like any other). A run
+ * that reports no turn phase (a classic loop) works for as long as it runs:
+ * each iteration starts the next.
+ */
+export function automationTurnPhase(run) {
+  if (run?.status !== 'starting' && run?.status !== 'running') return null;
+  switch (run.turnState) {
+    case 'awaiting_permission': case 'needs_input': return 'waiting';
+    case 'idle': return (run.outcome || run.lastResult?.status) === 'needs_input' ? 'waiting' : 'idle';
+    case 'terminal': return 'idle';
+    default: return 'working';
+  }
+}
+
+/**
+ * A tab's tray pill: 'waiting' while its session waits on the user, 'working'
+ * while a turn of it runs, else 'idle'. A live automation run's own phase
+ * (`automation`, automationTurnPhase) decides: an idle warm worker rests,
+ * whatever its run (and the store of the session on screen, which follows the
+ * run) says; nobody else can start a turn in it meanwhile (canSend). Otherwise
+ * the session on screen reads its store (`running`) and another tab what
+ * OpenCode said of it (`busy`).
+ */
+export function tabPillState({ sessionId, activeSessionId, running = false, busy = false, automation = null } = {}) {
+  if (automation === 'working' || automation === 'waiting' || automation === 'idle') return automation;
+  const turn = sessionId && sessionId === activeSessionId ? !!running : !!busy;
+  return turn ? 'working' : 'idle';
+}
+
 // ── Deleting a message ──────────────────────────────────────────────────────
 
 /** The question before a message is deleted: which one, and that it is final. */

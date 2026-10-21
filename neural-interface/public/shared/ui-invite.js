@@ -37,6 +37,7 @@ const _tunnel = createTunnelCard({
 let _keyMode = 'auto'; // 'auto' | 'custom'
 let _revealedKey = null; // shown only right after generation
 let _permissions = { terminal: false, whiteboard: false, memories: true, skills: false, cards: true, browser: false };
+let _dataLoaded = false; // the status was read once (the badge's read at start-up counts)
 
 // ─── Dropdown open/close ────────────────
 
@@ -47,7 +48,12 @@ function openDropdown() {
   dd.style.display = '';
   $('invite-btn')?.classList.add('active');
   emit('panel:close-all-dropdowns-except', 'invite');
-  loadAndRender();
+  // The status as last read (the badge's read at start-up, an earlier open) paints at once once the tunnel's
+  // state is known too (an earlier open asked it); the read below redraws only what changed, and never under a
+  // field being typed in.
+  const early = _dataLoaded && _tunnelKind !== null;
+  if (early) render();
+  loadAndRender({ inPlace: early });
 }
 
 function closeDropdown() {
@@ -65,7 +71,10 @@ function toggleDropdown() {
 
 // ─── Data fetching ──────────────────────
 
-async function loadAndRender() {
+const inviteSnapshot = () => { try { return JSON.stringify([_data, _permissions, _tunnel.view()]); } catch { return ''; } };
+
+async function loadAndRender({ inPlace = false } = {}) {
+  const before = inPlace ? inviteSnapshot() : null;
   try {
     const [inviteRes, , permRes] = await Promise.all([
       fetchInviteStatus(),
@@ -73,9 +82,15 @@ async function loadAndRender() {
       fetchInvitePermissions(),
     ]);
     _data = inviteRes;
+    _dataLoaded = true;
     if (permRes?.permissions) _permissions = permRes.permissions;
   } catch (err) {
     console.warn('[invite] Failed to load status:', err);
+  }
+  if (inPlace) {
+    if (inviteSnapshot() === before) return;
+    const typing = document.activeElement?.closest?.('#invite-dropdown') && /^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName);
+    if (typing) return; // the next open shows it
   }
   render();
 }
@@ -524,6 +539,7 @@ export function initInvite() {
   // Load initial badge count
   fetchInviteStatus().then((res) => {
     _data = res;
+    _dataLoaded = true;
     updateBadge();
   }).catch(() => {});
 }

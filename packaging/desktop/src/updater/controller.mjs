@@ -29,6 +29,13 @@
  * 'restart'). A macOS copy in a temporary place or a folder it cannot write
  * (move-to-applications, manual-download) still shows the offer and waits for
  * the user.
+ *
+ * Automatic updates can be turned off (Settings > App: host.autoUpdate()
+ * says false; autoChanged() when it changes). Then the checks still run and an
+ * update is offered ('available'), and nothing downloads, installs or restarts
+ * until the user asks: Install now downloads it if needed, waits for idle and
+ * installs, with no countdown. A quit or the next start installs only an update
+ * the user asked to install.
  */
 
 export const CHECK_DELAY_MS = 30 * 1000;
@@ -96,6 +103,8 @@ export function createUpdateController({
   adapter, host, t, now = () => Date.now(), timers = { setTimeout, clearTimeout, setInterval, clearInterval },
 }) {
   const iso = (ms) => new Date(ms).toISOString();
+  // Updates install by themselves unless the user turned that off (read at every decision: the setting is live).
+  const autoOn = () => { try { return host.autoUpdate ? host.autoUpdate() !== false : true; } catch { return true; } };
   let state = {
     supported: !!adapter?.supported,
     status: 'idle',
@@ -110,6 +119,7 @@ export function createUpdateController({
     manualFile: null,
     testFeed: !!adapter?.testFeed,
     auto: null,
+    autoUpdate: autoOn(),
     updated: host.updated?.version ? { version: String(host.updated.version), previous: host.updated.previous ? String(host.updated.previous) : null } : null,
     releasesUrl: RELEASES_URL,
   };
@@ -179,6 +189,8 @@ export function createUpdateController({
 
   function startAuto({ asked = false } = {}) {
     if (state.status !== 'downloaded' || !autoInstalls()) return;
+    // With automatic updates off only an install the user asked for waits for idle.
+    if (!autoOn() && !asked && !state.auto?.now) return;
     if (!state.auto) set({ auto: { phase: 'waiting', busy: [], installAt: null, postponedUntil: null, now: asked } });
     else if (asked && !state.auto.now) set({ auto: { ...state.auto, now: true, phase: state.auto.phase === 'postponed' ? 'waiting' : state.auto.phase, postponedUntil: null } });
     if (!poll) {
@@ -216,6 +228,12 @@ export function createUpdateController({
         log(`update v${state.latest}: idle, installing as asked`);
         ticking = false;
         await install({ trigger: 'now' });
+        return;
+      }
+      // Turned off meanwhile: the update waits for the user.
+      if (!autoOn()) {
+        stopAuto();
+        set({ auto: null });
         return;
       }
       if (current.phase === 'countdown') {
@@ -266,7 +284,7 @@ export function createUpdateController({
           return set({ status: 'error', ...offered, error: record?.error || t('errorInstall', { reason: 'unknown error' }) });
         }
         set({ status: 'available', ...offered });
-        if (autoInstalls()) download();
+        if (autoInstalls() && autoOn()) download();
         return state;
       } catch (error) {
         if (isNoUpdateError(error)) {
@@ -357,6 +375,12 @@ export function createUpdateController({
   function later() {
     if (state.status !== 'downloaded' || !state.auto) return state;
     if (alarm) { try { timers.clearTimeout(alarm); } catch {} alarm = null; }
+    // Automatic updates off: Later withdraws the Install now; the update waits for the user, and nothing installs on quit.
+    if (!autoOn()) {
+      stopAuto();
+      log(`update v${state.latest}: Install now withdrawn; it waits for the user`);
+      return set({ auto: null });
+    }
     const until = now() + POSTPONE_MS;
     log(`update v${state.latest}: postponed until ${iso(until)}`);
     return set({ auto: { ...state.auto, phase: 'postponed', postponedUntil: iso(until), installAt: null, busy: [], now: false } });
@@ -397,10 +421,17 @@ export function createUpdateController({
     return state;
   }
 
+  /** Will a quit now install the downloaded update (installOnQuit)? The app stops its server for it either way. */
+  function willInstallOnQuit() {
+    return !!state.supported && !installing && state.status === 'downloaded' && adapter.installMode() === 'restart'
+      && !state.manualFile && (autoOn() || !!state.auto?.now);
+  }
+
   /** While the app quits: a downloaded update is installed, and the app is not opened again. */
   async function installOnQuit() {
     if (!state.supported || installing || state.status !== 'downloaded') return false;
     if (adapter.installMode() !== 'restart' || state.manualFile) return false;
+    if (!autoOn() && !state.auto?.now) return false;
     installing = true;
     stopAuto();
     countAttempt(state.latest, 'quit');
@@ -424,7 +455,7 @@ export function createUpdateController({
    * the download from the file on disk take past `until`.
    */
   async function installAtLaunch(version, { until = Infinity } = {}) {
-    if (!state.supported || !autoInstalls() || held(version)) return false;
+    if (!state.supported || !autoInstalls() || !autoOn() || held(version)) return false;
     holdAuto = true;
     try {
       const found = await check();
@@ -453,10 +484,29 @@ export function createUpdateController({
     }
   }
 
+  /**
+   * The automatic updates setting changed (host.autoUpdate() says the new
+   * value). On: an update on offer downloads, a downloaded one waits for idle.
+   * Off: a wait or a countdown the user did not ask for stops.
+   */
+  function autoChanged() {
+    const on = autoOn();
+    set({ autoUpdate: on });
+    log(`automatic updates ${on ? 'on' : 'off'}`);
+    if (on) {
+      if (state.status === 'available' && autoInstalls()) download();
+      else if (state.status === 'downloaded') startAuto();
+    } else if (state.auto && !state.auto.now) {
+      stopAuto();
+      set({ auto: null });
+    }
+    return state;
+  }
+
   return {
     get state() { return state; },
     onChange(listener) { listeners.add(listener); return () => listeners.delete(listener); },
-    check, download, install, installNow, installOnQuit, installAtLaunch, later, start, stop, tick,
+    check, download, install, installNow, installOnQuit, willInstallOnQuit, installAtLaunch, later, start, stop, tick, autoChanged,
     /** The install of `version` failed after the app had quit (the swap rolled back, the installer failed): the version that runs stays. */
     failed({ version = null, error } = {}) {
       if (version) attemptFailed(version, error);

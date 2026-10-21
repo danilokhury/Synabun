@@ -36,6 +36,12 @@ export function opencodeImageParts(images = []) {
 
 /** The route-gate plugin (opencode-route-gate.js) as a file URL the serve can load. */
 export const OPENCODE_ROUTE_GATE_PLUGIN = pathToFileURL(resolve(dirname(fileURLToPath(import.meta.url)), 'opencode-route-gate.js')).href;
+/**
+ * The same gate for OpenCode 2 (opencode2-route-gate/: OpenCode 2 loads a plugin
+ * folder from the config's `plugins` list). Both entries are written: OpenCode 1
+ * ignores `plugins`, OpenCode 2 skips the 1.x file (a warning in its log).
+ */
+export const OPENCODE2_ROUTE_GATE_PLUGIN = pathToFileURL(resolve(dirname(fileURLToPath(import.meta.url)), 'opencode2-route-gate')).href;
 
 /**
  * SynaBun's plan agent. OpenCode adds its own read-only reminder ("commands may
@@ -96,9 +102,15 @@ export function patchOpenCodeAssistantConfig(xdgRoot, { persona = '', role = 'as
   // read-only classifier decides on the whole line.
   config.agent.plan = { ...(config.agent.plan || {}), permission: { ...(config.agent.plan?.permission || {}), bash: 'ask' } };
   const plugins = (Array.isArray(config.plugin) ? config.plugin : []).filter((entry) => (Array.isArray(entry) ? entry[0] : entry) !== OPENCODE_ROUTE_GATE_PLUGIN);
+  const plugins2 = (Array.isArray(config.plugins) ? config.plugins : []).filter((entry) => (entry && typeof entry === 'object' ? entry.package : entry) !== OPENCODE2_ROUTE_GATE_PLUGIN);
   // `remote`: a WhatsApp session's serve — the plugin refuses a call it could not check (fail closed).
-  if (routeGate?.url && routeGate?.session && routeGate?.token) plugins.push([OPENCODE_ROUTE_GATE_PLUGIN, { url: routeGate.url, session: routeGate.session, token: routeGate.token, ...(routeGate.remote === true ? { remote: true } : {}) }]);
+  if (routeGate?.url && routeGate?.session && routeGate?.token) {
+    const options = { url: routeGate.url, session: routeGate.session, token: routeGate.token, ...(routeGate.remote === true ? { remote: true } : {}) };
+    plugins.push([OPENCODE_ROUTE_GATE_PLUGIN, options]);
+    plugins2.push({ package: OPENCODE2_ROUTE_GATE_PLUGIN, options });
+  }
   if (plugins.length) config.plugin = plugins; else delete config.plugin;
+  if (plugins2.length) config.plugins = plugins2; else delete config.plugins;
   writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n', 'utf8');
   // It carries this brain's grants (the desktop grant): readable by this user only.
   try { chmodSync(configPath, 0o600); } catch { /* a filesystem without modes */ }

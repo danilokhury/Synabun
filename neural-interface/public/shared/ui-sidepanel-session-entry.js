@@ -1,5 +1,6 @@
 import { hostedSidepanelId, sidepanelHost } from './ui-sidepanel-runtime.js';
 import { emit } from './state.js';
+import { sessionWindowStatus } from './sidepanel-session-status.js';
 
 const host = sidepanelHost();
 const provider = new URLSearchParams(location.search).get('provider');
@@ -32,6 +33,18 @@ if (hostedSidepanelId && host) {
     const syncTitle = () => host.title(hostedSidepanelId, title?.textContent?.trim());
     if (title) new MutationObserver(syncTitle).observe(title, { childList: true, subtree: true, characterData: true });
     syncTitle();
+    // What its sessions do, for this window's pill in the main window: read from this document's own tray
+    // pills, which the panel paints from its sessions' state, and sent when it changes.
+    const tray = document.getElementById('term-minimized-tray');
+    let sentStatus = '';
+    const syncStatus = () => {
+      const status = sessionWindowStatus([...(tray?.querySelectorAll('.term-minimized-pill') || [])].map((pill) => [...pill.classList]));
+      if (status === sentStatus) return;
+      sentStatus = status;
+      host.status?.(hostedSidepanelId, status);
+    };
+    if (tray) new MutationObserver(syncStatus).observe(tray, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
+    syncStatus();
     host.ready(hostedSidepanelId, { focus, defaults, end, receive(kind, data) {
       if (kind === 'path') return receivePath(data);
       emit(kind === 'image' ? 'wb:send-to-panel' : kind, data);

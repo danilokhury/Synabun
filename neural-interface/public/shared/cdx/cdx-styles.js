@@ -2724,6 +2724,10 @@ export function injectStyles() {
       animation: cxp-working 1.6s ease-in-out infinite;
       flex-shrink: 0;
     }
+    /* A session that waits on you (an approval or a question card): the warn hairline and mark of
+       the Assistant's and a detached window's pills, in place of the working look (paintTrayPill). */
+    .cxp-session-pill.cxp-pill-attention { border-color: color-mix(in srgb, var(--cxp-warning) 42%, transparent); }
+    .cxp-session-pill.cxp-pill-attention .term-minimized-pill-icon { color: var(--cxp-warning); }
     .cxp-hint {
       margin-top: 8px;
       font-size: var(--cxp-fs-xs);

@@ -91,11 +91,13 @@ export function createAccountUsage({ accounts = {}, readCodex = null, fetchImpl 
     combined.fetchedAt = new Date(Math.max(...fresh.map(w => w.at), value.windows.length ? Date.parse(value.fetchedAt) : 0)).toISOString();
     return combined;
   }
-  function peek(provider, id) {
+  // `stale`: a reading older than ttlMs still counts (a display that refreshes in the background); the
+  // account's own state must still match it, and a window past its reset is still unknown.
+  function peek(provider, id, { stale = false } = {}) {
     const row = rowOf(provider, id);
     if (row?.mode === 'apiKey' || row?.mode === 'api') return unknown('not_applicable', now());
     const item = cache.get(keyOf(provider, id));
-    const value = item?.signature === signature(row) && now() - item.at < ttlMs ? summarize(item.value.windows, item.value.source, Date.parse(item.value.fetchedAt), item.value.limited && !item.value.windows.some(w => w.usedPercent >= 100)) : unknown('unknown', now());
+    const value = item?.signature === signature(row) && (stale || now() - item.at < ttlMs) ? summarize(item.value.windows, item.value.source, Date.parse(item.value.fetchedAt), item.value.limited && !item.value.windows.some(w => w.usedPercent >= 100)) : unknown('unknown', now());
     // Do not keep a limited window alive after its reset.
     if (value.windows.some(w => w.resetsAt && Date.parse(w.resetsAt) <= now())) return overlay(provider, id, unknown('unknown', now()));
     return overlay(provider, id, value);
@@ -137,7 +139,7 @@ export function createAccountUsage({ accounts = {}, readCodex = null, fetchImpl 
     await Promise.all(Object.entries(accounts).filter(([p]) => !provider || p === provider).flatMap(([p, service]) => service.list().map(row => read(p, row.id))));
     return list();
   }
-  function list() { return Object.fromEntries(Object.entries(accounts).map(([p, service]) => [p, service.listForClient().map(row => ({ ...row, usage: peek(p, row.id) }))])); }
+  function list({ stale = false } = {}) { return Object.fromEntries(Object.entries(accounts).map(([p, service]) => [p, service.listForClient().map(row => ({ ...row, usage: peek(p, row.id, { stale }) }))])); }
   function invalidate(p, id) { const key = keyOf(p, id); generations.set(key, (generations.get(key) || 0) + 1); cache.delete(key); overlays.delete(key); }
   return { read, peek, note, refresh, list, invalidate };
 }

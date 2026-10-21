@@ -10,6 +10,7 @@
 export {
   toggleOpencodePanel,
   isOpencodePanelOpen,
+  bootOpencodePanel,
   openOpencodeWithPrompt,
   attachPathToOpencode,
   attachOpenCodeAutomation,

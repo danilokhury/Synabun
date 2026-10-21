@@ -605,6 +605,8 @@ export function compactRow(row) {
  * @param {(change:{providers:string[], generatedAt:string})=>void} [deps.onChange] a build listed other
  *   models than the build before it (hiding has its own event and does not count)
  * @param {number} [deps.retryMs] how soon a build is redone while Claude Code or Codex gave no verified list
+ * @param {boolean} [deps.staleWhileRevalidate] an old build (past its lifetime) is given at once and built
+ *   again in the background, one build at a time; only a first build, invalidate() and force wait for one
  */
 export function createAssistantCatalog({
   fetchJson,
@@ -617,6 +619,7 @@ export function createAssistantCatalog({
   onChange = null,
   ttlMs = 30_000,
   retryMs = 5_000,
+  staleWhileRevalidate = false,
   now = Date.now,
   log = () => {},
 } = {}) {
@@ -753,7 +756,17 @@ export function createAssistantCatalog({
    */
   async function full({ force = false, deep = false } = {}) {
     if (!force && !deep && cache && now() - cache.at < cache.ttl) return cache.value;
+    // Past its lifetime: with staleWhileRevalidate the old build is the answer while the next one is made
+    // (never a build that began before an invalidate(): `current` says it was made for the lists as they are).
+    if (staleWhileRevalidate && !force && !deep && cache?.current) {
+      if (!inflight) startBuild({ deep: false }).catch((error) => log('catalog:background-error', error?.message || String(error)));
+      return cache.value;
+    }
     if (inflight) return inflight;
+    return startBuild({ deep });
+  }
+
+  function startBuild({ deep = false } = {}) {
     const started = epoch;
     inflight = build({ deep }).then((built) => {
       const { changedProviders, ...value } = built;
@@ -762,7 +775,7 @@ export function createAssistantCatalog({
       const degraded = ['claude-code', 'codex'].some((p) => value.sources[p] !== 'live');
       degradedBuilds = degraded ? degradedBuilds + 1 : 0;
       const ttl = degraded ? Math.min(ttlMs, retryMs * 2 ** (degradedBuilds - 1)) : ttlMs;
-      cache = { at: now(), value, ttl: started === epoch ? ttl : 0 };
+      cache = { at: now(), value, ttl: started === epoch ? ttl : 0, current: started === epoch };
       if (changedProviders.length && typeof onChange === 'function') {
         try { onChange({ providers: changedProviders, generatedAt: value.generatedAt }); } catch (error) { log('catalog:onchange-error', error?.message || String(error)); }
       }
@@ -872,6 +885,8 @@ export function createAssistantCatalog({
   }
 
   function invalidate() { cache = null; epoch += 1; }
+  /** The lists may have changed (a serve restarted, a CLI updated): the next read still answers with this build and makes the next one. */
+  function markStale() { if (cache) cache = { ...cache, at: -Infinity }; }
   /** A provider's own list changed: drop the copy and build the next one now (onChange reports the difference). */
   function refresh() {
     invalidate();
@@ -879,5 +894,5 @@ export function createAssistantCatalog({
     return pending ? pending.catch(() => null).then(() => full()) : full();
   }
 
-  return { get, full, peek, find, hiddenId, manageRows, manageSnapshot, brainInfo, invalidate, refresh };
+  return { get, full, peek, find, hiddenId, manageRows, manageSnapshot, brainInfo, invalidate, markStale, refresh };
 }

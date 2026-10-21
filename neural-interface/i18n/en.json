@@ -104,6 +104,7 @@
     "graph": "Graph",
     "skills": "Skills",
     "automations": "Automations",
+    "schedules": "Schedules",
     "games": "Games",
     "apps": "Apps",
     "bookmarks": "Bookmarks",
@@ -152,6 +153,7 @@
       "openCode": "OpenCode",
       "shell": "Shell",
       "browser": "Browser",
+      "browserApps": "Browser apps",
       "youtube": "YouTube",
       "showTerminal": "Show Terminal"
     }
@@ -1425,6 +1427,10 @@
         "about": {
           "label": "About",
           "help": "Version, links and licenses"
+        },
+        "app": {
+          "label": "App",
+          "help": "Updates, startup and the window"
         }
       },
       "page": {
@@ -1479,6 +1485,10 @@
         "about": {
           "title": "About",
           "purpose": "The version you run, what it runs on, and the open-source software SynaBun is built with."
+        },
+        "app": {
+          "title": "App",
+          "purpose": "How SynaBun updates, starts and runs on this computer."
         }
       },
       "section": {
@@ -1818,6 +1828,24 @@
           "dependencies": {
             "title": "Dependencies",
             "purpose": "Every package SynaBun ships with, the version installed here and its license."
+          }
+        },
+        "app": {
+          "updates": {
+            "title": "Updates",
+            "purpose": "The version you run, and how SynaBun gets new ones."
+          },
+          "startup": {
+            "title": "Startup",
+            "purpose": "Whether SynaBun starts when you log in."
+          },
+          "window": {
+            "title": "Window",
+            "purpose": "What the SynaBun app's window does."
+          },
+          "maintenance": {
+            "title": "Maintenance",
+            "purpose": "SynaBun's folders, and a restart when something needs one."
           }
         }
       },
@@ -3479,6 +3507,50 @@
         "abt003": {
           "label": "Filter dependencies",
           "help": "Shows only the packages whose name contains what you type."
+        },
+        "sys001": {
+          "label": "Check for updates",
+          "help": "Looks for a newer version of SynaBun now."
+        },
+        "sys002": {
+          "label": "Automatic updates",
+          "help": "Looks for new versions by itself. In the desktop app it also installs them when SynaBun is idle."
+        },
+        "sys003": {
+          "label": "Install update",
+          "help": "Opens the update with its release notes, and a backup first if you want one."
+        },
+        "sys004": {
+          "label": "Start at login",
+          "help": "Starts SynaBun when you log in to this computer."
+        },
+        "sys005": {
+          "label": "Start in the background",
+          "help": "At login, SynaBun starts without opening its window. Open SynaBun to show it."
+        },
+        "sys006": {
+          "label": "Keep running when the window closes",
+          "help": "Closing the window leaves SynaBun in the tray, so your AI tools keep their memory. Off: closing the window quits SynaBun."
+        },
+        "sys007": {
+          "label": "Hardware acceleration",
+          "help": "Draws the window with the graphics card. Turn it off if the window flickers or stays blank. Applies after a restart."
+        },
+        "sys008": {
+          "label": "Restart now",
+          "help": "Quits SynaBun and opens it again."
+        },
+        "sys009": {
+          "label": "Open data folder",
+          "help": "Shows the folder with your memories, settings and backups."
+        },
+        "sys010": {
+          "label": "Open logs folder",
+          "help": "Shows the folder with SynaBun's logs, for a bug report."
+        },
+        "sys011": {
+          "label": "Restart SynaBun",
+          "help": "Restarts SynaBun's server: the same as Restart Server in the Apps menu."
         }
       },
       "pane": {
@@ -5729,7 +5801,8 @@
             "notifications": "alerts, sound, volume, banner, toast, mute, desktop notification",
             "appearance": "theme, dark mode, skin, color, font, text size, language, locale, icons, zoom, look",
             "code_editor": "editor, code, font, text size, word wrap, minimap, whitespace, indentation, tabs, autocomplete, completion, suggestions, copilot, ghost text, inline, ai, model, ollama, file",
-            "about": "version, GitHub, license, dependencies, Node, Electron, Chromium, system, update, credits, copyright, release notes, changelog"
+            "about": "version, GitHub, license, dependencies, Node, Electron, Chromium, system, update, credits, copyright, release notes, changelog",
+            "app": "updates, auto update, automatic updates, startup, start at login, launch at login, login items, boot, autostart, background, tray, menu bar, close window, quit, hardware acceleration, GPU, data folder, logs, restart, version"
           },
           "section": {
             "ai_connections": {
@@ -5835,6 +5908,12 @@
               "links": "GitHub, repository, releases, changelog, issue, bug report, website, docs, documentation, npm, license, Discord, community",
               "system": "version, Node, Node.js, Electron, Chromium, SQLite, operating system, OS, macOS, Windows, Linux, architecture, data folder, port, install, diagnostics",
               "dependencies": "packages, libraries, npm, licenses, open source, third party, versions, node_modules"
+            },
+            "app": {
+              "updates": "update, auto update, automatic, check, version, upgrade, release, download, install, badge",
+              "startup": "start at login, startup, boot, login items, autostart, launch, background, hidden, tray, minimized, LaunchAgent, systemd",
+              "window": "close, tray, menu bar, quit, keep running, hardware acceleration, GPU, graphics, flicker, blank window",
+              "maintenance": "data folder, logs, log files, restart, troubleshooting, diagnostics, folder, Finder, Explorer"
             }
           },
           "control": {
@@ -6021,6 +6100,70 @@
           "builtWith": "Built with open-source software"
         },
         "afterRestart": "Shown after SynaBun restarts."
+      },
+      "app": {
+        "version": "SynaBun {version}",
+        "update": {
+          "checking": "Checking for updates…",
+          "upToDate": "Up to date",
+          "available": "Version {version} is available",
+          "downloading": "Downloading version {version} ({percent}%)",
+          "ready": "Version {version} is ready to install",
+          "installing": "Installing version {version}",
+          "failed": "The last check failed",
+          "notChecked": "Not checked yet",
+          "unsupported": "This copy does not update itself",
+          "checkedAt": "checked at {time}",
+          "autoHelpDesktop": "Downloads new versions and installs them when SynaBun is idle, after a one-minute notice. Off: SynaBun still checks and tells you, and you install with one click.",
+          "autoHelpServer": "Looks for new versions when SynaBun starts and every half hour, and shows the update badge. Off: it looks only when you ask. Installing always asks first."
+        },
+        "startup": {
+          "helpDesktop": "Opens SynaBun when you log in, so its server is ready for your AI tools.",
+          "helpServer": "Starts SynaBun's server in the background when you log in, with no window or terminal.",
+          "hiddenNeedsLogin": "Applies when SynaBun starts at login.",
+          "requiresApproval": "macOS is waiting for you to allow SynaBun in System Settings > General > Login Items.",
+          "disabledInSystem": {
+            "darwin": "Turned off in System Settings > General > Login Items.",
+            "win32": "Turned off in Windows Settings > Apps > Startup.",
+            "linux": "Turned off in your desktop's startup applications."
+          },
+          "openSettings": {
+            "darwin": "Open Login Items",
+            "win32": "Open Startup apps"
+          },
+          "reason": {
+            "unpackaged": "Only an installed copy of SynaBun can start at login.",
+            "move-to-applications": "Move SynaBun to the Applications folder first.",
+            "no-appimage": "Start SynaBun from its AppImage file to use this.",
+            "not-here": "Not available in a test run or a temporary data folder.",
+            "unsupported": "Not available on this system.",
+            "desktop": "The SynaBun app sets this itself. Update the app to change it here."
+          },
+          "owner": "The SynaBun app opens at login on this data folder. Turn it off in the app first.",
+          "replaced": "The npm install no longer starts at login: this app does now.",
+          "error": {
+            "refused": "The system did not accept the change.",
+            "write-failed": "SynaBun could not write its startup entry.",
+            "no-wscript": "Windows Script Host (wscript.exe) is missing, so SynaBun cannot start without a window.",
+            "bad-path": "SynaBun cannot start at login from a folder whose name has % in it.",
+            "desktop-app": "The SynaBun app opens at login on this data folder. Turn it off in the app first.",
+            "npm-entry": "The npm install's start at login could not be removed. Turn it off there, then try again.",
+            "save-failed": "SynaBun could not save this setting.",
+            "network": "SynaBun did not answer. Try again."
+          }
+        },
+        "window": {
+          "desktopOnly": "Only in the SynaBun desktop app.",
+          "macDock": "On macOS, SynaBun stays in the Dock when its window closes. Quit it from the menu.",
+          "noTray": "This desktop shows no tray icon: open SynaBun again to show its window.",
+          "restartNeeded": "Applies after SynaBun restarts."
+        },
+        "maintenance": {
+          "openFailed": "The folder could not be opened."
+        },
+        "remote": "Open SynaBun on the computer it runs on to change these.",
+        "serverOld": "These controls come with a restart of SynaBun's server.",
+        "saveFailed": "Could not save the setting."
       }
     }
   },
@@ -6492,7 +6635,14 @@
     "sessions": {
       "empty": "No other sessions",
       "recent": "Recent",
-      "filter": "Filter sessions…"
+      "filter": "Filter sessions…",
+      "remove": "Remove session",
+      "removeNamed": "Remove “{title}”",
+      "removeAsk": "Remove “{title}” for good?",
+      "removeStopsTurn": "Its running turn stops.",
+      "removeStopsAgents": "Its running agents stop ({count}).",
+      "removeConfirm": "Remove",
+      "removeFailed": "Could not remove “{title}”: {error}"
     },
     "work": {
       "agents": "{count} agents",
@@ -7145,6 +7295,7 @@
       "awaitingRoute": "waiting for your model choice",
       "needsApproval": "needs approval",
       "needsInput": "needs input",
+      "waitingInput": "waiting for your answer",
       "queued": "queued",
       "strongerModel": "a stronger model",
       "escalateTo": "Escalate to {label}",
@@ -7178,12 +7329,65 @@
       "showAll": "Show all",
       "stopAll": "Stop all",
       "empty": "No dispatched agents yet. Try /dispatch codex \"…\"",
-      "running": "{n} running",
-      "needsApproval": "{n} needs approval",
-      "done": "{n} finished",
+      "running": {
+        "one": "{count} running",
+        "other": "{count} running"
+      },
+      "needsApproval": {
+        "one": "{count} needs approval",
+        "other": "{count} need approval"
+      },
+      "needsAnswer": {
+        "one": "{count} waiting for your answer",
+        "other": "{count} waiting for your answer"
+      },
+      "done": {
+        "one": "{count} finished",
+        "other": "{count} finished"
+      },
       "emptyShort": "No dispatched agents yet.",
       "clearFinished": "Clear finished",
-      "idle": "{n} idle"
+      "idle": {
+        "one": "{count} idle",
+        "other": "{count} idle"
+      },
+      "reveal": "{label}. Show it in the conversation",
+      "working": "Agents at work",
+      "more": {
+        "one": "{count} more agent at work: show the list",
+        "other": "{count} more agents at work: show the list"
+      }
+    },
+    "stage": {
+      "scene": {
+        "quick": "Quick fix",
+        "code": "Coding",
+        "complex": "Complex task",
+        "review": "Reviewing",
+        "research": "Researching",
+        "browser": "Browsing",
+        "computer": "Using the computer",
+        "automation": "Automating",
+        "design": "Designing",
+        "image_gen": "Making an image",
+        "video_gen": "Making a video",
+        "generic": "Working"
+      },
+      "doing": "{scene}…",
+      "queued": "Queued",
+      "queuedAt": "Queued · position {n}",
+      "starting": "Starting…",
+      "waitingApproval": "Waiting for your approval",
+      "waitingInput": "Waiting for your answer",
+      "waitingRoute": "Waiting for your model choice",
+      "done": "Done",
+      "failed": "Failed",
+      "stopped": "Stopped",
+      "underMinute": "under a minute",
+      "minutes": {
+        "one": "{count} min",
+        "other": "{count} min"
+      }
     },
     "composer": {
       "aria": "Message the assistant",
@@ -8581,7 +8785,7 @@
       },
       "explain-graph": {
         "title": "See your memory as a map",
-        "body": "Each memory is a point on the map, and categories form islands. The {menu} menu frames it, shows a memory's neighbours and rebuilds the layout.",
+        "body": "Each memory is a point on the map, and categories form islands. The {menu} submenu of {apps} frames it, shows a memory's neighbours and rebuilds the layout.",
         "body2d": "Each memory is a node, linked to the memories related to it. The {menu} menu picks which links show and how many memories load, and resets the layout."
       },
       "explain-focus": {
@@ -8755,6 +8959,7 @@
       "tooltip": "SynaBun update available: v{current} → v{latest}",
       "tooltipDownloading": "Downloading SynaBun v{latest}",
       "tooltipReady": "SynaBun v{latest} is ready: it installs when SynaBun is idle",
+      "tooltipReadyOff": "SynaBun v{latest} is ready to install",
       "titleAvailable": "Update available",
       "titleDownloading": "Downloading the update",
       "titleDownloaded": "Update ready",
@@ -8777,6 +8982,8 @@
       "hide": "Hide",
       "hideHint": "The download continues while this is hidden. SynaBun installs the update by itself when nothing is running.",
       "readyBody": "SynaBun v{version} is downloaded. It installs by itself once nothing is running: SynaBun shows a one-minute notice, then restarts into it. It also installs when you quit SynaBun.",
+      "offBody": "Automatic updates are off. Install now downloads it and restarts SynaBun into it once nothing is running.",
+      "readyBodyOff": "SynaBun v{version} is downloaded. Automatic updates are off: it installs when you choose Install now.",
       "waitingBody": "Waiting for: {list}.",
       "countdownBody": "SynaBun restarts into v{version} in {seconds} s.",
       "postponedBody": "Postponed until {time}. It also installs when you quit SynaBun.",
@@ -8793,12 +9000,14 @@
       "errorFallback": "SynaBun could not check for updates. Check the connection and try again.",
       "errorNext": "SynaBun keeps the version it runs and tries again at its next check. You can try now, or download the new version yourself.",
       "manualLink": "Download it yourself",
+      "settingsLink": "Update settings",
       "close": "Close",
       "retry": "Try again",
       "testFeed": "test feed",
       "metaAvailable": "From the SynaBun app",
       "metaDownloading": "Downloading: {percent}%",
       "metaDownloaded": "Ready: installs when SynaBun is idle",
+      "metaReadyOff": "Ready to install",
       "metaCountdown": "Restarting to install it",
       "metaPostponed": "Postponed: installs on quit or later"
     },
@@ -8845,6 +9054,8 @@
       "updateAvailableManualDetail": "This copy cannot replace itself where it is. Download the new disk image and install it the way you installed SynaBun.",
       "updateDownloading": "SynaBun v{version} is downloading",
       "updateAutoDetail": "SynaBun installs it by itself as soon as nothing is running, after a one-minute notice you can postpone. It also installs when you quit SynaBun.",
+      "updateAvailableOffDetail": "Automatic updates are off. Install now downloads it and restarts SynaBun into it once nothing is running.",
+      "updateReadyOffDetail": "Automatic updates are off: it installs when you choose Install now.",
       "installNow": "Install now",
       "downloadYourself": "Download it yourself",
       "countdownTitle": "Updating SynaBun to v{version}",

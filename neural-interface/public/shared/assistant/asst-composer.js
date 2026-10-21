@@ -204,7 +204,7 @@ export function createComposer(hostEl, hooks = {}) {
   function renderAttachments() {
     const chips = [];
     state.images.forEach((img, i) => {
-      chips.push(`<span class="asst-chip static" data-kind="image" data-idx="${i}"><img src="data:${esc(img.mediaType)};base64,${img.base64}" alt=""><span class="asst-chip-text">${esc(img.name || 'image')}</span><button type="button" class="asst-chip-x" aria-label="${esc(t('common.remove', 'Remove'))}">${ICON_X}</button></span>`);
+      chips.push(`<span class="asst-chip static" data-kind="image" data-idx="${i}"><img src="data:${esc(img.mediaType)};base64,${esc(img.base64)}" alt=""><span class="asst-chip-text">${esc(img.name || 'image')}</span><button type="button" class="asst-chip-x" aria-label="${esc(t('common.remove', 'Remove'))}">${ICON_X}</button></span>`);
     });
     state.files.forEach((f, i) => {
       chips.push(`<span class="asst-chip static" data-kind="file" data-idx="${i}"><span class="asst-chip-text">${esc(f.name)}</span><span class="asst-chip-meta">${esc(Math.ceil(f.content.length / 1024))}k</span><button type="button" class="asst-chip-x" aria-label="${esc(t('common.remove', 'Remove'))}">${ICON_X}</button></span>`);

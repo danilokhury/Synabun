@@ -30,6 +30,31 @@ let _pollWired = false;
 let _desktopState = null;
 let _desktopDialog = null;
 
+// One update dialog on the page, whichever surface asks for it (the badge, the toast, Notifications, Settings >
+// App, the sessions list, the app's menu or tray, the notice's Details): while one is open another request leaves
+// it as it is, and one still fading out goes at once before the next is drawn, so two never share the page or the
+// ids their labels point at.
+let _updateDialogOverlay = null;
+const _closingUpdateDialogs = new Set();
+
+function updateDialogOpen() {
+  return !!_updateDialogOverlay;
+}
+
+function claimUpdateDialog(overlay) {
+  for (const leaving of _closingUpdateDialogs) leaving.remove();
+  _closingUpdateDialogs.clear();
+  _updateDialogOverlay = overlay;
+}
+
+function releaseUpdateDialog(overlay) {
+  if (_updateDialogOverlay !== overlay) return;
+  _updateDialogOverlay = null;
+  _closingUpdateDialogs.add(overlay);
+  overlay.classList.add('closing');
+  setTimeout(() => { overlay.remove(); _closingUpdateDialogs.delete(overlay); }, 150);
+}
+
 /** Where an update comes from, as the badge, the toast and the menu name it. */
 export function synabunUpdateSourceLabel(data) {
   const src = data?.source;
@@ -97,12 +122,15 @@ export async function initUpdate() {
     if (!res.ok) return;
     _versionData = await res.json();
     applyTopRightButton(_versionData);
-    maybeShowUpdateAlert(_versionData);
+    // Settings > App: with automatic updates off the server looks only when asked, and the page does not ask by itself.
+    if (_versionData?.autoCheck !== false) maybeShowUpdateAlert(_versionData);
 
     if (!_pollWired) {
       _pollWired = true;
       setInterval(() => {
-        forceCheckSynabunUpdate({ alert: true }).catch(() => {});
+        if (_versionData?.autoCheck === false) return;
+        // Passive: with the automatic check off (another tab may have turned it off) the server asks nothing.
+        forceCheckSynabunUpdate({ alert: true, passive: true }).catch(() => {});
       }, 30 * 60 * 1000);
     }
   } catch { /* silent — no update UI if check fails */ }
@@ -110,8 +138,11 @@ export async function initUpdate() {
 
 // Force a fresh server-side check (bypasses 1h cache via ?force=1) and
 // re-applies the top-right button + badge state. Returns the latest
-// _synabunUpdateCache shape so callers can compose toasts.
-export async function forceCheckSynabunUpdate({ alert = false } = {}) {
+// _synabunUpdateCache shape so callers can compose toasts. `passive` (a timer,
+// a drawer that refreshes itself, not a person asking): with the automatic
+// check off (Settings > App) the server answers what it last saw and asks npm
+// and GitHub nothing.
+export async function forceCheckSynabunUpdate({ alert = false, passive = false } = {}) {
   // Inside the desktop app the app checks its own release feed; an error is
   // null here, as a failed request is, so callers list it under the errors.
   const desktop = desktopBridge();
@@ -124,7 +155,7 @@ export async function forceCheckSynabunUpdate({ alert = false } = {}) {
     }
   }
   try {
-    const res = await fetch('/api/system/version?force=1');
+    const res = await fetch(`/api/system/version?force=1${passive ? '&passive=1' : ''}`);
     if (!res.ok) return null;
     _versionData = await res.json();
     applyTopRightButton(_versionData);
@@ -142,7 +173,7 @@ export async function forceCheckSynabunUpdate({ alert = false } = {}) {
  */
 export async function syncSynabunUpdateData() {
   const desktop = desktopBridge();
-  if (!desktop) return forceCheckSynabunUpdate();
+  if (!desktop) return forceCheckSynabunUpdate({ passive: true });
   try {
     return applyDesktopState(await desktop.updates.state(), { alert: false });
   } catch {
@@ -150,9 +181,39 @@ export async function syncSynabunUpdateData() {
   }
 }
 
+/**
+ * The update state as it is, without a check (Settings > App): the desktop
+ * app's last report, or the server's last look. Published to the badge and the
+ * dialog, so what a page shows is what Install update opens.
+ */
+export async function refreshSynabunUpdateData() {
+  if (desktopBridge()) return syncSynabunUpdateData();
+  try {
+    const res = await fetch('/api/system/version');
+    if (!res.ok) return _versionData;
+    _versionData = await res.json();
+    applyTopRightButton(_versionData);
+    return _versionData;
+  } catch {
+    return _versionData;
+  }
+}
+
 export function openSynabunUpdateModal() {
   if (!_versionData?.updateAvailable) return;
   openUpdateModal();
+}
+
+/** Settings > App > Updates (the page id is its deep link: settings-ia.js). */
+export function openUpdateSettings() {
+  import('./ui-settings.js')
+    .then((settings) => settings.openSettingsModal({ tab: 'app', scrollTo: 'stg-sec-app-updates', expand: ['stg-sec-app-updates'] }))
+    .catch((error) => console.warn('[update] could not open Settings', error));
+}
+
+/** Settings > App changed the automatic update check of an npm or Git install: the half-hourly look follows it. */
+export function noteSynabunAutoCheck(auto) {
+  if (_versionData && !_versionData.desktop) _versionData = { ..._versionData, autoCheck: auto !== false };
 }
 
 // Read-only accessor for the Notifications drawer to mirror SynaBun core
@@ -209,7 +270,8 @@ function applyDesktopState(state, { alert = true } = {}) {
   // An offer that waits for the user (macOS: a copy to move to Applications, or one in a folder SynaBun
   // cannot write): one toast per version and session. Every other update downloads and installs by
   // itself, and the notice speaks when there is something to say.
-  if (alert && _versionData.updateAvailable && _versionData.status === 'available' && _versionData.install !== 'restart') maybeShowUpdateAlert(_versionData);
+  // With automatic updates off (Settings > App) every offer waits for the user, so it is said too.
+  if (alert && _versionData.updateAvailable && _versionData.status === 'available' && (_versionData.install !== 'restart' || _versionData.autoUpdate === false)) maybeShowUpdateAlert(_versionData);
   emit('synabun-update:changed', _versionData);
   _desktopDialog?.update(_desktopState);
   renderDesktopNotice();
@@ -373,7 +435,8 @@ function renderDesktopStep(view) {
   const actions = view.actions.length ? `
       <div class="tag-delete-modal-actions" style="margin-top:14px">
         ${view.actions.map(item => `<button class="action-btn action-btn--${item.kind}" type="button" data-desktop-action="${item.id}" id="desktop-update-${item.id}">${esc(item.label)}</button>`).join('')}
-      </div>` : '';
+      </div>
+      <p style="margin:10px 0 0"><button class="update-notice-link" type="button" data-desktop-action="settings" id="desktop-update-settings" style="background:none;border:0;padding:0;cursor:pointer;font:inherit;font-size:11px">${esc(desktopT('update.settingsLink'))}</button></p>` : '';
   return `
       <h3 class="update-modal-title" id="desktop-update-title">${working}${esc(view.title)}${pill}</h3>
       ${diff}
@@ -396,7 +459,7 @@ function openDesktopUpdateModal() {
   const desktop = desktopBridge();
   if (!desktop) return;
   // One dialog: a second request (the badge, the menu, the tray) leaves the open one as it is.
-  if (_desktopDialog) return;
+  if (_desktopDialog || updateDialogOpen()) return;
   const viewOf = (state) => desktopUpdateView(state, { t: desktopT, number: desktopNumber, time: desktopTime });
   const first = viewOf(_desktopState);
   if (first.step === 'none') return;
@@ -590,6 +653,8 @@ function openDesktopUpdateModal() {
 
   async function act(id) {
     if (working) return;
+    // Settings > App > Updates: automatic updates, the version, a check.
+    if (id === 'settings') { close(); openUpdateSettings(); return; }
     // Later on a ready update postpones its restart; everywhere else it only closes the dialog.
     if (id === 'later' && view?.step === 'downloaded') {
       close();
@@ -686,8 +751,7 @@ function openDesktopUpdateModal() {
     _desktopDialog = null;
     keepTicking(false);
     window.removeEventListener('keydown', onKey, true);
-    overlay.classList.add('closing');
-    setTimeout(() => overlay.remove(), 150);
+    releaseUpdateDialog(overlay);
   }
 
   overlay.addEventListener('click', (e) => {
@@ -695,6 +759,7 @@ function openDesktopUpdateModal() {
   });
   window.addEventListener('keydown', onKey, true);
   _desktopDialog = { overlay, update, close };
+  claimUpdateDialog(overlay);
   document.body.appendChild(overlay);
   setStep(first);
   keepTicking(first.ticking);
@@ -705,6 +770,7 @@ function openDesktopUpdateModal() {
 function openUpdateModal() {
   if (!_versionData) return;
   if (_versionData.desktop) { openDesktopUpdateModal(); return; }
+  if (updateDialogOpen()) return;
 
   let step = 1;
   let backupDone = false;
@@ -871,7 +937,8 @@ function openUpdateModal() {
         <span class="update-ver update-ver--new">v${esc(_versionData.latest)}</span>
       </div>
       <p style="font-size:12px;color:var(--t-muted);margin:12px 0 6px">${srcCopy}</p>
-      <p style="font-size:11px;color:var(--t-muted);opacity:.75;margin:0 0 18px">${npmStable}${npmBeta}${gitBit}</p>
+      <p style="font-size:11px;color:var(--t-muted);opacity:.75;margin:0 0 6px">${npmStable}${npmBeta}${gitBit}</p>
+      <p style="margin:0 0 18px"><button class="update-notice-link" type="button" id="update-settings" style="background:none;border:0;padding:0;cursor:pointer;font:inherit;font-size:11px">Update settings</button></p>
       <div class="tag-delete-modal-actions">
         <button class="action-btn action-btn--ghost" id="update-cancel">Cancel</button>
         <button class="action-btn action-btn--primary" id="update-next">Next</button>
@@ -972,6 +1039,8 @@ function openUpdateModal() {
     // Cancel / Done
     scope.querySelector('#update-cancel')?.addEventListener('click', close);
     scope.querySelector('#update-done')?.addEventListener('click', close);
+    // Settings > App > Updates: the automatic check, the version, a check now.
+    scope.querySelector('#update-settings')?.addEventListener('click', () => { close(); openUpdateSettings(); });
 
     // Next
     scope.querySelector('#update-next')?.addEventListener('click', () => {
@@ -1167,14 +1236,14 @@ function openUpdateModal() {
   }
 
   function close() {
-    overlay.classList.add('closing');
-    setTimeout(() => overlay.remove(), 150);
+    releaseUpdateDialog(overlay);
   }
 
   // Boot: attach shell once, wire overlay-click-to-close, render initial step.
   overlay.addEventListener('click', (e) => {
     if (e.target === overlay) close();
   });
+  claimUpdateDialog(overlay);
   document.body.appendChild(overlay);
   syncStepDots();
   setStep(1);

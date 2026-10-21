@@ -74,6 +74,8 @@
 
 !define SYNABUN_LEGACY_UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\SynaBun"
 !define SYNABUN_PROTOCOL_KEY "Software\Classes\synabun"
+!define SYNABUN_RUN_KEY "Software\Microsoft\Windows\CurrentVersion\Run"
+!define SYNABUN_RUN_NAME "ai.synabun.app"
 
 ; What this build carries, for the install page (packaging/lib/desktop.mjs writes it beside this file).
 !include /NONFATAL "synabun-installer-facts.nsh"
@@ -605,6 +607,21 @@ FunctionEnd
     ${if} $R4 == $R3
       DetailPrint "Removing the link handler synabun:// (HKCU\${SYNABUN_PROTOCOL_KEY})"
       DeleteRegKey HKCU "${SYNABUN_PROTOCOL_KEY}"
+    ${endIf}
+    ; Open at login (Settings > App): the Run value Electron names after the app's AppUserModelId, while it starts
+    ; this copy (the program quoted, or without quotes).
+    ReadRegStr $R5 HKCU "${SYNABUN_RUN_KEY}" "${SYNABUN_RUN_NAME}"
+    StrCpy $R3 '"$INSTDIR\SynaBun.exe"'
+    StrLen $R2 $R3
+    StrCpy $R4 $R5 $R2
+    ${if} $R4 != $R3
+      StrCpy $R3 '$INSTDIR\SynaBun.exe'
+      StrLen $R2 $R3
+      StrCpy $R4 $R5 $R2
+    ${endIf}
+    ${if} $R4 == $R3
+      DetailPrint "Removing open at login (HKCU\${SYNABUN_RUN_KEY}\${SYNABUN_RUN_NAME})"
+      DeleteRegValue HKCU "${SYNABUN_RUN_KEY}" "${SYNABUN_RUN_NAME}"
     ${endIf}
   ${endIf}
   ; %APPDATA%\synabun (memories, settings, logs) stays where it is.

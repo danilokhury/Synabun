@@ -1,12 +1,16 @@
 // SynaBun sidepanel tray placeholders.
 // Renders minimized pills for persisted sidepanel tabs before a panel is booted.
+// A tab saved while it was working may still be working (its turn outlives the
+// page on the server): its provider's panel boots then, hidden, and asks, and
+// its own pills (its styles, the sessions' real state) take the placeholders'
+// places. Panels whose saved tabs were all idle stay lazy.
 
 import { storage } from './storage.js';
 import { emit } from './state.js';
 import { getProviderMeta } from './provider-icons.js';
-import { toggleClaudePanel, isClaudePanelOpen } from './ui-claude-panel.js';
-import { toggleCodexPanel, isCodexPanelOpen } from './ui-codex-panel.js';
-import { toggleOpencodePanel, isOpencodePanelOpen } from './ui-opencode-panel-v2.js';
+import { toggleClaudePanel, isClaudePanelOpen, bootClaudePanel } from './ui-claude-panel.js';
+import { toggleCodexPanel, isCodexPanelOpen, bootCodexPanel } from './ui-codex-panel.js';
+import { toggleOpencodePanel, isOpencodePanelOpen, bootOpencodePanel } from './ui-opencode-panel-v2.js';
 import { nativeLoopWindowId } from './ui-native-window-id.js';
 
 const PLACEHOLDER_CLASS = 'sidepanel-tray-placeholder';
@@ -17,6 +21,8 @@ const PROVIDERS = {
     windowKey: 'cp-window-id',
     tabsKeyPrefix: 'synabun-claude-panel-tabs',
     pillClass: 'cp-session-pill',
+    // A tab saved while a permission or a question waited on the user (tabNeedsYou in ui-claude-panel.js).
+    attentionClass: 'cp-pill-attention',
     eventName: 'claude-panel:show',
   },
   codex: {
@@ -24,6 +30,8 @@ const PROVIDERS = {
     windowKey: 'cxp-window-id',
     tabsKeyPrefix: 'synabun-codex-panel-tabs',
     pillClass: 'cxp-session-pill',
+    // A tab saved while an approval or a question card waited on the user (paintTrayPill in cdx-tabs.js).
+    attentionClass: 'cxp-pill-attention',
     eventName: 'codex-panel:show',
   },
   opencode: {
@@ -35,12 +43,29 @@ const PROVIDERS = {
     automationKeyPrefix: 'opencode-v2-automations',
     v2Plain: true,
     windowScopedPlain: true,
+    // The sessions that were working when the panel last saw them (ocp-v2-panel.js STOR_BUSY).
+    busyKeyPrefix: 'opencode-v2-busy',
     legacyV1Prefix: 'synabun-ocp-tabs',
     legacyV1CleanupFlag: 'opencode-v1-cleanup-done',
-    pillClass: 'ocp-session-pill',
+    // The v2 panel's own pill (the v1 panel and its ocp-session-pill styles are gone), so a
+    // working placeholder wears ocpv2-pill-running like the real one.
+    pillClass: 'ocpv2-session-pill',
     eventName: 'opencode-panel:show',
   },
 };
+
+// How each panel boots without showing itself, and whether it should: OpenCode only
+// while its server runs (a SynaBun restart stopped every turn, and booting would
+// start the server again just to hear that).
+const BOOT_HIDDEN = {
+  claude: { boot: () => bootClaudePanel() },
+  codex: { boot: () => bootCodexPanel() },
+  opencode: {
+    boot: () => bootOpencodePanel(),
+    ready: async () => (await (await fetch('/api/opencode-v2/status')).json())?.running === true,
+  },
+};
+const _bootedHidden = new Set();
 
 const _loadedProviders = new Set();
 let _initialized = false;
@@ -147,8 +172,16 @@ function tabId(provider, tab, index) {
   return `${provider}-${index}`;
 }
 
+// Working when it was saved: a turn (or, in Codex, a thread being made), or, in Claude, background agents
+// and shells its turn left running (`backgroundWork`, their count: the real pill's tabWorking).
 function isRunning(tab) {
-  return !!(tab.running || tab.startingThread);
+  return !!(tab.running || tab.startingThread || Number(tab.backgroundWork) > 0);
+}
+
+// Waiting on the user when it was saved (Claude, Codex: `needsYou`): its placeholder says so before it says
+// working, and the panel boots to ask, as for a working tab (the reattach brings the card back).
+function needsYou(tab) {
+  return tab.needsYou === true;
 }
 
 function isForeignActiveAutomation(tab) {
@@ -168,6 +201,10 @@ function readPayload(key, meta = null) {
       const automationBySession = new Map((Array.isArray(automationRows) ? automationRows : [])
         .filter((row) => row?.sessionId && row?.runId)
         .map((row) => [row.sessionId, row]));
+      const busyRows = windowId && meta.busyKeyPrefix
+        ? parseJson(storage.getItem(`${meta.busyKeyPrefix}-${windowId}`), [])
+        : [];
+      const busy = new Set(Array.isArray(busyRows) ? busyRows : []);
       const tabs = arr
         .filter((s) => typeof s === 'string' && s)
         .map((sid) => {
@@ -177,7 +214,8 @@ function readPayload(key, meta = null) {
             automationRunId: automation?.runId || null,
             automationActive: !!automation?.running,
             automationOwnerId: automation?.ownerId || null,
-            running: !!automation?.running,
+            // An automation's pill follows its turn: a warm worker saved between turns ('idle') rests.
+            running: (!!automation?.running && automation.turn !== 'idle') || busy.has(sid),
           };
         });
       if (!tabs.length) return null;
@@ -492,7 +530,9 @@ function createPlaceholder(provider, payload, tab, index) {
     <span class="term-minimized-pill-label">${esc(tabLabel(provider, tab))}</span>
     <button class="term-minimized-pill-close" data-tooltip="Close" data-tooltip-pos="top">&times;</button>
   `;
-  pill.classList.toggle(`${meta.pillClass.replace('-session-pill', '')}-pill-running`, isRunning(tab));
+  const waiting = !!meta.attentionClass && needsYou(tab);
+  if (meta.attentionClass) pill.classList.toggle(meta.attentionClass, waiting);
+  pill.classList.toggle(`${meta.pillClass.replace('-session-pill', '')}-pill-running`, !waiting && isRunning(tab));
   pill.dataset.sourceKey = payload.key || '';
   pill.addEventListener('click', () => openProvider(provider, id, payload.key));
   pill.querySelector('.term-minimized-pill-close')?.addEventListener('click', (event) => {
@@ -517,6 +557,40 @@ function createPlaceholder(provider, payload, tab, index) {
   return pill;
 }
 
+/**
+ * Whether a provider's panel should boot, hidden, to ask after its tabs: one of this window's own
+ * saved tabs (the ones its restore brings back; never another window's, which a click migrates)
+ * was working when it was saved. Pure: `pills` is meaningfulPills(), `currentKey` this window's key.
+ */
+export function placeholdersNeedBoot(pills, currentKey) {
+  return (Array.isArray(pills) ? pills : [])
+    .some(({ payload, tab }) => payload?.key === currentKey && (isRunning(tab) || needsYou(tab)));
+}
+
+/**
+ * What the tabs a window of `provider` saved were doing then, read as the placeholders read them:
+ * 'action' when one waited on the user (needsYou), 'working' when one worked, else 'idle'. A detached
+ * session window's pill says it before the window loads (ui-sidepanel-sessions.js).
+ */
+export function savedTabsStatus(provider, windowId) {
+  const meta = PROVIDERS[provider];
+  if (!meta || !windowId) return 'idle';
+  const tabs = readPayload(`${meta.tabsKeyPrefix}-${windowId}`, meta)?.tabs || [];
+  if (tabs.some((tab) => needsYou(tab))) return 'action';
+  return tabs.some((tab) => isRunning(tab)) ? 'working' : 'idle';
+}
+
+function bootHiddenIfWorking(provider, pills) {
+  const meta = PROVIDERS[provider];
+  const entry = BOOT_HIDDEN[provider];
+  if (!meta || !entry || _bootedHidden.has(provider) || _loadedProviders.has(provider)) return;
+  if (!placeholdersNeedBoot(pills, scopedTabsKey(meta))) return;
+  _bootedHidden.add(provider);
+  Promise.resolve(entry.ready ? entry.ready() : true)
+    .then((ok) => (ok ? entry.boot() : null))
+    .catch((err) => console.warn(`[sidepanel-tray] ${provider}: could not boot to ask after its working tabs`, err));
+}
+
 export function renderSidepanelTrayPlaceholders() {
   for (const provider of Object.keys(PROVIDERS)) {
     if (_loadedProviders.has(provider)) {
@@ -524,9 +598,11 @@ export function renderSidepanelTrayPlaceholders() {
       continue;
     }
     removePlaceholders(provider);
-    for (const { payload, tab, index } of meaningfulPills(provider)) {
+    const pills = meaningfulPills(provider);
+    for (const { payload, tab, index } of pills) {
       createPlaceholder(provider, payload, tab, index);
     }
+    bootHiddenIfWorking(provider, pills);
   }
 }
 

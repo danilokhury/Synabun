@@ -29,6 +29,7 @@ import {
 import { getHiddenModels, HIDDEN_MODELS_EVENT, hiddenModelMatch } from '../ocp-hidden-models.js';
 import { getProviderMeta } from '../provider-icons.js';
 import { on } from '../state.js';
+import { registerLaunchPrefetch } from '../launch-prefetch.js';
 import { fetchAssistantCatalog, fetchProjects, patchClaudeAccount, patchCodexAccount, setClaudeWorkerAccount, setCodexWorkerAccount } from './asst-api.js';
 import { accountBadge, accountIdentity, accountName, accountText } from '../account-view.js';
 import { autoAccountLabel } from '../account-usage.js';
@@ -54,6 +55,9 @@ import {
 } from './asst-state.js';
 
 let _projectsCache = null;
+// Providers whose field menus have everything they read loaded once (models, catalog, accounts or agents,
+// presets, projects): their menus open from it at once and read it again in the background.
+const _warmProviders = new Set();
 
 /** SynaBun's registered projects as the last load saw them ([{ path, label }]; [] before the first). */
 export function cachedProjects() { return _projectsCache || []; }
@@ -321,10 +325,40 @@ export async function loadModelCatalog({ force = false } = {}) {
     // while it loaded: the next open asks again.
     _catalogAt = remote && epoch === _catalogEpoch ? Date.now() : 0;
     _catalogPartial = !remote;
+    if (_catalogAt) keepCatalog(out, sets);
     return out;
   })().finally(() => { _catalogLoading = null; });
   return _catalogLoading;
 }
+
+// The last complete catalog is also kept in sessionStorage (this tab only): after a reload the model menus
+// paint from it at once. Read back, it is due: the first load asks the server again.
+const CATALOG_STORE_KEY = 'synabun:assistant-model-catalog:v1';
+function keepCatalog(catalog, sets) {
+  try {
+    if (typeof sessionStorage === 'undefined') return;
+    const hidden = {};
+    for (const provider of PROVIDERS) hidden[provider] = [...(sets?.[provider] || [])];
+    const rowOnly = {};
+    for (const provider of PROVIDERS) rowOnly[provider] = [...(sets?.rowOnly?.[provider] || [])];
+    sessionStorage.setItem(CATALOG_STORE_KEY, JSON.stringify({ catalog, hidden, rowOnly }));
+  } catch { /* full or unavailable */ }
+}
+(() => {
+  try {
+    if (typeof sessionStorage === 'undefined' || _catalog) return;
+    const kept = JSON.parse(sessionStorage.getItem(CATALOG_STORE_KEY) || 'null');
+    if (!kept?.catalog || typeof kept.catalog !== 'object') return;
+    _catalog = kept.catalog;
+    _catalogAt = 0;
+    const sets = { rowOnly: {} };
+    for (const provider of PROVIDERS) {
+      sets[provider] = new Set(Array.isArray(kept.hidden?.[provider]) ? kept.hidden[provider] : []);
+      sets.rowOnly[provider] = new Set(Array.isArray(kept.rowOnly?.[provider]) ? kept.rowOnly[provider] : []);
+    }
+    _hidden = sets;
+  } catch { /* unreadable: the first load builds it */ }
+})();
 
 /** The last loadModelCatalog() result, synchronously (null before the first load). */
 export function cachedModelCatalog() { return _catalog; }
@@ -346,6 +380,8 @@ export function invalidateModelCatalog() {
   _catalogAt = 0;
   _catalogPartial = false;
   _catalogEpoch += 1;
+  // A reload must not paint the lists this replaced.
+  try { if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem(CATALOG_STORE_KEY); } catch { /* unavailable */ }
 }
 
 /**
@@ -366,6 +402,15 @@ function modelListsChanged() {
   for (const listener of [..._catalogListeners]) {
     try { listener(); } catch { /* a listener's failure is its own */ }
   }
+  scheduleCatalogReload();
+}
+
+// In a page: the new lists are read right away, so the next menu opens from them (an open that comes
+// first joins this read).
+let _catalogReloadTimer = null;
+function scheduleCatalogReload() {
+  if (typeof document === 'undefined' || _catalogReloadTimer) return;
+  _catalogReloadTimer = setTimeout(() => { _catalogReloadTimer = null; loadModelCatalog().catch(() => {}); }, 250);
 }
 
 /**
@@ -396,6 +441,12 @@ if (typeof document !== 'undefined') {
 on('sync:opencode:hidden-models-changed', modelListsChanged);
 on('sync:assistant:hidden-models-changed', modelListsChanged);
 on('sync:assistant:catalog-changed', modelListsChanged);
+
+// Launch: the menus' lists are read once the page has painted, so the first model menu opens from them.
+if (typeof document !== 'undefined') {
+  registerLaunchPrefetch('assistant-model-catalog', () => loadModelCatalog(), { order: 10, owner: true });
+  registerLaunchPrefetch('assistant-accounts', () => Promise.allSettled([fetchClaudeAccounts(), fetchCodexAccounts(), fetchMcpProfilePresets(), fetchOpencodeAgents()]), { order: 14, owner: true });
+}
 
 function sameModel(selected, m) {
   if (!selected) return false;
@@ -435,74 +486,28 @@ export async function openModelMenu(anchor, opts = {}) {
   if (!anchor) return null;
   const tr = tf(t);
   const b = normalizeBrain(brain);
-  anchor.setAttribute('aria-busy', 'true');
-  // Open immediately: a slow provider still has a visible, cancellable state.
-  const loading = opts.routingEditor ? openMenu(anchor, {
-    title, className: 'asst-model-menu asst-route-model-menu',
-    items: [{ kind: 'info', label: tr('assistant.routes.editorState.loadingModels', 'Loading models…') }],
-    width: 380, zIndex: opts.zIndex ?? null, repositionOnResize: true,
-  }) : null;
-  if (loading) loading.el.setAttribute('aria-busy', 'true');
-  if (loading) { loading.el.setAttribute('role', 'dialog'); anchor.setAttribute('aria-haspopup', 'dialog'); }
+  // The kept catalog paints the menu at once (it is read again in the background below, and an open menu
+  // follows it in place); only a first open, or a reload the user asked for, waits for the lists.
+  const kept = opts.forceReload === true ? null : cachedModelCatalog();
   let catalog = {};
   let failed = false;
-  try { catalog = await loadModelCatalog({ force: opts.forceReload === true }); } catch { failed = true; } finally { anchor.removeAttribute('aria-busy'); }
-  if (!anchor.isConnected || (loading && currentMenu() !== loading.el)) return null;
-  const metadata = modelCatalogStatus();
-  const items = [];
-  if (Array.isArray(opts.accountItems) && opts.accountItems.length) {
-    items.push({ kind: 'header', label: opts.accountTitle || tr('assistant.brain.account', 'Account profile') }, ...opts.accountItems, { kind: 'separator' });
+  let loading = null;
+  if (kept) {
+    catalog = kept;
+  } else {
+    anchor.setAttribute('aria-busy', 'true');
+    // Open immediately: a slow provider still has a visible, cancellable state.
+    loading = opts.routingEditor ? openMenu(anchor, {
+      title, className: 'asst-model-menu asst-route-model-menu',
+      items: [{ kind: 'info', label: tr('assistant.routes.editorState.loadingModels', 'Loading models…') }],
+      width: 380, zIndex: opts.zIndex ?? null, repositionOnResize: true,
+    }) : null;
+    if (loading) loading.el.setAttribute('aria-busy', 'true');
+    if (loading) { loading.el.setAttribute('role', 'dialog'); anchor.setAttribute('aria-haspopup', 'dialog'); }
+    try { catalog = await loadModelCatalog({ force: opts.forceReload === true }); } catch { failed = true; } finally { anchor.removeAttribute('aria-busy'); }
+    if (!anchor.isConnected || (loading && currentMenu() !== loading.el)) return null;
   }
-  if (includeHere) {
-    items.push({ kind: 'radio', id: '__here', label: hereLabel || tr('assistant.routes.brainDecides', 'Let the brain decide'), selected: !current, onSelect: () => onSelect?.({ here: true }) });
-  }
-  const list = Array.isArray(providers) && providers.length ? PROVIDERS.filter(p => providers.includes(p)) : PROVIDERS;
-  let listed = 0;
-  for (const provider of list) {
-    const models = (catalog[provider] || []).filter(m => typeof accept !== 'function' || accept(provider, m));
-    if (!models.length && !opts.routingEditor) continue;
-    listed += models.length;
-    const meta = getProviderMeta(provider);
-    const hiddenCount = metadata.hiddenCounts[provider] || 0;
-    const note = opts.routingEditor ? tr('assistant.routes.menu.hiddenCount', '{count} hidden in Models', { count: hiddenCount }) : warnSwitch && provider !== b.provider ? tr('assistant.brain.newConversation', 'starts a new conversation') : '';
-    items.push({ kind: 'header', label: meta.label, icon: meta.icon, color: meta.color, note });
-    for (const m of models) {
-      items.push({
-        kind: 'radio',
-        id: `${provider}:${m.id}`,
-        label: m.label,
-        desc: modelDesc(m, tr, opts.routingEditor),
-        title: `${m.label || m.id} · ${m.id}`,
-        tag: tierTag(m, tr),
-        keywords: `${meta.label} ${m.id}`,
-        selected: !!current && current.provider === provider && sameModel(current.model, m),
-        onSelect: () => onSelect?.({ provider, model: m.id, label: m.label, tier: m.tier || null, vision: m.vision ?? null, outputs: m.outputs || null, efforts: m.efforts || null, price: m.price || null }),
-      });
-    }
-    if (opts.routingEditor && !models.length) items.push({ kind: 'info', label: typeof accept === 'function' ? tr('assistant.routes.menu.noCompatible', 'No compatible models shown for this provider.') : tr('assistant.routes.menu.providerEmpty', 'No models shown for this provider.') });
-  }
-  // Nothing passes the filter (e.g. no model makes video yet): say so instead of an empty list.
-  if (!listed && typeof accept === 'function' && emptyLabel) items.push({ kind: 'info', label: emptyLabel });
-  if (opts.routingEditor && !listed && typeof accept !== 'function') items.push({ kind: 'info', label: tr('assistant.routes.editorState.modelsEmpty', 'No models are available. Check Models or connect a provider, then reload.') });
-  if (allowCustom) {
-    items.push({ kind: 'separator' });
-    items.push({
-      kind: 'input',
-      placeholder: tr('assistant.brain.modelCustom', 'Custom model id…'),
-      onSubmit: (v) => {
-        const provider = current?.provider || b.provider;
-        const disabled = hiddenModelFor(provider, v);
-        if (disabled) {
-          onToast?.(tr('assistant.brain.modelDisabled', "{model} is disabled in the Assistant's Models list.", { model: disabled }));
-          return;
-        }
-        onSelect?.({ provider, model: v, label: modelShortName(v), custom: true });
-      },
-    });
-  }
-  if (!opts.routingEditor && typeof opts.onManageModels === 'function') {
-    items.push({ id: '__manage_models', label: tr('assistant.models.manage', 'Manage models…'), onSelect: () => opts.onManageModels() });
-  }
+  const items = buildModelMenuItems(catalog);
   const menu = openMenu(anchor, {
     title: title || tr('assistant.brain.model', 'Model'),
     items,
@@ -516,7 +521,79 @@ export async function openModelMenu(anchor, opts = {}) {
     repositionOnResize: true,
     filterEmptyLabel: tr('assistant.routes.menu.noMatches', 'No matching models. Check Models for hidden choices.'),
   });
-  if (opts.routingEditor && menu) {
+  if (opts.routingEditor && menu) decorateRouteMenu(menu, failed);
+  // Painted from the kept catalog: read it again (fresh within its minute, else a background request) and
+  // redraw the open menu in place when the lists changed, leaving the filter, the scroll and the focus alone.
+  if (kept && menu && !opts.routingEditor) {
+    loadModelCatalog().then((next) => {
+      if (!next || next === kept || currentMenu() !== menu.el || !anchor.isConnected) return;
+      const nextItems = buildModelMenuItems(next);
+      if (menuItemsSignature(nextItems) !== menuItemsSignature(items)) menu.update({ items: nextItems, keepPlace: true });
+    }).catch(() => { /* the kept list stays */ });
+  }
+  return menu;
+
+  function buildModelMenuItems(catalog) {
+    const metadata = modelCatalogStatus();
+    const items = [];
+    if (Array.isArray(opts.accountItems) && opts.accountItems.length) {
+      items.push({ kind: 'header', label: opts.accountTitle || tr('assistant.brain.account', 'Account profile') }, ...opts.accountItems, { kind: 'separator' });
+    }
+    if (includeHere) {
+      items.push({ kind: 'radio', id: '__here', label: hereLabel || tr('assistant.routes.brainDecides', 'Let the brain decide'), selected: !current, onSelect: () => onSelect?.({ here: true }) });
+    }
+    const list = Array.isArray(providers) && providers.length ? PROVIDERS.filter(p => providers.includes(p)) : PROVIDERS;
+    let listed = 0;
+    for (const provider of list) {
+      const models = (catalog[provider] || []).filter(m => typeof accept !== 'function' || accept(provider, m));
+      if (!models.length && !opts.routingEditor) continue;
+      listed += models.length;
+      const meta = getProviderMeta(provider);
+      const hiddenCount = metadata.hiddenCounts[provider] || 0;
+      const note = opts.routingEditor ? tr('assistant.routes.menu.hiddenCount', '{count} hidden in Models', { count: hiddenCount }) : warnSwitch && provider !== b.provider ? tr('assistant.brain.newConversation', 'starts a new conversation') : '';
+      items.push({ kind: 'header', label: meta.label, icon: meta.icon, color: meta.color, note });
+      for (const m of models) {
+        items.push({
+          kind: 'radio',
+          id: `${provider}:${m.id}`,
+          label: m.label,
+          desc: modelDesc(m, tr, opts.routingEditor),
+          title: `${m.label || m.id} · ${m.id}`,
+          tag: tierTag(m, tr),
+          keywords: `${meta.label} ${m.id}`,
+          selected: !!current && current.provider === provider && sameModel(current.model, m),
+          onSelect: () => onSelect?.({ provider, model: m.id, label: m.label, tier: m.tier || null, vision: m.vision ?? null, outputs: m.outputs || null, efforts: m.efforts || null, price: m.price || null }),
+        });
+      }
+      if (opts.routingEditor && !models.length) items.push({ kind: 'info', label: typeof accept === 'function' ? tr('assistant.routes.menu.noCompatible', 'No compatible models shown for this provider.') : tr('assistant.routes.menu.providerEmpty', 'No models shown for this provider.') });
+    }
+    // Nothing passes the filter (e.g. no model makes video yet): say so instead of an empty list.
+    if (!listed && typeof accept === 'function' && emptyLabel) items.push({ kind: 'info', label: emptyLabel });
+    if (opts.routingEditor && !listed && typeof accept !== 'function') items.push({ kind: 'info', label: tr('assistant.routes.editorState.modelsEmpty', 'No models are available. Check Models or connect a provider, then reload.') });
+    if (allowCustom) {
+      items.push({ kind: 'separator' });
+      items.push({
+        kind: 'input',
+        placeholder: tr('assistant.brain.modelCustom', 'Custom model id…'),
+        onSubmit: (v) => {
+          const provider = current?.provider || b.provider;
+          const disabled = hiddenModelFor(provider, v);
+          if (disabled) {
+            onToast?.(tr('assistant.brain.modelDisabled', "{model} is disabled in the Assistant's Models list.", { model: disabled }));
+            return;
+          }
+          onSelect?.({ provider, model: v, label: modelShortName(v), custom: true });
+        },
+      });
+    }
+    if (!opts.routingEditor && typeof opts.onManageModels === 'function') {
+      items.push({ id: '__manage_models', label: tr('assistant.models.manage', 'Manage models…'), onSelect: () => opts.onManageModels() });
+    }
+    return items;
+  }
+
+  function decorateRouteMenu(menu, failed) {
+    const metadata = modelCatalogStatus();
     // Search and a custom-id input belong to a dialog; choices are a radio group.
     // A menu role cannot contain these form fields or recovery buttons.
     menu.el.setAttribute('role', 'dialog');
@@ -546,7 +623,11 @@ export async function openModelMenu(anchor, opts = {}) {
     }
     menu.el.append(footer); menu.reposition();
   }
-  return menu;
+}
+
+/** What a model menu lists, for telling a fresher read from the one on screen. */
+function menuItemsSignature(items) {
+  return JSON.stringify((items || []).map((item) => [item.kind || '', item.id ?? '', item.label || '', item.desc || '', item.tag || '', item.note || '', !!item.selected]));
 }
 
 // ── Picker ──────────────────────────────────────────────────────────────────
@@ -968,6 +1049,7 @@ export function createBrainPicker(host, hooks = {}) {
       }).catch(() => { _projectsCache = _projectsCache || []; }));
     }
     await Promise.allSettled(jobs);
+    if (cachedModelCatalog()) _warmProviders.add(provider);
   }
 
   async function refresh(force = false) {
@@ -999,7 +1081,11 @@ export function createBrainPicker(host, hooks = {}) {
     const anchor = anchorFor(field, anchorOverride);
     const brain = currentBrain();
     if (field === 'model') {
-      if (ACCOUNT_PROVIDERS.has(brain.provider)) await ensureLoaded(brain.provider);
+      // The account rows come from the kept lists; they are read again in the background once loaded.
+      if (ACCOUNT_PROVIDERS.has(brain.provider)) {
+        if (_warmProviders.has(brain.provider)) ensureLoaded(brain.provider).catch(() => {});
+        else await ensureLoaded(brain.provider);
+      }
       await openModelMenu(anchor, {
         brain,
         t: hooks.t,
@@ -1034,12 +1120,48 @@ export function createBrainPicker(host, hooks = {}) {
       });
       return;
     }
-    // Everything else needs the provider catalog — load it lazily on first open.
-    anchor.setAttribute('aria-busy', 'true');
-    try { await ensureLoaded(brain.provider); } finally { anchor.removeAttribute('aria-busy'); }
-    if (destroyed || !anchor.isConnected) return;
-    const menu = (title, items, extra = {}) => openMenu(anchor, { title, items, placement, role: 'menu', ...extra });
+    // The account menu reads the kept rows and asks again by itself (asst-account-menu.js).
+    if (field === 'account') {
+      if (!ACCOUNT_PROVIDERS.has(brain.provider)) return;
+      if (!_warmProviders.has(brain.provider)) {
+        anchor.setAttribute('aria-busy', 'true');
+        try { await ensureLoaded(brain.provider); } finally { anchor.removeAttribute('aria-busy'); }
+        if (destroyed || !anchor.isConnected) return;
+      } else {
+        ensureLoaded(brain.provider).catch(() => {});
+      }
+      // Kept inside the panel that holds the anchor (the sidepanel, or the tab's own root).
+      openAccountMenu(anchor, accountMenu(brain, anchor.closest?.('.assistant-panel') || anchor.closest?.('.asst-root') || null));
+      return;
+    }
+    // Everything else needs the provider catalog — load it lazily on first open. Once it is loaded the menu
+    // opens from what is kept, the lists are read again in the background, and an open menu they change is
+    // redrawn in place (the filter, the scroll and the focus stay).
+    const warm = _warmProviders.has(brain.provider);
+    if (!warm) {
+      anchor.setAttribute('aria-busy', 'true');
+      try { await ensureLoaded(brain.provider); } finally { anchor.removeAttribute('aria-busy'); }
+      if (destroyed || !anchor.isConnected) return;
+    }
+    let shown = null;
+    drawField(field, brain, (title, items, extra = {}) => {
+      const opened = openMenu(anchor, { title, items, placement, role: 'menu', ...extra });
+      shown = opened ? { opened, items } : null;
+      return opened;
+    }, { anchor, restoreFocus });
+    if (warm && shown) {
+      ensureLoaded(brain.provider).then(() => {
+        if (destroyed || !shown || currentMenu() !== shown.opened.el || !anchor.isConnected) return;
+        let fresh = null;
+        drawField(field, currentBrain(), (_title, items) => { fresh = items; return null; }, { anchor, restoreFocus });
+        if (fresh && menuItemsSignature(fresh) !== menuItemsSignature(shown.items)) shown.opened.update({ items: fresh, keepPlace: true });
+      }).catch(() => {});
+    }
+  }
 
+  // The menu of one field, from the lists as they are kept now: `menu(title, items, extra)` opens it (or, for a
+  // redraw, only takes the items).
+  function drawField(field, brain, menu, { anchor, restoreFocus = false } = {}) {
     if (field === 'effort') {
       if (brain.provider === 'opencode') {
         const agents = getCachedOpencodeAgents();
@@ -1067,13 +1189,6 @@ export function createBrainPicker(host, hooks = {}) {
         selected: (e.id === 'off' ? !brain.effort : e.id === brain.effort),
         onSelect: () => commit({ effort: e.id === 'off' ? null : e.id }, 'variant'),
       })));
-      return;
-    }
-
-    if (field === 'account') {
-      if (!ACCOUNT_PROVIDERS.has(brain.provider)) return;
-      // Kept inside the panel that holds the anchor (the sidepanel, or the tab's own root).
-      openAccountMenu(anchor, accountMenu(brain, anchor.closest?.('.assistant-panel') || anchor.closest?.('.asst-root') || null));
       return;
     }
 

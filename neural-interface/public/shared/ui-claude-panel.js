@@ -24,6 +24,7 @@ import { requestGeneratedSessionTitle } from './session-title.js';
 import { wireFileLinks } from './ui-file-links.js';
 import { WORKER_END_CLASS, backToAssistant, buildWorkerEndCard, endWorkerRunOnClose, forgetWorkerEnd, trackWorkerEnd, updateWorkerEndBusy } from './ui-worker-end.js';
 import { isDispatchedRun, isEndOfRunAbort } from './worker-end.js';
+import { runAwaitsAnswer } from './sidepanel-session-status.js';
 // ── cp/ feature modules (SDK-engine CLI parity: diffs, agents, bash, perms, statusline) ──
 import { setCpCtx } from './cp/cp-ctx.js';
 import { buildDiffCard, buildDiffPreviewEl, finalizeDiffCard } from './cp/cp-diff.js';
@@ -46,7 +47,8 @@ import { historyHasResultSupport, historyResultsNotice, snapshotWantsResults, fu
 import { CP_STYLES } from './cp/cp-styles.js';
 import { TEMPORARY_CAPABILITY, keepsNothing, chooseTemporary, applyTemporary, temporaryRefusal, endTemporary, leaveTemporary, tabAfterTemporary, persistableTabs, temporaryBlocks, reattaches } from './cp/cp-temporary.js';
 import { paintTemporary } from './cp/cp-temporary-view.js';
-import { renderMarkdown, scrubStoredHtml } from './cp/cp-markdown.js';
+import { renderMarkdown } from './cp/cp-markdown.js';
+import { sanitizeStoredHtml } from './assistant/asst-sanitize.js';
 import { escapeHtml, classToken } from './cp/cp-markdown.js';
 import { rehydrateStoredTranscript } from './cp/cp-rehydrate.js';
 import { compactHolds, compactQueue, isCompactCommand, newConversation, nextQueued, ownsQueued, queuedRefusal, restoredQueue, QUEUED_REFUSAL_LINES } from './cp/cp-compose.js';
@@ -178,7 +180,7 @@ let _cliBanner = null;
 let _marked = null;
 (async () => {
   try {
-    const m = await import('https://cdn.jsdelivr.net/npm/marked@14/lib/marked.esm.js').catch(() => null);
+    const m = await import('/vendor/marked/marked-14.1.4.esm.js').catch(() => null);
     if (m) {
       _marked = m.marked || m.default;
       if (_marked?.setOptions) _marked.setOptions({ breaks: true, gfm: true });
@@ -2338,6 +2340,11 @@ function injectStyles() {
     .cp-session-pill.cp-pill-running .term-minimized-pill-icon { color: rgba(212, 162, 127, 1); }
     .cp-session-pill:hover .term-minimized-pill-icon { color: rgba(212, 162, 127, 0.85); }
     .cp-session-pill .term-minimized-pill-icon svg { width: 12px; height: 12px; }
+    /* A session that waits on you (a permission, a plan, an MCP server's request, a question): the
+       warn hairline and mark of the Assistant's and a detached window's pills, in place of the
+       working look (paintPillState). */
+    .cp-session-pill.cp-pill-attention { border-color: color-mix(in srgb, var(--accent-orange, #FFB74D) 42%, transparent); }
+    .cp-session-pill.cp-pill-attention .term-minimized-pill-icon { color: var(--accent-orange, #FFB74D); }
     .cp-session-pill.cp-pill-enter {
       animation: cp-pill-pop-in 0.25s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
     }
@@ -2909,6 +2916,7 @@ function newTabState(sessionId = null, label = 'New chat', id = null) {
     mcpServers: [],           // from system/init + mcp_status events
     automationRunId: null,
     automationActive: false,
+    automationAwaits: false,  // the run's turn ended asking the user (runAwaitsAnswer): its pill needs you
     automationOwnerId: null,
     releasedRunId: null,      // the ended run this tab showed before the user continued it by hand
   };
@@ -3201,6 +3209,9 @@ function _createTrayPill(tab) {
     if (idx >= 0) closeTab(idx);
   });
   pill.style.display = 'none'; // Hidden by default; renderPills() controls visibility
+  // A pill made after the tab started working (a tray that was not there yet) starts out working too,
+  // or needing you.
+  paintPillState(pill, tab);
   tray.appendChild(pill);
   return pill;
 }
@@ -3220,8 +3231,10 @@ function _renderPillsNow() {
   const panelOpen = _visible;
   for (let i = 0; i < _tabs.length; i++) {
     const tab = _tabs[i];
-    if (!tab.pillEl) tab.pillEl = _createTrayPill(tab);
+    if (!tab.pillEl?.isConnected) tab.pillEl = _createTrayPill(tab);
     if (!tab.pillEl) continue;
+    // Every pass says it again: a re-render never leaves a working tab's pill idle.
+    paintPillState(tab.pillEl, tab);
     const isActive = i === activeIdx;
     const shouldShow = !isActive || !panelOpen;
     const wasHidden = tab.pillEl.style.display === 'none';
@@ -3247,15 +3260,52 @@ function updatePillLabel(tab) {
   if (lbl) lbl.textContent = tab.label;
 }
 
+/**
+ * A tab works while its turn runs, and also once the turn ended while background work it started
+ * still runs (agents, shells, workflows: the CLI's own live list, non-ambient, the statusline's count):
+ * the session reports back when they end, so its pill keeps moving, like their cards in the transcript.
+ */
+function tabWorking(tab) {
+  return !!tab?.running || (Array.isArray(tab?.backgroundWork) && tab.backgroundWork.length > 0);
+}
+
+/**
+ * A tab needs you while its session waits on your answer: a permission, a plan approval or an MCP
+ * server's request (the card on screen, and the ones queued behind it), or a question; and, for a
+ * dispatched worker, while its turn ended asking you something (the run's outcome: automationAwaits).
+ */
+function tabNeedsYou(tab) {
+  return !!(tab?._activePerm || tab?._permQueue?.length || tab?.pendingAskRequestId || tab?.automationAwaits);
+}
+
+/** What a tab's pill says: it needs you > it works > it rests (read for a detached window's pill too). */
+function paintPillState(pill, tab) {
+  const needsYou = tabNeedsYou(tab);
+  pill.classList.toggle('cp-pill-attention', needsYou);
+  pill.classList.toggle('cp-pill-running', !needsYou && tabWorking(tab));
+}
+
+// Whether each tab was saved needing you: a change is written at once, for the placeholder a reload
+// shows and the pill of a detached window that has not loaded yet (ui-sidepanel-tray.js).
+const _needsYouSaved = new WeakMap();
 function updatePillRunning(tab) {
-  if (tab.pillEl) tab.pillEl.classList.toggle('cp-pill-running', tab.running);
+  if (tab.pillEl) paintPillState(tab.pillEl, tab);
+  const needsYou = tabNeedsYou(tab);
+  if ((_needsYouSaved.get(tab) || false) === needsYou) return;
+  _needsYouSaved.set(tab, needsYou);
+  saveTabs();
 }
 
 function saveTabs() {
   try {
     // A temporary tab is never written: not the tab, its label, its queue or its session id.
+    // `backgroundWork`: how many background agents and shells it still ran (tabWorking). A tab whose turn
+    // ended while they run is working too: after a reload its placeholder says so and the panel loads to ask
+    // (ui-sidepanel-tray.js). Never restored: the reattach's live list says what still runs. `needsYou`:
+    // a permission or a question waited on the user (tabNeedsYou): its placeholder says so and the panel
+    // loads to ask, and the reattach brings the card back.
     const kept = persistableTabs(_tabs, _activeTabIdx);
-    const localTabs = kept.tabs.map(t => ({ id: t.id, sessionId: t.sessionId, label: t.label, titleState: t.titleState === 'generating' ? 'default' : (t.titleState || 'default'), sessionCost: t.sessionCost || 0, running: t.running || false, project: t.project || '', model: t.model || '', effort: t.effort || 'off', planMode: t.planMode || false, ...savedMode(t), toolPolicy: t.toolPolicy || 'full', accountId: t.accountId || '', session: normalizeSession(t.session), transcriptAt: t.transcriptAt || null, planFilePath: t.planFilePath || '', conversation: t.conversation || '', queue: t.queue || [], queuePaused: t.queuePaused || false, automationRunId: t.automationRunId || null, automationActive: !!t.automationActive, automationOwnerId: t.automationOwnerId || null, releasedRunId: t.releasedRunId || null }));
+    const localTabs = kept.tabs.map(t => ({ id: t.id, sessionId: t.sessionId, label: t.label, titleState: t.titleState === 'generating' ? 'default' : (t.titleState || 'default'), sessionCost: t.sessionCost || 0, running: t.running || false, backgroundWork: Array.isArray(t.backgroundWork) ? t.backgroundWork.length : 0, needsYou: tabNeedsYou(t), project: t.project || '', model: t.model || '', effort: t.effort || 'off', planMode: t.planMode || false, ...savedMode(t), toolPolicy: t.toolPolicy || 'full', accountId: t.accountId || '', session: normalizeSession(t.session), transcriptAt: t.transcriptAt || null, planFilePath: t.planFilePath || '', conversation: t.conversation || '', queue: t.queue || [], queuePaused: t.queuePaused || false, automationRunId: t.automationRunId || null, automationActive: !!t.automationActive, automationOwnerId: t.automationOwnerId || null, releasedRunId: t.releasedRunId || null }));
     const localRunIds = new Set(localTabs.map((tab) => tab.automationRunId).filter(Boolean));
     let foreignAutomationTabs = [];
     try {
@@ -4550,9 +4600,9 @@ function flushAllSessionSnapshots() {
 function renderStoredSession(snapshot, $msgs, tab) {
   const norm = _normalizeSnapshotEntry(snapshot);
   if (!norm || !$msgs) return false;
-  // A snapshot comes back from storage and may predate the sanitiser: nothing
-  // that can run or load code is put back (cp/cp-markdown.js).
-  $msgs.replaceChildren(scrubStoredHtml(norm.html));
+  // A snapshot comes back from storage and may predate the sanitiser: it is rebuilt
+  // from the stored-transcript allowlist every panel uses (asst-sanitize.js).
+  $msgs.replaceChildren(sanitizeStoredHtml(norm.html));
   // Restored DOM has no event handlers. Pending prompts (permission, plan, ask
   // cards) are stale and go, answered ones stay inert; the read-only actions
   // are wired again from what the markup saved: rewind (prompt uuid), the
@@ -5282,10 +5332,14 @@ function _setBackgroundWork(tab, tasks) {
   // reloaded while it ran) gets one, so /tasks can show and stop it.
   try { adoptLiveTasks(tab.tasks, tasks); } catch {}
   try { reconcileTasks(tab.tasks, tasks); } catch {}
+  const before = Array.isArray(tab.backgroundWork) ? tab.backgroundWork.length : 0;
   tab.backgroundWork = (Array.isArray(tasks) ? tasks : [])
     .filter(t => t && !t.ambient)
     .map(t => ({ id: t.task_id, type: t.task_type || '', description: t.description || '' }));
   if (tab === activeTab()) { try { renderStatusline(tab); } catch {} }
+  updatePillRunning(tab);
+  // Saved as it changes: a reload with only this left running loads the panel to ask (saveTabs).
+  if (tab.backgroundWork.length !== before) saveTabs();
 }
 
 function _processTabMsg(tab, msg) {
@@ -5343,6 +5397,7 @@ function _processTabMsg(tab, msg) {
       if (tab._pendingPlan?.requestId === msg.request_id) tab._pendingPlan = null;
       if (tab._activePerm) { tab._activePerm = false; _showNextPerm(tab); }
       else _flushMsgBuffer(tab);
+      updatePillRunning(tab);
       break;
     }
     case 'reattach_result': {
@@ -6885,6 +6940,7 @@ function sendAskAnswer(tab, questions, answers, annotations = null) {
   tab.pendingAskRequestId = null;
   tab.pendingAskToolUseId = null;
   tab.pendingAskBufferedAnswer = null;
+  updatePillRunning(tab); // answered: the pill no longer needs you
   // Flush BEFORE clearing askRenderedViaControl — buffered assistant events
   // must see the flag so buildAskFromToolUse returns a hidden placeholder
   // instead of rendering a duplicate card.
@@ -7400,6 +7456,7 @@ function handleControlRequest(tab, msg) {
   if (toolName === 'AskUserQuestion') {
     // AskUserQuestion: save the request_id — answer is sent via control_response when user picks an option
     tab.pendingAskRequestId = requestId;
+    updatePillRunning(tab); // the pill needs you
     // If tool_use block hasn't rendered the ask card yet, render from control_request input
     // Also check askRenderedViaControl to prevent duplicate cards from denial control_requests
     if (!tab.pendingAskToolUseId && !tab.askRenderedViaControl) {
@@ -8501,6 +8558,7 @@ function finishTab(tab, skipNotif) {
   if (tab.sessionId && tab._snapshotDirty) flushSessionSnapshotSave(tab);
   hideThinking(tab); setRunning(tab, false); tab._wasRunning = false; tab.currentMsgEl = null; tab.currentMsgId = null; tab.pendingAskToolUseId = null; tab.pendingAskRequestId = null; tab.pendingAskBufferedAnswer = null; tab.askRenderedViaControl = false; tab.sendStartedAt = null; tab._planContentCaptured = false; if (tab._stream?.mdTimer) clearTimeout(tab._stream.mdTimer); tab._stream = null;
   tab.currentActivity = null;
+  updatePillRunning(tab); // (its question went with the turn)
   if (tab === activeTab()) { try { renderStatusline(tab); } catch {} }
   if (tab.compacting) { tab.compacting = false; if (tab === activeTab()) _setCompactingUI(false); }
   tab._compactSentAt = 0; // a Compact the user started ends here too (cp-compose.js)
@@ -10347,6 +10405,14 @@ function applyClaudeVisibility(visible) {
 
 export function isClaudePanelOpen() { return _visible; }
 
+/**
+ * Boot the panel without showing it (ui-sidepanel-tray.js, when a tab saved while it worked comes back
+ * after a reload): its tabs reconnect and reattach, so their pills say what the sessions do now.
+ */
+export async function bootClaudePanel() {
+  await _ensureClaudePanelReady();
+}
+
 export function endHostedClaudeSessions() {
   while (_tabs.length) closeTab(_tabs.length - 1);
 }
@@ -10396,6 +10462,8 @@ export async function attachClaudeAutomation(run, { focus = !!run?.focus, isCanc
   tab.project = run.cwd || tab.project;
   tab.model = run.model || tab.model;
   tab.effort = run.effort || tab.effort;
+  // A warm worker whose turn ended on a question needs you, like one with a card up (setRunning repaints).
+  tab.automationAwaits = runAwaitsAnswer(run);
   setRunning(tab, running);
   updatePillLabel(tab);
   tab._automationIteration = run.currentIteration;

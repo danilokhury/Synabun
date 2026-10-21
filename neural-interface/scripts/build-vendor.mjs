@@ -1,11 +1,13 @@
 // One-shot vendor bundler — bundles xterm.js + addons into public/vendor/xterm/
 // as a version-stamped ESM file, and copies xterm.css alongside it; then the
-// parts of three.js the memory map uses into public/vendor/three/, and the
-// parts of CodeMirror 6 the code editor uses into public/vendor/codemirror/.
+// parts of three.js the memory map uses into public/vendor/three/, the
+// parts of CodeMirror 6 the code editor uses into public/vendor/codemirror/,
+// and the browser builds of marked and mermaid into public/vendor/marked/ and
+// public/vendor/mermaid/.
 // Run via `npm run build:vendor` (also wired into postinstall).
 import { build } from 'esbuild';
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, copyFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, unlinkSync, copyFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -138,3 +140,82 @@ if (codemirrorPackages.some((name) => !existsSync(packageJsonOf(name)))) {
   const bytes = outputs.reduce((sum, file) => sum + file.contents.length, 0);
   console.log(`vendored codemirror ${cmVersion} → public/vendor/codemirror/ (${outputs.length} files, ${(bytes / (1024 * 1024)).toFixed(2)} MB)`);
 }
+
+// marked (every Markdown sink of the panels), mermaid (the Skills preview's
+// diagrams), highlight.js (the Codex panel's code blocks) and html2canvas (the
+// card screenshot tool) are devDependencies too, and the same rule holds. They are copied,
+// not bundled: each package ships its own browser build, and that build is what
+// the pages loaded from a CDN before (marked@14 lib/marked.esm.js, mermaid@11
+// dist/mermaid.esm.min.mjs and the chunks it imports by relative path, html2canvas
+// 1.4.1 dist/html2canvas.min.js; highlight.js@11's stylesheet, beside the browser
+// build of the same version, which the highlight.js package itself does not ship:
+// @highlightjs/cdn-assets is its official one). The copy is those files, named after
+// the version, with the source-map comment taken off (no map ships), beside the
+// package's licence and a manifest.json naming the entry and any other file.
+const stripSourceMap = (text) => text.replace(/\n\/\/# sourceMappingURL=\S+\s*$/, '\n');
+
+function copyBuild(name, { pkg = name, entryFrom, entryName, chunksFrom = null, chunksTo = null, files = {}, license }) {
+  const pkgDir = join(root, 'node_modules', pkg);
+  if (!existsSync(join(pkgDir, 'package.json'))) {
+    console.log(`${pkg} is not installed — keeping the committed public/vendor/${name}/ copy`);
+    return;
+  }
+  const pkgVersion = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8')).version;
+  const dir = join(root, 'public', 'vendor', name);
+  const entry = entryName(pkgVersion);
+  const extra = Object.fromEntries(Object.entries(files).map(([key, [from, to]]) => [key, { from, to: to(pkgVersion) }]));
+  const keep = new Set([entry, license, 'manifest.json', ...Object.values(extra).map((file) => file.to)]);
+  mkdirSync(dir, { recursive: true });
+  // New files first, then the manifest, then stale files (the CodeMirror order).
+  if (chunksFrom) {
+    const source = join(pkgDir, chunksFrom);
+    const target = join(dir, chunksTo);
+    mkdirSync(target, { recursive: true });
+    for (const f of readdirSync(source).filter((f) => f.endsWith('.mjs'))) {
+      const text = readFileSync(join(source, f), 'utf8');
+      if (text.includes(entryFrom.split('/').pop())) throw new Error(`${name}: chunk ${f} imports the entry file`);
+      writeFileSync(join(target, f), stripSourceMap(text));
+      keep.add(`${chunksTo}/${f}`);
+    }
+  }
+  writeFileSync(join(dir, entry), stripSourceMap(readFileSync(join(pkgDir, entryFrom), 'utf8')));
+  for (const file of Object.values(extra)) writeFileSync(join(dir, file.to), stripSourceMap(readFileSync(join(pkgDir, file.from), 'utf8')));
+  copyFileSync(join(pkgDir, license), join(dir, license));
+  const named = Object.fromEntries(Object.entries(extra).map(([key, file]) => [key, file.to]));
+  writeFileSync(join(dir, 'manifest.json'), JSON.stringify({ version: pkgVersion, entry, ...named }, null, 2) + '\n');
+  // The folder is this step's own: any other file in it is a stale copy.
+  for (const f of readdirSync(dir)) {
+    if (!keep.has(f) && !statSync(join(dir, f)).isDirectory()) unlinkSync(join(dir, f));
+  }
+  if (chunksTo) {
+    for (const f of readdirSync(join(dir, chunksTo))) {
+      if (!keep.has(`${chunksTo}/${f}`)) unlinkSync(join(dir, chunksTo, f));
+    }
+  }
+  console.log(`vendored ${name} ${pkgVersion} → public/vendor/${name}/`);
+}
+
+copyBuild('marked', {
+  entryFrom: 'lib/marked.esm.js',
+  entryName: (v) => `marked-${v}.esm.js`,
+  license: 'LICENSE.md',
+});
+copyBuild('mermaid', {
+  entryFrom: 'dist/mermaid.esm.min.mjs',
+  entryName: (v) => `mermaid-${v}.esm.min.mjs`,
+  chunksFrom: 'dist/chunks/mermaid.esm.min',
+  chunksTo: 'chunks/mermaid.esm.min',
+  license: 'LICENSE',
+});
+copyBuild('highlight', {
+  pkg: '@highlightjs/cdn-assets',
+  entryFrom: 'highlight.min.js',
+  entryName: (v) => `highlight-${v}.min.js`,
+  files: { stylesheet: ['styles/github-dark-dimmed.min.css', (v) => `github-dark-dimmed-${v}.min.css`] },
+  license: 'LICENSE',
+});
+copyBuild('html2canvas', {
+  entryFrom: 'dist/html2canvas.min.js',
+  entryName: (v) => `html2canvas-${v}.min.js`,
+  license: 'LICENSE',
+});

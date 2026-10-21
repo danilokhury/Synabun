@@ -117,7 +117,8 @@ export function createChildPanel({
 
     // The chain of parents (replaces the session-menu dropdown — a sub-agent
     // panel has only one session). The first crumb is the session in the main
-    // panel; one after it is a sub-agent that has this one as its sub-agent.
+    // panel (the way back, on screen at every width); one after it is a
+    // sub-agent that has this one as its sub-agent.
     _crumbsEl = document.createElement('div');
     _crumbsEl.className = 'ocpv2-child-crumbs';
     header.appendChild(_crumbsEl);
@@ -361,10 +362,14 @@ export function createChildPanel({
       // (The first crumb keeps the class the single parent link had.)
       crumb.className = index ? 'ocpv2-child-crumb' : 'ocpv2-child-crumb ocpv2-child-parent-link';
       crumb.dataset.sessionId = String(parent.sessionId || '');
-      crumb.setAttribute('data-tooltip', index ? `Open sub-agent ${title}` : `Back to ${title}`);
+      // Named by what it does: in a narrow header the way back is its arrow alone.
+      const name = index ? `Open sub-agent ${title}` : `Back to ${title}`;
+      crumb.setAttribute('data-tooltip', name);
+      crumb.setAttribute('aria-label', name);
       if (!index) {
         const arrow = document.createElement('span');
         arrow.className = 'ocpv2-child-parent-arrow';
+        arrow.setAttribute('aria-hidden', 'true');
         arrow.textContent = '↳';
         crumb.appendChild(arrow);
       }

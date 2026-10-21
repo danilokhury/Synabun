@@ -39,14 +39,15 @@ export function createCapabilities() {
 /**
  * Send `payload` only when the server lists its type; otherwise resolve the
  * reply a failed request would have produced, without touching the socket.
+ * `options` go to `send` as they are (ocp-v2-ws.js: `turnOf`).
  */
-export function gatedRequest(caps, send, payload, timeoutMs) {
+export function gatedRequest(caps, send, payload, timeoutMs, options) {
   if (!caps.has(payload?.type)) {
     return Promise.resolve({
       type: `${payload?.type}:result`, ok: false, unsupported: true, status: 501, error: UNSUPPORTED_MESSAGE,
     });
   }
-  return send(payload, timeoutMs);
+  return options === undefined ? send(payload, timeoutMs) : send(payload, timeoutMs, options);
 }
 
 /** True when a reply is a failure: transport error, ok:false, or HTTP >= 400. */

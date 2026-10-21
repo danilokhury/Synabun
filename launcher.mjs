@@ -9,19 +9,25 @@
  *
  * Registered by lib/start-launcher.js; can also be run by hand:
  *   node launcher.mjs
+ *
+ * Start at login (Settings > App, neural-interface/lib/login-start.js) runs it
+ * with `--via=login --background`: the server starts with no window, and no
+ * page waits for a report.
  */
 
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { BEACON_LINGER_MS, runLauncher } from './lib/start-launcher.js';
+import { BEACON_LINGER_MS, parseLauncherArgs, runLauncher } from './lib/start-launcher.js';
 
 const packageRoot = dirname(fileURLToPath(import.meta.url));
 
 try {
   // The page that asked is offline and cannot ask a server how the start is
   // going: the launch reports itself on its beacon, and keeps a failure
-  // readable there for a moment.
-  const result = await runLauncher({ argv: process.argv.slice(2), packageRoot, beacon: true, lingerMs: BEACON_LINGER_MS });
+  // readable there for a moment. A start at login has no page.
+  const argv = process.argv.slice(2);
+  const login = parseLauncherArgs(argv).via === 'login';
+  const result = await runLauncher({ argv, packageRoot, beacon: !login, lingerMs: login ? 0 : BEACON_LINGER_MS });
   if (process.stdout.isTTY) {
     const said = {
       ignored: 'Nothing to do for that link.',

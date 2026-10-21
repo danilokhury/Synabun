@@ -12,7 +12,7 @@ import { updateMemory, deleteMemory, fetchMemory } from './api.js';
 import { KEYS } from './constants.js';
 import { storage } from './storage.js';
 import { catColor } from './colors.js';
-import { truncate, formatMemoryContent, exportMemoryAsMarkdown, rafThrottle } from './utils.js';
+import { truncate, formatMemoryContent, exportMemoryAsMarkdown, rafThrottle, escapeHtml } from './utils.js';
 import { t, getLocale } from './i18n.js';
 import { savePanelLayout, restorePanelLayout } from './ui-panels.js';
 import { sendSync as _sendSync, hasPermission, isGuest } from './ui-sync.js';
@@ -111,7 +111,7 @@ function showTagDeleteModal(tagName, onConfirm) {
   overlay.innerHTML = `
     <div class="tag-delete-modal">
       <div class="tag-delete-modal-title">Remove tag</div>
-      <div class="tag-delete-modal-tag">${tagName}</div>
+      <div class="tag-delete-modal-tag">${escapeHtml(tagName)}</div>
       <div class="tag-delete-modal-actions">
         <button class="action-btn action-btn--ghost tag-modal-cancel">Cancel</button>
         <button class="action-btn action-btn--danger tag-modal-confirm">Delete</button>
@@ -363,7 +363,7 @@ function openCategoryChangeModal(card, node) {
             <div class="cat-opt-dot" style="color:${catColor(cat)}; background:${catColor(cat)}"></div>
             <div class="cat-opt-info">
               <span class="cat-opt-name">${cat}</span>
-              ${desc ? `<span class="cat-opt-desc">${desc}</span>` : ''}
+              ${desc ? `<span class="cat-opt-desc">${escapeHtml(desc)}</span>` : ''}
             </div>
           </div>`;
       }
@@ -375,7 +375,7 @@ function openCategoryChangeModal(card, node) {
         <div class="cat-opt-dot" style="color:${catColor(cat)}; background:${catColor(cat)}"></div>
         <div class="cat-opt-info">
           <span class="cat-opt-name">${cat}</span>
-          ${desc ? `<span class="cat-opt-desc">${desc}</span>` : ''}
+          ${desc ? `<span class="cat-opt-desc">${escapeHtml(desc)}</span>` : ''}
         </div>
         ${isActive ? '<svg class="cat-opt-check" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg>' : ''}
       </div>`;
@@ -863,7 +863,7 @@ export function openMemoryCard(node, savedPosition) {
     if (!value) return;
     const row = document.createElement('div');
     row.className = 'detail-meta-row';
-    row.innerHTML = `<span style="color:rgba(255,255,255,0.3)">${label}</span><span>${value}</span>`;
+    row.innerHTML = `<span style="color:rgba(255,255,255,0.3)">${label}</span><span>${escapeHtml(String(value))}</span>`;
     meta.appendChild(row);
   };
   addMeta('Project', p.project);
@@ -893,7 +893,7 @@ export function openMemoryCard(node, savedPosition) {
   const filesContent = q(card, 'files-content');
   if (p.related_files && p.related_files.length) {
     filesContent.innerHTML = p.related_files.map(f =>
-      `<div style="font-family:'JetBrains Mono','SF Mono',Consolas,monospace;font-size:12px;color:rgba(255,255,255,0.45);padding:2px 0">${f}</div>`
+      `<div style="font-family:'JetBrains Mono','SF Mono',Consolas,monospace;font-size:12px;color:rgba(255,255,255,0.45);padding:2px 0">${escapeHtml(String(f))}</div>`
     ).join('');
     filesDiv.style.display = '';
   } else {

@@ -756,10 +756,12 @@ export async function createOpenCodeNativeLoopAdapter(options = {}) {
   const eventSource = client.onEvent ? client : client.event;
   let sessionId = null;
   // Assistant text assembled from the SSE stream (message.updated gives roles,
-  // message.part.updated gives text parts keyed by message id).
+  // message.part.updated gives text parts keyed by message id, message.part.delta
+  // the text a part grows by between them).
   const messageRoles = new Map();
   const messageOrder = [];
   const textParts = new Map(); // messageID → Map(partID → text)
+  const textPartMessages = new Map(); // partID of a text part → its messageID (where a delta goes)
   const rememberMessage = (info) => {
     if (!info?.id) return;
     if (!messageRoles.has(info.id)) messageOrder.push(info.id);
@@ -780,7 +782,15 @@ export async function createOpenCodeNativeLoopAdapter(options = {}) {
     if (!messageRoles.has(part.messageID)) rememberMessage({ id: part.messageID, role: null });
     let parts = textParts.get(part.messageID);
     if (!parts) { parts = new Map(); textParts.set(part.messageID, parts); }
+    if (part.id) textPartMessages.set(part.id, part.messageID);
     parts.set(part.id || `${parts.size}`, part.text);
+  };
+  // A delta of an announced text part extends it (OpenCode 2 streams text only this way until the part ends).
+  const rememberDelta = (event) => {
+    if (!event?.partID || (event.field && event.field !== 'text') || typeof event.delta !== 'string' || !event.delta) return;
+    const messageID = textPartMessages.get(event.partID);
+    if (!messageID || (event.messageID && event.messageID !== messageID)) return;
+    rememberPart({ id: event.partID, messageID, type: 'text', text: `${textParts.get(messageID)?.get(event.partID) || ''}${event.delta}` });
   };
   /** { media } with the generated files not returned yet (none: {}). */
   const turnMedia = (extraParts = []) => {
@@ -858,6 +868,7 @@ export async function createOpenCodeNativeLoopAdapter(options = {}) {
     }
     if (/^message[.:]updated$/i.test(eventType)) rememberMessage(event.info || event.message?.info || null);
     if (/^message[.:]part[.:]updated$/i.test(eventType)) rememberPart(event.part || null);
+    if (/^message[.:]part[.:]delta$/i.test(eventType)) rememberDelta(event);
     if (/question\.asked/i.test(eventType)) {
       const requestID = event.id || event.requestID;
       if (requestID && askMode && client.question?.reply) {
@@ -916,9 +927,13 @@ export async function createOpenCodeNativeLoopAdapter(options = {}) {
   // What the serve stored, for the usage meter's reconcile at a turn's end (assistant-usage.js).
   // A call that fails, times out or is missing on an older serve throws: the caller then knows
   // the turn was not reconciled.
+  // The clients SynaBun builds (lib/opencode-v2-client.js, either major) keep `session` as it was and carry
+  // `children` under `extra.session`.
   const storedRows = async (method, id) => {
-    if (typeof client.session?.[method] !== 'function') throw new Error(`OpenCode session.${method} is not available`);
-    const response = await settleWithin(client.session[method]({ sessionID: id, directory: cwd || undefined }), 5000);
+    const group = typeof client.session?.[method] === 'function' ? client.session
+      : typeof client.extra?.session?.[method] === 'function' ? client.extra.session : null;
+    if (!group) throw new Error(`OpenCode session.${method} is not available`);
+    const response = await settleWithin(group[method]({ sessionID: id, directory: cwd || undefined }), 5000);
     if (!response || response.error) throw new Error(providerErrorMessage(response?.error, `OpenCode session.${method} did not answer`));
     const rows = Array.isArray(response.data) ? response.data : Array.isArray(response) ? response : null;
     if (!rows) throw new Error(`OpenCode session.${method} returned no list`);

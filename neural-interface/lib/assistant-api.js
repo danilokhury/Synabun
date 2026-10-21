@@ -17,6 +17,7 @@ import { tooLargeMessage } from './assistant-attachments.js';
 import { getSessionPolicy, requiresHumanApproval } from './remote-policy.js';
 import { clampPlanDispatch, PLAN_DISPATCH_NOTE, runCanChangeCode } from './assistant-plan-permissions.js';
 import { noStore, requireJson, requireLocal, requireLocalHost, sendGuardError } from './http-guards.js';
+import { setUntrustedFileHeaders } from './untrusted-file-headers.js';
 
 /** The header whatsapp_send_file's caller proves it is the WhatsApp conversation's own brain with (assistant-runtime.js BRAIN_CREDENTIAL_RE). */
 export const BRAIN_CREDENTIAL_HEADER = 'x-synabun-brain-token';
@@ -301,7 +302,10 @@ export function createAssistantApi({
   // ── catalog ────────────────────────────────────────────────────────────────
   router.get('/catalog', async (req, res) => {
     try {
-      await accountUsage?.refresh();
+      // Quotas are shown as last read and read again in the background (the probe can take seconds; the
+      // dispatcher and the router read them fresh before they choose an account).
+      accountUsage?.refresh()?.catch?.(() => {});
+      const usage = () => accountUsage?.list({ stale: true });
       // refresh=1 rebuilds from the providers' endpoints; deep=1 also makes them ask the CLI / app-server again.
       const deep = req.query.deep === '1';
       const force = req.query.refresh === '1' || deep;
@@ -320,8 +324,8 @@ export function createAssistantApi({
         // names none.
         const accounts = {
           ...(brief.accounts || {}),
-          ...(claudeAccounts ? { 'claude-code': accountUsage?.list()?.['claude-code'] || claudeAccounts.listForClient() } : {}),
-          ...(codexAccounts ? { codex: accountUsage?.list()?.codex || codexAccounts.listForClient() } : {}),
+          ...(claudeAccounts ? { 'claude-code': usage()?.['claude-code'] || claudeAccounts.listForClient() } : {}),
+          ...(codexAccounts ? { codex: usage()?.codex || codexAccounts.listForClient() } : {}),
         };
         return res.json({ ok: true, generatedAt: new Date(now()).toISOString(), ...brief, accounts, claudeWorkerAccount: claudeWorkerAccountId(), codexWorkerAccount: codexWorkerAccountId(), limits: dispatcher.limits, runs: dispatcher.list({ activeOnly: true }), totals: dispatcher.totals() });
       }
@@ -329,7 +333,7 @@ export function createAssistantApi({
       // within seconds), so it is asked every time: this answer is reused only while it hands back the
       // build the answer was made from (a rebuild or invalidate() gives another one).
       const base = typeof buildCatalog === 'function' ? await buildCatalog({ force, deep }) : NO_CATALOG;
-      if (!force && catalogCache && catalogCache.base === base && now() - catalogCache.at < 30_000) return res.json(accountUsage ? { ...catalogCache.value, accounts: { ...catalogCache.value.accounts, ...accountUsage.list() } } : catalogCache.value);
+      if (!force && catalogCache && catalogCache.base === base && now() - catalogCache.at < 30_000) return res.json(accountUsage ? { ...catalogCache.value, accounts: { ...catalogCache.value.accounts, ...usage() } } : catalogCache.value);
       // Hidden rows stay server-side (view=manage lists them); the lists themselves ship.
       const { hiddenRows: _hiddenRows, ...visible } = base || {};
       const value = {
@@ -338,8 +342,8 @@ export function createAssistantApi({
         ...visible,
         accounts: {
           ...(base.accounts || {}),
-          'claude-code': accountUsage?.list()?.['claude-code'] || (claudeAccounts ? claudeAccounts.listForClient() : (base.accounts?.['claude-code'] || [])),
-          codex: accountUsage?.list()?.codex || (codexAccounts ? codexAccounts.listForClient() : (base.accounts?.codex || [])),
+          'claude-code': usage()?.['claude-code'] || (claudeAccounts ? claudeAccounts.listForClient() : (base.accounts?.['claude-code'] || [])),
+          codex: usage()?.codex || (codexAccounts ? codexAccounts.listForClient() : (base.accounts?.codex || [])),
         },
         claudeWorkerAccount: claudeWorkerAccountId(),
         codexWorkerAccount: codexWorkerAccountId(),
@@ -836,6 +840,8 @@ export function createAssistantApi({
       'Accept-Ranges': 'bytes', 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, max-age=3600',
     });
     if (range) res.set('Content-Range', `bytes ${start}-${end}/${size}`);
+    // A run's media is what a worker made: opened by its address it runs nothing, and an SVG is a download.
+    setUntrustedFileHeaders(res, file.path, file.mime);
     if (req.method === 'HEAD' || !size) { await handle.close().catch(() => {}); return res.end(); }
     const stream = handle.createReadStream({ start, end });
     stream.on('error', () => res.destroy());
@@ -996,9 +1002,17 @@ export function createAssistantApi({
     if (!requireRuntime(res)) return;
     try { res.json({ ok: true, session: await runtime.closeSession(req.params.id) }); } catch (error) { sendError(res, error); }
   });
+  // Remove (the Sessions menu): the record, its transcript and its usage journal go for good, after its
+  // running turn and the workers it dispatched are stopped. Memories made from it stay.
   router.delete('/sessions/:id', async (req, res) => {
     if (!requireRuntime(res)) return;
-    try { res.json({ ok: true, removed: await runtime.destroySession(req.params.id) }); } catch (error) { sendError(res, error); }
+    try {
+      if (runtime.removeSession) {
+        const { removed, stoppedRuns } = await runtime.removeSession(req.params.id);
+        return res.json({ ok: true, removed, stoppedRuns });
+      }
+      res.json({ ok: true, removed: await runtime.destroySession(req.params.id) });
+    } catch (error) { sendError(res, error); }
   });
 
   // ── attachments ────────────────────────────────────────────────────────────

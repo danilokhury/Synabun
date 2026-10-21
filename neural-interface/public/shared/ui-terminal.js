@@ -20,6 +20,7 @@ import { readinessKind, typeWhenReady } from './term-ready.js';
 import { initRendererManager, acquireRenderer, disposeRenderer, hasWebgl, noteFocus, adoptRenderer, rendererState, rendererStats } from './term-renderer.js';
 import { mountAssistant } from './assistant/asst-panel.js';
 import { getAssistantSession } from './assistant/asst-api.js';
+import { mascotCameoSvg } from './synabun-mascot.js';
 import { brainLabel, normalizeBrain, readStoredBrain, restoredSessionName, sessionNameGivenUp } from './assistant/asst-state.js';
 import { initAssistant, registerAssistantHost, openAssistant, assistantOwnerOf, fetchLiveAssistantSessions, isAssistantSessionLive } from './ui-assistant.js';
 
@@ -447,13 +448,25 @@ function _setBadgeStatus(container, status) {
   if (lbl) lbl.textContent = _CLI_LABELS[status] || '';
 }
 
+/**
+ * An Assistant tab minimises to the Assistant's own tray pill (assistant/asst-styles.js "Tray pill"), the one
+ * its sidepanel shows: the mark, the gold cameo and hairline while the session works (its turn or a worker it
+ * dispatched), the warn tint while it needs you. No CLI dot and no check: its status is the panel's.
+ */
+function _paintAssistantPill(pill, status) {
+  pill.classList.toggle('asp-pill-running', status === CLI_STATUS.WORKING);
+  pill.classList.toggle('asp-pill-attention', status === CLI_STATUS.ACTION);
+  pill.classList.toggle('asp-pill-done', status === CLI_STATUS.DONE);
+}
+
 function _updateSessionBadges(sessionId, status) {
   _notifyStatusChange(sessionId, status);
   const refs = _getBadgeContainers(sessionId);
   _setBadgeStatus(refs.tab, status);
   _setBadgeStatus(refs.float, status);
+  if (refs.pill?.classList.contains('asp-session-pill')) _paintAssistantPill(refs.pill, status);
   // Minimized pill badge + icon swap on done
-  if (refs.pill) {
+  else if (refs.pill) {
     _setBadgeStatus(refs.pill, status);
     const ico = refs.pill.querySelector('.term-minimized-pill-icon');
     if (ico) {
@@ -646,7 +659,7 @@ function _initFloatProfileDropdown(dd) {
     for (const [id, preset] of Object.entries(data.presets)) {
       const opt = document.createElement('div');
       opt.className = 'term-float-profile-option' + (id === data.current ? ' selected' : '');
-      opt.innerHTML = `<span class="tfp-name">${preset.label || id}</span><span class="tfp-hint">${preset.tools} tools</span>`;
+      opt.innerHTML = `<span class="tfp-name">${_escHtml(String(preset.label || id))}</span><span class="tfp-hint">${_escHtml(String(preset.tools))} tools</span>`;
       opt.addEventListener('click', async (ev) => {
         ev.stopPropagation();
         menu.classList.remove('open');
@@ -726,7 +739,7 @@ function _initFloatRecallDropdown(dd) {
     for (const p of FLOAT_RECALL_META) {
       const opt = document.createElement('div');
       opt.className = 'term-float-recall-option' + (p.value === data.profile ? ' selected' : '');
-      opt.innerHTML = `<span class="tfr-name">${p.label}</span><span class="tfr-hint">${p.hint}</span>`;
+      opt.innerHTML = `<span class="tfr-name">${_escHtml(p.label)}</span><span class="tfr-hint">${_escHtml(p.hint)}</span>`;
       opt.addEventListener('click', async (ev) => {
         ev.stopPropagation();
         menu.classList.remove('open');
@@ -1740,7 +1753,7 @@ function pickProject(profile) {
 
     const title = document.createElement('div');
     title.className = 'term-picker-title';
-    title.innerHTML = `<span class="term-picker-icon">${profileDef?.svg || SVG_SHELL}</span>Open ${label} in...`;
+    title.innerHTML = `<span class="term-picker-icon">${profileDef?.svg || SVG_SHELL}</span>Open ${_escHtml(String(label))} in...`;
 
     const list = document.createElement('div');
     list.className = 'term-picker-list';
@@ -1757,7 +1770,7 @@ function pickProject(profile) {
       const item = document.createElement('button');
       item.className = 'term-picker-item';
       const folder = p.path.split(/[\\/]/).pop();
-      item.innerHTML = `<span class="term-picker-item-icon"><svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></span><span class="term-picker-item-label">${p.label || folder}</span><span class="term-picker-item-path">${p.path}</span>`;
+      item.innerHTML = `<span class="term-picker-item-icon"><svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></span><span class="term-picker-item-label">${_escHtml(String(p.label || folder))}</span><span class="term-picker-item-path">${_escHtml(String(p.path))}</span>`;
       item.addEventListener('click', () => { overlay.remove(); resolve(p.path); });
       list.appendChild(item);
     });
@@ -3288,7 +3301,7 @@ async function reconnectBrowserSession(sessionId, liveData, saved) {
     <div class="browser-url-bar">
       <input type="text" class="browser-url-input" value="${currentUrl.replace(/"/g, '&quot;')}" spellcheck="false" autocomplete="off">
     </div>
-    <span class="browser-title-label">${liveData?.title || ''}</span>
+    <span class="browser-title-label">${_escHtml(String(liveData?.title || ''))}</span>
   `;
   viewport.appendChild(navbar);
 
@@ -5133,10 +5146,11 @@ function minimizeTab(sessionId) {
   if (!tray) { tabState.el.style.display = 'none'; _syncRenderers(); return; }
   const prof = PROFILES.find(p => p.id === session.profile);
   const pill = document.createElement('div');
-  pill.className = 'term-minimized-pill' + (session._bell ? ' has-bell' : '');
+  pill.className = 'term-minimized-pill' + (session._isAssistant ? ' asp-session-pill' : '') + (session._bell ? ' has-bell' : '');
   pill.setAttribute('data-session-id', sessionId);
+  // (An Assistant's carries the running cameo beside its mark: _paintAssistantPill shows one or the other.)
   pill.innerHTML = `
-    <span class="term-minimized-pill-icon">${prof?.svg || SVG_SHELL}</span>
+    <span class="term-minimized-pill-icon"${session._isAssistant ? ' aria-hidden="true"' : ''}>${prof?.svg || SVG_SHELL}${session._isAssistant ? mascotCameoSvg() : ''}</span>
     <span class="term-minimized-pill-label">${_escHtml(_displayLabel(session))}</span>
     <button class="term-minimized-pill-close" data-tooltip="Close">&times;</button>
   `;
@@ -5150,9 +5164,11 @@ function minimizeTab(sessionId) {
   tray.appendChild(pill);
   tabState.pill = pill;
 
-  // Set initial CLI status badge on pill
+  // Set initial CLI status badge on pill (an Assistant's: the state the panel last pushed)
   const tracked = _cliSessionStatus.get(sessionId);
-  if (tracked) {
+  if (tracked && session._isAssistant) {
+    _paintAssistantPill(pill, tracked.status);
+  } else if (tracked) {
     const badge = _ensureBadge(pill);
     badge.dataset.status = tracked.status;
     const lbl = badge.querySelector('.cli-status-label');
@@ -6905,9 +6921,9 @@ async function toggleFileTree(sidebar, session) {
 
     // Branch (clickable if git)
     const branchHtml = data.branch
-      ? `<button class="ft-branch" data-tooltip="Switch branch"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg><span class="ft-branch-name">${data.branch}</span></button>`
+      ? `<button class="ft-branch" data-tooltip="Switch branch"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg><span class="ft-branch-name">${_escHtml(String(data.branch))}</span></button>`
       : '';
-    header.innerHTML = `<span class="ft-header-label" data-tooltip="Click to change path" title="${session.cwd}">${dirName}</span>${branchHtml}`;
+    header.innerHTML = `<span class="ft-header-label" data-tooltip="Click to change path" title="${_escHtml(session.cwd).replace(/"/g, '&quot;')}">${_escHtml(dirName)}</span>${branchHtml}`;
 
     // Wire header label click → inline path editor
     header.querySelector('.ft-header-label').addEventListener('click', (e) => {
@@ -6980,7 +6996,7 @@ async function toggleFileTree(sidebar, session) {
 
     renderFileItems(tree, originalItems, session.cwd, 0, session);
   } catch (err) {
-    sidebar.innerHTML = `<div class="ft-empty">Error: ${err.message}</div>`;
+    sidebar.innerHTML = `<div class="ft-empty">Error: ${_escHtml(String(err?.message || err))}</div>`;
   }
 }
 
@@ -7001,7 +7017,7 @@ function renderFileItems(container, items, parentPath, depth, session) {
     const gitBadge = item.git ? `<span class="ft-git-badge" data-tooltip="${item.git}">${GIT_STATUS_LABEL[item.git] || '?'}</span>` : '';
 
     if (item.type === 'dir') {
-      row.innerHTML = `<span class="ft-chevron">${SVG_CHEVRON}</span><span class="ft-icon">${SVG_DIR}</span><span class="ft-name">${item.name}</span>${gitBadge}`;
+      row.innerHTML = `<span class="ft-chevron">${SVG_CHEVRON}</span><span class="ft-icon">${SVG_DIR}</span><span class="ft-name">${_escHtml(item.name)}</span>${gitBadge}`;
       row.dataset.path = fullPath;
       row.dataset.expanded = 'false';
 
@@ -7045,7 +7061,7 @@ function renderFileItems(container, items, parentPath, depth, session) {
         }
       });
     } else {
-      row.innerHTML = `<span class="ft-chevron-spacer"></span><span class="ft-icon">${SVG_FILE}</span><span class="ft-name">${item.name}</span>${gitBadge}`;
+      row.innerHTML = `<span class="ft-chevron-spacer"></span><span class="ft-icon">${SVG_FILE}</span><span class="ft-name">${_escHtml(item.name)}</span>${gitBadge}`;
       row.dataset.path = fullPath;
 
       // Click file → type path into terminal
@@ -7076,9 +7092,9 @@ function renderSearchResults(container, items, session) {
     // Show relative path — highlight the filename part
     const parts = item.name.split('/');
     const fileName = parts.pop();
-    const dirPath = parts.length ? `<span class="ft-search-path">${parts.join('/')}/</span>` : '';
+    const dirPath = parts.length ? `<span class="ft-search-path">${_escHtml(parts.join('/'))}/</span>` : '';
 
-    row.innerHTML = `<span class="ft-icon">${icon}</span>${dirPath}<span class="ft-name">${fileName}</span>`;
+    row.innerHTML = `<span class="ft-icon">${icon}</span>${dirPath}<span class="ft-name">${_escHtml(fileName)}</span>`;
 
     const fullPath = session.cwd.replace(/[\\/]$/, '') + '/' + item.name;
     row.dataset.path = fullPath;
@@ -7235,7 +7251,7 @@ async function openBranchPicker(sidebar, session, anchorEl) {
     for (const branch of data.branches) {
       const item = document.createElement('button');
       item.className = `ft-branch-item${branch === data.current ? ' current' : ''}`;
-      item.innerHTML = `<span class="ft-branch-item-name">${branch}</span>${branch === data.current ? '<span class="ft-branch-item-check">&#10003;</span>' : ''}`;
+      item.innerHTML = `<span class="ft-branch-item-name">${_escHtml(branch)}</span>${branch === data.current ? '<span class="ft-branch-item-check">&#10003;</span>' : ''}`;
 
       item.addEventListener('click', async (e) => {
         e.stopPropagation();
@@ -7246,7 +7262,7 @@ async function openBranchPicker(sidebar, session, anchorEl) {
 
         // Show loading state
         item.classList.add('switching');
-        item.innerHTML = `<span class="ft-branch-item-name">${branch}</span><span class="ft-branch-item-check">...</span>`;
+        item.innerHTML = `<span class="ft-branch-item-name">${_escHtml(branch)}</span><span class="ft-branch-item-check">...</span>`;
 
         try {
           const result = await checkoutTerminalBranch(session.cwd, branch);
@@ -7270,7 +7286,7 @@ async function openBranchPicker(sidebar, session, anchorEl) {
           }
         } catch (err) {
           item.classList.remove('switching');
-          item.innerHTML = `<span class="ft-branch-item-name">${branch}</span><span class="ft-branch-item-check" style="color:#ff5252">!</span>`;
+          item.innerHTML = `<span class="ft-branch-item-name">${_escHtml(branch)}</span><span class="ft-branch-item-check" style="color:#ff5252">!</span>`;
           writeGitOutput('error', err.message || 'Checkout failed');
         }
       });

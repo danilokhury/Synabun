@@ -17,25 +17,41 @@
 // out. mascot() names the character on screen for the panel's director
 // (asst-mascot.js), which may hold its pose; stills are painted SVGs, never
 // rigs.
+// A dispatched run's card opens a stage while its worker works
+// (asst-run-stage.js): the run's own mascot and scene, independent of the
+// Assistant's turn, so a worker that outlives the turn keeps moving. Run
+// cards are not journaled: a reload restores them from the runs the agents
+// tray lists (restoreRuns), next to the call that dispatched them.
+// The Assistant's own work on a direct route (an approved "do it here" route
+// of a task class: research, browser, quick…) uses the same scenes: its
+// racks' stages show the class's scene under the mascot, and the scene the
+// bubble's call implies (a browser tool the browser, a web search research),
+// for the turn the route runs in (noteDirectRoute, paintRackScene). A
+// conversation opened again learns its route from the journal like any other
+// event (no rack of the history moves: none is live) and lends it to the
+// resumed work once its turn runs (lendRouteScene).
 
-import { assistantEventKey, fmtCost, fmtElapsed, isRemovableRun, isRunIdle, isTerminalRunStatus, modelShortName, providerShortLabel, routeTargetLabel, runTone, summarizeMailbox } from './asst-state.js';
+import { assistantEventKey, fmtCost, fmtElapsed, isRemovableRun, isTerminalRunStatus, modelShortName, providerShortLabel, routeTargetLabel, runTone, summarizeMailbox } from './asst-state.js';
 import { createRouteLine } from './asst-route.js';
 import { closeMenu, isMenuOpen } from './asst-menu.js';
 import { computerToolName, describeComputerAction, frameUrls, markerPercent, openFrameLightbox, parseComputerResult, swapImage } from './asst-computer.js';
 import * as mascotLib from '../synabun-mascot.js';
 import { isReducedMotion, subscribe } from '../synabun-ticker.js';
-import { KIND_SPECS, callOutcome, commandOf, editDiff, editPaths, fmtDuration, groupSubject, kindOf, maskEcho, mcpServerOf, middleEllipsis, planState, plural, prettyServer, receiptSentence, redactInput, resultDetail, sayCall, shouldFoldNarration, stationAggregate, stationKey, targetKey, toolWords, verbText } from './asst-tool-kinds.js';
+import { KIND_SPECS, callOutcome, commandOf, editDiff, editPaths, fmtDuration, groupSubject, joinCut, kindOf, maskEcho, mcpServerOf, middleEllipsis, planState, plural, prettyServer, receiptSentence, redactInput, resultDetail, sayCall, shouldFoldNarration, stationAggregate, stationKey, targetKey, toolWords, verbText } from './asst-tool-kinds.js';
 import { injectRackStyles } from './asst-rack-styles.js';
+import { injectSceneStyles } from './asst-scene-styles.js';
+import { activityScene, compactActivity, isLivePhase, runChip, sceneOfClass, sceneSvg, stagePhase } from './asst-scenes.js';
+import { STAGE_TIMING, createWorkerStage } from './asst-run-stage.js';
 import { formatRunTokens } from './asst-usage.js';
 import { sanitizeHtmlString, sanitizeInto } from './asst-sanitize.js';
 import { automationView } from './asst-automation.js';
 
-// ── Markdown (lazy marked, same CDN build as the sidepanels) ───────────────
+// ── Markdown (lazy marked, the vendored build the sidepanels use too) ───────────────
 let _marked = null;
 let _markedLoading = null;
 function loadMarked() {
   if (_marked || _markedLoading) return _markedLoading;
-  _markedLoading = import('https://cdn.jsdelivr.net/npm/marked@14/lib/marked.esm.js')
+  _markedLoading = import('/vendor/marked/marked-14.1.4.esm.js')
     .then((m) => {
       _marked = m?.marked || m?.default || null;
       if (_marked?.setOptions) _marked.setOptions({ breaks: true, gfm: true });
@@ -126,10 +142,6 @@ function memoryTitle(memory) {
 
 // ── Run cards (shared with the agents dock) ────────────────────────────────
 
-function runWaitingForRoute(run) {
-  return run?.state === 'awaiting_route' || run?.turnState === 'awaiting_route' || run?.route?.status === 'pending';
-}
-
 /**
  * buildRunCard(run, { t, providerIcon, providerColor, onFocus, onStop, onRead, onEscalate, compact, result, index })
  * Returns a card element; call updateRunCard(el, run, opts) to refresh it in place.
@@ -191,20 +203,13 @@ export function updateRunCard(card, run, opts = {}) {
   const title = card.querySelector('.asst-run-title');
   const label = run.title || run.task || run.runId || '';
   if (title) { title.textContent = label; title.title = label; }
-  const waitingRoute = runWaitingForRoute(run);
   const pill = card.querySelector('.asst-pill');
   if (pill) {
-    const tone = waitingRoute ? 'action' : runTone(run);
-    pill.dataset.tone = tone;
-    (pill.querySelector('.asst-pill-label') || pill).textContent = waitingRoute ? t('assistant.run.awaitingRoute', 'waiting for your model choice')
-      : run.turnState === 'awaiting_permission' ? t('assistant.run.needsApproval', 'needs approval')
-        : run.turnState === 'needs_input' ? t('assistant.run.needsInput', 'needs input')
-          : run.queued && run.status !== 'running' ? t('assistant.run.queued', 'queued')
-            // A warm worker between turns reports what its last turn ended with, not "running".
-            : isRunIdle(run) ? (run.outcome || run.lastResult?.status
-              ? t('assistant.run.idleWith', '{outcome} · idle', { outcome: run.outcome || run.lastResult.status })
-              : t('assistant.run.idle', 'idle'))
-              : (run.status || tone);
+    // What it waits on (a route card, your answer: the stage's own words) > its approval > queued > what a warm
+    // worker's last turn ended with > its status (asst-scenes.js runChip).
+    const chip = runChip(run, t);
+    pill.dataset.tone = chip.tone;
+    (pill.querySelector('.asst-pill-label') || pill).textContent = chip.label;
   }
   const meta = card.querySelector('.asst-run-meta');
   if (meta) {
@@ -433,9 +438,13 @@ const SUGGESTION_KINDS = { computer: 'computer', web: 'web', fix: 'edit', schedu
 export function createRenderer(transcriptEl, hooks = {}) {
   loadMarked();
   injectRackStyles();
+  injectSceneStyles();
   const $msgs = transcriptEl;
   const scopes = new Map(); // parent_tool_use_id → { container, stream, key }
   const runCards = new Map(); // runId → card element
+  const stages = new Map(); // runId → its card's worker stage (asst-run-stage.js)
+  const runActivity = new Map(); // runId → what its worker does now, compact ({ kind, name, step, at }), while the run lasts
+  let unsubStageTick = null;
   const routeLines = new Map(); // routeId → line handle
   const autoRows = new Map(); // traceId → the turn's automation trace row
   let working = null;
@@ -451,6 +460,16 @@ export function createRenderer(transcriptEl, hooks = {}) {
   let turn = { calls: 0, last: null, errored: false, answerRow: null }; // what the turn did: the mascot's verdict, the announced answer
   let grace = null; // the stage on screen when the result arrived: it waits for the turn's verdict (finishTurn)
   let waiting = null; // a card waits on the user: { id: the tool_use id it holds or null, since } (setWaiting)
+  // An approved direct route (synabun.route auto / decided, target.kind 'direct', a class with a scene) lends its
+  // class's scene to the racks of the turn it runs in (noteDirectRoute): { routeId, taskClass, turn, rackAt } with
+  // `turn` the turnSeq it belongs to, null until a turn takes it (a pick made while no turn runs, or a route the
+  // journal's last turn was still running), and `rackAt` the last rack made before it (its racks come after).
+  // A route the journal records (`journal`) belongs to the journal's last turn only: the turn the reattach finds
+  // running takes it; with none running, that turn is over (it ended with no result) and nothing later takes it.
+  let directRoute = null;
+  let lastDirect = null; // the last one approved since the user's prompt: a "do it here" continuation turn takes it again
+  let turnSeq = 0; // turns this renderer has seen start (showWorking)
+  let reattachRunning = null; // what the last reattach said: a turn runs (true), none (false), not asked yet (null)
 
   // ── Activity racks ──
   // Every burst of agent work (tool calls, thinking, short narration) is one
@@ -463,6 +482,27 @@ export function createRenderer(transcriptEl, hooks = {}) {
   let rackSeq = 0;
   let stepSeq = 0;
   let unsubTick = null;
+  // A staged rack's bubble is cut to its stage's width (subjectBudget, fitSubject): when that width
+  // changes, the bubble is cut again once it has held still (one pass when a drag ends, never one per
+  // frame of it), instead of on the next tick. Heights are not watched.
+  const RECUT_SETTLE_MS = 120;
+  const stageWidths = new WeakMap(); // stage element → { rack, width }
+  const toRecut = new Set();
+  let recutTimer = 0;
+  const stageResizes = typeof ResizeObserver === 'function' ? new ResizeObserver((entries) => {
+    for (const entry of entries) {
+      const seen = stageWidths.get(entry.target);
+      if (!seen) continue;
+      const width = Math.round(entry.contentRect.width);
+      if (seen.width === null) { seen.width = width; continue; } // the first report: the width it was cut at
+      if (width === seen.width) continue;
+      seen.width = width;
+      toRecut.add(seen.rack);
+    }
+    if (!toRecut.size) return;
+    clearTimeout(recutTimer);
+    recutTimer = setTimeout(recutBubbles, RECUT_SETTLE_MS);
+  }) : null;
   let muted = false; // inside handleEvent(…, { silent: true }): no motion, no announcements
   let replayDraw = false; // inside handleEvent(…, { replay: true }): a reattach's missed packets (drawn like the journal)
   let clockAt = null; // the journal `at` of the entry being replayed
@@ -1256,6 +1296,25 @@ export function createRenderer(transcriptEl, hooks = {}) {
   }
 
   // ── Racks ──
+  /**
+   * The class whose scene a new rack of this turn shows: an approved direct route this turn runs, else ''. Live, or
+   * a reattach's replay of the running turn; never the journal (no turn runs while it is drawn).
+   */
+  function directSceneClass() {
+    return (!muted || replayDraw) && turnActive && directRoute && directRoute.turn === turnSeq ? directRoute.taskClass : '';
+  }
+
+  /**
+   * A route a turn takes when it starts (a conversation opened again mid-turn, a pick made while no turn ran): the
+   * open racks made after it are that turn's work, and show its scene from now on. Settled racks never move.
+   */
+  function lendRouteScene(route) {
+    for (const rack of racks) {
+      if (rack.nested || rack.closed || rack.sceneClass || !(rack.id > (route.rackAt ?? Infinity))) continue;
+      rack.sceneClass = route.taskClass;
+    }
+  }
+
   function createRack(scope) {
     const id = ++rackSeq;
     const nested = scope.container !== $msgs;
@@ -1265,7 +1324,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
     row.setAttribute('role', 'group');
     const ledgerId = `asst-rack-${id}-ledger`;
     row.innerHTML = `<div class="asst-rack-stage">
-        <div class="asst-rack-face" aria-hidden="true"></div>
+        <div class="asst-rack-set"><div class="asst-rack-face" aria-hidden="true"></div><div class="asst-rack-scene" aria-hidden="true"></div></div>
         <div class="asst-rack-caption"></div>
         <div class="asst-bubble" aria-live="off" hidden><span class="asst-bubble-verb"></span><span class="asst-bubble-subject" role="button" tabindex="-1" aria-expanded="false"><span class="asst-bubble-text"></span><span class="asst-bubble-caret" aria-hidden="true"></span></span><span class="asst-bubble-meta"></span><span class="asst-bubble-err" hidden></span></div>
         <div class="asst-rack-sweep" aria-hidden="true"></div>
@@ -1278,7 +1337,10 @@ export function createRenderer(transcriptEl, hooks = {}) {
     const rack = {
       id, row, scope, nested, closed: false, live: false, staged: false, open: false, view: 'kind', everAwake: false,
       stations: new Map(), steps: [], timeline: [], said: [], firstAt: 0,
-      stage: { el: q('.asst-rack-stage'), face: q('.asst-rack-face'), caption: q('.asst-rack-caption'), bubble: q('.asst-bubble'), verb: q('.asst-bubble-verb'), subject: q('.asst-bubble-subject'), text: q('.asst-bubble-text'), meta: q('.asst-bubble-meta'), err: q('.asst-bubble-err') },
+      // The direct route's class whose scene the stage shows: set here, or once when a reopened conversation's route
+      // resumes (lendRouteScene); a rack never loses its scene.
+      sceneClass: nested ? '' : directSceneClass(), sceneId: '', sceneAt: -Infinity,
+      stage: { el: q('.asst-rack-stage'), set: q('.asst-rack-set'), face: q('.asst-rack-face'), scene: q('.asst-rack-scene'), caption: q('.asst-rack-caption'), bubble: q('.asst-bubble'), verb: q('.asst-bubble-verb'), subject: q('.asst-bubble-subject'), text: q('.asst-bubble-text'), meta: q('.asst-bubble-meta'), err: q('.asst-bubble-err') },
       receipt: { btn: q('.asst-rack-receipt'), face: q('.asst-rack-receipt-face'), text: q('.asst-rack-receipt-text'), failed: q('.asst-rack-receipt-failed'), clock: q('.asst-rack-receipt-clock'), faceBuilt: false, pose: '', svg: null },
       ledger: q('.asst-rack-ledger'), statusEl: q('.asst-rack-status'), alertEl: q('.asst-rack-alert'), timelineEl: null, timelineSig: '',
       rig: null, target: null, held: false, holdUntil: 0, holdTimer: 0, pose: null, awake: null, awakeKey: null,
@@ -1454,6 +1516,8 @@ export function createRenderer(transcriptEl, hooks = {}) {
     renderRackLabel(rack, sentence);
     if (live) { if (rack.staged) paintStage(rack, now); scheduleStage(rack, now); needTicker(); }
     else if (was) settle(rack);
+    // The scene moves while the rack is live, as its sweep does: never while a card holds it, nor once it settled.
+    rack.stage.scene.firstElementChild?.toggleAttribute('data-live', live && !rack.waiting);
     if (rack.open && rack.view === 'time') renderTimeline(rack);
     if (working?.isConnected) syncWorkingFace();
   }
@@ -1506,6 +1570,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
       clearTimeout(rack.clearTimer);
       rack.clearTimer = 0;
       rack.row.classList.add('is-staged');
+      watchStageWidth(rack, true);
       if (!rack.rig) {
         try { rack.rig = mascotLib.createMascot(rack.stage.face, { width: 72, height: 36, rangeX: 10, rangeY: 7, pose: 'idle' }); } catch { rack.rig = null; }
         rack.pose = null;
@@ -1544,6 +1609,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
   /** A folded stage keeps nothing: its rig goes, its texts empty (a settled rack is the same live or replayed). */
   function clearStage(rack) {
     if (rack.staged) return;
+    watchStageWidth(rack, false);
     const had = !!rack.rig;
     rack.rig?.destroy?.();
     rack.rig = null;
@@ -1553,6 +1619,10 @@ export function createRenderer(transcriptEl, hooks = {}) {
     if (had) mascotChanged();
     const s = rack.stage;
     s.face.textContent = '';
+    s.scene.textContent = '';
+    delete s.el.dataset.scene;
+    rack.sceneId = '';
+    rack.sceneAt = -Infinity;
     s.caption.textContent = '';
     s.bubble.hidden = true;
     delete s.bubble.dataset.state;
@@ -1638,9 +1708,30 @@ export function createRenderer(transcriptEl, hooks = {}) {
       if (!rack.waiting && shown && shown.rack === rack && now - rack.bubble.since < hold) rack.bubble.pendingAt = rack.bubble.since + hold;
       else { rack.bubble.step = target; rack.bubble.since = now; }
     }
+    paintRackScene(rack, now); // before the bubble: the set it sits beside takes the scene's width
     poseStage(rack);
     paintBubble(rack, now, { swap: true });
     paintCaption(rack);
+  }
+
+  /**
+   * A direct route's rack: the scene under the mascot is the route class's
+   * (asst-scenes.js), or the one the bubble's call implies (a browser tool the
+   * browser, a computer tool the computer, a web search or a page read
+   * research); a scene a call picked holds STAGE_TIMING.sceneDwellMs, as on a
+   * run's stage (tickRacks tries again). Nothing for a rack without a route.
+   */
+  function paintRackScene(rack, now) {
+    if (!rack.sceneClass || !rack.staged) return;
+    const step = rack.bubble.step;
+    const call = step?.type === 'call' ? { kind: step.kind, name: step.name } : null;
+    const want = activityScene(call, rack.sceneClass) || sceneOfClass(rack.sceneClass);
+    if (want === rack.sceneId) return;
+    if (rack.sceneId && now - rack.sceneAt < STAGE_TIMING.sceneDwellMs) return;
+    rack.sceneId = want;
+    rack.sceneAt = now;
+    rack.stage.scene.innerHTML = sceneSvg(want, { live: rack.live && !rack.waiting });
+    rack.stage.el.dataset.scene = want;
   }
 
   function paintCaption(rack) {
@@ -1670,10 +1761,11 @@ export function createRenderer(transcriptEl, hooks = {}) {
     const full = grouped || say.text;
     const literal = !grouped && say.full ? say.full : full; // the command as written: the title and the opened bubble
     const open = rack.bubble.open;
-    // Narrow stages cut from the head, so the file name (the tail) survives.
+    // Narrow stages cut from the head, so the file name (the tail) survives. A small budget keeps a
+    // shorter tail (24 chars of it would not fit beside the verb).
     const cut = subjectCut(rack);
-    const budget = subjectBudget(rack, verb, cut);
-    const shownText = open ? literal : cut === 'head' ? headEllipsis(full, budget) : middleEllipsis(full, budget, 24);
+    const cutTo = (n) => (open ? literal : cut === 'head' ? headEllipsis(full, n) : middleEllipsis(full, n, Math.min(24, Math.max(8, n - 6))));
+    const shownText = cutTo(subjectBudget(rack, verb, cut));
     const key = `${step.id}|${verb}|${shownText}|${say.muted ? 1 : 0}`;
     s.bubble.hidden = !full && !verb;
     s.bubble.dataset.state = held ? 'waiting' : running ? 'running' : step.state;
@@ -1684,8 +1776,12 @@ export function createRenderer(transcriptEl, hooks = {}) {
       const write = () => {
         s.verb.textContent = verb;
         s.subject.className = `asst-bubble-subject${say.mono ? ' is-mono' : ''}${say.muted ? ' is-muted' : ''}`;
-        writeSubject(s.text, grouped || open ? null : say.segments, shownText);
-        if (literal !== shownText || open) s.subject.title = literal; else s.subject.removeAttribute('title');
+        const segments = grouped || open ? null : say.segments;
+        writeSubject(s.text, segments, shownText);
+        // The budget is an estimate (a long token wraps whole to the next line): what the two-line
+        // clamp would hide is cut here instead, so the subject is never cut a second time.
+        const fitted = open ? shownText : fitSubject(s, shownText, cutTo, segments);
+        if (literal !== fitted || open) s.subject.title = literal; else s.subject.removeAttribute('title');
       };
       if (swap && changedStep && !calm() && typeof s.subject.animate === 'function' && s.text.textContent) {
         s.subject.getAnimations?.().forEach(a => a.cancel());
@@ -1717,7 +1813,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
     const s = rack.stage;
     const width = s.el.clientWidth;
     if (!width) return 96;
-    const face = s.face.getBoundingClientRect();
+    const face = (s.set || s.face).getBoundingClientRect(); // the mascot's column (with a scene under it, as wide as the scene)
     const bubble = s.bubble.hidden ? null : s.bubble.getBoundingClientRect();
     const beside = !bubble || bubble.left >= face.right - 1;
     const verbPx = Math.max(s.verb.getBoundingClientRect().width, verb.length * 7);
@@ -1733,14 +1829,17 @@ export function createRenderer(transcriptEl, hooks = {}) {
     try { return getComputedStyle(rack.stage.subject).getPropertyValue('--rk-cut').trim() === 'head' ? 'head' : 'middle'; } catch { return 'middle'; }
   }
 
-  /** "…ender-events.browser.mjs": the last `max` chars, from a token boundary when one is near. */
+  /**
+   * "…ender-events.browser.mjs": the last `max` chars, from a token boundary when one is near. One "…":
+   * a token the subject already shortened at the start of that tail goes with the cut ("……/x.js").
+   */
   function headEllipsis(text, max) {
     const s = String(text ?? '');
     if (s.length <= max) return s;
     let tail = s.slice(s.length - Math.max(8, max - 1));
     const cut = tail.search(/[\s/]/);
     if (cut > 0 && cut < tail.length * 0.4) tail = tail.slice(tail[cut] === '/' ? cut : cut + 1);
-    return `…${tail}`;
+    return joinCut('', tail);
   }
 
   function writeSubject(node, segments, text) {
@@ -1748,6 +1847,18 @@ export function createRenderer(transcriptEl, hooks = {}) {
     if (Array.isArray(segments) && segments.length && segments.map(x => x.text).join('') === text) {
       for (const seg of segments) node.appendChild(el('span', seg.cls ? `is-${seg.cls}` : '', seg.text));
     } else node.textContent = text;
+  }
+
+  /** The bubble's subject cut shorter (`cutTo`, six steps at most) until its clamp hides none of it; the text it shows. */
+  function fitSubject(s, text, cutTo, segments) {
+    let shown = text;
+    let budget = shown.length;
+    for (let i = 0; i < 6 && budget > 12 && s.subject.scrollHeight > s.subject.clientHeight + 1; i += 1) {
+      budget = Math.floor(budget * 0.85);
+      shown = cutTo(budget);
+      writeSubject(s.text, segments, shown);
+    }
+    return shown;
   }
 
   /** How many calls of the rack act on the bubble call's target (itself included): a re-run or re-read reads ×N. */
@@ -2462,6 +2573,30 @@ export function createRenderer(transcriptEl, hooks = {}) {
     unsubTick = null;
   }
 
+  /** The bubbles whose stage changed width: cut and fit again (the same text may fit differently now). */
+  function recutBubbles() {
+    recutTimer = 0;
+    for (const rack of toRecut) {
+      if (!rack.staged || !rack.bubble.step || !rack.row.isConnected) continue;
+      rack.bubble.key = '';
+      paintBubble(rack, Date.now(), { swap: false });
+    }
+    toRecut.clear();
+  }
+
+  function watchStageWidth(rack, on) {
+    if (!stageResizes) return;
+    const stage = rack.stage.el;
+    if (on && !stageWidths.has(stage)) {
+      stageWidths.set(stage, { rack, width: null });
+      stageResizes.observe(stage);
+    } else if (!on && stageWidths.has(stage)) {
+      stageWidths.delete(stage);
+      stageResizes.unobserve(stage);
+      toRecut.delete(rack);
+    }
+  }
+
   /** Once a second while a rack is live: its clocks (and any wake-up the timers have not caught). */
   function tickRacks() {
     let any = false;
@@ -2470,7 +2605,8 @@ export function createRenderer(transcriptEl, hooks = {}) {
       if (!rack.live) continue;
       any = true;
       const now = Date.now();
-      if (rack.staged && rack.bubble.step) paintBubble(rack, now, { swap: false }); // clocks, and the cut after a resize
+      if (rack.staged && rack.sceneClass) paintRackScene(rack, now); // a scene swap the dwell held back
+      if (rack.staged && rack.bubble.step) paintBubble(rack, now, { swap: false }); // its clocks (a resize re-cuts it: recutBubbles)
       for (const st of rack.stations.values()) { const time = stationTime(st, true, rackNow(rack)); if (st.time.textContent !== time) st.time.textContent = time; }
       for (const step of rack.steps) if (step.state === 'running' && step.type === 'call' && step.progress >= 1) refreshStep(step);
     }
@@ -2478,6 +2614,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
   }
 
   function dropRack(rack) {
+    watchStageWidth(rack, false);
     clearTimeout(rack.stageTimer);
     clearTimeout(rack.clearTimer);
     clearTimeout(rack.sr.timer);
@@ -2545,6 +2682,8 @@ export function createRenderer(transcriptEl, hooks = {}) {
 
   function appendUser(text, { images = [], files = [], memories = [], origin = null, imageCount = 0 } = {}) {
     turnFrames = [];
+    directRoute = null; // a new prompt is a new task: its own route decides
+    lastDirect = null;
     rootScope.kept = null;
     lastErrorText = '';
     const row = el('div', 'asst-msg msg-user');
@@ -2604,7 +2743,14 @@ export function createRenderer(transcriptEl, hooks = {}) {
     working.querySelector('.asst-working-label').textContent = label || t('assistant.rack.verb.think.now', 'Thinking');
     hideEmpty({ park: true });
     $msgs.appendChild(working);
-    if (!turnActive) turn = { calls: 0, last: null, errored: false, answerRow: null };
+    if (!turnActive) {
+      turn = { calls: 0, last: null, errored: false, answerRow: null };
+      turnSeq += 1;
+      if (directRoute && directRoute.turn == null) { // a route picked while no turn ran, or one the journal left running, is this turn's
+        directRoute.turn = turnSeq;
+        lendRouteScene(directRoute);
+      }
+    }
     turnActive = true;
     if (racks.size) syncRacks();
     syncWorkingFace();
@@ -2690,26 +2836,165 @@ export function createRenderer(transcriptEl, hooks = {}) {
     };
   }
 
-  function upsertRunCard(run, { result = null } = {}) {
-    if (!run?.runId) return null;
+  /** What the renderer knows of a run (titles for the stage bubble, the route line's live state). */
+  function noteRun(run) {
     const prev = runInfo.get(run.runId);
     const status = run.status || prev?.state;
     const tone = status ? runTone({ ...run, status }) : '';
     const routeId = run.route?.routeId || prev?.routeId || '';
     runInfo.set(run.runId, { ...prev, title: run.title || run.task || prev?.title, state: status, provider: run.provider, routeId, working: tone === 'running' || tone === 'queued' });
+    if (isTerminalRunStatus(status)) runActivity.delete(run.runId); // the run is over: so is what it was doing
     if (routeId) syncRouteLive(routeId);
+  }
+
+  function upsertRunCard(run, { result = null } = {}) {
+    if (!run?.runId) return null;
+    noteRun(run);
     const cardOpts = runCardOpts(result);
     let card = runCards.get(run.runId);
     if (card && card.isConnected) {
       updateRunCard(card, run, cardOpts);
+      syncStage(run.runId, card, run);
       for (const rack of racks) if (rack.live) renderRack(rack); // "Waiting on <title>" learns the title
       return card;
     }
+    dropStage(run.runId); // a card that left the transcript took its stage with it
     card = buildRunCard(run, cardOpts);
     runCards.set(run.runId, card);
     const { wrap } = assistantRow(rootScope);
     wrap.appendChild(card);
+    syncStage(run.runId, card, run);
     return card;
+  }
+
+  /**
+   * A run update from anywhere (the agents tray's sources: the sync bus, its
+   * fetch): the card and its stage update in place, the route line learns
+   * whether its run works. Never adds a card.
+   */
+  function syncRun(run) {
+    if (!run?.runId) return null;
+    noteRun(run);
+    const card = runCards.get(run.runId);
+    if (!card?.isConnected) return null;
+    updateRunCard(card, run, runCardOpts()); // fresh options: the run's own lastResult, never a result the card was built with
+    syncStage(run.runId, card, run);
+    return card;
+  }
+
+  // ── Worker stages (asst-run-stage.js) ──
+  /** The card's stage: made when the run first works, then updated in place for as long as the card lives. */
+  function syncStage(runId, card, run) {
+    let stage = stages.get(runId);
+    if (!stage) {
+      if (!isLivePhase(stagePhase(run))) return;
+      stage = createWorkerStage(card, { t, calm: () => reducedMotion() });
+      stages.set(runId, stage);
+      stage.setActivity(runActivity.get(runId) || null);
+    }
+    stage.update(run);
+    if (stage.live()) needStageTicker();
+  }
+
+  function dropStage(runId) {
+    const stage = stages.get(runId);
+    if (!stage) return;
+    stages.delete(runId);
+    try { stage.destroy(); } catch { /* gone */ }
+  }
+
+  function needStageTicker() {
+    if (unsubStageTick) return;
+    try { unsubStageTick = subscribe(tickStages, { fps: 1 }); } catch { unsubStageTick = null; }
+  }
+
+  function stopStageTicker() {
+    if (!unsubStageTick) return;
+    try { unsubStageTick(); } catch { /* already gone */ }
+    unsubStageTick = null;
+  }
+
+  /** Once a second while a stage is open: its beat, and the card's elapsed time (the run's one clock: the details line). */
+  function tickStages() {
+    let any = false;
+    const now = Date.now();
+    for (const [runId, stage] of [...stages]) {
+      const card = runCards.get(runId);
+      if (!card?.isConnected) { dropStage(runId); continue; }
+      if (!stage.live()) continue;
+      any = true;
+      stage.tick(now);
+      if (card._usageRun) tickRunCard(card, card._usageRun);
+    }
+    if (!any) stopStageTicker();
+  }
+
+  /** What a run's worker does now (its provider events: Claude and Codex workers). Kept compact, and only while the run lasts. */
+  function setRunActivity(runId, activity) {
+    if (!runId) return;
+    const next = isTerminalRunStatus(runInfo.get(runId)?.state) ? null : compactActivity(activity, t);
+    if (next) runActivity.set(runId, next); else runActivity.delete(runId);
+    while (runActivity.size > 200) runActivity.delete(runActivity.keys().next().value);
+    stages.get(runId)?.setActivity(next);
+  }
+
+  /** The row a restored card sits after: its dispatch call's rack, else its route line; null when neither is drawn. */
+  function dispatchAnchor(run) {
+    const routeId = run.route?.routeId || '';
+    let byRoute = null;
+    for (const step of stepsById.values()) {
+      if (step.type !== 'call' || step.kind !== 'runs' || step.rack.nested || !/agent_dispatch$/i.test(String(step.name))) continue;
+      if (step.result && step.result.includes(run.runId)) return step.rack.row;
+      if (!byRoute && routeId && (step.input?.route_id === routeId || step.input?.routeId === routeId)) byRoute = step.rack.row;
+    }
+    if (byRoute?.isConnected) return byRoute;
+    const line = routeId ? routeLines.get(routeId) : null;
+    return line?.el?.isConnected ? line.el : null;
+  }
+
+  const startMs = (run) => new Date(run.startedAt || run.createdAt || 0).getTime() || 0;
+
+  /**
+   * After a reload (run cards are not journaled): each run's card comes back
+   * next to the call that dispatched it (runs of one call in the order they
+   * started), live when its worker still works. A finished run with nothing
+   * in the transcript to sit by is left to the tray; one still working is
+   * added at the end. A card already drawn is only updated.
+   */
+  function restoreRuns(list) {
+    const placed = new Map(); // anchor row → the last card row put after it
+    const runs = (Array.isArray(list) ? list : []).filter(run => run?.runId).sort((a, b) => startMs(a) - startMs(b));
+    for (const run of runs) {
+      if (runCards.get(run.runId)?.isConnected) { syncRun(run); continue; }
+      const anchor = dispatchAnchor(run);
+      if (!anchor && isTerminalRunStatus(run.status)) { noteRun(run); continue; }
+      const row = upsertRunCard(run)?.closest('.asst-msg');
+      if (!row || !anchor?.isConnected || anchor === row) continue;
+      const after = placed.get(anchor);
+      (after?.isConnected ? after : anchor).after(row);
+      placed.set(anchor, row);
+    }
+  }
+
+  /** Bring a run's card into view and hand it focus (the agents tray's mini scenes and lanes). */
+  function revealRun(runId) {
+    const card = runCards.get(runId);
+    if (!card?.isConnected) return false;
+    const top = card.getBoundingClientRect().top - $msgs.getBoundingClientRect().top + $msgs.scrollTop - 16;
+    try { $msgs.scrollTo({ top: Math.max(0, top), behavior: calm() ? 'auto' : 'smooth' }); } catch { $msgs.scrollTop = Math.max(0, top); }
+    card.classList.remove('is-revealed');
+    void card.offsetWidth; // restart the highlight
+    card.classList.add('is-revealed');
+    clearTimeout(card._revealTimer);
+    card._revealTimer = setTimeout(() => card.classList.remove('is-revealed'), 1600);
+    if (!card.hasAttribute('tabindex')) card.tabIndex = -1;
+    try { card.focus({ preventScroll: true }); } catch { /* not focusable */ }
+    return true;
+  }
+
+  function dropStages() {
+    for (const runId of [...stages.keys()]) dropStage(runId);
+    stopStageTicker();
   }
 
   function patchRunUsage(runId, tokens, fidelity) {
@@ -2749,6 +3034,43 @@ export function createRenderer(transcriptEl, hooks = {}) {
   }
 
   // ── Route lines ──
+  /**
+   * A decided route says what the Assistant's own racks show. A direct one
+   * ("do it here") whose class has a scene lends it to the racks of the turn
+   * it runs in: this turn, or the next one when it was picked while no turn
+   * ran (a late card answer). A dispatch or chat route takes it back, and so
+   * does the end of its card (declined, expired, cancelled). The scene goes
+   * with its turn (finishTurn; in a journal or a replay, the turn's `result`) and with a new prompt (appendUser).
+   */
+  function noteDirectRoute(route, phase) {
+    const id = String(route?.routeId || '');
+    if (phase !== 'auto' && phase !== 'decided') {
+      if (directRoute && directRoute.routeId === id && (phase === 'declined' || phase === 'expired' || phase === 'cancelled')) directRoute = null;
+      return;
+    }
+    const target = route?.target && typeof route.target === 'object' ? route.target : null;
+    const cls = sceneOfClass(route?.taskClass);
+    const direct = !!target && String(target.kind || 'direct') === 'direct' && cls !== 'generic';
+    // Drawn from the journal (not a live event, not a reattach's replay of the running turn): its turn is the journal's last.
+    const journal = muted && !replayDraw;
+    // That turn is known to be over (the reattach found nothing running, e.g. the journal was drawn again after it):
+    // nothing takes its route.
+    const over = journal && !turnActive && reattachRunning === false;
+    directRoute = direct && !over ? { routeId: id, taskClass: cls, turn: turnActive ? turnSeq : null, rackAt: rackSeq, journal } : null;
+    lastDirect = direct ? { routeId: id, taskClass: cls } : null;
+  }
+
+  /**
+   * What a reattach said (asst-panel.js reattach_result). With no turn running, a route the journal left without its
+   * turn's result belonged to a turn that is over: a later turn (one the CLI starts on its own, a mailbox turn) is
+   * something else and never takes its scene. With one running, that turn is the journal's last: it takes the route
+   * when it starts (showWorking).
+   */
+  function reattached(running) {
+    reattachRunning = !!running;
+    if (!running && directRoute?.journal && directRoute.turn == null) directRoute = null;
+  }
+
   function routeLineOpts(phase) {
     return { phase, t: hooks.t, providerIcon: hooks.providerIcon, brainLabel: hooks.brainLabel, onChangeRoutes: hooks.onChangeRoutes };
   }
@@ -3212,6 +3534,8 @@ export function createRenderer(transcriptEl, hooks = {}) {
         if (!parentId && !muted) grace = newestStage();
         if (grace) grace.holdUntil = Infinity;
         if (!parentId) endBursts(rootScope);
+        // A journal's or a replay's turn ended here (live, finishTurn ends it): so did the route it ran.
+        if (!parentId && muted) directRoute = null;
         hooks.onResult?.(ev);
         if (errorText && errorText !== lastErrorText) appendError(errorText);
         if (!parentId) { lastErrorText = ''; rootScope.kept = null; releaseGrace(); }
@@ -3270,11 +3594,16 @@ export function createRenderer(transcriptEl, hooks = {}) {
         return true;
       case 'synabun.route': {
         const phase = ev.phase || 'decided';
+        noteDirectRoute(ev.route, phase); // the journal's too: a conversation opened again keeps the route of its last turn
         if (hooks.onRouteEvent?.(ev)) return true; // an open card represents it
         if (phase === 'card' && silent) return true; // replayed card: the pending control re-sends it
         upsertRouteLine(ev.route || {}, phase);
         return true;
       }
+      case 'synabun.continuation':
+        // A "do it here" pick on another model runs as a turn of its own: the route it approved goes on there.
+        if (lastDirect) directRoute = { ...lastDirect, turn: turnActive ? turnSeq : null, rackAt: rackSeq };
+        return true;
       case 'synabun.clarify':
         // The card itself arrives as a control_request; its outcome is a line (the panel's card shows it live).
         if (ev.phase !== 'card') appendStatus(clarifyLine(ev), 'info');
@@ -3321,6 +3650,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
     closeStreamThinks();
     hideWorking();
     turnActive = false;
+    if (directRoute && directRoute.turn === turnSeq) directRoute = null; // its turn is over
     const stage = grace || newestStage();
     grace = null;
     const hold = holdMs > 0 && !calm();
@@ -3402,6 +3732,8 @@ export function createRenderer(transcriptEl, hooks = {}) {
     if (rootScope.stream?.mdTimer) clearTimeout(rootScope.stream.mdTimer);
     if (rootScope.stream?.thinkTimer) clearTimeout(rootScope.stream.thinkTimer);
     scopes.clear();
+    dropStages();
+    runActivity.clear();
     runCards.clear();
     routeLines.clear();
     autoRows.clear();
@@ -3417,6 +3749,8 @@ export function createRenderer(transcriptEl, hooks = {}) {
     dropHero();
     grace = null;
     turn = { calls: 0, last: null, errored: false, answerRow: null };
+    directRoute = null;
+    lastDirect = null;
     mcpWarned.clear();
     seen.clear();
     snapshot = null;
@@ -3430,7 +3764,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
   return {
     el: $msgs,
     clear,
-    destroy: () => { hideWorking(); dropHero(); dropAll(); },
+    destroy: () => { hideWorking(); dropHero(); dropAll(); dropStages(); },
     appendUser,
     appendAssistantMarkdown,
     appendStatus,
@@ -3441,6 +3775,16 @@ export function createRenderer(transcriptEl, hooks = {}) {
     appendMemorySaved,
     appendMailbox,
     upsertRunCard,
+    /** A run update that never adds a card (the tray's sources): the card, its stage and the route line follow it. */
+    syncRun,
+    /** After a reload: these runs' cards again, next to the calls that dispatched them (see restoreRuns). */
+    restoreRuns,
+    /** What a run's worker does now: its stage's scene and step follow it. */
+    setRunActivity,
+    /** Scroll a run's card into view and focus it. */
+    revealRun,
+    /** For tests and devtools: a run card's stage ({ open, phase, scene, final, pose, step, label }) or null. */
+    stageOf: (runId) => stages.get(runId)?.state() || null,
     patchRunUsage,
     upsertRouteLine,
     registerRouteLine,
@@ -3453,6 +3797,8 @@ export function createRenderer(transcriptEl, hooks = {}) {
     claimEvent,
     /** A reattach's buffered packets minus what is on screen (see planReplay). */
     planReplay,
+    /** What the reattach said (a turn runs or not): a route the journal left open goes only to that turn (see reattached). */
+    reattached,
     /** Forget what was drawn (a brain switch starts a new id space). */
     forgetSeen: () => { seen.clear(); snapshot = null; },
     /** A card waits on the user: `toolUseId` names the call it holds (the newest live stage when unknown); false clears it. */
