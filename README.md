@@ -23,7 +23,26 @@
 
 ---
 
-SynaBun gives your AI coding tools a memory that lasts. What you decided, fixed and explained in one session is there in the next one, in every project and every tool you connect, so you stop repeating yourself. It all lives in one file on your computer: no account, no cloud service, no API key.
+**SynaBun is an open-source, self-hosted AI workspace and persistent memory MCP server: SynaBun Assistant coordinates Claude Code, Codex and OpenCode agents.** What you decided, fixed and explained in one session is there in the next one, in every project and every tool you connect, so you stop repeating yourself. It all lives in one SQLite file on your computer: no account, no cloud service, no API key.
+
+```bash
+npm install -g synabun
+```
+
+`synabun` starts the app. `synabun mcp` is the MCP server on stdio, for any MCP client:
+
+```json
+{
+  "mcpServers": {
+    "SynaBun": {
+      "command": "npx",
+      "args": ["-y", "synabun", "mcp"]
+    }
+  }
+}
+```
+
+After the global install, `"command": "synabun", "args": ["mcp"]` runs the same server. Read the [docs](https://synabun.ai/docs), or see how SynaBun [compares](https://synabun.ai/compare) with other memory tools.
 
 It connects to Claude Code, Codex CLI, Gemini CLI and OpenCode with one switch each, and to Cursor, Windsurf or any other tool that supports MCP (the Model Context Protocol) with a config snippet you copy. It comes with the Neural Interface, a local web app where you see what your tools remember and run your coding agents.
 
