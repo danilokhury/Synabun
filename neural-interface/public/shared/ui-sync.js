@@ -138,6 +138,9 @@ const SYNC_HANDLERS = {
   'assistant:routing-changed':     (msg) => emit('sync:assistant:routing-changed', msg),
   // Admin sandbox (lib/agent-sandbox-setting.js): the one global value changed in some window
   'agents:admin-sandbox-changed':  (msg) => emit('sync:agents:admin-sandbox-changed', msg),
+  // Skills Service (lib/skills/service.js): a skill, a revision, a review or an installation changed (owner only) —
+  // the Studio reads its library again, Settings its chips, the Codex panel its skill hints
+  'skills:changed':                (msg) => emit('sync:skills:changed', msg),
 
   // WhatsApp Link — states and counters only (never a QR, code, number or text); Settings → WhatsApp re-reads /api/whatsapp/status
   'whatsapp:status':               (msg) => emit('sync:whatsapp:status', msg),

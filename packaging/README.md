@@ -425,15 +425,53 @@ release without desktop files is "no update", quietly. The user side is
   (no countdown for an hour). Work that starts during the countdown stops it.
   The update also installs when the app quits, and a copy that starts with
   one downloaded (`update-state/pending.json`) installs it before its server.
-  **Install now** skips the countdown, never the wait for running work.
-  Before installing, the app stops the server it started and writes how its
-  window was (`relaunch.json`); the new copy opens it the same way and says
-  once that it updated. Its first start takes SynaBun's verified pre-update
-  snapshot of the data home (`backups/updates/synabun-pre-update-*.zip`)
-  before its server, and so any migration, runs; when the snapshot fails, it
-  does not start (`lib/first-launch-protection.js`).
+  **Install now** skips the countdown, never the wait for running work, and
+  **Restart to update** (the interface's green button, the menus, the tray, the
+  Dock) is Install now. Every install is one attempt with an id of its own. The
+  app shows the splash (`desktop/src/splash.mjs`) and hides its window only
+  once the splash is on screen, writes how its window was (`relaunch.json`),
+  stops the server it started, and then protects the data
+  (`desktop/src/updater/data-guard.mjs` → `<entry> update-snapshot --json`,
+  `lib/update-snapshot.js`): the pre-update snapshot
+  (`backups/updates/synabun-pre-update-*.zip`,
+  `neural-interface/lib/backup-service.js` createUpgradeSnapshot: each SQLite
+  file, known by its header, copied as of one commit (a clone on APFS, SQLite's
+  online backup elsewhere; a copy that fails fails the snapshot, never a plain
+  file copy), every copy through `PRAGMA integrity_check` on a worker thread
+  while the archive is written, stored, checksummed in one pass, read back
+  once, published only when both passed) is handed over in
+  `data/update-handoff.json`. Logs, the records every start and the hooks
+  rewrite, the caches the server rebuilds (map layout, links) and the
+  automation browser's Chromium profiles (`isUpgradeRuntimeFile`) are not in
+  it. The manifest records what each entry
+  was taken from (`inputs`: a database's fingerprint, its file and the content
+  of its WAL, emptied by a TRUNCATE checkpoint first so that the last
+  connection's close changes nothing; any other file by its SHA-256), and
+  `checkUpgradeSnapshotFreshness` compares the data home with it from any
+  process. While the update waits and SynaBun is idle, the snapshot is prepared
+  in the background (later preparations keep it while it is exact); at the
+  install, after the server has stopped, the command uses it only when it is
+  still exact, and takes a new one otherwise. The app holds no connection to
+  the database and seals nothing. Only then is anything replaced; a snapshot
+  that cannot be taken fails the install and the version that runs comes back.
+  The new copy shows the splash as its first act, marks the handoff `installed`
+  (its install id in `plan.json`), and its first start, before its server and
+  any migration (`lib/first-launch-protection.js`), checks that archive again:
+  the very file that was read back (its stamp; any other file is read in full),
+  a database copy that passed the integrity check, and still exact. A write
+  since (an AI tool's own MCP server writes `memory.db` itself) makes it take a
+  new snapshot there, with its progress on the splash (the supervisor's
+  `snapshot` phase); without a handoff it takes one too, and does not start
+  when it fails. What no check covers: a write by another process in the
+  moment between that last check and the server's first open of the database
+  (about a second), which belongs to the new version's run. The npm updater's
+  handoff (no `inputs`) is checked as before. A quiet server stop commits
+  nothing (the judge backfill writes its counters only when there are some),
+  so a quiet restart keeps the snapshot made ahead.
 - **Failures.** Anything that fails keeps the version that runs: an error with
-  a link to the releases page, and the version is installed automatically
+  a link to the releases page (the splash on screen says the update did not
+  finish for a moment, `FAILED_BEAT_MS`, before the server starts again behind
+  it), and the version is installed automatically
   again only at a check 3 hours or more later, 3 times at most
   (`update-state/attempts.json`); Try again and Install now still work.
 - **Windows** (electron-updater's `NsisUpdater` downloads and checks the
@@ -457,7 +495,23 @@ release without desktop files is "no update", quietly. The user side is
   (Apple Silicon for an Intel copy under Rosetta) is downloaded and checked
   against `latest-mac.yml` (size and SHA-512), unpacked beside the app and
   checked (bundle id, version, processor, `codesign --verify --deep
-  --strict`). After the app quits, a small detached script moves the new copy
+  --strict`). A copy an earlier run unpacked (`staged.json`, a hint only) is
+  used again only when it is, entry by entry and byte by byte, the archive just
+  checked against the feed (`desktop/src/updater/stage-check.mjs`
+  compareFolderWithZip: names, kinds, link targets, sizes, executable bits,
+  content; about 2 s for the 16,000 entries of a build, where unpacking and
+  verifying again take half a minute): an ad hoc signature can be made again by
+  whoever changed the files, so `codesign --verify` proves nothing there. Then
+  its headless entry runs once (`synabun-cli help`, through
+  `/bin/sh`: `warmStagedCopy`), so macOS's first-start check of the new bundle
+  (3–4 s, Gatekeeper and XProtect) is over before the restart and stays with
+  the files through the rename; the window executable is never run for this (it
+  would show in the Dock). What the checked copy's files are is kept in memory
+  (treeSignature: kind, mode, size, inode, modification and change times); right
+  before the swap the copy is compared with it, and when anything moved, with
+  the archive again (itself checked against the feed's SHA-512 first): a copy
+  that changed is removed and the install fails (`STAGED_CHANGED`), so nothing
+  of it runs. After the app quits, a small detached script moves the new copy
   into place, opens it, and keeps the old one until the new one says it runs;
   if it does not within three minutes, or the move fails, the old copy is put
   back. A copy started from the disk image, or one macOS runs from a temporary

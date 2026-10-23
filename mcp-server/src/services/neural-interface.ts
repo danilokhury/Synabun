@@ -12,6 +12,7 @@ import {
   getIdentity,
   effectivePins,
   terminalIdFor,
+  callerBrainCredential,
   callerRole,
   setReleaseHook,
   peekStdioIdentity,
@@ -1340,6 +1341,18 @@ export async function moreloginStop(envId: string): Promise<NiResponse> {
 
 export async function moreloginUseDefault(envId: string | null): Promise<NiResponse> {
   return request('POST', '/api/morelogin/use-default', envId ? { envId } : { clear: true });
+}
+
+// ── Skills (the role-gated `skills` tool group) ──
+// One thin call over /api/skills-studio/v2 (neural-interface/lib/skills/api-v2.js, creation-api.js), which owns every
+// rule: an agent reads, drafts, checks and submits for review; installing and approving are the owner's, from the
+// app's own page, and the routes refuse them to a request that carries the agent headers requestOnce sends. The
+// caller's brain credential (identity.ts callerBrainCredential: its own request's over HTTP, SYNABUN_BRAIN_TOKEN for a
+// stdio child) rides along: the server knows the Assistant by it (AI drafting needs it), never by X-Synabun-Role.
+
+export async function skillsV2(method: 'GET' | 'POST' | 'PATCH', path: string, body?: Record<string, unknown>, timeout = LONG_TIMEOUT): Promise<NiResponse> {
+  const credential = callerBrainCredential();
+  return requestOnce(method, `/api/skills-studio/v2${path}`, body, timeout, credential ? { 'X-Synabun-Brain-Token': credential } : {});
 }
 
 // ── SynaBun assistant orchestration (role-gated `agents` tool group) ──

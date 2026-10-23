@@ -3,12 +3,15 @@
 // ═══════════════════════════════════════════
 // The renderer (asst-render.js) owns the rigs and says which one is on screen:
 // the hero (the empty state's character; a send hands it over to the
-// "Thinking" row's at once), the live rack's stage or the "Thinking" row's.
+// "Thinking" row's at once), the face of the newest open card the mascot
+// presents (a follow-ups or question card: asst-ask.js, kind 'card'), the
+// live rack's stage or the "Thinking" row's.
 // This module dresses that one in the panel's own state, above the pose the
 // renderer gives it:
 //
 //   offline         the socket dropped (the Reconnecting banner); one startle on reconnect
-//   blocked         a card waits on you: eyes on it, two pulses, then still
+//   blocked         a card waits on you: eyes on it, two pulses, then still (never on a
+//                   question card's own face, `waits`: that card asks in its own pose)
 //   success, error  once, when a turn that did real work ends (then idle)
 //   watch           while you type: eyes on the caret column, look() at most
 //                   every 120 ms; back 1.5 s after the last key, at once on send
@@ -67,8 +70,8 @@ export function lookToward(box, point, { horizontal = false } = {}) {
 
 /**
  * createMascotDirector({ getTarget, caret, env })
- * getTarget() → the renderer's visible mascot { kind: 'hero'|'stage'|'working',
- *   rig, el, parked?(), hold(on), restore() } or null; caret() → the caret's
+ * getTarget() → the renderer's visible mascot { kind: 'hero'|'card'|'stage'|'working',
+ *   rig, el, parked?(), waits?, hold(on), restore() } or null; caret() → the caret's
  *   client point or null.
  * Control API: attend(owner, { pose, rectOf, options, open }), leave(owner),
  * controlCommitted({ pose, options, reaction }); type(present, pointOf?) also
@@ -109,7 +112,8 @@ export function createMascotDirector({ getTarget = () => null, caret = () => nul
 
   function desired(t) {
     if (offline) return { pose: 'offline' };
-    if (blocked) {
+    // A question card's own face is the card that waits: it asks in its own pose (asst-ask.js), never "blocked" at itself.
+    if (blocked && !t.waits) {
       // The card's head (its title and command sit top left), not its centre.
       const card = safe(blocked);
       const point = card && card.width ? { x: card.left + Math.min(card.width * 0.3, 160), y: card.top + Math.min(card.height / 2, 28) } : null;

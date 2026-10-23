@@ -31,6 +31,7 @@ import { codexRouteGateBootstrap } from './assistant-route-gate-codex.js';
 import { proposedPlanText } from './assistant-envelope.js';
 import { clampBrainModes, clampRouteMode, defaultRemotePolicyRegistry, effectiveLevel, isComputerTool, readRegisteredProjects, remoteBrainLimited, remoteComputerDenial, remoteComputerUse, remoteToolDenial, runExceedsPolicy } from './remote-policy.js';
 import { browserToolDenial } from './browser-tool-policy.js';
+import { stripFollowups } from '../public/shared/assistant/asst-followups.js';
 
 export const BRAIN_PROVIDERS = new Set(['claude-code', 'codex', 'opencode']);
 // Every tab is called SynaBun; the session title (the history list) comes from
@@ -379,7 +380,7 @@ export function createAssistantRuntime({
       // Claude brains: the turns sent, keyed by their final text, for the in-process recall hook.
       turnMeta: new Map(),
       desktopGrant: null,
-      // A WhatsApp conversation's brain credential (mintBrainCredential): this launch only, never persisted.
+      // This brain launch's credential (mintBrainCredential): this launch only, never persisted.
       brainCredential: null,
       // Route gate (assistant-route-gate.js): one per session while routing is wired.
       // gatePluginAt: when the OpenCode serve loaded the gate plugin (until then, reactive).
@@ -1287,7 +1288,8 @@ export function createAssistantRuntime({
         if (event.subtype === 'error_max_budget_usd' && live.brainProvider === 'claude-code') live.brainCapHit = true;
         if (live.planTurn) live.planText = planTurnText(event);
         // The reply the user's next message answers (context for the learning loop; a subagent's result is not it).
-        if (typeof event.result === 'string' && event.result.trim() && !event.parent_tool_use_id) live.lastReply = clip(event.result, 600);
+        // The follow-ups block is the panel's buttons, not words of the reply.
+        if (typeof event.result === 'string' && event.result.trim() && !event.parent_tool_use_id) live.lastReply = clip(stripFollowups(event.result), 600);
         touch(live);
       }
       if (TRANSCRIPT_EVENT_TYPES.has(event.type) && !(event.type === 'system' && event.subtype !== 'init')) appendTranscript(id, { at: iso(now()), packet });
@@ -2003,9 +2005,12 @@ export function createAssistantRuntime({
         live.computerGrantLive = false;
       } catch (error) { log('assistant:desktop-grant-error', error?.message || String(error)); }
     }
-    // whatsapp_send_file: one credential per brain launch of a WhatsApp conversation (BRAIN_CREDENTIAL_RE),
-    // for that brain's SynaBun MCP server alone. Every other session's brain gets none.
-    live.brainCredential = (live.record.channel || live.record.remote?.channel) === 'whatsapp' ? mintBrainCredential() : null;
+    // One credential per brain launch (BRAIN_CREDENTIAL_RE), for that brain's SynaBun MCP server alone: how SynaBun
+    // knows a call comes from this session's own brain, never from a process that only sent X-Synabun-Role or
+    // X-Synabun-Terminal. Skill creation (lib/skills/creation-api.js) and the Skills Service's assistant author
+    // (lib/skills/api-v2.js principalOf) take it; whatsapp_send_file takes it and then only the active WhatsApp
+    // conversation's session (lib/whatsapp/service.js sendFile).
+    live.brainCredential = mintBrainCredential();
     const cliCap = brain.provider === 'claude-code' ? brainCliCap(live) : null;
     const deps = {
       ClaudeSession, sdkVersion, PACKAGE_ROOT, handleCodexSkinWebSocket, ensureIsolatedServe, stopIsolatedServe, setupOpencodeSidepanelConfig,

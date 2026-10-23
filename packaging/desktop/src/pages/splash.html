@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' file:; style-src 'self' file:; script-src 'self' file:">
+  <meta name="color-scheme" content="dark">
+  <title>SynaBun</title>
+  <link rel="stylesheet" href="splash.css">
+</head>
+<body data-stage="checking">
+  <!-- The splash (src/splash-model.mjs): what SynaBun is doing while it starts, installs an update or closes.
+       The whole window drags; only the Details button takes a click. -->
+  <main class="splash">
+    <header class="brand">
+      <img class="wordmark" id="wordmark" src="../../assets/logo.png" alt="SynaBun" width="89" height="20">
+      <!-- The little animation beside the logo: three pills like the mark's, hopping while SynaBun works. -->
+      <span class="pills" id="pills" data-state="waking" aria-hidden="true"><i></i><i></i><i></i></span>
+    </header>
+
+    <section class="stage">
+      <!-- What the mascot says: a few lines per stage, in turn (decorative: the status line below is what a
+           screen reader hears). -->
+      <div class="bubble" id="bubble" aria-hidden="true"><span id="say"></span></div>
+      <!-- The mascot of neural-interface/public/offline.html: same 280 x 140 pill geometry and states. -->
+      <div class="mascot-wrap" id="mascot" data-state="waking">
+        <svg viewBox="0 0 280 140" width="150" height="75" style="overflow:visible" aria-hidden="true" focusable="false">
+          <rect class="eye eye-l" x="80" y="24" width="38" height="72" rx="19"/>
+          <rect class="eye eye-r" x="162" y="24" width="38" height="72" rx="19"/>
+          <path class="mouth mouth-calm" d="M118,116 Q140,128 162,116"/>
+          <path class="mouth mouth-happy" d="M111,112 Q140,138 169,112"/>
+          <path class="mouth mouth-sad" d="M123,124 Q140,114 157,124"/>
+        </svg>
+        <div class="zzz" aria-hidden="true"><span>z</span><span>z</span><span>z</span></div>
+      </div>
+    </section>
+
+    <p class="status" id="status" role="status" aria-live="polite"></p>
+    <div class="bar" id="bar" role="progressbar" aria-labelledby="status" aria-valuemin="0" aria-valuemax="100" data-mode="travel"><span id="fill"></span></div>
+    <p class="meta" id="meta"></p>
+    <button class="details" id="details" type="button">Details</button>
+  </main>
+  <script src="splash.js"></script>
+</body>
+</html>

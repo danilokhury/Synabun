@@ -76,6 +76,10 @@ export const DESKTOP_COPY = Object.freeze({
     metaReadyOff: 'Ready to install',
     metaCountdown: 'Restarting to install it',
     metaPostponed: 'Postponed: installs on quit or later',
+    // The button at the top right while a downloaded update waits for a restart, as Discord's green one.
+    restartButton: 'Restart to update',
+    restartTooltip: 'SynaBun v{latest} is ready: restart to update',
+    restartSoon: 'Restarting soon',
   }),
   // What an update waits for (the app's server names it, GET /api/system/activity).
   busy: Object.freeze({
@@ -420,6 +424,22 @@ export function desktopUpdateTooltip(state, { t = fillDesktopCopy } = {}) {
   if (step === 'downloading') return t('update.tooltipDownloading', params);
   if (step === 'downloaded') return t(s.autoUpdate || s.auto?.now ? 'update.tooltipReady' : 'update.tooltipReadyOff', params);
   return t('update.tooltip', params);
+}
+
+/**
+ * The top right button while a downloaded update waits for a restart into it, or null: { label, tooltip, asked }.
+ * Only an update this copy installs by restarting (not one to move to Applications or to install by hand). After
+ * Restart to update, while something still runs, it says that the restart is coming (`asked`).
+ */
+export function desktopRestartButton(state, { t = fillDesktopCopy } = {}) {
+  const s = readDesktopUpdateState(state);
+  if (desktopUpdateStep(s) !== 'downloaded' || s.install !== 'restart' || s.manualFile) return null;
+  const asked = s.auto?.now === true;
+  return {
+    label: t(asked ? 'update.restartSoon' : 'update.restartButton'),
+    tooltip: t('update.restartTooltip', { latest: s.latest || '', current: s.current }),
+    asked,
+  };
 }
 
 /**

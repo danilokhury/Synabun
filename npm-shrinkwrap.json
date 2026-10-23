@@ -1,12 +1,12 @@
 {
   "name": "synabun",
-  "version": "2.0.10",
+  "version": "2.0.11",
   "lockfileVersion": 3,
   "requires": true,
   "packages": {
     "": {
       "name": "synabun",
-      "version": "2.0.10",
+      "version": "2.0.11",
       "hasInstallScript": true,
       "license": "Apache-2.0",
       "dependencies": {
@@ -34,6 +34,7 @@
         "undici": "^8.5.0",
         "uuid": "^14.0.0",
         "ws": "^8.21.0",
+        "yaml": "2.9.1",
         "zod": "^4.4.3"
       },
       "bin": {
@@ -4386,6 +4387,21 @@
       "license": "BlueOak-1.0.0",
       "engines": {
         "node": ">=18"
+      }
+    },
+    "node_modules/yaml": {
+      "version": "2.9.1",
+      "resolved": "https://registry.npmjs.org/yaml/-/yaml-2.9.1.tgz",
+      "integrity": "sha512-3NxN8+78OdzbT7C/WjGsyfPAtJaN3FNDsWxv7Y7mcDsT/oOmgW8BpyQQFFBnvZE3j9Y2Sdz1ULFLezL7Eb2yFw==",
+      "license": "ISC",
+      "bin": {
+        "yaml": "bin.mjs"
+      },
+      "engines": {
+        "node": ">= 14.6"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/eemeli"
       }
     },
     "node_modules/zip-stream": {

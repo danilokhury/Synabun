@@ -30,13 +30,13 @@ const GROUP_TOOL_ESTIMATES: Record<string, number> = {
   browser_instagram: 5,
   browser_linkedin: 8,
   browser_bluesky: 15,
-  leonardo: 5,
   discord: 8,
   gsc: 30,
   youtube: 11,
   styleguide: 1,
   morelogin: 1,
   agents: 11,
+  skills: 1,
   computer: 4,
 };
 

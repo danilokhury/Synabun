@@ -1,5 +1,6 @@
 import {
   accessSync,
+  closeSync,
   copyFileSync,
   constants as FS_CONSTANTS,
   createReadStream,
@@ -7,7 +8,9 @@ import {
   lstatSync,
   mkdtempSync,
   mkdirSync,
+  openSync,
   readFileSync,
+  readSync,
   readdirSync,
   renameSync,
   rmSync,
@@ -16,11 +19,15 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { basename, dirname, extname, join, parse as parsePath, relative, resolve, sep } from 'node:path';
+import { basename, dirname, extname, isAbsolute, join, parse as parsePath, relative, resolve, sep } from 'node:path';
+import * as nodeSqlite from 'node:sqlite';
 import { DatabaseSync } from 'node:sqlite';
+import { Worker } from 'node:worker_threads';
 import archiver from 'archiver';
 import { openZipArchive, readZipEntry, verifyBackupChecksums } from './backup-zip-reader.js';
+import { writeZipArchive } from './backup-zip-writer.js';
 import { LOCK_FILE_NAME } from './rulesets/lock.js';
 
 export const BACKUP_MANIFEST_VERSION = 3;
@@ -461,14 +468,26 @@ async function writeArchive({ tempPath, files, manifest, level = 6 }) {
  * sha256. Streaming matters: reading the archive into memory failed every
  * backup over 2 GiB, which is when a backup matters most.
  */
-export async function verifyBackupArchive(path) {
+export async function verifyBackupArchive(path, { onBytes = null } = {}) {
   const zip = await openZipArchive(path);
   try {
     const manifestEntry = zip.getEntry(`${BACKUP_PREFIX}/manifest.json`);
     if (!manifestEntry) throw new Error('Backup verification failed: manifest is missing');
     const manifest = JSON.parse((await readZipEntry(zip, manifestEntry)).toString('utf-8'));
-    await verifyBackupChecksums(zip, { prefix: BACKUP_PREFIX, manifest });
+    await verifyBackupChecksums(zip, { prefix: BACKUP_PREFIX, manifest, onBytes });
     return manifest;
+  } finally {
+    await zip.close();
+  }
+}
+
+/** The manifest of a backup archive, read without reading anything else (its central directory and the manifest entry). */
+export async function readBackupArchiveManifest(path) {
+  const zip = await openZipArchive(path);
+  try {
+    const manifestEntry = zip.getEntry(`${BACKUP_PREFIX}/manifest.json`);
+    if (!manifestEntry) throw new Error('Backup verification failed: manifest is missing');
+    return JSON.parse((await readZipEntry(zip, manifestEntry)).toString('utf-8'));
   } finally {
     await zip.close();
   }
@@ -632,6 +651,604 @@ export async function createVerifiedBackup({
     if (stageDir) {
       try { rmSync(stageDir, { recursive: true, force: true }); } catch {}
     }
+  }
+}
+
+// ── The pre-update snapshot: quick at any size ──
+//
+// createVerifiedBackup() is the full backup (scheduled, manual, the npm updater's): VACUUM INTO, an integrity
+// check, deflate, and a re-read through inflate. On a 3.9 GB memory.db that is 81 s on an Apple M-series SSD,
+// and the pre-update snapshot is taken while SynaBun restarts into a new version, with the user waiting.
+// createUpgradeSnapshot() keeps what that snapshot promises (the state as of one commit, every byte in a ZIP the
+// restore paths read, every database copy passing the integrity check the restore runs, read back once and checked
+// before it is published) and drops what made it slow: VACUUM INTO, deflating the database and inflating it again.
+// The integrity check runs on a thread of its own while the archive is written (about 28 s for that 3.9 GB file).
+//
+// The snapshot also records what it was taken from (`inputs` in its manifest): checkUpgradeSnapshotFreshness()
+// tells later, from any process, whether it still stands for the data as it is (lib/update-snapshot.js before the
+// desktop app replaces itself, lib/first-launch-protection.js before the new version's server starts).
+
+/** statfs type of APFS (macOS): a file there can be cloned in constant time. */
+const APFS_STATFS_TYPE = 26;
+
+/**
+ * How `source` can be cloned (copy on write, in constant time) into the folder `targetDir`, or null: APFS on
+ * macOS (/bin/cp -c, which is clonefile), a reflink on Linux (FICLONE; a file system without one refuses it, and
+ * the copy falls back). Windows has neither. Only within one volume.
+ */
+export function cloneMethodFor(source, targetDir, { platform = process.platform, statfs = statfsSync, stat = statSync } = {}) {
+  try {
+    if (stat(source).dev !== stat(targetDir).dev) return null;
+    if (platform === 'darwin') return Number(statfs(targetDir).type) === APFS_STATFS_TYPE ? 'clone' : null;
+    if (platform === 'linux') return 'reflink';
+  } catch { /* no clone: SQLite's backup copies */ }
+  return null;
+}
+
+function cloneFileNow(source, target, method) {
+  if (method === 'clone') execFileSync('/bin/cp', ['-c', source, target], { stdio: 'ignore', timeout: 60_000 });
+  else copyFileSync(source, target, FS_CONSTANTS.COPYFILE_FICLONE_FORCE);
+}
+
+const SQLITE_HEADER = Buffer.from('SQLite format 3\0', 'latin1');
+
+/** Up to `length` bytes from the start of the file at `path`. */
+function readHead(path, length) {
+  const fd = openSync(path, 'r');
+  try {
+    const head = Buffer.alloc(length);
+    const read = readSync(fd, head, 0, length, 0);
+    return head.subarray(0, read);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * True when the file at `path` begins with SQLite's 16-byte header: a database, whatever its name says. False for
+ * anything else and for a file that is gone (nothing to copy); any other error is thrown.
+ */
+export function isSqliteDatabaseFile(path) {
+  try {
+    return readHead(path, SQLITE_HEADER.length).equals(SQLITE_HEADER);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+/** SHA-256 (hex) of a file, read in one pass on this thread (WAL files: small, and read while a lock is held). */
+function hashFileNow(path) {
+  const digest = createHash('sha256');
+  const fd = openSync(path, 'r');
+  try {
+    const buffer = Buffer.allocUnsafe(4 * 1024 * 1024);
+    let position = 0;
+    for (;;) {
+      const read = readSync(fd, buffer, 0, buffer.length, position);
+      if (!read) break;
+      digest.update(buffer.subarray(0, read));
+      position += read;
+    }
+  } finally {
+    closeSync(fd);
+  }
+  return digest.digest('hex');
+}
+
+/**
+ * What tells a later reader, in any process, whether the SQLite database at `path` was written since: its file
+ * (device, inode, size, modification and change times, and its first 100 bytes, where a rollback-journal database
+ * counts every commit) and the content of its WAL, which every commit of a WAL database changes. An empty WAL counts
+ * as none: the last connection to close deletes it, and changes nothing else when it is empty. The fingerprint is
+ * physical, so a checkpoint changes it without a commit: that costs a needless new snapshot, never a missed write.
+ */
+export function sqliteFingerprint(path) {
+  const stat = statSync(path, { bigint: true });
+  let wal = null;
+  const walPath = `${path}-wal`;
+  try {
+    const walSize = statSync(walPath).size;
+    if (walSize > 0) wal = { size: walSize, sha256: hashFileNow(walPath) };
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+  return {
+    dev: String(stat.dev),
+    ino: String(stat.ino),
+    size: Number(stat.size),
+    mtimeNs: String(stat.mtimeNs),
+    ctimeNs: String(stat.ctimeNs),
+    head: createHash('sha256').update(readHead(path, 100)).digest('hex'),
+    wal,
+  };
+}
+
+/** True when two fingerprints (sqliteFingerprint) say the database was not written in between. */
+export function sameSqliteFingerprint(a, b) {
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false;
+  for (const key of ['dev', 'ino', 'mtimeNs', 'ctimeNs', 'head']) if (String(a[key]) !== String(b[key])) return false;
+  if (Number(a.size) !== Number(b.size)) return false;
+  if (!a.wal || !b.wal) return !a.wal && !b.wal;
+  return Number(a.wal.size) === Number(b.wal.size) && a.wal.sha256 === b.wal.sha256;
+}
+
+/**
+ * A consistent copy of the SQLite database `sourcePath` at `targetPath`: the database as of one commit, in one
+ * self-contained file (journal_mode DELETE, nothing beside it). As fast as the file system allows:
+ *
+ *   clone    APFS or a reflink: the database file and its WAL are cloned while this connection holds the write
+ *            lock (BEGIN IMMEDIATE: a writer waits a moment, readers go on), then the copy folds its WAL in.
+ *            Constant time whatever the size. Nothing can go missing between the two clones: a checkpoint may
+ *            still copy frames into the database file, but the WAL keeps every one of them, because no writer
+ *            can reset it while the lock is held.
+ *   backup   anywhere else (or when the lock is not free within `busyTimeoutMs`), SQLite's online backup in
+ *            one step: one sequential read and write, from one read transaction, and no writer ever waits.
+ *   vacuum   a Node without the backup API (before 22.16): VACUUM INTO, as the full backups do.
+ *
+ * First the WAL is emptied when nothing holds an older snapshot (a TRUNCATE checkpoint, waiting a second at most),
+ * so the source's fingerprint (sqliteFingerprint) survives the close of its last connection; it is taken under the
+ * write lock for a clone, right before the copy otherwise (a commit in between makes a later check find it written:
+ * never the other way round). The copy is then opened read-only once: its header must account for its whole size,
+ * and the memories of the `primary` database are counted (a query that fails there fails the copy). Resolves
+ * { method, path, sizeBytes, memoryCount, pageCount, fingerprint }, or null when there is no database.
+ */
+export async function copySqliteDatabase(sourcePath, targetPath, {
+  platform = process.platform, method: forced = null, busyTimeoutMs = 15_000, clone = cloneFileNow, primary = false,
+} = {}) {
+  if (!existsSync(sourcePath)) return null;
+  for (const suffix of ['', '-wal', '-shm', '-journal']) rmSync(`${targetPath}${suffix}`, { force: true });
+  const fallback = typeof nodeSqlite.backup === 'function' ? 'backup' : 'vacuum';
+  let method = forced || cloneMethodFor(sourcePath, dirname(targetPath), { platform }) || fallback;
+  let fingerprint = null;
+  const source = new DatabaseSync(sourcePath);
+  try {
+    // Readers that hold an older snapshot keep the WAL as it is: the copy is right either way.
+    try {
+      source.exec('PRAGMA busy_timeout = 1000');
+      source.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get();
+    } catch { /* busy or not a WAL database */ }
+    source.exec(`PRAGMA busy_timeout = ${Math.max(0, Math.floor(busyTimeoutMs))}`);
+    if (method === 'clone' || method === 'reflink') {
+      let locked = false;
+      let cloned = false;
+      try {
+        source.exec('BEGIN IMMEDIATE');
+        locked = true;
+        fingerprint = sqliteFingerprint(sourcePath);
+        clone(sourcePath, targetPath, method);
+        const wal = `${sourcePath}-wal`;
+        if (existsSync(wal) && statSync(wal).size > 0) clone(wal, `${targetPath}-wal`, method);
+        cloned = true;
+      } catch {
+        for (const suffix of ['', '-wal']) rmSync(`${targetPath}${suffix}`, { force: true });
+      } finally {
+        // Nothing was written: the lock is only let go.
+        if (locked) { try { source.exec('ROLLBACK'); } catch {} }
+      }
+      if (!cloned) method = fallback;
+    }
+    if (method === 'backup') {
+      fingerprint = sqliteFingerprint(sourcePath);
+      // One step holds one read transaction for the whole copy: no restart, whatever the server writes.
+      await nodeSqlite.backup(source, targetPath, { rate: 1_000_000_000 });
+    } else if (method === 'vacuum') {
+      fingerprint = sqliteFingerprint(sourcePath);
+      source.exec(`VACUUM INTO '${escapeSqliteString(targetPath)}'`);
+    }
+  } finally {
+    try { source.close(); } catch {}
+  }
+  const copy = new DatabaseSync(targetPath);
+  try {
+    copy.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    copy.exec('PRAGMA journal_mode = DELETE');
+  } finally {
+    try { copy.close(); } catch {}
+  }
+  for (const suffix of ['-wal', '-shm']) rmSync(`${targetPath}${suffix}`, { force: true });
+  const check = new DatabaseSync(targetPath, { readOnly: true });
+  try {
+    const pageCount = Number(check.prepare('PRAGMA page_count').get()?.page_count);
+    const pageSize = Number(check.prepare('PRAGMA page_size').get()?.page_size);
+    const sizeBytes = statSync(targetPath).size;
+    if (!(pageCount > 0) || pageCount * pageSize !== sizeBytes) {
+      throw new Error(`The copy of ${basename(sourcePath)} is incomplete: ${pageCount} pages of ${pageSize} bytes in a file of ${sizeBytes} bytes`);
+    }
+    let memoryCount = null;
+    if (primary) {
+      // A memory database that was never set up has no memories table; any other failure is the copy's.
+      const hasMemories = check.prepare("SELECT 1 AS found FROM sqlite_master WHERE type = 'table' AND name = 'memories'").get();
+      memoryCount = hasMemories ? Number(check.prepare('SELECT COUNT(*) AS count FROM memories').get().count) : 0;
+    }
+    return { method, path: targetPath, sizeBytes, memoryCount, pageCount, fingerprint };
+  } finally {
+    try { check.close(); } catch {}
+  }
+}
+
+/**
+ * SQLite's PRAGMA integrity_check, the one `synabun restore-backup` runs, on each file in `paths`, on a thread of
+ * its own (sqlite-integrity-worker.js): a 3.9 GB memory.db takes about 28 s, spent while the archive is written.
+ * Resolves [{ path, ok, lines, ms }] (`lines`: SQLite's first findings when a file is not ok); `cancel()` on the
+ * promise stops the thread (it then rejects).
+ */
+export function checkSqliteIntegrity(paths, { spawnWorker = (workerData) => new Worker(new URL('./sqlite-integrity-worker.js', import.meta.url), { workerData }) } = {}) {
+  if (!paths.length) return Object.assign(Promise.resolve([]), { cancel: () => {} });
+  let worker = null;
+  const checking = new Promise((resolveCheck, reject) => {
+    let settled = false;
+    const settle = (fn, value) => { if (!settled) { settled = true; fn(value); } };
+    try { worker = spawnWorker({ paths }); }
+    catch (error) { reject(error); return; }
+    worker.once('message', (results) => settle(resolveCheck, results));
+    worker.once('error', (error) => settle(reject, error));
+    worker.once('exit', (code) => settle(reject, new Error(`the integrity check ended (exit ${code}) without a result`)));
+  });
+  checking.cancel = () => { try { worker?.terminate(); } catch { /* already gone */ } };
+  return checking;
+}
+
+/** Raised when a database copy fails SQLite's integrity check: the snapshot is not published. */
+export class SnapshotIntegrityError extends Error {
+  constructor(file, lines) {
+    super(`The copy of ${file} did not pass SQLite's integrity check: ${lines.slice(0, 3).join('; ') || 'no answer'}`);
+    this.name = 'SnapshotIntegrityError';
+    this.code = 'EINTEGRITY';
+    this.file = file;
+    this.lines = lines;
+  }
+}
+
+/** Which file this is, as far as a later reader can tell without reading it: device, inode, size, modified. */
+export function backupFileStamp(path) {
+  const stat = statSync(path, { bigint: true });
+  return { dev: String(stat.dev), ino: String(stat.ino), size: Number(stat.size), mtimeNs: String(stat.mtimeNs) };
+}
+
+/** True when `path` is still the very file `stamp` describes (nothing rewrote or replaced it). */
+export function sameBackupFile(path, stamp) {
+  if (!stamp || typeof stamp !== 'object') return false;
+  try {
+    const now = backupFileStamp(path);
+    return now.dev === String(stamp.dev) && now.ino === String(stamp.ino) && now.size === Number(stamp.size) && now.mtimeNs === String(stamp.mtimeNs);
+  } catch {
+    return false;
+  }
+}
+
+// ── What an upgrade snapshot protects ──
+
+// What lives in data/ and mcp-data/ without being state to roll back, and is rewritten by itself all the time (a
+// snapshot that held it could never stay exact): logs; the start launcher's and the supervisor's records, the
+// update's own handoff, the resume heartbeat of terminal sessions (rewritten every 30 s), the hooks' per-session flags
+// and transcript captures, the MCP tool counters; the caches the server rebuilds from the memories (the map's layout,
+// the links); and the automation browser's Chromium profiles, which Chromium locks and rewrites while it runs (the
+// "attach" one even when SynaBun does not), and which no SynaBun update touches. Upgrade snapshots leave them out;
+// the full backups keep everything.
+const UPGRADE_RUNTIME_FILES = Object.freeze({
+  data: new Set(['supervisor.json', 'start-launcher.lock', 'update-handoff.json', 'last-session.json', 'memory-map.json', 'links-cache.json']),
+  'mcp-data': new Set(['tool-usage.json']),
+});
+const UPGRADE_RUNTIME_DIRS = Object.freeze({
+  data: new Set(['pending-remember', 'pending-compact', 'precompact', 'chrome-profile', 'chrome-attach', 'browser-profiles']),
+  'mcp-data': new Set(),
+});
+
+/** True for what no upgrade snapshot holds (the list above): `relativePath` inside data/ or mcp-data/ (`dir`). */
+export function isUpgradeRuntimeFile(dir, relativePath) {
+  const parts = String(relativePath).replace(/\\/g, '/').split('/');
+  if (/\.log(?:\.\d+)?$/i.test(parts.at(-1))) return true;
+  if (parts.length === 1) return !!UPGRADE_RUNTIME_FILES[dir]?.has(parts[0]);
+  return !!UPGRADE_RUNTIME_DIRS[dir]?.has(parts[0]);
+}
+
+/**
+ * What an upgrade snapshot protects, as it is now, besides the memory database: `.env` and the state files of data/
+ * and mcp-data/ (selectUpgradeSnapshotFiles' choice, without the runtime records above). Each is { archivePath,
+ * diskPath, sqlite }: a file that begins with SQLite's header is a database whatever its name, and its journal, WAL
+ * and shared-memory files belong to it (never archived on their own).
+ */
+function collectUpgradeInputs({ dataHome, additionalEntries = [], softLimitBytes = UPGRADE_SNAPSHOT_SOFT_LIMIT_BYTES }) {
+  const files = [];
+  const envPath = resolve(dataHome, '.env');
+  if (existsSync(envPath)) files.push({ diskPath: envPath, archivePath: 'env.bak' });
+  const dataDirFilters = {
+    data: rel => !shouldSkipDataPath(rel) && !isUpgradeRuntimeFile('data', rel),
+    'mcp-data': rel => !shouldSkipDataPath(rel)
+      && !isUpgradeRuntimeFile('mcp-data', rel)
+      && !isDatabaseCopyArtifact(rel)
+      && !/^memory\.db(?:-wal|-shm|-journal)?$/i.test(rel),
+  };
+  for (const dir of BACKUP_DATA_DIRS) files.push(...collectFiles(resolve(dataHome, dir), dir, { filter: dataDirFilters[dir] }));
+  files.push(...normalizeAdditionalEntries(additionalEntries));
+  const deduped = [...new Map(files.map(file => [file.archivePath.replace(/\\/g, '/'), file])).values()];
+  const { files: kept, excluded } = selectUpgradeSnapshotFiles(deduped, { softLimitBytes });
+  const marked = kept.map(file => ({ ...file, sqlite: isSqliteDatabaseFile(file.diskPath) }));
+  const databases = new Set(marked.filter(file => file.sqlite).map(file => file.archivePath.toLowerCase()));
+  const sideFile = (archivePath) => {
+    const lower = archivePath.toLowerCase();
+    return SQLITE_SIDE_FILES.some(suffix => suffix && lower.endsWith(suffix) && databases.has(lower.slice(0, -suffix.length)));
+  };
+  return { inputs: marked.filter(file => !sideFile(file.archivePath)), excluded };
+}
+
+/** Where an input is, as the manifest records it: relative to the data home (forward slashes), absolute outside it. */
+function inputPath(dataHome, diskPath) {
+  const rel = relative(resolve(dataHome), resolve(diskPath));
+  return rel && !rel.startsWith('..') && !isAbsolute(rel) ? rel.split(sep).join('/') : resolve(diskPath);
+}
+
+/**
+ * Whether the upgrade snapshot whose manifest is `manifest` still stands for the data home as it is now, whichever
+ * process wrote since: the same protected files (none new, none gone), every database with the fingerprint it had
+ * when it was copied (sqliteFingerprint), every other file with the very content that was archived (its SHA-256 in
+ * the manifest). Resolves { fresh, reason, changed: [{ entry, path, why }] }; it stops at the third difference. A
+ * snapshot that does not record what it was taken from is never fresh.
+ */
+export async function checkUpgradeSnapshotFreshness({
+  dataHome, manifest, databasePath = resolve(dataHome, 'mcp-data', 'memory.db'), upgradeSoftLimitBytes = UPGRADE_SNAPSHOT_SOFT_LIMIT_BYTES,
+} = {}) {
+  const recorded = manifest?.inputs?.entries;
+  if (!dataHome || !Array.isArray(recorded)) return { fresh: false, reason: 'it does not record what it was taken from', changed: [] };
+  const current = new Map(collectUpgradeInputs({ dataHome, softLimitBytes: upgradeSoftLimitBytes }).inputs.map(file => [file.archivePath, file]));
+  if (existsSync(databasePath)) current.set('database/memory.db', { archivePath: 'database/memory.db', diskPath: databasePath, sqlite: true });
+  const before = new Map(recorded.filter(item => item && typeof item.entry === 'string').map(item => [item.entry, item]));
+  const changed = [];
+  const differs = (entry, path, why) => changed.push({ entry, path, why }) >= 3;
+  scan: {
+    for (const [entry, file] of current) {
+      if (!before.has(entry) && differs(entry, inputPath(dataHome, file.diskPath), 'is new')) break scan;
+    }
+    for (const [entry, item] of before) {
+      const file = current.get(entry);
+      const path = typeof item.path === 'string' && item.path ? item.path : entry;
+      if (!file) { if (differs(entry, path, 'is gone')) break scan; continue; }
+      if (!!item.sqlite !== !!file.sqlite) { if (differs(entry, path, 'changed')) break scan; continue; }
+      if (item.sqlite) {
+        let now = null;
+        try { now = sqliteFingerprint(file.diskPath); } catch { /* gone or unreadable: written */ }
+        if (!sameSqliteFingerprint(item.sqlite, now) && differs(entry, path, 'was written')) break scan;
+        continue;
+      }
+      let actual = null;
+      try { actual = `sha256:${await hashFile(file.diskPath)}`; } catch { /* gone or unreadable: changed */ }
+      if (actual !== manifest.checksums?.[entry] && differs(entry, path, 'changed')) break scan;
+    }
+  }
+  return changed.length
+    ? { fresh: false, reason: changed.map(item => `${item.path} ${item.why}`).join(', '), changed }
+    : { fresh: true, reason: null, changed };
+}
+
+/**
+ * The snapshot SynaBun takes before a new version first runs on the data (kinds pre-update and pre-migration),
+ * built for the moment it is taken: a restart into an update, with the user waiting.
+ *
+ *   what       collectUpgradeInputs: .env, the memory database and the state files of data/ and mcp-data/
+ *              (generated media, logs and runtime records, the copies of memory.db that migrations leave, and the
+ *              backups folder are never in it)
+ *   databases  memory.db and every other SQLite file, known by its header whatever its name, each as of one commit
+ *              (copySqliteDatabase: a clone under the write lock where the file system clones, SQLite's online
+ *              backup elsewhere). A database that cannot be copied that way fails the snapshot: it is never
+ *              archived as a plain file, which could lose committed rows or mix two moments
+ *   integrity  every database copy passes PRAGMA integrity_check (checkSqliteIntegrity, on a thread of its own while
+ *              the archive is written and read back), the check `synabun restore-backup` runs
+ *   archive    one ZIP (backup-zip-writer.js): databases stored as they are, small files deflated, each entry's
+ *              CRC-32 and SHA-256 computed as it is written; the manifest lists every SHA-256 and, in `inputs`,
+ *              what each entry was taken from (a database's fingerprint) for checkUpgradeSnapshotFreshness
+ *   verified   the finished ZIP is read back once (every entry's CRC-32, size and SHA-256 against the manifest);
+ *              it is published, with a rename, only when that and the integrity check have passed
+ *
+ * The same archive layout and manifest as createVerifiedBackup(), so Settings > restore and `synabun
+ * restore-backup` restore it as they restore any backup.
+ *
+ * onProgress({ phase: 'collect' | 'copy' | 'archive' | 'verify' | 'integrity', ... }): collect says how much (files,
+ * bytes, skipped), archive and verify say how far (done, total, in bytes); integrity says that the archive is ready
+ * and the integrity check still runs (state 'running'), then that it passed (state 'ok').
+ */
+export async function createUpgradeSnapshot({
+  dataHome,
+  databasePath = resolve(dataHome, 'mcp-data', 'memory.db'),
+  folderPath,
+  kind = 'pre-update',
+  appVersion = null,
+  dataSchemaVersion = 1,
+  sourceFingerprint = null,
+  additionalEntries = [],
+  freeSpaceReserveBytes = BACKUP_FREE_SPACE_RESERVE_BYTES,
+  getAvailableBytes = backupAvailableBytes,
+  onProgress = null,
+  upgradeSoftLimitBytes = UPGRADE_SNAPSHOT_SOFT_LIMIT_BYTES,
+  copyDatabase = copySqliteDatabase,
+  checkIntegrity = checkSqliteIntegrity,
+  now = () => new Date(),
+} = {}) {
+  const report = (detail) => { try { if (typeof onProgress === 'function') onProgress(detail); } catch { /* reporting never stops a snapshot */ } };
+  if (!dataHome || !folderPath) throw new Error('dataHome and folderPath are required');
+  if (!UPGRADE_BACKUP_KINDS.has(kind)) throw new Error(`An upgrade snapshot is ${[...UPGRADE_BACKUP_KINDS].join(' or ')}, not ${kind}`);
+  const started = Date.now();
+  const createdAt = now();
+  assertBackupDestinationMounted(folderPath);
+  mkdirSync(folderPath, { recursive: true });
+  cleanupStaleBackupArtifacts(folderPath);
+  const destination = resolve(folderPath, archiveNameFor(kind, createdAt));
+  if (existsSync(destination)) throw new Error(`Backup already exists: ${destination}`);
+  const tempPath = `${destination}.${process.pid}.tmp`;
+  // Everything this snapshot copies lives here until the archive is published (an abandoned one is swept after an hour).
+  const work = mkdtempSync(resolve(folderPath, `.synabun-files-${process.pid}-`));
+  const timings = {};
+  const mark = (name, since) => { timings[name] = Date.now() - since; };
+  // The integrity check of the database copies, once they exist: { results, ms } or { error, ms }, never a rejection.
+  let integrity = null;
+  try {
+    let since = Date.now();
+    const { inputs: kept, excluded } = collectUpgradeInputs({ dataHome, additionalEntries, softLimitBytes: upgradeSoftLimitBytes });
+    const databaseBytes = existsSync(databasePath) ? statSync(databasePath).size : 0;
+    const walBytes = existsSync(`${databasePath}-wal`) ? statSync(`${databasePath}-wal`).size : 0;
+    const keptBytes = kept.reduce((sum, file) => sum + backupFileSize(file), 0);
+    report({
+      phase: 'collect',
+      files: kept.length + (databaseBytes ? 1 : 0),
+      bytes: keptBytes + databaseBytes,
+      skippedFiles: excluded?.files ?? 0,
+      skippedBytes: excluded?.bytes ?? 0,
+      skippedReason: excluded?.reason ?? null,
+    });
+
+    // Room for it: the archive holds everything once; a database that cannot be cloned is copied first.
+    const cloned = !!cloneMethodFor(databasePath, work);
+    const sqliteBytes = kept.filter(file => file.sqlite).reduce((sum, file) => sum + backupFileSize(file), 0);
+    const stagedBytes = kept.filter(file => !file.sqlite && !IMMUTABLE_BACKUP_EXTENSIONS.has(extname(file.archivePath).toLowerCase()))
+      .reduce((sum, file) => sum + backupFileSize(file), 0);
+    const requiredBytes = Math.max(0, Number(freeSpaceReserveBytes) || 0)
+      + keptBytes + databaseBytes + walBytes
+      + (cloned ? walBytes : databaseBytes + walBytes) + sqliteBytes + stagedBytes;
+    const availableBytes = Number(getAvailableBytes(folderPath));
+    if (Number.isFinite(availableBytes) && availableBytes < requiredBytes) throw new BackupStorageError({ availableBytes, requiredBytes, folderPath });
+    mark('collect', since);
+
+    since = Date.now();
+    report({ phase: 'copy', bytes: databaseBytes, method: cloned ? 'clone' : 'copy' });
+    const entries = [];
+    // What each entry was taken from: checkUpgradeSnapshotFreshness compares the data home with it later.
+    const recorded = [];
+    const copies = [];
+    const database = await copyDatabase(databasePath, resolve(work, 'memory.db'), { primary: true });
+    if (database) {
+      entries.push({ diskPath: database.path, archivePath: 'database/memory.db', store: true });
+      recorded.push({ entry: 'database/memory.db', path: inputPath(dataHome, databasePath), sqlite: database.fingerprint });
+      copies.push({ entry: 'database/memory.db', path: database.path });
+    }
+    for (const [index, file] of kept.entries()) {
+      if (file.sqlite) {
+        let copied;
+        try { copied = await copyDatabase(file.diskPath, resolve(work, `db-${index}.db`)); }
+        catch (error) {
+          throw Object.assign(new Error(`${file.archivePath} could not be copied as of one commit: ${error?.message || error}`), { cause: error, code: error?.code });
+        }
+        if (!copied) continue;   // gone since it was listed
+        entries.push({ diskPath: copied.path, archivePath: file.archivePath, store: true });
+        recorded.push({ entry: file.archivePath, path: inputPath(dataHome, file.diskPath), sqlite: copied.fingerprint });
+        copies.push({ entry: file.archivePath, path: copied.path });
+        continue;
+      }
+      const store = INCOMPRESSIBLE_EXTENSIONS.has(extname(file.archivePath).toLowerCase());
+      if (IMMUTABLE_BACKUP_EXTENSIONS.has(extname(file.archivePath).toLowerCase())) {
+        entries.push({ diskPath: file.diskPath, archivePath: file.archivePath, store });
+        recorded.push({ entry: file.archivePath, path: inputPath(dataHome, file.diskPath) });
+        continue;
+      }
+      // A moment's copy, so the bytes archived and the bytes checksummed are the same bytes.
+      const staged = resolve(work, `file-${index}`);
+      try { copyFileSync(file.diskPath, staged); }
+      catch (error) {
+        if (error?.code === 'ENOENT') continue;
+        throw error;
+      }
+      entries.push({ diskPath: staged, archivePath: file.archivePath, store });
+      recorded.push({ entry: file.archivePath, path: inputPath(dataHome, file.diskPath) });
+    }
+    entries.sort((a, b) => a.archivePath.localeCompare(b.archivePath));
+    recorded.sort((a, b) => a.entry.localeCompare(b.entry));
+    mark('copy', since);
+
+    // From now on, beside the archive: SQLite's integrity check of every copy, as the restore runs it.
+    const integrityStarted = Date.now();
+    let integrityDone = false;
+    const checking = checkIntegrity(copies.map(copy => copy.path));
+    integrity = Promise.resolve(checking).then(
+      (results) => ({ results, ms: Date.now() - integrityStarted }),
+      (error) => ({ error, ms: Date.now() - integrityStarted }),
+    ).finally(() => { integrityDone = true; });
+    integrity.cancel = () => { try { checking?.cancel?.(); } catch {} };
+
+    since = Date.now();
+    const total = entries.reduce((sum, entry) => sum + statSync(entry.diskPath).size, 0);
+    report({ phase: 'archive', done: 0, total });
+    const manifestFor = (written) => {
+      const checksums = {};
+      for (const item of written) checksums[item.name.slice(BACKUP_PREFIX.length + 1)] = `sha256:${item.sha256}`;
+      return JSON.stringify({
+        version: BACKUP_MANIFEST_VERSION,
+        created: createdAt.toISOString(),
+        kind,
+        appVersion,
+        dataSchemaVersion,
+        sourceFingerprint,
+        storage: 'sqlite',
+        database: database ? {
+          file: 'database/memory.db',
+          sizeBytes: database.sizeBytes,
+          memoryCount: database.memoryCount,
+          // The archive is published only once this check has passed on every database copy in it.
+          integrity: 'ok',
+          copy: database.method,
+        } : null,
+        files: entries.map(entry => entry.archivePath),
+        checksums,
+        scope: 'state-only',
+        excluded,
+        inputs: { version: 1, entries: recorded },
+        verified: true,
+        verification: { algorithm: 'sha256', publication: 'verify-before-atomic-rename', writer: 'one-pass', integrity: 'integrity_check' },
+      }, null, 2);
+    };
+    await writeZipArchive(tempPath, [
+      ...entries.map(entry => ({ name: `${BACKUP_PREFIX}/${entry.archivePath}`, diskPath: entry.diskPath, store: entry.store })),
+      { name: `${BACKUP_PREFIX}/manifest.json`, data: manifestFor },
+    ], { now, onProgress: ({ bytes, totalBytes }) => report({ phase: 'archive', done: bytes, total: Math.max(total, totalBytes) }) });
+    mark('archive', since);
+
+    since = Date.now();
+    let checked = 0;
+    let reportedAt = 0;
+    report({ phase: 'verify', done: 0, total });
+    const publishedManifest = await verifyBackupArchive(tempPath, {
+      onBytes: (bytes) => {
+        checked += bytes;
+        if (checked - reportedAt >= 64 * 1024 * 1024 || checked >= total) { reportedAt = checked; report({ phase: 'verify', done: checked, total }); }
+      },
+    });
+    mark('verify', since);
+
+    since = Date.now();
+    if (!integrityDone) report({ phase: 'integrity', state: 'running' });
+    const verdict = await integrity;
+    timings.integrity = verdict.ms;
+    mark('integrityWait', since);
+    if (verdict.error) {
+      throw Object.assign(new Error(`SQLite's integrity check of the copies could not run: ${verdict.error?.message || verdict.error}`), { code: 'EINTEGRITY' });
+    }
+    for (const [index, result] of copies.entries()) {
+      const found = (verdict.results || []).find(item => item?.path === result.path) || verdict.results?.[index];
+      if (!found?.ok) throw new SnapshotIntegrityError(result.entry, found?.lines || []);
+    }
+    report({ phase: 'integrity', state: 'ok' });
+    // The copies are in the archive and checked: their room goes back.
+    try { rmSync(work, { recursive: true, force: true }); } catch {}
+    renameSync(tempPath, destination);
+    return {
+      path: destination,
+      name: basename(destination),
+      kind,
+      createdAt: createdAt.toISOString(),
+      sizeBytes: statSync(destination).size,
+      manifest: publishedManifest,
+      stamp: backupFileStamp(destination),
+      database: database ? { method: database.method, sizeBytes: database.sizeBytes, memoryCount: database.memoryCount, integrity: 'ok' } : null,
+      timings: { ...timings, total: Date.now() - started },
+    };
+  } catch (error) {
+    try { if (existsSync(tempPath)) unlinkSync(tempPath); } catch {}
+    throw error;
+  } finally {
+    // A check still running reads the copies: it ends first (its thread is stopped), then they go.
+    if (integrity) {
+      integrity.cancel();
+      await integrity;
+    }
+    try { rmSync(work, { recursive: true, force: true }); } catch {}
   }
 }
 

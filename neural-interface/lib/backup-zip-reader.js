@@ -200,10 +200,15 @@ export async function openZipArchive(path) {
   }
 }
 
-export async function hashZipEntry(zip, entry) {
+/** SHA-256 of one entry's bytes; `onBytes(n)` hears how many went by (a progress bar). */
+export async function hashZipEntry(zip, entry, { onBytes = null } = {}) {
   const digest = createHash('sha256');
   await zip.pipeEntry(entry, new Writable({
-    write(chunk, _encoding, callback) { digest.update(chunk); callback(); },
+    write(chunk, _encoding, callback) {
+      digest.update(chunk);
+      if (onBytes) { try { onBytes(chunk.length); } catch { /* reporting never stops a check */ } }
+      callback();
+    },
   }));
   return digest.digest('hex');
 }
@@ -249,13 +254,13 @@ export function backupEntryName(prefix, archivePath) {
   return prefix ? `${prefix}/${archivePath}` : archivePath;
 }
 
-/** Stream every manifest-listed entry through sha256 and compare. */
-export async function verifyBackupChecksums(zip, { prefix, manifest, label = 'Backup verification failed' }) {
+/** Stream every manifest-listed entry through sha256 and compare. `onBytes`: as for hashZipEntry. */
+export async function verifyBackupChecksums(zip, { prefix, manifest, label = 'Backup verification failed', onBytes = null }) {
   for (const [archivePath, expected] of Object.entries(manifest.checksums || {})) {
     const entry = zip.getEntry(backupEntryName(prefix, archivePath));
     if (!entry) throw new Error(`${label}: ${archivePath} is missing`);
     let actual;
-    try { actual = `sha256:${await hashZipEntry(zip, entry)}`; }
+    try { actual = `sha256:${await hashZipEntry(zip, entry, { onBytes })}`; }
     catch (error) { throw new Error(`${label}: ${archivePath} is unreadable (${error.message})`); }
     if (actual !== expected) throw new Error(`${label}: checksum mismatch for ${archivePath}`);
   }

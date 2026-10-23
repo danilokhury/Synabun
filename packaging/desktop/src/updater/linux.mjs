@@ -74,8 +74,8 @@ log="$state/swap.log"
 say() { printf '%s %s\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >>"$log"; }
 n=0
 while kill -0 "$pid" 2>/dev/null; do
-  n=$((n + 1)); [ "$n" -gt 1200 ] && { say "SynaBun did not quit within two minutes"; exit 1; }
-  sleep 0.1
+  n=$((n + 1)); [ "$n" -gt 2400 ] && { say "SynaBun did not quit within two minutes"; exit 1; }
+  sleep 0.05
 done
 rm -f "$state/started"
 "$image" --synabun-updated >/dev/null 2>&1 &
@@ -130,11 +130,11 @@ export function reopenAfterExit({ image, pid = process.pid, env = process.env, s
 }
 
 /** The plan and the marker of an AppImage that is in place, for the next start (state.mjs). */
-export function recordAppImageSwap({ stateDir, image, previous, version, from, relaunch, now = () => new Date() }) {
+export function recordAppImageSwap({ stateDir, image, previous, version, from, relaunch, installId = null, now = () => new Date() }) {
   mkdirSync(stateDir, { recursive: true });
   for (const name of ['swap-failed', 'rolled-back', 'started']) rmSync(join(stateDir, name), { force: true });
   writeFileSync(join(stateDir, 'plan.json'), JSON.stringify({
-    platform: 'linux', appPath: image, backup: previous || null, version, previous: from, relaunch: !!relaunch, at: now().toISOString(),
+    platform: 'linux', appPath: image, backup: previous || null, version, previous: from, relaunch: !!relaunch, installId, at: now().toISOString(),
   }, null, 2) + '\n');
   writeFileSync(join(stateDir, 'swapped'), '');
 }

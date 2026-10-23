@@ -68,15 +68,15 @@ export function createElectronUpdaterAdapter({
         autoUpdater.removeListener?.('download-progress', listener);
       }
     },
-    async install({ relaunch, version, previous }) {
+    async install({ relaunch, version, previous, installId = null }) {
       if (platform === 'win32') {
         const installer = autoUpdater.installerPath || downloaded;
         if (!installer) throw new Error('the downloaded installer is gone; download it again');
-        await installWindows({ installer, relaunch, version, previous });
+        await installWindows({ installer, relaunch, version, previous, installId });
         return;
       }
       if (!downloaded) throw new Error('the downloaded image is gone; download it again');
-      await installAppImage({ downloaded, relaunch, version, previous });
+      await installAppImage({ downloaded, relaunch, version, previous, installId });
     },
     moveToApplications: async () => {},
     reveal: async () => {},

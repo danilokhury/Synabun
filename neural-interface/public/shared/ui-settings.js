@@ -6,6 +6,7 @@ import { buildAboutTab, wireAboutTab } from './settings/settings-about-pane.js';
 import { buildAppTab, wireAppTab } from './settings/settings-app-pane.js';
 import { SETTINGS_GROUPS, SETTINGS_PAGES, DEFAULT_SETTINGS_PAGE, pageKeys, getSettingsPage, resolveSettingsTarget, homeOfControl } from './settings/settings-ia.js';
 import * as kit from './settings/settings-kit.js';
+import { skillFoldersHTML, wireSkillFolders, refreshSkillChips, chipState, installedToast } from './settings/settings-skill-folders-pane.js';
 import { RULES_HOST_LABELS, describeRulesHost, describeRulesInstall, describeRulesInstallAll } from './settings/settings-rules.js';
 import { readUserContextResponse, describeUserContext, describeUserContextSaveFailure } from './settings/settings-user-context.js';
 import { readGreetingStatus, describeGreeting, describeGreetingSaveFailure } from './settings/settings-greeting.js';
@@ -1668,14 +1669,19 @@ function buildSkillsTab(ccSkills) {
   const row = (skill) => {
     const installed = skill.installedTargets || { claude: !!skill.installed, codex: false, opencode: false };
     const anyOn = targets.some(t => installed[t.id]);
-    const chips = targets.map(t => `
-              <button type="button" class="cc-skill-target${installed[t.id] ? ' on' : ''}"
+    // What each runtime has of it: a native skill folder, an old bridge not moved yet, or a folder of that name
+    // SynaBun did not install (settings/settings-skill-folders.js chipState).
+    const chips = targets.map(t => {
+      const chip = chipState(skill.targetStates?.[t.id], installed[t.id]);
+      return `
+              <button type="button" class="cc-skill-target${chip.on ? ' on' : ''}"
                       data-cc-skill="${kit.esc(skill.dirName)}"
                       data-cc-target="${t.id}"
-                      data-state="${installed[t.id] ? 'on' : 'off'}"
-                      ${kit.inv('SKL001')} data-stg-pressed="on" aria-pressed="${installed[t.id] ? 'true' : 'false'}"
-                      title="${kit.te('settings.redesign.skills.installFor', { skill: skill.name, assistant: t.label })}">${t.label}</button>
-          `).join('');
+                      data-state="${chip.on ? 'on' : 'off'}" data-install-state="${chip.state}"
+                      ${kit.inv('SKL001')} data-stg-pressed="on" aria-pressed="${chip.on ? 'true' : 'false'}"
+                      title="${kit.te(chip.key, { skill: skill.name, assistant: t.label })}">${t.label}</button>
+          `;
+    }).join('');
     return `
           <div class="cc-skill-row${anyOn ? ' installed' : ''}" data-skill-name="${kit.esc(skill.dirName)}">
             <div class="cc-skill-info">
@@ -1690,10 +1696,14 @@ function buildSkillsTab(ccSkills) {
       <div class="stg-pane" data-stg-pane="skills">
         ${kit.card({
           id: 'stg-sec-skills', section: 'tool_access.skills',
-          body: skills.length
+          body: (skills.length
             ? `<div ${kit.inv('SKL004')} role="group" aria-label="${kit.L('SKL004')}">${skills.map(row).join('')}</div>
           ${kit.help('SKL001')}`
-            : `<div class="stg-help" style="margin-top:0">${kit.te('settings.redesign.skills.none')}</div>`,
+            : `<div class="stg-help" style="margin-top:0">${kit.te('settings.redesign.skills.none')}</div>`)
+            // Skills Studio is where a skill is edited, versioned and published; these chips stay for what SynaBun ships.
+            + `<div class="cc-skill-studio"><button type="button" class="stg-action-btn compact" data-cc-open-studio="1">${kit.te('settings.redesign.skills.openStudio')}</button>
+            <span class="stg-help">${kit.te('settings.redesign.skills.openStudioHelp')}</span></div>`
+            + skillFoldersHTML(),
         })}
       </div>`;
 }
@@ -1704,7 +1714,7 @@ function buildPermissionsTab(toolCategories, toolPermissions) {
   // The inventory ids of the "all tools of this group" switches, by group.
   const ALL_SWITCH = {
     memory: 'PER001', browser: 'PER003', whiteboard: 'PER004', cards: 'PER005', automation: 'PER006',
-    leonardo: 'PER007', images: 'PER008', gsc: 'PER009', youtube: 'PER010', thirdparty: 'PER011',
+    images: 'PER008', gsc: 'PER009', youtube: 'PER010', thirdparty: 'PER011',
   };
 
   let totalOn = 0, totalAll = 0;
@@ -5192,6 +5202,12 @@ async function openSettingsModalNow(options = {}) {
     btn.addEventListener('click', () => { const idx = btn.dataset.ccProjectToggle; const panel = overlay.querySelector(`.cc-panel[data-cc-idx="${idx}"]`); const projectPath = panel?.dataset.ccPath; if (projectPath) ccToggleHook('project', projectPath, btn, panel); });
   });
 
+  // Skills Studio, from Settings → Skills: Settings closes, the Studio opens on its Library.
+  overlay.querySelector('[data-cc-open-studio]')?.addEventListener('click', () => {
+    close();
+    emit('skills:open', { place: 'library' });
+  });
+
   // Skill target chips — one skill can be installed independently into Claude / Codex / OpenCode
   const runtimeLabels = { claude: 'Claude Code', codex: 'Codex CLI', opencode: 'OpenCode CLI' };
   overlay.querySelectorAll('.cc-skill-target[data-cc-skill]').forEach(chip => {
@@ -5201,27 +5217,47 @@ async function openSettingsModalNow(options = {}) {
       const isOn = chip.classList.contains('on');
       try {
         chip.style.opacity = '0.4'; chip.style.pointerEvents = 'none';
-        const res = await fetch('/api/skills/install', {
+        const send = (extra = {}) => fetch('/api/skills/install', {
           method: isOn ? 'DELETE' : 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: skillName, target }),
-        });
-        const data = await res.json();
+          body: JSON.stringify({ name: skillName, target, ...extra }),
+        }).then((res) => res.json());
+        let data = await send();
+        // A skill of that name that SynaBun did not install, or that was changed since, is neither replaced nor
+        // removed unasked: the server says what it is, and only a yes sends its digest back (a backup is kept).
+        if (!data.ok && data.currentDigest && (data.code === 'skill_unowned' || data.code === 'skill_modified')) {
+          if (!confirm(data.question || data.error)) return;
+          data = await send({ expectedDestinationDigest: data.currentDigest });
+        }
         if (data.ok) {
           chip.classList.toggle('on');
           chip.dataset.state = isOn ? 'off' : 'on';
+          // (a server from before the skill folders answers without `destination`: the chip then only says it is installed)
+          const now = chipState(isOn ? null : (data.destination ? (data.shared ? { native: 'absent', shared: 'native' } : { native: 'native', bridge: !!data.bridge }) : undefined), !isOn);
+          chip.dataset.installState = now.state;
+          chip.setAttribute('aria-pressed', now.on ? 'true' : 'false');
+          chip.title = kit.tx(now.key, { skill: skillName, assistant: chip.textContent.trim() });
           const row = chip.closest('.cc-skill-row');
           if (row) {
             const anyOn = !!row.querySelector('.cc-skill-target.on');
             row.classList.toggle('installed', anyOn);
           }
           const runtime = runtimeLabels[target] || target;
-          showCCToast(isOn ? kit.tx('settings.redesign.hooks.skillUninstalledRestartToApply', { runtime: runtime }) : kit.tx('settings.redesign.hooks.skillInstalledRestartToApply', { runtime: runtime }));
+          // The shared ~/.agents/skills is read by Codex and OpenCode both: the other chips of the skill follow.
+          if (data.shared) refreshSkillChips(overlay);
+          // An install is a native skill folder now; the server says when an old bridge of it is still there.
+          if (isOn) showCCToast(kit.tx('settings.redesign.hooks.skillUninstalledRestartToApply', { runtime: runtime }));
+          else if (data.destination) showCCToast(kit.tx(installedToast(data), { skill: skillName, runtime: runtime }), 6000);
+          else showCCToast(kit.tx('settings.redesign.hooks.skillInstalledRestartToApply', { runtime: runtime }));
         } else { alert(data.error || kit.tx('settings.redesign.hooks.failedToToggleSkill')); }
       } catch (err) { alert(kit.tx('settings.redesign.hooks.failed2', { message: err.message })); }
       finally { chip.style.opacity = ''; chip.style.pointerEvents = ''; }
     });
   });
+
+  // Skill folders: the move of the old bridges to native skill folders, and the shared ~/.agents/skills switch.
+  // After a move, an undo, or a change made anywhere else, the chips are read again in place.
+  wireSkillFolders(overlay, { toast: (message, ms) => showCCToast(message, ms), onChanged: () => refreshSkillChips(overlay), signal: panelLife.signal });
 
   // ── Setup tab: per-provider MCP toggles, CLI copy, config copy, SynaBun rules ──
   {

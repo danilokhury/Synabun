@@ -44,3 +44,30 @@ export function boundsToSave({ normalBounds, maximized = false, fullScreen = fal
     maximized: !!maximized, fullScreen: !!fullScreen,
   };
 }
+
+/**
+ * How the window is recorded for the copy that opens after an update (relaunch.json). Once the main window has been
+ * revealed it is the window as it is: shown or closed to the Dock / tray (`windowOpen`), minimized or not. Before
+ * that (an install at launch, a start still behind the splash) the window has never been shown, and what counts is
+ * how this start was to end on screen (`boot`: shown, minimized, or out of sight after a start at login in the
+ * background or a splash a person closed), never the hidden window's own state.
+ */
+export function relaunchIntent({ revealed = false, alive = false, windowOpen = false, minimized = false, boot = null } = {}) {
+  if (!revealed) return { visible: !!boot?.show, minimized: !!boot?.show && !!boot?.minimized };
+  return { visible: !!alive && !!windowOpen, minimized: !!alive && !!windowOpen && !!minimized };
+}
+
+/**
+ * What it means when a person closes the splash (Cmd+W, Alt+F4), as the main window's close button would:
+ *   'continue'    an install or a quit is under way: it finishes out of sight
+ *   'ignore'      the main window has the screen already (the splash was on its way out)
+ *   'quit'        Windows and Linux with "keep running in the tray" off: SynaBun quits
+ *   'background'  otherwise: the start goes on and ends out of sight; the Dock, the tray or opening SynaBun again
+ *                 brings it back
+ */
+export function splashCloseAction({ platform = process.platform, closeToTray = true, revealed = false, quitting = false, installing = false } = {}) {
+  if (quitting || installing) return 'continue';
+  if (revealed) return 'ignore';
+  if (platform !== 'darwin' && !closeToTray) return 'quit';
+  return 'background';
+}

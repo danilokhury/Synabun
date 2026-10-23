@@ -11,49 +11,161 @@ export const OVERDUE_AFTER = 5 * MINUTE;
 // "Up next" looks this far ahead.
 export const UP_NEXT_WINDOW = DAY;
 
-const DAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-
 export const VIEW_SCOPES = ['upcoming', 'all', 'attention', 'paused', 'timers', 'activity'];
 export const LIST_SCOPES = ['upcoming', 'all', 'attention', 'paused'];
 export const SORTS = ['next', 'name', 'last'];
+
+// ── Words ──
+// SCHEDULES_VIEW_COPY is the English of every word this file shows: `schedules.view.*` in
+// i18n/en.json must equal it, and every locale file holds the same keys (the test checks both).
+// A `{ one, other }` entry is counted, as i18n's tp() counts. Without a translator (tests, Node)
+// the English reads as written; the window installs i18n's t() and the app's locale with
+// setSchedulesViewTranslator.
+export const SCHEDULES_VIEW_COPY = Object.freeze({
+  everyDay: 'Every day',
+  weekdays: 'Weekdays',
+  weekends: 'Weekends',
+  dayRange: '{from}–{to}',
+  monthDays: { one: 'Day {days} of every month', other: 'Days {days} of every month' },
+  everyMinutes: { one: 'every minute', other: 'every {count} minutes' },
+  everyHoursAt: { one: 'every hour at :{minute}', other: 'every {count} hours at :{minute}' },
+  everyHourBetween: 'every hour from {from} to {to}',
+  daysAt: '{days} at {times}',
+  daysEvery: '{days}, {every}',
+  listAnd: '{list} and {last}',
+  dayShort: { sun: 'Sun', mon: 'Mon', tue: 'Tue', wed: 'Wed', thu: 'Thu', fri: 'Fri', sat: 'Sat' },
+  dayLong: { sun: 'Sunday', mon: 'Monday', tue: 'Tuesday', wed: 'Wednesday', thu: 'Thursday', fri: 'Friday', sat: 'Saturday' },
+  runNever: 'Not run yet',
+  runCompleted: 'Completed',
+  runStarted: 'Started',
+  runAutomationMissing: 'Automation missing',
+  runAutomationMissingReason: 'The automation this schedule launches no longer exists.',
+  runFailed: 'Failed',
+  runFailedReason: 'The run failed.',
+  runStopped: 'Stopped',
+  runStoppedByYou: 'Stopped by you',
+  runInterrupted: 'Interrupted',
+  notScheduled: 'Not scheduled',
+  dueNow: 'Due now',
+  overdue: 'Overdue',
+  inSeconds: 'in {n} s',
+  inMinutes: 'in {n} min',
+  inHoursMinutes: 'in {h} h {m} min',
+  inHours: 'in {h} h',
+  inDaysHours: 'in {d} d {h} h',
+  inDays: 'in {d} d',
+  justNow: 'just now',
+  minutesAgo: '{n} min ago',
+  hoursAgo: '{n} h ago',
+  yesterdayAgo: 'yesterday',
+  daysAgo: '{n} d ago',
+  today: 'Today',
+  tomorrow: 'Tomorrow',
+  yesterday: 'Yesterday',
+  dayAt: '{day} {time}',
+  tomorrowAt: 'Tomorrow {time}',
+  weekdayAt: '{day} {time}',
+  factCli: 'CLI',
+  factModel: 'Model',
+  factContext: 'Context',
+  factThinking: 'Thinking',
+  factMcp: 'MCP tools',
+  factAccount: 'OpenAI account',
+  factBrowser: 'Browser',
+  valueDefault: 'Default',
+  valueOn: 'On',
+  valueOff: 'Off',
+  context1m: '1M tokens',
+  contextExtended: 'Extended',
+  effort: { none: 'None', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Xhigh', max: 'Max', ultra: 'Ultra', thinking: 'Thinking' },
+});
+
+let _translate = null;
+let _locale = null;
+
+/**
+ * The page's translator, `(key, params) => t('schedules.view.' + key, params)`, and the app's locale
+ * (a code or a function that returns one). An answer that is empty, or the key itself (i18n's word for
+ * "no such string"), falls back to the English.
+ */
+export function setSchedulesViewTranslator(fn, locale = null) {
+  _translate = typeof fn === 'function' ? fn : null;
+  _locale = locale;
+}
+
+const copyAt = (key) => key.split('.').reduce((node, part) => node?.[part], SCHEDULES_VIEW_COPY);
+const fill = (text, params) => String(text).replace(/\{(\w+)\}/g, (whole, name) => (params?.[name] != null ? params[name] : whole));
+
+/** A SCHEDULES_VIEW_COPY sentence in the page's language (the translator above, else the English). */
+export function scheduleWord(key, params) {
+  if (_translate) {
+    try {
+      const text = _translate(key, params);
+      if (typeof text === 'string' && text && text !== key && text !== `schedules.view.${key}`) return text;
+    } catch { /* the English below */ }
+  }
+  const english = copyAt(key);
+  return typeof english === 'string' ? fill(english, params) : key;
+}
+
+/** A counted sentence: `key.one` for exactly one, `key.other` otherwise (i18n's tp rule). */
+const countWord = (key, count, params) => scheduleWord(`${key}.${count === 1 ? 'one' : 'other'}`, { count, ...params });
+
+/**
+ * The locale dates and times are written in. English keeps en-GB: the 24-hour clock and day-first dates
+ * ("Wed 22 Oct 09:00") the cron descriptions use. Any other language writes them its own way.
+ */
+export function scheduleDateLocale() {
+  const locale = typeof _locale === 'function' ? _locale() : _locale;
+  return !locale || /^en(-|$)/i.test(locale) ? 'en-GB' : locale;
+}
+
+const DAY_KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+
+/** A weekday (0 = Sunday … 6 = Saturday; 7 is Sunday too, as in cron): "Mon", or "Monday" with `long`. */
+export function weekdayName(index, { long = false } = {}) {
+  const key = DAY_KEYS[Number(index) % 7];
+  return key ? scheduleWord(`${long ? 'dayLong' : 'dayShort'}.${key}`) : '';
+}
 
 const pad = (n) => String(n).padStart(2, '0');
 const time = (t) => (Number.isFinite(t) ? t : NaN);
 const parse = (iso) => (iso ? time(Date.parse(iso)) : NaN);
 
-/** "a", "a and b", "a, b and c". */
+/** "a", "a and b", "a, b and c" (the last joint in the page's language). */
 export function listJoin(items) {
-  const list = items.filter(Boolean);
+  const list = items.filter(item => item || item === 0).map(String);
   if (list.length <= 1) return list.join('');
-  return `${list.slice(0, -1).join(', ')} and ${list.at(-1)}`;
+  return scheduleWord('listAnd', { list: list.slice(0, -1).join(', '), last: list.at(-1) });
 }
 
+/** The days of a cron's day-of-week field: `{ text, everyDay }`, or null when it cannot be said plainly. */
 function dayList(field) {
-  if (field === '*' || field === '?') return 'Every day';
-  if (field === '1-5') return 'Weekdays';
-  if (field === '0,6' || field === '6,0' || field === '6,7') return 'Weekends';
+  if (field === '*' || field === '?') return { text: scheduleWord('everyDay'), everyDay: true };
+  if (field === '1-5') return { text: scheduleWord('weekdays') };
+  if (field === '0,6' || field === '6,0' || field === '6,7') return { text: scheduleWord('weekends') };
   const parts = field.split(',');
   const names = [];
   for (const part of parts) {
     const range = part.match(/^(\d)-(\d)$/);
     if (range) {
-      const from = DAY_SHORT[+range[1] % 7], to = DAY_SHORT[+range[2] % 7];
+      const from = weekdayName(range[1]), to = weekdayName(range[2]);
       if (!from || !to) return null;
-      names.push(`${from}–${to}`);
+      names.push(scheduleWord('dayRange', { from, to }));
     } else if (/^\d$/.test(part)) {
-      names.push(DAY_SHORT[+part % 7]);
+      names.push(weekdayName(part));
     } else {
       return null;
     }
   }
-  return listJoin(names);
+  return { text: listJoin(names) };
 }
 
 function timesOf(minute, hour) {
   const m = /^\d{1,2}$/.test(minute) ? +minute : null;
-  if (minute === '*' && hour === '*') return { every: 'every minute' };
+  if (minute === '*' && hour === '*') return { every: countWord('everyMinutes', 1) };
   const minStep = minute.match(/^\*\/(\d+)$/);
-  if (minStep && hour === '*') return { every: `every ${minStep[1]} minutes` };
+  if (minStep && hour === '*') return { every: countWord('everyMinutes', +minStep[1]) };
   if (m == null) {
     // Several minutes in one hour: "at 09:00 and 09:30".
     if (/^\d{1,2}(,\d{1,2})+$/.test(minute) && /^\d{1,2}$/.test(hour)) {
@@ -61,14 +173,17 @@ function timesOf(minute, hour) {
     }
     return null;
   }
-  if (hour === '*') return { every: `every hour at :${pad(m)}` };
+  if (hour === '*') return { every: countWord('everyHoursAt', 1, { minute: pad(m) }) };
   const hourStep = hour.match(/^\*\/(\d+)$/);
-  if (hourStep) return { every: `every ${hourStep[1]} hours at :${pad(m)}` };
+  if (hourStep) return { every: countWord('everyHoursAt', +hourStep[1], { minute: pad(m) }) };
   const hourRange = hour.match(/^(\d{1,2})-(\d{1,2})$/);
-  if (hourRange) return { every: `every hour from ${pad(+hourRange[1])}:${pad(m)} to ${pad(+hourRange[2])}:${pad(m)}` };
+  if (hourRange) return { every: scheduleWord('everyHourBetween', { from: `${pad(+hourRange[1])}:${pad(m)}`, to: `${pad(+hourRange[2])}:${pad(m)}` }) };
   if (/^\d{1,2}(,\d{1,2})*$/.test(hour)) return { at: listJoin(hour.split(',').map(h => `${pad(+h)}:${pad(m)}`)) };
   return null;
 }
+
+// A sentence that starts with a phrase written for its middle ("every 15 minutes").
+const capitalize = (text) => text.charAt(0).toLocaleUpperCase(scheduleDateLocale()) + text.slice(1);
 
 /**
  * A five-field cron in plain words: "Every day at 06:55, 14:55 and 20:55", "Weekdays at 09:00",
@@ -84,13 +199,12 @@ export function describeCron(cron) {
   if (dom === '*' || dom === '?') days = dayList(dow);
   else if (dow === '*' && /^\d{1,2}(,\d{1,2})*$/.test(dom)) {
     const dates = dom.split(',').map(Number);
-    days = `${dates.length > 1 ? 'Days' : 'Day'} ${listJoin(dates)} of every month`;
+    days = { text: countWord('monthDays', dates.length, { days: listJoin(dates) }) };
   } else return expr;
   const times = timesOf(minute, hour);
   if (!days || !times) return expr;
-  if (times.at) return `${days} at ${times.at}`;
-  const every = times.every.charAt(0).toUpperCase() + times.every.slice(1);
-  return days === 'Every day' ? every : `${days}, ${times.every}`;
+  if (times.at) return scheduleWord('daysAt', { days: days.text, times: times.at });
+  return days.everyDay ? capitalize(times.every) : scheduleWord('daysEvery', { days: days.text, every: times.every });
 }
 
 /** One line of text from a run result: no newlines, no runs of spaces. */
@@ -104,17 +218,18 @@ export function oneLine(text) {
  */
 export function lastRunState(schedule) {
   const raw = schedule?.lastRunResult;
-  if (raw == null || raw === '') return { kind: 'never', label: 'Not run yet', reason: '' };
+  if (raw == null || raw === '') return { kind: 'never', label: scheduleWord('runNever'), reason: '' };
   const text = String(raw);
-  if (text === 'completed') return { kind: 'ok', label: 'Completed', reason: '' };
-  if (text === 'launched' || text === 'running' || text === 'started') return { kind: 'started', label: 'Started', reason: '' };
-  if (text === 'template_missing') return { kind: 'failed', label: 'Automation missing', reason: 'The automation this schedule launches no longer exists.' };
+  if (text === 'completed') return { kind: 'ok', label: scheduleWord('runCompleted'), reason: '' };
+  if (text === 'launched' || text === 'running' || text === 'started') return { kind: 'started', label: scheduleWord('runStarted'), reason: '' };
+  if (text === 'template_missing') return { kind: 'failed', label: scheduleWord('runAutomationMissing'), reason: scheduleWord('runAutomationMissingReason') };
+  // What follows the colon is the server's own message: it shows as it came.
   const colon = text.indexOf(':');
   const head = (colon >= 0 ? text.slice(0, colon) : text).trim();
   const reason = colon >= 0 ? text.slice(colon + 1).trim() : '';
-  if (head === 'error') return { kind: 'failed', label: 'Failed', reason: reason || 'The run failed.' };
-  if (head === 'stopped') return { kind: 'stopped', label: 'Stopped', reason: reason === 'user' ? 'Stopped by you' : reason };
-  if (head === 'interrupted') return { kind: 'interrupted', label: 'Interrupted', reason };
+  if (head === 'error') return { kind: 'failed', label: scheduleWord('runFailed'), reason: reason || scheduleWord('runFailedReason') };
+  if (head === 'stopped') return { kind: 'stopped', label: scheduleWord('runStopped'), reason: reason === 'user' ? scheduleWord('runStoppedByYou') : reason };
+  if (head === 'interrupted') return { kind: 'interrupted', label: scheduleWord('runInterrupted'), reason };
   return { kind: 'other', label: head.charAt(0).toUpperCase() + head.slice(1), reason };
 }
 
@@ -215,17 +330,17 @@ export function sortSchedules(list, sort = 'next') {
 /** "in 45 s", "in 26 min", "in 3 h 5 min", "in 2 d 4 h"; "Due now"; "Overdue". */
 export function formatCountdown(iso, now = Date.now()) {
   const next = parse(iso);
-  if (!Number.isFinite(next)) return { text: 'Not scheduled', state: 'none' };
+  if (!Number.isFinite(next)) return { text: scheduleWord('notScheduled'), state: 'none' };
   const diff = next - now;
-  if (diff <= 0) return diff > -OVERDUE_AFTER ? { text: 'Due now', state: 'due' } : { text: 'Overdue', state: 'overdue' };
-  if (diff < MINUTE) return { text: `in ${Math.ceil(diff / 1000)} s`, state: 'soon' };
-  if (diff < HOUR) return { text: `in ${Math.floor(diff / MINUTE)} min`, state: diff < 15 * MINUTE ? 'soon' : 'future' };
+  if (diff <= 0) return diff > -OVERDUE_AFTER ? { text: scheduleWord('dueNow'), state: 'due' } : { text: scheduleWord('overdue'), state: 'overdue' };
+  if (diff < MINUTE) return { text: scheduleWord('inSeconds', { n: Math.ceil(diff / 1000) }), state: 'soon' };
+  if (diff < HOUR) return { text: scheduleWord('inMinutes', { n: Math.floor(diff / MINUTE) }), state: diff < 15 * MINUTE ? 'soon' : 'future' };
   if (diff < DAY) {
     const h = Math.floor(diff / HOUR), m = Math.floor((diff % HOUR) / MINUTE);
-    return { text: m ? `in ${h} h ${m} min` : `in ${h} h`, state: 'future' };
+    return { text: m ? scheduleWord('inHoursMinutes', { h, m }) : scheduleWord('inHours', { h }), state: 'future' };
   }
   const d = Math.floor(diff / DAY), h = Math.floor((diff % DAY) / HOUR);
-  return { text: h ? `in ${d} d ${h} h` : `in ${d} d`, state: 'future' };
+  return { text: h ? scheduleWord('inDaysHours', { d, h }) : scheduleWord('inDays', { d }), state: 'future' };
 }
 
 /** "just now", "5 min ago", "2 h ago", "yesterday", "3 d ago". */
@@ -233,52 +348,70 @@ export function formatAgo(iso, now = Date.now()) {
   const then = parse(iso);
   if (!Number.isFinite(then)) return '';
   const diff = Math.max(0, now - then);
-  if (diff < MINUTE) return 'just now';
-  if (diff < HOUR) return `${Math.floor(diff / MINUTE)} min ago`;
-  if (diff < DAY) return `${Math.floor(diff / HOUR)} h ago`;
+  if (diff < MINUTE) return scheduleWord('justNow');
+  if (diff < HOUR) return scheduleWord('minutesAgo', { n: Math.floor(diff / MINUTE) });
+  if (diff < DAY) return scheduleWord('hoursAgo', { n: Math.floor(diff / HOUR) });
   const days = Math.floor(diff / DAY);
-  return days === 1 ? 'yesterday' : `${days} d ago`;
+  return days === 1 ? scheduleWord('yesterdayAgo') : scheduleWord('daysAgo', { n: days });
 }
 
 const sameDay = (a, b) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
-// The window's words are English, so are its dates: "Wed 22 Oct", never half in another language.
-const LOCALE = 'en-GB';
 
 /** "Today", "Tomorrow", "Yesterday" or the weekday and date, for a heading or a time. */
-export function dayLabel(iso, now = Date.now(), locale = LOCALE) {
+export function dayLabel(iso, now = Date.now(), locale = scheduleDateLocale()) {
   const then = new Date(parse(iso));
   if (Number.isNaN(then.getTime())) return '';
   const today = new Date(now);
-  if (sameDay(then, today)) return 'Today';
-  if (sameDay(then, new Date(now + DAY))) return 'Tomorrow';
-  if (sameDay(then, new Date(now - DAY))) return 'Yesterday';
+  if (sameDay(then, today)) return scheduleWord('today');
+  if (sameDay(then, new Date(now + DAY))) return scheduleWord('tomorrow');
+  if (sameDay(then, new Date(now - DAY))) return scheduleWord('yesterday');
   return then.toLocaleDateString(locale, { weekday: 'short', day: 'numeric', month: 'short' });
 }
 
 /** 24-hour clock, as the cron descriptions are: "14:55". */
-export function clockTime(iso, locale = LOCALE) {
+export function clockTime(iso, locale = scheduleDateLocale()) {
   const then = new Date(parse(iso));
   if (Number.isNaN(then.getTime())) return '';
   return then.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
 }
 
 /** "Today 14:55", "Tomorrow 09:00", "Wed 22 Oct 09:00". */
-export function whenLabel(iso, now = Date.now(), locale = LOCALE) {
+export function whenLabel(iso, now = Date.now(), locale = scheduleDateLocale()) {
   const day = dayLabel(iso, now, locale);
   const clock = clockTime(iso, locale);
-  return day && clock ? `${day} ${clock}` : '';
+  return day && clock ? scheduleWord('dayAt', { day, time: clock }) : '';
 }
 
 /** A run time in the fewest words: "14:55" today, "Tomorrow 09:00", "Wed 09:00" this week, then "22 Oct". */
-export function shortWhen(iso, now = Date.now(), locale = LOCALE) {
+export function shortWhen(iso, now = Date.now(), locale = scheduleDateLocale()) {
   const at = parse(iso);
   if (!Number.isFinite(at)) return '';
   const then = new Date(at);
   const clock = clockTime(iso, locale);
   if (sameDay(then, new Date(now))) return clock;
-  if (sameDay(then, new Date(now + DAY))) return `Tomorrow ${clock}`;
-  if (at > now && at - now < 6 * DAY) return `${then.toLocaleDateString(locale, { weekday: 'short' })} ${clock}`;
+  if (sameDay(then, new Date(now + DAY))) return scheduleWord('tomorrowAt', { time: clock });
+  if (at > now && at - now < 6 * DAY) return scheduleWord('weekdayAt', { day: then.toLocaleDateString(locale, { weekday: 'short' }), time: clock });
   return then.toLocaleDateString(locale, { day: 'numeric', month: 'short' });
+}
+
+/** A date and time in full, for a tooltip: "22/10/2026, 14:55:03" in English, the locale's own way otherwise. */
+export function fullDateTime(iso, locale = scheduleDateLocale()) {
+  const then = new Date(parse(iso));
+  return Number.isNaN(then.getTime()) ? '' : then.toLocaleString(locale);
+}
+
+const capitalized = (value) => String(value).charAt(0).toUpperCase() + String(value).slice(1);
+
+/** A context choice in words: "1M tokens", "Extended"; one this file does not know reads as its id. */
+export function contextWord(value) {
+  if (value === '1m') return scheduleWord('context1m');
+  if (value === 'extended') return scheduleWord('contextExtended');
+  return capitalized(value);
+}
+
+/** A thinking level in words: "Low", "High"; one this file does not know reads as its id. */
+export function effortWord(value) {
+  return Object.prototype.hasOwnProperty.call(SCHEDULES_VIEW_COPY.effort, value) ? scheduleWord(`effort.${value}`) : capitalized(value);
 }
 
 /**
@@ -296,23 +429,23 @@ export function launchFacts(schedule, { group = null, template = null, profiles 
   const facts = [];
   const profile = pick('profile');
   const profileId = profile.value || 'claude-code';
-  facts.push({ key: 'profile', label: 'CLI', value: profiles.find(p => p.id === profileId)?.label || profileId, source: profile.value ? profile.source : 'default' });
+  facts.push({ key: 'profile', label: scheduleWord('factCli'), value: profiles.find(p => p.id === profileId)?.label || profileId, source: profile.value ? profile.source : 'default' });
   const model = pick('model');
-  facts.push({ key: 'model', label: 'Model', value: model.value || 'Default', source: model.source, mono: !!model.value });
+  facts.push({ key: 'model', label: scheduleWord('factModel'), value: model.value || scheduleWord('valueDefault'), source: model.source, mono: !!model.value });
   const context = pick('contextMode');
-  if (context.value && context.value !== 'default') facts.push({ key: 'contextMode', label: 'Context', value: context.value === '1m' ? '1M tokens' : context.value.charAt(0).toUpperCase() + context.value.slice(1), source: context.source });
+  if (context.value && context.value !== 'default') facts.push({ key: 'contextMode', label: scheduleWord('factContext'), value: contextWord(context.value), source: context.source });
   const effort = pick('effort');
-  if (effort.value && effort.value !== 'off') facts.push({ key: 'effort', label: 'Thinking', value: effort.value.charAt(0).toUpperCase() + effort.value.slice(1), source: effort.source });
+  if (effort.value && effort.value !== 'off') facts.push({ key: 'effort', label: scheduleWord('factThinking'), value: effortWord(effort.value), source: effort.source });
   const mcp = pick('mcpProfile');
   if (mcp.value) {
     const value = mcpLabels[mcp.value] || String(mcp.value).split(',').map(x => x.trim()).filter(Boolean).join(', ');
-    facts.push({ key: 'mcpProfile', label: 'MCP tools', value, source: mcp.source });
+    facts.push({ key: 'mcpProfile', label: scheduleWord('factMcp'), value, source: mcp.source });
   }
   if (profileId === 'codex') {
     const account = pick('codexAccountId');
-    if (account.value) facts.push({ key: 'codexAccountId', label: 'OpenAI account', value: account.value, source: account.source });
+    if (account.value) facts.push({ key: 'codexAccountId', label: scheduleWord('factAccount'), value: account.value, source: account.source });
   }
   const browser = pick('usesBrowser');
-  facts.push({ key: 'usesBrowser', label: 'Browser', value: browser.value === true ? 'On' : 'Off', source: browser.source });
+  facts.push({ key: 'usesBrowser', label: scheduleWord('factBrowser'), value: scheduleWord(browser.value === true ? 'valueOn' : 'valueOff'), source: browser.source });
   return facts;
 }

@@ -12,7 +12,6 @@ import { openHelp } from './ui-help.js';
 import { armPwaInstallHandoff, initPwaInstall, installGuideUrl, isStandalone, requestPwaInstall } from './pwa-install.js';
 import { registerAction } from './ui-keybinds.js';
 import { isGuest, hasPermission } from './ui-sync.js';
-import { sendToPanel } from './ui-claude-panel.js';
 import { forceCheckToolUpdates, showUpdateToast, TOOL_LABELS } from './ui-tool-updates.js';
 import { forceCheckSynabunUpdate, openSynabunUpdateModal, synabunUpdateSourceLabel } from './ui-update.js';
 import { requestServerRestart } from './ui-loading.js';
@@ -611,7 +610,6 @@ function wireTerminalMenu() {
     'menu-terminal-discord': () => emit('browser:open', { url: 'https://discord.com/app' }),
     'menu-terminal-x':       () => emit('browser:open', { url: 'https://x.com' }),
     'menu-terminal-whatsapp': () => emit('browser:open', { url: 'https://web.whatsapp.com' }),
-    'menu-app-leonardo':     () => { emit('browser:open', { url: 'https://app.leonardo.ai' }); emit('leonardo:launch'); },
     'menu-open-styleguide':  () => emit('styleguide:open'),
     'menu-command-runner':   () => emit('command-runner:open'),
     'menu-terminal-link':    () => emit('link:toggle'),
@@ -643,11 +641,6 @@ function wireTerminalMenu() {
   Object.entries(items).forEach(([id, handler]) => {
     const el = $(id);
     if (el) el.addEventListener('click', () => { closeAll(); handler(); });
-  });
-
-  // Leonardo.AI — open panel with /leonardo skill after browser launches
-  on('leonardo:launch', () => {
-    setTimeout(() => sendToPanel('/leonardo', { newTab: true, tabLabel: 'Leonardo.AI', autoSubmit: true }), 500);
   });
 
   // Keyboard shortcuts: toggle terminal (via central keybinds)

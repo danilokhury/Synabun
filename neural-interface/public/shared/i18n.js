@@ -246,6 +246,8 @@ export function setLocaleChoice(choice) {
   const value = choice === SYSTEM_LOCALE ? SYSTEM_LOCALE : (SUPPORTED_LOCALES.includes(choice) ? choice : null);
   if (!value) return false;
   storage.setItem(LOCALE_STORAGE_KEY, value);
+  // Windows that open again after the reload (the Schedules window) note it now, while they are open.
+  try { globalThis.window?.dispatchEvent?.(new CustomEvent('synabun:locale-change', { detail: { choice: value } })); } catch { /* nobody listens */ }
   // The store writes to the server after a pause; the reload must read the new choice.
   // (A write still pending when the page unloads goes out as a beacon, so a slow server only delays the reload.)
   const written = Promise.resolve().then(() => storageModule.flushStorage?.()).catch(() => {});

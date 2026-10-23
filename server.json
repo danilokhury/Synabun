@@ -1,0 +1,38 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.danilokhury/synabun",
+  "title": "SynaBun",
+  "description": "Persistent memory MCP server for Claude Code, Codex and OpenCode, stored locally in SQLite",
+  "websiteUrl": "https://synabun.ai",
+  "repository": {
+    "url": "https://github.com/danilokhury/Synabun",
+    "source": "github",
+    "id": "1155949312"
+  },
+  "icons": [
+    {
+      "src": "https://synabun.ai/Public/android-chrome-512x512.png",
+      "mimeType": "image/png",
+      "sizes": ["512x512"]
+    }
+  ],
+  "version": "2.0.11",
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "synabun",
+      "version": "2.0.11",
+      "runtimeHint": "npx",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "mcp"
+        }
+      ]
+    }
+  ]
+}

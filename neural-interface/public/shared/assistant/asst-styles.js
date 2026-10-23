@@ -346,31 +346,51 @@ export function injectAssistantStyles() {
     .asst-transcript > .asst-route-line + .asst-route-line { margin-top: 4px; }
     .asst-transcript > .asst-working { margin-top: 8px; }
 
-    /* ── Empty state ────────────────────────────────────────────────── */
+    /* ── Empty state ────────────────────────────────────────────────────
+       One column, one hierarchy: the character and the heading, then the
+       starters as ghost rows (a prop glyph and a label, no capsule and no
+       seam: a faint fill with the md corners only while hovered or
+       focused), then the context line (Project · Budget) as quiet sm text
+       controls that open the toolbar's own menus (an open menu alone
+       wears the gold on-state). The rows and the line come in staggered
+       (--i, 40 ms apart), recede while the composer holds a draft, and
+       the picked starter keeps the gold on-state until the draft is
+       cleared. All of it static under reduced motion (the blanket at the
+       end). */
     .asst-empty {
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      gap: 10px;
+      gap: 6px;
       min-height: 100%;
       padding: 16px 4px;
       text-align: center;
     }
-    .asst-empty-title { color: var(--asst-text); font-family: var(--ff-heading, inherit); font-size: 20px; font-weight: 600; letter-spacing: -.01em; }
-    .asst-empty-body { max-width: 440px; color: var(--asst-text-3); font-size: 13px; line-height: 1.55; }
-    /* The greeting (public/shared/greeting/) takes the lead's place when there is one. */
+    @keyframes asst-empty-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+    .asst-empty-title { margin-bottom: 8px; color: var(--asst-text); font-family: var(--ff-heading, inherit); font-size: 20px; font-weight: 600; letter-spacing: -.01em; animation: asst-empty-in var(--asst-dur-moderate) var(--asst-ease-enter) backwards; }
+    /* The greeting (public/shared/greeting/) sits between the heading and the starters. */
     .asst-empty-greet { display: contents; }
-    .asst-empty.has-greeting .asst-empty-body { display: none; }
-    .asst-suggestions { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; max-width: 560px; margin-top: 6px; }
-    .asst-chip.asst-suggestion { --cap-h: var(--asst-pill-h-md); --cap-r: var(--asst-pill-r-md); --cap-px: var(--asst-pill-px-md); --cap-fs: 12px; justify-content: flex-start; text-align: left; }
+    .asst-suggestions { display: flex; flex-direction: column; align-items: stretch; gap: 2px; width: min(100%, 380px); margin-top: 2px; }
+    .asst-chip.asst-suggestion { --cap-h: var(--asst-pill-h-md); --cap-r: var(--asst-pill-r-md); --cap-px: var(--asst-pill-px-md); --cap-fs: 12.5px; --cap-gap: 10px; justify-content: flex-start; max-width: none; height: auto; min-height: var(--cap-h); padding: 5px var(--cap-px); background: transparent; box-shadow: none; color: var(--asst-text-2); text-align: left; white-space: normal; line-height: 1.3; animation: asst-empty-in var(--asst-dur-moderate) var(--asst-ease-enter) backwards; animation-delay: calc(var(--i, 0) * 40ms); }
+    .asst-chip.asst-suggestion .asst-chip-text { white-space: normal; overflow: visible; text-overflow: clip; }
     .asst-chip.asst-suggestion > .asst-icon svg { width: 20px; height: 14px; }
-    .asst-chip.asst-suggestion > .asst-icon { color: var(--asst-text-3); }
-    .asst-chip.asst-suggestion:is(:hover, :focus-visible) > .asst-icon { color: var(--asst-text); }
-    /* Project and Budget: shared md capsules under the lead, like the suggestions. */
-    .asst-empty-project { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; max-width: 100%; }
-    .asst-dd.asst-empty-control-btn { max-width: min(100%, 360px); }
-    .asst-empty-control-btn .asst-dd-label { max-width: 30ch; }
+    .asst-suggestions .asst-chip.asst-suggestion > .asst-icon:not([hidden]) { margin: 0; padding: 0; box-shadow: none; color: var(--asst-text-3); }
+    .asst-suggestions .asst-chip.asst-suggestion:is(:hover, :focus-visible) { background: var(--asst-fill-1); box-shadow: none; color: var(--asst-text); }
+    .asst-suggestions .asst-chip.asst-suggestion:is(:hover, :focus-visible) > .asst-icon { box-shadow: none; color: var(--asst-text); }
+    .asst-suggestions .asst-chip.asst-suggestion.is-picked { background: var(--asst-pill-on-fill); box-shadow: inset 0 0 0 1px var(--asst-pill-on-ring); color: var(--asst-text); }
+    .asst-suggestions .asst-chip.asst-suggestion.is-picked > .asst-icon { color: var(--asst-brand); }
+    .asst-empty.is-drafting .asst-chip.asst-suggestion:not(.is-picked):not(:hover):not(:focus-visible) { opacity: .55; }
+    /* The context line: the toolbar's Project field drawn once more, and Budget, as quiet sm text controls. */
+    .asst-empty-project { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 2px 8px; max-width: 100%; margin-top: 10px; animation: asst-empty-in var(--asst-dur-moderate) var(--asst-ease-enter) backwards; animation-delay: calc(var(--i, 0) * 40ms); }
+    .asst-empty-project .asst-dd.asst-empty-control-btn { --cap-h: var(--asst-pill-h-sm); --cap-r: var(--asst-pill-r-sm); --cap-px: var(--asst-pill-px-xs); --cap-gap: 4px; --cap-icon: 12px; --cap-fs: 11.5px; isolation: isolate; max-width: min(100%, 320px); color: var(--asst-text-2); }
+    .asst-empty-project .asst-dd.asst-empty-control-btn::after { content: ''; position: absolute; inset: -2px; z-index: -1; border-radius: inherit; }
+    .asst-empty-project .asst-dd.asst-empty-control-btn:not([aria-expanded="true"]) { background: transparent; box-shadow: none; }
+    .asst-empty-project .asst-dd.asst-empty-control-btn:hover:not([aria-expanded="true"]) { background: var(--asst-fill-1); color: var(--asst-text); }
+    .asst-empty-project .asst-dd.asst-empty-control-btn[aria-expanded="true"] { color: var(--asst-text); }
+    .asst-empty-project .asst-dd.asst-empty-control-btn > .asst-icon:not([hidden]) { margin: 0; padding: 0; box-shadow: none; color: var(--asst-text-3); }
+    .asst-empty-project .asst-dd.asst-empty-control-btn:is(:hover, [aria-expanded="true"]) > .asst-icon:not([hidden]) { box-shadow: none; }
+    .asst-empty-project .asst-dd.asst-empty-control-btn .asst-dd-label { max-width: 24ch; }
     .asst-empty-project-key { flex-shrink: 0; color: var(--asst-text-3); font-weight: 400; }
 
     /* ── Messages ───────────────────────────────────────────────────── */
@@ -1327,6 +1347,8 @@ export function injectAssistantStyles() {
     .asst-control-plan-body { min-width: 0; }
     .asst-control-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 
+    /* Follow-ups and the question cards are drawn by the mascot: their sheet is asst-ask-styles.js. */
+
     /* Route card */
     .asst-route-summary { color: var(--asst-text); }
     .asst-route-reasons { margin-top: -4px; color: var(--asst-text-3); font-size: 11.5px; }
@@ -1412,7 +1434,7 @@ export function injectAssistantStyles() {
     .assistant-panel :is(.asp-header, .asp-body) :is(button, [role="button"], [tabindex]):focus-visible,
     .asp-session-pill:focus-visible,
     .asp-session-pill .term-minimized-pill-close:focus-visible,
-    :is(.asst-control-cmd, .asst-control-deny-msg, .asst-control-custom):focus-visible {
+    :is(.asst-control-cmd, .asst-control-deny-msg, .asst-control-custom, .asst-ask-input):focus-visible {
       outline: 2px solid var(--asst-focus);
       outline-offset: 1px;
     }
@@ -1959,11 +1981,9 @@ export function injectAssistantStyles() {
     @container asst (max-width: 400px) {
       .asst-root > * { --asst-inline: 6px; }
       :is(.asst-cost, .asst-bar-group[data-group="context"]) { display: none !important; }
-      .asst-suggestions { flex-direction: column; align-items: stretch; width: 100%; }
-      .asst-chip.asst-suggestion { justify-content: flex-start; max-width: none; }
-      .asst-empty-project { width: 100%; }
-      .asst-dd.asst-empty-control-btn { flex: 1 1 auto; justify-content: flex-start; max-width: none; }
-      .asst-empty-control-btn .asst-dd-label { flex: 1 1 auto; max-width: none; text-align: start; }
+      .asst-empty { padding-inline: 0; }
+      .asst-suggestions { width: 100%; }
+      .asst-empty-project .asst-dd.asst-empty-control-btn { max-width: 100%; }
       .asst-msg.msg-user .asst-msg-content { max-width: 92%; }
       .asst-route-opt-sub { display: none; }
       .asst-run-main { flex-wrap: wrap; row-gap: 2px; }
@@ -1978,7 +1998,7 @@ export function injectAssistantStyles() {
     }
     @container asst (max-height: 260px) {
       /* the toolbar stays: it carries the controls */
-      :is(.asst-empty-body, .asst-empty-mascot, .asst-empty-project, .asst-suggestions, .asst-empty-greet) { display: none !important; }
+      :is(.asst-empty-mascot, .asst-empty-project, .asst-suggestions, .asst-empty-greet) { display: none !important; }
       .asst-empty { gap: 4px; padding: 4px; }
       .asst-empty-title { font-size: 14px; }
       .asst-bottom { margin-top: 6px; }

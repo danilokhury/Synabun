@@ -587,6 +587,13 @@ export function getOpenCardCount() {
   return _openCards.size;
 }
 
+/** Press an open card's Linked button from outside it (the context menu), unless it is on already. */
+export function focusLinkedMemories(memoryId) {
+  const card = _openCards.get(memoryId);
+  if (!card || state.focusedNodeId === memoryId) return;
+  q(card.el, 'focus-btn')?.click();
+}
+
 export function restoreOpenCards() {
   const raw = storage.getItem(KEYS.OPEN_CARDS);
   if (!raw) return;

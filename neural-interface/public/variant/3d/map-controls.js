@@ -2,9 +2,12 @@
 //
 // Hover → tooltip, click → open the memory, ⌘/Ctrl-click → multi-select,
 // click a label → fly to that island, double-click empty space → frame all,
-// Esc → clear the search, then the selection. Orbit / pan / zoom and the
+// Esc → clear the search, then the selection, right-click (no drag) → the
+// app's context menu for what is under the pointer. Orbit / pan / zoom and the
 // arrow keys belong to OrbitControls (arrows only while the map has focus, so
-// the app's single-key shortcuts keep working everywhere else).
+// the app's single-key shortcuts keep working everywhere else). OrbitControls
+// also cancels the browser's menu on the canvas, so a right-drag only pans:
+// the menu opens when the right button comes up where it went down.
 
 import { isGraphPointerActivity } from '../../shared/graph-activity.js';
 import { clearSearch } from '../../shared/ui-search.js';
@@ -12,7 +15,7 @@ import { escapeHtml } from '../../shared/utils.js';
 
 const CLICK_SLOP = 5; // px a press may move and still count as a click
 
-export function initMapControls({ renderer, view, labels }) {
+export function initMapControls({ renderer, view, labels, onContextMenu = null }) {
   const canvas = renderer.canvas;
   const tip = document.getElementById('tooltip');
   const tipCategory = document.getElementById('tooltip-category');
@@ -107,8 +110,17 @@ export function initMapControls({ renderer, view, labels }) {
     const wasDown = canvasDown;
     down = null;
     canvasDown = false;
-    if (!d || !wasDown || d.button !== 0 || e.button !== 0) return;
-    if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > CLICK_SLOP) return; // a drag, not a click
+    if (!d || !wasDown) return;
+    const still = Math.hypot(e.clientX - d.x, e.clientY - d.y) <= CLICK_SLOP; // else a drag, not a click
+    if (d.button === 2 && e.button === 2) {
+      if (still && onContextMenu) {
+        const [x, y] = local(e);
+        hideTip();
+        onContextMenu({ clientX: e.clientX, clientY: e.clientY, hit: resolve(x, y) });
+      }
+      return;
+    }
+    if (d.button !== 0 || e.button !== 0 || !still) return;
     const [x, y] = local(e);
     const { i, label } = resolve(x, y);
     if (i >= 0) view.clickPoint(i, { additive: e.metaKey || e.ctrlKey });

@@ -219,3 +219,35 @@ copyBuild('html2canvas', {
   entryName: (v) => `html2canvas-${v}.min.js`,
   license: 'LICENSE',
 });
+
+// yaml: the Skills Studio's frontmatter form changes one key at a time and leaves
+// every other byte of a SKILL.md as it was (public/shared/skills/ss-frontmatter.js).
+// The server reads frontmatter with the `yaml` package itself (a dependency);
+// the page gets the package's browser build, bundled into one file named after
+// the version, beside the package's licence and a manifest.json naming it.
+const yamlPkg = join(root, 'node_modules/yaml/package.json');
+if (!existsSync(yamlPkg)) {
+  console.log('yaml is not installed — keeping the committed public/vendor/yaml/ bundle');
+} else {
+  const yamlVersion = JSON.parse(readFileSync(yamlPkg, 'utf8')).version;
+  const yamlDir = join(root, 'public', 'vendor', 'yaml');
+  const yamlEntry = `yaml-${yamlVersion}.min.js`;
+  mkdirSync(yamlDir, { recursive: true });
+  await build({
+    entryPoints: [join(root, 'node_modules/yaml/browser/dist/index.js')],
+    bundle: true,
+    format: 'esm',
+    minify: true,
+    target: 'es2022',
+    legalComments: 'none',
+    outfile: join(yamlDir, yamlEntry),
+    logLevel: 'info',
+  });
+  copyFileSync(join(root, 'node_modules/yaml/LICENSE'), join(yamlDir, 'LICENSE'));
+  writeFileSync(join(yamlDir, 'manifest.json'), JSON.stringify({ version: yamlVersion, entry: yamlEntry }, null, 2) + '\n');
+  // The folder is this step's own: any other file in it is a stale copy.
+  for (const f of readdirSync(yamlDir)) {
+    if (![yamlEntry, 'LICENSE', 'manifest.json'].includes(f)) unlinkSync(join(yamlDir, f));
+  }
+  console.log(`vendored yaml ${yamlVersion} → public/vendor/yaml/`);
+}

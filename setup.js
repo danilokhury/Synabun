@@ -5,6 +5,10 @@
  *
  * Usage: node setup.js   (or: npm start)
  *
+ * The commands (mcp, doctor, profile, migrate-data, restore-backup, version)
+ * are listed by `synabun help`; `synabun mcp` never gets here (bin/synabun.js
+ * starts the MCP server itself).
+ *
  * 1. Checks Node.js version (>=22)
  * 2. Ensures data directory exists (~/.synabun or %APPDATA%/synabun)
  * 3. Migrates data from old scaffolded installs if detected
@@ -52,8 +56,15 @@ import { packagedRuntime } from './lib/packaged-runtime.js';
 import {
   OPTIONAL_AT_ROOT, checkRuntimeDependencies, findInstalled, installAtPackageRoot, installKind, mcpCompiler,
 } from './lib/runtime-dependencies.js';
+import { mcpDistBuilt } from './lib/mcp-dist.js';
+import { MCP_COMMAND, nodeArgs, runNode } from './bin/synabun.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// The environment as this process got it, before the data home below is
+// settled into it: `node setup.js mcp` hands the MCP server exactly what
+// `node mcp-server/run.mjs` would get.
+const LAUNCH_ENV = { ...process.env };
 
 // ── ANSI color helpers ──
 
@@ -388,9 +399,10 @@ function installPlaywrightChromium() {
 
 // ── Phase 4: MCP server build ──
 
+// Built means dist/index.js and every module it imports (lib/mcp-dist.js): a checkout can hold a tracked
+// dist/index.js whose newer imports git ignores.
 function needsBuild() {
-  const distIndex = resolve(PACKAGE_ROOT, 'mcp-server', 'dist', 'index.js');
-  return !existsSync(distIndex);
+  return !mcpDistBuilt(PACKAGE_ROOT);
 }
 
 function buildMcpServer() {
@@ -656,7 +668,6 @@ const TOOL_GROUPS = {
   browser_whatsapp:  { label: 'WhatsApp',   tools: 2  },
   browser_instagram: { label: 'Instagram',  tools: 5  },
   browser_linkedin:  { label: 'LinkedIn',   tools: 8  },
-  leonardo:          { label: 'Leonardo',   tools: 5  },
   discord:           { label: 'Discord',    tools: 8  },
   gsc:               { label: 'Google Search Console', tools: 30 },
 };
@@ -683,9 +694,8 @@ function getProfiles(dataHome) {
     instagram:  { label: 'Instagram',  groups: ['git', 'image', 'browser', 'browser_instagram'] },
     linkedin:   { label: 'LinkedIn',   groups: ['git', 'image', 'browser', 'browser_linkedin'] },
     discord:    { label: 'Discord',    groups: ['git', 'image', 'discord'] },
-    browser:    { label: 'Browser',    groups: ['git', 'image', 'whiteboard', 'card', 'tictactoe', 'browser', 'browser_twitter', 'browser_facebook', 'browser_tiktok', 'browser_whatsapp', 'browser_instagram', 'browser_linkedin', 'leonardo', 'gsc'] },
-    full:       { label: 'Full',       groups: ['git', 'image', 'whiteboard', 'card', 'tictactoe', 'browser', 'browser_twitter', 'browser_facebook', 'browser_tiktok', 'browser_whatsapp', 'browser_instagram', 'browser_linkedin', 'leonardo', 'discord', 'gsc'] },
-    leonardoai: { label: 'LeonardoAI', groups: ['leonardo'] },
+    browser:    { label: 'Browser',    groups: ['git', 'image', 'whiteboard', 'card', 'tictactoe', 'browser', 'browser_twitter', 'browser_facebook', 'browser_tiktok', 'browser_whatsapp', 'browser_instagram', 'browser_linkedin', 'gsc'] },
+    full:       { label: 'Full',       groups: ['git', 'image', 'whiteboard', 'card', 'tictactoe', 'browser', 'browser_twitter', 'browser_facebook', 'browser_tiktok', 'browser_whatsapp', 'browser_instagram', 'browser_linkedin', 'discord', 'gsc'] },
     gsc:        { label: 'GSC',        groups: ['git', 'image', 'browser', 'gsc'] },
   };
 }
@@ -785,6 +795,34 @@ function handleProfileCommand(dataHome) {
   process.exit(1);
 }
 
+// ── synabun help ──
+
+function usage(version) {
+  return [
+    '',
+    `  ${c.bold}SynaBun v${version}${c.reset}: persistent memory for AI coding tools`,
+    '',
+    '  synabun                    start SynaBun: the Neural Interface on port 3344 (or NEURAL_PORT),',
+    '                             with the setup wizard on the first start',
+    '  synabun mcp                the MCP server on stdio, for an AI tool\'s MCP config:',
+    '                             "command": "synabun", "args": ["mcp"]',
+    '                             stdout carries the protocol only; logs go to stderr',
+    '  synabun doctor [--json]    the state of your data and your tool connections',
+    '  synabun profile [list | get | set <name>]',
+    '                             the tool profile of SynaBun\'s MCP servers',
+    '  synabun migrate-data [--apply | --choose external|legacy]',
+    '                             copy an older install\'s data into the data folder (a dry run without --apply)',
+    '  synabun restore-backup --from <backup.zip> [--apply]',
+    '                             check a backup; --apply restores it',
+    '  synabun version            the installed version',
+    '  synabun help               this list',
+    '',
+    `  Data folder: ${DATA_HOME} (SYNABUN_DATA_HOME sets another)`,
+    '  Docs: https://synabun.ai/docs',
+    '',
+  ].join('\n');
+}
+
 // ── Main ──
 
 async function main() {
@@ -792,6 +830,16 @@ async function main() {
 
   // ── Subcommand routing (before setup flow) ──
   const cmd = process.argv[2];
+  if (cmd === MCP_COMMAND) {
+    // `synabun mcp` is started by bin/synabun.js without this file; this is
+    // `node setup.js mcp`, which must not print the banner on stdout either.
+    runNode(nodeArgs(process.argv.slice(2)), { env: LAUNCH_ENV, forwardSignals: true });
+    return;
+  }
+  if (cmd === 'help' || cmd === '--help' || cmd === '-h') {
+    console.log(usage(version));
+    process.exit(0);
+  }
   if (cmd === 'profile') {
     handleProfileCommand(DATA_HOME);
     process.exit(0);

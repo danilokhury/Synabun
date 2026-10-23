@@ -94,6 +94,31 @@ export function getBinding(actionId) {
   return _bindings[actionId] || null;
 }
 
+/** The key an action is bound to as a menu shows it, or '' while it has none (the context menu, read at each open). */
+export function getShortcutLabel(actionId) {
+  const combo = _bindings[actionId];
+  return combo ? comboToDisplay(combo) : '';
+}
+
+/** Whether a module registered an action with this id. */
+export function hasAction(actionId) {
+  return _actions.has(actionId);
+}
+
+/** The action a key press is bound to, or null (a key the user bound stays that action, Shift+F10 included). */
+export function actionForKey(e) {
+  const combo = buildCombo(e);
+  return (combo && _reverseMap.get(combo)) || null;
+}
+
+/** Run a registered action as its key would. False when nothing registered it. */
+export function runAction(actionId) {
+  const handler = _actions.get(actionId);
+  if (!handler) return false;
+  handler();
+  return true;
+}
+
 // ── Central dispatcher ──
 
 function centralKeyHandler(e) {

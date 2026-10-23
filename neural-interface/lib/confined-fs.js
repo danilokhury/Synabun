@@ -19,7 +19,7 @@
 // sequence; it does not remove it.
 
 import {
-  openSync, closeSync, fstatSync, lstatSync, readSync, writeSync, ftruncateSync, fsyncSync,
+  openSync, closeSync, fstatSync, fchmodSync, lstatSync, readSync, writeSync, ftruncateSync, fsyncSync,
   mkdirSync, readdirSync, rmSync, unlinkSync, renameSync, realpathSync, createReadStream, constants,
 } from 'node:fs';
 import { randomBytes } from 'node:crypto';
@@ -142,6 +142,17 @@ export function writeConfinedFile(base, path, data, { exclusive = false, mode = 
     if (!st.isFile()) throw new PathConfineError(400, 'Not a regular file.');
     if (!created) ftruncateSync(fd, 0);
     writeAll(fd, data);
+  } catch (err) {
+    // A file this call created and could not fill (the disk filled, the data could not be had) is not left
+    // half written: it is removed while it is still the file that was opened.
+    if (created) {
+      try {
+        const mine = fstatSync(fd);
+        const now = lstatSync(real);
+        if (now.dev === mine.dev && now.ino === mine.ino) unlinkSync(real);
+      } catch { /* gone already, or no longer ours */ }
+    }
+    throw err;
   } finally { try { closeSync(fd); } catch {} }
   return real;
 }
@@ -174,13 +185,28 @@ export function removeConfinedEntry(base, path) {
 }
 
 /**
+ * What is at `path` itself, a link not followed: 'absent', 'file', 'dir', 'link' or 'other' (a FIFO, a
+ * socket, a device). Nothing is opened.
+ */
+export function entryKind(path) {
+  let st;
+  try { st = lstatSync(String(path)); } catch { return 'absent'; }
+  if (st.isSymbolicLink()) return 'link';
+  if (st.isFile()) return 'file';
+  if (st.isDirectory()) return 'dir';
+  return 'other';
+}
+
+/**
  * Replace `path` with `data` through a temporary file in the same folder:
  * created exclusively under an unpredictable name, never through a link, then
  * renamed over `path` (a rename replaces a link, it does not follow it).
  * `expect` is the file's state when it was read ({ dev, ino, mtimeMs, size }):
- * a file that changed since is not overwritten (409).
+ * a file that changed since is not overwritten (409). `exactMode`: the new
+ * file gets `mode` as it is, not narrowed by the process umask (a file that
+ * replaces another keeps the permissions that one had).
  */
-export function replaceFileAtomic(path, data, { mode = 0o600, expect = null } = {}) {
+export function replaceFileAtomic(path, data, { mode = 0o600, expect = null, exactMode = false } = {}) {
   const dir = realPathOf(dirname(String(path)));
   const target = join(dir, basename(String(path)));
   const tmp = join(dir, `.${basename(target)}.${randomBytes(12).toString('hex')}.tmp`);
@@ -190,6 +216,7 @@ export function replaceFileAtomic(path, data, { mode = 0o600, expect = null } = 
     try {
       const st = verifyOpened(fd, tmp);
       if (!st.isFile()) throw moved();
+      if (exactMode) fchmodSync(fd, mode & 0o7777);
       writeAll(fd, data);
       try { fsyncSync(fd); } catch {}
     } finally { try { closeSync(fd); } catch {} }

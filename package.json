@@ -1,6 +1,7 @@
 {
   "name": "synabun",
-  "version": "2.0.10",
+  "version": "2.0.11",
+  "mcpName": "io.github.danilokhury/synabun",
   "description": "Local-first persistent vector memory, MCP tooling, and multi-agent workflows for AI assistants",
   "license": "Apache-2.0",
   "author": "The SynaBun Authors",
@@ -67,7 +68,9 @@
     "lib/paths.d.ts",
     "lib/data-home-migration.js",
     "lib/first-launch-protection.js",
+    "lib/update-snapshot.js",
     "lib/runtime-dependencies.js",
+    "lib/mcp-dist.js",
     "lib/package-processes.js",
     "npm-shrinkwrap.json",
     "lib/client-config-repair.js",
@@ -131,6 +134,7 @@
     "undici": "^8.5.0",
     "uuid": "^14.0.0",
     "ws": "^8.21.0",
+    "yaml": "2.9.1",
     "zod": "^4.4.3"
   },
   "optionalDependencies": {

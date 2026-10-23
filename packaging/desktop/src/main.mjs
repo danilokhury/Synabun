@@ -7,11 +7,20 @@
  * uses, through the headless entry (synabun-cli). MCP clients and Claude Code
  * hooks are registered with that entry and never start this window.
  *
- *   start     one copy per data home; the window shows the app's own status
- *             page until the server answers, then the Neural Interface; the
- *             page's Details area shows every step of the start as it
+ *   start     one copy per data home; the splash (splash.mjs: small, centred,
+ *             the mascot saying what happens) is the first thing on screen,
+ *             and the main window appears only once the interface is ready
+ *             behind it, as it was left (place, maximized, full screen). Its
+ *             Details button opens the app's own status page in the main
+ *             window, whose Details area shows every step of the start as it
  *             happens, the server's own installs and checks included
- *             (start-log.mjs)
+ *             (start-log.mjs); a start that fails ends there too, with what
+ *             failed and the buttons to go on. A start at login that stays in
+ *             the background shows nothing
+ *   colour    one colour profile for everything the window draws (sRGB): on a
+ *             Mac with a display profile of its own, tiles Chromium rasterizes
+ *             and tiles it fills with one colour were matched differently, and
+ *             a dark page showed a lighter band where its content was
  *   window    sandboxed, context-isolated, no Node; it shows the server's own
  *             pages and nothing else (other addresses go to the browser)
  *   title bar the app's own top bar is the window's title bar, with the
@@ -23,10 +32,16 @@
  *   updates   the app's own update function (updater/): checked 30 s after
  *             launch and every 6 hours, downloaded at once, installed by itself
  *             when SynaBun is idle (after a countdown the user can postpone),
- *             when the app quits, or at the next start before the server;
- *             the window comes back as it was, and says once that it updated.
- *             With automatic updates off it checks and offers, and installs
- *             when the user asks
+ *             when the user chooses Restart to Update (the interface's button,
+ *             the app menu, the tray), when the app quits, or at the next start
+ *             before the server; the window comes back as it was, and says once
+ *             that it updated. With automatic updates off it checks and offers,
+ *             and installs when the user asks. An install shows the splash
+ *             before the window goes, and the new version shows it as its
+ *             first act: a SynaBun window is on screen all along but for the
+ *             moment the files are swapped. The pre-update snapshot is taken by
+ *             this copy, ahead of time when it can (updater/data-guard.mjs),
+ *             and handed to the new version, whose first start takes none
  *   settings  Settings > App (app-prefs.mjs, read before anything starts):
  *             automatic updates, open at login (login-item.mjs) and a start
  *             at login without a window, what the close button does, and
@@ -50,7 +65,7 @@ import yaml from 'js-yaml';
 import { cliInvocation } from './cli.mjs';
 import { dataHomeFor, entryFor, isOnMountedVolume, isTranslocated, logsDirFor, macBundleFor, profileDirFor, readManifest } from './paths.mjs';
 import { backendUrl, isBackendUrl, isSafeExternal, navigationDecision, permissionDecision } from './navigation.mjs';
-import { boundsToSave, MIN_SIZE, restoreBounds } from './window-state.mjs';
+import { boundsToSave, MIN_SIZE, relaunchIntent, restoreBounds, splashCloseAction } from './window-state.mjs';
 import { pickLocale, translate } from './i18n.mjs';
 import { appMenuTemplate, MENU_IDS, trayMenuTemplate } from './menu.mjs';
 import { APP_OVERLAY, appMenuPosition, overlayColors, STATUS_OVERLAY, titleBarArgument, titleBarWindowOptions, windowStateOf } from './titlebar.mjs';
@@ -62,7 +77,10 @@ import { feedFromEnv, isNewer } from './updater/feed.mjs';
 import { cleanupStagedUpdates, createMacAdapter, folderWritable } from './updater/mac.mjs';
 import { createElectronUpdaterAdapter } from './updater/electron-updater-adapter.mjs';
 import { recordAppImageSwap, relaunchAfterExit, reopenAfterExit, replaceAppImage } from './updater/linux.mjs';
-import { finishPendingSwap, relaunchWindow, updateStateFiles } from './updater/state.mjs';
+import { finishPendingSwap, markUpdateHandoff, relaunchWindow, updateStateFiles } from './updater/state.mjs';
+import { createDataGuard, runSnapshotCommand } from './updater/data-guard.mjs';
+import { createSplash } from './splash.mjs';
+import { splashOfSnapshot, stageOfSupervisorPhase } from './splash-model.mjs';
 import { cleanupWindowsSwap, startWindowsSwap } from './updater/windows.mjs';
 import { prefsPathFor, readPrefChange, readPrefs, writePrefs } from './app-prefs.mjs';
 import {
@@ -72,6 +90,11 @@ import {
 
 const APP_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
 const STATUS_PAGE = join(APP_DIR, 'src', 'pages', 'status.html');
+const SPLASH_PAGE = join(APP_DIR, 'src', 'pages', 'splash.html');
+/** The longest the main window waits behind the splash for the interface to say it is ready, once its page loaded. */
+const INTERFACE_READY_WAIT_MS = 12000;
+/** A start or an update that cannot go on: how long the mascot says so on the splash on screen before the details take over. */
+const FAILED_BEAT_MS = 1600;
 const PRELOAD = join(APP_DIR, 'src', 'preload.cjs');
 const ASSETS = join(APP_DIR, 'assets');
 const BACKGROUND = '#050505';
@@ -158,6 +181,10 @@ function startApp() {
   let prefs = readPrefs(prefsPath);
   const hardwareAcceleration = prefs.hardwareAcceleration;
   if (!hardwareAcceleration) app.disableHardwareAcceleration();
+  // One colour profile for everything the windows draw. With the display's own profile, macOS matched the tiles
+  // Chromium rasterizes (where a page has content) and the tiles it fills with one colour differently: on a dark
+  // page, a lighter band across the middle, exactly on the GPU tile rows. SynaBun's colours are all sRGB.
+  app.commandLine.appendSwitch('force-color-profile', 'srgb');
   // The macOS and Linux login entries say "at login" in the environment: nothing this app starts inherits it.
   const loginEnvAtStart = env[LOGIN_ENV] === '1';
   delete env[LOGIN_ENV];
@@ -193,6 +220,11 @@ function startApp() {
   const pendingRecord = updateFiles.pending.read();
   if (pendingRecord && !isNewer(version, pendingRecord.version)) updateFiles.pending.clear();
   if (platform === 'win32') cleanupWindowsSwap(updateStateDir);
+  // The snapshot the old copy took for this install (lib/update-snapshot.js): this start's server uses it when the
+  // new copy runs, and never when the swap failed or rolled back. Before anything starts the server.
+  const installId = typeof pendingSwap.plan?.installId === 'string' ? pendingSwap.plan.installId : null;
+  if (installId && pendingSwap.started) markUpdateHandoff({ dataHome, installId, status: 'installed' });
+  if (installId && (pendingSwap.rolledBack || pendingSwap.failed)) markUpdateHandoff({ dataHome, installId, status: 'cancelled' });
 
   const readState = () => { try { return JSON.parse(readFileSync(statePath, 'utf8')) || {}; } catch { return {}; } };
   const writeState = (patch) => {
@@ -222,6 +254,19 @@ function startApp() {
   // close button hides it. Not isVisible() nor the window's show / hide events: on macOS both follow occlusion,
   // and an update must not bring back hidden a window that other windows only covered.
   let windowOpen = false;
+  // The splash (splash.mjs) and the start it covers. `boot` is how this start ends on screen: the main window shown
+  // (or minimized), or nothing (a start at login in the background, an update made while the window was closed).
+  // The main window is `revealed` once the interface is ready behind the splash, or when a failure, a stopped
+  // server or the Details button needs it; after that the splash has nothing more to say.
+  let splash = null;
+  let boot = { show: true, minimized: false };
+  let revealed = false;
+  let interfaceTimer = null;
+  let dataGuard = null;
+  let installingAtLaunch = false;
+  // A person closed the splash while the start went on: a start that then fails says so in a notification.
+  let splashClosedDuringStart = false;
+  const processStart = Date.now() - Math.round(process.uptime() * 1000);
   // The start's live log (start-log.mjs): the status page's Details area. Open by itself on a first start (setup
   // installs and downloads then) and when a start fails; the server's supervisor writes to launcher.log.
   const startLog = createStartLog();
@@ -242,21 +287,31 @@ function startApp() {
   // ── Screenshots and a menu click for the end-to-end test (SYNABUN_DESKTOP_TEST_DIR only) ──
   let captureCount = 0;
   let lastCapturedState = null;
-  const capture = (name) => {
-    if (!testDir || !mainWindow || mainWindow.isDestroyed()) return;
+  /** A screenshot of `win` (the main window unless another is named), as its page draws it. */
+  const captureWindow = (win, name, delay = 700) => {
+    if (!testDir || !win || win.isDestroyed()) return;
     const file = join(testDir, `${String(++captureCount).padStart(3, '0')}-${name.replace(/[^\w.-]+/g, '-')}.png`);
     setTimeout(() => {
-      if (!mainWindow || mainWindow.isDestroyed()) return;
-      mainWindow.webContents.capturePage().then((image) => {
+      if (!win || win.isDestroyed()) return;
+      win.webContents.capturePage().then((image) => {
         try { mkdirSync(testDir, { recursive: true }); writeFileSync(file, image.toPNG()); log(`test capture: ${file}`); } catch {}
       }).catch(() => {});
-    }, 700);
+    }, delay);
   };
+  const capture = (name) => captureWindow(mainWindow, name);
   if (testDir) {
     setInterval(() => {
       for (const [name, act] of [
-        ['capture-request', () => capture('requested')],
+        ['capture-request', () => {
+          if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) capture('requested');
+          if (splash?.visible) captureWindow(splash.window, 'requested-splash', 100);
+        }],
+        // The splash's Details button, as its page presses it.
+        ['click-splash-details', () => { splash?.window?.webContents.executeJavaScript("document.getElementById('details')?.click()", true).catch(() => {}); }],
+        // The splash closed as a person closes it (Cmd+W, Alt+F4): the same 'close' event.
+        ['close-splash', () => { splash?.window?.close(); }],
         ['click-check-for-updates', () => Menu.getApplicationMenu()?.getMenuItemById(MENU_IDS.checkForUpdates)?.click()],
+        ['click-restart-to-update', () => Menu.getApplicationMenu()?.getMenuItemById(MENU_IDS.restartToUpdate)?.click()],
         // What the window's close button and Quit do, through the same handlers.
         ['close-window', () => mainWindow?.close()],
         ['show-window', () => showWindow()],
@@ -422,6 +477,10 @@ function startApp() {
         backendShown = true;
         // The bar's colours from the style guide until the page reports the ones it draws (desktop-titlebar.js).
         applyOverlay(APP_OVERLAY, 'the interface');
+        if (!revealed) {
+          clearTimeout(interfaceTimer);
+          interfaceTimer = setTimeout(() => revealMainWindow('the page loaded and said nothing more'), INTERFACE_READY_WAIT_MS);
+        }
         capture('backend');
         if (updater) mainWindow.webContents.send('synabun:updates:changed', updater.state);
       } else {
@@ -440,8 +499,23 @@ function startApp() {
     mainWindow.loadFile(STATUS_PAGE);
   }
 
+  /**
+   * Bring SynaBun to the front (the Dock, the tray, a second start, a notification): while a start runs behind the
+   * splash, the splash; once the main window may be seen, the main window.
+   */
   function showWindow() {
-    if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
+    if (!revealed && !quitting && splash) {
+      boot = { show: true, minimized: false };
+      splash.show(splash.state);
+      return;
+    }
+    // Quitting, or installing an update: the splash says what happens; the window would show a server going away.
+    if (quitting && splash?.exists) { splash.show(splash.state); return; }
+    showMainWindow();
+  }
+
+  function showMainWindow() {
+    if (!mainWindow || mainWindow.isDestroyed()) createMainWindow({ show: false });
     if (mainWindow.isMinimized()) mainWindow.restore();
     windowOpen = true;
     mainWindow.show();
@@ -456,6 +530,7 @@ function startApp() {
   }
 
   function hideMainWindow() {
+    if (windowOpen) log('the window was closed: SynaBun goes on running');
     windowOpen = false;
     mainWindow.hide();
     if (platform === 'darwin') return;
@@ -467,16 +542,101 @@ function startApp() {
     } catch {}
   }
 
+  // ── The splash, and the main window behind it ──
+
+  /** What the splash says; nothing when there is no splash (a start that shows nothing). */
+  const splashSay = (next) => { splash?.update(next); };
+
+  /**
+   * The interface says it is ready (its loading overlay went away: preload.cjs), or it has had long enough: the
+   * main window appears as it was left (place, maximized, full screen, minimized), and the splash goes once it is
+   * on screen. A start that shows nothing only lets the splash go.
+   */
+  function revealMainWindow(reason) {
+    clearTimeout(interfaceTimer);
+    interfaceTimer = null;
+    if (revealed) return;
+    revealed = true;
+    log(`the interface is ready (${reason}), ${Date.now() - processStart} ms after this copy started`);
+    if (!boot.show) { splash?.close(); return; }
+    splashSay({ stage: 'ready' });
+    showMainWindow();
+    if (boot.minimized) mainWindow.minimize();
+    setTimeout(() => splash?.close(), 150);
+  }
+
+  /**
+   * The start needs the main window before the interface (a failure, a conflict, a stopped server, Details). After a
+   * failure (`beat`) the splash on screen says so for a moment first; one not on screen yet never appears.
+   */
+  function revealStatusPage(reason, { beat = false } = {}) {
+    clearTimeout(interfaceTimer);
+    interfaceTimer = null;
+    const shown = splash?.visible || boot.show;
+    if (!revealed) { revealed = true; log(`the window opens on the status page (${reason})`); }
+    // Closed by a person during the start: nothing is on screen to say it failed, so a notification does (a click
+    // shows the status page with the details).
+    if (!shown && beat && splashClosedDuringStart && statusShown?.heading) notify(statusShown.heading, statusShown.line || '');
+    const open = () => {
+      if (quitting) return;
+      if (shown) showMainWindow();
+      splash?.close();
+    };
+    if (beat && splash?.visible) setTimeout(open, FAILED_BEAT_MS);
+    else open();
+  }
+
+  /**
+   * A person closed the splash (Cmd+W, Alt+F4) while a start or an install went on behind it: what the main window's
+   * close button does applies. On Windows and Linux with "Keep running in the tray" off, SynaBun quits. Otherwise
+   * the start goes on out of sight and ends there (no window appears when the interface is ready, or after the
+   * update's restart), and the Dock, the tray or opening SynaBun again brings it back.
+   */
+  function onSplashClosed() {
+    const action = splashCloseAction({ platform, closeToTray: prefs.closeToTray, revealed, quitting, installing: updater?.state?.status === 'installing' });
+    if (action === 'continue') {
+      // An install or a quit under way: it finishes, out of sight; the new copy opens as it was recorded.
+      log('the splash was closed during an install or a quit: it goes on out of sight');
+      return;
+    }
+    if (action === 'ignore') return;
+    if (action === 'quit') {
+      log('the splash was closed during the start and the close button quits: SynaBun quits');
+      app.quit();
+      return;
+    }
+    boot = { show: false, minimized: false };
+    splashClosedDuringStart = true;
+    log('the splash was closed during the start: it goes on out of sight');
+    if (platform === 'darwin') return;
+    const state = readState();
+    if (state.closeNoticeShown) return;
+    writeState({ closeNoticeShown: true });
+    try {
+      if (Notification.isSupported()) new Notification({ title: t('stillRunningTitle'), body: tray ? t('stillRunningTray') : t('stillRunningOpen'), silent: true }).show();
+    } catch {}
+  }
+
   // ── The status page ──
 
-  const startingStatus = (line = t('looking'), startedAt = Date.now()) => ({
+  /** A start under way: the status page's words, and the splash's stage (splash-model.mjs). */
+  const startingStatus = (line = t('looking'), startedAt = Date.now(), stage = 'checking') => ({
     state: 'starting', busy: true, heading: t('headingStarting'), line, startedAt, elapsedLabel: t('elapsedLabel'),
-    actions: [{ id: 'quit', label: t('quit') }],
+    actions: [{ id: 'quit', label: t('quit') }], stage,
   });
 
   const OPEN_DETAILS = ['failed', 'conflict', 'stopped', 'incomplete'];
   function showStatus(status) {
     statusShown = { lang: locale, detailsLabel: t('details'), detailsOpen: firstStart || OPEN_DETAILS.includes(status.state), ...status };
+    // The splash follows the start. A start that cannot go on ends on the status page, where the details and the
+    // buttons are: the window appears with it (only while the splash covers the start; a window closed to the
+    // Dock or the tray stays closed, as before).
+    if (OPEN_DETAILS.includes(status.state)) {
+      splashSay({ stage: 'failed' });
+      if (!revealed) revealStatusPage(status.state, { beat: true });
+    } else if (status.stage) {
+      splashSay({ stage: status.stage, version: status.version, progress: status.progress || null });
+    }
     if (!mainWindow || mainWindow.isDestroyed()) return;
     if (isStatusPage(mainWindow.webContents.getURL())) mainWindow.webContents.send('synabun:shell:status', statusShown);
     else { backendShown = false; mainWindow.loadFile(STATUS_PAGE); }
@@ -511,17 +671,49 @@ function startApp() {
     return next;
   }
 
+  // The first start's snapshot steps, once each, with the time (desktop.log): the check of the copy made before the
+  // update, or a new copy and its integrity check.
+  let loggedSnapshotStep = null;
   function onHelperEvent(event, startedAt) {
-    startLog.add('app', helperEventLine(event, t));
-    if (event.type === 'existing' && event.kind === 'ours') showStatus(startingStatus(t('reusing'), startedAt));
-    else if (event.type === 'step') showStatus(startingStatus(t('launching'), startedAt));
+    const line = helperEventLine(event, t);
+    if (event.type === 'supervisor' && event.phase === 'snapshot') {
+      const step = [event.detail?.step || 'start', event.detail?.state].filter(Boolean).join(' ');
+      if (step !== loggedSnapshotStep) {
+        loggedSnapshotStep = step;
+        log(`the server's start: snapshot step ${step}, ${Date.now() - processStart} ms after this copy started`);
+      }
+    } else if (event.type === 'supervisor' && loggedSnapshotStep) {
+      log(`the server's start: snapshot over (${event.phase}), ${Date.now() - processStart} ms after this copy started`);
+      loggedSnapshotStep = null;
+    }
+    // The snapshot's progress moves the splash's bar; the log keeps one line per step of it.
+    const progressOnly = event.type === 'supervisor' && event.phase === 'snapshot' && event.detail?.done !== undefined && event.detail?.done !== null && Number(event.detail.done) > 0;
+    if (!progressOnly) startLog.add('app', line);
+    const stage = statusShown?.stage || 'checking';
+    if (event.type === 'existing' && event.kind === 'ours') showStatus(startingStatus(t('reusing'), startedAt, 'starting'));
+    else if (event.type === 'step') showStatus(startingStatus(t('launching'), startedAt, stage));
     else if (event.type === 'supervisor' && event.phase && event.phase !== 'failed') {
       const detail = event.detail || {};
-      const sized = event.phase === 'snapshot' && Number.isFinite(detail.files) && Number.isFinite(detail.bytes);
-      const line = sized ? t('snapshotSized', { files: detail.files, megabytes: Math.round(detail.bytes / 1048576) }) : t(event.phase);
-      showStatus({ ...startingStatus(line, startedAt), hint: statusShown?.hint || '' });
+      const snapshot = event.phase === 'snapshot' ? splashOfSnapshot(detail) : null;
+      const sized = !!snapshot && Number.isFinite(detail.files) && Number.isFinite(detail.bytes);
+      // The status page says what the snapshot step is: the copy made before the update checked against the data, a
+      // new copy (with its size), or SQLite's check of that copy.
+      const text = sized ? t('snapshotSized', { files: detail.files, megabytes: Math.round(detail.bytes / 1048576) })
+        : snapshot?.stage === 'confirming' ? t('snapshotCheck')
+          : snapshot?.stage === 'verifying' ? t('snapshotIntegrity')
+            : t(event.phase);
+      // setup.js goes back to `checking` between its slow steps; after one of those the server is next, and the
+      // splash says so rather than going back.
+      const next = stageOfSupervisorPhase(event.phase, detail);
+      const forward = next === 'checking' && ['browser', 'confirming', 'protecting', 'verifying', 'starting'].includes(stage) ? 'starting' : next;
+      const keepLine = snapshot?.stage === 'protecting' && !sized && statusShown?.stage === 'protecting';
+      showStatus({
+        ...startingStatus(keepLine ? statusShown?.line || text : text, startedAt, forward),
+        progress: snapshot ? snapshot.progress : null,
+        hint: statusShown?.hint || '',
+      });
     } else if (event.type === 'plan' && event.alternativePort) {
-      showStatus({ ...startingStatus(t('launching'), startedAt), hint: t('otherPort', { preferred: event.preferredPort, port: event.port }) });
+      showStatus({ ...startingStatus(t('launching'), startedAt, stage), hint: t('otherPort', { preferred: event.preferredPort, port: event.port }) });
     }
   }
 
@@ -563,8 +755,14 @@ function startApp() {
         backend = { port: result.port, launcherPid: result.launcherPid || remembered.backend?.launcherPid || null, supervisorPid: result.supervisorPid || null, owned: !!owned, version: result.version || version };
         writeState({ port: result.port, backend: owned ? { launcherPid: backend.launcherPid, supervisorPid: backend.supervisorPid, port: backend.port, version, startedAt: new Date().toISOString() } : null });
         startLog.add('app', t('logOpening'));
-        showStatus({ ...startingStatus(t('opening'), startedAt), hint: result.alternativePort ? t('otherPort', { preferred: result.preferredPort, port: result.port }) : '' });
-        // The page the window showed before an update, once; '/' every other time.
+        showStatus({ ...startingStatus(t('opening'), startedAt, 'loading'), hint: result.alternativePort ? t('otherPort', { preferred: result.preferredPort, port: result.port }) : '' });
+        // The page the window showed before an update, once; '/' every other time. Behind the splash the window
+        // waits for the interface to say it is ready (preload.cjs), and no longer than INTERFACE_READY_WAIT_MS
+        // after its page has loaded (or twice that, when the page never says it loaded).
+        if (!revealed) {
+          clearTimeout(interfaceTimer);
+          interfaceTimer = setTimeout(() => revealMainWindow('no answer from the page'), INTERFACE_READY_WAIT_MS * 2);
+        }
         mainWindow.loadURL(backendUrl(result.port, firstPath));
         firstPath = '/';
         watcher = watchBackend({
@@ -655,19 +853,20 @@ function startApp() {
     return fetchActivity(backend.port);
   }
 
-  /** How the window is now, for the copy that opens after the update. */
+  /**
+   * How the window is now, for the copy that opens after the update (relaunchIntent: before the main window was first
+   * revealed, how this start was to end on screen, never the hidden window's own state).
+   */
   function rememberWindowForUpdate(next) {
-    const alive = mainWindow && !mainWindow.isDestroyed();
+    const alive = !!mainWindow && !mainWindow.isDestroyed();
     let path = '/';
     try {
       const url = new URL(mainWindow.webContents.getURL());
       if (backend && isBackendUrl(url.href, backend.port)) path = `${url.pathname}${url.search}${url.hash}`;
     } catch {}
     saveWindowState();
-    updateFiles.relaunch.write({
-      at: new Date().toISOString(), version: next, path,
-      visible: !!alive && windowOpen, minimized: !!alive && windowOpen && mainWindow.isMinimized(),
-    });
+    const { visible, minimized } = relaunchIntent({ revealed, alive, windowOpen, minimized: alive && mainWindow.isMinimized(), boot });
+    updateFiles.relaunch.write({ at: new Date().toISOString(), version: next, path, visible, minimized });
   }
 
   /** A notice outside the window, for when nobody sees the window: a click shows it. */
@@ -704,17 +903,75 @@ function startApp() {
       downloaded: ({ version: next, file }) => {
         updateFiles.pending.write({ version: next, file: file || null, at: new Date().toISOString() });
       },
-      beforeInstall: async ({ version: next, trigger }) => {
+      beforeInstall: async ({ version: next, trigger, installId }) => {
+        // On screen now: the splash (an install at launch), or the main window, open and not minimized. Then the
+        // splash takes its place, and the new copy opens with one too. Out of sight, the update stays out of sight.
+        const shown = !!splash?.visible || (!!mainWindow && !mainWindow.isDestroyed() && windowOpen && !mainWindow.isMinimized());
         rememberWindowForUpdate(next);
-        showStatus({ state: 'installing', busy: true, heading: t('headingInstalling'), line: t('installing', { version: next }), startedAt: Date.now(), elapsedLabel: t('elapsedLabel') });
-        log(`update to v${next} (${trigger}): stopping the server`);
+        log(`update to v${next} (${trigger}, install ${installId}): ${shown ? 'the splash takes the window\'s place' : 'nothing is on screen'}`);
+        if (shown && splash) {
+          revealed = false;
+          splash.show({ stage: 'installing', version: next });
+          // The window goes once the splash is on screen: never a moment with neither.
+          await splash.whenShown();
+        }
+        if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) mainWindow.hide();
+        splashSay({ stage: 'stopping', version: next });
+        log(`update to v${next}: stopping the server`);
         // Windows cannot replace a node.exe that runs, and an AppImage's server dies with its mount: stop it first.
         await stopServer({ reason: `update to v${next}`, always: true });
         quitting = true;
         quitReady = true;
       },
-      quitForUpdate: () => { quitting = true; quitReady = true; app.quit(); exitSoon(); },
-      afterFailedInstall: async () => { quitting = false; quitReady = false; updateFiles.relaunch.clear(); await startBackend(); },
+      // The pre-update snapshot (updater/data-guard.mjs): the one prepared ahead when nothing was written since,
+      // otherwise a new one now, with its progress on the splash. Without it nothing installs.
+      protectData: async ({ version: next, installId }) => {
+        const prepared = dataGuard?.prepared?.target === next;
+        splashSay({ stage: prepared ? 'confirming' : 'protecting', version: next });
+        const started = Date.now();
+        const result = dataGuard
+          ? await dataGuard.protect({ target: next, installId, onProgress: (event) => {
+            if (event.phase === 'stale') log(`update to v${next}: the snapshot prepared ahead is not used: ${event.reason}`);
+            splashSay({ ...splashOfSnapshot(event), version: next });
+          } })
+          : { type: 'failed', message: 'this copy cannot take the snapshot' };
+        if (result?.type !== 'done') {
+          log(`update to v${next}: the pre-update snapshot failed (${result?.code || '?'}): ${result?.message || ''}`);
+          throw Object.assign(new Error(result?.message || 'the snapshot failed'), { userMessage: t('errorProtect', { reason: result?.message || '?' }) });
+        }
+        const what = result.skipped ? 'no user state to protect'
+          : result.reused ? `the snapshot prepared ahead is still exact and is handed over (${result.path})`
+            : `snapshot taken and handed over (${result.path})`;
+        const timings = result.timings ? ` (${Object.entries(result.timings).map(([name, ms]) => `${name} ${ms} ms`).join(', ')})` : '';
+        log(`update to v${next}: ${what}, ${Date.now() - started} ms${timings}`);
+        splashSay({ stage: 'installing', version: next });
+      },
+      // Idle, with an update waiting: the snapshot is taken ahead, in the background.
+      prepareData: ({ version: next }) => dataGuard?.prepare({ target: next }),
+      cancelHandoff: ({ installId }) => { if (markUpdateHandoff({ dataHome, installId, status: 'cancelled' })) log(`the snapshot handed over for install ${installId} is cancelled`); },
+      quitForUpdate: () => {
+        splashSay({ stage: 'restarting' });
+        log('quitting for the update: the splash stays until this copy ends');
+        quitting = true;
+        quitReady = true;
+        app.quit();
+        exitSoon();
+      },
+      afterFailedInstall: async () => {
+        quitting = false;
+        quitReady = false;
+        updateFiles.relaunch.clear();
+        // The splash that took the window's place says the update did not finish, for a moment. Then SynaBun comes
+        // back as it was: the splash follows the server's start, and the window, with the update's error, appears
+        // when it is ready.
+        if (splash?.visible) {
+          splashSay({ stage: 'failed', update: true });
+          await new Promise(done => setTimeout(done, FAILED_BEAT_MS));
+        }
+        revealed = false;
+        boot = { show: !!splash?.visible || windowOpen, minimized: false };
+        await startBackend();
+      },
     };
     let adapter;
     const packaged = app.isPackaged;
@@ -736,15 +993,15 @@ function startApp() {
       adapter = createElectronUpdaterAdapter({
         autoUpdater: supported ? (platform === 'win32' ? new NsisUpdater() : new AppImageUpdater()) : null,
         platform, feed, current: version, log, supported,
-        installWindows: async ({ installer, relaunch: reopen, version: next, previous }) => {
+        installWindows: async ({ installer, relaunch: reopen, version: next, previous, installId }) => {
           const started = await startWindowsSwap({
-            instDir: dirname(process.execPath), exe: basename(process.execPath), installer, version: next, previous, stateDir: updateStateDir, relaunch: reopen,
+            instDir: dirname(process.execPath), exe: basename(process.execPath), installer, version: next, previous, stateDir: updateStateDir, relaunch: reopen, installId,
             runtimeNode: join(resources, String(manifest?.runtime?.bin || 'runtime'), 'node.exe'),
             scriptSource: readFileSync(join(APP_DIR, 'src', 'updater', 'win-swap.mjs'), 'utf8'), env: helperEnvForUpdate(),
           });
           log(`install watchdog started (pid ${started.pid}): ${started.script}`);
         },
-        installAppImage: async ({ downloaded, relaunch: reopen, version: next, previous }) => {
+        installAppImage: async ({ downloaded, relaunch: reopen, version: next, previous, installId }) => {
           const image = env.APPIMAGE;
           let placed;
           try {
@@ -752,16 +1009,34 @@ function startApp() {
           } catch (error) {
             throw Object.assign(error, { userMessage: t('errorAppImage', { file: image, reason: error.code || error.message }) });
           }
-          recordAppImageSwap({ stateDir: updateStateDir, image, previous: placed.previous, version: next, from: previous, relaunch: reopen });
+          recordAppImageSwap({ stateDir: updateStateDir, image, previous: placed.previous, version: next, from: previous, relaunch: reopen, installId });
           if (reopen) relaunchAfterExit({ image, previous: placed.previous, stateDir: updateStateDir, env, cwd: dataHome });
         },
       });
     }
+    // The pre-update snapshot, through SynaBun's own runtime (lib/update-snapshot.js), which also decides whether one
+    // taken earlier still stands for the data (it compares the data home with what the snapshot records).
+    dataGuard = createDataGuard({
+      dataHome, current: version, log,
+      run: (args, onEvent) => (entry
+        ? runSnapshotCommand({ entry, args, env: helperEnv(), cwd: dataHome, onEvent })
+        : Promise.resolve({ type: 'failed', code: 'INCOMPLETE', message: 'synabun-cli is missing from this copy' })),
+    });
     const controller = createUpdateController({ adapter, host, t });
     let lastStep = null;
     controller.onChange((state) => {
       for (const win of BrowserWindow.getAllWindows()) {
         if (backend && !win.isDestroyed() && isBackendUrl(win.webContents.getURL(), backend.port)) win.webContents.send('synabun:updates:changed', state);
+      }
+      // An update downloaded and ready to restart into: the menus say Restart to Update (menu.mjs).
+      syncRestartItem(state);
+      // An install at launch readies the file it downloaded earlier (its checksum, the unpacked copy checked against
+      // it, macOS's first-start check): `preparing`. Only bytes that really come over the network are a download.
+      if (installingAtLaunch && state.status === 'downloading') {
+        const transferring = state.progress?.bytesPerSecond > 0 && state.progress.percent < 100 && state.progress.total > 0;
+        splashSay(transferring
+          ? { stage: 'downloading', version: state.latest, progress: { done: state.progress.transferred, total: state.progress.total, bytes: true } }
+          : { stage: 'preparing', version: state.latest });
       }
       const step = state.status === 'downloaded' ? `downloaded-${state.auto?.phase || 'ready'}` : state.status;
       if (step !== lastStep) {
@@ -791,7 +1066,7 @@ function startApp() {
     log(`check for updates (${source})`);
     if (!updater) return;
     const state = await updater.check({ manual: true });
-    if (mainWindow && !mainWindow.isDestroyed() && backendShown && backend) {
+    if (mainWindow && !mainWindow.isDestroyed() && backendShown && backend && revealed) {
       showWindow();
       mainWindow.webContents.send('synabun:updates:open', state);
       return;
@@ -1011,6 +1286,12 @@ function startApp() {
       if (!overlayColors(payload)) throw new Error('two #rrggbb colours');
       return applyOverlay(payload, 'the page');
     }
+    // The interface is ready to be seen (preload.cjs): the window comes out from behind the splash.
+    if (action === 'interface-ready') {
+      const reason = ['overlay', 'loaded'].includes(payload?.reason) ? payload.reason : 'page';
+      if (!revealed) revealMainWindow(reason === 'overlay' ? 'the interface finished loading' : 'the page loaded');
+      return true;
+    }
     throw new Error('unknown action');
   });
 
@@ -1043,6 +1324,7 @@ function startApp() {
 
   app.on('second-instance', () => showWindow());
   app.on('activate', () => showWindow());
+  app.on('will-quit', () => log('this copy ends'));
   app.on('window-all-closed', () => { /* SynaBun keeps running: the Dock or the tray brings the window back. */ });
 
   app.on('before-quit', (event) => {
@@ -1055,12 +1337,17 @@ function startApp() {
       // A downloaded update installs on the way out (never on a restart Settings asked for: that opens this copy again).
       const installOnQuit = !relaunching && !!updater?.willInstallOnQuit();
       if (backend && (backend.owned || installOnQuit)) {
-        if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) {
-          showStatus({ state: 'quitting', busy: true, heading: t('headingQuitting'), line: t('quitting'), startedAt: Date.now(), elapsedLabel: t('elapsedLabel') });
+        // The window goes at once; while the server stops (and an update is put in place), the splash says so.
+        const shown = !!splash?.visible || (!!mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() && !mainWindow.isMinimized());
+        if (shown && splash) {
+          splash.show({ stage: 'quitting' });
+          await splash.whenShown(1000);
         }
+        if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) mainWindow.hide();
         await stopServer({ reason: 'quit', always: installOnQuit });
       }
       if (installOnQuit) await updater.installOnQuit();
+      dataGuard?.discard();
     })().catch(error => log(`while quitting: ${error.message}`)).finally(() => {
       quitReady = true;
       app.quit();
@@ -1081,15 +1368,56 @@ function startApp() {
       return false;
     }
     log(`an update to v${pending.version} was downloaded in an earlier run: installing it before the server starts`);
-    showStatus({ state: 'installing', busy: true, heading: t('headingInstalling'), line: t('installingAtLaunch', { version: pending.version }), startedAt: Date.now(), elapsedLabel: t('elapsedLabel') });
+    showStatus({ state: 'installing', busy: true, heading: t('headingInstalling'), line: t('installingAtLaunch', { version: pending.version }), startedAt: Date.now(), elapsedLabel: t('elapsedLabel'), stage: 'installing', version: pending.version });
     let leaving = false;
+    installingAtLaunch = true;
     try {
       leaving = await updater.installAtLaunch(pending.version, { until: Date.now() + 3 * 60 * 1000 });
     } catch (error) {
       log(`the update at launch failed: ${error?.message || error}`);
+    } finally {
+      installingAtLaunch = false;
     }
     if (!leaving) log('the update was not installed at launch: SynaBun starts as usual, and installs it when it is idle');
     return leaving;
+  }
+
+  // ── Restart to Update ──
+
+  // The menus offer Restart to Update while a downloaded update waits to be restarted into.
+  let menuActions = null;
+  let restartReady = false;
+  function buildMenus() {
+    if (!menuActions) return;
+    Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate({ platform, t, actions: menuActions, restartReady })));
+    if (platform === 'darwin') {
+      app.dock?.setMenu(Menu.buildFromTemplate([
+        ...(restartReady ? [{ label: t('restartToUpdate'), click: () => menuActions.restartToUpdate('dock') }] : []),
+        { label: t('checkForUpdates'), click: () => menuActions.checkForUpdates('dock') },
+      ]));
+    } else if (tray) {
+      tray.setContextMenu(Menu.buildFromTemplate(trayMenuTemplate({ t, actions: menuActions, restartReady })));
+    }
+  }
+  function syncRestartItem(state) {
+    const ready = !!state?.supported && state.status === 'downloaded' && state.install === 'restart' && !state.manualFile;
+    if (ready === restartReady) return;
+    restartReady = ready;
+    buildMenus();
+  }
+  /** Restart to Update (a menu, the tray, the Dock): Install now. While something runs, the update says what it waits for. */
+  async function restartToUpdate(source) {
+    log(`restart to update (${source})`);
+    if (!updater) return;
+    const state = await updater.installNow();
+    if (state?.status === 'downloaded' && state.auto?.now) {
+      if (mainWindow && !mainWindow.isDestroyed() && backendShown && backend && revealed) {
+        showWindow();
+        mainWindow.webContents.send('synabun:updates:open', state);
+      } else {
+        await nativeUpdateDialog(state);
+      }
+    }
   }
 
   app.whenReady().then(async () => {
@@ -1098,30 +1426,64 @@ function startApp() {
     let saved = null;
     try { saved = JSON.parse(readFileSync(join(dataHome, 'data', 'ui-state.json'), 'utf8'))?.['synabun-locale'] || null; } catch {}
     locale = pickLocale(app.getPreferredSystemLanguages?.() || [app.getLocale()], saved);
+
+    // A start by the login item (login-item.mjs): with "Start in the background" on, nothing on screen until the user
+    // asks for it (the Dock, the tray, or opening SynaBun again). The entry says so itself (the flag on Windows, the
+    // variable elsewhere); any other start shows the splash, then the window, and so does a second start that reaches
+    // this one (second-instance, activate). After an update the window comes back as it was: shown, minimized (no
+    // splash then), or only in the tray / Dock (nothing on screen either).
+    startedAtLogin = app.isPackaged && !relaunch && !updatedStart
+      && openedAtLogin({ platform, argv: process.argv, env: { [LOGIN_ENV]: loginEnvAtStart ? '1' : '' } });
+    const hidden = startedAtLogin && prefs.startHidden;
+    if (startedAtLogin) log(`opened at login${hidden ? ': no window until it is asked for' : ''}`);
+    boot = relaunch ? { show: relaunch.visible, minimized: relaunch.minimized } : { show: !hidden, minimized: false };
+
+    // The splash before anything slow: the first thing this copy puts on screen.
+    splash = createSplash({
+      BrowserWindow, screen, ipcMain, page: SPLASH_PAGE, preload: PRELOAD, version, background: BACKGROUND, platform,
+      bounds: () => {
+        if (mainWindow && !mainWindow.isDestroyed()) return mainWindow.getBounds();
+        try { return JSON.parse(readFileSync(windowStatePath, 'utf8')); } catch { return null; }
+      },
+      locale: () => locale,
+      // Details: the start's log, on the status page in the main window, which shows from here on.
+      onDetails: () => {
+        log('the splash\'s Details: the status page shows the start');
+        if (statusShown) statusShown = { ...statusShown, detailsOpen: true };
+        revealStatusPage('Details');
+        if (mainWindow && !mainWindow.isDestroyed() && isStatusPage(mainWindow.webContents.getURL()) && statusShown) mainWindow.webContents.send('synabun:shell:status', statusShown);
+      },
+      // A person closed the splash: what closing SynaBun's window means applies to the start it covers.
+      onClose: () => onSplashClosed(),
+      log, capture: testDir ? (win, name) => captureWindow(win, name, 600) : null,
+      isQuitting: () => quitting,
+    });
+    if (boot.show && !boot.minimized) {
+      splash.show({ stage: updatedStart ? 'restarting' : 'checking' });
+      log(`splash asked for ${Date.now() - processStart} ms after this copy started${updatedStart ? ' (after an update)' : ''}`);
+    }
     app.setAboutPanelOptions({ applicationName: 'SynaBun', applicationVersion: version, version: '', copyright: 'The SynaBun Authors', website: 'https://synabun.ai' });
 
-    const actions = {
+    menuActions = {
       checkForUpdates: (source) => { checkForUpdatesInteractive(source).catch(error => log(`update check: ${error.message}`)); },
+      restartToUpdate: (source) => { restartToUpdate(source).catch(error => log(`restart to update: ${error.message}`)); },
       quit: () => app.quit(),
       openLogs: () => { openLogs(); },
       openExternal: (url) => { if (isSafeExternal(url)) shell.openExternal(url).catch(() => {}); },
       showWindow,
     };
-    Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate({ platform, t, actions })));
-    if (platform === 'darwin') {
-      app.dock?.setMenu(Menu.buildFromTemplate([{ label: t('checkForUpdates'), click: () => actions.checkForUpdates('dock') }]));
-    } else {
+    if (platform !== 'darwin') {
       const trayIcon = join(ASSETS, platform === 'win32' ? 'tray.ico' : 'tray.png');
       try {
         tray = new Tray(existsSync(trayIcon) ? nativeImage.createFromPath(trayIcon) : nativeImage.createEmpty());
         tray.setToolTip('SynaBun');
-        tray.setContextMenu(Menu.buildFromTemplate(trayMenuTemplate({ t, actions })));
         tray.on('click', () => showWindow());
       } catch (error) {
         log(`no tray icon: ${error.message}`);
         tray = null;
       }
     }
+    buildMenus();
 
     session.defaultSession.setPermissionRequestHandler((contents, permission, decide, details) => {
       const allowed = permissionDecision(permission, details?.requestingUrl || contents?.getURL(), backend?.port);
@@ -1130,16 +1492,10 @@ function startApp() {
     });
     session.defaultSession.setPermissionCheckHandler((contents, permission, origin) => permissionDecision(permission, origin, backend?.port));
 
-    // A start by the login item (login-item.mjs): with "Start in the background" on, no window until the user asks
-    // for it (the Dock, the tray, or opening SynaBun again).
-    // The entry says so itself (the flag on Windows, the variable elsewhere); any other start shows the window, and
-    // so does a second start that reaches this one (second-instance, activate).
-    startedAtLogin = app.isPackaged && !relaunch && !updatedStart
-      && openedAtLogin({ platform, argv: process.argv, env: { [LOGIN_ENV]: loginEnvAtStart ? '1' : '' } });
-    const hidden = startedAtLogin && prefs.startHidden;
-    if (startedAtLogin) log(`opened at login${hidden ? ': no window until it is asked for' : ''}`);
-    createMainWindow(relaunch ? { show: relaunch.visible, minimized: relaunch.minimized } : { show: !hidden });
-    showStatus(startingStatus());
+    // The main window waits behind the splash, on the status page, until the interface is ready (or the start
+    // needs it: a failure, Details).
+    createMainWindow({ show: false });
+    showStatus(startingStatus(t('looking'), Date.now(), updatedStart ? 'restarting' : 'checking'));
     healLogin();
 
     // A copy macOS runs from a temporary place, or from its disk image, cannot

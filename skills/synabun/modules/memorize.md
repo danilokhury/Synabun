@@ -15,11 +15,7 @@ You are now in **memorize mode**. Your job is to analyze the full conversation c
 
 ## Runtime Compatibility
 
-- **Interactive choice prompt** means an interactive option card the user clicks — not plain text choices.
-  - **Claude Code (REQUIRED path):** `AskUserQuestion` is a deferred tool — its schema is not loaded by default. Before the first prompt in this skill, call `ToolSearch` with query `select:AskUserQuestion` to load it, then call `AskUserQuestion` with 2-4 options. NEVER write the choices as plain text — the sidepanel will render text as static markdown, not an interactive card.
-  - **OpenCode (REQUIRED path):** call the native `question` tool — the sidepanel renders it as an interactive card via the `/question.asked` event. NEVER write the choices as plain text.
-  - **Codex (REQUIRED path):** call `request_user_input` — the sidepanel renders it as an interactive card. NEVER write the choices as plain text.
-  - **Other runtimes:** only when no interactive tool exists, fall back to a concise plain-text multiple-choice question and wait for the user's reply.
+- **Interactive choice prompt** follows the hub's rules (`$SKILL_DIR/SKILL.md` → Runtime Compatibility): the question tool this runtime has, a short plain-text question when it has none, and no question at all when nobody can answer (take the step's default, or stop and say what is needed).
 - **Category management** means: use the runtime's available category tool surface, whether that is split helpers such as `category_list` / `category_create` or a unified `category` tool with actions like `list` / `create`.
 
 ---
@@ -97,9 +93,10 @@ Compose the memory as a structured markdown document. Follow this template preci
 Determine the appropriate metadata for this memory:
 
 #### Category Selection
-1. Check if the conversation topic fits an existing child category under `conversations` by listing categories in `tree` format.
-2. If the conversation has a clear specialized topic that doesn't fit existing children, consider creating a new child category under `conversations` — but only if it represents a genuinely distinct recurring topic (not a one-off).
-3. **Default**: Use `conversations` as the category. Most context memories belong here.
+1. List categories in `tree` format and pick the existing **child** category that fits the topic (for project work, usually `<project>-architecture`, `<project>-bugs`, `<project>-config` or `<project>-project`).
+2. If no child fits and the topic is a distinct recurring one (not a one-off), create a child category under the fitting parent with the category tool (action `create`).
+3. Never file under a parent category. `conversations` holds the session indexes SynaBun writes at compaction: it is not the place for a memorized context.
+4. **Default**: `<project>-project` (`remember` creates it when it is missing).
 
 #### Tags
 Generate 3-5 lowercase tags. Include:
@@ -167,7 +164,7 @@ Once the user confirms:
 
 1. Call `remember` with:
    - `content`: The final markdown memory text
-   - `category`: The selected category (default: `conversations`)
+   - `category`: The selected child category (default: `<project>-project`)
    - `project`: The detected project
    - `importance`: The determined importance level
    - `tags`: The generated tags (always including `"context-memorize"`)

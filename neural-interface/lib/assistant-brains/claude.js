@@ -123,10 +123,11 @@ export function createClaudeBrain({ session, sink, deps = {}, persona = '', hook
       'X-Synabun-Role': 'assistant', 'X-Synabun-Terminal': session.id, 'X-Synabun-Memory-Session': session.id,
       ...(deps.desktopGrant ? { 'X-Synabun-Desktop-Grant': deps.desktopGrant } : {}),
       ...mcpHeaders,
-      // A WhatsApp conversation's brain credential (whatsapp_send_file). The header names the variable and
+      // This brain launch's credential (assistant-runtime.js mintBrainCredential). The header names the variable and
       // the CLI expands it from its own environment (below): the MCP config is on its command line, which every
       // account of the computer can read, an environment only this user's processes. The in-process MCP server
-      // keeps the value for the request it arrived with, and sends it on the file route alone. Last, so nothing replaces it.
+      // keeps the value for the request it arrived with, and sends it only to the routes that ask who the brain is
+      // (whatsapp_send_file, the Skills Service). Last, so nothing replaces it.
       ...(deps.brainCredential ? { 'X-Synabun-Brain-Token': '${SYNABUN_BRAIN_TOKEN}' } : {}),
     },
     // A remote (WhatsApp) session never pre-approves computer use: its PreToolUse hook refuses, asks or allows each call.
@@ -143,7 +144,7 @@ export function createClaudeBrain({ session, sink, deps = {}, persona = '', hook
       ...(typeof deps.claudeAccountEnv === 'function' ? deps.claudeAccountEnv(brain.accountId) : {}),
       SYNABUN_ASSISTANT_SESSION: String(session.id),
       ...(deps.userContextThreads === true ? { SYNABUN_ASSISTANT_THREADS: '1' } : {}),
-      // The value of the X-Synabun-Brain-Token header above (a WhatsApp conversation's brain only).
+      // The value of the X-Synabun-Brain-Token header above.
       ...(deps.brainCredential ? { SYNABUN_BRAIN_TOKEN: deps.brainCredential } : {}),
     },
     maxBudgetUsd: Number(deps.maxBudgetUsd) > 0 ? Number(deps.maxBudgetUsd) : undefined,

@@ -25,13 +25,13 @@ import { registerCardTools } from './tools/card.js';
 import { registerTicTacToeTools } from './tools/tictactoe.js';
 import { registerDiscordTools } from './tools/discord.js';
 import { registerGitTools } from './tools/git.js';
-import { registerLeonardoTools } from './tools/leonardo.js';
 import { registerImageTools } from './tools/image.js';
 import { registerGscTools } from './tools/gsc.js';
 import { registerYoutubeTools } from './tools/youtube.js';
 import { registerStyleGuideTools } from './tools/style-guide.js';
 import { registerMoreLoginTools } from './tools/morelogin.js';
 import { registerAgentTools } from './tools/agents.js';
+import { registerSkillTools } from './tools/skill.js';
 import { registerWhatsAppSendFileTool } from './tools/whatsapp-send-file.js';
 import { registerComputerTools } from './tools/computer.js';
 import { profileSchema, profileDescription, handleProfile } from './tools/profile.js';
@@ -113,7 +113,6 @@ export function registerTools(server: McpServer, runtime: ProfileRuntime = new P
   runtime.setToolGroup('tictactoe',  registerTicTacToeTools(server));
   runtime.setToolGroup('discord',    registerDiscordTools(server));
   runtime.setToolGroup('git',        registerGitTools(server));
-  runtime.setToolGroup('leonardo',   registerLeonardoTools(server));
   runtime.setToolGroup('image',      registerImageTools(server));
   runtime.setToolGroup('gsc',        registerGscTools(server));
   runtime.setToolGroup('youtube',    registerYoutubeTools(server));
@@ -123,6 +122,8 @@ export function registerTools(server: McpServer, runtime: ProfileRuntime = new P
   // (profiles.ts ROLE_GATED_GROUPS), never by profile selection. whatsapp_send_file
   // rides here: only an assistant brain sees it (and only a WhatsApp one may use it).
   runtime.setToolGroup('agents',     [...registerAgentTools(server), registerWhatsAppSendFileTool(server)]);
+  // Role-gated like agents: the Assistant drafts skills and submits them for review; the owner installs.
+  runtime.setToolGroup('skills',     registerSkillTools(server));
   // Capability-gated: advertised only to callers holding a desktop grant
   // (profiles.ts CAPABILITY_GATED_GROUPS), macOS only.
   runtime.setToolGroup('computer',   registerComputerTools(server));
@@ -222,11 +223,11 @@ export function getToolUsageSummary(runtime: ProfileRuntime = mainProfileRuntime
     tictactoe: ['tictactoe'],
     discord: ['discord_'],
     git: ['git'],
-    leonardo: ['leonardo_'],
     image: ['image_staged'],
     gsc: ['gsc_'],
     styleguide: ['style_guide'],
     agents: ['agent_', 'whatsapp_send_file'],
+    skills: ['skill'],
     computer: ['computer'],
   };
   const usedGroups = new Set<string>();

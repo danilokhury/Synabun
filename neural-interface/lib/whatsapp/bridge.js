@@ -57,6 +57,7 @@
 // composition are injected (Packages A and C); nothing here knows a phone number.
 
 import { assistantEventKey } from '../../public/shared/assistant/asst-state.js';
+import { stripFollowups } from '../../public/shared/assistant/asst-followups.js';
 import { brainCapsLevel, defaultRemotePolicyRegistry, effectiveLevel, remoteBrainNotice } from '../remote-policy.js';
 import { brainSignature, resolveBrainChoice } from './brain.js';
 import { answerCard, cardFromPacket, failClosedResponse, isBareAnswer, randomTag, renderCard } from './cards.js';
@@ -646,12 +647,14 @@ export function createWhatsAppBridge({
   function finalText(turn) {
     const segments = turn.segments.filter(Boolean);
     const result = typeof turn.resultText === 'string' ? turn.resultText.trim() : '';
-    const final = result || segments[segments.length - 1] || '';
+    const raw = result || segments[segments.length - 1] || '';
+    // A follow-ups block is the panel's buttons: a phone gets the words around it.
+    const final = stripFollowups(raw).trim();
     if (!final) return '';
     if (final.length < 200) {
-      const earlier = segments.filter((segment) => segment !== final && segment.length >= 280);
+      const earlier = segments.filter((segment) => segment !== raw && segment !== final && segment.length >= 280);
       const lead = earlier[earlier.length - 1];
-      if (lead && !turn.narrated?.has(lead)) return `${lead}\n\n${final}`;
+      if (lead && !turn.narrated?.has(lead)) return `${stripFollowups(lead).trim()}\n\n${final}`;
     }
     return final;
   }

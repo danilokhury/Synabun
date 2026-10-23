@@ -2895,10 +2895,12 @@ export class ClaudeSession {
       catch { this._greetingNote = ''; }
     }
 
-    // SynaBun skill injection runs FIRST; unrecognized /commands pass through to the CLI
+    // SynaBun skill injection runs FIRST; unrecognized /commands pass through to the CLI. A skill Claude Code
+    // loads by itself in this session (the account's or the project's) is left to it (server.js
+    // resolveSkillPrompt), so its own settings apply; only a SynaBun skill it cannot see is handed over as text.
     if (prompt && prompt.startsWith('/')) {
       try {
-        const injected = deps.maybeInjectSkillPrompt(prompt);
+        const injected = deps.maybeInjectSkillPrompt(prompt, { cwd: cwd || this.cwd || null, runtime: 'claude', accountId: (queryAccount?.account ?? this.accountId) || 'default' });
         if (injected.command === 'clear' && !injected.skill) return; // client-only
         if (injected.skill) {
           log('skill injection: /' + injected.command);

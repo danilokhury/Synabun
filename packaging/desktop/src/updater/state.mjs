@@ -18,6 +18,12 @@
  *                  installs it before its server
  *   relaunch.json  how the window was when the app quit to update: the new copy
  *                  opens it the same way
+ *
+ * plan.json carries the install's id. The pre-update snapshot the app took for
+ * that install is handed over in <data folder>/data/update-handoff.json under the
+ * same id (lib/update-snapshot.js), and the next start marks it: `installed`
+ * when the new copy runs, `cancelled` when the swap failed or rolled back
+ * (markUpdateHandoff).
  */
 
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
@@ -82,6 +88,21 @@ export function finishPendingSwap({ stateDir, current, removeTree = (path) => rm
     rmSync(join(stateDir, 'swap-failed'), { force: true });
   }
   return out;
+}
+
+/**
+ * The desktop app's handoff of a pre-update snapshot (data/update-handoff.json,
+ * written by lib/update-snapshot.js before the swap): the new copy says
+ * `installed` once it runs, so its first start uses the snapshot instead of
+ * taking one; a swap that failed or rolled back says `cancelled`. Only this
+ * install's handoff (its id), only from `prepared`. True when it changed.
+ */
+export function markUpdateHandoff({ dataHome, installId, status, now = () => new Date() } = {}) {
+  if (!dataHome || !installId || !['installed', 'cancelled'].includes(status)) return false;
+  const path = join(dataHome, 'data', 'update-handoff.json');
+  const handoff = readJsonFile(path);
+  if (!handoff || typeof handoff !== 'object' || handoff.source !== 'desktop' || handoff.installId !== installId || handoff.status !== 'prepared') return false;
+  return writeJsonFile(path, { ...handoff, status, [status === 'installed' ? 'installedAt' : 'cancelledAt']: now().toISOString() });
 }
 
 /**

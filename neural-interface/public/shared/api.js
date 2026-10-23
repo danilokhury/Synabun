@@ -10,16 +10,25 @@ async function jsonFetch(url, options = {}) {
   const res = await fetch(url, options);
   if (!res.ok) {
     let errMsg = `HTTP ${res.status}`;
-    try { const body = await res.json(); errMsg = body.error || errMsg; } catch {}
+    let errBody = null;
+    try { const body = await res.json(); errBody = body && typeof body === 'object' ? body : null; errMsg = body.error || errMsg; } catch {}
     if (res.status === 403) {
       console.warn(`[api] 403 Forbidden: ${url}`);
       // Trigger global toast for guest feedback
       window.dispatchEvent(new CustomEvent('synabun:forbidden', { detail: errMsg }));
       const err = new Error(errMsg);
       err.forbidden = true;
+      err.status = 403;
+      err.code = errBody?.code;
+      err.body = errBody;
       throw err;
     }
-    throw new Error(errMsg);
+    // What the server said besides the message (a code, the revision on disk…) stays with the error.
+    const err = new Error(errMsg);
+    err.status = res.status;
+    err.code = errBody?.code;
+    err.body = errBody;
+    throw err;
   }
   return res.json();
 }
@@ -436,6 +445,15 @@ export async function toggleClaudeCodeSkill(method, skillName) {
 }
 
 // ─── Skills Studio ───────────────────────
+// Every change here is the owner's, from this page: the routes refuse a write without the X-SynaBun-UI header (and a
+// guest's, and one that carries an agent's headers), as the Skills Service's owner routes below do.
+
+const STUDIO_UI = { 'X-SynaBun-UI': '1' };
+
+/** A Skills Studio write's JSON body, sent as this page's. */
+function studioJsonBody(data) {
+  return { headers: { 'Content-Type': 'application/json', ...STUDIO_UI }, body: JSON.stringify(data) };
+}
 
 export async function fetchSkillsLibrary() {
   return jsonFetch('/api/skills-studio/library');
@@ -445,10 +463,12 @@ export async function fetchSkillsArtifact(encodedId) {
   return jsonFetch(`/api/skills-studio/artifact/${encodedId}`);
 }
 
-export async function saveSkillsArtifact(encodedId, rawContent) {
+// `expectedRevision`: the revision the editor opened (or last saved). A file that is not that any more is not
+// written: the error has status 409, code `revision_conflict` and body.currentRevision.
+export async function saveSkillsArtifact(encodedId, rawContent, { expectedRevision } = {}) {
   return jsonFetch(`/api/skills-studio/artifact/${encodedId}`, {
     method: 'PUT',
-    ...jsonBody({ rawContent }),
+    ...studioJsonBody({ rawContent, ...(expectedRevision ? { expectedRevision } : {}) }),
   });
 }
 
@@ -456,59 +476,92 @@ export async function fetchSkillsSubFile(encodedId, path) {
   return jsonFetch(`/api/skills-studio/artifact/${encodedId}/file?path=${encodeURIComponent(path)}`);
 }
 
-export async function saveSkillsSubFile(encodedId, path, content) {
+export async function saveSkillsSubFile(encodedId, path, content, { expectedRevision } = {}) {
   return jsonFetch(`/api/skills-studio/artifact/${encodedId}/file`, {
     method: 'PUT',
-    ...jsonBody({ path, content }),
+    ...studioJsonBody({ path, content, ...(expectedRevision ? { expectedRevision } : {}) }),
   });
 }
 
-export async function createSkillsSubFile(encodedId, path, content, isDir) {
+// `contentBase64`: a file that is not text (an image, a PDF), sent byte for byte.
+export async function createSkillsSubFile(encodedId, path, content, isDir, { contentBase64 } = {}) {
   return jsonFetch(`/api/skills-studio/artifact/${encodedId}/file`, {
     method: 'POST',
-    ...jsonBody({ path, content, isDir }),
+    ...studioJsonBody({ path, content, isDir, ...(contentBase64 !== undefined ? { contentBase64 } : {}) }),
   });
 }
 
 export async function deleteSkillsSubFile(encodedId, path) {
   return jsonFetch(`/api/skills-studio/artifact/${encodedId}/file`, {
     method: 'DELETE',
-    ...jsonBody({ path }),
+    ...studioJsonBody({ path }),
   });
 }
 
 export async function createSkillsArtifact(payload) {
   return jsonFetch('/api/skills-studio/create', {
     method: 'POST',
-    ...jsonBody(payload),
+    ...studioJsonBody(payload),
   });
 }
 
 export async function deleteSkillsArtifact(encodedId) {
   return jsonFetch(`/api/skills-studio/artifact/${encodedId}`, {
     method: 'DELETE',
+    headers: STUDIO_UI,
   });
 }
 
 export async function validateSkillsArtifact(rawContent, type) {
   return jsonFetch('/api/skills-studio/validate', {
     method: 'POST',
-    ...jsonBody({ rawContent, type }),
+    ...studioJsonBody({ rawContent, type }),
   });
 }
 
-export async function installSkillsBundled(dirName) {
+// A folder already there is replaced only when SynaBun installed it and it is unchanged; otherwise the error is
+// a 409 (`skill_unowned` / `skill_modified`) whose body names `currentDigest`: sending that back as
+// `expectedDestinationDigest` is the person's confirmation of replacing exactly what is there (a backup is kept).
+export async function installSkillsBundled(dirName, { expectedDestinationDigest } = {}) {
   return jsonFetch('/api/skills-studio/install', {
     method: 'POST',
-    ...jsonBody({ dirName }),
+    ...studioJsonBody({ dirName, ...(expectedDestinationDigest ? { expectedDestinationDigest } : {}) }),
   });
 }
 
-export async function uninstallSkillsBundled(dirName) {
+export async function uninstallSkillsBundled(dirName, { expectedDestinationDigest } = {}) {
   return jsonFetch('/api/skills-studio/install', {
     method: 'DELETE',
-    ...jsonBody({ dirName }),
+    ...studioJsonBody({ dirName, ...(expectedDestinationDigest ? { expectedDestinationDigest } : {}) }),
   });
+}
+
+// An editable copy of a bundled skill, under a name of the user's own, in a scope they chose.
+export async function customizeSkillsCopy({ id, name, scope, projectPath }) {
+  return jsonFetch('/api/skills-studio/customize', {
+    method: 'POST',
+    ...studioJsonBody({ id, name, scope, ...(projectPath ? { projectPath } : {}) }),
+  });
+}
+
+// An import is checked and staged first (nothing is installed), then installed by its staged digest once a
+// person reviewed it. `scope` is 'global', or 'project' with a registered projectPath: never guessed.
+export async function stageSkillsImport(bundle, scope, projectPath) {
+  return jsonFetch('/api/skills-studio/import/stage', {
+    method: 'POST',
+    ...studioJsonBody({ bundle, scope, ...(projectPath ? { projectPath } : {}) }),
+  });
+}
+
+export async function commitSkillsImport({ stagingId, expectedDigest, acknowledgedDigest, overwrite }) {
+  return jsonFetch('/api/skills-studio/import/commit', {
+    method: 'POST',
+    ...studioJsonBody({ stagingId, expectedDigest, ...(acknowledgedDigest ? { acknowledgedDigest } : {}), ...(overwrite === true ? { overwrite: true } : {}) }),
+  });
+}
+
+export async function discardSkillsImport(stagingId) {
+  return jsonFetch(`/api/skills-studio/import/stage/${encodeURIComponent(stagingId)}`, { method: 'DELETE', headers: STUDIO_UI });
 }
 
 // `overwrite`: the user confirmed that files which already exist may be replaced.
@@ -517,7 +570,7 @@ export async function uninstallSkillsBundled(dirName) {
 export async function importSkillsBundle(bundle, scope, projectPath, { overwrite = false } = {}) {
   const res = await fetch('/api/skills-studio/import', {
     method: 'POST',
-    ...jsonBody({ bundle, scope, projectPath, ...(overwrite === true ? { overwrite: true } : {}) }),
+    ...studioJsonBody({ bundle, scope, projectPath, ...(overwrite === true ? { overwrite: true } : {}) }),
   });
   if (res.ok) return res.json();
   let body = {};
@@ -558,14 +611,85 @@ export function getSkillsIconUrl(encodedId) {
 export async function uploadSkillsIcon(encodedId, fileBuffer, contentType) {
   return jsonFetch(`/api/skills-studio/artifact/${encodedId}/icon`, {
     method: 'POST',
-    headers: { 'Content-Type': contentType || 'image/png' },
+    headers: { 'Content-Type': contentType || 'image/png', ...STUDIO_UI },
     body: fileBuffer,
   });
 }
 
 export async function deleteSkillsIcon(encodedId) {
-  return jsonFetch(`/api/skills-studio/artifact/${encodedId}/icon`, { method: 'DELETE' });
+  return jsonFetch(`/api/skills-studio/artifact/${encodedId}/icon`, { method: 'DELETE', headers: STUDIO_UI });
 }
+
+// ─── Skills Service (/api/skills-studio/v2) ──
+// Reads for everyone the Skills Studio permission lets in. Installs, approvals, rollbacks, the move of the old
+// bridges and the settings are the owner's, from this page: those routes want the X-SynaBun-UI header and refuse
+// a request that carries an agent's headers (lib/skills/api-v2.js).
+
+function skillsV2(path, { method = 'GET', body, idempotencyKey } = {}) {
+  const headers = { 'X-SynaBun-UI': '1' };
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  // A write that creates something is sent once: the same key within ten minutes answers the first result again.
+  if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey;
+  return jsonFetch(`/api/skills-studio/v2${path}`, { method, headers, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
+}
+
+export function fetchSkillsStatus() { return skillsV2('/status'); }
+export function fetchSkillsReviews({ open = null } = {}) { return skillsV2(`/reviews${open === null ? '' : `?open=${open}`}`); }
+export function decideSkillsReview(reviewId, decision, reason = '') { return skillsV2(`/reviews/${encodeURIComponent(reviewId)}/decision`, { method: 'POST', body: { decision, reason } }); }
+export function fetchSkillsRevision(revisionId) { return skillsV2(`/revisions/${encodeURIComponent(revisionId)}`); }
+export function fetchSkillsRevisionFile(revisionId, file) { return skillsV2(`/revisions/${encodeURIComponent(revisionId)}?file=${encodeURIComponent(file)}`); }
+export function fetchSkillsDiff(from, to) { return skillsV2(`/diff?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`); }
+export function planSkillsInstall(revisionId, targets) { return skillsV2('/installations/plan', { method: 'POST', body: { revisionId, targets } }); }
+export function installSkillsRevision(payload) { return skillsV2('/installations', { method: 'POST', body: payload }); }
+export function fetchSkillsInstallations({ active = null } = {}) { return skillsV2(`/installations${active === null ? '' : `?active=${active}`}`); }
+export function rollbackSkillsInstallation(id, body = {}) { return skillsV2(`/installations/${encodeURIComponent(id)}/rollback`, { method: 'POST', body }); }
+export function verifySkillsInstallation(id, { probe = false } = {}) { return skillsV2(`/installations/${encodeURIComponent(id)}/verify`, { method: 'POST', body: { probe } }); }
+export function planSkillsBridgeMigration() { return skillsV2('/migrations/bridges/plan'); }
+export function runSkillsBridgeMigration(planDigest) { return skillsV2('/migrations/bridges', { method: 'POST', body: { planDigest } }); }
+export function revertSkillsMigration(journalId) { return skillsV2(`/migrations/${encodeURIComponent(journalId)}/revert`, { method: 'POST', body: {} }); }
+export function fetchSkillsMigrations() { return skillsV2('/migrations'); }
+export function fetchSkillsConfig() { return skillsV2('/config'); }
+export function saveSkillsConfig(patch) { return skillsV2('/config', { method: 'PUT', body: patch }); }
+
+// Skills Studio 2.0 (P2): the catalog of every runtime folder, the managed library (skills, drafts, revisions,
+// pointers), checks, exports, and what a page newer than its server may ask (capabilities).
+const enc = (v) => encodeURIComponent(v);
+const query = (params) => { const q = Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== '').map(([k, v]) => `${enc(k)}=${enc(v)}`).join('&'); return q ? `?${q}` : ''; };
+export function fetchSkillsCapabilities() { return skillsV2('/capabilities'); }
+export function fetchSkillsCatalog({ cursor, limit, kind, runtime, rootId, scope, q } = {}) { return skillsV2(`/catalog${query({ cursor, limit, kind, runtime, rootId, scope, q })}`); }
+export function fetchSkillsCatalogEntry(artifactId) { return skillsV2(`/catalog/${enc(artifactId)}`); }
+export function fetchSkillsCatalogFile(artifactId, path) { return skillsV2(`/catalog/${enc(artifactId)}/file?path=${enc(path)}`); }
+export function fetchSkillsCompare(fromRevisionId, artifactId) { return skillsV2(`/compare?from=${enc(fromRevisionId)}&artifactId=${enc(artifactId)}`); }
+export function rescanSkillsCatalog() { return skillsV2('/catalog/rescan', { method: 'POST', body: {} }); }
+export function fetchSkillsList() { return skillsV2('/skills'); }
+export function fetchSkill(skillId) { return skillsV2(`/skills/${enc(skillId)}`); }
+// Out of the library (its versions kept in the library's archive): 409 `skill_installed` while it is installed
+// somewhere, 403 `skill_bundled` for one SynaBun ships, 409 `skill_conflict` when `expectedEtag` is not its etag now.
+export function deleteLibrarySkill(skillId, { expectedEtag = null } = {}) { return skillsV2(`/skills/${enc(skillId)}`, { method: 'DELETE', body: expectedEtag === null ? {} : { expectedEtag } }); }
+export function fetchSkillRevisions(skillId) { return skillsV2(`/skills/${enc(skillId)}/revisions`); }
+export function createLibrarySkill({ name, files, dirs = [] }, { idempotencyKey } = {}) { return skillsV2('/skills', { method: 'POST', body: { name, files, dirs }, idempotencyKey }); }
+export function adoptSkillsArtifact(artifactId, { idempotencyKey } = {}) { return skillsV2('/skills', { method: 'POST', body: { artifactId }, idempotencyKey }); }
+export function moveSkillPointer(skillId, { pointer, revisionId, expectedEtag = null, reason = '' }) { return skillsV2(`/skills/${enc(skillId)}/pointers`, { method: 'POST', body: { pointer, revisionId, expectedEtag, reason } }); }
+export function createSkillsDraft({ skillId, baseRevisionId = null }, { idempotencyKey } = {}) { return skillsV2('/drafts', { method: 'POST', body: { skillId, baseRevisionId }, idempotencyKey }); }
+export function fetchSkillsDraft(draftId) { return skillsV2(`/drafts/${enc(draftId)}`); }
+export function fetchSkillsDraftFile(draftId, path) { return skillsV2(`/drafts/${enc(draftId)}?file=${enc(path)}`); }
+export function patchSkillsDraft(draftId, { expectedEtag, ops }) { return skillsV2(`/drafts/${enc(draftId)}`, { method: 'PATCH', body: { expectedEtag, ops } }); }
+export function snapshotSkillsDraft(draftId, { expectedEtag, note = '' }, { idempotencyKey } = {}) { return skillsV2(`/drafts/${enc(draftId)}/snapshot`, { method: 'POST', body: { expectedEtag, note }, idempotencyKey }); }
+export function lintSkillsFolder(body) { return skillsV2('/lint', { method: 'POST', body }); }
+export function uninstallSkillsInstallation(id, body = {}) { return skillsV2(`/installations/${enc(id)}/uninstall`, { method: 'POST', body }); }
+export function commentSkillsReview(reviewId, body) { return skillsV2(`/reviews/${enc(reviewId)}/comment`, { method: 'POST', body: { body } }); }
+export function getSkillsRevisionExportUrl(revisionId, { format = 'bundle', profile = '' } = {}) { return `/api/skills-studio/v2/revisions/${enc(revisionId)}/export${query({ format, profile })}`; }
+
+// AI drafting (P3, lib/skills/creation-api.js): a creation from the owner's words and sources, one worker drafting it,
+// the result checked and put in the Review queue. Followed by a long poll (`wait`); cancelled and retried from here.
+export function fetchSkillCreationOptions() { return skillsV2('/creations/options'); }
+export function fetchSkillCreationSessions({ provider, project = '', q = '', limit = 40 } = {}) { return skillsV2(`/creations/sessions${query({ provider, project, q, limit })}`); }
+export function fetchSkillCreations({ limit = 20 } = {}) { return skillsV2(`/creations${query({ limit })}`); }
+export function startSkillCreation(body, { idempotencyKey } = {}) { return skillsV2('/creations', { method: 'POST', body, idempotencyKey }); }
+export function fetchSkillCreation(id) { return skillsV2(`/creations/${enc(id)}`); }
+export function waitSkillCreation(id, { since = -1, seconds = 20 } = {}) { return skillsV2(`/creations/${enc(id)}/wait${query({ since, seconds })}`); }
+export function cancelSkillCreation(id) { return skillsV2(`/creations/${enc(id)}/cancel`, { method: 'POST', body: {} }); }
+export function retrySkillCreation(id, { idempotencyKey } = {}) { return skillsV2(`/creations/${enc(id)}/retry`, { method: 'POST', body: {}, idempotencyKey }); }
 
 // ─── MCP Key ─────────────────────────────
 

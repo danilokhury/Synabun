@@ -31,6 +31,7 @@ import {
 } from '../agent-runtime-options.js';
 import { CodexModelCatalog, codexModelAccountKey, codexContextAvailability } from './cdx-model-catalog.js';
 import { nativeLoopWindowId } from '../ui-native-window-id.js';
+import { skillHintEntries, skillsForPrompt } from './cdx-skill-hints.js';
 import { syncSidepanelLayout, focusSidepanel, isHostedSessionFocused } from '../ui-sidepanel-windows.js';
 import { notify, NOTIF_TYPE } from '../ui-notifications.js';
 import { createStickyScrollController } from '../ui-scroll-follow.js';
@@ -5140,6 +5141,10 @@ export function dispatchPrompt(prompt, { tab = activeTab(), images = null, paths
   };
   if (tab?.model) msg.model = tab.model;
   if (tab?.effort && tab.effort !== 'off') msg.effort = tab.effort;
+  // A native skill picked from the hints (SK-050): sent as Codex's own skill input, once.
+  const nativeSkills = skillsForPrompt(inputText, tab?.pendingSkill);
+  if (nativeSkills.length) msg.skills = nativeSkills;
+  if (tab) tab.pendingSkill = null;
   // A person's own turn: the greeting engine keeps when they were last here. The greeting this
   // tab opened with goes back once, with the first prompt of its new thread.
   msg.human = true;
@@ -7215,6 +7220,9 @@ export function renderImageStrip() {
 // ── Whiteboard "Send to Panel" — receive image via event bus ──
 // Any window or surface changed a Codex account (signed in or out, a key, its mode, renamed, added,
 // removed): the menu re-reads the list, and the tabs on that account re-check sign-in.
+// A skill was installed, removed or changed: the skill hints are read again on the next "/".
+appOn('sync:skills:changed', () => { _skillsCache = null; _skillsPromise = null; });
+
 appOn('sync:codex:accounts-changed', (msg = {}) => {
   refreshCodexAccounts().catch(() => {});
   for (const tab of _tabs) if (!msg.accountId || serverAccountId(tab.accountId) === msg.accountId) void tab.terminalAuthView?.refresh();
@@ -7493,14 +7501,8 @@ export async function loadSlashCommands() {
     commands = codexCommandHints(capabilities);
     const data = await requestSocketPayloadForTab(tab, 'skills_list', { cwds: tab.project ? [tab.project] : [] });
     const seen = new Set(BUILTIN_SLASH_COMMANDS.map((entry) => entry.cmd));
-    const skillCommands = flattenNativeCatalog(data, 'skills')
-      .filter((skill) => skill.enabled !== false)
-      .map((skill) => ({
-        cmd: '/' + String(skill.name || skill.dirName || '').trim(),
-        desc: String(skill.description || '').trim(),
-      }))
-      .filter((skill) => skill.cmd !== '/' && !seen.has(skill.cmd))
-      .sort((a, b) => a.cmd.localeCompare(b.cmd));
+    // Each native skill keeps its SKILL.md path: picking it sends Codex's own skill input (cdx-skill-hints.js).
+    const skillCommands = skillHintEntries(flattenNativeCatalog(data, 'skills'), seen);
     _skillsCache = [...commands, ...skillCommands];
   } catch {
     _skillsCache = commands;
@@ -7563,15 +7565,19 @@ export function showSlashHints(text) {
     descSpan.className = 'cxp-slash-hint-desc';
     descSpan.textContent = c.desc;
     item.append(cmdSpan, descSpan);
-    item.addEventListener('click', () => selectSlashHint(c.cmd));
+    item._hint = c;
+    item.addEventListener('click', () => selectSlashHint(c.cmd, c));
     hintsEl.appendChild(item);
   });
 }
 
-export function selectSlashHint(cmd) {
+export function selectSlashHint(cmd, hint = null) {
   const input = panelEl('#cxp-input');
   hideComposerHints();
   if (!input) return;
+  // A native skill picked here goes as Codex's own skill input with the prompt, while the prompt starts with it.
+  const pickTab = activeTab();
+  if (pickTab) pickTab.pendingSkill = hint?.skill ? { cmd: hint.cmd, name: hint.skill.name, path: hint.skill.path } : null;
   const command = CODEX_COMMAND_BY_NAME.get(String(cmd).replace(/^\//, ''));
   if (command?.name === 'model') {
     panelEl('#cxp-model')?.classList.toggle('open');
@@ -7609,7 +7615,7 @@ export function confirmSlashHint() {
     return true;
   }
   const cmdEl = items[_slashActiveIdx]?.querySelector('.cxp-slash-hint-cmd');
-  if (cmdEl) selectSlashHint(cmdEl.textContent);
+  if (cmdEl) selectSlashHint(cmdEl.textContent, items[_slashActiveIdx]._hint || null);
   return true;
 }
 

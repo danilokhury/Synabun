@@ -69,7 +69,7 @@ export function patchOpenCodeAssistantConfig(xdgRoot, { persona = '', role = 'as
     // Computer use: an unforgeable per-brain grant unlocks the `computer` group.
     if (desktopGrant) env.SYNABUN_DESKTOP_GRANT = desktopGrant;
     else delete env.SYNABUN_DESKTOP_GRANT;
-    // A WhatsApp conversation's brain credential (whatsapp_send_file), for this serve's SynaBun MCP child only.
+    // The brain's launch credential (whatsapp_send_file, the Skills Service), for this serve's SynaBun MCP child only.
     // This file names the variable; the value is in the serve's own environment (ensureIsolatedServe), so
     // neither this file (it is in every backup of data/) nor OPENCODE_CONFIG_CONTENT ever holds it.
     if (brainCredential) env.SYNABUN_BRAIN_TOKEN = '{env:SYNABUN_BRAIN_TOKEN}';

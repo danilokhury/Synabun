@@ -76,6 +76,9 @@ export const ADMIN_ONLY_PREFIXES = Object.freeze([
   // Installing a skill into one of the owner's runtimes, or removing it (Settings; its older address is under
   // /api/claude-code above). The "Skills Studio" permission opens /api/skills-studio, not this.
   '/api/skills/install',
+  // The Skills Service's installs, rollbacks and removals, the move of the old bridges, and its settings: the
+  // owner's, from the app's own page (lib/skills/api-v2.js refuses guests and agents on its own too).
+  '/api/skills-studio/v2/installations', '/api/skills-studio/v2/migrations', '/api/skills-studio/v2/config',
   '/api/tunnel/start', '/api/tunnel/stop',
   '/api/bridges', '/api/keybinds',
   '/api/cli',
@@ -123,6 +126,13 @@ export const FEATURE_PERMISSION_MAP = Object.freeze([
   { prefix: '/api/cards',         perm: 'cards' },
   { prefix: '/api/style-guide',   perm: 'styleGuide' },
 ].map(Object.freeze));
+
+/**
+ * What an invite guest only reads, whatever the owner opened to guests: the "Skills Studio" permission shows the
+ * skills, and every change (save, create, delete, files, icons, install, customize, import, the Skills Service's
+ * drafts and reviews) is the owner's, as lib/skills/api-v2.js and each legacy Studio route say on their own too.
+ */
+export const GUEST_READ_ONLY_PREFIXES = Object.freeze(['/api/skills-studio']);
 
 /**
  * The GETs a guest does not get for the asking. The terminal's lists of a folder's files and of its branches take
@@ -579,6 +589,11 @@ export function createRequestGates({
       ? FEATURE_READ_PATHS.find((entry) => read.some((form) => startsWithSegment(form, entry.path)))
       : FEATURE_PERMISSION_MAP.find((entry) => read.some((form) => form.startsWith(entry.prefix)));
     if (match && !permissions()?.[match.perm]) return res.status(403).json({ error: 'Feature not enabled' });
+    // And a feature opened to guests that they only read: no change, whatever was opened.
+    const reading = req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS';
+    if (!reading && GUEST_READ_ONLY_PREFIXES.some((prefix) => read.some((form) => startsWithSegment(form, prefix)))) {
+      return sendGuardError(res, 403, 'GUEST_FORBIDDEN', 'Guests can read skills, not change them.');
+    }
     return next();
   }
 

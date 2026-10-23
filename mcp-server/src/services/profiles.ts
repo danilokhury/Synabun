@@ -23,18 +23,25 @@ export const PROFILE_PRESETS: Record<string, string[]> = {
   instagram:  ['git', 'image', 'browser', 'browser_instagram'],
   linkedin:   ['git', 'image', 'browser', 'browser_linkedin'],
   bluesky:    ['git', 'image', 'browser', 'browser_bluesky'],
-  browser:    ['git', 'image', 'whiteboard', 'card', 'tictactoe', ...ALL_BROWSER_GROUPS, 'leonardo', 'gsc', 'youtube', 'styleguide', 'morelogin'],
-  full:       ['git', 'image', 'whiteboard', 'card', 'tictactoe', ...ALL_BROWSER_GROUPS, 'leonardo', 'discord', 'gsc', 'youtube', 'styleguide', 'morelogin'],
-  leonardoai: ['leonardo'],
+  browser:    ['git', 'image', 'whiteboard', 'card', 'tictactoe', ...ALL_BROWSER_GROUPS, 'gsc', 'youtube', 'styleguide', 'morelogin'],
+  full:       ['git', 'image', 'whiteboard', 'card', 'tictactoe', ...ALL_BROWSER_GROUPS, 'discord', 'gsc', 'youtube', 'styleguide', 'morelogin'],
   gsc:        ['git', 'image', 'browser', 'gsc'],
   youtube:    ['git', 'image', 'browser', 'youtube'],
 };
 
 export const VALID_GROUPS = new Set([
   ...ALL_BROWSER_GROUPS,
-  'whiteboard', 'card', 'tictactoe', 'discord', 'git', 'leonardo', 'image', 'gsc', 'youtube', 'styleguide', 'morelogin',
-  'agents', 'computer',
+  'whiteboard', 'card', 'tictactoe', 'discord', 'git', 'image', 'gsc', 'youtube', 'styleguide', 'morelogin',
+  'agents', 'skills', 'computer',
 ]);
+
+/**
+ * Built-in presets that no longer exist. A registry written by an older
+ * Neural Interface may still list one; it is dropped here so a stored
+ * selection of it is invalid and falls back to the default profile instead of
+ * resolving to an empty one.
+ */
+const RETIRED_PROFILES = new Set(['leonardoai']);
 
 /**
  * Groups that only a caller with the matching role may see. They are never
@@ -42,7 +49,7 @@ export const VALID_GROUPS = new Set([
  * can neither reveal `agents` to a plain runtime nor hide it from the
  * assistant, and a deferred Codex catalog does not leak it either.
  */
-export const ROLE_GATED_GROUPS: Readonly<Record<string, CallerRole>> = Object.freeze({ agents: 'assistant' as const });
+export const ROLE_GATED_GROUPS: Readonly<Record<string, CallerRole>> = Object.freeze({ agents: 'assistant' as const, skills: 'assistant' as const });
 
 export function isRoleGatedGroup(group: string): boolean {
   return Object.prototype.hasOwnProperty.call(ROLE_GATED_GROUPS, group);
@@ -112,6 +119,7 @@ export function getProfilePresets(): Record<string, string[]> {
             .filter((group): group is string => typeof group === 'string' && VALID_GROUPS.has(group))
         : [];
       const normalizedName = String(name).toLowerCase().trim();
+      if (RETIRED_PROFILES.has(normalizedName)) continue;
       // Built-ins are forward-migrated additively. Older persisted registries
       // predate groups such as styleguide/morelogin; letting them replace the
       // current defaults would silently remove tools from new MCP processes.

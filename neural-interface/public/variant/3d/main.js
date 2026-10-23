@@ -24,7 +24,7 @@ import { initPanelSystem, initPinToggle, clampPanelsToViewport } from '../../sha
 import { initLoading, showLoadingError, hideLoading, rememberHealth } from '../../shared/ui-loading.js';
 import { initNavbar } from '../../shared/ui-navbar.js';
 import { initMenubar, closeMenubar } from '../../shared/ui-menubar.js';
-import { initSearch } from '../../shared/ui-search.js';
+import { initSearch, clearSearch } from '../../shared/ui-search.js';
 import { buildCategorySidebar, initSidebar, loadCategories } from '../../shared/ui-sidebar.js';
 import { openMemoryCard, restoreOpenCards, initDetailPanel, setDetailCallbacks } from '../../shared/ui-detail.js';
 import { initSettings, restoreInterfaceConfig, restoreSkin, loadIfaceConfig } from '../../shared/ui-settings.js';
@@ -55,6 +55,7 @@ import { initAutomationStudio } from '../../shared/ui-automation-studio.js';
 import { initSchedulesStudio } from '../../shared/ui-schedules-studio.js';
 import { initNativeLoopRouter } from '../../shared/ui-native-loop-router.js';
 import { initCommandRunner } from '../../shared/ui-command-runner.js';
+import { initAppContextMenu, openAppContextMenu, registerContextMenuArea } from '../../shared/ui-context-menu.js';
 
 // ── Memory map (three.js itself loads only when the map is shown) ──
 import { createLabelLayer } from './map-labels.js';
@@ -154,7 +155,7 @@ function ensureMap() {
       });
       labels.resize(renderer.size.width, renderer.size.height);
       v = createMapView({ renderer, labels, statusEl: statusPill(container), onMissingNodes: (ids) => addMissingMemories(ids) });
-      initMapControls({ renderer, view: v, labels });
+      initMapControls({ renderer, view: v, labels, onContextMenu: openMapMenu });
       view = v;
       applyRunState();
       syncMapMenuChecks();
@@ -387,7 +388,61 @@ registerAction('map-frame-all', () => view?.frameAll());
 
 
 // ═══════════════════════════════════════════
-// 8. BOOT
+// 8. CONTEXT MENU (shared/ui-context-menu.js)
+// ═══════════════════════════════════════════
+// A right-click (no drag) on the map opens the app's menu with the map's part on top: a memory, a name on the
+// map, or its empty space. The same functions as the map's clicks and Apps › Map.
+
+const mapActions = {
+  frameAll: () => view?.frameAll(),
+  toggleOption: (key) => { if (!view) return; view.setOption(key, !view.options[key]); syncMapMenuChecks(); },
+  toggleSelect: (id) => view?.toggleMulti(id),
+  flyToIsland: (name) => view?.flyToIsland(name),
+  clearSearch: () => clearSearch(),
+  clearSelection: () => view?.clearSelection(),
+  switchView: () => document.getElementById('nav-2d-link')?.click(), // the navbar hands the selection over
+};
+
+/** The map's part of the menu for what a press resolved to (map-controls.js resolve), null before the map exists. */
+function mapMenuArea(hit) {
+  if (!view?.map) return null;
+  if (hit && hit.i >= 0) {
+    const d = view.describe(hit.i);
+    if (d) {
+      const island = view.map.islands[view.map.islandOf[hit.i]]?.name || d.category;
+      return {
+        kind: 'memory',
+        memory: { id: d.id, onMap: true, island, selected: state.multiSelected.has(d.id) },
+        act: { ...mapActions, openMemory: () => view.clickPoint(hit.i) },
+      };
+    }
+  }
+  const label = hit?.label && hit.label.type !== 'memory' ? hit.label : null;
+  return {
+    kind: 'map',
+    map: { options: view.options, searching: view.searching, selected: !!view.selectedId, label, variant: '3d' },
+    act: { ...mapActions, flyToLabel: () => label && view.clickLabel(label) },
+  };
+}
+
+function openMapMenu({ clientX, clientY, hit }) {
+  openAppContextMenu({ x: clientX, y: clientY, target: renderer?.canvas || null, area: mapMenuArea(hit),
+    returnFocus: renderer?.canvas || null });
+}
+
+// From the keyboard (ContextMenu key, Shift+F10) on the focused map: the selected memory, else the map.
+registerContextMenuArea({
+  id: 'memory-map',
+  match(el) {
+    if (!renderer || el !== renderer.canvas) return null;
+    const i = view?.selectedId ? view.map?.indexOf.get(view.selectedId) : undefined;
+    return mapMenuArea(i === undefined ? null : { i, label: null });
+  },
+});
+
+
+// ═══════════════════════════════════════════
+// 9. BOOT
 // ═══════════════════════════════════════════
 
 async function boot() {
@@ -482,7 +537,7 @@ async function boot() {
 
 
 // ═══════════════════════════════════════════
-// 9. INIT ALL SHARED UI SYSTEMS
+// 10. INIT ALL SHARED UI SYSTEMS
 // ═══════════════════════════════════════════
 
 initLoading({ onInit: boot });
@@ -522,6 +577,7 @@ initWhiteboard();
 initCostWidget();
 initGames();
 initTutorial();
+initAppContextMenu();
 wireMapMenu();
 
 window.addEventListener('resize', () => clampPanelsToViewport());

@@ -30,6 +30,16 @@
 // conversation opened again learns its route from the journal like any other
 // event (no rack of the history moves: none is live) and lends it to the
 // resumed work once its turn runs (lendRouteScene).
+// What a turn leaves for the user to click sits under the row it belongs to:
+// the follow-ups a message offers (its ```synabun-followups block, or best
+// effort its prose: asst-followups.js) and, under an error that is a usage
+// limit, the waiting card with its countdown (asst-limit-wait.js); a limited
+// run's card shows the same waiting card. The user's next prompt answers
+// them or leaves them stale, and so does a new turn (settleOffers).
+// A follow-ups card and the question cards the panel appends (appendNode with
+// an `_ask`) are presented by the mascot (asst-ask.js): the newest one still
+// open is the character on screen, its face a live rig (liveAsk,
+// activateRigs); every other card's face is a painted still.
 
 import { assistantEventKey, fmtCost, fmtElapsed, isRemovableRun, isTerminalRunStatus, modelShortName, providerShortLabel, routeTargetLabel, runTone, summarizeMailbox } from './asst-state.js';
 import { createRouteLine } from './asst-route.js';
@@ -45,6 +55,10 @@ import { STAGE_TIMING, createWorkerStage } from './asst-run-stage.js';
 import { formatRunTokens } from './asst-usage.js';
 import { sanitizeHtmlString, sanitizeInto } from './asst-sanitize.js';
 import { automationView } from './asst-automation.js';
+import { guessFollowups, splitFollowups } from './asst-followups.js';
+import { createFollowupsCard } from './asst-followups-card.js';
+import { limitFromText } from './asst-limit.js';
+import { createLimitWait } from './asst-limit-wait.js';
 
 // ── Markdown (lazy marked, the vendored build the sidepanels use too) ───────────────
 let _marked = null;
@@ -259,12 +273,15 @@ export function updateRunCard(card, run, opts = {}) {
   const readBtn = card.querySelector('[data-action="read"]');
   if (readBtn) readBtn.disabled = run.status === 'queued';
 
+  // A provider's usage limit stopped it: the waiting card, whose Retry now stands in for "Retry on" the same model.
+  const limitShown = syncRunLimit(card, run, opts, t);
+
   // Escalation offer ("Escalate to ‹label›", or "Retry on ‹label›" after a
   // temporary failure) when the server proposes one; a note without a button
   // when a stronger model would hit the same wall (access, the user's input).
   let esc8 = card.querySelector('.asst-run-escalate');
   const escalationRaw = run.escalation && typeof run.escalation === 'object' ? run.escalation : null;
-  const escalation = escalationRaw?.to ? escalationRaw : null;
+  const escalation = escalationRaw?.to && !(limitShown && escalationRaw.kind === 'retry') ? escalationRaw : null;
   const needsNote = escalationRaw && escalationRaw.kind === 'none' ? escalationRaw : null;
   const onEscalate = opts.onEscalate || card._runOpts?.onEscalate;
   if (esc8 && esc8.dataset.kind !== (needsNote ? 'note' : 'offer')) { esc8.remove(); esc8 = null; card._escalation = null; }
@@ -320,6 +337,46 @@ export function updateRunCard(card, run, opts = {}) {
     summary.remove();
   }
   updateRunMedia(card, run, { t, lightboxT: opts.t || card._runOpts?.t });
+}
+
+/** What Retry now runs a limited run on: the server's same-model retry, else the run's own provider and model. */
+function limitRetryTarget(run) {
+  const esc = run?.escalation && typeof run.escalation === 'object' ? run.escalation : null;
+  if (esc?.kind === 'retry' && esc.to?.provider) return esc.to;
+  return { provider: run.provider || 'claude-code', model: run.model || null, effort: run.effort || null, accountId: run.accountId || null };
+}
+
+/**
+ * A run a provider's usage limit stopped (run.limit, lib/assistant-dispatch.js): the waiting card
+ * (asst-limit-wait.js) under its meta line, counting to the reset; Retry now runs it again on the
+ * same model. Never while the run works again, and not in the agents tray (compact). → shown or not.
+ */
+function syncRunLimit(card, run, opts, t) {
+  const limit = run.limit && typeof run.limit === 'object' ? run.limit : null;
+  const tone = runTone(run);
+  const show = !opts.compact && !!limit && tone !== 'running' && tone !== 'queued' && !run.removed;
+  let wait = card._limitWait || null;
+  if (!show) {
+    if (wait) { wait.destroy(); wait.el.remove(); card._limitWait = null; }
+    return false;
+  }
+  if (!wait || !wait.el.isConnected) {
+    const onEscalate = opts.onEscalate || card._runOpts?.onEscalate;
+    wait = createLimitWait({
+      t,
+      resetsAt: limit.resetsAt || null,
+      since: Date.parse(limit.detectedAt || run.completedAt || '') || Date.now(),
+      provider: providerShortLabel(run.provider || 'claude-code'),
+      onRetry: typeof onEscalate === 'function' ? () => onEscalate(card.dataset.runId, limitRetryTarget(card._usageRun || run)) : null,
+    });
+    card._limitWait = wait;
+    const meta = card.querySelector('.asst-run-meta');
+    if (meta) meta.after(wait.el); else card.appendChild(wait.el);
+  } else if (limit.resetsAt) {
+    wait.update({ resetsAt: limit.resetsAt });
+  }
+  if (limit.retriedAt || run.escalation?.started) wait.retried();
+  return true;
 }
 
 const MAX_RUN_MEDIA = 8;
@@ -433,7 +490,11 @@ const SUGGESTION_KINDS = { computer: 'computer', web: 'web', fix: 'edit', schedu
  *          emptySuggestions() → [{ id, label, template }], onSuggestion(template),
  *          brainLabel() → string, onChangeRoutes(), onRouteEvent(ev) → bool (true = handled by an open card),
  *          heroOrigin() → DOMRect | null (where the empty state's character flies in from: the host's placeholder),
- *          onMascotChange() (the character on screen changed: mascot()) }
+ *          onMascotChange() (the character on screen changed: mascot()),
+ *          onFollowup(text, { set, indices }) (a follow-up was clicked: send `text` as the user's message),
+ *          onFollowupOther() ("Something else…": the composer), limitInfo() → the session's limit notice
+ *          ({ status, resetsAt } | null), brainProvider() → the brain's provider id, onLimitRetry(text)
+ *          (Retry now on the Assistant's own limit card: send `text`) }
  */
 export function createRenderer(transcriptEl, hooks = {}) {
   loadMarked();
@@ -470,6 +531,17 @@ export function createRenderer(transcriptEl, hooks = {}) {
   let lastDirect = null; // the last one approved since the user's prompt: a "do it here" continuation turn takes it again
   let turnSeq = 0; // turns this renderer has seen start (showWorking)
   let reattachRunning = null; // what the last reattach said: a turn runs (true), none (false), not asked yet (null)
+  // What a turn left for the user to click: follow-up cards under its messages (asst-followups-card.js) and
+  // the waiting card of a usage limit (asst-limit-wait.js). The user's next prompt answers them or they go
+  // stale, and so does a new turn; live and from the journal alike, so a reload draws the same states.
+  const offers = new Set(); // { el, set, settle(text) → answered, stale() }
+  // The cards the mascot presents (asst-ask.js): follow-ups cards and the question cards the panel appends.
+  // The newest one still open is the character on screen (above any stage); see liveAsk / activateRigs.
+  const askCards = new Set(); // { el, presenter, isOpen(), onChange, seq }
+  let askSeq = 0;
+  let lastTextRow = null; // the newest root message since the user's last prompt: the one a guess reads
+  let turnLimit = null; // the Assistant's own limit card of this turn (one per turn: its error and its result agree)
+  let latestLimit = null; // the newest such card, past its turn too: a limit report that arrives late still sets its clock
 
   // ── Activity racks ──
   // Every burst of agent work (tool calls, thinking, short narration) is one
@@ -739,10 +811,38 @@ export function createRenderer(transcriptEl, hooks = {}) {
     return best;
   }
 
-  /** The mascot on screen: the hero, else the newest stage, else the "Thinking" row's, else none. */
+  /** The mascot on screen: the hero, else the newest open card's, else the newest stage, else the "Thinking" row's, else none. */
   function visibleMascot() {
     if (hero?.rig) return hero.target;
+    const ask = liveAsk();
+    if (ask?.presenter.isLive()) return ask.presenter.target;
     return newestStage()?.target || workingFace?.target || null;
+  }
+
+  // ── Cards the mascot presents ──
+  /** A follow-ups card or a question card (its `_ask`): its face may be the character on screen while it is open. */
+  function registerAsk(handle) {
+    if (!handle?.presenter || askCards.has(handle)) return;
+    handle.seq = (askSeq += 1);
+    handle.onChange = () => mascotChanged();
+    askCards.add(handle);
+    mascotChanged();
+  }
+
+  /** The newest card that is still open (answers can still be picked): the one whose face is live. */
+  function liveAsk() {
+    let best = null;
+    for (const handle of [...askCards]) {
+      if (!handle.el?.isConnected) { askCards.delete(handle); handle.presenter.destroy(); continue; }
+      if (!handle.isOpen() || (best && best.seq > handle.seq)) continue;
+      best = handle;
+    }
+    return best;
+  }
+
+  function dropAsks() {
+    for (const handle of askCards) { try { handle.presenter.destroy(); } catch { /* gone */ } }
+    askCards.clear();
   }
 
   function mascotChanged() {
@@ -825,6 +925,119 @@ export function createRenderer(transcriptEl, hooks = {}) {
     linkify(body);
   }
 
+  /**
+   * A message's text without its follow-ups block (asst-followups.js). While it streams, a block
+   * being typed stays hidden; once the text is final, the block becomes the card under the row
+   * (root messages only: a subagent's offers are not the user's to answer).
+   */
+  function paintMessage(row, body, text, { streaming = false, scope = rootScope } = {}) {
+    const split = splitFollowups(text, { streaming });
+    renderMarkdownInto(body, split.body);
+    if (!streaming && split.block && scope === rootScope) attachFollowups(row, split.block);
+    return split;
+  }
+  /** What a streaming text shows: '' while it is nothing but the start of a block. */
+  const shownText = (text) => splitFollowups(text, { streaming: true }).body;
+
+  // ── Offers ──
+  /**
+   * The follow-ups card under a message row: once per row, registered as an open offer, and presented by
+   * the mascot (its face is live while it is the newest open card: activateRigs).
+   */
+  function attachFollowups(row, set) {
+    if (!row || !set?.items?.length) return null;
+    if (row._followups?.el.isConnected) return row._followups;
+    const card = createFollowupsCard(set, {
+      t,
+      // A card drawn from the journal comes in quietly; a live one with a nod.
+      entrance: calm() ? null : 'nod',
+      onSend: (text, meta) => hooks.onFollowup?.(text, meta),
+      onOther: () => hooks.onFollowupOther?.(),
+      onFocusComposer: () => hooks.onFollowupOther?.(),
+    });
+    row._followups = card;
+    (row.querySelector('.asst-msg-content') || row).appendChild(card.el);
+    offers.add(card);
+    registerAsk(card);
+    enterRow(card.el);
+    scrollEnd();
+    return card;
+  }
+
+  /**
+   * A finished turn whose last message still ends in a list of options or an "I can X, or Y" offer,
+   * with no block: best-effort items read from the prose. Once per message.
+   */
+  function guessOffer() {
+    const row = lastTextRow;
+    if (!row?.isConnected || row._followups || row._guessed || row.classList.contains('asst-msg-error')) return;
+    row._guessed = true;
+    const set = guessFollowups(row._text || '');
+    if (set) attachFollowups(row, set);
+  }
+
+  /**
+   * The user's next prompt reached the transcript (`text`), or a new turn started (no text): every open
+   * offer is answered by it or goes stale. A guessed set nobody took leaves: its message says it in words.
+   */
+  function settleOffers(text = null) {
+    for (const offer of [...offers]) {
+      offers.delete(offer);
+      if (!offer.el?.isConnected) continue;
+      const answered = text !== null ? offer.settle(text) : (offer.stale(), false);
+      if (!answered && offer.set?.source === 'heuristic') offer.el.remove();
+    }
+    if (text !== null) lastTextRow = null;
+  }
+
+  const sameText = (a, b) => String(a ?? '').replace(/\s+/g, ' ').trim().toLowerCase() === String(b ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
+
+  /**
+   * An error that is a provider's usage limit (asst-limit.js): the waiting card right under it, one per
+   * turn. The reset time is the session's own limit report while live (hooks.limitInfo: the Claude SDK's
+   * rate_limit_info), else the one the message names, read from when it was written. Retry now sends one
+   * message that retries the blocked work.
+   */
+  function offerLimitWait(text, { brainError = false } = {}) {
+    const read = limitFromText(text, { now: nowMs() });
+    let info = null;
+    if (!muted) { try { info = hooks.limitInfo?.() || null; } catch { info = null; } }
+    const reported = info?.status === 'rejected' && Number(info.resetsAt) > nowMs();
+    // The brain's own error while the session's report says the limit holds is that limit, whatever its words.
+    if (!read && !(brainError && reported)) return null;
+    const resetsAt = reported ? info.resetsAt : read.resetsAt;
+    if (turnLimit?.wait.el.isConnected) {
+      if (resetsAt) turnLimit.wait.update({ resetsAt });
+      return turnLimit.wait;
+    }
+    const retryText = t('assistant.limitWait.continue', 'The usage limit has reset. Retry what was blocked and continue where you left off.');
+    let provider = '';
+    try { provider = providerShortLabel(hooks.brainProvider?.() || ''); } catch { provider = ''; }
+    const wait = createLimitWait({ t, resetsAt, since: nowMs(), provider, onRetry: () => hooks.onLimitRetry?.(retryText) });
+    const { row, wrap } = assistantRow(rootScope);
+    row.classList.add('asst-limit-row');
+    wrap.appendChild(wait.el);
+    const offer = {
+      el: wait.el,
+      set: null,
+      wait,
+      settle: (reply) => { if (sameText(reply, retryText)) { wait.retried(); return true; } wait.stale(); return false; },
+      stale: () => wait.stale(),
+    };
+    turnLimit = offer;
+    latestLimit = offer;
+    offers.add(offer);
+    enterRow(row);
+    return wait;
+  }
+
+  /** The session's limit report changed (assistant:limit): this turn's waiting card counts to its reset time. */
+  function noteLimit(limit) {
+    // update() leaves a card that was retried or left behind as it is.
+    if (!latestLimit?.wait.el.isConnected || limit?.status !== 'rejected' || !limit.resetsAt) return;
+    latestLimit.wait.update({ resetsAt: limit.resetsAt });
+  }
+
   function copyText(text) {
     const value = String(text ?? '');
     if (!value) return;
@@ -857,8 +1070,16 @@ export function createRenderer(transcriptEl, hooks = {}) {
     if (!s) return;
     if (s.mdTimer) { clearTimeout(s.mdTimer); s.mdTimer = null; }
     if (s.thinkTimer) { clearTimeout(s.thinkTimer); s.thinkTimer = null; }
-    if (s.bodyEl && s.textBuf.trim()) renderMarkdownInto(s.bodyEl, s.textBuf);
+    if (s.bodyEl && s.textBuf.trim()) paintMessage(s.row, s.bodyEl, s.textBuf, { streaming: true, scope });
     if (s.think) refreshStep(s.think);
+  }
+
+  /** A streamed row that stays as the message (no final message replaced it): its text is final now. */
+  function sealStreamRow(scope) {
+    const s = scope.stream;
+    if (!s?.row || !s.bodyEl || !s.textBuf.trim()) return;
+    s.row.classList.remove('streaming');
+    paintMessage(s.row, s.bodyEl, s.textBuf, { scope });
   }
 
   /** The stream's text row goes (the final message renders the text again). */
@@ -930,10 +1151,12 @@ export function createRenderer(transcriptEl, hooks = {}) {
         if (!s.thinkTimer) s.thinkTimer = setTimeout(() => { s.thinkTimer = null; refreshStep(step); if (step.rack.live) paintStage(step.rack); }, STREAM_TICK_MS);
       } else if (delta.type === 'text_delta' && delta.text != null) {
         s.textBuf += delta.text;
-        if (!s.bodyEl && s.textBuf.trim()) {
+        // A row once there is something to show: a follow-ups block on its own is the card, later.
+        if (!s.bodyEl && shownText(s.textBuf).trim()) {
           const { row, wrap } = assistantRow(scope, { _text: s.textBuf, _msgId: s.msgId, _claude: s.claude });
           row.classList.add('streaming');
           noteAnswer(scope, row);
+          if (scope === rootScope) lastTextRow = row;
           s.row = row;
           s.wrap = wrap;
           s.bodyEl = el('div', 'asst-md');
@@ -944,7 +1167,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
           s.mdTimer = setTimeout(() => {
             s.mdTimer = null;
             if (!s.bodyEl) return;
-            renderMarkdownInto(s.bodyEl, s.textBuf);
+            paintMessage(s.row, s.bodyEl, s.textBuf, { streaming: true, scope });
             scrollEnd();
           }, STREAM_TICK_MS);
         }
@@ -953,7 +1176,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
     }
     if (type === 'content_block_stop') {
       const s = scope.stream;
-      if (s?.bodyEl && s.mdTimer) { clearTimeout(s.mdTimer); s.mdTimer = null; renderMarkdownInto(s.bodyEl, s.textBuf); }
+      if (s?.bodyEl && s.mdTimer) { clearTimeout(s.mdTimer); s.mdTimer = null; paintMessage(s.row, s.bodyEl, s.textBuf, { streaming: true, scope }); }
       if (s?.think && s.thinkTimer) { clearTimeout(s.thinkTimer); s.thinkTimer = null; refreshStep(s.think); }
     }
   }
@@ -1023,9 +1246,10 @@ export function createRenderer(transcriptEl, hooks = {}) {
   function textRow(scope, text, ctx = {}) {
     const { row, wrap } = assistantRow(scope, { _text: text, _msgId: ctx.msgId || null, _claude: !!ctx.claude });
     const body = el('div', 'asst-md');
-    renderMarkdownInto(body, text);
     wrap.appendChild(body);
+    paintMessage(row, body, text, { scope });
     noteAnswer(scope, row);
+    if (scope === rootScope) lastTextRow = row;
     return row;
   }
 
@@ -1052,7 +1276,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
       else if (s.row) {
         s.row.classList.remove('streaming');
         if (!s.wrap.children.length) s.row.remove();
-        else if (s.textBuf.trim()) (scope.kept ||= new Set()).add(textKey(s.textBuf));
+        else if (s.textBuf.trim()) { (scope.kept ||= new Set()).add(textKey(s.textBuf)); sealStreamRow(scope); }
       }
       if (streamedThink && !thinks.length) finishThink(streamedThink);
       scope.stream = null;
@@ -1640,15 +1864,21 @@ export function createRenderer(transcriptEl, hooks = {}) {
   }
 
   /**
-   * One rig of this transcript animates: the hero, else the newest stage, else
-   * the "Thinking" row's. The rule ends at this renderer: every other panel
-   * runs its own, so N live sessions show N moving characters.
+   * One rig of this transcript animates: the hero, else the newest open card
+   * the mascot presents (a follow-ups card, a question card: its face is a rig
+   * only then, and never while calm), else the newest stage, else the
+   * "Thinking" row's. The rule ends at this renderer: every other panel runs
+   * its own, so N live sessions show N moving characters.
    */
   function activateRigs() {
-    const newest = hero?.rig ? null : newestStage();
+    const ask = hero?.rig ? null : liveAsk();
+    const askLive = !!ask && !calm();
+    for (const handle of askCards) handle.presenter.setLive(askLive && handle === ask);
+    const asking = askLive && ask.presenter.isLive();
+    const newest = hero?.rig || asking ? null : newestStage();
     for (const rack of racks) if (rack.rig) rack.rig.setActive?.(rack === newest);
     hero?.rig?.setActive?.(true);
-    workingFace?.rig?.setActive?.(!hero?.rig && !newest);
+    workingFace?.rig?.setActive?.(!hero?.rig && !asking && !newest);
   }
 
   /** The bubble's call: the awake one, else the newest; it holds 900 ms (3 s for thinking) before the next wins. */
@@ -2681,6 +2911,9 @@ export function createRenderer(transcriptEl, hooks = {}) {
   }
 
   function appendUser(text, { images = [], files = [], memories = [], origin = null, imageCount = 0 } = {}) {
+    // The prompt answers what the last turn offered (one of its follow-ups, a retry), or it leaves it behind.
+    settleOffers(String(text ?? ''));
+    turnLimit = null;
     turnFrames = [];
     directRoute = null; // a new prompt is a new task: its own route decides
     lastDirect = null;
@@ -2720,17 +2953,21 @@ export function createRenderer(transcriptEl, hooks = {}) {
   }
 
   function appendError(text) {
-    return appendStatus(text || t('assistant.errorGeneric', 'Something went wrong'), 'error');
+    const row = appendStatus(text || t('assistant.errorGeneric', 'Something went wrong'), 'error');
+    if (text) offerLimitWait(text); // a usage limit: the waiting card under it
+    return row;
   }
 
   function appendDivider(label) {
     return append(el('div', 'asst-divider', label || ''));
   }
 
-  /** Place an arbitrary node (control / route card) as a transcript row. */
+  /** Place an arbitrary node (control / route card) as a transcript row; a card that asks is presented by the mascot. */
   function appendNode(node) {
     if (!node) return null;
-    return append(node);
+    const row = append(node);
+    if (node._ask) registerAsk(node._ask);
+    return row;
   }
 
   function showWorking(label) {
@@ -2744,6 +2981,9 @@ export function createRenderer(transcriptEl, hooks = {}) {
     hideEmpty({ park: true });
     $msgs.appendChild(working);
     if (!turnActive) {
+      // A new turn: what the last one offered and nobody took is no longer clickable.
+      settleOffers();
+      turnLimit = null;
       turn = { calls: 0, last: null, errored: false, answerRow: null };
       turnSeq += 1;
       if (directRoute && directRoute.turn == null) { // a route picked while no turn ran, or one the journal left running, is this turn's
@@ -3231,13 +3471,14 @@ export function createRenderer(transcriptEl, hooks = {}) {
   function showEmpty() {
     if (emptyEl || $msgs.querySelector(':scope > :not(.asst-working)')) return;
     emptyEl = el('div', 'asst-empty');
+    // One column, one hierarchy: the character and the heading, the greeting when there is one,
+    // the starters, then the context line (Project · Budget). No lead: the starters say what it can do.
     emptyEl.innerHTML = `
       <div class="asst-empty-mascot" aria-hidden="true"></div>
       <div class="asst-empty-title" role="heading" aria-level="2">${esc(t('assistant.empty.heading', 'What should we do?'))}</div>
-      <div class="asst-empty-body">${esc(t('assistant.empty.lead', 'I can use your Mac, look things up on the web, edit files and run commands, and remember or schedule things.'))}</div>
       <div class="asst-empty-greet"></div>
-      <div class="asst-empty-project" hidden></div>
-      <div class="asst-suggestions" role="list"></div>`;
+      <div class="asst-suggestions" role="list" aria-label="${esc(t('assistant.empty.starters', 'Starters'))}"></div>
+      <div class="asst-empty-project" role="group" aria-label="${esc(t('assistant.empty.context', 'Context'))}" hidden></div>`;
     const box = emptyEl.querySelector('.asst-empty-mascot');
     try {
       const rig = mascotLib.createMascot(box, { width: 120, height: 60 });
@@ -3245,8 +3486,8 @@ export function createRenderer(transcriptEl, hooks = {}) {
       hero.target = heroTarget(hero);
       wireEgg(hero);
     } catch { hero = null; }
-    // The project the conversation works in, under the lead: the host draws the picker (the brain
-    // picker's project field), so it and the toolbar's Working project are one control.
+    // The project the conversation works in, on the context line under the starters: the host draws
+    // the picker (the brain picker's project field), so it and the toolbar's Working project are one control.
     const projectSlot = emptyEl.querySelector('.asst-empty-project');
     let picker = null;
     try { picker = typeof hooks.mountEmptyProject === 'function' ? hooks.mountEmptyProject(projectSlot) : null; } catch { picker = null; }
@@ -3263,8 +3504,8 @@ export function createRenderer(transcriptEl, hooks = {}) {
   }
 
   /**
-   * The greeting SynaBun prepared for this return (public/shared/greeting/) takes the lead's place.
-   * The panel calls it once it knows the conversation is new: a restored one is never greeted.
+   * The greeting SynaBun prepared for this return (public/shared/greeting/) sits between the heading
+   * and the starters. The panel calls it once it knows the conversation is new: a restored one is never greeted.
    */
   function offerGreeting() {
     const owner = emptyEl;
@@ -3282,12 +3523,16 @@ export function createRenderer(transcriptEl, hooks = {}) {
     host.innerHTML = '';
     let list = [];
     try { list = typeof hooks.emptySuggestions === 'function' ? (hooks.emptySuggestions() || []) : []; } catch { list = []; }
+    let i = 0;
     for (const s of list) {
-      // glyph | seam | label: the kind's prop, and the character acts it out while the suggestion is hovered or focused.
+      // A ghost row: the kind's prop and the label (no capsule, no seam); it comes in staggered by --i,
+      // and the character acts the kind out while the suggestion is hovered or focused.
       const chip = el('button', 'asst-chip asst-suggestion');
       chip.type = 'button';
       chip.setAttribute('role', 'listitem');
       chip.dataset.suggestion = s.id || '';
+      chip.style.setProperty('--i', String(i + 1));
+      i += 1;
       const kind = s.kind || SUGGESTION_KINDS[s.id] || null;
       if (kind) {
         chip.dataset.kind = kind;
@@ -3301,10 +3546,24 @@ export function createRenderer(transcriptEl, hooks = {}) {
         chip.addEventListener('blur', () => previewHero(null));
       }
       chip.appendChild(el('span', 'asst-chip-text', s.label));
-      chip.addEventListener('click', () => hooks.onSuggestion?.(s.template, s));
+      chip.addEventListener('click', () => {
+        // The picked starter keeps the gold on-state while its text is the draft (setDrafting clears it).
+        for (const other of host.querySelectorAll('.is-picked')) other.classList.remove('is-picked');
+        chip.classList.add('is-picked');
+        hooks.onSuggestion?.(s.template, s);
+      });
       host.appendChild(chip);
     }
     host.hidden = !list.length;
+    // The context line comes in after the last starter.
+    emptyEl.querySelector('.asst-empty-project')?.style.setProperty('--i', String(list.length + 1));
+  }
+
+  /** The composer holds a draft: the starters recede (the picked one stays lit) until it is cleared. */
+  function setDrafting(on) {
+    if (!emptyEl) return;
+    emptyEl.classList.toggle('is-drafting', !!on);
+    if (!on) for (const chip of emptyEl.querySelectorAll('.asst-suggestion.is-picked')) chip.classList.remove('is-picked');
   }
 
   /** The empty state's character tries a suggestion on (null: back to idle); never over a pose the director holds. */
@@ -3509,6 +3768,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
           const content = Array.isArray(ev.message.content) ? ev.message.content : [];
           lastErrorText = typeof ev.message.content === 'string' ? ev.message.content.trim()
             : content.filter((b) => b?.type === 'text').map((b) => b.text).join('\n').trim();
+          if (!parentId) offerLimitWait(lastErrorText, { brainError: true });
         }
         return true;
       }
@@ -3536,9 +3796,11 @@ export function createRenderer(transcriptEl, hooks = {}) {
         if (!parentId) endBursts(rootScope);
         // A journal's or a replay's turn ended here (live, finishTurn ends it): so did the route it ran.
         if (!parentId && muted) directRoute = null;
+        // A turn that ended well: its last message's options in prose become items (no block of its own).
+        if (!parentId && !ev.is_error && !String(ev.subtype || '').startsWith('error')) guessOffer();
         hooks.onResult?.(ev);
         if (errorText && errorText !== lastErrorText) appendError(errorText);
-        if (!parentId) { lastErrorText = ''; rootScope.kept = null; releaseGrace(); }
+        if (!parentId) { lastErrorText = ''; rootScope.kept = null; turnLimit = null; releaseGrace(); }
         return true;
       }
       case 'system':
@@ -3642,10 +3904,14 @@ export function createRenderer(transcriptEl, hooks = {}) {
   /**
    * The turn ended. `holdMs`: the panel plays a one-shot (success, error) on
    * the character on screen, so its stage stays up that long before it folds.
+   * `guess`: the turn ended well, so options its last message offers in prose may become items.
    */
-  function finishTurn({ holdMs = 0 } = {}) {
+  function finishTurn({ holdMs = 0, guess = true } = {}) {
     flushStream(rootScope);
+    sealStreamRow(rootScope);
     if (rootScope.stream?.row) rootScope.stream.row.classList.remove('streaming');
+    // The `result` usually guessed already; a turn that ended well without one gets it here (never a stopped or failed one).
+    if (guess && !turn.errored) guessOffer();
     for (const scope of scopes.values()) flushStream(scope);
     closeStreamThinks();
     hideWorking();
@@ -3686,11 +3952,14 @@ export function createRenderer(transcriptEl, hooks = {}) {
     }
     if (failed) console.warn(`[assistant] ${failed} of ${list.length} transcript entries could not be drawn`, firstError);
     flushStream(rootScope);
+    sealStreamRow(rootScope);
     if (rootScope.stream?.row) rootScope.stream.row.classList.remove('streaming');
     for (const scope of scopes.values()) flushStream(scope);
     hideWorking();
     turnActive = false;
     for (const rack of [...racks]) renderRack(rack);
+    // Drawn quietly: a card the history leaves open (nobody answered it yet) comes to life now.
+    mascotChanged();
     scrollEnd(true);
   }
 
@@ -3733,6 +4002,13 @@ export function createRenderer(transcriptEl, hooks = {}) {
     if (rootScope.stream?.thinkTimer) clearTimeout(rootScope.stream.thinkTimer);
     scopes.clear();
     dropStages();
+    for (const offer of offers) { try { offer.wait?.destroy(); } catch { /* gone */ } }
+    offers.clear();
+    dropAsks();
+    lastTextRow = null;
+    turnLimit = null;
+    latestLimit = null;
+    for (const card of runCards.values()) { try { card._limitWait?.destroy(); } catch { /* gone */ } }
     runActivity.clear();
     runCards.clear();
     routeLines.clear();
@@ -3764,7 +4040,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
   return {
     el: $msgs,
     clear,
-    destroy: () => { hideWorking(); dropHero(); dropAll(); dropStages(); },
+    destroy: () => { hideWorking(); dropHero(); dropAll(); dropStages(); dropAsks(); },
     appendUser,
     appendAssistantMarkdown,
     appendStatus,
@@ -3803,6 +4079,8 @@ export function createRenderer(transcriptEl, hooks = {}) {
     forgetSeen: () => { seen.clear(); snapshot = null; },
     /** A card waits on the user: `toolUseId` names the call it holds (the newest live stage when unknown); false clears it. */
     setWaiting,
+    /** The session's usage-limit report changed: this turn's waiting card counts to its reset time. */
+    noteLimit,
     finishTurn,
     renderTranscript,
     showWorking,
@@ -3811,6 +4089,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
     showEmpty,
     offerGreeting,
     refreshEmpty: renderSuggestions,
+    setDrafting,
     isEmpty: () => !!emptyEl,
     scrollEnd,
     isNearBottom,

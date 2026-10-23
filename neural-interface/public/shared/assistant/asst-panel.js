@@ -507,6 +507,13 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
       emptyBudgetChip = null;
     },
     onSuggestion: (template) => composer.fillTemplate(template),
+    // A follow-up under a finished message, or Retry now on a usage-limit card: sent as the user's next
+    // message (queued while a turn runs, like a typed one). "Something else…" is the composer.
+    onFollowup: (text) => { submit(clickPayload(text)); },
+    onFollowupOther: () => composer.focus(),
+    onLimitRetry: (text) => { submit(clickPayload(text)); },
+    limitInfo: () => st.limit,
+    brainProvider: () => st.brain.provider,
     heroOrigin: () => { try { return host.takeHeroOrigin?.() || null; } catch { return null; } },
     onMascotChange: () => director?.retarget(),
     onInit: (ev) => {
@@ -536,6 +543,11 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     },
   });
 
+  /** What a click sends: the text alone, shaped like a typed message with nothing attached. */
+  function clickPayload(text) {
+    return { text: String(text ?? ''), images: [], files: [], uploads: [], memories: [] };
+  }
+
   function emptySuggestions() {
     const project = projectLabel(st.brain.project, cachedProjects()) || tt('assistant.empty.thisProject', 'this project');
     const list = [];
@@ -553,7 +565,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     describeSlash: (cmd) => tt(cmd.descKey, cmd.desc),
     resolveMemory: (id) => appState.allNodes?.find(n => n.id === id) || null,
     resolveWhiteboardImage: (id) => { const wb = getWhiteboardElementById(id); return wb?.type === 'image' && wb.dataUrl ? { dataUrl: wb.dataUrl } : null; },
-    onDraftChange: (text) => { st.draft = text; persist(); director?.type(!!String(text || '').trim()); },
+    onDraftChange: (text) => { st.draft = text; persist(); director?.type(!!String(text || '').trim()); renderer.setDrafting?.(!!String(text || '').trim()); },
     onFocusChange: (focused) => { if (focused) director?.touch(); else director?.stopTyping(); },
     onAbort: () => abort(),
     onToast: toast,
@@ -721,6 +733,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     clearTimeout(limitTimer);
     limitTimer = null;
     const limit = st.limit;
+    renderer.noteLimit(limit); // the waiting card of this turn's limit error counts to the reported reset
     limitEl.hidden = !limit;
     limitEl.dataset.status = limit?.status || '';
     const text = limitNoticeText(limit, tt);
@@ -1181,7 +1194,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
       elapsedMs: st.turnStartedAt ? Date.now() - st.turnStartedAt : 0,
     }) : null;
     const answer = wasRunning && !aborted ? renderer.turnAnswer() : '';
-    renderer.finishTurn({ holdMs: pose ? MASCOT_TIMING.oneShotMs[pose] : 0 });
+    renderer.finishTurn({ holdMs: pose ? MASCOT_TIMING.oneShotMs[pose] : 0, guess: !aborted && !errored });
     if (wasRunning) director.turnEnded(pose);
     if (answer && !silent) announce(tt('assistant.announce.replied', 'SynaBun replied: {text}', { text: answer }));
     st.running = false;
@@ -1221,6 +1234,8 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
       providerIcon,
       scrollEnd: () => renderer.scrollEnd(),
       onRespond: (n, decision) => respondControl(n, decision),
+      // A question card's Esc, and its answer when focus was in it: back to the message box.
+      focusComposer: () => composer.focus(),
       renderRoute: (_container, n) => mountRouteCard(n),
     });
     if (!entry) return;

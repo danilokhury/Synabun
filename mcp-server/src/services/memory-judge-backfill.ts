@@ -303,13 +303,19 @@ let timer: ReturnType<typeof setInterval> | null = null;
 /** Forget in-memory pacing state (start/resume, and tests). Persisted counters are untouched. */
 export function resetJudgeBackfillRunner(): void { consecutiveFailures = 0; nextTickAt = 0; }
 
+/**
+ * Persist the counters gathered since the last flush. `force` flushes now instead of at the next due point; with
+ * nothing gathered nothing is written, forced or not: a server that stops (stopJudgeBackfill) commits nothing to
+ * memory.db then, so a pre-update snapshot taken before its stop still stands for the database
+ * (checkUpgradeSnapshotFreshness in neural-interface/lib/backup-service.js).
+ */
 function flushProgress(force = false): void {
   const due = force || jobsSinceFlush >= FLUSH_EVERY_JOBS || Date.now() - lastFlushAt >= FLUSH_EVERY_MS;
   if (!due) return;
   const pending = delta;
   const hasChanges = pending.judged || pending.skipped || pending.failures || pending.lastError;
   delta = emptyDelta(); jobsSinceFlush = 0; lastFlushAt = Date.now();
-  if (!hasChanges && !force) return;
+  if (!hasChanges) return;
   try {
     mutateTypeSafeConfig(current => {
       const b = current.backfill;

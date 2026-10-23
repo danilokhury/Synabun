@@ -14,6 +14,7 @@ import { execFile as nodeExecFile } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { redactDeep, redactSecrets } from '../../lib/log-redact.js';
+import { mcpDistBuilt } from '../../lib/mcp-dist.js';
 
 const COMMAND_TIMEOUT_MS = 8000;
 const OUTPUT_MAX = 2000;
@@ -111,6 +112,7 @@ export async function collectInstallDetails({
   browserExecutable = null,
   exists = existsSync,
   readJson = readJsonFile,
+  readText = null,
   version = runVersion,
 } = {}) {
   const windows = platform === 'win32';
@@ -135,7 +137,8 @@ export async function collectInstallDetails({
     const packages = installed ? packagesInLock(installed) : installedFromLock(shrinkwrap, packageRoot, { exists });
     return { name, folder, packages, dependencies: directDependencies(dir, { readJson, stopAt: packageRoot }) };
   });
-  const mcpBuilt = exists(path.join(packageRoot, 'mcp-server', 'dist', 'index.js'));
+  // Built: dist/index.js and every module it imports (lib/mcp-dist.js), not the entry file alone.
+  const mcpBuilt = exists(path.join(packageRoot, 'mcp-server', 'dist', 'index.js')) && mcpDistBuilt(packageRoot, { exists, ...(readText ? { readText } : {}) });
 
   return redactDeep({
     kind: packaged ? 'app' : 'source',

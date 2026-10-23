@@ -102,6 +102,100 @@
       "showTerminal": "Mostrar terminal"
     }
   },
+  "contextMenu": {
+    "label": "Menu de contexto",
+    "page": {
+      "back": "Voltar",
+      "forward": "Avançar",
+      "reload": "Recarregar",
+      "copyUrl": "Copiar URL da página",
+      "fullscreen": "Tela cheia",
+      "exitFullscreen": "Sair da tela cheia",
+      "submenu": "Página"
+    },
+    "selection": {
+      "copy": "Copiar",
+      "search": "Buscar memórias por “{text}”",
+      "sendToAi": "Enviar ao painel de IA"
+    },
+    "link": {
+      "open": "Abrir link em nova aba",
+      "copy": "Copiar endereço do link"
+    },
+    "image": {
+      "open": "Abrir imagem em nova aba",
+      "copy": "Copiar endereço da imagem"
+    },
+    "memory": {
+      "open": "Abrir memória",
+      "linked": "Mostrar memórias vinculadas",
+      "copyId": "Copiar ID da memória",
+      "sendToAi": "Enviar ao painel de IA",
+      "select": "Adicionar à seleção",
+      "deselect": "Remover da seleção",
+      "goToIsland": "Ir para {name}",
+      "closeCard": "Fechar cartão"
+    },
+    "map": {
+      "goTo": "Ir para {name}",
+      "frameAll": "Enquadrar todo o mapa",
+      "options": "Opções do mapa",
+      "neighbors": "Vizinhos ao selecionar",
+      "recency": "Brilho de atividade recente",
+      "grid": "Grade do mapa",
+      "clearSearch": "Limpar busca",
+      "clearSelection": "Limpar seleção",
+      "switchTo2d": "Mudar para a visão 2D",
+      "switchTo3d": "Mudar para a visão 3D",
+      "minimap": "Minimapa",
+      "regionGlow": "Brilho das regiões"
+    },
+    "focus": {
+      "tool": "Ferramenta",
+      "tools": {
+        "select": "Selecionar",
+        "text": "Texto",
+        "list": "Lista",
+        "arrow": "Seta",
+        "shape": "Forma",
+        "pen": "Lápis",
+        "section": "Seção de wireframe"
+      },
+      "multiSelect": "Seleção múltipla",
+      "undo": "Desfazer",
+      "redo": "Refazer",
+      "selectAll": "Selecionar tudo",
+      "exit": "Sair do modo de foco"
+    },
+    "app": {
+      "open": "Abrir",
+      "search": "Buscar memórias",
+      "shortcuts": "Atalhos de teclado",
+      "settings": "Ajustes"
+    },
+    "open": {
+      "assistant": "Assistente",
+      "claudePanel": "Painel do Claude Code",
+      "codexPanel": "Painel do Codex",
+      "opencodePanel": "Painel do OpenCode",
+      "terminal": "Novo terminal",
+      "claudeTerminal": "Terminal do Claude Code",
+      "browser": "Navegador",
+      "fileExplorer": "Explorador de Arquivos",
+      "memoryExplorer": "Explorador de memórias",
+      "categories": "Categorias",
+      "focusMode": "Modo de foco",
+      "skills": "Estúdio de Skills",
+      "automations": "Estúdio de automações",
+      "schedules": "Agendamentos",
+      "styleGuide": "Guia de estilo",
+      "commandRunner": "Executor de comandos",
+      "imageGallery": "Galeria de imagens",
+      "notifications": "Notificações",
+      "help": "Ajuda"
+    }
+  },
+
   "search": {
     "placeholder": "Buscar memórias...",
     "searching": "Buscando...",
@@ -2824,10 +2918,6 @@
           "label": "Todas as ferramentas de automação",
           "help": "Ativa ou desativa todas as ferramentas deste grupo de uma vez."
         },
-        "per007": {
-          "label": "Todas as ferramentas do Leonardo",
-          "help": "Ativa ou desativa todas as ferramentas deste grupo de uma vez."
-        },
         "per008": {
           "label": "Todas as ferramentas de imagens",
           "help": "Ativa ou desativa todas as ferramentas deste grupo de uma vez."
@@ -4267,7 +4357,50 @@
       "skills": {
         "installFor": "Instalar /{skill} para {assistant}",
         "targets": "Assistentes que têm /{skill}",
-        "none": "Nenhuma skill registrada."
+        "none": "Nenhuma skill registrada.",
+        "folders": {
+          "title": "Pastas de skills",
+          "loading": "Lendo as pastas de skills…",
+          "unavailable": "O servidor em execução ainda não conhece as pastas de skills: reinicie o SynaBun para vê-las aqui.",
+          "bridgesNone": "Toda skill que o SynaBun instalou para o Codex e o OpenCode tem uma pasta própria. Nada a mover.",
+          "bridgesOne": "Uma skill ainda chega ao Codex ou ao OpenCode por um arquivo-ponte antigo. Revise a mudança para dar a ela uma pasta de skill própria: a ponte fica guardada no registro da mudança, e a mudança pode ser desfeita.",
+          "bridgesMany": "{count} skills ainda chegam ao Codex ou ao OpenCode por arquivos-ponte antigos. Revise a mudança para dar a cada uma uma pasta de skill própria: as pontes ficam guardadas no registro da mudança, e a mudança pode ser desfeita.",
+          "othersOne": "Um outro arquivo nessas pastas de prompts e comandos não é uma ponte do SynaBun (ou foi alterado depois que o SynaBun o escreveu): ele nunca é movido.",
+          "othersMany": "{count} outros arquivos nessas pastas de prompts e comandos não são pontes do SynaBun (ou foram alterados depois que o SynaBun os escreveu): eles nunca são movidos.",
+          "review": "Revisar a mudança",
+          "move": "Mover",
+          "cancel": "Cancelar",
+          "undo": "Desfazer a última mudança",
+          "stepMigrate": "{runtime} {name}: vira uma pasta de skill em {destination}; o arquivo-ponte é removido depois de guardado no registro da mudança.",
+          "stepLeave": "{runtime} {name}: fica como está. {why}",
+          "stepBlocked": "{runtime} {name}: ainda não pode ser movido. {why}",
+          "planChanged": "As pontes ou as pastas de skill mudaram desde que o plano foi mostrado. Nada foi movido: aqui está o novo plano.",
+          "nothing": "Nada a mover: não sobrou nenhuma ponte do SynaBun para virar pasta de skill.",
+          "moved": "Movido. Os arquivos-ponte antigos ficam guardados no registro da mudança ({id}); Desfazer a última mudança os devolve.",
+          "movedPartly": "Movido em parte. Não movido: {details}",
+          "undone": "A mudança foi desfeita: os arquivos-ponte voltaram, e as pastas de skill que ela criou foram removidas.",
+          "undonePartly": "Desfeito em parte: {details}",
+          "failed": "Não funcionou: {message}",
+          "sharedLabel": "Pasta de skills compartilhada (~/.agents/skills)",
+          "sharedHelp": "Desligado: o SynaBun instala uma skill na pasta própria de cada assistente. Ligado: uma instalação também pode ir para ~/.agents/skills, que o Codex e o OpenCode leem.",
+          "sharedOn": "Ligado",
+          "sharedOff": "Desligado"
+        },
+        "chip": {
+          "installed": "/{skill} está instalada para {assistant}. Clique para removê-la.",
+          "native": "/{skill} está instalada para {assistant} como uma pasta de skill própria. Clique para removê-la.",
+          "bridge": "/{skill} chega a {assistant} por um arquivo-ponte antigo. Clique para removê-la, ou mova-a para uma pasta de skill em Pastas de skills.",
+          "other": "{assistant} tem uma /{skill} que o SynaBun não instalou. Clique para instalar a do SynaBun: você é consultado antes de qualquer substituição.",
+          "shared": "/{skill} chega a {assistant} pela pasta compartilhada ~/.agents/skills (o Codex e o OpenCode a leem). Clique para removê-la de lá.",
+          "otherShared": "{assistant} lê uma /{skill} em ~/.agents/skills que o SynaBun não instalou: outra cópia apareceria duas vezes.",
+          "installedShared": "/{skill} já chega a {runtime} pela pasta compartilhada ~/.agents/skills: nada foi adicionado.",
+          "installedNative": "/{skill} está instalada para {runtime} como uma pasta de skill própria.",
+          "installedReload": "/{skill} está instalada para {runtime}. A pasta de skills é nova: rode /reload-skills nas sessões já abertas.",
+          "installedNewSession": "/{skill} está instalada para {runtime}: inicie uma nova sessão do {runtime} para usá-la.",
+          "installedBridgeLeft": "/{skill} está instalada para {runtime} como uma pasta de skill própria. O arquivo-ponte antigo ainda está lá: mova-o em Pastas de skills."
+        },
+        "openStudio": "Abrir o Estúdio de Skills",
+        "openStudioHelp": "Edite, versione e publique skills, agentes e comandos, e revise o que o Assistente faz, no Estúdio de Skills."
       },
       "permissions": {
         "all": "Tudo",
@@ -5790,7 +5923,7 @@
               "morelogin_tool_server": "mcp, adicionar aos assistentes"
             },
             "tool_access": {
-              "skills": "comandos de barra, slash commands, instalar, leonardo, synabun",
+              "skills": "comandos de barra, slash commands, instalar, synabun",
               "tool_permissions": "permitir, aprovar, aprovação automática, perguntar"
             },
             "automations": {
@@ -6260,6 +6393,1533 @@
       "filenameRequired": "O nome do arquivo é obrigatório"
     }
   },
+  "skillsStudio": {
+    "guestDisabled": "O Estúdio de Skills está desativado para convidados pelo host.",
+    "title": "Estúdio de Skills",
+    "shell": {
+      "collapseRail": "Mostrar ou ocultar a barra lateral",
+      "dock": "Encaixar ao lado dos painéis laterais",
+      "dockHelp": "Encaixar: ocupa a área de trabalho ao lado dos painéis laterais, para uma conversa continuar usável junto ao Estúdio",
+      "dim": "Escurecer o fundo",
+      "dimHelp": "Escurecer o fundo: a página atrás espera até o Estúdio fechar",
+      "close": "Fechar o Estúdio de Skills",
+      "docked": "Encaixado ao lado dos painéis laterais.",
+      "undocked": "Janela flutuante.",
+      "dimmed": "Fundo escurecido.",
+      "notDimmed": "Fundo sem escurecer.",
+      "loading": "Lendo as skills…",
+      "olderServer": "Este servidor é mais antigo que esta página: reinicie o SynaBun.",
+      "olderServerTitle": "Reinicie o SynaBun para usar este Estúdio de Skills",
+      "olderServerHelp": "A página foi atualizada, mas o servidor ainda é o antigo, que não tem o Serviço de Skills. Reinicie o SynaBun (Apps → Reiniciar servidor) e abra o Estúdio de Skills de novo.",
+      "retry": "Tentar de novo"
+    },
+    "rail": {
+      "library": "Biblioteca",
+      "review": "Revisão",
+      "create": "Criar",
+      "waiting": "esperando por você",
+      "viewsTitle": "Visões",
+      "projectsTitle": "Projetos",
+      "runtimesTitle": "Assistentes",
+      "views": {
+        "attention": "Precisa de atenção",
+        "mine": "Minhas",
+        "synabun": "Do SynaBun",
+        "plugins": "Plugins",
+        "account": "Conta do Claude",
+        "drafts": "Rascunhos"
+      },
+      "runtimeState": {
+        "ready": "pronto",
+        "bridge": "ponte antiga",
+        "empty": "nenhuma skill ainda",
+        "unknown": "não encontrado"
+      }
+    },
+    "runtime": {
+      "claude": "Claude Code",
+      "codex": "Codex",
+      "opencode": "OpenCode",
+      "agents": "Pasta compartilhada"
+    },
+    "runtimeState": {
+      "installed": "instalada",
+      "outdated": "uma versão mais antiga está instalada",
+      "present": "em uma pasta que ele lê",
+      "bridge": "alcançada por uma ponte antiga",
+      "none": "não instalada"
+    },
+    "kind": {
+      "skill": "Skill",
+      "agent": "Agente",
+      "command": "Comando",
+      "commandLegacy": "Comando · legado"
+    },
+    "source": {
+      "mine": "Todos os projetos",
+      "project": "Projeto",
+      "synabun": "Do SynaBun",
+      "plugin": "Plugin",
+      "account": "Conta do Claude",
+      "system": "Do próprio assistente",
+      "shared": "Compartilhada (~/.agents)",
+      "library": "Biblioteca",
+      "legacyBridge": "Ponte antiga",
+      "pluginCopies": {
+        "one": "{plugin} · {count} cópia em cache",
+        "other": "{plugin} · {count} cópias em cache"
+      },
+      "accounts": {
+        "one": "{count} conta",
+        "other": "{count} contas"
+      },
+      "libraryVersions": {
+        "one": "{count} versão",
+        "other": "{count} versões"
+      },
+      "libraryDraft": "rascunho, sem versão ainda",
+      "installedCopies": {
+        "one": "{count} cópia instalada",
+        "other": "{count} cópias instaladas"
+      }
+    },
+    "health": {
+      "not-text": "Não é texto UTF-8",
+      "invalid": {
+        "one": "{count} problema",
+        "other": "{count} problemas"
+      },
+      "warnings": {
+        "one": "{count} aviso",
+        "other": "{count} avisos"
+      },
+      "update": "Nova versão",
+      "shadowed": "Encoberta",
+      "shadowedWhy": "{runtime} usa outra skill com este nome no lugar desta.",
+      "twice": "Duplicada",
+      "twiceWhy": "{runtime} lista duas skills com este nome: um modelo pode escolher qualquer uma.",
+      "sameDescription": "Mesma descrição",
+      "sameDescriptionWhy": "A mesma descrição de {names}: um modelo não consegue diferenciá-las.",
+      "bridge": "Ponte antiga",
+      "review": "Em revisão",
+      "draft": "Rascunho",
+      "readonly": "Somente leitura",
+      "ok": "Sem problemas"
+    },
+    "library": {
+      "title": "Biblioteca",
+      "searchLabel": "Buscar skills, agentes e comandos",
+      "searchPlaceholder": "Buscar skills, agentes, comandos…",
+      "new": "Nova",
+      "filter": {
+        "kind": "Tipo",
+        "source": "Origem",
+        "runtime": "Assistente",
+        "health": "Saúde",
+        "kindAll": "Todos os tipos",
+        "sourceAll": "Todas as origens",
+        "runtimeAll": "Todos os assistentes",
+        "healthAll": "Qualquer saúde"
+      },
+      "healthFilter": {
+        "attention": "Precisa de atenção",
+        "invalid": "Com problemas",
+        "warnings": "Com avisos",
+        "update": "Atualização disponível",
+        "duplicates": "Duplicadas e encobertas",
+        "drafts": "Rascunhos",
+        "readonly": "Somente leitura",
+        "ok": "Nenhum problema encontrado"
+      },
+      "sort": {
+        "label": "Ordenar",
+        "attention": "Precisa de atenção primeiro",
+        "name": "Nome",
+        "updated": "Alteradas recentemente",
+        "kind": "Tipo",
+        "source": "Origem"
+      },
+      "select": "Selecionar {name}",
+      "selectAll": "Selecionar todas as linhas mostradas",
+      "noDescription": "Sem descrição",
+      "unknownDate": "Desconhecida",
+      "unknownDateRestart": "Ainda desconhecida: reinicie o SynaBun para ver quando mudou",
+      "updatedRestart": "Reinicie o SynaBun para ver quando cada uma mudou pela última vez.",
+      "caption": "Skills, agentes e comandos",
+      "col": {
+        "name": "Nome",
+        "kind": "Tipo",
+        "source": "Origem",
+        "health": "Saúde",
+        "runtimes": "Assistentes",
+        "updated": "Atualizada"
+      },
+      "shown": "{shown} de {total} mostradas",
+      "attentionCount": {
+        "one": "{count} precisa de atenção",
+        "other": "{count} precisam de atenção"
+      },
+      "diagnostics": {
+        "one": "{count} pasta não pôde ser lida",
+        "other": "{count} pastas não puderam ser lidas"
+      },
+      "truncated": "A leitura parou nos seus limites: algumas pastas não foram lidas",
+      "loading": "Lendo cada pasta de assistente…",
+      "loadFailed": "Não foi possível ler as skills",
+      "emptyTitle": "Nenhuma skill ainda",
+      "emptyHelp": "Skills, agentes e comandos do Claude Code, do Codex e do OpenCode aparecem aqui. Crie a primeira ou importe um pacote.",
+      "noMatchTitle": "Nada corresponde a estes filtros",
+      "noMatchHelp": "Limpe os filtros ou busque outras palavras.",
+      "clearFilters": "Limpar filtros",
+      "kept": {
+        "one": "{count} alteração não salva foi guardada de uma sessão anterior ({names}).",
+        "other": "{count} alterações não salvas foram guardadas de uma sessão anterior ({names})."
+      },
+      "keptReopen": "Reabrir",
+      "keptDiscard": "Descartar",
+      "keptMore": {
+        "one": "Mais {count} skill tem alterações guardadas: abra-a pela Biblioteca.",
+        "other": "Mais {count} skills têm alterações guardadas: abra-as pela Biblioteca."
+      },
+      "keptDiscardTitle": "Descartar as alterações guardadas?",
+      "keptDiscardHelp": {
+        "one": "A alteração não salva guardada de uma sessão anterior será perdida. Os arquivos ficam como estão.",
+        "other": "As {count} alterações não salvas guardadas de uma sessão anterior serão perdidas. Os arquivos ficam como estão."
+      },
+      "updatesNotice": {
+        "one": "O SynaBun traz uma versão mais nova de {names}.",
+        "other": "O SynaBun traz versões mais novas de {count} skills: {names}."
+      },
+      "reviewUpdates": "Revisar a atualização",
+      "diagnosticsTitle": "Pastas que não puderam ser lidas",
+      "diagnosticsHelp": "Ficaram fora da Biblioteca, cada uma com o motivo.",
+      "diagRoot": "A própria pasta",
+      "diagReason": {
+        "no-skill-md": "uma pasta sem SKILL.md, então não é uma skill",
+        "unreadable-head": "o SKILL.md dela não pode ser lido",
+        "link": "um link que leva para fora da pasta",
+        "too-deep": "aninhada mais fundo do que o SynaBun lê",
+        "unreadable": "não pode ser lida",
+        "outside-project": "um link para fora do projeto",
+        "not-a-folder": "não é uma pasta"
+      },
+      "bulk": {
+        "region": "Itens selecionados",
+        "selected": {
+          "one": "{count} selecionado",
+          "other": "{count} selecionados"
+        },
+        "adopt": "Adicionar à biblioteca ({count})",
+        "adoptHelp": "Leva estas pastas para a biblioteca do SynaBun, para que tenham versões e sejam publicadas de lá",
+        "export": "Exportar ({count})",
+        "delete": "Excluir… ({count})",
+        "clear": "Limpar seleção",
+        "adoptTitle": {
+          "one": "Adicionar {count} skill à biblioteca?",
+          "other": "Adicionar {count} skills à biblioteca?"
+        },
+        "adoptExplain": "Cada pasta é copiada para a biblioteca do SynaBun como a primeira versão. As pastas ficam onde estão; alterações futuras só chegam a elas quando você publica.",
+        "adoptConfirm": "Adicionar à biblioteca",
+        "adoptDone": {
+          "one": "{count} skill adicionada à biblioteca.",
+          "other": "{count} skills adicionadas à biblioteca."
+        },
+        "adoptPartial": "{done} adicionadas, {failed} não: {first}",
+        "exported": {
+          "one": "{count} exportação iniciada.",
+          "other": "{count} exportações iniciadas."
+        },
+        "deleteType": "Digite {word} para confirmar",
+        "deleteWord": "excluir",
+        "deleteTitle": {
+          "one": "Excluir {count} item?",
+          "other": "Excluir {count} itens?"
+        },
+        "deleteExplain": "Eles são removidos de onde estão. Isso não pode ser desfeito.",
+        "deleteLibraryExplain": "Estas saem da biblioteca do SynaBun: os rascunhos e as versões ficam guardados no arquivo dela, e uma pasta de onde vieram fica como está.",
+        "deleteUnsaved": {
+          "one": "{count} deles tem alterações não salvas, que vão junto.",
+          "other": "{count} deles têm alterações não salvas, que vão junto."
+        },
+        "deleteConfirm": "Excluir",
+        "deleteTypeError": "Digite a palavra para confirmar.",
+        "deletePartial": "{done} excluídos, {failed} não: {first}",
+        "deleted": {
+          "one": "{count} item excluído.",
+          "other": "{count} itens excluídos."
+        }
+      }
+    },
+    "ws": {
+      "breadcrumb": "Onde você está",
+      "save": "Salvar",
+      "publish": "Publicar…",
+      "more": "Mais ações",
+      "unsaved": "alterações não salvas",
+      "tabs": {
+        "edit": "Editar",
+        "test": "Testar",
+        "versions": "Versões",
+        "publish": "Publicar"
+      },
+      "customize": "Personalizar uma cópia",
+      "adoptNow": "Adicionar à biblioteca",
+      "reviewChanges": "Revisar as mudanças",
+      "update": "Atualizar",
+      "keepMine": "Manter a minha",
+      "saveVersion": "Salvar como versão",
+      "openReview": "Abrir em Revisão",
+      "loadFailed": "Não foi possível abrir isto",
+      "loading": "Abrindo…",
+      "banner": {
+        "guest": "Somente leitura para convidados: só o host altera skills.",
+        "bundled": "Vem com o SynaBun, então é somente leitura aqui: uma atualização do app a substitui. Personalize uma cópia para torná-la sua.",
+        "plugin": "Do plugin {plugin}: somente leitura. O plugin a atualiza.",
+        "account": "Sincronizada da sua conta do Claude: somente leitura aqui.",
+        "system": "Skill do próprio assistente: somente leitura.",
+        "shared": "Na pasta compartilhada ~/.agents/skills, em que o SynaBun só escreve quando você a liga em Configurações → Skills.",
+        "not-writable": "O SynaBun não escreve nesta pasta: somente leitura.",
+        "not-addressable": "Este arquivo está fora das pastas que o SynaBun edita: somente leitura.",
+        "not-text": "O SKILL.md não é texto UTF-8 (UTF-16 ou binário): ele é mostrado, não editado. Salve-o como UTF-8 para editá-lo.",
+        "adopt": "Esta pasta ({path}) ainda não está na biblioteca do SynaBun. O primeiro salvamento a adiciona lá como rascunho; publicar a grava de volta.",
+        "update": "O SynaBun traz uma {name} mais nova do que a cópia instalada.",
+        "draftChanged": {
+          "one": "Rascunho: {count} arquivo mudou desde a última versão. Não é instalado até você publicar.",
+          "other": "Rascunho: {count} arquivos mudaram desde a última versão. Não é instalado até você publicar."
+        },
+        "newDraft": "Uma skill nova: um rascunho na biblioteca, ainda não instalado em lugar nenhum.",
+        "review": {
+          "pending": "Um envio desta skill espera em Revisão.",
+          "changes_requested": "Você pediu mudanças no envio desta skill.",
+          "approved": "Aprovada em Revisão, ainda não instalada.",
+          "partial": "Instalada em parte: alguns destinos falharam.",
+          "publish_failed": "A instalação da versão aprovada falhou."
+        }
+      },
+      "menu": {
+        "export": "Exportar como pacote",
+        "copyPath": "Copiar o caminho da pasta",
+        "close": "Fechar este espaço de trabalho",
+        "delete": "Excluir…",
+        "deleteLibrary": "Excluir da biblioteca…"
+      },
+      "deleteTitle": "Excluir {name}?",
+      "deleteSkill": "A pasta da skill {path} e todos os arquivos nela são removidos. Isso não pode ser desfeito.",
+      "deleteFile": "O arquivo {path} é removido. Isso não pode ser desfeito.",
+      "deleteUnsaved": {
+        "one": "{count} arquivo tem alterações não salvas, e elas vão junto:",
+        "other": "{count} arquivos têm alterações não salvas, e elas vão junto:"
+      },
+      "deleteAndDiscard": "Excluir e descartar",
+      "delete": "Excluir",
+      "libraryDeleteTitle": "Excluir {name} da biblioteca?",
+      "libraryDeleteBody": "Ela sai da biblioteca do SynaBun: o rascunho e as versões deixam de aparecer (ficam guardados no arquivo da biblioteca). Ela não está instalada em lugar nenhum, então nenhum runtime a perde.",
+      "libraryDeleteFolderStays": "A pasta de onde ela veio, {path}, fica como está.",
+      "libraryDeleteReviews": {
+        "one": "A revisão aberta dela é encerrada.",
+        "other": "As {count} revisões abertas dela são encerradas."
+      },
+      "libraryDelete": "Excluir da biblioteca",
+      "libraryDeleteInstalledTitle": "{name} está instalada",
+      "libraryDeleteInstalled": {
+        "one": "Ela está instalada em {count} lugar. Remova essa instalação em Publicar primeiro e depois exclua-a da biblioteca.",
+        "other": "Ela está instalada em {count} lugares. Remova essas instalações em Publicar primeiro e depois exclua-a da biblioteca."
+      },
+      "libraryDeleteOpenPublish": "Abrir Publicar",
+      "libraryDeleteRestart": "Reinicie o SynaBun para excluir skills da biblioteca."
+    },
+    "test": {
+      "title": "Testes e avaliações chegam na P4",
+      "body": "Esta aba vai verificar se os pedidos certos escolhem esta skill e se ela faz o trabalho melhor do que sem ela. Nada roda aqui ainda.",
+      "trigger": "Testes de acionamento: pedidos que devem e que não devem escolher a skill, rodados no assistente de verdade.",
+      "sample": "Execuções de amostra: uma tarefa com e sem a skill, lado a lado (passos, tokens, tempo, custo, resultado).",
+      "compare": "Comparação de modelos: os mesmos casos em outros modelos do catálogo.",
+      "meanwhile": "Enquanto isso, Editar mostra as verificações de cada assistente, e Publicar analisa os arquivos exatos antes de qualquer instalação."
+    },
+    "edit": {
+      "kind": {
+        "markdown": "Markdown",
+        "yaml": "YAML",
+        "json": "JSON",
+        "script": "Script",
+        "text": "Texto",
+        "image": "Imagem",
+        "binary": "Binário"
+      },
+      "newFileLabel": {
+        "reference": "Caminho da referência",
+        "script": "Caminho do script",
+        "asset": "Caminho do recurso",
+        "other": "Caminho do arquivo"
+      },
+      "pathProblem": {
+        "required": "Dê um caminho ao arquivo.",
+        "invalid": "Use um caminho dentro da skill: sem barra no início, sem \"..\".",
+        "hidden": "Arquivos ocultos (nome começando com ponto) ficam fora das skills.",
+        "exists": "Já existe um arquivo com esse nome."
+      },
+      "pane": {
+        "files": "Arquivos",
+        "doc": "Documento",
+        "details": "Detalhes"
+      },
+      "state": {
+        "saving": "Salvando…",
+        "unsaved": "Não salvo",
+        "readOnly": "Somente leitura",
+        "draftSaved": "Salvo no rascunho · não instalado",
+        "saved": "Salvo"
+      },
+      "lines": {
+        "one": "{n} linha",
+        "other": "{n} linhas"
+      },
+      "tokens": "≈{n} tokens",
+      "tokensHelp": "Uma estimativa: caracteres divididos por 4. Cada assistente conta tokens do seu jeito.",
+      "guidance": "{tokens} de {max} tokens no corpo",
+      "guidanceHelp": "Orientação para o corpo de um SKILL.md: cerca de {lines} linhas ou {tokens} tokens; leve os detalhes para arquivos de referência. Não é um limite de envio.",
+      "revision": "versão {id}",
+      "noVersion": "sem versão ainda",
+      "fileRevision": "arquivo {id}",
+      "line": "Linha {line}",
+      "problems": "Problemas",
+      "noProblems": "As verificações não encontraram problemas.",
+      "otherRuntimes": "Para outros assistentes ({count})",
+      "problemsCount": {
+        "one": "{count} problema",
+        "other": "{count} problemas"
+      },
+      "image": "imagem",
+      "binary": "binário",
+      "renameNamed": "Renomear {name}",
+      "rename": "Renomear",
+      "deleteNamed": "Excluir {name}",
+      "delete": "Excluir",
+      "newFile": "Novo arquivo…",
+      "newKind": {
+        "reference": "Referência: lida só quando necessário",
+        "script": "Script: executado, não lido",
+        "asset": "Recurso: um modelo, uma imagem, dados",
+        "other": "Outro arquivo"
+      },
+      "upload": "Enviar",
+      "closeTab": "Fechar {name}",
+      "preview": "Prévia",
+      "compare": "Comparar",
+      "compareHelp": "Mostrar as mudanças desde o último salvamento do arquivo",
+      "loadingEditor": "Carregando o editor…",
+      "previewLabel": "Prévia do documento",
+      "filesTruncated": "Esta skill tem mais arquivos do que os listados.",
+      "openFiles": "Arquivos abertos",
+      "showPane": "Mostrar painel",
+      "editorFailed": "O editor não carregou ({error}): uma caixa de texto simples edita o mesmo documento.",
+      "imageAlt": "Prévia de {name}",
+      "binaryInfo": "Não é um arquivo de texto ({size}): fica como está, nunca é editado como texto.",
+      "binaryInfoNoSize": "Não é um arquivo de texto: fica como está, nunca é editado como texto.",
+      "binaryHead": "O SKILL.md não é texto UTF-8: um assistente pode lê-lo errado. Salve-o como UTF-8 para editá-lo aqui.",
+      "download": "Baixar",
+      "noHead": "Este documento não tem metadados para mostrar.",
+      "needsLibrary": "Este arquivo abre quando a skill estiver na biblioteca: adicione-a à biblioteca primeiro.",
+      "needsRestart": "Este arquivo abre depois que o SynaBun reiniciar: o servidor de agora não lê os outros arquivos desta skill.",
+      "openFailed": "Não foi possível abrir {file}: {error}",
+      "linkMissing": "{file} não é um arquivo desta skill.",
+      "newFileTitle": "Novo arquivo",
+      "createFailed": "Não foi possível criar o arquivo: {error}",
+      "created": "{file} criado.",
+      "uploadTitle": "Enviar um arquivo",
+      "uploadLabel": "Caminho na skill",
+      "uploadFailed": "Não foi possível enviar o arquivo: {error}",
+      "uploaded": "{file} enviado.",
+      "deleteTitle": "Excluir {file}?",
+      "deleteFromDraft": "O arquivo é removido do rascunho. As cópias instaladas o mantêm até você publicar.",
+      "deleteAdopt": "A skill é adicionada à biblioteca primeiro, depois o arquivo é removido do rascunho dela. A pasta no disco o mantém até você publicar.",
+      "deleteUnsaved": "A aba dele tem alterações não salvas: mantenha-as abertas (salvar traz o arquivo de volta) ou descarte-as com o arquivo.",
+      "deleteKeep": "Excluir, manter minhas alterações",
+      "deleteDiscard": "Excluir e descartar",
+      "deleteFailed": "Não foi possível excluir o arquivo: {error}",
+      "deletedKept": "{file} excluído: suas alterações continuam abertas, e salvar traz o arquivo de volta.",
+      "deleted": "{file} excluído.",
+      "renameTitle": "Renomear {file}",
+      "renameLabel": "Novo caminho",
+      "renameFailed": "Não foi possível renomear o arquivo: {error}",
+      "renamed": "{from} renomeado para {to}.",
+      "revertChange": "Desfazer"
+    },
+    "form": {
+      "field": {
+        "name": "Nome",
+        "description": "Descrição",
+        "argument-hint": "Dica de argumento",
+        "allowed-tools": "Ferramentas pré-aprovadas",
+        "user-invocable": "Mostrar como /nome no menu",
+        "disable-model-invocation": "Só quando eu digitar /nome",
+        "model": "Modelo",
+        "tools": "Ferramentas (separadas por vírgulas)",
+        "maxTurns": "Máximo de turnos",
+        "color": "Cor"
+      },
+      "unlimited": "0 = sem limite",
+      "invocation": "Quando ela roda",
+      "invocationAuto": "O Claude a escolhe quando for relevante, e {name}",
+      "invocationManual": "Só quando eu digitar {name}",
+      "modelInherit": "O modelo da sessão",
+      "addTool": "Adicionar uma ferramenta…",
+      "toolsHelp": "Estas rodam sem perguntar enquanto a skill está ativa. Elas não bloqueiam outras ferramentas.",
+      "removeTool": "Remover {tool}",
+      "toolPattern": "Um padrão de ferramenta",
+      "toolPatternPlaceholder": "ex.: Bash(git:*)",
+      "add": "Adicionar",
+      "note": {
+        "notText": "Não é texto: edite-o no documento.",
+        "notTools": "Não é uma lista de nomes de ferramentas: edite-a no documento.",
+        "notBoolean": "Não é verdadeiro ou falso: edite-o no documento.",
+        "notNumber": "Não é um número inteiro: edite-o no documento.",
+        "alias": "Um alias YAML: edite-o no documento."
+      },
+      "reason": {
+        "errors": "O frontmatter tem erros: corrija-os no documento. Os campos ficam somente leitura até lá.",
+        "unsupported": "Este frontmatter está escrito de um jeito que o formulário não altera: edite-o no documento."
+      },
+      "budget": {
+        "portable": "Agent Skills",
+        "claude": "Lista do Claude Code",
+        "codex": "Codex",
+        "opencode": "OpenCode"
+      },
+      "budgetCount": "{used} / {limit}",
+      "saysWhat": "Diz o que faz",
+      "missingWhat": "Diga o que ela faz, em poucas palavras",
+      "saysWhen": "Diz quando usar",
+      "missingWhen": "Diga quando usá-la (\"Use quando…\")",
+      "advice": {
+        "ok": "Os modelos leem a descrição para decidir quando usar a skill: ela diz o quê e quando.",
+        "add-when": "Diga quando usá-la: o pedido ou a situação que deve escolher esta skill.",
+        "add-what": "Diga o que a skill faz antes de dizer quando usá-la.",
+        "write-one": "Escreva uma descrição: sem ela, os modelos não sabem quando usar a skill.",
+        "too-long": "Longa demais para a lista de um assistente: encurte-a ou leve os detalhes para o corpo."
+      },
+      "nameMissing": "Dê um nome a ela",
+      "nameFolder": "A pasta é {folder}: a skill é chamada pelo nome",
+      "nameFormat": "Use letras minúsculas, dígitos e hífens simples",
+      "nameMatches": "Igual ao nome da pasta",
+      "nameOk": "Um nome que todo assistente aceita",
+      "binaryHead": "Os campos não são lidos de um arquivo que não é texto UTF-8.",
+      "loading": "Lendo o frontmatter…",
+      "cannotRead": "O formulário não consegue ler este frontmatter: edite-o no documento.",
+      "yamlLabel": "O frontmatter como está escrito",
+      "noFrontmatter": "Sem frontmatter.",
+      "editInDocument": "Editar no documento",
+      "yamlHelp": "Formulário e YAML são um só documento: o formulário altera só a chave que você edita, e todo o resto fica byte por byte.",
+      "notShowing": "Estes campos estão em {file}, que não é o arquivo mostrado.",
+      "openIt": "Abrir",
+      "label": "Metadados",
+      "advanced": {
+        "one": "Avançado: mais {count} chave, mantida como está escrita",
+        "other": "Avançado: mais {count} chaves, mantidas como estão escritas"
+      },
+      "advancedHelp": "O formulário não tem campo para estas. Elas ficam exatamente como estão escritas; edite-as no documento.",
+      "advancedNone": "Nenhuma outra chave: toda chave está no formulário.",
+      "viewLabel": "Visão dos metadados",
+      "form": "Formulário",
+      "yaml": "YAML",
+      "invalidNumber": "Um número inteiro, 0 ou mais.",
+      "patchFailed": "{field} não pôde ser alterado aqui: edite-o no documento."
+    },
+    "snippets": {
+      "title": "Trechos",
+      "search": "Buscar trechos",
+      "group": {
+        "structure": "Estrutura",
+        "workflow": "Fluxo de trabalho",
+        "files": "Arquivos e variáveis",
+        "frontmatter": "Chaves do frontmatter",
+        "custom": "Seus trechos"
+      },
+      "whereKeys": "Chaves: {keys}",
+      "whereCaret": "No cursor",
+      "insert": "Inserir",
+      "insertNamed": "Inserir {name}",
+      "none": "Nenhum trecho corresponde.",
+      "openHeadFirst": "Chaves do frontmatter vão no SKILL.md: abra-o primeiro.",
+      "failed": {
+        "yaml": "O frontmatter tem erros: corrija-os antes de adicionar chaves.",
+        "other": "Não foi possível inserir o trecho."
+      },
+      "inserted": "{name} inserido.",
+      "role": {
+        "name": "Papel",
+        "desc": "Quem o modelo deve ser, e para quem"
+      },
+      "steps": {
+        "name": "Passos",
+        "desc": "Passos numerados, em ordem"
+      },
+      "constraints": {
+        "name": "Regras",
+        "desc": "O que o modelo deve e não deve fazer"
+      },
+      "output": {
+        "name": "Saída",
+        "desc": "O formato da resposta"
+      },
+      "examples": {
+        "name": "Exemplos",
+        "desc": "Um pedido e uma boa resposta"
+      },
+      "context": {
+        "name": "Reunir contexto",
+        "desc": "Ler antes de mudar qualquer coisa"
+      },
+      "errors": {
+        "name": "Quando algo falhar",
+        "desc": "Dizer, e tentar de outro jeito"
+      },
+      "input-check": {
+        "name": "Verificar a entrada",
+        "desc": "Perguntar quando $ARGUMENTS não estiver claro"
+      },
+      "confirm": {
+        "name": "Confirmar antes",
+        "desc": "Um sim antes de qualquer coisa destrutiva"
+      },
+      "scope": {
+        "name": "Escopo",
+        "desc": "O que ela cobre, e o que não cobre"
+      },
+      "references": {
+        "name": "Referências",
+        "desc": "Arquivos lidos só quando necessário"
+      },
+      "variables": {
+        "name": "Variáveis",
+        "desc": "$ARGUMENTS e ${CLAUDE_SKILL_DIR}"
+      },
+      "dynamic": {
+        "name": "Estado atual",
+        "desc": "Um comando de shell executado quando a skill carrega (a análise o lista)"
+      },
+      "fm-tools-readonly": {
+        "name": "Pré-aprovadas: ferramentas de leitura",
+        "desc": "Read, Grep e Glob rodam sem perguntar"
+      },
+      "fm-agent-tools": {
+        "name": "Ferramentas: só leitura",
+        "desc": "O agente recebe Read, Grep e Glob"
+      },
+      "fm-manual": {
+        "name": "Só quando eu digitar /nome",
+        "desc": "O modelo nunca a inicia sozinho"
+      },
+      "fm-hint": {
+        "name": "Dica de argumento",
+        "desc": "O que digitar depois de /nome"
+      },
+      "fm-when": {
+        "name": "Quando usar",
+        "desc": "O Claude Code a lista com a descrição"
+      },
+      "fm-fork": {
+        "name": "Rodar em um subagente",
+        "desc": "Contexto próprio, separado da conversa"
+      },
+      "fm-model": {
+        "name": "Modelo",
+        "desc": "O modelo que o agente usa"
+      }
+    },
+    "diff": {
+      "added": "adicionado",
+      "removed": "removido",
+      "same": "Sem diferenças.",
+      "unchanged": {
+        "one": "{count} arquivo é igual.",
+        "other": "{count} arquivos são iguais."
+      },
+      "status": {
+        "added": "Adicionado",
+        "removed": "Removido",
+        "modified": "Alterado",
+        "mode": "Modo alterado"
+      },
+      "note": {
+        "binary": "Não é texto: comparado só pelos bytes.",
+        "large": "Grande demais para comparar linha a linha.",
+        "far": "Diferente demais para comparar linha a linha."
+      },
+      "eol": "As quebras de linha diferem ({from} → {to}): toda linha conta como alterada."
+    },
+    "versions": {
+      "author": {
+        "owner": "Você",
+        "system": "SynaBun",
+        "assistant": "Assistente do SynaBun",
+        "agent": "Um agente"
+      },
+      "rev": "Versão {id}",
+      "label": {
+        "latest": "Mais recente",
+        "candidate": "Candidata",
+        "best": "Melhor",
+        "approved": "Aprovada",
+        "upstream": "Do SynaBun",
+        "installed": "Instalada: {where}",
+        "draft": "Rascunho"
+      },
+      "source": {
+        "bundled": "veio com o SynaBun",
+        "adopted": "adicionada da sua pasta",
+        "draft": "salva do rascunho",
+        "assistant": "feita pelo Assistente",
+        "import": "importada",
+        "restore": "restaurada",
+        "customize": "cópia personalizada",
+        "local": "feita aqui",
+        "github": "do GitHub"
+      },
+      "files": {
+        "one": "{count} arquivo",
+        "other": "{count} arquivos"
+      },
+      "diffPrev": "Mudanças em relação à anterior",
+      "restore": "Restaurar como rascunho",
+      "markCandidate": "Marcar como candidata",
+      "markBest": "Marcar como melhor",
+      "publishThis": "Publicar esta",
+      "noneTitle": "Nenhuma versão aqui",
+      "none": {
+        "adopt": "Esta pasta ainda não está na biblioteca do SynaBun, então não tem versões. Adicione-a à biblioteca: os arquivos como estão agora viram a primeira versão.",
+        "inplace": "Comandos e agentes são arquivos únicos mantidos onde estão: versões são para skills da biblioteca.",
+        "readonly": "Isto é somente leitura e não está na biblioteca do SynaBun: personalize uma cópia para ter versões suas."
+      },
+      "loading": "Lendo as versões…",
+      "loadFailed": "Não foi possível ler as versões: {error}",
+      "title": {
+        "one": "{count} versão",
+        "other": "{count} versões"
+      },
+      "from": "De",
+      "to": "Para",
+      "compare": "Comparar",
+      "draft": "Rascunho",
+      "draftChanged": {
+        "one": "{count} arquivo mudou desde a sua versão",
+        "other": "{count} arquivos mudaram desde a sua versão"
+      },
+      "draftSame": "Igual à sua versão",
+      "diffDraft": "Mostrar as mudanças do rascunho",
+      "noRevisions": "Nenhuma versão foi salva ainda.",
+      "comparing": "Comparando…",
+      "diffTitle": "Mudanças",
+      "diffFailed": "Não foi possível comparar as versões: {error}",
+      "diffDraftTitle": "As mudanças do rascunho desde a sua versão",
+      "pickTwo": "Escolha duas versões diferentes.",
+      "marked": {
+        "candidate": "Marcada como candidata.",
+        "best": "Marcada como melhor."
+      },
+      "markFailed": "Não foi possível marcar: {error}",
+      "restoreBlockedTitle": "Salve ou descarte primeiro",
+      "restoreBlocked": {
+        "one": "{count} arquivo aberto tem alterações não salvas. Salve-as ou descarte-as antes de restaurar uma versão.",
+        "other": "{count} arquivos abertos têm alterações não salvas. Salve-as ou descarte-as antes de restaurar uma versão."
+      },
+      "restoreTitle": "Substituir o rascunho?",
+      "restoreDraftChanged": {
+        "one": "O rascunho tem {count} alteração que não está salva como versão.",
+        "other": "O rascunho tem {count} alterações que não estão salvas como versão."
+      },
+      "restoreExplain": "Restaurar cria um novo rascunho a partir daquela versão. Salve o rascunho atual como versão antes para manter as alterações dele.",
+      "restoreReplace": "Substituir o rascunho",
+      "restoreSaveFirst": "Salvar como versão e restaurar",
+      "restored": "A versão {id} agora é o rascunho.",
+      "restoreFailed": "Não foi possível restaurar a versão: {error}"
+    },
+    "publish": {
+      "targetProject": "{runtime} · projeto {project}",
+      "targetAccount": "{runtime} · conta {account}",
+      "targetUser": "{runtime} · todos os projetos",
+      "state": {
+        "installed": "Instalada, esta versão",
+        "outdated": "Instalada, outra versão",
+        "present": "Uma pasta que o SynaBun não instalou",
+        "bridge": "Ponte antiga",
+        "none": "Não instalada",
+        "off": "Desligado"
+      },
+      "noneTitle": "Nada para publicar aqui",
+      "none": {
+        "adopt": "Adicione esta pasta à biblioteca primeiro: aí as versões dela são instaladas de lá, com um plano e um backup.",
+        "inplace": "Comandos e agentes são salvos onde estão; não há nada para instalar. Exportar cria um pacote.",
+        "readonly": "Não cabe a você publicar isto. Personalize uma cópia para ter a sua própria versão."
+      },
+      "exportBundle": "Pacote do SynaBun",
+      "loading": "Lendo onde ela está instalada…",
+      "loadFailed": "Não foi possível ler o estado das instalações: {error}",
+      "whatTitle": "O que instalar",
+      "version": "Versão",
+      "versionMeta": "salva {when}",
+      "noVersion": "Esta skill ainda não tem versão: salve o rascunho como versão para publicá-la.",
+      "draftNotPublished": {
+        "one": "O rascunho tem {count} alteração que ainda não é uma versão, então não é o que será instalado.",
+        "other": "O rascunho tem {count} alterações que ainda não são uma versão, então não são o que será instalado."
+      },
+      "saveVersionAndUse": "Salvar como versão e usá-la",
+      "fromReview": "Instalando a versão aprovada em Revisão.",
+      "whereTitle": "Onde",
+      "targetsCaption": "Destinos de instalação",
+      "pick": "Escolher",
+      "col": {
+        "target": "Assistente e escopo",
+        "folder": "Pasta",
+        "now": "Lá agora",
+        "actions": "Ações"
+      },
+      "pickTarget": "Instalar em {target}",
+      "sharedOff": "Ligue a pasta compartilhada em Configurações → Skills para instalar aqui.",
+      "verify": "Verificar",
+      "rollback": "Reverter",
+      "remove": "Remover",
+      "bridgeHelp": "Mova pontes antigas em Configurações → Skills → Pastas de skills.",
+      "addProject": "Adicionar um projeto",
+      "chooseProject": "Escolha um projeto…",
+      "showPlan": "Mostrar o plano",
+      "planHelp": "Nada é gravado antes de você ler o plano e confirmá-lo.",
+      "guest": "Só o host instala skills.",
+      "exportTitle": "Exportar",
+      "settingsNote": "Configurações → Skills mostra as mesmas instalações: os botões de lá também usam estes planos.",
+      "fact": {
+        "written": {
+          "ok": "Gravada: a pasta tem exatamente estes arquivos",
+          "missing": "Gravada: a pasta sumiu",
+          "changed": "Gravada: a pasta mudou desde a instalação",
+          "unknown": "Gravada: ainda não verificado"
+        },
+        "discoverable": {
+          "yes": "Encontrável: as regras do assistente a encontram",
+          "no": "Encontrável: o assistente não lê essa pasta agora",
+          "unknown": "Encontrável: não verificado"
+        },
+        "eligibility": {
+          "enabled": "Ativada nas configurações do assistente",
+          "disabled": "Desligada nas configurações do assistente",
+          "unknown": "Configurações: não puderam ser lidas"
+        },
+        "discovered": {
+          "yes": "O {runtime} a lista",
+          "no": "O {runtime} não a lista",
+          "unknown": "Não foi possível perguntar ao {runtime}"
+        }
+      },
+      "planStatus": {
+        "ready": "Pronto",
+        "needs": "Precisa da sua confirmação",
+        "blocked": "Não pode ser instalada"
+      },
+      "goesTo": "Vai para",
+      "readBy": "Lida por {runtimes}",
+      "destState": {
+        "absent": "Não há nada lá agora.",
+        "identical": "Estes mesmos arquivos já estão lá: nada será gravado.",
+        "owned": "A instalação do próprio SynaBun está lá; ela será substituída (um backup é mantido).",
+        "modified": "O SynaBun a instalou, mas ela foi alterada desde então.",
+        "unowned": "Há lá uma pasta que o SynaBun não instalou.",
+        "unreadable": "O que está lá não pode ser lido por inteiro."
+      },
+      "blocked": {
+        "no_root": "Não há pasta para este destino.",
+        "shared_root_off": "A pasta compartilhada está desligada.",
+        "root_read_only": "O SynaBun não escreve nesta pasta.",
+        "root_unusable": "A pasta não pode ser usada.",
+        "lint_errors": "Problemas impedem que ela funcione neste assistente.",
+        "scan_blocked": "A análise bloqueia esta instalação.",
+        "review_required": "Aprove-a em Revisão primeiro.",
+        "approval_stale": "A aprovação dela não cobre este nome: revise-a de novo.",
+        "destination_unreadable": "O que está no destino não pode ser lido por inteiro."
+      },
+      "transform": "Alterado só para este assistente:",
+      "lintCounts": "Verificações para este assistente: {errors} problemas, {warnings} avisos",
+      "scan": {
+        "clean": "Análise: nada encontrado nestes arquivos",
+        "error": "Análise: falhou, então nada é instalado",
+        "trusted": "Análise: veio com o SynaBun, achados mostrados, sem perguntar de novo",
+        "findings": "Análise: achados para revisar abaixo"
+      },
+      "refresh": {
+        "automatic": "O {runtime} a pega sozinho.",
+        "reload-skills": "{runtime}: rode /reload-skills nas sessões já abertas.",
+        "new-session": "{runtime}: inicie uma nova sessão para ter certeza de que ele a vê.",
+        "unknown": "{runtime}: veja a documentação dele."
+      },
+      "confirmReplaceModified": "Substituí-la, mantendo um backup (ela foi alterada desde que o SynaBun a instalou)",
+      "confirmReplaceUnowned": "Substituí-la, mantendo um backup (o SynaBun não a instalou)",
+      "confirmScan": "Revisei o que esta skill pode fazer, para estes arquivos exatos",
+      "planTitle": "O plano",
+      "install": {
+        "one": "Instalar em {count} destino",
+        "other": "Instalar em {count} destinos"
+      },
+      "nothingReady": "Confirme o que o plano pede, senão nada pode ser instalado.",
+      "resultsTitle": "O que aconteceu",
+      "result": {
+        "committed": "Instalada",
+        "skipped": "Não instalada",
+        "needs-confirmation": "Precisa da sua confirmação",
+        "failed": "Falhou"
+      },
+      "alreadyThere": "(já estava lá)",
+      "exportNeedsVersion": "Salve uma versão para exportá-la.",
+      "exportRestart": "Reinicie o SynaBun para exportar versões da biblioteca.",
+      "exportSkill": "Arquivo .skill",
+      "exportClaude": "Envio para o Claude.ai",
+      "checkClaude": "Verificar para o Claude.ai",
+      "exportHelp": "Um pacote é o que Importar aceita de volta. Um arquivo .skill guarda a pasta. O envio para o Claude.ai é um ZIP da pasta como o Claude.ai a lê.",
+      "planReady": "O plano está pronto.",
+      "planFailed": "Não foi possível fazer o plano: {error}",
+      "planChanged": "O que seria instalado mudou desde que o plano foi mostrado: aqui está o novo plano.",
+      "planOutdated": "O que está escolhido mudou enquanto o plano era feito: mostre o plano de novo.",
+      "installFailed": "Não instalada: {error}",
+      "installedAll": {
+        "one": "Instalada em {count} destino.",
+        "other": "Instalada em {count} destinos."
+      },
+      "installedSome": "Instalada em {ok} de {total} destinos: veja abaixo.",
+      "verified": "Verificado.",
+      "verifyFailed": "Não foi possível verificar: {error}",
+      "rollbackTitle": "Reverter esta instalação?",
+      "removeTitle": "Remover esta instalação?",
+      "rollbackBody": "O que estava lá antes desta instalação volta. Um backup da pasta atual é mantido.",
+      "removeBody": "A pasta que o SynaBun instalou é removida. Um backup é mantido.",
+      "undoFailed": "Não foi possível fazer isso: {error}",
+      "changedSinceTitle": "A pasta mudou desde a instalação",
+      "changedSinceBody": "Alguém a alterou depois que o SynaBun a instalou. Continuar com ela como está agora? Um backup é mantido.",
+      "changedSinceConfirm": "Continuar",
+      "rolledBack": "Revertida.",
+      "removed": "Removida.",
+      "checking": "Verificando…",
+      "claudeProblems": "Para o Claude.ai: {errors} problemas, {warnings} avisos.",
+      "claudeOk": "O Claude.ai lê esta skill como ela está.",
+      "checkFailed": "Não foi possível verificar: {error}"
+    },
+    "review": {
+      "author": {
+        "owner": "Você",
+        "assistant": "Assistente do SynaBun",
+        "agent": "Um agente"
+      },
+      "kind": {
+        "new": "Skill nova",
+        "change": "Mudança",
+        "update": "Atualização"
+      },
+      "state": {
+        "pending": "Esperando por você",
+        "changes_requested": "Mudanças pedidas",
+        "approved": "Aprovada, não instalada",
+        "publishing": "Instalando",
+        "published": "Instalada",
+        "partial": "Instalada em parte",
+        "publish_failed": "A instalação falhou",
+        "rejected": "Rejeitada",
+        "withdrawn": "Retirada"
+      },
+      "assumed": "Suposição: {text}",
+      "installsAs": "Instala como",
+      "forTargets": "Para: {targets}",
+      "lintErrors": {
+        "one": "{count} problema para os destinos dela",
+        "other": "{count} problemas para os destinos dela"
+      },
+      "lintOk": "Nenhum problema para os destinos dela",
+      "lintWarnings": {
+        "one": "{count} aviso",
+        "other": "{count} avisos"
+      },
+      "scan": {
+        "not-scanned": "Não analisada",
+        "error": "A análise falhou: ela não pode ser aprovada",
+        "blocked": {
+          "one": "A análise a bloqueia ({count} achado)",
+          "other": "A análise a bloqueia ({count} achados)"
+        },
+        "clean": "Nada encontrado nos arquivos analisados",
+        "incomplete": {
+          "one": "{count} achado; parte dela não pôde ser lida",
+          "other": "{count} achados; parte dela não pôde ser lida"
+        },
+        "review": {
+          "one": "{count} achado para revisar",
+          "other": "{count} achados para revisar"
+        },
+        "findings": {
+          "one": "{count} achado",
+          "other": "{count} achados"
+        }
+      },
+      "findings": {
+        "one": "{count} achado",
+        "other": "{count} achados"
+      },
+      "severity": {
+        "critical": "Crítico",
+        "high": "Alto",
+        "medium": "Médio",
+        "low": "Baixo"
+      },
+      "authorityAdds": "Adiciona {what}: {items}",
+      "authorityRemoves": "Não tem mais {what}: {items}",
+      "authority": {
+        "scripts": "scripts",
+        "binaries": "arquivos que não são texto",
+        "dynamicContext": "comandos executados ao carregar",
+        "hooks": "hooks de sessão",
+        "toolGrants": "ferramentas pré-aprovadas",
+        "domains": "endereços da web",
+        "sensitive": "leituras de dados privados",
+        "persistentWrites": "mudanças duradouras de configuração",
+        "installers": "instalações de software"
+      },
+      "authorityTitle": "O que ela pode fazer que a versão aprovada não podia:",
+      "filesChanged": {
+        "one": "{count} arquivo alterado",
+        "other": "{count} arquivos alterados"
+      },
+      "showFiles": "Mostrar os arquivos",
+      "loadingDiff": "Lendo as mudanças…",
+      "yourNote": "Sua observação: {text}",
+      "approve": "Aprovar",
+      "install": "Instalar…",
+      "requestChanges": "Pedir mudanças",
+      "reject": "Rejeitar",
+      "open": "Abrir no espaço de trabalho dela",
+      "libraryInstalls": {
+        "one": "{count} instalação da biblioteca",
+        "other": "{count} instalações da biblioteca"
+      },
+      "fromSynabun": "Vem com o SynaBun",
+      "updateBody": "O SynaBun traz uma {name} mais nova do que a cópia instalada aqui. Leia as mudanças, depois atualize (um backup da cópia é mantido) ou mantenha a sua.",
+      "updateRuntimes": "Instalada para {runtimes}",
+      "reviewChanges": "Revisar as mudanças",
+      "update": "Atualizar",
+      "keepMine": "Manter a minha",
+      "title": "Revisão",
+      "subtitle": "O que o Assistente fez e as atualizações que o SynaBun traz esperam aqui. Nada é instalado até você aprovar.",
+      "filterLabel": "Mostrar",
+      "filter": {
+        "waiting": "Esperando",
+        "all": "Tudo",
+        "decided": "Decididas"
+      },
+      "updatesTitle": {
+        "one": "{count} atualização do SynaBun",
+        "other": "{count} atualizações do SynaBun"
+      },
+      "decidedTitle": "Decididas",
+      "waitingTitle": {
+        "one": "{count} envio",
+        "other": "{count} envios"
+      },
+      "emptyTitle": "Nada esperando",
+      "emptyBody": "Quando o Assistente do SynaBun cria ou altera uma skill, ela aparece aqui para você aprovar, pedir mudanças ou rejeitar. As atualizações que o SynaBun traz aparecem aqui também.",
+      "diffFailed": "Não foi possível ler as mudanças: {error}",
+      "partialDiff": "Só o SKILL.md foi comparado: reinicie o SynaBun para comparar todos os arquivos.",
+      "updateDiffTitle": "O que atualizar {name} muda",
+      "send": "Enviar",
+      "reasonRequired": "Diga o que deve mudar.",
+      "rejectTitle": "Rejeitar {name}",
+      "changesTitle": "Pedir mudanças em {name}",
+      "rejectPrompt": "Por quê (opcional; o Assistente lê):",
+      "changesPrompt": "O que deve mudar (o Assistente lê):",
+      "decided": {
+        "approve": "{name} aprovada: instale-a em Publicar quando quiser.",
+        "request_changes": "Mudanças pedidas para {name}.",
+        "reject": "{name} rejeitada."
+      },
+      "decideFailed": "Não foi possível enviar a decisão: {error}"
+    },
+    "create": {
+      "title": "Criar uma skill",
+      "guest": "Só o host cria skills.",
+      "promptLabel": "Descreva a skill",
+      "promptPlaceholder": "Descreva o que a skill deve fazer e quando deve ser usada, ex.: \"Escrever notas de versão a partir dos pull requests mesclados desde a última tag, no estilo do nosso CHANGELOG\"",
+      "sourcesLabel": "Fontes",
+      "useAsSource": "Usar como fonte",
+      "source": {
+        "conversation": "Esta conversa",
+        "url": "URL",
+        "repo": "Repositório",
+        "memory": "Memória",
+        "import": "Uma skill existente"
+      },
+      "draftWithAi": "Rascunhar com IA",
+      "blankTitle": "Começar sem IA",
+      "nameLabel": "Nome",
+      "namePlaceholder": "notas-de-versao",
+      "nameHelp": "Letras minúsculas, dígitos e hífens: você a chama como {slug}.",
+      "name": {
+        "required": "Dê um nome a ela.",
+        "too-long": "No máximo 64 caracteres.",
+        "format": "Use letras minúsculas, dígitos e hífens simples.",
+        "shipped": "O SynaBun traz uma skill com este nome: escolha outro.",
+        "taken": "Já existe algo com este nome: instalar os dois causaria conflito."
+      },
+      "kindLabel": "Tipo",
+      "kind": {
+        "skill": "Skill",
+        "agent": "Agente",
+        "command": "Comando · legado"
+      },
+      "kindHelp": {
+        "skill": "Uma pasta com SKILL.md que o Claude Code, o Codex e o OpenCode carregam. A escolha comum.",
+        "agent": "Um subagente a quem o Claude Code delega, com contexto próprio. Um arquivo.",
+        "command": "Um arquivo de comando de barra do Claude Code. As skills os substituem; mantido para configurações antigas."
+      },
+      "layoutLabel": "Começar de",
+      "layout": {
+        "skill": {
+          "blank": {
+            "name": "Em branco",
+            "desc": "Nome, descrição e um título"
+          },
+          "steps": {
+            "name": "Passos",
+            "desc": "Passos numerados sobre o que o usuário digita"
+          },
+          "router": {
+            "name": "Roteador",
+            "desc": "Seções escolhidas pela primeira palavra"
+          },
+          "references": {
+            "name": "Com referências",
+            "desc": "SKILL.md mais references/guide.md"
+          },
+          "script": {
+            "name": "Com um script",
+            "desc": "SKILL.md mais scripts/run.sh"
+          }
+        },
+        "agent": {
+          "blank": {
+            "name": "Em branco",
+            "desc": "Um nome, uma descrição, um papel curto"
+          },
+          "specialist": {
+            "name": "Especialista",
+            "desc": "Um modelo e ferramentas de leitura"
+          },
+          "researcher": {
+            "name": "Pesquisador",
+            "desc": "Ferramentas de pesquisa em código e na web"
+          }
+        },
+        "command": {
+          "blank": {
+            "name": "Em branco",
+            "desc": "Uma descrição e instruções"
+          },
+          "analysis": {
+            "name": "Análise",
+            "desc": "Ler um alvo e relatar"
+          },
+          "workflow": {
+            "name": "Fluxo de trabalho",
+            "desc": "Planejar, confirmar, fazer, verificar"
+          }
+        }
+      },
+      "descriptionLabel": "Descrição",
+      "descriptionPlaceholder": "O que ela faz, e quando usar",
+      "descriptionHelp": "Gravada no frontmatter. Os modelos a leem para decidir quando usar a skill: diga o quê e quando.",
+      "whereSkill": "Ela começa como rascunho na biblioteca do SynaBun e só chega ao Claude Code, ao Codex ou ao OpenCode quando você a publica.",
+      "whereLabel": "Onde",
+      "whereGlobal": {
+        "agent": "Todos os projetos (~/.claude/agents)",
+        "command": "Todos os projetos (~/.claude/commands)"
+      },
+      "whereProject": "Um projeto",
+      "createButton": {
+        "skill": "Criar skill",
+        "agent": "Criar agente",
+        "command": "Criar comando"
+      },
+      "paste": "Colar um SKILL.md…",
+      "import": "Importar…",
+      "explain": "Você recebe uma pasta de skill: SKILL.md, mais referências ou scripts só quando ajudam, verificada enquanto você escreve. Nada chega ao Claude Code, ao Codex ou ao OpenCode até você publicar.",
+      "examplesTitle": "Ideias",
+      "example1": "\"Escrever mensagens de Conventional Commit a partir do diff preparado\"",
+      "example2": "\"Uma lista de verificação para preparar uma versão do SynaBun, a partir do CHANGELOG.md\"",
+      "example3": "\"Revisar um pull request em busca de problemas de segurança antes de mesclar\"",
+      "created": "{name} criada.",
+      "failed": "Não foi possível criar: {error}",
+      "pasteLabel": "SKILL.md",
+      "pasteTitle": "Colar um SKILL.md",
+      "pasteConfirm": "Adicionar à biblioteca",
+      "pasteEmpty": "Cole o arquivo primeiro.",
+      "ai": {
+        "title": "Rascunhar com IA",
+        "help": "Um agente rascunha o pacote inteiro a partir das suas palavras e fontes; o SynaBun o verifica e o coloca em Revisão. Nada é instalado até você publicar.",
+        "restart": "Rascunhar com IA precisa que o SynaBun reinicie: esta página é mais nova que o servidor.",
+        "unknown": "Verificando o que este SynaBun consegue fazer…",
+        "draftingUnavailable": "O rascunho precisa do Claude Code neste computador: {reason}",
+        "exampleToggle": "Adicionar um exemplo de bom resultado",
+        "exampleLabel": "Um exemplo de bom resultado (opcional)",
+        "examplePlaceholder": "Como deve ser a saída da skill, ou uma resposta antiga de que você gostou",
+        "noSources": "Nenhuma fonte: o rascunho é feito a partir da sua descrição.",
+        "removeSource": "Remover {name}",
+        "full": "No máximo {count} fontes.",
+        "duplicate": "Essa fonte já está aqui.",
+        "added": "{name} adicionada como fonte.",
+        "removed": "{name} removida.",
+        "kind": {
+          "conversation": "Conversa",
+          "url": "Página da web",
+          "repo": "Projeto",
+          "memory": "Memórias",
+          "import": "Skill"
+        },
+        "editorTitle": {
+          "conversation": "Escolha uma sessão",
+          "url": "Uma página da web",
+          "repo": "Um projeto registrado",
+          "memory": "Memórias",
+          "import": "Uma skill existente como ponto de partida"
+        },
+        "conv": {
+          "provider": "De",
+          "project": "Projeto",
+          "anyProject": "Todos os projetos",
+          "search": "Buscar sessões",
+          "title": "Sessões",
+          "loading": "Carregando sessões…",
+          "none": "Nenhuma sessão encontrada.",
+          "failed": "Não foi possível ler as sessões: {error}",
+          "messages": {
+            "one": "{count} mensagem",
+            "other": "{count} mensagens"
+          },
+          "use": "Usar esta sessão",
+          "pick": "Escolha uma sessão primeiro.",
+          "restart": "As sessões aparecem depois que o SynaBun reiniciar."
+        },
+        "url": {
+          "label": "Endereço da página",
+          "help": "O SynaBun a lê com o próprio navegador antes de o agente começar, como dados: nada na página é seguido como instrução.",
+          "add": "Adicionar a página",
+          "invalid": "Escreva um endereço que comece com http:// ou https://, sem usuário nem senha.",
+          "unavailable": "O navegador do SynaBun não consegue abrir páginas agora: {reason}"
+        },
+        "repo": {
+          "label": "Projeto",
+          "paths": "Arquivos ou pastas para ler primeiro (um por linha, opcional)",
+          "help": "O SynaBun lê a árvore de arquivos, o README, a documentação e os manifestos, só para leitura: nunca segredos, arquivos de lock ou saídas de build, e nada é alterado.",
+          "add": "Adicionar o projeto",
+          "none": "Nenhum projeto registrado.",
+          "choose": "Escolha um projeto.",
+          "pathsInvalid": "Até {count} caminhos, relativos ao projeto, sem \"..\"."
+        },
+        "memory": {
+          "query": "O que lembrar",
+          "placeholder": "processo de lançamento",
+          "project": "Projeto de memória (opcional)",
+          "help": "As memórias do SynaBun que combinam, com seus ids, como dados.",
+          "add": "Adicionar memórias",
+          "empty": "Diga o que lembrar."
+        },
+        "import": {
+          "help": "Os arquivos dela são o ponto de partida. Uma skill da biblioteca ganha uma nova versão para revisão; um arquivo de pacote vira uma skill nova.",
+          "library": "Uma skill da biblioteca",
+          "chooseSkill": "Escolha uma skill.",
+          "or": "Ou um arquivo",
+          "file": "Um arquivo de pacote…",
+          "useSkill": "Usar esta skill",
+          "notSkill": "Esse arquivo não é um pacote de skill do SynaBun.",
+          "failed": "Não foi possível usar o arquivo: {error}"
+        },
+        "options": {
+          "title": "Opções",
+          "name": "Nome (opcional)",
+          "nameHelp": "Deixe vazio e o agente escolhe um.",
+          "model": "Rascunhada por",
+          "minutes": "Tempo de trabalho",
+          "minutesValue": "{count} min",
+          "runtimes": "Para",
+          "route": "Sua rota de Programação: {target}",
+          "fallback": "Claude Code (o modelo padrão dele)",
+          "providerDefault": "{provider}: o modelo padrão dele",
+          "claudeOnly": "O rascunho roda no Claude Code, o único runtime que o SynaBun consegue manter dentro da pasta de rascunho (só ferramentas de arquivo, sem shell, web nem MCP)."
+        },
+        "problem": {
+          "prompt": "Descreva a skill ou adicione uma fonte.",
+          "name": "Um nome usa letras minúsculas, dígitos e hífens simples.",
+          "url": "Uma das páginas tem um endereço que não pode ser usado.",
+          "repo": "Um dos projetos não pode ser usado: confira os caminhos.",
+          "memory": "Uma das fontes de memória não tem o que lembrar.",
+          "conversation": "Uma das sessões não pode ser usada.",
+          "import": "Uma das skills não pode ser usada.",
+          "long": "Isso é maior do que um pedido pode ser.",
+          "provider": "O rascunho roda só no Claude Code.",
+          "targets": "Um dos lugares de instalação não pode ser usado (um projeto precisa estar registrado).",
+          "other": "O pedido não pode ser enviado assim."
+        },
+        "error": {
+          "needs_browser": "Uma página da web precisa do navegador do SynaBun, que não conseguiu abri-la.",
+          "needs_input": "O agente precisa de uma resposta antes de rascunhar.",
+          "worker_blocked": "O agente foi bloqueado.",
+          "worker_failed": "O agente parou sem rascunhar nada (o que ele disse está abaixo).",
+          "worker_ended": "O agente parou antes de terminar o rascunho.",
+          "draft_invalid": "O rascunho ainda tinha problemas depois de uma rodada de correções.",
+          "draft_unchanged": "O agente devolveu a skill como ela já era.",
+          "source_failed": "Uma fonte não pôde ser lida.",
+          "source_not_found": "Uma fonte não foi encontrada.",
+          "source_empty": "Uma fonte não tinha nada para ler.",
+          "source_unavailable": "Este servidor não consegue ler uma das fontes.",
+          "dispatch_failed": "O agente não conseguiu começar.",
+          "drafting_unavailable": "Os agentes do Assistente ainda não estão rodando: tente de novo em instantes.",
+          "too_many_creations": "Outras skills estão sendo rascunhadas: espere uma terminar ou cancele-a.",
+          "interrupted": "O SynaBun parou enquanto isto rodava.",
+          "invalid_request": "O pedido não era válido.",
+          "budget_exceeded": "O agente chegou ao limite de gasto e foi parado.",
+          "draft_unsafe": "A pasta de rascunho tinha um link: nada nela foi usado.",
+          "provider_unsupported": "O rascunho roda só no Claude Code.",
+          "request_too_long": "O pedido é longo demais para o agente que rascunha: encurte-o.",
+          "other": "Não foi possível fazer o rascunho."
+        },
+        "job": {
+          "loading": "Lendo o rascunho…",
+          "back": "Voltar ao formulário",
+          "backWhile": "Voltar ao formulário (ele continua)",
+          "stepsLabel": "Etapas",
+          "title": {
+            "active": "Rascunhando {name}",
+            "done": "{name} está em Revisão",
+            "drafted": "{name} está rascunhada",
+            "failed": "Não foi possível rascunhar {name}",
+            "cancelled": "{name} foi cancelada",
+            "interrupted": "{name} foi interrompida"
+          },
+          "step": {
+            "sources": "Fontes",
+            "drafting": "Rascunho",
+            "checking": "Verificação",
+            "review": "Revisão"
+          },
+          "stepState": {
+            "done": "feito",
+            "active": "em andamento",
+            "failed": "parou aqui",
+            "waiting": "ainda não",
+            "skipped": "não pedido"
+          },
+          "cancel": "Cancelar",
+          "cancelling": "Cancelando…",
+          "cancelFailed": "Não foi possível cancelar: {error}",
+          "worker": "Agente",
+          "byRoute": "(sua rota de Programação)",
+          "browser": "com o navegador do SynaBun",
+          "time": "Tempo",
+          "cost": "{cost} até agora",
+          "spent": "{cost} gastos",
+          "cut": "cortada para caber",
+          "files": "Escrito até agora",
+          "noFiles": "Nada escrito ainda.",
+          "activity": "O que o agente está fazendo",
+          "lint": "Verificações: {errors} erros, {warnings} avisos",
+          "tests": "Prompts de teste: {tasks} tarefas, {positive} que devem acioná-la, {nearMiss} quase acertos",
+          "noTests": "Sem prompts de teste (evals/evals.json)",
+          "assumptions": {
+            "one": "{count} suposição",
+            "other": "{count} suposições"
+          },
+          "warnings": {
+            "one": "{count} aviso",
+            "other": "{count} avisos"
+          },
+          "inReview": "Ela espera em Revisão: aprove-a lá e depois publique nos assistentes que escolher.",
+          "notInReview": "É um rascunho na biblioteca: abra-o e publique quando estiver pronto.",
+          "openReview": "Abrir em Revisão",
+          "openDraft": "Abrir o rascunho",
+          "another": "Rascunhar outra",
+          "question": "O agente perguntou: {question}",
+          "partial": "O que ele escreveu fica guardado como o rascunho {name}.",
+          "openPartial": "Abrir",
+          "retry": "Tentar de novo",
+          "editRetry": "Editar e tentar de novo",
+          "retryFailed": "Não foi possível começar de novo: {error}",
+          "gone": "Não foi possível ler esse rascunho: {error}",
+          "started": "Rascunho iniciado."
+        },
+        "recent": {
+          "title": "Rascunhadas com IA",
+          "failed": "Não foi possível ler os rascunhos: {error}",
+          "state": {
+            "queued": "Esperando",
+            "gathering": "Lendo fontes",
+            "drafting": "Rascunhando",
+            "checking": "Verificando",
+            "submitting": "Indo para Revisão",
+            "done": "Em Revisão",
+            "drafted": "Rascunhada",
+            "failed": "Falhou",
+            "cancelled": "Cancelada",
+            "interrupted": "Interrompida"
+          }
+        }
+      }
+    },
+    "customize": {
+      "nameLabel": "Nome da sua cópia",
+      "title": "Personalizar uma cópia de {name}",
+      "explain": "Cada arquivo dela é copiado para a biblioteca do SynaBun como uma skill nova sua, com só o nome alterado. A original fica como está.",
+      "confirm": "Fazer a cópia",
+      "cannot": {
+        "binary": "Ela tem arquivos que não são texto, que este servidor não consegue copiar: reinicie o SynaBun e tente de novo.",
+        "unreadable": "O SKILL.md dela não pode ser lido.",
+        "restart": "Os outros arquivos dela só podem ser lidos por um servidor mais novo: reinicie o SynaBun e tente de novo.",
+        "truncated": "Ela tem mais arquivos do que o SynaBun lista, então uma cópia perderia alguns.",
+        "yaml": "O frontmatter dela tem erros, então o nome não pôde ser definido: corrija-o primeiro."
+      },
+      "done": "{name} criada, a sua cópia.",
+      "nameInUse": "Uma skill chamada {name} já está instalada: renomeie uma delas antes de publicar.",
+      "failed": "Não foi possível fazer a cópia: {error}"
+    },
+    "import": {
+      "guest": "Só o host importa skills.",
+      "serverUnknown": "Não foi possível ler o que este servidor sabe fazer, então nada foi importado: tente de novo.",
+      "tooLarge": "Esse arquivo é maior do que um pacote de skill pode ser (24 MB).",
+      "notJson": "Esse arquivo não é um pacote de skill (não é JSON).",
+      "notBundle": "Esse arquivo não é um pacote de skill do SynaBun.",
+      "chooseProject": "Escolha um projeto…",
+      "where": "Para onde vai",
+      "scopeGlobal": "Todos os projetos (~/.claude/)",
+      "scopeProject": "Um projeto",
+      "project": "Projeto",
+      "chooseProjectError": "Escolha o projeto para onde ela vai.",
+      "title": "Importar {kind} \"{name}\"",
+      "intro": {
+        "one": "De {file}: {count} arquivo. Ele é verificado antes; nada é instalado até você confirmar.",
+        "other": "De {file}: {count} arquivos. Eles são verificados antes; nada é instalado até você confirmar."
+      },
+      "check": "Verificar",
+      "refusedTitle": "Este pacote não pode ser importado",
+      "refusedIntro": "Nada foi gravado. O que há de errado com ele:",
+      "failed": "A importação falhou: {error}",
+      "reviewTitle": "Revise \"{name}\" antes de instalá-la",
+      "discard": "Descartar",
+      "install": "Instalar",
+      "confirmReviewed": "Confirme que você revisou o que ela pode fazer.",
+      "confirmReplace": "Confirme que os arquivos de lá podem ser substituídos (um backup é mantido) ou descarte a importação.",
+      "done": "{name} importada.",
+      "goesTo": "Vai para",
+      "files": "Arquivos",
+      "fileCount": {
+        "one": "{count} arquivo ({size})",
+        "other": "{count} arquivos ({size})"
+      },
+      "digest": "Resumo (digest)",
+      "showFiles": "Mostrar os arquivos",
+      "executable": "executável",
+      "leftOut": "{path}: deixado de fora ({reason})",
+      "skillExists": "Uma skill chamada \"{name}\" já está lá. Ela não é substituída: exclua-a ou renomeie-a primeiro.",
+      "replaceBox": {
+        "one": "Substituir o arquivo que já está lá ({files}); um backup é mantido",
+        "other": "Substituir os {count} arquivos que já estão lá ({files}); um backup é mantido"
+      },
+      "checks": "Verificações: {errors} problemas, {warnings} avisos",
+      "checksOk": "Verificações: nenhum problema encontrado",
+      "blockedByProblems": "Ela não pode ser instalada enquanto tiver problemas: um assistente a leria errado.",
+      "scanClean": "nada encontrado no conteúdo analisado",
+      "scanError": "a análise falhou ({error}): ela não pode ser instalada",
+      "scanIncomplete": {
+        "one": "{count} achado; parte dela não pôde ser lida",
+        "other": "{count} achados; parte dela não pôde ser lida"
+      },
+      "scanFindings": {
+        "one": "{count} achado",
+        "other": "{count} achados"
+      },
+      "canDo": "O que ela pode fazer:",
+      "gateBlocked": "bloqueada",
+      "gateReview": "precisa da sua revisão",
+      "fact": {
+        "dynamic": {
+          "one": "Ela executa {count} comando de shell ao carregar, antes de o modelo lê-la.",
+          "other": "Ela executa {count} comandos de shell ao carregar, antes de o modelo lê-la."
+        },
+        "hooks": "Ela registra hooks para o resto da sessão ({events}).",
+        "tools": "Ela pré-aprova {tools} no turno que a usa.",
+        "scripts": {
+          "one": "Ela contém {count} script.",
+          "other": "Ela contém {count} scripts."
+        },
+        "binaries": {
+          "one": "Ela contém {count} arquivo que não é texto.",
+          "other": "Ela contém {count} arquivos que não são texto."
+        },
+        "domains": "Ela cita {domains}."
+      },
+      "reviewedBox": "Revisei o que esta skill pode fazer, para estes arquivos exatos"
+    },
+    "dialog": {
+      "unsavedTitle": "Alterações não salvas",
+      "unsavedFiles": {
+        "one": "{count} arquivo tem alterações não salvas:",
+        "other": "{count} arquivos têm alterações não salvas:"
+      },
+      "andMore": "e mais {count}",
+      "keepForLaterHelp": "\"Guardar para depois\" fecha o Estúdio de Skills e as traz de volta na próxima vez que ele abrir neste navegador.",
+      "cancel": "Cancelar",
+      "discard": "Descartar",
+      "keepForLater": "Guardar para depois",
+      "saveAll": "Salvar tudo",
+      "save": "Salvar",
+      "close": "Fechar",
+      "ok": "OK",
+      "dismiss": "Dispensar",
+      "restoreTitle": "Alterações não salvas de antes",
+      "restoreChanged": "{file} tem alterações não salvas de uma sessão anterior, mas o arquivo mudou desde então. Colocar suas alterações de volta sobre o arquivo como está agora, ou descartá-las?",
+      "restoreDrop": "Descartar minhas alterações",
+      "restorePut": "Colocar minhas alterações de volta",
+      "keepEditing": "Continuar editando",
+      "loadTheirs": "Carregar a outra, descartar a minha",
+      "overwriteMine": "Salvar a minha por cima",
+      "recreate": "Criar de novo",
+      "conflictTitle": "O arquivo mudou em outro lugar",
+      "conflictBody": "{file} foi alterado por outra coisa desde que você o abriu. Nada foi gravado.",
+      "goneTitle": "O arquivo foi removido",
+      "goneBody": "{file} foi removido desde que você o abriu. Nada foi gravado.",
+      "stillHere": "Suas alterações continuam nesta aba.",
+      "unsavedOne": "{file} tem alterações não salvas.",
+      "closeWorkspaceKeeps": "Fechar o espaço de trabalho as guarda neste navegador: elas voltam quando você o abrir de novo."
+    },
+    "toast": {
+      "saveConflict": "{file} mudou em outro lugar: abra-o para decidir o que manter.",
+      "saveFailed": "Não foi possível salvar {file}: {error}",
+      "loadFailed": "Não foi possível ler as skills de novo: {error}",
+      "keptMine": "Mantendo a sua {name} como está. A atualização fica oculta até o SynaBun trazer outra versão.",
+      "saveFirst": "Salve ou descarte as alterações abertas primeiro.",
+      "versionUnchanged": "O rascunho é igual à sua versão: nada novo para salvar.",
+      "versionSaved": "Salvo como nova versão.",
+      "versionFailed": "Não foi possível salvar a versão: {error}",
+      "pathCopied": "Caminho copiado.",
+      "nothingToSave": "Nada para salvar.",
+      "savedTypedSince": "{file} salvo: o que você digitou depois ainda não está salvo.",
+      "savedWithProblems": {
+        "one": "{file} salvo, com {count} problema.",
+        "other": "{file} salvo, com {count} problemas."
+      },
+      "savedDraft": "{file} salvo no rascunho. Publique para instalá-lo.",
+      "saved": "{file} salvo.",
+      "reloadFailed": "Não foi possível ler o arquivo de novo: {error}",
+      "changedElsewhere": "{file} foi alterado em outro lugar. O seu próximo salvamento pergunta antes de substituí-lo.",
+      "adopted": "{name} agora está na biblioteca: as versões e a publicação funcionam a partir daqui.",
+      "adoptFailed": "Não foi possível adicioná-la à biblioteca: {error}",
+      "deleted": "{name} excluído.",
+      "deleteFailed": "Não foi possível excluir: {error}",
+      "libraryDeleted": "{name} foi excluída da biblioteca.",
+      "libraryDeleteInstalled": "{name} está instalada: remova as instalações dela em Publicar primeiro.",
+      "libraryDeleteChanged": "{name} mudou desde que foi lida: veja de novo e depois exclua.",
+      "exportUnavailable": "Isto não pode ser exportado daqui."
+    }
+  },
   "context": {
     "focus": "Focar",
     "orbitHere": "Orbitar aqui",
@@ -6434,6 +8094,44 @@
     "errStorage": "Não foi possível salvar a chave desta conta."
   },
   "assistant": {
+    "followups": {
+      "title": "Próximos passos",
+      "titleMulti": "Suas decisões",
+      "hintMulti": "Escolha quantos quiser e envie",
+      "send": "Enviar",
+      "sendCount": "Enviar {n} selecionados",
+      "other": "Outra coisa…",
+      "otherTip": "Escreva sua própria resposta na caixa de mensagem",
+      "sent": "Enviado",
+      "earlier": "Anterior",
+      "guessed": "Lido da resposta: confira o texto antes de enviar",
+      "titleConfirm": "Pode seguir?",
+      "titleQuestion": "Você decide",
+      "hintQuestion": "Escolha uma, ou escreva a sua resposta",
+      "hold": "Agora não",
+      "holdSend": "Espere com isso por enquanto.",
+      "recommended": "Recomendado",
+      "answerLabel": "Sua resposta",
+      "answered": "Respondida",
+      "keysNext": "{keys} para enviar · Esc para escrever a sua",
+      "keysMulti": "{keys} para marcar · {mod}+Enter para enviar · Esc para escrever a sua",
+      "keysConfirm": "Enter para seguir · Esc para escrever a sua",
+      "keysQuestion": "{keys} para escolher · Enter para enviar"
+    },
+    "limitWait": {
+      "waiting": "Aguardando o limite de uso reiniciar",
+      "restored": "Limite de uso restaurado",
+      "unknown": "Horário de reinício desconhecido",
+      "provider": "Limite de uso do {provider}",
+      "resetsAt": "reinicia às {time}",
+      "resetAt": "reiniciou às {time}",
+      "left": "faltam {clock}",
+      "retry": "Tentar agora",
+      "tryAgain": "Tentar de novo",
+      "retried": "Reenviado",
+      "announceRestored": "O limite de uso reiniciou.",
+      "continue": "O limite de uso reiniciou. Tente de novo o que foi bloqueado e continue de onde parou."
+    },
     "accountUsage": {
       "autoPicked": "Auto escolheu {to}: {usage}",
       "fallbackPicked": "{from} sem uso disponível → {to}: {usage}",
@@ -7037,7 +8735,9 @@
       "templateRemember": "Lembrar {caret}",
       "project": "Projeto",
       "chooseProject": "Escolha um projeto",
-      "projectAria": "Escolha um projeto (atual: {project})"
+      "projectAria": "Escolha um projeto (atual: {project})",
+      "starters": "Sugestões",
+      "context": "Contexto"
     },
     "status": {
       "aborted": "Interrompido.",
@@ -7426,6 +9126,8 @@
       "customAnswer": "Ou digite sua resposta…",
       "typeAnswer": "Digite sua resposta…",
       "multiHint": "Selecione todas as opções aplicáveis",
+      "keys": "{keys} para escolher · Enter para responder · Esc volta à caixa de mensagem",
+      "keysText": "Enter para responder · Esc volta à caixa de mensagem",
       "denyReason": "Diga ao agente o motivo (opcional)…",
       "planFeedback": "Solicitar alterações… (enviado com “Continuar planejando”)",
       "action": {
@@ -7443,6 +9145,7 @@
         "allowed": "Permitido",
         "always": "Sempre",
         "denied": "Negado",
+        "declined": "Recusado",
         "answered": "Respondidas",
         "answeredInChat": "Respondido na conversa",
         "skipped": "Ignorados",
@@ -9012,7 +10715,10 @@
       "metaDownloaded": "Pronta: é instalada quando o SynaBun estiver ocioso",
       "metaReadyOff": "Pronta para instalar",
       "metaCountdown": "Reiniciando para instalá-la",
-      "metaPostponed": "Adiada: é instalada ao sair ou mais tarde"
+      "metaPostponed": "Adiada: é instalada ao sair ou mais tarde",
+      "restartButton": "Reiniciar para atualizar",
+      "restartTooltip": "O SynaBun v{latest} está pronto: reinicie para atualizar",
+      "restartSoon": "Reiniciando em breve"
     },
     "busy": {
       "assistant": "uma execução do Assistente ou um agente despachado",
@@ -9167,5 +10873,524 @@
     "errorCancelled": "O download foi interrompido.",
     "errorUnknown": "O download não terminou.",
     "errorRequest": "O SynaBun não respondeu: {message}"
+  },
+  "schedules": {
+    "window": {
+      "title": "Agendamentos",
+      "guestDisabled": "Agendamentos desativados pelo host",
+      "hideBackdrop": "Ocultar o fundo escuro",
+      "showBackdrop": "Mostrar o fundo escuro",
+      "close": "Fechar Agendamentos",
+      "closeTip": "Fechar (Esc)",
+      "railLabel": "Visualizações e grupos de agendamentos",
+      "viewLabel": "Visualização"
+    },
+    "views": {
+      "upcoming": "A seguir",
+      "all": "Todos os agendamentos",
+      "attention": "Precisa de atenção",
+      "paused": "Pausados",
+      "timers": "Timers",
+      "activity": "Atividade",
+      "ungrouped": "Sem grupo"
+    },
+    "oneAtATime": "Um de cada vez",
+    "rail": {
+      "groups": "Grupos",
+      "views": "Visualizações",
+      "newGroup": "Novo grupo",
+      "noGroups": "Nenhum grupo ainda.",
+      "groupLabel": "{name}: {facts}",
+      "oneAtATimeFact": "um de cada vez",
+      "attentionTip": {
+        "one": "{count} agendamento precisa de atenção",
+        "other": "{count} agendamentos precisam de atenção"
+      },
+      "withCount": "{label} ({count})"
+    },
+    "count": {
+      "schedules": {
+        "one": "{count} agendamento",
+        "other": "{count} agendamentos"
+      },
+      "active": {
+        "one": "{count} ativo",
+        "other": "{count} ativos"
+      },
+      "paused": {
+        "one": "{count} pausado",
+        "other": "{count} pausados"
+      },
+      "attention": {
+        "one": "{count} precisa de atenção",
+        "other": "{count} precisam de atenção"
+      },
+      "runs": {
+        "one": "{count} execução",
+        "other": "{count} execuções"
+      }
+    },
+    "list": {
+      "searchSchedules": "Buscar agendamentos",
+      "searchRuns": "Buscar execuções",
+      "searchPlaceholder": "Buscar por nome, automação, grupo ou horário…",
+      "searchRunsPlaceholder": "Buscar execuções por agendamento ou automação…",
+      "clearSearch": "Limpar busca",
+      "order": "Ordem",
+      "sortNext": "Próxima execução primeiro",
+      "sortName": "Nome",
+      "sortLast": "Última execução primeiro",
+      "dragHint": "Arraste um agendamento para um grupo na barra lateral para movê-lo",
+      "loading": "Carregando agendamentos…",
+      "statusLoading": "Carregando…",
+      "statusNotLoaded": "Não carregado",
+      "statusMatch": {
+        "one": "{count} agendamento corresponde a “{query}”",
+        "other": "{count} agendamentos correspondem a “{query}”"
+      },
+      "statusShowing": {
+        "one": "Mostrando {shown} de {count} agendamento",
+        "other": "Mostrando {shown} de {count} agendamentos"
+      },
+      "statusNoMatches": "Nenhum resultado",
+      "shownOf": "{shown} de {total}",
+      "editGroupNamed": "Editar o grupo {name}",
+      "later": "Mais tarde"
+    },
+    "head": {
+      "editGroup": "Editar grupo",
+      "prompt": "Criar por prompt",
+      "promptTip": "Descreva o agendamento ao Claude Code em um painel lateral",
+      "newSchedule": "Novo agendamento",
+      "upcoming": {
+        "one": "{count} agendamento roda nas próximas 24 horas, listado na próxima execução.",
+        "other": "{count} agendamentos rodam nas próximas 24 horas, cada um na próxima execução, o mais próximo primeiro."
+      },
+      "upcomingNone": "Nada roda nas próximas 24 horas.",
+      "attention": "Agendamentos ativos cuja última execução falhou ou que estão atrasados. Abra um para ver o motivo.",
+      "paused": "Agendamentos pausados mantêm os ajustes. Ative um para colocá-lo de volta no cronograma.",
+      "activity": "A última execução de cada agendamento, da mais recente para a mais antiga. Abra uma para ver o agendamento.",
+      "ungrouped": "Agendamentos sem grupo. Arraste um para um grupo na barra lateral para organizá-lo.",
+      "groupLaunch": "Ajustes de execução do grupo: {settings}"
+    },
+    "overrides": {
+      "context": "contexto {value}",
+      "thinking": "raciocínio {value}",
+      "mcp": "MCP {value}",
+      "browserOn": "navegador ativado",
+      "browserOff": "navegador desativado"
+    },
+    "note": {
+      "showingBefore": "{error} Mostrando o que foi carregado antes.",
+      "tryAgain": "Tentar novamente",
+      "dismiss": "Dispensar"
+    },
+    "load": {
+      "failed": "Não foi possível carregar {lists}: {reasons}.",
+      "list": {
+        "schedules": "os agendamentos",
+        "automations": "as automações",
+        "groups": "os grupos"
+      },
+      "timersFailed": "Não foi possível carregar os timers: {reasons}.",
+      "noAnswer": "sem resposta em {seconds} segundos",
+      "unexpected": "uma resposta inesperada"
+    },
+    "loadFailed": {
+      "title": "Não foi possível carregar os agendamentos",
+      "notEverything": "Nem tudo foi carregado.",
+      "waitingSchedule": "O novo agendamento abre quando eles carregarem.",
+      "waitingGroup": "O novo grupo abre quando eles carregarem."
+    },
+    "cliReport": {
+      "clearing": "Limpando os ajustes da CLI anterior dos agendamentos do grupo…",
+      "nowRuns": "O grupo agora usa {cli}.",
+      "noCli": "O grupo não define mais uma CLI.",
+      "cleared": "Os ajustes da CLI anterior foram limpos em {names}.",
+      "noneLeft": "Nenhum agendamento do grupo tinha ajustes da CLI anterior.",
+      "changed": {
+        "one": "{names} mudou nesse meio-tempo e manteve os próprios ajustes.",
+        "other": "{names} mudaram nesse meio-tempo e mantiveram os próprios ajustes."
+      },
+      "failed": {
+        "one": "{names} não pôde ser verificado ou atualizado e manteve os próprios ajustes.",
+        "other": "{names} não puderam ser verificados ou atualizados e mantiveram os próprios ajustes."
+      },
+      "open": {
+        "one": "Abra-o para escolher os ajustes.",
+        "other": "Abra-os para escolher os ajustes."
+      }
+    },
+    "empty": {
+      "none": "Nenhum agendamento ainda",
+      "noneText": "Um agendamento inicia uma das suas automações em um cronograma.",
+      "noMatch": "Nenhum agendamento corresponde a “{query}”",
+      "elsewhere": "Há resultados em outras visualizações.",
+      "tryAnother": "Tente outra palavra ou limpe a busca.",
+      "searchAll": "Buscar em todos os agendamentos",
+      "attention": "Nada precisa de atenção",
+      "attentionText": "A última execução de cada agendamento ativo funcionou, e nenhum está atrasado.",
+      "paused": "Nenhum agendamento pausado",
+      "pausedText": "Todos os agendamentos estão no cronograma.",
+      "upcoming": "Nada roda nas próximas 24 horas",
+      "upcomingText": "Os agendamentos ativos aparecem aqui quando a próxima execução estiver a menos de um dia.",
+      "ungrouped": "Todos os agendamentos estão em um grupo",
+      "group": "Nenhum agendamento neste grupo ainda",
+      "groupText": "Arraste um para o grupo na barra lateral ou crie um aqui.",
+      "noRunMatch": "Nenhuma execução corresponde a “{query}”",
+      "noRuns": "Nenhuma execução ainda",
+      "noRunsText": "A última execução de cada agendamento aparece aqui depois que ele rodar."
+    },
+    "row": {
+      "paused": "Pausado",
+      "switchLabel": "Executar {name} no cronograma",
+      "pause": "Pausar",
+      "resume": "Retomar"
+    },
+    "detail": {
+      "runs": "Execuções",
+      "automation": "Automação",
+      "missingAutomation": "Automação ausente",
+      "timetable": "Cronograma",
+      "nextRun": "Próxima execução",
+      "lastRun": "Última execução",
+      "error": "Erro",
+      "detail": "Detalhe",
+      "runCount": "Execuções até agora",
+      "timeZone": "Fuso horário",
+      "dayThemes": "Temas por dia",
+      "themedDaysOnly": "(roda só nesses dias)",
+      "launchSettings": "Ajustes de execução",
+      "source": {
+        "group": "(grupo)",
+        "automation": "(automação)",
+        "default": "(padrão)"
+      },
+      "group": "Grupo",
+      "groupOf": "Grupo de {name}",
+      "runNow": "Executar agora",
+      "runNowTip": "Inicia uma execução agora; o cronograma não muda",
+      "editPrompt": "Editar prompt",
+      "editPromptTip": "Abre a automação no Estúdio de automações",
+      "editSchedule": "Editar agendamento",
+      "delete": "Excluir…"
+    },
+    "activity": {
+      "listLabel": "Últimas execuções",
+      "rowLabel": "{name}: {result} {ago}. Mostrar em Todos os agendamentos",
+      "next": "Próxima",
+      "statusMatch": {
+        "one": "{count} execução corresponde a “{query}”",
+        "other": "{count} execuções correspondem a “{query}”"
+      }
+    },
+    "timers": {
+      "sub": "Execute uma automação, ou um agendamento salvo, uma vez após um intervalo.",
+      "waiting": "Aguardando execução",
+      "runOnce": "Executar uma automação uma vez",
+      "usesBrowser": "Usa o navegador",
+      "startIn": "Iniciar em",
+      "delay": "Intervalo",
+      "presetMinutes": "{n} min",
+      "presetHours": "{n} h",
+      "minutesPlaceholder": "min",
+      "minutesFromNow": "Minutos a partir de agora",
+      "start": "Iniciar timer",
+      "fireSaved": "Disparar um agendamento salvo uma vez",
+      "fireSavedIntro": "Ele roda com os próprios ajustes; o cronograma não muda.",
+      "schedule": "Agendamento",
+      "chooseSchedule": "Escolha um agendamento…",
+      "set": "Definir timer",
+      "savedOnce": "Agendamento salvo, uma vez",
+      "automationOnce": "Automação, uma vez",
+      "cancel": "Cancelar",
+      "cancelFor": "Cancelar o timer de {name}",
+      "none": "Nenhum timer aguardando.",
+      "loading": "Carregando timers…",
+      "firing": "disparando",
+      "countdownHours": "{h}h {m}min",
+      "countdownHour": "{h}h",
+      "countdownMinutes": "{m}min"
+    },
+    "form": {
+      "automation": "Automação",
+      "chooseAutomation": "Escolha uma automação…",
+      "cli": "CLI",
+      "model": "Modelo",
+      "context": "Contexto",
+      "thinking": "Raciocínio",
+      "mcp": "Ferramentas MCP",
+      "account": "Conta OpenAI",
+      "browser": "Navegador",
+      "group": "Grupo",
+      "name": "Nome",
+      "launchOverrides": "Substituições de execução"
+    },
+    "launch": {
+      "default": "Padrão",
+      "templateDefault": "Padrão da automação",
+      "templateOrDefault": "Automação/padrão",
+      "templateOrGroupDefault": "Padrão da automação/grupo",
+      "noOverride": "Sem substituição",
+      "alwaysOn": "Sempre ativado",
+      "alwaysOff": "Sempre desativado",
+      "saved": "{value} (salvo)",
+      "unavailable": "{value} (indisponível — escolha outro)",
+      "loading": "Carregando...",
+      "loadingValue": "{value} (carregando...)",
+      "mcpTools": "{label} - {count} ferramentas",
+      "effortOption": "{level} - {desc}",
+      "accountPlan": "{label} ({plan})",
+      "contextProviderDefault": "Padrão do provedor",
+      "contextDefaultSize": "Padrão ({size})",
+      "contextExtendedSize": "Estendido ({size})",
+      "word": {
+        "off": "Desativado",
+        "default": "Padrão",
+        "low": "Baixo",
+        "medium": "Médio",
+        "high": "Alto",
+        "xhigh": "Muito alto",
+        "max": "Máximo",
+        "ultra": "Ultra",
+        "noThinking": "Sem raciocínio",
+        "minimal": "Mínimo",
+        "balanced": "Equilibrado",
+        "deep": "Profundo",
+        "veryDeep": "Muito profundo",
+        "maximum": "Máximo",
+        "configDefault": "Padrão da configuração",
+        "modelDefault": "Padrão do modelo",
+        "light": "Leve",
+        "maximumDelegated": "Máximo, com delegação"
+      }
+    },
+    "editor": {
+      "back": "Voltar para a lista",
+      "backTip": "Voltar (Esc)",
+      "cancel": "Cancelar",
+      "save": "Salvar alterações"
+    },
+    "groupEditor": {
+      "newTitle": "Novo grupo",
+      "newSub": "Grupos reúnem agendamentos relacionados e podem compartilhar ajustes de execução.",
+      "namePlaceholder": "Ritmo do Twitter",
+      "colour": "Cor",
+      "oneAtATimeHelp": "Os agendamentos de todos os grupos definidos como um de cada vez se revezam: enquanto um roda, os outros esperam.",
+      "launchIntro": "Valem para todos os agendamentos deste grupo. O ajuste do próprio agendamento prevalece.",
+      "order": "Ordem",
+      "position": "Posição {position} de {count}",
+      "moveUp": "Mover para cima",
+      "moveDown": "Mover para baixo",
+      "delete": "Excluir",
+      "membersStay": {
+        "one": "O {count} agendamento do grupo vai para Sem grupo e continua rodando.",
+        "other": "Os {count} agendamentos do grupo vão para Sem grupo e continuam rodando."
+      },
+      "empty": "O grupo está vazio.",
+      "deleteGroup": "Excluir grupo…",
+      "create": "Criar grupo"
+    },
+    "scheduleEditor": {
+      "newSub": "Inicia uma das suas automações em um cronograma.",
+      "namePlaceholder": "Post da manhã",
+      "automationOption": "{name} ({category})",
+      "customCategory": "personalizada",
+      "active": "Ativo",
+      "activeHelp": "Desative para pausar o agendamento sem excluí-lo.",
+      "when": "Quando roda",
+      "cron": "Expressão cron",
+      "cronHelp": "Uma expressão cron tem cinco campos: minuto, hora, dia do mês, mês, dia da semana.",
+      "presets": "Predefinições",
+      "presetGroup": "Predefinições: {group}",
+      "launchIntro": "Deixe um ajuste no padrão para usar o do grupo e, depois, o da automação.",
+      "optional": "opcional",
+      "dayThemesIntro": "Contexto extra adicionado à execução naquele dia da semana, como um tema para as segundas. Quando algum dia tem tema, o agendamento roda só nos dias que têm um.",
+      "themeLabel": "Tema: {label}",
+      "removeTheme": "Remover o tema de {day}",
+      "removeThemeTip": "Remover o tema deste dia",
+      "themePlaceholder": "Contexto extra para execuções de {day} (opcional)",
+      "create": "Criar agendamento"
+    },
+    "presets": {
+      "group": {
+        "frequency": "Frequência",
+        "daily": "Diário",
+        "weekly": "Semanal"
+      },
+      "every15min": "A cada 15 min",
+      "every30min": "A cada 30 min",
+      "everyHour": "A cada hora",
+      "every2hours": "A cada 2 horas",
+      "every6hours": "A cada 6 horas",
+      "twiceADay": "Duas vezes por dia",
+      "threeTimesADay": "Três vezes por dia",
+      "weekdays0900": "Dias úteis 09:00",
+      "weekdaysTwice": "Dias úteis, duas vezes",
+      "weekends1000": "Fins de semana 10:00",
+      "monWedFri": "Seg, Qua, Sex",
+      "tueThu": "Ter, Qui"
+    },
+    "confirm": {
+      "scheduleTitle": "Excluir este agendamento?",
+      "scheduleText": "Ele para de rodar e não pode ser restaurado. A automação que ele inicia continua no Estúdio de automações.",
+      "scheduleAccept": "Excluir agendamento",
+      "groupTitle": "Excluir este grupo?",
+      "groupAccept": "Excluir grupo"
+    },
+    "prompt": {
+      "title": "Criar agendamento por prompt",
+      "sub": "Comece o rascunho do agendamento em um painel lateral.",
+      "close": "Fechar",
+      "ready": "Pronto",
+      "planned": "Planejado",
+      "multiProvider": "Vários provedores",
+      "tabLabel": "Assistente de agendamento"
+    },
+    "toast": {
+      "notLoaded": "Os agendamentos ainda não carregaram: salve quando tiverem carregado",
+      "modelUnavailable": "Este modelo não está disponível para a conta selecionada",
+      "contextUnavailable": "Esta janela de contexto não está disponível para o modelo e a conta selecionados",
+      "noChanges": "Nenhuma alteração para salvar",
+      "nameRequired": "Dê um nome ao agendamento",
+      "automationRequired": "Escolha a automação que ele inicia",
+      "cronRequired": "Digite uma expressão cron com cinco campos",
+      "updated": "Agendamento atualizado",
+      "created": "Agendamento criado",
+      "saveFailed": "Falha ao salvar: {error}",
+      "noAutomation": "Nenhuma automação vinculada a este agendamento",
+      "themeRemoved": "Tema de {day} removido",
+      "movedTo": "Movido para {group}",
+      "aGroup": "um grupo",
+      "moveFailed": "Falha ao mover: {error}",
+      "resumed": "{name} voltou ao cronograma",
+      "paused": "{name} está pausado",
+      "toggleFailed": "Falha ao alternar: {error}",
+      "launching": "Iniciando agendamento…",
+      "runFailed": "Falha na execução: {error}",
+      "deleted": "Agendamento excluído",
+      "groupDeleted": "Grupo excluído",
+      "deleteFailed": "Falha ao excluir: {error}",
+      "groupDeleteFailed": "Falha ao excluir o grupo: {error}",
+      "groupNameRequired": "O nome do grupo é obrigatório",
+      "groupCreated": "Grupo criado",
+      "groupFailed": "Falha ao criar o grupo: {error}",
+      "groupUpdated": "Grupo atualizado",
+      "groupUpdatedKept": {
+        "one": "Grupo atualizado. {count} agendamento manteve os ajustes da CLI anterior: a página do grupo diz qual",
+        "other": "Grupo atualizado. {count} agendamentos mantiveram os ajustes da CLI anterior: a página do grupo diz quais"
+      },
+      "groupUpdateFailed": "Falha ao atualizar o grupo: {error}",
+      "reorderFailed": "Falha ao reordenar: {error}",
+      "comingSoon": "Em breve — por enquanto, só o Claude Code",
+      "panelFailed": "Falha ao abrir o painel do Claude: {error}",
+      "chooseAutomation": "Escolha uma automação primeiro",
+      "chooseDelay": "Escolha um intervalo ou digite os minutos",
+      "runningNow": "Executando agora: {name}",
+      "timerSet": "Timer definido: {name}",
+      "runNowFailed": "Falha ao executar agora: {error}",
+      "timerFailed": "Falha no timer: {error}",
+      "timerCancelled": "Timer cancelado",
+      "cancelFailed": "Falha ao cancelar: {error}",
+      "chooseSchedule": "Escolha um agendamento",
+      "minutesRequired": "Digite os minutos a partir de agora",
+      "scheduleTimerSet": "Timer do agendamento definido",
+      "fired": "Agendamento disparado: {name}",
+      "scheduleFailed": "O agendamento falhou: {reason}",
+      "timerFired": "Timer disparado: {name}"
+    },
+    "view": {
+      "everyDay": "Todos os dias",
+      "weekdays": "Dias úteis",
+      "weekends": "Fins de semana",
+      "dayRange": "{from}–{to}",
+      "monthDays": {
+        "one": "Dia {days} de cada mês",
+        "other": "Dias {days} de cada mês"
+      },
+      "everyMinutes": {
+        "one": "a cada minuto",
+        "other": "a cada {count} minutos"
+      },
+      "everyHoursAt": {
+        "one": "a cada hora, no minuto {minute}",
+        "other": "a cada {count} horas, no minuto {minute}"
+      },
+      "everyHourBetween": "a cada hora, das {from} às {to}",
+      "daysAt": "{days} às {times}",
+      "daysEvery": "{days}, {every}",
+      "listAnd": "{list} e {last}",
+      "dayShort": {
+        "sun": "Dom",
+        "mon": "Seg",
+        "tue": "Ter",
+        "wed": "Qua",
+        "thu": "Qui",
+        "fri": "Sex",
+        "sat": "Sáb"
+      },
+      "dayLong": {
+        "sun": "Domingo",
+        "mon": "Segunda-feira",
+        "tue": "Terça-feira",
+        "wed": "Quarta-feira",
+        "thu": "Quinta-feira",
+        "fri": "Sexta-feira",
+        "sat": "Sábado"
+      },
+      "runNever": "Ainda não executado",
+      "runCompleted": "Concluído",
+      "runStarted": "Iniciado",
+      "runAutomationMissing": "Automação ausente",
+      "runAutomationMissingReason": "A automação que este agendamento inicia não existe mais.",
+      "runFailed": "Falhou",
+      "runFailedReason": "A execução falhou.",
+      "runStopped": "Parado",
+      "runStoppedByYou": "Parado por você",
+      "runInterrupted": "Interrompido",
+      "notScheduled": "Não agendado",
+      "dueNow": "Agora",
+      "overdue": "Atrasado",
+      "inSeconds": "em {n} s",
+      "inMinutes": "em {n} min",
+      "inHoursMinutes": "em {h} h {m} min",
+      "inHours": "em {h} h",
+      "inDaysHours": "em {d} d {h} h",
+      "inDays": "em {d} d",
+      "justNow": "agora mesmo",
+      "minutesAgo": "há {n} min",
+      "hoursAgo": "há {n} h",
+      "yesterdayAgo": "ontem",
+      "daysAgo": "há {n} d",
+      "today": "Hoje",
+      "tomorrow": "Amanhã",
+      "yesterday": "Ontem",
+      "dayAt": "{day} às {time}",
+      "tomorrowAt": "Amanhã {time}",
+      "weekdayAt": "{day} {time}",
+      "factCli": "CLI",
+      "factModel": "Modelo",
+      "factContext": "Contexto",
+      "factThinking": "Raciocínio",
+      "factMcp": "Ferramentas MCP",
+      "factAccount": "Conta OpenAI",
+      "factBrowser": "Navegador",
+      "valueDefault": "Padrão",
+      "valueOn": "Ativado",
+      "valueOff": "Desativado",
+      "context1m": "1M de tokens",
+      "contextExtended": "Estendido",
+      "effort": {
+        "none": "Nenhum",
+        "minimal": "Mínimo",
+        "low": "Baixo",
+        "medium": "Médio",
+        "high": "Alto",
+        "xhigh": "Muito alto",
+        "max": "Máximo",
+        "ultra": "Ultra",
+        "thinking": "Raciocínio"
+      }
+    }
   }
 }

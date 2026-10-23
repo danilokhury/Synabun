@@ -11,6 +11,7 @@ import { codexStreamMedia, collectCodexMedia, openCodeMediaPart, ownCodexImages 
 import { browserToolDenial } from './browser-tool-policy.js';
 import { CODEX_BROWSER_POLICY_UNTRUSTED_NOTE, codexBrowserPolicyHook } from './assistant-route-gate-codex.js';
 import { codexWindowsSandbox, codexWindowsSandboxConfig } from './agent-sandbox-elevation.js';
+import { DRAFT_DISALLOWED_TOOLS, DRAFT_TOOLS, draftPreToolUseHook, draftToolDecision, resolveDraftConfinement } from './skills/draft-confinement.js';
 
 function stringEnv(source) {
   const out = {};
@@ -136,6 +137,13 @@ function policyUnsupportedError(provider, policy) {
   return error;
 }
 
+/** A confined run (lib/skills/draft-confinement.js) on a provider that cannot enforce it: it never starts unconfined. */
+function confinementUnsupportedError(provider) {
+  const error = new Error(`${provider} cannot run confined to a drafting folder (only Claude Code can): the run did not start.`);
+  error.code = 'CONFINEMENT_UNSUPPORTED';
+  return error;
+}
+
 /** Final assistant text carried by a Codex SDK stream event, or null. */
 export function codexAgentMessageText(event) {
   if (!event) return null;
@@ -255,7 +263,10 @@ export async function createCodexNativeLoopAdapter(options = {}) {
     // The Admin sandbox setting when the run started (lib/agent-sandbox-elevation.js): the Windows
     // sandbox every `codex exec` of the thread may use. The run keeps it while it lives.
     adminSandbox = false,
+    // A skill-drafting run's confinement: Codex starts MCP servers outside its sandbox, so it never runs one.
+    confinement = null,
   } = options;
+  if (confinement) throw confinementUnsupportedError('Codex');
   const permissionPolicy = normalizePermissionPolicy(rawPolicy);
   const capability = normalizeCapability(rawCapability);
   // "<id>[extended]" (the Assistant's extended-context row) runs <id> with the
@@ -438,10 +449,14 @@ export async function createClaudeNativeLoopAdapter(options = {}) {
     unsetEnv = [],
     // The host's last word on the environment: on Windows the Git Bash it names (lib/git-bash/).
     childEnv = null,
+    // A skill-drafting run (lib/skills/draft-confinement.js): file tools in its folder only, nothing else.
+    confinement = null,
   } = options;
   const permissionPolicy = normalizePermissionPolicy(rawPolicy);
   const capability = normalizeCapability(rawCapability);
-  const askMode = permissionPolicy === 'ask' && typeof permissionBroker?.request === 'function';
+  // Resolved before anything starts: a confinement that cannot be set up stops the run (never an unconfined start).
+  const confined = confinement ? resolveDraftConfinement(confinement, cwd) : null;
+  const askMode = !confined && permissionPolicy === 'ask' && typeof permissionBroker?.request === 'function';
   const input = createInputQueue();
   const abortController = new AbortController();
   let alive = true;
@@ -486,15 +501,21 @@ export async function createClaudeNativeLoopAdapter(options = {}) {
   const denyMessage = askMode
     ? 'Dispatched workers do not use plan mode.'
     : 'This unattended automation cannot wait for interactive input.';
+  // A confined run asks canUseTool for every write (permission mode 'default') on top of its PreToolUse hook, and
+  // loads no settings file: no user hooks (they would ask it for memories it has no tool to write), no allow rules.
+  const bypass = !askMode && !confined;
   const queryOptions = {
     cwd: cwd || process.cwd(),
-    permissionMode: askMode ? 'default' : 'bypassPermissions',
-    ...(askMode ? {} : { allowDangerouslySkipPermissions: true }),
+    permissionMode: bypass ? 'bypassPermissions' : 'default',
+    ...(bypass ? { allowDangerouslySkipPermissions: true } : {}),
     includePartialMessages: !!includePartialMessages,
     systemPrompt: { type: 'preset', preset: 'claude_code' },
-    settingSources: ['user', 'project', 'local'],
+    settingSources: confined ? [] : ['user', 'project', 'local'],
     hooks: {
-      PreToolUse: [{
+      PreToolUse: [
+      // A skill-drafting run: every call, before any permission mode (lib/skills/draft-confinement.js).
+      ...(confined ? [{ hooks: [draftPreToolUseHook(confined)] }] : []),
+      {
         matcher: denyMatcher,
         hooks: [async () => ({
           hookSpecificOutput: {
@@ -516,6 +537,10 @@ export async function createClaudeNativeLoopAdapter(options = {}) {
     env,
     abortController,
     canUseTool: async (toolName, toolInput) => {
+      if (confined) {
+        const reason = draftToolDecision(toolName, toolInput, confined);
+        return reason ? { behavior: 'deny', message: reason } : { behavior: 'allow', updatedInput: toolInput };
+      }
       if (toolName === 'ExitPlanMode') return { behavior: 'deny', message: denyMessage };
       if (toolName === 'AskUserQuestion') {
         if (!askMode) return { behavior: 'deny', message: denyMessage };
@@ -541,10 +566,16 @@ export async function createClaudeNativeLoopAdapter(options = {}) {
       return { behavior: 'allow', updatedInput: toolInput };
     },
   };
-  if (mcpUrl) queryOptions.mcpServers = { SynaBun: { type: 'http', url: mcpUrl, headers } };
+  if (confined) {
+    // No MCP server at all (SynaBun's or the user's: strict), and only the file tools.
+    queryOptions.mcpServers = {};
+    queryOptions.strictMcpConfig = true;
+    queryOptions.tools = [...DRAFT_TOOLS];
+    queryOptions.disallowedTools = [...DRAFT_DISALLOWED_TOOLS];
+  } else if (mcpUrl) queryOptions.mcpServers = { SynaBun: { type: 'http', url: mcpUrl, headers } };
   if (model) queryOptions.model = model;
   if (effort && CLAUDE_EFFORT_LEVELS.includes(effort)) queryOptions.effort = effort;
-  if (capability === 'read-only') queryOptions.disallowedTools = [...CLAUDE_READ_ONLY_DISALLOWED_TOOLS];
+  if (capability === 'read-only' && !confined) queryOptions.disallowedTools = [...CLAUDE_READ_ONLY_DISALLOWED_TOOLS];
   if (Number(maxBudgetUsd) > 0) queryOptions.maxBudgetUsd = Number(maxBudgetUsd);
   if (outputSchema && typeof outputSchema === 'object') queryOptions.outputFormat = { type: 'json_schema', schema: outputSchema };
   // The loop runs the user's own Claude Code: SynaBun carries none, and the SDK
@@ -681,7 +712,7 @@ export async function createClaudeNativeLoopAdapter(options = {}) {
   return {
     identity: () => ({ providerSessionId: sessionId }),
     isAlive: () => alive,
-    describe: () => ({ provider: 'claude-code', permissionPolicy, capability, askMode }),
+    describe: () => ({ provider: 'claude-code', permissionPolicy, capability, askMode, ...(confined ? { confinement: confined.kind, root: confined.root } : {}) }),
     runTurn(prompt, meta = {}) {
       if (!alive) return Promise.reject(new Error('Claude native loop is closed'));
       if (activeTurn) return Promise.reject(new Error('Claude native loop already has an active turn'));
@@ -743,7 +774,10 @@ export async function createOpenCodeNativeLoopAdapter(options = {}) {
     agent = null, effort = null, runMode = 'loop',
     // Image / video creation runs: 'image' | 'video' → each turn returns the files its model generated.
     collectMedia = null,
+    // A skill-drafting run's confinement: OpenCode answers its own permission prompts here, so it never runs one.
+    confinement = null,
   } = options;
+  if (confinement) throw confinementUnsupportedError('OpenCode');
   if (!client?.session?.create || (!client?.session?.promptAsync && !client?.session?.prompt)) {
     throw new Error('OpenCode native loop requires an isolated SDK client');
   }

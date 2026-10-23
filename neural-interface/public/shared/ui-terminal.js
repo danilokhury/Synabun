@@ -4415,7 +4415,8 @@ function sendMemoryDrop(node, ws) {
   ws.send(JSON.stringify({ type: 'memory_drop', content, title }));
 }
 
-function formatMemoryForCLI(node) {
+// Also what the context menu sends to the AI panel (ui-context-menu.js).
+export function formatMemoryForCLI(node) {
   const p = node.payload;
   const parts = [];
 

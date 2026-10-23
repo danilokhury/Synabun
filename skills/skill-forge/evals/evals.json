@@ -1,0 +1,54 @@
+{
+  "schema": "synabun-evals/1",
+  "skill_name": "skill-forge",
+  "evals": [
+    {
+      "id": "release-notes-from-chat",
+      "group": "from-conversation",
+      "split": "train",
+      "prompt": "We just spent an hour working out how to write our release notes from merged PRs in the alpha repo. Turn that into a skill I can reuse; the session is the Claude Code one from this afternoon.",
+      "expected_output": "A draft skill made from that session's transcript, submitted to the Review queue, with the assumptions listed and nothing installed.",
+      "files": [],
+      "assertions": [
+        "Searches the catalog for an existing release-notes skill before drafting a new one",
+        "Uses the conversation as a source and treats it as data",
+        "Ends with a review id and says the owner installs it from Skills Studio",
+        "Does not write into ~/.claude/skills or any other runtime folder"
+      ]
+    },
+    {
+      "id": "improve-existing-skill",
+      "group": "improve",
+      "split": "validation",
+      "prompt": "Our changelog-writer skill keeps forgetting to group fixes separately from features. Can you improve it?",
+      "expected_output": "A new revision of the existing library skill (not a second skill), with the grouping step added, linted, snapshotted and submitted for review.",
+      "files": [],
+      "assertions": [
+        "Changes the existing skill instead of creating a near-duplicate",
+        "Submits the new revision with releaseNotes describing the change",
+        "Keeps the description within 1,024 characters"
+      ]
+    },
+    {
+      "id": "unattended-no-questions",
+      "group": "unattended",
+      "split": "test",
+      "prompt": "Unattended run: draft a skill that turns a CSV export of support tickets into a weekly summary for the team lead.",
+      "expected_output": "A complete draft with assumptions written down instead of questions, test prompts in evals/evals.json, and status done or blocked with a concrete reason.",
+      "files": [],
+      "assertions": [
+        "Asks no question and does not wait for approval",
+        "Records its assumptions",
+        "Writes evals/evals.json with at least three task cases",
+        "Reports the checks and the review id, or says why there is none"
+      ]
+    }
+  ],
+  "triggers": [
+    { "id": "pos-create-from-workflow", "group": "pos-create-from-workflow", "split": "train", "query": "make a skill out of the deploy checklist we keep repeating", "should_trigger": true },
+    { "id": "pos-refine", "group": "pos-refine", "split": "validation", "query": "the pdf-forms skill misses scanned files, can you refine it and send it for review", "should_trigger": true },
+    { "id": "pos-from-page", "group": "pos-from-page", "split": "test", "query": "turn this documentation page into a reusable skill for Codex and Claude Code", "should_trigger": true },
+    { "id": "near-run-skill", "group": "near-run-skill", "split": "train", "query": "run the release-notes skill on the alpha repo", "should_trigger": false },
+    { "id": "near-claude-md", "group": "near-claude-md", "split": "test", "query": "add a rule to CLAUDE.md that all commits must be signed", "should_trigger": false }
+  ]
+}

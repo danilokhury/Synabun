@@ -18,6 +18,7 @@ import { fileURLToPath } from 'node:url';
 import { platform } from 'node:os';
 import { registerStartLauncher } from './lib/start-launcher.js';
 import { mcpCompiler } from './lib/runtime-dependencies.js';
+import { mcpDistMissing } from './lib/mcp-dist.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -72,16 +73,20 @@ function rebuildPty() {
 // ── MCP server build ──
 //
 // A published package carries mcp-server/dist; a fresh checkout compiles it,
-// with the TypeScript of the root's devDependencies.
+// with the TypeScript of the root's devDependencies. Built means dist/index.js
+// and every module it imports (lib/mcp-dist.js): a checkout can hold a tracked
+// dist/index.js whose newer imports git ignores, and then it is built again.
 
 function buildMcpServer() {
-  const distIndex = resolve(__dirname, 'mcp-server', 'dist', 'index.js');
-  if (existsSync(distIndex)) {
+  const { complete, missing } = mcpDistMissing(__dirname);
+  if (complete) {
     ok('MCP server already built');
     return;
   }
 
-  info('Building MCP server from source...');
+  const distIndex = resolve(__dirname, 'mcp-server', 'dist', 'index.js');
+  if (existsSync(distIndex)) info(`MCP server build is incomplete (missing ${missing.slice(0, 3).join(', ')}${missing.length > 3 ? ` and ${missing.length - 3} more` : ''}): building it again...`);
+  else info('Building MCP server from source...');
   const tsc = mcpCompiler(__dirname);
   if (!tsc) {
     fail('MCP server build failed: TypeScript is not installed (run npm install in the package root)');

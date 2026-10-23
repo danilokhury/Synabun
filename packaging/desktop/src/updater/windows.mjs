@@ -20,7 +20,7 @@ import { SWAP_ENV } from './win-swap.mjs';
  *   scriptSource the text of win-swap.mjs (read from the app's own files)
  */
 export function startWindowsSwap({
-  pid = process.pid, instDir, installer, version, previous, stateDir, relaunch, runtimeNode, scriptSource,
+  pid = process.pid, instDir, installer, version, previous, stateDir, relaunch, runtimeNode, scriptSource, installId = null,
   env = process.env, spawn = nodeSpawn, exe = 'SynaBun.exe', now = () => new Date(),
 }) {
   return new Promise((done, fail) => {
@@ -31,7 +31,7 @@ export function startWindowsSwap({
       mkdirSync(swapDir, { recursive: true });
       for (const name of ['swap-failed', 'rolled-back', 'started', 'swapped']) rmSync(join(stateDir, name), { force: true });
       writeFileSync(join(stateDir, 'plan.json'), JSON.stringify({
-        platform: 'win32', appPath: instDir, backup: `${instDir}.previous`, version, previous, relaunch: !!relaunch, installer, at: now().toISOString(),
+        platform: 'win32', appPath: instDir, backup: `${instDir}.previous`, version, previous, relaunch: !!relaunch, installer, installId, at: now().toISOString(),
       }, null, 2) + '\n');
       // A copy of the runtime: the one in the install folder is about to be moved away.
       const node = join(swapDir, 'node.exe');

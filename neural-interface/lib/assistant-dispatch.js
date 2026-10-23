@@ -40,6 +40,7 @@ import { createBudgetPlanner } from './assistant-budget-planner.js';
 import { CLAUDE_ESTIMATE_SOURCE, CODEX_USAGE_KEYS, TOKEN_KEYS, addTokens, codexUsageTokens, createClaudeMeter, createCodexMeter, createOpenCodeMeter, totalTokens, withTotal, zeroTokens } from './assistant-usage.js';
 import { claudeTokensCostUsd } from './assistant-pricing.js';
 import { RemotePolicyError, clampDispatchSpec, getSessionPolicy, readRegisteredProjects } from './remote-policy.js';
+import { limitFromText } from '../public/shared/assistant/asst-limit.js';
 
 export const NATIVE_PROVIDERS = new Set(['claude-code', 'codex', 'opencode']);
 // awaiting_route: an un-routed dispatch held until the user picks a model on
@@ -666,7 +667,7 @@ export function createAssistantDispatcher({
     const cwd = String(spec.cwd || spec.project || PACKAGE_ROOT).trim();
     if (!cwd || !isDirectory(cwd)) throw new DispatchError('CWD_INVALID', `cwd is not a directory: ${cwd}`);
     let permissionPolicy = normalizePermissionPolicy(spec.permissionPolicy);
-    const capability = normalizeCapability(spec.capability || 'full');
+    let capability = normalizeCapability(spec.capability || 'full');
     const notes = [];
     if (provider === 'codex' && permissionPolicy === 'ask') {
       // A route card may move an 'ask' dispatch onto Codex: degrade instead of failing.
@@ -730,6 +731,18 @@ export function createAssistantDispatcher({
     const tags = Array.isArray(spec.tags) ? spec.tags.map((tag) => String(tag).trim()).filter(Boolean).slice(0, 10) : [];
     if ((usesBrowser || usesComputer) && capability === 'full' && !tags.includes('user-authorized-full')) {
       throw new DispatchError('QUARANTINE_VIOLATION', `${usesComputer ? 'Computer-use' : 'Browser-reading'} runs must use capability "read-only" or "workspace" unless tagged "user-authorized-full" by explicit user request.`);
+    }
+    // A skill-drafting run (lib/skills/creation.js): held to its folder by lib/skills/draft-confinement.js, which only
+    // Claude Code enforces (Codex starts MCP servers outside its sandbox, OpenCode answers its own permission prompts).
+    // It reads no page, drives no computer and is never asked anything: refused otherwise, never started unconfined.
+    let confinement = null;
+    if (spec.confinement !== undefined && spec.confinement !== null) {
+      if (spec.confinement?.kind !== 'skill-draft') throw new DispatchError('CONFINEMENT_INVALID', 'Unknown confinement.', { status: 400 });
+      if (provider !== 'claude-code') throw new DispatchError('CONFINEMENT_UNSUPPORTED', `A skill-drafting run runs on Claude Code only: ${provider} cannot be held to its folder.`, { status: 400 });
+      if (usesBrowser || usesComputer) throw new DispatchError('CONFINEMENT_UNSUPPORTED', 'A skill-drafting run reads no page and drives no computer.', { status: 400 });
+      confinement = { kind: 'skill-draft' };
+      capability = 'workspace';
+      permissionPolicy = 'auto';
     }
     if (usesComputer) {
       if (!desktop || !desktop.isSupported?.()) throw new DispatchError('COMPUTER_UNAVAILABLE', 'Computer use is not available on this machine (macOS only).', { status: 409 });
@@ -809,7 +822,7 @@ export function createAssistantDispatcher({
       model, modelContextWindow, pricingModel,
       effort: checked.effort || null, effortCorrection,
       agent, modelInfo, notes,
-      mcpProfile, permissionPolicy, capability, usesBrowser, usesComputer,
+      mcpProfile, permissionPolicy, capability, usesBrowser, usesComputer, confinement,
       codexAccountId: codexAccount?.id || null,
       codexHome: codexAccount ? (codexAccount.home || CODEX_DEFAULT_HOME) : null,
       claudeAccountId: claudeAccount?.id || (provider === 'claude-code' ? 'default' : null),
@@ -1000,6 +1013,17 @@ export function createAssistantDispatcher({
     return Math.max(MIN_SPEND_USD, floorCents(value) / 100);
   }
   /**
+   * The Claude CLI's stop for a run: claudeBackstop() under a budget; a skill-drafting run (confined) also stops at its
+   * own ceiling whatever the session's mode, No limit included (its budget_usd, or what No limit set aside).
+   */
+  function claudeRunCap(entry) {
+    const backstop = claudeBackstop(entry);
+    if (!entry.confinement) return backstop;
+    const own = Number(entry.budgetUsd) || Number(entry.budgetIgnoredUsd) || 0;
+    const caps = [backstop, own > 0 ? own : null].filter((v) => Number(v) > 0);
+    return caps.length ? Math.min(...caps) : null;
+  }
+  /**
    * After money moved in a session: one warning at 80 % of the budget (per budget amount), and at
    * the budget every live, queued and held run of the session stops. Nothing under No limit.
    * Returns the session's budget view.
@@ -1060,6 +1084,7 @@ export function createAssistantDispatcher({
       codexAccountId: spec.codexAccountId, codexHome: spec.codexHome, claudeAccountId: spec.claudeAccountId, claudeConfigDir: spec.claudeConfigDir,
       cwd: spec.cwd, project: spec.project, mcpProfile: spec.mcpProfile,
       permissionPolicy: spec.permissionPolicy, capability: spec.capability, usesBrowser: spec.usesBrowser, usesComputer: !!spec.usesComputer,
+      confinement: spec.confinement || null,
       title: spec.title, task: spec.task, context: spec.context, tags: spec.tags,
       maxMinutes: spec.maxMinutes, budgetUsd: spec.budgetUsd ?? null, freeModel: spec.freeModel === true, idleTimeoutMs: spec.idleTimeoutMs, maxTurns: spec.maxTurns,
       outputSchema: spec.outputSchema, focus: spec.focus, workflowId: spec.workflowId, parentRunId: spec.parentRunId,
@@ -1430,17 +1455,51 @@ export function createAssistantDispatcher({
       permissionPolicy: to.provider === 'codex' && entry.permissionPolicy === 'ask' ? 'restricted' : entry.permissionPolicy,
       usesBrowser: entry.usesBrowser, usesComputer: entry.usesComputer, maxMinutes: entry.maxMinutes, budgetUsd: entry.budgetUsd,
       outputSchema: entry.outputSchema, taskClass: entry.taskClass || null,
+      // A skill-drafting run escalates confined or not at all (normalizeSpec refuses another provider).
+      ...(entry.confinement ? { confinement: entry.confinement } : {}),
     }, { assistantSessionId: entry.assistantSessionId, origin: 'ui', brief: entry.brief || null });
     const child = entries.get(result?.run?.runId);
     if (child) { child.escalationDepth = (Number(entry.escalationDepth) || 0) + 1; child.escalatedFrom = runId; }
     entry.notes.push(`${retry ? 'retried on' : 'escalated to'} ${to.provider}/${to.model || 'default'} as ${result?.run?.runId || '?'}`);
+    if (entry.limit && typeof entry.limit === 'object') entry.limit = { ...entry.limit, retriedAt: iso(now()) };
     emit(entry, 'escalated', { childRunId: result?.run?.runId || null });
     return result;
   }
   function computeEscalation(entry, stateOverride = null) {
     if (!router?.escalationFor) return null;
-    try { return router.escalationFor({ run: stateOverride ? { ...entry, state: stateOverride } : entry, depth: Number(entry.escalationDepth) || 0 }) || null; }
+    let found = null;
+    try { found = router.escalationFor({ run: stateOverride ? { ...entry, state: stateOverride } : entry, depth: Number(entry.escalationDepth) || 0 }) || null; }
     catch { return null; }
+    // A skill-drafting run is confined to Claude Code: no escalation is offered onto another provider.
+    if (found && entry.confinement && found.to?.provider && found.to.provider !== 'claude-code') return null;
+    return found;
+  }
+  /**
+   * A run a provider's usage limit stopped (failed, or a turn that ended blocked or without a result):
+   * entry.limit = { provider, accountId, resetsAt (ISO | null), source, detectedAt } for the panel's
+   * waiting card and the brain's mailbox line, else null. The reset is the account's own usage window
+   * when SynaBun reads one (account-usage.js), else the time the worker's message names (asst-limit.js).
+   */
+  function noteLimit(entry) {
+    const prev = entry.limit && typeof entry.limit === 'object' ? entry.limit : null;
+    const text = [entry.error, entry.lastResult?.summary, entry.lastResult?.question, lastParagraph(entry.lastText), ...(entry.notes || []).slice(-3)]
+      .filter(Boolean).map((line) => String(line)).join('\n');
+    const read = limitFromText(text, { now: now() });
+    let usage = null;
+    try { usage = accountUsage?.peek?.(entry.provider, entry.accountId || 'default', { stale: true }) || null; } catch { usage = null; }
+    const limited = usage?.limited === true;
+    if (!read && !limited) { entry.limit = null; return null; }
+    const accountReset = Date.parse(usage?.resetsAt || '');
+    const fromAccount = Number.isFinite(accountReset) && accountReset > now() && (limited || read?.resetsAt == null);
+    const resetsAt = fromAccount ? accountReset : read?.resetsAt ?? null;
+    entry.limit = {
+      provider: entry.provider || null,
+      accountId: entry.accountId || 'default',
+      resetsAt: Number.isFinite(resetsAt) ? new Date(resetsAt).toISOString() : null,
+      source: fromAccount ? 'account' : resetsAt != null ? 'message' : null,
+      detectedAt: prev?.detectedAt || iso(now()),
+    };
+    return entry.limit;
   }
 
   // ── Jev (worker-outcome, rider worker-claim) ────────────────────────────────
@@ -1518,7 +1577,7 @@ export function createAssistantDispatcher({
    * for it — at most the surface timeout. Without Jev it is emitted at once.
    */
   function emitFailed(entry, evidenceAcc = null) {
-    const done = () => { delete entry.judging; entry.escalation = computeEscalation(entry); emit(entry, 'failed'); };
+    const done = () => { delete entry.judging; noteLimit(entry); entry.escalation = computeEscalation(entry); emit(entry, 'failed'); };
     if (!judge?.workerOutcome || budgetStopReason(entry.completionReason)) { done(); return Promise.resolve(); }
     entry.judging = true;
     const evidence = evidenceSnapshot(evidenceAcc);
@@ -1541,6 +1600,7 @@ export function createAssistantDispatcher({
         }
       } catch { /* the failure stays unjudged */ }
       delete entry.judging;
+      noteLimit(entry);
       entry.escalation = computeEscalation(entry);
       if (judged?.logId) {
         try { judge.annotate?.(judged.logId, { run: entry.runId, turn: null, source: 'failure', retried: false, status: 'failed', cause: judged.cause || null, claim: null, escalation: entry.escalation?.kind || null, judged: view, applied: { cause: !!judged.cause } }); } catch {}
@@ -1605,7 +1665,9 @@ export function createAssistantDispatcher({
       driverType: 'native', runtimeType: 'native', surface: 'sidepanel', runId: entry.runId, cwd: entry.cwd,
       runMode: 'task', assistantSessionId: entry.assistantSessionId, permissionPolicy: entry.permissionPolicy,
       // A Claude worker's CLI stop (--max-budget-usd): a backstop under a budget, none under No limit.
-      capability: entry.capability, budgetUsd: entry.budgetUsd, maxBudgetUsd: entry.provider === 'claude-code' ? claudeBackstop(entry) : null,
+      capability: entry.capability, budgetUsd: entry.budgetUsd, maxBudgetUsd: entry.provider === 'claude-code' ? claudeRunCap(entry) : null,
+      // A skill-drafting run's confinement (lib/skills/draft-confinement.js): its adapter enforces it, or refuses to start.
+      confinement: entry.confinement || null,
       idleTimeoutMs: entry.idleTimeoutMs, maxTurns: entry.maxTurns, outputSchema: entry.outputSchema, project: entry.project,
       title: entry.title, tags: entry.tags, workflowId: entry.workflowId, parentRunId: entry.parentRunId,
       // The user's brief after a clarification (assistant-task-prompt.js briefBlock).
@@ -1904,6 +1966,8 @@ export function createAssistantDispatcher({
       // itself stays warm for follow-ups; the brain or the user decides). A
       // status Jev read from the message is a usable result.
       entry.escalation = parsed.status === 'blocked' || (!parsed.found && parsed.source !== 'jev') ? computeEscalation(entry, 'idle') : null;
+      // A provider's usage limit that stopped it: when it resets (the panel's waiting card counts to it).
+      if (parsed.status === 'blocked' || !parsed.found) noteLimit(entry); else entry.limit = null;
       if (judged?.logId) {
         try {
           judge.annotate?.(judged.logId, {
@@ -2822,7 +2886,7 @@ export function createAssistantDispatcher({
       processQueue().catch(() => {});
       return;
     }
-    if (entry.state === 'failed' || entry.lastResult?.status === 'blocked') entry.escalation = computeEscalation(entry);
+    if (entry.state === 'failed' || entry.lastResult?.status === 'blocked') { noteLimit(entry); entry.escalation = computeEscalation(entry); }
     emit(entry, entry.state);
     // A memory already stored for the run (by the worker or the brain) is the run's memory.
     if (memory?.rememberDispatch && !syncMemory(entry, { announce: true }) && (entry.state === 'completed' || (entry.state === 'stopped' && entry.lastResult))) {

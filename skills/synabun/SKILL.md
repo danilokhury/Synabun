@@ -20,11 +20,12 @@ You are the SynaBun assistant hub. The user has invoked `/synabun`.
 
 ## Runtime Compatibility
 
-- **Interactive choice prompt** means an interactive option card the user clicks — not plain text choices.
-  - **Claude Code (REQUIRED path):** `AskUserQuestion` is a deferred tool — its schema is not loaded by default. Before the first prompt in this skill, call `ToolSearch` with query `select:AskUserQuestion` to load it, then call `AskUserQuestion` with 2-4 options. NEVER write the choices as plain text — the sidepanel will render text as static markdown, not an interactive card.
-  - **OpenCode (REQUIRED path):** call the native `question` tool — the sidepanel renders it as an interactive card via the `/question.asked` event. NEVER write the choices as plain text.
-  - **Codex (REQUIRED path):** call `request_user_input` — the sidepanel renders it as an interactive card. NEVER write the choices as plain text.
-  - **Other runtimes:** only when no interactive tool exists, fall back to a concise plain-text multiple-choice question and wait for the user's reply.
+- **Interactive choice prompt** means a question card the user answers by clicking, asked with the question tool this runtime actually has:
+  - **Claude Code:** `AskUserQuestion` is a deferred tool. Before the first prompt in this skill, call `ToolSearch` with query `select:AskUserQuestion` to load it, then call `AskUserQuestion` with 2-4 options.
+  - **OpenCode:** the native `question` tool. **Codex:** `request_user_input`, or SynaBun `choice` where that is not offered (Default mode). **A runtime with only SynaBun's tools:** SynaBun `choice`.
+  - Whenever one of these tools is available, never write the choices as plain text: a side panel shows text as static markdown, not as a card.
+  - **No question tool at all:** ask a short plain-text multiple-choice question and wait for the reply.
+  - **Nobody can answer** (an unattended or dispatched run, a loop, a schedule, a worker): ask nothing. Take the default the step names, or the most conservative option; when a step cannot be done without the user, stop and say what it needs.
 - **Load/read a module file** means: use whatever local file-reading mechanism exists in the current runtime. Do not depend on a tool literally being named `Read`.
 - **Category management** means: use the runtime's available category tool surface, whether that is split helpers such as `category_list` / `category_create` or a unified `category` tool with actions like `list` / `create`.
 
@@ -44,6 +45,8 @@ Parse `$ARGUMENTS` to determine the path:
 - If args start with `search` or `recall` or `find` → jump to **Step 4: Search Memories**, using the rest as the initial query.
 
 **Interactive menu** (args are empty or don't match any above):
+
+If nobody can answer (see Runtime Compatibility), show no menu: name the commands in one line (`idea`, `audit`, `memorize`, `changelog`, `schedule`, `health`, `search`) and stop.
 
 Output a single line:
 
@@ -172,7 +175,7 @@ This is handled inline (no module needed).
 
    If user picks a preset, use that as the recall query. If they type custom text via "Other", use that.
 
-2. Call `recall` with the query, `limit: 10`.
+2. Call `recall` with the query and `format: "compact"`. Leave `limit` and `min_score` unset: the user's configured recall settings apply.
 
 3. Present results in a numbered list with clearly labeled fields. Convert dates from ISO/relative to **MM/DD/YYYY** format. Write a specific, descriptive summary (not just the title — explain what was actually done or decided):
    ```
@@ -194,7 +197,7 @@ This is handled inline (no module needed).
    - **Search again** — "Try a different query"
    - **Done** — "Found what I needed"
 
-   If "View full" → ask which number, call `recall` to get full content, display it, then offer actions:
+   If "View full" → ask which number, call `memories` with `action: "get"` and that memory's full UUID, display it, then offer actions:
    - **Update** — "Edit this memory's content via reflect"
    - **Delete** — "Move this memory to trash (recoverable)"
    - **Back** — "Return to results"

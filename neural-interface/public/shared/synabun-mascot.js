@@ -39,6 +39,11 @@
  *   one-shot (success, error, blocked) has played and held. The same pose with
  *   a new count or ticks keeps its loop running. `opts.unlimited` selects the
  *   budget pose's relaxed infinity variant; project peeks into a folder.
+ *   The card poses (`MASCOT_CARD_POSES`, the Assistant's follow-ups and
+ *   question cards): `present` (a warm smile toward what it offers), `pick`
+ *   (the plan's clipboard, one tick per picked item: `opts.ticks`) and `ask`
+ *   (a tilted head and a question mark); all three are still between blinks
+ *   and look where look() points.
  * - `react(name)` — `MASCOT_REACTIONS`: hop (spring, at most one per 600 ms),
  *   wince, nod, pop (plan: pops the newest tick; ticks the next box too
  *   unless setPose passed `ticks`), startle, pulse, click
@@ -82,7 +87,9 @@ export const MASCOT_VIEWBOX = '0 0 280 140';
 /** One pose per tool kind (shared with the activity rack's kind ids). */
 export const MASCOT_KINDS = Object.freeze(['shell', 'read', 'edit', 'search', 'web', 'subagent', 'plan', 'memory', 'runs', 'computer', 'think', 'mcp']);
 export const MASCOT_STATES = Object.freeze(['idle', 'sleep', 'watch', 'wait', 'success', 'error', 'blocked', 'offline']);
-export const MASCOT_POSES = Object.freeze([...MASCOT_KINDS, ...MASCOT_STATES, 'project', 'budget']);
+/** The Assistant's cards the mascot presents (asst-ask.js): next steps and confirms, decisions, questions. */
+export const MASCOT_CARD_POSES = Object.freeze(['present', 'pick', 'ask']);
+export const MASCOT_POSES = Object.freeze([...MASCOT_KINDS, ...MASCOT_STATES, 'project', 'budget', ...MASCOT_CARD_POSES]);
 export const MASCOT_REACTIONS = Object.freeze(['hop', 'wince', 'nod', 'pop', 'startle', 'pulse', 'click']);
 
 /** The character's SVG. Colour comes from `currentColor` (the mouth at 25 %). */
@@ -148,6 +155,7 @@ export function mascotCameoSvg({ className = '' } = {}) {
 const PROP_BOX = Object.freeze({
   project: [204, 77, 62, 48],
   budget: [212, 65, 54, 60],
+  ask: [210, 0, 46, 66],
   shell: [144, 116, 42, 26], // the last keycap and the caret
   read: [65, 20, 150, 88],
   edit: [188, 93, 56, 44],
@@ -340,6 +348,40 @@ const POSES = {
       f.mouth = mouth(o.unlimited ? 48 : 34, o.unlimited ? 20 : 11);
       gaze(f, o.look, { x: 16, y: 10 });
       f.prop = { name: 'budget', lift, unlimited: o.unlimited };
+      return f;
+    },
+  },
+  // Cards the mascot presents (asst-ask.js): still between blinks, the gaze on the option the host points at.
+  present: { // next steps, a confirm: a warm smile, the head turned a little toward what it offers
+    motion: 'still', blinks: true, look: 70,
+    frame(t, o) {
+      const f = blankFrame();
+      f.eyes = [eye(0, 2, 1, 0.94, -2), eye(0, 2, 1, 0.98, 2)];
+      f.mouth = mouth(40, 18, 0, -1);
+      f.face.rot = -2;
+      return gaze(f, o.look, { x: 16, y: 10 });
+    },
+  },
+  pick: { // decisions: the plan's clipboard ticks a box per picked item (opts.ticks)
+    motion: 'still', blinks: true, look: 70,
+    frame(t, o) {
+      const f = blankFrame();
+      f.eyes = [eye(0, 1, 1.02, 0.9, 0), eye(0, 1, 0.98, 0.86, 2)];
+      f.mouth = mouth(30, 8);
+      gaze(f, o.look, { x: 14, y: 9 });
+      f.prop = { name: 'plan', ticks: o.ticks, pop: 1 };
+      return f;
+    },
+  },
+  ask: { // a question: the head tilts, one eye wider, a small round mouth, a question mark beside it
+    motion: 'still', blinks: true, look: 70,
+    frame(t, o) {
+      const f = blankFrame();
+      f.face.rot = 5;
+      f.eyes = [eye(0, -2, 1.02, 1.06, 0), eye(0, -1, 0.98, 0.9, 3)];
+      f.mouth = mouth(16, 7, 2, 1, 0, 0.3);
+      gaze(f, o.look, { x: 14, y: 9 });
+      f.prop = { name: 'ask' };
       return f;
     },
   },
@@ -920,6 +962,12 @@ const PROPS = {
         put(dot, 'fill-opacity', n(0.25 + 0.55 * (q > 0 && q < 1 ? Math.sin(Math.PI * q) : 0)));
       });
     },
+  },
+  ask: { // a question mark beside the face, in the outline props' weight
+    markup: () => '<path d="M216,22 C216,10 225,4 233,4 C242,4 250,10 250,19 C250,28 243,32 236,36 C232,38 231,41 231,46" fill="none" stroke="currentColor" stroke-opacity=".7" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>'
+      + '<rect x="227.5" y="54" width="7" height="8" rx="3.5" fill="currentColor" fill-opacity=".7"/>',
+    refs: () => ({}),
+    update() {},
   },
   mcp: { // a two-prong plug on its cord
     markup: () => '<path d="M41,106 C41,120 30,122 22,134" fill="none" stroke="currentColor" stroke-opacity=".4" stroke-width="3" stroke-linecap="round"/>'

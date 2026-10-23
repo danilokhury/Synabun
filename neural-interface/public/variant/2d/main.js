@@ -24,7 +24,7 @@ import { initPanelSystem, initPinToggle, clampPanelsToViewport } from '../../sha
 import { initLoading, showLoadingError, hideLoading, rememberHealth } from '../../shared/ui-loading.js';
 import { initNavbar } from '../../shared/ui-navbar.js';
 import { initMenubar } from '../../shared/ui-menubar.js';
-import { initSearch } from '../../shared/ui-search.js';
+import { initSearch, clearSearch } from '../../shared/ui-search.js';
 import { buildCategorySidebar, initSidebar, loadCategories } from '../../shared/ui-sidebar.js';
 import { openMemoryCard, restoreOpenCards, initDetailPanel, setDetailCallbacks } from '../../shared/ui-detail.js';
 import { initSettings, restoreInterfaceConfig, restoreSkin, loadIfaceConfig } from '../../shared/ui-settings.js';
@@ -60,6 +60,7 @@ import { initAutomationStudio } from '../../shared/ui-automation-studio.js';
 import { initSchedulesStudio } from '../../shared/ui-schedules-studio.js';
 import { initNativeLoopRouter } from '../../shared/ui-native-loop-router.js';
 import { initCommandRunner } from '../../shared/ui-command-runner.js';
+import { initAppContextMenu, registerContextMenuArea } from '../../shared/ui-context-menu.js';
 import { stopBackground } from './background.js';
 import { initMinimap, drawMinimap, toggleMinimap, isMinimapVisible, forceHideMinimap, restoreMinimap } from './minimap.js';
 import { initLasso, clearLasso } from './lasso.js';
@@ -257,6 +258,34 @@ on('layout:reset', () => {
 on('layout:frame', () => {
   const g = getGraph();
   if (g) g.zoomToFit(400, 60);
+});
+// The 3D map's Frame whole map key (H by default) fits the graph here: the same function as a double-click on its empty space.
+registerAction('map-frame-all', () => emit('layout:frame'));
+
+// The app's right-click menu on the graph's empty space and the minimap (a card keeps its own menu, graph.js):
+// the graph's rows, each through what the page already does (View › Minimap / Region Glow, the navbar's 3D link).
+registerContextMenuArea({
+  id: 'graph-2d',
+  match(el) {
+    if (!el?.closest?.('#canvas-main, #minimap')) return null;
+    return {
+      kind: 'map',
+      map: {
+        variant: '2d',
+        options: { minimap: isMinimapVisible(), regionGlow: gfx.regionGlowOpacity > 0 },
+        searching: !!state.searchResults,
+        selected: state.multiSelected.size > 0,
+        label: null,
+      },
+      act: {
+        frameAll: () => emit('layout:frame'),
+        toggleOption: (key) => document.getElementById(key === 'minimap' ? 'menu-minimap' : 'menu-region-glow')?.click(),
+        clearSearch: () => clearSearch(),
+        clearSelection: () => clearMultiSelect(),
+        switchView: () => document.getElementById('nav-3d-link')?.click(), // keeps the selected memory, as the navbar does
+      },
+    };
+  },
 });
 
 // Stats update
@@ -466,6 +495,7 @@ initWhiteboard();
 initCostWidget();
 initGames();
 initTutorial();
+initAppContextMenu(); // a graph card keeps its own menu (context-menu.js); everything else gets the app's
 
 // View switch handler
 {

@@ -159,6 +159,100 @@
     }
   },
 
+  "contextMenu": {
+    "label": "Context menu",
+    "page": {
+      "back": "Back",
+      "forward": "Forward",
+      "reload": "Reload",
+      "copyUrl": "Copy page URL",
+      "fullscreen": "Full screen",
+      "exitFullscreen": "Exit full screen",
+      "submenu": "Page"
+    },
+    "selection": {
+      "copy": "Copy",
+      "search": "Search memories for “{text}”",
+      "sendToAi": "Send to AI panel"
+    },
+    "link": {
+      "open": "Open link in new tab",
+      "copy": "Copy link address"
+    },
+    "image": {
+      "open": "Open image in new tab",
+      "copy": "Copy image address"
+    },
+    "memory": {
+      "open": "Open memory",
+      "linked": "Show linked memories",
+      "copyId": "Copy memory ID",
+      "sendToAi": "Send to AI panel",
+      "select": "Add to selection",
+      "deselect": "Remove from selection",
+      "goToIsland": "Go to {name}",
+      "closeCard": "Close card"
+    },
+    "map": {
+      "goTo": "Go to {name}",
+      "frameAll": "Frame whole map",
+      "options": "Map options",
+      "neighbors": "Neighbours on select",
+      "recency": "Recency glow",
+      "grid": "Chart grid",
+      "clearSearch": "Clear search",
+      "clearSelection": "Clear selection",
+      "switchTo2d": "Switch to 2D view",
+      "switchTo3d": "Switch to 3D view",
+      "minimap": "Minimap",
+      "regionGlow": "Region glow"
+    },
+    "focus": {
+      "tool": "Tool",
+      "tools": {
+        "select": "Select",
+        "text": "Text",
+        "list": "List",
+        "arrow": "Arrow",
+        "shape": "Shape",
+        "pen": "Pencil",
+        "section": "Wireframe section"
+      },
+      "multiSelect": "Multi-select",
+      "undo": "Undo",
+      "redo": "Redo",
+      "selectAll": "Select all",
+      "exit": "Exit focus mode"
+    },
+    "app": {
+      "open": "Open",
+      "search": "Search memories",
+      "shortcuts": "Keyboard shortcuts",
+      "settings": "Settings"
+    },
+    "open": {
+      "assistant": "Assistant",
+      "claudePanel": "Claude Code panel",
+      "codexPanel": "Codex panel",
+      "opencodePanel": "OpenCode panel",
+      "terminal": "New terminal",
+      "claudeTerminal": "Claude Code terminal",
+      "browser": "Browser",
+      "fileExplorer": "File Explorer",
+      "memoryExplorer": "Memory Explorer",
+      "categories": "Categories",
+      "focusMode": "Focus mode",
+      "skills": "Skills Studio",
+      "automations": "Automation Studio",
+      "schedules": "Schedules",
+      "styleGuide": "Style Guide",
+      "commandRunner": "Command Runner",
+      "imageGallery": "Image gallery",
+      "notifications": "Notifications",
+      "help": "Help"
+    }
+  },
+
   "search": {
     "placeholder": "Search memories...",
     "searching": "Searching...",
@@ -2892,10 +2986,6 @@
           "label": "All Automation tools",
           "help": "Switches every tool of this group on or off at once."
         },
-        "per007": {
-          "label": "All Leonardo tools",
-          "help": "Switches every tool of this group on or off at once."
-        },
         "per008": {
           "label": "All Images tools",
           "help": "Switches every tool of this group on or off at once."
@@ -4335,7 +4425,50 @@
       "skills": {
         "installFor": "Install /{skill} for {assistant}",
         "targets": "Assistants that have /{skill}",
-        "none": "No skills are registered."
+        "none": "No skills are registered.",
+        "folders": {
+          "title": "Skill folders",
+          "loading": "Reading the skill folders…",
+          "unavailable": "The server that is running does not know about skill folders yet: restart SynaBun to see them here.",
+          "bridgesNone": "Every skill SynaBun installed for Codex and OpenCode has a skill folder of its own. Nothing to move.",
+          "bridgesOne": "One skill still reaches Codex or OpenCode through an old bridge file. Review the move to give it a skill folder of its own: the bridge is kept in the move’s record, and the move can be undone.",
+          "bridgesMany": "{count} skills still reach Codex or OpenCode through old bridge files. Review the move to give each a skill folder of its own: the bridges are kept in the move’s record, and the move can be undone.",
+          "othersOne": "One other file in those prompt and command folders is not SynaBun’s bridge (or was changed since SynaBun wrote it): it is never moved.",
+          "othersMany": "{count} other files in those prompt and command folders are not SynaBun’s bridges (or were changed since SynaBun wrote them): they are never moved.",
+          "review": "Review the move",
+          "move": "Move them",
+          "cancel": "Cancel",
+          "undo": "Undo the last move",
+          "stepMigrate": "{runtime} {name}: becomes a skill folder at {destination}; the bridge file is removed once it is saved in the move’s record.",
+          "stepLeave": "{runtime} {name}: left as it is. {why}",
+          "stepBlocked": "{runtime} {name}: cannot move yet. {why}",
+          "planChanged": "The bridges or their skill folders changed since the plan was shown. Nothing was moved: here is the new plan.",
+          "nothing": "Nothing to move: no bridge of SynaBun’s is left to give a skill folder.",
+          "moved": "Moved. The old bridge files are kept in the move’s record ({id}); Undo the last move puts them back.",
+          "movedPartly": "Moved in part. Not moved: {details}",
+          "undone": "The move is undone: the bridge files are back, and the skill folders it made are removed.",
+          "undonePartly": "Undone in part: {details}",
+          "failed": "That did not work: {message}",
+          "sharedLabel": "Shared skills folder (~/.agents/skills)",
+          "sharedHelp": "Off: SynaBun installs a skill into each assistant’s own folder. On: an install can also go into ~/.agents/skills, which Codex and OpenCode both read.",
+          "sharedOn": "On",
+          "sharedOff": "Off"
+        },
+        "chip": {
+          "installed": "/{skill} is installed for {assistant}. Click to remove it.",
+          "native": "/{skill} is installed for {assistant} as a skill folder of its own. Click to remove it.",
+          "bridge": "/{skill} reaches {assistant} through an old bridge file. Click to remove it, or move it to a skill folder under Skill folders.",
+          "other": "{assistant} has a /{skill} that SynaBun did not install. Click to install SynaBun’s: you are asked before anything is replaced.",
+          "shared": "/{skill} reaches {assistant} through the shared ~/.agents/skills folder (Codex and OpenCode both read it). Click to remove it from there.",
+          "otherShared": "{assistant} reads a /{skill} in ~/.agents/skills that SynaBun did not install: another copy would list it twice.",
+          "installedShared": "/{skill} already reaches {runtime} through the shared ~/.agents/skills folder: nothing was added.",
+          "installedNative": "/{skill} is installed for {runtime} as a skill folder of its own.",
+          "installedReload": "/{skill} is installed for {runtime}. Its skills folder is new: run /reload-skills in sessions that are already open.",
+          "installedNewSession": "/{skill} is installed for {runtime}: start a new {runtime} session to use it.",
+          "installedBridgeLeft": "/{skill} is installed for {runtime} as a skill folder of its own. Its old bridge file is still there: move it under Skill folders."
+        },
+        "openStudio": "Open Skills Studio",
+        "openStudioHelp": "Edit, version and publish skills, agents and commands, and review what the Assistant makes, in Skills Studio."
       },
       "permissions": {
         "all": "All",
@@ -5858,7 +5991,7 @@
               "morelogin_tool_server": "mcp, add to assistants"
             },
             "tool_access": {
-              "skills": "slash commands, install, leonardo, synabun",
+              "skills": "slash commands, install, synabun",
               "tool_permissions": "allow, approve, auto approve, ask"
             },
             "automations": {
@@ -6303,6 +6436,1533 @@
     }
   },
 
+  "skillsStudio": {
+    "guestDisabled": "Skills Studio is turned off for guests by the host.",
+    "title": "Skills Studio",
+    "shell": {
+      "collapseRail": "Show or hide the side rail",
+      "dock": "Dock beside the side panels",
+      "dockHelp": "Dock: fill the work area beside the side panels, so a conversation stays usable next to the Studio",
+      "dim": "Dim the background",
+      "dimHelp": "Dim the background: the page behind waits until the Studio closes",
+      "close": "Close Skills Studio",
+      "docked": "Docked beside the side panels.",
+      "undocked": "Floating window.",
+      "dimmed": "Background dimmed.",
+      "notDimmed": "Background not dimmed.",
+      "loading": "Reading the skills…",
+      "olderServer": "This server is older than this page: restart SynaBun.",
+      "olderServerTitle": "Restart SynaBun to use this Skills Studio",
+      "olderServerHelp": "The page was updated but the server is still the older one, which has no Skills Service. Restart SynaBun (Apps → Restart Server), then open Skills Studio again.",
+      "retry": "Try again"
+    },
+    "rail": {
+      "library": "Library",
+      "review": "Review",
+      "create": "Create",
+      "waiting": "waiting for you",
+      "viewsTitle": "Views",
+      "projectsTitle": "Projects",
+      "runtimesTitle": "Runtimes",
+      "views": {
+        "attention": "Needs attention",
+        "mine": "Mine",
+        "synabun": "From SynaBun",
+        "plugins": "Plugins",
+        "account": "Claude account",
+        "drafts": "Drafts"
+      },
+      "runtimeState": {
+        "ready": "ready",
+        "bridge": "old bridge",
+        "empty": "no skills yet",
+        "unknown": "not found"
+      }
+    },
+    "runtime": {
+      "claude": "Claude Code",
+      "codex": "Codex",
+      "opencode": "OpenCode",
+      "agents": "Shared folder"
+    },
+    "runtimeState": {
+      "installed": "installed",
+      "outdated": "an older version is installed",
+      "present": "in a folder it reads",
+      "bridge": "reached through an old bridge",
+      "none": "not installed"
+    },
+    "kind": {
+      "skill": "Skill",
+      "agent": "Agent",
+      "command": "Command",
+      "commandLegacy": "Command · legacy"
+    },
+    "source": {
+      "mine": "All projects",
+      "project": "Project",
+      "synabun": "From SynaBun",
+      "plugin": "Plugin",
+      "account": "Claude account",
+      "system": "Runtime's own",
+      "shared": "Shared (~/.agents)",
+      "library": "Library",
+      "legacyBridge": "Old bridge",
+      "pluginCopies": {
+        "one": "{plugin} · {count} cached copy",
+        "other": "{plugin} · {count} cached copies"
+      },
+      "accounts": {
+        "one": "{count} account",
+        "other": "{count} accounts"
+      },
+      "libraryVersions": {
+        "one": "{count} version",
+        "other": "{count} versions"
+      },
+      "libraryDraft": "draft, no version yet",
+      "installedCopies": {
+        "one": "{count} installed copy",
+        "other": "{count} installed copies"
+      }
+    },
+    "health": {
+      "not-text": "Not UTF-8 text",
+      "invalid": {
+        "one": "{count} problem",
+        "other": "{count} problems"
+      },
+      "warnings": {
+        "one": "{count} warning",
+        "other": "{count} warnings"
+      },
+      "update": "Update available",
+      "shadowed": "Shadowed",
+      "shadowedWhy": "{runtime} uses another skill of this name instead of this one.",
+      "twice": "Defined twice",
+      "twiceWhy": "{runtime} lists two skills of this name: a model may pick either.",
+      "sameDescription": "Same description",
+      "sameDescriptionWhy": "The same description as {names}: a model cannot tell them apart.",
+      "bridge": "Old bridge",
+      "review": "In review",
+      "draft": "Draft",
+      "readonly": "Read-only",
+      "ok": "No problems"
+    },
+    "library": {
+      "title": "Library",
+      "searchLabel": "Search skills, agents and commands",
+      "searchPlaceholder": "Search skills, agents, commands…",
+      "new": "New",
+      "filter": {
+        "kind": "Kind",
+        "source": "Source",
+        "runtime": "Runtime",
+        "health": "Health",
+        "kindAll": "All kinds",
+        "sourceAll": "All sources",
+        "runtimeAll": "All runtimes",
+        "healthAll": "Any health"
+      },
+      "healthFilter": {
+        "attention": "Needs attention",
+        "invalid": "Has problems",
+        "warnings": "Has warnings",
+        "update": "Update available",
+        "duplicates": "Duplicates and shadowing",
+        "drafts": "Drafts",
+        "readonly": "Read-only",
+        "ok": "No problems found"
+      },
+      "sort": {
+        "label": "Sort",
+        "attention": "Needs attention first",
+        "name": "Name",
+        "updated": "Recently changed",
+        "kind": "Kind",
+        "source": "Source"
+      },
+      "select": "Select {name}",
+      "selectAll": "Select every row shown",
+      "noDescription": "No description",
+      "unknownDate": "Not known",
+      "unknownDateRestart": "Not known yet: restart SynaBun to see when it changed",
+      "updatedRestart": "Restart SynaBun to see when each one last changed.",
+      "caption": "Skills, agents and commands",
+      "col": {
+        "name": "Name",
+        "kind": "Kind",
+        "source": "Source",
+        "health": "Health",
+        "runtimes": "Runtimes",
+        "updated": "Updated"
+      },
+      "shown": "{shown} of {total} shown",
+      "attentionCount": {
+        "one": "{count} needs attention",
+        "other": "{count} need attention"
+      },
+      "diagnostics": {
+        "one": "{count} folder could not be read",
+        "other": "{count} folders could not be read"
+      },
+      "truncated": "The scan stopped at its limits: some folders were not read",
+      "loading": "Reading every runtime folder…",
+      "loadFailed": "The skills could not be read",
+      "emptyTitle": "No skills yet",
+      "emptyHelp": "Skills, agents and commands from Claude Code, Codex and OpenCode show here. Create the first one, or import a bundle.",
+      "noMatchTitle": "Nothing matches these filters",
+      "noMatchHelp": "Clear the filters or search for other words.",
+      "clearFilters": "Clear filters",
+      "kept": {
+        "one": "{count} unsaved change was kept from an earlier session ({names}).",
+        "other": "{count} unsaved changes were kept from an earlier session ({names})."
+      },
+      "keptReopen": "Reopen",
+      "keptDiscard": "Discard",
+      "keptMore": {
+        "one": "{count} more skill has kept changes: open it from the Library.",
+        "other": "{count} more skills have kept changes: open them from the Library."
+      },
+      "keptDiscardTitle": "Discard the kept changes?",
+      "keptDiscardHelp": {
+        "one": "The unsaved change kept from an earlier session will be gone. The files stay as they are.",
+        "other": "The {count} unsaved changes kept from an earlier session will be gone. The files stay as they are."
+      },
+      "updatesNotice": {
+        "one": "SynaBun ships a newer version of {names}.",
+        "other": "SynaBun ships newer versions of {count} skills: {names}."
+      },
+      "reviewUpdates": "Review the update",
+      "diagnosticsTitle": "Folders that could not be read",
+      "diagnosticsHelp": "These were left out of the Library, each with the reason.",
+      "diagRoot": "The folder itself",
+      "diagReason": {
+        "no-skill-md": "a folder without SKILL.md, so not a skill",
+        "unreadable-head": "its SKILL.md cannot be read",
+        "link": "a link that leads out of its folder",
+        "too-deep": "nested deeper than SynaBun reads",
+        "unreadable": "cannot be read",
+        "outside-project": "a link out of the project",
+        "not-a-folder": "not a folder"
+      },
+      "bulk": {
+        "region": "Selected items",
+        "selected": {
+          "one": "{count} selected",
+          "other": "{count} selected"
+        },
+        "adopt": "Add to library ({count})",
+        "adoptHelp": "Take these folders into SynaBun's library, so they get versions and are published from there",
+        "export": "Export ({count})",
+        "delete": "Delete… ({count})",
+        "clear": "Clear selection",
+        "adoptTitle": {
+          "one": "Add {count} skill to the library?",
+          "other": "Add {count} skills to the library?"
+        },
+        "adoptExplain": "Each folder is copied into SynaBun's library as its first version. The folders stay where they are; later changes reach them only when you publish.",
+        "adoptConfirm": "Add to library",
+        "adoptDone": {
+          "one": "{count} skill added to the library.",
+          "other": "{count} skills added to the library."
+        },
+        "adoptPartial": "{done} added, {failed} not: {first}",
+        "exported": {
+          "one": "{count} export started.",
+          "other": "{count} exports started."
+        },
+        "deleteType": "Type {word} to confirm",
+        "deleteWord": "delete",
+        "deleteTitle": {
+          "one": "Delete {count} item?",
+          "other": "Delete {count} items?"
+        },
+        "deleteExplain": "These are removed from where they are. This cannot be undone.",
+        "deleteLibraryExplain": "These leave SynaBun's library: their drafts and versions are kept in its archive, and a folder one came from stays as it is.",
+        "deleteUnsaved": {
+          "one": "{count} of them has unsaved changes, which go with it.",
+          "other": "{count} of them have unsaved changes, which go with them."
+        },
+        "deleteConfirm": "Delete",
+        "deleteTypeError": "Type the word to confirm.",
+        "deletePartial": "{done} deleted, {failed} not: {first}",
+        "deleted": {
+          "one": "{count} item deleted.",
+          "other": "{count} items deleted."
+        }
+      }
+    },
+    "ws": {
+      "breadcrumb": "Where you are",
+      "save": "Save",
+      "publish": "Publish…",
+      "more": "More actions",
+      "unsaved": "unsaved changes",
+      "tabs": {
+        "edit": "Edit",
+        "test": "Test",
+        "versions": "Versions",
+        "publish": "Publish"
+      },
+      "customize": "Customize a copy",
+      "adoptNow": "Add to library",
+      "reviewChanges": "Review changes",
+      "update": "Update",
+      "keepMine": "Keep mine",
+      "saveVersion": "Save as version",
+      "openReview": "Open in Review",
+      "loadFailed": "This could not be opened",
+      "loading": "Opening…",
+      "banner": {
+        "guest": "Read-only for guests: only the host changes skills.",
+        "bundled": "Ships with SynaBun, so it is read-only here: an app update replaces it. Customize a copy to make it your own.",
+        "plugin": "From the plugin {plugin}: read-only. The plugin updates it.",
+        "account": "Synced from your Claude account: read-only here.",
+        "system": "The runtime's own skill: read-only.",
+        "shared": "In the shared ~/.agents/skills folder, which SynaBun writes to only when you turn it on in Settings → Skills.",
+        "not-writable": "SynaBun does not write to this folder: read-only.",
+        "not-addressable": "This file is outside the folders SynaBun edits: read-only.",
+        "not-text": "SKILL.md is not UTF-8 text (UTF-16 or binary): it is shown, not edited. Save it as UTF-8 to edit it.",
+        "adopt": "This folder ({path}) is not in SynaBun's library yet. Your first save adds it there as a draft; publishing writes it back.",
+        "update": "SynaBun ships a newer {name} than the copy that is installed.",
+        "draftChanged": {
+          "one": "Draft: {count} file changed since its last version. Not installed until you publish.",
+          "other": "Draft: {count} files changed since its last version. Not installed until you publish."
+        },
+        "newDraft": "A new skill: a draft in the library, not installed anywhere yet.",
+        "review": {
+          "pending": "A submission of this skill waits in Review.",
+          "changes_requested": "You asked for changes to this skill's submission.",
+          "approved": "Approved in Review, not installed yet.",
+          "partial": "Installed in part: some targets failed.",
+          "publish_failed": "The install of its approved version failed."
+        }
+      },
+      "menu": {
+        "export": "Export as a bundle",
+        "copyPath": "Copy the folder's path",
+        "close": "Close this workspace",
+        "delete": "Delete…",
+        "deleteLibrary": "Delete from library…"
+      },
+      "deleteTitle": "Delete {name}?",
+      "deleteSkill": "The skill folder {path} and every file in it are removed. This cannot be undone.",
+      "deleteFile": "The file {path} is removed. This cannot be undone.",
+      "deleteUnsaved": {
+        "one": "{count} file has changes that are not saved, and they go with it:",
+        "other": "{count} files have changes that are not saved, and they go with it:"
+      },
+      "deleteAndDiscard": "Delete and discard",
+      "delete": "Delete",
+      "libraryDeleteTitle": "Delete {name} from the library?",
+      "libraryDeleteBody": "It leaves SynaBun's library: its draft and versions are no longer listed (they are kept in the library's archive). It is installed nowhere, so no runtime loses it.",
+      "libraryDeleteFolderStays": "The folder it came from, {path}, stays as it is.",
+      "libraryDeleteReviews": {
+        "one": "Its open review is closed.",
+        "other": "Its {count} open reviews are closed."
+      },
+      "libraryDelete": "Delete from library",
+      "libraryDeleteInstalledTitle": "{name} is installed",
+      "libraryDeleteInstalled": {
+        "one": "It is installed in {count} place. Remove that installation in Publish first, then delete it from the library.",
+        "other": "It is installed in {count} places. Remove those installations in Publish first, then delete it from the library."
+      },
+      "libraryDeleteOpenPublish": "Open Publish",
+      "libraryDeleteRestart": "Restart SynaBun to delete skills from the library."
+    },
+    "test": {
+      "title": "Tests and evaluations arrive in P4",
+      "body": "This tab will check that the right requests pick this skill and that it does its job better than working without it. Nothing runs here yet.",
+      "trigger": "Trigger tests: requests that should and should not pick the skill, run against the real runtime.",
+      "sample": "Sample runs: one task with and without the skill, side by side (steps, tokens, time, cost, outcome).",
+      "compare": "Model comparison: the same cases on other models from the catalog.",
+      "meanwhile": "Meanwhile, Edit shows the checks of each runtime, and Publish scans the exact files before anything is installed."
+    },
+    "edit": {
+      "kind": {
+        "markdown": "Markdown",
+        "yaml": "YAML",
+        "json": "JSON",
+        "script": "Script",
+        "text": "Text",
+        "image": "Image",
+        "binary": "Binary"
+      },
+      "newFileLabel": {
+        "reference": "Path of the reference",
+        "script": "Path of the script",
+        "asset": "Path of the asset",
+        "other": "Path of the file"
+      },
+      "pathProblem": {
+        "required": "Give the file a path.",
+        "invalid": "Use a path inside the skill: no leading slash, no \"..\".",
+        "hidden": "Hidden files (a name starting with a dot) are left out of skills.",
+        "exists": "A file of that name is already there."
+      },
+      "pane": {
+        "files": "Files",
+        "doc": "Document",
+        "details": "Details"
+      },
+      "state": {
+        "saving": "Saving…",
+        "unsaved": "Unsaved",
+        "readOnly": "Read-only",
+        "draftSaved": "Saved to the draft · not installed",
+        "saved": "Saved"
+      },
+      "lines": {
+        "one": "{n} line",
+        "other": "{n} lines"
+      },
+      "tokens": "≈{n} tokens",
+      "tokensHelp": "An estimate: characters divided by 4. Runtimes count tokens their own way.",
+      "guidance": "{tokens} of {max} body tokens",
+      "guidanceHelp": "Guidance for a SKILL.md body: about {lines} lines or {tokens} tokens; move details to reference files. Not an upload limit.",
+      "revision": "version {id}",
+      "noVersion": "no version yet",
+      "fileRevision": "file {id}",
+      "line": "Line {line}",
+      "problems": "Problems",
+      "noProblems": "No problems found by the checks.",
+      "otherRuntimes": "For other runtimes ({count})",
+      "problemsCount": {
+        "one": "{count} problem",
+        "other": "{count} problems"
+      },
+      "image": "image",
+      "binary": "binary",
+      "renameNamed": "Rename {name}",
+      "rename": "Rename",
+      "deleteNamed": "Delete {name}",
+      "delete": "Delete",
+      "newFile": "New file…",
+      "newKind": {
+        "reference": "Reference: read only when needed",
+        "script": "Script: run, not read",
+        "asset": "Asset: a template, an image, data",
+        "other": "Another file"
+      },
+      "upload": "Upload",
+      "closeTab": "Close {name}",
+      "preview": "Preview",
+      "compare": "Compare",
+      "compareHelp": "Show the changes since the file was last saved",
+      "loadingEditor": "Loading the editor…",
+      "previewLabel": "Preview of the document",
+      "filesTruncated": "This skill has more files than are listed.",
+      "openFiles": "Open files",
+      "showPane": "Show pane",
+      "editorFailed": "The editor could not load ({error}): a plain text box edits the same document.",
+      "imageAlt": "Preview of {name}",
+      "binaryInfo": "Not a text file ({size}): kept as it is, never edited as text.",
+      "binaryInfoNoSize": "Not a text file: kept as it is, never edited as text.",
+      "binaryHead": "SKILL.md is not UTF-8 text: a runtime may misread it. Save it as UTF-8 to edit it here.",
+      "download": "Download",
+      "noHead": "This document has no metadata to show.",
+      "needsLibrary": "This file opens once the skill is in the library: add it to the library first.",
+      "needsRestart": "This file opens after SynaBun restarts: the server running now cannot read this skill's other files.",
+      "openFailed": "{file} could not be opened: {error}",
+      "linkMissing": "{file} is not a file of this skill.",
+      "newFileTitle": "New file",
+      "createFailed": "The file could not be made: {error}",
+      "created": "Made {file}.",
+      "uploadTitle": "Upload a file",
+      "uploadLabel": "Path in the skill",
+      "uploadFailed": "The file could not be uploaded: {error}",
+      "uploaded": "Uploaded {file}.",
+      "deleteTitle": "Delete {file}?",
+      "deleteFromDraft": "The file is removed from the draft. Installed copies keep it until you publish.",
+      "deleteAdopt": "The skill is added to the library first, then the file is removed from its draft. The folder on disk keeps it until you publish.",
+      "deleteUnsaved": "Its tab has changes that are not saved: keep them open (saving puts the file back), or discard them with the file.",
+      "deleteKeep": "Delete, keep my changes",
+      "deleteDiscard": "Delete and discard",
+      "deleteFailed": "The file could not be deleted: {error}",
+      "deletedKept": "Deleted {file}: your changes are still open, and saving puts the file back.",
+      "deleted": "Deleted {file}.",
+      "renameTitle": "Rename {file}",
+      "renameLabel": "New path",
+      "renameFailed": "The file could not be renamed: {error}",
+      "renamed": "Renamed {from} to {to}.",
+      "revertChange": "Put back"
+    },
+    "form": {
+      "field": {
+        "name": "Name",
+        "description": "Description",
+        "argument-hint": "Argument hint",
+        "allowed-tools": "Pre-approved tools",
+        "user-invocable": "Show it as /name in the menu",
+        "disable-model-invocation": "Only when I type /name",
+        "model": "Model",
+        "tools": "Tools (comma-separated)",
+        "maxTurns": "Most turns",
+        "color": "Color"
+      },
+      "unlimited": "0 = no limit",
+      "invocation": "When it runs",
+      "invocationAuto": "Claude picks it when relevant, and {name}",
+      "invocationManual": "Only when I type {name}",
+      "modelInherit": "The session's model",
+      "addTool": "Add a tool…",
+      "toolsHelp": "These run without asking while the skill is active. They do not block other tools.",
+      "removeTool": "Remove {tool}",
+      "toolPattern": "A tool pattern",
+      "toolPatternPlaceholder": "e.g. Bash(git:*)",
+      "add": "Add",
+      "note": {
+        "notText": "Not text: edit it in the document.",
+        "notTools": "Not a list of tool names: edit it in the document.",
+        "notBoolean": "Not true or false: edit it in the document.",
+        "notNumber": "Not a whole number: edit it in the document.",
+        "alias": "A YAML alias: edit it in the document."
+      },
+      "reason": {
+        "errors": "The frontmatter has errors: fix them in the document. The fields are read-only until then.",
+        "unsupported": "This frontmatter is written in a way the form does not change: edit it in the document."
+      },
+      "budget": {
+        "portable": "Agent Skills",
+        "claude": "Claude Code list",
+        "codex": "Codex",
+        "opencode": "OpenCode"
+      },
+      "budgetCount": "{used} / {limit}",
+      "saysWhat": "Says what it does",
+      "missingWhat": "Say what it does, in a few words",
+      "saysWhen": "Says when to use it",
+      "missingWhen": "Say when to use it (\"Use when…\")",
+      "advice": {
+        "ok": "Models read the description to decide when to use the skill: it says what and when.",
+        "add-when": "Add when to use it: the request or situation that should pick this skill.",
+        "add-what": "Say what the skill does before when to use it.",
+        "write-one": "Write a description: without one, models cannot tell when to use the skill.",
+        "too-long": "Too long for a runtime's list: shorten it, or move detail into the body."
+      },
+      "nameMissing": "Give it a name",
+      "nameFolder": "The folder is {folder}: the skill is called by its name",
+      "nameFormat": "Use lowercase letters, digits and single hyphens",
+      "nameMatches": "Matches the folder name",
+      "nameOk": "A name every runtime takes",
+      "binaryHead": "The fields are not read from a file that is not UTF-8 text.",
+      "loading": "Reading the frontmatter…",
+      "cannotRead": "The form cannot read this frontmatter: edit it in the document.",
+      "yamlLabel": "The frontmatter as written",
+      "noFrontmatter": "No frontmatter.",
+      "editInDocument": "Edit in the document",
+      "yamlHelp": "Form and YAML are one document: the form changes only the key you edit, and everything else stays byte for byte.",
+      "notShowing": "These fields are in {file}, which is not the file showing.",
+      "openIt": "Open it",
+      "label": "Metadata",
+      "advanced": {
+        "one": "Advanced: {count} more key, kept as written",
+        "other": "Advanced: {count} more keys, kept as written"
+      },
+      "advancedHelp": "The form has no field for these. They are kept exactly as written; edit them in the document.",
+      "advancedNone": "No other keys: every key is in the form.",
+      "viewLabel": "Metadata view",
+      "form": "Form",
+      "yaml": "YAML",
+      "invalidNumber": "A whole number, 0 or more.",
+      "patchFailed": "{field} could not be changed here: edit it in the document."
+    },
+    "snippets": {
+      "title": "Snippets",
+      "search": "Search snippets",
+      "group": {
+        "structure": "Structure",
+        "workflow": "Workflow",
+        "files": "Files and variables",
+        "frontmatter": "Frontmatter keys",
+        "custom": "Your snippets"
+      },
+      "whereKeys": "Keys: {keys}",
+      "whereCaret": "At the cursor",
+      "insert": "Insert",
+      "insertNamed": "Insert {name}",
+      "none": "No snippet matches.",
+      "openHeadFirst": "Frontmatter keys go into SKILL.md: open it first.",
+      "failed": {
+        "yaml": "The frontmatter has errors: fix them before adding keys.",
+        "other": "The snippet could not be inserted."
+      },
+      "inserted": "Inserted {name}.",
+      "role": {
+        "name": "Role",
+        "desc": "Who the model should be, and for whom"
+      },
+      "steps": {
+        "name": "Steps",
+        "desc": "Numbered steps, in order"
+      },
+      "constraints": {
+        "name": "Rules",
+        "desc": "What the model must and must not do"
+      },
+      "output": {
+        "name": "Output",
+        "desc": "The shape of the answer"
+      },
+      "examples": {
+        "name": "Examples",
+        "desc": "A request and a good answer"
+      },
+      "context": {
+        "name": "Gather context",
+        "desc": "Read before changing anything"
+      },
+      "errors": {
+        "name": "When something fails",
+        "desc": "Say it, then try another way"
+      },
+      "input-check": {
+        "name": "Check the input",
+        "desc": "Ask when $ARGUMENTS is unclear"
+      },
+      "confirm": {
+        "name": "Confirm first",
+        "desc": "A yes before anything destructive"
+      },
+      "scope": {
+        "name": "Scope",
+        "desc": "What it covers, and what it does not"
+      },
+      "references": {
+        "name": "References",
+        "desc": "Files read only when needed"
+      },
+      "variables": {
+        "name": "Variables",
+        "desc": "$ARGUMENTS and ${CLAUDE_SKILL_DIR}"
+      },
+      "dynamic": {
+        "name": "Current state",
+        "desc": "A shell command run when the skill loads (the scan lists it)"
+      },
+      "fm-tools-readonly": {
+        "name": "Pre-approved: read-only tools",
+        "desc": "Read, Grep and Glob run without asking"
+      },
+      "fm-agent-tools": {
+        "name": "Tools: read-only",
+        "desc": "The agent gets Read, Grep and Glob"
+      },
+      "fm-manual": {
+        "name": "Only when I type /name",
+        "desc": "The model never starts it by itself"
+      },
+      "fm-hint": {
+        "name": "Argument hint",
+        "desc": "What to type after /name"
+      },
+      "fm-when": {
+        "name": "When to use it",
+        "desc": "Claude Code lists it with the description"
+      },
+      "fm-fork": {
+        "name": "Run in a subagent",
+        "desc": "Its own context, apart from the conversation"
+      },
+      "fm-model": {
+        "name": "Model",
+        "desc": "The model the agent uses"
+      }
+    },
+    "diff": {
+      "added": "added",
+      "removed": "removed",
+      "same": "No differences.",
+      "unchanged": {
+        "one": "{count} file is the same.",
+        "other": "{count} files are the same."
+      },
+      "status": {
+        "added": "Added",
+        "removed": "Removed",
+        "modified": "Changed",
+        "mode": "Mode changed"
+      },
+      "note": {
+        "binary": "Not text: compared by its bytes only.",
+        "large": "Too large to compare line by line.",
+        "far": "Too different to compare line by line."
+      },
+      "eol": "Line endings differ ({from} → {to}): every line counts as changed."
+    },
+    "versions": {
+      "author": {
+        "owner": "You",
+        "system": "SynaBun",
+        "assistant": "SynaBun Assistant",
+        "agent": "An agent"
+      },
+      "rev": "Version {id}",
+      "label": {
+        "latest": "Latest",
+        "candidate": "Candidate",
+        "best": "Best",
+        "approved": "Approved",
+        "upstream": "From SynaBun",
+        "installed": "Installed: {where}",
+        "draft": "Draft"
+      },
+      "source": {
+        "bundled": "shipped with SynaBun",
+        "adopted": "added from its folder",
+        "draft": "saved from the draft",
+        "assistant": "made by the Assistant",
+        "import": "imported",
+        "restore": "restored",
+        "customize": "customized copy",
+        "local": "made here",
+        "github": "from GitHub"
+      },
+      "files": {
+        "one": "{count} file",
+        "other": "{count} files"
+      },
+      "diffPrev": "Changes from the one before",
+      "restore": "Restore as draft",
+      "markCandidate": "Mark as candidate",
+      "markBest": "Mark as best",
+      "publishThis": "Publish this one",
+      "noneTitle": "No versions here",
+      "none": {
+        "adopt": "This folder is not in SynaBun's library yet, so it has no versions. Add it to the library: its files as they are now become the first version.",
+        "inplace": "Commands and agents are single files kept where they are: versions are for skills in the library.",
+        "readonly": "This is read-only and not in SynaBun's library: customize a copy to keep versions of your own."
+      },
+      "loading": "Reading the versions…",
+      "loadFailed": "The versions could not be read: {error}",
+      "title": {
+        "one": "{count} version",
+        "other": "{count} versions"
+      },
+      "from": "From",
+      "to": "To",
+      "compare": "Compare",
+      "draft": "Draft",
+      "draftChanged": {
+        "one": "{count} file changed since its version",
+        "other": "{count} files changed since its version"
+      },
+      "draftSame": "The same as its version",
+      "diffDraft": "Show the draft's changes",
+      "noRevisions": "No version has been saved yet.",
+      "comparing": "Comparing…",
+      "diffTitle": "Changes",
+      "diffFailed": "The versions could not be compared: {error}",
+      "diffDraftTitle": "The draft's changes since its version",
+      "pickTwo": "Pick two different versions.",
+      "marked": {
+        "candidate": "Marked as candidate.",
+        "best": "Marked as best."
+      },
+      "markFailed": "It could not be marked: {error}",
+      "restoreBlockedTitle": "Save or discard first",
+      "restoreBlocked": {
+        "one": "{count} open file has unsaved changes. Save or discard them before restoring a version.",
+        "other": "{count} open files have unsaved changes. Save or discard them before restoring a version."
+      },
+      "restoreTitle": "Replace the draft?",
+      "restoreDraftChanged": {
+        "one": "The draft has {count} change that is not saved as a version.",
+        "other": "The draft has {count} changes that are not saved as a version."
+      },
+      "restoreExplain": "Restoring makes a new draft from that version. Save the current draft as a version first to keep its changes.",
+      "restoreReplace": "Replace the draft",
+      "restoreSaveFirst": "Save as version, then restore",
+      "restored": "Version {id} is the draft now.",
+      "restoreFailed": "The version could not be restored: {error}"
+    },
+    "publish": {
+      "targetProject": "{runtime} · project {project}",
+      "targetAccount": "{runtime} · account {account}",
+      "targetUser": "{runtime} · all projects",
+      "state": {
+        "installed": "Installed, this version",
+        "outdated": "Installed, another version",
+        "present": "A folder SynaBun did not install",
+        "bridge": "Old bridge",
+        "none": "Not installed",
+        "off": "Turned off"
+      },
+      "noneTitle": "Nothing to publish here",
+      "none": {
+        "adopt": "Add this folder to the library first: then its versions are installed from there, with a plan and a backup.",
+        "inplace": "Commands and agents are saved where they are; there is nothing to install. Export makes a bundle.",
+        "readonly": "This is not yours to publish. Customize a copy to make your own version."
+      },
+      "exportBundle": "SynaBun bundle",
+      "loading": "Reading where it is installed…",
+      "loadFailed": "The install state could not be read: {error}",
+      "whatTitle": "What to install",
+      "version": "Version",
+      "versionMeta": "saved {when}",
+      "noVersion": "This skill has no version yet: save the draft as a version to publish it.",
+      "draftNotPublished": {
+        "one": "The draft has {count} change that is not a version yet, so it is not what gets installed.",
+        "other": "The draft has {count} changes that are not a version yet, so they are not what gets installed."
+      },
+      "saveVersionAndUse": "Save as version and use it",
+      "fromReview": "Installing the version approved in Review.",
+      "whereTitle": "Where",
+      "targetsCaption": "Install targets",
+      "pick": "Pick",
+      "col": {
+        "target": "Runtime and scope",
+        "folder": "Folder",
+        "now": "There now",
+        "actions": "Actions"
+      },
+      "pickTarget": "Install into {target}",
+      "sharedOff": "Turn the shared folder on in Settings → Skills to install here.",
+      "verify": "Verify",
+      "rollback": "Roll back",
+      "remove": "Remove",
+      "bridgeHelp": "Move old bridges in Settings → Skills → Skill folders.",
+      "addProject": "Add a project",
+      "chooseProject": "Choose a project…",
+      "showPlan": "Show the plan",
+      "planHelp": "Nothing is written before you read the plan and confirm it.",
+      "guest": "Only the host installs skills.",
+      "exportTitle": "Export",
+      "settingsNote": "Settings → Skills shows the same installs: its buttons use these plans too.",
+      "fact": {
+        "written": {
+          "ok": "Written: the folder holds exactly these files",
+          "missing": "Written: the folder is gone",
+          "changed": "Written: the folder changed since it was installed",
+          "unknown": "Written: not checked yet"
+        },
+        "discoverable": {
+          "yes": "Discoverable: the runtime's rules find it",
+          "no": "Discoverable: the runtime does not read that folder now",
+          "unknown": "Discoverable: not checked"
+        },
+        "eligibility": {
+          "enabled": "Enabled in the runtime's settings",
+          "disabled": "Turned off in the runtime's settings",
+          "unknown": "Settings: could not be read"
+        },
+        "discovered": {
+          "yes": "{runtime} lists it",
+          "no": "{runtime} does not list it",
+          "unknown": "{runtime} could not be asked"
+        }
+      },
+      "planStatus": {
+        "ready": "Ready",
+        "needs": "Needs your confirmation",
+        "blocked": "Cannot be installed"
+      },
+      "goesTo": "Goes to",
+      "readBy": "Read by {runtimes}",
+      "destState": {
+        "absent": "Nothing is there now.",
+        "identical": "These exact files are there already: nothing will be written.",
+        "owned": "SynaBun's own install is there; it will be replaced (a backup is kept).",
+        "modified": "SynaBun installed it, but it was changed since.",
+        "unowned": "A folder SynaBun did not install is there.",
+        "unreadable": "What is there cannot be read whole."
+      },
+      "blocked": {
+        "no_root": "There is no folder for this target.",
+        "shared_root_off": "The shared folder is turned off.",
+        "root_read_only": "SynaBun does not write to this folder.",
+        "root_unusable": "The folder cannot be used.",
+        "lint_errors": "Problems keep it from working in this runtime.",
+        "scan_blocked": "The scan blocks this install.",
+        "review_required": "Approve it in Review first.",
+        "approval_stale": "Its approval does not cover this name: review it again.",
+        "destination_unreadable": "What is at the destination cannot be read whole."
+      },
+      "transform": "Changed for this runtime only:",
+      "lintCounts": "Checks for this runtime: {errors} problems, {warnings} warnings",
+      "scan": {
+        "clean": "Scan: no findings in these files",
+        "error": "Scan: it failed, so nothing is installed",
+        "trusted": "Scan: shipped with SynaBun, findings shown, not asked again",
+        "findings": "Scan: findings to review below"
+      },
+      "refresh": {
+        "automatic": "{runtime} picks it up by itself.",
+        "reload-skills": "{runtime}: run /reload-skills in sessions already open.",
+        "new-session": "{runtime}: start a new session to be sure it sees it.",
+        "unknown": "{runtime}: see its documentation."
+      },
+      "confirmReplaceModified": "Replace it, keeping a backup (it was changed since SynaBun installed it)",
+      "confirmReplaceUnowned": "Replace it, keeping a backup (SynaBun did not install it)",
+      "confirmScan": "I reviewed what this skill can do, for these exact files",
+      "planTitle": "The plan",
+      "install": {
+        "one": "Install to {count} target",
+        "other": "Install to {count} targets"
+      },
+      "nothingReady": "Confirm what the plan asks, or nothing can be installed.",
+      "resultsTitle": "What happened",
+      "result": {
+        "committed": "Installed",
+        "skipped": "Not installed",
+        "needs-confirmation": "Needs your confirmation",
+        "failed": "Failed"
+      },
+      "alreadyThere": "(it was already there)",
+      "exportNeedsVersion": "Save a version to export it.",
+      "exportRestart": "Restart SynaBun to export versions from the library.",
+      "exportSkill": ".skill archive",
+      "exportClaude": "Claude.ai upload",
+      "checkClaude": "Check for Claude.ai",
+      "exportHelp": "A bundle is what Import takes back. A .skill archive holds the folder. The Claude.ai upload is a ZIP of the folder as Claude.ai reads it.",
+      "planReady": "The plan is ready.",
+      "planFailed": "The plan could not be made: {error}",
+      "planChanged": "What would be installed changed since the plan was shown: here is the new plan.",
+      "planOutdated": "What is picked changed while the plan was being made: show the plan again.",
+      "installFailed": "Not installed: {error}",
+      "installedAll": {
+        "one": "Installed to {count} target.",
+        "other": "Installed to {count} targets."
+      },
+      "installedSome": "Installed to {ok} of {total} targets: see below.",
+      "verified": "Checked.",
+      "verifyFailed": "It could not be checked: {error}",
+      "rollbackTitle": "Roll back this install?",
+      "removeTitle": "Remove this install?",
+      "rollbackBody": "What was there before this install comes back. A backup of the current folder is kept.",
+      "removeBody": "The folder SynaBun installed is removed. A backup is kept.",
+      "undoFailed": "It could not be done: {error}",
+      "changedSinceTitle": "The folder changed since it was installed",
+      "changedSinceBody": "Someone changed it after SynaBun installed it. Go ahead with it as it is now? A backup is kept.",
+      "changedSinceConfirm": "Go ahead",
+      "rolledBack": "Rolled back.",
+      "removed": "Removed.",
+      "checking": "Checking…",
+      "claudeProblems": "For Claude.ai: {errors} problems, {warnings} warnings.",
+      "claudeOk": "Claude.ai reads this skill as it is.",
+      "checkFailed": "It could not be checked: {error}"
+    },
+    "review": {
+      "author": {
+        "owner": "You",
+        "assistant": "SynaBun Assistant",
+        "agent": "An agent"
+      },
+      "kind": {
+        "new": "New skill",
+        "change": "Change",
+        "update": "Update"
+      },
+      "state": {
+        "pending": "Waiting for you",
+        "changes_requested": "Changes asked for",
+        "approved": "Approved, not installed",
+        "publishing": "Installing",
+        "published": "Installed",
+        "partial": "Installed in part",
+        "publish_failed": "Install failed",
+        "rejected": "Rejected",
+        "withdrawn": "Withdrawn"
+      },
+      "assumed": "Assumed: {text}",
+      "installsAs": "Installs as",
+      "forTargets": "For: {targets}",
+      "lintErrors": {
+        "one": "{count} problem for its targets",
+        "other": "{count} problems for its targets"
+      },
+      "lintOk": "No problems for its targets",
+      "lintWarnings": {
+        "one": "{count} warning",
+        "other": "{count} warnings"
+      },
+      "scan": {
+        "not-scanned": "Not scanned",
+        "error": "The scan failed: it cannot be approved",
+        "blocked": {
+          "one": "The scan blocks it ({count} finding)",
+          "other": "The scan blocks it ({count} findings)"
+        },
+        "clean": "No findings in the scanned files",
+        "incomplete": {
+          "one": "{count} finding; part of it could not be read",
+          "other": "{count} findings; part of it could not be read"
+        },
+        "review": {
+          "one": "{count} finding to review",
+          "other": "{count} findings to review"
+        },
+        "findings": {
+          "one": "{count} finding",
+          "other": "{count} findings"
+        }
+      },
+      "findings": {
+        "one": "{count} finding",
+        "other": "{count} findings"
+      },
+      "severity": {
+        "critical": "Critical",
+        "high": "High",
+        "medium": "Medium",
+        "low": "Low"
+      },
+      "authorityAdds": "Adds {what}: {items}",
+      "authorityRemoves": "No longer has {what}: {items}",
+      "authority": {
+        "scripts": "scripts",
+        "binaries": "files that are not text",
+        "dynamicContext": "commands run when it loads",
+        "hooks": "session hooks",
+        "toolGrants": "pre-approved tools",
+        "domains": "web addresses",
+        "sensitive": "reads of private data",
+        "persistentWrites": "lasting configuration changes",
+        "installers": "software installs"
+      },
+      "authorityTitle": "What it can do that the approved version could not:",
+      "filesChanged": {
+        "one": "{count} file changed",
+        "other": "{count} files changed"
+      },
+      "showFiles": "Show the files",
+      "loadingDiff": "Reading the changes…",
+      "yourNote": "Your note: {text}",
+      "approve": "Approve",
+      "install": "Install…",
+      "requestChanges": "Ask for changes",
+      "reject": "Reject",
+      "open": "Open in its workspace",
+      "libraryInstalls": {
+        "one": "{count} install from the library",
+        "other": "{count} installs from the library"
+      },
+      "fromSynabun": "Ships with SynaBun",
+      "updateBody": "SynaBun ships a newer {name} than the copy installed here. Read the changes, then update (a backup of the copy is kept) or keep yours.",
+      "updateRuntimes": "Installed for {runtimes}",
+      "reviewChanges": "Review the changes",
+      "update": "Update",
+      "keepMine": "Keep mine",
+      "title": "Review",
+      "subtitle": "What the Assistant made and the updates SynaBun ships wait here. Nothing is installed until you approve it.",
+      "filterLabel": "Show",
+      "filter": {
+        "waiting": "Waiting",
+        "all": "All",
+        "decided": "Decided"
+      },
+      "updatesTitle": {
+        "one": "{count} update from SynaBun",
+        "other": "{count} updates from SynaBun"
+      },
+      "decidedTitle": "Decided",
+      "waitingTitle": {
+        "one": "{count} submission",
+        "other": "{count} submissions"
+      },
+      "emptyTitle": "Nothing is waiting",
+      "emptyBody": "When the SynaBun Assistant makes or changes a skill, it appears here for you to approve, ask for changes or reject. Updates SynaBun ships appear here too.",
+      "diffFailed": "The changes could not be read: {error}",
+      "partialDiff": "Only SKILL.md was compared: restart SynaBun to compare every file.",
+      "updateDiffTitle": "What updating {name} changes",
+      "send": "Send",
+      "reasonRequired": "Say what should change.",
+      "rejectTitle": "Reject {name}",
+      "changesTitle": "Ask for changes to {name}",
+      "rejectPrompt": "Why (optional; the Assistant reads it):",
+      "changesPrompt": "What should change (the Assistant reads it):",
+      "decided": {
+        "approve": "{name} approved: install it from Publish when you want it.",
+        "request_changes": "Changes asked for {name}.",
+        "reject": "{name} rejected."
+      },
+      "decideFailed": "The decision could not be sent: {error}"
+    },
+    "create": {
+      "title": "Create a skill",
+      "guest": "Only the host creates skills.",
+      "promptLabel": "Describe the skill",
+      "promptPlaceholder": "Describe what the skill should do and when it should be used, e.g. \"Write release notes from merged pull requests since the last tag, in our CHANGELOG style\"",
+      "sourcesLabel": "Sources",
+      "useAsSource": "Use as source",
+      "source": {
+        "conversation": "This conversation",
+        "url": "URL",
+        "repo": "Repository",
+        "memory": "Memory",
+        "import": "An existing skill"
+      },
+      "draftWithAi": "Draft with AI",
+      "blankTitle": "Start without AI",
+      "nameLabel": "Name",
+      "namePlaceholder": "release-notes",
+      "nameHelp": "Lowercase letters, digits and hyphens: you call it as {slug}.",
+      "name": {
+        "required": "Give it a name.",
+        "too-long": "At most 64 characters.",
+        "format": "Use lowercase letters, digits and single hyphens.",
+        "shipped": "SynaBun ships a skill of this name: pick another.",
+        "taken": "Something of this name exists already: installing both would collide."
+      },
+      "kindLabel": "Kind",
+      "kind": {
+        "skill": "Skill",
+        "agent": "Agent",
+        "command": "Command · legacy"
+      },
+      "kindHelp": {
+        "skill": "A folder with SKILL.md that Claude Code, Codex and OpenCode load. The usual choice.",
+        "agent": "A subagent Claude Code delegates to, in its own context. One file.",
+        "command": "A Claude Code slash command file. Skills replace these; kept for older setups."
+      },
+      "layoutLabel": "Start from",
+      "layout": {
+        "skill": {
+          "blank": {
+            "name": "Blank",
+            "desc": "Name, description and a heading"
+          },
+          "steps": {
+            "name": "Steps",
+            "desc": "Numbered steps over what the user types"
+          },
+          "router": {
+            "name": "Router",
+            "desc": "Sections picked by the first word"
+          },
+          "references": {
+            "name": "With references",
+            "desc": "SKILL.md plus references/guide.md"
+          },
+          "script": {
+            "name": "With a script",
+            "desc": "SKILL.md plus scripts/run.sh"
+          }
+        },
+        "agent": {
+          "blank": {
+            "name": "Blank",
+            "desc": "A name, a description, a short role"
+          },
+          "specialist": {
+            "name": "Specialist",
+            "desc": "A model and read-only tools"
+          },
+          "researcher": {
+            "name": "Researcher",
+            "desc": "Code and web research tools"
+          }
+        },
+        "command": {
+          "blank": {
+            "name": "Blank",
+            "desc": "A description and instructions"
+          },
+          "analysis": {
+            "name": "Analysis",
+            "desc": "Read a target and report"
+          },
+          "workflow": {
+            "name": "Workflow",
+            "desc": "Plan, confirm, do, check"
+          }
+        }
+      },
+      "descriptionLabel": "Description",
+      "descriptionPlaceholder": "What it does, and when to use it",
+      "descriptionHelp": "Written into the frontmatter. Models read it to decide when to use the skill: say what and when.",
+      "whereSkill": "It starts as a draft in SynaBun's library, and reaches Claude Code, Codex or OpenCode only when you publish it.",
+      "whereLabel": "Where",
+      "whereGlobal": {
+        "agent": "All projects (~/.claude/agents)",
+        "command": "All projects (~/.claude/commands)"
+      },
+      "whereProject": "A project",
+      "createButton": {
+        "skill": "Create skill",
+        "agent": "Create agent",
+        "command": "Create command"
+      },
+      "paste": "Paste a SKILL.md…",
+      "import": "Import…",
+      "explain": "You get a skill folder: SKILL.md, plus references or scripts only when they help, checked as you write it. Nothing reaches Claude Code, Codex or OpenCode until you publish it.",
+      "examplesTitle": "Ideas",
+      "example1": "\"Write Conventional Commit messages from the staged diff\"",
+      "example2": "\"A checklist for preparing a SynaBun release, from CHANGELOG.md\"",
+      "example3": "\"Review a pull request for security problems before merging\"",
+      "created": "Made {name}.",
+      "failed": "It could not be made: {error}",
+      "pasteLabel": "SKILL.md",
+      "pasteTitle": "Paste a SKILL.md",
+      "pasteConfirm": "Add to library",
+      "pasteEmpty": "Paste the file first.",
+      "ai": {
+        "title": "Draft with AI",
+        "help": "One worker drafts the whole package from your words and sources; SynaBun checks it and puts it in Review. Nothing is installed until you publish it.",
+        "restart": "Drafting with AI needs SynaBun to restart: this page is newer than the server.",
+        "unknown": "Checking what this SynaBun can do…",
+        "draftingUnavailable": "Drafting needs Claude Code on this computer: {reason}",
+        "exampleToggle": "Add an example of a good result",
+        "exampleLabel": "An example of a good result (optional)",
+        "examplePlaceholder": "What the skill's output should look like, or a past answer you liked",
+        "noSources": "No source: the draft is made from your description.",
+        "removeSource": "Remove {name}",
+        "full": "At most {count} sources.",
+        "duplicate": "That source is there already.",
+        "added": "{name} added as a source.",
+        "removed": "{name} removed.",
+        "kind": {
+          "conversation": "Conversation",
+          "url": "Web page",
+          "repo": "Project",
+          "memory": "Memories",
+          "import": "Skill"
+        },
+        "editorTitle": {
+          "conversation": "Pick a session",
+          "url": "A web page",
+          "repo": "A registered project",
+          "memory": "Memories",
+          "import": "An existing skill to start from"
+        },
+        "conv": {
+          "provider": "From",
+          "project": "Project",
+          "anyProject": "Every project",
+          "search": "Search sessions",
+          "title": "Sessions",
+          "loading": "Loading sessions…",
+          "none": "No session found.",
+          "failed": "The sessions could not be read: {error}",
+          "messages": {
+            "one": "{count} message",
+            "other": "{count} messages"
+          },
+          "use": "Use this session",
+          "pick": "Pick a session first.",
+          "restart": "Sessions are listed once SynaBun restarts."
+        },
+        "url": {
+          "label": "Web page address",
+          "help": "SynaBun reads it with its own browser before the worker starts, as data: nothing on the page is followed as an instruction.",
+          "add": "Add the page",
+          "invalid": "Write an address starting with http:// or https://, without a user name or password.",
+          "unavailable": "The SynaBun browser cannot open pages now: {reason}"
+        },
+        "repo": {
+          "label": "Project",
+          "paths": "Files or folders to read first (one per line, optional)",
+          "help": "SynaBun reads its file tree, README, docs and manifests, read-only: never secrets, lock files or build output, and nothing is changed.",
+          "add": "Add the project",
+          "none": "No project is registered.",
+          "choose": "Choose a project.",
+          "pathsInvalid": "Up to {count} paths, relative to the project, without \"..\"."
+        },
+        "memory": {
+          "query": "What to recall",
+          "placeholder": "release process",
+          "project": "Memory project (optional)",
+          "help": "SynaBun's memories that match, with their ids, as data.",
+          "add": "Add memories",
+          "empty": "Say what to recall."
+        },
+        "import": {
+          "help": "Its files are the starting point. A skill of the library gets a new version for review; a bundle file becomes a new skill.",
+          "library": "A skill of the library",
+          "chooseSkill": "Choose a skill.",
+          "or": "Or a file",
+          "file": "A bundle file…",
+          "useSkill": "Use this skill",
+          "notSkill": "That file is not a SynaBun skill bundle.",
+          "failed": "The file could not be used: {error}"
+        },
+        "options": {
+          "title": "Options",
+          "name": "Name (optional)",
+          "nameHelp": "Leave it empty and the worker picks one.",
+          "model": "Drafted by",
+          "minutes": "Work time",
+          "minutesValue": "{count} min",
+          "runtimes": "For",
+          "route": "Your Coding route: {target}",
+          "fallback": "Claude Code (its default model)",
+          "providerDefault": "{provider}: its default model",
+          "claudeOnly": "Drafting runs on Claude Code, the one runtime SynaBun can hold to the drafting folder (file tools only, no shell, web or MCP)."
+        },
+        "problem": {
+          "prompt": "Describe the skill, or add a source.",
+          "name": "A name is lowercase letters, digits and single hyphens.",
+          "url": "One of the web pages has an address that cannot be used.",
+          "repo": "One of the projects cannot be used: check its paths.",
+          "memory": "One of the memory sources has nothing to recall.",
+          "conversation": "One of the sessions cannot be used.",
+          "import": "One of the skills cannot be used.",
+          "long": "That is longer than a request can be.",
+          "provider": "Drafting runs on Claude Code only.",
+          "targets": "One of the places to install it cannot be used (a project must be a registered one).",
+          "other": "The request cannot be sent as it is."
+        },
+        "error": {
+          "needs_browser": "A web page needs the SynaBun browser, which could not open it.",
+          "needs_input": "The worker needs an answer before it can draft.",
+          "worker_blocked": "The worker was blocked.",
+          "worker_failed": "The worker stopped without drafting anything (what it said is below).",
+          "worker_ended": "The worker stopped before the draft was finished.",
+          "draft_invalid": "The draft still had problems after one round of fixes.",
+          "draft_unchanged": "The worker returned the skill as it already was.",
+          "source_failed": "A source could not be read.",
+          "source_not_found": "A source was not found.",
+          "source_empty": "A source had nothing to read.",
+          "source_unavailable": "This server cannot read one of the sources.",
+          "dispatch_failed": "The worker could not start.",
+          "drafting_unavailable": "The Assistant's workers are not running yet: try again in a moment.",
+          "too_many_creations": "Other skills are being drafted: wait for one to finish, or cancel it.",
+          "interrupted": "SynaBun stopped while this was running.",
+          "invalid_request": "The request was not valid.",
+          "budget_exceeded": "The worker reached its spend ceiling and was stopped.",
+          "draft_unsafe": "The drafting folder held a link: nothing in it was used.",
+          "provider_unsupported": "Drafting runs on Claude Code only.",
+          "request_too_long": "The request is too long for the drafting worker: shorten it.",
+          "other": "The draft could not be made."
+        },
+        "job": {
+          "loading": "Reading the drafting…",
+          "back": "Back to the form",
+          "backWhile": "Back to the form (it keeps going)",
+          "stepsLabel": "Steps",
+          "title": {
+            "active": "Drafting {name}",
+            "done": "{name} is in Review",
+            "drafted": "{name} is drafted",
+            "failed": "{name} could not be drafted",
+            "cancelled": "{name} was cancelled",
+            "interrupted": "{name} was interrupted"
+          },
+          "step": {
+            "sources": "Sources",
+            "drafting": "Drafting",
+            "checking": "Checking",
+            "review": "Review"
+          },
+          "stepState": {
+            "done": "done",
+            "active": "in progress",
+            "failed": "stopped here",
+            "waiting": "not yet",
+            "skipped": "not asked"
+          },
+          "cancel": "Cancel",
+          "cancelling": "Cancelling…",
+          "cancelFailed": "It could not be cancelled: {error}",
+          "worker": "Worker",
+          "byRoute": "(your Coding route)",
+          "browser": "with the SynaBun browser",
+          "time": "Time",
+          "cost": "{cost} so far",
+          "spent": "{cost} spent",
+          "cut": "cut to fit",
+          "files": "Written so far",
+          "noFiles": "Nothing written yet.",
+          "activity": "What the worker is doing",
+          "lint": "Checks: {errors} errors, {warnings} warnings",
+          "tests": "Test prompts: {tasks} tasks, {positive} that should pick it, {nearMiss} near-misses",
+          "noTests": "No test prompts (evals/evals.json)",
+          "assumptions": {
+            "one": "{count} assumption",
+            "other": "{count} assumptions"
+          },
+          "warnings": {
+            "one": "{count} warning",
+            "other": "{count} warnings"
+          },
+          "inReview": "It waits in Review: approve it there, then publish it to the runtimes you choose.",
+          "notInReview": "It is a draft in the library: open it, and publish it when it is ready.",
+          "openReview": "Open in Review",
+          "openDraft": "Open the draft",
+          "another": "Draft another",
+          "question": "The worker asked: {question}",
+          "partial": "What it wrote is kept as the draft {name}.",
+          "openPartial": "Open it",
+          "retry": "Try again",
+          "editRetry": "Edit and try again",
+          "retryFailed": "It could not start again: {error}",
+          "gone": "That drafting could not be read: {error}",
+          "started": "Drafting started."
+        },
+        "recent": {
+          "title": "Drafted with AI",
+          "failed": "The drafts could not be read: {error}",
+          "state": {
+            "queued": "Waiting",
+            "gathering": "Reading sources",
+            "drafting": "Drafting",
+            "checking": "Checking",
+            "submitting": "Adding to Review",
+            "done": "In Review",
+            "drafted": "Drafted",
+            "failed": "Failed",
+            "cancelled": "Cancelled",
+            "interrupted": "Interrupted"
+          }
+        }
+      }
+    },
+    "customize": {
+      "nameLabel": "Name of your copy",
+      "title": "Customize a copy of {name}",
+      "explain": "Every file of it is copied into SynaBun's library as a new skill of yours, with only its name changed. The original stays as it is.",
+      "confirm": "Make the copy",
+      "cannot": {
+        "binary": "It has files that are not text, which this server cannot copy: restart SynaBun and try again.",
+        "unreadable": "Its SKILL.md cannot be read.",
+        "restart": "Its other files can be read only by a newer server: restart SynaBun and try again.",
+        "truncated": "It has more files than SynaBun lists, so a copy would miss some.",
+        "yaml": "Its frontmatter has errors, so the name could not be set: fix it first."
+      },
+      "done": "Made {name}, your copy.",
+      "nameInUse": "A skill named {name} is installed already: rename one before publishing.",
+      "failed": "The copy could not be made: {error}"
+    },
+    "import": {
+      "guest": "Only the host imports skills.",
+      "serverUnknown": "What this server can do could not be read, so nothing was imported: try again.",
+      "tooLarge": "That file is larger than a skill bundle can be (24 MB).",
+      "notJson": "That file is not a skill bundle (not JSON).",
+      "notBundle": "That file is not a SynaBun skill bundle.",
+      "chooseProject": "Choose a project…",
+      "where": "Where it goes",
+      "scopeGlobal": "All projects (~/.claude/)",
+      "scopeProject": "A project",
+      "project": "Project",
+      "chooseProjectError": "Choose the project it goes into.",
+      "title": "Import {kind} \"{name}\"",
+      "intro": {
+        "one": "From {file}: {count} file. It is checked first; nothing is installed until you confirm.",
+        "other": "From {file}: {count} files. It is checked first; nothing is installed until you confirm."
+      },
+      "check": "Check it",
+      "refusedTitle": "This bundle cannot be imported",
+      "refusedIntro": "Nothing was written. What is wrong with it:",
+      "failed": "The import failed: {error}",
+      "reviewTitle": "Review \"{name}\" before installing it",
+      "discard": "Discard",
+      "install": "Install",
+      "confirmReviewed": "Confirm that you reviewed what it can do.",
+      "confirmReplace": "Confirm that the files there may be replaced (a backup is kept), or discard the import.",
+      "done": "Imported {name}.",
+      "goesTo": "Goes to",
+      "files": "Files",
+      "fileCount": {
+        "one": "{count} file ({size})",
+        "other": "{count} files ({size})"
+      },
+      "digest": "Digest",
+      "showFiles": "Show the files",
+      "executable": "executable",
+      "leftOut": "{path}: left out ({reason})",
+      "skillExists": "A skill named \"{name}\" is already there. It is not replaced: delete or rename it first.",
+      "replaceBox": {
+        "one": "Replace the file already there ({files}); a backup is kept",
+        "other": "Replace the {count} files already there ({files}); a backup is kept"
+      },
+      "checks": "Checks: {errors} problems, {warnings} warnings",
+      "checksOk": "Checks: no problems found",
+      "blockedByProblems": "It cannot be installed while it has problems: a runtime would misread it.",
+      "scanClean": "no findings in the scanned content",
+      "scanError": "the scan failed ({error}): it cannot be installed",
+      "scanIncomplete": {
+        "one": "{count} finding; part of it could not be read",
+        "other": "{count} findings; part of it could not be read"
+      },
+      "scanFindings": {
+        "one": "{count} finding",
+        "other": "{count} findings"
+      },
+      "canDo": "What it can do:",
+      "gateBlocked": "blocked",
+      "gateReview": "needs your review",
+      "fact": {
+        "dynamic": {
+          "one": "It runs {count} shell command when it loads, before the model reads it.",
+          "other": "It runs {count} shell commands when it loads, before the model reads it."
+        },
+        "hooks": "It registers hooks for the rest of the session ({events}).",
+        "tools": "It pre-approves {tools} for the turn that uses it.",
+        "scripts": {
+          "one": "It holds {count} script.",
+          "other": "It holds {count} scripts."
+        },
+        "binaries": {
+          "one": "It holds {count} file that is not text.",
+          "other": "It holds {count} files that are not text."
+        },
+        "domains": "It names {domains}."
+      },
+      "reviewedBox": "I reviewed what this skill can do, for these exact files"
+    },
+    "dialog": {
+      "unsavedTitle": "Unsaved changes",
+      "unsavedFiles": {
+        "one": "{count} file has changes that are not saved:",
+        "other": "{count} files have changes that are not saved:"
+      },
+      "andMore": "and {count} more",
+      "keepForLaterHelp": "\"Keep for later\" closes Skills Studio and brings them back the next time it opens in this browser.",
+      "cancel": "Cancel",
+      "discard": "Discard",
+      "keepForLater": "Keep for later",
+      "saveAll": "Save all",
+      "save": "Save",
+      "close": "Close",
+      "ok": "OK",
+      "dismiss": "Dismiss",
+      "restoreTitle": "Unsaved changes from earlier",
+      "restoreChanged": "{file} has unsaved changes from an earlier session, but the file changed since they were made. Put your changes back over the file as it is now, or drop them?",
+      "restoreDrop": "Drop my changes",
+      "restorePut": "Put my changes back",
+      "keepEditing": "Keep editing",
+      "loadTheirs": "Load theirs, drop mine",
+      "overwriteMine": "Save mine over theirs",
+      "recreate": "Create it again",
+      "conflictTitle": "The file changed elsewhere",
+      "conflictBody": "{file} was changed by something else since you opened it. Nothing was written.",
+      "goneTitle": "The file was removed",
+      "goneBody": "{file} was removed since you opened it. Nothing was written.",
+      "stillHere": "Your changes are still in this tab.",
+      "unsavedOne": "{file} has changes that are not saved.",
+      "closeWorkspaceKeeps": "Closing the workspace keeps them in this browser: they come back when you open it again."
+    },
+    "toast": {
+      "saveConflict": "{file} changed elsewhere: open it to decide what to keep.",
+      "saveFailed": "{file} could not be saved: {error}",
+      "loadFailed": "The skills could not be read again: {error}",
+      "keptMine": "Keeping your {name} as it is. Its update is hidden until SynaBun ships another version.",
+      "saveFirst": "Save or discard the open changes first.",
+      "versionUnchanged": "The draft is the same as its version: nothing new to save.",
+      "versionSaved": "Saved as a new version.",
+      "versionFailed": "The version could not be saved: {error}",
+      "pathCopied": "Path copied.",
+      "nothingToSave": "Nothing to save.",
+      "savedTypedSince": "Saved {file}: what you typed since is not saved yet.",
+      "savedWithProblems": {
+        "one": "Saved {file}, with {count} problem.",
+        "other": "Saved {file}, with {count} problems."
+      },
+      "savedDraft": "Saved {file} to the draft. Publish to install it.",
+      "saved": "Saved {file}.",
+      "reloadFailed": "The file could not be read again: {error}",
+      "changedElsewhere": "{file} was changed elsewhere. Your next save asks before replacing it.",
+      "adopted": "{name} is in the library now: its versions and publishing work from here.",
+      "adoptFailed": "It could not be added to the library: {error}",
+      "deleted": "Deleted {name}.",
+      "deleteFailed": "It could not be deleted: {error}",
+      "libraryDeleted": "{name} was deleted from the library.",
+      "libraryDeleteInstalled": "{name} is installed: remove its installations in Publish first.",
+      "libraryDeleteChanged": "{name} changed since it was read: look at it again, then delete it.",
+      "exportUnavailable": "This cannot be exported from here."
+    }
+  },
   "context": {
     "focus": "Focus",
     "orbitHere": "Orbit Here",
@@ -6482,6 +8142,44 @@
     "errStorage": "Couldn't save the key for this account."
   },
   "assistant": {
+    "followups": {
+      "title": "Next steps",
+      "titleMulti": "Your decisions",
+      "hintMulti": "Pick any, then send",
+      "send": "Send",
+      "sendCount": "Send {n} selected",
+      "other": "Something else…",
+      "otherTip": "Type your own reply in the message box",
+      "sent": "Sent",
+      "earlier": "Earlier",
+      "guessed": "Read from the reply: check the wording before you send",
+      "titleConfirm": "Go ahead?",
+      "titleQuestion": "Your call",
+      "hintQuestion": "Pick one, or type your own answer",
+      "hold": "Not now",
+      "holdSend": "Hold off on that for now.",
+      "recommended": "Recommended",
+      "answerLabel": "Your answer",
+      "answered": "Answered",
+      "keysNext": "{keys} to send · Esc to type your own",
+      "keysMulti": "{keys} to pick · {mod}+Enter to send · Esc to type your own",
+      "keysConfirm": "Enter to go ahead · Esc to type your own",
+      "keysQuestion": "{keys} to pick · Enter to send"
+    },
+    "limitWait": {
+      "waiting": "Waiting for the usage limit to reset",
+      "restored": "Usage limit restored",
+      "unknown": "Reset time unknown",
+      "provider": "{provider} usage limit",
+      "resetsAt": "resets at {time}",
+      "resetAt": "reset at {time}",
+      "left": "{clock} left",
+      "retry": "Retry now",
+      "tryAgain": "Try again",
+      "retried": "Retried",
+      "announceRestored": "The usage limit has reset.",
+      "continue": "The usage limit has reset. Retry what was blocked and continue where you left off."
+    },
     "accountUsage": {
       "autoPicked": "Auto chose {to}: {usage}",
       "fallbackPicked": "{from} out of usage → {to}: {usage}",
@@ -7085,7 +8783,9 @@
       "templateRemember": "Remember {caret}",
       "project": "Project",
       "chooseProject": "Choose a project",
-      "projectAria": "Choose a project (now: {project})"
+      "projectAria": "Choose a project (now: {project})",
+      "starters": "Starters",
+      "context": "Context"
     },
     "status": {
       "aborted": "Aborted.",
@@ -7474,6 +9174,8 @@
       "customAnswer": "Or type your own answer…",
       "typeAnswer": "Type your answer…",
       "multiHint": "Select all that apply",
+      "keys": "{keys} to pick · Enter to answer · Esc for the message box",
+      "keysText": "Enter to answer · Esc for the message box",
       "denyReason": "Tell the agent why (optional)…",
       "planFeedback": "Request changes… (sent with \"Keep planning\")",
       "action": {
@@ -7491,6 +9193,7 @@
         "allowed": "Allowed",
         "always": "Always",
         "denied": "Denied",
+        "declined": "Declined",
         "answered": "Answered",
         "answeredInChat": "Answered in chat",
         "skipped": "Skipped",
@@ -9009,7 +10712,10 @@
       "metaDownloaded": "Ready: installs when SynaBun is idle",
       "metaReadyOff": "Ready to install",
       "metaCountdown": "Restarting to install it",
-      "metaPostponed": "Postponed: installs on quit or later"
+      "metaPostponed": "Postponed: installs on quit or later",
+      "restartButton": "Restart to update",
+      "restartTooltip": "SynaBun v{latest} is ready: restart to update",
+      "restartSoon": "Restarting soon"
     },
     "busy": {
       "assistant": "an Assistant run or dispatched agent",
@@ -9164,5 +10870,525 @@
     "errorCancelled": "The download was stopped.",
     "errorUnknown": "The download did not finish.",
     "errorRequest": "SynaBun did not answer: {message}"
+  },
+
+  "schedules": {
+    "window": {
+      "title": "Schedules",
+      "guestDisabled": "Schedules are disabled by the host",
+      "hideBackdrop": "Hide the backdrop",
+      "showBackdrop": "Show the backdrop",
+      "close": "Close Schedules",
+      "closeTip": "Close (Esc)",
+      "railLabel": "Schedule views and groups",
+      "viewLabel": "View"
+    },
+    "views": {
+      "upcoming": "Up next",
+      "all": "All schedules",
+      "attention": "Needs attention",
+      "paused": "Paused",
+      "timers": "Timers",
+      "activity": "Activity",
+      "ungrouped": "Ungrouped"
+    },
+    "oneAtATime": "One at a time",
+    "rail": {
+      "groups": "Groups",
+      "views": "Views",
+      "newGroup": "New group",
+      "noGroups": "No groups yet.",
+      "groupLabel": "{name}: {facts}",
+      "oneAtATimeFact": "one at a time",
+      "attentionTip": {
+        "one": "{count} schedule needs attention",
+        "other": "{count} schedules need attention"
+      },
+      "withCount": "{label} ({count})"
+    },
+    "count": {
+      "schedules": {
+        "one": "{count} schedule",
+        "other": "{count} schedules"
+      },
+      "active": {
+        "one": "{count} active",
+        "other": "{count} active"
+      },
+      "paused": {
+        "one": "{count} paused",
+        "other": "{count} paused"
+      },
+      "attention": {
+        "one": "{count} needs attention",
+        "other": "{count} need attention"
+      },
+      "runs": {
+        "one": "{count} run",
+        "other": "{count} runs"
+      }
+    },
+    "list": {
+      "searchSchedules": "Search schedules",
+      "searchRuns": "Search runs",
+      "searchPlaceholder": "Search by name, automation, group or time…",
+      "searchRunsPlaceholder": "Search runs by schedule or automation…",
+      "clearSearch": "Clear search",
+      "order": "Order",
+      "sortNext": "Next run first",
+      "sortName": "Name",
+      "sortLast": "Last run first",
+      "dragHint": "Drag a schedule onto a group in the sidebar to move it",
+      "loading": "Loading schedules…",
+      "statusLoading": "Loading…",
+      "statusNotLoaded": "Not loaded",
+      "statusMatch": {
+        "one": "{count} schedule matches “{query}”",
+        "other": "{count} schedules match “{query}”"
+      },
+      "statusShowing": {
+        "one": "Showing {shown} of {count} schedule",
+        "other": "Showing {shown} of {count} schedules"
+      },
+      "statusNoMatches": "No matches",
+      "shownOf": "{shown} of {total}",
+      "editGroupNamed": "Edit group {name}",
+      "later": "Later"
+    },
+    "head": {
+      "editGroup": "Edit group",
+      "prompt": "Prompt a schedule",
+      "promptTip": "Describe the schedule to Claude Code in a side panel",
+      "newSchedule": "New schedule",
+      "upcoming": {
+        "one": "{count} schedule runs in the next 24 hours, each at its next run, soonest first.",
+        "other": "{count} schedules run in the next 24 hours, each at its next run, soonest first."
+      },
+      "upcomingNone": "Nothing runs in the next 24 hours.",
+      "attention": "Active schedules whose last run failed or that are late. Open one to see why.",
+      "paused": "Paused schedules keep their settings. Turn one on to put it back on its timetable.",
+      "activity": "The latest run of each schedule, newest first. Open one to see its schedule.",
+      "ungrouped": "Schedules in no group. Drag one onto a group in the sidebar to file it.",
+      "groupLaunch": "Group launch settings: {settings}"
+    },
+    "overrides": {
+      "context": "context {value}",
+      "thinking": "thinking {value}",
+      "mcp": "MCP {value}",
+      "browserOn": "browser on",
+      "browserOff": "browser off"
+    },
+    "note": {
+      "showingBefore": "{error} Showing what loaded before.",
+      "tryAgain": "Try again",
+      "dismiss": "Dismiss"
+    },
+    "load": {
+      "failed": "The {lists} did not load: {reasons}.",
+      "list": {
+        "schedules": "schedules",
+        "automations": "automations",
+        "groups": "groups"
+      },
+      "timersFailed": "The timers did not load: {reasons}.",
+      "noAnswer": "no answer within {seconds} seconds",
+      "unexpected": "an unexpected answer"
+    },
+    "loadFailed": {
+      "title": "Schedules could not be loaded",
+      "notEverything": "Not everything loaded.",
+      "waitingSchedule": "The new schedule opens once they load.",
+      "waitingGroup": "The new group opens once they load."
+    },
+    "cliReport": {
+      "clearing": "Clearing the old CLI's settings from the group's schedules…",
+      "nowRuns": "The group now runs {cli}.",
+      "noCli": "The group no longer sets a CLI.",
+      "cleared": "Cleared the old CLI's settings on {names}.",
+      "noneLeft": "None of its schedules had settings of the old CLI left.",
+      "changed": {
+        "one": "{names} changed meanwhile and kept its settings.",
+        "other": "{names} changed meanwhile and kept their settings."
+      },
+      "failed": {
+        "one": "{names} could not be checked or updated and kept its settings.",
+        "other": "{names} could not be checked or updated and kept their settings."
+      },
+      "open": {
+        "one": "Open it to choose its settings.",
+        "other": "Open them to choose their settings."
+      }
+    },
+    "empty": {
+      "none": "No schedules yet",
+      "noneText": "A schedule launches one of your automations on a timetable.",
+      "noMatch": "No schedules match “{query}”",
+      "elsewhere": "Some do in other views.",
+      "tryAnother": "Try another word, or clear the search.",
+      "searchAll": "Search all schedules",
+      "attention": "Nothing needs attention",
+      "attentionText": "The last run of every active schedule worked, and none is late.",
+      "paused": "No paused schedules",
+      "pausedText": "Every schedule is on its timetable.",
+      "upcoming": "Nothing runs in the next 24 hours",
+      "upcomingText": "Active schedules show here once their next run is less than a day away.",
+      "ungrouped": "Every schedule is in a group",
+      "group": "No schedules in this group yet",
+      "groupText": "Drag one onto the group in the sidebar, or create one here.",
+      "noRunMatch": "No runs match “{query}”",
+      "noRuns": "No runs yet",
+      "noRunsText": "Each schedule's latest run shows here once it has run."
+    },
+    "row": {
+      "paused": "Paused",
+      "switchLabel": "Run {name} on schedule",
+      "pause": "Pause",
+      "resume": "Resume"
+    },
+    "detail": {
+      "runs": "Runs",
+      "automation": "Automation",
+      "missingAutomation": "Missing automation",
+      "timetable": "Timetable",
+      "nextRun": "Next run",
+      "lastRun": "Last run",
+      "error": "Error",
+      "detail": "Detail",
+      "runCount": "Runs so far",
+      "timeZone": "Time zone",
+      "dayThemes": "Day themes",
+      "themedDaysOnly": "(runs on these days only)",
+      "launchSettings": "Launch settings",
+      "source": {
+        "group": "(group)",
+        "automation": "(automation)",
+        "default": "(default)"
+      },
+      "group": "Group",
+      "groupOf": "Group of {name}",
+      "runNow": "Run now",
+      "runNowTip": "Start one run now; the timetable is unchanged",
+      "editPrompt": "Edit prompt",
+      "editPromptTip": "Open its automation in Automation Studio",
+      "editSchedule": "Edit schedule",
+      "delete": "Delete…"
+    },
+    "activity": {
+      "listLabel": "Latest runs",
+      "rowLabel": "{name}: {result} {ago}. Show it in All schedules",
+      "next": "Next",
+      "statusMatch": {
+        "one": "{count} run matches “{query}”",
+        "other": "{count} runs match “{query}”"
+      }
+    },
+    "timers": {
+      "sub": "Run an automation, or a saved schedule, once after a delay.",
+      "waiting": "Waiting to run",
+      "runOnce": "Run an automation once",
+      "usesBrowser": "Uses the browser",
+      "startIn": "Start in",
+      "delay": "Delay",
+      "presetMinutes": "{n} min",
+      "presetHours": "{n} h",
+      "minutesPlaceholder": "min",
+      "minutesFromNow": "Minutes from now",
+      "start": "Start timer",
+      "fireSaved": "Fire a saved schedule once",
+      "fireSavedIntro": "Runs it with its own settings; its timetable is unchanged.",
+      "schedule": "Schedule",
+      "chooseSchedule": "Choose a schedule…",
+      "set": "Set timer",
+      "savedOnce": "Saved schedule, once",
+      "automationOnce": "Automation, once",
+      "cancel": "Cancel",
+      "cancelFor": "Cancel the timer for {name}",
+      "none": "No timers are waiting.",
+      "loading": "Loading timers…",
+      "firing": "firing",
+      "countdownHours": "{h}h {m}m",
+      "countdownHour": "{h}h",
+      "countdownMinutes": "{m}m"
+    },
+    "form": {
+      "automation": "Automation",
+      "chooseAutomation": "Choose an automation…",
+      "cli": "CLI",
+      "model": "Model",
+      "context": "Context",
+      "thinking": "Thinking",
+      "mcp": "MCP tools",
+      "account": "OpenAI account",
+      "browser": "Browser",
+      "group": "Group",
+      "name": "Name",
+      "launchOverrides": "Launch overrides"
+    },
+    "launch": {
+      "default": "Default",
+      "templateDefault": "Template default",
+      "templateOrDefault": "Template/default",
+      "templateOrGroupDefault": "Template/group default",
+      "noOverride": "No override",
+      "alwaysOn": "Always on",
+      "alwaysOff": "Always off",
+      "saved": "{value} (saved)",
+      "unavailable": "{value} (unavailable — choose another)",
+      "loading": "Loading...",
+      "loadingValue": "{value} (loading...)",
+      "mcpTools": "{label} - {count} tools",
+      "effortOption": "{level} - {desc}",
+      "accountPlan": "{label} ({plan})",
+      "contextProviderDefault": "Provider default",
+      "contextDefaultSize": "Default ({size})",
+      "contextExtendedSize": "Extended ({size})",
+      "word": {
+        "off": "Off",
+        "default": "Default",
+        "low": "Low",
+        "medium": "Med",
+        "high": "High",
+        "xhigh": "XHigh",
+        "max": "Max",
+        "ultra": "Ultra",
+        "noThinking": "No thinking",
+        "minimal": "Minimal",
+        "balanced": "Balanced",
+        "deep": "Deep",
+        "veryDeep": "Very deep",
+        "maximum": "Maximum",
+        "configDefault": "Config default",
+        "modelDefault": "Model default",
+        "light": "Light",
+        "maximumDelegated": "Maximum, with delegation"
+      }
+    },
+    "editor": {
+      "back": "Back to the list",
+      "backTip": "Back (Esc)",
+      "cancel": "Cancel",
+      "save": "Save changes"
+    },
+    "groupEditor": {
+      "newTitle": "New group",
+      "newSub": "Groups keep related schedules together, and can share launch settings.",
+      "namePlaceholder": "Twitter cadence",
+      "colour": "Colour",
+      "oneAtATimeHelp": "Schedules in every group set to one at a time take turns: while one runs, the others wait.",
+      "launchIntro": "Apply to every schedule in this group. A schedule's own setting wins.",
+      "order": "Order",
+      "position": "Position {position} of {count}",
+      "moveUp": "Move up",
+      "moveDown": "Move down",
+      "delete": "Delete",
+      "membersStay": {
+        "one": "Its {count} schedule moves to Ungrouped and keeps running.",
+        "other": "Its {count} schedules move to Ungrouped and keep running."
+      },
+      "empty": "The group is empty.",
+      "deleteGroup": "Delete group…",
+      "create": "Create group"
+    },
+    "scheduleEditor": {
+      "newSub": "Launches one of your automations on a timetable.",
+      "namePlaceholder": "Morning post",
+      "automationOption": "{name} ({category})",
+      "customCategory": "custom",
+      "active": "Active",
+      "activeHelp": "Turn it off to pause the schedule without deleting it.",
+      "when": "When it runs",
+      "cron": "Cron expression",
+      "cronHelp": "A cron expression has five fields: minute, hour, day of month, month, day of week.",
+      "presets": "Presets",
+      "presetGroup": "{group} presets",
+      "launchIntro": "Leave a setting on its default to use the group's, then the automation's.",
+      "optional": "optional",
+      "dayThemesIntro": "Extra context added to the run on that weekday, such as a topic for Mondays. Once any day has a theme, the schedule runs only on the days that have one.",
+      "themeLabel": "Theme: {label}",
+      "removeTheme": "Remove the {day} theme",
+      "removeThemeTip": "Remove this day's theme",
+      "themePlaceholder": "Extra context for {day} runs (optional)",
+      "create": "Create schedule"
+    },
+    "presets": {
+      "group": {
+        "frequency": "Frequency",
+        "daily": "Daily",
+        "weekly": "Weekly"
+      },
+      "every15min": "Every 15 min",
+      "every30min": "Every 30 min",
+      "everyHour": "Every hour",
+      "every2hours": "Every 2 hours",
+      "every6hours": "Every 6 hours",
+      "twiceADay": "Twice a day",
+      "threeTimesADay": "Three times a day",
+      "weekdays0900": "Weekdays 09:00",
+      "weekdaysTwice": "Weekdays twice",
+      "weekends1000": "Weekends 10:00",
+      "monWedFri": "Mon, Wed, Fri",
+      "tueThu": "Tue, Thu"
+    },
+    "confirm": {
+      "scheduleTitle": "Delete this schedule?",
+      "scheduleText": "It stops running and cannot be restored. The automation it launches stays in Automation Studio.",
+      "scheduleAccept": "Delete schedule",
+      "groupTitle": "Delete this group?",
+      "groupAccept": "Delete group"
+    },
+    "prompt": {
+      "title": "Prompt a Schedule",
+      "sub": "Start the schedule draft in a sidepanel.",
+      "close": "Close",
+      "ready": "Ready",
+      "planned": "Planned",
+      "multiProvider": "Multi-provider",
+      "tabLabel": "Schedule Wizard"
+    },
+    "toast": {
+      "notLoaded": "The schedules have not loaded yet: save once they have",
+      "modelUnavailable": "This model is unavailable for the selected account",
+      "contextUnavailable": "This context window is unavailable for the selected model and account",
+      "noChanges": "No changes to save",
+      "nameRequired": "Give the schedule a name",
+      "automationRequired": "Choose the automation it launches",
+      "cronRequired": "Enter a cron expression with five fields",
+      "updated": "Schedule updated",
+      "created": "Schedule created",
+      "saveFailed": "Save failed: {error}",
+      "noAutomation": "No automation linked to this schedule",
+      "themeRemoved": "{day} theme removed",
+      "movedTo": "Moved to {group}",
+      "aGroup": "group",
+      "moveFailed": "Move failed: {error}",
+      "resumed": "{name} is back on its timetable",
+      "paused": "{name} is paused",
+      "toggleFailed": "Toggle failed: {error}",
+      "launching": "Launching schedule…",
+      "runFailed": "Run failed: {error}",
+      "deleted": "Schedule deleted",
+      "groupDeleted": "Group deleted",
+      "deleteFailed": "Delete failed: {error}",
+      "groupDeleteFailed": "Group delete failed: {error}",
+      "groupNameRequired": "Group name is required",
+      "groupCreated": "Group created",
+      "groupFailed": "Group failed: {error}",
+      "groupUpdated": "Group updated",
+      "groupUpdatedKept": {
+        "one": "Group updated. {count} schedule kept the old CLI's settings: the group's page names it",
+        "other": "Group updated. {count} schedules kept the old CLI's settings: the group's page names them"
+      },
+      "groupUpdateFailed": "Group update failed: {error}",
+      "reorderFailed": "Reorder failed: {error}",
+      "comingSoon": "Coming soon — Claude Code only for now",
+      "panelFailed": "Failed to open Claude panel: {error}",
+      "chooseAutomation": "Choose an automation first",
+      "chooseDelay": "Choose a delay or enter minutes",
+      "runningNow": "Running now: {name}",
+      "timerSet": "Timer set: {name}",
+      "runNowFailed": "Run now failed: {error}",
+      "timerFailed": "Timer failed: {error}",
+      "timerCancelled": "Timer cancelled",
+      "cancelFailed": "Cancel failed: {error}",
+      "chooseSchedule": "Choose a schedule",
+      "minutesRequired": "Enter the minutes from now",
+      "scheduleTimerSet": "Schedule timer set",
+      "fired": "Schedule fired: {name}",
+      "scheduleFailed": "Schedule failed: {reason}",
+      "timerFired": "Timer fired: {name}"
+    },
+    "view": {
+      "everyDay": "Every day",
+      "weekdays": "Weekdays",
+      "weekends": "Weekends",
+      "dayRange": "{from}–{to}",
+      "monthDays": {
+        "one": "Day {days} of every month",
+        "other": "Days {days} of every month"
+      },
+      "everyMinutes": {
+        "one": "every minute",
+        "other": "every {count} minutes"
+      },
+      "everyHoursAt": {
+        "one": "every hour at :{minute}",
+        "other": "every {count} hours at :{minute}"
+      },
+      "everyHourBetween": "every hour from {from} to {to}",
+      "daysAt": "{days} at {times}",
+      "daysEvery": "{days}, {every}",
+      "listAnd": "{list} and {last}",
+      "dayShort": {
+        "sun": "Sun",
+        "mon": "Mon",
+        "tue": "Tue",
+        "wed": "Wed",
+        "thu": "Thu",
+        "fri": "Fri",
+        "sat": "Sat"
+      },
+      "dayLong": {
+        "sun": "Sunday",
+        "mon": "Monday",
+        "tue": "Tuesday",
+        "wed": "Wednesday",
+        "thu": "Thursday",
+        "fri": "Friday",
+        "sat": "Saturday"
+      },
+      "runNever": "Not run yet",
+      "runCompleted": "Completed",
+      "runStarted": "Started",
+      "runAutomationMissing": "Automation missing",
+      "runAutomationMissingReason": "The automation this schedule launches no longer exists.",
+      "runFailed": "Failed",
+      "runFailedReason": "The run failed.",
+      "runStopped": "Stopped",
+      "runStoppedByYou": "Stopped by you",
+      "runInterrupted": "Interrupted",
+      "notScheduled": "Not scheduled",
+      "dueNow": "Due now",
+      "overdue": "Overdue",
+      "inSeconds": "in {n} s",
+      "inMinutes": "in {n} min",
+      "inHoursMinutes": "in {h} h {m} min",
+      "inHours": "in {h} h",
+      "inDaysHours": "in {d} d {h} h",
+      "inDays": "in {d} d",
+      "justNow": "just now",
+      "minutesAgo": "{n} min ago",
+      "hoursAgo": "{n} h ago",
+      "yesterdayAgo": "yesterday",
+      "daysAgo": "{n} d ago",
+      "today": "Today",
+      "tomorrow": "Tomorrow",
+      "yesterday": "Yesterday",
+      "dayAt": "{day} {time}",
+      "tomorrowAt": "Tomorrow {time}",
+      "weekdayAt": "{day} {time}",
+      "factCli": "CLI",
+      "factModel": "Model",
+      "factContext": "Context",
+      "factThinking": "Thinking",
+      "factMcp": "MCP tools",
+      "factAccount": "OpenAI account",
+      "factBrowser": "Browser",
+      "valueDefault": "Default",
+      "valueOn": "On",
+      "valueOff": "Off",
+      "context1m": "1M tokens",
+      "contextExtended": "Extended",
+      "effort": {
+        "none": "None",
+        "minimal": "Minimal",
+        "low": "Low",
+        "medium": "Medium",
+        "high": "High",
+        "xhigh": "Xhigh",
+        "max": "Max",
+        "ultra": "Ultra",
+        "thinking": "Thinking"
+      }
+    }
   }
 }

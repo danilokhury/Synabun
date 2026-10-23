@@ -59,14 +59,17 @@ export function claudeAutomationSupportsOneMillion(model) {
   return !/(haiku|claude-3|opus-4-[0-5](?:-|$)|opus-4-\d{8}|opus-4$)/.test(id);
 }
 
+// `size` is the window as a short label ("272K"), '' when unknown: a page that words the choice in
+// another language puts it in its own sentence (the Schedules window).
 export function automationContextOptions(profile, modelId, models = []) {
   const id = normalizeAutomationSelection(profile, modelId).model;
   const model = models.find((entry) => entry?.id === id);
   const baseSize = contextSizeLabel(model?.contextWindow);
-  const options = [{ id: 'default', label: baseSize ? `Default (${baseSize})` : 'Provider default' }];
+  const options = [{ id: 'default', label: baseSize ? `Default (${baseSize})` : 'Provider default', size: baseSize }];
   if (profile === 'codex' && model?.supportsExtendedContext === true
     && Number(model.maxContextWindow) > Number(model.contextWindow)) {
-    options.push({ id: 'extended', label: `Extended (${contextSizeLabel(model.maxContextWindow)})` });
+    const size = contextSizeLabel(model.maxContextWindow);
+    options.push({ id: 'extended', label: `Extended (${size})`, size });
   } else if (profile === 'claude-code'
     && (models.some((entry) => entry?.id === `${id}[1m]`) || claudeAutomationSupportsOneMillion(model))) {
     options.push({ id: '1m', label: '1M' });

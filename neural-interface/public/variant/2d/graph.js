@@ -1502,11 +1502,14 @@ function _onDblClick(e) {
   }
 }
 
+// A card has its own menu (context-menu.js): the event is taken only then. Anywhere else on the graph (its empty
+// space, a region, while focus mode pauses it) it is left to the app's right-click menu, which adds the graph's
+// own rows (main.js registers that area): taking it there would leave the user with no menu at all.
 function _onContextMenu(e) {
-  if (_focusPaused) { e.preventDefault(); return; }
-  e.preventDefault();
+  if (_focusPaused) return;
   const hit = _hitTest(e.clientX, e.clientY);
   if (hit && hit.type === 'card') {
+    e.preventDefault();
     emit('node-context-menu', { node: hit.node, event: e });
   }
 }

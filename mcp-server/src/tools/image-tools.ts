@@ -2,7 +2,7 @@
  * General-purpose image staging MCP tools.
  * Browse, list, and manage images in SynaBun's data/images/ directory.
  * Images arrive via paste in the Neural Interface chat area.
- * Any skill or tool can use staged images (Leonardo references, social posts, etc.).
+ * Any skill or tool can use staged images (social posts, uploads, etc.).
  */
 
 import { z } from 'zod/v3';

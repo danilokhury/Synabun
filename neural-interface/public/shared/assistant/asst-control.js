@@ -25,11 +25,22 @@
 // Submit answers them, Skip lets the brain go on its assumptions; the reply is
 // { kind:'clarify', behavior, answers: string[][] } and the server's clarifier
 // (lib/assistant-clarify.js) owns it, never the brain.
+//
+// Every card that asks (question, elicitation, clarify) is drawn by the mascot,
+// like the follow-ups card (asst-ask.js): its face (`ask`, live while it is
+// the newest open card of the panel) beside its first bubble, the questions in
+// its bubbles, the options as numbered rows (1-9, arrows, Enter; Esc goes to
+// the composer). Only the drawing changed: what each provider is sent is built by
+// buildControlResponse from the same answers as before.
 
 import { normalizeProvider } from './asst-state.js';
 import { sanitizeInto } from './asst-sanitize.js';
 import { fill, maskEcho, redactInput } from './asst-tool-kinds.js';
 import { mascotSvg, paintMascot, stillFrame } from '../synabun-mascot.js';
+import { splitRecommended } from './asst-followups.js';
+import {
+  askOption, createPresenter, injectAskStyles, keyRange, setOptionChecked, wireCardKeys, wireGaze, wireOptionGroup, wireWatch,
+} from './asst-ask.js';
 import {
   SYNABUN_CHOICE_MARKER,
   SYNABUN_OTHER_VALUE,
@@ -691,6 +702,17 @@ export function renderControlCard(container, normalized, hooks = {}) {
   card.setAttribute('role', 'group');
   card.setAttribute('aria-label', t(`assistant.control.${n.kind}`, n.title || n.kind));
 
+  // A card that asks is the mascot asking (asst-ask.js): its face beside its first bubble (renderQuestionBody).
+  const asking = n.kind === CONTROL_KINDS.QUESTION || n.kind === CONTROL_KINDS.ELICITATION || n.kind === CONTROL_KINDS.CLARIFY;
+  const presenter = asking ? createPresenter({ pose: 'ask', waits: true, entrance: 'pulse' }) : null;
+  if (presenter) {
+    injectAskStyles();
+    card.classList.add('asst-ask');
+  }
+  // What the renderer reads to make this card's face live while it is the newest open card (asst-render.js).
+  const ask = presenter ? { el: card, presenter, isOpen: () => !state.resolved, onChange: null } : null;
+  if (ask) card._ask = ask;
+
   const head = el('div', 'asst-control-head');
   const kindLabel = el('span', 'asst-control-kind', t(`assistant.control.${n.kind}`, n.title || n.kind));
   head.appendChild(kindLabel);
@@ -710,11 +732,14 @@ export function renderControlCard(container, normalized, hooks = {}) {
   card.appendChild(body);
 
   const state = { resolved: false, answers: n.questions.map(() => ({ selected: new Set(), custom: '' })), bashInput: null, denyMsg: null, checkedSuggestions: new Set() };
+  // Back to the message box (Esc in the card, and after an answer the card had focus for).
+  const toComposer = () => { try { hooks.focusComposer?.(); } catch { /* the host is gone */ } };
+  let groups = [];
 
   if (n.kind === CONTROL_KINDS.PERMISSION) renderPermissionBody(body, n, state, t);
   else if (n.kind === CONTROL_KINDS.COMPUTER) body.appendChild(el('div', 'asst-control-message', t('assistant.control.computerBody', n.detail)));
   else if (n.kind === CONTROL_KINDS.PLAN) renderPlanBody(body, n, hooks);
-  else renderQuestionBody(body, n, state, t);
+  else groups = renderQuestionBody(body, n, state, t, { presenter, onEscape: toComposer });
 
   const actions = el('div', 'asst-control-actions');
   const denyMsg = el('textarea', 'asst-control-deny-msg');
@@ -726,11 +751,15 @@ export function renderControlCard(container, normalized, hooks = {}) {
   denyMsg.setAttribute('aria-label', denyMsg.placeholder);
   denyMsg.rows = 1;
   denyMsg.hidden = n.kind !== CONTROL_KINDS.PLAN;
-  denyMsg.addEventListener('keydown', (e) => e.stopPropagation());
+  denyMsg.addEventListener('keydown', (e) => {
+    if (presenter && e.key === 'Escape') { e.preventDefault(); toComposer(); }
+    e.stopPropagation();
+  });
   state.denyMsg = denyMsg;
 
   const buttons = [];
-  const finish = (label) => {
+  /** `answered`: the user answered here (the mascot hops and settles on its "got it" face); else it just goes still. */
+  const finish = (label, answered = false) => {
     state.resolved = true;
     card.classList.remove('active');
     card.classList.add('resolved');
@@ -739,7 +768,13 @@ export function renderControlCard(container, normalized, hooks = {}) {
     card.querySelectorAll('button, input, textarea').forEach(node => { if (!node.classList?.contains('asst-reveal')) node.disabled = true; });
     status.textContent = label;
     status.hidden = false;
+    if (presenter) {
+      presenter.settle(answered ? 'success' : 'idle', {}, { hop: answered });
+      presenter.el.classList.toggle('is-answered', answered);
+    }
+    try { ask?.onChange?.(); } catch { /* the renderer is gone */ }
   };
+  const focusInside = () => { try { return !!card.contains?.(globalThis.document?.activeElement); } catch { return false; } };
 
   for (const action of controlActions(n)) {
     const btn = el('button', `asst-btn asst-btn-${action.tone}`);
@@ -757,6 +792,7 @@ export function renderControlCard(container, normalized, hooks = {}) {
     }
     btn.addEventListener('click', () => {
       if (state.resolved) return;
+      const hadFocus = presenter && focusInside();
       const decision = { ...action.decision };
       if (decision.behavior === 'deny' && denyMsg.value.trim()) decision.message = denyMsg.value.trim();
       if (n.kind === CONTROL_KINDS.PERMISSION && decision.behavior === 'allow') {
@@ -769,16 +805,28 @@ export function renderControlCard(container, normalized, hooks = {}) {
         decision.answers = state.answers.map(a => (a.custom ? [a.custom] : [...a.selected]));
       }
       if (n.kind === CONTROL_KINDS.CLARIFY) {
-        finish(decision.behavior === 'allow' ? t('assistant.control.state.answered', 'Answered') : t('assistant.control.state.skipped', 'Skipped'));
+        finish(decision.behavior === 'allow' ? t('assistant.control.state.answered', 'Answered') : t('assistant.control.state.skipped', 'Skipped'), decision.behavior === 'allow');
+      } else if (presenter) {
+        // A question is answered or declined, not allowed or denied (the reply is the same as before).
+        finish(decision.behavior === 'allow' ? t('assistant.control.state.answered', 'Answered') : t('assistant.control.state.declined', 'Declined'), decision.behavior === 'allow');
       } else {
         finish(decision.behavior === 'allow'
           ? (decision.always ? t('assistant.control.state.always', 'Always') : t('assistant.control.state.allowed', 'Allowed'))
-          : t('assistant.control.state.denied', 'Denied'));
+          : t('assistant.control.state.denied', 'Denied'), !!presenter && decision.behavior === 'allow');
       }
       hooks.onRespond?.(n, decision);
+      if (hadFocus) toComposer();
     });
     buttons.push(btn);
     actions.appendChild(btn);
+  }
+  if (presenter) {
+    // The keys, said once focus is in the card (asst-ask-styles.js).
+    const most = Math.max(0, ...groups.map((g) => g.buttons.length));
+    const keys = el('span', 'asst-ask-keys', most
+      ? fill(t('assistant.control.keys', '{keys} to pick · Enter to answer · Esc for the message box', { keys: keyRange(most) }), { keys: keyRange(most) })
+      : t('assistant.control.keysText', 'Enter to answer · Esc for the message box'));
+    actions.appendChild(keys);
   }
   state.updateSubmit = () => {
     if (!state.submitBtn) return;
@@ -795,6 +843,7 @@ export function renderControlCard(container, normalized, hooks = {}) {
 
   card.appendChild(denyMsg);
   card.appendChild(actions);
+  if (presenter) wireAsking(card, { groups, state, presenter, toComposer });
   if (container) container.appendChild(card);
   try { hooks.scrollEnd?.(); } catch { /* ignore */ }
 
@@ -804,7 +853,59 @@ export function renderControlCard(container, normalized, hooks = {}) {
     lock(label) { if (!state.resolved) finish(label || t('assistant.control.state.resolved', 'Resolved')); },
     // Answered here, but the request closed before the answer reached it: the answer did nothing.
     expire(label) { finish(label || t('assistant.control.state.expired', 'Expired')); card.classList.add('expired'); },
+    // The mascot's part, for the renderer (null on a card that does not ask).
+    ask,
   };
+}
+
+/**
+ * A question card's keys and gaze (asst-ask.js). Each question's options are one tab stop (arrows move;
+ * a radio follows focus, as radios do); 1-9 pick an option of the question focus is in (else the first one
+ * still unanswered); Enter on a radio picks it and moves on: to the next question still unanswered, else
+ * Submit, which a card of one question presses at once; Esc goes back to the composer. The mascot looks
+ * at the option pointed at or focused, and watches a typed answer.
+ */
+function wireAsking(card, { groups, state, presenter, toComposer }) {
+  const active = () => { try { return globalThis.document?.activeElement || null; } catch { return null; } };
+  const done = (g) => !!(state.answers[g.qIdx]?.custom || state.answers[g.qIdx]?.selected.size);
+  const current = () => groups.find((g) => g.section.contains?.(active())) || groups.find((g) => !done(g)) || groups[0] || null;
+  const focus = (node) => { try { node?.focus?.(); } catch { /* not focusable here */ } };
+  const focusGroup = (g) => focus(g.buttons.find((b) => b.classList.contains('selected')) || g.buttons[0] || g.input);
+  /** After a pick by key: the next question still unanswered, else Submit (pressed at once for a lone question). */
+  function advance(g) {
+    const after = groups.slice(groups.indexOf(g) + 1).find((x) => !done(x)) || groups.find((x) => x !== g && !done(x));
+    if (after) { focusGroup(after); return; }
+    const submit = state.submitBtn;
+    if (!submit || submit.disabled) return;
+    if (groups.length === 1) submit.click();
+    else focus(submit);
+  }
+  for (const g of groups) {
+    if (!g.options || !g.buttons.length) continue;
+    wireOptionGroup(g.options, { options: () => g.buttons, onMove: (btn) => { if (!g.q.multiple && !btn.classList.contains('selected')) btn.click(); } });
+  }
+  wireCardKeys(card, {
+    options: () => current()?.buttons || [],
+    onPick: (_i, btn) => {
+      const g = current();
+      if (state.resolved || !btn || !g) return;
+      focus(btn);
+      btn.click();
+      if (!g.q.multiple) advance(g);
+    },
+    onComposer: toComposer,
+    onEnter: (e) => {
+      if (state.resolved) return false;
+      const g = groups.find((x) => x.buttons.includes(e.target));
+      if (!g || g.q.multiple) return false; // a checkbox toggles, a button presses: their own Enter
+      if (!e.target.classList.contains('selected')) e.target.click();
+      advance(g);
+      return true;
+    },
+  });
+  wireGaze(card, presenter);
+  presenter.setHome(groups[0]?.buttons[0] || groups[0]?.input || null);
+  for (const g of groups) if (g.input) wireWatch(g.input, presenter);
 }
 
 /**
@@ -922,52 +1023,79 @@ function renderPlanBody(body, n, hooks) {
   body.appendChild(planEl);
 }
 
-function renderQuestionBody(body, n, state, t) {
-  if (n.message) body.appendChild(el('div', 'asst-control-message', n.message));
+/**
+ * The questions of a card that asks, as the mascot asks them: its words in bubbles (the card's message
+ * first, then each question), the first beside its face with the notch pointing at it, each question's
+ * options as numbered rows (asst-ask.js askOption, radios or checkboxes), and a field for a typed answer.
+ * Picks and typed answers go to `state.answers` as they always did. → the question groups, for the keys.
+ */
+function renderQuestionBody(body, n, state, t, { presenter = null, onEscape = null } = {}) {
+  let lead = true;
+  /** A bubble; the first one shares a stage row with the mascot's face. */
+  const speech = (node) => {
+    node.classList.add('asst-ask-bubble');
+    if (!lead) return node;
+    lead = false;
+    node.classList.add('is-lead');
+    if (!presenter) return node;
+    const stage = el('div', 'asst-ask-stage');
+    stage.appendChild(presenter.el);
+    stage.appendChild(node);
+    return stage;
+  };
+  // Nothing for it to say (no message, no question text): the face still leads the card.
+  if (presenter && !n.message && !n.questions.some((q) => q.text || q.header)) body.appendChild(presenter.el);
+  const groups = [];
+  if (n.message) body.appendChild(speech(el('div', 'asst-control-message', n.message)));
   n.questions.forEach((q, qIdx) => {
     const section = el('div', 'asst-control-q');
-    if (q.header) section.appendChild(el('div', 'asst-control-q-header', q.header));
-    if (q.text && q.text !== q.header) section.appendChild(el('div', 'asst-control-q-text', q.text));
+    // The mascot says the question; a header that only repeats it is not said twice.
+    if (q.header && q.text && q.text !== q.header) section.appendChild(el('div', 'asst-control-q-header', q.header));
+    if (q.text || q.header) section.appendChild(speech(el('div', 'asst-control-q-text', q.text || q.header)));
     if (q.multiple) section.appendChild(el('div', 'asst-control-q-hint', t('assistant.control.multiHint', 'Select all that apply')));
     const optionButtons = [];
     let customInput = null;
+    let opts = null;
     if (q.options.length) {
-      const opts = el('div', `asst-control-options${q.multiple ? ' multi' : ''}`);
+      opts = el('div', `asst-control-options${q.multiple ? ' multi' : ''}`);
       opts.setAttribute('role', q.multiple ? 'group' : 'radiogroup');
       opts.setAttribute('aria-label', q.header || q.text || t('assistant.control.question', 'Question'));
-      for (const opt of q.options) {
-        const btn = el('button', 'asst-control-option');
-        btn.type = 'button';
-        btn.setAttribute('role', q.multiple ? 'checkbox' : 'radio');
-        btn.setAttribute('aria-checked', 'false');
-        btn.appendChild(el('span', 'asst-control-option-label', opt.label));
-        if (opt.description) btn.appendChild(el('span', 'asst-control-option-desc', opt.description));
+      q.options.forEach((opt, oIdx) => {
+        // Shown without a "(Recommended)" suffix, badged instead; the answer keeps the label as written.
+        const shown = splitRecommended(opt.label);
+        const btn = askOption({
+          label: shown.label,
+          description: opt.description,
+          index: oIdx,
+          role: q.multiple ? 'checkbox' : 'radio',
+          badge: shown.recommended ? t('assistant.followups.recommended', 'Recommended') : '',
+        });
+        btn.classList.add('asst-control-option');
         btn.addEventListener('click', () => {
           if (state.resolved) return;
           const ans = state.answers[qIdx];
           ans.custom = '';
           if (customInput) customInput.value = '';
+          const was = ans.selected.has(opt.label);
           if (q.multiple) {
-            if (ans.selected.has(opt.label)) ans.selected.delete(opt.label); else ans.selected.add(opt.label);
+            if (was) ans.selected.delete(opt.label); else ans.selected.add(opt.label);
           } else {
             ans.selected = new Set([opt.label]);
           }
-          for (const b of optionButtons) {
-            const on = ans.selected.has(b.dataset.label);
-            b.classList.toggle('selected', on);
-            b.setAttribute('aria-checked', on ? 'true' : 'false');
-          }
+          for (const b of optionButtons) setOptionChecked(b, ans.selected.has(b.dataset.label));
+          // The mascot answers the pick: a pop for a tick, a nod for a choice.
+          if (!was) presenter?.react(q.multiple ? 'pop' : 'nod');
           state.updateSubmit?.();
         });
         btn.dataset.label = opt.label;
         optionButtons.push(btn);
         opts.appendChild(btn);
-      }
+      });
       section.appendChild(opts);
     }
     customInput = document.createElement('input');
     customInput.type = q.type === 'number' || q.type === 'integer' ? 'number' : 'text';
-    customInput.className = 'asst-control-custom';
+    customInput.className = 'asst-control-custom asst-ask-input';
     customInput.placeholder = q.options.length
       ? t('assistant.control.customAnswer', 'Or type your own answer…')
       : t('assistant.control.typeAnswer', 'Type your answer…');
@@ -977,16 +1105,18 @@ function renderQuestionBody(body, n, state, t) {
       ans.custom = customInput.value.trim();
       if (ans.custom) {
         ans.selected.clear();
-        for (const b of optionButtons) { b.classList.remove('selected'); b.setAttribute('aria-checked', 'false'); }
+        for (const b of optionButtons) setOptionChecked(b, false);
       }
       state.updateSubmit?.();
     });
     customInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && state.submitBtn && !state.submitBtn.disabled) { e.preventDefault(); state.submitBtn.click(); }
+      if (e.key === 'Escape' && onEscape) { e.preventDefault(); onEscape(); }
       e.stopPropagation();
     });
     section.appendChild(customInput);
     body.appendChild(section);
+    groups.push({ q, qIdx, section, options: opts, buttons: optionButtons, input: customInput });
   });
   // A clarify card also shows what the assistant will assume for the rest, so the user can correct it.
   const assumptions = n.clarify?.assumptions || [];
@@ -994,6 +1124,7 @@ function renderQuestionBody(body, n, state, t) {
     const list = assumptions.join(' · ');
     body.appendChild(el('div', 'asst-control-assume', t('assistant.control.assuming', `Otherwise I'll assume: ${list}`, { list })));
   }
+  return groups;
 }
 
 export function describeSuggestion(s) {

@@ -15,8 +15,8 @@ import { emit } from './state.js';
 import { getLocale, t } from './i18n.js';
 import { desktopBridge } from './desktop-bridge.js';
 import {
-  desktopCheckOutcome, desktopUpdateMeta, desktopUpdateNotice, desktopUpdateTooltip, desktopUpdateView, fillDesktopCopy, readDesktopUpdateState,
-  versionDataFromDesktop,
+  desktopCheckOutcome, desktopRestartButton, desktopUpdateMeta, desktopUpdateNotice, desktopUpdateTooltip, desktopUpdateView, fillDesktopCopy,
+  readDesktopUpdateState, versionDataFromDesktop,
 } from './desktop-update-view.js';
 
 const $ = (id) => document.getElementById(id);
@@ -83,6 +83,25 @@ function applyTopRightButton(data) {
       ? desktopUpdateTooltip(_desktopState, { t: desktopT })
       : `SynaBun update available: v${data.current} → v${data.latest} (${srcLabel})`;
   }
+  // The desktop app with an update downloaded: the button says Restart to update, as Discord's green one does.
+  const restart = has && data.desktop ? desktopRestartButton(_desktopState, { t: desktopT }) : null;
+  btn.classList.toggle('update-ready', !!restart);
+  let label = btn.querySelector('.update-ready-label');
+  if (restart) {
+    if (!label) {
+      label = document.createElement('span');
+      label.className = 'update-ready-label';
+      btn.appendChild(label);
+    }
+    if (label.textContent !== restart.label) label.textContent = restart.label;
+    btn.dataset.tooltip = restart.tooltip;
+    btn.setAttribute('aria-label', restart.label);
+    btn.classList.toggle('update-ready--asked', restart.asked);
+  } else {
+    label?.remove();
+    btn.classList.remove('update-ready--asked');
+    btn.removeAttribute('aria-label');
+  }
   if (!_btnWired) {
     _btnWired = true;
     // Whole button opens the update flow — it's a dedicated SynaBun-update
@@ -92,9 +111,26 @@ function applyTopRightButton(data) {
       if (!_versionData?.updateAvailable) return;
       e.stopPropagation();
       e.preventDefault();
+      if (btn.classList.contains('update-ready')) { restartToUpdate(); return; }
       openUpdateModal();
     });
   }
+}
+
+/**
+ * Restart to update (the desktop app's ready button): Install now. When SynaBun is idle the app restarts into the
+ * update at once (its splash takes the window's place); while something runs, the dialog says what it waits for.
+ */
+async function restartToUpdate() {
+  const desktop = desktopBridge();
+  if (!desktop) return;
+  const btn = $('topright-update-btn');
+  btn?.setAttribute('aria-busy', 'true');
+  let answer = null;
+  try { answer = await desktop.updates.install(); } catch { /* the dialog below says what the app reports */ }
+  btn?.removeAttribute('aria-busy');
+  if (answer) applyDesktopState(answer, { alert: false });
+  if (readDesktopUpdateState(answer || _desktopState).status !== 'installing') openDesktopUpdateModal();
 }
 
 function maybeShowUpdateAlert(data, { once = true } = {}) {

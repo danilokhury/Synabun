@@ -37,7 +37,7 @@ Execute these phases in order. Do NOT skip phases or combine them.
 
 Execute **5 sequential recall rounds**. Each round uses a different query strategy. After each round, briefly note what you found before moving to the next.
 
-**IMPORTANT**: Make each `recall` call with `limit: 5` and `min_score: 0.2`. Do NOT filter by project unless the user's topic is clearly project-specific.
+**IMPORTANT**: Call `recall` with `format: "compact"` and leave `limit` and `min_score` unset: the user's configured recall settings apply. Do NOT filter by project unless the user's topic is clearly project-specific.
 
 #### Round 1 — Direct
 - If topic given: `recall` with the topic as the query

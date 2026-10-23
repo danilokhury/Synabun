@@ -6,14 +6,18 @@
  * work in the window. Windows and Linux keep the same menu for its shortcuts
  * and show it on Alt (the interface has a menu bar of its own); their tray
  * offers Open SynaBun, Check for Updates and Quit.
+ *
+ * While a downloaded update waits to be restarted into (`restartReady`), both
+ * menus also offer Restart to Update, as Discord's does.
  */
 
-export const MENU_IDS = Object.freeze({ checkForUpdates: 'check-for-updates', openLogs: 'open-logs', quit: 'quit-synabun' });
+export const MENU_IDS = Object.freeze({ checkForUpdates: 'check-for-updates', restartToUpdate: 'restart-to-update', openLogs: 'open-logs', quit: 'quit-synabun' });
 
-export function appMenuTemplate({ platform = process.platform, t, actions, devTools = true }) {
+export function appMenuTemplate({ platform = process.platform, t, actions, devTools = true, restartReady = false }) {
   const mac = platform === 'darwin';
   // Electron names its roles in English whatever the language: every one gets the app's own words.
   const role = (name) => ({ role: name, label: t(name) });
+  const restart = restartReady ? [{ id: MENU_IDS.restartToUpdate, label: t('restartToUpdate'), click: () => actions.restartToUpdate('menu') }] : [];
   const check = { id: MENU_IDS.checkForUpdates, label: t('checkForUpdates'), click: () => actions.checkForUpdates('menu') };
   const quit = { id: MENU_IDS.quit, label: t('quit'), accelerator: mac ? 'Command+Q' : 'Control+Q', click: () => actions.quit() };
   const openLogs = { id: MENU_IDS.openLogs, label: t('openLogsFolder'), click: () => actions.openLogs() };
@@ -52,6 +56,7 @@ export function appMenuTemplate({ platform = process.platform, t, actions, devTo
         submenu: [
           { role: 'about', label: t('about') },
           { type: 'separator' },
+          ...restart,
           check,
           { type: 'separator' },
           role('services'),
@@ -68,7 +73,7 @@ export function appMenuTemplate({ platform = process.platform, t, actions, devTo
     ];
   }
   return [
-    { label: t('file'), submenu: [check, openLogs, { type: 'separator' }, quit] },
+    { label: t('file'), submenu: [...restart, check, openLogs, { type: 'separator' }, quit] },
     edit,
     view,
     { role: 'windowMenu', label: t('window'), submenu: [role('minimize'), role('close')] },
@@ -76,9 +81,10 @@ export function appMenuTemplate({ platform = process.platform, t, actions, devTo
   ];
 }
 
-export function trayMenuTemplate({ t, actions }) {
+export function trayMenuTemplate({ t, actions, restartReady = false }) {
   return [
     { label: t('openApp'), click: () => actions.showWindow() },
+    ...(restartReady ? [{ id: MENU_IDS.restartToUpdate, label: t('restartToUpdate'), click: () => actions.restartToUpdate('tray') }] : []),
     { id: MENU_IDS.checkForUpdates, label: t('checkForUpdates'), click: () => actions.checkForUpdates('tray') },
     { type: 'separator' },
     { id: MENU_IDS.quit, label: t('quit'), click: () => actions.quit() },

@@ -7,6 +7,8 @@
  *                           window only) its title bar: `window`
  *   window.synabunShell     on the app's own status page: its status, the
  *                           start's live log, and the buttons on it
+ *   window.synabunSplash    on the app's splash (pages/splash.html): what it
+ *                           draws, and its Details button
  *
  * Nothing else is exposed, and no Electron object ever reaches a page: only
  * plain data goes in and out. The app checks the sender of every message
@@ -15,6 +17,14 @@
  * The main window has no native title bar (src/titlebar.mjs): a page of it
  * that does not lay out a title bar of its own (no <meta name="synabun-titlebar">)
  * gets a strip along its top that drags the window, under the caption buttons.
+ *
+ * The main window stays hidden behind the splash until the interface is ready:
+ * on the interface's pages (/, /index.html, /index2d.html), once SynaBun's
+ * loading overlay (#loading-overlay: html-shell.js puts it in after the page's
+ * translations load, ui-loading.js hides it once the map is drawn) is hidden or
+ * shows an error; on any other page (onboarding), when it has loaded. This file
+ * says so once per page (synabun:window 'interface-ready'); the app waits a few
+ * seconds at most.
  */
 
 const { contextBridge, ipcRenderer } = require('electron');
@@ -55,6 +65,40 @@ const titleBar = (() => {
   }
 })();
 
+/**
+ * The interface is ready to be seen: SynaBun's loading overlay went away (or says why it cannot), or the page has
+ * no overlay and has loaded. Once.
+ */
+function watchInterfaceReady(say) {
+  let said = false;
+  const ready = (reason) => { if (said) return; said = true; say(reason); };
+  const interfacePage = /^\/(?:index\.html|index2d\.html)?$/.test(location.pathname);
+  /** The overlay is there: ready once it is hidden, or says why the interface cannot load. */
+  const follow = (overlay) => {
+    const settled = () => ['hidden', 'error', 'server-offline'].some(name => overlay.classList.contains(name));
+    if (settled()) { ready('overlay'); return; }
+    const observer = new MutationObserver(() => { if (settled()) { observer.disconnect(); ready('overlay'); } });
+    observer.observe(overlay, { attributes: true, attributeFilter: ['class'] });
+  };
+  const start = () => {
+    if (!interfacePage) {
+      if (document.readyState === 'complete') ready('loaded');
+      else window.addEventListener('load', () => ready('loaded'), { once: true });
+      return;
+    }
+    const overlay = document.getElementById('loading-overlay');
+    if (overlay) { follow(overlay); return; }
+    // Put in by the page's script after its translations load: watched for until it comes.
+    const observer = new MutationObserver(() => {
+      const found = document.getElementById('loading-overlay');
+      if (found) { observer.disconnect(); follow(found); }
+    });
+    observer.observe(document.body || document.documentElement, { childList: true });
+  };
+  if (document.readyState === 'loading') window.addEventListener('DOMContentLoaded', start, { once: true });
+  else start();
+}
+
 /** A page without a title bar of its own: a strip along the top drags the window (the system double-clicks it too). */
 function addDragStrip() {
   if (document.querySelector('meta[name="synabun-titlebar"]') || document.getElementById('synabun-desktop-drag-strip')) return;
@@ -77,6 +121,7 @@ if (location.protocol === 'http:' && LOOPBACK.includes(location.hostname)) {
   if (titleBar) {
     if (document.readyState === 'loading') window.addEventListener('DOMContentLoaded', addDragStrip, { once: true });
     else addDragStrip();
+    watchInterfaceReady((reason) => { windowAction('interface-ready', { reason }).catch(() => {}); });
   }
   contextBridge.exposeInMainWorld('synabunDesktop', Object.freeze({
     version: argument('synabun-version'),
@@ -118,6 +163,14 @@ if (location.protocol === 'http:' && LOOPBACK.includes(location.hostname)) {
       // Windows and Linux: the caption buttons in the colours of the bar under them (two #rrggbb colours).
       setColors: (colors) => windowAction('colors', { color: String(colors?.color ?? ''), symbolColor: String(colors?.symbolColor ?? '') }),
     }) : null,
+  }));
+} else if (location.protocol === 'file:' && /\/splash\.html$/.test(location.pathname)) {
+  const onState = channelListeners('synabun:splash:state');
+  contextBridge.exposeInMainWorld('synabunSplash', Object.freeze({
+    onState,
+    ready: () => ipcRenderer.invoke('synabun:splash:action', 'ready'),
+    // 'details' only: the start's log, in the main window.
+    action: (name) => ipcRenderer.invoke('synabun:splash:action', String(name)),
   }));
 } else if (location.protocol === 'file:') {
   const onStatus = channelListeners('synabun:shell:status');

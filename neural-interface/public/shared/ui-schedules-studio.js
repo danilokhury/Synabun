@@ -5,6 +5,7 @@
 
 import { emit, on } from './state.js';
 import { storage } from './storage.js';
+import { t, tp, getLocale } from './i18n.js';
 import { KEYS } from './constants.js';
 import { isGuest, hasPermission, showGuestToast } from './ui-sync.js';
 import { registerLaunchPrefetch } from './launch-prefetch.js';
@@ -64,6 +65,7 @@ import {
   describeCron,
   formatAgo,
   formatCountdown,
+  fullDateTime,
   groupIdOf,
   groupSummary,
   inScope,
@@ -73,8 +75,10 @@ import {
   matchesQuery,
   oneLine,
   scopeCounts,
+  setSchedulesViewTranslator,
   shortWhen,
   sortSchedules,
+  weekdayName,
   whenLabel,
 } from './schedules-view.js';
 import {
@@ -93,6 +97,7 @@ const LAYOUT_KEY = KEYS.PANEL_PREFIX + 'schedules-window';
 const SCOPE_KEY = 'sched-view-scope';
 const SORT_KEY = 'sched-view-sort';
 const COLLAPSED_KEY = 'sched-collapsed-groups';
+const REOPEN_KEY = 'synabun-schedules-reopen'; // sessionStorage, for one reload
 const DEFAULT_GROUP_COLOR = '#4fc3f7';
 
 let _panel = null;
@@ -183,41 +188,60 @@ const ICONS = {
 };
 const RESULT_ICON = { ok: ICONS.ok, failed: ICONS.failed, started: ICONS.started, stopped: ICONS.stopped, interrupted: ICONS.alert, never: ICONS.never, other: ICONS.never };
 
-const VIEWS = {
-  upcoming: { label: 'Up next', icon: ICONS.next },
-  all: { label: 'All schedules', icon: ICONS.list },
-  attention: { label: 'Needs attention', icon: ICONS.alert },
-  paused: { label: 'Paused', icon: ICONS.pause },
-  timers: { label: 'Timers', icon: ICONS.timer },
-  activity: { label: 'Activity', icon: ICONS.activity },
-};
+// Words: every string the window shows is a `schedules.*` key of i18n/<locale>.json; the ones
+// schedules-view.js decides read through the translator set here. What the user named (schedules,
+// groups, automations) and what a provider named (models, accounts, CLIs) show as they are.
+setSchedulesViewTranslator((key, params) => t(`schedules.view.${key}`, params), getLocale);
+// The same strings, escaped for markup.
+const te = (key, params) => esc(t(key, params));
+const tpe = (key, count, params) => esc(tp(key, count, params));
 
+const VIEWS = {
+  upcoming: { icon: ICONS.next },
+  all: { icon: ICONS.list },
+  attention: { icon: ICONS.alert },
+  paused: { icon: ICONS.pause },
+  timers: { icon: ICONS.timer },
+  activity: { icon: ICONS.activity },
+};
+const viewLabel = (scope) => t(`schedules.views.${scope}`);
+
+// A preset is a phrase (`key`) or a time of day, which reads the same in every language.
 const CRON_PRESET_GROUPS = [
-  { group: 'Frequency', presets: [
-    { label: 'Every 15 min', cron: '*/15 * * * *' },
-    { label: 'Every 30 min', cron: '*/30 * * * *' },
-    { label: 'Every hour', cron: '0 * * * *' },
-    { label: 'Every 2 hours', cron: '0 */2 * * *' },
-    { label: 'Every 6 hours', cron: '0 */6 * * *' },
+  { group: 'frequency', presets: [
+    { key: 'every15min', cron: '*/15 * * * *' },
+    { key: 'every30min', cron: '*/30 * * * *' },
+    { key: 'everyHour', cron: '0 * * * *' },
+    { key: 'every2hours', cron: '0 */2 * * *' },
+    { key: 'every6hours', cron: '0 */6 * * *' },
   ] },
-  { group: 'Daily', presets: [
-    { label: '09:00', cron: '0 9 * * *' },
-    { label: '12:00', cron: '0 12 * * *' },
-    { label: '18:00', cron: '0 18 * * *' },
-    { label: 'Twice a day', cron: '0 10,18 * * *' },
-    { label: 'Three times a day', cron: '0 9,14,19 * * *' },
+  { group: 'daily', presets: [
+    { time: '09:00', cron: '0 9 * * *' },
+    { time: '12:00', cron: '0 12 * * *' },
+    { time: '18:00', cron: '0 18 * * *' },
+    { key: 'twiceADay', cron: '0 10,18 * * *' },
+    { key: 'threeTimesADay', cron: '0 9,14,19 * * *' },
   ] },
-  { group: 'Weekly', presets: [
-    { label: 'Weekdays 09:00', cron: '0 9 * * 1-5' },
-    { label: 'Weekdays twice', cron: '0 10,18 * * 1-5' },
-    { label: 'Weekends 10:00', cron: '0 10 * * 0,6' },
-    { label: 'Mon, Wed, Fri', cron: '0 9 * * 1,3,5' },
-    { label: 'Tue, Thu', cron: '0 9 * * 2,4' },
+  { group: 'weekly', presets: [
+    { key: 'weekdays0900', cron: '0 9 * * 1-5' },
+    { key: 'weekdaysTwice', cron: '0 10,18 * * 1-5' },
+    { key: 'weekends1000', cron: '0 10 * * 0,6' },
+    { key: 'monWedFri', cron: '0 9 * * 1,3,5' },
+    { key: 'tueThu', cron: '0 9 * * 2,4' },
   ] },
 ];
+const presetLabel = (preset) => (preset.key ? t(`schedules.presets.${preset.key}`) : preset.time);
 
-const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-const DAY_LONG = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+// The words of the launch popups that agent-runtime-options.js and automation-context.js write in
+// English for every window: the ones the Schedules window shows read in the page's language. A
+// word not listed (a level or a description a provider named) shows as it is.
+const LAUNCH_WORDS = {
+  Off: 'off', Default: 'default', Low: 'low', Med: 'medium', High: 'high', XHigh: 'xhigh', Max: 'max', Ultra: 'ultra',
+  'No thinking': 'noThinking', Minimal: 'minimal', Balanced: 'balanced', Deep: 'deep', 'Very deep': 'veryDeep',
+  Maximum: 'maximum', 'Config default': 'configDefault', 'Model default': 'modelDefault', Light: 'light',
+  'Maximum, with delegation': 'maximumDelegated',
+};
+const launchWord = (text) => (Object.prototype.hasOwnProperty.call(LAUNCH_WORDS, text) ? t(`schedules.launch.word.${LAUNCH_WORDS[text]}`) : text);
 
 function readJson(key, fallback) {
   try { const value = JSON.parse(storage.getItem(key) || 'null'); return value ?? fallback; } catch { return fallback; }
@@ -238,7 +262,6 @@ const domId = (value) => String(value ?? '').replace(/[^\w-]/g, '_');
 // A choice of a popup (cc-dropdown.js). The one shown is the last marked `selected`, else the
 // first, as in a <select>: a saved value a list lacks is added as a choice of its own, marked.
 const opt = (value, label, selected = false) => ({ value: value ?? '', label: String(label ?? ''), selected: !!selected });
-const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const cssColor = (value) => (value && CSS.supports('color', String(value)) ? String(value) : 'var(--stg-off)');
 
 function showToast(msg) {
@@ -281,14 +304,14 @@ const listScope = () => LIST_SCOPES.includes(_scope) || _scope === 'ungrouped' |
 
 function formatTimerCountdown(firesAtISO) {
   const diff = new Date(firesAtISO) - Date.now();
-  if (diff <= 0) return 'firing';
+  if (diff <= 0) return t('schedules.timers.firing');
   const mins = Math.ceil(diff / 60_000);
   if (mins >= 60) {
     const h = Math.floor(mins / 60);
     const m = mins % 60;
-    return m ? `${h}h ${m}m` : `${h}h`;
+    return m ? t('schedules.timers.countdownHours', { h, m }) : t('schedules.timers.countdownHour', { h });
   }
-  return `${mins}m`;
+  return t('schedules.timers.countdownMinutes', { m: mins });
 }
 
 // ── Opening and closing ──
@@ -300,11 +323,28 @@ export function initSchedulesStudio() {
   on('schedules:open', (opts) => openPanel(opts || {}));
   on('schedules:toggle', () => (_panel ? closePanel() : openPanel({})));
   setupSync();
+  // A language change reloads the app (i18n.js): an open window opens again, in the new language,
+  // on the view it showed (Settings does the same for itself).
+  window.addEventListener('synabun:locale-change', () => {
+    if (!_panel) return;
+    try { sessionStorage.setItem(REOPEN_KEY, _scope); } catch { /* private mode: the reload leaves it closed */ }
+  });
+  const reopen = takeReopen();
+  if (reopen) setTimeout(() => openPanel({ scope: reopen }), 0);
+}
+
+/** The view to open the window on after a reload a language change asked for; read once. */
+function takeReopen() {
+  try {
+    const scope = sessionStorage.getItem(REOPEN_KEY);
+    if (scope) sessionStorage.removeItem(REOPEN_KEY);
+    return scope && (VIEW_SCOPES.includes(scope) || scope === 'ungrouped' || scope.startsWith('group:')) ? scope : null;
+  } catch { return null; }
 }
 
 async function openPanel(opts = {}) {
   if (isGuest() && !hasPermission('automations')) {
-    showGuestToast('Schedules are disabled by the host');
+    showGuestToast(t('schedules.window.guestDisabled'));
     return;
   }
   if (_panel) {
@@ -443,21 +483,21 @@ function buildPanelHTML() {
     <header class="sched-header drag-handle" data-drag="${PANEL_ID}">
       <div class="sched-header-left">
         <span class="sched-header-icon">${ICONS.clock}</span>
-        <h3 id="sched-title">Schedules</h3>
+        <h3 id="sched-title">${te('schedules.window.title')}</h3>
         <span class="sched-count" id="sched-total-count"></span>
       </div>
-      <button type="button" class="backdrop-toggle-btn" id="sched-backdrop-toggle" aria-pressed="false" aria-label="Hide the backdrop" data-tooltip="Hide the backdrop">${ICONS.eye}</button>
-      <button type="button" class="sched-close" id="sched-close" aria-label="Close Schedules" data-tooltip="Close (Esc)">${ICONS.close}</button>
+      <button type="button" class="backdrop-toggle-btn" id="sched-backdrop-toggle" aria-pressed="false" aria-label="${te('schedules.window.hideBackdrop')}" data-tooltip="${te('schedules.window.hideBackdrop')}">${ICONS.eye}</button>
+      <button type="button" class="sched-close" id="sched-close" aria-label="${te('schedules.window.close')}" data-tooltip="${te('schedules.window.closeTip')}">${ICONS.close}</button>
     </header>
     <div class="sched-body">
-      <nav class="sched-rail" id="sched-rail" aria-label="Schedule views and groups"></nav>
+      <nav class="sched-rail" id="sched-rail" aria-label="${te('schedules.window.railLabel')}"></nav>
       <section class="sched-main" aria-labelledby="sched-view-title">
         <!-- A window too narrow for the rail: its views and groups as a popup, and New group. Outside
              the frame below, which each view and editor replaces, so it is there in every one. -->
         <div class="sched-narrow-nav" id="sched-narrow-nav">
-          <span class="sched-sr" id="sched-scope-label">View</span>
+          <span class="sched-sr" id="sched-scope-label">${te('schedules.window.viewLabel')}</span>
           ${dropdownHTML('sched-scope-select', [], { classes: 'sched-scope-select', labelledBy: 'sched-scope-label', inputAttrs: 'data-change="scope"' })}
-          <button type="button" class="sched-btn" data-action="group-new" id="sched-narrow-new-group">${ICONS.plus}<span>New group</span></button>
+          <button type="button" class="sched-btn" data-action="group-new" id="sched-narrow-new-group">${ICONS.plus}<span>${te('schedules.rail.newGroup')}</span></button>
         </div>
         <div class="sched-frame" id="sched-main"></div>
       </section>
@@ -476,7 +516,7 @@ function wirePanel() {
     if (!btn) return;
     btn.classList.toggle('active', hidden);
     btn.setAttribute('aria-pressed', String(hidden));
-    const label = hidden ? 'Show the backdrop' : 'Hide the backdrop';
+    const label = t(hidden ? 'schedules.window.showBackdrop' : 'schedules.window.hideBackdrop');
     btn.setAttribute('aria-label', label);
     btn.dataset.tooltip = label;
   }, { signal });
@@ -510,7 +550,7 @@ function withDeadline(request) {
   let timer;
   const late = new Promise((_, reject) => {
     timer = setTimeout(() => {
-      const err = new Error(`no answer within ${LOAD_DEADLINE / 1000} seconds`);
+      const err = new Error(t('schedules.load.noAnswer', { seconds: LOAD_DEADLINE / 1000 }));
       err.timeout = true;
       reject(err);
     }, LOAD_DEADLINE);
@@ -518,7 +558,8 @@ function withDeadline(request) {
   return Promise.race([request, late]).finally(() => clearTimeout(timer));
 }
 
-const failureReason = (result) => String(result.reason?.message || 'an unexpected answer').replace(/\.$/, '');
+// The reason is the server's or the network's own words ("HTTP 500"): it shows as it came.
+const failureReason = (result) => String(result.reason?.message || t('schedules.load.unexpected')).replace(/\.$/, '');
 
 async function loadData() {
   const seq = ++_loadSeq;
@@ -542,7 +583,10 @@ async function loadData() {
     if (groupIdOf(_scope) && !getGroup(groupIdOf(_scope))) setScope('all', { keepEditors: true });
   } else failed.push(['groups', failureReason(groups)]);
   _loadError = failed.length
-    ? `The ${listJoin(failed.map(([what]) => what))} did not load: ${[...new Set(failed.map(([, why]) => why))].join('; ')}.`
+    ? t('schedules.load.failed', {
+      lists: listJoin(failed.map(([what]) => t(`schedules.load.list.${what}`))),
+      reasons: [...new Set(failed.map(([, why]) => why))].join('; '),
+    })
     : null;
   loadFinished();
 }
@@ -578,7 +622,7 @@ async function loadTimers() {
   if (quick.status === 'fulfilled' && Array.isArray(quick.value)) _quickTimers = quick.value;
   else failed.push(failureReason(quick));
   _timersLoaded = true;
-  _timersError = failed.length ? `The timers did not load: ${[...new Set(failed)].join('; ')}.` : null;
+  _timersError = failed.length ? t('schedules.load.timersFailed', { reasons: [...new Set(failed)].join('; ') }) : null;
   if (!_panel) return;
   renderRail();
   renderActiveTimersInto();
@@ -647,22 +691,27 @@ function renderRail() {
   const timers = _quickTimers.length + Object.keys(_scheduleTimerData).length;
   const ids = groupIds();
   const view = (scope, count, { alert = false } = {}) => {
-    const { label, icon } = VIEWS[scope];
+    const { icon } = VIEWS[scope];
     const current = _scope === scope;
     const countHTML = count == null || !countsKnown() ? '' : `<span class="sched-nav-count${alert && count ? ' sched-nav-count--alert' : ''}">${count}</span>`;
     return `<button type="button" class="sched-nav-item" data-action="set-scope" data-scope="${scope}"${current ? ' aria-current="page"' : ''}>
-      <span class="sched-nav-icon">${icon}</span><span class="sched-nav-label">${label}</span>${countHTML}</button>`;
+      <span class="sched-nav-icon">${icon}</span><span class="sched-nav-label">${esc(viewLabel(scope))}</span>${countHTML}</button>`;
   };
   const groupRows = orderedGroups().map(group => {
     const members = _schedules.filter(s => s.groupId === group.id);
     const summary = groupSummary(members, now);
     const scope = `group:${group.id}`;
-    const name = `${group.name}: ${plural(summary.total, 'schedule')}${summary.attention ? `, ${summary.attention} need attention` : ''}${group.mutualExclusion ? ', one at a time' : ''}`;
+    const facts = [
+      tp('schedules.count.schedules', summary.total),
+      summary.attention ? tp('schedules.count.attention', summary.attention) : '',
+      group.mutualExclusion ? t('schedules.rail.oneAtATimeFact') : '',
+    ].filter(Boolean).join(', ');
+    const name = t('schedules.rail.groupLabel', { name: group.name, facts });
     return `<button type="button" class="sched-nav-item" data-action="set-scope" data-scope="${esc(scope)}" data-drop-group="${esc(group.id)}" aria-label="${esc(name)}"${_scope === scope ? ' aria-current="page"' : ''}>
       <span class="sched-nav-icon"><span class="sched-dot" style="--dot:${esc(cssColor(group.color))}"></span></span>
       <span class="sched-nav-label">${esc(group.name)}</span>
-      ${group.mutualExclusion ? `<span class="sched-nav-flag" data-tooltip="One at a time">${ICONS.lock}</span>` : ''}
-      ${summary.attention ? `<span class="sched-nav-flag sched-nav-flag--alert" data-tooltip="${esc(plural(summary.attention, 'schedule'))} need attention">${ICONS.alert}${summary.attention}</span>` : ''}
+      ${group.mutualExclusion ? `<span class="sched-nav-flag" data-tooltip="${te('schedules.oneAtATime')}">${ICONS.lock}</span>` : ''}
+      ${summary.attention ? `<span class="sched-nav-flag sched-nav-flag--alert" data-tooltip="${tpe('schedules.rail.attentionTip', summary.attention)}">${ICONS.alert}${summary.attention}</span>` : ''}
       <span class="sched-nav-count">${summary.total}</span>
     </button>`;
   }).join('');
@@ -682,11 +731,11 @@ function renderRail() {
     <div class="sched-rail-sep" role="presentation"></div>
     ${view('timers', timers || null)}
     ${view('activity', null)}
-    <div class="sched-rail-head"><span id="sched-rail-groups">Groups</span><button type="button" class="sched-icon-btn" data-action="group-new" aria-label="New group" data-tooltip="New group"${editorsWait() ? ' disabled' : ''}>${ICONS.plus}</button></div>
+    <div class="sched-rail-head"><span id="sched-rail-groups">${te('schedules.rail.groups')}</span><button type="button" class="sched-icon-btn" data-action="group-new" aria-label="${te('schedules.rail.newGroup')}" data-tooltip="${te('schedules.rail.newGroup')}"${editorsWait() ? ' disabled' : ''}>${ICONS.plus}</button></div>
     <div role="group" aria-labelledby="sched-rail-groups">
-      ${groupRows || (countsKnown() ? '<div class="sched-rail-empty">No groups yet.</div>' : '')}
-      <button type="button" class="sched-nav-item" data-action="set-scope" data-scope="ungrouped" data-drop-group="" aria-label="Ungrouped${countsKnown() ? `: ${esc(plural(ungrouped, 'schedule'))}` : ''}"${_scope === 'ungrouped' ? ' aria-current="page"' : ''}>
-        <span class="sched-nav-icon">${ICONS.folder}</span><span class="sched-nav-label">Ungrouped</span><span class="sched-nav-count">${countsKnown() ? ungrouped : ''}</span>
+      ${groupRows || (countsKnown() ? `<div class="sched-rail-empty">${te('schedules.rail.noGroups')}</div>` : '')}
+      <button type="button" class="sched-nav-item" data-action="set-scope" data-scope="ungrouped" data-drop-group="" aria-label="${countsKnown() ? te('schedules.rail.groupLabel', { name: viewLabel('ungrouped'), facts: tp('schedules.count.schedules', ungrouped) }) : esc(viewLabel('ungrouped'))}"${_scope === 'ungrouped' ? ' aria-current="page"' : ''}>
+        <span class="sched-nav-icon">${ICONS.folder}</span><span class="sched-nav-label">${esc(viewLabel('ungrouped'))}</span><span class="sched-nav-count">${countsKnown() ? ungrouped : ''}</span>
       </button>
     </div>
   `;
@@ -737,24 +786,24 @@ function buildListFrame(frame) {
     <div class="sched-toolbar">
       <div class="sched-search">
         ${ICONS.search}
-        <label class="sched-sr" for="sched-search">${activity ? 'Search runs' : 'Search schedules'}</label>
+        <label class="sched-sr" for="sched-search">${activity ? te('schedules.list.searchRuns') : te('schedules.list.searchSchedules')}</label>
         <input id="sched-search" type="search" autocomplete="off" spellcheck="false"
-          placeholder="${activity ? 'Search runs by schedule or automation…' : 'Search by name, automation, group or time…'}" value="${esc(_query)}">
-        <button type="button" class="sched-icon-btn" data-action="clear-search" aria-label="Clear search"${_query ? '' : ' hidden'}>${ICONS.close}</button>
+          placeholder="${activity ? te('schedules.list.searchRunsPlaceholder') : te('schedules.list.searchPlaceholder')}" value="${esc(_query)}">
+        <button type="button" class="sched-icon-btn" data-action="clear-search" aria-label="${te('schedules.list.clearSearch')}"${_query ? '' : ' hidden'}>${ICONS.close}</button>
         <kbd aria-hidden="true">/</kbd>
       </div>
-      ${activity ? '' : `<span class="sched-sort" id="sched-sort-wrap"><span class="sched-sr" id="sched-sort-label">Order</span>
+      ${activity ? '' : `<span class="sched-sort" id="sched-sort-wrap"><span class="sched-sr" id="sched-sort-label">${te('schedules.list.order')}</span>
       ${dropdownHTML('sched-sort', [
-        opt('next', 'Next run first', _sort === 'next'),
-        opt('name', 'Name', _sort === 'name'),
-        opt('last', 'Last run first', _sort === 'last'),
+        opt('next', t('schedules.list.sortNext'), _sort === 'next'),
+        opt('name', t('schedules.list.sortName'), _sort === 'name'),
+        opt('last', t('schedules.list.sortLast'), _sort === 'last'),
       ], { labelledBy: 'sched-sort-label', inputAttrs: 'data-change="sort"' })}</span>`}
     </div>
     <div class="sched-load-note" id="sched-load-note" role="status"></div>
     <div class="sched-list" id="sched-list" tabindex="-1"></div>
     <footer class="sched-footer">
       <span id="sched-status" role="status" aria-live="polite" aria-atomic="true"></span>
-      ${activity ? '' : `<span class="sched-footer-hint">${ICONS.move}Drag a schedule onto a group in the sidebar to move it</span>`}
+      ${activity ? '' : `<span class="sched-footer-hint">${ICONS.move}${te('schedules.list.dragHint')}</span>`}
     </footer>
   `;
   if (caret) {
@@ -768,9 +817,9 @@ function headActions({ group = null } = {}) {
   // An editor needs the automations and groups: nothing opens one before they have loaded.
   const wait = editorsWait() ? ' disabled' : '';
   return `<div class="sched-view-actions">
-    ${group ? `<button type="button" class="sched-btn" data-action="group-edit" data-id="${esc(group.id)}"${wait}>${ICONS.edit}<span>Edit group</span></button>` : ''}
-    <button type="button" class="sched-btn sched-btn--text" data-action="schedule-prompt" data-tooltip="Describe the schedule to Claude Code in a side panel">${ICONS.sparkle}<span>Prompt a schedule</span></button>
-    <button type="button" class="sched-btn sched-btn--primary" data-action="schedule-new"${wait}>${ICONS.plus}<span>New schedule</span></button>
+    ${group ? `<button type="button" class="sched-btn" data-action="group-edit" data-id="${esc(group.id)}"${wait}>${ICONS.edit}<span>${te('schedules.head.editGroup')}</span></button>` : ''}
+    <button type="button" class="sched-btn sched-btn--text" data-action="schedule-prompt" data-tooltip="${te('schedules.head.promptTip')}">${ICONS.sparkle}<span>${te('schedules.head.prompt')}</span></button>
+    <button type="button" class="sched-btn sched-btn--primary" data-action="schedule-new"${wait}>${ICONS.plus}<span>${te('schedules.head.newSchedule')}</span></button>
   </div>`;
 }
 
@@ -778,12 +827,22 @@ function groupOverridesText(group) {
   const parts = [];
   if (group.profile) parts.push(CLI_PROFILES.find(c => c.id === group.profile)?.label || group.profile);
   if (group.model) parts.push(group.model);
-  if (group.contextMode && group.contextMode !== 'default') parts.push(`context ${group.contextMode}`);
-  if (group.effort) parts.push(`thinking ${group.effort}`);
-  if (group.mcpProfile) parts.push(`MCP ${group.mcpProfile}`);
-  if (group.usesBrowser === true) parts.push('browser on');
-  else if (group.usesBrowser === false) parts.push('browser off');
+  if (group.contextMode && group.contextMode !== 'default') parts.push(t('schedules.overrides.context', { value: group.contextMode }));
+  if (group.effort) parts.push(t('schedules.overrides.thinking', { value: group.effort }));
+  if (group.mcpProfile) parts.push(t('schedules.overrides.mcp', { value: group.mcpProfile }));
+  if (group.usesBrowser === true) parts.push(t('schedules.overrides.browserOn'));
+  else if (group.usesBrowser === false) parts.push(t('schedules.overrides.browserOff'));
   return parts.join(' · ');
+}
+
+/** "4 schedules · 3 active · 1 paused · 1 needs attention": the facts of a set of schedules. */
+function countsLine({ total, active, paused, attention }) {
+  return [
+    tp('schedules.count.schedules', total),
+    tp('schedules.count.active', active),
+    tp('schedules.count.paused', paused),
+    attention ? tp('schedules.count.attention', attention) : '',
+  ].filter(Boolean).join(' · ');
 }
 
 function renderViewHead() {
@@ -791,39 +850,38 @@ function renderViewHead() {
   if (!head) return;
   const now = Date.now();
   const counts = scopeCounts(_schedules, now);
-  let title = VIEWS[_scope]?.label || 'Schedules';
+  let title = VIEWS[_scope] ? viewLabel(_scope) : t('schedules.window.title');
   let dot = '';
   let sub = '';
   let meta = '';
   let group = null;
   if (_scope === 'all') {
-    sub = `${plural(counts.all, 'schedule')} · ${counts.active} active · ${counts.paused} paused${counts.attention ? ` · ${counts.attention} need attention` : ''}`;
+    sub = countsLine({ total: counts.all, active: counts.active, paused: counts.paused, attention: counts.attention });
   } else if (_scope === 'upcoming') {
     // One row per schedule, at its next run (a schedule that runs three times today is listed once).
-    sub = counts.upcoming
-      ? `${counts.upcoming === 1 ? '1 schedule runs' : `${counts.upcoming} schedules run`} in the next 24 hours, each at its next run, soonest first.`
-      : 'Nothing runs in the next 24 hours.';
+    sub = counts.upcoming ? tp('schedules.head.upcoming', counts.upcoming) : t('schedules.head.upcomingNone');
   } else if (_scope === 'attention') {
-    sub = 'Active schedules whose last run failed or that are late. Open one to see why.';
+    sub = t('schedules.head.attention');
   } else if (_scope === 'paused') {
-    sub = 'Paused schedules keep their settings. Turn one on to put it back on its timetable.';
+    sub = t('schedules.head.paused');
   } else if (_scope === 'activity') {
-    sub = 'The latest run of each schedule, newest first. Open one to see its schedule.';
+    sub = t('schedules.head.activity');
   } else if (_scope === 'ungrouped') {
-    title = 'Ungrouped';
-    sub = 'Schedules in no group. Drag one onto a group in the sidebar to file it.';
+    title = viewLabel('ungrouped');
+    sub = t('schedules.head.ungrouped');
   } else if (groupIdOf(_scope)) {
     group = getGroup(groupIdOf(_scope));
     if (group) {
       title = group.name;
       dot = `<span class="sched-dot" style="--dot:${esc(cssColor(group.color))}" aria-hidden="true"></span>`;
       const summary = groupSummary(_schedules.filter(s => s.groupId === group.id), now);
-      sub = `${plural(summary.total, 'schedule')} · ${summary.active} active · ${summary.paused} paused${summary.attention ? ` · ${summary.attention} need attention` : ''}${group.mutualExclusion ? ' · One at a time' : ''}`;
+      sub = countsLine(summary);
+      if (group.mutualExclusion) sub = `${sub} · ${t('schedules.oneAtATime')}`;
       const overrides = groupOverridesText(group);
-      if (overrides) meta = `<p class="sched-view-meta sched-group-overrides">Group launch settings: ${esc(overrides)}</p>`;
+      if (overrides) meta = `<p class="sched-view-meta sched-group-overrides">${te('schedules.head.groupLaunch', { settings: overrides })}</p>`;
     }
   }
-  if (_loading) sub = 'Loading schedules…';
+  if (_loading) sub = t('schedules.list.loading');
   else if (dataIncomplete()) sub = '';
   // A live update changes counts, not the head's controls: keep them (and the focus on them).
   const key = `${_scope}|${title}|${dot}|${meta}|${editorsWait()}`;
@@ -849,11 +907,11 @@ function renderNarrowNav() {
   if (scope) {
     const counts = scopeCounts(_schedules, Date.now());
     const timers = _quickTimers.length + Object.keys(_scheduleTimerData).length;
-    const n = (value) => (!countsKnown() || !value && value !== 0 ? '' : ` (${value})`);
+    const n = (label, value) => (!countsKnown() || !value && value !== 0 ? label : t('schedules.rail.withCount', { label, count: value }));
     const views = [['upcoming', counts.upcoming], ['all', counts.all], ['attention', counts.attention], ['paused', counts.paused], ['timers', timers || null], ['activity', null]]
-      .map(([id, count]) => opt(id, `${VIEWS[id].label}${n(count)}`));
-    const groups = orderedGroups().map(g => opt(`group:${g.id}`, `${g.name}${n(_schedules.filter(s => s.groupId === g.id).length)}`));
-    const entries = [{ group: 'Views', options: views }, { group: 'Groups', options: [...groups, opt('ungrouped', 'Ungrouped')] }];
+      .map(([id, count]) => opt(id, n(viewLabel(id), count)));
+    const groups = orderedGroups().map(g => opt(`group:${g.id}`, n(g.name, _schedules.filter(s => s.groupId === g.id).length)));
+    const entries = [{ group: t('schedules.rail.views'), options: views }, { group: t('schedules.rail.groups'), options: [...groups, opt('ungrouped', viewLabel('ungrouped'))] }];
     // Redrawn only when it changes (an open popup stays open, its highlighted choice too).
     const key = JSON.stringify(entries);
     if (scope._key !== key) { setDropdownItems(scope, entries); scope._key = key; }
@@ -879,7 +937,7 @@ function renderNote() {
   if (!note) return;
   const listView = _frame === 'list' || _frame === 'activity';
   const failed = _loading || !_loadError || (listView && dataIncomplete()) ? ''
-    : dataIncomplete() ? _loadError : `${_loadError} Showing what loaded before.`;
+    : dataIncomplete() ? _loadError : t('schedules.note.showingBefore', { error: _loadError });
   const report = !failed && _frame === 'list' ? cliReportNote() : null;
   const kind = failed ? 'load' : report?.kind || '';
   const text = failed || report?.text || '';
@@ -889,8 +947,8 @@ function renderNote() {
   note.classList.toggle('sched-load-note--ok', kind === 'ok');
   note.classList.toggle('sched-load-note--busy', kind === 'busy');
   const icon = kind === 'ok' ? ICONS.ok : kind === 'busy' ? ICONS.clock : ICONS.alert;
-  const action = kind === 'load' ? '<button type="button" class="sched-btn" data-action="retry-load">Try again</button>'
-    : kind === 'busy' ? '' : '<button type="button" class="sched-btn" data-action="dismiss-report">Dismiss</button>';
+  const action = kind === 'load' ? `<button type="button" class="sched-btn" data-action="retry-load">${te('schedules.note.tryAgain')}</button>`
+    : kind === 'busy' ? '' : `<button type="button" class="sched-btn" data-action="dismiss-report">${te('schedules.note.dismiss')}</button>`;
   note.innerHTML = text ? `${icon}<span>${esc(text)}</span>${action}` : '';
 }
 
@@ -898,23 +956,23 @@ function renderNote() {
 function cliReportNote() {
   const r = _cliReport;
   if (!r || _scope !== `group:${r.groupId}`) return null;
-  if (r.pending) return { kind: 'busy', text: "Clearing the old CLI's settings from the group's schedules…" };
+  if (r.pending) return { kind: 'busy', text: t('schedules.cliReport.clearing') };
   const cli = r.profile ? CLI_PROFILES.find(p => p.id === r.profile)?.label || r.profile : null;
   const kept = r.changed.length + r.failed.length;
-  const its = (list) => (list.length === 1 ? 'its' : 'their');
-  const parts = [cli ? `The group now runs ${cli}.` : 'The group no longer sets a CLI.'];
-  if (r.reset.length) parts.push(`Cleared the old CLI's settings on ${listJoin(r.reset)}.`);
-  else if (!kept) parts.push('None of its schedules had settings of the old CLI left.');
-  if (r.changed.length) parts.push(`${listJoin(r.changed)} changed meanwhile and kept ${its(r.changed)} settings.`);
-  if (r.failed.length) parts.push(`${listJoin(r.failed)} could not be checked or updated and kept ${its(r.failed)} settings.`);
-  if (kept) parts.push(`Open ${kept === 1 ? 'it' : 'them'} to choose ${kept === 1 ? 'its' : 'their'} settings.`);
+  // Each sentence is whole in every language; the report is the sentences that apply, in order.
+  const parts = [cli ? t('schedules.cliReport.nowRuns', { cli }) : t('schedules.cliReport.noCli')];
+  if (r.reset.length) parts.push(t('schedules.cliReport.cleared', { names: listJoin(r.reset) }));
+  else if (!kept) parts.push(t('schedules.cliReport.noneLeft'));
+  if (r.changed.length) parts.push(tp('schedules.cliReport.changed', r.changed.length, { names: listJoin(r.changed) }));
+  if (r.failed.length) parts.push(tp('schedules.cliReport.failed', r.failed.length, { names: listJoin(r.failed) }));
+  if (kept) parts.push(tp('schedules.cliReport.open', kept));
   return { kind: kept ? 'warn' : 'ok', text: parts.join(' ') };
 }
 
 function loadFailedHTML() {
-  const waiting = _pendingAction ? ` The ${_pendingAction === 'new-group' ? 'new group' : 'new schedule'} opens once they load.` : '';
-  return emptyState(ICONS.alert, 'Schedules could not be loaded', `${_loadError || 'Not everything loaded.'}${waiting}`,
-    '<button type="button" class="sched-btn" data-action="retry-load">Try again</button>');
+  const waiting = _pendingAction ? t(_pendingAction === 'new-group' ? 'schedules.loadFailed.waitingGroup' : 'schedules.loadFailed.waitingSchedule') : '';
+  return emptyState(ICONS.alert, t('schedules.loadFailed.title'), [_loadError || t('schedules.loadFailed.notEverything'), waiting].filter(Boolean).join(' '),
+    `<button type="button" class="sched-btn" data-action="retry-load">${te('schedules.note.tryAgain')}</button>`);
 }
 
 /** Keep the place: scroll position and the focused control survive a re-render of the list. */
@@ -970,29 +1028,30 @@ function renderList() {
   renderNote();
 
   if (_loading) {
-    list.innerHTML = emptyState(ICONS.clock, 'Loading schedules…', '');
-    setStatus('Loading…');
+    list.innerHTML = emptyState(ICONS.clock, t('schedules.list.loading'), '');
+    setStatus(t('schedules.list.statusLoading'));
     return;
   }
   if (dataIncomplete()) {
     list.innerHTML = loadFailedHTML();
-    setStatus('Not loaded');
+    setStatus(t('schedules.list.statusNotLoaded'));
     return;
   }
 
   const now = Date.now();
   const shown = visibleSchedules();
   const scopeTotal = _schedules.filter(s => inScope(s, _scope, { now, groupIds: groupIds() })).length;
+  const query = _query.trim();
   if (!_schedules.length) {
-    list.innerHTML = emptyState(ICONS.clock, 'No schedules yet', 'A schedule launches one of your automations on a timetable.',
-      `<button type="button" class="sched-btn sched-btn--primary" data-action="schedule-new">${ICONS.plus}<span>New schedule</span></button>
-       <button type="button" class="sched-btn" data-action="schedule-prompt">${ICONS.sparkle}<span>Prompt a schedule</span></button>`);
-  } else if (!shown.length && _query.trim()) {
+    list.innerHTML = emptyState(ICONS.clock, t('schedules.empty.none'), t('schedules.empty.noneText'),
+      `<button type="button" class="sched-btn sched-btn--primary" data-action="schedule-new">${ICONS.plus}<span>${te('schedules.head.newSchedule')}</span></button>
+       <button type="button" class="sched-btn" data-action="schedule-prompt">${ICONS.sparkle}<span>${te('schedules.head.prompt')}</span></button>`);
+  } else if (!shown.length && query) {
     const elsewhere = _scope !== 'all' && _schedules.some(s => matchesQuery(s, _query, scheduleExtras(s)));
-    list.innerHTML = emptyState(ICONS.search, `No schedules match “${_query.trim()}”`,
-      elsewhere ? 'Some do in other views.' : 'Try another word, or clear the search.',
-      `<button type="button" class="sched-btn" data-action="clear-search">Clear search</button>
-       ${elsewhere ? '<button type="button" class="sched-btn" data-action="search-all">Search all schedules</button>' : ''}`);
+    list.innerHTML = emptyState(ICONS.search, t('schedules.empty.noMatch', { query }),
+      elsewhere ? t('schedules.empty.elsewhere') : t('schedules.empty.tryAnother'),
+      `<button type="button" class="sched-btn" data-action="clear-search">${te('schedules.list.clearSearch')}</button>
+       ${elsewhere ? `<button type="button" class="sched-btn" data-action="search-all">${te('schedules.empty.searchAll')}</button>` : ''}`);
   } else if (!shown.length) {
     list.innerHTML = scopeEmptyState();
   } else if (_scope === 'all') {
@@ -1001,9 +1060,9 @@ function renderList() {
     list.innerHTML = renderUpcomingList(shown, now);
   } else {
     const rows = sortSchedules(shown, _sort).map(s => rowHTML(s, { now, showGroup: !groupIdOf(_scope) })).join('');
-    list.innerHTML = `<div class="sched-box"><ul class="sched-rows" aria-label="${esc(VIEWS[_scope]?.label || 'Schedules')}">${rows}</ul></div>`;
+    list.innerHTML = `<div class="sched-box"><ul class="sched-rows" aria-label="${esc(VIEWS[_scope] ? viewLabel(_scope) : t('schedules.window.title'))}">${rows}</ul></div>`;
   }
-  setStatus(_query.trim() ? `${plural(shown.length, 'schedule')} match “${_query.trim()}”` : `Showing ${shown.length} of ${plural(scopeTotal, 'schedule')}`);
+  setStatus(query ? tp('schedules.list.statusMatch', shown.length, { query }) : tp('schedules.list.statusShowing', scopeTotal, { shown: shown.length }));
   restoreListState(list, saved);
 }
 
@@ -1017,12 +1076,12 @@ function emptyState(icon, title, text, actions = '') {
 }
 
 function scopeEmptyState() {
-  if (_scope === 'attention') return emptyState(ICONS.ok, 'Nothing needs attention', 'The last run of every active schedule worked, and none is late.');
-  if (_scope === 'paused') return emptyState(ICONS.pause, 'No paused schedules', 'Every schedule is on its timetable.');
-  if (_scope === 'upcoming') return emptyState(ICONS.next, 'Nothing runs in the next 24 hours', 'Active schedules show here once their next run is less than a day away.');
-  if (_scope === 'ungrouped') return emptyState(ICONS.folder, 'Every schedule is in a group', '');
-  return emptyState(ICONS.folder, 'No schedules in this group yet', 'Drag one onto the group in the sidebar, or create one here.',
-    `<button type="button" class="sched-btn sched-btn--primary" data-action="schedule-new">${ICONS.plus}<span>New schedule</span></button>`);
+  if (_scope === 'attention') return emptyState(ICONS.ok, t('schedules.empty.attention'), t('schedules.empty.attentionText'));
+  if (_scope === 'paused') return emptyState(ICONS.pause, t('schedules.empty.paused'), t('schedules.empty.pausedText'));
+  if (_scope === 'upcoming') return emptyState(ICONS.next, t('schedules.empty.upcoming'), t('schedules.empty.upcomingText'));
+  if (_scope === 'ungrouped') return emptyState(ICONS.folder, t('schedules.empty.ungrouped'), '');
+  return emptyState(ICONS.folder, t('schedules.empty.group'), t('schedules.empty.groupText'),
+    `<button type="button" class="sched-btn sched-btn--primary" data-action="schedule-new">${ICONS.plus}<span>${te('schedules.head.newSchedule')}</span></button>`);
 }
 
 /** All schedules: one box per group, in the groups' order, then the ungrouped ones. */
@@ -1037,21 +1096,21 @@ function renderGroupedList(shown, now) {
     const all = group ? _schedules.filter(s => s.groupId === group.id) : items;
     const summary = groupSummary(all, now);
     const meta = [
-      summary.attention ? `<span class="is-alert">${ICONS.alert} ${summary.attention} need attention</span>` : '',
-      summary.paused ? `<span>${summary.paused} paused</span>` : '',
-      group?.mutualExclusion ? `<span>${ICONS.lock} One at a time</span>` : '',
+      summary.attention ? `<span class="is-alert">${ICONS.alert} ${tpe('schedules.count.attention', summary.attention)}</span>` : '',
+      summary.paused ? `<span>${tpe('schedules.count.paused', summary.paused)}</span>` : '',
+      group?.mutualExclusion ? `<span>${ICONS.lock} ${te('schedules.oneAtATime')}</span>` : '',
     ].filter(Boolean).join('<span aria-hidden="true">·</span>');
-    const name = group ? group.name : 'Ungrouped';
+    const name = group ? group.name : viewLabel('ungrouped');
     return `<section class="sched-box${collapsed ? ' is-collapsed' : ''}" data-group-section="${esc(key)}">
       <div class="sched-group-head" data-drop-group="${group ? esc(group.id) : ''}">
         <button type="button" class="sched-group-toggle" data-action="group-collapse" data-key="${esc(key)}" aria-expanded="${!collapsed}" aria-controls="${listId}">
           <span class="sched-group-chevron">${ICONS.chevron}</span>
           ${group ? `<span class="sched-dot" style="--dot:${esc(cssColor(group.color))}" aria-hidden="true"></span>` : `<span class="sched-nav-icon">${ICONS.folder}</span>`}
           <span class="sched-group-name">${esc(name)}</span>
-          <span class="sched-group-count">${items.length === all.length ? items.length : `${items.length} of ${all.length}`}</span>
+          <span class="sched-group-count">${items.length === all.length ? items.length : te('schedules.list.shownOf', { shown: items.length, total: all.length })}</span>
         </button>
         ${meta ? `<span class="sched-group-meta">${meta}</span>` : ''}
-        ${group ? `<button type="button" class="sched-icon-btn" data-action="group-edit" data-id="${esc(group.id)}" aria-label="Edit group ${esc(name)}" data-tooltip="Edit group">${ICONS.edit}</button>` : ''}
+        ${group ? `<button type="button" class="sched-icon-btn" data-action="group-edit" data-id="${esc(group.id)}" aria-label="${te('schedules.list.editGroupNamed', { name })}" data-tooltip="${te('schedules.head.editGroup')}">${ICONS.edit}</button>` : ''}
       </div>
       <ul class="sched-rows" id="${listId}" aria-label="${esc(name)}"${collapsed ? ' hidden' : ''}>
         ${sortSchedules(items, _sort).map(s => rowHTML(s, { now, showGroup: false })).join('')}
@@ -1065,19 +1124,19 @@ function renderUpcomingList(shown, now) {
   const ordered = sortSchedules(shown, 'next');
   const days = new Map();
   for (const s of ordered) {
-    const label = dayLabel(s.nextRun, now) || 'Later';
+    const label = dayLabel(s.nextRun, now) || t('schedules.list.later');
     if (!days.has(label)) days.set(label, []);
     days.get(label).push(s);
   }
   return [...days.entries()].map(([label, items], i) => `
     <section class="sched-section" aria-labelledby="sched-day-${i}">
-      <h3 class="sched-section-title" id="sched-day-${i}">${esc(label)}<span>${plural(items.length, 'schedule')}</span></h3>
+      <h3 class="sched-section-title" id="sched-day-${i}">${esc(label)}<span>${tpe('schedules.count.schedules', items.length)}</span></h3>
       <div class="sched-box"><ul class="sched-rows">${items.map(s => rowHTML(s, { now, showGroup: true })).join('')}</ul></div>
     </section>`).join('');
 }
 
 function nextRunHTML(s, now) {
-  if (!s.enabled) return '<span class="sched-next" data-state="paused"><span class="sched-next-rel">Paused</span></span>';
+  if (!s.enabled) return `<span class="sched-next" data-state="paused"><span class="sched-next-rel">${te('schedules.row.paused')}</span></span>`;
   const countdown = formatCountdown(s.nextRun, now);
   const when = s.nextRun ? whenLabel(s.nextRun, now) : '';
   return `<span class="sched-next" data-state="${countdown.state}" data-countdown="${esc(s.nextRun || '')}"${when ? ` title="${esc(when)}"` : ''}>
@@ -1086,7 +1145,7 @@ function nextRunHTML(s, now) {
 
 function lastRunHTML(s, now, run = lastRunState(s), { ago: withAgo = true } = {}) {
   const ago = withAgo && s.lastRun ? formatAgo(s.lastRun, now) : '';
-  const title = s.lastRun ? new Date(s.lastRun).toLocaleString() : '';
+  const title = s.lastRun ? fullDateTime(s.lastRun) : '';
   return `<span class="sched-last" data-kind="${run.kind}"${title ? ` title="${esc(title)}"` : ''}>
     <span class="sched-last-word">${RESULT_ICON[run.kind] || ICONS.never}<span>${esc(run.label)}</span></span>${ago ? `<span class="sched-last-ago">${esc(ago)}</span>` : ''}</span>`;
 }
@@ -1105,7 +1164,7 @@ function rowHTML(s, { now = Date.now(), showGroup = false } = {}) {
     <div class="sched-row-line" data-action="schedule-expand" data-id="${esc(s.id)}" draggable="true">
       <span class="sched-switch-cell">
         <button type="button" class="sched-switch" role="switch" aria-checked="${!!s.enabled}" data-action="schedule-toggle" data-id="${esc(s.id)}"
-          aria-label="Run ${esc(s.name)} on schedule" data-tooltip="${s.enabled ? 'Pause' : 'Resume'}"></button>
+          aria-label="${te('schedules.row.switchLabel', { name: s.name })}" data-tooltip="${s.enabled ? te('schedules.row.pause') : te('schedules.row.resume')}"></button>
       </span>
       <button type="button" class="sched-row-toggle" data-action="schedule-expand" data-id="${esc(s.id)}" aria-expanded="${open}"${open ? ` aria-controls="${detailId}"` : ''}>
         <span class="sched-row-name">${esc(s.name)}</span>
@@ -1126,52 +1185,51 @@ function detailHTML(s, now, run) {
   const presets = getCachedMcpProfilePresets();
   const mcpLabels = Object.fromEntries(Object.entries(presets).map(([id, p]) => [id, p.label || id]));
   const facts = launchFacts(s, { group, template, profiles: CLI_PROFILES, mcpLabels });
-  const sourceNote = (source) => (source === 'group' ? ' <span class="sched-source">(group)</span>'
-    : source === 'automation' ? ' <span class="sched-source">(automation)</span>'
-      : source === 'default' ? ' <span class="sched-source">(default)</span>' : '');
+  const sourceNote = (source) => (['group', 'automation', 'default'].includes(source)
+    ? ` <span class="sched-source">${te(`schedules.detail.source.${source}`)}</span>` : '');
   const next = s.enabled
-    ? (s.nextRun ? `${esc(whenLabel(s.nextRun, now))} · <span data-countdown="${esc(s.nextRun)}">${esc(formatCountdown(s.nextRun, now).text)}</span>` : 'Not scheduled')
-    : 'Paused';
-  const last = run.kind === 'never' ? 'Not run yet'
+    ? (s.nextRun ? `${esc(whenLabel(s.nextRun, now))} · <span data-countdown="${esc(s.nextRun)}">${esc(formatCountdown(s.nextRun, now).text)}</span>` : esc(formatCountdown(null, now).text))
+    : te('schedules.row.paused');
+  const last = run.kind === 'never' ? esc(run.label)
     : `<span class="${run.kind === 'failed' ? 'is-failed' : ''}">${esc(run.label)}</span>${s.lastRun ? ` · ${esc(whenLabel(s.lastRun, now))}` : ''}`;
   // Any entry counts: with day themes, the server runs a schedule only on the days that have one.
-  const themes = [1, 2, 3, 4, 5, 6, 0].filter(d => s.dayThemes?.[String(d)]).map(d => DAY_NAMES[d]);
+  const themes = [1, 2, 3, 4, 5, 6, 0].filter(d => s.dayThemes?.[String(d)]).map(d => weekdayName(d));
   const groupOptions = [
-    opt('', 'Ungrouped', !s.groupId),
+    opt('', viewLabel('ungrouped'), !s.groupId),
     ...orderedGroups().map(g => opt(g.id, g.name, s.groupId === g.id)),
   ];
   const fact = (label, value, cls = '') => `<div class="sched-fact"><dt>${esc(label)}</dt><dd${cls ? ` class="${cls}"` : ''}>${value}</dd></div>`;
   return `
     <div class="sched-detail-grid">
       <section class="sched-facts-block">
-      <h4 class="sched-facts-title">Runs</h4>
+      <h4 class="sched-facts-title">${te('schedules.detail.runs')}</h4>
       <dl class="sched-facts">
-        ${fact('Automation', template ? esc(template.name) : '<span class="is-failed">Missing automation</span>')}
-        ${fact('Timetable', `${esc(describeCron(s.cron))} <span class="sched-source">(${esc(s.cron || '')})</span>`)}
-        ${fact('Next run', next)}
-        ${fact('Last run', last)}
-        ${run.reason ? fact(run.kind === 'failed' ? 'Error' : 'Detail', esc(oneLine(run.reason))) : ''}
-        ${fact('Runs so far', esc(String(s.runCount || 0)))}
-        ${fact('Time zone', esc(s.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone))}
-        ${themes.length ? fact('Day themes', `${esc(themes.join(', '))} <span class="sched-source">(runs on these days only)</span>`) : ''}
+        ${fact(t('schedules.detail.automation'), template ? esc(template.name) : `<span class="is-failed">${te('schedules.detail.missingAutomation')}</span>`)}
+        ${fact(t('schedules.detail.timetable'), `${esc(describeCron(s.cron))} <span class="sched-source">(${esc(s.cron || '')})</span>`)}
+        ${fact(t('schedules.detail.nextRun'), next)}
+        ${fact(t('schedules.detail.lastRun'), last)}
+        ${run.reason ? fact(t(run.kind === 'failed' ? 'schedules.detail.error' : 'schedules.detail.detail'), esc(oneLine(run.reason))) : ''}
+        ${fact(t('schedules.detail.runCount'), esc(String(s.runCount || 0)))}
+        ${fact(t('schedules.detail.timeZone'), esc(s.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone))}
+        ${themes.length ? fact(t('schedules.detail.dayThemes'), `${esc(themes.join(', '))} <span class="sched-source">${te('schedules.detail.themedDaysOnly')}</span>`) : ''}
       </dl>
       </section>
       <section class="sched-facts-block">
-      <h4 class="sched-facts-title">Launch settings</h4>
+      <h4 class="sched-facts-title">${te('schedules.detail.launchSettings')}</h4>
       <dl class="sched-facts">
         ${facts.map(f => fact(f.label, `${esc(f.value)}${sourceNote(f.source)}`, f.mono ? 'sched-mono' : '')).join('')}
       </dl>
       </section>
     </div>
     <div class="sched-detail-bar">
-      <div class="sched-detail-group"><span aria-hidden="true">Group</span>
-        ${dropdownHTML(`sched-move-${domId(s.id)}`, groupOptions, { label: `Group of ${s.name}`, inputAttrs: `data-change="move-group" data-id="${esc(s.id)}"` })}
+      <div class="sched-detail-group"><span aria-hidden="true">${te('schedules.detail.group')}</span>
+        ${dropdownHTML(`sched-move-${domId(s.id)}`, groupOptions, { label: t('schedules.detail.groupOf', { name: s.name }), inputAttrs: `data-change="move-group" data-id="${esc(s.id)}"` })}
       </div>
       <span class="sched-detail-spacer"></span>
-      <button type="button" class="sched-btn" data-action="schedule-test" data-id="${esc(s.id)}" data-tooltip="Start one run now; the timetable is unchanged">${ICONS.bolt}<span>Run now</span></button>
-      <button type="button" class="sched-btn" data-action="schedule-edit-prompt" data-id="${esc(s.id)}" data-template-id="${esc(s.templateId || '')}" data-tooltip="Open its automation in Automation Studio">${ICONS.script}<span>Edit prompt</span></button>
-      <button type="button" class="sched-btn" data-action="schedule-edit" data-id="${esc(s.id)}">${ICONS.edit}<span>Edit schedule</span></button>
-      <button type="button" class="sched-btn sched-btn--danger" data-action="schedule-delete" data-id="${esc(s.id)}">${ICONS.trash}<span>Delete…</span></button>
+      <button type="button" class="sched-btn" data-action="schedule-test" data-id="${esc(s.id)}" data-tooltip="${te('schedules.detail.runNowTip')}">${ICONS.bolt}<span>${te('schedules.detail.runNow')}</span></button>
+      <button type="button" class="sched-btn" data-action="schedule-edit-prompt" data-id="${esc(s.id)}" data-template-id="${esc(s.templateId || '')}" data-tooltip="${te('schedules.detail.editPromptTip')}">${ICONS.script}<span>${te('schedules.detail.editPrompt')}</span></button>
+      <button type="button" class="sched-btn" data-action="schedule-edit" data-id="${esc(s.id)}">${ICONS.edit}<span>${te('schedules.detail.editSchedule')}</span></button>
+      <button type="button" class="sched-btn sched-btn--danger" data-action="schedule-delete" data-id="${esc(s.id)}">${ICONS.trash}<span>${te('schedules.detail.delete')}</span></button>
     </div>`;
 }
 
@@ -1183,36 +1241,37 @@ function renderActivityList() {
   if (clear) clear.hidden = !_query;
   renderNote();
   if (_loading || dataIncomplete()) {
-    list.innerHTML = _loading ? emptyState(ICONS.clock, 'Loading schedules…', '') : loadFailedHTML();
+    list.innerHTML = _loading ? emptyState(ICONS.clock, t('schedules.list.loading'), '') : loadFailedHTML();
     return;
   }
   const now = Date.now();
   const ran = _schedules.filter(s => s.lastRun);
   const shown = sortSchedules(ran.filter(s => matchesQuery(s, _query, scheduleExtras(s))), 'last');
+  const query = _query.trim();
   if (!shown.length) {
-    list.innerHTML = _query.trim()
-      ? emptyState(ICONS.search, `No runs match “${_query.trim()}”`, 'Try another word, or clear the search.', '<button type="button" class="sched-btn" data-action="clear-search">Clear search</button>')
-      : emptyState(ICONS.activity, 'No runs yet', 'Each schedule\'s latest run shows here once it has run.');
-    setStatus(_query.trim() ? 'No matches' : 'No runs yet');
+    list.innerHTML = query
+      ? emptyState(ICONS.search, t('schedules.empty.noRunMatch', { query }), t('schedules.empty.tryAnother'), `<button type="button" class="sched-btn" data-action="clear-search">${te('schedules.list.clearSearch')}</button>`)
+      : emptyState(ICONS.activity, t('schedules.empty.noRuns'), t('schedules.empty.noRunsText'));
+    setStatus(query ? t('schedules.list.statusNoMatches') : t('schedules.empty.noRuns'));
     restoreListState(list, saved);
     return;
   }
-  list.innerHTML = `<div class="sched-box"><ul class="sched-rows sched-rows--activity" aria-label="Latest runs">${shown.map(s => {
+  list.innerHTML = `<div class="sched-box"><ul class="sched-rows sched-rows--activity" aria-label="${te('schedules.activity.listLabel')}">${shown.map(s => {
     const run = lastRunState(s);
     const template = getTemplate(s.templateId);
-    const sub = run.kind === 'failed' && run.reason ? oneLine(run.reason) : template?.name || 'Missing automation';
-    const next = s.enabled ? formatCountdown(s.nextRun, now).text : 'Paused';
+    const sub = run.kind === 'failed' && run.reason ? oneLine(run.reason) : template?.name || t('schedules.detail.missingAutomation');
+    const next = s.enabled ? formatCountdown(s.nextRun, now).text : t('schedules.row.paused');
     return `<li class="sched-row" data-schedule-id="${esc(s.id)}">
-      <button type="button" class="sched-activity-btn" data-action="reveal-schedule" data-id="${esc(s.id)}" aria-label="${esc(`${s.name}: ${run.label} ${formatAgo(s.lastRun, now)}. Show it in All schedules`)}">
+      <button type="button" class="sched-activity-btn" data-action="reveal-schedule" data-id="${esc(s.id)}" aria-label="${te('schedules.activity.rowLabel', { name: s.name, result: run.label, ago: formatAgo(s.lastRun, now) })}">
         ${lastRunHTML(s, now, run, { ago: false })}
         <span class="sched-activity-main"><span class="sched-row-name">${esc(s.name)}</span><span class="sched-row-sub"><span>${esc(sub)}</span></span></span>
         <span class="sched-activity-when"><span>${esc(formatAgo(s.lastRun, now))}</span><span>${esc(whenLabel(s.lastRun, now))}</span></span>
-        <span class="sched-activity-when sched-activity-next"><span>${s.enabled ? 'Next' : ''}</span><span>${esc(next)}</span></span>
+        <span class="sched-activity-when sched-activity-next"><span>${s.enabled ? te('schedules.activity.next') : ''}</span><span>${esc(next)}</span></span>
         <span class="sched-row-chevron" aria-hidden="true">${ICONS.chevron}</span>
       </button>
     </li>`;
   }).join('')}</ul></div>`;
-  setStatus(`${plural(shown.length, 'run')}${_query.trim() ? ` match “${_query.trim()}”` : ''}`);
+  setStatus(query ? tp('schedules.activity.statusMatch', shown.length, { query }) : tp('schedules.count.runs', shown.length));
   restoreListState(list, saved);
 }
 
@@ -1247,8 +1306,8 @@ function renderTimersView() {
   const customMinutes = $('sched-qt-custom-min')?.value || '';
   const selectedSchedule = $('sched-existing-timer-schedule')?.value || '';
   const scheduleMinutes = $('sched-existing-timer-min')?.value || '';
-  const templateOptions = [opt('', 'Choose an automation…'), ..._templates.map(t => opt(t.id, t.name, selectedTemplate === t.id))];
-  const scheduleOptions = [opt('', 'Choose a schedule…'), ...sortSchedules(_schedules, 'name').map(s => opt(s.id, s.name, selectedSchedule === s.id))];
+  const templateOptions = [opt('', t('schedules.form.chooseAutomation')), ..._templates.map(tpl => opt(tpl.id, tpl.name, selectedTemplate === tpl.id))];
+  const scheduleOptions = [opt('', t('schedules.timers.chooseSchedule')), ...sortSchedules(_schedules, 'name').map(s => opt(s.id, s.name, selectedSchedule === s.id))];
   const profileOptions = CLI_PROFILES.map(p => opt(p.id, p.label, p.id === _launchProfile));
   const modelOptions = renderModelOptions(_launchProfile, _launchModel, { accountId: _launchAccount });
   const contextOptions = renderContextOptions(_launchProfile, _launchModel, _launchContextMode, { accountId: _launchAccount });
@@ -1260,7 +1319,7 @@ function renderTimersView() {
   const showAccount = _launchProfile === 'codex';
   const usesBrowser = _qtUsesBrowser !== null ? _qtUsesBrowser : !!getTemplate(selectedTemplate)?.usesBrowser;
   const qtPresetButtons = [5, 15, 30, 60, 120, 240]
-    .map(min => `<button type="button" class="sched-chip" data-action="qt-select" data-minutes="${min}" aria-pressed="${_selectedQtMinutes === min}">${min >= 60 ? `${min / 60} h` : `${min} min`}</button>`)
+    .map(min => `<button type="button" class="sched-chip" data-action="qt-select" data-minutes="${min}" aria-pressed="${_selectedQtMinutes === min}">${min >= 60 ? te('schedules.timers.presetHours', { n: min / 60 }) : te('schedules.timers.presetMinutes', { n: min })}</button>`)
     .join('');
 
   const modelLoadKey = `${_launchProfile}:${_launchAccount}`;
@@ -1276,45 +1335,45 @@ function renderTimersView() {
   main.innerHTML = `
     <div class="sched-view-head">
       <div class="sched-view-titles">
-        <h2 id="sched-view-title">Timers</h2>
-        <p class="sched-view-sub">Run an automation, or a saved schedule, once after a delay.</p>
+        <h2 id="sched-view-title">${esc(viewLabel('timers'))}</h2>
+        <p class="sched-view-sub">${te('schedules.timers.sub')}</p>
       </div>
     </div>
     <div class="sched-load-note" id="sched-load-note" role="status"></div>
     <div class="sched-editor-body">
       <div class="sched-form">
         <section class="sched-form-section" aria-labelledby="sched-timers-active-title">
-          <h3 class="sched-form-title" id="sched-timers-active-title">Waiting to run</h3>
+          <h3 class="sched-form-title" id="sched-timers-active-title">${te('schedules.timers.waiting')}</h3>
           <div id="sched-active-timers"></div>
         </section>
         <section class="sched-form-section" aria-labelledby="sched-qt-title">
-          <h3 class="sched-form-title" id="sched-qt-title">Run an automation once</h3>
+          <h3 class="sched-form-title" id="sched-qt-title">${te('schedules.timers.runOnce')}</h3>
           <div class="sched-form-group">
-            ${dropdownRow('sched-qt-template', 'Automation', templateOptions)}
-            ${dropdownRow('sched-qt-profile', 'CLI', profileOptions)}
-            ${dropdownRow('sched-qt-model', 'Model', modelOptions)}
-            ${dropdownRow('sched-qt-context', 'Context', contextOptions)}
-            ${dropdownRow('sched-qt-effort', 'Thinking', effortOptions, { hidden: !showEffort })}
-            ${dropdownRow('sched-qt-mcp', 'MCP tools', mcpOptions, { hidden: !showMcp })}
-            ${dropdownRow('sched-qt-account', 'OpenAI account', accountOptions, { hidden: !showAccount, rowId: 'sched-qt-account-field' })}
-            ${formRow('sched-qt-browser', 'Uses the browser', toggleHTML('sched-qt-browser', usesBrowser), { toggle: true })}
-            ${formRow('sched-qt-custom-min', 'Start in', `<span class="sched-chip-list" role="group" aria-label="Delay">${qtPresetButtons}</span>
-              <input class="sched-input" id="sched-qt-custom-min" type="number" min="1" max="1440" value="${esc(customMinutes)}" placeholder="min" aria-label="Minutes from now">`, { top: true })}
+            ${dropdownRow('sched-qt-template', t('schedules.form.automation'), templateOptions)}
+            ${dropdownRow('sched-qt-profile', t('schedules.form.cli'), profileOptions)}
+            ${dropdownRow('sched-qt-model', t('schedules.form.model'), modelOptions)}
+            ${dropdownRow('sched-qt-context', t('schedules.form.context'), contextOptions)}
+            ${dropdownRow('sched-qt-effort', t('schedules.form.thinking'), effortOptions, { hidden: !showEffort })}
+            ${dropdownRow('sched-qt-mcp', t('schedules.form.mcp'), mcpOptions, { hidden: !showMcp })}
+            ${dropdownRow('sched-qt-account', t('schedules.form.account'), accountOptions, { hidden: !showAccount, rowId: 'sched-qt-account-field' })}
+            ${formRow('sched-qt-browser', t('schedules.timers.usesBrowser'), toggleHTML('sched-qt-browser', usesBrowser), { toggle: true })}
+            ${formRow('sched-qt-custom-min', t('schedules.timers.startIn'), `<span class="sched-chip-list" role="group" aria-label="${te('schedules.timers.delay')}">${qtPresetButtons}</span>
+              <input class="sched-input" id="sched-qt-custom-min" type="number" min="1" max="1440" value="${esc(customMinutes)}" placeholder="${te('schedules.timers.minutesPlaceholder')}" aria-label="${te('schedules.timers.minutesFromNow')}">`, { top: true })}
           </div>
           <div class="sched-form-actions">
-            <button type="button" class="sched-btn" data-action="qt-now">${ICONS.bolt}<span>Run now</span></button>
-            <button type="button" class="sched-btn sched-btn--primary" data-action="qt-go">${ICONS.timer}<span>Start timer</span></button>
+            <button type="button" class="sched-btn" data-action="qt-now">${ICONS.bolt}<span>${te('schedules.detail.runNow')}</span></button>
+            <button type="button" class="sched-btn sched-btn--primary" data-action="qt-go">${ICONS.timer}<span>${te('schedules.timers.start')}</span></button>
           </div>
         </section>
         <section class="sched-form-section" aria-labelledby="sched-st-title">
-          <h3 class="sched-form-title" id="sched-st-title">Fire a saved schedule once</h3>
-          <p class="sched-form-intro">Runs it with its own settings; its timetable is unchanged.</p>
+          <h3 class="sched-form-title" id="sched-st-title">${te('schedules.timers.fireSaved')}</h3>
+          <p class="sched-form-intro">${te('schedules.timers.fireSavedIntro')}</p>
           <div class="sched-form-group">
-            ${dropdownRow('sched-existing-timer-schedule', 'Schedule', scheduleOptions)}
-            ${formRow('sched-existing-timer-min', 'Minutes from now', `<input class="sched-input" id="sched-existing-timer-min" type="number" min="1" max="1440" value="${esc(scheduleMinutes)}" placeholder="15">`)}
+            ${dropdownRow('sched-existing-timer-schedule', t('schedules.timers.schedule'), scheduleOptions)}
+            ${formRow('sched-existing-timer-min', t('schedules.timers.minutesFromNow'), `<input class="sched-input" id="sched-existing-timer-min" type="number" min="1" max="1440" value="${esc(scheduleMinutes)}" placeholder="15">`)}
           </div>
           <div class="sched-form-actions">
-            <button type="button" class="sched-btn sched-btn--primary" data-action="schedule-timer-create">Set timer</button>
+            <button type="button" class="sched-btn sched-btn--primary" data-action="schedule-timer-create">${te('schedules.timers.set')}</button>
           </div>
         </section>
       </div>
@@ -1389,31 +1448,38 @@ function renderModelOptions(profile, selected, { showService = false, accountId 
   if (!models.length) {
     // List not loaded yet — preserve any stored selection so saving the form cannot
     // blank it (a blank popup makes save send model:null, which DELETES the override).
-    if (selected) return [opt('', 'Template/default'), opt(selected, selected, true)];
-    return [opt('', 'Default', true)];
+    if (selected) return [opt('', t('schedules.launch.templateOrDefault')), opt(selected, selected, true)];
+    return [opt('', t('schedules.launch.default'), true)];
   }
   const known = !!selected && models.some(m => modelMatchesSelector(m, selected));
   const current = selected || '';
   const opts = [
-    opt('', 'Template/default', !current),
+    opt('', t('schedules.launch.templateOrDefault'), !current),
     ...models.map(m => opt(modelSelectorValue(m), formatModelOptionLabel(m, {
       includeService: showService && profile === 'opencode',
     }), modelMatchesSelector(m, current))),
   ];
   // Preserve a stored model that isn't in the (still-loading or curated) list so the
   // dropdown never silently blanks it and a save can't wipe the persisted override.
-  if (selected && !known) opts.push(opt(selected, `${selected} (saved)`, true));
+  if (selected && !known) opts.push(opt(selected, t('schedules.launch.saved', { value: selected }), true));
   return opts;
+}
+
+/** A context choice of automation-context.js in the page's language (its size stays as written). */
+function contextChoiceLabel(choice) {
+  if (choice.id === 'default') return choice.size ? t('schedules.launch.contextDefaultSize', { size: choice.size }) : t('schedules.launch.contextProviderDefault');
+  if (choice.id === 'extended' && choice.size) return t('schedules.launch.contextExtendedSize', { size: choice.size });
+  return choice.label;
 }
 
 function renderContextOptions(profile, model, selected, { accountId = 'default', inherit = false } = {}) {
   const models = getModelsForProfile(profile, accountId);
   const choices = automationContextOptions(profile, model, models);
   const current = selected || (inherit ? '' : 'default');
-  const options = inherit ? [opt('', 'No override', !current)] : [];
-  for (const choice of choices) options.push(opt(choice.id, choice.label, current === choice.id));
+  const options = inherit ? [opt('', t('schedules.launch.noOverride'), !current)] : [];
+  for (const choice of choices) options.push(opt(choice.id, contextChoiceLabel(choice), current === choice.id));
   if (current && !choices.some((choice) => choice.id === current)) {
-    options.push(opt(current, `${current} (unavailable — choose another)`, true));
+    options.push(opt(current, t('schedules.launch.unavailable', { value: current }), true));
   }
   return options;
 }
@@ -1434,13 +1500,15 @@ function modelChoiceAvailable(profile, model, accountId = 'default') {
 function renderEffortOptions(profile, selected, { inheritLabel = null } = {}) {
   const levels = getEffortLevelsForProfile(profile);
   const value = selected || '';
-  if (!inheritLabel && !levels.length) return [opt('off', 'Default', true)];
+  if (!inheritLabel && !levels.length) return [opt('off', t('schedules.launch.default'), true)];
   const known = !!value && levels.some(e => e.id === value);
   const opts = inheritLabel ? [opt('', inheritLabel, !value)] : [];
-  for (const e of levels) opts.push(opt(e.id, `${e.label}${e.desc ? ' - ' + e.desc : ''}`, e.id === value));
+  for (const e of levels) {
+    opts.push(opt(e.id, e.desc ? t('schedules.launch.effortOption', { level: launchWord(e.label), desc: launchWord(e.desc) }) : launchWord(e.label), e.id === value));
+  }
   // A saved level this CLI does not list (set for another CLI, or by hand) stays selected,
   // so saving the form cannot drop it (the model, MCP and account popups do the same).
-  if (value && !known) opts.push(opt(value, `${value} (saved)`, true));
+  if (value && !known) opts.push(opt(value, t('schedules.launch.saved', { value }), true));
   return opts;
 }
 
@@ -1448,18 +1516,18 @@ function renderMcpOptions(selected) {
   const presets = getCachedMcpProfilePresets();
   const entries = Object.entries(presets);
   if (!entries.length) {
-    if (!selected) return [opt('', 'Loading...')];
-    return [opt(selected, `${selected} (loading...)`, true)];
+    if (!selected) return [opt('', t('schedules.launch.loading'))];
+    return [opt(selected, t('schedules.launch.loadingValue', { value: selected }), true)];
   }
   const known = !!selected && !!presets[selected];
   const options = entries.map(([id, p]) => {
     const label = p.label || id;
-    const tools = p.tools != null ? ` - ${p.tools} tools` : '';
-    return opt(id, `${label}${tools}`, known && id === selected);
+    // `tools` is an estimate the server writes ("~38"): a count to show, not to count by.
+    return opt(id, p.tools != null ? t('schedules.launch.mcpTools', { label, count: p.tools }) : label, known && id === selected);
   });
   // A saved tool list that is not a preset ("browser,browser_twitter") stays selected, so saving
   // the form cannot quietly replace it with another preset (the model popup does the same).
-  if (selected && !known) options.push(opt(selected, `${selected} (saved)`, true));
+  if (selected && !known) options.push(opt(selected, t('schedules.launch.saved', { value: selected }), true));
   return options;
 }
 
@@ -1474,12 +1542,14 @@ function renderAccountOptions(selected, allowInherit = false) {
   const keep = allowInherit && !!selected && !known;
   const current = known || keep ? selected : (allowInherit ? '' : 'default');
   const opts = accounts.map(a => {
-    const label = a.label || a.email || (a.isDefault ? 'Default' : a.id);
-    const plan = a.planType ? ` (${a.planType})` : '';
-    return opt(a.id, `${label}${plan}`, a.id === current);
+    // The default account is "Default" in SynaBun's own list (agent-runtime-options.js): that word is
+    // the page's; an account's own label or address shows as it is.
+    const ownDefault = a.isDefault && (a.label === 'Default' || (!a.label && !a.email));
+    const label = ownDefault ? t('schedules.launch.default') : a.label || a.email || a.id;
+    return opt(a.id, a.planType ? t('schedules.launch.accountPlan', { label, plan: a.planType }) : label, a.id === current);
   });
-  if (allowInherit) opts.unshift(opt('', 'Template/group default', !current));
-  if (keep) opts.push(opt(selected, `${selected} (saved)`, true));
+  if (allowInherit) opts.unshift(opt('', t('schedules.launch.templateOrGroupDefault'), !current));
+  if (keep) opts.push(opt(selected, t('schedules.launch.saved', { value: selected }), true));
   return opts;
 }
 
@@ -1495,12 +1565,12 @@ function renderActiveTimersInto() {
   if (!box) return;
   const scheduleTimers = Object.entries(_scheduleTimerData).map(([scheduleId, timer]) => {
     const schedule = _schedules.find(s => s.id === scheduleId);
-    const name = schedule?.name || 'Schedule';
+    const name = schedule?.name || t('schedules.timers.schedule');
     return `
       <div class="sched-timer-row" data-timer-id="${esc(scheduleId)}" data-timer-kind="schedule">
-        <span class="sched-timer-name">${esc(name)}<span class="sched-timer-meta">Saved schedule, once</span></span>
-        <strong class="sched-timer-count" data-fires-at="${esc(timer.firesAt)}">${formatTimerCountdown(timer.firesAt)}</strong>
-        <button type="button" class="sched-btn" data-action="schedule-timer-cancel" data-id="${esc(scheduleId)}" aria-label="Cancel the timer for ${esc(name)}">Cancel</button>
+        <span class="sched-timer-name">${esc(name)}<span class="sched-timer-meta">${te('schedules.timers.savedOnce')}</span></span>
+        <strong class="sched-timer-count" data-fires-at="${esc(timer.firesAt)}">${esc(formatTimerCountdown(timer.firesAt))}</strong>
+        <button type="button" class="sched-btn" data-action="schedule-timer-cancel" data-id="${esc(scheduleId)}" aria-label="${te('schedules.timers.cancelFor', { name })}">${te('schedules.timers.cancel')}</button>
       </div>`;
   }).join('');
 
@@ -1508,23 +1578,23 @@ function renderActiveTimersInto() {
     const meta = [
       timer.profile ? CLI_PROFILES.find(p => p.id === timer.profile)?.label || timer.profile : '',
       timer.model,
-      timer.contextMode && timer.contextMode !== 'default' ? `context ${timer.contextMode}` : '',
-      timer.effort ? `thinking ${timer.effort}` : '',
-      timer.mcpProfile ? `MCP ${timer.mcpProfile}` : '',
+      timer.contextMode && timer.contextMode !== 'default' ? t('schedules.overrides.context', { value: timer.contextMode }) : '',
+      timer.effort ? t('schedules.overrides.thinking', { value: timer.effort }) : '',
+      timer.mcpProfile ? t('schedules.overrides.mcp', { value: timer.mcpProfile }) : '',
     ].filter(Boolean).join(' · ');
     return `
       <div class="sched-timer-row" data-timer-id="${esc(timer.id)}" data-timer-kind="quick">
-        <span class="sched-timer-name">${esc(timer.templateName)}<span class="sched-timer-meta">${esc(meta || 'Automation, once')}</span></span>
-        <strong class="sched-timer-count" data-fires-at="${esc(timer.firesAt)}">${formatTimerCountdown(timer.firesAt)}</strong>
-        <button type="button" class="sched-btn" data-action="qt-cancel" data-id="${esc(timer.id)}" aria-label="Cancel the timer for ${esc(timer.templateName)}">Cancel</button>
+        <span class="sched-timer-name">${esc(timer.templateName)}<span class="sched-timer-meta">${esc(meta || t('schedules.timers.automationOnce'))}</span></span>
+        <strong class="sched-timer-count" data-fires-at="${esc(timer.firesAt)}">${esc(formatTimerCountdown(timer.firesAt))}</strong>
+        <button type="button" class="sched-btn" data-action="qt-cancel" data-id="${esc(timer.id)}" aria-label="${te('schedules.timers.cancelFor', { name: timer.templateName })}">${te('schedules.timers.cancel')}</button>
       </div>`;
   }).join('');
 
   // The timers load on their own: until they answer (or when they could not), say so here.
   const note = _timersError
-    ? `<div class="sched-load-note">${ICONS.alert}<span>${esc(_timersError)}</span><button type="button" class="sched-btn" data-action="retry-timers">Try again</button></div>`
+    ? `<div class="sched-load-note">${ICONS.alert}<span>${esc(_timersError)}</span><button type="button" class="sched-btn" data-action="retry-timers">${te('schedules.note.tryAgain')}</button></div>`
     : '';
-  const empty = _timersError ? '' : `<p class="sched-form-intro">${_timersLoaded ? 'No timers are waiting.' : 'Loading timers…'}</p>`;
+  const empty = _timersError ? '' : `<p class="sched-form-intro">${_timersLoaded ? te('schedules.timers.none') : te('schedules.timers.loading')}</p>`;
   box.innerHTML = note + (scheduleTimers || quickTimers ? `<div class="sched-form-group">${quickTimers}${scheduleTimers}</div>` : empty);
 }
 
@@ -1584,7 +1654,7 @@ function redrawEditor(main, html) {
 
 function editorHead({ back, title, sub, titleId }) {
   return `<header class="sched-editor-head">
-    <button type="button" class="sched-icon-btn" data-action="${back}" aria-label="Back to the list" data-tooltip="Back (Esc)">${ICONS.back}</button>
+    <button type="button" class="sched-icon-btn" data-action="${back}" aria-label="${te('schedules.editor.back')}" data-tooltip="${te('schedules.editor.backTip')}">${ICONS.back}</button>
     <div class="sched-editor-titles"><h2 id="${titleId}">${esc(title)}</h2>${sub ? `<p>${esc(sub)}</p>` : ''}</div>
   </header>`;
 }
@@ -1635,12 +1705,12 @@ function renderGroupEditor(group) {
   const profileForModels = d.profile || 'claude-code';
   const accountId = d.codexAccountId || 'default';
   const profileOptions = [
-    opt('', 'No override', !d.profile),
+    opt('', t('schedules.launch.noOverride'), !d.profile),
     ...CLI_PROFILES.map(p => opt(p.id, p.label, d.profile === p.id)),
   ];
   const modelOptions = renderModelOptions(profileForModels, d.model || '', { showService: true, accountId });
   const contextOptions = renderContextOptions(profileForModels, d.model, d.contextMode, { accountId, inherit: true });
-  const effortOptions = renderEffortOptions(profileForModels, d.effort || '', { inheritLabel: 'No override' });
+  const effortOptions = renderEffortOptions(profileForModels, d.effort || '', { inheritLabel: t('schedules.launch.noOverride') });
   const mcpOptions = renderMcpOptions(d.mcpProfile || '');
   const accountOptions = renderAccountOptions(d.codexAccountId || '', true);
   const showEffort = profileSupportsEffort(profileForModels);
@@ -1656,55 +1726,55 @@ function renderGroupEditor(group) {
 
   redrawEditor(main, `
     <div class="sched-editor">
-      ${editorHead({ back: 'group-editor-cancel', title: creating ? 'New group' : 'Edit group', sub: creating ? 'Groups keep related schedules together, and can share launch settings.' : (group || d._original)?.name, titleId: 'sched-view-title' })}
+      ${editorHead({ back: 'group-editor-cancel', title: t(creating ? 'schedules.groupEditor.newTitle' : 'schedules.head.editGroup'), sub: creating ? t('schedules.groupEditor.newSub') : (group || d._original)?.name, titleId: 'sched-view-title' })}
       <div class="sched-editor-body">
         <div class="sched-form">
           <section class="sched-form-section" aria-labelledby="sched-ge-sec-group">
-            <h3 class="sched-form-title" id="sched-ge-sec-group">Group</h3>
+            <h3 class="sched-form-title" id="sched-ge-sec-group">${te('schedules.form.group')}</h3>
             <div class="sched-form-group">
-              ${formRow('sched-ge-name', 'Name', `<input class="sched-input" id="sched-ge-name" type="text" value="${esc(d.name || '')}" placeholder="Twitter cadence" autocomplete="off">`)}
-              ${formRow('sched-ge-color', 'Colour', `<input class="sched-input" id="sched-ge-color" type="color" value="${esc(/^#[0-9a-f]{6}$/i.test(d.color || '') ? d.color : DEFAULT_GROUP_COLOR)}">`)}
-              ${formRow('sched-ge-mutex', 'One at a time', toggleHTML('sched-ge-mutex', !!d.mutualExclusion, 'sched-ge-mutex-help'),
-                { help: 'Schedules in every group set to one at a time take turns: while one runs, the others wait.', toggle: true })}
+              ${formRow('sched-ge-name', t('schedules.form.name'), `<input class="sched-input" id="sched-ge-name" type="text" value="${esc(d.name || '')}" placeholder="${te('schedules.groupEditor.namePlaceholder')}" autocomplete="off">`)}
+              ${formRow('sched-ge-color', t('schedules.groupEditor.colour'), `<input class="sched-input" id="sched-ge-color" type="color" value="${esc(/^#[0-9a-f]{6}$/i.test(d.color || '') ? d.color : DEFAULT_GROUP_COLOR)}">`)}
+              ${formRow('sched-ge-mutex', t('schedules.oneAtATime'), toggleHTML('sched-ge-mutex', !!d.mutualExclusion, 'sched-ge-mutex-help'),
+                { help: te('schedules.groupEditor.oneAtATimeHelp'), toggle: true })}
             </div>
           </section>
           <section class="sched-form-section" aria-labelledby="sched-ge-sec-launch">
-            <h3 class="sched-form-title" id="sched-ge-sec-launch">Launch overrides</h3>
-            <p class="sched-form-intro">Apply to every schedule in this group. A schedule's own setting wins.</p>
+            <h3 class="sched-form-title" id="sched-ge-sec-launch">${te('schedules.form.launchOverrides')}</h3>
+            <p class="sched-form-intro">${te('schedules.groupEditor.launchIntro')}</p>
             <div class="sched-form-group">
-              ${dropdownRow('sched-ge-profile', 'CLI', profileOptions)}
-              ${dropdownRow('sched-ge-model', 'Model', modelOptions)}
-              ${dropdownRow('sched-ge-context', 'Context', contextOptions)}
-              ${dropdownRow('sched-ge-effort', 'Thinking', effortOptions, { hidden: !showEffort })}
-              ${dropdownRow('sched-ge-mcp', 'MCP tools', [opt('', 'No override', !d.mcpProfile), ...mcpOptions], { hidden: !showMcp })}
-              ${dropdownRow('sched-ge-account', 'OpenAI account', accountOptions, { hidden: !showAccount, rowId: 'sched-ge-account-field' })}
-              ${dropdownRow('sched-ge-browser', 'Browser', [
-                opt('', 'No override', browserValue === ''),
-                opt('true', 'Always on', browserValue === 'true'),
-                opt('false', 'Always off', browserValue === 'false'),
+              ${dropdownRow('sched-ge-profile', t('schedules.form.cli'), profileOptions)}
+              ${dropdownRow('sched-ge-model', t('schedules.form.model'), modelOptions)}
+              ${dropdownRow('sched-ge-context', t('schedules.form.context'), contextOptions)}
+              ${dropdownRow('sched-ge-effort', t('schedules.form.thinking'), effortOptions, { hidden: !showEffort })}
+              ${dropdownRow('sched-ge-mcp', t('schedules.form.mcp'), [opt('', t('schedules.launch.noOverride'), !d.mcpProfile), ...mcpOptions], { hidden: !showMcp })}
+              ${dropdownRow('sched-ge-account', t('schedules.form.account'), accountOptions, { hidden: !showAccount, rowId: 'sched-ge-account-field' })}
+              ${dropdownRow('sched-ge-browser', t('schedules.form.browser'), [
+                opt('', t('schedules.launch.noOverride'), browserValue === ''),
+                opt('true', t('schedules.launch.alwaysOn'), browserValue === 'true'),
+                opt('false', t('schedules.launch.alwaysOff'), browserValue === 'false'),
               ])}
             </div>
           </section>
           ${!group ? '' : `
           <section class="sched-form-section" aria-labelledby="sched-ge-sec-order">
-            <h3 class="sched-form-title" id="sched-ge-sec-order">Order</h3>
+            <h3 class="sched-form-title" id="sched-ge-sec-order">${te('schedules.groupEditor.order')}</h3>
             <div class="sched-form-group">
               <div class="sched-form-row">
-                <span class="sched-form-label">Position ${position + 1} of ${ordered.length}</span>
+                <span class="sched-form-label">${te('schedules.groupEditor.position', { position: position + 1, count: ordered.length })}</span>
                 <div class="sched-form-control">
-                  <button type="button" class="sched-btn" data-action="group-up" data-id="${esc(group.id)}"${position <= 0 ? ' disabled' : ''}>${ICONS.up}<span>Move up</span></button>
-                  <button type="button" class="sched-btn" data-action="group-down" data-id="${esc(group.id)}"${position >= ordered.length - 1 ? ' disabled' : ''}>${ICONS.down}<span>Move down</span></button>
+                  <button type="button" class="sched-btn" data-action="group-up" data-id="${esc(group.id)}"${position <= 0 ? ' disabled' : ''}>${ICONS.up}<span>${te('schedules.groupEditor.moveUp')}</span></button>
+                  <button type="button" class="sched-btn" data-action="group-down" data-id="${esc(group.id)}"${position >= ordered.length - 1 ? ' disabled' : ''}>${ICONS.down}<span>${te('schedules.groupEditor.moveDown')}</span></button>
                 </div>
               </div>
             </div>
           </section>
           <section class="sched-form-section" aria-labelledby="sched-ge-sec-delete">
-            <h3 class="sched-form-title" id="sched-ge-sec-delete">Delete</h3>
+            <h3 class="sched-form-title" id="sched-ge-sec-delete">${te('schedules.groupEditor.delete')}</h3>
             <div class="sched-form-group">
               <div class="sched-form-row">
-                <span class="sched-form-label">${members ? `Its ${plural(members, 'schedule')} move to Ungrouped and keep running.` : 'The group is empty.'}</span>
+                <span class="sched-form-label">${members ? tpe('schedules.groupEditor.membersStay', members) : te('schedules.groupEditor.empty')}</span>
                 <div class="sched-form-control">
-                  <button type="button" class="sched-btn sched-btn--danger" data-action="group-delete" data-id="${esc(group.id)}">${ICONS.trash}<span>Delete group…</span></button>
+                  <button type="button" class="sched-btn sched-btn--danger" data-action="group-delete" data-id="${esc(group.id)}">${ICONS.trash}<span>${te('schedules.groupEditor.deleteGroup')}</span></button>
                 </div>
               </div>
             </div>
@@ -1712,8 +1782,8 @@ function renderGroupEditor(group) {
         </div>
       </div>
       <footer class="sched-editor-actions">
-        <button type="button" class="sched-btn" data-action="group-editor-cancel">Cancel</button>
-        <button type="button" class="sched-btn sched-btn--primary" data-action="group-editor-save" data-id="${esc(_groupEditorId || '')}">${creating ? 'Create group' : 'Save changes'}</button>
+        <button type="button" class="sched-btn" data-action="group-editor-cancel">${te('schedules.editor.cancel')}</button>
+        <button type="button" class="sched-btn sched-btn--primary" data-action="group-editor-save" data-id="${esc(_groupEditorId || '')}">${creating ? te('schedules.groupEditor.create') : te('schedules.editor.save')}</button>
       </footer>
     </div>`);
   wireGroupEditor();
@@ -1765,18 +1835,18 @@ function renderScheduleEditor() {
   // A saved automation or group the lists do not show (deleted elsewhere, or not in what loaded)
   // stays selected: a popup without it would show the first choice, and a save would move it.
   const templateOptions = [
-    opt('', 'Choose an automation…'),
-    ..._templates.map(t => opt(t.id, `${t.name} (${t.category || 'custom'})`, s.templateId === t.id)),
-    ...(s.templateId && !getTemplate(s.templateId) ? [opt(s.templateId, `${s.templateId} (saved)`, true)] : []),
+    opt('', t('schedules.form.chooseAutomation')),
+    ..._templates.map(tpl => opt(tpl.id, t('schedules.scheduleEditor.automationOption', { name: tpl.name, category: tpl.category || t('schedules.scheduleEditor.customCategory') }), s.templateId === tpl.id)),
+    ...(s.templateId && !getTemplate(s.templateId) ? [opt(s.templateId, t('schedules.launch.saved', { value: s.templateId }), true)] : []),
   ];
   const groupOptions = [
-    opt('', 'Ungrouped', !s.groupId),
+    opt('', viewLabel('ungrouped'), !s.groupId),
     ...orderedGroups().map(g => opt(g.id, g.name, s.groupId === g.id)),
-    ...(s.groupId && !getGroup(s.groupId) ? [opt(s.groupId, `${s.groupId} (saved)`, true)] : []),
+    ...(s.groupId && !getGroup(s.groupId) ? [opt(s.groupId, t('schedules.launch.saved', { value: s.groupId }), true)] : []),
   ];
   const tz = s.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
   const profileOptions = [
-    opt('', 'Template default', !s.profile),
+    opt('', t('schedules.launch.templateDefault'), !s.profile),
     ...CLI_PROFILES.map(p => opt(p.id, p.label, s.profile === p.id)),
   ];
   const template = getTemplate(s.templateId);
@@ -1786,7 +1856,7 @@ function renderScheduleEditor() {
   const effectiveModel = s.model || group?.model || template?.model || null;
   const modelOptions = renderModelOptions(profileForModels, s.model || '', { showService: true, accountId });
   const contextOptions = renderContextOptions(profileForModels, effectiveModel, s.contextMode, { accountId, inherit: true });
-  const effortOptions = renderEffortOptions(profileForModels, s.effort || '', { inheritLabel: 'Template/default' });
+  const effortOptions = renderEffortOptions(profileForModels, s.effort || '', { inheritLabel: t('schedules.launch.templateOrDefault') });
   const mcpOptions = renderMcpOptions(s.mcpProfile || '');
   const accountOptions = renderAccountOptions(s.codexAccountId || '', true);
   const showEffort = profileSupportsEffort(profileForModels);
@@ -1795,11 +1865,14 @@ function renderScheduleEditor() {
   if (showAccount) ensureCodexAccountsLoaded(() => { if (_panel && _scheduleEditor) { collectScheduleEditorDraft(); renderScheduleEditor(); } });
   const browserValue = s.usesBrowser === true ? 'true' : s.usesBrowser === false ? 'false' : '';
   const cron = s.cron || '0 9 * * *';
-  const presetsHTML = CRON_PRESET_GROUPS.map(group => `
-    <div class="sched-preset-group" role="group" aria-label="${esc(group.group)} presets">
-      <span>${esc(group.group)}</span>
-      <div class="sched-chip-list">${group.presets.map(p => `<button type="button" class="sched-chip" data-action="cron-preset" data-cron="${esc(p.cron)}" aria-pressed="${p.cron === cron}" data-tooltip="${esc(describeCron(p.cron))}">${esc(p.label)}</button>`).join('')}</div>
-    </div>`).join('');
+  const presetsHTML = CRON_PRESET_GROUPS.map(group => {
+    const name = t(`schedules.presets.group.${group.group}`);
+    return `
+    <div class="sched-preset-group" role="group" aria-label="${te('schedules.scheduleEditor.presetGroup', { group: name })}">
+      <span>${esc(name)}</span>
+      <div class="sched-chip-list">${group.presets.map(p => `<button type="button" class="sched-chip" data-action="cron-preset" data-cron="${esc(p.cron)}" aria-pressed="${p.cron === cron}" data-tooltip="${esc(describeCron(p.cron))}">${esc(presetLabel(p))}</button>`).join('')}</div>
+    </div>`;
+  }).join('');
   const dayOrder = [1, 2, 3, 4, 5, 6, 0];
   const hasThemes = dayOrder.some(idx => s.dayThemes?.[String(idx)]);
   // A textarea, not an input: a theme can span lines, and an input would drop its line breaks.
@@ -1807,13 +1880,14 @@ function renderScheduleEditor() {
   // whole entry away.
   const dayThemes = dayOrder.map(idx => {
     const entry = s.dayThemes?.[String(idx)];
-    const help = entry?.label ? `Theme: ${esc(entry.label)}` : '';
+    const day = weekdayName(idx, { long: true });
+    const help = entry?.label ? te('schedules.scheduleEditor.themeLabel', { label: entry.label }) : '';
     // A day without an entry keeps the button's room, so the fields line up.
     const remove = entry
-      ? `<button type="button" class="sched-icon-btn sched-icon-btn--danger sched-day-remove" data-action="day-theme-remove" data-day="${idx}" aria-label="Remove the ${DAY_LONG[idx]} theme" data-tooltip="Remove this day's theme">${ICONS.trash}</button>`
+      ? `<button type="button" class="sched-icon-btn sched-icon-btn--danger sched-day-remove" data-action="day-theme-remove" data-day="${idx}" aria-label="${te('schedules.scheduleEditor.removeTheme', { day })}" data-tooltip="${te('schedules.scheduleEditor.removeThemeTip')}">${ICONS.trash}</button>`
       : '<span class="sched-icon-btn sched-day-remove sched-day-remove--room" aria-hidden="true"></span>';
-    return formRow(`sched-ed-day-${idx}`, DAY_LONG[idx],
-      `<textarea class="sched-input sched-textarea" id="sched-ed-day-${idx}" data-day="${idx}" rows="2" spellcheck="false" placeholder="Extra context for ${DAY_LONG[idx]} runs (optional)"${help ? ` aria-describedby="sched-ed-day-${idx}-help"` : ''}>${esc(entry?.contextOverride || '')}</textarea>${remove}`,
+    return formRow(`sched-ed-day-${idx}`, day,
+      `<textarea class="sched-input sched-textarea" id="sched-ed-day-${idx}" data-day="${idx}" rows="2" spellcheck="false" placeholder="${te('schedules.scheduleEditor.themePlaceholder', { day })}"${help ? ` aria-describedby="sched-ed-day-${idx}-help"` : ''}>${esc(entry?.contextOverride || '')}</textarea>${remove}`,
       { help });
   }).join('');
 
@@ -1830,66 +1904,66 @@ function renderScheduleEditor() {
 
   redrawEditor(main, `
     <div class="sched-editor">
-      ${editorHead({ back: 'schedule-editor-close', title: isEdit ? 'Edit schedule' : 'New schedule', sub: isEdit ? s.name : 'Launches one of your automations on a timetable.', titleId: 'sched-view-title' })}
+      ${editorHead({ back: 'schedule-editor-close', title: t(isEdit ? 'schedules.detail.editSchedule' : 'schedules.head.newSchedule'), sub: isEdit ? s.name : t('schedules.scheduleEditor.newSub'), titleId: 'sched-view-title' })}
       <div class="sched-editor-body">
         <div class="sched-form">
           <section class="sched-form-section" aria-labelledby="sched-ed-sec-basics">
-            <h3 class="sched-form-title" id="sched-ed-sec-basics">Schedule</h3>
+            <h3 class="sched-form-title" id="sched-ed-sec-basics">${te('schedules.timers.schedule')}</h3>
             <div class="sched-form-group">
-              ${formRow('sched-ed-name', 'Name', `<input class="sched-input" id="sched-ed-name" type="text" value="${esc(s.name || '')}" placeholder="Morning post" autocomplete="off">`)}
-              ${dropdownRow('sched-ed-template', 'Automation', templateOptions)}
-              ${dropdownRow('sched-ed-group', 'Group', groupOptions)}
-              ${formRow('sched-ed-enabled', 'Active', toggleHTML('sched-ed-enabled', s.enabled !== false, 'sched-ed-enabled-help'),
-                { help: 'Turn it off to pause the schedule without deleting it.', toggle: true })}
+              ${formRow('sched-ed-name', t('schedules.form.name'), `<input class="sched-input" id="sched-ed-name" type="text" value="${esc(s.name || '')}" placeholder="${te('schedules.scheduleEditor.namePlaceholder')}" autocomplete="off">`)}
+              ${dropdownRow('sched-ed-template', t('schedules.form.automation'), templateOptions)}
+              ${dropdownRow('sched-ed-group', t('schedules.form.group'), groupOptions)}
+              ${formRow('sched-ed-enabled', t('schedules.scheduleEditor.active'), toggleHTML('sched-ed-enabled', s.enabled !== false, 'sched-ed-enabled-help'),
+                { help: te('schedules.scheduleEditor.activeHelp'), toggle: true })}
             </div>
           </section>
 
           <section class="sched-form-section" aria-labelledby="sched-ed-sec-when">
-            <h3 class="sched-form-title" id="sched-ed-sec-when">When it runs</h3>
+            <h3 class="sched-form-title" id="sched-ed-sec-when">${te('schedules.scheduleEditor.when')}</h3>
             <div class="sched-form-group">
               <div class="sched-form-row sched-form-row--top">
-                <label class="sched-form-label" for="sched-ed-cron">Cron expression</label>
+                <label class="sched-form-label" for="sched-ed-cron">${te('schedules.scheduleEditor.cron')}</label>
                 <div class="sched-form-stack">
                   <div class="sched-form-control"><input class="sched-input sched-mono" id="sched-ed-cron" type="text" value="${esc(cron)}" placeholder="0 9 * * *" spellcheck="false" autocomplete="off" aria-describedby="sched-ed-cron-desc"></div>
                   <p class="sched-help" id="sched-ed-cron-desc" aria-live="polite">${esc(describeCron(cron))}</p>
                 </div>
               </div>
               <div class="sched-form-row sched-form-row--top">
-                <span class="sched-form-label">Presets</span>
+                <span class="sched-form-label">${te('schedules.scheduleEditor.presets')}</span>
                 <div class="sched-presets">${presetsHTML}</div>
               </div>
-              ${formRow('sched-ed-tz', 'Time zone', `<input class="sched-input" id="sched-ed-tz" type="text" value="${esc(tz)}" spellcheck="false" autocomplete="off">`)}
+              ${formRow('sched-ed-tz', t('schedules.detail.timeZone'), `<input class="sched-input" id="sched-ed-tz" type="text" value="${esc(tz)}" spellcheck="false" autocomplete="off">`)}
             </div>
           </section>
 
           <section class="sched-form-section" aria-labelledby="sched-ed-sec-launch">
-            <h3 class="sched-form-title" id="sched-ed-sec-launch">Launch overrides</h3>
-            <p class="sched-form-intro">Leave a setting on its default to use the group's, then the automation's.</p>
+            <h3 class="sched-form-title" id="sched-ed-sec-launch">${te('schedules.form.launchOverrides')}</h3>
+            <p class="sched-form-intro">${te('schedules.scheduleEditor.launchIntro')}</p>
             <div class="sched-form-group">
-              ${dropdownRow('sched-ed-profile', 'CLI', profileOptions)}
-              ${dropdownRow('sched-ed-model', 'Model', modelOptions)}
-              ${dropdownRow('sched-ed-context', 'Context', contextOptions)}
-              ${dropdownRow('sched-ed-effort', 'Thinking', effortOptions, { hidden: !showEffort })}
-              ${dropdownRow('sched-ed-mcp', 'MCP tools', [opt('', 'Template/default', !s.mcpProfile), ...mcpOptions], { hidden: !showMcp })}
-              ${dropdownRow('sched-ed-account', 'OpenAI account', accountOptions, { hidden: !showAccount, rowId: 'sched-ed-account-field' })}
-              ${dropdownRow('sched-ed-browser', 'Browser', [
-                opt('', 'Template default', browserValue === ''),
-                opt('true', 'Always on', browserValue === 'true'),
-                opt('false', 'Always off', browserValue === 'false'),
+              ${dropdownRow('sched-ed-profile', t('schedules.form.cli'), profileOptions)}
+              ${dropdownRow('sched-ed-model', t('schedules.form.model'), modelOptions)}
+              ${dropdownRow('sched-ed-context', t('schedules.form.context'), contextOptions)}
+              ${dropdownRow('sched-ed-effort', t('schedules.form.thinking'), effortOptions, { hidden: !showEffort })}
+              ${dropdownRow('sched-ed-mcp', t('schedules.form.mcp'), [opt('', t('schedules.launch.templateOrDefault'), !s.mcpProfile), ...mcpOptions], { hidden: !showMcp })}
+              ${dropdownRow('sched-ed-account', t('schedules.form.account'), accountOptions, { hidden: !showAccount, rowId: 'sched-ed-account-field' })}
+              ${dropdownRow('sched-ed-browser', t('schedules.form.browser'), [
+                opt('', t('schedules.launch.templateDefault'), browserValue === ''),
+                opt('true', t('schedules.launch.alwaysOn'), browserValue === 'true'),
+                opt('false', t('schedules.launch.alwaysOff'), browserValue === 'false'),
               ])}
             </div>
           </section>
 
           <details class="sched-form-section"${hasThemes ? ' open' : ''}>
-            <summary class="sched-form-title">Day themes <small>optional</small></summary>
-            <p class="sched-form-intro">Extra context added to the run on that weekday, such as a topic for Mondays. Once any day has a theme, the schedule runs only on the days that have one.</p>
+            <summary class="sched-form-title">${te('schedules.detail.dayThemes')} <small>${te('schedules.scheduleEditor.optional')}</small></summary>
+            <p class="sched-form-intro">${te('schedules.scheduleEditor.dayThemesIntro')}</p>
             <div class="sched-form-group" id="sched-ed-daythemes">${dayThemes}</div>
           </details>
         </div>
       </div>
       <footer class="sched-editor-actions">
-        <button type="button" class="sched-btn" data-action="schedule-editor-close">Cancel</button>
-        <button type="button" class="sched-btn sched-btn--primary" data-action="schedule-editor-save">${isEdit ? 'Save changes' : 'Create schedule'}</button>
+        <button type="button" class="sched-btn" data-action="schedule-editor-close">${te('schedules.editor.cancel')}</button>
+        <button type="button" class="sched-btn sched-btn--primary" data-action="schedule-editor-save">${isEdit ? te('schedules.editor.save') : te('schedules.scheduleEditor.create')}</button>
       </footer>
     </div>
   `);
@@ -1949,7 +2023,7 @@ function updateCronDesc() {
   const valid = value.split(/\s+/).length === 5;
   if (!valid && value) input.setAttribute('aria-invalid', 'true');
   else input.removeAttribute('aria-invalid');
-  if (desc) desc.textContent = valid ? describeCron(value) : 'A cron expression has five fields: minute, hour, day of month, month, day of week.';
+  if (desc) desc.textContent = valid ? describeCron(value) : t('schedules.scheduleEditor.cronHelp');
   _panel?.querySelectorAll('[data-action="cron-preset"]').forEach(btn => btn.setAttribute('aria-pressed', String(btn.dataset.cron === value)));
 }
 
@@ -2022,7 +2096,7 @@ function markInvalid(id, message) {
 }
 
 async function saveScheduleFromEditor() {
-  if (editorsWait()) { showToast('The schedules have not loaded yet: save once they have'); return; }
+  if (editorsWait()) { showToast(t('schedules.toast.notLoaded')); return; }
   const original = _scheduleEditor?._original || null;
   const name = $('sched-ed-name')?.value?.trim();
   const templateId = $('sched-ed-template')?.value;
@@ -2043,9 +2117,9 @@ async function saveScheduleFromEditor() {
     usesBrowser: browserRaw === '' ? null : browserRaw === 'true',
   };
 
-  if (!name) { markInvalid('sched-ed-name', 'Give the schedule a name'); return; }
-  if (!templateId) { markInvalid('sched-ed-template', 'Choose the automation it launches'); return; }
-  if (!cron || cron.split(/\s+/).length !== 5) { markInvalid('sched-ed-cron', 'Enter a cron expression with five fields'); return; }
+  if (!name) { markInvalid('sched-ed-name', t('schedules.toast.nameRequired')); return; }
+  if (!templateId) { markInvalid('sched-ed-template', t('schedules.toast.automationRequired')); return; }
+  if (!cron || cron.split(/\s+/).length !== 5) { markInvalid('sched-ed-cron', t('schedules.toast.cronRequired')); return; }
 
   const template = getTemplate(templateId);
   const group = groupId ? getGroup(groupId) : null;
@@ -2057,10 +2131,10 @@ async function saveScheduleFromEditor() {
     const effectiveModel = launch.model || group?.model || template?.model || null;
     const effectiveAccount = launch.codexAccountId || group?.codexAccountId || template?.codexAccountId || 'default';
     if (!modelChoiceAvailable(effectiveProfile, effectiveModel, effectiveAccount)) {
-      showToast('This model is unavailable for the selected account'); return;
+      showToast(t('schedules.toast.modelUnavailable')); return;
     }
     if (!contextChoiceAvailable(effectiveProfile, effectiveModel, launch.contextMode, effectiveAccount)) {
-      showToast('This context window is unavailable for the selected model and account'); return;
+      showToast(t('schedules.toast.contextUnavailable')); return;
     }
   }
 
@@ -2081,7 +2155,7 @@ async function saveScheduleFromEditor() {
       _scheduleEditor = null;
       render({ frame: true });
       focusRow(original.id);
-      showToast('No changes to save');
+      showToast(t('schedules.toast.noChanges'));
       return;
     }
   } else {
@@ -2099,11 +2173,11 @@ async function saveScheduleFromEditor() {
       saved = await updateSchedule(draft.id, payload);
       const idx = _schedules.findIndex(s => s.id === saved.id);
       if (idx >= 0) _schedules[idx] = saved;
-      showToast('Schedule updated');
+      showToast(t('schedules.toast.updated'));
     } else {
       saved = await createSchedule(payload);
       if (!_schedules.some(s => s.id === saved.id)) _schedules.push(saved);
-      showToast('Schedule created');
+      showToast(t('schedules.toast.created'));
     }
     if (_panel !== panel || _scheduleEditor !== draft) { refresh(); return; }
     _scheduleEditor = null;
@@ -2115,7 +2189,7 @@ async function saveScheduleFromEditor() {
       row?.querySelector('.sched-row-toggle')?.focus({ preventScroll: true });
     }
   } catch (err) {
-    showToast('Save failed: ' + err.message);
+    showToast(t('schedules.toast.saveFailed', { error: err.message }));
   }
 }
 
@@ -2193,7 +2267,7 @@ async function handleClick(e) {
     }
     case 'schedule-edit-prompt': {
       const templateId = el.dataset.templateId;
-      if (!templateId) { showToast('No automation linked to this schedule'); break; }
+      if (!templateId) { showToast(t('schedules.toast.noAutomation')); break; }
       closePanel();
       emit('automations:open', { templateId });
       break;
@@ -2263,7 +2337,7 @@ async function handleClick(e) {
       _scheduleEditor.dayThemes = themes;
       renderScheduleEditor();
       $(`sched-ed-day-${day}`)?.focus();
-      showToast(`${DAY_LONG[Number(day)] || 'Day'} theme removed`);
+      showToast(t('schedules.toast.themeRemoved', { day: weekdayName(day, { long: true }) }));
       break;
     }
     case 'group-editor-save':
@@ -2486,10 +2560,10 @@ async function moveScheduleToGroup(id, groupId) {
   if (!schedule || (schedule.groupId || null) === (groupId || null)) return;
   try {
     replaceSchedule(await updateSchedule(id, { groupId }));
-    showToast(groupId ? `Moved to ${getGroup(groupId)?.name || 'group'}` : 'Moved to Ungrouped');
+    showToast(t('schedules.toast.movedTo', { group: groupId ? getGroup(groupId)?.name || t('schedules.toast.aGroup') : viewLabel('ungrouped') }));
     refresh();
   } catch (err) {
-    showToast('Move failed: ' + err.message);
+    showToast(t('schedules.toast.moveFailed', { error: err.message }));
     refresh();
   }
 }
@@ -2501,11 +2575,11 @@ async function toggleSchedule(id, el = null) {
   try {
     replaceSchedule(await updateSchedule(id, { enabled: !schedule.enabled }));
     const updated = _schedules.find(s => s.id === id);
-    showToast(updated?.enabled ? `${schedule.name} is back on its timetable` : `${schedule.name} is paused`);
+    showToast(t(updated?.enabled ? 'schedules.toast.resumed' : 'schedules.toast.paused', { name: schedule.name }));
     refresh();
   } catch (err) {
     el?.removeAttribute('aria-busy');
-    showToast('Toggle failed: ' + err.message);
+    showToast(t('schedules.toast.toggleFailed', { error: err.message }));
   }
 }
 
@@ -2516,9 +2590,9 @@ async function fireSchedule(id, el = null) {
       sidepanelWindowId: getNativeLoopRouterWindowId(),
       sidepanelClaimToken: getNativeLoopRouterClaimToken(),
     });
-    showToast('Launching schedule…');
+    showToast(t('schedules.toast.launching'));
   } catch (err) {
-    showToast('Run failed: ' + err.message);
+    showToast(t('schedules.toast.runFailed', { error: err.message }));
   } finally {
     if (el?.isConnected) el.disabled = false;
   }
@@ -2533,18 +2607,18 @@ function openConfirm({ kind, id, opener }) {
   if (kind === 'schedule') {
     const schedule = _schedules.find(s => s.id === id);
     if (!schedule) return;
-    title = 'Delete this schedule?';
+    title = t('schedules.confirm.scheduleTitle');
     name = schedule.name;
-    text = 'It stops running and cannot be restored. The automation it launches stays in Automation Studio.';
-    accept = 'Delete schedule';
+    text = t('schedules.confirm.scheduleText');
+    accept = t('schedules.confirm.scheduleAccept');
   } else {
     const group = getGroup(id);
     if (!group) return;
     const count = _schedules.filter(s => s.groupId === id).length;
-    title = 'Delete this group?';
+    title = t('schedules.confirm.groupTitle');
     name = group.name;
-    text = count ? `Its ${plural(count, 'schedule')} move to Ungrouped and keep running.` : 'The group is empty.';
-    accept = 'Delete group';
+    text = count ? tp('schedules.groupEditor.membersStay', count) : t('schedules.groupEditor.empty');
+    accept = t('schedules.confirm.groupAccept');
   }
   _confirm = { kind, id, opener };
   layer.innerHTML = `<div class="sched-dialog" role="alertdialog" aria-modal="true" aria-labelledby="sched-dialog-title" aria-describedby="sched-dialog-text">
@@ -2554,7 +2628,7 @@ function openConfirm({ kind, id, opener }) {
       <p class="sched-help" id="sched-dialog-text">${esc(text)}</p>
     </div>
     <div class="sched-dialog-actions">
-      <button type="button" class="sched-btn" data-action="confirm-cancel">Cancel</button>
+      <button type="button" class="sched-btn" data-action="confirm-cancel">${te('schedules.editor.cancel')}</button>
       <button type="button" class="sched-btn sched-btn--danger" data-action="confirm-accept">${ICONS.trash}<span>${esc(accept)}</span></button>
     </div>
   </div>`;
@@ -2581,14 +2655,14 @@ async function acceptConfirm(button) {
       await deleteSchedule(id);
       _schedules = _schedules.filter(s => s.id !== id);
       _expanded.delete(id);
-      showToast('Schedule deleted');
+      showToast(t('schedules.toast.deleted'));
     } else {
       await deleteScheduleGroup(id);
       _groups = _groups.filter(g => g.id !== id);
       for (const schedule of _schedules) if (schedule.groupId === id) schedule.groupId = null;
       if (_scope === `group:${id}`) setScope('ungrouped', { keepEditors: true });
       if (_groupEditorId === id) { _groupEditorId = null; _groupEditorDraft = null; }
-      showToast('Group deleted');
+      showToast(t('schedules.toast.groupDeleted'));
     }
     _confirm.opener = null;
     closeConfirm();
@@ -2596,17 +2670,17 @@ async function acceptConfirm(button) {
     $('sched-search')?.focus();
   } catch (err) {
     button.disabled = false;
-    showToast(`${kind === 'schedule' ? 'Delete' : 'Group delete'} failed: ${err.message}`);
+    showToast(t(kind === 'schedule' ? 'schedules.toast.deleteFailed' : 'schedules.toast.groupDeleteFailed', { error: err.message }));
   }
 }
 
 // ── Groups ──
 
 async function saveGroupFromEditor(id) {
-  if (editorsWait()) { showToast('The schedules have not loaded yet: save once they have'); return; }
+  if (editorsWait()) { showToast(t('schedules.toast.notLoaded')); return; }
   collectGroupEditorDraft();
   const name = $('sched-ge-name')?.value?.trim();
-  if (!name) { markInvalid('sched-ge-name', 'Group name is required'); return; }
+  if (!name) { markInvalid('sched-ge-name', t('schedules.toast.groupNameRequired')); return; }
   const color = $('sched-ge-color')?.value || null;
   const mutualExclusion = !!$('sched-ge-mutex')?.checked;
   const browserRaw = $('sched-ge-browser')?.value || '';
@@ -2624,10 +2698,10 @@ async function saveGroupFromEditor(id) {
   if (!existing || ['profile', 'model', 'contextMode', 'codexAccountId'].some(k => !sameValue(launch[k], existing[k]))) {
     const effectiveProfile = launch.profile || 'claude-code';
     if (!modelChoiceAvailable(effectiveProfile, launch.model, launch.codexAccountId || 'default')) {
-      showToast('This model is unavailable for the selected account'); return;
+      showToast(t('schedules.toast.modelUnavailable')); return;
     }
     if (!contextChoiceAvailable(effectiveProfile, launch.model, launch.contextMode, launch.codexAccountId || 'default')) {
-      showToast('This context window is unavailable for the selected model and account'); return;
+      showToast(t('schedules.toast.contextUnavailable')); return;
     }
   }
 
@@ -2643,7 +2717,7 @@ async function saveGroupFromEditor(id) {
       for (const key of LAUNCH_FIELDS) if (launch[key] !== null) payload[key] = launch[key];
       const group = await createScheduleGroup(payload);
       if (!_groups.some(g => g.id === group.id)) _groups.push(group);
-      showToast('Group created');
+      showToast(t('schedules.toast.groupCreated'));
       if (!stillHere()) { refresh(); return; }
       _groupEditorId = null;
       _groupEditorDraft = null;
@@ -2652,7 +2726,7 @@ async function saveGroupFromEditor(id) {
       render({ frame: true });
       _panel?.querySelector(`.sched-nav-item[data-scope="group:${CSS.escape(group.id)}"]`)?.focus();
     } catch (err) {
-      showToast('Group failed: ' + err.message);
+      showToast(t('schedules.toast.groupFailed', { error: err.message }));
     }
     return;
   }
@@ -2674,7 +2748,7 @@ async function saveGroupFromEditor(id) {
     _groupEditorDraft = null;
     render({ frame: true });
     _panel?.querySelector(`.sched-nav-item[data-scope="group:${CSS.escape(id)}"]`)?.focus();
-    showToast('No changes to save');
+    showToast(t('schedules.toast.noChanges'));
     return;
   }
   // What each schedule of the group holds as the user saves: a reset afterwards writes only over
@@ -2692,7 +2766,7 @@ async function saveGroupFromEditor(id) {
       _panel?.querySelector(`.sched-nav-item[data-scope="group:${CSS.escape(id)}"]`)?.focus();
     }
     if (!cliChanged) {
-      showToast('Group updated');
+      showToast(t('schedules.toast.groupUpdated'));
     } else {
       _cliReport = { groupId: id, profile: launch.profile, pending: true };
       renderNote();
@@ -2700,15 +2774,13 @@ async function saveGroupFromEditor(id) {
       _cliReport = { groupId: id, profile: launch.profile, ...result };
       renderNote();
       const kept = result.changed.length + result.failed.length;
-      showToast(kept
-        ? `Group updated. ${plural(kept, 'schedule')} kept the old CLI's settings: the group's page names ${kept === 1 ? 'it' : 'them'}`
-        : 'Group updated');
+      showToast(kept ? tp('schedules.toast.groupUpdatedKept', kept) : t('schedules.toast.groupUpdated'));
     }
     // The schedules show what the save pushed onto them. From here on nothing is navigated:
     // the user may have opened something else meanwhile, and it stays as it is.
     await loadData();
   } catch (err) {
-    showToast('Group update failed: ' + err.message);
+    showToast(t('schedules.toast.groupUpdateFailed', { error: err.message }));
   }
 }
 
@@ -2783,7 +2855,7 @@ async function moveGroup(id, direction) {
     const pressed = _panel?.querySelector(`[data-action="${direction < 0 ? 'group-up' : 'group-down'}"]`);
     (pressed && !pressed.disabled ? pressed : _panel?.querySelector(`[data-action="${direction < 0 ? 'group-down' : 'group-up'}"]`))?.focus();
   } catch (err) {
-    showToast('Reorder failed: ' + err.message);
+    showToast(t('schedules.toast.reorderFailed', { error: err.message }));
   }
 }
 
@@ -2810,11 +2882,11 @@ function openPromptScheduleModal() {
       <div class="sched-prompt-head-text">
         <span class="sched-prompt-icon">${ICONS.sparkle}</span>
         <div>
-          <h3 id="sched-prompt-title">Prompt a Schedule</h3>
-          <p>Start the schedule draft in a sidepanel.</p>
+          <h3 id="sched-prompt-title">${te('schedules.prompt.title')}</h3>
+          <p>${te('schedules.prompt.sub')}</p>
         </div>
       </div>
-      <button class="sched-prompt-close" data-action="prompt-modal-close" aria-label="Close">${ICONS.close}</button>
+      <button class="sched-prompt-close" data-action="prompt-modal-close" aria-label="${te('schedules.prompt.close')}">${ICONS.close}</button>
     </header>
     <div class="sched-prompt-tiles">
       <button class="sched-prompt-tile" style="--provider-color:${claudeMeta.color};" data-action="prompt-modal-pick" data-runtime="claude-code">
@@ -2823,15 +2895,15 @@ function openPromptScheduleModal() {
           <span class="sched-prompt-tile-title">${claudeMeta.label}</span>
           <span class="sched-prompt-tile-sub">Anthropic</span>
         </span>
-        <span class="sched-prompt-pill sched-prompt-pill--active">Ready</span>
+        <span class="sched-prompt-pill sched-prompt-pill--active">${te('schedules.prompt.ready')}</span>
       </button>
       <button class="sched-prompt-tile disabled" style="--provider-color:${opencodeMeta.color};" disabled aria-disabled="true">
         <span class="sched-prompt-tile-logo" aria-hidden="true">${opencodeMeta.icon}</span>
         <span class="sched-prompt-tile-body">
           <span class="sched-prompt-tile-title">${opencodeMeta.label}</span>
-          <span class="sched-prompt-tile-sub">Multi-provider</span>
+          <span class="sched-prompt-tile-sub">${te('schedules.prompt.multiProvider')}</span>
         </span>
-        <span class="sched-prompt-pill">Planned</span>
+        <span class="sched-prompt-pill">${te('schedules.prompt.planned')}</span>
       </button>
       <button class="sched-prompt-tile disabled" style="--provider-color:${codexMeta.color};" disabled aria-disabled="true">
         <span class="sched-prompt-tile-logo" aria-hidden="true">${codexMeta.icon}</span>
@@ -2839,7 +2911,7 @@ function openPromptScheduleModal() {
           <span class="sched-prompt-tile-title">Codex CLI</span>
           <span class="sched-prompt-tile-sub">OpenAI</span>
         </span>
-        <span class="sched-prompt-pill">Planned</span>
+        <span class="sched-prompt-pill">${te('schedules.prompt.planned')}</span>
       </button>
     </div>
   `;
@@ -2882,7 +2954,7 @@ function closePromptScheduleModal() {
 
 async function handlePromptPick(runtime, triggerEl = null) {
   if (runtime !== 'claude-code') {
-    showToast('Coming soon — Claude Code only for now');
+    showToast(t('schedules.toast.comingSoon'));
     return;
   }
   if (triggerEl) {
@@ -2890,9 +2962,9 @@ async function handlePromptPick(runtime, triggerEl = null) {
     triggerEl.setAttribute('aria-busy', 'true');
   }
   try {
-    await sendToPanel('/synabun schedule', { newTab: true, tabLabel: 'Schedule Wizard', autoSubmit: true });
+    await sendToPanel('/synabun schedule', { newTab: true, tabLabel: t('schedules.prompt.tabLabel'), autoSubmit: true });
   } catch (err) {
-    showToast('Failed to open Claude panel: ' + err.message);
+    showToast(t('schedules.toast.panelFailed', { error: err.message }));
   } finally {
     closePromptScheduleModal();
   }
@@ -2902,19 +2974,19 @@ async function handlePromptPick(runtime, triggerEl = null) {
 
 async function createQuickTimerFromForm(runNow) {
   const templateId = $('sched-qt-template')?.value;
-  if (!templateId) { markInvalid('sched-qt-template', 'Choose an automation first'); return; }
+  if (!templateId) { markInvalid('sched-qt-template', t('schedules.toast.chooseAutomation')); return; }
   const customVal = Number($('sched-qt-custom-min')?.value);
   const minutes = customVal >= 1 ? customVal : _selectedQtMinutes;
-  if (!runNow && !minutes) { showToast('Choose a delay or enter minutes'); return; }
+  if (!runNow && !minutes) { showToast(t('schedules.toast.chooseDelay')); return; }
   const template = getTemplate(templateId);
   const profile = $('sched-qt-profile')?.value || 'claude-code';
   const model = $('sched-qt-model')?.value || null;
   const contextMode = $('sched-qt-context')?.value || 'default';
   if (!modelChoiceAvailable(profile, model, _launchAccount)) {
-    showToast('This model is unavailable for the selected account'); return;
+    showToast(t('schedules.toast.modelUnavailable')); return;
   }
   if (!contextChoiceAvailable(profile, model, contextMode, _launchAccount)) {
-    showToast('This context window is unavailable for the selected model and account'); return;
+    showToast(t('schedules.toast.contextUnavailable')); return;
   }
   const effortRaw = $('sched-qt-effort')?.value || null;
   const effort = normalizeEffortForProfile(profile, effortRaw);
@@ -2928,7 +3000,7 @@ async function createQuickTimerFromForm(runNow) {
         sidepanelWindowId: getNativeLoopRouterWindowId(),
         sidepanelClaimToken: getNativeLoopRouterClaimToken(),
       });
-      showToast(`Running now: ${result.templateName}`);
+      showToast(t('schedules.toast.runningNow', { name: result.templateName }));
     } else {
       const result = await createQuickTimer(templateId, minutes, { profile, model, contextMode, effort, mcpProfile, usesBrowser, codexAccountId });
       if (!_quickTimers.some(t => t.id === result.timerId)) {
@@ -2936,12 +3008,12 @@ async function createQuickTimerFromForm(runNow) {
       }
       _selectedQtMinutes = null;
       _panel?.querySelectorAll('[data-action="qt-select"]').forEach(chip => chip.setAttribute('aria-pressed', 'false'));
-      showToast(`Timer set: ${result.templateName}`);
+      showToast(t('schedules.toast.timerSet', { name: result.templateName }));
     }
     renderActiveTimersInto();
     renderRail();
   } catch (err) {
-    showToast((runNow ? 'Run now' : 'Timer') + ' failed: ' + err.message);
+    showToast(t(runNow ? 'schedules.toast.runNowFailed' : 'schedules.toast.timerFailed', { error: err.message }));
   }
 }
 
@@ -2951,25 +3023,25 @@ async function cancelQuickTimerById(id) {
     _quickTimers = _quickTimers.filter(t => t.id !== id);
     renderActiveTimersInto();
     renderRail();
-    showToast('Timer cancelled');
+    showToast(t('schedules.toast.timerCancelled'));
   } catch (err) {
-    showToast('Cancel failed: ' + err.message);
+    showToast(t('schedules.toast.cancelFailed', { error: err.message }));
   }
 }
 
 async function createExistingScheduleTimer() {
   const scheduleId = $('sched-existing-timer-schedule')?.value;
   const minutes = Number($('sched-existing-timer-min')?.value);
-  if (!scheduleId) { markInvalid('sched-existing-timer-schedule', 'Choose a schedule'); return; }
-  if (!minutes || minutes < 1) { markInvalid('sched-existing-timer-min', 'Enter the minutes from now'); return; }
+  if (!scheduleId) { markInvalid('sched-existing-timer-schedule', t('schedules.toast.chooseSchedule')); return; }
+  if (!minutes || minutes < 1) { markInvalid('sched-existing-timer-min', t('schedules.toast.minutesRequired')); return; }
   try {
     const result = await startScheduleTimer(scheduleId, minutes);
     _scheduleTimerData[scheduleId] = { firesAt: result.firesAt, minutes: result.minutes };
     renderActiveTimersInto();
     renderRail();
-    showToast('Schedule timer set');
+    showToast(t('schedules.toast.scheduleTimerSet'));
   } catch (err) {
-    showToast('Timer failed: ' + err.message);
+    showToast(t('schedules.toast.timerFailed', { error: err.message }));
   }
 }
 
@@ -2979,9 +3051,9 @@ async function cancelExistingScheduleTimer(id) {
     delete _scheduleTimerData[id];
     renderActiveTimersInto();
     renderRail();
-    showToast('Timer cancelled');
+    showToast(t('schedules.toast.timerCancelled'));
   } catch (err) {
-    showToast('Cancel failed: ' + err.message);
+    showToast(t('schedules.toast.cancelFailed', { error: err.message }));
   }
 }
 
@@ -3033,7 +3105,7 @@ function setupSync() {
     refresh();
   });
   on('sync:schedule:fired', (data) => {
-    if (data?.scheduleName) showToast(`Schedule fired: ${data.scheduleName}`);
+    if (data?.scheduleName) showToast(t('schedules.toast.fired', { name: data.scheduleName }));
     if (_panel) scheduleRefresh();
   });
   on('sync:schedule:completed', (data) => {
@@ -3047,7 +3119,7 @@ function setupSync() {
     }
   });
   on('sync:schedule:failed', (data) => {
-    if (data?.reason) showToast(`Schedule failed: ${data.reason}`);
+    if (data?.reason) showToast(t('schedules.toast.scheduleFailed', { reason: data.reason }));
     if (_panel) scheduleRefresh();
   });
   on('sync:schedule:timer-set', (data) => {
@@ -3057,7 +3129,7 @@ function setupSync() {
     }
   });
   on('sync:schedule:timer-fired', (data) => {
-    if (data?.scheduleName) showToast(`Timer fired: ${data.scheduleName}`);
+    if (data?.scheduleName) showToast(t('schedules.toast.timerFired', { name: data.scheduleName }));
     if (data?.scheduleId) delete _scheduleTimerData[data.scheduleId];
     if (_panel) { renderRail(); renderActiveTimersInto(); }
   });
@@ -3094,19 +3166,19 @@ function setupSync() {
     }
   });
   on('sync:quick-timer:fired', (data) => {
-    if (data?.templateName) showToast(`Timer fired: ${data.templateName}`);
+    if (data?.templateName) showToast(t('schedules.toast.timerFired', { name: data.templateName }));
     if (data?.timerId) _quickTimers = _quickTimers.filter(t => t.id !== data.timerId);
     if (_panel) { renderRail(); renderActiveTimersInto(); }
   });
   on('sync:quick-timer:fired-now', (data) => {
-    if (data?.templateName) showToast(`Running now: ${data.templateName}`);
+    if (data?.templateName) showToast(t('schedules.toast.runningNow', { name: data.templateName }));
   });
   on('sync:quick-timer:cancelled', (data) => {
     if (data?.timerId) _quickTimers = _quickTimers.filter(t => t.id !== data.timerId);
     if (_panel) { renderRail(); renderActiveTimersInto(); }
   });
   on('sync:quick-timer:failed', (data) => {
-    if (data?.reason) showToast(`Timer failed: ${data.reason}`);
+    if (data?.reason) showToast(t('schedules.toast.timerFailed', { error: data.reason }));
   });
 }
 

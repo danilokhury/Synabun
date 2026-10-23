@@ -59,6 +59,7 @@ runtime dependencies in the published package.
 | `playwright` | `^1.59.1` | 1.59.1 | Apache-2.0 | [npm](https://www.npmjs.com/package/playwright) |
 | `undici` | `^8.5.0` | 8.8.0 | MIT | [npm](https://www.npmjs.com/package/undici) |
 | `ws` | `^8.21.0` | 8.21.1 | MIT | [npm](https://www.npmjs.com/package/ws) |
+| `yaml` | `2.9.1` | 2.9.1 | ISC | [npm](https://www.npmjs.com/package/yaml) |
 | `zod` | `^4.4.3` | 4.4.3 | MIT | [npm](https://www.npmjs.com/package/zod) |
 
 ## Neural Interface Development Dependencies
@@ -94,6 +95,7 @@ runtime dependencies in the published package.
 | highlight.js | 11.12.0 | Bundled browser asset (`neural-interface/public/vendor/highlight/`) copied from the npm development dependency `@highlightjs/cdn-assets` | BSD-3-Clause | [GitHub](https://github.com/highlightjs/highlight.js) |
 | Mermaid | 11.17.2 | Bundled browser asset (`neural-interface/public/vendor/mermaid/`) copied from the npm development dependency | MIT | [GitHub](https://github.com/mermaid-js/mermaid) |
 | html2canvas | 1.4.1 | Bundled browser asset (`neural-interface/public/vendor/html2canvas/`) copied from the npm development dependency | MIT | [GitHub](https://github.com/niklasvh/html2canvas) |
+| yaml | 2.9.1 | Bundled browser asset (`neural-interface/public/vendor/yaml/`) built from the npm dependency | ISC | [GitHub](https://github.com/eemeli/yaml) |
 
 ### CodeMirror 6
 
@@ -155,6 +157,15 @@ The card screenshot tool of the 3D map (`index.html`). Its own browser build (`d
 - **License:** MIT
 - **Copyright:** Copyright (c) 2012 Niklas von Hertzen
 - **URL:** https://github.com/niklasvh/html2canvas
+
+### yaml
+
+The YAML parser behind the Skills Studio: it reads the frontmatter of skills, commands and agents, and changes it one key at a time without touching the rest (`neural-interface/lib/skills/`, `neural-interface/public/shared/skills/ss-frontmatter.js`). No dependencies of its own. The Studio's metadata form uses the same package in the browser: its browser build (`browser/dist/index.js`), bundled by `neural-interface/scripts/build-vendor.mjs` into one file in `neural-interface/public/vendor/yaml/` with the package's `LICENSE` and a `manifest.json`, loaded only when the editor opens.
+
+- **Version:** 2.9.1
+- **License:** ISC
+- **Copyright:** Copyright Eemeli Aro
+- **URL:** https://github.com/eemeli/yaml
 
 ## Vendored Code
 
@@ -224,6 +235,7 @@ The model is distributed under Apache-2.0. See its
 - [BSD 2-Clause License](https://opensource.org/license/bsd-2-clause)
 - [BSD 3-Clause License](https://opensource.org/license/bsd-3-clause)
 - [GNU General Public License v3.0](https://www.gnu.org/licenses/gpl-3.0.html)
+- [ISC License](https://opensource.org/license/isc-license-txt)
 
 SynaBun's own Apache-2.0 terms are in [LICENSE](./LICENSE), and attribution
 information is in [NOTICE](./NOTICE). The

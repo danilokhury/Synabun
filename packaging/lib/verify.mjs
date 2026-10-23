@@ -27,6 +27,7 @@ import { basename, dirname, join, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { externalToolPayloadReason, externalToolsInLock } from '../../lib/external-tools.js';
 import { bundledNpmrc } from '../../lib/packaged-runtime.js';
+import { mcpDistMissing } from '../../lib/mcp-dist.js';
 import { npmRootIn, npmWrapperScript, WINDOWS_NPM_SHIMS } from './bundle.mjs';
 import { elfSymbols, unmetImports } from './cross.mjs';
 import { gitBashModulesOf } from './git-bash.mjs';
@@ -172,6 +173,10 @@ export async function auditBundle(ctx) {
     windows ? 'runtime/node_modules/npm/bin/npm-cli.js' : 'runtime/lib/node_modules/npm/bin/npm-cli.js',
   ];
   for (const file of required) if (!existsSync(join(resources, file))) problems.push(`missing: ${file}`);
+  // The MCP server: every module dist/index.js imports, transitively (lib/mcp-dist.js), once the entry is there.
+  if (existsSync(join(resources, 'app', 'mcp-server', 'dist', 'index.js'))) {
+    for (const file of mcpDistMissing(join(resources, 'app')).missing) problems.push(`missing: app/${file} (mcp-server/dist/index.js imports it)`);
+  }
   // npm and npx, which features run on a machine without Node: there, set up, and (where the target's Node runs here)
   // answering with the bundled runtime alone.
   const npmAudit = auditBundledNpm({ resources, platform, runnable: !ctx.cross, home: ctx.work ? join(ctx.work, 'npm-check-home') : null, run: ctx.runCommand });

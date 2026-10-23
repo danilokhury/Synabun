@@ -15,11 +15,7 @@ You are now in **changelog mode**. Your job is to analyze the current session's 
 
 ## Runtime Compatibility
 
-- **Interactive choice prompt** means an interactive option card the user clicks — not plain text choices.
-  - **Claude Code (REQUIRED path):** `AskUserQuestion` is a deferred tool — its schema is not loaded by default. Before the first prompt in this skill, call `ToolSearch` with query `select:AskUserQuestion` to load it, then call `AskUserQuestion` with 2-4 options. NEVER write the choices as plain text — the sidepanel will render text as static markdown, not an interactive card.
-  - **OpenCode (REQUIRED path):** call the native `question` tool — the sidepanel renders it as an interactive card via the `/question.asked` event. NEVER write the choices as plain text.
-  - **Codex (REQUIRED path):** call `request_user_input` — the sidepanel renders it as an interactive card. NEVER write the choices as plain text.
-  - **Other runtimes:** only when no interactive tool exists, fall back to a concise plain-text multiple-choice question and wait for the user's reply.
+- **Interactive choice prompt** follows the hub's rules (`$SKILL_DIR/SKILL.md` → Runtime Compatibility): the question tool this runtime has, a short plain-text question when it has none, and no question at all when nobody can answer (take the step's default, or stop and say what is needed).
 - **File operations** mean: use the runtime's available local file tools. In Claude environments that may be `Read` / `Write` / `Edit`; in Codex it may be shell reads plus `apply_patch` or equivalent editing tools.
 
 ---

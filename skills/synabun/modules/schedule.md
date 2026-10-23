@@ -45,7 +45,7 @@ All bodies + responses are JSON. Capture the returned `id` from each POST.
 - CLI profiles: `claude-code`, `codex`, `gemini`, `opencode`.
 - Default model per profile: `claude-code → claude-sonnet-4-6` · `codex → gpt-5.4-mini` · `gemini → gemini-2.5-pro` · `opencode → null` (last-used).
 - Categories (only these): `social`, `productivity`, `monitoring`, `custom`.
-- Icon keys: `twitter, x, instagram, facebook, linkedin, tiktok, youtube, whatsapp, discord, search, research, chart, mail, globe, monitor, code, pencil, chat, refresh, brain, clock, claude, openai, gemini, leonardo, pin, sparkle`.
+- Icon keys: `twitter, x, instagram, facebook, linkedin, tiktok, youtube, whatsapp, discord, search, research, chart, mail, globe, monitor, code, pencil, chat, refresh, brain, clock, claude, openai, gemini, pin, sparkle`.
 
 ---
 

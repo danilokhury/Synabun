@@ -36,7 +36,18 @@
  * until the user asks: Install now downloads it if needed, waits for idle and
  * installs, with no countdown. A quit or the next start installs only an update
  * the user asked to install.
+ *
+ * The data comes first. Every install is one attempt with an id of its own:
+ * after host.beforeInstall() (the splash, the server stopped) host.protectData()
+ * takes or confirms the pre-update snapshot and hands it to the new version
+ * (updater/data-guard.mjs), and only then does the adapter replace the app. A
+ * snapshot that cannot be taken is a failed install: the version that runs
+ * stays. While a downloaded update waits and SynaBun is idle,
+ * host.prepareData() takes that snapshot ahead, in the background, so the
+ * restart itself has nothing to copy when nothing was written since.
  */
+
+import { newInstallId } from './data-guard.mjs';
 
 export const CHECK_DELAY_MS = 30 * 1000;
 export const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
@@ -101,6 +112,7 @@ const sameBusy = (a = [], b = []) => a.length === b.length && a.every((item, ind
 
 export function createUpdateController({
   adapter, host, t, now = () => Date.now(), timers = { setTimeout, clearTimeout, setInterval, clearInterval },
+  makeInstallId = newInstallId,
 }) {
   const iso = (ms) => new Date(ms).toISOString();
   // Updates install by themselves unless the user turned that off (read at every decision: the setting is live).
@@ -182,6 +194,18 @@ export function createUpdateController({
 
   const autoInstalls = () => adapter.installMode() === 'restart' && !state.manualFile;
 
+  /** Idle with a downloaded update: the snapshot can be taken ahead (the host knows whether one is still exact). */
+  function prepareAhead() {
+    if (!autoInstalls() || !state.latest) return;
+    try { Promise.resolve(host.prepareData?.({ version: state.latest })).catch(() => {}); } catch {}
+  }
+
+  /** The pre-update snapshot of this install, taken or confirmed: a failure is the install's. */
+  async function protectData(version, installId, trigger) {
+    if (typeof host.protectData !== 'function') return;
+    await host.protectData({ version, installId, trigger });
+  }
+
   function stopAuto() {
     if (poll) { try { timers.clearInterval(poll); } catch {} poll = null; }
     if (alarm) { try { timers.clearTimeout(alarm); } catch {} alarm = null; }
@@ -224,6 +248,7 @@ export function createUpdateController({
         }
         return;
       }
+      prepareAhead();
       if (current.now) {
         log(`update v${state.latest}: idle, installing as asked`);
         ticking = false;
@@ -403,11 +428,13 @@ export function createUpdateController({
     installing = true;
     stopAuto();
     const version = state.latest;
+    const installId = makeInstallId();
     countAttempt(version, trigger);
     set({ status: 'installing', error: null, auto: null });
     try {
-      await host.beforeInstall({ version, trigger });
-      await adapter.install({ relaunch: true, version, previous: state.current });
+      await host.beforeInstall({ version, trigger, installId });
+      await protectData(version, installId, trigger);
+      await adapter.install({ relaunch: true, version, previous: state.current, installId });
       log(`installing v${version} (${trigger}); the app quits now`);
       host.quitForUpdate();
     } catch (error) {
@@ -416,7 +443,8 @@ export function createUpdateController({
       attemptFailed(version, message);
       log(`update install failed: ${error?.code || ''} ${error?.message || error}`);
       set({ status: 'error', error: message });
-      try { await host.afterFailedInstall?.(); } catch {}
+      try { host.cancelHandoff?.({ installId }); } catch {}
+      try { await host.afterFailedInstall?.({ version, installId }); } catch {}
     }
     return state;
   }
@@ -435,13 +463,16 @@ export function createUpdateController({
     installing = true;
     stopAuto();
     countAttempt(state.latest, 'quit');
+    const installId = makeInstallId();
     try {
-      await adapter.install({ relaunch: false, version: state.latest, previous: state.current });
+      await protectData(state.latest, installId, 'quit');
+      await adapter.install({ relaunch: false, version: state.latest, previous: state.current, installId });
       log(`installing v${state.latest} on quit`);
       return true;
     } catch (error) {
       attemptFailed(state.latest, describeUpdateError(error, t, { stage: 'install' }));
       log(`update install on quit failed: ${error?.message || error}`);
+      try { host.cancelHandoff?.({ installId }); } catch {}
       installing = false;
       return false;
     }

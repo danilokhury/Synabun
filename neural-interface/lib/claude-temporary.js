@@ -84,19 +84,13 @@ const ACT_TOOLS = new Set([
   'gsc_removals_cancel', 'gsc_screenshot', 'gsc_security_issues', 'gsc_settings', 'gsc_shopping', 'gsc_sitemap', 'gsc_users', 'gsc_videos_report',
   'youtube_analytics', 'youtube_channel', 'youtube_download', 'youtube_endscreen', 'youtube_metadata', 'youtube_navigate',
   'youtube_playlist', 'youtube_schedule', 'youtube_source', 'youtube_thumbnail',
-  'leonardo_browser_download', 'leonardo_browser_generate', 'leonardo_browser_library', 'leonardo_browser_navigate',
   'computer', 'computer_apps', 'computer_ax', 'computer_status',
   'git',
 ]);
 // An acting tool that also changes one of SynaBun's stores unless it is told
-// not to: allowed with that input only. (`leonardo_browser_reference` deletes
-// the staged images it uploaded from SynaBun's image store by default.)
-const ACT_WHEN = Object.freeze({
-  leonardo_browser_reference: {
-    ok: (input) => input?.autoClear === false,
-    why: 'it removes the staged images from SynaBun\'s store unless it is called with autoClear: false',
-  },
-});
+// not to: allowed with that input only, as `{ ok: (input) => boolean, why }`.
+// No tool of the server needs one today.
+const ACT_WHEN = Object.freeze({});
 // Why a storing tool that looks like an acting one is off.
 const STORE_REASONS = Object.freeze({
   youtube_upload: 'it records every upload as a memory',

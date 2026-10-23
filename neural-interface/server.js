@@ -7,7 +7,7 @@ import { createSessionOps } from './lib/claude-session-ops.js';
 import { createSessionCleanup, dropSessionCost, deleteSessionRows } from './lib/claude-session-cleanup.js';
 import { createSessionListOverlay, overlaySessions, matchesSessionFilter } from './lib/claude-session-list.js';
 import { findSessionTranscript, sessionProjects, confineArtifact, confineSubPath, confineToRoot, staysInside, isInsideReal, isInside, isPlainName, PathConfineError } from './lib/path-confine.js';
-import { readConfinedFile, writeConfinedFile, makeConfinedDir, removeConfinedEntry, listConfined, openConfinedStream } from './lib/confined-fs.js';
+import { readConfinedFile, writeConfinedFile, makeConfinedDir, removeConfinedEntry, listConfined, openConfinedStream, entryKind } from './lib/confined-fs.js';
 import { createClaudeAccounts as createPanelClaudeAccounts } from './lib/claude-accounts.js';
 import { createClaudePanelAuth } from './lib/claude-panel-auth.js';
 import { createCodexPanelAuth } from './lib/codex-panel-auth.js';
@@ -39,7 +39,7 @@ import { createEventLoopMonitor } from './lib/event-loop-monitor.js';
 import { createRulesetInstaller } from './lib/rulesets/installer.js';
 import { registerRulesetRoutes, registerLegacyRulesetRoutes } from './lib/rulesets/api.js';
 import { createPtyHostManager } from './lib/pty-host/manager.js';
-import { hostNameOf, isAllowedHost, isAllowedWebSocketOrigin, parseCookies, refuseUpgrade } from './lib/http-guards.js';
+import { AGENT_HEADERS, hostNameOf, isAllowedHost, isAllowedWebSocketOrigin, parseCookies, refuseUpgrade } from './lib/http-guards.js';
 import { createRequestGates, extraHostNames, hostsOf, savedValueOf, startedValueOf } from './lib/request-gate.js';
 import { createGitDiffRouter } from './lib/git-diff-api.js';
 import { gitRead, gitReadSync, setGitFallbackFolder, withGitFallback } from './lib/git-read.js';
@@ -242,6 +242,27 @@ import {
   correlationMismatch,
 } from './lib/codex-request-journal.js';
 import { buildCodexSkillPromptBridge, expandSynabunCodexSlashPrompt } from './lib/skill-prompt-bridge.js';
+import { frontmatterData, lintText, problemCounts, asText, renameSkillDocument } from './lib/skills/frontmatter.js';
+import { readManifest } from './lib/skills/digest.js';
+import { readRevisioned, writeRevisioned } from './lib/skills/revision.js';
+import { createSkillInstaller } from './lib/skills/ownership.js';
+import { scanArtifact, scanAllows } from './lib/skills/scan.js';
+import { readBundle, buildBundle, collectFolder, createImportStaging, writeSkillFolder, decodeBase64 } from './lib/skills/bundle.js';
+import { createSkillLibrary } from './lib/skills/library.js';
+import { createRootResolver } from './lib/skills/roots.js';
+import { createSkillsCatalog } from './lib/skills/catalog.js';
+import { createDeployer } from './lib/skills/deploy.js';
+import { createReviewQueue } from './lib/skills/reviews.js';
+import { createBridgeMigration, bridgeSignature } from './lib/skills/migration.js';
+import { createSkillsService } from './lib/skills/service.js';
+import { createSkillsRuntimeChecks } from './lib/skills/runtime-checks.js';
+import { registerSkillsV2Routes } from './lib/skills/api-v2.js';
+import { createSkillCreations } from './lib/skills/creation.js';
+import { registerSkillCreationRoutes } from './lib/skills/creation-api.js';
+import { urlProblem as skillSourceUrlProblem } from './public/shared/skills/ss-creation.js';
+import { claudeRowsToMessages, codexRolloutToMessages, opencodeRowsToMessages } from './lib/skills/creation-sources.js';
+import { renderSkillBody } from './public/shared/skills/ss-args.js';
+import { claudeBoolean } from './public/shared/skills/ss-profiles.js';
 import { generateSessionTitle } from './lib/session-title-generator.js';
 import {
   CLAUDE_EFFORT_LEVELS,
@@ -293,6 +314,7 @@ import { launcherLogPath } from '../lib/first-launch-protection.js';
 import { launcherRegistrationAllowed, registerStartLauncher, startLauncherState } from '../lib/start-launcher.js';
 import { effectiveNpmPrefix } from '../lib/child-path.js';
 import { checkRuntimeDependencies, fallbackInstallArgs, fallbackInstallEnv, findInstalled, mcpCompiler, npmCommand, npmInvocation } from '../lib/runtime-dependencies.js';
+import { mcpDistBuilt } from '../lib/mcp-dist.js';
 import { redactDeep, redactSecrets } from '../lib/log-redact.js';
 import { applyPackagedChildPath, durableEntry, mcpStdioCommand, npmGlobalBinFor, packagedNpmPrefix, packagedPathFolders, packagedRuntime } from '../lib/packaged-runtime.js';
 import { dataHomeId } from '../lib/desktop-app.js';
@@ -380,6 +402,9 @@ let _greeting = null;
 let _greetingRouter = null;
 let _greetingError = null;
 let _assistantDispatcher = null;
+// The Assistant's settings store (assistant-config.json), once the Assistant is built: Skills Studio's AI drafting reads
+// the owner's saved route for Coding from it (skillDraftDefaultTarget).
+let _assistantConfigStore = null;
 // The Assistant's model catalog (lib/assistant-catalog.js): Settings → WhatsApp checks its brain choice against it.
 let _assistantCatalog = null;
 // The Claude account the Assistant's Claude Code workers use when a dispatch names none (assistant-config.json
@@ -4571,7 +4596,7 @@ CRITICAL — When you need clarification during planning:
     return _cachedConfig[key] ?? fallback;
   }
 
-  function buildCodexInputItems(prompt, { mentions = [], localImages = [] } = {}) {
+  function buildCodexInputItems(prompt, { mentions = [], localImages = [], skills = [] } = {}) {
     const input = [];
     const text = typeof prompt === 'string' ? prompt.trim() : '';
     if (text) {
@@ -4581,6 +4606,8 @@ CRITICAL — When you need clarification during planning:
         text_elements: [],
       });
     }
+    // A skill picked by name: Codex's own `skill` input (app-server UserInput), checked by codexSkillInputs.
+    for (const skill of codexSkillInputs(skills)) input.push({ type: 'skill', name: skill.name, path: skill.path });
     if (Array.isArray(mentions)) {
       for (const mention of mentions) {
         if (!mention || typeof mention !== 'object') continue;
@@ -6136,10 +6163,13 @@ CRITICAL — When you need clarification during planning:
     }
     activeTurnAutoAccept = !!opts.autoAccept;
     const originalPrompt = prompt;
-    prompt = expandSynabunCodexSlashPrompt(
-      prompt,
-      join(SKILLS_SOURCE_DIR, 'synabun', 'SKILL.md'),
-    );
+    // A native skill input carries the skill itself: its /name is not expanded into a pointer as well.
+    if (!(Array.isArray(opts.skills) && opts.skills.length)) {
+      prompt = expandSynabunCodexSlashPrompt(
+        prompt,
+        join(SKILLS_SOURCE_DIR, 'synabun', 'SKILL.md'),
+      );
+    }
     const isPlanModeTurn = !!opts.planMode || isCodexPlanModePrompt(originalPrompt);
     const isSlashCommand = /^\/\w/.test(String(originalPrompt || '').trim());
     // The greeting SynaBun showed when this tab opened (lib/greeting/): the panel echoes its id
@@ -6153,6 +6183,7 @@ CRITICAL — When you need clarification during planning:
     const input = buildCodexInputItems(turnPrompt, {
       mentions: Array.isArray(opts.mentions) ? opts.mentions : [],
       localImages: Array.isArray(opts.localImages) ? opts.localImages : [],
+      skills: Array.isArray(opts.skills) ? opts.skills : [],
     });
     const turnParams = {
       threadId,
@@ -6657,11 +6688,17 @@ CRITICAL — When you need clarification during planning:
           sendToClient({ type: 'error', message: 'No prompt provided' });
           return;
         }
+        // Skills Codex loads itself go as its own skill input (name + SKILL.md), so Codex applies them as native
+        // skills: one picked from the hint list (`msg.skills`), or a typed /name of one; any other /name of a
+        // SynaBun or Claude Code skill is handed to the model as before.
+        const nativeSkills = codexSkillInputs(msg.skills);
         if (prompt.startsWith('/')) {
-          const injected = maybeInjectSkillPrompt(prompt);
+          const injected = maybeInjectSkillPrompt(prompt, { cwd: msg.cwd || PACKAGE_ROOT, runtime: 'codex', accountId: activeAccountId || 'default' });
           if (injected.skill) {
             console.log('[codex-skin] Skill injection: /' + injected.command, 'dir:', injected.skill.dir);
             prompt = injected.prompt;
+          } else if (injected.native && !nativeSkills.some((s) => s.path === injected.native.filePath)) {
+            nativeSkills.push({ name: injected.native.name, path: injected.native.filePath });
           }
         }
         // A person typed this in the Codex panel (the Assistant's brain, a loop and a run never
@@ -6679,6 +6716,7 @@ CRITICAL — When you need clarification during planning:
           effort: msg.effort || null,
           localImages,
           mentions,
+          skills: nativeSkills,
           planMode: !!msg.planMode,
           sandboxMode: msg.sandboxMode === 'read-only' ? 'read-only' : null,
           autoAccept: !!msg.autoAccept,
@@ -17868,9 +17906,9 @@ app.post('/api/system/restore', async (req, res) => {
       }
     }
 
-    // Post-restore: ensure MCP server is built (critical for fresh installs + restore)
-    const mcpDistCheck = resolve(PACKAGE_ROOT, 'mcp-server', 'dist', 'index.js');
-    if (!existsSync(mcpDistCheck)) {
+    // Post-restore: ensure MCP server is built (critical for fresh installs + restore). Built means dist/index.js
+    // and every module it imports (lib/mcp-dist.js).
+    if (!mcpDistBuilt(PACKAGE_ROOT)) {
       try {
         // TypeScript is a devDependency of the package root (a development checkout also has it in mcp-server/).
         const mcpDir = resolve(PACKAGE_ROOT, 'mcp-server');
@@ -19079,7 +19117,7 @@ app.get('/api/setup/onboarding', async (req, res) => {
     const vars = parseEnvFile(ENV_PATH);
     const setupComplete = vars.SETUP_COMPLETE === 'true';
     const dbExists = existsSync(getDbPath());
-    const mcpBuilt = existsSync(resolve(PACKAGE_ROOT, 'mcp-server', 'dist', 'index.js'));
+    const mcpBuilt = mcpDistBuilt(PACKAGE_ROOT);
     const { mcpCommand, mcpArgs } = getMcpPaths();
 
     res.json({
@@ -19154,9 +19192,9 @@ app.post('/api/setup/build', async (req, res) => {
     { name: 'MCP Server', path: resolve(PACKAGE_ROOT, 'mcp-server') },
   ];
 
-  // Check if MCP server needs building (determines if we need dev deps)
+  // Check if MCP server needs building (determines if we need dev deps): dist/index.js and every module it imports.
   const mcpDist = resolve(PACKAGE_ROOT, 'mcp-server', 'dist', 'index.js');
-  const mcpNeedsBuild = !existsSync(mcpDist);
+  const mcpNeedsBuild = !mcpDistBuilt(PACKAGE_ROOT);
 
   // Phase 1: the dependencies. `npm i -g synabun` installed them at the package root (lib/runtime-dependencies.js
   // checks that Node finds them from both parts); only what is missing is installed, once, at the package root,
@@ -19192,7 +19230,7 @@ app.post('/api/setup/build', async (req, res) => {
 
   // Phase 2: Build MCP server
   const mcpSrc = resolve(PACKAGE_ROOT, 'mcp-server', 'src', 'index.ts');
-  let needsBuild = !existsSync(mcpDist);
+  let needsBuild = !mcpDistBuilt(PACKAGE_ROOT);
   if (!needsBuild) {
     try { needsBuild = statSync(mcpSrc).mtimeMs > statSync(mcpDist).mtimeMs; } catch { needsBuild = true; }
   }
@@ -19456,11 +19494,6 @@ const SYNABUN_TOOL_PERMISSIONS = [
   'mcp__SynaBun__card_close',
   'mcp__SynaBun__card_update',
   'mcp__SynaBun__card_screenshot',
-  'mcp__SynaBun__leonardo_browser_navigate',
-  'mcp__SynaBun__leonardo_browser_generate',
-  'mcp__SynaBun__leonardo_browser_library',
-  'mcp__SynaBun__leonardo_browser_download',
-  'mcp__SynaBun__leonardo_browser_reference',
   'mcp__SynaBun__image_staged',
   'mcp__SynaBun__profile',
   'mcp__SynaBun__gsc_navigate',
@@ -19643,16 +19676,6 @@ const SYNABUN_TOOL_CATEGORIES = [
       { key: 'mcp__SynaBun__profile', label: 'Switch tool profile', desc: 'Get or set the active MCP tool profile at runtime' },
       { key: 'mcp__SynaBun__tictactoe', label: 'Tic Tac Toe', desc: 'Play a game of tic-tac-toe with your AI' },
       { key: 'mcp__SynaBun__git', label: 'Git operations', desc: 'Status, diff, commit, log, and branches' },
-    ],
-  },
-  {
-    id: 'leonardo', label: 'Leonardo AI',
-    tools: [
-      { key: 'mcp__SynaBun__leonardo_browser_navigate', label: 'Navigate Leonardo', desc: 'Open Leonardo.ai pages' },
-      { key: 'mcp__SynaBun__leonardo_browser_generate', label: 'Generate image', desc: 'Create images with Leonardo AI' },
-      { key: 'mcp__SynaBun__leonardo_browser_library', label: 'Browse library', desc: 'Search Leonardo image library' },
-      { key: 'mcp__SynaBun__leonardo_browser_download', label: 'Download image', desc: 'Download generated images' },
-      { key: 'mcp__SynaBun__leonardo_browser_reference', label: 'Set reference', desc: 'Upload reference images for generation' },
     ],
   },
   {
@@ -22185,27 +22208,427 @@ app.get('/api/setup/status', (req, res) => {
 // ═══════════════════════════════════════════
 
 const SKILLS_SOURCE_DIR = resolve(PACKAGE_ROOT, 'skills');
+// A SKILL.md, a command or an agent file is read whole, and bounded: a bigger one is not a skill anyone wrote.
+const SKILL_FILE_MAX_BYTES = 2 * 1024 * 1024;
+// What SynaBun installed into a runtime's folders, with the digest of what it wrote, and the backups of what an
+// install or a removal replaced (lib/skills/ownership.js); imports wait in staging, outside every folder a
+// runtime reads skills from, until they are installed (lib/skills/bundle.js).
+const SKILLS_DATA_DIR = resolve(DATA_HOME, 'data', 'skills');
+const skillInstaller = createSkillInstaller({ dataDir: SKILLS_DATA_DIR });
+const skillImportStaging = createImportStaging({ dir: join(SKILLS_DATA_DIR, 'staging'), liveRoots: () => skillLiveRoots() });
+
+// ── The Skills Service (docs/skills-studio.md → The Skills Service) ──
+// One service for the Studio, Settings, the MCP `skill` tool (through /api/skills-studio/v2) and the install
+// routes below: every runtime folder (lib/skills/roots.js, per Claude and Codex account, per project), what they
+// hold (lib/skills/catalog.js), the managed library of complete folders and immutable revisions
+// (lib/skills/library.js, DATA_HOME/data/skills/library), native installs with plans, backups and rollback
+// (lib/skills/deploy.js), the Review queue (lib/skills/reviews.js) and the move of the old prompt and command
+// bridges to native skill folders (lib/skills/migration.js: only when the owner starts it, never at start-up).
+// Nothing here runs when the server starts: the first request reads what it needs.
+let skillsService = null;
+const skillRoots = createRootResolver({
+  env: process.env, homeDir: getHomePath(),
+  projects: () => { try { return loadHookProjects(); } catch { return []; } },
+  claudeAccounts: () => { try { return _panelClaudeAccounts().list().map((row) => ({ id: row.id, label: row.label, home: row.home })); } catch { return []; } },
+  codexAccounts: () => { try { return _codexAccounts().registryRows().map((row) => ({ id: row.id, label: row.label, home: row.home })); } catch { return []; } },
+  bundledDir: SKILLS_SOURCE_DIR,
+  config: () => (skillsService ? skillsService.getConfig() : { sharedAgentsRoot: false }),
+});
+const skillLibrary = createSkillLibrary({ dir: join(SKILLS_DATA_DIR, 'library') });
+const skillsCatalog = createSkillsCatalog({
+  roots: () => skillRoots.listRoots(),
+  readHead: (base, file) => readRevisioned(base, file, { maxBytes: SKILL_FILE_MAX_BYTES }),
+  describe: ({ type, text, folderName, binary }) => {
+    const { parsed, lint } = lintText({ type, text, folderName, binary, knownNames: bundledSkillNames() });
+    const fm = parsed.data || {};
+    return { name: asText(fm.name), description: asText(fm.description).replace(/\s+/g, ' ').trim(), problems: problemCounts(lint), data: fm };
+  },
+  ownership: (path) => {
+    const rec = skillInstaller.recordFor(path);
+    return rec ? { managedBy: 'synabun', target: rec.target, digest: rec.digest, source: rec.source || null, installedAt: rec.installedAt || null } : null;
+  },
+  classifyBridge: ({ text, name, family }) => bridgeSignature(text, { name, family }),
+});
+const skillsDefaultCodexHome = () => resolve(process.env.CODEX_HOME || join(getHomePath(), '.codex'));
+const skillsRuntimeChecks = createSkillsRuntimeChecks({
+  codexHome: (id) => { try { return _codexAccounts().homeFor(id || 'default') || skillsDefaultCodexHome(); } catch { return skillsDefaultCodexHome(); } },
+  claudeHome: (id) => { try { return (id && id !== 'default' ? _panelClaudeAccounts().homeFor(id) : null) || claudeConfigHome(); } catch { return claudeConfigHome(); } },
+  // Where OpenCode reads its settings: OPENCODE_CONFIG_DIR when set, as for its skills (lib/skills/roots.js).
+  opencodeConfigDir: () => skillRoots.opencodeConfigDir(),
+  codexBin: () => { try { return getCodexBin(); } catch { return null; } },
+  // Listing skills needs no credential: the account's CODEX_HOME, and none of the inherited keys.
+  codexEnv: (id) => {
+    const env = { ...process.env };
+    for (const name of ['OPENAI_API_KEY', 'CODEX_API_KEY', 'CODEX_ACCESS_TOKEN']) delete env[name];
+    try { env.CODEX_HOME = _codexAccounts().homeFor(id || 'default') || skillsDefaultCodexHome(); } catch { env.CODEX_HOME = skillsDefaultCodexHome(); }
+    return env;
+  },
+  opencodeClient: () => { try { return opencodeV2Client.isConnected() ? opencodeV2Client.getClient() : null; } catch { return null; } },
+});
+const skillsDeployer = createDeployer({
+  library: skillLibrary, roots: skillRoots, ownership: skillInstaller, dataDir: SKILLS_DATA_DIR,
+  config: () => (skillsService ? skillsService.getConfig() : { sharedAgentsRoot: false }),
+  catalogEntries: async () => (await skillsCatalog.scan()).entries,
+  probe: (o) => skillsRuntimeChecks.probe(o),
+  eligibility: (o) => skillsRuntimeChecks.eligibility(o),
+  emit: (event) => skillsService?.announce(event),
+  // A scan checks a skill's install name against what SynaBun ships; an Assistant's revision installs only under
+  // the name it was approved for (lib/skills/reviews.js approvalOf; the queue is made below, read at plan time).
+  shippedNames: () => bundledSkillNames(),
+  approvalOf: (revisionId) => skillReviews.approvalOf(revisionId),
+});
+const skillReviews = createReviewQueue({ dataDir: SKILLS_DATA_DIR, library: skillLibrary, emit: (event) => skillsService?.announce(event) });
+const skillBridgeMigration = createBridgeMigration({
+  dataDir: SKILLS_DATA_DIR, roots: skillRoots, ownership: skillInstaller, deployer: skillsDeployer,
+  bundledRevision: (name) => skillsService.bundledRevision(name),
+  // What SynaBun's bridge for a bundled skill is today: a bridge that is exactly this is SynaBun's.
+  currentBridge: (name, runtime) => { try { return buildCliSkillPrompt(name, runtime === 'codex' ? 'codex' : 'opencode'); } catch { return null; } },
+  emit: (event) => skillsService?.announce(event),
+});
+skillsService = createSkillsService({
+  dataDir: SKILLS_DATA_DIR, roots: skillRoots, catalog: skillsCatalog, library: skillLibrary, deployer: skillsDeployer,
+  reviews: skillReviews, migration: skillBridgeMigration, ownership: skillInstaller, bundledDir: SKILLS_SOURCE_DIR, appVersion: SERVER_VERSION,
+  // Every page of the owner hears of a change (the Studio reloads its library, Settings its chips, the Codex panel
+  // its skill hints); invite guests do not (broadcastSync keeps `skills:` to the owner).
+  broadcast: (event) => broadcastSync({ type: 'skills:changed', event }),
+});
+registerSkillsV2Routes(app, {
+  service: skillsService, isGuestRequest,
+  ownerGuard: ownerRouteGuard({ isGuestRequest, port: PORT, allowedOrigins: publicWebOrigins, refuseCrossSite: true, ownOriginsOnly: true }),
+  // An agent is the Assistant only by its brain's launch credential (never by X-Synabun-Role alone).
+  assistantOf: (req) => skillsAssistantOf(req),
+});
+
+// ── AI skill creation (docs/skills-studio.md → AI creation (P3)) ──
+// Create's AI sources in Skills Studio and the Assistant's `skill` action "create": the server reads the sources
+// (a session transcript, memories, a registered project, an existing skill, a web page through the SynaBun browser)
+// into a workspace outside every runtime's skill folders, one confined Claude Code worker of the Assistant's
+// dispatcher drafts the package there (lib/skills/draft-confinement.js), and the result is checked and lands in the
+// library and the Review queue (lib/skills/creation.js). Nothing is installed.
+const skillCreations = createSkillCreations({
+  dataDir: SKILLS_DATA_DIR, service: skillsService, library: skillLibrary,
+  dispatcher: () => _assistantDispatcher,
+  liveRoots: () => skillLiveRoots(),
+  shippedNames: () => bundledSkillNames(),
+  defaultTarget: () => skillDraftDefaultTarget(),
+  browserAvailable: () => skillBrowserAvailability().available,
+  projects: () => { try { return loadHookProjects().filter((p) => p?.path).map((p) => p.path); } catch { return []; } },
+  gather: {
+    conversation: (o) => skillSourceConversation(o),
+    memory: (o) => skillSourceMemory(o),
+    repo: (o) => skillSourceRepo(o),
+    importSource: (o) => skillSourceImport(o),
+    url: (o) => skillSourcePage(o),
+  },
+  log: (tag, message) => { try { loopLog(null, `skills:${tag}`, message); } catch {} },
+});
+registerSkillCreationRoutes(app, {
+  creations: skillCreations, service: skillsService, isGuestRequest,
+  ownerGuard: ownerRouteGuard({ isGuestRequest, port: PORT, allowedOrigins: publicWebOrigins, refuseCrossSite: true, ownOriginsOnly: true }),
+  assistantCaller: (req) => skillCreationCaller(req),
+  options: () => {
+    const browser = skillBrowserAvailability();
+    return {
+      conversation: ['claude-code', 'codex', 'opencode'], url: browser.available, urlReason: browser.reason, memory: true, import: true,
+      repo: (() => { try { return loadHookProjects().filter((p) => p?.path).map((p) => ({ path: p.path, label: p.label || basename(p.path) })); } catch { return []; } })(),
+      defaultTarget: skillDraftDefaultTarget(),
+      drafting: skillDraftingAvailability(),
+    };
+  },
+  sessions: (q) => skillSourceSessions(q),
+});
+
+/** The Assistant session whose live brain holds the launch credential a request carries (X-Synabun-Brain-Token), or null. */
+function skillsAssistantOf(req) {
+  const value = typeof req?.get === 'function' ? req.get('x-synabun-brain-token') : req?.headers?.['x-synabun-brain-token'];
+  if (!value) return null;
+  try { return _assistantRuntime?.sessionForBrainCredential?.(value) || null; } catch { return null; }
+}
+
+/**
+ * Who an agent's request to the creation routes is: an Assistant brain, by the credential its launch was given
+ * (resolved to its session by the runtime; X-Synabun-Role and X-Synabun-Terminal prove nothing, any local process can
+ * send them), a dispatched worker (its terminal is a run id: refused), or nobody known.
+ */
+function skillCreationCaller(req) {
+  const sessionId = skillsAssistantOf(req);
+  if (sessionId) return { kind: 'assistant', assistantSessionId: sessionId };
+  const pin = String(req.get('x-synabun-terminal') || '').trim();
+  if (pin && _assistantDispatcher?.peek?.(pin)) return { kind: 'worker' };
+  return null;
+}
+
+/**
+ * The drafting worker when a request names none: Claude Code, the one runtime a drafting run can be confined on
+ * (lib/skills/draft-confinement.js), with the model of the owner's Coding route when that route is Claude Code's.
+ */
+function skillDraftDefaultTarget() {
+  try {
+    const pref = _assistantConfigStore?.routing?.()?.preferences?.code || null;
+    if (pref?.provider === 'claude-code' && pref.kind !== 'direct') return { provider: 'claude-code', model: pref.model || null, effort: pref.effort || null, ...(pref.accountId ? { accountId: pref.accountId } : {}), route: true };
+  } catch { /* the default below */ }
+  return { provider: 'claude-code', model: null, effort: null, route: false };
+}
+
+/** Whether a drafting worker can start here: the Claude Code every Claude start uses is found, else why not. */
+function skillDraftingAvailability() {
+  try {
+    const exe = getClaudeSdkExecutable();
+    return exe?.path ? { available: true } : { available: false, reason: String(exe?.reason || 'Claude Code was not found on this computer.').slice(0, 400) };
+  } catch (err) { return { available: false, reason: String(err?.message || err).slice(0, 400) }; }
+}
+
+/** Whether the SynaBun browser (the one Settings → Browser chose) can open a page for a draft now, and if not why. */
+function skillBrowserAvailability() {
+  try {
+    const cfg = loadBrowserConfig();
+    const unreadable = browserConfigUnreadable(cfg);
+    if (unreadable) return { available: false, reason: `The browser settings cannot be read (${unreadable}): fix them in Settings → Browser.` };
+    if (cfg.connectMode === 'morelogin') {
+      let installed = false;
+      try { installed = !!moreLogin.isMoreLoginInstalled().installed; } catch { installed = false; }
+      return installed ? { available: true, reason: null } : { available: false, reason: 'MoreLogin is the default browser (Settings → Browser) and it is not installed.' };
+    }
+    if ([...browserSessions.values()].some((s) => s?.context)) return { available: true, reason: null };
+    if (findBrowserExecutable(cfg.channel)) return { available: true, reason: null };
+    try { const bundled = chromium.executablePath(); if (bundled && existsSync(bundled)) return { available: true, reason: null }; } catch { /* not installed */ }
+    return { available: false, reason: 'No Chrome, Edge or Chromium was found for the SynaBun browser (Settings → Browser).' };
+  } catch (err) { return { available: false, reason: String(err?.message || err).slice(0, 400) }; }
+}
+
+/**
+ * A web page for a draft, read by the server with the SynaBun browser in a tab of its own (the browser Settings →
+ * Browser chose): opened, its text, title and final address read, the tab emptied and given back. The drafting worker
+ * never browses (lib/skills/draft-confinement.js): what the page says reaches it as a source file, as data.
+ */
+async function skillSourcePage({ url }) {
+  if (skillSourceUrlProblem(url)) throw Object.assign(new Error('That address cannot be opened.'), { status: 400, code: 'source_failed' });
+  const ownerKey = `skill-source:${randomBytes(6).toString('hex')}`;
+  const acq = await acquireSharedBrowserTab({ ownerKey, ownerType: 'interactive', logTag: 'skills:source-page' });
+  if (acq?.error) throw Object.assign(new Error(acq.error), { status: 409, code: 'needs_browser' });
+  let page = null;
+  try {
+    page = browserSessions.get(acq.browserSessionId)?.tabs?.get(acq.browserTabId)?.page || null;
+    if (!page) throw Object.assign(new Error('The browser tab for the page went away.'), { status: 409, code: 'needs_browser' });
+    let status = null;
+    try { const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 }); status = typeof response?.status === 'function' ? response.status() : null; }
+    catch (err) { throw Object.assign(new Error(`The page could not be opened: ${String(err?.message || err).split('\n')[0].slice(0, 300)}`), { status: 422, code: 'source_failed' }); }
+    await page.waitForLoadState('load', { timeout: 8_000 }).catch(() => {});
+    const title = await page.title().catch(() => '');
+    const text = await page.innerText('body', { timeout: 8_000 }).catch(() => '');
+    return { url, finalUrl: page.url(), title: String(title || '').slice(0, 500), text: String(text || '').slice(0, 400_000), status };
+  } finally {
+    // The page is not left open in the shared browser: the tab is emptied, then given back.
+    if (page) await page.goto('about:blank', { timeout: 5_000 }).catch(() => {});
+    await releaseSharedBrowserTab(acq.browserSessionId, ownerKey).catch(() => {});
+  }
+}
+
+/** Where each Claude account keeps its sessions: CLAUDE_CONFIG_DIR or ~/.claude, and every other account (lib/skills/roots.js). */
+function skillClaudeProjectsDirs() {
+  let homes = [];
+  try { homes = skillRoots.claudeHomes(); } catch { homes = []; }
+  const dirs = homes.filter((h) => h?.home).map((h) => ({ accountId: h.id, label: h.label || h.id, dir: join(h.home, 'projects') }));
+  if (!dirs.length) dirs.push({ accountId: 'default', label: 'Default', dir: join(process.env.CLAUDE_CONFIG_DIR || join(process.env.USERPROFILE || process.env.HOME || '', '.claude'), 'projects') });
+  return dirs.filter((d, i, all) => all.findIndex((x) => resolve(x.dir) === resolve(d.dir)) === i);
+}
+
+/** The sessions a conversation source can use: the registered projects' newest first, as the Resume lists show them. */
+async function skillSourceSessions({ provider, project = null, q = '', limit = 40 }) {
+  const out = [];
+  const search = String(q || '').toLowerCase().trim();
+  const projects = loadHookProjects().filter((p) => p?.path && (!project || resolve(p.path) === resolve(project)));
+  if (provider === 'claude-code') {
+    // Every Claude account's sessions (CLAUDE_CONFIG_DIR, ~/.claude, the others SynaBun knows), each listed once.
+    const accounts = skillClaudeProjectsDirs();
+    const seen = new Set();
+    for (const account of accounts) {
+      for (const proj of projects) {
+        let projDir = join(account.dir, pathToClaudeKey(proj.path).replace(/^([A-Z])/, (m) => m.toLowerCase()));
+        if (!existsSync(projDir)) projDir = join(account.dir, pathToClaudeKey(proj.path));
+        if (!existsSync(projDir)) continue;
+        let entries = (await getSessionEntriesForRequest(projDir, {})).filter((e) => !e.isSidechain && !e._deleted);
+        try { entries = overlaySessions(entries, await claudeSessionOverlay.forProject(proj.path)); } catch { /* titles are optional */ }
+        if (search) entries = entries.filter((e) => matchesSessionFilter(e, { search, tag: '' }));
+        for (const e of entries) {
+          if (seen.has(e.sessionId)) continue;
+          seen.add(e.sessionId);
+          out.push({ provider, sessionId: e.sessionId, title: e.title || e.firstPrompt || '', project: proj.path, projectLabel: proj.label || basename(proj.path), ...(accounts.length > 1 ? { account: account.label } : {}), modified: e.modified || null, messages: e.messageCount || 0 });
+        }
+      }
+    }
+  } else if (provider === 'codex') {
+    const groups = await getCodexSessionsResponse({ targetProject: project || undefined, limit, offset: 0, search });
+    for (const g of groups) for (const s of g.sessions) out.push({ provider, sessionId: s.sessionId, title: s.firstPrompt || '', project: g.path, projectLabel: g.label, modified: s.modified || null, messages: s.messageCount || 0 });
+  } else if (provider === 'opencode') {
+    const db = getOpencodeDb();
+    const flavor = db ? opencodeDbFlavor(db, _ocpProtocol) : null;
+    if (flavor) {
+      const tables = sessionTablesFor(flavor);
+      let rows = [];
+      try {
+        rows = db.prepare(`SELECT s.id, s.title, s.directory, s.time_updated, p.worktree AS project_worktree, ${tables.messageCount} AS message_count
+          FROM ${tables.session} s LEFT JOIN project p ON s.project_id = p.id WHERE s.time_archived IS NULL ORDER BY s.time_updated DESC LIMIT 2000`).all();
+      } catch { rows = []; }
+      for (const row of rows) {
+        const dir = row.project_worktree || row.directory ? resolve(row.project_worktree || row.directory) : null;
+        const proj = dir ? projects.find((p) => isInside(resolve(p.path), dir, { allowRoot: true })) : null;
+        if (!proj) continue;
+        const title = String(row.title || '');
+        if (search && !title.toLowerCase().includes(search) && !String(row.id).toLowerCase().includes(search)) continue;
+        out.push({ provider, sessionId: row.id, title, project: proj.path, projectLabel: proj.label || basename(proj.path), modified: row.time_updated ? new Date(row.time_updated).toISOString() : null, messages: Number(row.message_count) || 0 });
+      }
+    }
+  }
+  return out.sort((a, b) => String(b.modified || '').localeCompare(String(a.modified || ''))).slice(0, Math.max(1, Math.min(100, Number(limit) || 40)));
+}
+
+/**
+ * One session transcript as messages, read the way each runtime keeps it: Claude Code's transcript inside a
+ * registered project's folder (lib/path-confine.js findSessionTranscript), Codex's rollout inside its account's home,
+ * OpenCode's rows of its database. Bounded: the first messages and the last ones of a very long session.
+ */
+async function skillSourceConversation({ provider, sessionId, project = null }) {
+  const keep = (list, m) => { list.push(m); if (list.length > 2400) list.splice(300, list.length - 2100); };
+  if (provider === 'claude-code') {
+    // In whichever Claude account holds it (CLAUDE_CONFIG_DIR, ~/.claude, the others SynaBun knows).
+    let found = null;
+    for (const account of skillClaudeProjectsDirs()) {
+      found = findSessionTranscript({ sessionId, project: typeof project === 'string' ? project : '', projects: loadHookProjects(), projectsDir: account.dir, pathToKey: pathToClaudeKey });
+      if (found) break;
+    }
+    if (!found) throw Object.assign(new Error('That Claude Code session was not found in a registered project.'), { status: 404, code: 'source_not_found' });
+    const collector = createHistoryCollector();
+    for await (const line of jsonlLines(openConfinedStream(found.realFolder, found.realPath, { encoding: 'utf-8' }))) {
+      if (!line.trim()) continue;
+      try { collector.add(JSON.parse(line)); } catch {}
+    }
+    const rows = collector.finish({ limit: 1000 }).messages;
+    const firstPrompt = rows.find((r) => r.role === 'user' && typeof r.text === 'string')?.text || '';
+    return { title: firstPrompt.replace(/\s+/g, ' ').slice(0, 120), project, messages: claudeRowsToMessages(rows) };
+  }
+  if (provider === 'codex') {
+    const accounts = loadCodexAccounts().accounts.map((a) => ({ ...a, home: a.home || getCodexAccountHome(a.id) }));
+    const rows = listCodexSessionsFromAccounts(accounts, { projects: loadHookProjects(), includeArchived: true, maxRows: 10000 });
+    const hit = rows.find((r) => r.sessionId === sessionId);
+    const account = hit ? accounts.find((a) => a.id === hit.accountId) : null;
+    if (!hit?.rolloutPath || !account?.home) throw Object.assign(new Error('That Codex session was not found.'), { status: 404, code: 'source_not_found' });
+    const entries = [];
+    for await (const line of jsonlLines(openConfinedStream(realpathSync(account.home), hit.rolloutPath, { encoding: 'utf-8' }))) {
+      if (!line.trim()) continue;
+      let entry; try { entry = JSON.parse(line); } catch { continue; }
+      if (entry?.type === 'response_item') keep(entries, entry);
+    }
+    return { title: hit.title || hit.firstPrompt || '', project: hit.projectPath || project, messages: codexRolloutToMessages(entries) };
+  }
+  if (provider === 'opencode') {
+    const db = getOpencodeDb();
+    const flavor = db ? opencodeDbFlavor(db, _ocpProtocol) : null;
+    if (!flavor) throw Object.assign(new Error('OpenCode\'s sessions cannot be read here.'), { status: 404, code: 'source_not_found' });
+    const tables = sessionTablesFor(flavor);
+    const session = db.prepare(`SELECT id, title FROM ${tables.session} WHERE id = ?`).get(sessionId);
+    if (!session) throw Object.assign(new Error('That OpenCode session was not found.'), { status: 404, code: 'source_not_found' });
+    const { v2MessageText } = await import('./lib/opencode-db-schema.js');
+    let rows = [];
+    if (flavor === 'v2') rows = db.prepare(`SELECT type, data FROM session_message WHERE session_id = ? AND type IN ('user', 'assistant') ORDER BY seq ASC LIMIT 5000`).all(sessionId);
+    else {
+      const parts = db.prepare(`SELECT p.data AS pdata, m.data AS mdata, p.message_id AS mid FROM part p LEFT JOIN message m ON m.id = p.message_id WHERE p.session_id = ? ORDER BY p.time_created ASC LIMIT 20000`).all(sessionId);
+      const byMessage = new Map();
+      for (const part of parts) {
+        let text = ''; let role = null;
+        try { const pd = JSON.parse(part.pdata || 'null'); if (pd?.type === 'text' && pd.text) text = pd.text; } catch {}
+        try { role = JSON.parse(part.mdata || 'null')?.role || null; } catch {}
+        if (!text || (role !== 'user' && role !== 'assistant')) continue;
+        const row = byMessage.get(part.mid) || { role, text: '' };
+        row.text = row.text ? `${row.text}\n${text}` : text;
+        byMessage.set(part.mid, row);
+      }
+      rows = [...byMessage.values()];
+    }
+    return { title: session.title || '', project, messages: opencodeRowsToMessages(rows, { flavor, v2MessageText }) };
+  }
+  throw Object.assign(new Error('Unknown provider.'), { status: 400, code: 'source_failed' });
+}
+
+/** A recall over SynaBun's memory, as the `recall` tool runs it (no session chunks). */
+async function skillSourceMemory({ query, project = null, limit = 10 }) {
+  const { retrieveMemory } = await import('../mcp-server/dist/services/memory-retrieval.js');
+  const result = await retrieveMemory({ query, ...(project ? { project } : {}), limit, include_sessions: false, judge: false });
+  return (result?.results || []).filter((r) => r.type !== 'session').map((r) => ({
+    id: r.id, content: r.payload?.content ?? r.content ?? '', category: r.payload?.category ?? r.category ?? null, project: r.payload?.project ?? r.project ?? null,
+    importance: Number(r.payload?.importance) || null, createdAt: r.payload?.created_at ?? r.created_at ?? null, tags: Array.isArray(r.payload?.tags) ? r.payload.tags : [],
+  }));
+}
+
+/** A registered project, read-only: its real folder (a path that is not a registered project is refused). */
+async function skillSourceRepo({ project }) {
+  const hit = loadHookProjects().find((p) => p?.path && resolve(p.path) === resolve(String(project || '')));
+  if (!hit) throw Object.assign(new Error('That folder is not a registered project.'), { status: 404, code: 'source_not_found' });
+  return { root: realpathSync(hit.path), label: hit.label || basename(hit.path) };
+}
+
+/** An existing skill to start from: a staged import, a library skill (its latest version) or a catalog skill. */
+async function skillSourceImport({ stagingId = null, skillId = null, artifactId = null }) {
+  if (stagingId) {
+    const staged = skillImportStaging.load(stagingId);
+    if (staged.record.type !== 'skill') throw Object.assign(new Error('Only a skill bundle can be a starting point.'), { status: 400, code: 'source_failed' });
+    return { name: staged.record.name, files: staged.files };
+  }
+  if (skillId) {
+    const skill = skillLibrary.getSkill(skillId);
+    const revisionId = skill.pointers.latest || skill.pointers.upstream;
+    if (!revisionId) throw Object.assign(new Error('That library skill has no version yet.'), { status: 409, code: 'source_failed' });
+    const { files } = skillLibrary.readRevisionFiles(revisionId);
+    return { name: skill.name, files, skillId, bundled: skill.origin?.kind === 'bundled' };
+  }
+  const entry = await skillsService.catalogFind(artifactId);
+  if (!entry || entry.kind !== 'skill') throw Object.assign(new Error('There is no such skill in the catalog.'), { status: 404, code: 'source_not_found' });
+  return { name: entry.folderName, files: collectFolder(entry.realPath).files };
+}
+
+/** Every folder Claude Code, Codex or OpenCode reads skills, commands or agents from: staging is never inside one. */
+function skillLiveRoots() {
+  const home = process.env.USERPROFILE || process.env.HOME || '';
+  const roots = [
+    join(home, '.claude'), join(home, '.codex'), join(home, '.agents'), join(home, '.opencode'),
+    join(home, '.config', 'opencode'), getOpenCodeCommandDir(),
+  ];
+  let projects = [];
+  try { projects = loadHookProjects(); } catch { projects = []; }
+  for (const proj of projects) {
+    if (!proj?.path) continue;
+    for (const sub of ['.claude', '.codex', '.agents', '.opencode']) roots.push(join(proj.path, sub));
+  }
+  // And every root the catalog knows (other accounts' folders, CLAUDE_CONFIG_DIR, CODEX_HOME, XDG_CONFIG_HOME).
+  try { for (const root of skillRoots.listRoots()) if (root.family !== 'synabun') roots.push(root.path); } catch { /* the list above stands */ }
+  return roots;
+}
 
 /** Dirent.isDirectory() returns false for symlinks — check both */
 function isDirEntry(entry) {
   return entry.isDirectory() || entry.isSymbolicLink();
 }
 
-function getGlobalSkillsDir() {
+/** Claude Code's configuration folder of the default account: CLAUDE_CONFIG_DIR when it is set, else ~/.claude. */
+function claudeConfigHome() {
   const home = process.env.USERPROFILE || process.env.HOME || '';
-  return join(home, '.claude', 'skills');
+  return process.env.CLAUDE_CONFIG_DIR ? resolve(process.env.CLAUDE_CONFIG_DIR) : join(home, '.claude');
+}
+
+function getGlobalSkillsDir() {
+  return join(claudeConfigHome(), 'skills');
 }
 
 function getCodexPromptsDir() {
   const home = process.env.USERPROFILE || process.env.HOME || '';
-  return join(home, '.codex', 'prompts');
+  return join(process.env.CODEX_HOME ? resolve(process.env.CODEX_HOME) : join(home, '.codex'), 'prompts');
 }
 
 function getOpenCodeCommandDir() {
   const home = process.env.USERPROFILE || process.env.HOME || '';
-  // OpenCode's documented default is XDG_CONFIG_HOME/opencode/command.
+  // OpenCode's documented default is XDG_CONFIG_HOME/opencode/command (~/.config when XDG_CONFIG_HOME is unset).
   // Honour the legacy ~/.opencode/command path when it exists already.
-  const xdgDefault = join(home, '.config', 'opencode', 'command');
+  const xdgDefault = join(process.env.XDG_CONFIG_HOME ? resolve(process.env.XDG_CONFIG_HOME) : join(home, '.config'), 'opencode', 'command');
   const legacy = join(home, '.opencode', 'command');
   if (existsSync(legacy) && !existsSync(xdgDefault)) return legacy;
   return xdgDefault;
@@ -22213,38 +22636,61 @@ function getOpenCodeCommandDir() {
 
 const SKILL_TARGETS = /** @type {const} */ (['claude', 'codex', 'opencode']);
 
-function getSkillTargetPath(target, skillName) {
-  if (target === 'claude') return join(getGlobalSkillsDir(), skillName);
+/** Where the old prompt / command bridge of a skill is (Codex, OpenCode), or null (Claude Code never had one). */
+function legacyBridgePath(target, skillName) {
   if (target === 'codex') return join(getCodexPromptsDir(), `${skillName}.md`);
   if (target === 'opencode') return join(getOpenCodeCommandDir(), `${skillName}.md`);
   return null;
 }
 
-function isSkillInstalled(target, skillName) {
-  const p = getSkillTargetPath(target, skillName);
-  if (!p) return false;
-  if (target === 'claude') return existsSync(join(p, 'SKILL.md'));
-  return existsSync(p);
+/** Where a skill is installed for a runtime now: a native skill folder in the runtime's own folder (the default account). */
+function nativeSkillPath(target, skillName) {
+  const root = skillRoots.installRoot({ runtime: target, scope: 'user', accountId: 'default' });
+  return root ? join(root.path, skillName) : null;
 }
 
-/** Build the CLI bridge. Codex gets a thin pointer so the repository skill is
- *  the only runtime authority; OpenCode retains its self-contained prompt. */
+/**
+ * A skill in the shared ~/.agents/skills, which Codex and OpenCode both read: 'native' (SynaBun's: its ledger or
+ * an active installation), 'other' (a folder of that name SynaBun did not install) or 'absent'.
+ */
+function sharedSkillState(skillName) {
+  const root = skillRoots.installRoot({ runtime: 'agents', scope: 'user' });
+  if (!root) return { state: 'absent', path: null };
+  const path = join(root.path, skillName);
+  if (!existsSync(join(path, 'SKILL.md'))) return { state: 'absent', path };
+  return { state: skillInstaller.recordFor(path) || skillsDeployer.activeAt(path) ? 'native' : 'other', path };
+}
+const SHARED_READERS = new Set(['codex', 'opencode']);
+
+function getSkillTargetPath(target, skillName) {
+  return SKILL_TARGETS.includes(target) ? nativeSkillPath(target, skillName) : null;
+}
+
+/** A runtime has the skill: its native folder, (Codex, OpenCode) the shared ~/.agents/skills, or an old bridge. */
+function isSkillInstalled(target, skillName) {
+  const native = nativeSkillPath(target, skillName);
+  if (native && existsSync(join(native, 'SKILL.md'))) return true;
+  if (SHARED_READERS.has(target) && sharedSkillState(skillName).state !== 'absent') return true;
+  const bridge = legacyBridgePath(target, skillName);
+  return !!bridge && existsSync(bridge);
+}
+
+/** The old CLI bridge of a bundled skill, as SynaBun wrote it (and would write it today). It is no longer
+ *  installed: the bridge migration (lib/skills/migration.js) compares a bridge on disk with it, and a bridge that
+ *  is exactly this is SynaBun's. Codex got a thin pointer to the bundled SKILL.md (lib/skill-prompt-bridge.js);
+ *  OpenCode a copy of the skill with a banner and $SKILL_DIR filled in. */
 function buildCliSkillPrompt(skillName, target) {
   const sourceDir = join(SKILLS_SOURCE_DIR, skillName);
   const sourceFile = join(sourceDir, 'SKILL.md');
   if (!existsSync(sourceFile)) throw new Error(`Skill "${skillName}" not found in bundled skills.`);
-  const raw = readFileSync(sourceFile, 'utf-8');
+  // A regular file really inside the skill's folder, bounded (lib/confined-fs.js).
+  const raw = readConfinedFile(sourceDir, sourceFile, { maxBytes: SKILL_FILE_MAX_BYTES, encoding: 'utf-8' });
   if (target === 'codex') {
     return buildCodexSkillPromptBridge({ sourceFile, raw });
   }
   // Replace $SKILL_DIR placeholders with the bundled absolute path. Modules
   // stay in the bundled location and are loaded on demand.
   let body = raw.replace(/\$SKILL_DIR/g, sourceDir);
-
-  // Per-target argument-token rewriting. Claude and OpenCode substitute
-  // $ARGUMENTS natively; Codex only expands shell-style positionals ($1..$N)
-  // and leaves $ARGUMENTS as literal text — rewrite to $1 so Codex injects
-  // the full argument string that follows /<command>.
   const argsNote = '';
 
   // Prefix a short orientation note so CLI agents know the bridge layout.
@@ -22262,65 +22708,184 @@ function buildCliSkillPrompt(skillName, target) {
   return body;
 }
 
-function installSkillToTarget(target, skillName) {
-  if (!isPlainName(skillName)) throw new Error('Not a skill name.');
+/** Where a P0-era install of a skill for a runtime was: Claude Code's skills folder, or the old bridge file. */
+function skillTargetPlace(target, skillName) {
+  if (target === 'claude') { const root = getGlobalSkillsDir(); return { root, destination: join(root, skillName) }; }
+  if (target === 'codex') { const root = getCodexPromptsDir(); return { root, destination: join(root, `${skillName}.md`) }; }
+  if (target === 'opencode') { const root = getOpenCodeCommandDir(); return { root, destination: join(root, `${skillName}.md`) }; }
+  throw new PathConfineError(400, `Unknown target: ${target}`);
+}
+
+/** What a P0-era install of a bundled skill wrote: the folder for Claude Code, the bridge file otherwise. */
+function bundledSkillPayload(target, skillName) {
   const sourceDir = join(SKILLS_SOURCE_DIR, skillName);
-  const sourceFile = join(sourceDir, 'SKILL.md');
-  if (!existsSync(sourceFile)) throw new Error(`Skill "${skillName}" not found in skills/.`);
-
-  if (target === 'claude') {
-    const targetDir = join(getGlobalSkillsDir(), skillName);
-    if (existsSync(targetDir)) rmSync(targetDir, { recursive: true, force: true });
-    mkdirSync(dirname(targetDir), { recursive: true });
-    cpSync(sourceDir, targetDir, { recursive: true });
-    return { restartMsg: 'Restart Claude Code to apply.' };
-  }
-  if (target === 'codex') {
-    const dir = getCodexPromptsDir();
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, `${skillName}.md`), buildCliSkillPrompt(skillName, 'codex'));
-    return { restartMsg: 'Restart Codex CLI to apply.' };
-  }
-  if (target === 'opencode') {
-    const dir = getOpenCodeCommandDir();
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, `${skillName}.md`), buildCliSkillPrompt(skillName, 'opencode'));
-    return { restartMsg: 'Restart OpenCode CLI to apply.' };
-  }
-  throw new Error(`Unknown target: ${target}`);
+  if (!existsSync(join(sourceDir, 'SKILL.md'))) throw new PathConfineError(404, `Skill "${skillName}" not found in skills/.`);
+  if (target === 'claude') return skillInstaller.payloadFromFolder(sourceDir);
+  return skillInstaller.payloadFromText(buildCliSkillPrompt(skillName, target));
 }
 
-function uninstallSkillFromTarget(target, skillName) {
-  if (!isPlainName(skillName)) throw new Error('Not a skill name.');
-  if (target === 'claude') {
-    const targetDir = join(getGlobalSkillsDir(), skillName);
-    if (existsSync(targetDir)) rmSync(targetDir, { recursive: true, force: true });
-    return;
-  }
-  if (target === 'codex') {
-    const f = join(getCodexPromptsDir(), `${skillName}.md`);
-    if (existsSync(f)) unlinkSync(f);
-    return;
-  }
-  if (target === 'opencode') {
-    const f = join(getOpenCodeCommandDir(), `${skillName}.md`);
-    if (existsSync(f)) unlinkSync(f);
-    return;
-  }
-  throw new Error(`Unknown target: ${target}`);
+/** A refusal in the shape the install routes answer it (skillInstallFailure): what is there, and its digest. */
+function skillRefusal(message, { code, state, destination, currentDigest }) {
+  return Object.assign(new PathConfineError(409, message), { code, state, destination, currentDigest });
 }
 
-function parseSkillFrontmatter(content) {
-  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-  if (!match) return { name: null, description: null };
-  const fm = match[1];
-  const nameMatch = fm.match(/^name:\s*(.+)$/m);
-  const descMatch = fm.match(/^description:\s*>\s*\r?\n([\s\S]*?)(?=\r?\n\w|\r?\n---)/);
-  const descSimple = fm.match(/^description:\s*(.+)$/m);
+/**
+ * The library revision a bundled skill, or one of the user's own Claude Code skills, is installed from: the
+ * bundled skill as this app version ships it, or the user's folder as it is now (taken into the library first).
+ */
+async function skillRevisionForInstall(skillName) {
+  const bundled = skillsService.bundledRevision(skillName);
+  if (bundled) return bundled;
+  const scan = await skillsCatalog.scan();
+  const own = scan.entries.find((e) => e.kind === 'skill' && e.family === 'claude' && e.scope === 'user' && (e.accountId || 'default') === 'default' && e.folderName === skillName);
+  if (!own) throw new PathConfineError(404, `Skill "${skillName}" is neither one SynaBun ships nor one of your Claude Code skills.`);
+  const adopted = await skillsService.adopt({ artifactId: own.id, author: { kind: 'owner' } });
+  return adopted.revision;
+}
+
+/**
+ * Install a skill for one runtime as a native skill folder (Claude Code: ~/.claude/skills; Codex: $CODEX_HOME/skills;
+ * OpenCode: <config>/opencode/skills) through the Skills Service: a plan, then the install of exactly that plan.
+ * What is already there is replaced only when SynaBun installed it and it is unchanged, or when
+ * `decision.expectedDestinationDigest` names exactly what is there now (a person confirmed it); a backup is kept.
+ * An old bridge of the skill is left where it is (the bridge migration moves it): the answer names it.
+ */
+async function installSkillToTarget(target, skillName, decision = {}) {
+  if (!isPlainName(skillName)) throw new PathConfineError(400, 'Not a skill name.');
+  if (!SKILL_TARGETS.includes(target)) throw new PathConfineError(400, `Unknown target: ${target}`);
+  // Codex and OpenCode read the shared ~/.agents/skills too: a skill there already reaches them, and a second copy
+  // in their own folder would list it twice.
+  if (SHARED_READERS.has(target)) {
+    const shared = sharedSkillState(skillName);
+    if (shared.state === 'native') {
+      return { ok: true, changed: false, shared: true, state: 'shared', backupId: null, destination: shared.path, installationId: skillsDeployer.activeAt(shared.path)?.installationId || null, refresh: [], restartMsg: 'It reaches it through the shared ~/.agents/skills folder already.', bridge: null };
+    }
+    if (shared.state === 'other') {
+      throw Object.assign(new PathConfineError(409, `${target === 'codex' ? 'Codex' : 'OpenCode'} already reads a "${skillName}" skill in ${shared.path} that SynaBun did not install: another copy would list it twice. Remove or rename that one first.`), { code: 'shared_other', destination: shared.path });
+    }
+  }
+  const revision = await skillRevisionForInstall(skillName);
+  const targets = [{ runtime: target, scope: 'user', accountId: 'default' }];
+  const plan = await skillsService.installPlan({ revisionId: revision.revisionId, targets });
+  const t = plan.targets[0];
+  if (t.blocked.length) throw Object.assign(new PathConfineError(t.blocked.some((b) => b.code === 'no_root') ? 404 : 409, t.blocked.map((b) => b.message).join(' ')), { code: t.blocked[0].code });
+  const confirm = t.needs.find((n) => n.code === 'confirm_replace');
+  if (confirm && decision.expectedDestinationDigest !== confirm.currentDigest) {
+    const state = t.destinationState.state;
+    throw skillRefusal(confirm.message, { code: state === 'modified' ? 'skill_modified' : 'skill_unowned', state, destination: t.destination, currentDigest: confirm.currentDigest });
+  }
+  const scanNeed = t.needs.find((n) => n.code === 'acknowledge_scan');
+  if (scanNeed && decision.acknowledgedDigest !== scanNeed.digest) {
+    throw Object.assign(new PathConfineError(409, `${scanNeed.message} Open it in Skills Studio to review the findings.`), { code: 'review_required' });
+  }
+  const result = await skillsService.install({
+    revisionId: revision.revisionId, targets, planDigest: plan.planDigest, principal: { kind: 'owner' },
+    decisions: { [t.targetKey]: { expectedDestinationDigest: confirm ? decision.expectedDestinationDigest : null, acknowledgedDigest: scanNeed ? decision.acknowledgedDigest : null } },
+  });
+  const r = result.results[0];
+  if (r.status !== 'committed') throw Object.assign(new PathConfineError(r.status === 'failed' ? 500 : 409, r.error || (r.reasons || []).map((x) => x.message).join(' ') || 'Not installed.'), { code: r.code || 'install_failed' });
+  const bridge = legacyBridgePath(target, skillName);
   return {
-    name: nameMatch ? nameMatch[1].trim() : null,
-    description: descMatch ? descMatch[1].replace(/\r?\n\s*/g, ' ').trim() : (descSimple ? descSimple[1].trim() : null),
+    ok: true, changed: !r.unchanged, state: t.destinationState.state, backupId: r.backupId || null, digest: t.export.artifactDigest,
+    destination: t.destination, installationId: r.installationId, refresh: t.refresh,
+    restartMsg: t.refresh.map((x) => x.message).join(' '), bridge: bridge && existsSync(bridge) ? bridge : null,
   };
+}
+
+/**
+ * Remove a skill a runtime has: its native folder (SynaBun's own install, or one the owner confirms as it is now)
+ * and, for Codex and OpenCode, an old bridge of SynaBun's. A backup of each is kept. A refusal names one place at
+ * a time: confirming it and asking again removes it and goes on.
+ */
+function uninstallSkillFromTarget(target, skillName, decision = {}) {
+  if (!isPlainName(skillName)) throw new PathConfineError(400, 'Not a skill name.');
+  if (!SKILL_TARGETS.includes(target)) throw new PathConfineError(400, `Unknown target: ${target}`);
+  let changed = false;
+  const backups = [];
+  const native = nativeSkillPath(target, skillName);
+  if (native && entryKind(native) !== 'absent') {
+    const active = skillsDeployer.activeAt(native);
+    if (active) {
+      try {
+        const out = skillsDeployer.uninstall(active.installationId, { expectedDestinationDigest: decision.expectedDestinationDigest ?? null, principal: { kind: 'owner' } });
+        changed = changed || out.removed;
+        if (out.backupId) backups.push(out.backupId);
+      } catch (err) {
+        if (err?.code === 'uninstall_conflict') throw skillRefusal(err.message, { code: 'skill_modified', state: 'modified', destination: native, currentDigest: err.currentDigest });
+        throw err;
+      }
+      skillsService.announce({ type: 'installation.changed', installationId: active.installationId, action: 'uninstall' });
+    } else {
+      let payload = null;
+      if (target === 'claude') { try { payload = bundledSkillPayload('claude', skillName); } catch { payload = null; } }
+      const out = skillInstaller.uninstall({ target, name: skillName, root: dirname(native), destination: native, payload, decision });
+      changed = changed || out.changed;
+      if (out.backupId) backups.push(out.backupId);
+    }
+  }
+  const bridge = legacyBridgePath(target, skillName);
+  if (bridge && entryKind(bridge) !== 'absent') {
+    let payload = null;
+    try { payload = bundledSkillPayload(target, skillName); } catch { payload = null; }
+    const out = skillInstaller.uninstall({ target, name: skillName, root: dirname(bridge), destination: bridge, payload, decision });
+    changed = changed || out.changed;
+    if (out.backupId) backups.push(out.backupId);
+  }
+  // Nothing of its own folder or a bridge: the copy Codex and OpenCode read from the shared ~/.agents/skills, when
+  // it is SynaBun's, is the one removed (both runtimes lose it: the answer says so).
+  let shared = false;
+  if (!changed && SHARED_READERS.has(target)) {
+    const place = sharedSkillState(skillName);
+    if (place.state === 'native') {
+      const active = skillsDeployer.activeAt(place.path);
+      if (active) {
+        try {
+          const out = skillsDeployer.uninstall(active.installationId, { expectedDestinationDigest: decision.expectedDestinationDigest ?? null, principal: { kind: 'owner' } });
+          changed = out.removed;
+          if (out.backupId) backups.push(out.backupId);
+        } catch (err) {
+          if (err?.code === 'uninstall_conflict') throw skillRefusal(err.message, { code: 'skill_modified', state: 'modified', destination: place.path, currentDigest: err.currentDigest });
+          throw err;
+        }
+      } else {
+        const out = skillInstaller.uninstall({ target: 'agents', name: skillName, root: dirname(place.path), destination: place.path, payload: null, decision });
+        changed = out.changed;
+        if (out.backupId) backups.push(out.backupId);
+      }
+      shared = changed;
+    }
+  }
+  if (changed) skillsService.announce({ type: 'installation.changed', action: 'uninstall', name: skillName, target });
+  return { ok: true, changed, shared, backupId: backups[0] || null, backupIds: backups };
+}
+
+/** The answer for an install or a removal that failed, with what a person needs to confirm a refused one. */
+function skillInstallFailure(res, err, action) {
+  if (!(err instanceof PathConfineError)) return res.status(500).json({ ok: false, error: err.message });
+  const body = { ok: false, error: err.message };
+  if (err.code) body.code = err.code;
+  if (err.state) {
+    Object.assign(body, { state: err.state, destination: err.destination, currentDigest: err.currentDigest });
+    if (err.currentDigest) {
+      const what = err.state === 'modified' ? 'was installed by SynaBun but has been changed since' : 'was not installed by SynaBun';
+      body.question = action === 'install'
+        ? `"${err.destination}" ${what}. Replace it with SynaBun's copy? A backup of what is there now is kept.`
+        : `"${err.destination}" ${what}. Remove it anyway? A backup of it is kept.`;
+    }
+  }
+  return res.status(err.status || 500).json(body);
+}
+
+/** The name and description of a SKILL.md or a command file, for a list (YAML read by the `yaml` package). */
+function parseSkillFrontmatter(content) {
+  const { data } = frontmatterData(content);
+  return { name: asText(data.name).trim() || null, description: asText(data.description).replace(/\s+/g, ' ').trim() || null };
+}
+
+/** The text of one skill's SKILL.md: a regular file really in its folder, bounded. Null when it cannot be read so. */
+function readSkillHead(dir) {
+  try { return readConfinedFile(dir, join(dir, 'SKILL.md'), { maxBytes: SKILL_FILE_MAX_BYTES, encoding: 'utf-8' }); }
+  catch { return null; }
 }
 
 function listAvailableSkills() {
@@ -22332,14 +22897,43 @@ function listAvailableSkills() {
     codex: isSkillInstalled('codex', dirName),
     opencode: isSkillInstalled('opencode', dirName),
   });
+  // What each runtime has of it: a native skill folder ('native'; 'modified' when changed since SynaBun installed
+  // it; 'other' when it is not SynaBun's), and an old bridge not moved yet. `installedTargets` stays the one flag
+  // older pages read (either counts).
+  const buildTargetStates = (dirName) => {
+    const out = {};
+    for (const target of SKILL_TARGETS) {
+      const native = nativeSkillPath(target, dirName);
+      let state = 'absent';
+      if (native && existsSync(join(native, 'SKILL.md'))) {
+        const record = skillInstaller.recordFor(native);
+        const active = skillsDeployer.activeAt(native);
+        state = record || active ? 'native' : 'other';
+      }
+      const bridge = legacyBridgePath(target, dirName);
+      out[target] = { native: state, nativePath: native, bridge: !!bridge && existsSync(bridge), bridgePath: bridge && existsSync(bridge) ? bridge : null };
+      // Codex and OpenCode read the shared ~/.agents/skills too: what is there of it.
+      if (SHARED_READERS.has(target)) {
+        const shared = sharedSkillState(dirName);
+        out[target].shared = shared.state;
+        out[target].sharedPath = shared.state === 'absent' ? null : shared.path;
+      }
+    }
+    return out;
+  };
+
+  // A folder that cannot be listed lists nothing; a SKILL.md that is not a regular file inside its folder
+  // (a link out, a FIFO, a device) or is too large is skipped, the others are still listed.
+  const entriesOf = (dir) => { try { return readdirSync(dir, { withFileTypes: true }); } catch { return []; } };
 
   // 1. Bundled skills (PACKAGE_ROOT/skills/)
   if (existsSync(SKILLS_SOURCE_DIR)) {
-    for (const entry of readdirSync(SKILLS_SOURCE_DIR, { withFileTypes: true })) {
+    for (const entry of entriesOf(SKILLS_SOURCE_DIR)) {
       if (!isDirEntry(entry)) continue;
       const skillFile = join(SKILLS_SOURCE_DIR, entry.name, 'SKILL.md');
       if (!existsSync(skillFile)) continue;
-      const content = readFileSync(skillFile, 'utf-8');
+      const content = readSkillHead(join(SKILLS_SOURCE_DIR, entry.name));
+      if (content === null) continue;
       const { name, description } = parseSkillFrontmatter(content);
       const installedTargets = buildInstalledState(entry.name);
       const installedPath = join(getGlobalSkillsDir(), entry.name, 'SKILL.md');
@@ -22349,6 +22943,8 @@ function listAvailableSkills() {
         description: description || '',
         installed: installedTargets.claude, // back-compat: legacy callers expect a single flag (claude)
         installedTargets,
+        targetStates: buildTargetStates(entry.name),
+        bundled: true,
         sourcePath: skillFile,
         installedPath,
       });
@@ -22360,18 +22956,23 @@ function listAvailableSkills() {
   const globalDir = getGlobalSkillsDir();
   if (existsSync(globalDir)) {
     try {
-      for (const entry of readdirSync(globalDir, { withFileTypes: true })) {
+      for (const entry of entriesOf(globalDir)) {
         if (!isDirEntry(entry) || seen.has(entry.name)) continue;
         const skillFile = join(globalDir, entry.name, 'SKILL.md');
         if (!existsSync(skillFile)) continue;
-        const content = readFileSync(skillFile, 'utf-8');
+        // A skill folder the user linked here is read where it really is: its SKILL.md must be inside it.
+        const content = readSkillHead(join(globalDir, entry.name));
+        if (content === null) continue;
         const { name, description } = parseSkillFrontmatter(content);
+        const installedTargets = buildInstalledState(entry.name);
         skills.push({
           dirName: entry.name,
           name: name || entry.name,
           description: description || '',
           installed: true,
-          installedTargets: { claude: true, codex: false, opencode: false },
+          installedTargets: { ...installedTargets, claude: true },
+          targetStates: buildTargetStates(entry.name),
+          bundled: false,
           sourcePath: skillFile,
           installedPath: skillFile,
         });
@@ -22383,36 +22984,134 @@ function listAvailableSkills() {
   return skills;
 }
 
-function resolveSkillPrompt(command, args) {
-  const dirs = [
-    join(SKILLS_SOURCE_DIR, command),
-    join(getGlobalSkillsDir(), command),
-  ];
-  for (const dir of dirs) {
-    const file = join(dir, 'SKILL.md');
-    if (!existsSync(file)) continue;
-    let content = readFileSync(file, 'utf-8');
-    content = content.replace(/\$ARGUMENTS/g, args || '(none)');
-    return { content, dir };
+/** A slash command's first word as a skill folder name: one plain name, nothing that climbs out of the folder. */
+const SLASH_SKILL_NAME_RE = /^[a-z0-9][a-z0-9._-]{0,127}$/;
+
+/** The folders from `cwd` up to its repository root (the first one holding .git), nearest first, at most 12. */
+function foldersUpToRepo(cwd) {
+  const out = [];
+  if (typeof cwd !== 'string' || !cwd) return out;
+  let dir = resolve(cwd);
+  for (let i = 0; i < 12; i++) {
+    out.push(dir);
+    if (existsSync(join(dir, '.git'))) break;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
   }
-  return null;
+  return out;
 }
 
-function maybeInjectSkillPrompt(prompt) {
+/** The skill folder `command` in one root, really inside it and readable as a bounded regular file, or null. */
+function readSkillIn(rootDir, command, { links = false, anchor = null } = {}) {
+  let artifact;
+  try { artifact = confineArtifact(`skill:${join(rootDir, command)}`, { skill: [{ dir: rootDir, links, ...(anchor ? { anchor } : {}) }] }); } catch { return null; }
+  let content;
+  try { content = readConfinedFile(artifact.realBase, artifact.filePath, { maxBytes: SKILL_FILE_MAX_BYTES, encoding: 'utf-8' }); } catch { return null; }
+  return { dir: artifact.dirPath, filePath: artifact.filePath, content };
+}
+
+/** A skill found for a slash command, as the model is handed it: its frontmatter as written, its body filled in. */
+function injectableSkill(found, args, cwd) {
+  const { data, parsed } = frontmatterData(found.content);
+  if (claudeBoolean(data['user-invocable']) === false) return { blocked: 'not-user-invocable', dir: found.dir };
+  const head = found.content.slice(0, found.content.length - String(parsed.body).length);
+  const rendered = renderSkillBody(parsed.body, { args, declared: data.arguments, skillDir: found.dir, projectDir: cwd || '', emptyArguments: '(none)' });
+  return { content: `${head}${rendered.text}`, dir: found.dir };
+}
+
+/**
+ * Where a slash command's skill is, for the runtime of the panel it was typed in:
+ *   claude  a skill Claude Code loads by itself in that session (the account's skills folder, the project's
+ *           .claude/skills from the working folder up to the repository root) is left to Claude Code (`native`),
+ *           so its own settings (model, context, hooks, allowed tools) apply; a bundled skill it cannot see is
+ *           handed to the model.
+ *   codex   a skill Codex loads ($CODEX_HOME/skills of the account, ~/.agents/skills, the repository's
+ *           .agents/skills or .codex/skills) is sent as Codex's own skill input (`native`, with its SKILL.md);
+ *           otherwise the user's Claude Code skill, then the bundled one, is handed to the model.
+ *   (none)  the user's own Claude Code skill first, then the bundled one (an edited installed copy wins over the
+ *           shipped source), handed to the model.
+ * A skill with `user-invocable: false` is not started by its name (`blocked`). Arguments are filled the way
+ * Claude Code fills them (public/shared/skills/ss-args.js): $ARGUMENTS, $0 for the first, a quoted phrase as one,
+ * and what was typed reaches the model as typed ("$&" included).
+ */
+function resolveSkillPrompt(command, args, { cwd = null, runtime = null, accountId = 'default' } = {}) {
+  // The word comes from what someone typed in a panel: `/../../x` must not reach join().
+  if (typeof command !== 'string' || !SLASH_SKILL_NAME_RE.test(command) || !isPlainName(command)) return null;
+  const ups = foldersUpToRepo(cwd);
+  const nativeOf = (found, kind) => {
+    const { data } = frontmatterData(found.content);
+    if (claudeBoolean(data['user-invocable']) === false) return { blocked: 'not-user-invocable', dir: found.dir };
+    const name = typeof data.name === 'string' && data.name.trim() ? data.name.trim() : command;
+    return { native: true, runtime: kind, name, dir: found.dir, filePath: found.filePath };
+  };
+  if (runtime === 'claude') {
+    let configHome = null;
+    try { configHome = accountId && accountId !== 'default' ? _panelClaudeAccounts().homeFor(accountId) : null; } catch { configHome = null; }
+    const personal = readSkillIn(join(configHome || claudeConfigHome(), 'skills'), command, { links: true });
+    const project = personal ? null : ups.map((dir) => readSkillIn(join(dir, '.claude', 'skills'), command, { anchor: dir })).find(Boolean);
+    if (personal || project) return nativeOf(personal || project, 'claude');
+    const bundled = readSkillIn(SKILLS_SOURCE_DIR, command);
+    return bundled ? injectableSkill(bundled, args, cwd) : null;
+  }
+  if (runtime === 'codex') {
+    let codexHome = null;
+    try { codexHome = _codexAccounts().homeFor(accountId || 'default'); } catch { codexHome = null; }
+    const places = [
+      () => readSkillIn(join(codexHome || skillsDefaultCodexHome(), 'skills'), command, { links: true }),
+      () => readSkillIn(join(getHomePath(), '.agents', 'skills'), command, { links: true }),
+      ...ups.flatMap((dir) => [() => readSkillIn(join(dir, '.agents', 'skills'), command, { anchor: dir }), () => readSkillIn(join(dir, '.codex', 'skills'), command, { anchor: dir })]),
+    ];
+    for (const look of places) { const found = look(); if (found) return nativeOf(found, 'codex'); }
+    const fallback = readSkillIn(getGlobalSkillsDir(), command, { links: true }) || readSkillIn(SKILLS_SOURCE_DIR, command);
+    return fallback ? injectableSkill(fallback, args, cwd) : null;
+  }
+  const found = readSkillIn(getGlobalSkillsDir(), command, { links: true }) || readSkillIn(SKILLS_SOURCE_DIR, command);
+  return found ? injectableSkill(found, args, cwd) : null;
+}
+
+/**
+ * A prompt that starts with /<skill>: handed to the model as the skill's instructions, left to a runtime that
+ * loads the skill itself (`native`), or refused for a skill not started by name (`blocked`). The arguments are
+ * kept as typed (white space, quotes and newlines too).
+ */
+function maybeInjectSkillPrompt(prompt, { cwd = null, runtime = null, accountId = 'default' } = {}) {
   const input = typeof prompt === 'string' ? prompt.trim() : '';
   if (!input.startsWith('/')) return { prompt: input, command: null, args: '', skill: null };
-  const parts = input.slice(1).split(/\s+/);
-  const command = (parts[0] || '').toLowerCase();
-  const args = parts.slice(1).join(' ');
+  const m = /^\/(\S*)(?:\s+([\s\S]*))?$/.exec(input);
+  const command = (m?.[1] || '').toLowerCase();
+  const args = (m?.[2] || '').trim();
   if (!command || command === 'clear') return { prompt: input, command, args, skill: null };
-  const skill = resolveSkillPrompt(command, args);
+  const skill = resolveSkillPrompt(command, args, { cwd, runtime, accountId });
   if (!skill) return { prompt: input, command, args, skill: null };
+  if (skill.blocked) return { prompt: input, command, args, skill: null, blocked: skill.blocked };
+  if (skill.native) return { prompt: input, command, args, skill: null, native: skill };
   return {
     prompt: `<skill-instructions>\nBase directory for this skill: ${skill.dir}\n\n${skill.content}\n</skill-instructions>\n\nThe user invoked the /${command} command${args ? ' with arguments: ' + args : ''}. Follow the skill instructions above exactly.`,
     command,
     args,
     skill,
   };
+}
+
+/**
+ * Native Codex skill inputs a request names ({ name, path } each): at most 8, each a SKILL.md that is a regular
+ * file at an absolute path (Codex reads it; the path comes from Codex's own skills/list or from
+ * resolveSkillPrompt). Anything else is dropped.
+ */
+function codexSkillInputs(list) {
+  const out = [];
+  if (!Array.isArray(list)) return out;
+  for (const item of list.slice(0, 8)) {
+    if (!item || typeof item !== 'object') continue;
+    const name = typeof item.name === 'string' ? item.name.trim() : '';
+    const path = typeof item.path === 'string' ? item.path : '';
+    if (!name || name.length > 200 || /[\0\r\n]/.test(name)) continue;
+    if (!path || path.includes('\0') || !/^(?:[A-Za-z]:[\\/]|\/)/.test(path) || basename(path) !== 'SKILL.md') continue;
+    try { if (!statSync(realpathSync(path)).isFile()) continue; } catch { continue; }
+    if (!out.some((s) => s.path === path)) out.push({ name, path });
+  }
+  return out;
 }
 
 // GET /api/skills — list available skills with per-target install state
@@ -22424,33 +23123,44 @@ app.get('/api/skills', (req, res) => {
   }
 });
 
-// POST /api/skills/install — install a skill into one runtime target
-app.post('/api/skills/install', (req, res) => {
+// POST /api/skills/install — install a skill into one runtime target. What is already there is replaced only
+// when SynaBun installed it and it is unchanged, or when `expectedDestinationDigest` names what is there now
+// (the 409 says what that is, and why it was refused); a backup is kept.
+app.post('/api/skills/install', async (req, res) => {
   try {
-    const { name, target } = req.body || {};
-    if (!name) return res.status(400).json({ error: 'name is required.' });
+    const { name, target, expectedDestinationDigest, acknowledgedDigest } = req.body || {};
+    if (!name || typeof name !== 'string') return res.status(400).json({ error: 'name is required.' });
     if (!target || !SKILL_TARGETS.includes(target)) {
       return res.status(400).json({ error: `target must be one of: ${SKILL_TARGETS.join(', ')}` });
     }
-    const { restartMsg } = installSkillToTarget(target, name);
-    res.json({ ok: true, target, message: `Skill "${name}" installed for ${target}. ${restartMsg}` });
+    const result = await installSkillToTarget(target, name, { expectedDestinationDigest, acknowledgedDigest });
+    res.json({
+      ok: true, target, changed: result.changed, backupId: result.backupId, destination: result.destination, installationId: result.installationId,
+      refresh: result.refresh, bridge: result.bridge, ...(result.shared ? { shared: true } : {}),
+      message: result.shared
+        ? `Skill "${name}" already reaches ${target} through the shared ~/.agents/skills folder (${result.destination}): nothing was added.`
+        : `Skill "${name}" installed for ${target}${typeof result.destination === 'string' ? ` as a skill folder (${result.destination})` : ''}. ${result.restartMsg}${result.bridge ? ` The old bridge ${result.bridge} is still there: move it in Settings → Skills.` : ''}`,
+    });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    skillInstallFailure(res, err, 'install');
   }
 });
 
-// DELETE /api/skills/install — uninstall a skill from one runtime target
+// DELETE /api/skills/install — uninstall a skill from one runtime target (SynaBun's own install, or confirmed)
 app.delete('/api/skills/install', (req, res) => {
   try {
-    const { name, target } = req.body || {};
-    if (!name) return res.status(400).json({ error: 'name is required.' });
+    const { name, target, expectedDestinationDigest } = req.body || {};
+    if (!name || typeof name !== 'string') return res.status(400).json({ error: 'name is required.' });
     if (!target || !SKILL_TARGETS.includes(target)) {
       return res.status(400).json({ error: `target must be one of: ${SKILL_TARGETS.join(', ')}` });
     }
-    uninstallSkillFromTarget(target, name);
-    res.json({ ok: true, target, message: `Skill "${name}" uninstalled from ${target}.` });
+    const result = uninstallSkillFromTarget(target, name, { expectedDestinationDigest });
+    res.json({
+      ok: true, target, changed: result.changed, backupId: result.backupId, backupIds: result.backupIds, ...(result.shared ? { shared: true } : {}),
+      message: result.shared ? `Skill "${name}" removed from the shared ~/.agents/skills folder: Codex and OpenCode both read it there.` : `Skill "${name}" uninstalled from ${target}.`,
+    });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    skillInstallFailure(res, err, 'uninstall');
   }
 });
 
@@ -22475,7 +23185,8 @@ app.get('/api/opencode/commands', (req, res) => {
       const name = entry.name.replace(/\.md$/, '');
       let description = '';
       try {
-        const content = readFileSync(join(dir, entry.name), 'utf-8');
+        // A regular file really in the folder, bounded: a FIFO or a device named *.md is listed without a description.
+        const content = readConfinedFile(dir, join(dir, entry.name), { maxBytes: SKILL_FILE_MAX_BYTES, encoding: 'utf-8' });
         const fm = parseSkillFrontmatter(content);
         description = fm.description || '';
       } catch {}
@@ -22588,27 +23299,27 @@ app.post('/api/sidepanel/kill-session', async (req, res) => {
   }
 });
 
-// POST /api/claude-code/skills — install a skill globally (copies entire directory)
-app.post('/api/claude-code/skills', (req, res) => {
+// POST /api/claude-code/skills — install a skill globally (copies entire directory; same ownership rule as /api/skills/install)
+app.post('/api/claude-code/skills', async (req, res) => {
   try {
-    const { name } = req.body || {};
-    if (!name) return res.status(400).json({ error: 'name is required.' });
-    installSkillToTarget('claude', name);
+    const { name, expectedDestinationDigest } = req.body || {};
+    if (!name || typeof name !== 'string') return res.status(400).json({ error: 'name is required.' });
+    await installSkillToTarget('claude', name, { expectedDestinationDigest });
     res.json({ ok: true, message: `Skill "${name}" installed. Restart Claude Code to use /${name}.` });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    skillInstallFailure(res, err, 'install');
   }
 });
 
-// DELETE /api/claude-code/skills — uninstall a skill (removes entire directory)
+// DELETE /api/claude-code/skills — uninstall a skill (SynaBun's own install, or confirmed; a backup is kept)
 app.delete('/api/claude-code/skills', (req, res) => {
   try {
-    const { name } = req.body || {};
-    if (!name) return res.status(400).json({ error: 'name is required.' });
-    uninstallSkillFromTarget('claude', name);
+    const { name, expectedDestinationDigest } = req.body || {};
+    if (!name || typeof name !== 'string') return res.status(400).json({ error: 'name is required.' });
+    uninstallSkillFromTarget('claude', name, { expectedDestinationDigest });
     res.json({ ok: true, message: `Skill "${name}" uninstalled.` });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    skillInstallFailure(res, err, 'uninstall');
   }
 });
 
@@ -22617,8 +23328,47 @@ app.delete('/api/claude-code/skills', (req, res) => {
 // ═══════════════════════════════════════════
 
 function getGlobalAgentsDir() {
+  return join(studioClaudeHome(), 'agents');
+}
+
+/** The default account's Claude Code folder (CLAUDE_CONFIG_DIR when it is set, else ~/.claude), for the Studio. */
+function studioClaudeHome() {
   const home = process.env.USERPROFILE || process.env.HOME || '';
-  return join(home, '.claude', 'agents');
+  return process.env.CLAUDE_CONFIG_DIR ? resolve(process.env.CLAUDE_CONFIG_DIR) : join(home, '.claude');
+}
+
+function getGlobalCommandsDir() {
+  return join(studioClaudeHome(), 'commands');
+}
+
+/** Tell every page of the owner that a skill changed (the Studio's library, Settings' chips, the Codex hints). */
+// An invite guest reads skills; every change here (save, create, delete, files, icons, install, customize, import)
+// is the owner's, whatever the guest was given: the request gate says so first (lib/request-gate.js
+// GUEST_READ_ONLY_PREFIXES), each route again by itself, as the Skills Service's routes do (lib/skills/api-v2.js).
+// And it is the owner's from SynaBun's own page, as the Service's owner routes are: a write without the page's
+// X-SynaBun-UI header is refused, and so is one that carries an agent's headers (what an agent makes goes to the
+// Review queue, never straight into a folder a runtime reads). Every caller is the Studio, through public/shared/api.js.
+function refuseStudioWrite(req, res) {
+  let guest = false;
+  try { guest = !!isGuestRequest(req); } catch { guest = true; }
+  if (guest) {
+    res.status(403).json({ ok: false, code: 'GUEST_FORBIDDEN', error: 'Guests can read skills, not change them.' });
+    return true;
+  }
+  const headers = req.headers || {};
+  if (AGENT_HEADERS.some((name) => headers[name] !== undefined)) {
+    res.status(403).json({ ok: false, code: 'UI_ONLY', error: 'Skills are changed by the owner, from Skills Studio: submit a draft for review instead.' });
+    return true;
+  }
+  if (headers['x-synabun-ui'] !== '1') {
+    res.status(403).json({ ok: false, code: 'UI_HEADER_REQUIRED', error: 'This change comes from a page older than the server: reload SynaBun and try again.' });
+    return true;
+  }
+  return false;
+}
+
+function studioChanged(action, extra = {}) {
+  try { skillsService?.announce({ type: 'skill.changed', action, ...extra }); } catch { /* a page reads it again on its own */ }
 }
 
 function encodeArtifactId(id) {
@@ -22634,19 +23384,45 @@ function decodeArtifactId(encoded) {
 function resolveArtifactFile(decodedId) {
   // The id carries a path the browser sent back: it is honoured only inside the
   // folders the library lists (lib/path-confine.js throws otherwise).
-  return confineArtifact(decodedId, artifactRoots());
+  const artifact = confineArtifact(decodedId, artifactRoots());
+  // What ships with SynaBun is read-only: an app update replaces it, and the panels run it. It is installed,
+  // or copied to be customised; never edited or deleted where it is.
+  artifact.readOnly = isBundledSource(artifact);
+  return artifact;
+}
+
+/** Whether an artifact is a bundled skill's source (its real folder is inside PACKAGE_ROOT/skills). */
+function isBundledSource(artifact) {
+  try { return isInsideReal(SKILLS_SOURCE_DIR, artifact.realBase, { allowRoot: true }); } catch { return false; }
+}
+
+const SKILLS_STUDIO_CAPABILITIES = Object.freeze(['revisions', 'read-only-bundled', 'staged-import', 'binary-files', 'customize-copy', 'install-ownership', 'lint', 'v2', 'native-installs', 'review-queue', 'diagnostics', 'utf8-ids', 'nested-commands']);
+
+/** The refusal of a change to a bundled skill's source. */
+function refuseReadOnly(res) {
+  return res.status(403).json({ error: 'Skills that ship with SynaBun are read-only. Install the skill, or customize a copy to edit it.', code: 'read_only' });
+}
+
+/** The answer for a Skills Studio route that failed: a refused path or a conflict is the caller's (with its code), anything else the server's. */
+function skillsStudioFailure(res, err) {
+  const status = err instanceof PathConfineError ? err.status : 500;
+  const body = { error: err.message };
+  if (err?.code && typeof err.code === 'string' && !/^E[A-Z]+$/.test(err.code)) body.code = err.code;
+  if (err?.currentRevision !== undefined) body.currentRevision = err.currentRevision;
+  if (Array.isArray(err?.problems) && err.problems.length) body.problems = err.problems.slice(0, 200);
+  if (Array.isArray(err?.notRestored) && err.notRestored.length) body.notRestored = err.notRestored.slice(0, 200);
+  return res.status(status).json(body);
 }
 
 /** The folders a Skills Studio artifact may live in, per type. */
 function artifactRoots() {
-  const home = process.env.USERPROFILE || process.env.HOME || '';
   // Links are resolved before anything is read or written (lib/path-confine.js).
   // A skill folder linked into the user's own skills folder is theirs (`links`);
   // a project's folders came with its repository and must really be inside it
   // (`anchor`), so a link a repository ships cannot lead out of the project.
   const roots = {
     skill: [{ dir: getGlobalSkillsDir(), links: true }, SKILLS_SOURCE_DIR],
-    command: [join(home, '.claude', 'commands')],
+    command: [getGlobalCommandsDir()],
     agent: [getGlobalAgentsDir()],
   };
   let projects = [];
@@ -22692,66 +23468,26 @@ function resolveArtifactIcon(decodedId) {
   return null;
 }
 
-/** Parse full YAML frontmatter from a skill/command/agent .md file */
+/** The YAML frontmatter of a skill/command/agent .md file as data, read by the `yaml` package ({} when it has none or it does not parse). */
 function parseFullFrontmatter(content) {
-  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-  if (!match) return {};
-  const fm = match[1];
-  const result = {};
-  const lines = fm.split(/\r?\n/);
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i];
-    // Skip blank lines
-    if (!line.trim()) { i++; continue; }
-    // Key-value pair
-    const kv = line.match(/^(\S[\w-]*):\s*(.*)/);
-    if (!kv) { i++; continue; }
-    const key = kv[1];
-    let val = kv[2].trim();
-    // Block scalar (description: >)
-    if (val === '>' || val === '|') {
-      const blockLines = [];
-      i++;
-      while (i < lines.length && (lines[i].startsWith('  ') || lines[i].trim() === '')) {
-        blockLines.push(lines[i].replace(/^  /, ''));
-        i++;
-      }
-      result[key] = blockLines.join('\n').trim();
-      continue;
-    }
-    // YAML list (key with no value, followed by - items)
-    if (val === '' && i + 1 < lines.length && lines[i + 1].match(/^\s+-\s/)) {
-      const items = [];
-      i++;
-      while (i < lines.length && lines[i].match(/^\s+-\s/)) {
-        items.push(lines[i].replace(/^\s+-\s*/, '').trim());
-        i++;
-      }
-      result[key] = items;
-      continue;
-    }
-    // Boolean
-    if (val === 'true') { result[key] = true; i++; continue; }
-    if (val === 'false') { result[key] = false; i++; continue; }
-    // Number
-    if (/^\d+$/.test(val)) { result[key] = parseInt(val, 10); i++; continue; }
-    // Quoted string
-    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
-      result[key] = val.slice(1, -1);
-      i++; continue;
-    }
-    // Plain string
-    result[key] = val;
-    i++;
-  }
-  return result;
+  return frontmatterData(content).data;
 }
 
 /** Get the markdown body (after frontmatter) */
 function getFrontmatterBody(content) {
-  const match = content.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n?([\s\S]*)/);
-  return match ? match[1] : content;
+  return frontmatterData(content).parsed.body;
+}
+
+/** The names of the bundled skills: a skill that looks like one of them but is not is worth a warning. */
+function bundledSkillNames() {
+  try { return readdirSync(SKILLS_SOURCE_DIR, { withFileTypes: true }).filter(isDirEntry).map((e) => e.name); } catch { return []; }
+}
+
+/** What the library says of one artifact's file: its metadata as text where it must be text, and its problems. */
+function describeArtifactHead(type, head, folderName, knownNames = []) {
+  const { parsed, lint } = lintText({ type, text: head.text, folderName, knownNames, binary: head.binary });
+  const frontmatter = parsed.data || {};
+  return { frontmatter, name: asText(frontmatter.name), description: asText(frontmatter.description), problems: problemCounts(lint) };
 }
 
 /** Build a recursive file tree for a directory */
@@ -22759,33 +23495,30 @@ function getFrontmatterBody(content) {
 // a link that leads out of the skill (or nowhere) is neither listed nor walked,
 // a link cycle inside it is walked once, special files (a FIFO, a device) are
 // left out, and depth and entry count are bounded.
-function artifactFileTree(artifact) {
+// With `withInfo`, also whether the walk stopped at its limits (a tree cut short is never shown as complete).
+function artifactFileTree(artifact, { withInfo = false } = {}) {
   const plain = (nodes) => nodes.map(n => (n.type === 'dir'
     ? { name: n.name, path: n.path, type: 'dir', children: plain(n.children || []) }
     : { name: n.name, path: n.path, type: 'file', size: n.size }));
-  return plain(listConfined(artifact.realBase, artifact.realBase, { skip: (name) => name.startsWith('.') || name === 'node_modules' }).entries);
+  const listing = listConfined(artifact.realBase, artifact.realBase, { skip: (name) => name.startsWith('.') || name === 'node_modules' });
+  const entries = plain(listing.entries);
+  return withInfo ? { entries, truncated: listing.truncated } : entries;
 }
 
 // SKILL.md and command / agent files are text a person wrote; an icon is a
 // small image; an export is one JSON document held in memory. All bounded.
 const ARTIFACT_MD_MAX_BYTES = 2 * 1024 * 1024;
 const ICON_MAX_BYTES = 4 * 1024 * 1024;
-const EXPORT_MAX_BYTES = 64 * 1024 * 1024;
 
-/** The text of an artifact's own file: a regular file really inside its folder, bounded. Null when it cannot be read. */
+/**
+ * An artifact's own file: a regular file really inside its folder, bounded. `{ text, binary }`, `binary` when it
+ * is not UTF-8 text (then its bytes are not read as metadata); null when it cannot be read.
+ */
 function readArtifactHead(artifact) {
-  try { return readConfinedFile(artifact.realBase, artifact.filePath, { maxBytes: ARTIFACT_MD_MAX_BYTES, encoding: 'utf-8' }); }
-  catch { return null; }
-}
-
-/** What a bundle holds for one file, as the bytes or text to write. */
-function importedFileData(content) {
-  return content && typeof content === 'object' && content.base64 ? Buffer.from(String(content.base64), 'base64') : String(content ?? '');
-}
-
-/** Do two of these paths name one file? Compared as a volume that ignores case and Unicode form would (macOS, Windows). */
-function namesOneFileTwice(paths) {
-  return new Set(paths.map(p => String(p).normalize('NFC').toLowerCase())).size !== paths.length;
+  try {
+    const read = readRevisioned(artifact.realBase, artifact.filePath, { maxBytes: ARTIFACT_MD_MAX_BYTES });
+    return { text: read.binary ? '' : read.text, binary: read.binary };
+  } catch { return null; }
 }
 
 /** The refusal for an import that would replace files: which ones, and that nothing was written. */
@@ -22794,8 +23527,11 @@ function importCollisionText(label, name, existing) {
   return `${label} "${name}" was not imported: ${existing.length === 1 ? 'a file it would replace already exists' : `${existing.length} files it would replace already exist`} (${shown}). Nothing was written.`;
 }
 
-/** Discover all Claude Code artifacts from all known locations */
-function discoverAllArtifacts() {
+/**
+ * Discover all Claude Code artifacts from all known locations. `diagnostics` receives what could not be listed
+ * and why (a folder that cannot be read, an entry refused or unreadable): nothing is dropped in silence.
+ */
+function discoverAllArtifacts(diagnostics = []) {
   const artifacts = [];
   // An artifact is listed only when the routes below would open it, and that is
   // decided before anything of it is read: its SKILL.md (or command / agent
@@ -22804,36 +23540,89 @@ function discoverAllArtifacts() {
   // is skipped; the others are still listed.
   const roots = artifactRoots();
   const openArtifact = (id) => { try { return confineArtifact(id, roots); } catch { return null; } };
+  // Name and description are listed as text only (a number or a list there is a problem, never rendered); each
+  // row carries the counts of its problems (lib/skills/frontmatter.js lintText).
+  const known = bundledSkillNames();
+  const entriesOf = (dir) => {
+    try { return readdirSync(dir, { withFileTypes: true }); } catch (err) {
+      if (err?.code !== 'ENOENT') diagnostics.push({ path: dir, reason: 'unreadable', message: `This folder cannot be read (${err?.code || err?.message}).` });
+      return [];
+    }
+  };
+  const skipped = (path, reason, message) => { if (diagnostics.length < 500) diagnostics.push({ path, reason, message }); };
+  const treeOf = (artifact) => {
+    const info = artifactFileTree(artifact, { withInfo: true });
+    if (info.truncated) skipped(artifact.dirPath, 'tree-truncated', 'This skill has more files than the Studio lists: its tree is cut short.');
+    return { subFiles: info.entries.filter(f => f.name !== 'SKILL.md' && !f.name.match(/^icon\.(png|svg|jpe?g|webp)$/i)), ...(info.truncated ? { subFilesTruncated: true } : {}) };
+  };
+  // Commands: every .md file of the folder and of its sub-folders, three deep (frontend/component.md is
+  // /frontend:component in Claude Code), at most 500 per folder.
+  const commandFiles = (dir) => {
+    const out = [];
+    const walk = (d, rel, depth) => {
+      for (const entry of entriesOf(d)) {
+        if (out.length >= 500) { skipped(dir, 'truncated', 'More than 500 commands: the rest are not listed.'); return; }
+        if (entry.name.startsWith('.')) continue;
+        const relPath = rel ? `${rel}/${entry.name}` : entry.name;
+        if (entry.isDirectory()) {
+          if (depth < 3) walk(join(d, entry.name), relPath, depth + 1);
+          else skipped(join(d, entry.name), 'too-deep', 'Commands nested deeper than this are not listed.');
+          continue;
+        }
+        if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
+        out.push({ filePath: join(d, entry.name), dir: d, stem: entry.name.replace(/\.md$/, ''), namespace: rel ? rel.split('/').join(':') : '' });
+      }
+    };
+    walk(dir, '', 0);
+    return out;
+  };
+  const commandEntry = (cmd, scope, extra = {}) => {
+    const artifact = openArtifact(`command:${cmd.filePath}`);
+    if (!artifact) { skipped(cmd.filePath, 'refused', 'A link out of its folder, or not a regular file: not listed.'); return null; }
+    const content = readArtifactHead(artifact);
+    if (content === null) { skipped(cmd.filePath, 'unreadable', 'Cannot be read as a regular file (or it is too large).'); return null; }
+    const head = describeArtifactHead('command', content, cmd.stem, known);
+    return {
+      id: `command:${cmd.filePath}`, type: 'command', scope, ...extra,
+      name: cmd.namespace ? `${cmd.namespace}:${cmd.stem}` : cmd.stem, dirName: cmd.stem, ...(cmd.namespace ? { namespace: cmd.namespace } : {}),
+      filePath: cmd.filePath, dirPath: cmd.dir, description: head.description, problems: head.problems, readOnly: false, frontmatter: head.frontmatter,
+      hasIcon: ICON_EXTENSIONS.some(ext => existsSync(join(cmd.dir, `${cmd.stem}.icon${ext}`))), subFiles: [],
+    };
+  };
 
   // 1. Global skills (~/.claude/skills/)
   const globalSkillsDir = getGlobalSkillsDir();
   if (existsSync(globalSkillsDir)) {
-    for (const entry of readdirSync(globalSkillsDir, { withFileTypes: true })) {
+    for (const entry of entriesOf(globalSkillsDir)) {
       if (!isDirEntry(entry)) continue;
       const skillFile = join(globalSkillsDir, entry.name, 'SKILL.md');
       if (!existsSync(skillFile)) continue;
       const dir = join(globalSkillsDir, entry.name);
       const artifact = openArtifact(`skill:${dir}`);
-      if (!artifact) continue;
+      if (!artifact) { skipped(dir, 'refused', 'A link out of its folder, or a SKILL.md that is not in it: not listed.'); continue; }
       const content = readArtifactHead(artifact);
-      if (content === null) continue;
-      const frontmatter = parseFullFrontmatter(content);
-      // Check if this was installed from bundled
+      if (content === null) { skipped(skillFile, 'unreadable', 'SKILL.md cannot be read as a regular file (or it is too large).'); continue; }
+      const head = describeArtifactHead('skill', content, entry.name, known);
+      // A copy installed from a bundled skill is the user's own folder (global, editable): it names its source.
+      // One that is a link into the bundled source is that source, and read-only like it.
       const bundledSource = join(SKILLS_SOURCE_DIR, entry.name, 'SKILL.md');
       const isBundledInstall = existsSync(bundledSource);
       artifacts.push({
         id: `skill:${dir}`,
         type: 'skill',
-        scope: isBundledInstall ? 'bundled' : 'global',
-        name: frontmatter.name || entry.name,
+        scope: 'global',
+        name: head.name || entry.name,
         dirName: entry.name,
         filePath: skillFile,
         dirPath: dir,
-        description: frontmatter.description || '',
-        frontmatter,
+        description: head.description,
+        frontmatter: head.frontmatter,
+        problems: head.problems,
+        readOnly: isBundledSource(artifact),
         hasIcon: ICON_EXTENSIONS.some(ext => existsSync(join(dir, `icon${ext}`))),
-        subFiles: artifactFileTree(artifact).filter(f => f.name !== 'SKILL.md' && !f.name.match(/^icon\.(png|svg|jpe?g|webp)$/i)),
+        ...treeOf(artifact),
         bundledSource: isBundledInstall ? bundledSource : null,
+        fromBundled: isBundledInstall || undefined,
         installed: isBundledInstall ? true : undefined,
       });
     }
@@ -22842,23 +23631,26 @@ function discoverAllArtifacts() {
   // 2. Global agents (~/.claude/agents/)
   const globalAgentsDir = getGlobalAgentsDir();
   if (existsSync(globalAgentsDir)) {
-    for (const entry of readdirSync(globalAgentsDir, { withFileTypes: true })) {
+    for (const entry of entriesOf(globalAgentsDir)) {
       if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
       const filePath = join(globalAgentsDir, entry.name);
       const artifact = openArtifact(`agent:${filePath}`);
-      if (!artifact) continue;
+      if (!artifact) { skipped(filePath, 'refused', 'A link out of its folder: not listed.'); continue; }
       const content = readArtifactHead(artifact);
-      if (content === null) continue;
-      const frontmatter = parseFullFrontmatter(content);
+      if (content === null) { skipped(filePath, 'unreadable', 'Cannot be read as a regular file (or it is too large).'); continue; }
+      const head = describeArtifactHead('agent', content, entry.name.replace(/\.md$/, ''), known);
+      const frontmatter = head.frontmatter;
       artifacts.push({
         id: `agent:${filePath}`,
         type: 'agent',
         scope: 'global',
-        name: frontmatter.name || entry.name.replace(/\.md$/, ''),
+        name: head.name || entry.name.replace(/\.md$/, ''),
         dirName: entry.name.replace(/\.md$/, ''),
         filePath,
         dirPath: globalAgentsDir,
-        description: frontmatter.description || '',
+        description: head.description,
+        problems: head.problems,
+        readOnly: false,
         frontmatter,
         hasIcon: ICON_EXTENSIONS.some(ext => existsSync(join(globalAgentsDir, `${entry.name.replace(/\.md$/, '')}.icon${ext}`))),
         subFiles: [],
@@ -22866,63 +23658,50 @@ function discoverAllArtifacts() {
     }
   }
 
+  // 2b. Global commands (~/.claude/commands/, nested folders as namespaces)
+  for (const cmd of commandFiles(getGlobalCommandsDir())) {
+    const entry = commandEntry(cmd, 'global');
+    if (entry) artifacts.push(entry);
+  }
+
   // 3. Project-scoped commands and agents
-  const projects = loadHookProjects();
+  let projects = [];
+  try { projects = loadHookProjects(); } catch (err) { skipped('', 'projects', `The registered projects cannot be read (${err?.message || err}).`); projects = []; }
   for (const proj of projects) {
     const projPath = proj.path;
     const projLabel = proj.label || basename(projPath);
 
-    // Commands
-    const cmdDir = join(projPath, '.claude', 'commands');
-    if (existsSync(cmdDir)) {
-      for (const entry of readdirSync(cmdDir, { withFileTypes: true })) {
-        if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
-        const filePath = join(cmdDir, entry.name);
-        const artifact = openArtifact(`command:${filePath}`);
-        if (!artifact) continue;
-        const content = readArtifactHead(artifact);
-        if (content === null) continue;
-        const frontmatter = parseFullFrontmatter(content);
-        artifacts.push({
-          id: `command:${filePath}`,
-          type: 'command',
-          scope: 'project',
-          scopeLabel: projLabel,
-          scopePath: projPath,
-          name: entry.name.replace(/\.md$/, ''),
-          dirName: entry.name.replace(/\.md$/, ''),
-          filePath,
-          dirPath: cmdDir,
-          description: frontmatter.description || '',
-          frontmatter,
-          hasIcon: ICON_EXTENSIONS.some(ext => existsSync(join(cmdDir, `${entry.name.replace(/\.md$/, '')}.icon${ext}`))),
-          subFiles: [],
-        });
-      }
+    // Commands (nested folders as namespaces)
+    for (const cmd of commandFiles(join(projPath, '.claude', 'commands'))) {
+      const entry = commandEntry(cmd, 'project', { scopeLabel: projLabel, scopePath: projPath });
+      if (entry) artifacts.push(entry);
     }
 
     // Project agents
     const agentDir = join(projPath, '.claude', 'agents');
     if (existsSync(agentDir)) {
-      for (const entry of readdirSync(agentDir, { withFileTypes: true })) {
+      for (const entry of entriesOf(agentDir)) {
         if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
         const filePath = join(agentDir, entry.name);
         const artifact = openArtifact(`agent:${filePath}`);
-        if (!artifact) continue;
+        if (!artifact) { skipped(filePath, 'refused', 'A link out of the project: not listed.'); continue; }
         const content = readArtifactHead(artifact);
-        if (content === null) continue;
-        const frontmatter = parseFullFrontmatter(content);
+        if (content === null) { skipped(filePath, 'unreadable', 'Cannot be read as a regular file (or it is too large).'); continue; }
+        const head = describeArtifactHead('agent', content, entry.name.replace(/\.md$/, ''), known);
+        const frontmatter = head.frontmatter;
         artifacts.push({
           id: `agent:${filePath}`,
           type: 'agent',
           scope: 'project',
           scopeLabel: projLabel,
           scopePath: projPath,
-          name: frontmatter.name || entry.name.replace(/\.md$/, ''),
+          name: head.name || entry.name.replace(/\.md$/, ''),
           dirName: entry.name.replace(/\.md$/, ''),
           filePath,
           dirPath: agentDir,
-          description: frontmatter.description || '',
+          description: head.description,
+          problems: head.problems,
+          readOnly: false,
           frontmatter,
           hasIcon: ICON_EXTENSIONS.some(ext => existsSync(join(agentDir, `${entry.name.replace(/\.md$/, '')}.icon${ext}`))),
           subFiles: [],
@@ -22933,38 +23712,41 @@ function discoverAllArtifacts() {
     // Project skills
     const projSkillsDir = join(projPath, '.claude', 'skills');
     if (existsSync(projSkillsDir)) {
-      for (const entry of readdirSync(projSkillsDir, { withFileTypes: true })) {
+      for (const entry of entriesOf(projSkillsDir)) {
         if (!isDirEntry(entry)) continue;
         const skillFile = join(projSkillsDir, entry.name, 'SKILL.md');
         if (!existsSync(skillFile)) continue;
         const dir = join(projSkillsDir, entry.name);
         const artifact = openArtifact(`skill:${dir}`);
-        if (!artifact) continue;
+        if (!artifact) { skipped(dir, 'refused', 'A link out of the project: not listed.'); continue; }
         const content = readArtifactHead(artifact);
-        if (content === null) continue;
-        const frontmatter = parseFullFrontmatter(content);
+        if (content === null) { skipped(skillFile, 'unreadable', 'SKILL.md cannot be read as a regular file (or it is too large).'); continue; }
+        const head = describeArtifactHead('skill', content, entry.name, known);
+        const frontmatter = head.frontmatter;
         artifacts.push({
           id: `skill:${dir}`,
           type: 'skill',
           scope: 'project',
           scopeLabel: projLabel,
           scopePath: projPath,
-          name: frontmatter.name || entry.name,
+          name: head.name || entry.name,
           dirName: entry.name,
           filePath: skillFile,
           dirPath: dir,
-          description: frontmatter.description || '',
+          description: head.description,
+          problems: head.problems,
+          readOnly: isBundledSource(artifact),
           frontmatter,
           hasIcon: ICON_EXTENSIONS.some(ext => existsSync(join(dir, `icon${ext}`))),
-          subFiles: artifactFileTree(artifact).filter(f => f.name !== 'SKILL.md' && !f.name.match(/^icon\.(png|svg|jpe?g|webp)$/i)),
+          ...treeOf(artifact),
         });
       }
     }
   }
 
-  // 4. Bundled SynaBun skills (not yet installed)
+  // 4. Bundled SynaBun skills (not yet installed): the source that ships with the app, read-only
   if (existsSync(SKILLS_SOURCE_DIR)) {
-    for (const entry of readdirSync(SKILLS_SOURCE_DIR, { withFileTypes: true })) {
+    for (const entry of entriesOf(SKILLS_SOURCE_DIR)) {
       if (!isDirEntry(entry)) continue;
       const skillFile = join(SKILLS_SOURCE_DIR, entry.name, 'SKILL.md');
       if (!existsSync(skillFile)) continue;
@@ -22976,20 +23758,23 @@ function discoverAllArtifacts() {
       if (!artifact) continue;
       const content = readArtifactHead(artifact);
       if (content === null) continue;
-      const frontmatter = parseFullFrontmatter(content);
+      const head = describeArtifactHead('skill', content, entry.name, []);
+      const frontmatter = head.frontmatter;
       artifacts.push({
         id: `skill:${dir}`,
         type: 'skill',
         scope: 'bundled',
-        name: frontmatter.name || entry.name,
+        name: head.name || entry.name,
         dirName: entry.name,
         filePath: skillFile,
         dirPath: dir,
-        description: frontmatter.description || '',
+        description: head.description,
+        problems: head.problems,
+        readOnly: true,
         frontmatter,
         installed: false,
         hasIcon: ICON_EXTENSIONS.some(ext => existsSync(join(dir, `icon${ext}`))),
-        subFiles: artifactFileTree(artifact).filter(f => f.name !== 'SKILL.md' && !f.name.match(/^icon\.(png|svg|jpe?g|webp)$/i)),
+        ...treeOf(artifact),
       });
     }
   }
@@ -22997,53 +23782,80 @@ function discoverAllArtifacts() {
   return artifacts;
 }
 
-// GET /api/skills-studio/library
+// GET /api/skills-studio/library — `capabilities` says what this server does, so a page reloaded before the
+// server was restarted leaves out what it would ask for in vain.
 app.get('/api/skills-studio/library', (req, res) => {
   try {
-    const artifacts = discoverAllArtifacts();
+    const diagnostics = [];
+    const artifacts = discoverAllArtifacts(diagnostics);
     const projects = loadHookProjects().map(p => ({ path: p.path, label: p.label || basename(p.path) }));
-    res.json({ ok: true, artifacts, projects });
+    res.json({ ok: true, artifacts, projects, capabilities: SKILLS_STUDIO_CAPABILITIES, diagnostics });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// GET /api/skills-studio/artifact/:id — full content + file tree
+// GET /api/skills-studio/artifact/:id — full content + file tree. `revision` is the hash of the exact bytes read:
+// a save names it, and is refused when the file is not that any more. `readOnly`: a bundled skill's source.
 app.get('/api/skills-studio/artifact/:id', (req, res) => {
   try {
     const id = decodeArtifactId(req.params.id);
     const artifact = resolveArtifactFile(id);
     const { type, filePath } = artifact;
     if (!existsSync(filePath)) return res.status(404).json({ error: 'Artifact not found.' });
-    const content = readConfinedFile(artifact.realBase, filePath, { maxBytes: ARTIFACT_MD_MAX_BYTES, encoding: 'utf-8' });
-    const frontmatter = parseFullFrontmatter(content);
-    const body = getFrontmatterBody(content);
+    const read = readRevisioned(artifact.realBase, filePath, { maxBytes: ARTIFACT_MD_MAX_BYTES });
+    // A file that is not UTF-8 text (a SKILL.md saved as UTF-16) is answered without its decoded bytes: shown,
+    // never edited, and a save over it is refused (PUT below), so its bytes are never replaced by mojibake.
+    const content = read.binary ? '' : read.text;
+    const folderName = type === 'skill' ? basename(artifact.dirPath) : basename(filePath, '.md');
+    const { parsed, lint } = lintText({ type, text: content, folderName, knownNames: bundledSkillNames(), binary: read.binary });
     // For skills (directory-based), include sub-file tree
     let subFiles = [];
     if (type === 'skill') {
       subFiles = artifactFileTree(artifact).filter(f => f.name !== 'SKILL.md');
     }
-    res.json({ ok: true, frontmatter, body, rawContent: content, subFiles });
+    res.json({
+      ok: true, frontmatter: parsed.data || {}, body: parsed.body, rawContent: content, subFiles,
+      revision: read.revision, readOnly: artifact.readOnly, binary: read.binary, size: read.size, diagnostics: lint.all,
+    });
   } catch (err) {
-    res.status(skillsStudioStatus(err)).json({ error: err.message });
+    skillsStudioFailure(res, err);
   }
 });
 
-// GET /api/skills-studio/artifact/:id/file — read a sub-file
+/**
+ * The files of a skill's folder are its sub-files; a command or an agent is one file in a folder of others, so it
+ * has none (the folder's other files are other artifacts, never reached through this one's id). Throws 400.
+ */
+function requireSkillFolder(artifact) {
+  if (artifact.type !== 'skill') throw Object.assign(new PathConfineError(400, 'A command or an agent is one file: it has no files of its own to open or change here.'), { code: 'not_a_skill' });
+}
+
+/** A request body's sub-file path: text (the confinement checks it further). */
+function subPathOf(body) {
+  const path = body && typeof body === 'object' ? body.path : undefined;
+  if (typeof path !== 'string' || !path) throw Object.assign(new PathConfineError(400, 'path (text) is required.'), { code: 'invalid_body' });
+  return path;
+}
+
+// GET /api/skills-studio/artifact/:id/file — read a sub-file. A file that is not text (an image, a PDF, a
+// program) is answered without its content (`binary: true`): the editor shows it, never edits it.
 app.get('/api/skills-studio/artifact/:id/file', (req, res) => {
   try {
     const id = decodeArtifactId(req.params.id);
     const artifact = resolveArtifactFile(id);
+    requireSkillFolder(artifact);
     const subPath = req.query.path;
-    if (!subPath) return res.status(400).json({ error: 'path query param required.' });
+    if (!subPath || typeof subPath !== 'string') return res.status(400).json({ error: 'path query param required.' });
     // Security: the path must stay in the artifact's folder, as written and
     // after links are resolved (throws 403 otherwise).
     const fullPath = confineSubPath(artifact, subPath);
     if (!existsSync(fullPath)) return res.status(404).json({ error: 'File not found.' });
-    const content = readConfinedFile(artifact.realBase, fullPath, { encoding: 'utf-8' });
-    res.json({ ok: true, content, path: subPath });
+    const read = readRevisioned(artifact.realBase, fullPath);
+    if (read.binary) return res.json({ ok: true, path: subPath, binary: true, size: read.size, revision: read.revision, readOnly: artifact.readOnly });
+    res.json({ ok: true, content: read.text, path: subPath, binary: false, size: read.size, revision: read.revision, readOnly: artifact.readOnly });
   } catch (err) {
-    res.status(skillsStudioStatus(err)).json({ error: err.message });
+    skillsStudioFailure(res, err);
   }
 });
 
@@ -23069,10 +23881,12 @@ app.get('/api/skills-studio/artifact/:id/icon', (req, res) => {
 app.post('/api/skills-studio/artifact/:id/icon',
   express.raw({ type: ['image/png', 'image/svg+xml', 'image/jpeg', 'image/webp'], limit: '2mb' }),
   (req, res) => {
+  if (refuseStudioWrite(req, res)) return;
     try {
       const id = decodeArtifactId(req.params.id);
       const artifact = resolveArtifactFile(id);
       const { type, dirPath, filePath } = artifact;
+      if (artifact.readOnly) return refuseReadOnly(res);
       if (!existsSync(filePath)) return res.status(404).json({ error: 'Artifact not found.' });
       if (!req.body || req.body.length === 0) return res.status(400).json({ error: 'No image data received.' });
       const contentType = req.headers['content-type'] || 'image/png';
@@ -23080,25 +23894,32 @@ app.post('/api/skills-studio/artifact/:id/icon',
       const ext = extMap[contentType] || '.png';
       const iconDir = type === 'skill' ? dirPath : dirname(filePath);
       const iconStem = type === 'skill' ? 'icon' : `${basename(filePath, '.md')}.icon`;
-      // Remove any existing icon files first (a link is removed, never followed)
-      for (const e of ICON_EXTENSIONS) { try { removeConfinedEntry(artifact.realBase, join(iconDir, `${iconStem}${e}`)); } catch {} }
       // The icon is written only where it really lands in the artifact's folder.
       const iconFile = join(iconDir, `${iconStem}${ext}`);
       if (!staysInside(artifact, iconFile)) return res.status(403).json({ error: 'That path leaves the artifact through a link.' });
-      writeConfinedFile(artifact.realBase, iconFile, req.body);
+      // The new icon first (created, or the old one of that type replaced in one rename; a link there is removed,
+      // never followed), then the icons of the other types: a failed upload leaves the old icon as it was.
+      if (entryKind(iconFile) === 'link') removeConfinedEntry(artifact.realBase, iconFile);
+      writeRevisioned(artifact.realBase, iconFile, req.body, { maxBytes: ICON_MAX_BYTES });
+      for (const e of ICON_EXTENSIONS) {
+        if (`${iconStem}${e}` === `${iconStem}${ext}`) continue;
+        try { removeConfinedEntry(artifact.realBase, join(iconDir, `${iconStem}${e}`)); } catch {}
+      }
       res.json({ ok: true, hasIcon: true });
     } catch (err) {
-      res.status(skillsStudioStatus(err)).json({ error: err.message });
+      skillsStudioFailure(res, err);
     }
   }
 );
 
 // DELETE /api/skills-studio/artifact/:id/icon — remove custom icon
 app.delete('/api/skills-studio/artifact/:id/icon', (req, res) => {
+  if (refuseStudioWrite(req, res)) return;
   try {
     const id = decodeArtifactId(req.params.id);
     const artifact = resolveArtifactFile(id);
     const { type, dirPath, filePath } = artifact;
+    if (artifact.readOnly) return refuseReadOnly(res);
     if (!existsSync(filePath)) return res.status(404).json({ error: 'Artifact not found.' });
     if (type === 'skill') {
       for (const ext of ICON_EXTENSIONS) removeConfinedEntry(artifact.realBase, join(dirPath, `icon${ext}`));
@@ -23113,91 +23934,131 @@ app.delete('/api/skills-studio/artifact/:id/icon', (req, res) => {
   }
 });
 
-// PUT /api/skills-studio/artifact/:id — save frontmatter + body
+// PUT /api/skills-studio/artifact/:id — save frontmatter + body. `expectedRevision` (the `revision` the editor
+// opened, or last saved) must be what the file holds now: otherwise nothing is written and the answer is 409
+// `revision_conflict` with the revision that is there. The bytes are replaced in one rename (lib/skills/revision.js).
+// A file that is not text is never replaced by text (415 `binary_file`), as for a sub-file.
+// The problems of what was saved come back (`diagnostics`): a draft with problems is saved all the same.
 app.put('/api/skills-studio/artifact/:id', (req, res) => {
+  if (refuseStudioWrite(req, res)) return;
   try {
     const id = decodeArtifactId(req.params.id);
     const artifact = resolveArtifactFile(id);
-    const { filePath } = artifact;
+    const { filePath, type } = artifact;
+    if (artifact.readOnly) return refuseReadOnly(res);
     if (!existsSync(filePath)) return res.status(404).json({ error: 'Artifact not found.' });
-    const { rawContent } = req.body;
+    const { rawContent, expectedRevision } = req.body || {};
     if (typeof rawContent !== 'string') return res.status(400).json({ error: 'rawContent is required.' });
-    writeConfinedFile(artifact.realBase, filePath, rawContent);
-    res.json({ ok: true });
+    const saved = writeRevisioned(artifact.realBase, filePath, rawContent, { expectedRevision: expectedRevision ?? null, maxBytes: ARTIFACT_MD_MAX_BYTES, create: false, refuseBinary: true });
+    studioChanged('save', { artifactId: req.params.id, path: null, revision: saved.revision });
+    const folderName = type === 'skill' ? basename(artifact.dirPath) : basename(filePath, '.md');
+    const { lint } = lintText({ type, text: rawContent, folderName, knownNames: bundledSkillNames() });
+    res.json({ ok: true, revision: saved.revision, diagnostics: lint.all });
   } catch (err) {
-    res.status(skillsStudioStatus(err)).json({ error: err.message });
+    skillsStudioFailure(res, err);
   }
 });
 
-// PUT /api/skills-studio/artifact/:id/file — save a sub-file
+// PUT /api/skills-studio/artifact/:id/file — save a sub-file (text), over `expectedRevision` like the main
+// file. A file that is not text is never replaced by text (415 `binary_file`).
 app.put('/api/skills-studio/artifact/:id/file', (req, res) => {
+  if (refuseStudioWrite(req, res)) return;
   try {
     const id = decodeArtifactId(req.params.id);
     const artifact = resolveArtifactFile(id);
-    const { path: subPath, content } = req.body;
-    if (!subPath || typeof content !== 'string') return res.status(400).json({ error: 'path and content required.' });
+    if (artifact.readOnly) return refuseReadOnly(res);
+    requireSkillFolder(artifact);
+    const { path: subPath, content, expectedRevision } = req.body || {};
+    if (!subPath || typeof subPath !== 'string' || typeof content !== 'string') return res.status(400).json({ error: 'path and content required.' });
     const fullPath = confineSubPath(artifact, subPath);
-    writeConfinedFile(artifact.realBase, fullPath, content);
-    res.json({ ok: true });
+    const saved = writeRevisioned(artifact.realBase, fullPath, content, { expectedRevision: expectedRevision ?? null, refuseBinary: true });
+    studioChanged('save', { artifactId: req.params.id, path: subPath, revision: saved.revision });
+    // `created`: the file was made again (a save over `absent`, after it was deleted): the tree follows.
+    res.json({ ok: true, revision: saved.revision, created: saved.created });
   } catch (err) {
-    res.status(skillsStudioStatus(err)).json({ error: err.message });
+    skillsStudioFailure(res, err);
   }
 });
 
-// POST /api/skills-studio/artifact/:id/file — create new sub-file or directory
+// POST /api/skills-studio/artifact/:id/file — create new sub-file or directory. Text comes as `content`; any
+// other file (an image, a PDF, a font) as `contentBase64`, written byte for byte.
 app.post('/api/skills-studio/artifact/:id/file', (req, res) => {
+  if (refuseStudioWrite(req, res)) return;
   try {
     const id = decodeArtifactId(req.params.id);
     const artifact = resolveArtifactFile(id);
-    const { path: subPath, content, isDir } = req.body;
-    if (!subPath) return res.status(400).json({ error: 'path required.' });
+    if (artifact.readOnly) return refuseReadOnly(res);
+    requireSkillFolder(artifact);
+    const { path: subPath, content, contentBase64, isDir } = req.body || {};
+    if (!subPath || typeof subPath !== 'string') return res.status(400).json({ error: 'path required.' });
+    if (content !== undefined && typeof content !== 'string') return res.status(400).json({ error: 'content is text (send a file that is not text as contentBase64).', code: 'invalid_body' });
     const fullPath = confineSubPath(artifact, subPath);
     if (existsSync(fullPath)) return res.status(409).json({ error: 'File already exists.' });
     if (isDir) {
       makeConfinedDir(artifact.realBase, fullPath);
-    } else {
-      writeConfinedFile(artifact.realBase, fullPath, content || '', { exclusive: true });
+      return res.json({ ok: true });
     }
-    res.json({ ok: true });
+    let data = typeof content === 'string' ? content : '';
+    if (contentBase64 !== undefined) {
+      data = decodeBase64(contentBase64);
+      if (!data) return res.status(400).json({ error: 'contentBase64 is not valid base64.' });
+    }
+    const saved = writeRevisioned(artifact.realBase, fullPath, data, { expectedRevision: 'absent' });
+    studioChanged('file-created', { artifactId: req.params.id, path: subPath, revision: saved.revision });
+    res.json({ ok: true, revision: saved.revision });
   } catch (err) {
-    res.status(skillsStudioStatus(err)).json({ error: err.message });
+    skillsStudioFailure(res, err);
   }
 });
 
 // DELETE /api/skills-studio/artifact/:id/file — delete a sub-file
 app.delete('/api/skills-studio/artifact/:id/file', (req, res) => {
+  if (refuseStudioWrite(req, res)) return;
   try {
     const id = decodeArtifactId(req.params.id);
     const artifact = resolveArtifactFile(id);
-    const { path: subPath } = req.body;
-    if (!subPath) return res.status(400).json({ error: 'path required.' });
+    if (artifact.readOnly) return refuseReadOnly(res);
+    requireSkillFolder(artifact);
+    const subPath = subPathOf(req.body);
     const fullPath = confineSubPath(artifact, subPath);
+    // SKILL.md is the skill: removing it is deleting the skill (DELETE /artifact/:id), never a sub-file's removal.
+    if (resolve(fullPath) === resolve(artifact.filePath)) return res.status(400).json({ error: 'SKILL.md is the skill itself: delete the skill instead.', code: 'head_protected' });
     // The entry that is named is removed: a link is unlinked, never followed.
     if (!removeConfinedEntry(artifact.realBase, fullPath)) return res.status(404).json({ error: 'File not found.' });
+    studioChanged('file-deleted', { artifactId: req.params.id, path: subPath });
     res.json({ ok: true });
   } catch (err) {
-    res.status(skillsStudioStatus(err)).json({ error: err.message });
+    skillsStudioFailure(res, err);
   }
 });
 
 // POST /api/skills-studio/create — create a new skill/command/agent
 app.post('/api/skills-studio/create', (req, res) => {
+  if (refuseStudioWrite(req, res)) return;
   try {
-    const { type, scope, projectPath, name, rawContent } = req.body;
+    const { type, scope, projectPath, name, rawContent } = req.body || {};
     if (!type || !scope || !name || !rawContent) {
       return res.status(400).json({ error: 'type, scope, name, and rawContent are required.' });
+    }
+    if ([type, scope, name, rawContent].some((v) => typeof v !== 'string') || (projectPath !== undefined && projectPath !== null && typeof projectPath !== 'string')) {
+      return res.status(400).json({ error: 'type, scope, name, rawContent and projectPath are text.', code: 'invalid_body' });
     }
     if (!/^[a-z][a-z0-9-]*$/.test(name) && !/^[a-z][a-z0-9-.]*$/.test(name)) {
       return res.status(400).json({ error: 'Name must be lowercase, start with a letter, and use only letters, digits, hyphens, and dots.' });
     }
     if (scope === 'project' && projectPath && !isRegisteredProjectPath(projectPath)) return res.status(400).json({ error: 'Not a registered project.' });
-    const home = process.env.USERPROFILE || process.env.HOME || '';
     const folder = { skill: 'skills', command: 'commands', agent: 'agents' }[type];
     if (!folder) return res.status(400).json({ error: 'type must be skill, command, or agent.' });
-    const scopeDir = scope === 'global' ? join(home, '.claude')
+    const scopeDir = scope === 'global' ? studioClaudeHome()
       : scope === 'project' && projectPath ? join(projectPath, '.claude')
       : null;
     if (!scopeDir) return res.status(400).json({ error: 'Invalid scope or missing projectPath.' });
+    if (typeof rawContent !== 'string') return res.status(400).json({ error: 'rawContent must be text.' });
+    if (Buffer.byteLength(rawContent, 'utf8') > ARTIFACT_MD_MAX_BYTES) return res.status(413).json({ error: 'That is larger than 2 MB: the library could not list it.' });
+    // A new file lands where the runtimes read it: it must be one they read as meant (YAML that parses, a
+    // name and a description that are text). Problems of lesser weight come back as warnings.
+    const { lint } = lintText({ type, text: rawContent, folderName: name, knownNames: bundledSkillNames() });
+    if (lint.errors.length) return res.status(422).json({ error: `Not created: ${lint.errors[0].message}${lint.errors.length > 1 ? ` (and ${lint.errors.length - 1} more)` : ''}`, code: 'invalid_artifact', diagnostics: lint.all });
     const root = { dir: join(scopeDir, folder), anchor: scope === 'project' ? projectPath : '' };
     const baseDir = type === 'skill' ? join(root.dir, name) : root.dir;
     const targetPath = type === 'skill' ? join(baseDir, 'SKILL.md') : join(baseDir, `${name}.md`);
@@ -23206,20 +24067,24 @@ app.post('/api/skills-studio/create', (req, res) => {
     confineToRoot(root, targetPath);
     if (existsSync(targetPath)) return res.status(409).json({ error: `Artifact "${name}" already exists at that location.` });
     // Its folders are made on the canonical path and the file is created exclusively.
-    writeConfinedFile(root.dir, targetPath, String(rawContent), { exclusive: true });
-    const id = type === 'skill' ? `skill:${targetPath}` : `${type}:${targetPath}`;
-    res.json({ ok: true, id: encodeArtifactId(id), filePath: targetPath });
+    writeConfinedFile(root.dir, targetPath, rawContent, { exclusive: true });
+    // The id the library lists it under: a skill is its folder (`skill:<dir>`), a command or an agent its file.
+    const id = type === 'skill' ? `skill:${baseDir}` : `${type}:${targetPath}`;
+    studioChanged('create', { artifact: type });
+    res.json({ ok: true, id: encodeArtifactId(id), filePath: targetPath, diagnostics: lint.all });
   } catch (err) {
-    res.status(skillsStudioStatus(err)).json({ error: err.message });
+    skillsStudioFailure(res, err);
   }
 });
 
 // DELETE /api/skills-studio/artifact/:id — delete an artifact
 app.delete('/api/skills-studio/artifact/:id', (req, res) => {
+  if (refuseStudioWrite(req, res)) return;
   try {
     const id = decodeArtifactId(req.params.id);
     const artifact = resolveArtifactFile(id);
     const { type, dirPath, filePath } = artifact;
+    if (artifact.readOnly) return refuseReadOnly(res);
     if (!existsSync(filePath)) return res.status(404).json({ error: 'Artifact not found.' });
     if (type === 'skill') {
       // Delete entire skill directory (a skill folder that is a link: the link goes, not what it points to)
@@ -23231,72 +24096,108 @@ app.delete('/api/skills-studio/artifact/:id', (req, res) => {
       for (const ext of ICON_EXTENSIONS) removeConfinedEntry(artifact.realBase, join(dir, `${name}.icon${ext}`));
       removeConfinedEntry(artifact.realBase, filePath);
     }
+    studioChanged('delete', { artifactId: req.params.id });
     res.json({ ok: true });
   } catch (err) {
     res.status(skillsStudioStatus(err)).json({ error: err.message });
   }
 });
 
-// POST /api/skills-studio/validate — validate frontmatter structure
+// POST /api/skills-studio/validate — the problems of a document (lib/skills/frontmatter.js lintText, the same
+// checks the Studio runs as it is edited). `errors` / `warnings` are the messages; `diagnostics` the problems
+// with their rule, severity and line.
 app.post('/api/skills-studio/validate', (req, res) => {
+  if (refuseStudioWrite(req, res)) return;
   try {
-    const { rawContent, type } = req.body;
-    const errors = [];
-    const warnings = [];
-    if (!rawContent) { errors.push('Content is empty.'); return res.json({ ok: true, errors, warnings }); }
-    const fm = parseFullFrontmatter(rawContent);
-    if (type === 'skill') {
-      if (!fm.name) warnings.push('Missing "name" field in frontmatter.');
-      if (!fm.description) warnings.push('Missing "description" field — Claude cannot auto-detect this skill.');
-    }
-    if (type === 'agent') {
-      if (!fm.name) warnings.push('Missing "name" field in frontmatter.');
-      if (!fm.description) errors.push('Agents require a "description" field.');
-    }
-    if (type === 'command') {
-      if (!fm.description) warnings.push('Missing "description" field.');
-    }
-    const body = getFrontmatterBody(rawContent);
-    if (!body.trim()) warnings.push('Body is empty — the skill has no instructions.');
-    res.json({ ok: true, errors, warnings });
+    const { rawContent, type, folderName } = req.body || {};
+    if (typeof rawContent !== 'string' || !rawContent) return res.json({ ok: true, errors: ['Content is empty.'], warnings: [], diagnostics: [{ ruleId: 'content-empty', severity: 'error', message: 'Content is empty.', line: 1 }] });
+    if (!['skill', 'command', 'agent'].includes(type)) return res.status(400).json({ error: 'type must be skill, command, or agent.' });
+    const { lint } = lintText({ type, text: rawContent, folderName: typeof folderName === 'string' ? folderName : '', knownNames: bundledSkillNames() });
+    res.json({ ok: true, profile: lint.profile, errors: lint.errors.map((d) => d.message), warnings: lint.warnings.map((d) => d.message), diagnostics: lint.all });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// POST /api/skills-studio/install — install bundled skill globally
-app.post('/api/skills-studio/install', (req, res) => {
+// POST /api/skills-studio/install — install bundled skill globally. A folder already there is replaced only
+// when SynaBun installed it and it is unchanged, or when `expectedDestinationDigest` names it as it is now
+// (409 otherwise, with that digest and the question to ask); a backup is kept (lib/skills/ownership.js).
+app.post('/api/skills-studio/install', async (req, res) => {
+  if (refuseStudioWrite(req, res)) return;
   try {
-    const { dirName } = req.body;
+    const { dirName, expectedDestinationDigest } = req.body || {};
     if (!dirName) return res.status(400).json({ error: 'dirName is required.' });
     if (!isPlainName(dirName)) return res.status(400).json({ error: 'dirName must be a folder name.' });
-    const sourceDir = join(SKILLS_SOURCE_DIR, dirName);
-    if (!existsSync(join(sourceDir, 'SKILL.md'))) return res.status(404).json({ error: `Bundled skill "${dirName}" not found.` });
-    const targetDir = join(getGlobalSkillsDir(), dirName);
-    // What is there is replaced as an entry: a link is removed, never followed.
-    removeConfinedEntry(null, targetDir);
-    cpSync(sourceDir, targetDir, { recursive: true });
-    res.json({ ok: true });
+    if (!existsSync(join(SKILLS_SOURCE_DIR, dirName, 'SKILL.md'))) return res.status(404).json({ error: `Bundled skill "${dirName}" not found.` });
+    const result = await installSkillToTarget('claude', dirName, { expectedDestinationDigest });
+    res.json({ ok: true, changed: result.changed, backupId: result.backupId });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    skillInstallFailure(res, err, 'install');
   }
 });
 
-// DELETE /api/skills-studio/install — uninstall a globally installed skill
+// DELETE /api/skills-studio/install — uninstall a globally installed skill (SynaBun's own, or confirmed)
 app.delete('/api/skills-studio/install', (req, res) => {
+  if (refuseStudioWrite(req, res)) return;
   try {
-    const { dirName } = req.body;
+    const { dirName, expectedDestinationDigest } = req.body || {};
     if (!dirName) return res.status(400).json({ error: 'dirName is required.' });
     if (!isPlainName(dirName)) return res.status(400).json({ error: 'dirName must be a folder name.' });
-    const targetDir = join(getGlobalSkillsDir(), dirName);
-    removeConfinedEntry(null, targetDir);
-    res.json({ ok: true });
+    const result = uninstallSkillFromTarget('claude', dirName, { expectedDestinationDigest });
+    res.json({ ok: true, changed: result.changed, backupId: result.backupId });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    skillInstallFailure(res, err, 'uninstall');
   }
 });
 
-// GET /api/skills-studio/export/:id — export as downloadable file
+// POST /api/skills-studio/customize — an editable copy of a bundled skill, under a name of the user's own, in
+// their global or a registered project's skills folder (a new folder: nothing is replaced). Its `name` field is
+// set to the new name; where it came from is recorded for later updates.
+app.post('/api/skills-studio/customize', (req, res) => {
+  if (refuseStudioWrite(req, res)) return;
+  try {
+    const { id, name, scope, projectPath } = req.body || {};
+    if (typeof id !== 'string') return res.status(400).json({ error: 'id is required.' });
+    const source = resolveArtifactFile(decodeArtifactId(id));
+    if (source.type !== 'skill' || !source.readOnly) return res.status(400).json({ error: 'Only a bundled skill is customized as a copy.' });
+    if (typeof name !== 'string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name) || name.length > 64) return res.status(400).json({ error: 'The name may use lowercase letters, digits and single hyphens (at most 64).' });
+    const root = skillScopeRoot('skill', scope, projectPath);
+    const destination = join(root.dir, name);
+    confineToRoot(root, join(destination, 'SKILL.md'));
+    const { files, dirs } = collectFolder(source.realBase);
+    const head = files.find((f) => f.path === 'SKILL.md');
+    if (!head) return res.status(404).json({ error: 'The bundled skill has no SKILL.md.' });
+    const patched = renameSkillDocument(head.bytes.toString('utf-8'), name);
+    if (patched === null) return res.status(422).json({ error: 'The bundled SKILL.md could not be given the new name.' });
+    head.bytes = Buffer.from(patched, 'utf-8');
+    writeSkillFolder(root, destination, { files, dirs });
+    const written = readManifest(destination);
+    skillInstaller.recordWrite({ target: 'claude', name, destination, digest: written.digest, kind: 'dir', source: { kind: 'bundled-copy', name: basename(source.dirPath), digest: readManifest(source.realBase).digest } });
+    studioChanged('customize', { name });
+    res.json({ ok: true, id: encodeArtifactId(`skill:${destination}`), name });
+  } catch (err) {
+    skillsStudioFailure(res, err);
+  }
+});
+
+/** The folder of one type in a scope a request named: `global`, or `project` with a registered project. Never a guess. */
+function skillScopeRoot(type, scope, projectPath) {
+  const folder = { skill: 'skills', command: 'commands', agent: 'agents' }[type];
+  if (!folder) throw new PathConfineError(400, 'type must be skill, command, or agent.');
+  if (scope === 'global') return { dir: join(studioClaudeHome(), folder), anchor: '', scope: 'global', label: 'Global' };
+  if (scope === 'project') {
+    if (typeof projectPath !== 'string' || !projectPath) throw new PathConfineError(400, 'A project import names the project (projectPath).');
+    if (!isRegisteredProjectPath(projectPath)) throw new PathConfineError(400, 'Not a registered project.');
+    const proj = loadHookProjects().find((p) => p?.path && resolve(p.path) === resolve(projectPath));
+    return { dir: join(projectPath, '.claude', folder), anchor: projectPath, scope: 'project', label: proj?.label || basename(projectPath) };
+  }
+  throw new PathConfineError(400, 'scope must be global or project.');
+}
+
+// GET /api/skills-studio/export/:id — export as downloadable file. A version 2 bundle (lib/skills/bundle.js):
+// every file byte for byte (text as text, anything else as base64) with its size, SHA-256 and executable bit,
+// the folders (empty ones too), and what was left out on purpose (hidden files, node_modules) with the reason.
+// One too large to be imported again is refused (413) rather than written.
 app.get('/api/skills-studio/export/:id', (req, res) => {
   try {
     const id = decodeArtifactId(req.params.id);
@@ -23305,123 +24206,191 @@ app.get('/api/skills-studio/export/:id', (req, res) => {
     if (!existsSync(filePath)) return res.status(404).json({ error: 'Artifact not found.' });
 
     if (type === 'skill') {
-      // Export entire directory as a simple JSON bundle (portable, no ZIP dep needed)
       const name = basename(dirPath);
-      const files = {};
-      // The bundle holds the skill's own files only: a link that leads out is
-      // not exported, a link cycle is walked once, special files are left out,
-      // and the walk and the bundle are bounded (lib/confined-fs.js).
-      const listing = listConfined(artifact.realBase, artifact.realBase, { skip: (name) => name.startsWith('.') });
-      if (listing.truncated) return res.status(413).json({ error: 'This skill has too many files to export as one bundle.' });
-      let exportedBytes = 0;
-      const collect = (nodes) => {
-        for (const node of nodes) {
-          if (node.type === 'dir') { collect(node.children || []); continue; }
-          const data = readConfinedFile(artifact.realBase, node.real);
-          exportedBytes += data.length;
-          if (exportedBytes > EXPORT_MAX_BYTES) throw new PathConfineError(413, 'This skill is too large to export as one bundle.');
-          files[node.path] = /\.(png|jpe?g|webp)$/i.test(node.path) ? { base64: data.toString('base64') } : data.toString('utf-8');
-        }
-      };
-      collect(listing.entries);
-      const bundle = { format: 'synabun-skill-bundle', version: 1, type: 'skill', name, files };
+      // The bundle holds the skill's own files, each by its own name: a link is
+      // never followed (it is named in `excluded`), special files are left out,
+      // and the walk stops at an import's limits before the files are read.
+      const { files, dirs, excluded } = collectFolder(artifact.realBase);
+      const { json } = buildBundle({ type: 'skill', name, files, dirs, excluded });
       res.setHeader('Content-Type', 'application/json');
       res.setHeader('Content-Disposition', `attachment; filename="${name}.skill.json"`);
-      res.send(JSON.stringify(bundle, null, 2));
+      res.send(json);
     } else {
-      // Single file: export as .md
+      // Single file: the .md and its icon
       const name = basename(filePath, '.md');
-      const content = readConfinedFile(artifact.realBase, filePath, { maxBytes: ARTIFACT_MD_MAX_BYTES, encoding: 'utf-8' });
-      const bundleFiles = { [`${name}.md`]: content };
-      // Include sibling icon file if present
+      const files = [{ path: `${name}.md`, bytes: readConfinedFile(artifact.realBase, filePath, { maxBytes: ARTIFACT_MD_MAX_BYTES }), executable: false }];
       const dir = dirname(filePath);
       for (const ext of ICON_EXTENSIONS) {
         const iconPath = join(dir, `${name}.icon${ext}`);
         if (existsSync(iconPath) && staysInside(artifact, iconPath)) {
-          const iconKey = `${name}.icon${ext}`;
-          const icon = readConfinedFile(artifact.realBase, iconPath, { maxBytes: ICON_MAX_BYTES });
-          bundleFiles[iconKey] = ext === '.svg' ? icon.toString('utf-8') : { base64: icon.toString('base64') };
+          files.push({ path: `${name}.icon${ext}`, bytes: readConfinedFile(artifact.realBase, iconPath, { maxBytes: ICON_MAX_BYTES }), executable: false });
           break;
         }
       }
-      const bundle = { format: 'synabun-skill-bundle', version: 1, type, name, files: bundleFiles };
+      const { json } = buildBundle({ type, name, files });
       res.setHeader('Content-Type', 'application/json');
       res.setHeader('Content-Disposition', `attachment; filename="${name}.${type}.json"`);
-      res.send(JSON.stringify(bundle, null, 2));
+      res.send(json);
     }
   } catch (err) {
-    res.status(skillsStudioStatus(err)).json({ error: err.message });
+    skillsStudioFailure(res, err);
   }
 });
 
-// POST /api/skills-studio/import — import a skill bundle
+// POST /api/skills-studio/import — the import of a page from before imports were staged: refused, nothing is
+// written. An import is staged and reviewed first (the routes below).
 app.post('/api/skills-studio/import', (req, res) => {
+  if (refuseStudioWrite(req, res)) return;
+  res.status(409).json({ error: 'Imports are now checked and reviewed before they are installed. Reload Skills Studio and import the file again.', code: 'import_review_required' });
+});
+
+/** Where a staged import would go, and what is already there. */
+function importDestination(type, name, scope, projectPath) {
+  const root = skillScopeRoot(type, scope, projectPath);
+  if (type === 'skill') {
+    const destination = join(root.dir, name);
+    // Before anything is staged: the folder must really land in the skills folder (a linked `.claude/skills`
+    // in a project would otherwise lead outside it).
+    confineToRoot(root, join(destination, 'SKILL.md'));
+    return { root, destination, existing: existsSync(destination) ? [name] : [] };
+  }
+  return { root, destination: join(root.dir, `${name}.md`), existing: [] };
+}
+
+/** The files of a command or agent import that are already in its folder. */
+function importCollisions(root, files) {
+  const existing = [];
+  for (const f of files) {
+    const full = join(root.dir, f.path);
+    confineToRoot(root, full);
+    if (entryKind(full) !== 'absent') existing.push(f.path);
+  }
+  return existing;
+}
+
+/** The head file's metadata of a staged import, for the scan and the lint. */
+function stagedHead(read) {
+  const head = read.files.find((f) => f.path === read.headPath);
+  return head ? head.bytes.toString('utf-8') : '';
+}
+
+// POST /api/skills-studio/import/stage — check a bundle and put it into staging, outside every folder a runtime
+// reads (lib/skills/bundle.js). `scope` is `global` or `project` with a registered `projectPath`, never guessed.
+// The answer is what the bundle is: its files, its digest, the scan of exactly those bytes (lib/skills/scan.js),
+// its problems and what it would collide with. Nothing is installed.
+app.post('/api/skills-studio/import/stage', (req, res) => {
+  if (refuseStudioWrite(req, res)) return;
   try {
-    const { bundle, scope, projectPath } = req.body;
-    if (!bundle || !bundle.format || bundle.format !== 'synabun-skill-bundle') {
-      return res.status(400).json({ error: 'Invalid bundle format.' });
-    }
-    const { type, name, files } = bundle;
-    if (!type || !name || !files) return res.status(400).json({ error: 'Bundle missing required fields.' });
-    // The bundle is a file someone handed over: its name and the paths inside it
-    // must stay in the folder being written.
-    if (!isPlainName(name)) return res.status(400).json({ error: 'Bundle name must be a plain name.' });
-    if (typeof files !== 'object' || Array.isArray(files)) return res.status(400).json({ error: 'Bundle files must be an object.' });
-    const home = process.env.USERPROFILE || process.env.HOME || '';
-    const effectiveScope = scope || 'global';
-    if (effectiveScope === 'project' && projectPath && !isRegisteredProjectPath(projectPath)) return res.status(400).json({ error: 'Not a registered project.' });
-    let targetDir;
-    // Where the bundle is written must really be the folder it names: a link
-    // (the folder itself in a project, or a file already there) is not followed.
-    const inProject = effectiveScope === 'project' && projectPath;
-    const importFolder = { skill: 'skills', command: 'commands', agent: 'agents' }[type];
-    if (!importFolder) return res.status(400).json({ error: 'Unknown artifact type.' });
-    const importRoot = { dir: join(inProject ? projectPath : home, '.claude', importFolder), anchor: inProject ? projectPath : '' };
-    if (type === 'skill') confineToRoot(importRoot, join(importRoot.dir, name));
-    else for (const rel of Object.keys(files)) { if (isPlainName(rel)) confineToRoot(importRoot, join(importRoot.dir, rel)); }
-    if (type === 'skill') {
-      targetDir = effectiveScope === 'project' && projectPath
-        ? join(projectPath, '.claude', 'skills', name)
-        : join(home, '.claude', 'skills', name);
-      if (existsSync(targetDir)) return res.status(409).json({ error: `Skill "${name}" already exists. Delete it first.` });
-      if (Object.keys(files).some(rel => !isInside(targetDir, join(targetDir, rel)))) return res.status(400).json({ error: 'Bundle contains a path outside the skill folder.' });
-      // Two names for one file: the second write would replace the first.
-      if (namesOneFileTwice(Object.keys(files).map(rel => join(targetDir, rel)))) return res.status(400).json({ error: 'Bundle names the same file twice.' });
-      // The folder is made where the check said, and every file is written
-      // inside it on the canonical path, never through a link. The skill is
-      // new, so every file is created: one that is somehow there is not replaced.
-      const skillDir = makeConfinedDir(importRoot.dir, targetDir);
-      for (const [rel, content] of Object.entries(files)) {
-        const fullPath = join(targetDir, rel);
-        if (!isInside(targetDir, fullPath)) continue;
-        writeConfinedFile(skillDir, fullPath, importedFileData(content), { exclusive: true });
-      }
-    } else if (type === 'command' || type === 'agent') {
-      targetDir = importRoot.dir;
-      // What the bundle brings: the main .md file and any sibling icon files
-      // (plain names in the folder). A command or an agent is a file among the
-      // user's other ones, so a bundle can name a file that is already there:
-      // its own, or a sibling's. Nothing that exists is replaced unless the
-      // request confirms it (`overwrite: true`, sent by the import dialog after
-      // it asked). The refusal names the files, and nothing of the bundle is written.
-      const incoming = Object.entries(files).filter(([rel]) => isPlainName(rel) && isInside(targetDir, join(targetDir, rel)));
-      // Two names for one file: the second write would replace the first, or fail half way.
-      if (namesOneFileTwice(incoming.map(([rel]) => rel))) return res.status(400).json({ error: 'Bundle names the same file twice.' });
-      const overwrite = req.body.overwrite === true;
-      const existing = incoming.map(([rel]) => rel).filter(rel => existsSync(join(targetDir, rel)));
-      if (existing.length && !overwrite) {
-        return res.status(409).json({ error: importCollisionText(type === 'command' ? 'Command' : 'Agent', name, existing), code: 'import_exists', existing: existing.slice(0, 200) });
-      }
-      // Created exclusively unless confirmed: a file that appeared since the check is not replaced either.
-      for (const [rel, content] of incoming) {
-        writeConfinedFile(importRoot.dir, join(targetDir, rel), importedFileData(content), { exclusive: !overwrite });
-      }
-    } else {
-      return res.status(400).json({ error: 'Unknown artifact type.' });
-    }
-    res.json({ ok: true, name, type });
+    const { bundle, scope, projectPath } = req.body || {};
+    const read = readBundle(bundle);
+    const place = importDestination(read.type, read.name, scope, projectPath);
+    const collisions = read.type === 'skill' ? place.existing : importCollisions(place.root, read.files);
+    const headText = stagedHead(read);
+    const { parsed, lint } = lintText({ type: read.type, text: headText, folderName: read.name, knownNames: bundledSkillNames() });
+    const scan = scanArtifact({ type: read.type, name: read.name, files: read.files, frontmatter: parsed.data, digest: read.digest, knownNames: bundledSkillNames() });
+    const stagingId = skillImportStaging.stage(read, {
+      scope: place.root.scope, projectPath: place.root.scope === 'project' ? projectPath : null, scopeLabel: place.root.label,
+      destination: place.destination, scan, lint: lint.all,
+    });
+    res.json({
+      ok: true,
+      staged: {
+        stagingId, digest: read.digest, type: read.type, name: read.name, version: read.version,
+        scope: place.root.scope, scopeLabel: place.root.label, destination: place.destination,
+        files: read.files.map((f) => ({ path: f.path, size: f.bytes.length, executable: !!f.executable })),
+        dirs: read.dirs, excluded: read.excluded, collisions,
+        lint: { errors: lint.errors.length, warnings: lint.warnings.length, diagnostics: lint.all },
+        scan,
+      },
+    });
   } catch (err) {
-    res.status(skillsStudioStatus(err)).json({ error: err.message });
+    skillsStudioFailure(res, err);
+  }
+});
+
+// POST /api/skills-studio/import/commit — install a staged import. `expectedDigest` is the digest the review
+// showed: the staged files are read again and must still be exactly those bytes; the scan must be of them and
+// allow it (`acknowledgedDigest`: the person confirmed the findings of that digest); the head file must have no
+// errors. A skill is written as a new folder, all of it or none of it; a command or an agent replaces a file
+// already there only with `overwrite: true`, after a backup of it.
+app.post('/api/skills-studio/import/commit', (req, res) => {
+  if (refuseStudioWrite(req, res)) return;
+  try {
+    const { stagingId, expectedDigest, acknowledgedDigest, overwrite } = req.body || {};
+    const staged = skillImportStaging.load(stagingId);
+    const { record } = staged;
+    if (typeof expectedDigest !== 'string' || expectedDigest !== staged.digest) {
+      return res.status(409).json({ error: 'These are not the files that were reviewed. Nothing was installed.', code: 'digest_mismatch', digest: staged.digest });
+    }
+    const allowed = scanAllows(record.scan, { digest: staged.digest, acknowledgedDigest });
+    if (!allowed.ok) return res.status(409).json({ error: `${allowed.message} Nothing was installed.`, code: allowed.code });
+    const errors = (record.lint || []).filter((d) => d.severity === 'error');
+    if (errors.length) return res.status(422).json({ error: `Not installed: ${errors[0].message}`, code: 'invalid_artifact', diagnostics: record.lint });
+    // The place is worked out again now: the project must still be registered, the folder still really there.
+    const place = importDestination(record.type, record.name, record.scope, record.projectPath);
+    let destinationId;
+    if (record.type === 'skill') {
+      writeSkillFolder(place.root, place.destination, { files: staged.files, dirs: staged.dirs });
+      skillInstaller.recordWrite({ target: 'claude', name: record.name, destination: place.destination, digest: readManifest(place.destination).digest, kind: 'dir', source: { kind: 'import', name: record.name, digest: staged.digest, stagedAt: record.stagedAt } });
+      destinationId = `skill:${place.destination}`;
+    } else {
+      const existing = importCollisions(place.root, staged.files);
+      if (existing.length && overwrite !== true) {
+        return res.status(409).json({ error: importCollisionText(record.type === 'command' ? 'Command' : 'Agent', record.name, existing), code: 'import_exists', existing: existing.slice(0, 200) });
+      }
+      const backups = [];
+      const written = [];
+      let attempt = null;
+      try {
+        for (const f of staged.files) {
+          const full = join(place.root.dir, f.path);
+          if (existing.includes(f.path)) {
+            backups.push({ full, path: f.path, id: skillInstaller.backup({ destination: full, target: 'claude', name: f.path, reason: 'import over' }) });
+            removeConfinedEntry(place.root.dir, full);
+          }
+          attempt = full;
+          writeConfinedFile(place.root.dir, full, f.bytes, { exclusive: true });
+          written.push(full);
+          attempt = null;
+        }
+      } catch (err) {
+        // All or nothing: what was written goes, and so does the file whose write failed half way (it is this
+        // import's: its place was free when the write began; a 409 means somebody else's file took the place,
+        // and that one stays). Then what was replaced comes back into the places that are free again. A backup
+        // that cannot be put back is said, with its id, never dropped in silence.
+        const ours = attempt && err?.status !== 409 && err?.code !== 'EEXIST' ? [attempt] : [];
+        for (const full of [...written, ...ours].reverse()) { try { removeConfinedEntry(place.root.dir, full); } catch {} }
+        const notRestored = [];
+        for (const b of backups) {
+          try { skillInstaller.restore(b.id, { root: place.root.dir }); }
+          catch { notRestored.push({ path: b.path, backupId: b.id }); }
+        }
+        if (notRestored.length) {
+          err.message = `${err.message} ${notRestored.map((b) => `"${b.path}" could not be put back: it is kept in the backup ${b.backupId}.`).join(' ')}`;
+          err.notRestored = notRestored;
+        }
+        throw err;
+      }
+      const headPath = join(place.root.dir, `${record.name}.md`);
+      skillInstaller.recordWrite({ target: 'claude', name: record.name, destination: headPath, digest: readManifest(headPath).digest, kind: 'file', source: { kind: 'import', name: record.name, digest: staged.digest, stagedAt: record.stagedAt } });
+      destinationId = `${record.type}:${headPath}`;
+    }
+    skillImportStaging.discard(stagingId);
+    studioChanged('import', { name: record.name });
+    res.json({ ok: true, name: record.name, type: record.type, id: encodeArtifactId(destinationId) });
+  } catch (err) {
+    skillsStudioFailure(res, err);
+  }
+});
+
+// DELETE /api/skills-studio/import/stage/:stagingId — give a staged import up
+app.delete('/api/skills-studio/import/stage/:stagingId', (req, res) => {
+  if (refuseStudioWrite(req, res)) return;
+  try {
+    const removed = skillImportStaging.discard(req.params.stagingId);
+    res.json({ ok: true, removed });
+  } catch (err) {
+    skillsStudioFailure(res, err);
   }
 });
 
@@ -23521,7 +24490,7 @@ function readActiveMcpProfile() {
     try {
       if (!existsSync(profilePath)) continue;
       const data = JSON.parse(readFileSync(profilePath, 'utf-8'));
-      if (data.profile && typeof data.profile === 'string') return data.profile;
+      if (data.profile && typeof data.profile === 'string') return retireMcpProfileSelection(data.profile);
     } catch {}
   }
   return 'full';
@@ -23541,7 +24510,30 @@ function ensureMcpProfileDefault(profile) {
 }
 
 function normalizeMcpProfileName(profile) {
-  return String(profile || 'full').toLowerCase().trim() || 'full';
+  return retireMcpProfileSelection(String(profile || 'full').toLowerCase().trim() || 'full');
+}
+
+// Profile and group names of removed integrations. A selection stored before
+// the removal (default profile, schedule, loop, tab) still launches: a retired
+// preset becomes the default profile and a retired group is dropped from a
+// comma-separated selection, never an "Invalid MCP profile" error. Functions,
+// not constants: profile names are read while the module is still loading.
+function isRetiredMcpProfile(name) {
+  return name === 'leonardoai';
+}
+
+function isRetiredMcpGroup(name) {
+  return name === 'leonardo';
+}
+
+function retireMcpProfileSelection(profile) {
+  const raw = String(profile);
+  const name = raw.toLowerCase().trim();
+  if (isRetiredMcpProfile(name)) return 'full';
+  const groups = name.split(',').map((group) => group.trim());
+  if (!groups.some(isRetiredMcpGroup)) return raw;
+  const kept = groups.filter((group) => group && !isRetiredMcpGroup(group));
+  return kept.length ? kept.join(',') : 'full';
 }
 
 function buildMcpProfilePresets() {
@@ -23824,7 +24816,6 @@ const SYNABUN_TOOL_GROUPS = {
   browser_instagram: { label: 'Instagram',  tools: 5  },
   browser_linkedin:  { label: 'LinkedIn',   tools: 8  },
   browser_bluesky:   { label: 'BlueSky',    tools: 15 },
-  leonardo:          { label: 'Leonardo',   tools: 5  },
   discord:           { label: 'Discord',    tools: 8  },
   gsc:               { label: 'Google Search Console', tools: 30 },
   youtube:           { label: 'YouTube',    tools: 11 },
@@ -23860,9 +24851,8 @@ function readMcpRegistry() {
       instagram:  { label: 'Instagram',  groups: ['git', 'image', 'browser', 'browser_instagram'], servers: [] },
       linkedin:   { label: 'LinkedIn',   groups: ['git', 'image', 'browser', 'browser_linkedin'], servers: [] },
       bluesky:    { label: 'BlueSky',    groups: ['git', 'image', 'browser', 'browser_bluesky'], servers: [] },
-      browser:    { label: 'Browser',    groups: ['git', 'image', 'whiteboard', 'card', 'tictactoe', 'browser', 'browser_twitter', 'browser_facebook', 'browser_tiktok', 'browser_whatsapp', 'browser_instagram', 'browser_linkedin', 'browser_bluesky', 'leonardo', 'gsc', 'youtube', 'styleguide', 'morelogin'], servers: [] },
-      full:       { label: 'Full',       groups: ['git', 'image', 'whiteboard', 'card', 'tictactoe', 'browser', 'browser_twitter', 'browser_facebook', 'browser_tiktok', 'browser_whatsapp', 'browser_instagram', 'browser_linkedin', 'browser_bluesky', 'leonardo', 'discord', 'gsc', 'youtube', 'styleguide', 'morelogin'], servers: [] },
-      leonardoai: { label: 'LeonardoAI', groups: ['leonardo'], servers: [] },
+      browser:    { label: 'Browser',    groups: ['git', 'image', 'whiteboard', 'card', 'tictactoe', 'browser', 'browser_twitter', 'browser_facebook', 'browser_tiktok', 'browser_whatsapp', 'browser_instagram', 'browser_linkedin', 'browser_bluesky', 'gsc', 'youtube', 'styleguide', 'morelogin'], servers: [] },
+      full:       { label: 'Full',       groups: ['git', 'image', 'whiteboard', 'card', 'tictactoe', 'browser', 'browser_twitter', 'browser_facebook', 'browser_tiktok', 'browser_whatsapp', 'browser_instagram', 'browser_linkedin', 'browser_bluesky', 'discord', 'gsc', 'youtube', 'styleguide', 'morelogin'], servers: [] },
       gsc:        { label: 'GSC',        groups: ['git', 'image', 'browser', 'gsc'], servers: [] },
       youtube:    { label: 'YouTube',    groups: ['git', 'image', 'browser', 'youtube'], servers: [] },
     },
@@ -23929,9 +24919,8 @@ function ensureProfileGroupsBackfilled() {
           instagram:  { label: 'Instagram',  groups: ['git', 'image', 'browser', 'browser_instagram'], servers: [] },
           linkedin:   { label: 'LinkedIn',   groups: ['git', 'image', 'browser', 'browser_linkedin'], servers: [] },
           bluesky:    { label: 'BlueSky',    groups: ['git', 'image', 'browser', 'browser_bluesky'], servers: [] },
-          browser:    { label: 'Browser',    groups: ['git', 'image', 'whiteboard', 'card', 'tictactoe', 'browser', 'browser_twitter', 'browser_facebook', 'browser_tiktok', 'browser_whatsapp', 'browser_instagram', 'browser_linkedin', 'browser_bluesky', 'leonardo', 'gsc', 'youtube', 'styleguide', 'morelogin'], servers: [] },
-          full:       { label: 'Full',       groups: ['git', 'image', 'whiteboard', 'card', 'tictactoe', 'browser', 'browser_twitter', 'browser_facebook', 'browser_tiktok', 'browser_whatsapp', 'browser_instagram', 'browser_linkedin', 'browser_bluesky', 'leonardo', 'discord', 'gsc', 'youtube', 'styleguide', 'morelogin'], servers: [] },
-          leonardoai: { label: 'LeonardoAI', groups: ['leonardo'], servers: [] },
+          browser:    { label: 'Browser',    groups: ['git', 'image', 'whiteboard', 'card', 'tictactoe', 'browser', 'browser_twitter', 'browser_facebook', 'browser_tiktok', 'browser_whatsapp', 'browser_instagram', 'browser_linkedin', 'browser_bluesky', 'gsc', 'youtube', 'styleguide', 'morelogin'], servers: [] },
+          full:       { label: 'Full',       groups: ['git', 'image', 'whiteboard', 'card', 'tictactoe', 'browser', 'browser_twitter', 'browser_facebook', 'browser_tiktok', 'browser_whatsapp', 'browser_instagram', 'browser_linkedin', 'browser_bluesky', 'discord', 'gsc', 'youtube', 'styleguide', 'morelogin'], servers: [] },
           gsc:        { label: 'GSC',        groups: ['git', 'image', 'browser', 'gsc'], servers: [] },
           youtube:    { label: 'YouTube',    groups: ['git', 'image', 'browser', 'youtube'], servers: [] },
         },
@@ -23939,6 +24928,16 @@ function ensureProfileGroupsBackfilled() {
     } finally { void stash; }
     let changed = false;
     persisted.profiles = persisted.profiles || {};
+    // Drop retired presets and groups an older version wrote into the registry.
+    for (const name of Object.keys(persisted.profiles)) {
+      if (isRetiredMcpProfile(name)) { delete persisted.profiles[name]; changed = true; }
+    }
+    for (const profile of Object.values(persisted.profiles)) {
+      if (!Array.isArray(profile?.groups)) continue;
+      const kept = profile.groups.filter((group) => !isRetiredMcpGroup(group));
+      if (kept.length !== profile.groups.length) { profile.groups = kept; changed = true; }
+    }
+    if (isRetiredMcpProfile(String(persisted.activeProfile || '').toLowerCase().trim())) { persisted.activeProfile = 'full'; changed = true; }
     for (const [name, defProfile] of Object.entries(defaults.profiles)) {
       if (!persisted.profiles[name]) {
         persisted.profiles[name] = { label: defProfile.label, groups: [...defProfile.groups], servers: [] };
@@ -26026,6 +27025,7 @@ _nativeLoopRuntime = new NativeLoopRuntime({
     const assistantLog = (tag, message, meta) => { try { loopLog(null, `assistant:${tag}`, typeof message === 'string' ? message : JSON.stringify(message), meta); } catch {} };
     // One store for assistant-config.json: routing knobs re-read on change.
     const assistantConfigStore = createAssistantConfigStore({ path: assistantConfigPath, log: (tag, message) => assistantLog(tag, message) });
+    _assistantConfigStore = assistantConfigStore;
     const assistantConfig = assistantConfigStore.read();
     // The one Claude accounts instance (the sidepanel's): one account state for the brain picker, the catalog,
     // worker dispatch and the panel. `createClaudeAccounts` stays imported for older callers of this block.
@@ -26572,6 +27572,8 @@ _nativeLoopRuntime = new NativeLoopRuntime({
       adminSandbox: _agentSandbox,
     }));
     const shutdownAssistant = () => {
+      // Running skill creations first: what their workers wrote is kept as drafts before the workers go.
+      try { skillCreations.shutdown(); } catch {}
       try { assistantRouter.shutdown(); } catch {}
       try { assistantClarifier.shutdown(); } catch {}
       try { assistantDesktop?.shutdown?.(); } catch {}
@@ -29638,7 +30640,7 @@ function isDroppableSidepanelProviderEvent(message) {
 function broadcastSync(message, excludeWs = null) {
   const data = JSON.stringify(message);
   const messageType = String(message?.type || '');
-  const ownerOnly = ['sidepanel:', 'schedule:', 'schedule-group:', 'quick-timer:', 'assistant:', 'whatsapp:', 'editor:']
+  const ownerOnly = ['sidepanel:', 'schedule:', 'schedule-group:', 'quick-timer:', 'assistant:', 'whatsapp:', 'editor:', 'skills:']
     .some((prefix) => messageType.startsWith(prefix));
   const dropUnderBackpressure = isDroppableSidepanelProviderEvent(message);
   let sent = 0;

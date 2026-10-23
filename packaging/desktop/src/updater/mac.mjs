@@ -9,7 +9,12 @@
  *   2. download it and check its size and sha512 against the feed
  *   3. unpack it beside the installed app (same folder, so the swap is a rename)
  *      and check what came out: our bundle id, the expected version, a
- *      processor this Mac runs, an intact code signature
+ *      processor this Mac runs, an intact code signature; then run its headless
+ *      entry once, so macOS's first-start check is over before the swap
+ *      (warmStagedCopy). A copy an earlier run unpacked is used again only when
+ *      it is, file by file, byte by byte, the archive whose SHA-512 the feed
+ *      gives (stage-check.mjs): an ad hoc signature proves nothing about who
+ *      changed a file, since anyone can make one again
  *   4. when SynaBun is idle (controller.mjs), when the user asks, or when the
  *      app quits: a small script outside the app waits for this process to
  *      end, moves the old app aside, moves the new one in its place, and opens
@@ -29,13 +34,18 @@ import { createHash } from 'node:crypto';
 import { spawn as nodeSpawn } from 'node:child_process';
 import {
   accessSync, closeSync, constants, createReadStream, createWriteStream, existsSync, mkdirSync, openSync, readdirSync,
-  readSync, renameSync, rmSync, writeFileSync,
+  readFileSync, readSync, renameSync, rmSync, writeFileSync,
 } from 'node:fs';
 import { basename, dirname, extname, join } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { isOnMountedVolume, isTranslocated } from '../paths.mjs';
 import { assetUrl, channelFileFor, isNewer, normalizeFeed, pickMacFile } from './feed.mjs';
+import { compareFolderWithZip, signatureDifference, treeSignature } from './stage-check.mjs';
+import { realFs } from './real-fs.mjs';
+
+/** Removes an unpacked update: through Node's own fs, since Electron's would refuse the app.asar inside it. */
+const removeTree = (path) => realFs.rmSync(path, { recursive: true, force: true });
 
 export const BUNDLE_ID = 'ai.synabun.app';
 const LSREGISTER = '/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister';
@@ -164,16 +174,60 @@ export function machoArchs(path) {
   return [];
 }
 
+/** What an unpacked update that passed every check records beside itself (reusableStage). */
+export const STAGED_RECORD = 'staged.json';
+
+/**
+ * An update an earlier run unpacked and checked, for this version, processor
+ * and archive (its sha512, as staged.json says), used again without unpacking
+ * the archive and verifying the signature once more (half a minute an install at
+ * launch would otherwise spend in front of the user), and only when it is still
+ * exactly that archive: compareFolderWithZip against `zipPath`, which the caller
+ * has just checked against the feed (downloadVerified). staged.json is only a
+ * hint: whoever could change the copy could change it too, so even the name of
+ * the executable is read again from the copy's own Info.plist. Resolves the
+ * stage, or null for anything else (stageMacUpdate then unpacks the archive
+ * again in its place).
+ */
+export async function reusableStage({ appPath, version, arch, zipSha512, zipPath, compare = compareFolderWithZip, run = runAsync, log = () => {} }) {
+  if (!appPath || !zipSha512 || !zipPath) return null;
+  const stageDir = join(dirname(appPath), `.SynaBun-update-${version}`);
+  let record;
+  try { record = JSON.parse(readFileSync(join(stageDir, STAGED_RECORD), 'utf8')); } catch { return null; }
+  if (!record || record.version !== String(version) || record.arch !== arch || record.zipSha512 !== zipSha512) return null;
+  if (typeof record.app !== 'string' || !/^[^/\\]+\.app$/i.test(record.app) || typeof record.executable !== 'string' || !/^[^/\\]+$/.test(record.executable)) return null;
+  const staged = join(stageDir, record.app);
+  let compared;
+  try {
+    compared = await compare({ zipPath, folder: stageDir });
+  } catch (error) {
+    compared = { same: false, reason: error?.message || String(error) };
+  }
+  if (!compared.same) {
+    log(`the update unpacked earlier is not used: ${compared.reason}`);
+    return null;
+  }
+  const plist = await run('/usr/bin/plutil', ['-convert', 'json', '-o', '-', join(staged, 'Contents', 'Info.plist')], { timeoutMs: 30000 });
+  let executable = null;
+  try { executable = plist.status === 0 ? String(JSON.parse(plist.stdout).CFBundleExecutable || '') : null; } catch {}
+  if (!executable || !/^[^/\\]+$/.test(executable) || !existsSync(join(staged, 'Contents', 'MacOS', executable))) {
+    log('the update unpacked earlier is not used: its Info.plist names no executable');
+    return null;
+  }
+  return { stageDir, staged, executable, reused: true };
+}
+
 /**
  * Unpack the downloaded zip next to the installed app and check the result.
  * Resolves { stageDir, staged, executable }: the new .app, not yet in place.
+ * `zipSha512` (the feed's) is recorded with the checks, for reusableStage().
  */
-export async function stageMacUpdate({ zipPath, appPath, version, arch, run = runAsync } = {}) {
+export async function stageMacUpdate({ zipPath, appPath, version, arch, zipSha512 = null, run = runAsync } = {}) {
   const stageDir = join(dirname(appPath), `.SynaBun-update-${version}`);
-  rmSync(stageDir, { recursive: true, force: true });
+  removeTree(stageDir);
   mkdirSync(stageDir, { recursive: true });
   const fail = (reason) => {
-    rmSync(stageDir, { recursive: true, force: true });
+    removeTree(stageDir);
     throw Object.assign(new Error(reason), { code: 'STAGED_INVALID', reason });
   };
   // ditto made the zip; it keeps the links, modes and extended attributes of the bundle.
@@ -195,7 +249,32 @@ export async function stageMacUpdate({ zipPath, appPath, version, arch, run = ru
   // An intact seal (ad hoc or Developer ID): nothing in the bundle changed since it was signed.
   const verified = await run('/usr/bin/codesign', ['--verify', '--deep', '--strict', staged]);
   if (verified.status !== 0) fail(`its code signature does not verify (${String(verified.stderr).trim().split('\n')[0]})`);
+  if (zipSha512) {
+    try { writeFileSync(join(stageDir, STAGED_RECORD), JSON.stringify({ version: String(version), arch, zipSha512, app: apps[0], executable }) + '\n'); } catch {}
+  }
   return { stageDir, staged, executable };
+}
+
+/**
+ * macOS checks a program the first time it runs (Gatekeeper's scan, XProtect):
+ * three to four seconds for a freshly unpacked SynaBun, which an update spent
+ * after the old copy had closed and before the new one could show anything.
+ * Spent here instead, while the user still works: the staged copy's headless
+ * entry prints its help once (no window, no Dock icon, nothing read from the
+ * data home), and the check is done for the whole bundle; it stays with the
+ * files through the rename into place. Started through /bin/sh, so the wait
+ * holds that shell and never this process (a spawn returns only once the new
+ * program's image is up). Only a copy that passed every check gets here. Never
+ * fails the update: { warmed, ms }.
+ */
+export async function warmStagedCopy({ staged, run = runAsync, env = process.env, timeoutMs = 60000, now = Date.now }) {
+  const entry = join(staged || '', 'Contents', 'MacOS', 'synabun-cli');
+  if (!staged || !existsSync(entry)) return { warmed: false, ms: 0 };
+  const started = now();
+  const result = await run('/bin/sh', ['-c', 'exec "$0" help >/dev/null 2>&1', entry], {
+    timeoutMs, env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: env.HOME || '/', TMPDIR: env.TMPDIR || '/tmp' },
+  });
+  return { warmed: result.status === 0, ms: now() - started };
 }
 
 /**
@@ -212,7 +291,7 @@ export function cleanupStagedUpdates({ appPath, keepVersion = null } = {}) {
   for (const name of names) {
     const match = /^\.SynaBun-update-(.+)$/.exec(name);
     if (!match || (keepVersion && match[1] === String(keepVersion))) continue;
-    try { rmSync(join(folder, name), { recursive: true, force: true }); removed.push(name); } catch {}
+    try { removeTree(join(folder, name)); removed.push(name); } catch {}
   }
   return removed;
 }
@@ -237,8 +316,8 @@ open_app() { "$app/Contents/MacOS/$exe" "$@" >/dev/null 2>&1 & newpid=$!; }
 say "waiting for $pid to quit"
 n=0
 while kill -0 "$pid" 2>/dev/null; do
-  n=$((n + 1)); [ "$n" -gt 1200 ] && fail "SynaBun did not quit within two minutes"
-  sleep 0.1
+  n=$((n + 1)); [ "$n" -gt 2400 ] && fail "SynaBun did not quit within two minutes"
+  sleep 0.05
 done
 [ -d "$staged" ] || fail "the unpacked update is gone"
 rm -rf "$backup" 2>/dev/null
@@ -253,13 +332,17 @@ if ! mv "$staged" "$app" 2>>"$log"; then
   [ "$relaunch" = 1 ] && open_app
   fail "the new copy could not be moved into place; the old copy was put back"
 fi
+rm -f "$(dirname "$staged")/staged.json"
 rmdir "$(dirname "$staged")" 2>/dev/null
-"${LSREGISTER}" -f "$app" >/dev/null 2>&1
 : >"$state/swapped"
 say "the new copy is in place"
+# The new copy opens first (its splash is the first thing it shows); LaunchServices learns about it meanwhile.
+if [ "$relaunch" = 1 ]; then
+  rm -f "$state/started"
+  open_app --synabun-updated
+fi
+"${LSREGISTER}" -f "$app" >/dev/null 2>&1 &
 [ "$relaunch" = 1 ] || exit 0
-rm -f "$state/started"
-open_app --synabun-updated
 n=0
 while [ ! -f "$state/started" ]; do
   n=$((n + 1))
@@ -284,11 +367,11 @@ exit 0
 `;
 
 /** Write the plan and the swap script into the state folder and start it, detached, so it outlives this process. */
-export function startSwap({ pid = process.pid, appPath, staged, stateDir, relaunch, executable, version, previous, env = process.env, spawn = nodeSpawn, startTicks = 1800 }) {
+export function startSwap({ pid = process.pid, appPath, staged, stateDir, relaunch, executable, version, previous, installId = null, env = process.env, spawn = nodeSpawn, startTicks = 1800 }) {
   mkdirSync(stateDir, { recursive: true });
   for (const name of ['swap-failed', 'rolled-back', 'started', 'swapped']) rmSync(join(stateDir, name), { force: true });
   const backup = join(dirname(appPath), `.${basename(appPath)}.previous`);
-  writeFileSync(join(stateDir, 'plan.json'), JSON.stringify({ platform: 'darwin', appPath, backup, version, previous, relaunch: !!relaunch, at: new Date().toISOString() }, null, 2) + '\n');
+  writeFileSync(join(stateDir, 'plan.json'), JSON.stringify({ platform: 'darwin', appPath, backup, version, previous, relaunch: !!relaunch, installId, at: new Date().toISOString() }, null, 2) + '\n');
   const script = join(stateDir, 'swap.sh');
   writeFileSync(script, SWAP_SCRIPT, { mode: 0o700 });
   const child = spawn('/bin/sh', [script, String(pid), appPath, staged, backup, stateDir, relaunch ? '1' : '0', executable, String(startTicks)], {
@@ -310,9 +393,35 @@ export { finishPendingSwap } from './state.mjs';
 export function createMacAdapter(deps) {
   const {
     feed, current, appPath, arch, translated = false, cacheDir, downloadsDir = cacheDir, stateDir, parseYaml, fetchImpl = fetch,
-    moveToApplications, reveal, env = process.env, run = runAsync, spawn = nodeSpawn, log = () => {},
+    moveToApplications, reveal, env = process.env, run = runAsync, spawn = nodeSpawn, warm = warmStagedCopy, log = () => {},
+    compare = compareFolderWithZip, signature = treeSignature,
   } = deps;
   let offer = null;
+
+  /**
+   * Right before the swap: the unpacked copy is still what was checked. Its files as the file system describes them
+   * (treeSignature, taken once it was checked and warmed up) are compared first; when anything moved, the copy is
+   * compared with the archive again, which is first checked against the feed once more. A copy that is no longer the
+   * archive is removed and the install fails: the next attempt unpacks it again.
+   */
+  async function confirmStaged() {
+    const { staged, stageDir } = offer.staged;
+    const moved = signatureDifference(offer.signature, await signature(staged).catch(() => null));
+    if (!moved) return;
+    log(`the unpacked update was touched since it was checked (${moved}): comparing it with the archive again`);
+    let compared = { same: false, reason: 'the archive is gone' };
+    if (offer.zipPath && existsSync(offer.zipPath) && await sha512File(offer.zipPath).catch(() => null) === offer.zip.sha512) {
+      compared = await compare({ zipPath: offer.zipPath, folder: stageDir }).catch((error) => ({ same: false, reason: error?.message || String(error) }));
+    } else if (offer.zipPath && existsSync(offer.zipPath)) {
+      compared = { same: false, reason: 'the archive no longer matches the feed' };
+    }
+    if (!compared.same) {
+      try { removeTree(stageDir); } catch {}
+      offer.staged = null;
+      throw Object.assign(new Error(`the unpacked update changed after it was checked (${compared.reason}); it is unpacked again at the next try`), { code: 'STAGED_CHANGED' });
+    }
+    offer.signature = await signature(staged);
+  }
 
   return {
     supported: true,
@@ -341,14 +450,26 @@ export function createMacAdapter(deps) {
       log(`downloading ${url}`);
       await downloadVerified({ url, destination, sha512: file.sha512, size: file.size, fetchImpl, onProgress });
       if (manual) return { file: destination };
-      offer.staged = await stageMacUpdate({ zipPath: destination, appPath, version: offer.info.version, arch: offer.arch, run });
-      log(`unpacked and checked beside the app: ${offer.staged.staged}`);
+      offer.zipPath = destination;
+      // A copy unpacked earlier is used only when it is still, byte by byte, this archive (just checked against the feed).
+      const compareStarted = Date.now();
+      offer.staged = await reusableStage({ appPath, version: offer.info.version, arch: offer.arch, zipSha512: file.sha512, zipPath: destination, compare, run, log });
+      if (offer.staged) log(`the update unpacked earlier is still exactly the archive (${Date.now() - compareStarted} ms): ${offer.staged.staged}`);
+      else {
+        offer.staged = await stageMacUpdate({ zipPath: destination, appPath, version: offer.info.version, arch: offer.arch, zipSha512: file.sha512, run });
+        log(`unpacked and checked beside the app: ${offer.staged.staged}`);
+      }
+      const warmed = await warm({ staged: offer.staged.staged, run, env });
+      log(warmed.warmed ? `macOS checked the new copy's first start ahead of time (${warmed.ms} ms)` : 'the new copy\'s first start could not be checked ahead of time: macOS checks it when it opens');
+      // What the checked copy's files are now: the install compares them with this before the swap.
+      offer.signature = await signature(offer.staged.staged).catch(() => null);
       // The archive stays until the new version runs: a start before that installs from it without a download.
       return { file: destination };
     },
-    async install({ relaunch, version, previous }) {
+    async install({ relaunch, version, previous, installId = null }) {
       if (!offer?.staged || !existsSync(offer.staged.staged)) throw new Error('the unpacked update is gone; download it again');
-      const started = startSwap({ appPath, staged: offer.staged.staged, stateDir, relaunch, executable: offer.staged.executable, version, previous, env, spawn });
+      await confirmStaged();
+      const started = startSwap({ appPath, staged: offer.staged.staged, stateDir, relaunch, executable: offer.staged.executable, version, previous, installId, env, spawn });
       log(`swap script started (pid ${started.pid}): ${started.script}`);
     },
     moveToApplications: () => moveToApplications(),

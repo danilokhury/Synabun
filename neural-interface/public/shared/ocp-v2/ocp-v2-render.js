@@ -802,9 +802,6 @@ const SYNABUN_LABELS = {
   discord_role: 'Discord · Role', discord_message: 'Discord · Message',
   discord_member: 'Discord · Member', discord_onboarding: 'Discord · Onboarding',
   discord_webhook: 'Discord · Webhook', discord_thread: 'Discord · Thread',
-  leonardo_browser_navigate: 'Leonardo · Navigate', leonardo_browser_generate: 'Leonardo · Generate',
-  leonardo_browser_library: 'Leonardo · Library', leonardo_browser_download: 'Leonardo · Download',
-  leonardo_browser_reference: 'Leonardo · Reference',
 };
 
 function isSynaBunTool(name) {
@@ -859,7 +856,6 @@ function synabunSummaryText(name, input) {
     case 'whiteboard_update': return t(input.content || input.title);
     case 'card_open':
     case 'card_update':     return t(input.title || input.id);
-    case 'leonardo_browser_generate': return t(input.prompt);
     default:                return '';
   }
 }
@@ -949,7 +945,7 @@ function renderSynaBunToolPart(part, toolName, stateStatus) {
 }
 
 // Render an MCP tool result. Tools like browser_screenshot / card_screenshot /
-// whiteboard_screenshot / leonardo_* return `{ content: [text, image] }`,
+// whiteboard_screenshot return `{ content: [text, image] }`,
 // which arrives here as an array (or a JSON string of one). Render image
 // blocks as actual <img> elements; render text blocks as their text; fall
 // back to formatJson for anything else.

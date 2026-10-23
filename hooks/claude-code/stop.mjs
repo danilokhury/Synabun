@@ -916,7 +916,7 @@ function handleStop({ sessionId, lastMessage, cwd, transcriptPath, judged = {}, 
     }
 
     // CHECK 2.5: User learning (bundled with task or standalone)
-    // Skipped when waiting for user action (interactive flows like Leonardo questionnaires).
+    // Skipped when waiting for user action (interactive questionnaire flows).
     // Limited to 1 retry to minimize chat noise.
     // Never inside the Assistant's brain (SYNABUN_ASSISTANT_SESSION): SynaBun's harness learns
     // about the user there, and prompt-submit.mjs never arms this in it.

@@ -13,6 +13,10 @@
  *   SynaBun app-backend     for the desktop app's window: find or start this
  *                           install's server, each step a JSON line on stdout
  *                           (lib/desktop-app.js)
+ *   SynaBun update-snapshot for the desktop app's updater: the pre-update
+ *                           snapshot taken before the app replaces itself, and
+ *                           the handoff to the new version, each step a JSON
+ *                           line on stdout (lib/update-snapshot.js)
  *   SynaBun diagnostics     what this build is and where it keeps things
  *   SynaBun claude-hook <s> one Claude Code hook handler, for the command the
  *                           application registers (lib/claude-hooks.js); silent
@@ -45,6 +49,8 @@ const USAGE = `SynaBun (packaged application)
   SynaBun diagnostics      what this build is and where it keeps its data
                            (--json, --natives to load the native modules)
   SynaBun app-backend      find or start the server for the desktop window
+                           (one JSON line per step)
+  SynaBun update-snapshot  the desktop app's snapshot before an update
                            (one JSON line per step)
   SynaBun version | doctor | profile | migrate-data | restore-backup
                            the same commands as the npm install
@@ -218,6 +224,29 @@ export async function runAppBackendMode(args, { write = (line) => process.stdout
   return result.type === 'ready' ? 0 : result.type === 'conflict' ? 2 : 1;
 }
 
+/**
+ * The desktop app's updater protects the data here before it replaces the app
+ * (lib/update-snapshot.js): every step one JSON line on stdout. Exit code: 0
+ * done, 3 the snapshot could not be taken (nothing is installed then), 2 a
+ * wrong command line.
+ */
+export async function runUpdateSnapshotMode(args, { write = (line) => process.stdout.write(line) } = {}) {
+  const { env } = await packagedEnv();
+  const { getDataHome } = await load('lib/paths.js');
+  const { parseUpdateSnapshotArgs, runUpdateSnapshot } = await load('lib/update-snapshot.js');
+  const options = parseUpdateSnapshotArgs(args);
+  if (options.error) {
+    write(JSON.stringify({ type: 'failed', code: 'USAGE', message: `update-snapshot needs ${options.error}` }) + '\n');
+    return 2;
+  }
+  const result = await runUpdateSnapshot({
+    dataHome: getDataHome({ env }), ...options,
+    loadBackupService: () => load('neural-interface/lib/backup-service.js'),
+    emit: (event) => write(JSON.stringify(event) + '\n'),
+  });
+  return result.type === 'done' ? 0 : 3;
+}
+
 function isExecutable(path) {
   if (process.platform === 'win32') return existsSync(path);
   try { accessSync(path, constants.X_OK); return true; } catch { return false; }
@@ -372,6 +401,7 @@ export async function main(argv = process.argv.slice(2)) {
   }
   if (mode === 'launcher') return runProtocolLauncher(rest);
   if (mode === 'app-backend') return runAppBackendMode(rest);
+  if (mode === 'update-snapshot') return runUpdateSnapshotMode(rest);
   if (mode === 'diagnostics') return printDiagnostics(rest);
   if (mode === 'help' || mode === '--help' || mode === '-h') { process.stdout.write(USAGE); return 0; }
   // version, doctor, profile, migrate-data, restore-backup: setup.js owns them.

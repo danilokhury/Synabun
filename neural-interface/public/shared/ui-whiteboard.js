@@ -13,6 +13,7 @@ import { storage } from './storage.js';
 import { isGuest, hasPermission } from './ui-sync.js';
 import { openSettingsModal } from './ui-settings.js';
 import { fetchRulesStatus } from './api.js';
+import { registerContextMenuArea } from './context-menu-areas.js';
 
 // ── Helpers ──
 
@@ -3401,6 +3402,41 @@ export function addImageToWhiteboard(url) {
 }
 
 // ═══════════════════════════════════════════
+// THE APP'S RIGHT-CLICK MENU (context-menu-model.js focusItems)
+// ═══════════════════════════════════════════
+
+// Each row goes through what the board already does: its toolbar's own buttons (onToolbarClick, with
+// its guest check and the multi-select mode a tool leaves) and Ctrl+A's selectMultiple.
+const pressToolbar = (selector) => _toolbar?.querySelector(selector)?.click();
+
+// The whole focus-mode screen (#static-bg while it is shown): the board, its toolbar, the logo.
+const focusMenuArea = {
+  id: 'focus-whiteboard',
+  match(el) {
+    if (!el?.closest?.('#static-bg.visible')) return null;
+    return {
+      kind: 'focus',
+      focus: {
+        tool: _activeTool,
+        multi: _multiSelectMode,
+        canUndo: _undoStack.length > 0,
+        canRedo: _redoStack.length > 0,
+        hasElements: _elements.length > 0,
+        canEdit: !(isGuest() && !hasPermission('whiteboard')),
+      },
+      act: {
+        setTool: (name) => pressToolbar(`.wb-tool[data-tool="${name}"]`),
+        toggleMulti: () => pressToolbar('#wb-multiselect'),
+        undo: () => pressToolbar('#wb-undo'),
+        redo: () => pressToolbar('#wb-redo'),
+        selectAll: () => { const ids = _elements.map(e => e.id); if (ids.length) selectMultiple(ids); },
+        exitFocus: () => $('titlebar-viz-toggle')?.click(), // the navbar's button, as the V key presses it
+      },
+    };
+  },
+};
+
+// ═══════════════════════════════════════════
 // INIT
 // ═══════════════════════════════════════════
 
@@ -3487,8 +3523,10 @@ export function initWhiteboard() {
   // Logo-adjacent ruleset reminder
   initRulesetAlert();
 
-  // Prevent context menu on whiteboard
-  _root.addEventListener('contextmenu', e => e.preventDefault());
+  // Right-click: the board has no menu of its own, so it leaves the event to the app's menu
+  // (ui-context-menu.js), which adds the board's section from focusMenuArea. A card being
+  // edited keeps the browser's menu (spelling, paste), as every field does.
+  registerContextMenuArea(focusMenuArea);
 
   // Listen for workspace events
   on('whiteboard:restore', restoreWhiteboardSnapshot);

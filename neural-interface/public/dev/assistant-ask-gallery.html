@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>SynaBun · mascot-led follow-ups and questions · dev gallery</title>
+<!--
+  Dev only, linked from nowhere in the product: every style and state of the cards the
+  mascot presents (asst-followups-card.js, asst-control.js question cards), drawn by the real
+  renderer, director and rig. Options in the query string: ?lang=pt-BR, ?freeze=1 (the shared
+  ticker stops 1.6 s after load, for captures), ?reduced=1 (prefers-reduced-motion as the
+  panel reads it). Served by any static server whose root is neural-interface/public with
+  /i18n/ mapped to neural-interface/i18n (the app's own server does both).
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/shared/styles.css">
+<script>
+  // ?reduced=1: the panel's own reading of prefers-reduced-motion (synabun-ticker.js) says yes.
+  if (new URLSearchParams(location.search).has('reduced')) {
+    const real = window.matchMedia.bind(window);
+    window.matchMedia = (query) => (/prefers-reduced-motion/.test(query)
+      ? { matches: true, media: query, onchange: null, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {}, dispatchEvent() { return false; } }
+      : real(query));
+    document.documentElement.dataset.reducedMotion = '1';
+  }
+</script>
+<style>
+  /* The app's sheet pins the page to the window; this page scrolls. The accent is the user's (DESIGN.md: hsl(0,0%,80%)). */
+  html { position: static !important; overflow: auto !important; height: auto !important; }
+  :root:root { --accent-hue: 0; --accent-saturation: 0%; --accent-lightness: 80%; }
+  body { overflow: visible !important; height: auto !important; min-height: 100vh; margin: 0; background: #050505; }
+  html[data-reduced-motion] *, html[data-reduced-motion] *::before, html[data-reduced-motion] *::after { transition: none !important; animation: none !important; }
+  .g-head { padding: 20px 20px 8px; color: var(--t-bright, rgba(255,255,255,.9)); font-family: 'Inter', system-ui, sans-serif; }
+  .g-head h1 { margin: 0 0 6px; font-family: 'Space Grotesk', 'Inter', sans-serif; font-size: 20px; font-weight: 600; line-height: 1.25; }
+  .g-head p { max-width: 75ch; margin: 0 0 6px; color: rgba(255,255,255,.64); font-size: 13px; line-height: 1.5; }
+  .g-head code { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: rgba(255,255,255,.8); overflow-wrap: anywhere; }
+  .g-flags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .g-flag { display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: 6px; background: rgba(255,255,255,.04); box-shadow: inset 0 0 0 1px rgba(255,255,255,.1); color: rgba(255,255,255,.7); font-size: 11px; }
+  .g-flag[data-on="1"] { background: color-mix(in srgb, rgba(255,215,0,.85) 16%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, rgba(255,215,0,.85) 42%, transparent); color: rgba(255,255,255,.9); }
+  .g-section { padding: 8px 20px 16px; }
+  .g-section > h2 { margin: 18px 0 4px; color: rgba(255,255,255,.9); font-family: 'Space Grotesk', 'Inter', sans-serif; font-size: 16px; font-weight: 600; }
+  .g-section > p { max-width: 75ch; margin: 0 0 10px; color: rgba(255,255,255,.52); font-size: 12.5px; line-height: 1.45; }
+  .g-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 420px), 1fr)); gap: 14px; align-items: start; }
+  .g-grid.fixed { display: flex; flex-wrap: wrap; }
+  .g-grid.fixed > .g-tile { max-width: 100%; }
+  .g-grid.single { grid-template-columns: minmax(0, 1fr); }
+  .g-tile { min-width: 0; border-radius: 12px; background: #0a0a0c; box-shadow: inset 0 0 0 1px rgba(255,255,255,.06); overflow: hidden; }
+  .g-tile > header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; padding: 9px 12px 0; }
+  .g-tile h3 { margin: 0; color: rgba(255,255,255,.9); font-size: 12.5px; font-weight: 600; }
+  .g-tile .g-state { color: rgba(255,255,255,.52); font-size: 11.5px; }
+  .g-tile .g-note { flex-basis: 100%; margin: 0; color: rgba(255,255,255,.56); font-size: 11px; line-height: 1.4; }
+  /* Each tile is a panel: the assistant root as an inline-size container (the app's is a size container of a fixed height). */
+  .g-panel.asst-root { container: asst / inline-size !important; height: auto !important; min-height: 0; }
+  .g-panel .asst-transcript { overflow: visible; max-height: none; padding: 10px 12px 12px; }
+  .g-log { display: block; min-height: 18px; margin: 0; padding: 6px 12px 9px; border-top: 1px solid rgba(255,255,255,.06); color: rgba(255,255,255,.6); font-family: 'JetBrains Mono', monospace; font-size: 10.5px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .g-log:empty::before { content: 'Nothing sent yet'; color: rgba(255,255,255,.3); }
+  .g-frozen { position: fixed; right: 10px; bottom: 10px; z-index: 5; padding: 3px 8px; border-radius: 6px; background: rgba(0,0,0,.7); color: rgba(255,255,255,.6); font: 11px 'Inter', sans-serif; }
+</style>
+</head>
+<body>
+<header class="g-head">
+  <h1>Mascot-led follow-ups and questions</h1>
+  <p>Dev gallery for the SynaBun Assistant (not linked from the product). Every tile is its own panel: the real renderer (<code>createRenderer</code>), the panel's mascot director and the rig, fed synthetic transcript events. In each panel only the newest open card is live.</p>
+  <p>Query options: <code>?lang=pt-BR</code>, <code>?freeze=1</code> (stops the shared ticker 1.6 s after load), <code>?reduced=1</code> (reduced motion as the panel reads it), <code>?only=next,decisions,confirm,question,older,cards,live,narrow,wide</code> (just those sections).</p>
+  <div class="g-flags" id="g-flags"></div>
+</header>
+<main id="gallery"></main>
+<script type="module" src="./assistant-ask-gallery.js"></script>
+</body>
+</html>
