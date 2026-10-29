@@ -352,6 +352,12 @@ export function injectStyles() {
       display: inline-flex; align-items: center; gap: 3px;
       position: relative;
     }
+    /* SVGs with only a viewBox have platform-dependent intrinsic sizes. */
+    .cxp-toolbar-toggle > svg {
+      width: var(--cxp-space-3);
+      height: var(--cxp-space-3);
+      flex-shrink: 0;
+    }
     .cxp-toolbar-toggle::after {
       content: '';
       position: absolute; bottom: 0; left: 25%; right: 25%;

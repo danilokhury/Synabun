@@ -178,7 +178,7 @@ Everything SynaBun stores is in one folder outside the app: `~/.synabun` on macO
 
 ## Links
 
-- [Changelog](./CHANGELOG.md): what is new in 2.0.121 and before
+- [Changelog](./CHANGELOG.md): what is new in 2.1.0 and before
 - [Security](./SECURITY.md): security model and how to report a vulnerability
 - [Contributing](./CONTRIBUTING.md): bug reports and feature requests are welcome as [issues](https://github.com/danilokhury/Synabun/issues); pull requests are not accepted
 - [Website](https://synabun.ai), [docs](https://synabun.ai/docs) and [blog](https://synabun.ai/blog)
@@ -193,3 +193,7 @@ You are free to use, modify, and distribute SynaBun under Apache 2.0. Premium fe
 ## Trademark Notice
 
 "SynaBun" is a trademark of its authors. The license does not grant permission to use the SynaBun name, trademarks, service marks, or branding. If you fork this project, you must use a different name for your derivative work.
+
+<!-- synabun:verification:start -->
+Package verification: [downloadable VirusTotal reports and SHA-256 hashes](https://github.com/danilokhury/Synabun/releases/latest). Match the report to your exact version and file hash. Reports record engine coverage and analysis dates; they are not a guarantee of safety. Website results describe URL reputation, not a vulnerability audit.
+<!-- synabun:verification:end -->

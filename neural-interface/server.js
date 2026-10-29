@@ -36454,7 +36454,7 @@ function handleWhiteboardWebSocket(ws, req) {
   }
 }
 
-// Shared dedup across fs watcher + clipboard watcher — Win+PrtScr fires both.
+// Deduplicate screenshot files with the same image content within five seconds.
 const _recentImageHashes = new Map();
 const _IMAGE_DEDUP_TTL = 5000;
 function _imageRecentlySeen(buf) {
@@ -36468,84 +36468,9 @@ function _imageRecentlySeen(buf) {
   return false;
 }
 
-// ── Clipboard Image Watcher → auto-paste to whiteboard (Windows only) ──
-// Mac screenshots always go to a file (handled above). On Windows, PrintScreen
-// and Snipping Tool often land only in the clipboard, so we poll it via PS.
-if (process.platform === 'win32') {
-  const _psScript = [
-    "Add-Type -AssemblyName System.Windows.Forms",
-    "Add-Type -AssemblyName System.Drawing",
-    "if ([System.Windows.Forms.Clipboard]::ContainsImage()) {",
-    "  try {",
-    "    $img = [System.Windows.Forms.Clipboard]::GetImage()",
-    "    $ms = New-Object System.IO.MemoryStream",
-    "    $img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)",
-    "    [Convert]::ToBase64String($ms.ToArray())",
-    "  } catch { 'NONE' }",
-    "} else { 'NONE' }",
-  ].join('; ');
-  const _psEncoded = Buffer.from(_psScript, 'utf16le').toString('base64');
-  const _psArgs = ['-Sta', '-NoProfile', '-NonInteractive', '-EncodedCommand', _psEncoded];
-
-  let _clipLastHash = null;
-  let _clipPolling = false;
-  let _clipFailures = 0;
-  let _clipIntervalId = null;
-
-  const _pollClipboard = (seed = false) => {
-    if (_clipPolling) return;
-    _clipPolling = true;
-    let child;
-    try {
-      child = spawn('powershell.exe', _psArgs, { windowsHide: true });
-    } catch (err) {
-      _clipPolling = false;
-      if (_clipIntervalId) clearInterval(_clipIntervalId);
-      console.warn('[clipboard-watcher] Could not spawn PowerShell:', err.message);
-      return;
-    }
-    let stdout = '';
-    const killTimer = setTimeout(() => { try { child.kill(); } catch {} }, 5000);
-    child.stdout.on('data', (d) => { stdout += d.toString('utf8'); });
-    child.on('error', () => { /* surface via close */ });
-    child.on('close', (code) => {
-      clearTimeout(killTimer);
-      _clipPolling = false;
-      if (code !== 0 && code !== null) {
-        _clipFailures++;
-        if (_clipFailures >= 5 && _clipIntervalId) {
-          clearInterval(_clipIntervalId);
-          console.warn('[clipboard-watcher] Disabled after repeated PowerShell failures');
-        }
-        return;
-      }
-      _clipFailures = 0;
-      const out = stdout.trim();
-      if (!out || out === 'NONE') return;
-      try {
-        const buf = Buffer.from(out, 'base64');
-        if (buf.length < 100) return;
-        const hash = createHash('sha256').update(buf).digest('hex');
-        if (hash === _clipLastHash) return;
-        _clipLastHash = hash;
-        if (seed) return; // Suppress whatever was already in clipboard at startup
-        if (_imageRecentlySeen(buf)) return;
-        const localName = `screenshot-${Date.now()}.png`;
-        const localPath = join(IMAGES_DIR, localName);
-        try { writeFileSync(localPath, buf); } catch {}
-        const dataUrl = `data:image/png;base64,${out}`;
-        console.log(`[clipboard-watcher] New clipboard image (${(buf.length / 1024).toFixed(0)}KB) → ${localName}`);
-        broadcastToWhiteboard({ type: 'screenshot:auto', dataUrl, filename: localName, localPath });
-      } catch (err) {
-        console.warn('[clipboard-watcher] Failed to process clipboard image:', err.message);
-      }
-    });
-  };
-
-  _pollClipboard(true); // seed: record current clipboard hash without broadcasting
-  _clipIntervalId = setInterval(() => _pollClipboard(false), 1500);
-  console.log('[clipboard-watcher] Windows clipboard image polling enabled');
-}
+// Clipboard images arrive through the user's paste event in ui-whiteboard.js.
+// Keep clipboard reads in that page; the server must not monitor the OS clipboard
+// or launch background PowerShell processes to capture its contents.
 
 // ── Cards WebSocket clients (Claude MCP integration) ──
 const cardsClients = new Set(); // Set<WebSocket>

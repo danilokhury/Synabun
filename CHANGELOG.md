@@ -1,3 +1,21 @@
+# SynaBun v.2.1.0
+
+SynaBun 2.1.0 adds downloadable release verification reports, improves automated package publishing, and changes Windows clipboard images to explicit paste.
+
+## ✨ New
+
+- **Release verification reports** — Desktop downloads and the npm package are checked with VirusTotal before publication. Release notes include analysis dates, engine results, file hashes and links to the reports. These results describe the scans and do not guarantee that a download is safe.
+
+## 🛠 Fixed
+
+- **Automated npm publishing** — The npm package is published from the prepared release and verified against the scanned package before desktop downloads become available. This helps keep package installation and desktop updates on the same release.
+
+## ⚙️ Changed
+
+- **Explicit clipboard image paste on Windows** — Focus the whiteboard and press Ctrl+V to add a clipboard image. Background clipboard monitoring has been removed; screenshot files in the watched folder still appear automatically. This change addresses a suspected source of antivirus alerts, but resolution of the reported Kaspersky detection has not been confirmed.
+
+---
+
 # SynaBun v.2.0.121
 
 2.0.121 fixes repeated Codex MCP tool approval prompts and keeps automatic approvals aligned with the current session policy.

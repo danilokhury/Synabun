@@ -1,59 +1,63 @@
 name: Publish to npm
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('npm {0} {1} {2}', inputs.version, inputs.commit, inputs.request_id) || format('npm release {0}', github.event.release.tag_name) }}
 
 on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Stable prepared package version
+        required: true
+        type: string
+      commit:
+        description: Exact prepared main commit (40 lowercase hex characters)
+        required: true
+        type: string
+      request_id:
+        description: Unique owner command UUID (used for exact run correlation)
+        required: true
+        type: string
   release:
     types: [published]
 
 permissions:
   contents: read
-  id-token: write
 
+# Serialize registry writes; superseded queued requests fail closed in the owner command.
 concurrency:
-  group: npm-publish-${{ github.event.release.tag_name }}
+  group: npm-publication
   cancel-in-progress: false
 
 jobs:
+  # These two jobs share the same checks. Permissions differ so npm-only dispatch
+  # gets read access; only release fallback may attach reports and notify Discord.
   publish:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-
+    if: github.repository == 'danilokhury/Synabun' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name }}
-
-      - name: Verify release commit is the main branch tip
-        run: |
-          git fetch --no-tags --depth=1 origin main
-          if [ "$(git rev-parse HEAD)" != "$(git rev-parse FETCH_HEAD)" ]; then
-            echo "Release tags must point to the current main branch tip." >&2
-            exit 1
-          fi
+          # Dispatch always checks out its immutable main SHA, never an input ref.
+          ref: ${{ github.event_name == 'release' && github.event.release.tag_name || github.sha }}
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
           node-version: 22.19.0
-          registry-url: https://registry.npmjs.org
+          # No registry-url: OIDC publication uses isolated empty npm config files.
           cache: npm
           cache-dependency-path: |
             npm-shrinkwrap.json
             mcp-server/package-lock.json
             neural-interface/package-lock.json
 
-      - name: Verify release tag matches package version
-        env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-        run: >-
-          node -e "const { version } = require('./package.json');
-          const raw = process.env.RELEASE_TAG || '';
-          const normalized = raw.replace(/^v\.?/, '').split('.').map((part, index) =>
-          index < 3 && /^\d+$/.test(part) ? String(Number(part)) : part).join('.');
-          if (normalized !== version) {
-          console.error('Release tag ' + raw + ' does not match package version ' + version);
-          process.exit(1);
-          }"
+      - name: Verify event, workflow, repository, main commit and registry version
+        id: registry
+        run: node lib/release-npm-ci.mjs identity
 
-      # What npm i -g synabun installs (root dependencies, npm-shrinkwrap.json) must be what the two parts give.
       - name: Check root dependencies
         run: node lib/root-dependencies.mjs --check
 
@@ -72,46 +76,150 @@ jobs:
       - name: Inspect npm package
         run: npm run pack:check
 
-      # A release may be published to npm by hand before the GitHub Release is
-      # created. Only a registry answer counts: any lookup failure stops the job.
-      - name: Check whether this version is already on npm
-        id: registry
-        run: |
-          node -e '
-            const { name, version } = require("./package.json");
-            const spec = name + "@" + version;
-            fetch("https://registry.npmjs.org/" + name.replace("/", "%2F"), {
-              headers: { accept: "application/vnd.npm.install-v1+json" },
-              signal: AbortSignal.timeout(30000)
-            }).then(async (response) => {
-              if (response.status === 404) return false;
-              if (!response.ok) {
-                throw new Error("npm registry lookup failed: " + response.status + " " + await response.text());
-              }
-              const packument = await response.json();
-              if (!packument || packument.name !== name || !packument.versions || typeof packument.versions !== "object") {
-                throw new Error("npm registry returned an unexpected document for " + name);
-              }
-              return Object.hasOwn(packument.versions, version);
-            }).then((published) => {
-              console.log(published
-                ? "::notice::" + spec + " is already on npm, so the publish step is skipped."
-                : spec + " is not on npm yet, so the publish step runs.");
-              require("node:fs").appendFileSync(process.env.GITHUB_OUTPUT, "published=" + published + "\n");
-            }).catch((error) => {
-              console.error(error);
-              process.exit(1);
-            });
-          '
-
-      - name: Publish with provenance
+      - name: Pack and scan npm tarball
         if: steps.registry.outputs.published != 'true'
-        run: npm publish --provenance --access public --tag latest
+        run: npm run release:publish -- --out "$RUNNER_TEMP/npm-release" --pack-only
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN || secrets.NPM }}
+          VIRUSTOTAL_API_KEY: ${{ secrets.VIRUSTOTAL_API_KEY }}
+
+      # Reports and exact bytes are retained BEFORE the registry PUT.
+      - name: Preserve scan evidence before publication
+        if: always() && steps.registry.outputs.published == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-scan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/npm-release/npm-virustotal.*
+            ${{ runner.temp }}/npm-release/*.tgz
+          if-no-files-found: ignore
+          retention-days: 30
+
+      # Install ONLY the publishing CLI separately; builder remains npm 10.9.3.
+      - name: Install pinned OIDC-compatible publication CLI
+        if: steps.registry.outputs.published != 'true'
+        run: npm install --prefix "$RUNNER_TEMP/npm-oidc-cli" --ignore-scripts --no-audit --no-fund --package-lock=false npm@11.21.0
+
+      - name: Publish scanned tarball with OIDC and verify registry SHA512
+        if: steps.registry.outputs.published != 'true'
+        run: node lib/release-npm-ci.mjs publish
+        env:
+          VIRUSTOTAL_API_KEY: ${{ secrets.VIRUSTOTAL_API_KEY }}
+
+      - name: Upload verified publication handoff
+        if: success() && steps.registry.outputs.published == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-publication-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/npm-release/npm-publication.json
+            ${{ runner.temp }}/npm-release/npm-virustotal.json
+            ${{ runner.temp }}/npm-release/npm-virustotal.md
+            ${{ runner.temp }}/npm-release/*.tgz
+          if-no-files-found: error
+          retention-days: 30
+
+  fallback:
+    if: github.repository == 'danilokhury/Synabun' && github.event_name == 'release'
+    permissions:
+      contents: write
+      id-token: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Dispatch always checks out its immutable main SHA, never an input ref.
+          ref: ${{ github.event_name == 'release' && github.event.release.tag_name || github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.19.0
+          # No registry-url: OIDC publication uses isolated empty npm config files.
+          cache: npm
+          cache-dependency-path: |
+            npm-shrinkwrap.json
+            mcp-server/package-lock.json
+            neural-interface/package-lock.json
+
+      - name: Verify event, workflow, repository, main commit and registry version
+        id: registry
+        run: node lib/release-npm-ci.mjs identity
+
+      - name: Check root dependencies
+        run: node lib/root-dependencies.mjs --check
+
+      - name: Install root dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Install MCP server dependencies
+        run: npm --prefix mcp-server ci --ignore-scripts
+
+      - name: Install Neural Interface dependencies
+        run: npm --prefix neural-interface ci --ignore-scripts
+
+      - name: Build MCP server
+        run: npm run mcp:build
+
+      - name: Inspect npm package
+        run: npm run pack:check
+
+      - name: Pack and scan npm tarball
+        if: steps.registry.outputs.published != 'true'
+        run: npm run release:publish -- --out "$RUNNER_TEMP/npm-release" --pack-only
+        env:
+          VIRUSTOTAL_API_KEY: ${{ secrets.VIRUSTOTAL_API_KEY }}
+
+      # Reports and exact bytes are retained BEFORE the registry PUT.
+      - name: Preserve scan evidence before publication
+        if: always() && steps.registry.outputs.published == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-scan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/npm-release/npm-virustotal.*
+            ${{ runner.temp }}/npm-release/*.tgz
+          if-no-files-found: ignore
+          retention-days: 30
+
+      # release.published remains a fallback. Only its job needs contents: write.
+      - name: Attach npm verification reports and exact tarball
+        if: steps.registry.outputs.published != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: >-
+          gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --clobber
+          "$RUNNER_TEMP/npm-release/npm-virustotal.json"
+          "$RUNNER_TEMP/npm-release/npm-virustotal.md"
+          "$RUNNER_TEMP/npm-release/"*.tgz
+
+      # Install ONLY the publishing CLI separately; builder remains npm 10.9.3.
+      - name: Install pinned OIDC-compatible publication CLI
+        if: steps.registry.outputs.published != 'true'
+        run: npm install --prefix "$RUNNER_TEMP/npm-oidc-cli" --ignore-scripts --no-audit --no-fund --package-lock=false npm@11.21.0
+
+      - name: Publish scanned tarball with OIDC and verify registry SHA512
+        if: steps.registry.outputs.published != 'true'
+        run: node lib/release-npm-ci.mjs publish
+        env:
+          VIRUSTOTAL_API_KEY: ${{ secrets.VIRUSTOTAL_API_KEY }}
+
+      - name: Upload verified publication handoff
+        if: success() && steps.registry.outputs.published == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-publication-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/npm-release/npm-publication.json
+            ${{ runner.temp }}/npm-release/npm-virustotal.json
+            ${{ runner.temp }}/npm-release/npm-virustotal.md
+            ${{ runner.temp }}/npm-release/*.tgz
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Notify Discord changelog
-        if: success()
+        if: success() && github.event_name == 'release'
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_CHANGELOG_WEBHOOK }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
