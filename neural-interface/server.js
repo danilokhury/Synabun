@@ -267,6 +267,7 @@ import {
   buildCodexMcpServerApprovalEdit,
   codexMcpServerApprovalMode,
   getCodexMcpServerConfig,
+  shouldAutoAcceptCodexMcpToolApproval,
 } from './lib/codex-mcp-approvals.js';
 import { buildCodexCollaborationMode } from './lib/codex-collaboration-mode.js';
 import { CodexCapabilityRegistry, classifyCodexRpcError, isCodexUnsupportedMethod, parseCodexVersion, validateCodexConfigRequirements } from './lib/codex-capabilities.js';
@@ -5820,24 +5821,16 @@ CRITICAL — When you need clarification during planning:
             continue;
           }
 
-          // Auto-accept MCP elicitations only when the active Codex tab's Auto
-          // toggle is enabled. The Claude permissions list controls eligibility;
-          // it should not bypass Codex approval cards by itself.
-          const mcpApprovalMeta = msg.params?._meta ?? msg.params?.meta;
+          // Auto-accept MCP tool approvals under this turn's mode, independently
+          // of Claude's settings. Native Codex can omit tool_name altogether.
+          // Assistant requests always reach the brain: it applies the current
+          // mode and the plan/read-only policy before answering automatically.
           if (msg.method === 'mcpServer/elicitation/request'
-            && msg.params?.mode !== 'openai/userVerification'
-            && mcpApprovalMeta?.codex_approval_kind === 'mcp_tool_call') {
-            const toolShort = mcpApprovalMeta.tool_name || '';
-            const serverName = msg.params?.serverName || '';
-            const fullKey = toolShort.startsWith('mcp__')
-              ? toolShort
-              : (serverName && toolShort ? `mcp__${serverName}__${toolShort}` : '');
-            const permitted = _codexPermittedTools.has(fullKey);
-            console.log('[codex-skin] MCP elicitation for tool:', toolShort, '→', fullKey, 'auto:', activeTurnAutoAccept, 'permitted:', permitted);
-            if (activeTurnAutoAccept && permitted && serverRequestThreadIsOwned(msg.params?.threadId || activeThreadId)) {
-              try { writeRpc({ jsonrpc: '2.0', id: requestId, result: { action: 'accept', content: {}, _meta: {} } }); } catch {}
-              continue;
-            }
+            && codexRole !== 'assistant'
+            && shouldAutoAcceptCodexMcpToolApproval(msg.params, { autoAccept: activeTurnAutoAccept })
+            && serverRequestThreadIsOwned(msg.params?.threadId || activeThreadId)) {
+            try { writeRpc({ jsonrpc: '2.0', id: requestId, result: { action: 'accept', content: {}, _meta: {} } }); } catch {}
+            continue;
           }
 
           const requestParams = msg.params || {};

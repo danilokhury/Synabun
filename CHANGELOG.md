@@ -1,3 +1,14 @@
+# SynaBun v.2.0.121
+
+2.0.121 fixes repeated Codex MCP tool approval prompts and keeps automatic approvals aligned with the current session policy.
+
+## 🛠 Fixed
+
+- **Codex MCP approvals** — Auto-accept handles tool approvals even when Codex omits the tool name, avoiding repeated permission cards. Plan mode and remote read-only sessions continue to apply their restrictions, while questions and authorization prompts still wait for your response.
+- **Assistant routing** — Routing requests no longer need an extra tool permission card when approvals are set to Ask.
+
+---
+
 # SynaBun v.2.0.12
 
 2.0.12 makes Skills Studio easier to install from, test and maintain, keeps dispatched workers running through a server restart, and adds a guided tour of the workspace. It also moves OpenCode support to OpenCode 2 and makes the 3D memory map the default for everyone.

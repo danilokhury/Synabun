@@ -1,4 +1,15 @@
+import { codexMcpToolApproval } from '../public/shared/cdx/cdx-protocol.js';
+
 const CODEX_MCP_APPROVAL_MODES = new Set(['auto', 'prompt', 'writes', 'approve']);
+
+/** Auto is this session's choice; Claude's allow list is not a Codex approval prerequisite. */
+export function shouldAutoAcceptCodexMcpToolApproval(params, { autoAccept = false, role = null } = {}) {
+  const approval = codexMcpToolApproval(params);
+  if (!approval) return false;
+  // agent_route owns the model-choice card. Calling it must not require an
+  // additional permission card, even when ordinary tools are set to Ask.
+  return autoAccept || (role === 'assistant' && approval.fullName === 'mcp__SynaBun__agent_route');
+}
 
 export function codexConfigKeyPathSegment(value) {
   const text = String(value || '').trim();

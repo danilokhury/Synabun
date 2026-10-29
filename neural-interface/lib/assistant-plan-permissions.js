@@ -22,6 +22,7 @@
 // refuses, and plan mode auto-allows what it allows.
 
 import { REPLY_TOOLS } from './assistant-route-gate.js';
+import { codexMcpToolApproval } from '../public/shared/cdx/cdx-protocol.js';
 
 // ── the read-only classifier ─────────────────────────────────────────────────
 
@@ -239,9 +240,9 @@ export function codexReadOnlyPermission(packet) {
   if (CODEX_EXECUTION_METHODS.has(method)) return 'deny';
   if (method === 'mcpServer/elicitation/request') {
     const params = native.params || {};
-    const meta = params._meta ?? params.meta ?? {};
-    if (meta.codex_approval_kind !== 'mcp_tool_call' || !meta.tool_name) return null;
-    return isReadOnlyMcpTool(meta.tool_name, meta.tool_params || meta.arguments || {}, { serverName: params.serverName }) ? 'allow' : 'deny';
+    const approval = codexMcpToolApproval(params);
+    if (!approval) return null;
+    return isReadOnlyMcpTool(approval.toolName, approval.input, { serverName: approval.serverName }) ? 'allow' : 'deny';
   }
   return null;
 }
@@ -402,11 +403,11 @@ export function codexPlanPermission(packet, { approvalMode = 'default' } = {}) {
     return auto ? 'allow' : null;
   }
   if (method === 'mcpServer/elicitation/request') {
-    const meta = params._meta ?? params.meta ?? {};
-    if (meta.codex_approval_kind !== 'mcp_tool_call' || !meta.tool_name) return null;
-    const server = { serverName: params.serverName };
-    if (isFileWritingMcpTool(meta.tool_name, server)) return 'deny';
-    if (isReadOnlyMcpTool(meta.tool_name, meta.tool_params || meta.arguments || {}, server)) return 'allow';
+    const approval = codexMcpToolApproval(params);
+    if (!approval?.toolName) return null;
+    const server = { serverName: approval.serverName };
+    if (isFileWritingMcpTool(approval.toolName, server)) return 'deny';
+    if (isReadOnlyMcpTool(approval.toolName, approval.input, server)) return 'allow';
     return auto ? 'allow' : null;
   }
   return null;

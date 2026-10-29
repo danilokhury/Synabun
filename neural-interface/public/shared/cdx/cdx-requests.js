@@ -12,7 +12,7 @@ import {
   buildSynaBunChoiceContent,
   codexApprovalDecisionActions,
   codexHeldServerRequests,
-  codexMcpElicitationMeta,
+  codexMcpToolApproval,
   codexMcpToolApprovalActions,
   codexPermissionApprovalActions,
   codexRequestIdentityKey,
@@ -546,9 +546,9 @@ export function isElicitationValueSatisfied(value, schema) {
 
 export function renderMcpToolApprovalRequest(requestId, params) {
   if (_ctx.requestCards.has(String(requestId))) return;
-  const metadata = codexMcpElicitationMeta(params);
+  const approval = codexMcpToolApproval(params);
   const serverName = String(params?.serverName || 'MCP');
-  const toolName = String(metadata.tool_name || metadata.toolName || 'unknown tool');
+  const toolName = approval?.toolName || 'unknown tool';
   const entry = createInteractiveRequestCard(requestId, {
     title: `${serverName} Tool Approval`,
     subtitle: 'mcp tool approval',

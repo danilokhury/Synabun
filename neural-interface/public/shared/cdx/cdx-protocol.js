@@ -252,7 +252,34 @@ export function codexMcpElicitationMeta(params = {}) {
 }
 
 export function isCodexMcpToolApproval(params = {}) {
-  return codexMcpElicitationMeta(params).codex_approval_kind === 'mcp_tool_call';
+  return params?.mode !== 'openai/userVerification'
+    && params?.mode !== 'url'
+    && codexMcpElicitationMeta(params).codex_approval_kind === 'mcp_tool_call';
+}
+
+/** Native Codex approvals need not include tool_name (codex-rs/core/src/mcp_tool_call.rs). */
+export function codexMcpToolApproval(params = {}) {
+  if (!isCodexMcpToolApproval(params)) return null;
+  const meta = codexMcpElicitationMeta(params);
+  const serverName = typeof params.serverName === 'string' ? params.serverName : '';
+  let toolName = [meta.tool_name, meta.toolName].find(value => typeof value === 'string' && value.trim())?.trim() || '';
+  if (!toolName && serverName && typeof params.message === 'string') {
+    // Only Codex's exact fallback template is an identity source. Human tool
+    // titles and custom prompt prose are not names suitable for a policy check.
+    const prefix = `Allow the ${serverName} MCP server to run tool "`;
+    if (params.message.startsWith(prefix) && params.message.endsWith('"?')) {
+      const name = params.message.slice(prefix.length, -2);
+      if (name && !/["\r\n]/.test(name)) toolName = name;
+    }
+  }
+  const qualified = /^mcp__(.+?)__(.+)$/.exec(toolName);
+  if (qualified) toolName = qualified[1] === serverName ? qualified[2] : '';
+  return {
+    serverName,
+    toolName,
+    fullName: serverName && toolName ? `mcp__${serverName}__${toolName}` : '',
+    input: meta.tool_params ?? meta.arguments ?? {},
+  };
 }
 
 export function normalizeCodexMcpApprovalPersistence(params = {}) {

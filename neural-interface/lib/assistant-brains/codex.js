@@ -14,6 +14,8 @@ import { createCodexEnvelopeTranslator, codexControlResponse } from '../assistan
 import { baseModelId, contextVariantOf } from '../assistant-catalog.js';
 import { codexPlanPermission, codexReadOnlyPermission, planDenyMessage, readOnlyDenyMessage } from '../assistant-plan-permissions.js';
 import { planModeInstructions } from '../assistant-persona.js';
+import { shouldAutoAcceptCodexMcpToolApproval } from '../codex-mcp-approvals.js';
+import { codexMcpToolApproval } from '../../public/shared/cdx/cdx-protocol.js';
 
 const READY_TIMEOUT_MS = 90_000;
 // Approvals the Codex sidepanel's Auto-accept answers on its own (cdx-requests.js).
@@ -83,7 +85,7 @@ export function createCodexBrain({ session, sink, deps = {}, persona = '' } = {}
       }
       if (planned) {
         const method = packet.request?.brain_native?.method || packet.request?.method || '';
-        const tool = packet.request?.brain_native?.params?._meta?.tool_name || packet.request?.tool_name || 'request';
+        const tool = codexMcpToolApproval(packet.request?.brain_native?.params)?.fullName || packet.request?.tool_name || 'request';
         const response = planned === 'allow'
           ? { behavior: 'allow', ...(!remoteReadOnly && approvalMode === 'auto' ? { always: true } : {}) }
           : { behavior: 'deny', decline: true, message: remoteReadOnly ? readOnlyDenyMessage(tool) : planDenyMessage(tool, { host: 'codex' }) };
@@ -91,7 +93,9 @@ export function createCodexBrain({ session, sink, deps = {}, persona = '' } = {}
         sink.send({ type: 'stderr', text: `${planMode ? 'Plan mode' : 'Read-only (WhatsApp)'}: ${planned === 'allow' ? 'allowed' : 'declined'} ${String(method).split('/').slice(1, -1).join('/') || 'request'} ${tool}${planned === 'allow' ? '' : remoteReadOnly ? ' (read-only)' : ' (no code changes)'}` });
         return;
       }
-      if (packet.type === 'control_request' && !planMode && !remoteReadOnly && approvalMode === 'auto' && AUTO_ACCEPT_METHODS.has(packet.request?.brain_native?.method || packet.request?.method)) {
+      const method = packet.request?.brain_native?.method || packet.request?.method;
+      const autoMcp = method === 'mcpServer/elicitation/request' && shouldAutoAcceptCodexMcpToolApproval(packet.request?.brain_native?.params, { autoAccept: approvalMode === 'auto', role: 'assistant' });
+      if (packet.type === 'control_request' && !planMode && !remoteReadOnly && (autoMcp || (approvalMode === 'auto' && AUTO_ACCEPT_METHODS.has(method)))) {
         // Auto-accept: approve at once (for the session when offered), as the Codex sidepanel does.
         send({ type: 'server_request_response', ...codexControlResponse(packet, { behavior: 'allow', always: true }) });
         sink.send({ type: 'stderr', text: `Auto-accepted: ${String(packet.request?.brain_native?.method || packet.request?.method).split('/').slice(1, -1).join('/')}` });
