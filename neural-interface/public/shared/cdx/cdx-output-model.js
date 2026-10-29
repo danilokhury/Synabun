@@ -236,12 +236,33 @@ export function fileChangeDiffs(item = {}) {
   if (raw && (/^(?:diff --git |--- )/m.test(raw) || changes.length <= 1 && /^@@ /m.test(raw))) return parseUnifiedDiff(raw, changes.length === 1 ? changeInfo(changes[0]) : {});
   const files = changes.slice(0, OUTPUT_LIMITS.files).flatMap(change => {
     const info = changeInfo(change);
-    const patch = change.diff || change.patch || change.content || change.output || '';
+    const patch = change.diff ?? change.patch ?? change.content ?? change.output;
+    if ((info.status === 'added' || info.status === 'deleted') && typeof patch === 'string') {
+      return [wholeFileDiff(patch, info)];
+    }
     if (!patch) return [{ ...info, lines: [], hunks: [], added: 0, removed: 0, raw: '', unavailable: true }];
     return parseUnifiedDiff(typeof patch === 'string' ? patch : readableStructuredValue(patch), info);
   });
   if (changes.length > OUTPUT_LIMITS.files && files.length) files[files.length - 1].filesTruncated = true;
   return files;
+}
+
+function wholeFileDiff(content, info) {
+  const added = info.status === 'added';
+  const text = content.replace(/\r\n/g, '\n');
+  const lines = text === '' ? [] : text.split('\n');
+  if (text.endsWith('\n')) lines.pop();
+  const sign = added ? '+' : '-';
+  const raw = `@@ -${added ? '0,0' : `1,${lines.length}`} +${added ? `1,${lines.length}` : '0,0'} @@\n`
+    + lines.map(line => `${sign}${line}\n`).join('')
+    + (text && !text.endsWith('\n') ? '\\ No newline at end of file\n' : '');
+  const oversized = content.length > OUTPUT_LIMITS.input || lines.length > OUTPUT_LIMITS.diffLines;
+  return { ...info, lines: oversized ? [] : lines.map((text, i) => ({
+    kind: added ? 'add' : 'delete', sign, text,
+    oldLine: added ? null : i + 1, newLine: added ? i + 1 : null,
+  })), hunks: [{ oldStart: added ? 0 : 1, newStart: added ? 1 : 0 }],
+  added: added ? lines.length : 0, removed: added ? 0 : lines.length,
+  raw, oversized };
 }
 
 function changeInfo(change) {

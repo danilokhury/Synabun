@@ -118,6 +118,8 @@ export function runChip(run, t = tFallback) {
   const tone = runTone(run);
   if (run?.turnState === 'awaiting_permission') return { tone, label: t('assistant.run.needsApproval', 'needs approval') };
   if (run?.turnState === 'needs_input') return { tone, label: t('assistant.run.needsInput', 'needs input') };
+  // A Claude Code worker a server restart cut off, until the next start has resumed it (lib/assistant-dispatch.js).
+  if (run?.state === 'suspended' || run?.state === 'resuming') return { tone, label: t('assistant.run.resuming', 'resuming after a server restart') };
   if (run?.queued && run.status !== 'running') return { tone, label: t('assistant.run.queued', 'queued') };
   if (isRunIdle(run)) {
     const outcome = run.outcome || run.lastResult?.status;

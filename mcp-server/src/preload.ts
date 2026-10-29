@@ -18,7 +18,7 @@ try {
     const eq = trimmed.indexOf('=');
     if (eq === -1) continue;
     const key = trimmed.slice(0, eq);
-    // Explicit host/session values (especially SYNABUN_PROFILE) must outrank
+    // Explicit host/session values (especially SYNABUN_TOOLS) must outrank
     // shared dotenv defaults so concurrent MCP processes remain isolated.
     if (process.env[key] !== undefined) continue;
     process.env[key] = trimmed.slice(eq + 1);

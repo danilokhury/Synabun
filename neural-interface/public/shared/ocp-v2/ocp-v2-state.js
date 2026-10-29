@@ -84,7 +84,7 @@ export function createPanelStore() {
     model: null,
     variant: null,
     cwd: null,
-    mcpProfile: null,
+    tools: null,
     contextGauge: createDefaultContextGauge(),
 
     planTurnActive: false,
@@ -161,20 +161,7 @@ export function createPanelStore() {
     notify({ type: 'server:status' });
   }
 
-  // What session info passes through before the store keeps it. The panel
-  // takes out a share link whose sharing it stopped (createStoppedShares in
-  // ocp-v2-sessions-logic.js): OpenCode goes on reporting it.
-  let _sessionInfoFilter = null;
-  function setSessionInfoFilter(filter) {
-    _sessionInfoFilter = typeof filter === 'function' ? filter : null;
-  }
-  const filteredInfo = (info) => {
-    if (!info || !_sessionInfoFilter) return info;
-    try { return _sessionInfoFilter(info) || info; } catch { return info; }
-  };
-
-  function setSession(sessionId, rawInfo = null) {
-    const info = filteredInfo(rawInfo);
+  function setSession(sessionId, info = null) {
     const prevSessionId = _state.sessionId;
     _state.sessionId = sessionId;
     _state.sessionInfo = info;
@@ -217,7 +204,7 @@ export function createPanelStore() {
     if (!info || !_state.sessionId) return;
     const id = info.id || info.sessionID;
     if (id && id !== _state.sessionId) return;
-    _state.sessionInfo = filteredInfo({ ...(_state.sessionInfo || {}), ...info });
+    _state.sessionInfo = { ...(_state.sessionInfo || {}), ...info };
     _state.knownSessions.set(_state.sessionId, _state.sessionInfo);
     const compacting = !!info.time?.compacting;
     if (compacting !== _state.compacting) {
@@ -501,7 +488,7 @@ export function createPanelStore() {
   function setKnownSessions(list) {
     _state.knownSessions.clear();
     for (const s of list || []) {
-      if (s?.id) _state.knownSessions.set(s.id, filteredInfo(s));
+      if (s?.id) _state.knownSessions.set(s.id, s);
     }
     notify({ type: 'sessions:list' });
   }
@@ -608,7 +595,7 @@ export function createPanelStore() {
   function setModel(model)     { _state.model = model;     notify({ type: 'config:model' }); }
   function setVariant(variant) { _state.variant = variant; notify({ type: 'config:variant' }); }
   function setCwd(cwd)         { _state.cwd = cwd;         notify({ type: 'config:cwd' }); }
-  function setMcpProfile(profile) { _state.mcpProfile = profile || null; notify({ type: 'config:mcp-profile' }); }
+  function setTools(tools) { _state.tools = Array.isArray(tools) ? [...tools] : null; notify({ type: 'config:tools' }); }
 
   function setContextGauge(value = {}) {
     _state.contextGauge = { ...(_state.contextGauge || createDefaultContextGauge()), ...value };
@@ -677,8 +664,8 @@ export function createPanelStore() {
     setAutoAccept, setTodos, setSessionDiff,
     setPendingQuestions, addPendingQuestion, removePendingQuestion,
     pushError, dismissError, clearErrors, setHealing, setKnownSessions,
-    setSessionInfoFilter, setHelpCard,
-    setMode, setAgent, setModel, setVariant, setCwd, setMcpProfile,
+    setHelpCard,
+    setMode, setAgent, setModel, setVariant, setCwd, setTools,
     setContextGauge, resetContextGauge,
     beginPlanTurn, completePlanTurn, setPlanContent,
     setPostPlanActions, setPlanMaterializing, clearPlanState,
@@ -729,7 +716,7 @@ export const setAgent                = (...a) => _defaultStore.setAgent(...a);
 export const setModel                = (...a) => _defaultStore.setModel(...a);
 export const setVariant              = (...a) => _defaultStore.setVariant(...a);
 export const setCwd                  = (...a) => _defaultStore.setCwd(...a);
-export const setMcpProfile           = (...a) => _defaultStore.setMcpProfile(...a);
+export const setTools           = (...a) => _defaultStore.setTools(...a);
 export const setContextGauge         = (...a) => _defaultStore.setContextGauge(...a);
 export const resetContextGauge       = (...a) => _defaultStore.resetContextGauge(...a);
 export const beginPlanTurn           = (...a) => _defaultStore.beginPlanTurn(...a);

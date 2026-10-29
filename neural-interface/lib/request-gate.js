@@ -67,10 +67,10 @@ export const ADMIN_ONLY_PREFIXES = Object.freeze([
   '/api/settings', '/api/display-settings',
   '/api/connections', '/api/setup', '/api/system',
   '/api/invite/key', '/api/invite/sessions', '/api/invite/proxy', '/api/invite/permissions',
-  '/api/claude-code', '/api/mcp-key', '/api/mcp/runtime-profile',
+  '/api/claude-code', '/api/mcp-key', '/api/mcp/runtime-tools',
   // MCP servers and plugins as the owner set them up: their credentials (GET /api/mcp/env/<name>?reveal=1
   // answers with them), the registry of the commands that are started, installs, what is written into the
-  // CLIs' own configuration, and the tool profile. Everything under /api/mcp, the two entries above included.
+  // CLIs' own configuration, and tool lists. Everything under /api/mcp, the two entries above included.
   '/api/mcp',
   '/api/plugins',
   // Installing a skill into one of the owner's runtimes, or removing it (Settings; its older address is under

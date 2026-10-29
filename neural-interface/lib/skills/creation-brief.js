@@ -19,9 +19,15 @@ export const REQUEST_FILE = 'REQUEST.md';
 /**
  * The longest brief: the dispatcher refuses a task over 20,000 characters (assistant-dispatch.js normalizeSpec), and
  * a creation that gathered its sources and then could not start would waste them. Every part of the brief is bounded
- * below; checkBriefFits() builds the worst brief a request can make and refuses it before anything is gathered.
+ * below; checkBriefFits() builds the worst brief a request can make and refuses it before anything is gathered. The
+ * ceiling keeps 2,000 characters of headroom under the dispatcher's limit (P3 review: the worst brief measured within a
+ * few hundred of it), so a new line in the brief cannot turn an accepted request into a refused dispatch.
  */
-export const BRIEF_MAX_CHARS = 19_000;
+export const DISPATCH_TASK_MAX = 20_000;
+export const BRIEF_HEADROOM = 2_000;
+export const BRIEF_MAX_CHARS = DISPATCH_TASK_MAX - BRIEF_HEADROOM;
+/** The repair turn's bound: each problem at most 400 characters, the whole message at most 8,000. */
+export const REPAIR_MAX_CHARS = 8_000;
 /** What the brief quotes of the owner's words and example, measured as quoted (the rest is in REQUEST_FILE). */
 const PROMPT_IN_BRIEF = 5000;
 const EXAMPLE_IN_BRIEF = 2500;
@@ -159,11 +165,18 @@ export function checkBriefFits(request) {
  * @param {{ errors: string[] }} o
  */
 export function buildRepairPrompt({ errors = [] } = {}) {
-  return [
-    'SynaBun checked the folder you wrote and found problems that stop it from becoming a draft:',
-    ...errors.slice(0, 20).map((e) => `- ${e}`),
-    `Fix them in place inside ${OUT_DIR}/<name>/ (change only what the problems name), then finish with the Result block again.`,
-  ].join('\n');
+  const head = 'SynaBun checked the folder you wrote and found problems that stop it from becoming a draft:';
+  const tail = `Fix them in place inside ${OUT_DIR}/<name>/ (change only what the problems name), then finish with the Result block again.`;
+  const lines = [];
+  let used = head.length + tail.length + 2;
+  for (const e of errors.slice(0, 20)) {
+    const text = String(e ?? '');
+    const line = `- ${text.length > 400 ? `${text.slice(0, 399)}…` : text}`;
+    if (used + line.length + 1 > REPAIR_MAX_CHARS) break;
+    lines.push(line);
+    used += line.length + 1;
+  }
+  return [head, ...lines, tail].join('\n');
 }
 
 /**

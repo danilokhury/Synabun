@@ -34,11 +34,11 @@ If unsure, say what you think it is and why, in one line, and go on with the ski
 |---|---|---|
 | The `skill` tool | It is in your tool list (the SynaBun Assistant has it) | Write the folder in a scratch place outside every runtime's skill folders and tell the owner to import it in Skills Studio (Create → Import). Never write into `~/.claude/skills`, `~/.codex/skills`, `~/.agents/skills`, `~/.config/opencode/skills` or a project's `.claude` / `.agents` / `.opencode` / `.codex` folders. |
 | Memory | `recall` and `remember` are listed | Skip steps 3 and 9's memory parts and say so. |
-| Asking the user | An interactive session with a question tool (`AskUserQuestion`, `choice`, `question`) or a chat channel | Unattended: assume, record the assumption, and finish with the draft. Ask nothing. |
+| Asking the user | An interactive session with the question tool of your runtime (Claude Code: `AskUserQuestion`; Codex: its own `request_user_input`, or SynaBun's `choice`; OpenCode: its `question` tool) or a chat channel | Unattended: assume, record the assumption, and finish with the draft. Ask nothing. |
 | A web page as a source | The `skill` action `create` with a `url` source (SynaBun reads the page with its own browser before the worker starts), or the SynaBun browser tools (`browser_navigate`, `browser_content`) when you draft yourself | Stop that source and say "needs the SynaBun browser". Never fetch a page another way. |
 | A worker to draft | The `skill` action `create` (a Claude Code worker, held to its drafting folder with file tools only) | Draft it yourself (step 5). |
 | A budget | `agent_usage` shows your session's budget and what is spent | Use the defaults (30 minutes, $3) and say so. |
-| Evaluation runs | Not yet: Skills Studio's Test tab runs them later | Write `evals/evals.json`; leave the test gate pending. |
+| Evaluation runs | The `skill` action `eval_start` (it says so when no runtime here can run one) | Write `evals/evals.json`; leave the test gate pending and say so. |
 
 Details: [references/sources-and-capabilities.md](references/sources-and-capabilities.md).
 
@@ -60,7 +60,8 @@ Details: [references/sources-and-capabilities.md](references/sources-and-capabil
      guess a path: a project that is not registered is refused.
    - Account: the runtime's default account unless the user named another one.
 6. Ask only when a wrong guess would waste the work or cause harm (two readings with different results, a
-   destructive scope, spend). One question, the options named, then go on. In an unattended run, assume.
+   destructive scope, spend). One question, the options named, through the question tool your runtime has (step 2),
+   then go on. In an unattended run, assume.
 
 ## 4. Gather the sources
 
@@ -109,9 +110,28 @@ What a complete package holds (the full rules: [references/package.md](reference
 
 ## 7. Tests (evaluation)
 
-Write the test prompts in step 5. Running them (a worker with the skill and one without, graded by a different
-provider than the author) is Skills Studio's Test tab, not yet available to you: leave the test gate pending and
-say so. Never grade a skill with the model that wrote it, and never put a held-out test case into the skill.
+Write the test prompts in step 5, then run them on the snapshot (the owner sees the same runs in Skills Studio's
+Test tab):
+
+1. `skill` action `eval_start` with the `revisionId`. The defaults are cheap: the train and validation cases, the
+   first runtime that can run them with its cheapest model, $3 and 30 minutes (`budgetUsd` and `maxMinutes` hold
+   whatever the session's mode). Each task case runs with the skill and without it, each trigger case asks whether
+   the runtime picks the skill; every run has its own folder with a copy of the skill (nothing is installed) and is
+   graded by code and by a grader of another provider than the author. Codex runs (or grades) a version only after
+   the owner allows Codex for it in the Test tab, because its shell can read files on the computer: never name Codex
+   unless the owner did, and when an evaluation is refused with `codex_not_confirmed`, ask the owner.
+2. `eval_status` with `waitSeconds` and `since` until it is `done` (`stopped`, `cancelled` or `failed`: read why),
+   then `eval_report`: each case with the skill and without it, the triggers, the cost and the time; `trialId`
+   opens one answer and its grades.
+3. A case that fails: fix the draft, `snapshot`, run again (`caseIds` for those cases only). A skill that does no
+   better than no skill: say so, it may not be worth keeping.
+4. When the skill is ready, `purpose` "final" runs the held-out (test) cases once: using them to choose edits wears
+   them out. `purpose` "optimise" rewrites the description on the trigger cases and keeps the best as a candidate
+   version, never applied by itself: tell the owner it is there.
+
+Never grade a skill with the model that wrote it, and never put a held-out test case into the skill. Without
+`eval_start` (no tool, or no runtime can run one): leave the test gate pending and say so. Never call a skill
+tested unless an evaluation says so.
 
 ## 8. Submit for review, and stop
 
@@ -119,7 +139,8 @@ say so. Never grade a skill with the model that wrote it, and never put a held-o
    or changes, the sources used) and `assumptions`. For an improvement, also `install_plan` to show where it would
    go (it installs nothing).
 2. Tell the user: the skill's name, what it does, the review id, the checks (errors, warnings, scan), the test
-   prompts' counts, your assumptions, and that it waits in Skills Studio → Review for their approval.
+   prompts' counts and the evaluation's results (with the skill and without it, the triggers, its id), your
+   assumptions, and that it waits in Skills Studio → Review for their approval.
 3. Installing is the owner's: they approve the review and publish it in Skills Studio. Do not install it another
    way, do not copy it into a runtime folder, and do not say it is installed.
 4. Changes requested: read the review's reason (`review_list`), make a new draft revision over it, snapshot, and

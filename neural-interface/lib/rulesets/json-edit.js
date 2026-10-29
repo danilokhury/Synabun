@@ -2,7 +2,7 @@
 // SynaBun — one entry of a JSON list, edited as text (pure, no fs)
 // ═══════════════════════════════════════════
 //
-// OpenCode's config.json belongs to the user. Parsing it and writing it back
+// OpenCode's opencode.json belongs to the user. Parsing it and writing it back
 // would re-indent it, re-space it and drop whatever JSON.stringify spells
 // differently, all to add one string to one list. These two functions change
 // only the characters of that entry (and of the key, when SynaBun adds or takes

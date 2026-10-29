@@ -80,9 +80,9 @@ export function matchesExpectedMarkdown(content, expected) {
   return String(content).replace(/\r\n/g, '\n') === expected.replace(/\r\n/g, '\n');
 }
 
-/** Whether a path is the user's OpenCode configuration file. */
+/** Whether a path is the user's OpenCode configuration file (OpenCode 2's opencode.json or opencode.jsonc). */
 export function isOpencodeConfigPath(path) {
-  return String(path || '').replace(/\\/g, '/').endsWith('/.config/opencode/config.json');
+  return /\/\.config\/opencode\/opencode\.jsonc?$/.test(String(path || '').replace(/\\/g, '/'));
 }
 
 const OUTSIDE_ROOTS = 'Path outside registered project roots';

@@ -17,6 +17,7 @@ import { sendToPanel as sendToClaudePanel, isClaudePanelOpen } from './ui-claude
 import { toggleCodexPanel, isCodexPanelOpen } from './cdx/cdx-panel.js';
 import { openOpencodeWithPrompt } from './ui-opencode-panel-v2.js';
 import { fetchRulesStatus, installAllRules, ackRulesNotice } from './api.js';
+import { centeredInFrame } from './app-frame.js';
 
 // ── State ──
 let ws = null;
@@ -1171,9 +1172,10 @@ function openPanel() {
   _panel.innerHTML = buildPanelHTML();
   document.body.appendChild(_panel);
 
-  // Center at default size
-  _panel.style.left = Math.max(20, (window.innerWidth - 680) / 2) + 'px';
-  _panel.style.top = Math.max(48, (window.innerHeight - 520) / 2) + 'px';
+  // Center at default size, in the app frame
+  const at = centeredInFrame(680, 520);
+  _panel.style.left = at.left + 'px';
+  _panel.style.top = at.top + 'px';
 
   wirePanel();
   isVisible = true;

@@ -151,7 +151,8 @@ const RUNTIME_OF_FAMILY = { claude: 'claude', codex: 'codex', opencode: 'opencod
  * @param {object[]} [o.roots] the catalog's roots (GET /catalog `roots`)
  * @param {{ sharedAgentsRoot?: boolean }} [o.config]
  * @param {{ path: string, label: string }[]} [o.projects] projects to offer targets for
- * @returns {{ key, target, runtime, scope, accountId, projectPath, projectLabel, path, status, policy, shared }[]}
+ * @returns {{ key, target, runtime, scope, accountId, projectPath, projectLabel, path, status, policy, shared, runtimes }[]}
+ *   `runtimes`: every runtime that reads that folder (OpenCode reads Claude Code's; Codex's project folder is shared)
  */
 export function installTargets({ roots = [], config = {}, projects = [] } = {}) {
   const out = [];
@@ -166,14 +167,17 @@ export function installTargets({ roots = [], config = {}, projects = [] } = {}) 
     if (root.scope === 'project') continue;   // projects come from `projects`, one row per runtime
     const accountId = root.accountId || 'default';
     const target = { runtime, scope: 'user', ...(accountId !== 'default' ? { accountId } : {}) };
-    push({ key: targetKey(target), target, runtime, scope: 'user', accountId, projectPath: null, projectLabel: null, path: root.path, status: root.status, policy: root.policy || null, shared: runtime === 'agents', off: runtime === 'agents' && !config.sharedAgentsRoot });
+    const readers = Array.isArray(root.runtimes) && root.runtimes.length ? root.runtimes.filter((r) => typeof r === 'string') : [runtime === 'agents' ? 'codex' : runtime, ...(runtime === 'agents' ? ['opencode'] : [])];
+    push({ key: targetKey(target), target, runtime, scope: 'user', accountId, projectPath: null, projectLabel: null, path: root.path, status: root.status, policy: root.policy || null, shared: runtime === 'agents', off: runtime === 'agents' && !config.sharedAgentsRoot, runtimes: readers });
   }
   for (const p of Array.isArray(projects) ? projects : []) {
     if (!p?.path) continue;
     for (const runtime of ['claude', 'codex', 'opencode']) {
       const target = { runtime, scope: 'project', projectPath: p.path };
       const sub = runtime === 'claude' ? '.claude/skills' : runtime === 'codex' ? '.agents/skills' : '.opencode/skills';
-      push({ key: targetKey(target), target, runtime, scope: 'project', accountId: 'default', projectPath: p.path, projectLabel: p.label || p.path, path: `${p.path.replace(/[\\/]+$/, '')}/${sub}`, status: null, policy: null, shared: false, off: false });
+      // Who reads a project's folders (lib/skills/roots.js): .claude/skills and .agents/skills are read by OpenCode too.
+      const readers = runtime === 'opencode' ? ['opencode'] : [runtime, 'opencode'];
+      push({ key: targetKey(target), target, runtime, scope: 'project', accountId: 'default', projectPath: p.path, projectLabel: p.label || p.path, path: `${p.path.replace(/[\\/]+$/, '')}/${sub}`, status: null, policy: null, shared: false, off: false, runtimes: readers });
     }
   }
   const order = { claude: 0, codex: 1, opencode: 2, agents: 3 };
@@ -204,10 +208,41 @@ export function targetState(t, { skill = null, row = null, revisionId = null } =
   return { state: 'none', installation: null, path: null };
 }
 
-/** Targets checked to start with: where the skill is already, else Claude Code for the default account. */
-export function defaultTargets(targets, { skill = null, row = null } = {}) {
+/**
+ * Targets checked to start with: where the skill is already, else the owner's assistants (Settings → Skills → My
+ * assistants; detected from what is installed and used when none were chosen), each in its own user folder for the
+ * default account: never everything. A folder another assistant reads too is counted for it: OpenCode reads Claude
+ * Code's skills folder, so with both among the assistants only Claude Code's is ticked (no second copy unless asked;
+ * `seenThrough` says which). Without any list: Claude Code.
+ * @param {object[]} targets installTargets()
+ * @param {{ skill?: object|null, row?: object|null, assistants?: string[]|null }} [o]
+ */
+export function defaultTargets(targets, { skill = null, row = null, assistants = null } = {}) {
   const there = targets.filter((t) => !t.off && ['installed', 'outdated', 'present'].includes(targetState(t, { skill, row }).state));
   if (there.length) return new Set(there.map((t) => t.key));
-  const claude = targets.find((t) => t.runtime === 'claude' && t.scope === 'user' && t.accountId === 'default');
-  return new Set(claude ? [claude.key] : []);
+  const own = (runtime) => targets.find((t) => t.runtime === runtime && t.scope === 'user' && t.accountId === 'default' && !t.off) || null;
+  const wanted = Array.isArray(assistants) && assistants.length ? assistants.filter((r) => ['claude', 'codex', 'opencode'].includes(r)) : ['claude'];
+  // Every assistant gets its own folder: a terminal OpenCode reads Claude Code's folder, but SynaBun's own OpenCode
+  // serves (the panel, an Assistant brain) start with OPENCODE_DISABLE_CLAUDE_CODE=1 and never see it (checked with
+  // opencode 2.1.4), so an OpenCode among the assistants is ticked for a real copy.
+  const picked = ['claude', 'codex', 'opencode'].filter((runtime) => wanted.includes(runtime)).map(own).filter(Boolean);
+  if (!picked.length) { const claude = own('claude'); return new Set(claude ? [claude.key] : []); }
+  return new Set(picked.map((t) => t.key));
+}
+
+/**
+ * The runtime whose ticked (or installed) folder a terminal copy of this runtime reads too, in this scope: 'claude'
+ * for an OpenCode tile when Claude Code's folder is ticked or holds the skill (a terminal OpenCode reads it; SynaBun's
+ * own OpenCode serves do not, so this is a hint, never a reason to leave OpenCode out); else null.
+ * @param {string} runtime @param {object[]} targets @param {Set<string>} checked
+ * @param {{ scope?: string, skill?: object|null, row?: object|null }} [o]
+ */
+export function seenThrough(runtime, targets, checked, { scope = 'user', skill = null, row = null } = {}) {
+  for (const t of targets) {
+    if (t.runtime === runtime || t.off || !(t.runtimes || []).includes(runtime)) continue;
+    const inScope = scope.startsWith('project:') ? t.scope === 'project' && t.projectPath === scope.slice(8) : t.scope === 'user' && t.accountId === 'default';
+    if (!inScope) continue;
+    if (checked?.has?.(t.key) || ['installed', 'outdated', 'present'].includes(targetState(t, { skill, row }).state)) return t.runtime;
+  }
+  return null;
 }

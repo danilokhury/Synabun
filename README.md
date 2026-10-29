@@ -178,7 +178,7 @@ Everything SynaBun stores is in one folder outside the app: `~/.synabun` on macO
 
 ## Links
 
-- [Changelog](./CHANGELOG.md): what is new in 2.0.11 and before
+- [Changelog](./CHANGELOG.md): what is new in 2.0.12 and before
 - [Security](./SECURITY.md): security model and how to report a vulnerability
 - [Contributing](./CONTRIBUTING.md): bug reports and feature requests are welcome as [issues](https://github.com/danilokhury/Synabun/issues); pull requests are not accepted
 - [Website](https://synabun.ai), [docs](https://synabun.ai/docs) and [blog](https://synabun.ai/blog)

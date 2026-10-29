@@ -96,6 +96,7 @@ runtime dependencies in the published package.
 | Mermaid | 11.17.2 | Bundled browser asset (`neural-interface/public/vendor/mermaid/`) copied from the npm development dependency | MIT | [GitHub](https://github.com/mermaid-js/mermaid) |
 | html2canvas | 1.4.1 | Bundled browser asset (`neural-interface/public/vendor/html2canvas/`) copied from the npm development dependency | MIT | [GitHub](https://github.com/niklasvh/html2canvas) |
 | yaml | 2.9.1 | Bundled browser asset (`neural-interface/public/vendor/yaml/`) built from the npm dependency | ISC | [GitHub](https://github.com/eemeli/yaml) |
+| Caveat (font) | 5.3.0 (`@fontsource/caveat`) | Bundled browser asset (`neural-interface/public/vendor/caveat/`): the Latin 400 and 700 WOFF2 files, copied unmodified with the package's license | OFL-1.1 | [GitHub](https://github.com/googlefonts/caveat) |
 
 ### CodeMirror 6
 
@@ -166,6 +167,15 @@ The YAML parser behind the Skills Studio: it reads the frontmatter of skills, co
 - **License:** ISC
 - **Copyright:** Copyright Eemeli Aro
 - **URL:** https://github.com/eemeli/yaml
+
+### Caveat
+
+The handwriting of the whiteboard and of the Workspace tour, served by SynaBun itself instead of a font CDN. The Latin subset of weights 400 and 700 (`caveat-latin-400-normal.woff2`, `caveat-latin-700-normal.woff2`) from the npm package `@fontsource/caveat` 5.3.0, copied unmodified into `neural-interface/public/vendor/caveat/` with the package's `LICENSE` as `OFL.txt`, a `caveat.css` that declares the two faces and a `manifest.json` with the SHA-256 of each file. The font is not sold on its own and its name is not changed (OFL 1.1, conditions 1 and 3).
+
+- **Version:** 5.3.0 (`@fontsource/caveat`)
+- **License:** SIL Open Font License 1.1
+- **Copyright:** Copyright 2014 The Caveat Project Authors
+- **URL:** https://github.com/googlefonts/caveat
 
 ## Vendored Code
 

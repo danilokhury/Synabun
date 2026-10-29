@@ -1,3 +1,7 @@
+import { createHash } from 'node:crypto';
+import { isEditableText } from '../../public/shared/skills/ss-doc.js';
+import { ASSET_EXT, inspectAsset, assetBudget, scriptMarkers } from './scan-assets.js';
+import { shellFindings, shellReviewFindings, looksLikeShell } from './scan-shell.js';
 // ── What a skill can do, read without running anything ──
 // A local, deterministic look at every file of a skill before it is installed: what it would run and when
 // (scripts, Claude Code dynamic context, hooks that stay for the session, tool grants), what it reaches (URLs,
@@ -11,14 +15,33 @@
 // findings for this digest) or `blocked`. A finding is evidence of capability, not a verdict of malice: a backup
 // skill legitimately reads files and uploads them; it is shown so the person installing it knows.
 
+import { redactSecrets } from '../../../lib/log-redact.js';
 import { findHiddenChars, inspectName, revealHidden } from '../../public/shared/skills/ss-unicode.js';
-import { isEditableText } from '../../public/shared/skills/ss-doc.js';
+const utf8 = new TextDecoder('utf-8', { fatal: true });
+function isScannableText(bytes) {
+  if (bytes.includes(0)) return false;
+  try { utf8.decode(bytes); return true; } catch { return false; }
+}
+function colourSGR(text, at) {
+  const match = /^\x1b\[([0-9;:]*)m/.exec(text.slice(at, at + 100));
+  if (!match) return false;
+  const codes = match[1].replace(/::/g, ':').split(/[;:]/).map((v) => v === '' ? 0 : Number(v));
+  for (let i = 0; i < codes.length; i++) {
+    const n = codes[i];
+    if ([38, 48, 58].includes(n)) {
+      const mode = codes[++i], count = mode === 5 ? 1 : mode === 2 ? 3 : -1;
+      if (count < 0 || i + count >= codes.length) return false;
+      for (let k = 0; k < count; k++) if (!(codes[++i] >= 0 && codes[i] <= 255)) return false;
+    } else if (![0, 1, 2, 3, 4, 5, 7, 9, 21, 22, 23, 24, 25, 27, 28, 29, 39, 49, 59].includes(n) && !(n >= 30 && n <= 37 || n >= 40 && n <= 47 || n >= 90 && n <= 97 || n >= 100 && n <= 107)) return false;
+  }
+  return true;
+}
 
 export const SCAN_ENGINE = 'synabun-static';
-export const SCAN_ENGINE_VERSION = '1.2.0';
+export const SCAN_ENGINE_VERSION = '1.7.5';
 // skills-p1: typosquats of a shipped skill's name (S-13), calibrated on tests/fixtures/skills-scan/corpus.json;
 // 1.2.0: a name that is exactly a shipped skill's, on something that is not that skill (S-13-shipped-name).
-export const SCAN_POLICY = 'skills-p1-2026-10-22b';
+export const SCAN_POLICY = 'skills-p5-review-2026-10-27';
 export const SCAN_LIMITS = Object.freeze({ maxFileChars: 2 * 1024 * 1024, maxTotalChars: 16 * 1024 * 1024, maxLineChars: 20000, maxFindings: 400 });
 
 const SEVERITY_RANK = { critical: 4, high: 3, medium: 2, low: 1, info: 0 };
@@ -41,7 +64,7 @@ const LINE_RULES = [
     message: 'Downloads a script and runs it in one step.', remediation: 'Pin what is downloaded (a version, a checksum) and show it before it runs, or drop the step.' },
   { id: 'S-08-remote-subshell', severity: 'high', re: /\b(?:ba|z)?sh\s+(?:-c\s+)?["']?\$?\(\s*(?:curl|wget)\b|\bsource\s+<\(\s*(?:curl|wget)\b|\.\s+<\(\s*(?:curl|wget)\b/i,
     message: 'Runs a script fetched from the network.', remediation: 'Ship the script with the skill, or pin and verify it.' },
-  { id: 'S-08-installer', severity: 'medium', re: /\b(?:npm\s+(?:i|install)\s+(?:-g|--global)\b|npx\s+(?:-y|--yes)\b|pip3?\s+install\b|pipx\s+install\b|brew\s+install\b|gem\s+install\b|cargo\s+install\b|go\s+install\b|apt(?:-get)?\s+install\b)/i,
+  { id: 'S-08-installer', severity: 'medium', re: /\b(?:npm\s+(?:i|install)\s+(?:-g|--global)\b|npx\s+\S|pnpm\s+dlx\b|pip3?\s+install\b|pipx\s+install\b|brew\s+install\b|gem\s+install\b|cargo\s+install\b|go\s+install\b|apt(?:-get)?\s+install\b)/i,
     message: 'Installs software on the machine that runs it.', remediation: 'Say which package and version, and why; a reviewer decides.' },
   { id: 'S-09-decode-exec', severity: 'high', re: /\bbase64\s+(?:-d|--decode|-D)\b[^\n]{0,200}\|\s*(?:sudo\s+)?(?:ba|z)?sh\b|\becho\s+[A-Za-z0-9+/=]{24,}\s*\|\s*base64\b|\b(?:eval|exec)\s*\(\s*(?:atob|Buffer\.from|base64\.b64decode|bytes\.fromhex|codecs\.decode)\b|FromBase64String\s*\([^)]{0,200}\)[^\n]{0,200}(?:Invoke-Expression|iex)\b|powershell(?:\.exe)?\s+[^\n]{0,80}-(?:e|en|enc|encodedcommand)\s+[A-Za-z0-9+/=]{16,}/i,
     message: 'Decodes hidden text and runs it.', remediation: 'Write the command out in plain text, or remove it.' },
@@ -124,7 +147,18 @@ export function scanArtifact({ type, name, files, frontmatter = null, digest, kn
   const findings = [];
   const authority = { scripts: [], binaries: [], dynamicContext: [], hooks: [], toolGrants: [], domains: [], sensitive: [], persistentWrites: [], installers: [] };
   const coverage = { scanned: 0, skipped: [], complete: true };
-  const add = (finding) => { if (findings.length < SCAN_LIMITS.maxFindings) findings.push(finding); };
+  const add = (finding) => {
+    if (findings.length < SCAN_LIMITS.maxFindings) findings.push(finding);
+    else {
+      coverage.complete = false;
+      // A flood of lower-severity evidence must not hide a later high-severity class.
+      const lower = findings.findIndex((f) => SEVERITY_RANK[f.severity] < SEVERITY_RANK[finding.severity]);
+      if (lower >= 0) findings[lower] = finding;
+    }
+  };
+  const shellFiles = [];
+  const decompression = assetBudget();
+  const hiddenGroups = new Map();
   try {
     // The name it would be installed under.
     const look = inspectName(name, knownNames);
@@ -169,17 +203,21 @@ export function scanArtifact({ type, name, files, frontmatter = null, digest, kn
       const bytes = file.bytes;
       const lower = path.toLowerCase();
       // Plugin parts run outside Claude's tool sandbox.
-      if (/(^|\/)\.claude-plugin\//.test(path) || /(^|\/)hooks\/hooks\.json$/.test(path) || /(^|\/)\.mcp\.json$/.test(path) || /^bin\//.test(path)) {
+      if (/(^|\/)\.claude-plugin\//.test(path) || /(^|\/)hooks\/hooks\.json$/.test(path) || /(^|\/)\.mcp\.json$/.test(path) || /^bin\//.test(path) || /(?:^|\/)(?:plugin|marketplace|mcp|lsp|monitor)\.json$/.test(path)) {
         add({ ruleId: 'S-14-plugin-component', severity: 'high', file: path, line: null, message: 'A plugin component (hooks, MCP servers, programs) that runs outside the tool sandbox.', evidence: path, remediation: 'Install plugins as plugins, after reviewing them.' });
       }
-      if (!isEditableText(bytes)) {
-        const head = Array.from(bytes.subarray(0, 4));
-        const magic = MAGIC.find(([sig]) => sig.every((b, i) => head[i] === b));
+      const magic = MAGIC.find(([sig]) => sig.every((b, i) => bytes[i] === b));
+      const container = /\.(?:zip|gz|tgz|tar|rar|xz|bz2|7z|zst|lz|lzma)$/i.test(path);
+      if (ASSET_EXT.test(path) || magic || container || !(isEditableText(bytes) || (SCRIPT_EXT.test(path) || INSTRUCTION_EXT.test(path) || !path.includes('.') || file.executable) && isScannableText(bytes))) {
         authority.binaries.push({ path, size: bytes.length, kind: magic ? magic[1] : 'binary', executable: !!file.executable });
-        if (magic || file.executable) {
-          add({ ruleId: 'S-09-opaque-binary', severity: 'high', file: path, line: null, message: `${magic ? `A ${magic[1]}` : 'An executable binary file'} that could not be read: what it does is unknown.`, evidence: `${path} (${bytes.length} bytes)`, remediation: 'Ship source code instead, or remove it.' });
+        let assetHeuristic = null;
+        const assetReason = ASSET_EXT.test(path) ? inspectAsset(path, bytes, (text) => LINE_RULES.some((r) => r.re.test(text)) || SECRET_PATTERNS.some(([, re]) => re.test(text)) ? 'strong' : looksLikeShell(text) ? 'command' : null, { budget: decompression, heuristic: (text) => { assetHeuristic ||= text; } }) : null;
+        if (!assetReason && (assetHeuristic || file.executable && ASSET_EXT.test(path))) add({ ruleId: 'S-09-asset-command', severity: 'medium', file: path, line: null, message: 'An asset contains a command-shaped text line or is marked executable; review its use.', evidence: evidenceOf(assetHeuristic || path), remediation: 'Review the asset and the commands that use it.' });
+        if (magic || container || !ASSET_EXT.test(path) || assetReason) {
+          coverage.complete = false;
+          add({ ruleId: 'S-09-opaque-binary', severity: 'high', file: path, line: null, message: assetReason ? 'This asset has an invalid structure, trailing bytes, or script-like content; it cannot be treated as passive.' : `${magic ? `A ${magic[1]}` : 'An opaque file'} that could not be read: what it does is unknown.`, reason: assetReason, evidence: `${path} (${bytes.length} bytes)`, remediation: 'Ship source code instead, or remove it.' });
         }
-        coverage.skipped.push({ path, reason: 'binary' });
+        coverage.skipped.push({ path, reason: assetReason || 'binary' });
         continue;
       }
       let text = bytes.toString('utf-8');
@@ -190,21 +228,34 @@ export function scanArtifact({ type, name, files, frontmatter = null, digest, kn
       }
       total += text.length;
       coverage.scanned++;
+      // SVG is source text: apply every text rule below as well as asset script markers.
+      if (/\.svg$/i.test(path) && scriptMarkers(text)) {
+        coverage.complete = false;
+        coverage.skipped.push({ path, reason: 'asset-script-content' });
+        add({ ruleId: 'S-09-opaque-binary', severity: 'high', file: path, line: null, reason: 'asset-script-content', message: 'This SVG contains script markers; it cannot be treated as passive.', evidence: path, remediation: 'Remove executable content from the SVG.' });
+      }
       const isScript = SCRIPT_EXT.test(lower) || text.startsWith('#!') || !!file.executable;
       if (isScript) authority.scripts.push({ path, executable: !!file.executable, interpreter: text.startsWith('#!') ? clip(text.slice(2, text.indexOf('\n') > 0 ? text.indexOf('\n') : 80).trim(), 80) : null });
       const instructions = INSTRUCTION_EXT.test(lower) || (!isScript && !lower.includes('.'));
 
-      // Hidden characters: in instructions and in scripts alike.
-      for (const hit of findHiddenChars(text, { limit: 20 })) {
-        add({ ruleId: 'S-12-hidden-chars', severity: hit.kind === 'bidi' || hit.kind === 'tag' ? 'high' : 'medium', file: path, line: hit.line, message: `A character nobody can see: ${hit.label}.`, evidence: evidenceOf(text.split('\n')[hit.line - 1] || ''), remediation: 'Remove it, or replace it with what it was meant to be.' });
-      }
-
+      // Visit every code point. The sample budget limits display only, never coverage.
+      findHiddenChars(text, { limit: 0, onHit(hit) {
+        const colour = isScript && hit.codePoint === 0x1b && colourSGR(text, hit.index);
+        const high = hit.kind === 'bidi' || hit.kind === 'tag';
+        const groupKey = high ? `high:${hit.codePoint}` : colour ? 'low' : 'medium';
+        let group = hiddenGroups.get(groupKey);
+        if (!group) { group = { severity: high ? 'high' : colour ? 'low' : 'medium', total: 0, samples: [], file: path, line: hit.line, label: high ? hit.label : null }; hiddenGroups.set(groupKey, group); }
+        group.total++;
+        if (group.samples.length < 20) group.samples.push({ file: path, line: hit.line, column: hit.column, label: hit.label });
+      } });
+      shellFiles.push({ path, text: text.split('\n').map((line) => line.slice(0, SCAN_LIMITS.maxLineChars)).join('\n') });
       const lines = text.split('\n');
       let inBangFence = false;
       let hasSensitive = false; let hasSink = false; let sinkLine = 0; let sensitiveLine = 0;
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i].length > SCAN_LIMITS.maxLineChars ? lines[i].slice(0, SCAN_LIMITS.maxLineChars) : lines[i];
         const n = i + 1;
+        if (lines[i].length > SCAN_LIMITS.maxLineChars) { coverage.complete = false; coverage.skipped.push({ path, line: n, reason: 'line-too-large' }); }
         // Claude Code dynamic context: !`command` inline, and ```! fenced blocks. They run before the model reads the skill.
         if (instructions) {
           if (/^\s*```!/.test(line)) { inBangFence = true; authority.dynamicContext.push({ file: path, line: n, command: '(block)' }); add({ ruleId: 'S-06-dynamic-context', severity: 'high', file: path, line: n, message: 'A shell block that Claude Code runs when the skill is loaded, before the model reads it, without asking.', evidence: evidenceOf(line), remediation: 'Make sure every command in it is safe to run unattended; a reviewer decides.' }); continue; }
@@ -239,6 +290,18 @@ export function scanArtifact({ type, name, files, frontmatter = null, digest, kn
         add({ ruleId: 'S-11-exfiltration', severity: 'high', file: path, line: sinkLine, message: `Reads private data or secrets (line ${sensitiveLine}) and sends data off the machine (line ${sinkLine}) in the same file.`, evidence: evidenceOf(lines[sinkLine - 1] || ''), remediation: 'Check exactly what is sent where; a reviewer decides.' });
       }
     }
+    for (const group of hiddenGroups.values()) add({ ruleId: 'S-12-hidden-chars', ...group,
+      message: `${group.total} hidden characters, first ${group.samples.length} listed${group.label ? `: ${group.label}` : ''}.`,
+      evidence: group.samples.map((s) => `${s.file}:${s.line}:${s.column} ${s.label}`).join('; '),
+      remediation: 'Review the listed characters and remove unintended invisible text.' });
+    const shell = shellFindings(shellFiles);
+    if (!shell.complete) { coverage.complete = false; coverage.skipped.push({ path: null, reason: 'shell-analysis-limit' }); }
+    for (const hit of [...shell.hits, ...shellReviewFindings(shellFiles)]) {
+      if (['S-09-asset-exec', 'S-08-remote-pipe'].includes(hit.ruleId) && findings.some((f) => f.ruleId === hit.ruleId && f.file === hit.file && f.line === hit.line)) continue;
+      add({ ...hit, evidence: evidenceOf(hit.evidence), severity: ['S-09-asset-exec', 'S-08-download-run'].includes(hit.ruleId) ? 'medium' : 'high', message: hit.ruleId === 'S-08-download-run' ? 'This skill mentions download or decode tools and execution; review both locations.' : hit.ruleId === 'S-09-asset-exec' ? 'Names an image, font or media asset together with a program that could run it, or makes it executable.' : hit.ruleId === 'S-08-remote-pipe' ? 'Downloads a script and runs it in one step.' : hit.ruleId === 'S-08-remote-file' ? 'Downloads a file then executes or sources it.' : 'Decodes a file then executes or sources it.', remediation: 'Ship readable source instead, or pin and verify the bytes before execution.' });
+      authority.installers.push({ file: hit.file, line: hit.line });
+    }
+
   } catch (err) {
     return record({ type, name, digest, status: 'error', findings, authority, coverage: { ...coverage, complete: false }, error: String(err?.message || err) });
   }
@@ -250,7 +313,7 @@ function record({ type, name, digest, status, findings, authority, coverage, err
   const top = findings.reduce((max, f) => Math.max(max, SEVERITY_RANK[f.severity] ?? 0), -1);
   // A scan that failed or could not read everything never lets an install through on its own.
   let gate = 'allowed';
-  if (status === 'error') gate = 'blocked';
+  if (status === 'error' || status === 'incomplete') gate = 'blocked';
   else if (top >= SEVERITY_RANK.critical) gate = 'blocked';
   else if (status === 'incomplete' || top >= SEVERITY_RANK.medium) gate = 'review';
   const sorted = findings.slice().sort((a, b) => (SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity]) || String(a.file).localeCompare(String(b.file)) || ((a.line || 0) - (b.line || 0)));
@@ -258,7 +321,7 @@ function record({ type, name, digest, status, findings, authority, coverage, err
     engine: SCAN_ENGINE, engineVersion: SCAN_ENGINE_VERSION, policy: SCAN_POLICY,
     type, name, digest, status, gate, error,
     counts: Object.fromEntries(Object.keys(SEVERITY_RANK).map((s) => [s, findings.filter((f) => f.severity === s).length])),
-    findings: sorted, authority, coverage,
+    findings: redactRecord(sorted), authority: redactRecord(authority), coverage,
     disclosure: 'Scanned on this computer. No file left it.',
   };
 }
@@ -267,7 +330,35 @@ function record({ type, name, digest, status, findings, authority, coverage, err
 export function scanAllows(scan, { digest, acknowledgedDigest = null } = {}) {
   if (!scan || scan.digest !== digest) return { ok: false, code: 'scan_stale', message: 'The scan is not of these files: scan them again.' };
   if (scan.status === 'error') return { ok: false, code: 'scan_error', message: `The scan failed (${scan.error || 'error'}): nothing is installed without one.` };
+  if (scan.coverage?.complete === false || scan.status === 'incomplete' || scan.status === 'skipped') return { ok: false, code: 'scan_incomplete', message: 'Required scan coverage is incomplete; an acknowledgement cannot make it pass.' };
   if (scan.gate === 'blocked') return { ok: false, code: 'scan_blocked', message: 'The scan found something that blocks this install.' };
   if (scan.gate === 'review' && acknowledgedDigest !== digest) return { ok: false, code: 'review_required', message: 'Review the findings and confirm them for these exact files first.' };
   return { ok: true };
+}
+
+// Redact the entire result, including commands and domains, before it reaches disk or a page.
+function redactRecord(value) {
+  if (typeof value === 'string') return redactSecrets(value);
+  if (Array.isArray(value)) return value.map(redactRecord);
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, redactRecord(v)]));
+  return value;
+}
+
+// Exact evidence acknowledged by the owner; changing engines, policy or findings requires review again.
+export function scanEvidenceKey(scan) {
+  return createHash('sha256').update(JSON.stringify([scan.digest, scan.engineVersion, scan.policy, scan.status, scan.gate, scan.findings, scan.external || []])).digest('hex');
+}
+export function withExternalScans(scan, results = []) {
+  const required = results.filter((r) => r.required);
+  if (!required.length) return scan;
+  const coverage = { ...scan.coverage };
+  const findings = [...scan.findings];
+  let error = scan.error;
+  for (const result of required) {
+    if (result.digest !== scan.digest || !['no_findings', 'findings'].includes(result.status) || result.coverage?.complete === false) coverage.complete = false;
+    if (result.status === 'error') error = 'external_scanner_failed';
+    for (const finding of result.findings || []) findings.push({ ...finding, engine: result.engine });
+  }
+  const status = error ? 'error' : !coverage.complete ? 'incomplete' : findings.length ? 'findings' : 'no_findings';
+  return { ...record({ ...scan, status, coverage, findings, error }), external: required };
 }

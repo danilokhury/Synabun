@@ -181,11 +181,18 @@ export function capitalize(text) {
   return s ? s[0].toLocaleUpperCase() + s.slice(1) : s;
 }
 
+/** A letter or a digit: what a cut must keep some of. */
+const CONTENT = /[\p{L}\p{N}]/u;
+/** The "…" a text ends on (a clipped query, `"…"`), with the quote or bracket after it. */
+const END_CUT = /…([^\p{L}\p{N}…]*)$/u;
+
 /**
  * Cut `text` in the middle so it fits `max` chars, keeping at least `minTail`
  * tail chars and cutting at token boundaries (spaces, slashes) when one is near.
- * One cut, shorter than the text: never a head and a tail that overlap, and a
- * token the text already shortened ("…/name") that the cut meets goes with it.
+ * One cut, shorter than the text: never a head and a tail that overlap. What it
+ * shows has one "…": the cut takes in every "…" the text already has (a token
+ * the summary shortened, "…/name"; its clipped end), so the head comes from
+ * before the first of them and the tail from after the last.
  */
 export function middleEllipsis(text, max = 96, minTail = 24) {
   const s = str(text);
@@ -194,26 +201,131 @@ export function middleEllipsis(text, max = 96, minTail = 24) {
   // A cut that keeps this much removes nothing: under a small `max` the budget rises to minTail + 6,
   // past a short text's end, and the head and the tail overlapped ("$ np…npm test" of "$ npm test").
   if (s.length <= budget + 1) return s;
-  let tailStart = s.length - minTail;
-  // Pull the tail back to the token boundary before it, within a third of the budget.
-  const floor = s.length - Math.max(minTail, Math.floor(budget / 3) + minTail);
-  for (let i = tailStart; i > floor && i > 0; i -= 1) {
+  const first = s.indexOf('…');
+  const last = s.lastIndexOf('…');
+  const headEnd = first < 0 ? s.length : first;
+  const tailFrom = last < 0 ? 0 : last + 1;
+  // "…words…" (a thought's tail that ends on its own "…"): nothing to keep on either side of the cuts (headEllipsis).
+  if (first >= 0 && !CONTENT.test(s.slice(0, headEnd)) && !CONTENT.test(s.slice(tailFrom))) return headEllipsis(s, max);
+  let tailStart = Math.max(tailFrom, s.length - minTail);
+  // A head that stops at the text's first "…" leaves the rest of the budget to the tail.
+  if (headEnd < budget - (s.length - tailStart)) tailStart = Math.max(tailFrom, s.length - (budget - headEnd));
+  // Pull the tail back to the token boundary before it, within a third of the budget and short of all of it
+  // (a char of head, or the cut runs one past `max`).
+  const floor = s.length - Math.min(budget - 1, Math.max(minTail, Math.floor(budget / 3) + minTail));
+  let atBoundary = false;
+  for (let i = tailStart; i > floor && i > tailFrom && i > 0; i -= 1) {
     const c = s[i - 1];
-    if (c === ' ') { tailStart = i; break; }
-    if (c === '/') { tailStart = i - 1; break; }
+    if (c === ' ') { tailStart = i; atBoundary = true; break; }
+    if (c === '/') { tailStart = i - 1; atBoundary = true; break; }
+  }
+  // None near enough behind a tail that opens inside a word: it starts at the next boundary instead, when
+  // that keeps half of it ("$ node --test…b.mjs c.mjs", never "…r.mjs b.mjs c.mjs").
+  if (!atBoundary && tailStart > tailFrom) {
+    const rest = s.slice(tailStart);
+    const next = rest.search(/[\s/]/);
+    if (next > 0 && next <= rest.length / 2 && CONTENT.test(rest.slice(next))) tailStart += rest[next] === '/' ? next : next + 1;
   }
   const tail = s.slice(tailStart);
-  let head = s.slice(0, Math.max(1, budget - tail.length));
+  let head = s.slice(0, Math.min(headEnd, Math.max(1, budget - tail.length)));
   const cut = Math.max(head.lastIndexOf(' '), head.lastIndexOf('/'));
   if (cut >= head.length * 0.6) head = head.slice(0, head[cut] === '/' ? cut + 1 : cut);
   return joinCut(head, tail);
 }
 
-/** `head…tail`, one "…": a shortened token's own "…" beside the cut is dropped ("…/…/x.js" read as two cuts). */
+/**
+ * "…ender-events.browser.mjs": the last `max` chars, from a token boundary when one is near. One "…":
+ * a "…" the text already has in that tail goes with the cut ("…--test …/x.js" reads "…/x.js"). A text
+ * that ends on its own "…" (a clipped query) has no tail to keep: its head stays (middleEllipsis); one
+ * that starts and ends on one ("…words…") loses the end's.
+ */
+export function headEllipsis(text, max) {
+  let s = str(text);
+  if (s.length <= max) return s;
+  if (END_CUT.test(s)) {
+    if (CONTENT.test(s.slice(0, s.indexOf('…')))) return middleEllipsis(s, max, Math.min(8, max - 1));
+    s = s.replace(/…[^\p{L}\p{N}]*$/u, m => m.replace(/…/g, ''));
+    if (s.length <= max) return s;
+  }
+  let tail = s.slice(s.length - Math.max(8, max - 1));
+  const own = tail.lastIndexOf('…'); // followed by a word: the text no longer ends on one
+  if (own >= 0) return joinCut('', tail.slice(own));
+  const cut = tail.search(/[\s/]/);
+  // A fragment of a word before the first boundary goes too, when that keeps half the tail ("…c.mjs", never "…ker-stage.mjs c.mjs").
+  const inWord = !/[\s/]/.test(s[s.length - tail.length - 1] ?? ' ');
+  if (inWord && cut > 0 && cut <= tail.length / 2 && CONTENT.test(tail.slice(cut))) tail = tail.slice(tail[cut] === '/' ? cut : cut + 1);
+  return joinCut('', tail);
+}
+
+/** `head…tail`, one "…": a shortened token's own "…" beside the cut is dropped ("…/…/x.js" read as two cuts), and so is the space next to it. */
 export function joinCut(head, tail) {
   const h = str(head).trimEnd().replace(/\/?…\/?$/, '').trimEnd();
-  const t = str(tail).trimStart().replace(/^\/?…/, '');
+  const t = str(tail).trimStart().replace(/^\/?…/, '').trimStart();
   return `${h}…${t}`;
+}
+
+// A URL or a path in a subject wraps at its separators, never mid-word (wrapRuns).
+const URL_START = /^[a-z][a-z0-9+.-]*:\/\//i;
+const HOST_OR_FILE = /^[\p{L}\p{N}_~@%+…-]+(?:\.[\p{L}\p{N}_~@%+…-]+)+(?::\d+(?:[-:]\d+)?)?$/u; // a file may end on its lines, ":131-191"
+const TOKEN_LEAD = /^[("'“‘[<{]+/;
+const TOKEN_TRAIL = /[)"'”’\]>},;:!?.]+$/;
+const PATH_MIN = 12; // a shorter token wraps whole, as a word does
+const LONG_PIECE = 20; // a longer segment also breaks inside it
+const MIN_PIECE = 3; // "~/", "…/", "./" stay with the piece after them
+
+function isPathToken(tok) {
+  if (tok.length < PATH_MIN || !CONTENT.test(tok)) return false;
+  return URL_START.test(tok) || /[/\\]/.test(tok) || HOST_OR_FILE.test(tok);
+}
+
+/**
+ * A URL or path as the pieces a line may break between: after "/" (a run of
+ * slashes, "https://", stays whole); in a segment over LONG_PIECE chars, also
+ * before "?" or "#" and after "-", "_", "=" or "&" when a letter follows, and
+ * before "." only in a piece still that long ("queue.browser.mjs" keeps its
+ * extension). A piece under MIN_PIECE chars, and a scheme ("https://"), joins
+ * its neighbour. The pieces join to `tok`.
+ */
+export function pathPieces(tok) {
+  const s = str(tok);
+  const long = (p) => p.replace(/[/\\]+$/, '').length > LONG_PIECE;
+  const pieces = [];
+  for (const part of s.match(/[^/\\]*[/\\]+|[^/\\]+$/g) || [s]) {
+    if (!long(part)) { pieces.push(part); continue; }
+    for (const p of part.split(/(?=[?#])|(?<=[-_=&])(?=\p{L})/u).filter(Boolean)) pieces.push(...(long(p) ? p.split(/(?=\.)/).filter(Boolean) : [p]));
+  }
+  const leans = (p) => p.length < MIN_PIECE || /^[a-z][a-z0-9+.-]*:\/+$/i.test(p);
+  const out = [];
+  for (const piece of pieces) {
+    if (out.length && (leans(out[out.length - 1]) || piece.length < MIN_PIECE)) out[out.length - 1] += piece;
+    else out.push(piece);
+  }
+  return out;
+}
+
+/**
+ * Where a bubble subject may wrap: its URL and path tokens (a scheme, a slash,
+ * or a dotted host or file name, PATH_MIN chars or more; quotes, brackets and
+ * the sentence's punctuation around them left out) as `{ text, pieces }` that
+ * break only between their pieces (pathPieces); the rest as `{ text }`, which
+ * wraps as any text does. The runs' texts join to `text`.
+ */
+export function wrapRuns(text) {
+  const s = str(text);
+  const runs = [];
+  let at = 0;
+  for (const m of s.matchAll(/\S+/g)) {
+    const lead = m[0].match(TOKEN_LEAD)?.[0] || '';
+    const rest = m[0].slice(lead.length);
+    const core = rest.slice(0, rest.length - (rest.match(TOKEN_TRAIL)?.[0].length || 0));
+    if (!isPathToken(core)) continue;
+    const start = m.index + lead.length;
+    if (start > at) runs.push({ text: s.slice(at, start) });
+    runs.push({ text: core, pieces: pathPieces(core) });
+    at = start + core.length;
+  }
+  if (at < s.length) runs.push({ text: s.slice(at) });
+  return runs;
 }
 
 /** A path's last two folders and its basename: `shared/assistant/asst-render.js`. */
@@ -274,14 +386,39 @@ export function commandCore(cmd) {
   return s;
 }
 
+/** A path token's file name with what wraps it: `--config=` or a quote before, `;` or a quote after it. */
+function fileNameOf(tok) {
+  const lead = tok.match(/^(?:[^/\\=]*=)?["'(]*/)[0];
+  const rest = tok.slice(lead.length);
+  const trail = rest.match(/[)"'\];,]*$/)[0];
+  const path = rest.slice(0, rest.length - trail.length);
+  const base = path.replace(/[/\\]+$/, '').split(/[/\\]/).pop();
+  return base ? { lead, base: `${base}${/[/\\]$/.test(path) ? '/' : ''}`, trail } : null;
+}
+
 /**
  * The command a bubble says: its core (commandCore), the home directory shown
  * as ~/, whitespace collapsed and tokens over 28 chars cut in the middle.
+ * `oneCut` (the stage bubble): one "…" at most, however many paths it shortens.
+ * The first path over 28 chars spends it on its dropped folders; a later one
+ * keeps its file name, unmarked ("…/a.mjs b.mjs c.mjs"); every other token
+ * (a bare file name, a flag) stays whole. A "…" of the command's own counts.
  */
-export function summarizeCommand(cmd) {
+export function summarizeCommand(cmd, { oneCut = false } = {}) {
   let s = commandCore(cmd);
   s = s.replace(HOME_RE, '$1~').replace(/(^|[\s"'=:(])\$HOME(?=\/|$|[\s"'])/g, '$1~');
-  return s.split(' ').map(tok => shortenToken(tok, 28)).join(' ');
+  if (!oneCut) return s.split(' ').map(tok => shortenToken(tok, 28)).join(' ');
+  let spent = s.includes('…');
+  return s.split(' ').map((tok) => {
+    if (tok.length <= 28 || !/[/\\]/.test(tok)) return tok;
+    const file = fileNameOf(tok);
+    if (!file) return tok;
+    if (spent) return `${file.lead}${file.base}${file.trail}`;
+    spent = true;
+    const short = shortenToken(tok, 28);
+    if (short.includes('…/')) return short;
+    return `${file.lead}…${tok.includes('/') ? '/' : '\\'}${file.base}${file.trail}`; // never a file name cut in its middle
+  }).join(' ');
 }
 
 /** The command a shell call ran: `command` or `cmd`, as a string (Codex sends argv arrays). */
@@ -596,6 +733,7 @@ export function urlSubject(url) {
 /**
  * The bubble for one call: { verb, text, detail?, mono, segments?, meta[], caption, copy, tag }.
  * `detail` (computer calls) is what the call's own row shows when it differs from the bubble's subject.
+ * `stage` (commands) is the stage bubble's subject: `text` with one "…" at most (summarizeCommand `oneCut`).
  * `call`: { name, kind, input, result, state, memories?, app? }.
  * `ctx`: { t, runLabel(call), runState(call), describeComputer(input, name) }.
  */
@@ -614,6 +752,7 @@ export function sayCall(call, ctx = {}) {
       out.verb = 'run';
       out.text = `$ ${summarizeCommand(cmd)}`;
       out.full = `$ ${str(cmd).replace(/\s+/g, ' ').trim()}`; // the literal line: the title and the opened bubble
+      if (cmd.trim()) out.stage = `$ ${summarizeCommand(cmd, { oneCut: true })}`; // the stage bubble's: one "…" at most
       out.mono = true;
       out.copy = cmd;
       out.caption = firstString(input.description);
@@ -765,7 +904,7 @@ export function sayCall(call, ctx = {}) {
     case 'think': {
       out.verb = 'think';
       const text = str(call?.text).replace(/\s+/g, ' ').trim();
-      out.text = text ? (text.length > 80 ? `…${text.slice(-79)}` : text) : '…';
+      out.text = text ? headEllipsis(text, 80) : '…'; // the tail: one "…", a "…" of the thought's own in it goes with the cut
       out.muted = true;
       break;
     }
@@ -807,7 +946,8 @@ export function targetKey(call) {
 
 /**
  * The subject parallel calls of one kind share: "a.js, b.js +1" for reads and
- * edits, "$ npm test +1" for commands; "server.js ×2" for a re-read.
+ * edits, "$ npm test +1" for commands (one "…" at most, as the stage says a
+ * command); "server.js ×2" for a re-read.
  * `calls`: the calls running side by side (the bubble's own call last);
  * `all`: every call of the row (for re-reads). Empty when one subject says it.
  */
@@ -825,7 +965,7 @@ export function groupSubject(kind, calls, all = calls) {
   if (list.length >= 2) {
     if (kind === 'shell') {
       const cmd = commandOf(list[list.length - 1].input);
-      return cmd ? `$ ${summarizeCommand(cmd)} +${list.length - 1}` : '';
+      return cmd ? `$ ${summarizeCommand(cmd, { oneCut: true })} +${list.length - 1}` : '';
     }
     const names = [...new Set(list.map(nameOf).filter(Boolean))];
     if (names.length >= 2) return `${names[0]}, ${names[1]}${names.length > 2 ? ` +${names.length - 2}` : ''}`;

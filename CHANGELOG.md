@@ -1,3 +1,32 @@
+# SynaBun v.2.0.12
+
+2.0.12 makes Skills Studio easier to install from, test and maintain, keeps dispatched workers running through a server restart, and adds a guided tour of the workspace. It also moves OpenCode support to OpenCode 2 and makes the 3D memory map the default for everyone.
+
+## ✨ New
+
+- **Skill health and local usage** — Skills Studio shows local evidence of skill use in Claude Code, Codex and OpenCode runs, with native invocations distinguished from inferred reads. Optional periodic checks report integrity and eligibility changes to the Assistant.
+- **A guided workspace tour** — The help button opens a tour on SynaBun's own whiteboard, with pointing arms, handwritten labels and steps that follow the workspace. It supports narrow windows, English and Portuguese, and reduced motion. The handwriting font ships with the app.
+- **Tool lists** — Choose the SynaBun tools and external MCP servers available to a session, worker or automation from reusable tool lists. External server choices report why a requested server cannot be used, with provider context to help recover.
+
+## 🛠 Fixed
+
+- **Workers resume after a restart** — Dispatched Claude Code, Codex and OpenCode workers can pause during a SynaBun server restart and resume the same run and provider conversation in the same sidepanel tab.
+- **Server crash recovery** — SynaBun restarts a server that crashes and reports the reason. Desktop recovery shows the failure and recovery state, and a stalled Codex title request no longer holds the server open indefinitely.
+- **MoreLogin attachment and cleanup** — Connecting to a MoreLogin profile preserves its native HTTP cache and WebSocket APIs while keeping SynaBun's network guards. Closing a connected browser session also closes the automation tabs SynaBun opened for it, so they do not return on the profile's next start.
+- **Worker startup and permissions** — Codex workers start correctly when external MCP servers are disabled. Protected OpenCode workers receive MCP tools directly with Code Mode disabled, and Codex Plan mode with automatic approvals no longer repeats permission requests in the Assistant.
+- **Claude Code hooks from the desktop** — Hooks work when SynaBun starts from the macOS Dock. Settings shows their actual state and lets you switch them on or off.
+- **Stopping the intended worker** — A request naming one run stops that run. The Assistant's Stop all control requires a second press before it stops every running worker.
+- **Compact activity and app layout** — Activity bubbles use one busy indicator and at most one ellipsis, with long paths and URLs wrapping at separators. Browser tabs and Safari web apps have consistent spacing between the navigation bar and the app frame, and Codex output and tab layout handle narrow panels more reliably.
+
+## ⚙️ Changed
+
+- **Installing approved skills** — Review approval and installation have clearer, separate states. Publishing an approved skill presents one install decision with readable runtime targets, and Claude Code, Codex and OpenCode share the drafting, evaluation and installation workflow. Skill checks cover more shell wrappers, asset references and command forms while keeping passive references distinct from executable instructions.
+- **OpenCode 2 required** — OpenCode 1 support is removed. Every launch path checks the installed version before starting and explains how to install OpenCode 2 when needed.
+- **One memory map** — The memory map uses 3D. Saved 2D preferences and old links open in 3D, and the 2D switch and shortcut have been removed from the interface.
+- **Project test commands** — Browser policy permits test runners inside registered code projects and accepts syntax-only Node checks. Commands that execute preloaded code still receive the normal policy checks.
+
+---
+
 # SynaBun v.2.0.11
 
 2.0.11 rebuilds Skills Studio around a skill library: every skill in one list, a workspace to edit, test, version and publish it, native skill folders for Claude Code, Codex and OpenCode, a Review queue, and skills drafted by AI from your own sources. SynaBun's memory is also one command away for any MCP client (`npx -y synabun mcp`), the whole app has a right-click menu, desktop updates show a splash and restart in seconds, and the Schedules window speaks your language.

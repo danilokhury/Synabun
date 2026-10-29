@@ -13,13 +13,14 @@
 // (the model list, the sessions, the recent list, the progress), never the text being typed. Strings are
 // `skillsStudio.create.*` (i18n/en.json, pt-BR.json).
 
+import { studioErrorText } from './sx-errors.js';
 import { dropdownHTML, setDropdownItems } from '../../cc-dropdown.js';
 import { CREATION_LIMITS, isActiveCreation, urlProblem, relativePathProblem } from '../ss-creation.js';
-import { html, raw, setHTML, ICONS, attr, plural, relativeTime, fullTime } from './sx-dom.js';
+import { html, raw, setHTML, ICONS, attr, plural, relativeTime, fullTime, listText } from './sx-dom.js';
 import { scanState } from './sx-review.js';
 import {
   AI_FORM_KEY, AI_SOURCE_KINDS, CREATION_ERRORS, DRAFT_RUNTIMES, WORK_MINUTES, readAiForm, writeAiForm, addSource, removeSource, sourceChip,
-  buildCreationRequest, problemKey, creationSteps, creationTitle, errorCode, elapsedSeconds, clockText, sizeText, pollSeconds, modelEntries,
+  buildCreationRequest, problemKey, creationSteps, creationTitle, errorCode, elapsedSeconds, clockText, sizeText, pollSeconds, modelEntries, draftingProviders,
 } from './sx-create-ai.js';
 
 const PROMPT_KEY = 'skills-studio-create-prompt';
@@ -67,13 +68,16 @@ export function aiAreaHTML(ctx) {
   </div>`;
 }
 
-/** Whether this server's Claude Code can draft now (false only when the server said it cannot). */
+/** Whether no provider that drafts can start here now (false only when the server said so). */
 const draftingOff = () => AI.options?.drafting?.available === false;
 /** Whether the SynaBun browser cannot open a page now (the server said so). */
 const browserOff = () => !!AI.options && AI.options.url === false;
 const helpText = (ctx, state) => (state !== 'ready'
   ? ctx.t(state === 'restart' ? 'skillsStudio.create.ai.restart' : 'skillsStudio.create.ai.unknown')
-  : draftingOff() ? ctx.t('skillsStudio.create.ai.draftingUnavailable', { reason: AI.options.drafting.reason || '' }) : ctx.t('skillsStudio.create.ai.help'));
+  : draftingOff() ? ctx.t('skillsStudio.create.ai.draftingUnavailable', {
+    providers: listText(draftingProviders(AI.options.drafting).map((p) => runtimeName(ctx.t, p.provider)), ctx.locale, 'disjunction'),
+    reason: AI.options.drafting.reason || '',
+  }) : ctx.t('skillsStudio.create.ai.help'));
 
 function formHTML(ctx) {
   const { t } = ctx;
@@ -209,13 +213,7 @@ function sessionsHTML(ctx) {
 
 function optionsHTML(ctx, f) {
   const { t } = ctx;
-  const words = {
-    route: (target) => t('skillsStudio.create.ai.options.route', { target: targetText(t, target) }),
-    fallback: t('skillsStudio.create.ai.options.fallback'),
-    providerDefault: (p) => t('skillsStudio.create.ai.options.providerDefault', { provider: runtimeName(t, p) }),
-    provider: (p) => runtimeName(t, p),
-  };
-  const models = modelEntries({ defaultTarget: AI.options?.defaultTarget || null, catalog: AI.catalog, selected: f.target, words });
+  const models = modelList(ctx, f.target);
   const minutes = WORK_MINUTES.map((m) => ({ value: String(m), label: t('skillsStudio.create.ai.options.minutesValue', { count: m }), selected: m === f.minutes }));
   const nameShown = f.name ? `/${f.name}` : '/name';
   return html`<fieldset class="sx-ai-options"><legend class="sx-field-label">${t('skillsStudio.create.ai.options.title')}</legend>
@@ -226,7 +224,7 @@ function optionsHTML(ctx, f) {
       <div class="sx-field"><span class="sx-field-label" id="sx-ai-model-label">${t('skillsStudio.create.ai.options.model')}</span>${raw(dropdownHTML('sx-ai-model', models, { labelledBy: 'sx-ai-model-label' }))}</div>
       <div class="sx-field"><span class="sx-field-label" id="sx-ai-minutes-label">${t('skillsStudio.create.ai.options.minutes')}</span>${raw(dropdownHTML('sx-ai-minutes', minutes, { labelledBy: 'sx-ai-minutes-label' }))}</div>
     </div>
-    <p class="sx-help" id="sx-ai-model-help">${t('skillsStudio.create.ai.options.claudeOnly')}</p>
+    <p class="sx-help" id="sx-ai-model-help">${modelHelpText(ctx)}</p>
     <div class="sx-choices" role="radiogroup" aria-label="${t('skillsStudio.form.invocation')}">
       <label class="sx-choice"><input type="radio" name="sx-ai-inv" value="auto"${attr('checked', f.invocation === 'auto')}> ${t('skillsStudio.form.invocationAuto', { name: nameShown })}</label>
       <label class="sx-choice"><input type="radio" name="sx-ai-inv" value="manual"${attr('checked', f.invocation === 'manual')}> ${t('skillsStudio.form.invocationManual', { name: nameShown })}</label>
@@ -286,7 +284,7 @@ function jobHTML(ctx) {
       </div></div>` : ''}
     ${job.error ? html`<div class="sx-ai-error" role="alert">
       <p class="sx-err-text">${t(`skillsStudio.create.ai.error.${errorCode(job)}`)}</p>
-      ${job.error.problems?.length ? '' : html`<p class="sx-help">${job.error.message || ''}</p>`}
+      ${job.error.problems?.length ? '' : html`<p class="sx-help">${studioErrorText(ctx.t, job.error)}</p>`}
       ${job.error.problems?.length ? html`<ul class="sx-plain-list">${job.error.problems.slice(0, 12).map((p) => html`<li>${p.message || p.code || ''}</li>`)}</ul>` : ''}
       ${job.error.worker?.question ? html`<p>${t('skillsStudio.create.ai.job.question', { question: job.error.worker.question })}</p>` : ''}
     </div>` : ''}
@@ -371,7 +369,7 @@ async function loadOptions(host, ctx, signal) {
     refreshModelList(host, ctx);
     applyAvailability(host, ctx);
     if (AI.editing === 'repo' || AI.editing === 'conversation' || AI.editing === 'url') redrawEditor(host, ctx);
-  } catch (err) { AI.optionsFailed = err.message; }
+  } catch (err) { AI.optionsFailed = studioErrorText(ctx.t, err); }
   // The models of every provider, from the Assistant's one catalog (never a list of the Studio's own).
   try {
     const { loadModelCatalog } = await import('../../assistant/asst-brain-picker.js');
@@ -393,17 +391,45 @@ function applyAvailability(host, ctx) {
   if (sources && browserOff()) setHTML(sources, sourcesHTML(ctx, form(ctx)));
 }
 
-function refreshModelList(host, ctx) {
-  const input = host.querySelector('#sx-ai-model');
-  if (!input) return;
+/** Who drafts, as the server lists it: the providers, Claude Code the default, and why one cannot start here now. */
+function modelHelpText(ctx) {
+  const { t, locale } = ctx;
+  const providers = draftingProviders(AI.options?.drafting);
+  const on = providers.filter((p) => p.available).map((p) => runtimeName(t, p.provider));
+  const off = providers.filter((p) => !p.available).map((p) => (p.reason
+    ? t('skillsStudio.create.ai.options.providerUnavailable', { provider: runtimeName(t, p.provider), reason: p.reason })
+    : t('skillsStudio.create.ai.options.providerOffPlain', { provider: runtimeName(t, p.provider) })));
+  const claudeOn = providers.some((p) => p.provider === 'claude-code' && p.available);
+  const lead = !on.length ? t('skillsStudio.create.ai.options.draftsNone')
+    : t(claudeOn ? 'skillsStudio.create.ai.options.draftsOn' : 'skillsStudio.create.ai.options.draftsOnOnly', { providers: listText(on, locale) });
+  return [lead, ...off].join(' ');
+}
+
+/** The model dropdown's entries: the server's providers (none known yet: Claude Code), each in the page's words. */
+function modelList(ctx, selected) {
   const { t } = ctx;
   const words = {
     route: (target) => t('skillsStudio.create.ai.options.route', { target: targetText(t, target) }),
     fallback: t('skillsStudio.create.ai.options.fallback'),
     providerDefault: (p) => t('skillsStudio.create.ai.options.providerDefault', { provider: runtimeName(t, p) }),
+    providerOff: (p, reason) => (reason
+      ? t('skillsStudio.create.ai.options.providerOff', { provider: runtimeName(t, p), reason })
+      : t('skillsStudio.create.ai.options.providerOffPlain', { provider: runtimeName(t, p) })),
     provider: (p) => runtimeName(t, p),
   };
-  setDropdownItems(input, modelEntries({ defaultTarget: AI.options?.defaultTarget || null, catalog: AI.catalog, selected: form(ctx).target, words }));
+  return modelEntries({ defaultTarget: AI.options?.defaultTarget || null, catalog: AI.catalog, selected, words, providers: draftingProviders(AI.options?.drafting) });
+}
+
+function refreshModelList(host, ctx) {
+  const input = host.querySelector('#sx-ai-model');
+  if (!input) return;
+  const f = form(ctx);
+  setDropdownItems(input, modelList(ctx, f.target));
+  // Once the server has said who can draft, the request names what the list shows: a kept choice of a provider that
+  // cannot start here now (or the default, when Claude Code cannot) gives way to the first one that can.
+  if (AI.options && !draftingOff() && input.value !== f.target) keep(ctx, { ...f, target: input.value });
+  const help = host.querySelector('#sx-ai-model-help');
+  if (help) help.textContent = modelHelpText(ctx);
 }
 
 async function loadCreations(host, ctx, signal) {
@@ -415,7 +441,7 @@ async function loadCreations(host, ctx, signal) {
     AI.creations = res.creations || []; AI.creationsFailed = null;
   } catch (err) {
     if (!ctx.alive(gen) || !live(host, signal)) return;
-    AI.creationsFailed = err.message;
+    AI.creationsFailed = studioErrorText(ctx.t, err);
   }
   redrawRecent(host, ctx);
 }
@@ -434,7 +460,7 @@ async function loadSessions(host, ctx, signal) {
     if (!c.list.some((s) => s.sessionId === c.chosen)) c.chosen = null;
   } catch (err) {
     if (mine !== AI.seq || !live(host, signal)) return;
-    c.failed = err.message; c.list = null;
+    c.failed = studioErrorText(ctx.t, err); c.list = null;
   }
   c.loading = false;
   const el = host.querySelector('#sx-ai-sessions');
@@ -450,7 +476,7 @@ async function follow(host, ctx, signal) {
     try { AI.job = (await ctx.api.fetchSkillCreation(id)).creation; } catch (err) {
       if (!ctx.alive(gen) || !live(host, signal) || AI.openJobId !== id) return;
       AI.openJobId = null; AI.job = null;
-      ctx.toast(ctx.t('skillsStudio.create.ai.job.gone', { error: err.message }), 'error');
+      ctx.toast(ctx.t('skillsStudio.create.ai.job.gone', { error: studioErrorText(ctx.t, err) }), 'error');
       redrawMain(host, ctx);
       return;
     }
@@ -533,7 +559,7 @@ async function startDraft(host, ctx, signal) {
     if (!ctx.alive(gen) || !live(host, signal)) return;
     if (button) button.disabled = false;
     const key = Array.isArray(err?.body?.problems) && err.body.problems.length ? `problem.${problemKey(err.body.problems[0])}` : `error.${CREATION_ERRORS.includes(err?.code) ? err.code : 'other'}`;
-    problem(host, ctx, `${t(`skillsStudio.create.ai.${key}`)} ${err.message}`.trim());
+    problem(host, ctx, `${t(`skillsStudio.create.ai.${key}`)} ${studioErrorText(ctx.t, err)}`.trim());
   } finally { AI.starting = false; }
 }
 
@@ -550,7 +576,7 @@ async function cancelJob(host, ctx, signal) {
   } catch (err) {
     if (!ctx.alive(gen)) return;
     AI.cancelling = false;
-    ctx.toast(ctx.t('skillsStudio.create.ai.job.cancelFailed', { error: err.message }), 'error');
+    ctx.toast(ctx.t('skillsStudio.create.ai.job.cancelFailed', { error: studioErrorText(ctx.t, err) }), 'error');
   }
   if (live(host, signal) && AI.openJobId === job.jobId) { redrawJob(host, ctx); redrawRecent(host, ctx); }
 }
@@ -569,7 +595,7 @@ async function retryJob(host, ctx, signal) {
     redrawMain(host, ctx, { focus: '#sx-ai-job-title' });
     redrawRecent(host, ctx);
     follow(host, ctx, signal);
-  } catch (err) { if (ctx.alive(gen)) ctx.toast(ctx.t('skillsStudio.create.ai.job.retryFailed', { error: err.message }), 'error'); } finally { AI.starting = false; }
+  } catch (err) { if (ctx.alive(gen)) ctx.toast(ctx.t('skillsStudio.create.ai.job.retryFailed', { error: studioErrorText(ctx.t, err) }), 'error'); } finally { AI.starting = false; }
 }
 
 /** The request of a creation back in the form, to change it and start again. */
@@ -613,7 +639,7 @@ async function importFileSource(host, ctx, signal) {
       const res = await ctx.api.stageSkillsImport(bundle, 'global');
       if (!ctx.alive(gen) || !live(host, signal)) return;
       add(host, ctx, { kind: 'import', stagingId: res.staged.stagingId, label: String(bundle.name || file.name).slice(0, 120) });
-    } catch (err) { if (ctx.alive(gen) && live(host, signal)) problem(host, ctx, t('skillsStudio.create.ai.import.failed', { error: err.message }), '#sx-ai-editor-problem'); }
+    } catch (err) { if (ctx.alive(gen) && live(host, signal)) problem(host, ctx, t('skillsStudio.create.ai.import.failed', { error: studioErrorText(ctx.t, err) }), '#sx-ai-editor-problem'); }
   });
   input.click();
 }

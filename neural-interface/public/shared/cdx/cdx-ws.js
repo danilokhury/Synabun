@@ -223,7 +223,6 @@ function handleSocketMessage(msg, tab, callbacks) {
     case 'rate_limits':
     case 'status_snapshot':
     case 'mcp_status':
-    case 'mcp_profile_changed':
     case 'config_saved':
     case 'mcp_refreshed':
     case 'mcp_oauth_done':

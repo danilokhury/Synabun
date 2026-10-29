@@ -3,9 +3,9 @@ import { randomUUID } from 'crypto';
 /**
  * Serializes and coalesces post-tool-call MCP refreshes per managed runtime.
  * Different sidepanels remain independent; repeated selections in one panel
- * collapse to the newest pending profile and never reconnect concurrently.
+ * collapse to the newest pending tools and never reconnect concurrently.
  */
-export class McpProfileRefreshCoordinator {
+export class McpToolsRefreshCoordinator {
   constructor({
     delayMs = 250,
     setTimer = setTimeout,
@@ -21,7 +21,7 @@ export class McpProfileRefreshCoordinator {
     this.states = new Map();
   }
 
-  schedule(runtimeId, profile, runtimeKind, refresh) {
+  schedule(runtimeId, tools, runtimeKind, refresh) {
     const refreshCorrelationId = this.correlationId();
     let state = this.states.get(runtimeId);
     if (!state) {
@@ -29,7 +29,7 @@ export class McpProfileRefreshCoordinator {
       this.states.set(runtimeId, state);
     }
     state.cancelled = false;
-    state.pending = { profile, runtimeKind, correlationId: refreshCorrelationId, refresh };
+    state.pending = { tools, runtimeKind, correlationId: refreshCorrelationId, refresh };
     if (state.timer) this.clearTimer(state.timer);
     if (!state.running) this.#arm(runtimeId, state);
     return refreshCorrelationId;

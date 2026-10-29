@@ -9,6 +9,7 @@
 // (canonical paths, no link followed out of the project, regular files only, bounded).
 
 import { listConfined, readConfinedFile } from '../confined-fs.js';
+import { v2MessageText } from '../opencode-db-schema.js';
 import { redactSecrets } from '../../../lib/log-redact.js';
 import { isEditableText } from '../../public/shared/skills/ss-doc.js';
 
@@ -79,19 +80,13 @@ export function codexRolloutToMessages(entries) {
   return out;
 }
 
-/**
- * OpenCode rows → messages. OpenCode 2 (`flavor: 'v2'`): `{ type, data }` rows of session_message, read with
- * lib/opencode-db-schema.js v2MessageText (passed in, so this stays pure). OpenCode 1: `{ role, text }` rows already
- * joined from its parts.
- */
-export function opencodeRowsToMessages(rows, { flavor = 'v2', v2MessageText = null } = {}) {
+/** OpenCode rows → messages: the `{ type, data }` rows of OpenCode's session_message (lib/opencode-db-schema.js v2MessageText). */
+export function opencodeRowsToMessages(rows) {
   const out = [];
   for (const row of Array.isArray(rows) ? rows : []) {
     if (!row) continue;
-    if (flavor === 'v2' && typeof v2MessageText === 'function') {
-      const m = v2MessageText(row.type, row.data);
-      if (m?.text) out.push({ role: m.role, text: m.text });
-    } else if ((row.role === 'user' || row.role === 'assistant') && typeof row.text === 'string' && row.text.trim()) out.push({ role: row.role, text: row.text });
+    const m = v2MessageText(row.type, row.data);
+    if (m?.text) out.push({ role: m.role, text: m.text });
   }
   return out;
 }

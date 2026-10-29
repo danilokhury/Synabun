@@ -65,7 +65,10 @@ A skill with no deterministic step has no scripts.
 
 ## Test prompts
 
-`evals/evals.json`, for evaluation in Skills Studio's Test tab (it runs them later; you only write them):
+`evals/evals.json`, what an evaluation runs (`skill` action `eval_start`, or the owner in Skills Studio's Test tab).
+A case's test files (`files`) live under `evals/files/`: one inside `.claude/`, `.opencode/`, `.agents/`, `.codex/`,
+`.config/` or `.git/`, or named `.mcp.json`, `opencode.json` or `.envrc` at the top, is something a runtime would load
+as its own settings or code, and the test prompts are refused until it moves.
 
 ```json
 {
@@ -87,6 +90,12 @@ A skill with no deterministic step has no scripts.
 
 - `evals`: at least 3 task cases: realistic requests with the details a user gives, what a good answer holds, and
   checks (`assertions`) a grader can verify.
+- An assertion is a sentence a grader checks, or an object `{ "text": …, "check": { "type": …, "value": … } }`
+  whose `check` code decides: `contains`, `not_contains`, `regex` (no backreference, no repeat inside a repeat),
+  `file_exists` and `json_valid` (with `path`, a file the run writes), `max_lines`. Prefer a check where the words
+  are exact; `"kind": "preference"` marks how the user wants it done rather than what it must hold.
+- `"compare": true` on a task case asks for a blind comparison of the answers with and without the skill;
+  `"shell": true` says it needs a shell (it then runs only where the OS sandbox holds one).
 - `triggers`: at least 3 requests that should pick the skill and 2 near-misses (the same words, another intent).
 - Every `id` is unique (a lowercase slug). Never the same request twice, not even reworded slightly.
 - Variants of one request share a `group`, and a group lives in ONE `split` (train, validation or test): a group in

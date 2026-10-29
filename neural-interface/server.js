@@ -1,3 +1,8 @@
+import { readStoredToolListRecord, toolListRecordForUpdate } from './lib/tool-lists.js';
+import { externalServerInventory, selectExternalServers, externalCatalog, EXTERNAL_SERVER_LIMITATIONS, scopeOpenCodeServers, retainExternalRefs, writePrivateMcpConfig, redactMcpValues, mcpDefinitionValues } from './lib/mcp-external-servers.js';
+import { openCodeWorkerData } from './lib/opencode-worker-data.js';
+import { resumeSandboxPlan } from './lib/worker-resume.js';
+import { waitForSynabunTools, synabunConfigured, invalidateSynabunTools, synabunToolsTimeoutText } from './lib/opencode-mcp-ready.js';
 import { connectClaudeSkin } from './lib/claude-skin-connect.js';
 import { createHistoryCollector, createChainIndex, transcriptNotFound } from './lib/claude-history.js';
 import { readPermissionRules, removePermissionRule, userSettingsFile } from './lib/claude-permission-rules.js';
@@ -14,11 +19,23 @@ import { createCodexPanelAuth } from './lib/codex-panel-auth.js';
 import { createCodexAccounts, applyCodexLaunchEnv, codexAppServerArgs, codexExecEnv } from './lib/codex-accounts.js';
 import { codexWindowsSandbox, codexWindowsSandboxArgs } from './lib/agent-sandbox-elevation.js';
 import { createAdminSandboxSetting } from './lib/agent-sandbox-setting.js';
+import { createWorkerGuardSetting } from './lib/worker-guard-setting.js';
+import { resolveWorkerConfinement } from './lib/worker-confinement.js';
+import { SANDBOX_EXEC, buildWorkerSandboxProfile, canonicalPath, sandboxExecArgv, sandboxExecAvailable, sandboxSupported, workerSandboxPlan, writeWorkerSandbox } from './lib/worker-sandbox.js';
+import { createWorkerMcpChannel } from './lib/worker-mcp-channel.js';
+import { createPageSession, PAGE_SECRET_PATHS, PAGE_SECRET_REFRESH_PATH, SERVICE_WORKER_PATH } from './lib/page-session.js';
+import { normalizeViewUrl } from './public/shared/view-variant.js';
+import { createPeerIdentity } from './lib/peer-identity.js';
+import { createOwnerAuthority } from './lib/owner-authority.js';
+import { collectRelayListenerPorts, localProxyPorts } from './lib/worker-relay-ports.js';
+import { machineNames } from './lib/machine-names.js';
+import { draftConfinementSupport } from './lib/skills/draft-confinement.js';
 import { createCodexAccountAuth } from './lib/codex-account-auth.js';
 import { registerProviderPanelApiKeyAuthRoutes, redactProviderSecrets, providerApiKeyBodyError, providerDiagnosticSink } from './lib/provider-panel-api-key-auth.js';
 import { createProviderPanelTerminalAuth, providerLoginSpec, registerProviderPanelTerminalAuthRoutes } from './lib/provider-panel-terminal-auth.js';
 import { claudeLegacyPricing, claudeUsageCostUsd } from './lib/assistant-pricing.js';
 import { HOOK_SCRIPTS, hookDefinitionsForEvent, hookCommandString, hookInstallBlocker, hookInstallPlan, isSynaBunHookCommand, sweepSettingsHooks, ensureHookRoot } from '../lib/claude-hooks.js';
+import { claudeHooksStatus } from './lib/claude-hooks-status.js';
 import { browserV2Enabled, browserRequestMiddleware, assertBrowserRequestActive, browserActionTimeout, markBrowserActionStarted, runBrowserRequest, cancellableBrowserDelay, measureBrowserPhase, createEngagementScheduler, engagementTargetSelector, isEngagementWriteSelector, isXShortcutPublish, isXScriptedWrite } from './lib/browser-execution.js';
 import { describeLocatorMatches, healLocatorByText, validNthMatch, captureTargetIdentity, matchesTargetIdentity } from './lib/browser-targets.js';
 import { getInteractiveHints, collectSemanticContext, buildAssist, describeTargetFacts, verifyHealTarget, createAssistContextStore } from './lib/browser-semantic-context.js';
@@ -107,7 +124,8 @@ import AdmZip from 'adm-zip';
 import { chromium } from 'playwright';
 import { NodeHtmlMarkdown } from 'node-html-markdown';
 import { VTermBuffer } from './public/shared/vterm-buffer.js';
-import { bindOpenCodeChildSessionProfile } from './public/shared/ocp-v2/ocp-v2-profile-inheritance.js';
+import { writeListItems, normalizeListUpdate } from './public/shared/whiteboard-list.js';
+import { bindOpenCodeChildSessionTools } from './public/shared/ocp-v2/ocp-v2-tools-inheritance.js';
 import { startIndexing, getIndexingStatus, mirrorExistingChunks } from './lib/session-indexer.js';
 import * as mcpInstaller from './lib/mcp-installer.js';
 import * as pluginInstaller from './lib/plugin-installer.js';
@@ -126,6 +144,7 @@ import { osPath } from './lib/os-path.js';
 import { createCliInstaller, CLI_INSTALL_GUIDES } from './lib/cli-install.js';
 import { createCliInstallApi, createCliPathApi, createGitBashApi } from './lib/cli-install-api.js';
 import { createAppControlsApi, createAppSettingsStore } from './lib/app-controls-api.js';
+import { createCrashNoticeApi } from './lib/crash-notice-api.js';
 import { createLoginStart } from './lib/login-start.js';
 import { createCliPathManager } from './lib/cli-path.js';
 import { composeTerminalPath, terminalLaunchCommand, terminalArgument } from './lib/terminal-path.js';
@@ -147,27 +166,45 @@ import {
 } from './lib/backup-zip-reader.js';
 import { planRestoreWrites, removeRestoreUpload, saveRestoreUpload } from './lib/system-restore.js';
 import * as opencodeV2Client from './lib/opencode-v2-client.js';
-import { basicAuthHeader, checkOpencodeServer, opencodeProblemText, protocolForVersion, serveSpecFor } from './lib/opencode-protocol.js';
+import { OPENCODE_MIN_VERSION, basicAuthHeader, checkPrivateOpencodeServer as checkOpencodeServer, createServeLogRedactor, opencodeInstallCommands, opencodeProblemText, opencodeSupportFor, redactServeOutput, servePasswordReader, serveSpecFor, serveUnsetCommand, withServeEnv } from './lib/opencode-protocol.js';
 import { SERVE_TOKEN_ENV } from './lib/process-identity.js';
-import { createServeRecords } from './lib/opencode-serve-records.js';
+import { commandArgs, createServeRecords } from './lib/opencode-serve-records.js';
 import { opencode2Proxy } from './lib/opencode2-proxy.js';
-import { opencodeDbFlavor, sessionTablesFor } from './lib/opencode-db-schema.js';
+import { integrationCredentialIds, integrationsWithCredentials } from './lib/opencode2-translate.js';
+import { OPENCODE_SESSION_TABLES, hasOpencodeSessionTables } from './lib/opencode-db-schema.js';
 import {
-  handleOpencodeV2Request, opencodeV2WsCapabilities, opencodeSdkVersion, buildOpencodeRuntimeMcpConfig, shouldRelayOpencodeV2Message,
+  OPENCODE_TOOL_ACTIONS, PERMISSION_EFFECTS, allowActions, appendRules, compactionOf, hasOpencode1Providers, mcpServersOf, mergedOpencodeConfig,
+  normalizeMcpServers, opencodeConfigDir, opencodeConfigFilePath, opencodeMcpServerEntry, permissionRulesOf,
+  providerOf, readOpencodeConfigDocument, readOpencodeConfigDocuments, removeMcpServer, removeProvider,
+  setActionEffect, setCompaction, setMcpServer, setProvider, setSnapshots, snapshotsOf, toolEffectsOf,
+  updateOpencodeConfigFile, withProviderTimeout,
+} from './lib/opencode-config.js';
+import {
+  handleOpencodeV2Request, opencodeV2WsCapabilities,
   buildSessionListQuery, mapSessionListRow, OPENCODE_V2_WS_MUTATION_TYPES, guardOpencodeV2Request,
 } from './lib/opencode-v2-ws-requests.js';
 import { NativeLoopRuntime, isNativeLoopProfile } from './lib/native-loop-runtime.js';
 import { migrateAutomationContextFiles, normalizeAutomationRecord } from './lib/automation-storage-migration.js';
 import { createLoopGoalJudge } from './lib/native-loop-goal.js';
-import { McpProfileRefreshCoordinator } from './lib/mcp-profile-refresh-coordinator.js';
-import { buildManagedOpenCodeSynabunEntry, withOpenCodeBrowserPolicy } from './lib/opencode-runtime-config.js';
+import { McpToolsRefreshCoordinator } from './lib/mcp-tools-refresh-coordinator.js';
+import { buildManagedOpenCodeSynabunEntry, buildSharedOpenCodeConfigOverlay, withOpenCodeBrowserPolicy } from './lib/opencode-runtime-config.js';
 import { codexReasoningEffort } from './lib/effort-levels.js';
 import {
   createClaudeNativeLoopAdapter,
   createCodexNativeLoopAdapter,
   createOpenCodeNativeLoopAdapter,
+  openCodeRunConfigFor,
+  openCodeRunEnvFor,
+  openCodeEvalSkillFor,
+  openCodeProtectedWorker,
+  LIVE_DATA_ENV,
 } from './lib/native-loop-providers.js';
 import { createOpenCodeActivityRelay } from './lib/opencode-worker-activity.js';
+import { browserServePortDenial } from './lib/browser-tool-policy.js';
+import { createNativeServeBoundary, nativeServeCapability } from './lib/opencode-native-boundary.js';
+const nativeServeBoundary = createNativeServeBoundary();
+import { setBrowserNetworkRule, usesNativeBrowserNetworkGuard, disposeBrowserNetworkGuard, MONEY_PATTERNS, SERVE_PORT_PATTERNS } from './lib/browser-network-guard.js';
+import { browserPolicyRoots } from './lib/browser-policy-roots.js';
 import {
   mergeCodexModelContextCapabilities,
   resolveCodexExtendedContext,
@@ -202,13 +239,15 @@ import {
   buildGeminiMcpEntry,
   mergeClaudeMcpConfig,
   mergeGeminiMcpConfig,
-  mergeOpenCodeMcpConfig,
 } from './lib/mcp-client-config.js';
 import {
   buildAgentDisallowedTools,
-  reconcileProfileServers,
-  selectProfileServerNames,
-} from './lib/mcp-profile-servers.js';
+  agentAccessFrom,
+  agentServerNames,
+} from './lib/mcp-agent-servers.js';
+import { toolCatalogView } from '../mcp-server/dist/services/tool-catalog.js';
+import { resolveToolList, serializeToolList } from '../mcp-server/dist/services/tool-list.js';
+import { storedToolList, runtimeToolsValue, toolListRecord, applyStoredToolList, automationPlatform, resolveStoredTools, requireToolList, readDefaultTools, writeDefaultTools } from './lib/tool-lists.js';
 import {
   CODEX_SIDEPANEL_APPROVAL_POLICY,
   CodexSidepanelPermissionStore,
@@ -253,12 +292,16 @@ import { createRootResolver } from './lib/skills/roots.js';
 import { createSkillsCatalog } from './lib/skills/catalog.js';
 import { createDeployer } from './lib/skills/deploy.js';
 import { createReviewQueue } from './lib/skills/reviews.js';
-import { createBridgeMigration, bridgeSignature } from './lib/skills/migration.js';
+import { createBridgeMigration, bridgeSignature, autoMigrationAllowed } from './lib/skills/migration.js';
 import { createSkillsService } from './lib/skills/service.js';
 import { createSkillsRuntimeChecks } from './lib/skills/runtime-checks.js';
 import { registerSkillsV2Routes } from './lib/skills/api-v2.js';
 import { createSkillCreations } from './lib/skills/creation.js';
 import { registerSkillCreationRoutes } from './lib/skills/creation-api.js';
+import { createSkillEvals } from './lib/skills/evals.js';
+import { registerSkillEvalRoutes } from './lib/skills/evals-api.js';
+import { evalConfinementSupport } from './lib/skills/eval-confinement.js';
+import { evalShellReadPaths, evalShellSupported, prepareEvalShell } from './lib/skills/eval-sandbox.js';
 import { urlProblem as skillSourceUrlProblem } from './public/shared/skills/ss-creation.js';
 import { claudeRowsToMessages, codexRolloutToMessages, opencodeRowsToMessages } from './lib/skills/creation-sources.js';
 import { renderSkillBody } from './public/shared/skills/ss-args.js';
@@ -315,6 +358,7 @@ import { launcherRegistrationAllowed, registerStartLauncher, startLauncherState 
 import { effectiveNpmPrefix } from '../lib/child-path.js';
 import { checkRuntimeDependencies, fallbackInstallArgs, fallbackInstallEnv, findInstalled, mcpCompiler, npmCommand, npmInvocation } from '../lib/runtime-dependencies.js';
 import { mcpDistBuilt } from '../lib/mcp-dist.js';
+import { STOP_MARKER_NAME, STOP_TOKEN_ENV, stopAnnouncement, writeStopMarker } from '../lib/server-exit.js';
 import { redactDeep, redactSecrets } from '../lib/log-redact.js';
 import { applyPackagedChildPath, durableEntry, mcpStdioCommand, npmGlobalBinFor, packagedNpmPrefix, packagedPathFolders, packagedRuntime } from '../lib/packaged-runtime.js';
 import { dataHomeId } from '../lib/desktop-app.js';
@@ -339,10 +383,9 @@ import {
   rebuildClaudeCache, rebuildCodexCache, rebuildOpencodeCache,
 } from './lib/session-cache-builder.js';
 import {
-  clearOpenCodeHistoryInWorker,
+  clearOpenCodeHistory,
   getOpenCodeHistoryStats,
   OPENCODE_HISTORY_CONFIRMATION,
-  OPENCODE2_HISTORY_REFUSAL,
 } from './lib/opencode-history.js';
 import {
   clearProjectStorageInWorker,
@@ -370,7 +413,8 @@ const __dirname = dirname(__filename);
 // Both node_modules an install can have: the package root's (`npm i -g synabun` puts every dependency there) and
 // the Neural Interface's own (a development checkout, a desktop build).
 try {
-  for (const root of new Set([__dirname, resolve(__dirname, '..')])) {
+  // SYNABUN_REPAIR_EXECUTABLES=off: a temporary instance booted beside the app leaves the real node_modules alone.
+  for (const root of (process.env.SYNABUN_REPAIR_EXECUTABLES === 'off' ? [] : new Set([__dirname, resolve(__dirname, '..')]))) {
     const sweep = ensureVendoredExecutables({ root, log: (msg) => console.log(msg) });
     for (const failure of sweep.failed) {
       console.warn(`[binaries] ${failure.path} is not launchable (${failure.state}).`
@@ -486,6 +530,25 @@ function isGuestRequest(req) {
 // match it (letter case, percent-escapes, a doubled slash, `;` parameters), not on the path as it was written.
 app.use(requestGates.adminOnly);
 app.use(requestGates.features);
+// Owner authority by peer-process identity (lib/peer-identity.js): for a request that asks for the page secret or
+// carries it, for one of the owner's writes (lib/owner-authority.js), and for one with a brain credential, the process
+// at the other end of the connection is looked up in the kernel's TCP table (macOS netstat, ~4 ms per new
+// connection, kept on the connection) and its parents walked: SynaBun's automation browser or any browser started
+// for automation, an AI agent's process tree, another SynaBun server or a relay (ssh, socat, a proxy, a tunnel, any
+// program that listens and calls SynaBun) is never handed the secret and never counts as the owner, whatever host,
+// cookie or marker it sends. A brain credential (X-Synabun-Brain-Token) from a process outside the brain's own tree
+// is dropped from the request. A lookup that cannot run changes nothing (the rules from before apply). Mounted here,
+// in front of every route (the page secret's pieces are made further down and read only when a request comes).
+// This install's root (PACKAGE_ROOT, defined further down): SynaBun's own MCP server over HTTP is the one listening
+// program the lookup knows, by its main script under it (mcp-server/dist/http.js, `npm run start:http`).
+const _peerIdentity = createPeerIdentity({ log: (line) => console.warn(line), disabled: String(process.env.SYNABUN_PEER_IDENTITY || '').toLowerCase() === 'off', synabunRoots: [resolve(__dirname, '..')] });
+// The one decision for the owner's routes and sockets (lib/owner-authority.js): every write to /api but the hooks'
+// and the agents' feature data, the two reads that hand out a secret, and the owner's sockets are refused to the
+// automation browser (its marker or its process), relays, other SynaBun servers, remote logins and an agent's tree
+// that does not say it is an agent's call. Requests from outside keep the guest rules.
+const _ownerAuthority = createOwnerAuthority({ pageSession: () => _pageSession, isRemote: (req) => requestGates.isRemote(req), peer: _peerIdentity, log: (line) => console.warn(line) });
+app.use(_peerIdentity.middleware({ needs: peerLookupWanted }));
+app.use(_ownerAuthority.restGate);
 
 import { registerCodexPlanRoutes } from './lib/codex-plan-store.js';
 import { createOpencodeHiddenModelsRouter, createOpencodeHiddenModelsStore } from './lib/opencode-hidden-models.js';
@@ -503,7 +566,7 @@ import { ownerRouteGuard } from './lib/http-guards.js';
 import { setUntrustedFileHeaders } from './lib/untrusted-file-headers.js';
 import { BUNDLED_LOGO_FILES, UPLOADED_IMAGE_PATH } from './lib/request-gate.js';
 import { createCloudflaredManager } from './lib/cloudflared/manager.js';
-import { createQuickTunnel } from './lib/cloudflared/tunnel.js';
+import { TUNNEL_KINDS, createQuickTunnel, tunnelsToPort } from './lib/cloudflared/tunnel.js';
 import { createGitBashManager } from './lib/git-bash/manager.js';
 import { settingsGitBashValue, syncClaudeSettingsGitBash } from './lib/git-bash/claude-settings.js';
 
@@ -888,6 +951,37 @@ app.use('/custom-icons', express.static(CUSTOM_ICONS_DIR, {
 app.use(function uploadedLogoHeaders(req, res, next) {
   const path = String(req.path || '').toLowerCase();
   if (UPLOADED_IMAGE_PATH.test(path) && (!BUNDLED_LOGO_FILES.includes(path) || isCategoryUpload(path))) setUntrustedFileHeaders(res, path);
+  next();
+});
+// The page secret (lib/page-session.js): one per boot, an HttpOnly cookie the app's own pages get, asked of the
+// owner's writes to Skills Studio and the Assistant. A worker never has it; a guest is never handed it. Named by
+// this server's port, as the browser's cookie jar is one for every localhost port. Made here, before the first
+// middleware that sets it. GET /api/page-session is how an open tab gets this boot's cookie after a restart
+// (public/shared/page-session.js retries the refused write once with it).
+// The page secret, asked of the peer lookup mounted in front of every route (_peerIdentity, above).
+const _pageSession = createPageSession({ port: Number(PORT), isGuest: isGuestRequest, peer: _peerIdentity });
+/** Whether a request asks for the page secret (the app's pages, the refresh route, the Studio's owner reads, the
+ *  service worker's script), is one of the owner's writes, or carries this boot's secret on an API request: only
+ *  then is its peer looked up. */
+function peerLookupWanted(req) {
+  const path = String(req.path || '');
+  if (req.method === 'GET' || req.method === 'HEAD') {
+    if (PAGE_SECRET_PATHS.includes(path) || path === PAGE_SECRET_REFRESH_PATH || path === SERVICE_WORKER_PATH) return true;
+    // A Studio read hands the owner's page the secret (lib/skills/api-v2.js reader, creation-api.js); an agent's read
+    // (its headers) never gets it, so it is not looked up.
+    if (path.startsWith('/api/skills-studio/') && !AGENT_HEADERS.some((name) => req.headers[name] !== undefined)) return true;
+  }
+  // One of the owner's writes, or a read that hands out a secret (lib/owner-authority.js).
+  if (_ownerAuthority.needsLookup(req)) return true;
+  return path.startsWith('/api/') && _pageSession.carriesSecret(req);
+}
+app.use(_pageSession.serviceWorker); // GET /sw.js: a worker that takes itself away, for a browser refused the secret
+app.use(_pageSession.pages);
+app.get('/api/page-session', (req, res) => _pageSession.refresh(req, res)); // PAGE_SECRET_REFRESH_PATH
+// Retired 2D bookmarks and explicit variant links always enter the 3D page. Keep their other URL state.
+app.get(['/', '/index.html', '/index2d.html'], (req, res, next) => {
+  const target = normalizeViewUrl(req.originalUrl);
+  if (target !== req.originalUrl) return res.redirect(target);
   next();
 });
 app.use(express.static(join(__dirname, 'public'), {
@@ -2227,9 +2321,67 @@ app.put('/api/settings', (req, res) => {
 let _shutdownInProgress = false;
 let _shutdownPromise = null;
 
+// A stop someone asked for (Stop Server, the desktop app quitting, an update,
+// uninstall, a signal) is said to the supervisor (setup.js,
+// lib/server-supervisor.js). The `exit` handler at the end of this file ends
+// the process by force, which Windows reports as exit code 1 and macOS / Linux
+// as SIGKILL, so without it the supervisor would take the stop for a crash and
+// start the server again (lib/server-exit.js). It is said twice over: the stop
+// marker in the data home, replaced whole, and a line on stdout with the token
+// this server was started with, which needs no disk. A marker that cannot be
+// written (a full, read-only or locked data folder) also leaves the exit at 0,
+// which the supervisor reads as a stop. A restart has its own marker and is
+// not a stop. Returns true when the marker is in place, false when it could not
+// be written, null when there is no supervisor to tell (or for a restart).
+//
+// A stop asked while a restart is under way (the desktop app quitting, Stop
+// Server, an update or a signal during /api/server/restart's shutdown) wins over
+// it: the later request decides. The restart's marker goes, the restart ends as
+// this stop (never with exit code 75), and the supervisor an unsupervised
+// restart started for itself is ended. A supervisor that still finds both
+// markers compares their times (lib/server-exit.js serverExitDecision).
+const SUPERVISOR_STOP_TOKEN = /^[0-9a-f]{32}$/.test(process.env[STOP_TOKEN_ENV] || '') ? process.env[STOP_TOKEN_ENV] : '';
+delete process.env[STOP_TOKEN_ENV]; // this server's only: nothing it starts inherits it
+let _stopMarked = false;
+let _stopAnnounced = false;
+let _stopOverridesRestart = false;
+let _stopOverridingReason = null; // the stop that called a restart off
+function noteRequestedStop(reason) {
+  if (reason === 'restart') return null;
+  if (_restartRequestedAt && !_stopOverridesRestart) {
+    _stopOverridesRestart = true;
+    _stopOverridingReason = reason;
+    // Said again below, the marker and the stop line, with this stop's time: later than the restart's.
+    _stopMarked = false;
+    _stopAnnounced = false;
+    try { rmSync(RESTART_MARKER, { force: true }); } catch (err) {
+      console.warn(`[server] Could not remove the restart marker (${err?.code || err?.message}): the supervisor goes by the later of the two requests.`);
+    }
+    try { _restartRespawn?.kill(); } catch {}
+    console.log(`[server] Stop requested (${reason}) while a restart was under way: this is a stop, the restart is called off.`);
+  }
+  if (process.env.SYNABUN_SUPERVISED !== '1') return null;
+  if (SUPERVISOR_STOP_TOKEN && !_stopAnnounced) {
+    _stopAnnounced = true;
+    try { process.stdout.write(`${stopAnnouncement(SUPERVISOR_STOP_TOKEN, reason)}\n`); } catch {}
+  }
+  if (_stopMarked) return true;
+  const written = writeStopMarker(resolve(DATA_HOME, STOP_MARKER_NAME), { reason, pid: process.pid, at: Date.now() }, { writeFileSync, renameSync, rmSync });
+  if (written.ok) { _stopMarked = true; return true; }
+  // The exit handler then lets the process end with the code it is given (0 on every stop path) instead of by force.
+  _preserveExitCode = true;
+  console.warn(`[server] Could not write the stop marker (${written.error}): this stop ends with exit code 0, which the supervisor reads as a stop.`);
+  return false;
+}
+
 function gracefulShutdown(reason = 'shutdown') {
-  if (_shutdownPromise) return _shutdownPromise;
+  if (_shutdownPromise) {
+    // A stop asked while another shutdown runs (a restart's) is still said: it calls that restart off.
+    noteRequestedStop(reason);
+    return _shutdownPromise;
+  }
   _shutdownInProgress = true;
+  noteRequestedStop(reason);
   _shutdownPromise = runGracefulShutdown(reason);
   return _shutdownPromise;
 }
@@ -2238,8 +2390,13 @@ async function runGracefulShutdown(reason) {
   console.log(`[server] gracefulShutdown(${reason}) — releasing children...`);
 
   // Native automation providers own SDK subprocesses/isolated serves that are
-  // not represented by the terminal or agent registries below.
-  try { await _nativeLoopRuntime?.shutdown(reason); } catch (err) { console.warn('  native loop stop err:', err?.message); }
+  // not represented by the terminal or agent registries below. First the
+  // Assistant's Claude Code workers that can continue are suspended (they resume
+  // on the next start, lib/assistant-dispatch.js), and the runtime keeps them;
+  // every other run is stopped. Either way each worker's CLI is ended now.
+  let keepRuns = [];
+  try { keepRuns = _assistantDispatcher?.suspendForShutdown?.(reason) || []; } catch (err) { console.warn('  assistant suspend err:', err?.message); }
+  try { await _nativeLoopRuntime?.shutdown(reason, { keep: keepRuns }); } catch (err) { console.warn('  native loop stop err:', err?.message); }
   try { stopAllIsolatedServes(); } catch (err) { console.warn('  isolated opencode stop err:', err?.message); }
   // The code editor's completion serve, and today's autocomplete counters.
   try { await editorCompletion.stop(); } catch (err) { console.warn('  editor completion stop err:', err?.message); }
@@ -2306,8 +2463,10 @@ async function runGracefulShutdown(reason) {
   // terminal too, which looks like a brief blink and no update on Windows.
   // Also skip for 'restart': the parent setup.js supervisor must survive so
   // it can respawn us. taskkill /T from this process would also kill the
-  // parent setup.js node process and break auto-restart.
-  if (process.platform === 'win32' && reason !== 'run-update' && reason !== 'restart') {
+  // parent setup.js node process and break auto-restart. A restart a later
+  // stop called off (noteRequestedStop) ends as that stop, this step included.
+  const ending = reason === 'restart' && _stopOverridesRestart ? _stopOverridingReason : reason;
+  if (process.platform === 'win32' && ending !== 'run-update' && ending !== 'restart') {
     try {
       // Use spawn(detached) so taskkill survives our own exit and finishes
       // killing children even if we exit before it completes.
@@ -2337,8 +2496,11 @@ const RESTART_EXIT_CODE = 75;
 let _preserveExitCode = false;
 const RESTART_MARKER = resolve(DATA_HOME, 'restart-requested');
 // When this server accepted a restart (0: it has not). From then on
-// /api/health says `restarting`, and a second request starts nothing more.
+// /api/health says `restarting` (until a later stop calls it off), and a second
+// request starts nothing more.
 let _restartRequestedAt = 0;
+// The supervisor an unsupervised restart started for itself: ended when a later stop calls the restart off.
+let _restartRespawn = null;
 app.post('/api/server/restart', async (req, res) => {
   const supervised = process.env.SYNABUN_SUPERVISED === '1';
   if (_restartRequestedAt) {
@@ -2360,7 +2522,7 @@ app.post('/api/server/restart', async (req, res) => {
 
   // Defer so the response flushes before we start tearing down children.
   setTimeout(async () => {
-    if (!supervised) {
+    if (!supervised && !_stopOverridesRestart) {
       // Detached fallback: spawn setup.js so a fresh server comes up after we exit.
       try {
         const setupPath = resolve(PACKAGE_ROOT, 'setup.js');
@@ -2377,14 +2539,17 @@ app.post('/api/server/restart', async (req, res) => {
           windowsHide: true,
         });
         child.unref();
+        _restartRespawn = child;
         console.log('[server] Detached setup.js spawned for unsupervised restart.');
       } catch (err) {
         console.error('[server] Detached respawn failed:', err?.message);
       }
     }
     await gracefulShutdown('restart');
-    if (supervised) _preserveExitCode = true; // supervisor needs RESTART_EXIT_CODE; skip SIGKILL
-    process.exit(supervised ? RESTART_EXIT_CODE : 0);
+    // A stop asked while it shut down (noteRequestedStop) ends it as that stop: no exit code 75, no new server.
+    const restart = !_stopOverridesRestart;
+    if (supervised && restart) _preserveExitCode = true; // supervisor needs RESTART_EXIT_CODE; skip SIGKILL
+    process.exit(supervised && restart ? RESTART_EXIT_CODE : 0);
   }, 200);
 });
 
@@ -2392,6 +2557,8 @@ app.post('/api/server/restart', async (req, res) => {
 // `npm uninstall synabun` (preuninstall.js) and the in-app updater.
 app.post('/api/server/shutdown', async (req, res) => {
   console.log('[server] Shutdown requested.');
+  // At once: an end in the moment before the shutdown below begins is still a stop that was asked for.
+  noteRequestedStop('shutdown');
   res.json({ ok: true, message: 'Server shutting down...' });
   setTimeout(async () => {
     await gracefulShutdown('shutdown');
@@ -2783,6 +2950,10 @@ app.post('/api/system/run-update', async (req, res) => {
     });
 
     console.log(`[server] Updater terminal launched (${installPlan.displayCommand}, autoRestart=${autoRestart}, stage=${staged.stageDir}). Shutting down...`);
+    // At once, as the shutdown route does: from here the updater replaces this install, and an end in the moment
+    // before the shutdown below (a crash, a forced stop) is a stop the supervisor must not undo by starting the server
+    // again while the package is being replaced.
+    noteRequestedStop('run-update');
     res.json({ ok: true, autoRestart, installPlan, stageDir: staged.stageDir, platform: plat });
 
     // Give the spawned terminal time to fully launch before we tear down
@@ -3524,41 +3695,46 @@ function getNativeCodexBin() {
 // the provider keys exported in .zshrc), naming the CLI the resolver found by
 // its full path; on Windows the opencode.exe found, started directly with the
 // PATH a new terminal has (a command file that leads nowhere: through cmd.exe,
-// every word escaped). A command line in Settings is run as written.
-// `protocol` is the OpenCode major it is (detectOpencodeProtocol): OpenCode 2
-// also gets its loopback host and a fresh password (lib/opencode-protocol.js
-// serveSpecFor), which the answer carries as `password`.
-function opencodeServeLaunch(port, { env = process.env, protocol = 1, password = null } = {}) {
+// every word escaped). A command line in Settings is run as written. The serve
+// gets its loopback host and a fresh password (lib/opencode-protocol.js
+// serveSpecFor). Every production serve uses `passwordFrom: 'stdout'`: no password variable at all
+// (the login shell unsets both after the profile ran): the serve prints the
+// password it made, `password` is null and the caller reads it from stdout.
+function opencodeServeLaunch(port, { env = process.env, password = null, passwordFrom = 'stdout' } = {}) {
   const found = cliResolver.launcher('opencode');
   _noteCliLookup('opencode', found, 'OpenCode');
   const line = configuredCommandLine('opencode');
-  const spec = serveSpecFor(protocol, port, { env, password });
+  const nativeWebSocketSafe = nativeServeCapability({ version: found.version, commandLine: !!line, passwordFrom });
+  nativeServeBoundary.assertLaunch(nativeWebSocketSafe);
+  const spec = serveSpecFor(port, { env, password, passwordFrom });
   const words = spec.args.join(' ');
   if (IS_WIN) {
     const spawnEnv = withPathEnv(spec.env, getAugmentedPath());
     if (!line && found.spec) {
       const launch = spawnArgsFor(found.spec, spec.args, { env: spawnEnv });
-      return { command: launch.command, args: launch.args, options: { ...launch.options, env: spawnEnv, windowsHide: true }, label: `${found.launchPath} ${words}`, password: spec.password };
+      return { command: launch.command, args: launch.args, options: { ...launch.options, env: spawnEnv, windowsHide: true }, label: `${found.launchPath} ${words}`, password: spec.password, passwordFrom: spec.passwordFrom, nativeWebSocketSafe };
     }
     const text = `${line || 'opencode'} ${words}`;
-    return { command: DEFAULT_SHELL, args: ['/d', '/s', '/c', text], options: { env: spawnEnv, windowsHide: true }, label: text, password: spec.password };
+    return { command: DEFAULT_SHELL, args: ['/d', '/s', '/c', text], options: { env: spawnEnv, windowsHide: true }, label: text, password: spec.password, passwordFrom: spec.passwordFrom, nativeWebSocketSafe };
   }
   const cmd = line || (found.path ? shellSingleQuote(found.path) : 'opencode');
+  const unset = spec.passwordFrom === 'stdout' ? `${serveUnsetCommand()}; ` : '';
   // A packaged application's runtime and npm after the user's own (the login shell adds the user's profile on top).
-  return { command: DEFAULT_SHELL, args: ['-lc', `exec ${cmd} ${words}`], options: { env: withPackagedPathLast(spec.env) }, label: `${cmd} ${words}`, password: spec.password };
+  return { command: DEFAULT_SHELL, args: ['-lc', `${unset}exec ${cmd} ${words}`], options: { env: withPackagedPathLast(spec.env) }, label: `${cmd} ${words}`, password: spec.password, passwordFrom: spec.passwordFrom, nativeWebSocketSafe };
 }
 
-// Which OpenCode major the binary SynaBun starts is: the resolver's `--version`
-// of it (cached by the file, so an upgrade in place is read again), then
-// lib/opencode-protocol.js protocolForVersion. `{ protocol: 1 | 2 | null,
-// major, version, supported, reason, path }`; `protocol` null with `supported`
-// false and a `major` is an OpenCode SynaBun does not speak (3 and later). A
-// command line in Settings has no version to read (`protocol` null, `major`
-// null): its serve is told apart by what answers (checkOpencodeServer).
-async function detectOpencodeProtocol({ force = false } = {}) {
+// Which OpenCode the binary SynaBun starts is: the resolver's `--version` of it
+// (cached by the file, so an upgrade in place is read again), then
+// lib/opencode-protocol.js opencodeSupportFor. `{ major, version, supported,
+// reason, path }`; `supported` false with a `major` is an OpenCode SynaBun does
+// not drive (OpenCode 0 and 1, OpenCode 2 older than OPENCODE_MIN_VERSION, 3
+// and later), `reason` the sentence that says so. A command line in Settings
+// has no version to read (`major` null): its serve's answer says which version
+// it is (checkOpencodeServer).
+async function detectOpencode({ force = false } = {}) {
   let found = cliResolver.launcher('opencode');
   if (configuredCommandLine('opencode')) {
-    return { protocol: null, major: null, version: null, supported: true, reason: null, path: null, commandLine: true };
+    return { major: null, version: null, supported: true, reason: null, path: null, commandLine: true };
   }
   let version = found.version || null;
   if (!version || force || found.state === 'unverified') {
@@ -3569,16 +3745,20 @@ async function detectOpencodeProtocol({ force = false } = {}) {
       version = found.version || version;
     } catch { /* the launch below says what is wrong */ }
   }
-  if (!found.path) return { protocol: null, major: null, version: null, supported: false, reason: 'OpenCode is not installed.', path: null };
-  return { ...protocolForVersion(version), path: found.path };
+  if (!found.path) return { major: null, version: null, supported: false, reason: 'OpenCode is not installed.', path: null };
+  return { ...opencodeSupportFor(version, { path: found.path }), path: found.path };
 }
 
-// The OpenCode major as far as it is known now, without starting anything (for
-// a command line built at once): the resolver's cached --version, else the
-// major the shared serve answered with, else 1.
-function knownOpencodeMajor() {
-  const fromVersion = protocolForVersion(cliResolver.launcher('opencode').version).protocol;
-  return fromVersion || _ocpProtocol || 1;
+// What a start of OpenCode is told before it writes or spawns anything: null for an OpenCode SynaBun drives (or one
+// whose version is not known here: a command line in Settings, which its serve's answer decides), else an error
+// with code OPENCODE_UNSUPPORTED whose message is detectOpencode's sentence (what was found, and how to get
+// OpenCode 2). Every start path throws it or answers with it: isolated serves, loops and schedules, workers.
+async function opencodeStartRefusal() {
+  const detected = await detectOpencode();
+  if (detected.major == null || detected.supported) return null;
+  const refusal = new Error(detected.reason);
+  refusal.code = 'OPENCODE_UNSUPPORTED';
+  return refusal;
 }
 
 function extractCodexConfigValues(result) {
@@ -3644,7 +3824,7 @@ function buildCodexSandboxPolicy(cwd = PACKAGE_ROOT, sandboxMode) {
 }
 
 const _codexOrphanedProcs = new Map(); // windowId:sessionId → orphan
-const _codexMcpProfileRuntimes = new Map(); // terminalId → live Codex app-server profile bridge
+const _codexToolsRuntimes = new Map(); // terminalId → live Codex app-server tool-list binding
 const _codexWriterRetirements = new CodexWriterRetirementRegistry();
 const _codexProcessRetirements = new WeakMap();
 function _codexOrphanKey(wid, sid) { return wid && sid ? `${wid}:${sid}` : null; }
@@ -3673,12 +3853,12 @@ const CODEX_WRITER_RETIRE_WAIT_MS = 5000;
 const CODEX_WRITER_SIGKILL_DELAY_MS = 2000;
 const CODEX_LOCAL_RELEASE_DISCOVERY_MS = 1750;
 const CODEX_ORPHAN_REATTACH_DISCOVERY_MS = 500;
-const MCP_PROFILE_REFRESH_DELAY_MS = 250;
-const CODEX_RUNTIME_PROFILE_ROOT = resolve(DATA_HOME, 'data', 'sidepanel-configs', 'codex');
-const _runtimeMcpProfileRefreshes = new McpProfileRefreshCoordinator({
-  delayMs: MCP_PROFILE_REFRESH_DELAY_MS,
+const MCP_TOOLS_REFRESH_DELAY_MS = 250;
+const CODEX_RUNTIME_TOOLS_ROOT = resolve(DATA_HOME, 'data', 'sidepanel-configs', 'codex');
+const _runtimeMcpToolsRefreshes = new McpToolsRefreshCoordinator({
+  delayMs: MCP_TOOLS_REFRESH_DELAY_MS,
   onError({ runtimeId, runtimeKind, error }) {
-    console.warn(`[mcp/profile] ${runtimeKind} refresh failed terminal=${runtimeId}: ${error?.message || error}`);
+    console.warn(`[mcp/tools] ${runtimeKind} refresh failed terminal=${runtimeId}: ${error?.message || error}`);
   },
 });
 
@@ -3772,30 +3952,29 @@ async function retireIdleCodexOrphansForWindow(windowId, {
   return { count: removed, timedOut: result.timedOut };
 }
 
-function getCodexRuntimeProfilePath(runtimeId) {
-  return resolve(CODEX_RUNTIME_PROFILE_ROOT, runtimeId, 'synabun-runtime-profile.json');
+function getCodexRuntimeToolsPath(runtimeId) {
+  return resolve(CODEX_RUNTIME_TOOLS_ROOT, runtimeId, 'synabun-tools.json');
 }
 
-function writeCodexRuntimeProfile(runtimeId, profile) {
-  const normalized = normalizeMcpProfileName(profile);
-  if (!isValidMcpProfileValue(normalized)) throw new Error(`Invalid MCP profile: ${normalized}`);
-  const profilePath = getCodexRuntimeProfilePath(runtimeId);
-  if (!existsSync(dirname(profilePath))) mkdirSync(dirname(profilePath), { recursive: true });
-  writeFileSync(profilePath, JSON.stringify({ profile: normalized }, null, 2) + '\n', 'utf8');
-  return profilePath;
+function writeCodexRuntimeTools(runtimeId, selection) {
+  const tools = toolsFromSelection(selection);
+  const toolsPath = getCodexRuntimeToolsPath(runtimeId);
+  if (!existsSync(dirname(toolsPath))) mkdirSync(dirname(toolsPath), { recursive: true });
+  writeFileSync(toolsPath, JSON.stringify({ tools, updatedAt: new Date().toISOString() }, null, 2) + '\n', 'utf8');
+  return toolsPath;
 }
 
-function cleanupCodexRuntimeProfile(runtimeId) {
-  const runtimeDir = resolve(CODEX_RUNTIME_PROFILE_ROOT, runtimeId);
+function cleanupCodexRuntimeTools(runtimeId) {
+  const runtimeDir = resolve(CODEX_RUNTIME_TOOLS_ROOT, runtimeId);
   try { if (existsSync(runtimeDir)) rmSync(runtimeDir, { recursive: true, force: true }); } catch {}
 }
 
-function scheduleRuntimeMcpProfileRefresh(terminalId, profile, runtimeKind, refresh) {
-  return _runtimeMcpProfileRefreshes.schedule(terminalId, profile, runtimeKind, refresh);
+function scheduleRuntimeMcpToolsRefresh(terminalId, profile, runtimeKind, refresh) {
+  return _runtimeMcpToolsRefreshes.schedule(terminalId, profile, runtimeKind, refresh);
 }
 
-function cancelRuntimeMcpProfileRefresh(terminalId) {
-  _runtimeMcpProfileRefreshes.cancel(terminalId);
+function cancelRuntimeMcpToolsRefresh(terminalId) {
+  _runtimeMcpToolsRefreshes.cancel(terminalId);
 }
 
 async function resolveOpenCodeMcpDirectory(entry, sessionIds) {
@@ -3844,8 +4023,244 @@ const _agentSandbox = createAdminSandboxSetting({
   log: (tag, message) => console.log(`[${tag}]`, message),
 });
 function adminSandboxOn() { return _agentSandbox.enabled(); }
+// Protect workers (lib/worker-guard-setting.js): what capability read-only / workspace means for every worker the
+// Assistant's dispatcher starts (lib/worker-confinement.js). Settings → Automations → Automation behavior.
+const _workerGuard = createWorkerGuardSetting({
+  path: resolve(DATA_HOME, 'data', 'worker-guard.json'),
+  broadcast: (message) => broadcastSync(message),
+  log: (tag, message) => console.log(`[${tag}]`, message),
+});
 /** The `-c` words every Codex SynaBun starts gets for the setting (outside an account's launch plan). */
 function codexSandboxArgs() { return codexWindowsSandboxArgs(adminSandboxOn()); }
+
+// ── Worker OS isolation (macOS Seatbelt) ─────────────────────────────────────
+// A guarded Claude / OpenCode worker (Protect workers = Enforce) runs its whole process tree under sandbox-exec
+// with a per-run profile (lib/worker-sandbox.js) that blocks outbound to SynaBun's control port and the other
+// local command/authority endpoints, and denies reads of SynaBun's auth secrets on disk. Its own SynaBun MCP
+// reaches SynaBun through the worker-only channel (_workerMcpChannel), a second loopback listener the profile
+// leaves open that serves only the MCP endpoint and a tight browser proxy, pins every request to the run, and
+// never honours a page cookie or a brain credential. This is macOS-only and fail-open: if anything about the
+// isolation cannot be set up, the worker launches as before (the in-code guard still applies) and says so, so a
+// live restart never loses worker dispatch to a sandbox that could not be built. Codex is handled differently
+// (its own sandbox cannot be wrapped): a guarded Codex worker runs with its network off (lib/native-loop-providers.js).
+let _workerMcpChannel = null;
+/** The launch beacon's loopback port (lib/start-launcher.js startBeaconPort): a SynaBun listener while a launch lives. */
+function workerBeaconPort() { const p = Number(PORT) || 3344; return p + 10000 <= 65535 ? p + 10000 : p - 10000; }
+/** Browser-control ports a guarded worker must not reach, by fixed knowledge (dynamic ones come from detection,
+ *  workerRelayPorts): MoreLogin's local API (a worker there starts another profile with its own CDP) and the CDP
+ *  port SynaBun's own attach mode uses. Denied even when nothing is listening at profile-generation time. */
+function workerBrowserControlPorts() {
+  const ports = new Set([...moreLogin.MORELOGIN_FIXED_API_PORTS]);
+  try { const p = moreLogin.getMoreLoginPort(loadBrowserConfig()); if (p > 0) ports.add(p); } catch {}
+  try { if (CDP_PORT > 0) ports.add(CDP_PORT); } catch {}
+  return [...ports];
+}
+/** SynaBun's MCP server over HTTP (mcp-server/dist/http.js reads MCP_HTTP_PORT from its environment or this data
+ *  home's .env, which this process loaded too; 3345 by default): SynaBun takes its pinned calls like an MCP tool's, so
+ *  a guarded worker must not reach it, also when it starts after the worker's profile was written. */
+function workerMcpHttpPort() { const p = Number(process.env.MCP_HTTP_PORT); return Number.isInteger(p) && p > 0 && p < 65536 ? p : 3345; }
+/** The ports a guarded worker's shell must not reach, on every address: SynaBun's control port + its WebSockets,
+ *  the launch beacon, the shared OpenCode serve, SynaBun's MCP server over HTTP, and the fixed browser-control ports.
+ *  The OpenCode move + isolated range (4096-4400) is denied separately as a range (workerOsIsolation), so a serve
+ *  allocated later is covered; the dynamic relay listeners of other SynaBun instances, OpenCode, MoreLogin's Chromium,
+ *  the Codex app-server and an MCP server over HTTP on another port are added per run by detection. The worker
+ *  channel is NEVER here — it stays open. */
+function workerDenyPorts() {
+  const channelPort = Number(_workerMcpChannel?.port?.()) || 0;
+  return [...new Set([Number(PORT) || 3344, workerBeaconPort(), Number(_ocpPort) || 4096, workerMcpHttpPort(), ...workerBrowserControlPorts()].filter((p) => p > 0 && p !== channelPort))];
+}
+/** The live relay-capable LISTEN ports (lib/worker-relay-ports.js), by process identity: every other SynaBun
+ *  instance's server, OpenCode serves on any port, MoreLogin's app / API / Chromium-CDP, Chromium remote-debugging,
+ *  the Codex app-server. Read with lsof + ps at profile generation; never throws (an empty set on any failure).
+ *  The worker-only MCP channel's own port is excluded — the profile must leave it open. */
+function workerRelayPorts() {
+  // The system tools by absolute path, with a plain environment and a short timeout each (macOS: netstat ~4 ms, ps
+  // ~20 ms): a missing, slow or empty answer is a FAILED detection ({ ok: false }), never "no relays", and the
+  // caller then writes the strict profile and says so. The local proxies the worker's internet goes through stay
+  // reachable (the server refuses them by identity when they relay to SynaBun).
+  const run = (file, args) => {
+    const out = spawnSync(file, args, { encoding: 'utf8', timeout: 2000, maxBuffer: 64 * 1024 * 1024, windowsHide: true, env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', LANG: 'C', LC_ALL: 'C' } });
+    if (out.error) throw out.error;
+    if (out.status !== 0) throw Object.assign(new Error(`${file} exited with ${out.status ?? out.signal}`), { code: `EXIT_${out.status ?? out.signal}` });
+    return String(out.stdout || '');
+  };
+  try {
+    let scutilText = '';
+    if (process.platform === 'darwin') { try { scutilText = run('/usr/sbin/scutil', ['--proxy']); } catch { /* no proxy settings readable: none kept */ } }
+    const result = collectRelayListenerPorts({ run, expectPort: Number(PORT) || null, expectPid: process.pid, keepPorts: localProxyPorts({ env: process.env, scutilText }) });
+    const channelPort = Number(_workerMcpChannel?.port?.()) || 0;
+    return { ok: result.ok, reason: result.reason, ports: result.ports.filter((p) => p !== channelPort) };
+  } catch (error) { return { ok: false, reason: error?.message || String(error), ports: [] }; }
+}
+/** This instance's home ($HOME-derived, where the worker's own runtime lives) and the REAL login home. They match
+ *  in production; a dev/test instance runs under a temp $HOME, so os.userInfo().homedir (getpwuid, ignores $HOME)
+ *  still points at the real owner, whose secrets a worker must not reach either. */
+function workerHomes() {
+  const envHome = (() => { try { return resolve(os.homedir()); } catch { return null; } })();
+  const realHome = (() => { try { return resolve(os.userInfo().homedir); } catch { return null; } })();
+  return { envHome, realHome, realIsSeparate: !!realHome && realHome !== envHome };
+}
+/** The data-home trees a worker neither reads nor writes: SynaBun's whole data home (secrets, other runs' task
+ *  text, the memory DB), ~/.synabun for this instance's home, and — on a dev/test instance — the REAL owner's
+ *  ~/.synabun too (os.userInfo().homedir, so a temp $HOME cannot leave the real .env / invite keys readable).
+ *  Allow-backs are added for what the run needs (its scratch / cwd / config). */
+function workerSecretTrees() {
+  const { envHome, realHome, realIsSeparate } = workerHomes();
+  const trees = new Set([resolve(DATA_HOME)]);
+  if (envHome) trees.add(resolve(envHome, '.synabun'));
+  if (realIsSeparate) trees.add(resolve(realHome, '.synabun'));
+  return [...trees];
+}
+/** Other runtimes' credential files this worker's runtime does not use (denied read+write). A worker's OWN runtime
+ *  credentials (its provider's auth store, under this instance's $HOME) are never listed here and stay readable —
+ *  documented in docs/assistant.md. On a dev/test instance the REAL owner's home is NOT this worker's own, so ALL
+ *  of its runtime creds are denied there (none are the worker's). Codex guarded workers are held by network-off,
+ *  not this profile, so they are never wrapped here. */
+function workerOtherRuntimeCreds(provider) {
+  const { envHome, realHome, realIsSeparate } = workerHomes();
+  const credsUnder = (home) => ({
+    claude: [resolve(home, '.claude.json'), resolve(home, '.claude', '.credentials.json')],
+    codex: [resolve(home, '.codex')],
+    // OpenCode 2 keeps provider credentials in its database (the credential table of opencode.db); an auth.json an
+    // OpenCode 1 left behind may still hold keys.
+    opencode: [
+      resolve(home, '.local', 'share', 'opencode', 'opencode.db'), resolve(home, '.local', 'share', 'opencode', 'opencode.db-wal'),
+      resolve(home, '.local', 'share', 'opencode', 'opencode.db-shm'),
+      resolve(home, '.config', 'opencode', 'auth.json'), resolve(home, '.local', 'share', 'opencode', 'auth.json'),
+    ],
+  });
+  const out = [];
+  if (envHome) {
+    const { claude, codex, opencode } = credsUnder(envHome);
+    // This instance's home: deny only the runtimes this worker does NOT use (its own stays readable).
+    if (provider === 'claude') out.push(...codex, ...opencode);
+    else if (provider === 'opencode') out.push(...claude, ...codex);
+    else out.push(...claude, ...codex, ...opencode);
+  }
+  if (realIsSeparate) {
+    // The real owner's home (dev/test instance only): deny all of its runtime creds — none are this worker's own.
+    const { claude, codex, opencode } = credsUnder(realHome);
+    out.push(...claude, ...codex, ...opencode);
+  }
+  return [...new Set(out)];
+}
+/** Is `p` strictly inside `root` (both canonicalised the way the profile matches)? */
+function pathStrictlyInside(p, root) {
+  try {
+    const cp = canonicalPath(resolve(String(p))); const cr = canonicalPath(resolve(String(root)));
+    return cp !== cr && cp.startsWith(cr.endsWith('/') ? cr : cr + '/');
+  } catch { return false; }
+}
+/** The run's own folders to allow back after the data-home deny: its scratch folder, its cwd when that is inside a
+ *  denied tree (skill-drafting workspaces), and — for OpenCode — its own isolated-serve config folder. */
+function workerAllowBacks(state, { xdgConfigDir = null } = {}) {
+  const allow = [];
+  if (state?.scratchDir) allow.push(resolve(state.scratchDir));
+  const trees = workerSecretTrees();
+  if (state?.cwd && trees.some((t) => pathStrictlyInside(state.cwd, t))) allow.push(resolve(state.cwd));
+  if (xdgConfigDir) allow.push(resolve(xdgConfigDir));
+  return [...new Set(allow)];
+}
+/**
+ * OS isolation for one guarded Claude / OpenCode run. Never throws. Returns one of:
+ *   • null — not applicable (not macOS / no working sandbox-exec, not an enforced guard, capability full).
+ *   • { failed:true, reason } — it SHOULD have applied (enforced guard on macOS) but could not (no scratch folder,
+ *     the channel is not up, the profile could not be written): the caller runs the worker with the in-code guard
+ *     and posts the fail-open note. This is the visible fail-open.
+ *   • { profilePath, wrapperPath, mcpUrl, browserBase, confinement } — applied.
+ * Writes the profile (and, for Claude, a wrapper that execs the real CLI under it) into the run's own scratch folder.
+ */
+function workerOsIsolation(state, { realExecutable = null, name = null } = {}) {
+  // Not macOS: OS isolation does not apply here at all (plain null, no note — documented as a platform limit).
+  if (!sandboxSupported()) return null;
+  const provider = name || state?.provider || 'worker';
+  let confinement = null;
+  try {
+    confinement = resolveWorkerConfinement({
+      capability: state.capability, cwd: state.cwd || null, mode: state.guardMode,
+      scratchDir: state.scratchDir || null, serverPort: Number(state.serverPort) || Number(PORT) || null,
+    });
+  } catch { confinement = null; }
+  if (!confinement || !confinement.enforced) return null; // full / warn / off: no OS sandbox, no note
+  // From here on an enforced guard on macOS WANTED the OS sandbox: any failure is a visible fall-back, not silence.
+  // The macOS sandbox tool itself missing or broken is the first such failure (was a silent null before item 5).
+  if (!sandboxExecAvailable()) return { failed: true, reason: 'the macOS sandbox tool (sandbox-exec) is unavailable' };
+  try {
+    if (!state?.scratchDir) return { failed: true, reason: 'the run has no scratch folder' };
+    if (!_workerMcpChannel?.isUp?.()) return { failed: true, reason: 'the worker-only MCP channel is not running' };
+    const xdgConfigDir = provider === 'opencode' ? resolve(DATA_HOME, 'data', 'loop-configs', `opencode-${state.runId}`) : null;
+    // The live relay listeners, by process identity (other SynaBun instances, OpenCode on any port, MoreLogin's
+    // Chromium CDP, a browser's DevTools port, a Node inspector, the Codex app-server, proxies and tunnels). When that
+    // detection fails (netstat / ps missing, slow or not believable) nothing local is known to be safe: the run gets
+    // the strict profile (no local port but the worker channel) and the transcript says so. The worker still starts.
+    const relays = workerRelayPorts();
+    const channelPort = Number(_workerMcpChannel.port?.()) || null;
+    const strict = relays.ok ? null : { allowPorts: channelPort ? [channelPort] : [] };
+    if (!relays.ok) { try { console.warn(`[worker-sandbox] relay detection failed for ${state?.runId || 'run'} (${relays.reason}); strict profile: no local port but the worker channel`); } catch {} }
+    let plan = workerSandboxPlan({
+      confinement,
+      serverPort: Number(PORT) || null,
+      // 4096-4400: the shared serve, its move targets, and every isolated serve (relays a worker could reach).
+      reservedPortRange: { from: OCP_SHARED_PORT_MIN, to: OCP_ISO_PORT_MAX },
+      // Static (SynaBun port, beacon, shared serve, fixed browser-control) + the live relay listeners detected by
+      // process identity.
+      extraDenyPorts: [...workerDenyPorts(), ...relays.ports],
+      denyPaths: [...workerSecretTrees(), ...workerOtherRuntimeCreds(provider)],
+      allowPaths: workerAllowBacks(state, { xdgConfigDir }),
+      strictLocal: strict,
+    });
+    if (!plan) return { failed: true, reason: 'the sandbox plan could not be built' };
+    if (state.resumingWorker && state.sandboxPlan) plan = resumeSandboxPlan(plan, state.sandboxPlan, channelPort);
+    state.onSandboxPlan?.(plan);
+    const profile = buildWorkerSandboxProfile(plan);
+    const selection = launchToolList(state, { provider: provider === 'claude' ? 'claude-code' : provider });
+    _workerMcpChannel.register(state.runId, { groups: selection.groups, mode: selection.effect });
+    const { profilePath, wrapperPath } = writeWorkerSandbox({ dir: state.scratchDir, profile, realExecutable, name: provider });
+    return { profilePath, wrapperPath, mcpUrl: _workerMcpChannel.url(state.runId), browserBase: _workerMcpChannel.base(state.runId), confinement, strict: relays.ok ? null : (relays.reason || 'the relay detection failed') };
+  } catch (error) {
+    const reason = error?.message || String(error);
+    try { console.warn(`[worker-sandbox] OS isolation not applied for ${state?.runId || 'run'}: ${reason}`); } catch {}
+    return { failed: true, reason };
+  }
+}
+/**
+ * The shell of an evaluation case that asks for one (`shell: true`, lib/skills/eval-sandbox.js): every command runs under
+ * the evaluation's own macOS sandbox (no network, no home folder or SynaBun data, writes in the job folder only),
+ * through a wrapper the runtime is told to use (Claude Code: CLAUDE_CODE_SHELL_PREFIX; OpenCode: SHELL). The runtime
+ * itself stays outside, with its sign-in, and an evaluation run never gets the workers' own sandbox around it (a
+ * sandbox cannot be applied inside another). Throws when it cannot be set up: the run does not start without it.
+ */
+function skillEvalShell(state, { provider, claudeConfigDir = null } = {}) {
+  if (!evalShellSupported()) throw new Error('This evaluation case needs a shell, which runs only under the macOS sandbox (sandbox-exec is not available here): the run did not start.');
+  const { envHome, realHome } = workerHomes();
+  const homes = [...new Set([envHome, realHome].filter(Boolean))];
+  const configDir = provider === 'claude-code' ? (claudeConfigDir || process.env.CLAUDE_CONFIG_DIR || (envHome ? resolve(envHome, '.claude') : null)) : null;
+  let prepared;
+  try {
+    let osEntries = [];
+    try { osEntries = osPath.cached(); } catch { osEntries = []; }
+    prepared = prepareEvalShell({
+      cwd: state.cwd, shell: process.env.SHELL, denyReadTrees: [...workerSecretTrees(), ...homes],
+      readOnly: evalShellReadPaths({ path: [String(process.env.PATH || ''), ...osEntries].join(':'), homes, claudeConfigDir: configDir }),
+      note: `${provider} ${state.runId || ''}`,
+    });
+  } catch (error) {
+    throw new Error(`This evaluation case needs a shell, and its sandbox could not be set up (${error?.message || error}): the run did not start.`);
+  }
+  const env = provider === 'claude-code' ? { ...prepared.env, CLAUDE_CODE_SHELL_PREFIX: prepared.wrapperPath } : { ...prepared.env, SHELL: prepared.wrapperPath };
+  try { state.onNote?.(`evaluation shell: every command runs under the evaluation's own macOS sandbox (${prepared.profilePath}): no network, no home folder or SynaBun data, writes in its job folder only.`); } catch {}
+  return { ...prepared, env };
+}
+/** The fail-open transcript note (item 5). English literal, matching settings.redesign.hooks.workerGuard.sandboxFallback
+ *  in i18n/en.json (pt-BR carries the translation). */
+function workerSandboxFallbackNote(reason) {
+  return `Protect workers couldn't apply the macOS sandbox to this run (${reason}); the built-in guard is active.`;
+}
+/** The strict-profile transcript note: the relay detection failed, so this run reaches no local server. English
+ *  literal, matching settings.redesign.hooks.workerGuard.sandboxStrict in i18n/en.json (pt-BR carries the translation). */
+function workerSandboxStrictNote(reason) {
+  return `Protect workers couldn't check which local programs could relay this run to SynaBun (${reason}), so its sandbox is stricter: local servers aren't reachable in this run (dev servers, tests that start a server, local proxies); the internet's web, SSH and DNS ports and SynaBun's own tools still work.`;
+}
 _agentSandbox.subscribe(() => {
   for (const connection of [..._codexLiveConnections]) {
     if (!connection.busy()) { try { connection.credentialsChanged(); } catch {} }
@@ -4032,7 +4447,7 @@ CRITICAL — When you need clarification during planning:
   let wsConnectionEpoch = null;
   let writerLifecycleState = { releaseRequested: false, operationsInFlight: 0 };
   let childRetirementPromise = null;
-  let codexMcpProfileState = { value: normalizeMcpProfileName(readActiveMcpProfile()) };
+  let codexToolsState = { value: ['all'] };
   let _codexOrphanBuffer = null;
   const pending = new Map(); // id -> { resolve, reject, timer }
   const pendingServerRequests = new Map();
@@ -4133,52 +4548,36 @@ CRITICAL — When you need clarification during planning:
     }
   }
 
-  function registerCodexMcpProfileRuntime() {
-    const profilePath = writeCodexRuntimeProfile(codexMcpRuntimeId, codexMcpProfileState.value);
+  function registerCodexToolsRuntime() {
+    const toolsPath = writeCodexRuntimeTools(codexMcpRuntimeId, codexToolsState.value);
     const binding = {
-      runtimeId: codexMcpRuntimeId,
-      profilePath,
-      catalogMode: 'deferred',
-      profileRefreshFailed: false,
-      get profile() { return codexMcpProfileState.value; },
+      runtimeId: codexMcpRuntimeId, toolsPath, catalogMode: 'deferred',
+      get tools() { return codexToolsState.value; },
       get sessionId() { return wsSessionId; },
-      setProfile(profile) {
-        const normalized = normalizeMcpProfileName(profile);
-        writeCodexRuntimeProfile(codexMcpRuntimeId, normalized);
-        codexMcpProfileState.value = normalized;
-        binding.profileRefreshFailed = false;
-        return normalized;
+      setTools(tools) {
+        writeCodexRuntimeTools(codexMcpRuntimeId, tools);
+        codexToolsState.value = tools;
+        return tools;
       },
-      confirmAgentProfile(profile, correlationId, hostRefresh = 'not-needed') {
-        if (_codexMcpProfileRuntimes.get(codexMcpRuntimeId) !== binding) return false;
-        if (codexMcpProfileState.value !== profile) return false;
-        binding.profileRefreshFailed = false;
-        sendToClient({
-          type: 'mcp_profile_changed',
-          profile,
-          defaultProfile: readActiveMcpProfile(),
-          presets: buildMcpProfilePresets(),
-          source: 'agent',
-          hostRefresh,
-          refreshCorrelationId: correlationId,
-          restarted: false,
-        });
-        console.log(`[mcp/profile] Codex deferred profile updated terminal=${codexMcpRuntimeId} profile=${profile} correlation=${correlationId}`);
+      confirmAgentTools(tools, correlationId, hostRefresh = 'not-needed') {
+        if (_codexToolsRuntimes.get(codexMcpRuntimeId) !== binding) return false;
+        if (serializeToolList(codexToolsState.value) !== serializeToolList(tools)) return false;
+        sendToClient({ type: 'mcp_tools_changed', tools, source: 'agent', hostRefresh, refreshCorrelationId: correlationId });
         return true;
       },
     };
     codexMcpRuntimeBinding = binding;
-    _codexMcpProfileRuntimes.set(codexMcpRuntimeId, binding);
-    return profilePath;
+    _codexToolsRuntimes.set(codexMcpRuntimeId, binding);
+    return toolsPath;
   }
 
-  function unregisterCodexMcpProfileRuntime({ cleanup = false } = {}) {
-    if (_codexMcpProfileRuntimes.get(codexMcpRuntimeId) === codexMcpRuntimeBinding) {
-      _codexMcpProfileRuntimes.delete(codexMcpRuntimeId);
+  function unregisterCodexToolsRuntime({ cleanup = false } = {}) {
+    if (_codexToolsRuntimes.get(codexMcpRuntimeId) === codexMcpRuntimeBinding) {
+      _codexToolsRuntimes.delete(codexMcpRuntimeId);
     }
-    cancelRuntimeMcpProfileRefresh(codexMcpRuntimeId);
+    cancelRuntimeMcpToolsRefresh(codexMcpRuntimeId);
     codexMcpRuntimeBinding = null;
-    if (cleanup) cleanupCodexRuntimeProfile(codexMcpRuntimeId);
+    if (cleanup) cleanupCodexRuntimeTools(codexMcpRuntimeId);
   }
 
   function requestCorrelation(requestId, requestInfo = {}, overrides = {}) {
@@ -4265,7 +4664,7 @@ CRITICAL — When you need clarification during planning:
       }
       pending.clear();
       childStdoutBuf = '';
-      unregisterCodexMcpProfileRuntime();
+      unregisterCodexToolsRuntime();
       child = null;
       childCredential = null;
       childWindowsSandbox = null;
@@ -4303,16 +4702,14 @@ CRITICAL — When you need clarification during planning:
     if (data && (data.type === 'ready' || (data.type === 'reattach_result' && data.ok))) {
       data = { ...data, ...codexCapabilitySnapshot() };
     }
-    const profiled = data && typeof data === 'object' && data.type === 'ready' && !data.mcpProfile
-      ? { ...data, mcpProfile: codexMcpProfileState.value }
-      : data;
-    const packet = profiled && typeof profiled === 'object'
+    const packetData = data;
+    const packet = packetData && typeof packetData === 'object'
       ? {
-          ...profiled,
+          ...packetData,
           ...(wsSessionId ? { sessionId: wsSessionId } : {}),
           ...(wsConnectionEpoch ? { connectionEpoch: wsConnectionEpoch } : {}),
         }
-      : profiled;
+      : packetData;
     if (_codexOrphanBuffer) { _codexOrphanBuffer.push(packet); return; }
     if (ws.readyState === 1) ws.send(JSON.stringify(packet));
   }
@@ -4420,7 +4817,7 @@ CRITICAL — When you need clarification during planning:
     const threadIds = ownedWriterThreadIds();
     shuttingDown = true;
     panelAuth.interrupted();
-    unregisterCodexMcpProfileRuntime({ cleanup: true });
+    unregisterCodexToolsRuntime({ cleanup: true });
     childRetirementPromise = (async () => {
       if (unsubscribe) await unsubscribeAllThreadsBeforeRetirement();
       return retireCodexProcess(proc, { codexHome, threadIds, reason });
@@ -5311,14 +5708,14 @@ CRITICAL — When you need clarification during planning:
     if (!launch.ok) throw new Error(launch.message);
     activeCodexHome = launch.home;
     let codexBin = getCodexBin();
-    const runtimeProfilePath = writeCodexRuntimeProfile(codexMcpRuntimeId, codexMcpProfileState.value);
+    const runtimeToolsPath = writeCodexRuntimeTools(codexMcpRuntimeId, ['all']);
     const args = [
       '-c',
-      `mcp_servers.SynaBun.env.SYNABUN_PROFILE=${JSON.stringify(codexMcpProfileState.value)}`,
+      `mcp_servers.SynaBun.env.SYNABUN_TOOLS=${JSON.stringify('all')}`,
       '-c',
       `mcp_servers.SynaBun.env.SYNABUN_TERMINAL_SESSION=${JSON.stringify(codexMcpRuntimeId)}`,
       '-c',
-      `mcp_servers.SynaBun.env.SYNABUN_RUNTIME_PROFILE_PATH=${JSON.stringify(runtimeProfilePath)}`,
+      `mcp_servers.SynaBun.env.SYNABUN_TOOLS_PATH=${JSON.stringify(runtimeToolsPath)}`,
       '-c',
       'mcp_servers.SynaBun.env.SYNABUN_TOOL_CATALOG_MODE="deferred"',
       'app-server',
@@ -5345,9 +5742,9 @@ CRITICAL — When you need clarification during planning:
     const env = {
       ...applyCodexLaunchEnv(process.env, launch),
       NO_COLOR: '1',
-      SYNABUN_PROFILE: codexMcpProfileState.value,
+      SYNABUN_TOOLS: 'all',
       SYNABUN_TERMINAL_SESSION: codexMcpRuntimeId,
-      SYNABUN_RUNTIME_PROFILE_PATH: runtimeProfilePath,
+      SYNABUN_TOOLS_PATH: runtimeToolsPath,
       SYNABUN_TOOL_CATALOG_MODE: 'deferred',
       ...(codexDesktopGrant ? { SYNABUN_DESKTOP_GRANT: codexDesktopGrant } : {}),
       ...(codexRole === 'assistant' && codexRouteGate?.env ? codexRouteGate.env : {}),
@@ -5370,8 +5767,9 @@ CRITICAL — When you need clarification during planning:
     childWindowsSandbox = launch.windowsSandbox;
     childRetirementPromise = null;
     writerLifecycleState.releaseRequested = false;
-    registerCodexMcpProfileRuntime();
-    console.log(`[codex-skin] Spawned app-server pid ${proc.pid || '?'} account=${activeAccountId} mode=${launch.mode || 'none'} windowsSandbox=${launch.windowsSandbox} profile=${codexMcpProfileState.value} runtime=${codexMcpRuntimeId} CODEX_HOME=${activeCodexHome}`);
+    codexToolsState.value = ['all'];
+    registerCodexToolsRuntime();
+    console.log(`[codex-skin] Spawned app-server pid ${proc.pid || '?'} account=${activeAccountId} mode=${launch.mode || 'none'} windowsSandbox=${launch.windowsSandbox} runtime=${codexMcpRuntimeId} CODEX_HOME=${activeCodexHome}`);
     proc.stdout.setEncoding('utf-8');
     proc.stdout.on('data', (chunk) => {
       if (child !== proc) return; // stale process from a previous account
@@ -5574,6 +5972,12 @@ CRITICAL — When you need clarification during planning:
         }
       }
     });
+    // A write that reaches an app-server as it exits fails on the pipe (EPIPE)
+    // after write() returned; unhandled, that error ended the whole server.
+    // Its 'close' below does the bookkeeping, and writeRpc refuses from then on.
+    proc.stdin.on('error', (err) => {
+      if (child === proc) console.warn('[codex-skin] app-server input closed:', err?.code || err?.message);
+    });
     proc.stderr.setEncoding('utf-8');
     const recordNativeDiagnostic = providerDiagnosticSink(text => {
       // Key-login attempts expose only structured, filtered errors to the UI.
@@ -5593,7 +5997,7 @@ CRITICAL — When you need clarification during planning:
     proc.on('close', (code) => {
       if (child !== proc) return; // a newer process replaced this one (e.g. account switch)
       panelAuth.interrupted();
-      unregisterCodexMcpProfileRuntime();
+      unregisterCodexToolsRuntime();
       const wasShuttingDown = shuttingDown;
       child = null;
       initialized = false;
@@ -5668,7 +6072,7 @@ CRITICAL — When you need clarification during planning:
           const failed = child;
           child = null;
           childCredential = null;
-          unregisterCodexMcpProfileRuntime();
+          unregisterCodexToolsRuntime();
           try { failed?.kill('SIGTERM'); } catch {}
           throw new Error('Codex could not start on this account\'s API key. Save the key again, or switch the account to its ChatGPT sign-in.');
         } finally { apiKey = null; }
@@ -5716,7 +6120,7 @@ CRITICAL — When you need clarification during planning:
     }
     pending.clear();
     childStdoutBuf = '';
-    unregisterCodexMcpProfileRuntime();
+    unregisterCodexToolsRuntime();
     child = null;
     if (old) {
       await retireCodexProcess(old, {
@@ -5768,7 +6172,7 @@ CRITICAL — When you need clarification during planning:
     pending.clear();
     pendingServerRequests.clear();
     childStdoutBuf = ''; // drop any partial line from the outgoing process
-    unregisterCodexMcpProfileRuntime();
+    unregisterCodexToolsRuntime();
     child = null; // detach so old.on('close') sees child !== old and bails
     if (old) {
       retireCodexProcess(old, {
@@ -5780,57 +6184,6 @@ CRITICAL — When you need clarification during planning:
     await ensureInitialized();
   }
 
-  async function switchCodexMcpProfile(profile, {
-    threadId = null,
-    cwd = PACKAGE_ROOT,
-    model = null,
-    contextMode = 'default',
-  } = {}) {
-    if (activeTurnId || pendingServerRequests.size) {
-      throw new Error('Wait for the active Codex turn to finish before changing its MCP profile.');
-    }
-    const normalized = normalizeMcpProfileName(profile);
-    if (!buildMcpProfilePresets()[normalized]) throw new Error(`Unknown MCP profile: ${normalized}`);
-    if (normalized === codexMcpProfileState.value && child && initialized && !codexMcpRuntimeBinding?.profileRefreshFailed) {
-      return { profile: normalized, restarted: false, threadId: threadId || activeThreadId || null };
-    }
-
-    const resumeId = threadId || activeThreadId || null;
-    const old = child;
-    const oldHome = activeCodexHome;
-    const oldThreadIds = ownedWriterThreadIds();
-    codexMcpProfileState.value = normalized;
-    initialized = false;
-    bootPromise = null;
-    activeThreadId = null;
-    appBoundary.invalidate();
-    displayedThreadId = null;
-    activeTurnId = null;
-    activeThreadRuntimeFingerprint = null;
-    subscribedThreadIds.clear();
-    threadOwnerRoots.clear();
-    activeTurnAutoAccept = false;
-    for (const [, entry] of pending) {
-      try { clearTimeout(entry.timer); entry.reject(new Error('Codex MCP profile switched')); } catch {}
-    }
-    pending.clear();
-    pendingServerRequests.clear();
-    childStdoutBuf = '';
-    unregisterCodexMcpProfileRuntime();
-    child = null;
-    if (old) {
-      retireCodexProcess(old, {
-        codexHome: oldHome,
-        threadIds: oldThreadIds,
-        reason: 'Codex MCP profile switched',
-      });
-    }
-
-    await ensureInitialized();
-    if (resumeId) await resumeThread(resumeId, cwd, { model, contextMode });
-    else sendToClient({ type: 'ready', threadId: null });
-    return { profile: normalized, restarted: true, threadId: resumeId };
-  }
 
   async function bootstrapThread(threadId, cwd = PACKAGE_ROOT) {
     await ensureInitialized();
@@ -6297,10 +6650,8 @@ CRITICAL — When you need clarification during planning:
       if (msg.type === 'reattach') {
         const wid = msg.windowId;
         const reqAccountId = msg.accountId || 'default';
-        const reqMcpProfile = normalizeMcpProfileName(msg.mcpProfile || readActiveMcpProfile());
         if (!wid) {
           setActiveCodexAccount(reqAccountId);
-          codexMcpProfileState.value = reqMcpProfile;
           sendToClient({ type: 'reattach_result', ok: false });
           return;
         }
@@ -6325,15 +6676,7 @@ CRITICAL — When you need clarification during planning:
         const orphanRegistryKey = orphanMatch?.key || okey;
         const orphan = orphanMatch?.orphan || null;
         const orphanAccountId = orphan?.accountId || 'default';
-        const orphanMcpProfile = normalizeMcpProfileName(
-          orphan?.mcpProfileState?.value || orphan?.mcpProfile || readActiveMcpProfile(),
-        );
-        const orphanProfileChangedWhileDetached = !!orphan?.mcpProfileState
-          && normalizeMcpProfileName(orphan.mcpProfileState.value) !== normalizeMcpProfileName(orphan.mcpProfile);
-        const orphanSettingsMismatch = !!orphan && (
-          orphanAccountId !== reqAccountId
-          || (!orphanProfileChangedWhileDetached && orphanMcpProfile !== reqMcpProfile)
-        );
+        const orphanSettingsMismatch = !!orphan && orphanAccountId !== reqAccountId;
         const orphanIsBusy = !!orphan && orphan.isIdle?.() !== true;
         const orphanProcessExited = !orphan?.child
           || orphan.child.exitCode != null
@@ -6350,23 +6693,21 @@ CRITICAL — When you need clarification during planning:
             }
           }
           setActiveCodexAccount(reqAccountId);
-          codexMcpProfileState.value = reqMcpProfile;
           sendToClient({ type: 'reattach_result', ok: false });
           return;
         }
         if (orphanSettingsMismatch && orphanIsBusy) {
-          console.warn(`[codex-writer] Reattaching active orphan with pinned account/profile session=${wsSessionId || 'unknown'} account=${orphanAccountId} profile=${orphanMcpProfile}`);
+          console.warn(`[codex-writer] Reattaching active orphan with pinned account session=${wsSessionId || 'unknown'} account=${orphanAccountId}`);
         }
         clearTimeout(orphan.killTimer);
         child = orphan.child;
         if (orphan.capabilityRegistry) codexCapabilities = orphan.capabilityRegistry;
         codexMcpRuntimeId = orphan.mcpRuntimeId || codexMcpRuntimeId;
         codexMcpRuntimeBinding = orphan.mcpRuntimeBinding
-          || _codexMcpProfileRuntimes.get(codexMcpRuntimeId)
+          || _codexToolsRuntimes.get(codexMcpRuntimeId)
           || null;
         setActiveCodexAccount(orphanAccountId);
-        codexMcpProfileState = orphan.mcpProfileState || { value: orphanMcpProfile };
-        codexMcpProfileState.value = orphanMcpProfile;
+        codexToolsState = orphan.toolsState || { value: ['all'] };
         initialized = orphan.initialized;
         activeThreadId = orphan.activeThreadId;
         appBoundary.invalidate();
@@ -6433,7 +6774,7 @@ CRITICAL — When you need clarification during planning:
           running: !!activeTurnId && String(displayedThreadId || activeThreadId || '') === String(activeThreadId || ''),
           activeTurnId,
           accountId: activeAccountId,
-          mcpProfile: codexMcpProfileState.value,
+
         });
         return;
       }
@@ -6449,37 +6790,7 @@ CRITICAL — When you need clarification during planning:
         }
         // Resolve the tab's account BEFORE first spawn so CODEX_HOME is correct.
         if (!child && msg.accountId) setActiveCodexAccount(msg.accountId);
-        if (!child) codexMcpProfileState.value = normalizeMcpProfileName(msg.mcpProfile || readActiveMcpProfile());
         await bootstrapThread(msg.threadId || null, msg.cwd || PACKAGE_ROOT);
-        return;
-      }
-      if (msg.type === 'mcp_profile_get') {
-        sendToClient({
-          type: 'mcp_profile_changed',
-          requestId: msg.requestId || null,
-          profile: codexMcpProfileState.value,
-          defaultProfile: readActiveMcpProfile(),
-          presets: buildMcpProfilePresets(),
-          restarted: false,
-        });
-        return;
-      }
-      if (msg.type === 'mcp_profile_set') {
-        const result = await withCodexWriterOperation('mcp_profile_set', () => (
-          switchCodexMcpProfile(msg.profile, {
-            threadId: msg.threadId || activeThreadId,
-            cwd: msg.cwd || PACKAGE_ROOT,
-            model: msg.model || null,
-            contextMode: msg.contextMode || 'default',
-          })
-        ));
-        sendToClient({
-          type: 'mcp_profile_changed',
-          requestId: msg.requestId || null,
-          ...result,
-          defaultProfile: readActiveMcpProfile(),
-          presets: buildMcpProfilePresets(),
-        });
         return;
       }
       if (msg.type === 'permission_roots_list') {
@@ -7480,8 +7791,8 @@ CRITICAL — When you need clarification during planning:
           accountId: activeAccountId,
           codexHome: activeCodexHome,
           capabilityRegistry: codexCapabilities,
-          mcpProfile: codexMcpProfileState.value,
-          mcpProfileState: codexMcpProfileState,
+
+          toolsState: codexToolsState,
           mcpRuntimeId: codexMcpRuntimeId,
           mcpRuntimeBinding: codexMcpRuntimeBinding,
           writerLifecycleState,
@@ -7773,10 +8084,8 @@ let _ocpBaseUrl = () => `http://127.0.0.1:${_ocpPort}`;
 let _ocpStarting = false;
 let _ocpReady = false;
 let _ocpVersion = null;
-// The OpenCode major the shared serve speaks (1 or 2; null until one answered),
-// the password SynaBun gave the OpenCode 2 serve it started, and the sentence
-// that says why OpenCode cannot be used (shown by the panel and the tray).
-let _ocpProtocol = null;
+// The password SynaBun gave the shared serve it started, and the sentence that
+// says why OpenCode cannot be used (shown by the panel, Settings and the tray).
 let _ocpPassword = null;
 let _ocpProblem = null;
 let _ocpHistoryClearInProgress = false;
@@ -7796,14 +8105,10 @@ const opencodeServeRecords = createServeRecords({
 migrateOpencodeManagedPid();
 let _ocpBootReconcileTried = false;
 let _ocpLastBootAt = 0;           // Date.now() when serve process last became ready
-let _ocpAuthReconciling = false;  // prevent concurrent reconciliation
-let _ocpAuthStaleNoted = 0;       // the boot whose server SynaBun said it would not restart (once per boot)
 
 // ── Verbose trace logging (opt-in: OCP_VERBOSE=1 to enable) ──
 const OCP_VERBOSE = process.env.OCP_VERBOSE === '1';
 let _ocpTraceSeq = 0;
-function _ocpNow() { return Number(process.hrtime.bigint() / 1_000_000n); }
-function _ocpMs(start) { return _ocpNow() - start; }
 function _ocpTraceId() { return `t${Date.now().toString(36)}-${(++_ocpTraceSeq).toString(36)}`; }
 function ocpTrace(tag, fields = {}) {
   if (!OCP_VERBOSE) return;
@@ -7816,49 +8121,37 @@ function ocpTrace(tag, fields = {}) {
   }
   console.log(`[ocp-trace] ${tag}${parts.length ? ' ' + parts.join(' ') : ''}`);
 }
-function _ocpByteLen(text) {
-  if (text == null) return 0;
-  try { return Buffer.byteLength(typeof text === 'string' ? text : JSON.stringify(text), 'utf8'); } catch { return 0; }
-}
 
-function getOpencodeAuthPath() {
-  const xdgDataHome = process.env.XDG_DATA_HOME;
-  if (xdgDataHome) return join(xdgDataHome, 'opencode', 'auth.json');
-  const homeDir = os.homedir();
-  const localSharePath = join(homeDir, '.local', 'share', 'opencode', 'auth.json');
-  if (process.platform !== 'win32' || existsSync(localSharePath)) return localSharePath;
-  return join(homeDir, '.opencode', 'auth.json');
+// OpenCode's configuration folder (OPENCODE_CONFIG_DIR, else $XDG_CONFIG_HOME/opencode, else ~/.config/opencode)
+// and the global document SynaBun writes there, opencode.json (lib/opencode-config.js: OpenCode 2 reads
+// opencode.json and opencode.jsonc, never config.json).
+function getOpencodeConfigDir() {
+  return opencodeConfigDir({ env: process.env });
 }
 
 function getOpencodeConfigPath() {
-  const xdgConfigHome = process.env.XDG_CONFIG_HOME;
-  const configDir = xdgConfigHome
-    ? join(xdgConfigHome, 'opencode')
-    : join(os.homedir(), '.config', 'opencode');
-  return join(configDir, 'config.json');
+  return opencodeConfigFilePath(getOpencodeConfigDir());
+}
+
+// The user's global configuration as OpenCode 2 reads it: opencode.json, then opencode.jsonc over it.
+function readOpencodeGlobalConfig() {
+  const documents = readOpencodeConfigDocuments(getOpencodeConfigDir());
+  return { config: mergedOpencodeConfig(documents), documents };
 }
 
 function ensureOpencodeConfigFile() {
   const configPath = resolve(getOpencodeConfigPath());
-  const configDir = dirname(configPath);
-  if (!existsSync(configDir)) mkdirSync(configDir, { recursive: true });
-  if (!existsSync(configPath)) writeFileSync(configPath, '{}\n', 'utf8');
+  if (!existsSync(configPath)) updateOpencodeConfigFile(getOpencodeConfigDir(), (cfg) => cfg);
   return configPath;
 }
 
-// Persist an MCP server entry to ~/.config/opencode/config.json so it survives restarts.
-// config.json uses type:"local" with command as an array and "environment" (not "env").
-// The runtime POST /mcp API uses type:"stdio" with command string + args array — we translate.
+// Persist an MCP server entry to the global opencode.json so it survives restarts: OpenCode 2's
+// `mcp.servers.<name>` (type local with the command as an array and `environment`, or type remote), from what
+// SynaBun describes as { command, args, env } or { url, headers }. OpenCode reads the change at once.
 function persistMcpToOpencodeConfig(name, mcpConfig) {
-  const configPath = getOpencodeConfigPath();
-  let cfg = {};
-  try {
-    if (existsSync(configPath)) cfg = JSON.parse(readFileSync(configPath, 'utf8'));
-  } catch {}
-  cfg = mergeOpenCodeMcpConfig(cfg, name, mcpConfig);
-  const configDir = join(configPath, '..');
-  if (!existsSync(configDir)) mkdirSync(configDir, { recursive: true });
-  writeFileSync(configPath, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+  const entry = opencodeMcpServerEntry(mcpConfig);
+  if (String(name).toLowerCase() === 'synabun') entry.codemode = false;
+  const configPath = updateOpencodeConfigFile(getOpencodeConfigDir(), (cfg) => setMcpServer(cfg, name, entry));
   console.log(`[opencode] Persisted MCP server "${name}" to ${configPath}`);
 }
 
@@ -7878,9 +8171,34 @@ function migrateOpencodeManagedPid() {
 // spawned process's record goes with its exit, which Node has seen; a process it started that outlives it stays on
 // record until it has provably ended. Every serve SynaBun starts comes through here: the shared serve, the isolated
 // serves, the completion serve.
-function trackOpencodeServe(proc, { kind, id = null, port, token }) {
+// The ports SynaBun's own OpenCode serves hold right now: every spawn goes through trackOpencodeServe (shared,
+// isolated, completion), and the shared serve counts while it answers (an adopted one too). The automation browser
+// never opens them (installServePortGuard).
+const _opencodeServePortCounts = new Map(); // port → live spawns on it
+function liveOpencodeServePorts() {
+  const ports = new Set(_opencodeServePortCounts.keys());
+  if (_ocpReady && Number(_ocpPort) > 0) ports.add(Number(_ocpPort));
+  return ports;
+}
+function noteOpencodeServePort(port, delta) {
+  const p = Number(port);
+  if (!(p > 0)) return;
+  const next = (_opencodeServePortCounts.get(p) || 0) + delta;
+  if (next > 0) _opencodeServePortCounts.set(p, next); else _opencodeServePortCounts.delete(p);
+}
+
+function trackOpencodeServe(proc, { kind, id = null, port, token, nativeWebSocketSafe = false }) {
+  nativeServeBoundary.track(proc, { port, safe: nativeWebSocketSafe });
   const pid = Number(proc?.pid) || null;
   const exited = () => !proc || proc.exitCode != null || proc.signalCode != null;
+  if (!exited()) {
+    noteOpencodeServePort(port, 1);
+    let released = false;
+    const release = () => { if (!released) { released = true; noteOpencodeServePort(port, -1); } };
+    proc.once?.('exit', release);
+    // A spawn that failed (no pid) may never exit; a failed kill leaves the process running.
+    proc.once?.('error', () => { if (!proc.pid || exited()) release(); });
+  }
   const spawned = pid ? opencodeServeRecords.record({ kind, id, port, pid, token }).catch(() => null) : Promise.resolve(null);
   let started = Promise.resolve(null);
   const forget = () => {
@@ -7894,6 +8212,10 @@ function trackOpencodeServe(proc, { kind, id = null, port, token }) {
     async answering() {
       await spawned;
       const who = await opencodeServeRecords.answering({ port, pid, exited });
+      // Every caller has already passed private HTTP/WS readiness. A port
+      // collision never becomes a native capability; a new native attachment
+      // must wait until this check, including starts already under way.
+      if (who.state !== 'foreign' && !exited()) nativeServeBoundary.ready(proc);
       if (who.state !== 'ours') return who.state;
       // Read again now that it answers (its login shell has exec'd OpenCode by now), and the process that answers
       // when the spawned one started it.
@@ -7953,77 +8275,6 @@ function signalOwnedOpencodeProcess(record, signal) {
   return signalPids([record.pid], signal).length > 0;
 }
 
-function parseOpencodeLogTimestamp(fileName) {
-  const match = /^(\d{4}-\d{2}-\d{2})T(\d{2})(\d{2})(\d{2})\.log$/.exec(String(fileName || ''));
-  if (!match) return 0;
-  const [, day, hh, mm, ss] = match;
-  const parsed = Date.parse(`${day}T${hh}:${mm}:${ss}Z`);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function getLatestOpencodeLogStartedAt() {
-  try {
-    const logDir = join(dirname(getOpencodeAuthPath()), 'log');
-    const latest = readdirSync(logDir)
-      .filter((name) => name.endsWith('.log'))
-      .sort()
-      .at(-1);
-    return parseOpencodeLogTimestamp(latest);
-  } catch {}
-  return 0;
-}
-
-function hasStoredOpencodeAuth() {
-  try {
-    const authPath = getOpencodeAuthPath();
-    if (!existsSync(authPath)) return false;
-    const auth = JSON.parse(readFileSync(authPath, 'utf8'));
-    return Object.keys(auth || {}).length > 0;
-  } catch {}
-  return false;
-}
-
-function shouldReconcileOpencodeForStoredAuth() {
-  if (!hasStoredOpencodeAuth()) return false;
-  try {
-    const authStartedAt = existsSync(getOpencodeAuthPath()) ? statSync(getOpencodeAuthPath()).mtimeMs : 0;
-    const serverStartedAt = getLatestOpencodeLogStartedAt();
-    return authStartedAt > 0 && serverStartedAt > 0 && authStartedAt > serverStartedAt + 1000;
-  } catch {}
-  return false;
-}
-
-// Runtime auth reconciliation: restart serve if auth.json changed since last boot. Automatic, so only a serve
-// SynaBun can prove is its own is restarted (its child, or its recorded serve that is still that process); a
-// server someone else runs is used as it is, and said once.
-async function reconcileAuthIfStale() {
-  if (_ocpAuthReconciling || !_ocpReady || !_ocpLastBootAt) return false;
-  try {
-    const authPath = getOpencodeAuthPath();
-    if (!existsSync(authPath)) return false;
-    const authMtime = statSync(authPath).mtimeMs;
-    if (authMtime <= _ocpLastBootAt) return false;
-    if (!_ocpProc && !verifiedOpencodeManagedProcess({ port: _ocpPort })) {
-      if (_ocpAuthStaleNoted !== _ocpLastBootAt) {
-        _ocpAuthStaleNoted = _ocpLastBootAt;
-        console.warn(`[opencode] auth.json changed, but the OpenCode server on port ${_ocpPort} was not started by SynaBun: it is not restarted (it shows the new credentials once whoever runs it restarts it)`);
-      }
-      return false;
-    }
-    _ocpAuthReconciling = true;
-    console.log('[opencode] auth.json modified after last boot — restarting to pick up new credentials');
-    await takeoverOpencodeServer();
-    broadcastToOpencodeV2Clients({ type: 'providers:changed' });
-    console.log('[opencode] Restart complete after auth reconciliation');
-    return true;
-  } catch (err) {
-    console.error('[opencode] Auth reconciliation failed:', err.message);
-    return false;
-  } finally {
-    _ocpAuthReconciling = false;
-  }
-}
-
 function listPortListenerPids(port) {
   if (!port || process.platform === 'win32') return [];
   try {
@@ -8067,15 +8318,15 @@ function opencodeV2ClientOwnsRun(ws, run) {
 const OPENCODE_NATIVE_MUTATION_TYPES = new Set([
   'session:update', 'session:delete', 'message:send', 'message:abort',
   'session:compact', 'permission:reply', 'question:reply', 'question:reject',
-  'mcp:profile:set',
+  'mcp:tools:set',
   ...OPENCODE_V2_WS_MUTATION_TYPES,
 ]);
 const OPENCODE_HISTORY_WRITE_TYPES = new Set([
   'session:create', 'session:update', 'session:delete', 'session:compact',
-  'session:revert', 'session:unrevert', 'session:summarize', 'session:share',
+  'session:revert', 'session:unrevert', 'session:summarize',
   'message:send', 'message:abort',
   'permission:reply', 'permission:respond', 'question:reply', 'question:reject',
-  'mcp:profile:set', 'mcp:add', 'config:write', 'auth:set',
+  'mcp:tools:set', 'mcp:add', 'config:write', 'auth:set',
   ...OPENCODE_V2_WS_MUTATION_TYPES,
 ]);
 
@@ -8088,9 +8339,6 @@ function broadcastToOpencodeV2Clients(data, { nativeRunId = null } = {}) {
   if (data?.type === 'providers:changed' && !_announcingOpencodeProviders) noteOpencodeProvidersChanged({ announce: true });
   else if (data?.type === 'server:status' && data.status === 'ready') noteOpencodeProvidersChanged();
   else if (data?.type === 'event' && /^(?:catalog\.updated|models-dev\.refreshed|integration\.)/.test(String(data.eventType || ''))) noteOpencodeProvidersChanged();
-  // OpenCode 1.18 mirrors every bus event as a `sync` envelope; the panel acts
-  // on the bus event, so relaying the mirror only doubles the traffic.
-  if (!shouldRelayOpencodeV2Message(data)) return;
   const event = data?.type === 'event' ? data.event || {} : null;
   const sessionId = event?.sessionID || event?.sessionId || event?.info?.id || event?.session?.id || null;
   const explicitRun = nativeRunId ? _nativeLoopRuntime?.get(nativeRunId) : null;
@@ -8129,7 +8377,6 @@ function installOpencodeV2Listener() {
         type: 'server:status',
         status: event?.status || 'unknown',
         version: _ocpVersion,
-        protocol: _ocpProtocol,
         port: event?.port || _ocpPort,
         managed: !!_ocpProc,
       });
@@ -8144,22 +8391,33 @@ function installOpencodeV2Listener() {
 // ───────────────────────────────────────────────────────────────────────────
 // The shared `opencode serve` remains the read/list/create control plane. Every
 // session that runs a turn gets its own `opencode serve`, unique terminal id,
-// browser ownership, and pinned MCP profile. Session rows live in OpenCode's
+// browser ownership, and pinned tool list. Session rows live in OpenCode's
 // shared SQLite DB, so history remains available across those runtimes. Spawn
 // failures are surfaced because a shared-serve fallback would collapse the
 // profile and browser boundaries.
 // ═══════════════════════════════════════════════════════════════════════════
 const _ocpIsoServes = new Map();      // termId → { termId, port, xdgRoot, proc, client, ready, starting, unsub, sessions:Set, lastUsed }
+const _externalMcpLogValues = new Map(); // Private launch-only log redaction values; released when the serve stops.
 const _ocpSessionToServe = new Map(); // opencode sessionID → termId
-const _ocpSessionProfiles = new Map(); // opencode sessionID → profile pinned to its current serve
+const _ocpSessionTools = new Map(); // opencode sessionID → profile pinned to its current serve
 const _ocpSessionServeStarts = new Map(); // sessionID → { termId, profile, promise }; coalesces cold-start races
 const _ocpActiveSessionTurns = new Map(); // sessionID → send token; promptAsync lives until idle/error
-let _ocpIsoPortNext = 4120;
+// A FIXED reserved range for SynaBun's own isolated OpenCode serves (relays that can run bash). Every guarded worker
+// profile denies this whole range (workerDenyPorts / workerOsIsolation), so a serve allocated AFTER a worker's
+// profile is written — another run's serve, or the worker's own — is already blocked for that worker's shell,
+// without denying arbitrary loopback ports (the worker may still start and curl its own dev servers elsewhere).
+const OCP_ISO_PORT_MIN = 4120;
+const OCP_ISO_PORT_MAX = 4400;
+// The shared serve starts at 4096 and moveSharedOpencodePort can walk it to 4097-4119 (just below the isolated
+// range). A guarded worker profile denies the WHOLE 4096-4400 band so a move or a later-started serve can never
+// leave a reachable serve whose OPENCODE_PASSWORD is in env (readable via KERN_PROCARGS2).
+const OCP_SHARED_PORT_MIN = 4096;
+let _ocpIsoPortNext = OCP_ISO_PORT_MIN;
 
 function allocOpencodeIsoPort() {
   for (let i = 0; i < 280; i++) {
     const port = _ocpIsoPortNext++;
-    if (_ocpIsoPortNext > 4400) _ocpIsoPortNext = 4120;
+    if (_ocpIsoPortNext > OCP_ISO_PORT_MAX) _ocpIsoPortNext = OCP_ISO_PORT_MIN;
     if (port === _ocpPort) continue;
     if (listPortListenerPids(port).length === 0) return port;
   }
@@ -8168,16 +8426,14 @@ function allocOpencodeIsoPort() {
 
 // OpenCode 2 cannot open its database while another serve of the same data
 // folder is opening it ("database is locked", and the serve exits): SynaBun
-// starts its OpenCode 2 serves one at a time, each until it answers. Every
-// start goes through here: the shared serve (ensureOpencodeServer), the
-// isolated serves of panel sessions, loops, workers and brains
-// (ensureIsolatedServe) and the editor's completion serve
-// (lib/editor-completion-opencode.js `startOneAtATime`). A start holds its turn
-// from the spawn until its serve answers, or until a failed start's process is
-// gone. OpenCode 1 serves start as they always did, side by side.
+// starts its serves one at a time, each until it answers. Every start goes
+// through here: the shared serve (ensureOpencodeServer), the isolated serves of
+// panel sessions, loops, workers and brains (ensureIsolatedServe) and the
+// editor's completion serve (lib/editor-completion-opencode.js
+// `startOneAtATime`). A start holds its turn from the spawn until its serve
+// answers, or until a failed start's process is gone.
 let _ocpStartChain = Promise.resolve();
-function oneOpencodeStartAtATime(protocol, run) {
-  if (protocol === 1) return run();
+function oneOpencodeStartAtATime(run) {
   const next = _ocpStartChain.then(run, run);
   _ocpStartChain = next.then(() => {}, () => {});
   return next;
@@ -8241,66 +8497,88 @@ function endIsolatedStart(termId, entry) {
 // Sidepanel variant of setupOpencodeLoopConfig: inject the terminal identity and
 // pinned profile into the MCP env (no browser pins → the child acquires its own
 // tab) and do not add the loop permission bypass — the panel is user-supervised.
-function getOpencodeRuntimeProfilePath(xdgRoot) {
-  return resolve(xdgRoot, 'synabun-runtime-profile.json');
+function getOpencodeRuntimeToolsPath(xdgRoot) {
+  return resolve(xdgRoot, 'synabun-tools.json');
 }
 
-function writeOpencodeRuntimeProfile(xdgRoot, profile) {
+function writeOpencodeRuntimeTools(xdgRoot, selection) {
   if (!xdgRoot) throw new Error('Missing isolated OpenCode config root');
-  const normalized = normalizeMcpProfileName(profile);
-  if (!isValidMcpProfileValue(normalized)) throw new Error(`Invalid MCP profile: ${normalized}`);
-  const profilePath = getOpencodeRuntimeProfilePath(xdgRoot);
-  if (!existsSync(dirname(profilePath))) mkdirSync(dirname(profilePath), { recursive: true });
-  writeFileSync(profilePath, JSON.stringify({ profile: normalized }, null, 2) + '\n', 'utf8');
-  return profilePath;
+  const tools = toolsFromSelection(selection);
+  const toolsPath = getOpencodeRuntimeToolsPath(xdgRoot);
+  if (!existsSync(dirname(toolsPath))) mkdirSync(dirname(toolsPath), { recursive: true });
+  writeFileSync(toolsPath, JSON.stringify({ tools, updatedAt: new Date().toISOString() }, null, 2) + '\n', 'utf8');
+  return toolsPath;
+}
+
+// The configuration of one of SynaBun's own serves, whose XDG_CONFIG_HOME is `xdgRoot`: OpenCode 2 reads
+// <xdgRoot>/opencode/opencode.json (never a config.json). It may hold a brain's grants: this user's only.
+function isolatedOpencodeConfigPath(xdgRoot) {
+  return opencodeConfigFilePath(resolve(xdgRoot, 'opencode'));
+}
+
+function readIsolatedOpencodeConfig(xdgRoot) {
+  const doc = readOpencodeConfigDocument(isolatedOpencodeConfigPath(xdgRoot));
+  if (!doc.exists) throw new Error('Isolated OpenCode config is missing');
+  if (doc.error) throw new Error(`Isolated OpenCode config cannot be read: ${doc.error}`);
+  return doc.config;
+}
+
+function writeIsolatedOpencodeConfig(xdgRoot, config) {
+  const target = isolatedOpencodeConfigPath(xdgRoot);
+  if (!existsSync(dirname(target))) mkdirSync(dirname(target), { recursive: true });
+  writeFileSync(target, JSON.stringify(config, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
+  try { chmodSync(target, 0o600); } catch { /* a filesystem without modes */ }
+  return target;
+}
+
+// What an isolated serve's config starts from: the user's global configuration (opencode.json, then
+// opencode.jsonc over it: its XDG_CONFIG_HOME is another folder, so OpenCode would not read them itself), every
+// MCP server in OpenCode 2's `mcp.servers`. A document that cannot be read is left out.
+function opencodeServeBaseConfig() {
+  const { config } = readOpencodeGlobalConfig();
+  return normalizeMcpServers(config);
 }
 
 // OpenCode loads project config after XDG_CONFIG_HOME. Its documented final
 // OPENCODE_CONFIG_CONTENT layer must therefore carry the runtime-owned SynaBun
 // MCP entry as well, otherwise a project's opencode.json could replace one
-// sidepanel's profile/identity with another. Keep the overlay minimal so all
-// unrelated project settings and AGENTS instructions continue to work.
+// sidepanel's selection/identity with another. Keep the overlay minimal so all
+// unrelated project settings and AGENTS instructions continue to work: the
+// SynaBun MCP server (switched off when a confined run's config switched it
+// off) and the rules of SynaBun's own config for its memory tools and, for an
+// unattended run, for OpenCode's own tools (the loop's allows, then a confined
+// run's asks and refusals, in that order).
 function buildOpencodeRuntimeConfigOverlay(xdgRoot, { unattended = false } = {}) {
-  const configPath = resolve(xdgRoot, 'opencode', 'config.json');
-  if (!existsSync(configPath)) throw new Error('Isolated OpenCode config is missing');
-  const config = JSON.parse(readFileSync(configPath, 'utf8'));
-  const synabun = config?.mcp?.SynaBun;
-  if (!synabun || typeof synabun !== 'object') {
-    throw new Error('Isolated OpenCode config has no SynaBun MCP entry');
-  }
-  const managedPermissionKeys = new Set(getOpenCodeCoreMcpToolKeys());
-  if (unattended) {
-    for (const key of ['edit', 'bash', 'webfetch', 'external_directory']) managedPermissionKeys.add(key);
-  }
-  const permission = {};
-  for (const key of managedPermissionKeys) {
-    if (Object.prototype.hasOwnProperty.call(config.permission || {}, key)) {
-      permission[key] = config.permission[key];
-    }
+  const config = readIsolatedOpencodeConfig(xdgRoot);
+  const synabun = mcpServersOf(config).SynaBun;
+  if (!synabun) throw new Error('Isolated OpenCode config has no SynaBun MCP entry');
+  const managed = new Set(getOpenCodeCoreMcpToolKeys());
+  if (unattended) for (const action of OPENCODE_TOOL_ACTIONS) managed.add(action);
+  const permissions = permissionRulesOf(config).filter((rule) => managed.has(rule.action));
+  let externalDisabled = {};
+  const scopePath = resolve(xdgRoot, 'synabun-external-scope.json');
+  if (existsSync(scopePath)) {
+    const scope = JSON.parse(readFileSync(scopePath, 'utf8'));
+    const entries = mcpServersOf(config);
+    externalDisabled = Object.fromEntries((scope.disabled || []).map(name => [name, entries[name]]).filter(([, entry]) => entry?.disabled === true));
   }
   const overlay = {
-    mcp: { SynaBun: { ...synabun, enabled: true } },
-    ...(Object.keys(permission).length ? { permission } : {}),
+    mcp: { servers: { ...externalDisabled, SynaBun: synabun } },
+    ...(permissions.length ? { permissions } : {}),
   };
   return JSON.stringify(overlay);
 }
 
-function setupOpencodeSidepanelConfig(termId, mcpProfile = null) {
+function setupOpencodeSidepanelConfig(termId, selection = null, { cwd = PACKAGE_ROOT, scopeExternal = true } = {}) {
   const xdgRoot = resolve(DATA_HOME, 'data', 'sidepanel-configs', `opencode-${termId}`);
   const targetDir = resolve(xdgRoot, 'opencode');
   if (!existsSync(targetDir)) mkdirSync(targetDir, { recursive: true });
-  const resolvedProfile = normalizeMcpProfileName(mcpProfile || readActiveMcpProfile());
-  if (!isValidMcpProfileValue(resolvedProfile)) throw new Error(`Invalid MCP profile: ${resolvedProfile}`);
-  const runtimeProfilePath = writeOpencodeRuntimeProfile(xdgRoot, resolvedProfile);
-  let baseCfg = {};
-  try {
-    const userPath = getOpencodeConfigPath();
-    if (existsSync(userPath)) baseCfg = JSON.parse(readFileSync(userPath, 'utf8'));
-  } catch { /* blank if missing/broken */ }
-  if (!baseCfg.mcp) baseCfg.mcp = {};
-  const existing = baseCfg.mcp.SynaBun;
+  const resolvedTools = toolsFromSelection(selection);
+  const runtimeToolsPath = writeOpencodeRuntimeTools(xdgRoot, resolvedTools);
+  const baseCfg = opencodeServeBaseConfig();
+  const existing = mcpServersOf(baseCfg).SynaBun;
   const { mcpIndexPath, envPath } = getMcpPaths();
-  baseCfg.mcp.SynaBun = buildManagedOpenCodeSynabunEntry(existing, {
+  setMcpServer(baseCfg, 'SynaBun', buildManagedOpenCodeSynabunEntry(existing, {
     command: ['node', mcpIndexPath],
     defaults: {
       DOTENV_PATH: envPath,
@@ -8309,59 +8587,67 @@ function setupOpencodeSidepanelConfig(termId, mcpProfile = null) {
     },
     overrides: {
       SYNABUN_TERMINAL_SESSION: termId,
-      SYNABUN_PROFILE: resolvedProfile,
-      SYNABUN_RUNTIME_PROFILE_PATH: runtimeProfilePath,
+      SYNABUN_TOOLS: runtimeToolsValue(resolvedTools),
+      SYNABUN_TOOLS_PATH: runtimeToolsPath,
     },
-    clearEnv: ['SYNABUN_BROWSER_SESSION', 'SYNABUN_BROWSER_TAB', 'CLAUDECODE'],
-  });
+    clearEnv: ['SYNABUN_BROWSER_SESSION', 'SYNABUN_BROWSER_TAB', 'CLAUDECODE', 'SYNABUN_PROFILE', 'SYNABUN_RUNTIME_PROFILE_PATH'],
+  }));
   ensureOpenCodeCoreMcpPermissions(baseCfg);
-  writeFileSync(resolve(targetDir, 'config.json'), JSON.stringify(baseCfg, null, 2) + '\n', 'utf8');
+  if (scopeExternal) applyOpenCodeExternalScope(xdgRoot, baseCfg, resolvedTools, cwd);
+  else if (existsSync(resolve(xdgRoot, 'synabun-external-scope.json'))) unlinkSync(resolve(xdgRoot, 'synabun-external-scope.json'));
+  writeIsolatedOpencodeConfig(xdgRoot, baseCfg);
   return xdgRoot;
 }
 
-function updateOpencodeRuntimeProfileConfig(xdgRoot, profile) {
+function updateOpencodeRuntimeToolsConfig(xdgRoot, selection) {
   if (!xdgRoot) throw new Error('Missing isolated OpenCode config root');
-  const configPath = resolve(xdgRoot, 'opencode', 'config.json');
-  if (!existsSync(configPath)) throw new Error('Isolated OpenCode config is missing');
-  const config = JSON.parse(readFileSync(configPath, 'utf8'));
-  const current = config?.mcp?.SynaBun;
-  if (!current || typeof current !== 'object') {
+  const current = mcpServersOf(readIsolatedOpencodeConfig(xdgRoot)).SynaBun;
+  if (!current) {
     throw new Error('Isolated OpenCode config has no SynaBun MCP entry');
   }
-  const runtimeProfilePath = getOpencodeRuntimeProfilePath(xdgRoot);
-  const configuredPath = (current.environment || current.env || {}).SYNABUN_RUNTIME_PROFILE_PATH;
-  if (configuredPath !== runtimeProfilePath) {
-    throw new Error('Isolated OpenCode config is missing its runtime profile pin');
+  const runtimeToolsPath = getOpencodeRuntimeToolsPath(xdgRoot);
+  const configuredPath = (current.environment || {}).SYNABUN_TOOLS_PATH;
+  if (current.type !== 'remote' && configuredPath !== runtimeToolsPath) {
+    throw new Error('Isolated OpenCode config is missing its runtime tool-list pin');
   }
-  writeOpencodeRuntimeProfile(xdgRoot, profile);
+  writeOpencodeRuntimeTools(xdgRoot, selection);
   return true;
 }
 
-async function ensureIsolatedServe(termId, { xdgRoot: requestedXdgRoot = null, keepAlive = false, mcpProfile = null, brainCredential = null } = {}) {
+async function ensureIsolatedServe(termId, { xdgRoot: requestedXdgRoot = null, cwd = PACKAGE_ROOT, keepAlive = false, tools = undefined, brainCredential = null, worker = false, sandboxProfile = null, extraEnv = null, hidePassword = false, persistentData = false } = {}) {
   if (_ocpHistoryClearInProgress) throw new Error('OpenCode history is being cleared');
-  const requestedProfile = normalizeMcpProfileName(mcpProfile || readActiveMcpProfile());
+  const requestedTools = toolsFromSelection(tools);
   let entry = _ocpIsoServes.get(termId);
   if (entry && entry.ready) {
-    if (entry.mcpProfile !== requestedProfile) {
-      throw new Error(`OpenCode serve ${termId} is pinned to ${entry.mcpProfile}; scoped restart required for ${requestedProfile}`);
+    if (serializeToolList(entry.tools) !== serializeToolList(requestedTools)) {
+      throw new Error(`OpenCode serve ${termId} is pinned to ${serializeToolList(entry.tools)}; scoped restart required for ${serializeToolList(requestedTools)}`);
     }
     entry.lastUsed = Date.now(); if (keepAlive) entry.keepAlive = true; return entry;
   }
   if (entry && entry.starting) {
-    if (entry.mcpProfile !== requestedProfile) {
-      throw new Error(`OpenCode serve ${termId} is starting with ${entry.mcpProfile}; scoped restart required for ${requestedProfile}`);
+    if (serializeToolList(entry.tools) !== serializeToolList(requestedTools)) {
+      throw new Error(`OpenCode serve ${termId} is starting with ${serializeToolList(entry.tools)}; scoped restart required for ${serializeToolList(requestedTools)}`);
     }
     for (let i = 0; i < 60 && !entry.ready; i++) await new Promise(r => setTimeout(r, 250));
     return entry.ready ? entry : null;
   }
+  // An OpenCode SynaBun does not drive (OpenCode 0 / 1, an OpenCode 2 older than the minimum, OpenCode 3) never
+  // starts: no configuration is written, nothing is swept, no port is taken, nothing is spawned, and the start fails
+  // with the sentence that says what was found and how to get OpenCode 2 (the panel, a loop, a worker, a brain show it).
+  const refusal = await opencodeStartRefusal();
+  if (refusal) { console.warn(`[ocp-iso] serve ${termId.slice(-8)}: ${refusal.message}`); throw refusal; }
   let xdgRoot;
-  try { xdgRoot = requestedXdgRoot || setupOpencodeSidepanelConfig(termId, requestedProfile); }
+  try { xdgRoot = requestedXdgRoot || setupOpencodeSidepanelConfig(termId, requestedTools, { cwd }); }
   catch (err) { console.warn(`[ocp-iso] config setup failed: ${err.message}`); return null; }
   // Registered before anything is waited for: a second start for the same term id waits for this one.
-  entry = { termId, port: null, xdgRoot, mcpProfile: requestedProfile, mcpProfileRefreshFailed: false, proc: null, client: null, ready: false, starting: true, keepAlive: !!keepAlive, unsub: null, sessions: new Set(), lastUsed: Date.now() };
+  entry = { termId, port: null, xdgRoot, persistentData, tools: requestedTools, toolsRefreshFailed: false, proc: null, client: null, ready: false, starting: true, keepAlive: !!keepAlive, unsub: null, sessions: new Set(), lastUsed: Date.now() };
   _ocpIsoServes.set(termId, entry);
   // What an earlier SynaBun left running goes first (its ports with it); then the port is picked.
   await sweepLeftoverOpencodeServes();
+  if (persistentData && opencodeServeRecords.list({ kind: 'isolated' }).some(record => record.id === termId && !opencodeServeRecords.ownedHere(record) && opencodeServeRecords.verifySync(record) !== 'gone')) {
+    endIsolatedStart(termId, entry);
+    throw new Error('The previous OpenCode worker serve could not be confirmed stopped; its session was not resumed');
+  }
   if (_ocpIsoServes.get(termId) !== entry) return null;
   let port = allocOpencodeIsoPort();
   if (port == null) { console.warn('[ocp-iso] no free port for isolated serve'); endIsolatedStart(termId, entry); return null; }
@@ -8370,7 +8656,8 @@ async function ensureIsolatedServe(termId, { xdgRoot: requestedXdgRoot = null, k
     const isolatedEnv = {
       ...process.env,
       XDG_CONFIG_HOME: xdgRoot,
-      SYNABUN_PROFILE: requestedProfile,
+      SYNABUN_TOOLS: runtimeToolsValue(requestedTools),
+      ...(persistentData ? openCodeWorkerData(xdgRoot) : {}),
       OPENCODE_CONFIG_CONTENT: buildOpencodeRuntimeConfigOverlay(xdgRoot, { unattended: keepAlive }),
       FORCE_COLOR: '0',
       OPENCODE_DISABLE_CLAUDE_CODE: '1',
@@ -8384,11 +8671,19 @@ async function ensureIsolatedServe(termId, { xdgRoot: requestedXdgRoot = null, k
     };
     delete isolatedEnv.CLAUDECODE;
     if (!brainCredential) delete isolatedEnv.SYNABUN_BRAIN_TOKEN;
-    // The OpenCode major decides how the serve starts (OpenCode 2: a password of
-    // its own) and how it is spoken to; one SynaBun does not speak never starts.
-    const detected = await detectOpencodeProtocol();
+    // A run's own settings for its serve (an evaluation run's, a protected worker's: lib/native-loop-providers.js
+    // openCodeRunEnvFor), last: a string is set, null removes the variable (an inherited OPENCODE_CONFIG_DIR, GIT_DIR).
+    if (extraEnv && typeof extraEnv === 'object') {
+      const next = withServeEnv(isolatedEnv, extraEnv);
+      for (const key of Object.keys(isolatedEnv)) if (!(key in next)) delete isolatedEnv[key];
+      Object.assign(isolatedEnv, next);
+    }
+    // A dispatched worker's serve: its shells must not inherit the owner's live-data paths (a temp server or the
+    // suite started from a worker shell would otherwise open the owner's real memory DB). The worker's SynaBun MCP
+    // child still gets them through its own config block (setupOpencodeLoopConfig / buildManagedOpenCodeSynabunEntry
+    // defaults + DOTENV_PATH), so remember / recall keep working. The interactive panel serve is untouched.
+    if (worker) for (const key of LIVE_DATA_ENV) delete isolatedEnv[key];
     const tag = termId.slice(-8);
-    if (detected.major != null && !detected.supported) { console.warn(`[ocp-iso] serve ${tag}: ${detected.reason}`); endIsolatedStart(termId, entry); return null; }
     // This start is wanted while its entry is the one under its term id: a stop cancels it, a scoped restart replaces it.
     const wanted = () => _ocpIsoServes.get(termId) === entry;
     let check = null;
@@ -8396,45 +8691,76 @@ async function ensureIsolatedServe(termId, { xdgRoot: requestedXdgRoot = null, k
     // Another server that takes the port while this serve boots is a start collision: it is left running (and never
     // put on record), this start's own process is ended, and the start tries the next free port (three at most).
     for (let attempt = 1; attempt <= 3; attempt++) {
-      started = await oneOpencodeStartAtATime(detected.protocol, async () => {
+      started = await oneOpencodeStartAtATime(async () => {
         // Its turn may come after it was cancelled or replaced: then nothing is started for it.
         if (!wanted()) return 'cancelled';
         // A token of this spawn in its environment: what tells its processes from any other (lib/opencode-serve-records.js).
         const token = opencodeServeRecords.newToken();
-        const launch = opencodeServeLaunch(port, { env: { ...isolatedEnv, [SERVE_TOKEN_ENV]: token }, protocol: detected.protocol });
-        const proc = spawn(launch.command, launch.args, {
+        // A protected worker's serve (hidePassword): no password variable in any environment, its own shell's
+        // included; the serve prints the password it made, read here from its output (and never logged).
+        const launch = opencodeServeLaunch(port, { env: { ...isolatedEnv, [SERVE_TOKEN_ENV]: token }, passwordFrom: 'stdout' });
+        const readPassword = launch.passwordFrom === 'stdout' ? servePasswordReader() : null;
+        // A guarded worker's serve (macOS): run the whole serve tree under the run's Seatbelt profile, so its shell
+        // commands cannot reach SynaBun's control port. The profile leaves the worker-only channel open, which the
+        // serve's MCP child uses for the browser API. The serve's env / cwd (launch.options) are inherited by the
+        // real process under the sandbox.
+        const spawnCommand = sandboxProfile ? SANDBOX_EXEC : launch.command;
+        const spawnArgs = sandboxProfile ? sandboxExecArgv(sandboxProfile, launch.command, launch.args).slice(1) : launch.args;
+        const proc = spawn(spawnCommand, spawnArgs, {
           stdio: ['ignore', 'pipe', 'pipe'],
           ...launch.options,
           detached: false, shell: false,
         });
         entry.proc = proc;
-        entry.password = launch.password;
+        entry.password = launch.password || null;
         // On record from its spawn: a crash of SynaBun from here on does not leave it running for good.
-        const tracked = trackOpencodeServe(proc, { kind: 'isolated', id: termId, port, token });
+        const tracked = trackOpencodeServe(proc, { kind: 'isolated', id: termId, port, token, nativeWebSocketSafe: launch.nativeWebSocketSafe });
         // While it boots, its start sees an exit itself (another server on the port is a collision); afterwards
         // its exit ends the serve.
         let booting = true;
-        proc.stdout?.on('data', (d) => console.log(`[ocp-iso:${tag}:out] ${String(d).trim()}`));
-        proc.stderr?.on('data', (d) => console.log(`[ocp-iso:${tag}:err] ${String(d).trim()}`));
+        // The log is line-buffered before redaction: the password reader reads the raw chunk (it buffers across
+        // reads), but the log must never see a "server password <x>" line until the whole line is assembled, or a
+        // token split across two chunks would reach the log as a fragment (createServeLogRedactor). Built lazily on
+        // the first stdout chunk — exactly where the old per-chunk redaction lived — so a stand-in whose stdout emits
+        // nothing never constructs it (keeps the source-extraction harnesses working unchanged).
+        const mcpLogValues = _externalMcpLogValues.get(xdgRoot) || [];
+        let outLog = null;
+        let errLog = null;
+        proc.stdout?.on('data', (d) => {
+          if (readPassword && !entry.password && entry.proc === proc) { const found = readPassword(String(d)); if (found) entry.password = found; }
+          if (!outLog) outLog = createServeLogRedactor((line) => { const t = redactOpenCodeMcpOutput(line, xdgRoot, isolatedEnv, mcpLogValues).trim(); if (t) console.log(`[ocp-iso:${tag}:out] ${t}`); });
+          outLog.push(String(d));
+        });
+        proc.stderr?.on('data', (d) => {
+          if (!errLog) errLog = createServeLogRedactor((line) => { const t = redactOpenCodeMcpOutput(line, xdgRoot, isolatedEnv, mcpLogValues).trim(); if (t) console.log(`[ocp-iso:${tag}:err] ${t}`); });
+          errLog.push(String(d));
+        });
+        proc.stdout?.on('end', () => outLog?.flush());
+        proc.stderr?.on('end', () => errLog?.flush());
+        // `exit` may precede the last pipe data. Flush only once the streams end/close, or a password split across
+        // exit and the final read could lose its prefix before the rest arrives and leak an unredacted fragment.
+        proc.on('close', () => { outLog?.flush(); errLog?.flush(); });
         proc.on('exit', (code) => {
           console.log(`[ocp-iso] serve ${tag} exited code=${code}`);
           if (!booting && _ocpIsoServes.get(termId)?.proc === proc) stopIsolatedServe(termId);
         });
 
-        // Healthy only when the right API answers JSON (an OpenCode 2 web page never is), and only from this start's
-        // own process (the spawned one, or one it started).
+        // Healthy only when OpenCode 2's API answers JSON (its web page never is), and only from this start's own
+        // process (the spawned one, or one it started).
         let outcome = 'unhealthy';
         for (let i = 0; i < 60; i++) {
           await new Promise(r => setTimeout(r, 250));
           if (!wanted()) { outcome = 'cancelled'; break; } // cancelled or replaced mid-boot
-          check = await checkOpencodeServer({ port, protocol: detected.protocol, password: launch.password, timeoutMs: 3000 });
+          // A 'stdout' launch answers 'locked' until its password line was read.
+          if (readPassword && !entry.password) { if (proc.exitCode != null || proc.signalCode != null) { outcome = 'exited'; break; } continue; }
+          check = await checkOpencodeServer({ port, password: entry.password, timeoutMs: 3000 });
           if (check.ok) {
             if (await tracked.answering() !== 'foreign') { booting = false; return 'ready'; }
             outcome = 'collision';
             break;
           }
           if (proc.exitCode != null || proc.signalCode != null) { outcome = 'exited'; break; }
-          if (['mismatch', 'html', 'locked'].includes(check.state) && i >= 3) break;
+          if (['unsupported', 'html', 'locked'].includes(check.state) && i >= 3) break;
         }
         // Not started, no longer wanted, or another server's port: this start's own process is gone before the next
         // start may open the database (SIGTERM, then SIGKILL), and on record until its exit is seen. Its exit no
@@ -8452,28 +8778,27 @@ async function ensureIsolatedServe(termId, { xdgRoot: requestedXdgRoot = null, k
       console.warn(`[ocp-iso] serve ${tag}: another server answers on port ${taken}; it is left running, and this serve starts on port ${port}`);
     }
     if (started !== 'ready') {
-      if (started === 'unhealthy') console.warn(`[ocp-iso] serve ${tag} not healthy within 15s${check && check.state !== 'down' ? `: ${opencodeProblemText({ check, port })}` : ''}`);
+      if (started === 'unhealthy') console.warn(`[ocp-iso] serve ${tag} not healthy within 15s${hidePassword && !check ? ': it never printed the server password it made (a protected worker\'s serve gets no password variable), so SynaBun could not talk to it' : check && check.state !== 'down' ? `: ${opencodeProblemText({ check, port })}` : ''}`);
       if (started === 'exited') console.warn(`[ocp-iso] serve ${tag} exited before it answered`);
       if (started === 'collision') console.warn(`[ocp-iso] serve ${tag}: another server took every port it tried`);
       endIsolatedStart(termId, entry);
       return null;
     }
     if (!wanted()) { endIsolatedStart(termId, entry); return null; }
-    entry.protocol = check.protocol;
     entry.version = check.version || null;
 
-    const client = opencodeV2Client.createClientInstance({ port, protocol: entry.protocol, password: entry.password, version: entry.version || '' });
+    const client = opencodeV2Client.createClientInstance({ port, password: entry.password, version: entry.version || '' });
     entry.client = client;
     entry.unsub = client.onEvent((envelope) => {
       if (!envelope) return;
       const { eventType, event } = envelope;
       if (eventType === 'server:status') return; // shared serve owns the status UI
-      bindOpenCodeChildSessionProfile({
+      bindOpenCodeChildSessionTools({
         eventType,
         event,
         sourceRuntime: entry,
         sessionToRuntime: _ocpSessionToServe,
-        sessionProfiles: _ocpSessionProfiles,
+        sessionTools: _ocpSessionTools,
         runtimes: _ocpIsoServes,
       });
       const eventSessionId = event?.sessionID || event?.sessionId || event?.session?.id || event?.info?.id || null;
@@ -8494,7 +8819,7 @@ async function ensureIsolatedServe(termId, { xdgRoot: requestedXdgRoot = null, k
     entry.ready = true;
     entry.starting = false;
     entry.lastUsed = Date.now();
-    console.log(`[ocp-iso] isolated serve ready term=${tag} port=${port} profile=${requestedProfile}`);
+    console.log(`[ocp-iso] isolated serve ready term=${tag} port=${port} tools=${serializeToolList(requestedTools)}`);
     return entry;
   } catch (err) {
     console.warn(`[ocp-iso] spawn failed: ${err.message}`);
@@ -8505,20 +8830,21 @@ async function ensureIsolatedServe(termId, { xdgRoot: requestedXdgRoot = null, k
 
 function stopIsolatedServe(termId, { preserveBindings = false } = {}) {
   const entry = _ocpIsoServes.get(termId);
+  if (entry?.xdgRoot) _externalMcpLogValues.delete(entry.xdgRoot);
   if (!entry) return;
-  cancelRuntimeMcpProfileRefresh(termId);
+  cancelRuntimeMcpToolsRefresh(termId);
   _ocpIsoServes.delete(termId);
   if (!preserveBindings) {
     for (const sid of entry.sessions) {
       if (_ocpSessionToServe.get(sid) === termId) _ocpSessionToServe.delete(sid);
-      _ocpSessionProfiles.delete(sid);
+      _ocpSessionTools.delete(sid);
       _ocpActiveSessionTurns.delete(sid);
     }
   }
   try { entry.unsub?.(); } catch {}
   try { entry.client?.stop(); } catch {}
   killIsolatedServeProcess(entry.proc);
-  try { if (entry.xdgRoot && existsSync(entry.xdgRoot)) rmSync(entry.xdgRoot, { recursive: true, force: true }); } catch {}
+  try { if (!entry.persistentData && entry.xdgRoot && existsSync(entry.xdgRoot)) rmSync(entry.xdgRoot, { recursive: true, force: true }); } catch {}
 }
 
 function stopAllIsolatedServes() {
@@ -8526,26 +8852,28 @@ function stopAllIsolatedServes() {
 }
 
 // Resolve the client to run a TURN for a session. Every sidepanel session gets
-// a dedicated serve because both browser ownership and MCP tool profiles are
+// a dedicated serve because both browser ownership and MCP tool lists are
 // process-scoped. Falling back to the shared serve would reintroduce leakage.
-async function turnClientForSession(sessionId, requestedProfile = null) {
+async function turnClientForSession(sessionId, requestedTools = null) {
   if (!sessionId) return opencodeV2Client;
-  const profile = normalizeMcpProfileName(requestedProfile || _ocpSessionProfiles.get(sessionId) || readActiveMcpProfile());
   let termId = _ocpSessionToServe.get(sessionId);
+  const bound = termId ? _ocpIsoServes.get(termId) : null;
+  const tools = requestedTools == null && bound?.tools ? bound.tools : toolsFromSelection(requestedTools ?? _ocpSessionTools.get(sessionId));
+  const toolKey = serializeToolList(tools);
   if (termId) {
     const existing = _ocpIsoServes.get(termId);
     if (existing?.ready && existing.client) {
-      if (existing.mcpProfile !== profile) {
-        throw new Error(`OpenCode session profile changed from ${existing.mcpProfile} to ${profile} without a scoped restart`);
+      if (serializeToolList(existing.tools) !== toolKey) {
+        throw new Error(`OpenCode session tool list changed from ${serializeToolList(existing.tools)} to ${serializeToolList(tools)} without a scoped restart`);
       }
-      _ocpSessionProfiles.set(sessionId, profile);
+      _ocpSessionTools.set(sessionId, tools);
       existing.lastUsed = Date.now(); return existing.client;
     }
   }
   const pending = _ocpSessionServeStarts.get(sessionId);
   if (pending) {
-    if (pending.profile !== profile) {
-      throw new Error(`OpenCode session is starting with MCP profile ${pending.profile}; cannot also start ${profile}`);
+    if (pending.toolKey !== toolKey) {
+      throw new Error(`OpenCode session is starting with tool list ${pending.toolKey}; cannot also start ${toolKey}`);
     }
     const pendingEntry = await pending.promise;
     if (!pendingEntry?.client) throw new Error('OpenCode isolated session runtime failed to start');
@@ -8554,17 +8882,21 @@ async function turnClientForSession(sessionId, requestedProfile = null) {
   if (!termId) termId = 'ocp-sp-' + randomUUID();
   const startToken = {};
   const startPromise = (async () => {
-    const entry = await ensureIsolatedServe(termId, { mcpProfile: profile });
+    const refusal = await opencodeStartRefusal(); if (refusal) throw refusal;
+    const session = await opencodeV2Client.session.get({ sessionID: sessionId });
+    const cwd = session?.data?.directory;
+    if (!cwd) throw new Error('OpenCode session directory is unavailable for MCP scope discovery');
+    const entry = await ensureIsolatedServe(termId, { tools, cwd });
     if (!entry || !entry.client) throw new Error('OpenCode isolated session runtime failed to start');
     // Publish the binding only after the isolated serve is ready. Every waiter
     // shares this promise, so one cold session can never fork two serves.
     _ocpSessionToServe.set(sessionId, termId);
-    _ocpSessionProfiles.set(sessionId, profile);
+    _ocpSessionTools.set(sessionId, tools);
     entry.sessions.add(sessionId);
     entry.lastUsed = Date.now();
     return entry;
   })();
-  _ocpSessionServeStarts.set(sessionId, { termId, profile, promise: startPromise, token: startToken });
+  _ocpSessionServeStarts.set(sessionId, { termId, toolKey, promise: startPromise, token: startToken });
   try {
     return (await startPromise).client;
   } finally {
@@ -8574,56 +8906,81 @@ async function turnClientForSession(sessionId, requestedProfile = null) {
   }
 }
 
-async function restartOpenCodeSessionProfile(sessionId, profile) {
+// Readiness belongs to the prompt boundary, where Stop owns an AbortSignal, not serve startup.
+async function waitForOpenCodeSessionTools(client, sessionId, directory, signal, onTimeout) {
+  const termId = _ocpSessionToServe.get(sessionId);
+  const entry = termId ? _ocpIsoServes.get(termId) : null;
+  // A history session may send no cwd. Poll its actual scope, the same one a tool-list reconnect uses.
+  if (!directory && typeof client.session?.get === 'function') {
+    const response = await client.session.get({ sessionID: sessionId });
+    directory = response?.data?.directory || response?.data?.location?.directory || undefined;
+    if (!directory) throw new Error('Could not resolve the OpenCode session directory before checking MCP tools');
+  }
+  const ready = await waitForSynabunTools(client, {
+    directory, signal, expected: entry ? synabunConfigured(entry.xdgRoot) : true,
+    stopped: () => !!entry && _ocpIsoServes.get(termId) !== entry,
+    onTimeout: (ms) => onTimeout?.(synabunToolsTimeoutText(ms)),
+  });
+  if (!ready || signal?.aborted) throw Object.assign(new Error('OpenCode turn stopped before sending'), { name: 'AbortError', status: 499 });
+}
+
+async function restartOpenCodeSessionTools(sessionId, selection) {
   if (!sessionId) throw new Error('OpenCode session id is required');
-  const normalized = normalizeMcpProfileName(profile);
-  if (!buildMcpProfilePresets()[normalized]) throw new Error(`Unknown MCP profile: ${normalized}`);
+  const tools = toolsFromSelection(selection);
   const termId = _ocpSessionToServe.get(sessionId) || `ocp-sp-${randomUUID()}`;
   const existing = _ocpIsoServes.get(termId);
   const familySessionIds = new Set(existing?.sessions || []);
   familySessionIds.add(sessionId);
-  const previousProfile = normalizeMcpProfileName(
-    existing?.mcpProfile || _ocpSessionProfiles.get(sessionId) || readActiveMcpProfile(),
-  );
-  if (existing?.mcpProfile === normalized && existing.ready && existing.client && !existing.mcpProfileRefreshFailed) {
+  const previousTools = existing?.tools || toolsFromSelection(_ocpSessionTools.get(sessionId));
+  if (existing && serializeToolList(existing.tools) === serializeToolList(tools) && existing.ready && existing.client && !existing.toolsRefreshFailed) {
     for (const familySessionId of familySessionIds) {
       _ocpSessionToServe.set(familySessionId, termId);
-      _ocpSessionProfiles.set(familySessionId, normalized);
+      _ocpSessionTools.set(familySessionId, tools);
       existing.sessions.add(familySessionId);
     }
-    return { profile: normalized, restarted: false, sessionIds: [...familySessionIds] };
+    return { tools, restarted: false, sessionIds: [...familySessionIds] };
   }
+  // An OpenCode SynaBun does not drive starts a serve with no selection: the running one and its bindings stay as they
+  // are, and the answer is the sentence.
+  const refusal = await opencodeStartRefusal();
+  if (refusal) throw refusal;
+  const sessionInfo = await (existing?.client || opencodeV2Client).session.get({ sessionID: sessionId });
+  const cwd = sessionInfo?.data?.directory;
+  if (!cwd) throw new Error('OpenCode session directory is unavailable for MCP scope discovery');
   if (existing) stopIsolatedServe(termId, { preserveBindings: true });
   for (const familySessionId of familySessionIds) {
     _ocpSessionToServe.set(familySessionId, termId);
-    _ocpSessionProfiles.set(familySessionId, normalized);
+    _ocpSessionTools.set(familySessionId, tools);
   }
-  let entry = await ensureIsolatedServe(termId, { mcpProfile: normalized });
+  let entry, startError;
+  try { entry = await ensureIsolatedServe(termId, { tools, cwd }); }
+  catch (error) { startError = error; }
   if (!entry?.client) {
     for (const familySessionId of familySessionIds) {
       _ocpSessionToServe.set(familySessionId, termId);
-      _ocpSessionProfiles.set(familySessionId, previousProfile);
+      _ocpSessionTools.set(familySessionId, previousTools);
     }
-    entry = await ensureIsolatedServe(termId, { mcpProfile: previousProfile });
+    try { entry = await ensureIsolatedServe(termId, { tools: previousTools, cwd }); }
+    catch { entry = null; }
     if (entry?.client) {
       for (const familySessionId of familySessionIds) entry.sessions.add(familySessionId);
     } else {
       for (const familySessionId of familySessionIds) {
         if (_ocpSessionToServe.get(familySessionId) === termId) _ocpSessionToServe.delete(familySessionId);
-        _ocpSessionProfiles.delete(familySessionId);
+        _ocpSessionTools.delete(familySessionId);
       }
     }
-    throw new Error(`Could not restart OpenCode session with MCP profile ${normalized}`);
+    throw new Error(`Could not restart OpenCode session with MCP tools ${serializeToolList(tools)}`, { cause: startError });
   }
   for (const familySessionId of familySessionIds) {
     entry.sessions.add(familySessionId);
     broadcastToOpencodeV2Clients({
       type: 'event',
-      eventType: 'mcp.profile.changed',
-      event: { sessionID: familySessionId, profile: normalized, source: 'selector' },
+      eventType: 'mcp.tools.changed',
+      event: { sessionID: familySessionId, tools, source: 'selector' },
     });
   }
-  return { profile: normalized, restarted: true, sessionIds: [...familySessionIds] };
+  return { tools, restarted: true, sessionIds: [...familySessionIds] };
 }
 
 // Non-spawning resolver: return the session's already-running isolated serve, or
@@ -8701,6 +9058,8 @@ function handleOpencodeV2Ws(ws) {
     shared: opencodeV2Client,
     bound: boundIsoClient,
     turn: turnClientForSession,
+    waitForTools: (client, sid, directory, signal) => waitForOpenCodeSessionTools(client, sid, directory, signal,
+      (text) => send({ type: 'event', eventType: 'synabun.mcp.status', event: { sessionID: sid, text } })),
     proxy: ocpProxy,
     baseUrlFor: ocpBaseUrlForSession,
     directoryQuery: ocpDirectoryQuery,
@@ -8740,7 +9099,7 @@ function handleOpencodeV2Ws(ws) {
       }
       if (type === 'identify') {
         // Sent on every (re)connect: the panel gates features on this list.
-        send({ type: 'capabilities', capabilities: opencodeV2WsCapabilities({ protocol: _ocpProtocol }) });
+        send({ type: 'capabilities', capabilities: opencodeV2WsCapabilities() });
         return;
       }
       // Canonical session id first (msg.sessionId is rewritten in place), then
@@ -8766,14 +9125,12 @@ function handleOpencodeV2Ws(ws) {
             id,
             ready,
             version: _ocpVersion,
-            // 1 or 2: the OpenCode API the shared serve speaks; `problem` why OpenCode cannot be used.
-            protocol: _ocpProtocol,
+            // `problem`: why OpenCode cannot be used.
             ...(ready ? {} : { problem: _ocpProblem || null }),
-            sdkVersion: opencodeSdkVersion(),
             port: _ocpPort,
             managed: !!_ocpProc,
             connected: opencodeV2Client.isConnected(),
-            capabilities: opencodeV2WsCapabilities({ protocol: _ocpProtocol }),
+            capabilities: opencodeV2WsCapabilities(),
           });
           break;
         }
@@ -8784,14 +9141,12 @@ function handleOpencodeV2Ws(ws) {
           // registered project. Reading the DB directly returns ALL sessions
           // so the sidepanel resume dropdown and boot tab-restore can
           // surface sessions outside SynaBun (every other registered project).
-          // OpenCode 2 keeps them in other tables of the same file
-          // (lib/opencode-db-schema.js); neither set of tables: the API.
+          // A file without OpenCode 2's session tables (lib/opencode-db-schema.js): the API.
           const db = getOpencodeDb();
-          const flavor = db ? opencodeDbFlavor(db, _ocpProtocol) : null;
-          if (db && flavor) {
+          if (db && hasOpencodeSessionTables(db)) {
             try {
               // msg.options: search / archived / roots / limit (see buildSessionListQuery).
-              const query = buildSessionListQuery(msg.options || {}, { flavor });
+              const query = buildSessionListQuery(msg.options || {});
               const rows = db.prepare(query.sql).all(...query.params);
               const sessions = rows.filter((row) => {
                 const run = activeNativeOpenCodeRunForSession(row.id);
@@ -8849,7 +9204,7 @@ function handleOpencodeV2Ws(ws) {
           const entry = termId ? _ocpIsoServes.get(termId) : null;
           entry?.sessions?.delete(msg.sessionId);
           _ocpSessionToServe.delete(msg.sessionId);
-          _ocpSessionProfiles.delete(msg.sessionId);
+          _ocpSessionTools.delete(msg.sessionId);
           _ocpActiveSessionTurns.delete(msg.sessionId);
           if (entry && entry.sessions.size === 0) stopIsolatedServe(termId);
           send({ type: 'session:delete:result', id, status: r.status, data: r.data });
@@ -8860,16 +9215,16 @@ function handleOpencodeV2Ws(ws) {
           send({ type: 'session:messages:result', id, status: r.status, data: r.data });
           break;
         }
-        case 'mcp:profile:get': {
-          const pinned = _ocpSessionProfiles.has(msg.sessionId);
-          const profile = normalizeMcpProfileName(_ocpSessionProfiles.get(msg.sessionId) || readActiveMcpProfile());
+        case 'mcp:tools:get': {
+          const pinned = _ocpSessionTools.has(msg.sessionId);
+          const tools = _ocpIsoServes.get(_ocpSessionToServe.get(msg.sessionId))?.tools || toolsFromSelection(_ocpSessionTools.get(msg.sessionId));
           send({
-            type: 'mcp:profile:get:result', id, status: 200,
-            data: { profile, pinned, defaultProfile: readActiveMcpProfile(), presets: buildMcpProfilePresets() },
+            type: `${msg.type}:result`, id, status: 200,
+            data: { tools, defaultTools: defaultToolList(), ...toolCatalogView(), pinned },
           });
           break;
         }
-        case 'mcp:profile:set': {
+        case 'mcp:tools:set': {
           const termId = _ocpSessionToServe.get(msg.sessionId);
           const entry = termId ? _ocpIsoServes.get(termId) : null;
           const familySessionIds = entry?.sessions?.size ? entry.sessions : new Set([msg.sessionId]);
@@ -8880,16 +9235,17 @@ function handleOpencodeV2Ws(ws) {
           ));
           if (activeFamilySessionId) {
             send({
-              type: 'mcp:profile:set:result', id, status: 409,
-              error: 'Wait for every active OpenCode parent/sub-agent turn to finish before changing this runtime MCP profile.',
+              type: `${msg.type}:result`, id, status: 409,
+              error: 'Wait for every active OpenCode parent/sub-agent turn to finish before changing this runtime tool list.',
             });
             break;
           }
           try {
-            const result = await restartOpenCodeSessionProfile(msg.sessionId, msg.profile);
-            send({ type: 'mcp:profile:set:result', id, status: 200, data: result });
+            if (!Array.isArray(msg.tools)) throw Object.assign(new Error('tools must be an array'), { status: 400 });
+            const result = await restartOpenCodeSessionTools(msg.sessionId, msg.tools);
+            send({ type: `${msg.type}:result`, id, status: 200, data: result });
           } catch (err) {
-            send({ type: 'mcp:profile:set:result', id, status: 500, error: err?.message || String(err) });
+            send({ type: `${msg.type}:result`, id, status: err.status || 500, code: err.code, problems: err.problems, error: err?.message || String(err) });
           }
           break;
         }
@@ -8911,8 +9267,10 @@ function handleOpencodeV2Ws(ws) {
           let asyncTurnAccepted = false;
           try {
             // Every sidepanel turn runs on its session's dedicated serve. The
-            // profile is immutable for that serve until mcp:profile:set restarts it.
-            const turnClient = await turnClientForSession(sid, msg.mcpProfile);
+            // profile is immutable for that serve until mcp:tools:set restarts it.
+            const turnClient = await turnClientForSession(sid, msg.tools);
+            await waitForOpenCodeSessionTools(turnClient, sid, msg.cwd || undefined, ctrl.signal,
+              (text) => send({ type: 'event', eventType: 'synabun.mcp.status', event: { sessionID: sid, text } }));
             const promptFn = useAsync
               ? turnClient.session.promptAsync
               : turnClient.session.prompt;
@@ -9015,33 +9373,25 @@ function handleOpencodeV2Ws(ws) {
 }
 
 // Healthy only when the API of the shared serve's major answers JSON
-// (lib/opencode-protocol.js checkOpencodeServer): OpenCode 2 answers every
-// OpenCode 1 path with its web app and status 200, which is never healthy.
+// (lib/opencode-protocol.js checkOpencodeServer): every other path of an
+// OpenCode 2 serve is its web app, status 200, which is never healthy.
 // `_ocpLastCheck` keeps the whole answer (what answered, and why it is not usable).
 let _ocpLastCheck = null;
 async function checkOpencodeHealth() {
-  const check = await checkOpencodeServer({ port: _ocpPort, protocol: _ocpProtocol, password: _ocpPassword, timeoutMs: 3000 });
+  const check = await checkOpencodeServer({ port: _ocpPort, password: _ocpPassword, timeoutMs: 3000 });
   _ocpLastCheck = check;
-  if (check.ok) {
-    _ocpVersion = check.version || null;
-    if (check.protocol) _ocpProtocol = check.protocol;
-  }
+  if (check.ok) _ocpVersion = check.version || null;
   return check.ok;
 }
 
 // At the first start: a server already on the port that is SynaBun's own serve of an earlier run (its recorded
-// process, still that process) is taken over, and so is one SynaBun owns whose credentials are older than
-// auth.json. Automatic, so a server someone else runs is never stopped: it is used as it is.
+// process, still that process) is taken over. Automatic, so a server someone else runs is never stopped: it is
+// used as it is.
 async function reconcileOpencodeServerIfStale() {
   if (_ocpBootReconcileTried) return false;
   const owned = verifiedOpencodeManagedProcess({ port: _ocpPort });
-  const staleAuth = shouldReconcileOpencodeForStoredAuth();
-  if (!owned && !staleAuth) return false;
+  if (!owned) return false;
   _ocpBootReconcileTried = true;
-  if (!owned) {
-    console.warn(`[opencode] The OpenCode server on port ${_ocpPort} was not started by SynaBun: it is used as it is, not restarted (it may not have the newest provider credentials until whoever runs it restarts it)`);
-    return false;
-  }
   _ocpReady = false;
   _ocpStarting = false;
   console.log(`[opencode] SynaBun's own earlier server (pid ${owned.pid}) holds port ${_ocpPort}; taking it over`);
@@ -9114,7 +9464,8 @@ async function moveSharedOpencodePort(why) {
 }
 
 // The shared serve's port is held by a server SynaBun cannot use: an OpenCode
-// 2 whose password SynaBun does not hold, a web page, something else. SynaBun's
+// whose password SynaBun does not hold or whose version SynaBun does not drive,
+// a web page, something else. SynaBun's
 // own serve from an earlier run (its recorded process, while the OS still
 // reports that very process) is stopped and the port reused; anything else,
 // and a recorded pid that is another process by now, is left running, and the
@@ -9132,7 +9483,7 @@ async function freeSharedOpencodePortIfHeld(check) {
 function reportOpencodeProblem(problem) {
   _ocpProblem = problem || 'OpenCode could not be started.';
   console.warn(`[opencode] ${_ocpProblem}`);
-  broadcastToOpencodeV2Clients({ type: 'server:status', status: 'error', error: _ocpProblem, version: _ocpVersion, protocol: _ocpProtocol, port: _ocpPort, managed: !!_ocpProc });
+  broadcastToOpencodeV2Clients({ type: 'server:status', status: 'error', error: _ocpProblem, version: _ocpVersion, port: _ocpPort, managed: !!_ocpProc });
 }
 
 async function ensureOpencodeServer({ allowDuringHistoryClear = false } = {}) {
@@ -9147,20 +9498,17 @@ async function ensureOpencodeServer({ allowDuringHistoryClear = false } = {}) {
   }
   _ocpStarting = true;
 
-  // 0. Which OpenCode is installed: its major decides how the serve starts and
-  // how SynaBun speaks to it. A major SynaBun does not know is refused here, with
-  // a sentence the panel shows, instead of failing call by call later.
-  const detected = await detectOpencodeProtocol();
+  // 0. Which OpenCode is installed. One SynaBun does not drive (OpenCode 1, an OpenCode 2 older than the
+  // minimum) is refused here, with a sentence the panel and Settings show, instead of failing call by call later.
+  const detected = await detectOpencode();
   if (detected.major != null && !detected.supported) {
     _ocpStarting = false;
     reportOpencodeProblem(detected.reason);
     return false;
   }
   _ocpProblem = null;
-  // A serve already running is adopted whatever is installed: an OpenCode 1
-  // answers SynaBun as it is, an OpenCode 2 only to the password SynaBun gave it.
-  if (!_ocpProc) _ocpProtocol = null;
-  // A serve an earlier SynaBun left running (on this port or any other it used) goes before anything here is
+  // A serve already running is adopted when it answers SynaBun: only to the password SynaBun gave it, and only
+  // as a version SynaBun drives (checkOpencodeServer). A serve an earlier SynaBun left running (on this port or any other it used) goes before anything here is
   // adopted, and its port with it.
   await sweepLeftoverOpencodeServes();
 
@@ -9174,9 +9522,9 @@ async function ensureOpencodeServer({ allowDuringHistoryClear = false } = {}) {
     // One event stream on this serve: the v2 client's. MCP prewarm runs on
     // the v2 client too.
     installOpencodeV2Listener();
-    await opencodeV2Client.connect({ port: _ocpPort, protocol: _ocpProtocol, password: _ocpPassword, version: _ocpVersion });
-    broadcastToOpencodeV2Clients({ type: 'server:status', status: 'ready', version: _ocpVersion, protocol: _ocpProtocol, port: _ocpPort, managed: false });
-    console.log(`[opencode] External server detected on port ${_ocpPort} (v${_ocpVersion || '?'}, OpenCode ${_ocpProtocol || '?'} API)`);
+    await opencodeV2Client.connect({ port: _ocpPort, password: _ocpPassword, version: _ocpVersion });
+    broadcastToOpencodeV2Clients({ type: 'server:status', status: 'ready', version: _ocpVersion, port: _ocpPort, managed: false });
+    console.log(`[opencode] External server detected on port ${_ocpPort} (v${_ocpVersion || '?'})`);
     prewarmOpencodeMcpServers();
     return true;
   }
@@ -9188,19 +9536,20 @@ async function ensureOpencodeServer({ allowDuringHistoryClear = false } = {}) {
 
   // 2. Spawn opencode serve, and 3. poll until ready (max 15s): one start at a time with every other serve
   // SynaBun starts (oneOpencodeStartAtATime), its turn held until the serve answers or a failed start's process
-  // is gone. null for a command line in Settings: what answers says which major it is.
+  // is gone. For a command line in Settings, what answers says which version it is.
   // Another server that takes the port while SynaBun's serve starts is a start collision: it is left running (and
   // never put on record), SynaBun's own process is ended, and the shared serve tries the next free port (three at most).
   let outcome = null;
   for (let attempt = 1; attempt <= 3; attempt++) {
-    _ocpProtocol = detected.protocol;
-    outcome = await oneOpencodeStartAtATime(detected.protocol, async () => {
+    outcome = await oneOpencodeStartAtATime(async () => {
       let proc = null;
       let tracked = null;
       try {
         // A token of this spawn in its environment: what tells its processes from any other (lib/opencode-serve-records.js).
         const token = opencodeServeRecords.newToken();
-        const launch = opencodeServeLaunch(_ocpPort, { env: { ...process.env, FORCE_COLOR: '0', OPENCODE_DISABLE_CLAUDE_CODE: '1', [SERVE_TOKEN_ENV]: token }, protocol: detected.protocol });
+        const launch = opencodeServeLaunch(_ocpPort, { env: { ...process.env, FORCE_COLOR: '0', OPENCODE_DISABLE_CLAUDE_CODE: '1', [SERVE_TOKEN_ENV]: token,
+          OPENCODE_CONFIG_CONTENT: buildSharedOpenCodeConfigOverlay(opencodeServeBaseConfig(), process.env.OPENCODE_CONFIG_CONTENT),
+        } });
         _ocpPassword = launch.password;
         console.log(`[opencode] Spawning: ${launch.label}`);
         proc = spawn(launch.command, launch.args, {
@@ -9211,9 +9560,19 @@ async function ensureOpencodeServer({ allowDuringHistoryClear = false } = {}) {
         });
         _ocpProc = proc;
         // On record from its spawn: a crash of SynaBun from here on does not leave it running for good.
-        tracked = trackOpencodeServe(proc, { kind: 'shared', id: 'shared', port: _ocpPort, token });
-        proc.stdout?.on('data', (d) => console.log(`[opencode:stdout] ${d.toString().trim()}`));
-        proc.stderr?.on('data', (d) => console.log(`[opencode:stderr] ${d.toString().trim()}`));
+        tracked = trackOpencodeServe(proc, { kind: 'shared', id: 'shared', port: _ocpPort, token, nativeWebSocketSafe: launch.nativeWebSocketSafe });
+        const readPassword = servePasswordReader();
+        const outLog = createServeLogRedactor(line => console.log(`[opencode:stdout] ${line.trim()}`));
+        const errLog = createServeLogRedactor(line => console.log(`[opencode:stderr] ${line.trim()}`));
+        proc.stdout?.on('data', d => {
+          const password = readPassword(d);
+          if (password && _ocpProc === proc) _ocpPassword = password;
+          outLog.push(d);
+        });
+        proc.stderr?.on('data', d => errLog.push(d));
+        proc.stdout?.on('end', () => outLog.flush());
+        proc.stderr?.on('end', () => errLog.flush());
+        proc.on('close', () => { outLog.flush(); errLog.flush(); });
         proc.on('exit', (code) => {
           console.log(`[opencode] Process exited with code ${code}`);
           // A serve stopped or replaced meanwhile says nothing about the one running now. (Its record goes with
@@ -9239,8 +9598,8 @@ async function ensureOpencodeServer({ allowDuringHistoryClear = false } = {}) {
           await endOpencodeChild(proc);
           return 'collision';
         }
-        // Something answers, but not the API SynaBun expects (another major, a web page): no use waiting.
-        if (_ocpLastCheck && ['mismatch', 'html', 'locked'].includes(_ocpLastCheck.state) && i >= 3) break;
+        // Something answers, but not as SynaBun expects (a version it does not drive, a web page): no use waiting.
+        if (_ocpLastCheck && ['unsupported', 'html', 'locked'].includes(_ocpLastCheck.state) && i >= 3) break;
       }
       stopOpencodeServer();
       await endOpencodeChild(proc);
@@ -9259,9 +9618,9 @@ async function ensureOpencodeServer({ allowDuringHistoryClear = false } = {}) {
     _ocpBootReconcileTried = true;
     _ocpLastBootAt = Date.now();
     installOpencodeV2Listener();
-    await opencodeV2Client.connect({ port: _ocpPort, protocol: _ocpProtocol, password: _ocpPassword, version: _ocpVersion });
-    broadcastToOpencodeV2Clients({ type: 'server:status', status: 'ready', version: _ocpVersion, protocol: _ocpProtocol, port: _ocpPort, managed: true });
-    console.log(`[opencode] Server ready on port ${_ocpPort} (v${_ocpVersion || '?'}, OpenCode ${_ocpProtocol || '?'} API)`);
+    await opencodeV2Client.connect({ port: _ocpPort, password: _ocpPassword, version: _ocpVersion });
+    broadcastToOpencodeV2Clients({ type: 'server:status', status: 'ready', version: _ocpVersion, port: _ocpPort, managed: true });
+    console.log(`[opencode] Server ready on port ${_ocpPort} (v${_ocpVersion || '?'})`);
     prewarmOpencodeMcpServers();
     return true;
   }
@@ -9286,7 +9645,7 @@ function stopOpencodeServer({ stopManagedOllama = true } = {}) {
   // children (cmd.exe shells, opencode native binaries). Use taskkill /T /F
   // to walk the process tree and force-terminate every descendant.
   // This is the recurring source of EBUSY errors during `npm i -g
-  // synabun@latest` — opencode-ai's `serve` process survives parent SynaBun
+  // synabun@latest` — opencode's `serve` process survives parent SynaBun
   // exit and keeps file handles inside neural-interface/ open.
   const winKill = (pid) => {
     try {
@@ -9328,8 +9687,8 @@ function stopOpencodeServer({ stopManagedOllama = true } = {}) {
 // reports that very process, checked again before each signal. No other process is ever signalled: not every
 // `opencode … serve` of the machine (the user's own, OpenCode 2's background service, SynaBun's isolated serves),
 // not a recorded pid another program has by now. A server SynaBun did not start is left running, and SynaBun
-// starts its own on another port. The automatic callers (reconcileOpencodeServerIfStale, reconcileAuthIfStale)
-// call this only for a serve that is SynaBun's.
+// starts its own on another port. The automatic caller (reconcileOpencodeServerIfStale)
+// calls this only for a serve that is SynaBun's.
 async function takeoverOpencodeServer() {
   if (_ocpHistoryClearInProgress) throw new Error('OpenCode history is being cleared');
   if (_ocpProc) {
@@ -9348,9 +9707,6 @@ async function takeoverOpencodeServer() {
     }
     return ensureOpencodeServer();
   }
-  try {
-    await ocpProxy('POST', '/global/dispose');
-  } catch {}
   await opencodeV2Client.disconnect().catch(() => {});
   console.log(`[opencode] Stopping SynaBun's earlier server (pid ${owned.pid}) on port ${_ocpPort}`);
   if (!(await stopOwnedOpencodeServe(owned, _ocpPort)) && await checkOpencodeHealth()) {
@@ -9390,76 +9746,76 @@ function getOpencodeDb() {
 
 // ── Proxy helper: forward REST calls to opencode serve ──
 
-// The OpenCode 2 serve behind a base URL (the shared one or an isolated one):
-// `{ client, password }`, or null for an OpenCode 1 serve.
-function opencode2ServeFor(baseUrl) {
+// The serve behind a base URL (the shared one or an isolated one): `{ client, password }`, or null when SynaBun
+// has no client of it (not started, or stopped).
+function opencodeServeFor(baseUrl) {
   let port = null;
   try { port = Number(new URL(baseUrl).port) || null; } catch { return null; }
-  if (port === _ocpPort && _ocpProtocol === 2) {
+  if (port === _ocpPort) {
     const client = opencodeV2Client.getClient();
     return client ? { client, password: _ocpPassword } : null;
   }
   for (const entry of _ocpIsoServes.values()) {
-    if (entry.port === port && entry.protocol === 2 && entry.client) return { client: entry.client.getClient(), password: entry.password };
+    if (entry.port === port && entry.client) return { client: entry.client.getClient(), password: entry.password };
   }
   return null;
 }
 
+// A raw request to a serve, as `{ status, data }`: the paths SynaBun's code names are answered through the
+// OpenCode 2 client in the shapes SynaBun reads (lib/opencode2-proxy.js), /api/* passes through with the serve's
+// password.
 async function ocpProxy(method, path, body = null, timeoutMs = 30000, baseUrl = _ocpBaseUrl()) {
-  // OpenCode 2 answers these OpenCode 1 paths with its web app: each is
-  // translated onto its API instead (lib/opencode2-proxy.js), /api/* passes
-  // through with the serve's password.
-  const v2 = opencode2ServeFor(baseUrl);
-  if (v2?.client) {
-    ocpTrace('proxy:req', { tid: _ocpTraceId(), method, path, opencode: 2, timeoutMs });
-    return opencode2Proxy(v2.client, method, path, body, {
-      rawFetch: async (apiPath, init = {}) => {
-        const resp = await fetch(`${baseUrl}${apiPath}`, {
-          method: init.method || method,
-          headers: { 'Content-Type': 'application/json', authorization: basicAuthHeader(v2.password || '') },
-          ...(init.body != null && (init.method || method) !== 'GET' ? { body: JSON.stringify(init.body) } : {}),
-          signal: AbortSignal.timeout(timeoutMs),
-        });
-        const text = await resp.text();
-        let data;
-        try { data = JSON.parse(text); } catch { data = text; }
-        return { status: resp.status, data };
-      },
-    });
-  }
-  const url = `${baseUrl}${path}`;
-  const opts = {
-    method,
-    headers: { 'Content-Type': 'application/json' },
-    signal: AbortSignal.timeout(timeoutMs),
-  };
-  if (body !== null && method !== 'GET') opts.body = JSON.stringify(body);
-  const traceId = _ocpTraceId();
-  const t0 = _ocpNow();
-  const reqBytes = opts.body ? _ocpByteLen(opts.body) : 0;
-  ocpTrace('proxy:req', { tid: traceId, method, path, reqBytes, timeoutMs });
-  let resp;
-  try {
-    resp = await fetch(url, opts);
-  } catch (err) {
-    ocpTrace('proxy:err', { tid: traceId, method, path, ms: _ocpMs(t0), err: err?.name || 'Error', msg: err?.message });
-    throw err;
-  }
-  const tFetch = _ocpMs(t0);
-  const text = await resp.text();
-  const tBody = _ocpMs(t0);
-  let data;
-  try { data = JSON.parse(text); } catch { data = text; }
-  ocpTrace('proxy:res', {
-    tid: traceId, method, path, status: resp.status,
-    fetchMs: tFetch, totalMs: tBody, respBytes: _ocpByteLen(text),
+  const serve = opencodeServeFor(baseUrl);
+  if (!serve?.client) return { status: 503, data: { error: 'OpenCode server not running' } };
+  ocpTrace('proxy:req', { tid: _ocpTraceId(), method, path, timeoutMs });
+  return opencode2Proxy(serve.client, method, path, body, {
+    rawFetch: async (apiPath, init = {}) => {
+      const resp = await fetch(`${baseUrl}${apiPath}`, {
+        method: init.method || method,
+        headers: { 'Content-Type': 'application/json', authorization: basicAuthHeader(serve.password || '') },
+        ...(init.body != null && (init.method || method) !== 'GET' ? { body: JSON.stringify(init.body) } : {}),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      const text = await resp.text();
+      let data;
+      try { data = JSON.parse(text); } catch { data = text; }
+      return { status: resp.status, data };
+    },
   });
-  return { status: resp.status, data };
 }
 
 function ocpDirectoryQuery(cwd) {
   const directory = String(cwd || '').trim();
   return directory ? `?directory=${encodeURIComponent(directory)}` : '';
+}
+
+// The providers of one of the user's configuration documents (`path`) as OpenCode 2 itself converted them from
+// OpenCode 1's "provider" section (the shared serve's /api/config lists each document it read, converted): an
+// object, or undefined when the shared serve is not running or did not read that file.
+async function opencodeConvertedProviders(path) {
+  if (!_ocpReady) return undefined;
+  try {
+    const r = await ocpProxy('GET', '/api/config', null, 10000);
+    const entries = Array.isArray(r.data) ? r.data : (Array.isArray(r.data?.data) ? r.data.data : []);
+    const doc = entries.find((entry) => entry?.type === 'document' && entry.path && resolve(entry.path) === resolve(path));
+    if (!doc) return undefined;
+    return doc.info?.providers && typeof doc.info.providers === 'object' ? { ...doc.info.providers } : {};
+  } catch {
+    return undefined;
+  }
+}
+
+// After SynaBun changed the global configuration (opencode.json): the shared serve reads it again at once
+// (OpenCode's own watcher would, a moment later), so the next read of its providers, agents or MCP servers is the
+// new one. The isolated serves read theirs when they start. False when the shared serve is not running.
+async function reloadSharedOpencodeConfig() {
+  if (!_ocpReady) return false;
+  try {
+    const r = await ocpProxy('POST', '/api/location/reload', null, 10000);
+    return r.status >= 200 && r.status < 300;
+  } catch {
+    return false;
+  }
 }
 
 // ── Ollama local model endpoints ──
@@ -9528,50 +9884,23 @@ app.post('/api/ollama/configure', async (req, res) => {
       models[id] = { name: parts ? `${humanName} (${parts})` : humanName };
     }
 
-    // Read + update opencode config
-    const configPath = getOpencodeConfigPath();
-    const configDir = join(configPath, '..');
-    if (!existsSync(configDir)) mkdirSync(configDir, { recursive: true });
-    let cfg = {};
-    try { if (existsSync(configPath)) cfg = JSON.parse(readFileSync(configPath, 'utf8')); } catch {}
-    if (!cfg.provider) cfg.provider = {};
-    cfg.provider.ollama = {
-      npm: '@ai-sdk/openai-compatible',
-      name: 'Ollama (local)',
-      options: { baseURL: `${OLLAMA_BASE}/v1` },
-      models,
-    };
-    writeFileSync(configPath, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+    // OpenCode 2's own provider entry in the global opencode.json (its built-in OpenAI-compatible package, so
+    // nothing is installed): OpenCode reads the change at once, no restart. A file that still keeps its providers
+    // in OpenCode 1's section gets them moved to OpenCode 2's first, as OpenCode itself converted them.
+    const ollama = { name: 'Ollama (local)', package: '@opencode/ai/providers/openai-compatible', settings: { baseURL: `${OLLAMA_BASE}/v1` }, models };
+    const converted = hasOpencode1Providers(readOpencodeConfigDocument(getOpencodeConfigPath()).config, 'ollama')
+      ? await opencodeConvertedProviders(getOpencodeConfigPath())
+      : null;
+    if (converted === undefined) {
+      return res.status(409).json({ ok: false, error: `${getOpencodeConfigPath()} keeps its providers in OpenCode 1's "provider" section. Start OpenCode so SynaBun can move them to "providers" first, or move them yourself.` });
+    }
+    const configPath = updateOpencodeConfigFile(getOpencodeConfigDir(), (cfg) => {
+      if (converted) { delete cfg.provider; cfg.providers = { ...converted, ...(cfg.providers && typeof cfg.providers === 'object' ? cfg.providers : {}) }; }
+      return setProvider(cfg, 'ollama', ollama);
+    });
     console.log(`[ollama] Configured ${Object.keys(models).length} model(s) in ${configPath}`);
-
-    // Install @ai-sdk/openai-compatible if not present
-    const pkgPath = join(configDir, 'package.json');
-    let needsInstall = true;
-    try {
-      if (existsSync(pkgPath)) {
-        const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
-        needsInstall = !pkg.dependencies?.['@ai-sdk/openai-compatible'];
-      }
-    } catch {}
-    if (needsInstall) {
-      console.log('[ollama] Installing @ai-sdk/openai-compatible…');
-      execSync('npm install @ai-sdk/openai-compatible --save', { cwd: configDir, timeout: 60000, stdio: 'pipe', env: withPackagedPathLast(process.env) });
-      console.log('[ollama] Package installed');
-    }
-
-    // Restart OpenCode server if running
-    if (_ocpReady) {
-      setTimeout(async () => {
-        try {
-          console.log('[ollama] Restarting OpenCode to load Ollama provider…');
-          await takeoverOpencodeServer();
-          broadcastToOpencodeV2Clients({ type: 'providers:changed' });
-          console.log('[ollama] OpenCode restart complete');
-        } catch (err) {
-          console.error('[ollama] OpenCode restart failed:', err.message);
-        }
-      }, 300);
-    }
+    await reloadSharedOpencodeConfig();
+    broadcastToOpencodeV2Clients({ type: 'providers:changed' });
 
     _ollamaUserRemoved = false;
     _ollamaManagedByUs = true;
@@ -9583,29 +9912,13 @@ app.post('/api/ollama/configure', async (req, res) => {
 
 app.delete('/api/ollama/configure', async (req, res) => {
   try {
-    const configPath = getOpencodeConfigPath();
-    let cfg = {};
-    try { if (existsSync(configPath)) cfg = JSON.parse(readFileSync(configPath, 'utf8')); } catch {}
-    if (cfg.provider?.ollama) {
-      delete cfg.provider.ollama;
-      if (Object.keys(cfg.provider).length === 0) delete cfg.provider;
-      writeFileSync(configPath, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+    if (providerOf(readOpencodeConfigDocument(getOpencodeConfigPath()).config, 'ollama')) {
+      updateOpencodeConfigFile(getOpencodeConfigDir(), (cfg) => removeProvider(cfg, 'ollama'));
       console.log('[ollama] Removed Ollama provider from config');
+      await reloadSharedOpencodeConfig();
+      broadcastToOpencodeV2Clients({ type: 'providers:changed' });
     }
     _ollamaUserRemoved = true;
-
-    // Restart OpenCode server if running
-    if (_ocpReady) {
-      setTimeout(async () => {
-        try {
-          await takeoverOpencodeServer();
-          broadcastToOpencodeV2Clients({ type: 'providers:changed' });
-        } catch (err) {
-          console.error('[ollama] OpenCode restart after removal failed:', err.message);
-        }
-      }, 300);
-    }
-
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
@@ -9614,11 +9927,9 @@ app.delete('/api/ollama/configure', async (req, res) => {
 
 app.get('/api/ollama/configured', (req, res) => {
   try {
-    const configPath = getOpencodeConfigPath();
-    let cfg = {};
-    try { if (existsSync(configPath)) cfg = JSON.parse(readFileSync(configPath, 'utf8')); } catch {}
-    const configured = !!cfg.provider?.ollama;
-    const modelCount = configured ? Object.keys(cfg.provider.ollama.models || {}).length : 0;
+    const ollama = providerOf(readOpencodeGlobalConfig().config, 'ollama');
+    const configured = !!ollama;
+    const modelCount = configured ? Object.keys(ollama.models || {}).length : 0;
     res.json({ ok: true, configured, modelCount, userRemoved: _ollamaUserRemoved });
   } catch {
     res.json({ ok: true, configured: false, modelCount: 0, userRemoved: _ollamaUserRemoved });
@@ -9679,7 +9990,7 @@ function clearPersistedOpenCodeUiHistory() {
     'opencode-v2-windows',
     'synabun-ocp-windows',
     'synabun-ocp-session-snapshots',
-    'synabun-opencode-session-mcp-profiles',
+    'synabun-opencode-session-tools',
   ]);
   const prefixes = [
     'opencode-v2-tabs-',
@@ -9705,68 +10016,18 @@ function getOpenCodeHistoryBlockers() {
   return { activeTurns, startingTurns, activeAutomations };
 }
 
-async function opencodePortIsAlive(port) {
-  if (process.platform !== 'win32' && listPortListenerPids(port).length > 0) return true;
-  try {
-    const response = await fetch(`http://127.0.0.1:${port}/global/health`, {
-      signal: AbortSignal.timeout(750),
-    });
-    return response.ok;
-  } catch {
-    return false;
-  }
-}
-
-async function waitForOpencodeProcessesToStop(ports, stopped, timeoutMs = 8000) {
-  const uniquePorts = [...new Set(ports.filter((port) => Number.isFinite(port) && port > 0))];
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const alive = await Promise.all(uniquePorts.map(opencodePortIsAlive));
-    if (!alive.some(Boolean) && stopped()) return true;
-    await new Promise((resolveWait) => setTimeout(resolveWait, 250));
-  }
-  return false;
-}
-
-// Only what SynaBun started is stopped for a history clear: its children, by their handles (which never signal a
-// process that has exited), and its recorded serve while the OS still reports that very process. A server someone
-// else runs on one of these ports is left running, and the clear then says so instead of killing it.
-async function stopOpenCodeForHistoryClear() {
-  const isolated = [..._ocpIsoServes.values()].map((entry) => ({ port: entry.port, proc: entry.proc || null }));
-  const ports = [_ocpPort, ...isolated.map((entry) => entry.port)];
-  const children = [_ocpProc, ...isolated.map((entry) => entry.proc)].filter(Boolean);
-  const owned = verifiedOpencodeManagedProcess();
+// The isolated serves (panel sessions, loops, workers, brains) end before a history clear: none of them may hold
+// a session that is being deleted. Only SynaBun's own children are stopped, by their handles (which never signal a
+// process that has exited). The shared serve stays up: OpenCode's own API deletes the sessions.
+async function stopIsolatedServesForHistoryClear(timeoutMs = 8000) {
+  const children = [..._ocpIsoServes.values()].map((entry) => entry.proc).filter(Boolean);
   const gone = (child) => child.exitCode != null || child.signalCode != null;
-  // Still running until it has provably ended: one that cannot be read now counts as running.
-  const ownedRuns = () => !!owned && opencodeServeRecords.verifySync(owned) !== 'gone';
-  const stopped = () => children.every(gone) && !ownedRuns();
-
-  await Promise.allSettled(isolated.map(({ port }) => fetch(
-    `http://127.0.0.1:${port}/global/dispose`,
-    { method: 'POST', signal: AbortSignal.timeout(1500) },
-  )));
-  try { await ocpProxy('POST', '/global/dispose', null, 2000); } catch {}
   stopAllIsolatedServes();
-  stopOpencodeServer({ stopManagedOllama: false });
-
-  if (await waitForOpencodeProcessesToStop(ports, stopped)) return;
-  if (process.platform !== 'win32') {
-    for (const child of children) if (!gone(child)) { try { child.kill('SIGKILL'); } catch {} }
-    if (owned) signalOwnedOpencodeProcess(owned, 'SIGKILL');
-    await waitForOpencodeProcessesToStop(ports, stopped, 4000);
-  }
-  const stillAlive = (await Promise.all(ports.map(async (port) => (
-    (await opencodePortIsAlive(port)) ? port : null
-  )))).filter(Boolean);
-  const stillRunningPids = [...children.filter((child) => !gone(child)).map((child) => child.pid), ...(ownedRuns() ? [owned.pid] : [])];
-  if (stillAlive.length || stillRunningPids.length) {
-    const details = [
-      ...stillAlive.map((port) => `port ${port}`),
-      ...stillRunningPids.map((pid) => `process ${pid}`),
-    ];
-    const someoneElse = stillAlive.length && !stillRunningPids.length ? ' (an OpenCode server SynaBun did not start answers there: stop it, then clear again)' : '';
-    throw new Error(`OpenCode did not release ${details.join(', ')}${someoneElse}`);
-  }
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline && !children.every(gone)) await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+  if (process.platform !== 'win32') for (const child of children) if (!gone(child)) { try { child.kill('SIGKILL'); } catch {} }
+  const left = children.filter((child) => !gone(child));
+  if (left.length) throw new Error(`OpenCode did not release ${left.map((child) => `process ${child.pid}`).join(', ')}`);
 }
 
 app.get('/api/opencode/history', (req, res) => {
@@ -9797,7 +10058,6 @@ app.delete('/api/opencode/history', async (req, res) => {
   }
 
   const requestId = String(req.body?.requestId || '').trim().slice(0, 128) || null;
-  let wasRunning = false;
   _ocpHistoryClearInProgress = true;
   try {
     const blockers = getOpenCodeHistoryBlockers();
@@ -9808,23 +10068,17 @@ app.delete('/api/opencode/history', async (req, res) => {
         blockers,
       });
     }
-    // OpenCode 2's database is not cleared here (lib/opencode-history.js): refused before anything is stopped.
-    let historyStats = null;
-    try { historyStats = getOpenCodeHistoryStats({ dbPath: getOpencodeDbPath(), dataRoot: dirname(getOpencodeDbPath()) }); } catch { /* the clear itself says */ }
-    if (historyStats?.opencode2 || _ocpProtocol === 2) {
-      return res.status(409).json({ ok: false, opencode2: true, error: historyStats?.reason || OPENCODE2_HISTORY_REFUSAL });
+
+    await stopIsolatedServesForHistoryClear();
+    if (!(await ensureOpencodeServer({ allowDuringHistoryClear: true })) || !opencodeV2Client.getClient()) {
+      return res.status(503).json({ ok: false, error: _ocpProblem || 'OpenCode is not running, and its sessions are deleted through it: start OpenCode in Settings → OpenCode, then clear again.' });
     }
 
-    wasRunning = await checkOpencodeHealth();
-    await stopOpenCodeForHistoryClear();
-    closeOpencodeDb();
-
     const dbPath = getOpencodeDbPath();
-    const result = await clearOpenCodeHistoryInWorker({
-      dbPath,
-      dataRoot: dirname(dbPath),
-      vacuum: true,
-    });
+    const before = getOpenCodeHistoryStats({ dbPath, dataRoot: dirname(dbPath) });
+    const result = await clearOpenCodeHistory(opencodeV2Client.getClient());
+    result.databaseBytesBefore = before.databaseBytes;
+    try { result.databaseBytesAfter = getOpenCodeHistoryStats({ dbPath, dataRoot: dirname(dbPath) }).databaseBytes; } catch { result.databaseBytesAfter = before.databaseBytes; }
 
     try {
       result.resumeCache = clearSessionCacheProvider('opencode');
@@ -9843,41 +10097,51 @@ app.delete('/api/opencode/history', async (req, res) => {
     }
 
     _ocpSessionToServe.clear();
-    _ocpSessionProfiles.clear();
+    _ocpSessionTools.clear();
     _ocpSessionServeStarts.clear();
     _ocpActiveSessionTurns.clear();
 
-    let restarted = false;
-    if (wasRunning) {
-      try {
-        restarted = await ensureOpencodeServer({ allowDuringHistoryClear: true });
-      } catch (error) {
-        result.warnings.push(`OpenCode history was cleared, but its server did not restart: ${error.message}`);
-      }
-      if (!restarted && !result.warnings.some((warning) => warning.includes('did not restart'))) {
-        result.warnings.push('OpenCode history was cleared, but its server did not restart');
-      }
-    }
-
-    const event = { type: 'opencode:history-cleared', requestId, restarted };
+    const event = { type: 'opencode:history-cleared', requestId, restarted: true };
     broadcastSync(event);
-    broadcastToOpencodeV2Clients({ type: 'history:cleared', restarted });
-    console.log(`[opencode] Cleared ${result.sessionsDeleted} sessions and ${result.partsDeleted} parts`);
-    return res.json({ ok: true, restarted, result });
+    broadcastToOpencodeV2Clients({ type: 'history:cleared', restarted: true });
+    console.log(`[opencode] Cleared ${result.sessionsDeleted} sessions${result.failed.length ? ` (${result.failed.length} could not be deleted)` : ''}`);
+    return res.json({ ok: true, restarted: true, result });
   } catch (err) {
-    if (wasRunning && !(await checkOpencodeHealth())) {
-      try { await ensureOpencodeServer({ allowDuringHistoryClear: true }); } catch {}
-    }
     return res.status(500).json({ ok: false, error: err.message });
   } finally {
     _ocpHistoryClearInProgress = false;
   }
 });
 
+// What OpenCode is installed (the resolver's `--version`, cached by the file) and whether SynaBun drives it:
+// Settings shows the version, or the sentence that says why not and how to get OpenCode 2 (`code`, `minimum` and
+// `commands` let it word that in the page's language; `reason` is the server's English one).
+// `supported` is true for a version SynaBun drives, false for one it refuses (`code` says why), null while the
+// version is not known (a command line in Settings, a `--version` that could not be read): the serve's own
+// answer decides when it starts.
+function opencodeInstallStateOf(detected) {
+  const refused = !detected.supported && detected.major != null;
+  return {
+    version: detected.version || null,
+    supported: refused ? false : (detected.supported === true && detected.major != null ? true : null),
+    path: detected.path || null,
+    commandLine: detected.commandLine === true,
+    installed: !!(detected.path || detected.commandLine),
+    minimum: OPENCODE_MIN_VERSION,
+    commands: opencodeInstallCommands(process.platform),
+    ...(refused ? { code: detected.code || null, reason: detected.reason } : {}),
+  };
+}
+
+async function opencodeInstallState() {
+  return opencodeInstallStateOf(await detectOpencode());
+}
+
 app.get('/api/opencode/status', async (req, res) => {
   try {
+    const installed = await opencodeInstallState();
     if (_ocpHistoryClearInProgress) {
-      return res.json({ ok: true, running: false, clearingHistory: true, port: _ocpPort, version: _ocpVersion });
+      return res.json({ ok: true, running: false, clearingHistory: true, port: _ocpPort, version: _ocpVersion, installed });
     }
     let running = await checkOpencodeHealth();
     if (running) {
@@ -9889,72 +10153,77 @@ app.get('/api/opencode/status', async (req, res) => {
     } else if (!running && _ocpReady) {
       _ocpReady = false;
     }
-    res.json({ ok: true, running, port: _ocpPort, version: _ocpVersion, protocol: _ocpProtocol, managed: !!_ocpProc, ...(running ? {} : { problem: _ocpProblem || (_ocpLastCheck && _ocpLastCheck.state !== 'down' ? opencodeProblemText({ check: _ocpLastCheck, port: _ocpPort }) : null) }) });
+    const problem = running ? null : (_ocpProblem || installed.reason || (_ocpLastCheck && _ocpLastCheck.state !== 'down' ? opencodeProblemText({ check: _ocpLastCheck, port: _ocpPort }) : null));
+    res.json({ ok: true, running, port: _ocpPort, version: _ocpVersion, managed: !!_ocpProc, installed, ...(running ? {} : { problem }) });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-app.get('/api/opencode/config', async (req, res) => {
+// What Settings → OpenCode edits in the global configuration, as OpenCode 2 reads it (opencode.json, then
+// opencode.jsonc over it): compaction, snapshots, and what each of OpenCode's own tools may do. Read from the
+// files, so it answers with OpenCode stopped too.
+function opencodeSettingsView() {
+  const { config, documents } = readOpencodeGlobalConfig();
+  const compaction = compactionOf(config);
+  return {
+    file: getOpencodeConfigPath(),
+    files: documents.map((doc) => ({ path: doc.path, exists: doc.exists, ...(doc.error ? { error: doc.error } : {}) })),
+    compaction: { auto: compaction.auto !== false, buffer: compaction.buffer },
+    snapshots: snapshotsOf(config) !== false,
+    actions: [...OPENCODE_TOOL_ACTIONS],
+    tools: toolEffectsOf(config),
+  };
+}
+
+app.get('/api/opencode/config', (req, res) => {
   try {
-    if (!_ocpReady) return res.json({ ok: false, error: 'OpenCode server not running' });
-    const r = await ocpProxy('GET', '/config');
-    res.status(r.status).json({ ok: r.status === 200, data: r.data });
+    res.json({ ok: true, data: opencodeSettingsView() });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
+// PATCH /api/opencode/config — { compaction?: { auto?, buffer? (null: OpenCode's default) }, snapshots?, tools?: { <action>: allow|ask|deny } }
+// into the global opencode.json, in OpenCode 2's shapes (lib/opencode-config.js). OpenCode reads the change at
+// once; the shared serve is asked to read it again before the answer.
 app.patch('/api/opencode/config', async (req, res) => {
+  if (isGuestRequest(req)) return res.status(403).json({ ok: false, error: 'Admin only' });
   try {
-    if (!_ocpReady) return res.status(503).json({ ok: false, error: 'OpenCode server not running' });
-    const r = await ocpProxy('PATCH', '/config', req.body);
-    res.status(r.status).json({ ok: r.status === 200, data: r.data });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-// GET /api/opencode/snapshot — read the persistent "snapshot" setting from config.json.
-// OpenCode reads this top-level key at startup; it defaults to true when absent.
-// (The runtime PATCH /config above is in-memory only, so snapshot lives in the file.)
-app.get('/api/opencode/snapshot', (req, res) => {
-  try {
-    const configPath = getOpencodeConfigPath();
-    let cfg = {};
-    try { if (existsSync(configPath)) cfg = JSON.parse(readFileSync(configPath, 'utf8')); } catch {}
-    res.json({ ok: true, snapshot: cfg.snapshot !== false });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-// POST /api/opencode/snapshot — persist the "snapshot" setting to config.json so it
-// survives restarts and is picked up by new OpenCode sessions. Body: { enabled: boolean }.
-app.post('/api/opencode/snapshot', (req, res) => {
-  try {
-    const enabled = req.body?.enabled === true;
-    const configPath = ensureOpencodeConfigFile();
-    let cfg = {};
-    try { cfg = JSON.parse(readFileSync(configPath, 'utf8')); } catch {}
-    cfg.snapshot = enabled;
-    writeFileSync(configPath, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
-    console.log(`[opencode] snapshot → ${enabled} (${configPath})`);
-    res.json({ ok: true, snapshot: enabled });
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const tools = body.tools && typeof body.tools === 'object' ? Object.entries(body.tools) : [];
+    for (const [action, effect] of tools) {
+      if (!OPENCODE_TOOL_ACTIONS.includes(action)) return res.status(400).json({ ok: false, error: `Unknown OpenCode tool: ${action}` });
+      if (!PERMISSION_EFFECTS.includes(effect)) return res.status(400).json({ ok: false, error: `A tool's permission is allow, ask or deny, not ${effect}` });
+    }
+    const compaction = body.compaction && typeof body.compaction === 'object' ? body.compaction : null;
+    if (compaction && compaction.auto !== undefined && typeof compaction.auto !== 'boolean') return res.status(400).json({ ok: false, error: 'compaction.auto is true or false' });
+    if (compaction && compaction.buffer !== undefined && compaction.buffer !== null && !(Number.isInteger(compaction.buffer) && compaction.buffer >= 0 && compaction.buffer <= 1_000_000)) {
+      return res.status(400).json({ ok: false, error: 'compaction.buffer is a whole number of tokens from 0 to 1000000, or null for OpenCode\'s default' });
+    }
+    if (body.snapshots !== undefined && typeof body.snapshots !== 'boolean') return res.status(400).json({ ok: false, error: 'snapshots is true or false' });
+    const configPath = updateOpencodeConfigFile(getOpencodeConfigDir(), (cfg) => {
+      if (compaction) setCompaction(cfg, { auto: compaction.auto, buffer: compaction.buffer });
+      if (typeof body.snapshots === 'boolean') setSnapshots(cfg, body.snapshots);
+      for (const [action, effect] of tools) setActionEffect(cfg, action, effect);
+      return cfg;
+    });
+    console.log(`[opencode] Settings saved to ${configPath}`);
+    await reloadSharedOpencodeConfig();
+    res.json({ ok: true, data: opencodeSettingsView() });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
 // ── OpenCode's provider list, kept (lib/launch-cache.js) ──
-// The shared serve's /provider is the whole models.dev catalog (about 7 MB, 231 providers on a typical
-// install) and took 1.3-1.5 s on every call. It is read once and kept: answered at once, read again in the
-// background when it is old, when the serve restarts and when a catalog event says it changed. Keyed on what
-// it depends on: the OpenCode major, the binary (an update), its credentials file and its config files (a
-// provider connected or removed rewrites auth.json: another key, so the next read waits for the new list).
-// Only a provider list is kept: a web page (an OpenCode 2 serve answering an OpenCode 1 path) or an error
-// never is. ?view=compact (the connected providers, lib/opencode-provider-view.js) is what the pickers read,
-// and the only part kept across restarts: the whole catalog is megabytes.
+// The shared serve's provider list (its providers, models, default model and every integration a provider can
+// be connected through: lib/opencode2-client.js providerCatalog) takes four requests. It is read once and kept:
+// answered at once, read again in the background when it is old, when the serve restarts, when SynaBun changed a
+// credential or the configuration and when a catalog or integration event says it changed. Keyed on what it
+// depends on: the binary (an update) and the global config files. Only a provider list is kept: an error never
+// is. ?view=compact (the connected providers, lib/opencode-provider-view.js) is what the pickers read, and the
+// only part kept across restarts.
 const OPENCODE_PROVIDERS_TTL_MS = 5 * 60_000;
 
 function opencodeFileStamp(file) {
@@ -9962,12 +10231,9 @@ function opencodeFileStamp(file) {
 }
 
 function opencodeProvidersKey() {
-  const configDir = dirname(getOpencodeConfigPath());
+  const configDir = getOpencodeConfigDir();
   return [
-    knownOpencodeMajor(),
     configuredCommandLine('opencode') || binaryIdentity(cliResolver.launcher('opencode').path || ''),
-    opencodeFileStamp(getOpencodeAuthPath()),
-    opencodeFileStamp(getOpencodeConfigPath()),
     opencodeFileStamp(join(configDir, 'opencode.json')),
     opencodeFileStamp(join(configDir, 'opencode.jsonc')),
   ].join('|');
@@ -9980,7 +10246,6 @@ const _opencodeProviders = createLaunchCache({
   maxEntries: 2,
   load: async () => {
     if (!_ocpReady) throw new Error('OpenCode server not running');
-    await reconcileAuthIfStale();
     const r = await ocpProxy('GET', '/provider');
     if (r.status !== 200 || !isProviderCatalog(r.data)) {
       throw Object.assign(new Error(r.status === 200 ? 'OpenCode did not answer with a provider list' : `OpenCode answered ${r.status}`), { status: r.status === 200 ? 502 : r.status, data: r.data });
@@ -10087,7 +10352,6 @@ app.get('/api/opencode-v2/status', async (req, res) => {
       running,
       port: _ocpPort,
       version: _ocpVersion,
-      protocol: _ocpProtocol,
       managed: !!_ocpProc,
       connected: opencodeV2Client.isConnected(),
       ...(running ? {} : { problem: _ocpProblem || (_ocpLastCheck && _ocpLastCheck.state !== 'down' ? opencodeProblemText({ check: _ocpLastCheck, port: _ocpPort }) : null) }),
@@ -10136,99 +10400,160 @@ app.get('/api/opencode/providers/full', async (req, res) => {
   }
 });
 
-// Auth methods per provider (api_key, oauth, etc.)
+// ── Provider credentials (OpenCode 2's integrations) ──
+// OpenCode 2 keeps provider credentials in its own database and uses a change at once: a key saved, a sign-in
+// finished or a credential removed needs no restart. A secret never comes back from these routes: an
+// integration's connections name a credential, never its value.
+
+// The shared serve's client, for a route that needs OpenCode running (null when it is not).
+function sharedOpencodeClient() {
+  return _ocpReady ? opencodeV2Client.getClient() : null;
+}
+
+// A failed OpenCode answer as `{ status, error }` for a route's reply.
+function opencodeFailure(result, fallback) {
+  const error = result?.error;
+  const status = Number(result?.response?.status);
+  const message = typeof error === 'string' ? error : (error?.message || error?.data?.message || error?._tag || fallback);
+  return { status: status >= 400 && status < 600 ? status : 502, error: message || fallback };
+}
+
+// The answer a sign-in method's form gets without the user: its hidden fields and the fields with a default.
+async function opencodeOAuthDefaults(client, integrationID, methodID) {
+  const listed = await client.integration.list({});
+  const integration = (Array.isArray(listed.data) ? listed.data : []).find((row) => row?.id === integrationID);
+  const method = (Array.isArray(integration?.methods) ? integration.methods : []).find((row) => row?.type === 'oauth' && row.id === methodID);
+  const answer = {};
+  for (const field of Array.isArray(method?.form) ? method.form : []) {
+    if (field?.key && field.default !== undefined) answer[field.key] = field.default;
+  }
+  return Object.keys(answer).length ? answer : null;
+}
+
+// How each provider can be connected: { [id]: [{ type: 'api' | 'oauth', label, id }] }.
 app.get('/api/opencode/providers/auth', async (req, res) => {
   try {
-    if (!_ocpReady) return res.json({ ok: false, error: 'OpenCode server not running', data: {} });
-    const r = await ocpProxy('GET', '/provider/auth');
-    res.status(r.status).json({ ok: r.status === 200, data: r.data });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-// Check which providers have stored API keys in auth.json
-app.get('/api/opencode/auth/stored', (req, res) => {
-  try {
-    const authPath = getOpencodeAuthPath();
-    const data = existsSync(authPath) ? readFileSync(authPath, 'utf8') : '{}';
-    const auth = JSON.parse(data);
-    res.json({ ok: true, data: Object.keys(auth) });
-  } catch (err) {
-    res.json({ ok: true, data: [] });
-  }
-});
-
-// Set API key / credential for a provider
-app.put('/api/opencode/auth/:providerId', async (req, res) => {
-  try {
-    if (!_ocpReady) return res.status(503).json({ ok: false, error: 'OpenCode server not running' });
-    const r = await ocpProxy('PUT', `/auth/${req.params.providerId}`, req.body);
-    if (r.status !== 200) return res.status(r.status).json({ ok: false, data: r.data });
-
-    // Takeover + restart so the server reads updated auth.json
-    setTimeout(async () => {
-      try {
-        console.log('[opencode] Restarting to apply new credentials…');
-        await takeoverOpencodeServer();
-        broadcastToOpencodeV2Clients({ type: 'providers:changed' });
-        console.log('[opencode] Restart complete after credential update');
-      } catch (err) {
-        console.error('[opencode] Restart after auth update failed:', err.message);
-      }
-    }, 300);
+    const client = sharedOpencodeClient();
+    if (!client) return res.json({ ok: false, error: 'OpenCode server not running', data: {} });
+    const r = await client.provider.auth({});
+    if (r.error) { const failed = opencodeFailure(r, 'OpenCode did not list its integrations'); return res.status(failed.status).json({ ok: false, error: failed.error, data: {} }); }
     res.json({ ok: true, data: r.data });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-// Remove API key / credential for a provider
-app.delete('/api/opencode/auth/:providerId', async (req, res) => {
+// The providers OpenCode holds a credential of (ids only).
+app.get('/api/opencode/auth/stored', async (req, res) => {
   try {
-    if (!_ocpReady) return res.status(503).json({ ok: false, error: 'OpenCode server not running' });
-    const providerId = req.params.providerId;
+    const client = sharedOpencodeClient();
+    if (!client) return res.json({ ok: true, data: [] });
+    const r = await client.integration.list({});
+    res.json({ ok: true, data: r.error ? [] : integrationsWithCredentials(r.data) });
+  } catch (err) {
+    res.json({ ok: true, data: [] });
+  }
+});
 
-    // Proxy DELETE to OpenCode server — this is where credentials actually live
-    const r = await ocpProxy('DELETE', `/auth/${providerId}`);
-    if (r.status !== 200 && r.status !== 204) {
-      return res.status(r.status).json({ ok: false, data: r.data, error: r.data?.error || 'Failed to remove credentials from OpenCode' });
-    }
-
-    // Takeover + restart so the server drops the credential
-    setTimeout(async () => {
-      try {
-        console.log('[opencode] Restarting after credential removal…');
-        await takeoverOpencodeServer();
-        broadcastToOpencodeV2Clients({ type: 'providers:changed' });
-        console.log('[opencode] Restart complete after credential removal');
-      } catch (err) {
-        console.error('[opencode] Restart after auth removal failed:', err.message);
-      }
-    }, 300);
+// Save an API key for a provider: { key }.
+app.put('/api/opencode/auth/:providerId', async (req, res) => {
+  if (isGuestRequest(req)) return res.status(403).json({ ok: false, error: 'Admin only' });
+  try {
+    const client = sharedOpencodeClient();
+    if (!client) return res.status(503).json({ ok: false, error: 'OpenCode server not running' });
+    const key = typeof req.body?.key === 'string' ? req.body.key.trim() : '';
+    if (!key) return res.status(400).json({ ok: false, error: 'An API key is required' });
+    const r = await client.integration.connectKey({ integrationID: req.params.providerId, key });
+    if (r.error) { const failed = opencodeFailure(r, 'OpenCode did not save the key'); return res.status(failed.status).json({ ok: false, error: failed.error }); }
+    console.log(`[opencode] Saved a key for ${req.params.providerId}`);
+    broadcastToOpencodeV2Clients({ type: 'providers:changed' });
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-// Start OAuth flow for a provider
-app.post('/api/opencode/oauth/:providerId/authorize', async (req, res) => {
+// Remove every credential OpenCode holds for a provider.
+app.delete('/api/opencode/auth/:providerId', async (req, res) => {
+  if (isGuestRequest(req)) return res.status(403).json({ ok: false, error: 'Admin only' });
   try {
-    if (!_ocpReady) return res.status(503).json({ ok: false, error: 'OpenCode server not running' });
-    const r = await ocpProxy('POST', `/provider/${req.params.providerId}/oauth/authorize`, req.body || {});
-    res.status(r.status).json({ ok: r.status === 200, data: r.data });
+    const client = sharedOpencodeClient();
+    if (!client) return res.status(503).json({ ok: false, error: 'OpenCode server not running' });
+    const providerId = req.params.providerId;
+    const listed = await client.integration.list({});
+    if (listed.error) { const failed = opencodeFailure(listed, 'OpenCode did not list its integrations'); return res.status(failed.status).json({ ok: false, error: failed.error }); }
+    const ids = integrationCredentialIds((Array.isArray(listed.data) ? listed.data : []).find((row) => row?.id === providerId));
+    if (!ids.length) return res.status(404).json({ ok: false, error: `OpenCode holds no credential of ${providerId}.` });
+    for (const credentialID of ids) {
+      const removed = await client.credential.remove({ credentialID });
+      if (removed.error && Number(removed.response?.status) !== 404) {
+        const failed = opencodeFailure(removed, 'OpenCode did not remove the credential');
+        return res.status(failed.status).json({ ok: false, error: failed.error });
+      }
+    }
+    console.log(`[opencode] Removed ${ids.length} credential(s) of ${providerId}`);
+    broadcastToOpencodeV2Clients({ type: 'providers:changed' });
+    res.json({ ok: true, removed: ids.length });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-// Handle OAuth callback
-app.post('/api/opencode/oauth/:providerId/callback', async (req, res) => {
+// Start a sign-in: { methodID } (or `method`, its place in the provider's list of /providers/auth). Answers
+// { url, instructions, method: 'auto' | 'code', attemptID }: 'auto' finishes by itself (poll …/status), 'code'
+// when the user pastes the code the provider showed (…/callback).
+app.post('/api/opencode/oauth/:providerId/authorize', async (req, res) => {
+  if (isGuestRequest(req)) return res.status(403).json({ ok: false, error: 'Admin only' });
   try {
-    if (!_ocpReady) return res.status(503).json({ ok: false, error: 'OpenCode server not running' });
-    const r = await ocpProxy('POST', `/provider/${req.params.providerId}/oauth/callback`, req.body);
-    res.status(r.status).json({ ok: r.status === 200, data: r.data });
+    const client = sharedOpencodeClient();
+    if (!client) return res.status(503).json({ ok: false, error: 'OpenCode server not running' });
+    const providerId = req.params.providerId;
+    let methodID = typeof req.body?.methodID === 'string' ? req.body.methodID.trim() : '';
+    if (!methodID) {
+      const auth = await client.provider.auth({});
+      const methods = Array.isArray(auth.data?.[providerId]) ? auth.data[providerId] : [];
+      const picked = methods[Number(req.body?.method)];
+      methodID = (picked?.type === 'oauth' ? picked.id : methods.find((method) => method.type === 'oauth')?.id) || '';
+    }
+    if (!methodID) return res.status(400).json({ ok: false, error: `${providerId} has no sign-in SynaBun can start.` });
+    const answer = await opencodeOAuthDefaults(client, providerId, methodID);
+    const r = await client.integration.connectOAuth({ integrationID: providerId, methodID, ...(answer ? { answer } : {}) });
+    if (r.error) { const failed = opencodeFailure(r, 'OpenCode did not start the sign-in'); return res.status(failed.status).json({ ok: false, error: failed.error }); }
+    res.json({ ok: true, data: { url: r.data.url || '', instructions: r.data.instructions || '', method: r.data.mode === 'code' ? 'code' : 'auto', attemptID: r.data.attemptID || '' } });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// How a sign-in is going: ?attemptID= → { status: 'pending' | 'complete' | 'failed' | 'expired', message? }.
+app.get('/api/opencode/oauth/:providerId/status', async (req, res) => {
+  try {
+    const client = sharedOpencodeClient();
+    if (!client) return res.status(503).json({ ok: false, error: 'OpenCode server not running' });
+    const attemptID = String(req.query?.attemptID || '').trim();
+    if (!attemptID) return res.status(400).json({ ok: false, error: 'attemptID is required' });
+    const r = await client.integration.oauthStatus({ integrationID: req.params.providerId, attemptID });
+    if (r.error) { const failed = opencodeFailure(r, 'OpenCode did not say how the sign-in is going'); return res.status(failed.status).json({ ok: false, error: failed.error }); }
+    if (r.data?.status === 'complete') broadcastToOpencodeV2Clients({ type: 'providers:changed' });
+    res.json({ ok: true, data: { status: String(r.data?.status || 'pending'), ...(r.data?.message ? { message: String(r.data.message) } : {}) } });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// Finish a sign-in with the code the provider showed: { attemptID, code }.
+app.post('/api/opencode/oauth/:providerId/callback', async (req, res) => {
+  if (isGuestRequest(req)) return res.status(403).json({ ok: false, error: 'Admin only' });
+  try {
+    const client = sharedOpencodeClient();
+    if (!client) return res.status(503).json({ ok: false, error: 'OpenCode server not running' });
+    const attemptID = typeof req.body?.attemptID === 'string' ? req.body.attemptID.trim() : '';
+    const code = typeof req.body?.code === 'string' ? req.body.code.trim() : '';
+    if (!attemptID || !code) return res.status(400).json({ ok: false, error: 'attemptID and code are required' });
+    const r = await client.integration.oauthComplete({ integrationID: req.params.providerId, attemptID, code });
+    if (r.error) { const failed = opencodeFailure(r, 'OpenCode did not accept the code'); return res.status(failed.status).json({ ok: false, error: failed.error }); }
+    broadcastToOpencodeV2Clients({ type: 'providers:changed' });
+    res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -10256,30 +10581,23 @@ app.get('/api/opencode/config/providers', async (req, res) => {
   }
 });
 
-// GET /api/opencode/mcp — config.json is the source of truth. OpenCode doesn't
-// need to be running for the toggle to reflect a persisted install.
+// GET /api/opencode/mcp — the global configuration is the source of truth (opencode.json, then opencode.jsonc
+// over it: the MCP servers OpenCode 2 starts). OpenCode doesn't need to be running for the toggle to reflect a
+// persisted install. `data` is the `mcp.servers` OpenCode reads.
 app.get('/api/opencode/mcp', async (req, res) => {
   try {
-    const configPath = getOpencodeConfigPath();
-    let connected = false;
-    let data = {};
-    try {
-      if (existsSync(configPath)) {
-        const cfg = JSON.parse(readFileSync(configPath, 'utf8'));
-        connected = !!(cfg?.mcp && cfg.mcp.SynaBun);
-        data = cfg?.mcp || {};
-      }
-    } catch {}
-    res.json({ ok: true, connected, runtimeReady: !!_ocpReady, data });
+    const servers = mcpServersOf(readOpencodeGlobalConfig().config);
+    res.json({ ok: true, connected: !!servers.SynaBun, runtimeReady: !!_ocpReady, file: getOpencodeConfigPath(), data: servers });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-// POST /api/opencode/mcp — persist to config.json always; register with the
-// running server too if it happens to be up. No body → installs SynaBun with
+// POST /api/opencode/mcp — persist to the global opencode.json (OpenCode 2's mcp.servers), which OpenCode reads
+// at once; the shared serve is asked to read it again before the answer. No body → installs SynaBun with
 // canonical config (parity with the other provider endpoints).
 app.post('/api/opencode/mcp', async (req, res) => {
+  if (isGuestRequest(req)) return res.status(403).json({ ok: false, error: 'Admin only' });
   try {
     let { name, config: mcpConfig } = req.body || {};
     if (!name) {
@@ -10294,19 +10612,10 @@ app.post('/api/opencode/mcp', async (req, res) => {
     try { persistMcpToOpencodeConfig(name, mcpConfig); } catch (e) {
       return res.status(500).json({ ok: false, error: `Persist failed: ${e.message}` });
     }
-    // Force-allow the 7 SynaBun memory tools so CLI sessions skip prompts.
+    // Allow the SynaBun memory tools so CLI sessions skip prompts.
     injectOpenCodeMemoryPerms();
-    if (_ocpReady) {
-      try {
-        const registered = await ocpProxy('POST', '/mcp', { name, config: buildOpencodeRuntimeMcpConfig(mcpConfig) });
-        if (registered.status >= 400) {
-          console.warn(`[opencode] Runtime register rejected (config persisted): HTTP ${registered.status}`);
-        }
-      } catch (e) {
-        console.warn(`[opencode] Runtime register failed (config persisted): ${e.message}`);
-      }
-    }
-    const response = { ok: true, message: 'SynaBun MCP registered. Restart OpenCode to connect.' };
+    await reloadSharedOpencodeConfig();
+    const response = { ok: true, message: `${name} MCP saved to ${getOpencodeConfigPath()}; OpenCode starts it with its next session.` };
     if (name === 'SynaBun') response.rules = syncRulesWithMcp('opencode', 'install', req.body);
     res.json(response);
   } catch (err) {
@@ -10314,38 +10623,26 @@ app.post('/api/opencode/mcp', async (req, res) => {
   }
 });
 
-// DELETE /api/opencode/mcp — remove SynaBun entry from config.json.
+// DELETE /api/opencode/mcp — remove the entry from the global opencode.json. One that only the user's
+// opencode.jsonc holds stays (SynaBun never edits that file): the answer says so.
 app.delete('/api/opencode/mcp', async (req, res) => {
+  if (isGuestRequest(req)) return res.status(403).json({ ok: false, error: 'Admin only' });
   try {
     const name = (req.body && req.body.name) || req.query?.name || 'SynaBun';
     const configPath = getOpencodeConfigPath();
-    if (existsSync(configPath)) {
+    if (mcpServersOf(readOpencodeConfigDocument(configPath).config)[name]) {
       try {
-        const cfg = JSON.parse(readFileSync(configPath, 'utf8'));
-        if (cfg?.mcp && cfg.mcp[name]) {
-          delete cfg.mcp[name];
-          if (Object.keys(cfg.mcp).length === 0) delete cfg.mcp;
-          writeFileSync(configPath, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
-          console.log(`[opencode] Removed MCP server "${name}" from ${configPath}`);
-        }
+        updateOpencodeConfigFile(getOpencodeConfigDir(), (cfg) => removeMcpServer(cfg, name));
+        console.log(`[opencode] Removed MCP server "${name}" from ${configPath}`);
       } catch (e) {
         return res.status(500).json({ ok: false, error: `Config rewrite failed: ${e.message}` });
       }
     }
-    const response = { ok: true, message: 'SynaBun MCP removed from OpenCode config.json.' };
+    await reloadSharedOpencodeConfig();
+    const left = mcpServersOf(readOpencodeGlobalConfig().config)[name];
+    const response = { ok: true, message: `${name} MCP removed from ${configPath}.`, ...(left ? { warning: `${name} is still set up in ${join(getOpencodeConfigDir(), 'opencode.jsonc')}, which SynaBun does not edit: remove it there.` } : {}) };
     if (name === 'SynaBun') response.rules = syncRulesWithMcp('opencode', 'remove');
     res.json(response);
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-// List available tool IDs
-app.get('/api/opencode/tools', async (req, res) => {
-  try {
-    if (!_ocpReady) return res.json({ ok: false, error: 'OpenCode server not running', data: [] });
-    const r = await ocpProxy('GET', '/experimental/tool/ids');
-    res.status(r.status).json({ ok: r.status === 200, data: r.data });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -12078,7 +12375,7 @@ const WB_GAMES_ROOT = join(__dirname, 'games');
 const WB_ELEMENT_TYPES = new Set(['text', 'list', 'shape', 'arrow', 'pen', 'image', 'section']);
 // Keys an update may touch. id/type/zIndex/measured/estimated/dataUrlBytes are server-owned.
 const WB_UPDATABLE_KEYS = new Set([
-  'x', 'y', 'width', 'height', 'content', 'items', 'ordered', 'fontSize', 'color', 'bold', 'italic',
+  'x', 'y', 'width', 'height', 'content', 'items', 'levels', 'ordered', 'fontSize', 'color', 'bold', 'italic',
   'shape', 'points', 'startAnchor', 'endAnchor', 'rotation', 'strokeWidth', 'sectionType', 'label',
   'dataUrl', 'pathD',
 ]);
@@ -12267,6 +12564,10 @@ function applyWhiteboardOps(wb, ops, { coordMode } = {}) {
         if (WB_UPDATABLE_KEYS.has(key)) patch[key] = value;
       }
       if (el.type === 'text' || el.type === 'list') { delete patch.width; delete patch.height; }
+      // List items as strings + levels (public/shared/whiteboard-list.js): plain strings stay level 0,
+      // { text, level } objects and a levels array are fitted to the nesting rules.
+      if (el.type === 'list') Object.assign(patch, normalizeListUpdate(el.items, patch));
+      else delete patch.levels;
       if (coordMode === 'pct') { wbConvertPctInPlace(patch, frame, { pointsToo: true }); reasons.push('pct'); }
       else if (op.parent != null) wbOffsetByFrame(patch, frame);   // px relative to the parent section
       if (patch.points !== undefined) {
@@ -12276,8 +12577,9 @@ function applyWhiteboardOps(wb, ops, { coordMode } = {}) {
       }
 
       const touched = new Set(Object.keys(patch));
-      const sizeInputsChanged = ['content', 'items', 'fontSize'].some(k => k in patch);
+      const sizeInputsChanged = ['content', 'items', 'levels', 'fontSize'].some(k => k in patch);
       Object.assign(el, patch);
+      if (el.levels == null) delete el.levels;   // a flat list is stored without levels
       wbValidateAnchors(el, lookup, reasons, touched);
 
       let reEstimated = false;
@@ -12412,6 +12714,9 @@ app.post('/api/whiteboard/elements', (req, res) => {
       delete el.parent;
       delete el.coordMode;
 
+      // List items as strings + levels (public/shared/whiteboard-list.js), before the size estimate reads them.
+      if (el.type === 'list') { if (Array.isArray(el.items)) writeListItems(el, el.items, el.levels); else delete el.levels; }
+      else delete el.levels;
       if (el.type === 'image' && el.url && !el.dataUrl) wbResolveImageUrl(el, reasons);
       if (el.type === 'image' && !(el.width > 0 && el.height > 0)) reasons.push('image:no-size');
       reasons.push(...wbEnsureElementGeometry(el).filter(r => r !== 'image:no-size'));
@@ -13386,7 +13691,8 @@ function isLoopRuntimeAlive(loopState) {
   if (!loopState) return false;
   const runId = loopState.runId || loopState.terminalSessionId;
   if (loopState.runtimeType === 'native' || loopState.driverType === 'native' || loopState.surface === 'sidepanel') {
-    return !!runId && !!_nativeLoopRuntime?.isAlive(runId);
+    // A dispatched worker a restart cut off waits (suspended) for its resume: its state file is what it resumes from.
+    return !!runId && (!!_nativeLoopRuntime?.isAlive(runId) || !!_nativeLoopRuntime?.isSuspended?.(runId));
   }
   return !!loopState.terminalSessionId && terminalSessions.has(loopState.terminalSessionId);
 }
@@ -13462,7 +13768,7 @@ function readLoopTemplateFiles() {
 function readLoopTemplates() {
   return mergeLoopItemsById(readLoopTemplateFiles(), 'templates').map((template) => {
     normalizeAutomationRecord(template);
-    return template;
+    return readStoredToolListRecord(template, toolListOptions());
   });
 }
 
@@ -13521,6 +13827,7 @@ function buildTemplateRouting(files) {
 }
 
 function writeLoopTemplateFile(path, templates, format = 'array') {
+  templates = templates.map(record => record.externalMcpVersion === 2 ? toolListRecord(record, toolListOptions()) : readStoredToolListRecord(record, toolListOptions()));
   mkdirSync(dirname(path), { recursive: true });
   const data = format === 'object' ? { templates } : templates;
   writeFileSync(path, JSON.stringify(data, null, 2));
@@ -13567,7 +13874,7 @@ app.get('/api/loop/templates', (req, res) => {
 
 // POST /api/loop/templates — create a template
 app.post('/api/loop/templates', (req, res) => {
-  const { name, description, task, context, iterations, maxMinutes, icon, category, usesBrowser, profile, model, contextMode, effort, mcpProfile, folderId, codexAccountId } = req.body;
+  const { name, description, task, context, iterations, maxMinutes, icon, category, usesBrowser, profile, model, contextMode, effort, tools, platform, folderId, codexAccountId } = req.body;
   if (!name?.trim() || !task?.trim()) {
     return res.status(400).json({ error: 'name and task are required' });
   }
@@ -13575,6 +13882,9 @@ app.post('/api/loop/templates', (req, res) => {
   if (!validAutomationContextMode(profile || 'claude-code', selection.contextMode)) {
     return res.status(400).json({ error: `Invalid context mode: ${selection.contextMode}` });
   }
+  let toolFields;
+  try { toolFields = toolListRecord({ tools, platform }, toolListOptions()); }
+  catch (error) { return res.status(400).json({ error: error.message, code: error.code, problems: error.problems }); }
   const templates = readLoopTemplates();
   const id = randomBytes(12).toString('hex');
   const template = {
@@ -13592,7 +13902,7 @@ app.post('/api/loop/templates', (req, res) => {
     model: selection.model,
     contextMode: selection.contextMode || null,
     effort: effort || null,
-    mcpProfile: mcpProfile || null,
+    ...toolFields,
     codexAccountId: codexAccountId || null,
     folderId: folderId || null,
     createdAt: new Date().toISOString(),
@@ -13600,7 +13910,7 @@ app.post('/api/loop/templates', (req, res) => {
   };
   templates.push(template);
   writeLoopTemplates(templates);
-  res.json(template);
+  res.json(toolListRecord(template, toolListOptions()));
 });
 
 // GET /api/loop/templates/export — export all templates as JSON (must be before /:id)
@@ -13686,7 +13996,8 @@ app.post('/api/loop/templates/import', (req, res) => {
       model: selection.model,
       contextMode: selection.contextMode || null,
       effort: t.effort || null,
-      mcpProfile: t.mcpProfile || null,
+      tools: storedToolList(t, toolListOptions()),
+      platform: automationPlatform(t),
       folderId: folderIdMap.get(t.folderId) || t.folderId || null,
       createdAt: t.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -13709,7 +14020,7 @@ app.put('/api/loop/templates/:id', (req, res) => {
   const templates = readLoopTemplates();
   const idx = templates.findIndex(t => t.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Template not found' });
-  const { name, description, task, context, iterations, maxMinutes, icon, category, usesBrowser, profile, model, contextMode, effort, mcpProfile, folderId, codexAccountId } = req.body;
+  const { name, description, task, context, iterations, maxMinutes, icon, category, usesBrowser, profile, model, contextMode, effort, tools, platform, folderId, codexAccountId } = req.body;
   const effectiveProfile = profile !== undefined ? (profile || 'claude-code') : (templates[idx].profile || 'claude-code');
   const selection = normalizeAutomationSelection(effectiveProfile, model !== undefined ? model : templates[idx].model, contextMode !== undefined ? contextMode : templates[idx].contextMode);
   if (!validAutomationContextMode(effectiveProfile, selection.contextMode)) {
@@ -13728,12 +14039,14 @@ app.put('/api/loop/templates/:id', (req, res) => {
   if (model !== undefined) templates[idx].model = selection.model;
   if (contextMode !== undefined || model !== undefined) templates[idx].contextMode = selection.contextMode;
   if (effort !== undefined) templates[idx].effort = effort || null;
-  if (mcpProfile !== undefined) templates[idx].mcpProfile = mcpProfile || null;
+  try { applyStoredToolList(templates[idx], { tools, platform }, toolListOptions()); }
+  catch (error) { return res.status(400).json({ error: error.message, code: error.code, problems: error.problems }); }
   if (codexAccountId !== undefined) templates[idx].codexAccountId = codexAccountId || null;
+  if (platform !== undefined) templates[idx].platform = platform || null;
   if (folderId !== undefined) templates[idx].folderId = folderId || null;
   templates[idx].updatedAt = new Date().toISOString();
   writeLoopTemplates(templates);
-  res.json(templates[idx]);
+  res.json(toolListRecord(templates[idx], toolListOptions()));
 });
 
 // DELETE /api/loop/templates/:id — delete a template
@@ -13907,7 +14220,7 @@ app.get('/api/loop/active', (req, res) => {
     }
     return res.json({ active: false, loops: [] });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message, ...(err.code ? { code: err.code, problems: err.problems } : {}) });
   }
 });
 
@@ -13970,7 +14283,7 @@ app.get('/api/loop/list', (_req, res) => {
     loops.sort((a, b) => (b.startedAt || '').localeCompare(a.startedAt || ''));
     res.json({ loops, staleCount });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message, ...(err.code ? { code: err.code, problems: err.problems } : {}) });
   }
 });
 
@@ -13999,7 +14312,7 @@ app.post('/api/loop/cleanup', (_req, res) => {
     }
     res.json({ ok: true, cleaned, remaining });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message, ...(err.code ? { code: err.code, problems: err.problems } : {}) });
   }
 });
 
@@ -14016,7 +14329,7 @@ app.get('/api/loop/log/:terminalSessionId', (req, res) => {
     }
     res.type('text/plain').send(readFileSync(p, 'utf-8'));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message, ...(err.code ? { code: err.code, problems: err.problems } : {}) });
   }
 });
 
@@ -14028,7 +14341,7 @@ app.post('/api/loop/client-log', (req, res) => {
     loopLog(terminalSessionId || null, `ui:${tag}`, msg, meta || undefined);
     res.json({ ok: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message, ...(err.code ? { code: err.code, problems: err.problems } : {}) });
   }
 });
 
@@ -14101,7 +14414,7 @@ app.post('/api/sidepanel-runs/:runId/release', (req, res) => {
 app.post('/api/loop/launch', async (req, res) => {
   let pendingNativeBrowserCleanup = null;
   try {
-    const { task: rawTask, context, iterations, maxMinutes, usesBrowser, cwd, profile, model: requestedModel, contextMode: requestedContextMode, effort, mcpProfile, codexAccountId, browserSessionId: requestedBrowserSessionId, sidepanelWindowId, sidepanelClaimToken } = req.body;
+    const { task: rawTask, context, iterations, maxMinutes, usesBrowser, cwd, profile, model: requestedModel, contextMode: requestedContextMode, effort, tools, platform, codexAccountId, browserSessionId: requestedBrowserSessionId, sidepanelWindowId, sidepanelClaimToken } = req.body;
     if (!rawTask?.trim()) return res.status(400).json({ error: 'task is required' });
     // Resolve Facebook deal-link tokens against current fresh-release deals before the task is
     // stored, so the post links a real game page (/games/<slug>) — never the /deals listing.
@@ -14111,15 +14424,17 @@ app.post('/api/loop/launch', async (req, res) => {
     // Validate profile if provided
     const cliProfile = profile || 'claude-code';
     const nativeRuntime = isNativeLoopProfile(cliProfile);
-    const cliMcpProfile = cliProfile === 'claude-code'
-      ? (nativeRuntime ? 'full' : null)
-      : normalizeMcpProfileName(mcpProfile || readActiveMcpProfile());
+    const cliTools = launchToolList({ tools }, { usesBrowser, provider: cliProfile }).items;
     const validProfiles = Object.keys(loadCliConfig());
     if (!validProfiles.includes(cliProfile) && cliProfile !== 'shell') {
       return res.status(400).json({ error: `Invalid profile: ${cliProfile}. Valid: ${validProfiles.join(', ')}` });
     }
-    if (cliMcpProfile && !isValidMcpProfileValue(cliMcpProfile)) {
-      return res.status(400).json({ error: `Invalid MCP profile: ${cliMcpProfile}` });
+    // An OpenCode SynaBun does not drive (OpenCode 0 / 1, an OpenCode 2 older than the minimum, OpenCode 3) starts
+    // nothing, on the native runtime or a terminal's: no browser tab, loop file, configuration or process. The answer
+    // is the sentence that says what was found and how to get OpenCode 2.
+    if (cliProfile === 'opencode') {
+      const refusal = await opencodeStartRefusal();
+      if (refusal) return res.status(400).json({ error: refusal.message, code: refusal.code });
     }
     const codexAccount = cliProfile === 'codex'
       ? (codexAccountId ? findCodexAccount(codexAccountId) : getCodexAccount(null))
@@ -14148,7 +14463,7 @@ app.post('/api/loop/launch', async (req, res) => {
       cwd: cwd || null,
       model: model || null,
       effort: effort || null,
-      mcpProfile: cliMcpProfile,
+      tools: cliTools, externalMcpVersion: 2,
       requestedBrowserSessionId: requestedBrowserSessionId || null,
     });
 
@@ -14216,7 +14531,7 @@ app.post('/api/loop/launch', async (req, res) => {
       contextMode,
       modelContextWindow: launchChoice.modelContextWindow,
       effort: effort || null,
-      mcpProfile: cliMcpProfile,
+      tools: cliTools, externalMcpVersion: 2,
       codexAccountId: codexAccount?.id || null,
       codexHome: codexAccount ? (codexAccount.home || CODEX_DEFAULT_HOME) : null,
       // A Codex exec loop keeps the Admin sandbox setting it started with (every iteration is its own `codex exec`).
@@ -14252,12 +14567,11 @@ app.post('/api/loop/launch', async (req, res) => {
         process.env.OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS || '300000';
     }
     // Claude Code uses ToolSearch for deferred loading — always give it the full profile
-    if (cliProfile === 'claude-code') loopExtraEnv.SYNABUN_PROFILE = 'full';
-    else if (cliMcpProfile) loopExtraEnv.SYNABUN_PROFILE = cliMcpProfile;
+    loopExtraEnv.SYNABUN_TOOLS = runtimeToolsValue(cliTools);
 
-    // Per-loop opencode config dir: opencode reads ~/.config/opencode/config.json (or
-    // $XDG_CONFIG_HOME/opencode/config.json) at startup and uses the MCP env block
-    // verbatim. Spawn each opencode loop with its own XDG_CONFIG_HOME so the MCP
+    // Per-loop opencode config dir: OpenCode reads $XDG_CONFIG_HOME/opencode/opencode.json
+    // at startup and uses the MCP environment block verbatim. Spawn each opencode loop
+    // with its own XDG_CONFIG_HOME so the MCP
     // child inherits this loop's browser pins AND the permission bypass block.
     // Written for ALL opencode loops (not just browser ones) so external_directory
     // access is pre-allowed even for non-browser tasks.
@@ -14267,8 +14581,8 @@ app.post('/api/loop/launch', async (req, res) => {
           terminalSessionId,
           browserSessionId,
           browserTabId,
-          cliMcpProfile,
-          model,
+          cliTools,
+          model, {}, { cwd: loopCwd },
         );
         if (xdgRoot) {
           loopExtraEnv.XDG_CONFIG_HOME = xdgRoot;
@@ -14332,13 +14646,13 @@ app.post('/api/loop/launch', async (req, res) => {
       // loop's browser pins ride as headers on its own SynaBun entry instead.
       let mcpConfigPath = null;
       try {
-        mcpConfigPath = setupClaudeLoopMcpConfig(terminalSessionId, browserSessionId, browserTabId);
+        mcpConfigPath = setupClaudeLoopMcpConfig(terminalSessionId, browserSessionId, browserTabId, cliTools, loopCwd);
         loopLog(terminalSessionId, 'launch:mcp-config', 'per-loop claude mcp config written', { mcpConfigPath, headerKeys: ['X-Synabun-Terminal', browserSessionId && 'X-Synabun-Browser-Session', browserTabId && 'X-Synabun-Browser-Tab'].filter(Boolean) });
       } catch (err) {
         // Without the config the loop still gets an isolated tab via its own
         // Mcp-Session-Id — only deterministic pinning to the pre-acquired tab
         // is lost. Log loudly so a missing pin is attributable.
-        loopLog(terminalSessionId, 'launch:mcp-config', 'FAILED to write per-loop mcp config — falling back to Mcp-Session-Id identity', { err: err.message });
+        throw Object.assign(new Error('Claude MCP scope config could not be written'), { code: 'MCP_SCOPE_UNENFORCED' });
       }
       loopLog(terminalSessionId, 'launch:spawn', 'creating claude-code PTY session', { profile: cliProfile, cwd: loopCwd, model, effort });
       createTerminalSession(cliProfile, 120, 30, loopCwd, { model, effort, extraEnv: loopExtraEnv, sessionId: terminalSessionId, loopBypass: true, mcpConfigPath });
@@ -14381,7 +14695,7 @@ app.post('/api/loop/launch', async (req, res) => {
       ).catch(() => {});
     }
     loopLog(null, 'launch:error', 'POST /api/loop/launch threw', { err: err.message, stack: err.stack?.slice(0, 800) });
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message, ...(err.code ? { code: err.code, problems: err.problems } : {}) });
   }
 });
 
@@ -14462,7 +14776,7 @@ app.post('/api/loop/stop', async (req, res) => {
     }
     res.json({ ok: true, stopped: Math.max(stopped, directlyStopped ? 1 : 0) });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message, ...(err.code ? { code: err.code, problems: err.problems } : {}) });
   }
 });
 
@@ -14496,7 +14810,7 @@ app.post('/api/loop/resolve-from-ancestors', (req, res) => {
       return res.json({ matched: false, terminalSessionId: matchedTerminal });
     }
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message, ...(err.code ? { code: err.code, problems: err.problems } : {}) });
   }
 });
 
@@ -14532,7 +14846,7 @@ app.post('/api/loop/recover-browser', async (req, res) => {
     }
     res.json({ ok: true, sessionId: acq.browserSessionId, tabId: acq.browserTabId || null });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message, ...(err.code ? { code: err.code, problems: err.problems } : {}) });
   }
 });
 
@@ -14574,7 +14888,7 @@ app.post('/api/loop/complete', async (req, res) => {
     res.json({ ok: true, id });
   } catch (err) {
     console.error('POST /api/loop/complete error:', err.message);
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message, ...(err.code ? { code: err.code, problems: err.problems } : {}) });
   }
 });
 
@@ -14640,8 +14954,8 @@ function loadScheduleStore() {
   for (const file of files) {
     if (file.path === LOOP_SCHEDULES_PATH) store.groups = file.groups;
   }
-  for (const group of store.groups) normalizeAutomationRecord(group);
-  for (const schedule of store.schedules) normalizeAutomationRecord(schedule);
+  store.groups = store.groups.map(record => { normalizeAutomationRecord(record); return readStoredToolListRecord(record, toolListOptions()); });
+  store.schedules = store.schedules.map(record => { normalizeAutomationRecord(record); return readStoredToolListRecord(record, toolListOptions()); });
   return store;
 }
 
@@ -14682,7 +14996,11 @@ function resolveScheduleStoragePath(schedule, routing, groupsById) {
   return LOOP_SCHEDULES_PATH;
 }
 
-function writeLoopScheduleFile(path, schedules, groups, format = 'object') {
+function writeLoopScheduleFile(path, schedules, groups, format = 'object', previousFiles = readLoopScheduleFiles()) {
+  const previousSchedules = new Map(previousFiles.flatMap(file => file.schedules || []).map(record => [record.id, record]));
+  const previousGroups = new Map(previousFiles.flatMap(file => file.groups || []).map(record => [record.id, record]));
+  schedules = schedules.map(record => toolListRecordForUpdate(record, previousSchedules.get(record.id), toolListOptions()));
+  groups = (groups || []).map(record => toolListRecordForUpdate(record, previousGroups.get(record.id), toolListOptions()));
   mkdirSync(dirname(path), { recursive: true });
   const isMain = path === LOOP_SCHEDULES_PATH;
   const data = isMain
@@ -14709,7 +15027,7 @@ function saveScheduleStore(store) {
   }
 
   for (const [path, schedules] of byPath) {
-    writeLoopScheduleFile(path, schedules, path === LOOP_SCHEDULES_PATH ? groups : [], formatByPath.get(path) || 'object');
+    writeLoopScheduleFile(path, schedules, path === LOOP_SCHEDULES_PATH ? groups : [], formatByPath.get(path) || 'object', files);
   }
 }
 
@@ -14740,7 +15058,8 @@ function validateScheduleGroupId(groupId) {
 }
 
 function applyScheduleLaunchOverrides(schedule, source) {
-  const fields = ['profile', 'model', 'contextMode', 'effort', 'mcpProfile', 'codexAccountId'];
+  applyStoredToolList(schedule, source, toolListOptions());
+  const fields = ['profile', 'model', 'contextMode', 'effort', 'platform', 'codexAccountId'];
   for (const field of fields) {
     if (source[field] !== undefined) {
       if (source[field] === null || source[field] === '') delete schedule[field];
@@ -14752,6 +15071,7 @@ function applyScheduleLaunchOverrides(schedule, source) {
     else schedule.usesBrowser = !!source.usesBrowser;
   }
   normalizeAutomationRecord(schedule);
+  delete schedule.mcpProfile;
 }
 
 function boundedScheduleNumber(value, fallback, min, max) {
@@ -14999,17 +15319,20 @@ async function launchScheduledLoop(schedule) {
     const launchOverrides = resolveAutomationOverrides(schedule, group, template);
     const cliProfile = launchOverrides.profile;
     scheduledLaunchProfile = cliProfile;
+    // An OpenCode SynaBun does not drive starts nothing (no browser tab, loop file, configuration or process): the
+    // schedule's result is the sentence that says what was found and how to get OpenCode 2.
+    if (cliProfile === 'opencode') {
+      const refusal = await opencodeStartRefusal();
+      if (refusal) throw refusal;
+    }
     const requestedModel = launchOverrides.model;
     const requestedContextMode = launchOverrides.contextMode;
     const cliEffort     = schedule.effort     || group?.effort     || template.effort     || null;
     const nativeRuntime = isNativeLoopProfile(cliProfile);
-    const configuredMcpProfile = schedule.mcpProfile || group?.mcpProfile || template.mcpProfile || null;
-    const cliMcpProfile = cliProfile === 'claude-code'
-      ? (nativeRuntime ? 'full' : (configuredMcpProfile ? normalizeMcpProfileName(configuredMcpProfile) : null))
-      : normalizeMcpProfileName(configuredMcpProfile || readActiveMcpProfile());
-    if (cliMcpProfile && !isValidMcpProfileValue(cliMcpProfile)) {
-      throw new Error(`Invalid MCP profile: ${cliMcpProfile}`);
-    }
+    const storedTools = [schedule, group, template].map(record => storedToolList(record, toolListOptions())).find(value => value !== null);
+    const cliTools = launchToolList({ tools: storedTools }, { provider: cliProfile,
+      usesBrowser: schedule.usesBrowser ?? group?.usesBrowser ?? template.usesBrowser }).items;
+    const platform = automationPlatform(schedule, group, template);
     const cliCodexAccountId = launchOverrides.codexAccountId;
     const codexAccount = cliProfile === 'codex' ? findCodexAccount(cliCodexAccountId) : null;
     if (cliProfile === 'codex' && !codexAccount) {
@@ -15040,8 +15363,7 @@ async function launchScheduledLoop(schedule) {
     let scheduledBrowserSessionId = null;
     let scheduledBrowserTabId = null;
     const schedExtraEnv = { SYNABUN_TERMINAL_SESSION: terminalSessionId };
-    if (cliProfile === 'claude-code') schedExtraEnv.SYNABUN_PROFILE = 'full';
-    else if (cliMcpProfile) schedExtraEnv.SYNABUN_PROFILE = cliMcpProfile;
+    schedExtraEnv.SYNABUN_TOOLS = runtimeToolsValue(cliTools);
     // Codex reads auth.json from CODEX_HOME — pin the schedule's selected ChatGPT account.
     if (cliProfile === 'codex') {
       schedExtraEnv.CODEX_HOME = codexAccount.home || CODEX_DEFAULT_HOME;
@@ -15070,8 +15392,8 @@ async function launchScheduledLoop(schedule) {
           terminalSessionId,
           scheduledBrowserSessionId,
           scheduledBrowserTabId,
-          cliMcpProfile,
-          cliModel,
+          cliTools,
+          cliModel, {}, { cwd: PACKAGE_ROOT },
         );
         if (xdgRoot) {
           schedExtraEnv.XDG_CONFIG_HOME = xdgRoot;
@@ -15093,9 +15415,9 @@ async function launchScheduledLoop(schedule) {
     // (accounts that blocked us). Deterministic and shared across all X schedules
     // for this account (the prior per-template memory recall was model-discretion
     // and namespaced, so the same post/author got hit by multiple schedules — a
-    // shadow-ban driver). Detection covers templates by platform or MCP profile, plus
-    // legacy cp_* template ids. Read-only; never blocks launch.
-    const isXAutomation = template.platform === 'twitter' || cliMcpProfile === 'twitter' || /^cp_/.test(schedule.templateId || '');
+    // shadow-ban driver). Detection follows the template platform.
+    // Read-only; never blocks launch.
+    const isXAutomation = platform === 'twitter';
     if (isXAutomation) {
       try {
         const xAccount = (template.account || (/^cp_/.test(schedule.templateId || '') ? 'Crit_Pix' : '')).trim();
@@ -15161,10 +15483,7 @@ async function launchScheduledLoop(schedule) {
     // exempt from the shared FB budget block, and their templates carry no SHARED
     // BUDGET text, so nothing in such a run stops for budget reasons.
     const isFbDealsLane = /Facebook Deals/i.test(template.name || '');
-    const isFbAutomation = !isFbDealsLane && (
-      template.platform === 'facebook'
-      || (configuredMcpProfile && normalizeMcpProfileName(configuredMcpProfile) === 'facebook')
-      || /^(cpfb_|fbdeals_)/.test(schedule.templateId || ''));
+    const isFbAutomation = !isFbDealsLane && platform === 'facebook';
     if (isFbAutomation) {
       try {
         const tz = schedule.timezone || 'America/Sao_Paulo';
@@ -15216,7 +15535,8 @@ async function launchScheduledLoop(schedule) {
       contextMode: cliContextMode,
       modelContextWindow: launchChoice.modelContextWindow,
       effort: cliEffort || null,
-      mcpProfile: cliMcpProfile || null,
+      tools: cliTools, externalMcpVersion: 2,
+      ...(platform ? { platform } : {}),
       codexAccountId: codexAccount?.id || null,
       codexHome: codexAccount ? (codexAccount.home || CODEX_DEFAULT_HOME) : null,
       // A Codex exec loop keeps the Admin sandbox setting it started with (every iteration is its own `codex exec`).
@@ -15281,10 +15601,10 @@ async function launchScheduledLoop(schedule) {
       // the NI-hosted MCP server.
       let schedMcpConfigPath = null;
       try {
-        schedMcpConfigPath = setupClaudeLoopMcpConfig(terminalSessionId, scheduledBrowserSessionId, scheduledBrowserTabId);
+        schedMcpConfigPath = setupClaudeLoopMcpConfig(terminalSessionId, scheduledBrowserSessionId, scheduledBrowserTabId, cliTools, PACKAGE_ROOT);
         loopLog(terminalSessionId, 'launch:mcp-config', 'per-loop claude mcp config written (scheduled)', { schedMcpConfigPath });
       } catch (err) {
-        loopLog(terminalSessionId, 'launch:mcp-config', 'FAILED to write per-loop mcp config (scheduled) — falling back to Mcp-Session-Id identity', { err: err.message });
+        throw Object.assign(new Error('Claude MCP scope config could not be written'), { code: 'MCP_SCOPE_UNENFORCED' });
       }
       createTerminalSession(cliProfile, 120, 30, PACKAGE_ROOT, { model: cliModel, effort: cliEffort, extraEnv: schedExtraEnv, sessionId: terminalSessionId, loopBypass: true, mcpConfigPath: schedMcpConfigPath });
       attachLoopDriver(terminalSessionId);
@@ -15315,7 +15635,7 @@ async function launchScheduledLoop(schedule) {
       profile: cliProfile,
       run: runDescriptor,
     });
-    console.log(`[schedule] Launched loop for "${schedule.name}" → ${nativeRuntime ? 'sidepanel run' : 'terminal'} ${terminalSessionId} (${cliProfile}/${cliModel || 'default'}/${cliEffort || 'off'}${cliMcpProfile ? '/mcp:' + cliMcpProfile : ''})`);
+    console.log(`[schedule] Launched loop for "${schedule.name}" → ${nativeRuntime ? 'sidepanel run' : 'terminal'} ${terminalSessionId} (${cliProfile}/${cliModel || 'default'}/${cliEffort || 'off'}${'/tools:' + serializeToolList(cliTools)})`);
   } catch (err) {
     if (registeredScheduledRunId) _runningScheduledLoops.delete(registeredScheduledRunId);
     if (scheduledLaunchTerminalId) {
@@ -15666,6 +15986,8 @@ function reconcileKeepAwake() {
 }
 
 function evaluateSchedules() {
+  // P5 deterministic health shares the scheduler's tick; disabled until enabled in Skills Studio.
+  skillsService?.health.tick().catch((error) => console.error('[skills-health]', error?.code || 'check_failed'));
   _scheduleEvalCount++;
   const schedules = loadSchedules();
   const enabled = schedules.filter(s => s.enabled);
@@ -15826,7 +16148,7 @@ startScheduleEvaluator();
 
 // ── Quick Timer (standalone, no schedule needed) ──
 
-const _quickTimers = new Map(); // timerId → { timeoutId, templateId, templateName, firesAt, minutes, profile, model, effort, mcpProfile, usesBrowser, createdAt }
+const _quickTimers = new Map(); // timerId → { timeoutId, templateId, templateName, firesAt, minutes, profile, model, effort, tools, platform, usesBrowser, createdAt }
 
 function launchQuickTimer(timerId, templateId, context) {
   const templates = readLoopTemplates();
@@ -15847,7 +16169,8 @@ function launchQuickTimer(timerId, templateId, context) {
     model: timerData.model || undefined,
     contextMode: timerData.contextMode || undefined,
     effort: timerData.effort || undefined,
-    mcpProfile: timerData.mcpProfile || undefined,
+    tools: storedToolList(timerData, toolListOptions()),
+    platform: timerData.platform,
     codexAccountId: timerData.codexAccountId || undefined,
     usesBrowser: timerData.usesBrowser,
     // Synthetic schedule (not persisted) — must bypass the queue's stillDue and
@@ -15864,7 +16187,7 @@ function launchQuickTimer(timerId, templateId, context) {
 // POST /api/quick-timer — fire a template after N minutes (standalone, no schedule)
 app.post('/api/quick-timer', async (req, res) => {
   try {
-    const { templateId, minutes, context, profile, model, contextMode, effort, mcpProfile, usesBrowser, codexAccountId } = req.body;
+    const { templateId, minutes, context, profile, model, contextMode, effort, tools, platform, usesBrowser, codexAccountId } = req.body;
     const mins = Number(minutes);
     if (!templateId?.trim()) return res.status(400).json({ error: 'templateId is required' });
     if (!mins || mins < 1 || mins > 1440) return res.status(400).json({ error: 'minutes must be 1–1440' });
@@ -15881,12 +16204,7 @@ app.post('/api/quick-timer', async (req, res) => {
     const timerModel = selection.model;
     const timerContextMode = selection.contextMode || 'default';
     const timerEffort = effort || null;
-    const timerMcpProfile = timerProfile !== 'claude-code'
-      ? normalizeMcpProfileName(mcpProfile || readActiveMcpProfile())
-      : null;
-    if (timerMcpProfile && !isValidMcpProfileValue(timerMcpProfile)) {
-      return res.status(400).json({ error: `Invalid MCP profile: ${timerMcpProfile}` });
-    }
+    const timerTools = launchToolList({ tools }, { provider: timerProfile, usesBrowser: usesBrowser ?? template.usesBrowser }).items;
     const timerCodexAccountId = timerProfile === 'codex' ? (codexAccountId || 'default') : null;
     const timerCodexAccount = timerProfile === 'codex' ? findCodexAccount(timerCodexAccountId) : null;
     if (timerProfile === 'codex' && !timerCodexAccount) return res.status(400).json({ error: `Codex account not found: ${timerCodexAccountId}` });
@@ -15899,12 +16217,12 @@ app.post('/api/quick-timer', async (req, res) => {
       _quickTimers.delete(timerId);
     }, mins * 60_000);
 
-    _quickTimers.set(timerId, { timeoutId, templateId, templateName: template.name, firesAt, minutes: mins, profile: timerProfile, model: timerModel, contextMode: timerContextMode, effort: timerEffort, mcpProfile: timerMcpProfile, codexAccountId: timerCodexAccountId, usesBrowser: timerUsesBrowser, createdAt: new Date().toISOString() });
-    console.log(`[quick-timer] Set: "${template.name}" fires in ${mins}m at ${firesAt} (${timerProfile}/${timerModel || 'default'}${timerEffort ? '/' + timerEffort : ''}${timerMcpProfile ? '/mcp:' + timerMcpProfile : ''})`);
-    broadcastSync({ type: 'quick-timer:set', timerId, templateName: template.name, firesAt, minutes: mins, profile: timerProfile, model: timerModel, contextMode: timerContextMode, effort: timerEffort, mcpProfile: timerMcpProfile, usesBrowser: timerUsesBrowser });
-    res.json({ ok: true, timerId, templateName: template.name, firesAt, minutes: mins, profile: timerProfile, model: timerModel, contextMode: timerContextMode, effort: timerEffort, mcpProfile: timerMcpProfile, usesBrowser: timerUsesBrowser });
+    _quickTimers.set(timerId, { timeoutId, templateId, templateName: template.name, firesAt, minutes: mins, profile: timerProfile, model: timerModel, contextMode: timerContextMode, effort: timerEffort, tools: timerTools, platform: automationPlatform({ platform }, null, template), codexAccountId: timerCodexAccountId, usesBrowser: timerUsesBrowser, createdAt: new Date().toISOString() });
+    console.log(`[quick-timer] Set: "${template.name}" fires in ${mins}m at ${firesAt} (${timerProfile}/${timerModel || 'default'}${timerEffort ? '/' + timerEffort : ''}${'/tools:' + serializeToolList(timerTools)})`);
+    broadcastSync({ type: 'quick-timer:set', timerId, templateName: template.name, firesAt, minutes: mins, profile: timerProfile, model: timerModel, contextMode: timerContextMode, effort: timerEffort, tools: timerTools, platform: automationPlatform({ platform }, null, template), usesBrowser: timerUsesBrowser });
+    res.json({ ok: true, timerId, templateName: template.name, firesAt, minutes: mins, profile: timerProfile, model: timerModel, contextMode: timerContextMode, effort: timerEffort, tools: timerTools, platform: automationPlatform({ platform }, null, template), usesBrowser: timerUsesBrowser });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message, ...(err.code ? { code: err.code, problems: err.problems } : {}) });
   }
 });
 
@@ -15912,7 +16230,7 @@ app.post('/api/quick-timer', async (req, res) => {
 app.get('/api/quick-timers', (_req, res) => {
   const timers = [];
   for (const [id, t] of _quickTimers) {
-    timers.push({ id, templateId: t.templateId, templateName: t.templateName, firesAt: t.firesAt, minutes: t.minutes, profile: t.profile, model: t.model, contextMode: t.contextMode, effort: t.effort, mcpProfile: t.mcpProfile, usesBrowser: t.usesBrowser, createdAt: t.createdAt });
+    timers.push({ id, templateId: t.templateId, templateName: t.templateName, firesAt: t.firesAt, minutes: t.minutes, profile: t.profile, model: t.model, contextMode: t.contextMode, effort: t.effort, tools: storedToolList(t, toolListOptions()), usesBrowser: t.usesBrowser, createdAt: t.createdAt });
   }
   res.json(timers);
 });
@@ -15932,7 +16250,7 @@ app.delete('/api/quick-timers/:id', (req, res) => {
 app.post('/api/quick-timer/now', async (req, res) => {
   try {
     const {
-      templateId, profile, model, contextMode, effort, mcpProfile, usesBrowser, codexAccountId,
+      templateId, profile, model, contextMode, effort, tools, platform, usesBrowser, codexAccountId,
       sidepanelWindowId, sidepanelClaimToken,
     } = req.body;
     if (!templateId?.trim()) return res.status(400).json({ error: 'templateId is required' });
@@ -15947,12 +16265,7 @@ app.post('/api/quick-timer/now', async (req, res) => {
     const timerModel = selection.model;
     const timerContextMode = selection.contextMode || 'default';
     const timerEffort = effort || null;
-    const timerMcpProfile = timerProfile !== 'claude-code'
-      ? normalizeMcpProfileName(mcpProfile || readActiveMcpProfile())
-      : null;
-    if (timerMcpProfile && !isValidMcpProfileValue(timerMcpProfile)) {
-      return res.status(400).json({ error: `Invalid MCP profile: ${timerMcpProfile}` });
-    }
+    const timerTools = launchToolList({ tools }, { provider: timerProfile, usesBrowser: usesBrowser ?? template.usesBrowser }).items;
     const timerCodexAccountId = timerProfile === 'codex' ? (codexAccountId || 'default') : null;
     const timerCodexAccount = timerProfile === 'codex' ? findCodexAccount(timerCodexAccountId) : null;
     if (timerProfile === 'codex' && !timerCodexAccount) return res.status(400).json({ error: `Codex account not found: ${timerCodexAccountId}` });
@@ -15970,7 +16283,7 @@ app.post('/api/quick-timer/now', async (req, res) => {
       model: timerModel,
       contextMode: timerContextMode,
       effort: timerEffort,
-      mcpProfile: timerMcpProfile,
+      tools: timerTools, platform: automationPlatform({ platform }, null, template),
       codexAccountId: timerCodexAccountId || undefined,
       usesBrowser: timerUsesBrowser,
       // Synthetic schedule (not persisted) — must bypass the queue's stillDue and
@@ -15980,14 +16293,14 @@ app.post('/api/quick-timer/now', async (req, res) => {
       _sidepanelLaunch: createScheduleSidepanelIntent({ sidepanelWindowId, sidepanelClaimToken }),
     };
 
-    console.log(`[quick-timer] Firing NOW "${template.name}" profile=${timerProfile} model=${timerModel || 'default'}${timerEffort ? ' effort=' + timerEffort : ''}${timerMcpProfile ? ' mcp=' + timerMcpProfile : ''}`);
+    console.log(`[quick-timer] Firing NOW "${template.name}" profile=${timerProfile} model=${timerModel || 'default'}${timerEffort ? ' effort=' + timerEffort : ''}${' tools=' + serializeToolList(timerTools)}`);
     _scheduleQueue.push(fakeSchedule);
     processScheduleQueue();
 
-    broadcastSync({ type: 'quick-timer:fired-now', templateName: template.name, profile: timerProfile, model: timerModel, contextMode: timerContextMode, effort: timerEffort, mcpProfile: timerMcpProfile });
-    res.json({ ok: true, templateName: template.name, profile: timerProfile, model: timerModel, contextMode: timerContextMode, effort: timerEffort, mcpProfile: timerMcpProfile, usesBrowser: timerUsesBrowser });
+    broadcastSync({ type: 'quick-timer:fired-now', templateName: template.name, profile: timerProfile, model: timerModel, contextMode: timerContextMode, effort: timerEffort, tools: timerTools });
+    res.json({ ok: true, templateName: template.name, profile: timerProfile, model: timerModel, contextMode: timerContextMode, effort: timerEffort, tools: timerTools, platform: automationPlatform({ platform }, null, template), usesBrowser: timerUsesBrowser });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message, ...(err.code ? { code: err.code, problems: err.problems } : {}) });
   }
 });
 
@@ -15999,7 +16312,7 @@ app.get('/api/schedule-groups', (_req, res) => {
 
 app.post('/api/schedule-groups', (req, res) => {
   try {
-    const { name, color, icon, collapsed, mutualExclusion, profile, model, contextMode, effort, mcpProfile, usesBrowser, codexAccountId } = req.body || {};
+    const { name, color, icon, collapsed, mutualExclusion, profile, model, contextMode, effort, tools, platform, usesBrowser, codexAccountId } = req.body || {};
     if (unknownAutomationContextMode(contextMode)) return res.status(400).json({ error: `Invalid context mode: ${contextMode}` });
     if (!name?.trim()) return res.status(400).json({ error: 'name is required' });
 
@@ -16015,13 +16328,13 @@ app.post('/api/schedule-groups', (req, res) => {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
-    applyScheduleLaunchOverrides(group, { profile, model, contextMode, effort, mcpProfile, usesBrowser, codexAccountId });
+    applyScheduleLaunchOverrides(group, { profile, model, contextMode, effort, tools, platform, usesBrowser, codexAccountId });
     groups.push(group);
     saveScheduleGroups(groups);
     broadcastSync({ type: 'schedule-group:created', group });
     res.json(group);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message, ...(err.code ? { code: err.code, problems: err.problems } : {}) });
   }
 });
 
@@ -16032,7 +16345,7 @@ app.put('/api/schedule-groups/:id', (req, res) => {
     const idx = groups.findIndex(g => g.id === req.params.id);
     if (idx === -1) return res.status(404).json({ error: 'Group not found' });
 
-    const { name, color, icon, collapsed, order, mutualExclusion, profile, model, contextMode, effort, mcpProfile, usesBrowser, codexAccountId } = req.body || {};
+    const { name, color, icon, collapsed, order, mutualExclusion, profile, model, contextMode, effort, tools, platform, usesBrowser, codexAccountId } = req.body || {};
     if (unknownAutomationContextMode(contextMode)) return res.status(400).json({ error: `Invalid context mode: ${contextMode}` });
     if (name !== undefined) {
       if (!name.trim()) return res.status(400).json({ error: 'name is required' });
@@ -16050,11 +16363,11 @@ app.put('/api/schedule-groups/:id', (req, res) => {
       model: groups[idx].model,
       contextMode: groups[idx].contextMode,
       effort: groups[idx].effort,
-      mcpProfile: groups[idx].mcpProfile,
+      tools: groups[idx].tools,
       usesBrowser: groups[idx].usesBrowser,
       codexAccountId: groups[idx].codexAccountId,
     };
-    applyScheduleLaunchOverrides(groups[idx], { profile, model, contextMode, effort, mcpProfile, usesBrowser, codexAccountId });
+    applyScheduleLaunchOverrides(groups[idx], { profile, model, contextMode, effort, tools, platform, usesBrowser, codexAccountId });
     groups[idx].updatedAt = new Date().toISOString();
 
     // Write-through: a launch override deliberately CHANGED in the group window is
@@ -16069,10 +16382,10 @@ app.put('/api/schedule-groups/:id', (req, res) => {
     const propagation = {};
     for (const [field, value] of [
       ['profile', profile], ['model', model], ['contextMode', contextMode], ['effort', effort],
-      ['mcpProfile', mcpProfile], ['usesBrowser', usesBrowser], ['codexAccountId', codexAccountId],
+      ['tools', tools], ['usesBrowser', usesBrowser], ['codexAccountId', codexAccountId],
     ]) {
       if (value === undefined) continue; // field absent from this request
-      if (normLaunch(value) === normLaunch(prevGroupLaunch[field])) continue; // unchanged — don't touch schedules
+      if (JSON.stringify(normLaunch(value)) === JSON.stringify(normLaunch(prevGroupLaunch[field]))) continue; // unchanged — don't touch schedules
       propagation[field] = value;
     }
     const changedSchedules = [];
@@ -16093,7 +16406,7 @@ app.put('/api/schedule-groups/:id', (req, res) => {
     }
     res.json(groups[idx]);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message, ...(err.code ? { code: err.code, problems: err.problems } : {}) });
   }
 });
 
@@ -16118,7 +16431,7 @@ app.delete('/api/schedule-groups/:id', (req, res) => {
     broadcastSync({ type: 'schedule-group:deleted', groupId: req.params.id, schedulesUnassigned: unassigned });
     res.json({ ok: true, id: req.params.id, schedulesUnassigned: unassigned });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message, ...(err.code ? { code: err.code, problems: err.problems } : {}) });
   }
 });
 
@@ -16144,7 +16457,7 @@ app.post('/api/schedule-groups/reorder', (req, res) => {
     broadcastSync({ type: 'schedule-group:reordered', groups });
     res.json({ ok: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message, ...(err.code ? { code: err.code, problems: err.problems } : {}) });
   }
 });
 
@@ -16177,7 +16490,7 @@ app.get('/api/schedules/mutex-status', (_req, res) => {
       loopFiles,
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message, ...(err.code ? { code: err.code, problems: err.problems } : {}) });
   }
 });
 
@@ -16256,7 +16569,7 @@ app.get('/api/schedules/queue', (_req, res) => {
 
     res.json({ running, queued, deferred, upcoming });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message, ...(err.code ? { code: err.code, problems: err.problems } : {}) });
   }
 });
 
@@ -16279,7 +16592,7 @@ app.get('/api/schedules/timers', (_req, res) => {
 // POST /api/schedules — create a new schedule
 app.post('/api/schedules', (req, res) => {
   try {
-    const { name, templateId, cron, timezone, enabled, dayThemes, overrides, groupId, profile, model, contextMode, effort, mcpProfile, usesBrowser, codexAccountId } = req.body;
+    const { name, templateId, cron, timezone, enabled, dayThemes, overrides, groupId, profile, model, contextMode, effort, tools, platform, usesBrowser, codexAccountId } = req.body;
     if (unknownAutomationContextMode(contextMode)) return res.status(400).json({ error: `Invalid context mode: ${contextMode}` });
     if (!name?.trim()) return res.status(400).json({ error: 'name is required' });
     if (!templateId?.trim()) return res.status(400).json({ error: 'templateId is required' });
@@ -16309,7 +16622,7 @@ app.post('/api/schedules', (req, res) => {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
-    applyScheduleLaunchOverrides(schedule, { profile, model, contextMode, effort, mcpProfile, usesBrowser, codexAccountId });
+    applyScheduleLaunchOverrides(schedule, { profile, model, contextMode, effort, tools, platform, usesBrowser, codexAccountId });
 
     const schedules = loadSchedules();
     schedules.push(schedule);
@@ -16318,7 +16631,7 @@ app.post('/api/schedules', (req, res) => {
     broadcastSync({ type: 'schedule:created', schedule });
     res.json(schedule);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message, ...(err.code ? { code: err.code, problems: err.problems } : {}) });
   }
 });
 
@@ -16337,7 +16650,7 @@ app.put('/api/schedules/:id', (req, res) => {
     const idx = schedules.findIndex(s => s.id === req.params.id);
     if (idx === -1) return res.status(404).json({ error: 'Schedule not found' });
 
-    const { name, templateId, cron, timezone, enabled, dayThemes, overrides, groupId, profile, model, contextMode, effort, mcpProfile, usesBrowser, codexAccountId } = req.body;
+    const { name, templateId, cron, timezone, enabled, dayThemes, overrides, groupId, profile, model, contextMode, effort, tools, platform, usesBrowser, codexAccountId } = req.body;
     if (unknownAutomationContextMode(contextMode)) return res.status(400).json({ error: `Invalid context mode: ${contextMode}` });
     if (name !== undefined) schedules[idx].name = name.trim();
     if (templateId !== undefined) {
@@ -16358,7 +16671,7 @@ app.put('/api/schedules/:id', (req, res) => {
       if (normalizedGroupId === false) return res.status(400).json({ error: 'Group not found' });
       schedules[idx].groupId = normalizedGroupId;
     }
-    applyScheduleLaunchOverrides(schedules[idx], { profile, model, contextMode, effort, mcpProfile, usesBrowser, codexAccountId });
+    applyScheduleLaunchOverrides(schedules[idx], { profile, model, contextMode, effort, tools, platform, usesBrowser, codexAccountId });
 
     schedules[idx].updatedAt = new Date().toISOString();
     schedules[idx].nextRun = getNextCronRun(schedules[idx].cron, schedules[idx].timezone);
@@ -16367,7 +16680,7 @@ app.put('/api/schedules/:id', (req, res) => {
     broadcastSync({ type: 'schedule:updated', schedule: schedules[idx] });
     res.json(schedules[idx]);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message, ...(err.code ? { code: err.code, problems: err.problems } : {}) });
   }
 });
 
@@ -16387,7 +16700,7 @@ app.delete('/api/schedules/:id', (req, res) => {
     broadcastSync({ type: 'schedule:deleted', scheduleId: removed.id });
     res.json({ ok: true, id: removed.id });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message, ...(err.code ? { code: err.code, problems: err.problems } : {}) });
   }
 });
 
@@ -16408,7 +16721,7 @@ app.post('/api/schedules/:id/test', async (req, res) => {
     processScheduleQueue();
     res.json({ ok: true, message: 'Schedule queued for immediate fire' });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message, ...(err.code ? { code: err.code, problems: err.problems } : {}) });
   }
 });
 
@@ -16449,7 +16762,7 @@ app.post('/api/schedules/:id/timer', (req, res) => {
     broadcastSync({ type: 'schedule:timer-set', scheduleId: schedule.id, scheduleName: schedule.name, firesAt, minutes: mins });
     res.json({ ok: true, firesAt, minutes: mins });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message, ...(err.code ? { code: err.code, problems: err.problems } : {}) });
   }
 });
 
@@ -16477,11 +16790,9 @@ const AGENT_IS_WIN = process.platform === 'win32';
 
 /**
  * Build the MCP config JSON for an agent.
- * - withSynabun=false → empty config (fully isolated)
- * - withSynabun=true  → includes SynaBun MCP with optional browser session pinning
+ * withSynabun controls the pinned SynaBun entry. External grants come only from the captured task list.
  */
-function buildAgentMcpConfig(withSynabun, browserSessionId, browserTabId, terminalSessionId) {
-  if (!withSynabun) return '{"mcpServers":{}}';
+function buildAgentMcpConfig(withSynabun, browserSessionId, browserTabId, terminalSessionId, tools = [], cwd = PACKAGE_ROOT) {
   const mcpPreload = resolve(PACKAGE_ROOT, 'mcp-server', 'dist', 'preload.js');
   const dotenvPath = resolve(DATA_HOME, '.env');
   const env = { DOTENV_PATH: dotenvPath, SYNABUN_DATA_HOME: DATA_HOME, MEMORY_DATA_DIR: resolve(DATA_HOME, 'mcp-data') };
@@ -16492,10 +16803,12 @@ function buildAgentMcpConfig(withSynabun, browserSessionId, browserTabId, termin
   // agent's own dedicated tab instead of the shared activeTab).
   if (terminalSessionId) env.SYNABUN_TERMINAL_SESSION = terminalSessionId;
   // Agents run with --strict-mcp-config, so they see only what this file lists.
-  // External servers come from the active profile's servers[]; SynaBun is added last
+  // External servers come from the captured list and owner switches; SynaBun is added last
   // so its per-agent pins always win over a same-named registry entry.
-  const mcpServers = buildProfileMcpServers();
-  mcpServers.SynaBun = { type: 'stdio', command: 'node', args: [mcpPreload], env };
+  const inventory = externalInventory('claude-code', cwd);
+  const scope = selectExternalServers(tools, inventory);
+  const mcpServers = Object.fromEntries(scope.names.map(name => [name, inventory.definitionFor(name)]));
+  if (withSynabun) mcpServers.SynaBun = { type: 'stdio', command: 'node', args: [mcpPreload], env };
   return JSON.stringify({ mcpServers });
 }
 
@@ -16505,19 +16818,22 @@ function buildAgentMcpConfig(withSynabun, browserSessionId, browserTabId, termin
  * The agent object is updated in-place with output, status, etc.
  */
 function spawnAgentProcess(agent, prompt, extraEnv = {}) {
-  return new Promise((resolve) => {
+  return new Promise((resolveAgentExit) => {
     const claudeBin = getClaudeBin();
     // Reuse the agent's persistent session-id for conversation continuity.
     // The controller rotates agent._activeSessionId every N iterations to avoid context overflow.
     const sessionId = agent._activeSessionId || agent.sessionId;
 
+    const serverMap = JSON.parse(agent._mcpConfig).mcpServers;
+    const mcpValues = Object.values(serverMap).flatMap(entry => [...Object.values(entry.env || {}), ...Object.values(entry.headers || {}), ...(entry.args || []), ...(entry.url ? [entry.url] : [])]).filter(value => typeof value === 'string' && value);
+    const mcpConfigPath = writePrivateMcpConfig(resolve(DATA_HOME, 'data', 'agents', agent.id, 'mcp.json'), serverMap);
     const args = [
       '--print',
       '--output-format', 'stream-json',
       '--verbose',
       '--session-id', sessionId,
       '--strict-mcp-config',
-      '--mcp-config', agent._mcpConfig,
+      '--mcp-config', mcpConfigPath,
       '--permission-mode', 'bypassPermissions',
     ];
     // Resume the session when continuing an existing conversation (not the first use of this session-id)
@@ -16558,6 +16874,7 @@ function spawnAgentProcess(agent, prompt, extraEnv = {}) {
     agent.process = child;
     agent._lineBuffer = '';
     let stderrBuf = '';
+    let stderrLineBuffer = '';
 
     child.stdout.on('data', (chunk) => {
       agent._lineBuffer += chunk.toString();
@@ -16567,7 +16884,7 @@ function spawnAgentProcess(agent, prompt, extraEnv = {}) {
       for (const line of lines) {
         if (!line.trim()) continue;
         try {
-          const event = JSON.parse(line);
+          const event = redactMcpValues(JSON.parse(line), mcpValues);
           agent.output.push(event);
           if (event.type === 'assistant' && event.message?.content) {
             for (const block of event.message.content) {
@@ -16592,11 +16909,14 @@ function spawnAgentProcess(agent, prompt, extraEnv = {}) {
 
     child.stderr.on('data', (chunk) => {
       const text = chunk.toString();
-      stderrBuf += text;
+      stderrBuf = redactMcpValues(stderrBuf + text, mcpValues);
       if (stderrBuf.length > 8192) stderrBuf = stderrBuf.slice(-4096);
       // Log MCP and error lines in real-time for diagnostics
-      for (const line of text.split('\n')) {
-        const t = line.trim();
+      stderrLineBuffer += text;
+      const lines = stderrLineBuffer.split('\n'); stderrLineBuffer = lines.pop() || '';
+      if (stderrLineBuffer.length > 65536) stderrLineBuffer = '';
+      for (const line of lines) {
+        const t = redactMcpValues(line, mcpValues).trim();
         if (t && (t.includes('error') || t.includes('Error') || t.includes('MCP') || t.includes('mcp') || t.includes('ENOENT') || t.includes('refused'))) {
           console.warn(`[agent] ${agent.id} stderr: ${t.slice(0, 200)}`);
         }
@@ -16605,13 +16925,13 @@ function spawnAgentProcess(agent, prompt, extraEnv = {}) {
 
     child.on('error', (err) => {
       console.error(`[agent] ${agent.id} spawn error:`, err.message);
-      resolve({ code: -1, error: err.message });
+      resolveAgentExit({ code: -1, error: err.message });
     });
 
     child.on('close', (code) => {
       if (agent._lineBuffer.trim()) {
         try {
-          const event = JSON.parse(agent._lineBuffer);
+          const event = redactMcpValues(JSON.parse(agent._lineBuffer), mcpValues);
           agent.output.push(event);
           if (event.type === 'result') {
             if (event.cost_usd != null) agent.costUsd = (agent.costUsd || 0) + event.cost_usd;
@@ -16624,7 +16944,7 @@ function spawnAgentProcess(agent, prompt, extraEnv = {}) {
         console.log(`[agent] ${agent.id} stderr dump (exit ${code}):\n${stderrBuf.trim().slice(-1000)}`);
       }
       console.log(`[agent] ${agent.id} close: code=${code}, tools=${agent.toolUses.length}, textLen=${agent.textOutput.length}`);
-      resolve({ code, error: code !== 0 ? (stderrBuf.trim().slice(-500) || `Exit code ${code}`) : null });
+      resolveAgentExit({ code, error: code !== 0 ? (stderrBuf.trim().slice(-500) || `Exit code ${code}`) : null });
     });
   });
 }
@@ -16644,7 +16964,8 @@ async function launchAgentController(opts) {
 
   const agentId = providedAgentId || randomUUID();
   const agentTerminalId = `agent:${agentId}`;
-  const mcpConfig = buildAgentMcpConfig(withSynabun, browserSessionId, browserTabId, agentTerminalId);
+  const agentTools = requireToolList(resolveToolList(opts.tools ?? [], { source: 'runtime' })).items;
+  const mcpConfig = buildAgentMcpConfig(withSynabun, browserSessionId, browserTabId, agentTerminalId, agentTools, cwd || PACKAGE_ROOT);
   const agentCwd = cwd || PACKAGE_ROOT;
 
   // Build default system prompt for agents — overrides the boot sequence in the agent's instructions
@@ -16712,6 +17033,7 @@ async function launchAgentController(opts) {
     withSynabun,
     // Internal
     _agentTerminalId: agentTerminalId,
+    tools: agentTools,
     _mcpConfig: mcpConfig,
     _maxTurns: maxTurns || 200,
     _systemPrompt: systemPrompt || defaultAgentPrompt,
@@ -16779,7 +17101,7 @@ async function launchAgentController(opts) {
             agent.browserTabId = acq.browserTabId;
             const bs = browserSessions.get(acq.browserSessionId);
             if (bs) (bs._agentOwnedSet ||= new Set()).add(agentId);
-            agent._mcpConfig = buildAgentMcpConfig(agent.withSynabun, agent.browserSessionId, agent.browserTabId, agent._agentTerminalId);
+            agent._mcpConfig = buildAgentMcpConfig(agent.withSynabun, agent.browserSessionId, agent.browserTabId, agent._agentTerminalId, agent.tools, agent.cwd);
             console.log(`[agent] ${agentId} fresh tab ${agent.browserTabId} in ${agent.browserSessionId} for iteration ${i}`);
             break;
           }
@@ -16788,7 +17110,7 @@ async function launchAgentController(opts) {
           else {
             console.error(`[agent] ${agentId} all tab acquire attempts failed for iteration ${i}`);
             // Update MCP config without browser so agent doesn't reference a dead session
-            agent._mcpConfig = buildAgentMcpConfig(agent.withSynabun, null, null, agent._agentTerminalId);
+            agent._mcpConfig = buildAgentMcpConfig(agent.withSynabun, null, null, agent._agentTerminalId, agent.tools, agent.cwd);
           }
         }
       }
@@ -16965,6 +17287,9 @@ app.post('/api/agents/launch', async (req, res) => {
       mode, iterations, maxMinutes, context,
     } = req.body;
     if (!task?.trim()) return res.status(400).json({ error: 'task is required' });
+    if (req.body.tools !== undefined && !Array.isArray(req.body.tools)) throw Object.assign(new Error('tools must be an array'), { code: 'TOOLS_INVALID', status: 400 });
+    const tools = requireToolList(resolveToolList(req.body.tools ?? [], { source: 'runtime' })).items;
+    selectExternalServers(tools, externalInventory('claude-code', cwd || PACKAGE_ROOT));
     let launchChoice;
     try { launchChoice = await resolveAutomationLaunchChoice('claude-code', model, contextMode); }
     catch (error) { return res.status(400).json({ error: error.message }); }
@@ -17001,6 +17326,7 @@ app.post('/api/agents/launch', async (req, res) => {
       effort, cwd, allowedTools, addDirs, systemPrompt,
       maxTurns: effectiveMaxTurns,
       withSynabun: !!withSynabun,
+      tools,
       agentId,
       browserSessionId,
       browserTabId,
@@ -17020,7 +17346,7 @@ app.post('/api/agents/launch', async (req, res) => {
     });
   } catch (err) {
     console.error('POST /api/agents/launch error:', err.message);
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message, code: err.code, problems: err.problems });
   }
 });
 
@@ -17365,6 +17691,19 @@ app.use('/api/system/app', createAppControlsApi({
   log: (line) => console.warn(line),
 }));
 
+// The notice after an automatic restart (lib/crash-notice-api.js): the crash the supervisor recovered from, which
+// the owner's pages show once (public/shared/ui-crash-notice.js); dismissed in one page, gone from every page.
+app.use('/api/system/crash-notice', createCrashNoticeApi({
+  dataHome: DATA_HOME,
+  guard: ownerRouteGuard({ isGuestRequest, port: PORT, allowedOrigins: publicWebOrigins, refuseCrossSite: true, ownOriginsOnly: true, requireOrigin: true }),
+  // The dismissal carries this boot's page secret, as Skills Studio's owner writes do (lib/page-session.js).
+  pageSession: _pageSession,
+  broadcast: (message) => broadcastSync(message),
+  // A public address the crashed server's cloudflared may still hold open (sweepLeftoverTunnels).
+  leftovers: () => tunnelLeftovers(),
+  log: (line) => console.log(line),
+}));
+
 // GET /api/system/about — Settings → About (lib/system-about.js): the app, the runtime, the project's links and
 // every dependency of the product's packages with the version installed, read from the files on disk on the first
 // request and kept for the life of the process. No environment, no token, no setting. Owner only (/api/system is
@@ -17439,7 +17778,9 @@ const TOOL_DEFS = [
   { key: 'claude-code', cmd: 'claude',   versionArg: '--version', npm: '@anthropic-ai/claude-code' },
   { key: 'codex',       cmd: 'codex',    versionArg: '--version', npm: '@openai/codex' },
   { key: 'gemini',      cmd: 'gemini',   versionArg: '--version', npm: '@google/gemini-cli' },
-  { key: 'opencode',    cmd: 'opencode', versionArg: '--version', npm: 'opencode-ai' },
+  // npm's opencode-ai is OpenCode 1: OpenCode 2's newer version is what Homebrew says (a brew install) or what OpenCode
+  // itself announces in its own interface.
+  { key: 'opencode',    cmd: 'opencode', versionArg: '--version' },
 ];
 
 let _toolVersionCache = { checkedAt: null, tools: {} };
@@ -18155,10 +18496,11 @@ function allowedFileRoots() {
   const registeredProjects = loadHookProjects();
   const claudePlansDir = resolve(join(process.env.USERPROFILE || process.env.HOME || '', '.claude', 'plans'));
   const localPlansDir = resolve(join(DATA_HOME, 'data', 'plans'));
-  const opencodeConfigPath = resolve(getOpencodeConfigPath());
+  // OpenCode's global configuration documents (the "Open config" link of Settings → OpenCode).
+  const opencodeConfigFiles = ['opencode.json', 'opencode.jsonc'].map((name) => resolve(getOpencodeConfigDir(), name));
   return {
     dirs: [resolve(DATA_HOME), ...registeredProjects.map(p => resolve(p.path)), localPlansDir, claudePlansDir],
-    files: [opencodeConfigPath],
+    files: opencodeConfigFiles,
   };
 }
 
@@ -18188,29 +18530,35 @@ const editorCompletionServeTracks = new WeakMap();
 const editorCompletionServe = createOpencodeCompletionEngine({
   dataDir: resolve(DATA_HOME, 'data', 'editor-complete'),
   system: COMPLETION_SYSTEM,
-  readUserConfig: () => {
-    const configPath = getOpencodeConfigPath();
-    return existsSync(configPath) ? JSON.parse(readFileSync(configPath, 'utf8')) : null;
-  },
+  // The user's global configuration (opencode.json, then opencode.jsonc over it).
+  readUserConfig: () => readOpencodeGlobalConfig().config,
   // A provider's {file:./key} is relative to that configuration: it is written whole for the serve's own folder.
-  userConfigDir: () => dirname(getOpencodeConfigPath()),
+  userConfigDir: () => getOpencodeConfigDir(),
   // What an earlier SynaBun left running goes first (lib/opencode-serve-records.js), then a port is picked.
   allocPort: async () => { await sweepLeftoverOpencodeServes(); return allocOpencodeIsoPort(); },
   // On record from its spawn (spawnServe), its record gone with its process: a crash of SynaBun does not leave it
   // running. Once something answers on its port: is it this start's own serve ('foreign': another server took the
   // port, which the engine leaves running while it tries another)?
   trackServe: ({ proc }) => editorCompletionServeTracks.get(proc)?.answering(),
-  // As the isolated serves are started (opencodeServeLaunch): the CLI the resolver found, through the login shell.
-  // OpenCode 2 gets the password the engine made for this start, and its start waits its turn among every serve
-  // SynaBun starts (one OpenCode 2 database cannot be opened by two serves at once).
-  detectProtocol: () => detectOpencodeProtocol(),
+  // As the isolated serves are started (opencodeServeLaunch): the CLI the resolver found, through the login shell,
+  // with the password OpenCode prints privately for this start; its start waits its turn among every serve SynaBun starts
+  // (one OpenCode database cannot be opened by two serves at once).
+  detectOpencode: () => detectOpencode(),
   startOneAtATime: oneOpencodeStartAtATime,
-  spawnServe: ({ port, env, cwd, protocol = 1, password = null }) => {
+  passwordFrom: 'stdout',
+  checkServer: checkOpencodeServer,
+  spawnServe: ({ port, env, cwd }) => {
     const token = opencodeServeRecords.newToken();
-    const launch = opencodeServeLaunch(port, { env: { ...env, [SERVE_TOKEN_ENV]: token }, protocol, password });
-    const proc = spawn(launch.command, launch.args, { stdio: ['ignore', 'ignore', 'pipe'], ...launch.options, cwd, detached: false, shell: false, windowsHide: true });
-    editorCompletionServeTracks.set(proc, trackOpencodeServe(proc, { kind: 'completion', id: 'editor-complete', port, token }));
-    proc.stderr?.on('data', (d) => console.log(`[editor-complete:err] ${String(d).trim().slice(0, 500)}`));
+    const launch = opencodeServeLaunch(port, { env: { ...env, [SERVE_TOKEN_ENV]: token }, passwordFrom: 'stdout' });
+    const proc = spawn(launch.command, launch.args, { stdio: ['ignore', 'pipe', 'pipe'], ...launch.options, cwd, detached: false, shell: false, windowsHide: true });
+    editorCompletionServeTracks.set(proc, trackOpencodeServe(proc, { kind: 'completion', id: 'editor-complete', port, token, nativeWebSocketSafe: launch.nativeWebSocketSafe }));
+    const outLog = createServeLogRedactor(line => console.log(`[editor-complete:out] ${line.trim().slice(0, 500)}`));
+    const errLog = createServeLogRedactor(line => console.log(`[editor-complete:err] ${line.trim().slice(0, 500)}`));
+    proc.stdout?.on('data', d => outLog.push(d));
+    proc.stderr?.on('data', d => errLog.push(d));
+    proc.stdout?.on('end', () => outLog.flush());
+    proc.stderr?.on('end', () => errLog.flush());
+    proc.on('close', () => { outLog.flush(); errLog.flush(); });
     return proc;
   },
   // SIGTERM to stop it; SIGKILL, through its handle, for a failed start's process that did not end (Windows: taskkill /T /F).
@@ -18965,10 +19313,11 @@ function _writeMoreLoginMcpToAgents(entry) {
       targets.push('Codex');
     }
   } catch (e) { console.warn('[morelogin] Codex register failed:', e.message); }
-  try { // OpenCode (~/.config/opencode/config.json)
-    const p = getOpencodeConfigPath();
-    if (existsSync(p) && entry.command) {
-      persistMcpToOpencodeConfig(MORELOGIN_MCP_KEY, { command: entry.command, args: entry.args || [], env: entry.env });
+  try { // OpenCode (its global opencode.json, mcp.servers)
+    if (existsSync(getOpencodeConfigDir()) && (entry.command || entry.url)) {
+      persistMcpToOpencodeConfig(MORELOGIN_MCP_KEY, entry.url
+        ? { url: entry.url }
+        : { command: entry.command, args: entry.args || [], env: entry.env });
       targets.push('OpenCode');
     }
   } catch (e) { console.warn('[morelogin] OpenCode register failed:', e.message); }
@@ -19012,14 +19361,9 @@ function _removeMoreLoginMcpFromAgents() {
     }
   } catch {}
   try {
-    const p = getOpencodeConfigPath();
-    if (existsSync(p)) {
-      const cfg = JSON.parse(readFileSync(p, 'utf8') || '{}');
-      if (cfg.mcp && cfg.mcp[MORELOGIN_MCP_KEY]) {
-        delete cfg.mcp[MORELOGIN_MCP_KEY];
-        writeFileSync(p, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
-        targets.push('OpenCode');
-      }
+    if (mcpServersOf(readOpencodeConfigDocument(getOpencodeConfigPath()).config)[MORELOGIN_MCP_KEY]) {
+      updateOpencodeConfigFile(getOpencodeConfigDir(), (cfg) => removeMcpServer(cfg, MORELOGIN_MCP_KEY));
+      targets.push('OpenCode');
     }
   } catch {}
   return targets;
@@ -19495,7 +19839,7 @@ const SYNABUN_TOOL_PERMISSIONS = [
   'mcp__SynaBun__card_update',
   'mcp__SynaBun__card_screenshot',
   'mcp__SynaBun__image_staged',
-  'mcp__SynaBun__profile',
+
   'mcp__SynaBun__gsc_navigate',
   'mcp__SynaBun__gsc_property',
   'mcp__SynaBun__gsc_inspect_url',
@@ -19673,7 +20017,7 @@ const SYNABUN_TOOL_CATEGORIES = [
     tools: [
       { key: 'mcp__SynaBun__loop', label: 'Autonomous loops', desc: 'Run, stop, or check background tasks' },
       { key: 'mcp__SynaBun__category', label: 'Manage categories', desc: 'Create, edit, or remove memory categories' },
-      { key: 'mcp__SynaBun__profile', label: 'Switch tool profile', desc: 'Get or set the active MCP tool profile at runtime' },
+      { key: 'mcp__SynaBun__tool_groups', label: 'Tool groups', desc: 'Get, add or set this runtime’s tool groups' },
       { key: 'mcp__SynaBun__tictactoe', label: 'Tic Tac Toe', desc: 'Play a game of tic-tac-toe with your AI' },
       { key: 'mcp__SynaBun__git', label: 'Git operations', desc: 'Status, diff, commit, log, and branches' },
     ],
@@ -19755,19 +20099,15 @@ function getMemoryToolKeys() {
 }
 
 function getOpenCodeCoreMcpToolKeys() {
-  return [...getMemoryToolKeys(), 'mcp__SynaBun__profile']
+  return [...getMemoryToolKeys(), 'mcp__SynaBun__tool_groups']
     .map((key) => key.replace(/^mcp__([^_]+)__/, '$1_'));
 }
 
+// An `allow` rule (OpenCode 2's `permissions`) for each SynaBun memory tool the config does not decide itself.
+// An explicit user deny/ask stays the user's. Missing rules inherit OpenCode's permissive default, but writing
+// allow here makes unattended profile routing resilient under restrictive wildcard policies.
 function ensureOpenCodeCoreMcpPermissions(config) {
-  if (!config.permission || typeof config.permission !== 'object') config.permission = {};
-  for (const key of getOpenCodeCoreMcpToolKeys()) {
-    // Preserve an explicit user deny/ask. Missing rules inherit OpenCode's
-    // permissive default, but writing allow here makes unattended profile
-    // routing resilient under restrictive wildcard policies.
-    if (!(key in config.permission)) config.permission[key] = 'allow';
-  }
-  return config;
+  return allowActions(config, getOpenCodeCoreMcpToolKeys());
 }
 
 function injectClaudeMemoryPerms() {
@@ -19827,19 +20167,7 @@ function injectOpenCodeMemoryPerms() {
   try {
     const configPath = getOpencodeConfigPath();
     if (!existsSync(configPath)) return { scope: 'none', paths: [] };
-    let cfg = {};
-    try { cfg = JSON.parse(readFileSync(configPath, 'utf8')); } catch {}
-    ensureOpenCodeCoreMcpPermissions(cfg);
-    // Migrate the obsolete Claude-style nested rules written by older SynaBun
-    // releases. OpenCode matches direct permission keys against native MCP tool
-    // ids such as SynaBun_profile.
-    if (cfg.permission.tools && typeof cfg.permission.tools === 'object') {
-      for (const k of [...getMemoryToolKeys(), 'mcp__SynaBun__profile']) {
-        if (cfg.permission.tools[k] === 'allow') delete cfg.permission.tools[k];
-      }
-      if (Object.keys(cfg.permission.tools).length === 0) delete cfg.permission.tools;
-    }
-    writeFileSync(configPath, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+    updateOpencodeConfigFile(getOpencodeConfigDir(), (cfg) => ensureOpenCodeCoreMcpPermissions(cfg));
     return { scope: 'global', paths: [configPath] };
   } catch (err) {
     console.error('[memory-perms] OpenCode inject failed:', err.message);
@@ -19931,6 +20259,16 @@ function loadHookProjects() {
     if (!existsSync(HOOK_PROJECTS_PATH)) return [];
     return JSON.parse(readFileSync(HOOK_PROJECTS_PATH, 'utf-8'));
   } catch { return []; }
+}
+
+/**
+ * The registered code projects an Assistant task run's test runners may run in besides its own project (the browser
+ * policy's `roots`, lib/browser-policy-roots.js: never ~/Downloads). Read as the run starts; a project registered while
+ * it runs counts from the next run.
+ */
+function taskBrowserPolicyRoots(state) {
+  if (state?.runMode !== 'task') return [];
+  try { return browserPolicyRoots(loadHookProjects()); } catch { return []; }
 }
 
 function saveHookProjects(projects) {
@@ -20769,8 +21107,9 @@ app.get('/api/opencode/sessions', (req, res) => {
 
     let rows;
     try {
-      // OpenCode 1's tables, or OpenCode 2's (lib/opencode-db-schema.js).
-      const tables = sessionTablesFor(opencodeDbFlavor(db, _ocpProtocol));
+      // OpenCode 2's tables (lib/opencode-db-schema.js); a file without them lists nothing.
+      if (!hasOpencodeSessionTables(db)) throw new Error('no OpenCode 2 session tables');
+      const tables = OPENCODE_SESSION_TABLES;
       const stmt = db.prepare(`
         SELECT s.id, s.title, s.directory, s.time_created, s.time_updated,
                p.worktree as project_worktree,
@@ -21325,6 +21664,12 @@ app.post('/api/session-indexing/mirror', async (req, res) => {
   }
 });
 
+// What SynaBun's Claude Code hooks really do for a session the owner starts by themselves (lib/claude-hooks-status.js):
+// the `claudeHooks` of the answers below, which Settings shows and switches. Read after any write, never cached.
+function currentClaudeHooksStatus() {
+  return claudeHooksStatus({ userPath: getGlobalClaudeSettingsPath(), projects: loadHookProjects() });
+}
+
 // GET /api/claude-code/integrations — list all hook integration targets with status
 app.get('/api/claude-code/integrations', (req, res) => {
   try {
@@ -21400,6 +21745,7 @@ app.get('/api/claude-code/integrations', (req, res) => {
       projects: projectStatuses,
       mcp: { connected: mcpConnected, cliCommand },
       hookFeatures: loadHookFeatures(),
+      claudeHooks: currentClaudeHooksStatus(),
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -21421,6 +21767,11 @@ app.post('/api/claude-code/integrations', (req, res) => {
       const filePath = getGlobalClaudeSettingsPath();
       let settings = readClaudeSettingsForWrite(filePath);
       settings = addHookToSettings(settings, hook || undefined);
+      // The Settings switch (unblock: true) asks for the hooks to run: Claude Code's own disableAllHooks in the same
+      // file would keep every hook off, so it goes too. Only when asked (onboarding's automatic install leaves a
+      // choice of the owner's alone), and only this file's (managed settings are the organization's).
+      const unblocked = !hook && req.body?.unblock === true && settings.disableAllHooks === true;
+      if (unblocked) delete settings.disableAllHooks;
       writeClaudeSettings(filePath, settings);
 
       // Cascade to all registered projects
@@ -21435,7 +21786,8 @@ app.post('/api/claude-code/integrations', (req, res) => {
         writeClaudeSettings(projFile, projSettings);
       }
 
-      return res.json({ ok: true, message: hook ? `${hook} hook enabled globally.` : 'Hooks enabled globally for all Claude Code projects.' });
+      const message = hook ? `${hook} hook enabled globally.` : `Hooks enabled globally for all Claude Code projects.${unblocked ? ` Claude Code's disableAllHooks was on in ${filePath}; it is off now.` : ''}`;
+      return res.json({ ok: true, message, unblocked, claudeHooks: currentClaudeHooksStatus() });
     }
 
     if (target === 'project') {
@@ -21499,22 +21851,23 @@ app.delete('/api/claude-code/integrations', (req, res) => {
     if (target === 'global') {
       const filePath = getGlobalClaudeSettingsPath();
       let settings = readClaudeSettings(filePath);
-      if (!settings) return res.json({ ok: true, message: 'No global settings found.' });
+      if (!settings) return res.json({ ok: true, message: 'No global settings found.', claudeHooks: currentClaudeHooksStatus() });
       settings = removeHookFromSettings(settings, hook || undefined);
       writeClaudeSettings(filePath, settings);
 
-      // Cascade to all registered projects
+      // Cascade to all registered projects (all of SynaBun's hooks off: their local settings too, so none runs)
       const projects = loadHookProjects();
       for (const p of projects) {
-        const projFile = getClaudeSettingsPath(p.path);
-        let projSettings = readClaudeSettings(projFile);
-        if (projSettings) {
+        for (const projFile of hook ? [getClaudeSettingsPath(p.path)] : [getClaudeSettingsPath(p.path), join(p.path, '.claude', 'settings.local.json')]) {
+          let projSettings = readClaudeSettings(projFile);
+          if (!projSettings?.hooks) continue;
+          const before = JSON.stringify(projSettings.hooks);
           projSettings = removeHookFromSettings(projSettings, hook || undefined, p.path);
-          writeClaudeSettings(projFile, projSettings);
+          if (JSON.stringify(projSettings.hooks) !== before) writeClaudeSettings(projFile, projSettings);
         }
       }
 
-      return res.json({ ok: true, message: hook ? `${hook} hook removed globally.` : 'Hooks removed globally.' });
+      return res.json({ ok: true, message: hook ? `${hook} hook removed globally.` : 'Hooks removed globally.', claudeHooks: currentClaudeHooksStatus() });
     }
 
     if (target === 'project') {
@@ -22042,7 +22395,8 @@ function buildCodexMcpEnv() {
     MEMORY_DATA_DIR: resolve(DATA_HOME, 'mcp-data'),
     SYNABUN_BROWSER_FAST: '1',
     SYNABUN_BROWSER_COMPACT: '1',
-    SYNABUN_PROFILE: 'full',
+    // Every SynaBun tool: a Codex runtime's own list is only its focus (the deferred catalog has them all).
+    SYNABUN_TOOLS: 'all',
     SYNABUN_TOOL_CATALOG_MODE: 'deferred',
   };
 }
@@ -22132,7 +22486,7 @@ app.post('/api/setup/codex/mcp', (req, res) => {
     const dir = CODEX_DEFAULT_HOME;
     const configPath = join(dir, 'config.toml');
     mkdirSync(dir, { recursive: true });
-    ensureMcpProfileDefault('codex-browser');
+    // Connecting a provider never changes the owner's Default tools.
     const health = upsertCodexMcpConfig(configPath, buildCodexMcpDefinition());
     // Force-allow the 7 SynaBun memory tools so CLI sessions skip prompts.
     injectCodexMemoryPerms();
@@ -22183,14 +22537,10 @@ app.get('/api/setup/status', (req, res) => {
     } catch {}
     codex.cliCommand = buildCodexMcpCliCommand();
 
-    // OpenCode
+    // OpenCode (its global configuration: opencode.json, then opencode.jsonc)
     let opencode = { connected: false };
     try {
-      const ocPath = getOpencodeConfigPath();
-      if (existsSync(ocPath)) {
-        const oc = JSON.parse(readFileSync(ocPath, 'utf-8'));
-        opencode.connected = !!(oc?.mcp && oc.mcp.SynaBun);
-      }
+      opencode.connected = !!mcpServersOf(readOpencodeGlobalConfig().config).SynaBun;
     } catch {}
 
     // Where each tool's SynaBun rules stand (lib/rulesets/installer.js).
@@ -22223,8 +22573,10 @@ const skillImportStaging = createImportStaging({ dir: join(SKILLS_DATA_DIR, 'sta
 // hold (lib/skills/catalog.js), the managed library of complete folders and immutable revisions
 // (lib/skills/library.js, DATA_HOME/data/skills/library), native installs with plans, backups and rollback
 // (lib/skills/deploy.js), the Review queue (lib/skills/reviews.js) and the move of the old prompt and command
-// bridges to native skill folders (lib/skills/migration.js: only when the owner starts it, never at start-up).
-// Nothing here runs when the server starts: the first request reads what it needs.
+// bridges to native skill folders (lib/skills/migration.js). The one thing that runs at start is that move, once,
+// for the bridges proven SynaBun's (LAUNCH_TASKS 'skills-bridges' below, after listen; never under a test run or a
+// temporary data home; SYNABUN_SKILLS_AUTO_MIGRATE=off keeps it off): journaled, reversible, with a one-time notice
+// in Skills Studio. Everything else is read at the first request.
 let skillsService = null;
 const skillRoots = createRootResolver({
   env: process.env, homeDir: getHomePath(),
@@ -22251,6 +22603,8 @@ const skillsCatalog = createSkillsCatalog({
 });
 const skillsDefaultCodexHome = () => resolve(process.env.CODEX_HOME || join(getHomePath(), '.codex'));
 const skillsRuntimeChecks = createSkillsRuntimeChecks({
+  // The owner's "Enable for …" copies the runtime's settings file here before it changes one line of it.
+  backupDir: join(SKILLS_DATA_DIR, 'backups', 'settings'),
   codexHome: (id) => { try { return _codexAccounts().homeFor(id || 'default') || skillsDefaultCodexHome(); } catch { return skillsDefaultCodexHome(); } },
   claudeHome: (id) => { try { return (id && id !== 'default' ? _panelClaudeAccounts().homeFor(id) : null) || claudeConfigHome(); } catch { return claudeConfigHome(); } },
   // Where OpenCode reads its settings: OPENCODE_CONFIG_DIR when set, as for its skills (lib/skills/roots.js).
@@ -22271,6 +22625,7 @@ const skillsDeployer = createDeployer({
   catalogEntries: async () => (await skillsCatalog.scan()).entries,
   probe: (o) => skillsRuntimeChecks.probe(o),
   eligibility: (o) => skillsRuntimeChecks.eligibility(o),
+  eligibilityDetail: (o) => skillsRuntimeChecks.eligibilityDetail(o),
   emit: (event) => skillsService?.announce(event),
   // A scan checks a skill's install name against what SynaBun ships; an Assistant's revision installs only under
   // the name it was approved for (lib/skills/reviews.js approvalOf; the queue is made below, read at plan time).
@@ -22291,12 +22646,23 @@ skillsService = createSkillsService({
   // Every page of the owner hears of a change (the Studio reloads its library, Settings its chips, the Codex panel
   // its skill hints); invite guests do not (broadcastSync keeps `skills:` to the owner).
   broadcast: (event) => broadcastSync({ type: 'skills:changed', event }),
+  // Which assistants are installed here (the CLI resolver), for the default of "My assistants" (Settings → Skills).
+  installedRuntimes: () => ({ claude: cliFoundForWarmup('claude-code'), codex: cliFoundForWarmup('codex'), opencode: cliFoundForWarmup('opencode') }),
+  runtimeChecks: skillsRuntimeChecks,
+  operationsOptions: { notify: (item) => {
+    const session = _assistantRuntime?.listSessions?.().find((s) => s.status !== 'ended');
+    if (!session) return false;
+    _assistantRuntime.routerMailbox(session.id, item);
+    return true;
+  } },
 });
 registerSkillsV2Routes(app, {
   service: skillsService, isGuestRequest,
-  ownerGuard: ownerRouteGuard({ isGuestRequest, port: PORT, allowedOrigins: publicWebOrigins, refuseCrossSite: true, ownOriginsOnly: true }),
+  ownerGuard: ownerRouteGuard({ isGuestRequest, port: PORT, allowedOrigins: publicWebOrigins, refuseCrossSite: true, ownOriginsOnly: true, requireOrigin: true }),
   // An agent is the Assistant only by its brain's launch credential (never by X-Synabun-Role alone).
   assistantOf: (req) => skillsAssistantOf(req),
+  // The owner's writes carry the page secret (lib/page-session.js); the Studio's reads hand it to the page.
+  pageSession: _pageSession,
 });
 
 // ── AI skill creation (docs/skills-studio.md → AI creation (P3)) ──
@@ -22324,8 +22690,10 @@ const skillCreations = createSkillCreations({
 });
 registerSkillCreationRoutes(app, {
   creations: skillCreations, service: skillsService, isGuestRequest,
-  ownerGuard: ownerRouteGuard({ isGuestRequest, port: PORT, allowedOrigins: publicWebOrigins, refuseCrossSite: true, ownOriginsOnly: true }),
+  ownerGuard: ownerRouteGuard({ isGuestRequest, port: PORT, allowedOrigins: publicWebOrigins, refuseCrossSite: true, ownOriginsOnly: true, requireOrigin: true }),
   assistantCaller: (req) => skillCreationCaller(req),
+  // The owner's writes carry the page secret (lib/page-session.js): a local process without it is refused.
+  pageSession: _pageSession,
   options: () => {
     const browser = skillBrowserAvailability();
     return {
@@ -22337,6 +22705,89 @@ registerSkillCreationRoutes(app, {
   },
   sessions: (q) => skillSourceSessions(q),
 });
+
+// ── Skill evaluations (docs/skills-studio.md → Evaluations (P4)) ──
+// The Studio's Test tab: a revision's evals/evals.json run on the runtimes the owner picks, through the Assistant's
+// dispatcher, every run held to its own job folder (lib/skills/eval-confinement.js: the skill under test is copied
+// there, never installed), graded by code and an independent grader, within a spend and a time ceiling, one evaluation
+// at a time and the rest in a queue (lib/skills/evals.js). Started by the owner's Run, or the Assistant's `skill`
+// action eval_start under its session's budget.
+const skillEvals = createSkillEvals({
+  dataDir: SKILLS_DATA_DIR, library: skillLibrary, service: skillsService,
+  dispatcher: () => _assistantDispatcher,
+  liveRoots: () => skillLiveRoots(),
+  runtimes: () => skillEvalRuntimes(),
+  catalog: async () => (_assistantCatalog ? _assistantCatalog.full() : null),
+  defaultModel: (provider, catalog) => skillEvalDefaultModel(provider, catalog),
+  priceOf: (runtime, catalog) => skillEvalPrice(runtime, catalog),
+  contamination: (o) => skillEvalContamination(o),
+  log: (tag, message) => { try { loopLog(null, `skills:${tag}`, message); } catch {} },
+});
+registerSkillEvalRoutes(app, {
+  evals: skillEvals, isGuestRequest,
+  ownerGuard: ownerRouteGuard({ isGuestRequest, port: PORT, allowedOrigins: publicWebOrigins, refuseCrossSite: true, ownOriginsOnly: true, requireOrigin: true }),
+  // The Assistant by its brain's launch credential only; a dispatched worker is refused.
+  assistantCaller: (req) => skillCreationCaller(req),
+  pageSession: _pageSession,
+});
+
+/**
+ * Each runtime an evaluation can run on here: found (the same answer as drafting's), held to its folder, and whether
+ * a case that needs a shell can have one (Codex: its own sandbox, always, and Codex is the owner's opt-in per skill
+ * version; Claude Code and OpenCode: only under the evaluation's own macOS sandbox, lib/skills/eval-sandbox.js,
+ * whatever Protect workers says).
+ */
+function skillEvalRuntimes() {
+  let rows = [];
+  try { rows = skillDraftingProviders(); } catch { rows = []; }
+  let sandboxShell = false;
+  try { sandboxShell = evalShellSupported(); } catch { sandboxShell = false; }
+  return rows.map((p) => {
+    const support = evalConfinementSupport(p.provider);
+    let version = null;
+    try { version = cliResolver.launcher(p.provider === 'claude-code' ? 'claude-code' : p.provider).version || null; } catch { version = null; }
+    return { provider: p.provider, available: !!p.available && support.ok, reason: p.available ? (support.ok ? null : support.reason) : p.reason, level: support.level || null, note: support.note || null, optIn: support.optIn === true, shell: support.shell === 'own-sandbox' ? true : support.shell === 'sandbox' && sandboxShell, version: version ? String(version).slice(0, 60) : null };
+  });
+}
+
+/** The model an evaluation runs when the owner names none: the provider's cheapest visible one (a free one first). */
+function skillEvalDefaultModel(provider, catalog) {
+  const rows = (catalog?.models?.[provider] || []).filter((row) => row && row.status !== 'unavailable');
+  if (!rows.length) return null;
+  const cost = (row) => (row.price && Number.isFinite(Number(row.price.input)) ? Number(row.price.input) + Number(row.price.output || 0) : null);
+  const free = rows.find((row) => row.price && (row.price.basis === 'free' || (Number(row.price.input) === 0 && Number(row.price.output) === 0 && row.price.basis !== 'plan')));
+  if (free) return free.id;
+  const priced = rows.filter((row) => cost(row) !== null).sort((a, b) => cost(a) - cost(b));
+  if (priced.length) return priced[0].id;
+  const small = rows.find((row) => row.tier === 'small');
+  return small ? small.id : null;
+}
+
+/** A model's list price per million tokens for the estimate, or null (unknown: the estimate says so). */
+function skillEvalPrice(runtime, catalog) {
+  const rows = catalog?.models?.[runtime?.provider] || [];
+  const want = String(runtime?.model || '').toLowerCase();
+  const row = want ? rows.find((r) => String(r.id).toLowerCase() === want || String(r.upstream || '').toLowerCase() === want) : (rows.find((r) => r.isDefault) || null);
+  const price = row?.price || row?.listPrice || null;
+  if (!price || !Number.isFinite(Number(price.input))) return null;
+  const isFree = price.basis === 'free' || (Number(price.input) === 0 && Number(price.output) === 0 && price.basis !== 'plan');
+  return { input: Number(price.input), output: Number(price.output) || 0, free: isFree };
+}
+
+/**
+ * The folders outside an evaluation's own where its runtime would also find a skill of that name: a baseline there is
+ * not a clean baseline. Claude Code reads its run folder's project settings only (none); SynaBun's OpenCode serves read
+ * neither ~/.claude (OPENCODE_DISABLE_CLAUDE_CODE) nor the user's config home (their own XDG_CONFIG_HOME), so only the
+ * shared ~/.agents/skills; Codex reads its home's, the shared and the system ones.
+ */
+async function skillEvalContamination({ provider, name }) {
+  if (provider === 'claude-code') return [];
+  let entries = [];
+  try { entries = (await skillsCatalog.scan()).entries || []; } catch { return []; }
+  const want = String(name || '').toLowerCase();
+  return entries.filter((e) => e.kind === 'skill' && e.scope !== 'project' && String(e.folderName || e.name || '').toLowerCase() === want
+    && (provider === 'opencode' ? e.family === 'shared' : (e.runtimes || []).includes('codex'))).map((e) => e.path).slice(0, 5);
+}
 
 /** The Assistant session whose live brain holds the launch credential a request carries (X-Synabun-Brain-Token), or null. */
 function skillsAssistantOf(req) {
@@ -22359,23 +22810,42 @@ function skillCreationCaller(req) {
 }
 
 /**
- * The drafting worker when a request names none: Claude Code, the one runtime a drafting run can be confined on
- * (lib/skills/draft-confinement.js), with the model of the owner's Coding route when that route is Claude Code's.
+ * The drafting worker when a request names none: Assistant saved routes are exempt; use
+ * the first provider that can draft here (Claude Code first, then Codex, then OpenCode: the order of
+ * skillDraftingProviders, which is what the Create page shows), with its default model. When none can, Claude Code
+ * is named so the answer has a shape; the options route says drafting is unavailable beside it.
  */
 function skillDraftDefaultTarget() {
-  try {
-    const pref = _assistantConfigStore?.routing?.()?.preferences?.code || null;
-    if (pref?.provider === 'claude-code' && pref.kind !== 'direct') return { provider: 'claude-code', model: pref.model || null, effort: pref.effort || null, ...(pref.accountId ? { accountId: pref.accountId } : {}), route: true };
-  } catch { /* the default below */ }
-  return { provider: 'claude-code', model: null, effort: null, route: false };
+  let providers = [];
+  try { providers = skillDraftingProviders(); } catch { providers = []; }
+  const first = providers.find((p) => p.available);
+  return { provider: first?.provider || 'claude-code', model: null, effort: null, route: false };
 }
 
-/** Whether a drafting worker can start here: the Claude Code every Claude start uses is found, else why not. */
+/** Each provider a drafting run can be confined on, and whether it can start here (its CLI found). */
+function skillDraftingProviders() {
+  const rows = [];
+  for (const provider of ['claude-code', 'codex', 'opencode']) {
+    const support = draftConfinementSupport(provider);
+    if (!support.ok) { rows.push({ provider, available: false, reason: support.reason }); continue; }
+    let available = false;
+    let reason = null;
+    try {
+      if (provider === 'claude-code') { const exe = getClaudeSdkExecutable(); available = !!exe?.path; reason = available ? null : String(exe?.reason || 'Claude Code was not found on this computer.').slice(0, 400); }
+      else if (provider === 'codex') { available = !!getNativeCodexBin(); reason = available ? null : 'Codex was not found on this computer.'; }
+      else { const found = cliResolver.launcher('opencode'); available = !!(found?.path || configuredCommandLine('opencode')); reason = available ? null : 'OpenCode was not found on this computer.'; }
+    } catch (err) { available = false; reason = String(err?.message || err).slice(0, 400); }
+    rows.push({ provider, available, reason, level: support.level, note: support.note });
+  }
+  return rows;
+}
+
+/** Whether a drafting worker can start here: Claude Code (the default) found, else why not; and every provider's answer. */
 function skillDraftingAvailability() {
-  try {
-    const exe = getClaudeSdkExecutable();
-    return exe?.path ? { available: true } : { available: false, reason: String(exe?.reason || 'Claude Code was not found on this computer.').slice(0, 400) };
-  } catch (err) { return { available: false, reason: String(err?.message || err).slice(0, 400) }; }
+  const providers = skillDraftingProviders();
+  const claude = providers.find((p) => p.provider === 'claude-code');
+  const any = providers.find((p) => p.available);
+  return { available: !!any, reason: any ? null : (claude?.reason || 'No provider that can draft was found on this computer.'), providers };
 }
 
 /** Whether the SynaBun browser (the one Settings → Browser chose) can open a page for a draft now, and if not why. */
@@ -22462,9 +22932,8 @@ async function skillSourceSessions({ provider, project = null, q = '', limit = 4
     for (const g of groups) for (const s of g.sessions) out.push({ provider, sessionId: s.sessionId, title: s.firstPrompt || '', project: g.path, projectLabel: g.label, modified: s.modified || null, messages: s.messageCount || 0 });
   } else if (provider === 'opencode') {
     const db = getOpencodeDb();
-    const flavor = db ? opencodeDbFlavor(db, _ocpProtocol) : null;
-    if (flavor) {
-      const tables = sessionTablesFor(flavor);
+    if (hasOpencodeSessionTables(db)) {
+      const tables = OPENCODE_SESSION_TABLES;
       let rows = [];
       try {
         rows = db.prepare(`SELECT s.id, s.title, s.directory, s.time_updated, p.worktree AS project_worktree, ${tables.messageCount} AS message_count
@@ -22523,29 +22992,11 @@ async function skillSourceConversation({ provider, sessionId, project = null }) 
   }
   if (provider === 'opencode') {
     const db = getOpencodeDb();
-    const flavor = db ? opencodeDbFlavor(db, _ocpProtocol) : null;
-    if (!flavor) throw Object.assign(new Error('OpenCode\'s sessions cannot be read here.'), { status: 404, code: 'source_not_found' });
-    const tables = sessionTablesFor(flavor);
-    const session = db.prepare(`SELECT id, title FROM ${tables.session} WHERE id = ?`).get(sessionId);
+    if (!hasOpencodeSessionTables(db)) throw Object.assign(new Error('OpenCode\'s sessions cannot be read here.'), { status: 404, code: 'source_not_found' });
+    const session = db.prepare(`SELECT id, title FROM ${OPENCODE_SESSION_TABLES.session} WHERE id = ?`).get(sessionId);
     if (!session) throw Object.assign(new Error('That OpenCode session was not found.'), { status: 404, code: 'source_not_found' });
-    const { v2MessageText } = await import('./lib/opencode-db-schema.js');
-    let rows = [];
-    if (flavor === 'v2') rows = db.prepare(`SELECT type, data FROM session_message WHERE session_id = ? AND type IN ('user', 'assistant') ORDER BY seq ASC LIMIT 5000`).all(sessionId);
-    else {
-      const parts = db.prepare(`SELECT p.data AS pdata, m.data AS mdata, p.message_id AS mid FROM part p LEFT JOIN message m ON m.id = p.message_id WHERE p.session_id = ? ORDER BY p.time_created ASC LIMIT 20000`).all(sessionId);
-      const byMessage = new Map();
-      for (const part of parts) {
-        let text = ''; let role = null;
-        try { const pd = JSON.parse(part.pdata || 'null'); if (pd?.type === 'text' && pd.text) text = pd.text; } catch {}
-        try { role = JSON.parse(part.mdata || 'null')?.role || null; } catch {}
-        if (!text || (role !== 'user' && role !== 'assistant')) continue;
-        const row = byMessage.get(part.mid) || { role, text: '' };
-        row.text = row.text ? `${row.text}\n${text}` : text;
-        byMessage.set(part.mid, row);
-      }
-      rows = [...byMessage.values()];
-    }
-    return { title: session.title || '', project, messages: opencodeRowsToMessages(rows, { flavor, v2MessageText }) };
+    const rows = db.prepare(`SELECT type, data FROM session_message WHERE session_id = ? AND type IN ('user', 'assistant') ORDER BY seq ASC LIMIT 5000`).all(sessionId);
+    return { title: session.title || '', project, messages: opencodeRowsToMessages(rows) };
   }
   throw Object.assign(new Error('Unknown provider.'), { status: 400, code: 'source_failed' });
 }
@@ -24406,7 +24857,7 @@ app.get('/api/health', (req, res) => {
       // Which server this is, and whether it is on its way out for a restart: a
       // page showing the restart tells this one from the one that replaces it.
       bootId: SERVER_BOOT_ID,
-      ...(_restartRequestedAt ? { restarting: true } : {}),
+      ...(_restartRequestedAt && !_stopOverridesRestart ? { restarting: true } : {}),
     });
   } catch (err) {
     res.json({ ok: false, reason: 'db_error', detail: err.message });
@@ -24474,161 +24925,91 @@ app.delete('/api/mcp-key', (req, res) => {
   res.json({ ok: true });
 });
 
-// --- MCP Profile API ---
-const MCP_PROFILE_PATH = resolve(DATA_HOME, 'data', 'active-profile.json');
-
-function getRuntimeMcpProfilePaths() {
-  const paths = new Set([
-    resolve(DATA_HOME, 'mcp-data', 'active-profile.json'),
-    MCP_PROFILE_PATH,
-  ]);
-  return [...paths];
+// --- MCP tool lists ---
+function toolListOptions() { return { customPresets: readMcpRegistry().profiles }; }
+function defaultToolList() { return readDefaultTools(DATA_HOME, toolListOptions()); }
+function redactOpenCodeMcpOutput(text, xdgRoot, env, captured = null) {
+  const values = (captured || _externalMcpLogValues.get(xdgRoot) || []).map(value => value.replace(/\{env:([A-Za-z_][A-Za-z0-9_]*)\}|\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (whole, a, b) => env?.[a || b] ?? whole));
+  return redactMcpValues(text, values);
 }
-
-function readActiveMcpProfile() {
-  for (const profilePath of getRuntimeMcpProfilePaths()) {
-    try {
-      if (!existsSync(profilePath)) continue;
-      const data = JSON.parse(readFileSync(profilePath, 'utf-8'));
-      if (data.profile && typeof data.profile === 'string') return retireMcpProfileSelection(data.profile);
-    } catch {}
+function externalInventory(provider, cwd = PACKAGE_ROOT, options = {}) {
+  return { ...externalServerInventory({ provider, cwd, dataHome: DATA_HOME, registry: readMcpRegistry(), ...(provider === 'opencode' ? { opencodeConfig: readOpencodeGlobalConfig().config } : {}), ...options }), catalog: () => externalToolsCatalog(cwd) };
+}
+function externalToolsCatalog(cwd = null) {
+  const rows = new Map();
+  const roots = cwd ? [cwd] : [PACKAGE_ROOT, ...loadHookProjects().map(project => project.path).filter(Boolean)];
+  for (const directory of new Set(roots)) for (const row of externalCatalog({ cwd: directory, dataHome: DATA_HOME, registry: readMcpRegistry(), opencodeConfig: readOpencodeGlobalConfig().config })) {
+    const previous = rows.get(row.ref);
+    if (!previous) rows.set(row.ref, row);
+    else for (const [provider, availability] of Object.entries(row.providers)) if (availability === 'deliverable' || previous.providers[provider] === 'absent') previous.providers[provider] = availability;
   }
-  return 'full';
+  return [...rows.values()];
 }
 
-function ensureMcpProfileDefault(profile) {
-  const paths = getRuntimeMcpProfilePaths();
-  if (paths.some((profilePath) => existsSync(profilePath))) return false;
-  const normalized = normalizeMcpProfileName(profile);
-  const payload = JSON.stringify({ profile: normalized }, null, 2) + '\n';
-  for (const profilePath of paths) {
-    const dir = dirname(profilePath);
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    writeFileSync(profilePath, payload, 'utf-8');
-  }
-  return true;
+function applyOpenCodeExternalScope(xdgRoot, config, tools, cwd, { readProject = true } = {}) {
+  const scoped = scopeOpenCodeServers(config, tools, externalInventory('opencode', cwd || PACKAGE_ROOT, { readProject }));
+  Object.assign(config, scoped.config);
+  _externalMcpLogValues.set(xdgRoot, mcpDefinitionValues(scoped.config.mcp.servers));
+  writeFileSync(resolve(xdgRoot, 'synabun-external-scope.json'), JSON.stringify(scoped.scope), { mode: 0o600 });
+  return scoped.scope;
 }
 
-function normalizeMcpProfileName(profile) {
-  return retireMcpProfileSelection(String(profile || 'full').toLowerCase().trim() || 'full');
+function launchToolList(record, context = {}) {
+  const options = toolListOptions();
+  const hasOwnList = storedToolList(record, options) !== null;
+  const result = resolveStoredTools(record, { defaultTools: hasOwnList ? undefined : defaultToolList(), ...context }, options);
+  // Capture automatic additions at launch too; runtime resolution no longer has the launch context.
+  return { ...result, items: requireToolList(resolveToolList([...result.items, ...result.added.map(group => group.id)], { source: 'runtime' })).items };
 }
-
-// Profile and group names of removed integrations. A selection stored before
-// the removal (default profile, schedule, loop, tab) still launches: a retired
-// preset becomes the default profile and a retired group is dropped from a
-// comma-separated selection, never an "Invalid MCP profile" error. Functions,
-// not constants: profile names are read while the module is still loading.
-function isRetiredMcpProfile(name) {
-  return name === 'leonardoai';
+function toolsFromSelection(value) {
+  return launchToolList(Array.isArray(value) ? { tools: value } : { mcpProfile: value }).items;
 }
-
-function isRetiredMcpGroup(name) {
-  return name === 'leonardo';
-}
-
-function retireMcpProfileSelection(profile) {
-  const raw = String(profile);
-  const name = raw.toLowerCase().trim();
-  if (isRetiredMcpProfile(name)) return 'full';
-  const groups = name.split(',').map((group) => group.trim());
-  if (!groups.some(isRetiredMcpGroup)) return raw;
-  const kept = groups.filter((group) => group && !isRetiredMcpGroup(group));
-  return kept.length ? kept.join(',') : 'full';
-}
-
-function buildMcpProfilePresets() {
-  const registry = readMcpRegistry();
-  const profiles = registry.profiles || {};
-  const tg = SYNABUN_TOOL_GROUPS;
-  const alwaysOnCount = Object.values(tg).filter(g => g.alwaysOn).reduce((sum, g) => sum + g.tools, 0);
-  const presets = {};
-  for (const [name, prof] of Object.entries(profiles)) {
-    const groupTools = (prof.groups || []).reduce((sum, g) => sum + (tg[g]?.tools || 0), 0);
-    presets[name] = { label: prof.label || name, groups: prof.groups || [], tools: `~${alwaysOnCount + groupTools}` };
-  }
-  return presets;
-}
-
-let _lastBroadcastMcpProfile = normalizeMcpProfileName(readActiveMcpProfile());
-
-function broadcastMcpProfileChanged(profile, source = 'server', extra = {}) {
-  const normalized = normalizeMcpProfileName(profile);
-  if (!extra.force && normalized === _lastBroadcastMcpProfile) return false;
-  _lastBroadcastMcpProfile = normalized;
+app.get('/api/mcp/tools', (req, res) => {
+  try { res.json({ ok: true, ...toolCatalogView({ browserV2: process.env.SYNABUN_BROWSER_V2 !== '0' }), defaultTools: defaultToolList(), externalServersVersion: 2, externalServerLimitations: EXTERNAL_SERVER_LIMITATIONS, servers: externalToolsCatalog(req.query?.cwd || null) }); }
+  catch (err) { res.status(err.status || 500).json({ ok: false, code: err.code, problems: err.problems, error: err.message }); }
+});
+// Read-time conversion for a saved page preference. This never launches a runtime or writes a default.
+app.post('/api/mcp/tools/convert', (req, res) => {
   try {
-    broadcastSync({
-      type: 'mcp:profile-changed',
-      profile: normalized,
-      presets: buildMcpProfilePresets(),
-      source,
-      ...extra,
-    });
-  } catch (err) {
-    console.warn(`[mcp/profile] Failed to broadcast profile change: ${err.message}`);
-  }
-  return true;
-}
-
-app.get('/api/mcp/profile', (req, res) => {
+    const tools = storedToolList({ mcpProfile: req.body?.value }, toolListOptions());
+    res.json({ ok: true, tools });
+  } catch (err) { res.status(err.status || 400).json({ ok: false, code: err.code, problems: err.problems, error: err.message }); }
+});
+app.put('/api/mcp/tools/default', (req, res) => {
   try {
-    const defaultProfile = readActiveMcpProfile();
-    res.json({ ok: true, profile: defaultProfile, defaultProfile, presets: buildMcpProfilePresets() });
-  } catch (err) {
-    res.json({ ok: true, profile: 'full', defaultProfile: 'full', presets: buildMcpProfilePresets() });
-  }
+    const requested = storedToolList({ tools: req.body?.tools });
+    if (requested === null) throw Object.assign(new Error('tools must be an array'), { code: 'TOOLS_INVALID', status: 400 });
+    const servers = externalToolsCatalog().map(row => ({ name: row.ref.slice(4), blocked: row.blocked, deliverable: Object.values(row.providers).includes('deliverable') }));
+    selectExternalServers(requested, { servers });
+    const tools = writeDefaultTools(DATA_HOME, requested);
+    broadcastSync({ type: 'mcp:tools-default-changed', tools, source: 'api' });
+    res.json({ ok: true, tools, defaultTools: tools });
+  } catch (err) { res.status(err.status || 500).json({ ok: false, code: err.code, problems: err.problems, error: err.message }); }
 });
 
-function applyMcpProfile(profile, source = 'server') {
-  if (!profile || typeof profile !== 'string') {
-    throw new Error('Missing "profile"');
-  }
-  const normalized = normalizeMcpProfileName(profile);
-  if (!isValidMcpProfileValue(normalized)) {
-    throw new Error(`Unknown MCP profile or tool group selection: ${normalized}`);
-  }
-  const payload = JSON.stringify({ profile: normalized }, null, 2) + '\n';
-  for (const profilePath of getRuntimeMcpProfilePaths()) {
-    const dir = resolve(profilePath, '..');
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    writeFileSync(profilePath, payload, 'utf-8');
-  }
-  // This file is a default for future runtimes only. Running OpenCode/Codex
-  // MCP children are pinned by SYNABUN_PROFILE and never watch it.
-  const synced = { opencode: false, codex: false };
-  broadcastMcpProfileChanged(normalized, source, { defaultProfile: normalized, synced });
-  return { profile: normalized, defaultProfile: normalized, synced };
-}
-
-app.post('/api/mcp/profile', (req, res) => {
-  try {
-    const result = applyMcpProfile(req.body?.profile, 'api');
-    res.json({ ok: true, ...result });
-  } catch (err) {
-    const status = err.message === 'Missing "profile"' || err.message.startsWith('Unknown MCP profile') ? 400 : 500;
-    res.status(status).json({ ok: false, error: err.message });
-  }
-});
-
-// An MCP child can change its own enabled tools through the always-on profile
+// An MCP child can change its own enabled tools through the always-on tool_groups
 // tool. Reconcile only the runtime named by its launch identity header; never
 // accept a sidepanel session/run id from the body and never touch the shared
 // future-session default from this path.
-app.post('/api/mcp/runtime-profile', (req, res) => {
+function applyRuntimeTools(req, res) {
   const terminalId = String(req.get('X-Synabun-Terminal') || '').trim();
   if (!terminalId) {
     return res.status(400).json({ ok: false, error: 'Missing X-Synabun-Terminal runtime identity' });
   }
-  if (!req.body?.profile || typeof req.body.profile !== 'string') {
-    return res.status(400).json({ ok: false, error: 'Missing "profile"' });
-  }
-  const profile = normalizeMcpProfileName(req.body.profile);
-  if (!isValidMcpProfileValue(profile)) {
-    return res.status(400).json({ ok: false, error: `Unknown MCP profile or tool group selection: ${profile}` });
-  }
-  const catalogMode = req.body?.catalogMode === 'deferred' ? 'deferred' : 'profiled';
+  let tools;
+  try {
+    if (!Array.isArray(req.body?.tools)) throw Object.assign(new Error('tools must be an array'), { status: 400, code: 'TOOLS_INVALID' });
+    tools = storedToolList({ tools: req.body.tools });
+  } catch (err) { return res.status(err.status || 400).json({ ok: false, code: err.code, problems: err.problems, error: err.message }); }
+  let toolKey = serializeToolList(tools);
   const entry = _ocpIsoServes.get(terminalId) || null;
-  const codexRuntime = _codexMcpProfileRuntimes.get(terminalId) || null;
-  const runBefore = _nativeLoopRuntime?.get(terminalId) || null;
+  const codexRuntime = _codexToolsRuntimes.get(terminalId) || null;
+  const nativeRun = _nativeLoopRuntime?.get(terminalId) || null;
+  const runBefore = nativeRun && ['starting', 'running'].includes(nativeRun.status) ? nativeRun : null;
+  tools = requireToolList(resolveToolList(retainExternalRefs(tools, entry?.tools || runBefore?.tools || codexRuntime?.tools || []), { source: 'runtime' })).items;
+  toolKey = serializeToolList(tools);
+  const focusHost = !!codexRuntime || ['codex', 'claude-code'].includes(runBefore?.provider);
+  const catalogMode = entry ? 'profiled' : focusHost || req.body?.mode === 'focus' ? 'deferred' : 'profiled';
   const loopFile = findLoopFileForTerminal(terminalId);
   let loopPath = null;
   let loopState = null;
@@ -24641,9 +25022,10 @@ app.post('/api/mcp/runtime-profile', (req, res) => {
       loopState = null;
     }
   }
+  if (!entry && !runBefore && !codexRuntime && loopState) { tools = requireToolList(resolveToolList(retainExternalRefs(tools, storedToolList(loopState, toolListOptions()) || []), { source: 'runtime' })).items; toolKey = serializeToolList(tools); }
   const liveLoop = !!(loopState?.active || loopState?.pending) && isLoopRuntimeAlive(loopState);
   if (!entry && !codexRuntime && !runBefore && !liveLoop) {
-    return res.status(404).json({ ok: false, error: 'Profile runtime is no longer active' });
+    return res.status(404).json({ ok: false, error: 'Tool runtime is no longer active' });
   }
 
   const sessionIds = entry
@@ -24651,25 +25033,26 @@ app.post('/api/mcp/runtime-profile', (req, res) => {
     : (codexRuntime?.sessionId ? [codexRuntime.sessionId] : []);
   try {
     if (entry) {
-      updateOpencodeRuntimeProfileConfig(entry.xdgRoot, profile);
+      updateOpencodeRuntimeToolsConfig(entry.xdgRoot, tools);
     } else if (codexRuntime) {
-      codexRuntime.setProfile(profile);
+      codexRuntime.setTools(tools);
     } else if (loopState?.profile === 'opencode') {
       const xdgRoot = resolve(DATA_HOME, 'data', 'loop-configs', `opencode-${terminalId}`);
-      updateOpencodeRuntimeProfileConfig(xdgRoot, profile);
+      updateOpencodeRuntimeToolsConfig(xdgRoot, tools);
     }
   } catch (err) {
-    return res.status(500).json({ ok: false, error: `Could not persist isolated runtime profile: ${err.message}` });
+    return res.status(500).json({ ok: false, error: `Could not persist isolated runtime tools: ${err.message}` });
   }
 
-  // The runtime-owned profile file above is authoritative for MCP child
+  // The runtime-owned tool-list file above is authoritative for MCP child
   // restarts. Loop state is ancillary UI/history metadata: report a warning
-  // if it cannot be mirrored, but keep maps/UI aligned with the profile that
+  // if it cannot be mirrored, but keep maps/UI aligned with the list that
   // the current MCP process has already activated.
   const warnings = [];
   if (loopPath && loopState) {
     try {
-      loopState.mcpProfile = profile;
+      loopState.tools = tools;
+      delete loopState.mcpProfile;
       writeFileSync(loopPath, JSON.stringify(loopState, null, 2), 'utf8');
     } catch (err) {
       warnings.push(`Could not mirror loop metadata: ${err.message}`);
@@ -24678,22 +25061,23 @@ app.post('/api/mcp/runtime-profile', (req, res) => {
 
   // Commit in-memory routing after the authoritative runtime file succeeds.
   if (entry) {
-    entry.mcpProfile = profile;
-    entry.mcpProfileRefreshFailed = false;
+    entry.tools = tools;
+    entry.toolsRefreshFailed = false;
     entry.lastUsed = Date.now();
-    for (const sessionId of sessionIds) _ocpSessionProfiles.set(sessionId, profile);
+    for (const sessionId of sessionIds) _ocpSessionTools.set(sessionId, tools);
   }
-  const run = runBefore ? _nativeLoopRuntime.setMcpProfile(terminalId, profile) : null;
+  if (_workerMcpChannel?.has(terminalId)) _workerMcpChannel.setSelection(terminalId, { groups: requireToolList(resolveToolList(tools, { source: 'runtime' })).groups, mode: runBefore?.provider === 'claude-code' ? 'focus' : 'strict' });
+  const run = runBefore ? _nativeLoopRuntime.setTools(terminalId, tools) : null;
 
-  let runtimeKind = 'loop';
-  let hostRefresh = 'notification';
+  let runtimeKind = _workerMcpChannel?.has(terminalId) ? 'channel' : runBefore?.provider === 'codex' ? 'codex' : 'loop';
+  let hostRefresh = catalogMode === 'deferred' ? 'not-needed' : 'notification';
   let correlationId = null;
-  if (entry) {
+  if (entry && req.body?.refresh !== 'in-band') {
     runtimeKind = 'opencode';
     hostRefresh = 'scheduled';
-    correlationId = scheduleRuntimeMcpProfileRefresh(
+    correlationId = scheduleRuntimeMcpToolsRefresh(
       terminalId,
-      profile,
+      toolKey,
       runtimeKind,
       async (refreshCorrelationId) => {
         try {
@@ -24703,12 +25087,18 @@ app.post('/api/mcp/runtime-profile', (req, res) => {
           }
           const directory = await resolveOpenCodeMcpDirectory(entry, sessionIds);
           const mcpTarget = { name: 'SynaBun', directory };
+          invalidateSynabunTools(entry.client, directory);
           try {
             await entry.client.mcp.disconnect(mcpTarget);
           } catch (err) {
-            console.warn(`[mcp/profile] OpenCode disconnect before refresh reported: ${err?.message || err}`);
+            console.warn(`[mcp/tools] OpenCode disconnect before refresh reported: ${err?.message || err}`);
           }
           await entry.client.mcp.connect(mcpTarget);
+          // Share this settle with the next brain/panel/worker prompt; no second 750 ms wait.
+          await waitForSynabunTools(entry.client, { directory,
+            stopped: () => _ocpIsoServes.get(terminalId) !== entry,
+            onTimeout: (ms) => { throw new Error(synabunToolsTimeoutText(ms)); },
+          });
           const statusResponse = await entry.client.mcp.status({ directory });
           if (_ocpIsoServes.get(terminalId) !== entry) {
             throw new Error('OpenCode isolated runtime closed during MCP reconnect');
@@ -24720,20 +25110,20 @@ app.post('/api/mcp/runtime-profile', (req, res) => {
             const detail = synabunStatus?.error || synabunStatus?.status || 'missing from MCP status';
             throw new Error(`OpenCode SynaBun MCP did not reconnect (${detail})`);
           }
-          // If another profile was queued during this reconnect, its runtime
+          // If another list was queued during this reconnect, its runtime
           // file may already be what the new child loaded. Let that pending
           // refresh perform the only confirmation instead of flashing stale UI.
-          if (entry.mcpProfile !== profile) return;
-          entry.mcpProfileRefreshFailed = false;
+          if (serializeToolList(entry.tools) !== toolKey) return;
+          entry.toolsRefreshFailed = false;
           entry.lastUsed = Date.now();
           for (const sessionId of sessionIds) {
             broadcastToOpencodeV2Clients(
               {
                 type: 'event',
-                eventType: 'mcp.profile.changed',
+                eventType: 'mcp.tools.changed',
                 event: {
                   sessionID: sessionId,
-                  profile,
+                  tools,
                   source: 'agent',
                   hostRefresh: 'confirmed',
                   refreshCorrelationId,
@@ -24742,18 +25132,18 @@ app.post('/api/mcp/runtime-profile', (req, res) => {
               { nativeRunId: run?.provider === 'opencode' ? run.runId : null },
             );
           }
-          console.log(`[mcp/profile] OpenCode MCP reconnected terminal=${terminalId} profile=${profile} correlation=${refreshCorrelationId}`);
+          console.log(`[mcp/tools] OpenCode MCP reconnected terminal=${terminalId} tools=${toolKey} correlation=${refreshCorrelationId}`);
         } catch (err) {
-          if (_ocpIsoServes.get(terminalId) !== entry || entry.mcpProfile !== profile) return;
-          entry.mcpProfileRefreshFailed = true;
+          if (_ocpIsoServes.get(terminalId) !== entry || serializeToolList(entry.tools) !== toolKey) return;
+          entry.toolsRefreshFailed = true;
           for (const sessionId of sessionIds) {
             broadcastToOpencodeV2Clients(
               {
                 type: 'event',
-                eventType: 'mcp.profile.refresh.failed',
+                eventType: 'mcp.tools.refresh.failed',
                 event: {
                   sessionID: sessionId,
-                  profile,
+                  tools,
                   source: 'agent',
                   refreshCorrelationId,
                   error: err?.message || String(err),
@@ -24771,18 +25161,19 @@ app.post('/api/mcp/runtime-profile', (req, res) => {
     correlationId = randomUUID();
     // Codex snapshots its deferred tool world at turn start. Managed Codex
     // runtimes therefore advertise the complete SynaBun catalog up front;
-    // the profile is a focus selection and needs no MCP restart. For a legacy
+    // the list is a focus selection and needs no MCP restart. For a legacy
     // profiled Codex child, its own standard tools/list_changed notification is
     // authoritative. A second config/mcpServer/reload races that notification,
     // restarts unrelated MCPs, and may invalidate a tool call prepared against
     // the first catalog revision.
     const deferredCatalog = catalogMode === 'deferred' || codexRuntime.catalogMode === 'deferred';
     hostRefresh = deferredCatalog ? 'not-needed' : 'notification';
-    codexRuntime.confirmAgentProfile(profile, correlationId, hostRefresh);
+    codexRuntime.confirmAgentTools(tools, correlationId, hostRefresh);
   }
   res.json({
     ok: true,
-    profile,
+    tools,
+    mode: catalogMode === 'deferred' ? 'focus' : 'strict',
     scope: 'current-runtime',
     runtimeKind,
     hostRefresh,
@@ -24791,48 +25182,18 @@ app.post('/api/mcp/runtime-profile', (req, res) => {
     runId: run?.runId || null,
     ...(warnings.length ? { warnings } : {}),
   });
-});
+}
 
+app.post('/api/mcp/runtime-tools', applyRuntimeTools);
 // --- MCP Registry API ---
 const MCP_REGISTRY_PATH = resolve(DATA_HOME, 'data', 'mcp-registry.json');
 
-const SYNABUN_TOOL_GROUPS = {
-  memory:            { label: 'Memory',     tools: 6, alwaysOn: true },
-  category:          { label: 'Categories', tools: 1, alwaysOn: true },
-  sync:              { label: 'Sync',       tools: 1, alwaysOn: true },
-  loop:              { label: 'Loop',       tools: 1, alwaysOn: true },
-  profile:           { label: 'Profile',    tools: 1, alwaysOn: true },
-  choice:            { label: 'Choice',     tools: 1, alwaysOn: true },
-  git:               { label: 'Git',        tools: 1  },
-  image:             { label: 'Images',     tools: 1  },
-  whiteboard:        { label: 'Whiteboard', tools: 5  },
-  card:              { label: 'Cards',      tools: 5  },
-  tictactoe:         { label: 'TicTacToe',  tools: 1  },
-  browser:           { label: 'Browser',    tools: 21 },
-  browser_twitter:   { label: 'Twitter/X',  tools: 2  },
-  browser_facebook:  { label: 'Facebook',   tools: 4  },
-  browser_tiktok:    { label: 'TikTok',     tools: 4  },
-  browser_whatsapp:  { label: 'WhatsApp',   tools: 2  },
-  browser_instagram: { label: 'Instagram',  tools: 5  },
-  browser_linkedin:  { label: 'LinkedIn',   tools: 8  },
-  browser_bluesky:   { label: 'BlueSky',    tools: 15 },
-  discord:           { label: 'Discord',    tools: 8  },
-  gsc:               { label: 'Google Search Console', tools: 30 },
-  youtube:           { label: 'YouTube',    tools: 11 },
-  styleguide:        { label: 'Style Guide', tools: 1  },
-  morelogin:         { label: 'MoreLogin',   tools: 1  },
-};
-
-function isValidMcpProfileValue(profile) {
-  const raw = normalizeMcpProfileName(profile);
-  if (Object.prototype.hasOwnProperty.call(buildMcpProfilePresets(), raw)) return true;
-  const groups = raw.split(',').map((group) => group.trim()).filter(Boolean);
-  return groups.length > 0 && groups.every((group) => Object.prototype.hasOwnProperty.call(SYNABUN_TOOL_GROUPS, group));
-}
-
 function readMcpRegistry() {
   try {
-    if (existsSync(MCP_REGISTRY_PATH)) return JSON.parse(readFileSync(MCP_REGISTRY_PATH, 'utf-8'));
+    if (existsSync(resolve(DATA_HOME, 'data', 'mcp-registry.json'))) {
+      const reg = JSON.parse(readFileSync(resolve(DATA_HOME, 'data', 'mcp-registry.json'), 'utf-8'));
+      return { ...reg, agentAccess: agentAccessFrom(reg), profiles: reg.profiles || {} };
+    }
   } catch {}
   const mcpPreload = resolve(PACKAGE_ROOT, 'mcp-server', 'dist', 'preload.js');
   const envPath = resolve(DATA_HOME, '.env');
@@ -24840,23 +25201,7 @@ function readMcpRegistry() {
     servers: {
       SynaBun: { type: 'stdio', command: 'node', args: [mcpPreload], env: { DOTENV_PATH: envPath }, builtin: true },
     },
-    profiles: {
-      core:       { label: 'Core',       groups: ['git', 'image', 'styleguide'], servers: [] },
-      standard:   { label: 'Standard',   groups: ['git', 'image', 'whiteboard', 'card', 'tictactoe', 'styleguide'], servers: [] },
-      'codex-browser': { label: 'Codex Browser', groups: ['git', 'image', 'browser', 'browser_twitter', 'styleguide'], servers: [] },
-      twitter:    { label: 'Twitter/X',  groups: ['git', 'image', 'browser', 'browser_twitter'], servers: [] },
-      facebook:   { label: 'Facebook',   groups: ['git', 'image', 'browser', 'browser_facebook'], servers: [] },
-      tiktok:     { label: 'TikTok',     groups: ['git', 'image', 'browser', 'browser_tiktok'], servers: [] },
-      whatsapp:   { label: 'WhatsApp',   groups: ['git', 'image', 'browser', 'browser_whatsapp'], servers: [] },
-      instagram:  { label: 'Instagram',  groups: ['git', 'image', 'browser', 'browser_instagram'], servers: [] },
-      linkedin:   { label: 'LinkedIn',   groups: ['git', 'image', 'browser', 'browser_linkedin'], servers: [] },
-      bluesky:    { label: 'BlueSky',    groups: ['git', 'image', 'browser', 'browser_bluesky'], servers: [] },
-      browser:    { label: 'Browser',    groups: ['git', 'image', 'whiteboard', 'card', 'tictactoe', 'browser', 'browser_twitter', 'browser_facebook', 'browser_tiktok', 'browser_whatsapp', 'browser_instagram', 'browser_linkedin', 'browser_bluesky', 'gsc', 'youtube', 'styleguide', 'morelogin'], servers: [] },
-      full:       { label: 'Full',       groups: ['git', 'image', 'whiteboard', 'card', 'tictactoe', 'browser', 'browser_twitter', 'browser_facebook', 'browser_tiktok', 'browser_whatsapp', 'browser_instagram', 'browser_linkedin', 'browser_bluesky', 'discord', 'gsc', 'youtube', 'styleguide', 'morelogin'], servers: [] },
-      gsc:        { label: 'GSC',        groups: ['git', 'image', 'browser', 'gsc'], servers: [] },
-      youtube:    { label: 'YouTube',    groups: ['git', 'image', 'browser', 'youtube'], servers: [] },
-    },
-    activeProfile: 'full',
+    agentAccess: {},
   };
 }
 
@@ -24866,116 +25211,6 @@ function writeMcpRegistry(registry) {
   writeFileSync(MCP_REGISTRY_PATH, JSON.stringify(registry, null, 2) + '\n', 'utf-8');
 }
 
-// Push `name` into every profile's servers[] (idempotent), honoring excludeProfiles.
-// Returns mutated registry.
-function addServerToAllProfiles(registry, name) {
-  const defaults = registry.profileDefaults || { autoAddNewServers: true, excludeProfiles: ['core'] };
-  const exclude = new Set(defaults.excludeProfiles || []);
-  // Record the server as seen even when auto-add is off, so the startup backfill
-  // never treats it as new and re-grants it behind the user's back.
-  if (Array.isArray(defaults.knownServers) && !defaults.knownServers.includes(name)) {
-    defaults.knownServers.push(name);
-  }
-  if (!defaults.autoAddNewServers) return registry;
-  for (const [profileName, profile] of Object.entries(registry.profiles || {})) {
-    if (exclude.has(profileName)) continue;
-    if (!Array.isArray(profile.servers)) profile.servers = [];
-    if (!profile.servers.includes(name)) profile.servers.push(name);
-  }
-  return registry;
-}
-
-function removeServerFromAllProfiles(registry, name) {
-  for (const profile of Object.values(registry.profiles || {})) {
-    if (Array.isArray(profile.servers)) {
-      profile.servers = profile.servers.filter(s => s !== name);
-    }
-  }
-  return registry;
-}
-
-// Backfill migration: ensure persisted registry has every preset + group that
-// the default registry ships with. New SynaBun groups (e.g. `gsc`) added after
-// a user's first run would otherwise be invisible in the MCP Settings matrix
-// because mcp-registry.json was frozen on first launch. Runs on startup.
-function ensureProfileGroupsBackfilled() {
-  try {
-    if (!existsSync(MCP_REGISTRY_PATH)) return; // first run uses defaults from readMcpRegistry()
-    const persisted = JSON.parse(readFileSync(MCP_REGISTRY_PATH, 'utf-8'));
-    // Load defaults by temporarily hiding the persisted file
-    const stash = MCP_REGISTRY_PATH + '.stash-' + process.pid;
-    let defaults;
-    try {
-      // Inline default — same shape as readMcpRegistry()'s fallback branch
-      defaults = {
-        profiles: {
-          core:       { label: 'Core',       groups: ['git', 'image', 'styleguide'], servers: [] },
-          standard:   { label: 'Standard',   groups: ['git', 'image', 'whiteboard', 'card', 'tictactoe', 'styleguide'], servers: [] },
-          'codex-browser': { label: 'Codex Browser', groups: ['git', 'image', 'browser', 'browser_twitter', 'styleguide'], servers: [] },
-          twitter:    { label: 'Twitter/X',  groups: ['git', 'image', 'browser', 'browser_twitter'], servers: [] },
-          facebook:   { label: 'Facebook',   groups: ['git', 'image', 'browser', 'browser_facebook'], servers: [] },
-          tiktok:     { label: 'TikTok',     groups: ['git', 'image', 'browser', 'browser_tiktok'], servers: [] },
-          whatsapp:   { label: 'WhatsApp',   groups: ['git', 'image', 'browser', 'browser_whatsapp'], servers: [] },
-          instagram:  { label: 'Instagram',  groups: ['git', 'image', 'browser', 'browser_instagram'], servers: [] },
-          linkedin:   { label: 'LinkedIn',   groups: ['git', 'image', 'browser', 'browser_linkedin'], servers: [] },
-          bluesky:    { label: 'BlueSky',    groups: ['git', 'image', 'browser', 'browser_bluesky'], servers: [] },
-          browser:    { label: 'Browser',    groups: ['git', 'image', 'whiteboard', 'card', 'tictactoe', 'browser', 'browser_twitter', 'browser_facebook', 'browser_tiktok', 'browser_whatsapp', 'browser_instagram', 'browser_linkedin', 'browser_bluesky', 'gsc', 'youtube', 'styleguide', 'morelogin'], servers: [] },
-          full:       { label: 'Full',       groups: ['git', 'image', 'whiteboard', 'card', 'tictactoe', 'browser', 'browser_twitter', 'browser_facebook', 'browser_tiktok', 'browser_whatsapp', 'browser_instagram', 'browser_linkedin', 'browser_bluesky', 'discord', 'gsc', 'youtube', 'styleguide', 'morelogin'], servers: [] },
-          gsc:        { label: 'GSC',        groups: ['git', 'image', 'browser', 'gsc'], servers: [] },
-          youtube:    { label: 'YouTube',    groups: ['git', 'image', 'browser', 'youtube'], servers: [] },
-        },
-      };
-    } finally { void stash; }
-    let changed = false;
-    persisted.profiles = persisted.profiles || {};
-    // Drop retired presets and groups an older version wrote into the registry.
-    for (const name of Object.keys(persisted.profiles)) {
-      if (isRetiredMcpProfile(name)) { delete persisted.profiles[name]; changed = true; }
-    }
-    for (const profile of Object.values(persisted.profiles)) {
-      if (!Array.isArray(profile?.groups)) continue;
-      const kept = profile.groups.filter((group) => !isRetiredMcpGroup(group));
-      if (kept.length !== profile.groups.length) { profile.groups = kept; changed = true; }
-    }
-    if (isRetiredMcpProfile(String(persisted.activeProfile || '').toLowerCase().trim())) { persisted.activeProfile = 'full'; changed = true; }
-    for (const [name, defProfile] of Object.entries(defaults.profiles)) {
-      if (!persisted.profiles[name]) {
-        persisted.profiles[name] = { label: defProfile.label, groups: [...defProfile.groups], servers: [] };
-        changed = true;
-        continue;
-      }
-      const have = new Set(persisted.profiles[name].groups || []);
-      for (const g of defProfile.groups) {
-        if (!have.has(g)) {
-          persisted.profiles[name].groups = persisted.profiles[name].groups || [];
-          persisted.profiles[name].groups.push(g);
-          changed = true;
-        }
-      }
-    }
-    if (changed) writeMcpRegistry(persisted);
-  } catch (err) {
-    console.warn('[mcp-registry] groups backfill failed:', err.message);
-  }
-}
-
-// Backfill migration: ensure profileDefaults is set and auto-assign newly registered
-// servers to profiles. `profileDefaults.knownServers` is the migration marker — on the
-// first run under this scheme we only record what already exists, so a server the user
-// de-selected in the External Servers grid stays de-selected. Only genuinely new
-// servers are auto-assigned afterwards, and only when autoAddNewServers is on.
-// Builtins (SynaBun) are never listed: runtimes inject them separately with their own pins.
-function ensureProfileServersBackfilled() {
-  try {
-    const reg = readMcpRegistry();
-    if (reconcileProfileServers(reg)) writeMcpRegistry(reg);
-  } catch (err) {
-    console.warn('[mcp-registry] backfill failed:', err.message);
-  }
-}
-ensureProfileGroupsBackfilled();
-ensureProfileServersBackfilled();
-
 // Build a per-CLI launch config from a server entry, merging env.json secrets.
 function buildLaunchConfig(name, serverEntry) {
   const base = { ...serverEntry };
@@ -24984,35 +25219,21 @@ function buildLaunchConfig(name, serverEntry) {
   return base;
 }
 
-// External MCP servers the given profile (default: the active one) grants to a runtime.
-// Builtins are excluded — SynaBun is injected separately with per-runtime browser/terminal pins.
-function getProfileServerNames(profileName) {
-  try {
-    return selectProfileServerNames(readMcpRegistry(), profileName);
-  } catch (err) {
-    console.warn('[mcp-registry] could not resolve profile servers:', err.message);
-    return [];
-  }
-}
-
-// { name: <~/.claude.json-shaped entry> } for a profile's external servers, for runtimes
-// that build an explicit server map (FleetView agents, per-loop --mcp-config files).
-function buildProfileMcpServers(profileName) {
-  const out = {};
-  let reg;
-  try { reg = readMcpRegistry(); } catch { return out; }
-  for (const name of getProfileServerNames(profileName)) {
-    try {
-      out[name] = buildClaudeMcpEntry(buildLaunchConfig(name, reg.servers[name]));
-    } catch (err) {
-      console.warn(`[mcp-registry] skipped "${name}" in runtime config: ${err.message}`);
-    }
-  }
-  return out;
-}
-
 app.get('/api/mcp/registry', (req, res) => {
-  res.json({ ok: true, toolGroups: SYNABUN_TOOL_GROUPS, ...readMcpRegistry() });
+  const { servers, agentAccess } = readMcpRegistry();
+  res.json({ ok: true, servers, agentAccess });
+});
+
+app.put('/api/mcp/registry/agent-access/:name', (req, res) => {
+  const reg = readMcpRegistry();
+  const name = req.params.name;
+  if (reg.servers?.[name]?.builtin || (!Object.hasOwn(reg.servers || {}, name) && !externalToolsCatalog().some(row => row.ref === `mcp:${name}`))) return res.status(404).json({ ok: false, error: 'Unknown external MCP server' });
+  if (typeof req.body?.enabled !== 'boolean') return res.status(400).json({ ok: false, error: 'enabled must be a boolean' });
+  reg.agentAccess = { ...agentAccessFrom(reg), [name]: req.body.enabled };
+  writeMcpRegistry(reg);
+  _assistantCatalog?.invalidate?.();
+  broadcastSync({ type: 'mcp:servers-changed', name, enabled: req.body.enabled });
+  res.json({ ok: true, agentAccess: reg.agentAccess });
 });
 
 app.put('/api/mcp/registry/servers/:name', (req, res) => {
@@ -25021,13 +25242,9 @@ app.put('/api/mcp/registry/servers/:name', (req, res) => {
     const config = req.body;
     if (!name || !config?.type) return res.status(400).json({ ok: false, error: 'Missing name or type' });
     const reg = readMcpRegistry();
-    const isNew = !reg.servers[name];
     reg.servers[name] = { ...config };
-    if (isNew && !reg.servers[name].builtin) {
-      addServerToAllProfiles(reg, name);
-    }
     writeMcpRegistry(reg);
-    res.json({ ok: true, server: name, autoRegisteredProfiles: isNew });
+    res.json({ ok: true, server: name });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -25040,7 +25257,7 @@ app.delete('/api/mcp/registry/servers/:name', (req, res) => {
     const reg = readMcpRegistry();
     if (reg.servers[name]?.builtin) return res.status(400).json({ ok: false, error: 'Cannot delete built-in server' });
     delete reg.servers[name];
-    removeServerFromAllProfiles(reg, name);
+    delete reg.agentAccess?.[name];
     writeMcpRegistry(reg);
     let purged = false;
     if (String(purgeFiles) === '1') {
@@ -25057,50 +25274,6 @@ app.delete('/api/mcp/registry/servers/:name', (req, res) => {
   }
 });
 
-app.put('/api/mcp/registry/profiles/:name', (req, res) => {
-  try {
-    const { name } = req.params;
-    const profile = req.body;
-    if (!name) return res.status(400).json({ ok: false, error: 'Missing profile name' });
-    const reg = readMcpRegistry();
-    reg.profiles[name] = { label: profile.label || name, groups: profile.groups || [], servers: profile.servers || [] };
-    writeMcpRegistry(reg);
-    res.json({ ok: true, profile: name });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-app.delete('/api/mcp/registry/profiles/:name', (req, res) => {
-  try {
-    const { name } = req.params;
-    const reg = readMcpRegistry();
-    if (reg.activeProfile === name) return res.status(400).json({ ok: false, error: 'Cannot delete the active profile' });
-    delete reg.profiles[name];
-    writeMcpRegistry(reg);
-    res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-app.post('/api/mcp/registry/activate', (req, res) => {
-  try {
-    const { profile } = req.body;
-    if (!profile) return res.status(400).json({ ok: false, error: 'Missing profile name' });
-    const reg = readMcpRegistry();
-    if (!reg.profiles[profile]) return res.status(404).json({ ok: false, error: `Profile "${profile}" not found` });
-    reg.activeProfile = profile;
-    writeMcpRegistry(reg);
-    const groups = reg.profiles[profile].groups || [];
-    const profileValue = groups.join(',') || 'core';
-    const result = applyMcpProfile(profileValue, 'registry');
-    res.json({ ok: true, activeProfile: profile, profileValue: result.profile, synced: result.synced });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
 // ── MCP Platform Detection & Sync ──
 
 app.get('/api/mcp/platforms', (req, res) => {
@@ -25108,7 +25281,7 @@ app.get('/api/mcp/platforms', (req, res) => {
   res.json({
     ok: true,
     claudeCode: existsSync(join(home, '.claude.json')) || existsSync(join(home, '.claude')),
-    opencode: existsSync(getOpencodeConfigPath()) || existsSync(join(home, '.config', 'opencode')),
+    opencode: existsSync(getOpencodeConfigDir()),
     codex: existsSync(join(home, '.codex')),
     gemini: existsSync(join(home, '.gemini')),
   });
@@ -25303,21 +25476,17 @@ app.get('/api/mcp/installed-all', (req, res) => {
       }
     } catch {}
 
-    // OpenCode
+    // OpenCode (its global configuration's mcp.servers, OpenCode 1 entries read as OpenCode 2 reads them)
     try {
-      const ocPath = getOpencodeConfigPath();
-      if (existsSync(ocPath)) {
-        const oc = JSON.parse(readFileSync(ocPath, 'utf-8'));
-        for (const [name, cfg] of Object.entries(oc?.mcp || {})) {
-          const cmd = Array.isArray(cfg.command) ? cfg.command[0] : cfg.command;
-          const args = Array.isArray(cfg.command) ? cfg.command.slice(1) : cfg.args;
-          touch(name, 'opencode', {
-            transport: cfg.type === 'local' ? 'stdio' : (cfg.type || 'stdio'),
-            command: cmd || null,
-            args: args || null,
-            url: cfg.url || null,
-          });
-        }
+      for (const [name, cfg] of Object.entries(mcpServersOf(readOpencodeGlobalConfig().config))) {
+        const cmd = Array.isArray(cfg.command) ? cfg.command[0] : cfg.command;
+        const args = Array.isArray(cfg.command) ? cfg.command.slice(1) : cfg.args;
+        touch(name, 'opencode', {
+          transport: cfg.type === 'local' ? 'stdio' : (cfg.type || 'stdio'),
+          command: cmd || null,
+          args: args || null,
+          url: cfg.url || null,
+        });
       }
     } catch {}
 
@@ -25557,13 +25726,8 @@ app.delete('/api/mcp/sync', (req, res) => {
         results.claudeCode = 'ok';
 
       } else if (p === 'opencode') {
-        const configPath = getOpencodeConfigPath();
-        if (existsSync(configPath)) {
-          const cfg = JSON.parse(readFileSync(configPath, 'utf8'));
-          if (cfg.mcp?.[name]) {
-            delete cfg.mcp[name];
-            writeFileSync(configPath, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
-          }
+        if (mcpServersOf(readOpencodeConfigDocument(getOpencodeConfigPath()).config)[name]) {
+          updateOpencodeConfigFile(getOpencodeConfigDir(), (cfg) => removeMcpServer(cfg, name));
         }
         results.opencode = 'ok';
 
@@ -25840,7 +26004,41 @@ app.get('/invite/logout', (req, res) => {
 // Host rule and the remote rule read it (remoteWebOrigins): it is set the moment cloudflared prints it.
 let tunnelUrl = null;
 const cloudflared = createCloudflaredManager({ dataHome: DATA_HOME, log: (line) => console.log(line) });
-const tunnel = createQuickTunnel({ cloudflared, port: PORT, onUrl: (url) => { tunnelUrl = url; }, log: (line) => console.log(line) });
+// Every cloudflared the tunnel starts is on record while it runs (lib/opencode-serve-records.js, kind 'quick'), in
+// DATA_HOME/runtime/tunnels (process state of this machine, outside data/): a server that crashed leaves its
+// cloudflared running on macOS and Linux, the old address pointing at this port, and this one ends it as it starts
+// (sweepLeftoverTunnels), only while the OS still reports that very process.
+const tunnelRecords = createServeRecords({
+  dir: resolve(DATA_HOME, 'runtime', 'tunnels'), kinds: TUNNEL_KINDS, noun: 'tunnel',
+  matchesCommand: (command, port, platform) => tunnelsToPort(commandArgs(command, platform), port),
+  log: (message) => console.log(`[tunnel] ${message}`),
+});
+const tunnel = createQuickTunnel({ cloudflared, port: PORT, onUrl: (url) => { tunnelUrl = url; }, log: (line) => console.log(line), records: tunnelRecords });
+
+// The cloudflared an earlier server left running (it crashed, or was killed): found by its record alone and ended
+// only when it is provably SynaBun's, of a server that has ended (lib/opencode-serve-records.js sweep). One look,
+// shared by everyone who waits for it: the start below, and the crash notice.
+let _tunnelSweep = null;
+function sweepLeftoverTunnels() {
+  _tunnelSweep ??= tunnelRecords.sweep().then((result) => {
+    if (result.stopped.length) console.log(`[tunnel] ended ${result.stopped.length} cloudflared an earlier SynaBun left running: ${result.stopped.map((r) => `pid ${r.pid}`).join(', ')}`);
+    return result;
+  }, () => null);
+  return _tunnelSweep;
+}
+// What the crash notice says of the public address (lib/crash-notice-api.js leftovers): 'unknown' while a tunnel an
+// earlier server started may still run (its record could not be proved, or it did not end), or the look is still
+// under way after TUNNEL_LEFTOVER_WAIT_MS. Kept records of another machine, user or live server are not ours to judge.
+const TUNNEL_LEFTOVER_WAIT_MS = 10_000;
+const TUNNEL_STILL_OPEN = new Set(['scope-unknown', 'identity-unknown', 'owner-unknown', 'survived']);
+async function tunnelLeftovers() {
+  let timer = null;
+  const late = new Promise((done) => { timer = setTimeout(() => done(undefined), TUNNEL_LEFTOVER_WAIT_MS); timer.unref?.(); });
+  const result = await Promise.race([sweepLeftoverTunnels(), late]);
+  clearTimeout(timer);
+  if (result === undefined) return { tunnel: 'unknown' };
+  return result?.kept?.some((item) => TUNNEL_STILL_OPEN.has(item.why)) ? { tunnel: 'unknown' } : {};
+}
 // Starting and stopping it is the owner's, from the app's own pages: never an invite guest, anybody from outside
 // or another machine on the network (its socket's peer), never a page of another origin (an Origin that is not
 // exactly this server's own, at its port: the tunnel's and the invite proxy's included; or the browser's own
@@ -25903,6 +26101,22 @@ try {
   app.use('/mcp', requestGates.mcpWithoutKey, mcpRouter);
 
   console.log('  MCP HTTP endpoint mounted at /mcp' + (activeMcpKey ? ' (from outside: /mcp/<key>)' : ' (local only: no key is set)'));
+
+  // The worker-only MCP channel (lib/worker-mcp-channel.js): a second loopback listener a sandboxed worker reaches
+  // in place of :3344 (its sandbox blocks :3344). Built here because createMcpRoutes is in hand; started in the
+  // background, fail-open — if it cannot bind, guarded workers simply are not OS-isolated (they keep the in-code
+  // guard) and dispatch is never blocked. macOS only; elsewhere nothing uses it.
+  if (sandboxSupported() && sandboxExecAvailable()) {
+    try {
+      _workerMcpChannel = createWorkerMcpChannel({ createMcpRoutes, mainPort: Number(PORT) || 3344, log: (line) => console.log(line) });
+      _workerMcpChannel.start().catch((error) => { console.warn('  worker-only MCP channel did not start (guarded workers run without OS isolation):', error?.message || error); _workerMcpChannel = null; });
+    } catch (error) {
+      console.warn('  worker-only MCP channel unavailable:', error?.message || error);
+      _workerMcpChannel = null;
+    }
+  } else if (sandboxSupported()) {
+    console.warn('  /usr/bin/sandbox-exec is missing or not working: guarded workers run with the in-code guard only (no OS sandbox).');
+  }
 } catch (err) {
   console.error('  MCP HTTP mount failed (run npm run build in mcp-server):', err.message);
 }
@@ -26030,8 +26244,8 @@ function getTerminalProfile(profileId, opts = {}) {
       'claude-code': (m) => `${cmd} --model ${m}`,
       'codex':       (m) => `${cmd} --model ${m}`,
       'gemini':      (m) => `${cmd} --model ${m}`,
-      // OpenCode 2's terminal app has no --model (it prints its help and exits): the model is picked in it.
-      'opencode':    (m) => (knownOpencodeMajor() >= 2 ? cmd : `${cmd} --model ${m}`),
+      // OpenCode's terminal app has no --model (it prints its help and exits): the model is picked in it.
+      'opencode':    () => cmd,
     };
     const builder = modelMap[profileId];
     if (builder) cmd = builder(quotedModel);
@@ -26890,6 +27104,7 @@ async function releaseNativeLoopResources(run) {
 const openCodeWorkerActivity = createOpenCodeActivityRelay({ send: (message) => broadcastSync(message) });
 
 _nativeLoopRuntime = new NativeLoopRuntime({
+  toolListOptions,
   stateDir: LOOP_DIR,
   ledgerPath: resolve(LOOP_DATA_DIR, 'native-loop-runs.json'),
   buildPrompt: (state, iteration) => buildLoopTaskPrompt(state, iteration),
@@ -26913,21 +27128,41 @@ _nativeLoopRuntime = new NativeLoopRuntime({
       // names the account. A run whose account is gone does not start under another identity.
       const launch = _panelClaudeAccounts().launchFor(state.claudeAccountId || 'default');
       if (!launch.ok) throw new Error(`${launch.message} The run did not start.`);
+      // The user's Claude Code (the same executable the model picker read its list from). Resolved first, because a
+      // guarded run on macOS wraps it in sandbox-exec: the SDK spawns the wrapper, which execs this CLI under the
+      // run's Seatbelt profile, and the worker's MCP is repointed to the worker-only channel the profile leaves open.
+      const claudeReal = getClaudeSdkExecutable();
+      // An evaluation case that needs a shell: its commands run under the evaluation's own sandbox (skillEvalShell), the
+      // CLI outside it; never without it.
+      const evalShell = state.confinement?.kind === 'skill-eval' && state.confinement.shell ? skillEvalShell(state, { provider: 'claude-code', claudeConfigDir: launch.env?.CLAUDE_CONFIG_DIR || null }) : null;
+      const iso = evalShell ? null : workerOsIsolation(state, { realExecutable: claudeReal?.path || null, name: 'claude' });
+      if (iso?.wrapperPath && iso.mcpUrl) {
+        try { state.onNote?.(`OS isolation (macOS Seatbelt): this Claude worker runs under a sandbox that blocks SynaBun's control port (every address of localhost:${PORT}), the reserved relay ports and reads of SynaBun's data home; its SynaBun MCP tools reach SynaBun through the worker-only channel. Internet, reads, writes-per-capability and the project's tests work as normal.`); } catch {}
+        if (iso.strict) { try { state.onNote?.(workerSandboxStrictNote(iso.strict)); } catch {} }
+      } else if (iso?.failed) {
+        try { state.onNote?.(workerSandboxFallbackNote(iso.reason)); } catch {}
+      }
       return createClaudeNativeLoopAdapter({
         ...state,
-        extraEnv: { ...(state.extraEnv || {}), ...launch.env },
+        // A sandboxed worker's shell cannot reach :3344, so SynaBun's user hooks (pre-websearch) are told how to
+        // reach SynaBun over the worker-only channel instead (its browser proxy forwards /api/browser/*). A hook
+        // that sees this var and still cannot reach SynaBun applies the worker default (deny) rather than failing
+        // open — only a guarded, sandboxed Claude worker gets it.
+        extraEnv: { ...(state.extraEnv || {}), ...launch.env, ...(iso?.wrapperPath && iso.browserBase ? { SYNABUN_WORKER_CHANNEL: iso.browserBase } : {}), ...(evalShell ? evalShell.env : {}) },
         unsetEnv: launch.unset,
         // On Windows, the Git Bash the worker's Claude Code gets (lib/git-bash/), never stored in the loop state.
         childEnv: claudeChildEnv,
         model: state.contextMode === '1m' && state.model
           ? `${state.model}[1m]`
           : state.model && state.model.includes(':') ? toCliModelName(state.model) : state.model,
-        mcpUrl: `http://localhost:${PORT}/mcp`,
-        // The user's Claude Code (or the cli-config override): the same
-        // executable the model picker read its list from, so the loop's model
-        // resolves the way it was named there. Without one the run fails at
-        // once with the install hint, before anything is started.
-        claudeExecutable: getClaudeSdkExecutable(),
+        // A sandboxed run reaches SynaBun only through the worker-only channel (the profile blocks :3344); otherwise
+        // the local /mcp as before.
+        mcpUrl: iso?.mcpUrl || `http://localhost:${PORT}/mcp`,
+        // Guarded + macOS: the wrapper that execs the real CLI under the Seatbelt profile; else the CLI itself.
+        // Without a Claude Code the run fails at once with the install hint, before anything is started.
+        claudeExecutable: iso?.wrapperPath ? { path: iso.wrapperPath } : claudeReal,
+        // Assistant task runs: where the browser policy lets its test runners run besides its own project.
+        policyRoots: taskBrowserPolicyRoots(state),
         includePartialMessages: typeof config.partials === 'boolean'
           ? config.partials
           : process.platform !== 'win32',
@@ -26944,45 +27179,110 @@ _nativeLoopRuntime = new NativeLoopRuntime({
       // names the account. A run whose account is gone does not start under another identity.
       const launch = _codexAccounts().launchFor(state.codexAccountId || 'default');
       if (!launch.ok) throw new Error(`${launch.message} The run did not start.`);
+      if (state.resumingWorker && state.codexHome && resolve(state.codexHome) !== resolve(launch.home)) throw new Error('Codex CODEX_HOME changed; the worker cannot resume under another account');
       ensureCanonicalCodexConfig({ strict: true, codexHome: launch.home });
+      const workerAdminSandbox = state.resumingWorker ? state.adminSandbox === true : adminSandboxOn();
+      state.onCodexSandbox?.(workerAdminSandbox);
       return createCodexNativeLoopAdapter({
         ...state,
         extraEnv: { ...(state.extraEnv || {}), ...codexExecEnv(launch) },
         unsetEnv: launch.unset,
+        apiKey: launch.apiKey, configArgs: codexAppServerArgs(launch),
         codexHome: launch.home,
         // The Admin sandbox setting as the run starts: it keeps that Windows sandbox while it lives.
-        adminSandbox: adminSandboxOn(),
+        adminSandbox: workerAdminSandbox,
         // Native schedules use the same trusted global CLI as the interactive
         // sidepanel; SynaBun carries no Codex for the SDK to find by itself.
         codexPath: getNativeCodexBin(),
+        // Assistant task runs: where the browser policy hook lets its test runners run besides its own project.
+        policyRoots: taskBrowserPolicyRoots(state),
       });
     },
     opencode: async (state) => {
+      // An OpenCode SynaBun does not drive: the run fails with the sentence before its configuration folder, its
+      // sandbox profile or its serve exist (a loop or a schedule was refused already; this is a worker's, a backstop).
+      const refusal = await opencodeStartRefusal();
+      if (refusal) throw refusal;
+      // Guarded + macOS: the whole `opencode serve` tree runs under the run's Seatbelt profile, so its shell
+      // commands cannot reach SynaBun's control port. The serve's own stdio SynaBun MCP child is inside that
+      // sandbox too, so its browser calls are repointed at the worker-only channel (NEURAL_INTERFACE_URL): the
+      // channel proxies only the browser API back to SynaBun, from this process, outside the sandbox. Memory tools
+      // open the DB directly (allowed). Fail-open: null iso ⇒ today's behaviour, the in-code OpenCode rules alone.
+      // An evaluation run: its serve reads no project configuration (openCodeRunEnvFor) and finds the skill under test
+      // in the run's own configuration folder (openCodeEvalSkillFor, below); a case that needs a shell runs its
+      // commands under the evaluation's own sandbox (skillEvalShell), the serve outside it; never without it.
+      // A protected worker (Enforce, read-only / workspace): its serve reads no project configuration either (nothing
+      // the worker writes in its folder runs in the serve) and no inherited OPENCODE_CONFIG_DIR, and its password is in
+      // no environment (hidePassword below), so its shell cannot reach its own session's settings.
+      const evalEnv = openCodeRunEnvFor(state);
+      const protectedWorker = openCodeProtectedWorker(state);
+      const evalShell = state.confinement?.kind === 'skill-eval' && state.confinement.shell ? skillEvalShell(state, { provider: 'opencode' }) : null;
+      const iso = evalShell ? null : workerOsIsolation(state, { name: 'opencode' });
+      if (state.resumingWorker && protectedWorker && (!state.sandboxPlan || !iso?.profilePath || !iso.mcpUrl)) throw new Error(`Protected OpenCode worker cannot resume confined: ${iso?.reason || 'OS isolation or the worker-only MCP channel is unavailable'}`);
+      if (iso?.profilePath) {
+        try { state.onNote?.(`OS isolation (macOS Seatbelt): this OpenCode worker's serve runs under a sandbox that blocks SynaBun's control port (every address of localhost:${PORT}), the reserved relay ports and reads of SynaBun's data home; its SynaBun MCP tools reach SynaBun through the worker-only channel (nothing in the sandbox touches the memory DB). Internet, reads, writes-per-capability and the project's tests work as normal.`); } catch {}
+        if (iso.strict) { try { state.onNote?.(workerSandboxStrictNote(iso.strict)); } catch {} }
+      } else if (iso?.failed) {
+        try { state.onNote?.(workerSandboxFallbackNote(iso.reason)); } catch {}
+      }
+      // Sandboxed: the SynaBun MCP is the HTTP worker channel (remote), so the Seatbelt profile can deny the whole
+      // data home — nothing in the sandbox opens the memory DB. The run's routing travels as headers.
+      const remoteMcp = iso?.profilePath && iso.mcpUrl ? {
+        url: iso.mcpUrl,
+        headers: {
+          'X-Synabun-Browser-Session': state.browserSessionId || '',
+          'X-Synabun-Browser-Tab': state.browserTabId || '',
+          'X-Synabun-Project': state.project || 'global',
+          'X-Synabun-Memory-Session': state.runId,
+          'X-Synabun-Desktop-Grant': typeof state.desktopGrantProvider === 'function' ? (state.desktopGrantProvider() || '') : '',
+        },
+      } : null;
+      if (state.resumingWorker) openCodeWorkerData(resolve(DATA_HOME, 'data', 'loop-configs', `opencode-${state.runId}`), { resume: true });
       const xdgRoot = setupOpencodeLoopConfig(
         state.runId,
         state.browserSessionId,
         state.browserTabId,
-        state.mcpProfile,
+        state.tools ?? state.mcpProfile,
         state.model,
-        { SYNABUN_DESKTOP_GRANT: typeof state.desktopGrantProvider === 'function' ? state.desktopGrantProvider() : null },
-        // Assistant task runs: the browser policy plugin (loops and schedules unchanged).
-        { browserPolicy: state.runMode === 'task', cwd: state.cwd || null },
+        {
+          SYNABUN_DESKTOP_GRANT: typeof state.desktopGrantProvider === 'function' ? state.desktopGrantProvider() : null,
+        },
+        // Assistant task runs: the browser policy plugin (loops and schedules unchanged) with the registered code
+        // projects its test runners may run in (the sandboxed serve cannot read the registry), and the run's confinement
+        // (lib/worker-confinement.js, lib/skills/draft-confinement.js): its permission rules, tool switches, MCP.
+        { browserPolicy: state.runMode === 'task', cwd: state.cwd || null, policyRoots: taskBrowserPolicyRoots(state), confinement: openCodeRunConfigFor(state), remoteMcp, readProject: !(protectedWorker || state.confinement) },
       );
+      // An evaluation trial with the skill: its copy goes into this run's own configuration folder, which OpenCode reads
+      // as its global one (never OPENCODE_CONFIG_DIR, which would take the place of this configuration).
+      if (evalEnv) openCodeEvalSkillFor(state, resolve(xdgRoot, 'opencode'));
       const entry = await ensureIsolatedServe(state.runId, {
         xdgRoot,
         keepAlive: true,
-        mcpProfile: state.mcpProfile,
+        tools: storedToolList(state, toolListOptions()),
+        // A dispatched worker: strip the owner's live-data paths from the serve's shells (its MCP child keeps them).
+        worker: true,
+        // Guarded + macOS: wrap the serve spawn in sandbox-exec with the run's profile (lib/worker-sandbox.js).
+        sandboxProfile: iso?.profilePath || null,
+        // An evaluation run: no project configuration, the skill under test, git's safety settings, its shell. A
+        // protected worker: no project configuration, no inherited OPENCODE_CONFIG_DIR.
+        ...(evalEnv || evalShell ? { extraEnv: { ...(evalEnv || {}), ...(evalShell ? evalShell.env : {}) } } : {}),
+        hidePassword: protectedWorker,
+        persistentData: !!state.persistentOpenCode,
       });
       if (!entry?.client) throw new Error('OpenCode isolated native serve failed to start');
       let providerSessionId = null;
       return createOpenCodeNativeLoopAdapter({
         ...state,
         client: entry.client,
+        synabunExpected: synabunConfigured(xdgRoot),
+        // The run's own serve and the band SynaBun keeps for its serves: a guarded worker's shell calls neither.
+        servePort: entry.port,
+        localPortRange: state.localPortRange || { from: OCP_SHARED_PORT_MIN, to: OCP_ISO_PORT_MAX },
         onIdentity: (identity) => {
           providerSessionId = identity?.providerSessionId || null;
           if (providerSessionId) {
             _ocpSessionToServe.set(providerSessionId, state.runId);
-            _ocpSessionProfiles.set(providerSessionId, state.mcpProfile || entry.mcpProfile);
+            _ocpSessionTools.set(providerSessionId, entry.tools);
             entry.sessions.add(providerSessionId);
           }
           state.onIdentity(identity);
@@ -27136,6 +27436,15 @@ _nativeLoopRuntime = new NativeLoopRuntime({
     // Model catalog (tier · price · vision) for routing, the persona and agent_catalog.
     const assistantCatalog = createAssistantCatalog({
       fetchJson: catalogFetch,
+      getExternalServers: (projects = []) => {
+        const rows = new Map();
+        for (const cwd of new Set([PACKAGE_ROOT, ...projects.map(project => project.path || project.cwd).filter(Boolean)])) for (const row of externalToolsCatalog(cwd)) {
+          const previous = rows.get(row.ref);
+          if (!previous) rows.set(row.ref, row);
+          else for (const [provider, availability] of Object.entries(row.providers)) if (availability === 'deliverable' || previous.providers[provider] === 'absent') previous.providers[provider] = availability;
+        }
+        return [...rows.values()];
+      },
       codexPrice: (model) => assistantPricing.codexPrice(model),
       listAccounts: () => accountUsage.list(),
       readFilter: () => assistantConfigStore.routing().catalogFilter || {},
@@ -27454,6 +27763,11 @@ _nativeLoopRuntime = new NativeLoopRuntime({
       assistantDesktop = null;
     }
     _assistantDispatcher = createAssistantDispatcher({
+      resolveExternalTools: (spec, tools) => spec.provider
+        ? selectExternalServers(tools, externalInventory(spec.provider, spec.cwd || PACKAGE_ROOT, { readProject: spec.provider !== 'opencode' || !openCodeProtectedWorker({ ...spec, cwd: spec.cwd || PACKAGE_ROOT, guardMode: _workerGuard.mode() }) }))
+        : selectExternalServers(tools, { registry: readMcpRegistry(), servers: externalToolsCatalog(spec.cwd || PACKAGE_ROOT).map(row => ({ name: row.ref.slice(4), blocked: row.blocked, deliverable: Object.values(row.providers).includes('deliverable') })) }),
+      observeSkillEvent: (run, event) => skillsService?.telemetry.observe(run, event),
+      completeSkillUsage: (run) => skillsService?.telemetry.complete(run),
       accountUsage,
       getRuntime: () => _nativeLoopRuntime,
       dataDir: LOOP_DATA_DIR,
@@ -27464,7 +27778,14 @@ _nativeLoopRuntime = new NativeLoopRuntime({
       findCodexAccount, getCodexAccount, CODEX_DEFAULT_HOME, claudeAccounts, codexAccounts: _codexAccounts(),
       claudeWorkerAccount: () => assistantConfigStore.workers().claudeAccount,
       codexWorkerAccount: () => assistantConfigStore.workers().codexAccount,
-      isValidMcpProfileValue, normalizeMcpProfileName, readActiveMcpProfile,
+      // Protect workers as a run starts (lib/worker-confinement.js); the run keeps it. SynaBun's own port: a guarded
+      // worker's shell may not call it.
+      workerGuard: () => _workerGuard.mode(),
+      serverPort: Number(PORT),
+      // The band of every OpenCode serve SynaBun starts (the shared one, its moves, the isolated ones): the same band
+      // the macOS sandbox denies a guarded worker (workerOsIsolation), refused by the in-code guard everywhere.
+      localPortRange: { from: OCP_SHARED_PORT_MIN, to: OCP_ISO_PORT_MAX },
+      toolListOptions,
       acquireLoopBrowserAndTab, releaseSharedBrowserTab, reconcileKeepAwake,
       memory: assistantMemory, detectProject: assistantDetectProject,
       // Limits are read live from assistant-config.json `limits`; the money is the session budget (the planner).
@@ -27481,8 +27802,22 @@ _nativeLoopRuntime = new NativeLoopRuntime({
       clarifier: assistantClarifier,
       // The session's Test density, read when a worker's prompt is composed (assistant-test-density.js).
       testDensity: (sessionId) => _assistantRuntime?.testDensityFor?.(sessionId) ?? null,
+      // After a restart, workers are resumed once this server listens and the worker-only MCP channel (a sandboxed
+      // worker's) is up or known to be off: a resumed CLI connects to SynaBun's MCP as it starts. 15 s at most.
+      serverReady: () => new Promise((resolveReady) => {
+        const since = Date.now();
+        const check = () => {
+          let listening = false;
+          try { listening = !!httpServer?.listening; } catch { listening = false; } // not made yet (later in this file)
+          const channel = !_workerMcpChannel || !!_workerMcpChannel.isUp?.();
+          if ((listening && channel) || Date.now() - since > 15_000) { resolveReady(); return; }
+          setTimeout(check, 100);
+        };
+        check();
+      }),
     });
     _assistantRuntime = createAssistantRuntime({
+      toolListOptions,
       accountUsage,
       dispatcher: _assistantDispatcher,
       phoneAuthority: _phoneAuthority.verify, // the verifier only
@@ -27570,10 +27905,16 @@ _nativeLoopRuntime = new NativeLoopRuntime({
       port: () => Number(PORT),
       // GET / PUT /api/assistant/admin-sandbox (the PUT answers UI_ONLY to agents).
       adminSandbox: _agentSandbox,
+      // GET / PUT /api/assistant/worker-guard (the PUT answers UI_ONLY to agents).
+      workerGuard: _workerGuard,
+      // A request without an agent pin is the owner's page only with this boot's page secret (lib/page-session.js).
+      pageSession: _pageSession,
     }));
     const shutdownAssistant = () => {
       // Running skill creations first: what their workers wrote is kept as drafts before the workers go.
       try { skillCreations.shutdown(); } catch {}
+      // Running skill evaluations: their runs are stopped, what they measured is kept (interrupted).
+      try { skillEvals.shutdown(); } catch {}
       try { assistantRouter.shutdown(); } catch {}
       try { assistantClarifier.shutdown(); } catch {}
       try { assistantDesktop?.shutdown?.(); } catch {}
@@ -27599,40 +27940,46 @@ _nativeLoopRuntime = new NativeLoopRuntime({
 })();
 
 /**
- * Build a per-loop XDG_CONFIG_HOME with an opencode config.json whose MCP env
- * block is augmented with this loop's SYNABUN_BROWSER_SESSION/TAB pins.
- * OpenCode's `opencode run` reads MCP server env verbatim from config.json; the
- * pins set on the PTY don't propagate to the MCP child, so we have to bake them
- * into the config file. Returns the XDG_CONFIG_HOME root (parent of opencode/).
- * `browserPolicy` (Assistant task runs): SynaBun's browser policy as a plugin
- * (lib/assistant-brains/opencode-browser-policy.js), `cwd` the run's project.
+ * Build a per-loop XDG_CONFIG_HOME whose opencode/opencode.json (OpenCode 2's
+ * schema) holds the SynaBun MCP entry with this loop's SYNABUN_BROWSER_SESSION/TAB
+ * pins. OpenCode reads an MCP server's environment verbatim from its
+ * configuration; the pins set on the PTY don't propagate to the MCP child, so
+ * they are baked into the file. Returns the XDG_CONFIG_HOME root (parent of
+ * opencode/). `browserPolicy` (Assistant task runs): SynaBun's browser policy as a
+ * plugin (lib/assistant-brains/opencode2-browser-policy/), `cwd` the run's project, `policyRoots` the registered code
+ * projects its test runners may also run in.
  */
-function setupOpencodeLoopConfig(terminalSessionId, browserSessionId, browserTabId, mcpProfile = null, model = null, extraMcpEnv = {}, { browserPolicy = false, cwd = null } = {}) {
+function setupOpencodeLoopConfig(terminalSessionId, browserSessionId, browserTabId, selection = null, model = null, extraMcpEnv = {}, { browserPolicy = false, cwd = null, policyRoots = [], confinement = null, remoteMcp = null, readProject = true } = {}) {
   const xdgRoot = resolve(DATA_HOME, 'data', 'loop-configs', `opencode-${terminalSessionId}`);
   const targetDir = resolve(xdgRoot, 'opencode');
   if (!existsSync(targetDir)) mkdirSync(targetDir, { recursive: true });
-  const resolvedProfile = normalizeMcpProfileName(mcpProfile || readActiveMcpProfile());
-  if (!isValidMcpProfileValue(resolvedProfile)) throw new Error(`Invalid MCP profile: ${resolvedProfile}`);
-  const runtimeProfilePath = writeOpencodeRuntimeProfile(xdgRoot, resolvedProfile);
+  const resolvedTools = toolsFromSelection(selection);
+  const runtimeToolsPath = writeOpencodeRuntimeTools(xdgRoot, resolvedTools);
 
-  let baseCfg = {};
-  try {
-    const userPath = getOpencodeConfigPath();
-    if (existsSync(userPath)) baseCfg = JSON.parse(readFileSync(userPath, 'utf8'));
-  } catch { /* start from blank if user's config is missing/broken */ }
-  if (!baseCfg.mcp) baseCfg.mcp = {};
-  const existingEntry = baseCfg.mcp.SynaBun;
+  // The user's global configuration (an unreadable one: none), every MCP server in OpenCode 2's mcp.servers.
+  const baseCfg = opencodeServeBaseConfig();
+  const existingEntry = mcpServersOf(baseCfg).SynaBun;
   const { mcpIndexPath, envPath } = getMcpPaths();
+  if (remoteMcp && remoteMcp.url) {
+    // A sandboxed (guarded + macOS) worker: its SynaBun MCP is the HTTP worker-only channel, like Claude, so NOTHING
+    // inside the Seatbelt sandbox needs the live memory DB on disk (the data home is denied). The tools run in the
+    // Neural Interface process (the channel's own MCP instance), which has the DB and reaches the browser over the
+    // main port — both outside the sandbox. The run's routing travels as headers (the channel pins the terminal to
+    // the run from its token; authority headers are stripped there).
+    const headers = {};
+    for (const [k, v] of Object.entries(remoteMcp.headers || {})) if (v) headers[k] = String(v);
+    setMcpServer(baseCfg, 'SynaBun', { type: 'remote', codemode: false, url: String(remoteMcp.url), ...(Object.keys(headers).length ? { headers } : {}) });
+  } else {
   const pinOverrides = {
     SYNABUN_TERMINAL_SESSION: terminalSessionId,
-    SYNABUN_PROFILE: resolvedProfile,
-    SYNABUN_RUNTIME_PROFILE_PATH: runtimeProfilePath,
+    SYNABUN_TOOLS: runtimeToolsValue(resolvedTools),
+    SYNABUN_TOOLS_PATH: runtimeToolsPath,
   };
   if (browserSessionId) pinOverrides.SYNABUN_BROWSER_SESSION = browserSessionId;
   if (browserTabId) pinOverrides.SYNABUN_BROWSER_TAB = browserTabId;
   // Assistant task runs: e.g. SYNABUN_DESKTOP_GRANT for computer-use workers.
   for (const [key, value] of Object.entries(extraMcpEnv || {})) if (value) pinOverrides[key] = String(value);
-  baseCfg.mcp.SynaBun = buildManagedOpenCodeSynabunEntry(existingEntry, {
+  setMcpServer(baseCfg, 'SynaBun', buildManagedOpenCodeSynabunEntry(existingEntry, {
     command: ['node', mcpIndexPath],
     defaults: {
       DOTENV_PATH: envPath,
@@ -27644,42 +27991,34 @@ function setupOpencodeLoopConfig(terminalSessionId, browserSessionId, browserTab
       ...(!browserSessionId ? ['SYNABUN_BROWSER_SESSION'] : []),
       ...(!browserTabId ? ['SYNABUN_BROWSER_TAB'] : []),
       ...(!extraMcpEnv?.SYNABUN_DESKTOP_GRANT ? ['SYNABUN_DESKTOP_GRANT'] : []),
-      'CLAUDECODE',
+      'CLAUDECODE', 'SYNABUN_PROFILE', 'SYNABUN_RUNTIME_PROFILE_PATH',
     ],
-  });
+  }));
+  }
+  applyOpenCodeExternalScope(xdgRoot, baseCfg, confinement?.mcp === 'off' ? [] : resolvedTools, cwd, { readProject });
   // Loop permission bypass: SynaBun Automation Studio runs loops unattended,
-  // so the loop must not stall on permission gates. The CLI's
-  // --dangerously-skip-permissions does NOT cover the `external_directory`
-  // gate (a separate permission rule), which auto-REJECTS in non-interactive
-  // `run` mode — e.g. reading a sibling project outside the serve directory.
-  // Set it (plus edit/bash/webfetch) to "allow" here. Preserves any existing
-  // tools/question allow-list from the user's config.
-  baseCfg.permission = {
-    ...(baseCfg.permission || {}),
-    edit: 'allow',
-    bash: 'allow',
-    webfetch: 'allow',
-    external_directory: 'allow',
-  };
+  // so the loop must not stall on permission gates. `--auto` does NOT cover the
+  // `external_directory` gate (a separate permission rule), which auto-REJECTS
+  // in non-interactive `run` mode — e.g. reading a sibling project outside the serve directory. Allow it (plus edits, the shell and webfetch) here, as
+  // OpenCode 2 rules after the user's own (the last matching rule decides).
+  appendRules(baseCfg, ['edit', 'shell', 'webfetch', 'external_directory'].map((action) => ({ action, effect: 'allow' })));
   ensureOpenCodeCoreMcpPermissions(baseCfg);
-  // The plugin refuses what the permissions above allow (webfetch, a browser from bash) before it runs.
-  if (browserPolicy) withOpenCodeBrowserPolicy(baseCfg, { cwd });
+  // A confined run (lib/native-loop-providers.js openCodeRunConfigFor): its rules after the bypass above (the shell
+  // and edits asked, answered by the adapter; a drafting run's tools refused and every MCP server switched off; an
+  // enforced worker's Code Mode denied, so every MCP server, SynaBun's included, is a direct call: `codemode: false`,
+  // without which OpenCode 2 reaches a server's tools through Code Mode only).
+  if (confinement && typeof confinement === 'object') {
+    if (Array.isArray(confinement.permissions)) appendRules(baseCfg, confinement.permissions);
+    if (confinement.mcp === 'off') for (const [name, entry] of Object.entries(mcpServersOf(baseCfg))) setMcpServer(baseCfg, name, { ...entry, disabled: true });
+    if (confinement.directMcp === true) for (const [name, entry] of Object.entries(mcpServersOf(baseCfg))) setMcpServer(baseCfg, name, { ...entry, codemode: false });
+  }
+  // The plugin refuses what the permissions above allow (webfetch, a browser from the shell) before it runs.
+  if (browserPolicy) withOpenCodeBrowserPolicy(baseCfg, { cwd, roots: policyRoots });
   // OpenCode's generic provider request timeout defaults to five minutes. Long
   // cloud-model turns in an unattended loop need a larger but still finite cap.
   const providerId = String(model || '').split('/')[0];
-  if (providerId) {
-    if (!baseCfg.provider) baseCfg.provider = {};
-    const provider = baseCfg.provider[providerId] || {};
-    baseCfg.provider[providerId] = {
-      ...provider,
-      options: {
-        ...(provider.options || {}),
-        timeout: provider.options?.timeout ?? 600000,
-      },
-    };
-  }
-  const target = resolve(targetDir, 'config.json');
-  writeFileSync(target, JSON.stringify(baseCfg, null, 2) + '\n', 'utf8');
+  if (providerId) withProviderTimeout(baseCfg, providerId, 600000);
+  writeIsolatedOpencodeConfig(xdgRoot, baseCfg);
   return xdgRoot;
 }
 
@@ -27696,43 +28035,21 @@ function cleanupOpencodeLoopConfig(terminalSessionId) {
 }
 
 /**
- * Write a per-loop --mcp-config file for Claude Code loops. The PTY env pins
- * (SYNABUN_BROWSER_SESSION/TAB, SYNABUN_TERMINAL_SESSION) only cross into
- * STDIO MCP children — they never reach the NI-hosted HTTP MCP server that
- * ~/.claude.json points Claude Code at. Headers on a per-loop SynaBun HTTP
- * entry carry the same pins per-request instead, so the server's
- * getTargetPage()/_tabOwners routing lands this loop's tab-less browser calls
- * on its own pre-acquired tab. The file contains the user's mcpServers with
- * SynaBun swapped (used with --strict-mcp-config), so duplicate-name precedence
- * quirks can never reintroduce the un-pinned user-scope entry. Registry-managed
- * servers are filtered to the active profile's servers[]; hand-added ones pass through.
- * Returns the config file path.
+ * Captured external refs build an explicit strict map. SynaBun's HTTP headers carry this loop's pins;
+ * definitions stay in a mode-0600 file, never in argv, a brief or a run record.
  */
-function setupClaudeLoopMcpConfig(terminalSessionId, browserSessionId, browserTabId) {
+function setupClaudeLoopMcpConfig(terminalSessionId, browserSessionId, browserTabId, selection = null, cwd = PACKAGE_ROOT) {
   const dir = resolve(DATA_HOME, 'data', 'loop-configs');
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   const headers = { 'X-Synabun-Terminal': terminalSessionId };
   if (browserSessionId) headers['X-Synabun-Browser-Session'] = browserSessionId;
   if (browserTabId) headers['X-Synabun-Browser-Tab'] = browserTabId;
-  let mcpServers = {};
-  try {
-    const home = process.env.USERPROFILE || process.env.HOME || '';
-    const data = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf-8'));
-    if (data.mcpServers && typeof data.mcpServers === 'object') mcpServers = { ...data.mcpServers };
-  } catch { /* the SynaBun entry alone still pins the loop */ }
-  // Servers SynaBun manages are gated by the active profile's servers[]; anything the
-  // user added to ~/.claude.json by hand is left alone.
-  try {
-    const managed = new Set(Object.keys(readMcpRegistry().servers || {}));
-    const granted = new Set(getProfileServerNames());
-    for (const name of Object.keys(mcpServers)) {
-      if (name !== 'SynaBun' && managed.has(name) && !granted.has(name)) delete mcpServers[name];
-    }
-  } catch { /* leave the inherited set as-is if the registry is unreadable */ }
+  const inventory = externalInventory('claude-code', cwd);
+  const scope = selectExternalServers(toolsFromSelection(selection), inventory);
+  const mcpServers = Object.fromEntries(scope.names.map(name => [name, inventory.definitionFor(name)]));
   mcpServers.SynaBun = { type: 'http', url: `http://localhost:${PORT}/mcp`, headers };
   const target = resolve(dir, `claude-mcp-${terminalSessionId}.json`);
-  writeFileSync(target, JSON.stringify({ mcpServers }, null, 2) + '\n', 'utf8');
-  return target;
+  return writePrivateMcpConfig(target, mcpServers);
 }
 
 /** Best-effort cleanup of a per-loop Claude MCP config file on loop stop. */
@@ -27798,9 +28115,8 @@ function buildExecMcpEnvOverrides(loopState) {
   if (loopState.terminalSessionId) {
     overrides.push(['SYNABUN_TERMINAL_SESSION', loopState.terminalSessionId]);
   }
-  if (loopState.mcpProfile) {
-    overrides.push(['SYNABUN_PROFILE', loopState.mcpProfile]);
-  }
+  const tools = storedToolList(readStoredToolListRecord(loopState, toolListOptions()), toolListOptions());
+  if (tools !== null) overrides.push(['SYNABUN_TOOLS', runtimeToolsValue(tools)]);
   return overrides;
 }
 
@@ -27836,7 +28152,6 @@ function prepareExecWrapperFile(terminalSessionId, loopState, taskFile, sentinel
     mcpEnvOverrides,
     // The Admin sandbox setting the loop started with (a loop file from before it: the current one).
     codexConfigArgs: codexWindowsSandboxArgs(typeof loopState.adminSandbox === 'boolean' ? loopState.adminSandbox : adminSandboxOn()),
-    ...(profile === 'opencode' ? { opencodeMajor: knownOpencodeMajor() } : {}),
   });
   const wrapperFile = join(
     os.tmpdir(),
@@ -29527,6 +29842,8 @@ app.post('/api/cli/detect/:profileId', async (req, res) => {
       pathStatus: cliPathManager.inspect(status),
       installSource: status.installSource,
       error: status.error,
+      // OpenCode: whether SynaBun drives the one found (OpenCode 2 only), in the shape of /api/opencode/status `installed`.
+      ...(profileId === 'opencode' && status.path ? { support: opencodeInstallStateOf({ ...opencodeSupportFor(status.version, { path: status.path }), path: status.path }) } : {}),
     });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
@@ -29741,7 +30058,10 @@ function spawnSidecarProcess(linkId, sessionId, message) {
     windowsHide: true,
   });
 
-  // Pipe message to stdin for CLIs that support it (e.g. Claude Code)
+  // Pipe message to stdin for CLIs that support it (e.g. Claude Code). A CLI
+  // that ends before reading it fails the pipe (EPIPE) after write() returned:
+  // its exit says what happened, and the error must not end the server.
+  child.stdin.on('error', () => {});
   if (sidecarConfig.stdin) {
     child.stdin.write(message);
   }
@@ -30640,7 +30960,7 @@ function isDroppableSidepanelProviderEvent(message) {
 function broadcastSync(message, excludeWs = null) {
   const data = JSON.stringify(message);
   const messageType = String(message?.type || '');
-  const ownerOnly = ['sidepanel:', 'schedule:', 'schedule-group:', 'quick-timer:', 'assistant:', 'whatsapp:', 'editor:', 'skills:']
+  const ownerOnly = ['sidepanel:', 'schedule:', 'schedule-group:', 'quick-timer:', 'assistant:', 'whatsapp:', 'editor:', 'skills:', 'crash-notice:']
     .some((prefix) => messageType.startsWith(prefix));
   const dropUnderBackpressure = isDroppableSidepanelProviderEvent(message);
   let sent = 0;
@@ -30690,6 +31010,8 @@ function handleSyncWebSocket(ws, req) {
     try {
       const msg = JSON.parse(raw);
       if (!msg.type || !RELAYABLE_TYPES.has(msg.type)) return;
+      // A socket the owner's powers are refused to (lib/owner-authority.js): it reads, it relays nothing.
+      if (req?._synabunReadOnly) return;
 
       // Permission check for guest senders
       if (ws._isGuest) {
@@ -31680,18 +32002,53 @@ function autoHealServerVeto(session, facts) {
 }
 
 // Abort every ad/boost/billing request in a context so no charge can land even if a
-// click or evaluate() slips a boost through. Scoped to MONEY_NET_RE (not '**/*') to
-// keep request overhead off normal traffic. Idempotent per context.
+// click or evaluate() slips a boost through. Native Fetch patterns keep unrelated
+// public requests and HTTP cache untouched; Playwright route matchers do not.
 async function installMoneyGuardRoute(ctx) {
   if (!ctx || ctx.__moneyGuardInstalled) return;
+  await setBrowserNetworkRule(ctx, 'money', {
+    patterns: MONEY_PATTERNS,
+    decide: request => MONEY_NET_RE.test(request.url) ? { abort: true } : null,
+  });
+  ctx.__moneyGuardInstalled = true;
+}
+
+// ── SynaBun's own OpenCode serves: never opened by the automation browser ──
+// A serve's API changes a session's rules and moves it to another folder, and a page that knew a serve's password could
+// use it (OpenCode 2 accepts any http://localhost:* and http://127.0.0.1:* origin), outside every sandbox a worker's
+// shell is in. HTTP to live serve ports (any host, including redirect hops) is
+// still aborted. Managed contexts also block WS through Playwright. MoreLogin
+// retains native WS only behind the verified server authentication boundary and
+// credentials confined to this server, never an environment, page or log.
+function protectNativeServeContext(ctx) {
+  return nativeServeBoundary.protect(ctx, {
+    ports: liveOpencodeServePorts(),
+    unverifiedRecords: opencodeServeRecords.list().filter(record =>
+      !opencodeServeRecords.ownedHere(record) && opencodeServeRecords.verifySync(record) !== 'gone'),
+  });
+}
+
+async function installServePortGuard(ctx) {
+  if (!ctx || ctx.__servePortGuardInstalled) return;
+  // routeWebSocket installs page bindings and replaces WebSocket on navigation,
+  // even with an empty matcher. Native contexts rely on the verified server's
+  // authentication; never silently route or drop protection for unknown serves.
+  const native = usesNativeBrowserNetworkGuard(ctx);
+  const release = native ? protectNativeServeContext(ctx) : null;
+  const refused = (url) => { try { return !!browserServePortDenial(url?.href ?? url, liveOpencodeServePorts()); } catch { return false; } };
   try {
-    await ctx.route(MONEY_NET_RE, route => {
-      try { console.warn(`[money-guard] aborted ad/billing request: ${route.request().url().slice(0, 120)}`); } catch {}
-      route.abort('blockedbyclient').catch(() => {});
+    await setBrowserNetworkRule(ctx, 'serve-port', {
+      patterns: SERVE_PORT_PATTERNS,
+      decide: request => refused(request.url) ? { abort: true } : null,
     });
-    ctx.__moneyGuardInstalled = true;
-  } catch (e) {
-    console.warn('[money-guard] failed to install network route:', e.message);
+    if (!native) {
+      if (typeof ctx.routeWebSocket !== 'function') throw new Error('WebSocket routing is unavailable');
+      await ctx.routeWebSocket(refused, ws => Promise.resolve(ws.close({ code: 1008, reason: 'SynaBun: not an address the browser opens' })).catch(() => {}));
+    }
+    ctx.__servePortGuardInstalled = true;
+  } catch (error) {
+    release?.();
+    throw new Error(`Failed to install the OpenCode serve guard: ${error.message}`);
   }
 }
 
@@ -32074,10 +32431,10 @@ async function createBrowserSession(options = {}) {
       }
       if (!endpoint) endpoint = `http://127.0.0.1:${debugPort}`;
 
-      const cdpBrowser = await chromium.connectOverCDP(endpoint);
-      let cdpContext = cdpBrowser.contexts()[0];
-      if (!cdpContext) cdpContext = await cdpBrowser.newContext(contextOpts);
-      const cdpPage = await newSessionPage({ browser: cdpBrowser, context: cdpContext, _profileMode: 'morelogin' }); // fresh tab; never hijack an existing one
+      const { browser: cdpBrowser, context: cdpContext, page: cdpPage } = await moreLogin.attachProfileBrowser(
+        chromium, endpoint,
+        (cdpBrowser, cdpContext) => newSessionPage({ browser: cdpBrowser, context: cdpContext, _profileMode: 'morelogin' }),
+      ); // fresh tab in the real profile; never substitute an incognito context
 
       browser = cdpBrowser;
       context = cdpContext;
@@ -32356,210 +32713,247 @@ async function createBrowserSession(options = {}) {
     await cdpStealth.detach().catch(() => {});
   }
 
-  // browser_console reads what this tab logs from its first page on.
-  attachConsoleBuffer(page);
-
-  // Navigate to initial URL or blank
-  const startUrl = options.url || 'about:blank';
-  const launchAborted = options.browserRequest && (options.browserRequest.signal.aborted || Date.now() >= options.browserRequest.deadline);
-  if (!launchAborted) await page.goto(startUrl).catch((err) => {
-    console.warn('Initial navigation warning:', err.message);
-  });
-
-  // Wait for page to be ready before attaching CDP
-  await page.waitForLoadState('domcontentloaded').catch(() => {});
-
-  // Get CDP session for screencast
-  console.log('[browser] Creating CDP session... persistent:', !!_isPersistent, 'page url:', page.url());
-  let cdpSession;
   try {
-    cdpSession = await context.newCDPSession(page);
-    console.log('[browser] CDP session created successfully via context');
-  } catch (err) {
-    console.error('[browser] CDP session creation failed:', err.message);
-    throw new Error('Cannot create CDP session for screencast: ' + err.message);
-  }
+    // browser_console reads what this tab logs from its first page on.
+    attachConsoleBuffer(page);
 
-  // Generate first tab ID
-  const firstTabId = randomBytes(4).toString('hex');
+    // Navigate to initial URL or blank
+    const startUrl = options.url || 'about:blank';
+    // Refuse a startUrl that resolves to one of SynaBun's own live OpenCode serve ports, and install the serve-port
+    // guards and host-proof worker marker BEFORE the first navigation. MoreLogin
+    // uses native URL patterns so other public traffic retains its native cache.
+    const startServeDenial = browserServePortDenial(startUrl, liveOpencodeServePorts());
+    if (startServeDenial) throw new Error(startServeDenial);
+    await installMoneyGuardRoute(context);
+    await installServePortGuard(context);
+    if (typeof _pageSession !== 'undefined') {
+      const marked = await _pageSession.markWorkerBrowserContext(context, { port: PORT, hostNames: machineNames.names() });
+      if (!marked) throw new Error('Cannot protect browser owner authority: local worker marker failed');
+    }
+    const launchAborted = options.browserRequest && (options.browserRequest.signal.aborted || Date.now() >= options.browserRequest.deadline);
+    if (!launchAborted) await page.goto(startUrl).catch((err) => {
+      console.warn('Initial navigation warning:', err.message);
+    });
 
-  const session = {
-    browser,
-    context,
-    page,              // alias → active tab's page (backward compat)
-    cdpSession,        // alias → active tab's CDP session (backward compat)
-    _isPersistent,
-    _profileMode: _profileMode || 'clean',
-    _profileSourceName: _profileSourceName || null,
-    _storageStatePath: STORAGE_STATE_PATH,
-    _launchUserDataDir: _launchUserDataDir || null,
-    _launchProfileDirectory: _launchProfileDirectory || null,
-    _selectedProfilePath: _sourceProfilePath || null,
-    _chromeProcess: _chromeProcess || null, // CDP mode: spawned Chrome process
-    _mlEnvId: _mlEnvId || null,        // MoreLogin env id (morelogin mode)
-    _mlDebugPort: _mlDebugPort || null,
-    clients: new Set(),       // WebSocket connections for screencast
-    screencastActive: false,
-    createdAt: Date.now(),
-    graceTimer: null,
-    _loopOwned: new Set(),  // terminalSessionIds of loops using this session
-    _interactiveOwned: new Set(),  // clientIds of interactive (non-loop) MCP processes owning a dedicated tab here
-    _agentOwnedSet: new Set(),  // agentIds of automation-window agents using this session
-    _tabOwners: new Map(),  // ownerKey (loop terminalSessionId | interactive clientId | agent terminal id | sidepanel owner key) → tabId (authoritative tab routing for tab-less calls)
-    currentUrl: startUrl,
-    title: await page.title().catch(() => ''),
-    // ── Multi-tab support ──
-    tabs: new Map(),          // tabId → { page, cdpSession, url, title }
-    activeTabId: firstTabId,
-  };
+    // Wait for page to be ready before attaching CDP
+    await page.waitForLoadState('domcontentloaded').catch(() => {});
 
-  // Register the first tab
-  session.tabs.set(firstTabId, {
-    page,
-    cdpSession,
-    url: startUrl,
-    title: session.title,
-  });
+    // Get CDP session for screencast
+    console.log('[browser] Creating CDP session... persistent:', !!_isPersistent, 'page url:', page.url());
+    let cdpSession;
+    try {
+      cdpSession = await context.newCDPSession(page);
+      console.log('[browser] CDP session created successfully via context');
+    } catch (err) {
+      console.error('[browser] CDP session creation failed:', err.message);
+      throw new Error('Cannot create CDP session for screencast: ' + err.message);
+    }
 
-  // Wire page events for a tab (reusable for new tabs)
-  function wireTabPageEvents(tabId, tabPage) {
-    const isRegisteredPage = () => session.tabs.get(tabId)?.page === tabPage;
-    attachConsoleBuffer(tabPage); // no-op when the tab's creator attached it already
+    // Generate first tab ID
+    const firstTabId = randomBytes(4).toString('hex');
 
-    tabPage.on('framenavigated', async (frame) => {
-      if (frame === tabPage.mainFrame()) {
+    const session = {
+      browser,
+      context,
+      page,              // alias → active tab's page (backward compat)
+      cdpSession,        // alias → active tab's CDP session (backward compat)
+      _isPersistent,
+      _profileMode: _profileMode || 'clean',
+      _profileSourceName: _profileSourceName || null,
+      _storageStatePath: STORAGE_STATE_PATH,
+      _launchUserDataDir: _launchUserDataDir || null,
+      _launchProfileDirectory: _launchProfileDirectory || null,
+      _selectedProfilePath: _sourceProfilePath || null,
+      _chromeProcess: _chromeProcess || null, // CDP mode: spawned Chrome process
+      _mlEnvId: _mlEnvId || null,        // MoreLogin env id (morelogin mode)
+      _mlDebugPort: _mlDebugPort || null,
+      clients: new Set(),       // WebSocket connections for screencast
+      screencastActive: false,
+      createdAt: Date.now(),
+      graceTimer: null,
+      _loopOwned: new Set(),  // terminalSessionIds of loops using this session
+      _interactiveOwned: new Set(),  // clientIds of interactive (non-loop) MCP processes owning a dedicated tab here
+      _agentOwnedSet: new Set(),  // agentIds of automation-window agents using this session
+      _tabOwners: new Map(),  // ownerKey (loop terminalSessionId | interactive clientId | agent terminal id | sidepanel owner key) → tabId (authoritative tab routing for tab-less calls)
+      currentUrl: startUrl,
+      title: await page.title().catch(() => ''),
+      // ── Multi-tab support ──
+      tabs: new Map(),          // tabId → { page, cdpSession, url, title }
+      activeTabId: firstTabId,
+    };
+
+    // Register the first tab
+    session.tabs.set(firstTabId, {
+      page,
+      cdpSession,
+      url: startUrl,
+      title: session.title,
+    });
+
+    // Wire page events for a tab (reusable for new tabs)
+    function wireTabPageEvents(tabId, tabPage) {
+      const isRegisteredPage = () => session.tabs.get(tabId)?.page === tabPage;
+      attachConsoleBuffer(tabPage); // no-op when the tab's creator attached it already
+
+      tabPage.on('framenavigated', async (frame) => {
+        if (frame === tabPage.mainFrame()) {
+          if (!isRegisteredPage()) return;
+          const url = tabPage.url();
+          const title = await tabPage.title().catch(() => '');
+          if (!isRegisteredPage()) return;
+          const tabEntry = session.tabs.get(tabId);
+          if (tabEntry) { tabEntry.url = url; tabEntry.title = title; }
+          // Only broadcast to clients if this is the active tab
+          if (session.activeTabId === tabId) {
+            session.currentUrl = url;
+            session.title = title;
+            const msg = JSON.stringify({ type: 'navigated', url, title });
+            session.clients.forEach(ws => { if (ws.readyState === 1) ws.send(msg); });
+          }
+        }
+      });
+
+      tabPage.on('load', async () => {
         if (!isRegisteredPage()) return;
-        const url = tabPage.url();
         const title = await tabPage.title().catch(() => '');
         if (!isRegisteredPage()) return;
         const tabEntry = session.tabs.get(tabId);
-        if (tabEntry) { tabEntry.url = url; tabEntry.title = title; }
-        // Only broadcast to clients if this is the active tab
+        if (tabEntry) { tabEntry.title = title; tabEntry.url = tabPage.url(); }
         if (session.activeTabId === tabId) {
-          session.currentUrl = url;
           session.title = title;
-          const msg = JSON.stringify({ type: 'navigated', url, title });
+          const msg = JSON.stringify({ type: 'loaded', url: tabPage.url(), title });
           session.clients.forEach(ws => { if (ws.readyState === 1) ws.send(msg); });
         }
-      }
-    });
+      });
 
-    tabPage.on('load', async () => {
-      if (!isRegisteredPage()) return;
-      const title = await tabPage.title().catch(() => '');
-      if (!isRegisteredPage()) return;
-      const tabEntry = session.tabs.get(tabId);
-      if (tabEntry) { tabEntry.title = title; tabEntry.url = tabPage.url(); }
-      if (session.activeTabId === tabId) {
-        session.title = title;
-        const msg = JSON.stringify({ type: 'loaded', url: tabPage.url(), title });
-        session.clients.forEach(ws => { if (ws.readyState === 1) ws.send(msg); });
-      }
-    });
-
-    tabPage.on('dialog', async (dialog) => {
-      try {
-        await dialog.accept();
-      } catch {
-        // Dialog already dismissed — race between page navigation and auto-accept
-      }
-    });
-
-    tabPage.on('close', () => {
-      try {
-        // A wedge recovery can replace the Playwright Page while preserving the
-        // public tabId. Ignore a late close event from the retired page so it
-        // cannot delete the replacement from the registry.
-        if (!isRegisteredPage()) return;
-        console.log(`Browser tab ${tabId} page closed for session ${sessionId}`);
-        session.tabs.delete(tabId);
-        // If active tab closed, switch to another tab if available
-        if (session.activeTabId === tabId) {
-          const remaining = [...session.tabs.keys()];
-          if (remaining.length > 0) {
-            _switchSessionTab(session, sessionId, remaining[0]).catch(() => {});
-          } else {
-            session.activeTabId = null;
-            session.page = null;
-            session.cdpSession = null;
-            session.currentUrl = 'about:blank';
-            session.title = '';
-            // No tabs left — notify clients
-            session.clients.forEach(ws => {
-              if (ws.readyState === 1) {
-                ws.send(JSON.stringify({ type: 'error', message: 'All tabs closed' }));
-                ws.close(1000, 'All tabs closed');
-              }
-            });
-            session.clients.clear();
-          }
+      tabPage.on('dialog', async (dialog) => {
+        try {
+          await dialog.accept();
+        } catch {
+          // Dialog already dismissed — race between page navigation and auto-accept
         }
-        broadcastSync({ type: 'browser:tab-closed', sessionId, tabId, remainingTabs: session.tabs.size });
-      } finally {
-        // The dialog listener stays alive through target retirement; once the
-        // close event arrives the page can release every closure it retained.
-        try { tabPage.removeAllListeners(); } catch {}
-      }
+      });
+
+      tabPage.on('close', () => {
+        try {
+          // A wedge recovery can replace the Playwright Page while preserving the
+          // public tabId. Ignore a late close event from the retired page so it
+          // cannot delete the replacement from the registry.
+          if (!isRegisteredPage()) return;
+          console.log(`Browser tab ${tabId} page closed for session ${sessionId}`);
+          session.tabs.delete(tabId);
+          // The session is being closed and closes its own tabs (destroyBrowserSession): the tab only leaves the
+          // registry. No other tab is switched to and nothing is announced but the session's end (browser:session-deleted).
+          if (session._tearingDown) return;
+          // If active tab closed, switch to another tab if available
+          if (session.activeTabId === tabId) {
+            const remaining = [...session.tabs.keys()];
+            if (remaining.length > 0) {
+              _switchSessionTab(session, sessionId, remaining[0]).catch(() => {});
+            } else {
+              session.activeTabId = null;
+              session.page = null;
+              session.cdpSession = null;
+              session.currentUrl = 'about:blank';
+              session.title = '';
+              // No tabs left — notify clients
+              session.clients.forEach(ws => {
+                if (ws.readyState === 1) {
+                  ws.send(JSON.stringify({ type: 'error', message: 'All tabs closed' }));
+                  ws.close(1000, 'All tabs closed');
+                }
+              });
+              session.clients.clear();
+            }
+          }
+          broadcastSync({ type: 'browser:tab-closed', sessionId, tabId, remainingTabs: session.tabs.size });
+        } finally {
+          // The dialog listener stays alive through target retirement; once the
+          // close event arrives the page can release every closure it retained.
+          try { tabPage.removeAllListeners(); } catch {}
+        }
+      });
+    }
+
+    // Wire events for the first tab
+    wireTabPageEvents(firstTabId, page);
+    // Store the wiring function on the session for creating new tabs
+    session._wireTabPageEvents = wireTabPageEvents;
+
+    // ── Money-safety: block all ad/boost/billing network requests in this context ──
+    // Applies to the first tab and every future tab (context-level route).
+    await installMoneyGuardRoute(context);
+    // ── SynaBun's own OpenCode serves: no request of this context reaches one ──
+    await installServePortGuard(context);
+
+    // Handle context close (browser quit / crash)
+    context.on('close', () => {
+      const orphanedLoops = session._loopOwned?.size > 0 ? [...session._loopOwned] : [];
+      console.log(`Browser context closed for session ${sessionId}${session._agentOwnedSet?.size ? ` (agent-owned: ${[...session._agentOwnedSet].join(',')})` : ''}${orphanedLoops.length ? ` (orphaning loops: ${orphanedLoops.join(', ')})` : ''}`);
+      session.screencastActive = false;
+      detachScreencastFrameHandler(session);
+      // Stop autosave interval
+      if (session._autosaveInterval) { clearInterval(session._autosaveInterval); session._autosaveInterval = null; }
+      session.clients.forEach(ws => {
+        if (ws.readyState === 1) ws.close(1000, 'Browser closed');
+      });
+      session.clients.clear();
+      // Always clean up from the map — the context is dead, tools will fail anyway.
+      // Agent iteration loop and MCP resolveSession will create a fresh session on next call.
+      browserSessions.delete(sessionId);
+      broadcastSync({ type: 'browser:session-deleted', sessionId, orphanedLoops });
     });
-  }
 
-  // Wire events for the first tab
-  wireTabPageEvents(firstTabId, page);
-  // Store the wiring function on the session for creating new tabs
-  session._wireTabPageEvents = wireTabPageEvents;
+    if (context.__browserNetworkGuardError) {
+      throw new Error(`Browser network protection unavailable: ${context.__browserNetworkGuardError}`);
+    }
+    browserSessions.set(sessionId, session);
+    // SynaBun's automation browser carries a marker for SynaBun's own origin (lib/page-session.js): a worker that opens
+    // the app's pages here can read and click them, but its owner-only writes are refused.
+    // (a test runs this function from the file's text without the page session: then nothing is marked)
 
-  // ── Money-safety: block all ad/boost/billing network requests in this context ──
-  // Applies to the first tab and every future tab (context-level route).
-  await installMoneyGuardRoute(context);
-
-  // Handle context close (browser quit / crash)
-  context.on('close', () => {
-    const orphanedLoops = session._loopOwned?.size > 0 ? [...session._loopOwned] : [];
-    console.log(`Browser context closed for session ${sessionId}${session._agentOwnedSet?.size ? ` (agent-owned: ${[...session._agentOwnedSet].join(',')})` : ''}${orphanedLoops.length ? ` (orphaning loops: ${orphanedLoops.join(', ')})` : ''}`);
-    session.screencastActive = false;
-    detachScreencastFrameHandler(session);
-    // Stop autosave interval
-    if (session._autosaveInterval) { clearInterval(session._autosaveInterval); session._autosaveInterval = null; }
-    session.clients.forEach(ws => {
-      if (ws.readyState === 1) ws.close(1000, 'Browser closed');
-    });
-    session.clients.clear();
-    // Always clean up from the map — the context is dead, tools will fail anyway.
-    // Agent iteration loop and MCP resolveSession will create a fresh session on next call.
-    browserSessions.delete(sessionId);
-    broadcastSync({ type: 'browser:session-deleted', sessionId, orphanedLoops });
-  });
-
-  browserSessions.set(sessionId, session);
-
-  // ── Periodic cookie autosave (every 30s) ──
-  // Protects against cookie loss when the user closes the window directly.
-  if (savedCfg.persistStorage !== false && !_isPersistent && _profileMode !== 'cdp' && _profileMode !== 'morelogin') {
-    session._autosaveInterval = setInterval(async () => {
-      if (!session.context) { clearInterval(session._autosaveInterval); return; }
+    // ── Periodic cookie autosave (every 30s) ──
+    // Protects against cookie loss when the user closes the window directly.
+    if (savedCfg.persistStorage !== false && !_isPersistent && _profileMode !== 'cdp' && _profileMode !== 'morelogin') {
+      session._autosaveInterval = setInterval(async () => {
+        if (!session.context) { clearInterval(session._autosaveInterval); return; }
+        try {
+          const dir = dirname(STORAGE_STATE_PATH);
+          if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+          await session.context.storageState({ path: STORAGE_STATE_PATH });
+          session._lastStorageSave = Date.now();
+        } catch {
+          // Context is dead — stop autosaving
+          clearInterval(session._autosaveInterval);
+          session._autosaveInterval = null;
+        }
+      }, 30000);
+    }
+    return {
+      sessionId,
+      // CDP-attached + persistent contexts have no streamable wsEndpoint; cdp also
+      // shows the real Chrome window directly, so the UI must not open a screencast.
+      wsEndpoint: (_isPersistent || _profileMode === 'cdp' || _profileMode === 'morelogin') ? null : (browser.wsEndpoint?.() || null),
+      profileMode: _profileMode || 'clean',
+      profileSource: _profileSourceName || null,
+      // A start URL MoreLogin refused (a localhost port missing from Port scan
+      // protection, say): the session exists, parked on the stop page.
+      moreLoginBlocked: moreLoginBlockError(session, startUrl, page.url()),
+    };
+  } catch (error) {
+    if (_profileMode === 'morelogin') {
+      // Includes failures AFTER guard installation (navigation setup, screencast
+      // CDP, tab registration). Dispose even if Playwright cannot disconnect.
+      browserSessions.delete(sessionId);
       try {
-        const dir = dirname(STORAGE_STATE_PATH);
-        if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-        await session.context.storageState({ path: STORAGE_STATE_PATH });
-        session._lastStorageSave = Date.now();
-      } catch {
-        // Context is dead — stop autosaving
-        clearInterval(session._autosaveInterval);
-        session._autosaveInterval = null;
+        await page.close().catch(() => {});
+        await browser.close().catch(() => {});
+      } finally {
+        await disposeBrowserNetworkGuard(context);
       }
-    }, 30000);
+    }
+    throw error;
   }
-  return {
-    sessionId,
-    // CDP-attached + persistent contexts have no streamable wsEndpoint; cdp also
-    // shows the real Chrome window directly, so the UI must not open a screencast.
-    wsEndpoint: (_isPersistent || _profileMode === 'cdp' || _profileMode === 'morelogin') ? null : (browser.wsEndpoint?.() || null),
-    profileMode: _profileMode || 'clean',
-    profileSource: _profileSourceName || null,
-    // A start URL MoreLogin refused (a localhost port missing from Port scan
-    // protection, say): the session exists, parked on the stop page.
-    moreLoginBlocked: moreLoginBlockError(session, startUrl, page.url()),
-  };
 }
 
 /**
@@ -32675,15 +33069,28 @@ async function stopScreencast(session) {
  * own windows (managed, mirror, direct and clean sessions), tabs a page opens
  * itself, or what selects a tab afterwards (the user, or the selected tab
  * closing next to it). A browser that cannot gets a normal tab.
+ *
+ * Every page it returns is recorded in synabunOpenedPages: an explicit close
+ * of such a session closes those, and only those (closeOwnTabsBeforeDisconnect).
  */
 async function newSessionPage(session, { timeoutMs } = {}) {
   if (loadBrowserConfig().openTabsInBackground === true && (session._profileMode === 'morelogin' || session._profileMode === 'cdp')) {
     const page = await openBackgroundPage(session.browser, session.context, timeoutMs ? { timeoutMs } : undefined).catch(() => null);
-    if (page) return page;
+    if (page) {
+      synabunOpenedPages.add(page);
+      return page;
+    }
     console.warn('[browser] could not open the tab in the background; opening it as the selected tab');
   }
-  return session.context.newPage();
+  const page = await session.context.newPage();
+  synabunOpenedPages.add(page);
+  return page;
 }
+
+// The pages newSessionPage opened. In a browser the user owns (MoreLogin, their Chrome over CDP) context.pages() is
+// the whole browser: the user's tabs, other sessions' tabs and what pages opened. A page is SynaBun's to close only
+// when it is in here; one that was open before SynaBun connected, or that someone else opened, never is.
+const synabunOpenedPages = new WeakSet();
 
 /**
  * Create a new tab (page) in an existing browser session.
@@ -32728,6 +33135,10 @@ async function recoverSessionTabPage(session, sessionId, tabId, reason = 'page b
   if (!session?.tabs?.has(tabId)) return { recovered: false, error: `Tab ${tabId} is no longer registered` };
   if (session._invalidating) {
     return { recovered: false, sessionInvalidated: true, error: `Browser session ${sessionId} is being replaced` };
+  }
+  // A session being closed closes its own tabs (destroyBrowserSession): a call that fails on one of them opens no new tab.
+  if (session._tearingDown) {
+    return { recovered: false, sessionInvalidated: true, error: `Browser session ${sessionId} is being closed` };
   }
   if (!session._tabRecoveries) session._tabRecoveries = new Map();
   const pending = session._tabRecoveries.get(tabId);
@@ -32984,8 +33395,9 @@ async function closeSessionTab(session, sessionId, tabId) {
   clearAiSnapshotCache(sessionId, tabId);
 
   if (session.tabs.size === 0) {
-    // Last tab — destroy the whole session
-    await destroyBrowserSession(sessionId);
+    // Last tab — destroy the whole session. In a browser the user owns, that teardown closes
+    // this tab too: it has left the registry already, so it is handed over.
+    await destroyBrowserSession(sessionId, { closeOwnTabs: true, closingPage: tabEntry.page });
     return;
   }
 
@@ -33023,79 +33435,168 @@ async function closeSessionTab(session, sessionId, tabId) {
 
 /**
  * Clean up a browser session.
+ * `closeOwnTabs` marks an explicit close (DELETE /api/browser/sessions/:id, or
+ * the session's last tab closed): in a browser the user owns (MoreLogin, or
+ * their Chrome over CDP) the tabs SynaBun opened for the session are closed
+ * before the disconnect, `closingPage` (a last tab that has left the registry
+ * already) included. Every other connect mode closes its whole browser anyway
+ * and is unchanged, and so is every other teardown (a dead or invalidated
+ * session, an idle or grace reap).
  */
-async function destroyBrowserSession(sessionId) {
+async function destroyBrowserSession(sessionId, { closeOwnTabs = false, closingPage = null } = {}) {
   const session = browserSessions.get(sessionId);
   if (!session) return;
 
-  // Remove from Map immediately to prevent races (new sessions seeing zombie entries)
-  browserSessions.delete(sessionId);
-  clearAiSnapshotCache(sessionId);
-  engagementScheduler.clear(sessionId);
-
-  const savedCfg = loadBrowserConfig();
-  if (savedCfg.persistStorage !== false && session.context && !session._chromeProcess && !session._isPersistent && session._profileMode !== 'cdp' && session._profileMode !== 'morelogin') {
-    // Use per-profile storage path from session (set at creation), fall back to config default
-    const storagePath = session._storageStatePath || resolve(DATA_HOME, savedCfg.storageStatePath || 'data/browser-storage.json');
-    try {
-      const dir = dirname(storagePath);
-      if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-      await session.context.storageState({ path: storagePath });
-      session._lastStorageSave = Date.now();
-      console.log(`  Storage state saved to ${storagePath}`);
-    } catch (err) {
-      console.warn('Failed to save storage state:', err.message);
+  try {
+    // Remove from Map immediately to prevent races (new sessions seeing zombie entries)
+    browserSessions.delete(sessionId);
+    clearAiSnapshotCache(sessionId);
+    engagementScheduler.clear(sessionId);
+    // From here on the tabs this close takes leave quietly: their close handlers switch to no
+    // other tab and announce nothing, and a call that fails on one of them opens no replacement.
+    if (closeOwnTabs && (session._profileMode === 'cdp' || session._profileMode === 'morelogin') && !session._chromeProcess) {
+      session._tearingDown = true;
     }
-  }
 
-  if (session._autosaveInterval) { clearInterval(session._autosaveInterval); session._autosaveInterval = null; }
-  if (session.graceTimer) clearTimeout(session.graceTimer);
-  try { await stopScreencast(session); } catch {}
-  if ((session._profileMode === 'cdp' || session._profileMode === 'morelogin') && !session._chromeProcess) {
-    // Connected to an externally-owned Chromium (real Chrome via CDP, or a MoreLogin
-    // env). For connectOverCDP, Playwright's browser.close() closes only its CDP
-    // transport; it does not terminate the externally-owned Chromium process.
-    try { await session.browser.close(); } catch {}
-  } else if (session._chromeProcess) {
-    // Spawned Chrome process: disconnect Playwright, then kill Chrome
-    try { await session.browser.close(); } catch {}
-    try {
-      if (!session._chromeProcess.killed) {
-        session._chromeProcess.kill('SIGTERM');
-        setTimeout(() => {
-          try { if (!session._chromeProcess.killed) session._chromeProcess.kill('SIGKILL'); } catch {}
-        }, 3000);
-      }
-    } catch {}
-  } else if (session._isPersistent) {
-    // Persistent context: close context kills browser
-    try { await session.context.close(); } catch {}
-  } else {
-    try { await session.browser.close(); } catch {}
-  }
-  // Keep the defensive dialog listeners installed while Playwright retires the
-  // targets. Removing them first makes DialogManager auto-close a beforeunload
-  // dialog against an already-detached page. Release their session closures only
-  // after disconnect/close has completed.
-  if (session.tabs) {
-    for (const entry of session.tabs.values()) {
-      try { entry?.page?.removeAllListeners?.(); } catch { /* page already gone */ }
-    }
-  }
-  if (session._isPersistent && session._launchUserDataDir) {
-    const pp = resolve(session._launchUserDataDir, session._launchProfileDirectory || 'Default', 'Preferences');
-    if (existsSync(pp)) {
+    const savedCfg = loadBrowserConfig();
+    if (savedCfg.persistStorage !== false && session.context && !session._chromeProcess && !session._isPersistent && session._profileMode !== 'cdp' && session._profileMode !== 'morelogin') {
+      // Use per-profile storage path from session (set at creation), fall back to config default
+      const storagePath = session._storageStatePath || resolve(DATA_HOME, savedCfg.storageStatePath || 'data/browser-storage.json');
       try {
-        const prefs = JSON.parse(readFileSync(pp, 'utf-8'));
-        if (prefs.profile) {
-          prefs.profile.exit_type = 'Normal';
-          prefs.profile.exited_cleanly = true;
-        }
-        writeFileSync(pp, JSON.stringify(prefs));
-      } catch {}
+        const dir = dirname(storagePath);
+        if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+        await session.context.storageState({ path: storagePath });
+        session._lastStorageSave = Date.now();
+        console.log(`  Storage state saved to ${storagePath}`);
+      } catch (err) {
+        console.warn('Failed to save storage state:', err.message);
+      }
     }
+
+    if (session._autosaveInterval) { clearInterval(session._autosaveInterval); session._autosaveInterval = null; }
+    if (session.graceTimer) clearTimeout(session.graceTimer);
+    try { await stopScreencast(session); } catch {}
+    if ((session._profileMode === 'cdp' || session._profileMode === 'morelogin') && !session._chromeProcess) {
+      // Connected to an externally-owned Chromium (real Chrome via CDP, or a MoreLogin
+      // env). For connectOverCDP, Playwright's browser.close() closes only its CDP
+      // transport; it does not terminate the externally-owned Chromium process, and
+      // every tab stays open (MoreLogin reopens them all at the profile's next start).
+      // An explicit close therefore first closes the tabs SynaBun opened for the session.
+      if (session._tearingDown) await closeOwnTabsBeforeDisconnect(session, sessionId, closingPage);
+      try { await session.browser.close(); } catch {}
+    } else if (session._chromeProcess) {
+      // Spawned Chrome process: disconnect Playwright, then kill Chrome
+      try { await session.browser.close(); } catch {}
+      try {
+        if (!session._chromeProcess.killed) {
+          session._chromeProcess.kill('SIGTERM');
+          setTimeout(() => {
+            try { if (!session._chromeProcess.killed) session._chromeProcess.kill('SIGKILL'); } catch {}
+          }, 3000);
+        }
+      } catch {}
+    } else if (session._isPersistent) {
+      // Persistent context: close context kills browser
+      try { await session.context.close(); } catch {}
+    } else {
+      try { await session.browser.close(); } catch {}
+    }
+    // Keep the defensive dialog listeners installed while Playwright retires the
+    // targets. Removing them first makes DialogManager auto-close a beforeunload
+    // dialog against an already-detached page. Release their session closures only
+    // after disconnect/close has completed.
+    if (session.tabs) {
+      for (const entry of session.tabs.values()) {
+        try { entry?.page?.removeAllListeners?.(); } catch { /* page already gone */ }
+      }
+    }
+    if (session._isPersistent && session._launchUserDataDir) {
+      const pp = resolve(session._launchUserDataDir, session._launchProfileDirectory || 'Default', 'Preferences');
+      if (existsSync(pp)) {
+        try {
+          const prefs = JSON.parse(readFileSync(pp, 'utf-8'));
+          if (prefs.profile) {
+            prefs.profile.exit_type = 'Normal';
+            prefs.profile.exited_cleanly = true;
+          }
+          writeFileSync(pp, JSON.stringify(prefs));
+        } catch {}
+      }
+    }
+    broadcastSync({ type: 'browser:session-deleted', sessionId });
+  } finally {
+    // Independent of Playwright disconnect, configuration or notification errors.
+    await disposeBrowserNetworkGuard(session.context);
   }
-  broadcastSync({ type: 'browser:session-deleted', sessionId });
+}
+
+// Explicit closes count a browser's pages one session at a time: two sessions closing together
+// in one browser could each count the other's tab as the page that stays, and leave it with none.
+let _ownTabsCloseChain = Promise.resolve();
+
+/**
+ * Before an explicit close disconnects from a browser the user owns, close the
+ * tabs SynaBun opened for the session: its registered pages that are in
+ * synabunOpenedPages, and `closingPage`. Never a page found by walking the
+ * browser, which is the user's whole browser. When no other page of the browser
+ * would stay open, one of them is emptied (about:blank) instead, so the browser
+ * keeps its window. Each close skips beforeunload and is bounded (3 s) and
+ * best-effort: a page that is gone or hung never holds the close up, and
+ * nothing here throws.
+ */
+function closeOwnTabsBeforeDisconnect(session, sessionId, closingPage = null) {
+  const work = async () => {
+    try {
+      const pages = [...(session.tabs?.values() || [])].map((entry) => entry?.page).concat(closingPage);
+      const own = [...new Set(pages)].filter((page) => page && synabunOpenedPages.has(page) && !page.isClosed?.());
+      if (own.length === 0) return;
+      const keep = (await otherOpenPageCount(session, own)) > 0 ? null : own[0];
+      await Promise.all(own.map((page) => withBrowserOperationDeadline(
+        page === keep ? page.goto('about:blank') : page.close({ runBeforeUnload: false }),
+        3_000,
+        page === keep ? 'Emptying the last tab of the browser' : 'Closing a tab SynaBun opened',
+      ).catch(() => {})));
+      const closed = own.filter((page) => page !== keep && page.isClosed?.()).length;
+      const open = own.length - closed - (keep ? 1 : 0);
+      console.log(`[browser] Closed ${closed} tab(s) SynaBun opened in session ${sessionId} before disconnecting`
+        + `${keep ? '; the last page of the browser was emptied (about:blank) instead' : ''}`
+        + `${open ? `; ${open} not confirmed closed, may still be open` : ''}`);
+    } catch (error) {
+      console.warn(`[browser] Closing the tabs SynaBun opened in session ${sessionId} failed: ${error.message}`);
+    }
+  };
+  const result = _ownTabsCloseChain.then(work, work);
+  _ownTabsCloseChain = result.then(() => {}, () => {});
+  return result;
+}
+
+/**
+ * How many pages of the browser are open besides `own`, as the browser lists
+ * them (Target.getTargets: this connection's own view of a tab another session
+ * just closed can lag), else as this connection sees them. Prerenders,
+ * extension and DevTools pages and the browser's own UI (tab search, side
+ * panels) are not counted: a doubt keeps a tab rather than closing the
+ * browser's last one.
+ */
+async function otherOpenPageCount(session, own) {
+  const counts = (url) => !/^(?:chrome-extension|devtools):|^chrome(?:-untrusted)?:\/\/[^/]*\.top-chrome\b/i.test(url || '');
+  let cdp = null;
+  try {
+    cdp = await withBrowserOperationDeadline(session.browser.newBrowserCDPSession(), 1_000, 'Opening a browser CDP session', {
+      onLateResolve: (late) => late?.detach?.(),
+    });
+    const { targetInfos = [] } = await withBrowserOperationDeadline(cdp.send('Target.getTargets'), 1_000, 'Listing the pages of the browser');
+    return targetInfos.filter((target) => target.type === 'page' && !target.subtype && counts(target.url)).length - own.length;
+  } catch {
+    try {
+      return session.browser.contexts().flatMap((context) => context.pages())
+        .filter((page) => !own.includes(page) && !page.isClosed() && counts(page.url())).length;
+    } catch {
+      return 0;
+    }
+  } finally {
+    if (cdp) cdp.detach().catch(() => {});
+  }
 }
 
 // ── Tab-level page routing (concurrent loop isolation) ──
@@ -33235,6 +33736,21 @@ app.use('/api/browser', (req, res, next) => { res.setHeader('X-Synabun-Browser-D
 // Chrome or of another MoreLogin env is refused before anything runs (any page
 // action, a new tab, CDP). Closing it, or listing its tabs, stays allowed.
 app.use('/api/browser/sessions/:id', (req, res, next) => {
+  const protectedContext = browserSessions.get(req.params.id)?.context;
+  const unsafe = protectedContext?.__browserNetworkGuardError;
+  if (unsafe && req.method !== 'DELETE' && !(req.method === 'GET' && req.path === '/tabs')) {
+    return res.status(503).json({ error: `Browser network protection unavailable: ${unsafe}`, networkGuard: true });
+  }
+  // Also cancel requests already waiting/probing when the protection disappears.
+  // Cancellation prevents their next page action; an action that already began
+  // retains the existing truthful "outcome uncertain" response semantics.
+  if (req.method !== 'DELETE' && protectedContext?.on) {
+    const cancel = reason => req.browserRequest?.cancelForProtection?.(reason);
+    protectedContext.on('synabun-network-guard-fault', cancel);
+    const release = () => protectedContext.removeListener('synabun-network-guard-fault', cancel);
+    res.once('finish', release);
+    res.once('close', release);
+  }
   if (!req.get('X-Synabun-Terminal') || req.method === 'DELETE' || (req.method === 'GET' && req.path === '/tabs')) return next();
   const session = browserSessions.get(req.params.id);
   if (!session) return next();
@@ -33298,6 +33814,12 @@ app.get('/api/browser/sessions', (req, res) => {
 
 app.post('/api/browser/sessions', async (req, res) => {
   const { url, width, height, screenWidth, screenHeight, deviceScaleFactor, timezone, connectMode, moreloginEnvId } = req.body;
+  // A create-session startUrl that points at one of SynaBun's own live OpenCode serve ports is refused up front, like
+  // navigate and new-tab: the serve's API can change what a worker session may do, and createBrowserSession navigates
+  // to the startUrl while the rest of the session is still being wired. (createBrowserSession enforces the same denial
+  // and installs the serve-port guard before that first navigation, for callers that do not pass through this route.)
+  const serveDenial = typeof url === 'string' ? browserServePortDenial(url, liveOpencodeServePorts()) : null;
+  if (serveDenial) return res.status(403).json({ error: serveDenial, servePortGuard: true });
   try {
     // Pass accept-language from the UI browser for locale matching.
     // user-agent and sec-ch-ua are NOT cloned — the automated Chrome generates its own
@@ -33339,7 +33861,8 @@ app.post('/api/browser/sessions', async (req, res) => {
 
 app.delete('/api/browser/sessions/:id', async (req, res) => {
   try {
-    await destroyBrowserSession(req.params.id);
+    // An explicit close (browser_session close, the UI): in MoreLogin or the user's Chrome, the tabs SynaBun opened for it close too.
+    await destroyBrowserSession(req.params.id, { closeOwnTabs: true });
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -33399,6 +33922,8 @@ app.post('/api/browser/sessions/:id/tabs', async (req, res) => {
   if (!session) return res.status(404).json({ error: 'Session not found' });
   try {
     const { url } = req.body;
+    const servePort = typeof url === 'string' ? browserServePortDenial(url, liveOpencodeServePorts()) : null;
+    if (servePort) return res.status(403).json({ error: servePort, servePortGuard: true });
     const tab = await createSessionTab(session, req.params.id, url || 'about:blank');
     res.json({ ok: true, ...tab });
   } catch (err) {
@@ -33606,7 +34131,7 @@ app.post('/api/browser/sessions/:id/paid-surfaces', async (req, res) => {
   try {
     if (allow) {
       // Drop the context-level abort route; the per-call guards read the flag directly.
-      await session.context?.unroute(MONEY_NET_RE);
+      if (session.context) await setBrowserNetworkRule(session.context, 'money', null);
       if (session.context) session.context.__moneyGuardInstalled = false;
     } else if (session.context) {
       await installMoneyGuardRoute(session.context);
@@ -33626,6 +34151,8 @@ app.post('/api/browser/sessions/:id/navigate', async (req, res) => {
   if (moneyGuardActive(session) && typeof url === 'string' && MONEY_URL_RE.test(url)) {
     return res.status(400).json({ error: `Blocked navigation to a paid Facebook ads/boost/billing surface (${url.slice(0, 80)}). ${MONEY_GUARD_MSG}`, moneyGuard: true });
   }
+  const servePort = typeof url === 'string' ? browserServePortDenial(url, liveOpencodeServePorts()) : null;
+  if (servePort) return res.status(403).json({ error: servePort, servePortGuard: true });
 
   const routed = getTargetPage(session, req);
   if (!routed) return res.status(404).json({ error: `Tab ${req.body?.tabId} not found in session` });
@@ -35226,6 +35753,14 @@ const LAUNCH_TASKS = {
   'assistant-catalog': async () => { await _assistantCatalog?.full?.({ force: true }); },
   // Subscription quotas the account menus show.
   'account-usage': async () => { await _assistantAccountUsage?.refresh?.(); },
+  // The old Codex prompt / OpenCode command bridges proven SynaBun's move to native skill folders, once per start
+  // (docs/skills-studio.md → The old bridges and their move). Not under a test run or a temporary data home.
+  'skills-bridges': async () => {
+    if (!skillsAutoMigrationAllowed()) return;
+    const out = await skillsService.autoMigrateBridges();
+    if (out.ran) console.log(`[skills] moved ${out.result?.results?.filter((r) => r.outcome === 'migrated').length || 0} old bridge file(s) to skill folders (${out.result?.journalId || 'no journal'})`);
+    else if (out.reason && out.reason !== 'nothing') console.log(`[skills] old bridges not moved at start: ${out.reason}${out.error ? ` (${out.error})` : ''}`);
+  },
   // What the Codex panel's settings and cog menu validate against (a Codex start per setting value, once per version).
   'codex-settings': async () => {
     const found = cliResolver.launcher('codex');
@@ -35234,6 +35769,15 @@ const LAUNCH_TASKS = {
     if (found.state === 'installed' && bin && /[\\/]/.test(bin)) await readCodexSettingsSchema(bin).catch(() => null);
   },
 };
+
+/**
+ * Whether the start-up move of the old bridges may run (lib/skills/migration.js autoMigrationAllowed): not under a test
+ * run, never from a temporary data home (os.tmpdir(), TMPDIR, /tmp, /var/folders and their /private twins, by real
+ * path: a dev or test boot with the real HOME must not move the owner's real bridges), not with the kill switch.
+ */
+function skillsAutoMigrationAllowed() {
+  return autoMigrationAllowed({ env: process.env, dataHome: DATA_HOME });
+}
 
 // A CLI the resolver found (probed or not yet): the warm-up starts nothing for a tool that is not installed.
 function cliFoundForWarmup(toolKey) {
@@ -35363,6 +35907,8 @@ const httpServer = app.listen(PORT, async () => {
   // stopped only when they are provably its own and nothing uses them (lib/opencode-serve-records.js). An
   // OpenCode start that comes earlier makes the same look first (and this one then finds nothing left).
   setTimeout(() => { sweepLeftoverOpencodeServes(); }, 1000);
+  // The cloudflared a crashed server left running (lib/cloudflared/tunnel.js): at once, its old address points here.
+  sweepLeftoverTunnels();
 
   // Compare the installed Claude CLI with the release the Agent SDK was built
   // against, once, so an older installation is named in the log before the
@@ -35406,7 +35952,7 @@ const httpServer = app.listen(PORT, async () => {
       },
       () => {
         try {
-          const oc = rebuildOpencodeCache({ getOpencodeDb, protocol: _ocpProtocol });
+          const oc = rebuildOpencodeCache({ getOpencodeDb });
           if (oc.updated > 0) console.log(`  Session cache (opencode): indexed ${oc.updated}/${oc.sessions}`);
         } catch (err) { console.warn('  Session cache (opencode) error:', err.message); }
       },
@@ -35600,6 +36146,20 @@ httpServer.on('upgrade', function onUpgrade(req, socket, head) {
       return;
     }
     // Whiteboard + sync always allowed (read-only viewing; sync needed for permission delivery)
+  }
+
+  // Owner authority by peer identity (lib/owner-authority.js): an owner's socket (a terminal, the agent panels, the
+  // Assistant, the browser panel) is refused to SynaBun's automation browser, a relay, another SynaBun server, a
+  // remote login and an agent's tree that does not say it is an agent's call; the sync socket stays open for them,
+  // read-only. The peer is looked up once, then the handler runs again from the top with the answer on the request.
+  if (!req._synabunOwnerChecked && (_ownerAuthority.socketScope(url.pathname).owner || _ownerAuthority.socketScope(url.pathname).readOnly)) {
+    req._synabunOwnerChecked = true;
+    _ownerAuthority.checkUpgrade(req, url.pathname).then((verdict) => {
+      if (verdict.refuse) { refuseUpgrade(socket, 403); return; }
+      if (verdict.readOnly) req._synabunReadOnly = true;
+      onUpgrade(req, socket, head);
+    }, () => onUpgrade(req, socket, head));
+    return;
   }
 
   // Terminal sockets belong to the pty-host: hand the raw socket over (after

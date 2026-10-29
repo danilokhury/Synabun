@@ -15,14 +15,18 @@
 //                       reactive fallback); Assistant task runs' workers in
 //                       native-loop-providers.js (Claude),
 //                       assistant-brains/codex-browser-policy-hook.mjs and
-//                       assistant-brains/opencode-browser-policy.js
+//                       assistant-brains/opencode2-browser-policy/
 //
 // Lexical, like remote-policy.js: a speed bump, not a sandbox. A shell that
 // builds a program name at run time, or a script loading a browser library
 // from a file SynaBun cannot read, gets past it. Mentions (rg playwright,
-// cat pw.cjs, sed -i … pw.cjs, git, code that only names a library) and a
-// project's own automated tests (npm test, node --test, vitest, jest, npx
-// playwright test run inside the project on files inside it) always pass.
+// cat pw.cjs, sed -i … pw.cjs, git, code that only names a library), a
+// syntax check (node --check <file>: Node parses it and runs nothing) and
+// automated tests (npm test, node --test, vitest, jest, npx playwright test)
+// run from inside one allowed project on files inside that same project
+// always pass. The allowed projects are the session's own and the `roots` its
+// caller passes: the registered SynaBun projects that are code projects
+// (lib/browser-policy-roots.js, read by the caller as a run starts).
 // Computer use on a browser window is refused by the desktop guards
 // (lib/desktop/guards.js), which know the app a click or a key lands in.
 // Pure ESM with no imports of SynaBun's own, loaded by Node and by OpenCode's
@@ -68,6 +72,9 @@ function browserToolNames(tools) {
   };
 }
 
+// Where automated tests run, and the syntax check: one sentence for the rule text and every refusal.
+const TEST_RUN_RULE = 'Automated tests run through their test runner (npm test, node --test, vitest, jest, npx playwright test, not its UI or debug mode) from inside the project they belong to: cd into that project first and name only its own files. That project may be this session\'s or any registered SynaBun project that is a code project (git, package.json or deno.json at its top; never the Downloads folder). A syntax check (node --check <file>) always runs.';
+
 /**
  * The browser rule, as bullet lines: the brain's persona (its host's tool
  * names in `tools`), the worker prompts of browser runs. `host`: claude /
@@ -78,7 +85,8 @@ export function browserPolicyText({ tools = '', host = null } = {}) {
   const web = WEB_TOOL_WORDS[hostKey(host)] || 'WebSearch / WebFetch (OpenCode webfetch / websearch, Codex web_search)';
   return [
     `- Every page, public or localhost, goes through SynaBun's browser tools (${t.navigate}, ${t.snapshot}, ${t.screenshot}, ${t.console} and the other browser_* tools); they open the browser configured in SynaBun (MoreLogin). Nothing else opens a page.`,
-    '- Never run Playwright, Puppeteer or Selenium code of your own to look at a page (a script, node -e, python -c, a heredoc), and never `npx playwright` except to run the project\'s automated tests (npx playwright test).',
+    '- Never run Playwright, Puppeteer or Selenium code of your own to look at a page (a script, node -e, python -c, a heredoc), and never `npx playwright` except to run automated tests (npx playwright test).',
+    `- ${TEST_RUN_RULE}`,
     '- Never launch Chrome, Chromium, Edge, chrome-headless-shell or any other browser binary, and never take headless screenshots (--headless, --screenshot).',
     '- Never `open` a URL or a browser app, and never use computer use on a browser app.',
     `- Never use the Playwright, Chrome DevTools, Claude-in-Chrome or any other browser MCP tools, nor ${web}.`,
@@ -229,6 +237,27 @@ function resolvePath(base, path) {
 function insideDir(path, dir) {
   const rel = relative(resolve(dir), resolve(path));
   return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
+// macOS and Windows name a folder in any letter case: an exclusion below compares that way.
+const caseless = (path) => (process.platform === 'darwin' || process.platform === 'win32' ? path.toLowerCase() : path);
+
+/**
+ * Where a test runner may run: the session's project, then each of `roots`
+ * (the caller's registered code projects) that is an absolute path, never
+ * the home folder or a folder above it, never the Downloads folder or
+ * anything in it (the caller's rule, held here too by name alone).
+ */
+function testRoots(project, roots) {
+  const out = [project];
+  const home = caseless(resolve(homedir()));
+  const downloads = caseless(resolve(homedir(), 'Downloads'));
+  for (const root of Array.isArray(roots) ? roots : []) {
+    if (typeof root !== 'string' || !isAbsolute(root)) continue;
+    const path = resolve(root);
+    if (insideDir(home, caseless(path)) || insideDir(caseless(path), downloads)) continue;
+    if (!out.includes(path)) out.push(path);
+  }
+  return out;
 }
 /** A regular file up to MAX_SCRIPT_BYTES, else null. */
 function defaultReadFile(path) {
@@ -549,13 +578,12 @@ function pathArgs(args) {
 }
 
 /**
- * A project's own automated tests: npm|pnpm|yarn|bun test (and run test*),
- * node --test, deno test, vitest, jest, playwright test — through a package
- * runner too — run from inside the project (`cwd`, where the command runs, `cd`
- * included) on file arguments, if any, that lie inside it too.
+ * A test runner's command, wherever it runs: { rest (its arguments, the files
+ * among them), playwright } for npm|pnpm|yarn|bun test (and run test*), node
+ * --test, deno test, vitest, jest, playwright test — through a package runner
+ * too — else null.
  */
-function isTestRun(words, { cwd, project }) {
-  if (!insideDir(cwd, project)) return false;
+function testRunner(words) {
   const [head, ...args] = words;
   const name = programName(head);
   let rest = null;
@@ -575,14 +603,58 @@ function isTestRun(words, { cwd, project }) {
     if (run?.pkg === 'vitest' || run?.pkg === 'jest') rest = run.args;
     else if (PLAYWRIGHT_TEST.has(run?.pkg) && run.args[0] === 'test') { rest = run.args.slice(1); playwright = true; }
   }
-  if (rest === null) return false;
-  if (playwright && rest.some((arg) => PLAYWRIGHT_INTERACTIVE.test(arg))) return false;
-  return pathArgs(rest).every((path) => insideDir(resolvePath(cwd, path), project));
+  return rest === null ? null : { rest, playwright };
+}
+/** The allowed projects (ctx.roots) the command runs from (`cwd`, where it runs, `cd` included). */
+const rootsHolding = (cwd, roots) => roots.filter((root) => insideDir(cwd, root));
+
+/**
+ * Automated tests: a test runner (testRunner) run from inside one of the
+ * allowed projects (the session's own, or a registered code project the
+ * caller passed) on file arguments, if any, that lie inside that same one.
+ */
+function isTestRun(words, { cwd, roots }) {
+  const run = testRunner(words);
+  if (!run) return false;
+  if (run.playwright && run.rest.some((arg) => PLAYWRIGHT_INTERACTIVE.test(arg))) return false;
+  const files = pathArgs(run.rest).map((path) => resolvePath(cwd, path));
+  return rootsHolding(cwd, roots).some((root) => files.every((file) => insideDir(file, root)));
+}
+/** Where a test run that is not exempt ran from, for its refusal. */
+function testRunWhere({ cwd, roots }) {
+  return rootsHolding(cwd, roots).length
+    ? 'on files outside the project it runs in'
+    : `run from ${cwd}, outside this session's project and every registered code project`;
 }
 /** Why a `playwright test` that is not an automated test run is refused. */
-function playwrightTestWhy(runner, args, { cwd, project }) {
+function playwrightTestWhy(runner, args, ctx) {
   if (args.some((arg) => PLAYWRIGHT_INTERACTIVE.test(arg))) return `${runner} test in its UI or debug mode (a browser window)`;
-  return insideDir(cwd, project) ? `${runner} test on files outside the project` : `${runner} test run from ${cwd}, outside the project`;
+  return `${runner} test ${testRunWhere(ctx)}`;
+}
+
+/**
+ * `node --check <file>` / `node -c <file>` (or its program on stdin): Node
+ * parses the program and runs none of it. Checked on Node 24: the forms
+ * below run code and are not exempt, so the usual check applies to them:
+ * any other option before the file (-r / --require and --import run the
+ * module they name, --env-file and --experimental-config-file can add a
+ * --require, --run runs a package.json script; -e / -p, --test and --watch
+ * Node refuses to combine with --check), NODE_OPTIONS set anywhere on the
+ * line (it can hold a --require), `inspect` as the file (node inspect
+ * starts the next file under the debugger) and arguments xargs supplies.
+ * Only node / nodejs started directly: a package runner's (npx node) is not.
+ */
+function syntaxCheckOnly(args, seg, ctx) {
+  if (ctx.nodeOptions || seg.words.some((word) => word.includes('NODE_OPTIONS') || programName(word) === 'xargs')) return false;
+  let check = false;
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === '--check' || arg === '-c') { check = true; continue; }
+    if (arg === '--') return check && args[i + 1] !== 'inspect';
+    if (arg.startsWith('-') && arg !== '-') return false;
+    return check && arg !== 'inspect';
+  }
+  return check;
 }
 
 /** What `open` / xdg-open is asked to show when it is a browser, a URL or a web page, else null. */
@@ -660,14 +732,28 @@ const RUNTIME_VALUE_OPTIONS = {
   ts: new Set(['--tsconfig', '-P', '--project', '-O', '--compiler-options', '-r', '--require', '--import', '--loader', '-C', '--conditions', '--env-file', '--config', '--root', '--mode', '-I', '--ignore']),
 };
 const EVAL_FLAG = /^(?:--eval|--print|-[A-Za-z]*[ep])$/;
+// Options whose value is a module the runtime loads and runs before the program (node -r, --import, a loader; bun --preload).
+const PRELOAD_OPTIONS = new Set(['-r', '--require', '--import', '--loader', '--experimental-loader', '--preload']);
+const PRELOAD_INLINE = /^(--require|--import|--loader|--experimental-loader|--preload)=(.*)$/;
+
+/** The modules a list of runtime options preloads (`-r x`, `--import=x` …), in order. */
+function preloadsIn(words) {
+  const out = [];
+  for (let i = 0; i < words.length; i += 1) {
+    if (PRELOAD_OPTIONS.has(words[i])) { if (words[i + 1] !== undefined) out.push(words[i + 1]); i += 1; continue; }
+    const inline = PRELOAD_INLINE.exec(words[i]);
+    if (inline) out.push(inline[2]);
+  }
+  return out;
+}
 
 /**
- * A JS runtime's arguments → { code: [inline code], script, stdin }: node,
+ * A JS runtime's arguments → { code: [inline code], script, preload }: node,
  * bun, deno, tsx, ts-node and friends. `script` "-" or none (and no code):
- * the program comes from stdin.
+ * the program comes from stdin. `preload`: the modules its options load first.
  */
 function jsProgram(name, args) {
-  const out = { code: [], script: null };
+  const out = { code: [], script: null, preload: [] };
   let list = args;
   let valued = NODE_VALUE_OPTIONS;
   if (name === 'bun') {
@@ -683,14 +769,25 @@ function jsProgram(name, args) {
     valued = RUNTIME_VALUE_OPTIONS.ts;
     if (list[0] === 'watch') list = list.slice(1); // tsx watch <file>
   }
+  const node = name === 'node' || name === 'nodejs';
   for (let i = 0; i < list.length; i += 1) {
     const arg = list[i];
     if (arg === '-') { out.script = '-'; return out; }
-    if (arg === '--') { out.script = list[i + 1] ?? null; return out; }
+    if (arg === '--') {
+      // `node -- inspect <file>` is node inspect too.
+      const inspect = node && !out.inspect && list[i + 1] === 'inspect';
+      out.script = list[i + (inspect ? 2 : 1)] ?? null;
+      return out;
+    }
     if (/^--(?:eval|print)=/.test(arg)) { out.code.push(arg.slice(arg.indexOf('=') + 1)); return out; }
     if (EVAL_FLAG.test(arg)) { if (list[i + 1] !== undefined) out.code.push(list[i + 1]); return out; }
+    if (PRELOAD_OPTIONS.has(arg) && valued.has(arg)) { if (list[i + 1] !== undefined) out.preload.push(list[i + 1]); i += 1; continue; }
+    const inline = PRELOAD_INLINE.exec(arg);
+    if (inline) { out.preload.push(inline[2]); continue; }
     if (valued.has(arg)) { i += 1; continue; }
     if (arg.startsWith('-')) continue;
+    // `node inspect <file>` runs <file> under the debugger.
+    if (arg === 'inspect' && node && !out.inspect) { out.inspect = true; continue; }
     out.script = arg;
     return out;
   }
@@ -723,6 +820,17 @@ const FILE_READERS = new Set(['cat', 'type', 'head', 'tail', 'bat', 'more', 'les
 function interpreterDenial(name, args, seg, ctx) {
   const python = PYTHON.test(name);
   const program = python ? pythonProgram(args) : jsProgram(name, args);
+  // A preloaded file runs before the program (with --check too): its options', and NODE_OPTIONS set on the command itself.
+  if (!python) {
+    const inherited = seg.words.filter((word) => word.startsWith('NODE_OPTIONS=')).flatMap((word) => preloadsIn(word.slice(13).trim().split(/\s+/)));
+    for (const module of [...inherited, ...program.preload]) {
+      if (!PATH_LIKE.test(module)) continue; // a package name: not read
+      let file = module;
+      if (/^file:/i.test(module)) { try { file = decodeURIComponent(new URL(module).pathname); } catch { continue; } }
+      const what = codeMarker(readScript(ctx, resolvePath(ctx.cwd, file)));
+      if (what) return `preloading ${module}, a script that ${what}, into ${name}`;
+    }
+  }
   for (const code of program.code) {
     const what = codeMarker(code);
     if (what) return `inline code that ${what} (${name} ${python ? '-c' : '-e'})`;
@@ -818,7 +926,12 @@ function segmentDenial(words, seg, ctx) {
   }
   if (name === 'playwright' && args[0] === 'test') return playwrightTestWhy(name, args.slice(1), ctx);
   if (BROWSER_CLIS.has(name)) return `${name}${args[0] ? ` ${args[0]}` : ''} (a browser CLI)`;
-  if (JS_RUNTIMES.has(name) || PYTHON.test(name)) return interpreterDenial(name, args, seg, ctx);
+  if ((name === 'node' || name === 'nodejs') && syntaxCheckOnly(args, seg, ctx)) return null;
+  if (JS_RUNTIMES.has(name) || PYTHON.test(name)) {
+    const why = interpreterDenial(name, args, seg, ctx);
+    // node --test / deno test of a browser test from outside the project it belongs to: say where it may run.
+    return why && testRunner(words) ? `${why} (${name === 'deno' ? 'deno test' : `${name} --test`} ${testRunWhere(ctx)})` : why;
+  }
   // A script run as a program (./shot.sh, ./pw.cjs, /tmp/x): by its shebang, else its extension.
   if (/[/\\]/.test(head)) {
     const text = readScript(ctx, resolvePath(ctx.cwd, head));
@@ -838,7 +951,10 @@ function segmentDenial(words, seg, ctx) {
 function commandDenial(text, ctx) {
   if (ctx.depth > MAX_DEPTH) return null;
   let cwd = ctx.cwd;
+  // NODE_OPTIONS set or exported earlier on the line reaches every later node (syntaxCheckOnly).
+  let nodeOptions = ctx.nodeOptions === true;
   for (const seg of simpleCommands(text)) {
+    if (seg.words.some((word) => word.includes('NODE_OPTIONS'))) nodeOptions = true;
     const words = commandWords(seg.words);
     // `cd dir && node pw.cjs`: the rest of the line runs there (a bare cd: the home folder).
     if (words[0] === 'cd' || words[0] === 'pushd') {
@@ -847,7 +963,7 @@ function commandDenial(text, ctx) {
       else if (words[0] === 'cd' && words.length === 1) cwd = homedir();
       continue;
     }
-    const why = segmentDenial(words, seg, { ...ctx, cwd });
+    const why = segmentDenial(words, seg, { ...ctx, cwd, nodeOptions });
     if (why) return why;
   }
   return null;
@@ -855,13 +971,15 @@ function commandDenial(text, ctx) {
 
 /** A shell tool's command: a string (a command line) or an argv array (Codex). */
 function argvDenial(argv, ctx) {
-  const words = commandWords(argv.map((arg) => String(arg ?? '')));
+  const raw = argv.map((arg) => String(arg ?? ''));
+  const words = commandWords(raw);
   if (!words.length) return null;
   if (SHELLS.has(programName(words[0]))) {
     const script = shellScript(words.slice(1));
     if (script !== null) return commandDenial(script, ctx);
   }
-  return segmentDenial(words, { words, heredocs: [], inputs: [], pipedFrom: null }, ctx);
+  // The segment keeps its wrappers and assignments (env NODE_OPTIONS=… node --check …).
+  return segmentDenial(words, { words: raw, heredocs: [], inputs: [], pipedFrom: null }, ctx);
 }
 
 // Where each host puts a shell tool's command and its working directory.
@@ -889,18 +1007,22 @@ function shellDenial(input, ctx) {
 // ── the refusal ─────────────────────────────────────────────────────────────
 
 function refusal(tool, what) {
-  return `SynaBun browser policy: ${tool} was refused — ${what}. Every page, public or localhost, goes through SynaBun's browser tools (browser_navigate, browser_snapshot, browser_screenshot, browser_console and the other browser_* tools), which open the browser configured in SynaBun. If the SynaBun browser fails or cannot do this, stop and report it; do not switch to another browser or tool. The project's own automated tests still run through its test runner (npm test, node --test, npx playwright test).`;
+  return `SynaBun browser policy: ${tool} was refused — ${what}. Every page, public or localhost, goes through SynaBun's browser tools (browser_navigate, browser_snapshot, browser_screenshot, browser_console and the other browser_* tools), which open the browser configured in SynaBun. If the SynaBun browser fails or cannot do this, stop and report it; do not switch to another browser or tool. ${TEST_RUN_RULE}`;
 }
 
 /**
  * Why this tool call may not run under the browser policy (the refusal text),
  * else null. `host`: claude / codex / opencode (null: any). `cwd`: the
- * project directory: relative script paths resolve against it, and a test
- * runner's files must lie inside it. `readFile(path)` returns an executed
- * script's text or null (tests); by default a regular file up to
- * MAX_SCRIPT_BYTES is read, and anything unreadable is allowed.
+ * session's project directory: relative script paths resolve against it, and
+ * a test runner may run inside it. `roots`: the other projects a test runner
+ * may run inside (absolute paths: the registered code projects,
+ * lib/browser-policy-roots.js; the home folder, a folder above it and the
+ * Downloads folder are dropped). A test run's directory and its files lie in
+ * one of them. `readFile(path)` returns an executed script's text or null
+ * (tests); by default a regular file up to MAX_SCRIPT_BYTES is read, and
+ * anything unreadable is allowed.
  */
-export function browserToolDenial(tool, input = {}, { host = null, cwd = null, readFile = defaultReadFile } = {}) {
+export function browserToolDenial(tool, input = {}, { host = null, cwd = null, roots = [], readFile = defaultReadFile } = {}) {
   const name = String(tool ?? '').trim();
   if (!name) return null;
   const kind = hostKey(host);
@@ -919,8 +1041,41 @@ export function browserToolDenial(tool, input = {}, { host = null, cwd = null, r
   }
   if (isSynabunTool(name) || /^mcp__/i.test(name)) return null;
   if (WEB_TOOLS.has(lower)) return refusal(name, 'web search / fetch outside the SynaBun browser');
+  // OpenCode's own browser tool drives a browser that is not SynaBun's.
+  if (kind === 'opencode' && lower === 'browser') return refusal(name, 'OpenCode\'s own browser');
   if (!SHELL_TOOLS.has(lower)) return null;
   const project = cwd ? resolve(String(cwd)) : process.cwd();
-  const why = shellDenial(args, { project, cwd: project, readFile: typeof readFile === 'function' ? readFile : defaultReadFile, depth: 0 });
+  const why = shellDenial(args, { roots: testRoots(project, roots), cwd: project, readFile: typeof readFile === 'function' ? readFile : defaultReadFile, depth: 0 });
   return why ? refusal(name, why) : null;
+}
+
+// ── SynaBun's own OpenCode serves ───────────────────────────────────────────
+
+/**
+ * The port a web address (http, https, ws, wss) opens: its own, else the scheme's (80 / 443); null for any other
+ * address (about:blank, data:, file:, chrome:) or one that cannot be read.
+ */
+export function addressPort(url) {
+  let parsed;
+  try { parsed = new URL(String(url ?? '')); } catch { return null; }
+  if (!/^(?:https?|wss?):$/.test(parsed.protocol)) return null;
+  const port = Number(parsed.port || (parsed.protocol === 'https:' || parsed.protocol === 'wss:' ? 443 : 80));
+  return Number.isInteger(port) && port > 0 ? port : null;
+}
+
+/**
+ * Why the SynaBun browser may not open this address (the refusal text), else null: it is on the port of one of
+ * SynaBun's own OpenCode serves running now (`ports`, a Set or a list: server.js liveOpencodeServePorts). Such a
+ * serve's API changes a session's rules or moves it; nothing a page does needs it. Any host counts, not only
+ * localhost: a name that resolves to this computer reaches the serve too. server.js refuses a navigation to it and
+ * aborts every request and WebSocket of the browser to it (installServePortGuard), whatever opened the page.
+ */
+export function browserServePortDenial(url, ports) {
+  const port = addressPort(url);
+  if (!port) return null;
+  const live = ports instanceof Set ? ports : new Set(Array.isArray(ports) ? ports.map(Number) : []);
+  if (!live.has(port)) return null;
+  let host = '';
+  try { host = new URL(String(url)).hostname; } catch { /* addressPort read it */ }
+  return `SynaBun browser policy: ${host}:${port} is one of SynaBun's own OpenCode servers, which the SynaBun browser never opens (their API changes what a session may do). Use your tools instead; whatever they cannot do is yours to report.`;
 }

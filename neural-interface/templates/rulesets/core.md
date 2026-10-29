@@ -12,7 +12,7 @@
 
 ### Tools
 - Use the exact tool names in your tool list (the host adds a prefix). Never invent one.
-- If a SynaBun tool you need is missing, call `profile` (`get`, then `set` the narrowest profile that has it) and restore the previous one afterwards. <!-- except: codex -->
+- If a SynaBun tool you need is missing, call `tool_groups` (`get`, then `add` the group that has it). This changes only this runtime.
 
 ### Browser
 - For every page, public-web and localhost alike (browsing, search, page retrieval, screenshots, visual checks), use only the configured SynaBun browser tools, and open a new tab instead of reusing an existing one.

@@ -51,3 +51,14 @@ export function renameSkillDocument(text, name) {
   if (!result.ok) return null;
   return fromEditing(text, result.text);
 }
+
+/**
+ * A SKILL.md with another `description` (the evaluation's optimiser proposes one): that one key changed, every other
+ * byte as it was. Null when the frontmatter cannot be patched.
+ */
+export function withSkillDescription(text, description) {
+  const editing = toEditing(text);
+  const result = frontmatter.patch(editing.text, { description });
+  if (!result.ok) return null;
+  return fromEditing(text, result.text);
+}

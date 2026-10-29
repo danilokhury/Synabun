@@ -143,9 +143,6 @@ export function contextMenuModel(d = {}) {
   const notice = updateNoticeText(d.updateAvailable, d.serverVersion);
   const versions = [['OpenCode', d.serverVersion ? String(d.serverVersion) : NOT_REPORTED]];
   if (notice) versions.push(['Update', `${String(d.updateAvailable).replace(/^v/i, '')} available`, notice]);
-  versions.push(d.sdkVersion
-    ? ['OpenCode SDK', String(d.sdkVersion), '@opencode-ai/sdk, the client SynaBun talks to OpenCode through']
-    : ['OpenCode SDK', NOT_REPORTED, d.serverVersion ? 'Restart SynaBun to see the SDK version here.' : '']);
 
   const sessionId = d.sessionId ? String(d.sessionId) : '';
   const sessionRows = [

@@ -19,15 +19,11 @@
 //                checked against the SHA-256 GitHub publishes for it, or, when
 //                GitHub's API does not answer, from https://chatgpt.com/codex/
 //                (the same file). The installer checks the package it fetches.
-//   OpenCode     the install script https://opencode.ai/install (bash) on
-//                macOS and Linux. On Windows, where that script does not run:
-//                the newest OpenCode 1 release archive for the processor
-//                (opencode-windows-x64-baseline.zip, which runs on every x64
-//                CPU, or opencode-windows-arm64.zip) from the anomalyco/opencode
-//                GitHub releases, checked against its published SHA-256, its
-//                opencode.exe read out without an unzip program (the backups'
-//                streaming reader) and put in %USERPROFILE%\.opencode\bin, the
-//                folder the official installer uses (and the resolver looks in).
+//   OpenCode     OpenCode 2's install script https://opencode.ai/v2/install
+//                (bash) on macOS and Linux, the one `opencode upgrade` itself
+//                runs (it puts opencode in ~/.opencode/bin). Windows has no
+//                one-click install: OpenCode 2 comes from WinGet there
+//                (Anomaly.OpenCode), and the banner shows that command.
 //
 // Every download is HTTPS, every redirect too, and only to the vendor's own
 // hosts. Nothing runs as administrator; everything lands in the user's own
@@ -41,12 +37,11 @@
 // `code` the page has words for. Nothing here throws to a caller of start().
 
 import { spawn } from 'node:child_process';
-import { createHash, randomBytes } from 'node:crypto';
-import { createWriteStream, existsSync, mkdirSync, rmSync, renameSync, unlinkSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, rmSync } from 'node:fs';
 import { mkdtemp, open } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { openZipArchive } from './backup-zip-reader.js';
 import { buildInstallCommand } from './cli-update-planner.js';
 import { packagedPathLast, rememberedPackagedPath, withPathEnv } from './augmented-path.js';
 
@@ -60,7 +55,6 @@ export const CLI_INSTALL_ERROR_CODES = Object.freeze([
   'timeout',                 // nothing arrived for too long, or the installer ran too long
   'installer-failed',        // the vendor's installer exited with an error
   'not-found-after-install', // it finished, but no working CLI is found
-  'unpack',                  // the archive did not hold the program
   'disk',                    // a file could not be written
   'cancelled',               // stopped (SynaBun shutting down)
   'internal',                // anything else
@@ -79,13 +73,12 @@ export class CliInstallError extends Error {
 export const CLI_INSTALL_GUIDES = Object.freeze({
   'claude-code': 'https://code.claude.com/docs/en/setup',
   codex: 'https://learn.chatgpt.com/docs/codex/cli',
-  opencode: 'https://opencode.ai/docs/',
+  opencode: 'https://opencode.ai/v2/docs',
   gemini: 'https://github.com/google-gemini/gemini-cli',
 });
 
 const GITHUB_DOWNLOAD_HOSTS = ['github.com', 'objects.githubusercontent.com', 'release-assets.githubusercontent.com', 'github-releases.githubusercontent.com'];
 const MAX_SCRIPT_BYTES = 2 * 1024 * 1024;
-const MAX_ARCHIVE_BYTES = 600 * 1024 * 1024;
 const MAX_JSON_BYTES = 8 * 1024 * 1024;
 const MAX_REDIRECTS = 6;
 const LOG_KEEP = 200;
@@ -95,12 +88,12 @@ const hostIs = (...hosts) => (url) => hosts.includes(url.hostname);
 
 /**
  * The one-click method for a tool on this system, or null when there is none
- * (Gemini CLI, a 32-bit or other system). Pure: tests ask it for every OS.
+ * (Gemini CLI, OpenCode on Windows, a 32-bit or other system). Pure: tests ask
+ * it for every OS.
  */
 export function installPlanFor(toolKey, { platform = process.platform, arch = process.arch, env = process.env, home } = {}) {
   if (!(SUPPORTED[platform] || []).includes(arch)) return null;
   const windows = platform === 'win32';
-  const homeDir = home || (windows ? env.USERPROFILE : env.HOME) || os.homedir();
   switch (toolKey) {
     case 'claude-code':
       return {
@@ -126,30 +119,16 @@ export function installPlanFor(toolKey, { platform = process.platform, arch = pr
         env: { CODEX_NON_INTERACTIVE: '1' },
       };
     case 'opencode':
-      if (windows) {
-        return {
-          tool: toolKey,
-          kind: 'archive',
-          interpreter: null,
-          repo: 'anomalyco/opencode',
-          tag: /^v1\.\d+\.\d+$/,
-          assets: arch === 'arm64' ? ['opencode-windows-arm64.zip'] : ['opencode-windows-x64-baseline.zip', 'opencode-windows-x64.zip'],
-          member: 'opencode.exe',
-          // The official installer's folder; $OPENCODE_INSTALL_DIR, which older installers honoured, when set.
-          dir: env.OPENCODE_INSTALL_DIR || path.win32.join(homeDir, '.opencode', 'bin'),
-          source: 'https://github.com/anomalyco/opencode/releases',
-          label: 'OpenCode release archive',
-          env: {},
-        };
-      }
+      // OpenCode 2's own installer is a bash script; on Windows it comes from WinGet (no one-click install).
+      if (windows) return null;
       return {
         tool: toolKey,
         kind: 'script',
         interpreter: 'bash',
-        url: 'https://opencode.ai/install',
+        url: 'https://opencode.ai/v2/install',
         allow: (url) => url.hostname === 'opencode.ai' || (url.hostname === 'raw.githubusercontent.com' && url.pathname.startsWith('/anomalyco/opencode/')),
-        source: 'https://opencode.ai/install',
-        label: 'OpenCode install script',
+        source: 'https://opencode.ai/v2/install',
+        label: 'OpenCode 2 install script',
         env: {},
       };
     default:
@@ -338,55 +317,6 @@ export function releaseAsset(release, name, repo) {
   const url = String(asset.browser_download_url || '');
   if (!url.startsWith(`https://github.com/${repo}/releases/download/`)) return null;
   return { name, url, size: Number(asset.size) || null, sha256: sha256OfDigest(asset.digest) };
-}
-
-/**
- * The newest OpenCode 1 release (not a draft, not a prerelease; OpenCode 2 is
- * a different program SynaBun's panel does not drive) that carries one of
- * `assets`, the first listed preferred.
- */
-export function pickOpencodeRelease(releases, { assets, repo = 'anomalyco/opencode', tag = /^v1\.\d+\.\d+$/ } = {}) {
-  for (const release of Array.isArray(releases) ? releases : []) {
-    if (!release || release.draft || release.prerelease || !tag.test(String(release.tag_name || ''))) continue;
-    for (const name of assets || []) {
-      const asset = releaseAsset(release, name, repo);
-      if (asset) return { tag: release.tag_name, version: String(release.tag_name).replace(/^v/, ''), asset };
-    }
-  }
-  return null;
-}
-
-// ── Zip ─────────────────────────────────────────────────────────────────────
-
-const unpack = (message) => new CliInstallError('unpack', message);
-
-/**
- * Read one member out of a zip archive into `destination` (a new file),
- * without an unzip program and without using a name of the archive as a path:
- * only the entry called exactly `member` is read, through the streaming
- * reader of backups (backup-zip-reader.js: ZIP64, stored or deflated, checked
- * against its size and CRC-32).
- */
-export async function extractZipMember({ archive, member, destination, maxSize = 1024 ** 3, mode = 0o755 }) {
-  let zip;
-  try { zip = await openZipArchive(archive); } catch (error) { throw unpack(`The download is not a readable zip archive (${error?.message || error}).`); }
-  let opened = false;
-  try {
-    const entry = zip.getEntry(member);
-    if (!entry) throw unpack(`The archive holds no ${member}.`);
-    if (entry.uncompressedSize > maxSize) throw unpack(`The archive's ${member} is larger than expected.`);
-    const out = createWriteStream(destination, { flags: 'wx', mode });
-    out.on('open', () => { opened = true; });
-    await zip.pipeEntry(entry, out);
-    return { size: entry.uncompressedSize };
-  } catch (error) {
-    if (opened) rmSync(destination, { force: true });
-    if (error instanceof CliInstallError) throw error;
-    if (DISK_CODES.has(errorCode(error))) throw asInstallError(error, 'disk', `The program could not be written (${errorCode(error)}).`);
-    throw unpack(`The archive's ${member} could not be read (${error?.message || error}).`);
-  } finally {
-    try { await zip.close(); } catch { /* closed */ }
-  }
 }
 
 // ── Output ──────────────────────────────────────────────────────────────────
@@ -630,52 +560,6 @@ export function createCliInstaller({
     });
   }
 
-  async function installArchive(job, plan, workDir, { step, line, progress }) {
-    step('download');
-    const releases = await fetchGithubJson(`https://api.github.com/repos/${plan.repo}/releases?per_page=20`, { fetchImpl, signal: job.abort.signal });
-    const picked = pickOpencodeRelease(releases, { assets: plan.assets, repo: plan.repo, tag: plan.tag });
-    if (!picked) throw new CliInstallError('http', `No OpenCode 1 release of ${plan.repo} carries ${plan.assets.join(' or ')}.`);
-    job.source = picked.asset.url;
-    line(`OpenCode ${picked.version}: ${picked.asset.name}`);
-    const archive = path.join(workDir, picked.asset.name);
-    const got = await downloadFile({
-      url: picked.asset.url,
-      allow: (url) => GITHUB_DOWNLOAD_HOSTS.includes(url.hostname),
-      destination: archive,
-      maxBytes: MAX_ARCHIVE_BYTES,
-      expectedSize: picked.asset.size,
-      sha256: picked.asset.sha256,
-      fetchImpl,
-      signal: job.abort.signal,
-      onProgress: progress,
-      stallMs,
-    });
-    step('verify');
-    line(picked.asset.sha256 ? `SHA-256 matches the published one (${got.sha256.slice(0, 12)}…).` : 'GitHub publishes no SHA-256 for this file; its size matches.');
-    step('extract');
-    try { mkdirSync(plan.dir, { recursive: true }); } catch (error) { throw asInstallError(error, 'disk', `${plan.dir} could not be created (${errorCode(error)}).`); }
-    const part = path.join(plan.dir, `.${plan.member}.${randomBytes(4).toString('hex')}.part`);
-    await extractZipMember({ archive, member: plan.member, destination: part });
-    step('place');
-    const head = Buffer.alloc(2);
-    const handle = await open(part, 'r');
-    try { await handle.read(head, 0, 2, 0); } finally { await handle.close(); }
-    if (head[0] !== 0x4d || head[1] !== 0x5a) {
-      rmSync(part, { force: true });
-      throw new CliInstallError('unpack', `The archive's ${plan.member} is not a Windows program.`);
-    }
-    const target = path.join(plan.dir, plan.member);
-    try {
-      renameSync(part, target);
-    } catch (error) {
-      rmSync(part, { force: true });
-      throw asInstallError(error, 'disk', `${target} could not be written (${errorCode(error)}: is an OpenCode still running from there?).`);
-    }
-    // Files SynaBun writes carry no Mark of the Web; a copy that does (a mirror, an antivirus) is cleared so it can start.
-    try { unlinkSync(`${target}:Zone.Identifier`); } catch { /* none */ }
-    line(`Placed ${target}`);
-  }
-
   async function run(job) {
     const { plan, tool } = job;
     const io = stepper(job);
@@ -685,13 +569,9 @@ export function createCliInstaller({
       emit(job, { type: 'start', tool, method: plan.kind, source: plan.source, label: plan.label, platform, arch });
       try { before = await readOsPath(); } catch { before = []; }
       workDir = await mkdtemp(path.join(tmpRoot, `synabun-cli-install-${tool}-`));
-      if (plan.kind === 'script') {
-        const script = await fetchScript(job, plan, workDir, io);
-        io.step('run');
-        await runScript(job, plan, script, workDir, before, io);
-      } else {
-        await installArchive(job, plan, workDir, io);
-      }
+      const script = await fetchScript(job, plan, workDir, io);
+      io.step('run');
+      await runScript(job, plan, script, workDir, before, io);
       io.step('check');
       const status = await resolver.resolve(tool, { force: true });
       if (status?.state !== 'installed') {

@@ -14,6 +14,7 @@
 import {
   accountManageModel, accountMenuModel, accountText, apiKeyErrorText, serverAccountId,
 } from './account-view.js';
+import { frameRect } from './app-frame.js';
 
 const STYLE_ID = 'account-menu-styles';
 // Values come from the panel's own tokens: Claude's global --t-* / --s-* scale, Codex's --cxp-* scale
@@ -338,15 +339,17 @@ export function mountAccountMenu({ provider = 'claude', container, before = null
     if (!rect.width && !rect.height && trigger.parentElement) rect = trigger.parentElement.getBoundingClientRect();
     const owner = layer?.() || trigger.closest('[class*="panel"]');
     const ownerWidth = owner?.getBoundingClientRect?.().width;
-    popup.style.width = `${Math.max(0, Math.min(320, ownerWidth > 240 ? ownerWidth - 16 : 320, window.innerWidth - 16))}px`;
+    // Inside the app frame (app-frame.js; the whole window on a page without it), 8px clear of its edges.
+    const f = frameRect();
+    popup.style.width = `${Math.max(0, Math.min(320, ownerWidth > 240 ? ownerWidth - 16 : 320, f.width - 16))}px`;
     const width = popup.offsetWidth || 300;
-    const left = Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8));
-    const below = window.innerHeight - rect.bottom - 14;
-    const above = rect.top - 14;
+    const left = Math.max(f.left + 8, Math.min(rect.right - width, f.right - width - 8));
+    const below = f.bottom - rect.bottom - 14;
+    const above = rect.top - f.top - 14;
     const flip = below < 180 && above > below;
     popup.style.maxHeight = `${Math.max(80, Math.min(520, flip ? above : below))}px`;
     popup.style.left = `${Math.round(left)}px`;
-    popup.style.top = `${Math.round(flip ? Math.max(8, rect.top - 6 - popup.offsetHeight) : rect.bottom + 6)}px`;
+    popup.style.top = `${Math.round(flip ? Math.max(f.top + 8, rect.top - 6 - popup.offsetHeight) : rect.bottom + 6)}px`;
     let z = 201;
     try { z = (parseInt(getComputedStyle(owner).zIndex, 10) || 200) + 1; } catch {}
     popup.style.zIndex = String(z);

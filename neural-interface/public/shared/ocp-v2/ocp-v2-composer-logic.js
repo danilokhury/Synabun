@@ -20,8 +20,6 @@ export const LOCAL_SLASH_COMMANDS = Object.freeze([
   { name: 'compact', description: 'Compact context', action: 'compact', aliases: ['summarize'] },
   { name: 'undo', description: 'Undo the last prompt', action: 'undo', needs: ['session:revert'] },
   { name: 'redo', description: 'Restore what was undone', action: 'redo', needs: ['session:unrevert'] },
-  { name: 'share', description: 'Share this session (public link)', action: 'share', needs: ['session:share', 'session:unshare'] },
-  { name: 'unshare', description: 'Stop sharing this session', action: 'unshare', needs: ['session:share', 'session:unshare'] },
   { name: 'export', description: 'Export the transcript as JSON', action: 'export' },
   { name: 'fork', description: 'Fork this session', action: 'fork', needs: ['session:fork'] },
   { name: 'models', description: 'Pick a model', action: 'models' },
@@ -49,9 +47,8 @@ const SERVER_SOURCES = new Set(['command', 'skill', 'mcp']);
  *   legacy          { skills, userCommands } from the pre-SDK REST lists, used
  *                   only when serverCommands is null
  *   supports(type)  capability check
- *   sharePolicy     OpenCode's `share` setting; 'disabled' removes /share and /unshare
  */
-export function buildSlashCatalog({ serverCommands = null, legacy = null, supports = () => false, sharePolicy = null } = {}) {
+export function buildSlashCatalog({ serverCommands = null, legacy = null, supports = () => false } = {}) {
   const out = [];
   const seen = new Set();
   const add = (entry) => {
@@ -62,7 +59,6 @@ export function buildSlashCatalog({ serverCommands = null, legacy = null, suppor
   };
   for (const cmd of LOCAL_SLASH_COMMANDS) {
     if ((cmd.needs || []).some((type) => !supports(type))) continue;
-    if (sharePolicy === 'disabled' && (cmd.action === 'share' || cmd.action === 'unshare')) continue;
     add({ name: cmd.name, description: cmd.description, aliases: cmd.aliases || [], source: 'builtin', kind: 'local', action: cmd.action });
   }
   const canRun = supports('command:run');
@@ -153,7 +149,7 @@ export function helpCardView({ catalog = [], supports = () => false, canAct = tr
     name: 'Enter',
     text: 'While a turn runs, Enter queues the prompt. The queue is listed above the box and sent in order when the turn ends; after a failed turn it waits for Resume.',
   }] });
-  const mine = ['Copy', canAct && supports('session:revert') && 'Undo to here', canAct && supports('session:fork') && 'Fork from here', canAct && supports('message:delete') && 'Delete'].filter(Boolean);
+  const mine = ['Copy', canAct && supports('session:revert') && 'Undo to here', canAct && supports('session:fork') && 'Fork from here'].filter(Boolean);
   const replies = ['Copy', canAct && supports('session:revert') && 'Retry'].filter(Boolean);
   sections.push({ title: 'Message actions', rows: [
     { name: 'Your prompts', text: `Hover one: ${mine.join(', ')}.` },

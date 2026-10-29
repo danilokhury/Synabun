@@ -170,7 +170,13 @@ export async function loadWorkspace(ws, io, { ask } = {}) {
     ws.skill = skill;
     const draftId = skill.pointers?.draft || null;
     const showRevision = s.mode === 'readonly' ? (skill.pointers?.upstream || skill.pointers?.approved || skill.pointers?.latest) : skill.pointers?.latest;
-    ws.revision = showRevision ? (await io.fetchSkillsRevision(showRevision)).revision : null;
+    try { ws.revision = showRevision ? (await io.fetchSkillsRevision(showRevision)).revision : null; }
+    catch (err) {
+      if (!['blob_missing', 'blob_corrupt', 'blob_invalid', 'revision_corrupt'].includes(err?.code || err?.body?.code)) throw err;
+      // Keep history reachable when the latest version cannot be opened. Strict file/install reads still fail.
+      ws.revision = null; ws.files = []; ws.dirs = []; ws.loaded = true; ws.tab = 'versions';
+      return ws;
+    }
     if (draftId && s.mode !== 'readonly') {
       try { ws.draft = (await io.fetchSkillsDraft(draftId)).draft; } catch (err) { if (err?.status !== 404) throw err; ws.draft = null; }
     }

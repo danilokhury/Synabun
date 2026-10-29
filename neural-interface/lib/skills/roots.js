@@ -127,7 +127,7 @@ export function createRootResolver({
       add({ family: 'claude', kind: 'skills', scope: 'user', sourceKind: 'native', path: join(acct.home, 'skills'), runtimes: opencodeCompat ? ['claude', 'opencode'] : ['claude'], ...a,
         policy: owner('The account\'s own skills folder.'), discovery: { contract: 'skills/<name>/SKILL.md', verified: 'docs' },
         installTarget: { runtime: 'claude', scope: 'user' },
-        note: opencodeCompat ? 'OpenCode reads it too (Claude compatibility), except in SynaBun\'s own OpenCode panel.' : '' });
+        note: opencodeCompat ? 'A terminal OpenCode reads it too (Claude compatibility); SynaBun\'s own OpenCode serves (the panel, an Assistant brain) start with OPENCODE_DISABLE_CLAUDE_CODE=1 and do not.' : '' });
       add({ family: 'claude', kind: 'skills', scope: 'synced', sourceKind: 'synced', path: join(acct.home, 'skills', 'synced'), runtimes: ['claude'], ...a,
         policy: never('Skills the Claude account syncs down; a local change would be overwritten. Customize a copy instead.'), discovery: { contract: 'skills/synced/<name>/SKILL.md, /anthropic-skills:<name>', verified: 'docs' } });
       add({ family: 'claude', kind: 'commands', scope: 'user', sourceKind: 'native', path: join(acct.home, 'commands'), runtimes: ['claude'], ...a,

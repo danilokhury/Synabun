@@ -478,6 +478,9 @@ export function budgetMove({ target, request, catalog = null, brain = {}, brainI
 export function evaluateRoute({ mode, routing = {}, request, brain = {}, brainInfo = null, catalog = null, budget = null }) {
   const reasons = [];
   const corrections = [];
+  const effective = normalizeRouteMode(mode) || 'ask-unsure';
+  // Always Ask is a task-local choice; the Never Ask table must not seed it.
+  if (effective === 'always-ask') routing = { ...routing, preferences: {} };
   const first = request.proposals[0];
   let proposal = { kind: first.kind, provider: first.provider, model: first.model, effort: first.effort };
   if (first.accountId) proposal.accountId = first.accountId;
@@ -546,7 +549,6 @@ export function evaluateRoute({ mode, routing = {}, request, brain = {}, brainIn
   if (request.confidence === null) reasons.push('no_confidence');
   else if (request.confidence < (routing.askBelow ?? 0.75)) reasons.push('low_confidence');
 
-  const effective = normalizeRouteMode(mode) || 'ask-unsure';
   if (effective === 'always-ask' || effective === 'ask-unsure') {
     // The suggestion a card shows (or the pick that runs) is one the budget can pay for.
     const budgeted = applyBudget(proposal);
@@ -725,6 +727,7 @@ function strongestClaude(catalog) {
  * run it instead (badge "capable"). Design: the same with "can see".
  */
 export function buildRouteOptions({ request, evaluation, brain = {}, brainInfo = null, catalog = null, routing = {}, coverage = null }) {
+  if (evaluation.reasons?.includes('always-ask')) routing = { ...routing, preferences: {} };
   const medium = request.needsOutput || null;
   const dispatchOnly = request.dispatchOnly === true;
   const visionOnly = request.visionOnly === true;
@@ -740,7 +743,7 @@ export function buildRouteOptions({ request, evaluation, brain = {}, brainInfo =
   // The session budget moved the suggestion: the brain's own pick stays on the card, disabled with why.
   if (evaluation.budgetFrom && coverage) push(optionFor('b0', evaluation.budgetFrom, 'suggested', { ...ctx, reason: request.proposals[0]?.reason || null }));
   if (!dispatchOnly) push(optionFor('here', hereTarget, 'current', ctx));
-  const pref = preferenceTarget(routing.preferences?.[request.taskClass], brain, catalog, { dispatchOnly });
+  const pref = evaluation.reasons?.includes('always-ask') ? null : preferenceTarget(routing.preferences?.[request.taskClass], brain, catalog, { dispatchOnly });
   if (pref) push(optionFor('r1', pref, 'remembered', ctx));
   const anchor = evaluation.proposal?.kind === 'dispatch' || dispatchOnly ? evaluation.proposal || request.proposals[0] : hereTarget;
   const cheaper = neighbour(catalog, anchor, 'cheaper', { needsVision: request.needsVision, seeingOnly: visionOnly, needsOutput: medium });
@@ -783,6 +786,7 @@ export function targetFromAnswer({ card, response = {}, catalog = null, brain = 
       if (isDisabled(catalog, target)) throw routeError('MODEL_DISABLED', `${target.model} is disabled in the Assistant's Models list. Pick an enabled model.`);
       throw routeError('ROUTE_INVALID', `Unknown model ${target.model} for ${target.provider}.`);
     }
+    if (findModel(catalog, target.provider, target.model)?.row?.status === 'unavailable') throw routeError('ROUTE_INVALID', UNAVAILABLE_TEXT);
     if (!target.model && isDisabled(catalog, target)) throw routeError('MODEL_DISABLED', `Every ${target.provider} model is disabled in the Assistant's Models list. Pick another provider.`);
     // Design: only a confirmed vision: true on an available row (unknown or unavailable is refused too);
     // other vision work: a confirmed false.
@@ -807,7 +811,7 @@ export function targetFromAnswer({ card, response = {}, catalog = null, brain = 
   if (!t || typeof t !== 'object' || !CATALOG_PROVIDERS.includes(t.provider)) throw routeError('ROUTE_INVALID', 'Pick one of the options or a catalog model.');
   const kind = t.kind === 'direct' && t.provider === brain.provider && !dispatchOnly ? 'direct' : 'dispatch';
   const corrections = [];
-  const target = effortChecked({ kind, provider: t.provider, model: t.model ? String(t.model) : null, effort: t.effort ? String(t.effort).trim().slice(0, 40) : null }, catalog, corrections);
+  const target = effortChecked({ kind, provider: t.provider, model: t.model ? String(t.model) : null, effort: t.effort ? String(t.effort).trim().slice(0, 40) : null, accountId: t.accountId ? String(t.accountId).trim() : null }, catalog, corrections);
   ensureAvailable(target);
   return { target, optionId: 'other', remember, corrections };
 }
@@ -1021,8 +1025,8 @@ export function createAssistantRouter({
     return enriched;
   }
   function accountCorrections(target, base = []) { return target.accountCorrection && !base.some(c => c.reason === target.accountCorrection.reason && c.from === target.accountCorrection.from && c.to === target.accountCorrection.to && c.message === target.accountCorrection.message) ? [...base, target.accountCorrection] : base; }
-  function checkedTarget(target, brain, cat, route = null, fallback = null) {
-    try { return accountTarget(target, brain, cat, { fallback }); }
+  function checkedTarget(target, brain, cat, route = null, fallback = null, exact = false) {
+    try { return accountTarget(target, brain, cat, { fallback, select: !exact || !target.accountId || target.accountId === 'auto' || target.accountChoice === 'auto' }); }
     catch (error) {
       if (route) call('routeEvent', route.sessionId, 'declined', routeView({ ...route, target: error.target, status: 'declined', reason: error.message, reasonCode: error.code }, { catalog: cat, brain }));
       throw error;
@@ -1384,7 +1388,7 @@ export function createAssistantRouter({
       return result;
     }
     const { optionId, remember } = parsed;
-    const target = checkedTarget(parsed.target, brain, cat);
+    const target = checkedTarget(parsed.target, brain, cat, null, null, card.mode === 'always-ask');
     const corrections = accountCorrections(target, parsed.corrections || []);
     // The session budget must be able to pay for the pick: a provider with no share left divides the
     // unspent budget again first; still none, and the card stays open with the reason.
@@ -1483,7 +1487,7 @@ export function createAssistantRouter({
         // A remote session's route is claimed here, so a second dispatch cannot take it meanwhile.
         // `claimed` tells the dispatcher to give it back (releaseRoute) if it refuses the launch
         // before a run exists: only the run it starts uses the route up.
-        const t = checkedTarget(approved.target, brain, cat, approved);
+        const t = checkedTarget(approved.target, brain, cat, approved, null, approved.mode === 'always-ask' && approved.decidedBy === 'user');
         approved.target = t;
         approved.corrections = accountCorrections(t, approved.corrections);
         // The approved provider may have run out of share since the approval: the unspent budget is
@@ -1491,6 +1495,7 @@ export function createAssistantRouter({
         let runTarget = t;
         let budgetCorrection = null;
         if (budgeted() && !budgetCovers(coverageOf(sessionId), cat, t)) {
+          if (approved.mode === 'always-ask' && approved.decidedBy === 'user') throw routeError('BUDGET_SHARE_EXHAUSTED', 'The selected model has no session budget left. Choose a new task route or raise the budget.', 409, { routeId, provider: t.provider });
           try { await budget.ensureCovered(sessionId, { provider: t.provider, forBrain: false, free: targetIsFree(cat, t), task: { taskClass: approved.taskClass, summary: approved.summary || null, provider: t.provider, model: t.model || null } }); } catch { /* decided on the shares as they are */ }
           const request = normalizeRouteRequest({ task_class: approved.taskClass, summary: approved.summary || '', confidence: 1, needs_vision: !!spec.usesComputer, proposals: [{ kind: 'dispatch', provider: t.provider, model: t.model || null, effort: t.effort || null }] }, { brain });
           const moved = budgetMove({ target: { ...t, kind: 'dispatch' }, request, catalog: cat, brain, brainInfo, routing: r, coverage: coverageOf(sessionId) });
@@ -1500,7 +1505,7 @@ export function createAssistantRouter({
           if (moved.correction) { runTarget = moved.target; budgetCorrection = moved.correction; }
         }
         if (remote) approved.consumed = true;
-        const applied = { ...spec, provider: runTarget.provider, model: runTarget.model || null, effort: runTarget.effort || spec.effort || null, ...(runTarget.accountId ? { accountId: runTarget.accountId, codexAccountId: null, claudeAccountId: null } : runTarget !== t ? { accountId: null, codexAccountId: null, claudeAccountId: null } : {}) };
+        const applied = { ...spec, provider: runTarget.provider, model: runTarget.model || null, effort: runTarget.effort ?? null, accountId: runTarget.accountId || null, codexAccountId: null, claudeAccountId: null };
         const meta = routeMeta(approved, cat, brain, brainInfo);
         const route = budgetCorrection ? { ...meta, target: describeTarget(runTarget, { catalog: cat, brain, brainInfo }), corrections: [...(meta.corrections || []), budgetCorrection] } : meta;
         return { action: 'start', spec: applied, route: { ...route, requested: { provider: spec.provider || null, model: spec.model || null, effort: spec.effort || null } }, ...(remote ? { claimed: true } : {}) };

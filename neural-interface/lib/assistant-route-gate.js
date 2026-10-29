@@ -7,7 +7,7 @@
 // refused before it runs, and the refusal tells the model what to do instead;
 // the turn goes on so it can route.
 // One module for every host: the Claude PreToolUse hook, the OpenCode plugin
-// (opencode-route-gate.js), the Codex PreToolUse hook (codex-route-gate-hook.mjs)
+// (opencode2-route-gate/), the Codex PreToolUse hook (codex-route-gate-hook.mjs)
 // and the reactive fallback all ask the same gate.
 //
 //   unrouted  turn start: exempt tools only
@@ -32,8 +32,8 @@ export const ROUTE_GATE_EXEMPT = Object.freeze([
   'agent_route', 'agent_clarify', 'agent_catalog', 'agent_list', 'agent_status', 'agent_read', 'agent_send', 'agent_wait', 'agent_stop', 'agent_focus', 'agent_usage', 'agent_dispatch',
   // Asking the user (OpenCode's own tool is `question`)
   'AskUserQuestion', 'choice', 'question',
-  // Profile, the images the user attached, the desktop lease
-  'profile', 'image_staged', 'computer_status',
+  // Tool groups, the images the user attached, the desktop lease
+  'tool_groups', 'image_staged', 'computer_status',
   // Host plumbing routing needs: MCP tools are deferred behind ToolSearch
   'ToolSearch', 'TodoWrite',
 ]);
@@ -202,7 +202,9 @@ export function createRouteGate({ sessionId = null, routeTool = () => 'agent_rou
   function refusalText(tool) {
     const name = toolBaseName(tool) || 'this tool';
     if (state === 'held' && heldText) return `SynaBun route gate: ${name} was refused. ${heldText}`;
-    return `SynaBun route gate: ${name} was refused because this turn is not routed. Call ${routeTool()} first (task_class, one-line summary, confidence, 1-3 proposals${sessionId ? `, assistant_session_id "${sessionId}"` : ''}) and follow its status: approved + direct opens every tool for this turn. Memory tools, agent_* tools and asking the user work without routing. For plain conversation, just answer in text.`;
+    // OpenCode's Code Mode tool: a model that went looking for SynaBun's tools inside it is told where they are.
+    const codeMode = name.toLowerCase() === 'execute' ? ` SynaBun's own tools, ${routeTool()} included, are separate tools in your tool list: call them directly, never through execute.` : '';
+    return `SynaBun route gate: ${name} was refused because this turn is not routed. Call ${routeTool()} first (task_class, one-line summary, confidence, 1-3 proposals${sessionId ? `, assistant_session_id "${sessionId}"` : ''}) and follow its status: approved + direct opens every tool for this turn. Memory tools, agent_* tools and asking the user work without routing. For plain conversation, just answer in text.${codeMode}`;
   }
   /**
    * The brain cannot reach agent_route (reason), or can again (null). While

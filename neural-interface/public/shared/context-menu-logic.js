@@ -74,40 +74,44 @@ export function countRows(items) {
 
 /**
  * Where a menu of `width` × `height` goes for a press at (x, y): down and to the right of it, flipped up or left
- * when that side has no room, and kept inside the window either way.
+ * when that side has no room, and kept inside the window either way. `bounds` ({ left, top, right, bottom }) is the
+ * area it is kept in instead of the window: the app frame (app-frame.js) for a press inside it.
  * @returns {{ left: number, top: number }}
  */
-export function placeMenu({ x, y, width, height, viewportWidth, viewportHeight, margin = VIEWPORT_MARGIN }) {
-  const fit = (at, size, room) => {
-    const furthest = room - margin - size;      // the last place it may start and still end inside the margin
-    if (furthest < margin) return margin;       // larger than the window: from the margin (it scrolls)
-    if (at + size <= room - margin) return Math.max(margin, at);
-    if (at - size >= margin) return Math.min(at - size, furthest);
+export function placeMenu({ x, y, width, height, viewportWidth, viewportHeight, margin = VIEWPORT_MARGIN, bounds = null }) {
+  const b = bounds || { left: 0, top: 0, right: viewportWidth, bottom: viewportHeight };
+  const fit = (at, size, lo, hi) => {
+    const first = lo + margin;                  // the first place it may start
+    const furthest = hi - margin - size;        // the last place it may start and still end inside the margin
+    if (furthest < first) return first;         // larger than the area: from the margin (it scrolls)
+    if (at + size <= hi - margin) return Math.max(first, at);
+    if (at - size >= first) return Math.min(at - size, furthest);
     return furthest;
   };
   return {
-    left: Math.round(fit(x, width, viewportWidth)),
-    top: Math.round(fit(y, height, viewportHeight)),
+    left: Math.round(fit(x, width, b.left, b.right)),
+    top: Math.round(fit(y, height, b.top, b.bottom)),
   };
 }
 
 /**
  * Where a submenu goes: beside the menu it opens from, its first row level with the row that opened it; on the left
- * when the window has no room on the right, and kept inside the window.
+ * when the window (or `bounds`, as for placeMenu) has no room on the right, and kept inside it.
  * @param {{ left: number, right: number }} o.menuRect the menu it opens from
  * @param {{ top: number }} o.rowRect the row that opens it
  * @returns {{ left: number, top: number, side: 'right' | 'left' }}
  */
 export function placeSubmenu({ menuRect, rowRect, width, height, viewportWidth, viewportHeight,
-  margin = VIEWPORT_MARGIN, gap = SUBMENU_GAP, lead = SUBMENU_LEAD }) {
+  margin = VIEWPORT_MARGIN, gap = SUBMENU_GAP, lead = SUBMENU_LEAD, bounds = null }) {
+  const b = bounds || { left: 0, top: 0, right: viewportWidth, bottom: viewportHeight };
   let side = 'right';
   let left = menuRect.right + gap;
-  if (left + width > viewportWidth - margin) {
+  if (left + width > b.right - margin) {
     const leftSide = menuRect.left - gap - width;
-    if (leftSide >= margin) { left = leftSide; side = 'left'; }
-    else left = Math.max(margin, viewportWidth - margin - width);
+    if (leftSide >= b.left + margin) { left = leftSide; side = 'left'; }
+    else left = Math.max(b.left + margin, b.right - margin - width);
   }
-  const top = Math.max(margin, Math.min(rowRect.top - lead, viewportHeight - margin - height));
+  const top = Math.max(b.top + margin, Math.min(rowRect.top - lead, b.bottom - margin - height));
   return { left: Math.round(left), top: Math.round(top), side };
 }
 

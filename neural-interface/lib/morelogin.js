@@ -21,8 +21,13 @@
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
+import { registerBrowserNetworkEndpoint } from './browser-network-guard.js';
 
 export const DEFAULT_MORELOGIN_PORT = 40000;
+// MoreLogin's documented local-API ports. 40000 is the HTTP API SynaBun drives; 15523 is the companion port its
+// desktop app also listens on. A guarded worker's sandbox denies both (a worker with the API could start another
+// profile with its own CDP). Fixed, so they are denied even when nothing is listening at profile-generation time.
+export const MORELOGIN_FIXED_API_PORTS = Object.freeze([40000, 15523]);
 
 /** Resolve the MoreLogin local-API port: env → saved config → default. */
 export function getMoreLoginPort(savedCfg) {
@@ -269,6 +274,31 @@ export async function startProfile(envId, opts = {}) {
   }
   if (!port) throw new Error(`MoreLogin started env ${envId} but returned no debugPort`);
   return { debugPort: port, webdriver: webdriver || null, raw: data };
+}
+
+/**
+ * Attach to the profile's existing context, preserving MoreLogin's identity.
+ * A new Playwright context is incognito: it does not inherit the profile's
+ * cookies/fingerprint, even though it belongs to the same Chromium process.
+ * Never substitute one when the profile context is missing. On setup failure,
+ * close only this connectOverCDP transport; MoreLogin owns the running browser.
+ */
+export async function attachProfileBrowser(chromium, endpoint, openPage) {
+  const browser = await chromium.connectOverCDP(endpoint);
+  try {
+    const context = browser.contexts()[0];
+    if (!context) {
+      throw new Error('MoreLogin did not expose its profile context over CDP; refusing to create an isolated context with different cookies and fingerprint settings');
+    }
+    const page = await openPage(browser, context);
+    registerBrowserNetworkEndpoint(context, endpoint);
+    return { browser, context, page };
+  } catch (error) {
+    // Browser.close on a connectOverCDP browser disconnects this client. Do not
+    // call context.close or /api/env/close: either would close the user's profile.
+    try { await browser.close(); } catch { /* retain the original setup error */ }
+    throw error;
+  }
 }
 
 /** Stop (close) a profile. */

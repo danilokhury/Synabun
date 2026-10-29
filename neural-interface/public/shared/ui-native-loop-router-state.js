@@ -3,6 +3,11 @@ export function isNewerRunDescriptor(next, current, terminalStatuses) {
   const nextTerminal = terminalStatuses.has(next.status);
   const currentTerminal = terminalStatuses.has(current.status);
   if (currentTerminal !== nextTerminal) return nextTerminal;
+  // A run resumed after a server restart (`resumes` only grows) is newer whatever its version: a crash can lose the
+  // last ledger writes, and with them versions a page already saw.
+  const nextResumes = Number(next.resumes) || 0;
+  const currentResumes = Number(current.resumes) || 0;
+  if (nextResumes !== currentResumes) return nextResumes > currentResumes;
   const nextVersion = Number(next.version) || 0;
   const currentVersion = Number(current.version) || 0;
   if (nextVersion !== currentVersion) return nextVersion > currentVersion;

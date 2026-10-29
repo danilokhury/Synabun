@@ -1,0 +1,12 @@
+{
+  "name": "Caveat",
+  "version": "5.3.0",
+  "source": "@fontsource/caveat 5.3.0 (npm), files/caveat-latin-400-normal.woff2 and files/caveat-latin-700-normal.woff2",
+  "license": "OFL-1.1",
+  "licenseFile": "OFL.txt",
+  "copyright": "Copyright 2014 The Caveat Project Authors (https://github.com/googlefonts/caveat)",
+  "files": {
+    "caveat-latin-400-normal.woff2": "d0b7b931b8980049327e8f8f9ac264617c8200b8422d62e886473d3d9527bad3",
+    "caveat-latin-700-normal.woff2": "15f9638095ad5ec9816f93d66805ca1a87e71dc5a76b596bfce1c78d4704c405"
+  }
+}

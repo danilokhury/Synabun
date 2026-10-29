@@ -14,27 +14,34 @@
 export const DEFAULT_SIZE = Object.freeze({ width: 1180, height: 760, widthShare: 0.94, heightShare: 0.86 });
 export const MIN_SIZE = Object.freeze({ width: 380, height: 320 });
 export const LAYOUTS = Object.freeze([{ name: 'compact', max: 560 }, { name: 'narrow', max: 760 }, { name: 'medium', max: 900 }]);
-export const PLACES = Object.freeze(['library', 'review', 'create']);
+export const PLACES = Object.freeze(['library', 'review', 'create', 'discover', 'health']);
 export const TABS = Object.freeze(['edit', 'test', 'versions', 'publish']);
 
 const px = (v) => { const n = Number.parseFloat(v); return Number.isFinite(n) ? n : null; };
 
 /**
  * The window's first rectangle: what was saved (kept inside the viewport), else the default size, centred.
- * @param {{ vw: number, vh: number, navbar?: number, saved?: { left?, top?, width?, height? } | null }} o
+ * `frame` is the app frame's rect when the page has one (app-frame.js frameRect()): the window stays inside it, up to
+ * its edges. Without it, the window below the menu bar.
+ * @param {{ vw: number, vh: number, navbar?: number, saved?: { left?, top?, width?, height? } | null,
+ *   frame?: { left: number, top: number, right: number, bottom: number } | null }} o
  */
-export function initialRect({ vw, vh, navbar = 48, saved = null }) {
-  const room = { width: Math.max(MIN_SIZE.width, vw - 20), height: Math.max(MIN_SIZE.height, vh - navbar - 10) };
-  let width = px(saved?.width) ?? Math.min(DEFAULT_SIZE.width, Math.round(vw * DEFAULT_SIZE.widthShare));
-  let height = px(saved?.height) ?? Math.min(DEFAULT_SIZE.height, Math.round(vh * DEFAULT_SIZE.heightShare));
+export function initialRect({ vw, vh, navbar = 48, saved = null, frame = null }) {
+  const b = frame || { left: 0, top: navbar, right: vw, bottom: vh };
+  const bw = b.right - b.left, bh = b.bottom - b.top;
+  const room = frame
+    ? { width: Math.max(MIN_SIZE.width, bw), height: Math.max(MIN_SIZE.height, bh) }
+    : { width: Math.max(MIN_SIZE.width, vw - 20), height: Math.max(MIN_SIZE.height, vh - navbar - 10) };
+  let width = px(saved?.width) ?? Math.min(DEFAULT_SIZE.width, Math.round((frame ? bw : vw) * DEFAULT_SIZE.widthShare));
+  let height = px(saved?.height) ?? Math.min(DEFAULT_SIZE.height, Math.round((frame ? bh : vh) * DEFAULT_SIZE.heightShare));
   width = Math.round(Math.max(MIN_SIZE.width, Math.min(width, room.width)));
   height = Math.round(Math.max(MIN_SIZE.height, Math.min(height, room.height)));
   let left = px(saved?.left);
   let top = px(saved?.top);
-  if (left === null) left = Math.round((vw - width) / 2);
-  if (top === null) top = Math.round(navbar + Math.max(0, (vh - navbar - height) / 2));
-  left = Math.round(Math.max(0, Math.min(left, vw - width)));
-  top = Math.round(Math.max(navbar, Math.min(top, vh - height)));
+  if (left === null) left = Math.round(b.left + (bw - width) / 2);
+  if (top === null) top = Math.round(b.top + Math.max(0, (bh - height) / 2));
+  left = Math.round(Math.max(b.left, Math.min(left, b.right - width)));
+  top = Math.round(Math.max(b.top, Math.min(top, b.bottom - height)));
   return { left, top, width, height };
 }
 

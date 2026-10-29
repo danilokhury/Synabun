@@ -864,8 +864,13 @@ export async function judgeText(kind, text, { project, timeoutMs = 1500, extra =
 /**
  * Fire-and-forget POST that may wait at most `waitMs` for the answer and never
  * keeps the process alive past that. Resolves true only on a 2xx.
+ * SYNABUN_HOOK_NOTICE_WAIT_MS replaces `waitMs` for the hook tests only
+ * (tests/helpers/hook-harness.mjs): on a machine running the whole suite the
+ * notice missed its 200 ms. Nothing SynaBun starts sets it.
  */
 export async function postNotice(path, body, waitMs = 200) {
+  const testWait = Number(process.env.SYNABUN_HOOK_NOTICE_WAIT_MS);
+  if (Number.isFinite(testWait) && testWait > 0) waitMs = testWait;
   let timer;
   try {
     const request = fetch(`${niUrl()}${path}`, {

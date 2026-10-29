@@ -14,10 +14,14 @@
 // location (lib/path-confine.js realPathOf: links resolved, a dangling link refused), so neither a link nor ".." leads
 // out; a ".." segment is refused outright. Glob and Grep patterns are relative and never climb. A file that is written
 // must be a plain file with one name (no hard link to somewhere else). Anything that cannot be checked is refused.
-// Only Claude Code runs confined: Codex runs MCP servers outside its sandbox and OpenCode answers its own permission
-// prompts, so the dispatcher refuses a confined run on either (assistant-dispatch.js normalizeSpec).
+// Every provider holds a drafting worker the way it can (draftConfinementSupport): Claude Code as above, exactly;
+// Codex under its sandbox (writes inside the workspace only, no network, no web search, every MCP server of its
+// config disabled; it keeps its shell, which the sandbox confines: codexDraftOptions); OpenCode with its shell, web,
+// subagent and skill tools switched off, no MCP server, and every edit asked and answered by draftToolDecision
+// inside the workspace (openCodeDraftConfig, draftOpenCodeDecision). The dispatcher refuses a provider that cannot
+// (assistant-dispatch.js normalizeSpec), never starts a run unconfined and never escalates it onto one that cannot.
 
-import { lstatSync, realpathSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { isInside, realPathOf } from '../path-confine.js';
 
@@ -113,4 +117,98 @@ export function draftPreToolUseHook(confinement) {
     const reason = draftToolDecision(input?.tool_name, input?.tool_input || {}, confinement);
     return reason ? { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } } : {};
   };
+}
+
+// ── The other providers ──
+
+/** The providers a drafting run can be confined on, in the order the Create page lists them. */
+export const DRAFT_CONFINED_PROVIDERS = Object.freeze(['claude-code', 'codex', 'opencode']);
+
+/**
+ * What a provider can hold a drafting worker to: { ok: true, level, note } or { ok: false, reason }. `level`:
+ * 'strict' (file tools only, every call checked), 'sandbox' (the OS sandbox around a shell), 'rules' (the
+ * provider's permission rules plus its tool switches).
+ */
+export function draftConfinementSupport(provider, { platform = process.platform } = {}) {
+  const name = String(provider || '');
+  if (name === 'claude-code') return { ok: true, level: 'strict', note: 'Read, Write, Edit, Glob and Grep inside its folder only; no shell, no web, no MCP tools, no subagents.' };
+  if (name === 'codex') {
+    return {
+      ok: true, level: 'sandbox',
+      note: `Codex keeps its shell under its ${platform === 'win32' ? 'Windows' : platform === 'darwin' ? 'Seatbelt' : 'Linux'} sandbox: writes inside its folder only, no network, no web search, no MCP server.`,
+    };
+  }
+  if (name === 'opencode') return { ok: true, level: 'rules', note: 'OpenCode with its shell, web, subagent and skill tools switched off, no MCP server, and every edit answered inside its folder only.' };
+  return { ok: false, reason: `${name || 'That provider'} cannot be held to a drafting folder.` };
+}
+
+/** The MCP server names a Codex config.toml declares ([mcp_servers.NAME] tables), for disabling them one by one. */
+export function codexMcpServerNames(codexHome) {
+  const names = new Set();
+  try {
+    const file = join(String(codexHome || ''), 'config.toml');
+    if (!codexHome || !existsSync(file)) return [];
+    for (const line of readFileSync(file, 'utf8').split(/\r?\n/)) {
+      const m = /^\s*\[\s*mcp_servers\.(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_-]+))/.exec(line);
+      if (m) names.add(m[1] ?? m[2] ?? m[3]);
+    }
+  } catch { /* an unreadable config declares nothing we can name; SynaBun's own entry is disabled by name anyway */ }
+  return [...names];
+}
+
+/**
+ * Codex: the thread options and the config overrides of a confined drafting run. The sandbox holds the shell
+ * (writable roots: the workspace and Codex's own temp folders; no parent folder, no network); every MCP server the
+ * account's config declares, and SynaBun's, is disabled; web search is off.
+ */
+export function codexDraftOptions(confined, { codexHome = null, projectDir = null } = {}) {
+  if (!confined || confined.kind !== DRAFT_CONFINEMENT) throw new Error('Unknown confinement.');
+  // The account's config.toml and a project-level .codex/config.toml in the drafting folder (SynaBun makes that folder,
+  // so there is none; checked all the same). Servers a Codex plugin brings cannot be named here: Codex loads plugins
+  // from its own home, which the sandbox does not reach, and SynaBun installs none for a worker.
+  const servers = new Set(['SynaBun', ...codexMcpServerNames(codexHome), ...(projectDir ? codexMcpServerNames(join(String(projectDir), '.codex')) : [])]);
+  const mcp_servers = {};
+  for (const name of servers) mcp_servers[name] = { enabled: false };
+  return {
+    thread: { sandboxMode: 'workspace-write', networkAccessEnabled: false, webSearchMode: 'disabled', additionalDirectories: undefined },
+    config: { mcp_servers },
+  };
+}
+
+/**
+ * OpenCode's tools a drafting run does without: refused by its rules (OpenCode 2's permission actions). `execute` is
+ * Code Mode, whose `opencode` namespace moves the session to another folder (seen live on 2.1.4: a moved session read
+ * a file outside the workspace with external_directory denied), creates and removes worktrees and reads MCP
+ * resources; `question` would wait for an answer nobody gives.
+ */
+export const OPENCODE_DRAFT_TOOLS_OFF = Object.freeze(['shell', 'webfetch', 'websearch', 'subagent', 'skill', 'todo', 'lsp', 'external_directory', 'browser', 'execute', 'question']);
+
+/**
+ * OpenCode: the config a confined drafting run's serve and session get: OpenCode 2's permission rules (every edit
+ * asked, every other tool refused) and no MCP server.
+ */
+export function openCodeDraftConfig() {
+  return {
+    permissions: [
+      { action: 'edit', resource: '*', effect: 'ask' },
+      ...OPENCODE_DRAFT_TOOLS_OFF.map((action) => ({ action, resource: '*', effect: 'deny' })),
+    ],
+    mcp: 'off',
+  };
+}
+
+/** An OpenCode permission ask under the draft confinement: null when it may go ahead, else why not. */
+export function draftOpenCodeDecision(request, confined) {
+  const kind = String(request?.permission || request?.type || '').toLowerCase();
+  if (/^(?:edit|write|patch|multiedit|apply_patch)$/.test(kind)) {
+    const meta = request?.metadata && typeof request.metadata === 'object' ? request.metadata : {};
+    let raw = null;
+    for (const key of ['filePath', 'filepath', 'file_path', 'path']) if (typeof meta[key] === 'string' && meta[key]) { raw = meta[key]; break; }
+    if (!raw) {
+      const pattern = request?.pattern ?? request?.patterns;
+      raw = typeof pattern === 'string' ? pattern : Array.isArray(pattern) && typeof pattern[0] === 'string' ? pattern[0] : null;
+    }
+    return draftToolDecision('Write', { file_path: raw }, confined);
+  }
+  return `${kind || 'That tool'} is not available. ${REFUSED}`;
 }

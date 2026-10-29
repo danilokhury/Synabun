@@ -200,14 +200,14 @@ export async function setAutoAccept(store, api, enabled, { cwd, isDescendant } =
 }
 
 /**
- * How long an "Always allow" lasts, for the card. On OpenCode 1.18.34 the
- * answer is kept by the serve process that runs the session: the patterns are
- * allowed for the project on that serve until it restarts. It is not written
- * to OpenCode's saved-permissions store (`/api/permission/saved` stays empty
- * after an "always"; checked against a live serve), so there is no list of
- * earlier answers to show or take back.
+ * How far an "Always allow" reaches, for the card. OpenCode 2 saves the answer
+ * for the session's project: after an "always" reply on 2.1.4,
+ * `GET /api/permission/saved` lists `{ projectID, action, resource }` with the
+ * card's pattern (checked against a live serve), so it holds in every session
+ * of that project and outlives the serve. The panel shows no list of saved
+ * answers; OpenCode's own saved permissions are where one is taken back.
  */
-export const ALWAYS_ALLOW_SCOPE = 'until this session\u2019s OpenCode runtime restarts';
+export const ALWAYS_ALLOW_SCOPE = 'in every session of this project: OpenCode saves the answer';
 
 // ── Questions ───────────────────────────────────────────────────────────────
 // The answer path of a question card, whatever built the card: a request in

@@ -14,6 +14,7 @@
 // asks first when something is unsaved. Every answer that arrives after the window closed (or another workspace
 // opened) is dropped. Strings are `skillsStudio.*` (i18n/en.json, pt-BR.json).
 
+import { studioErrorText } from './sx-errors.js';
 import { t, tp, getLocale } from '../../i18n.js';
 import { storage } from '../../storage.js';
 import { emit } from '../../state.js';
@@ -23,16 +24,21 @@ import { createUnloadGuard } from '../../editor/editor-safety.js';
 import { askInPanel, dialogOpen, closeDialog } from '../ss-dialog.js';
 import { closeDropdowns } from '../../cc-dropdown.js';
 import * as api from '../../api.js';
-import { buildRows, countRows, projectsOf, keepSelection } from './sx-library.js';
+import { readWholeCatalog, buildRows, countRows, projectsOf, keepSelection } from './sx-library.js';
 import { initialRect, parseOpen } from './sx-geometry.js';
+import { frameRect } from '../../app-frame.js';
 import { updateCards, reviewCount } from './sx-review.js';
 import { newWorkspace, dirtyTabs, saveTab, dropDraft, backups, keptDrafts } from './sx-docs.js';
 import { html, setHTML, ICONS, idempotencyKey, inTextField, focusableIn, trapIndex } from './sx-dom.js';
 import { renderLibraryPlace, focusLibrary, leaveLibraryPlace } from './sx-library-view.js';
-import { renderReviewPlace, leaveReviewPlace } from './sx-review-view.js';
+import { renderReviewPlace, leaveReviewPlace, forgetReviewOutcomes } from './sx-review-view.js';
 import { renderCreatePlace, startImport, leaveCreatePlace, openCreation } from './sx-create-view.js';
 import { importFile } from './sx-import.js';
-import { renderWorkspace, closeWorkspaceMenus, workspaceShortcut, disposeWorkspace, disposeStudio } from './sx-workspace-view.js';
+import { renderWorkspace, closeWorkspaceMenus, workspaceShortcut, disposeWorkspace, disposeStudio, refreshWorkspaceChrome } from './sx-workspace-view.js';
+import { refreshPublishBusy } from './sx-publish-view.js';
+import { leaveTestTab } from './sx-test-view.js';
+import { renderOperationsPlace, leaveOperationsPlace } from './sx-operations-view.js';
+import { onInstallBusy } from './sx-install-flow.js';
 
 const PANEL_ID = 'skills-studio-panel';
 const DOCK_KEY = 'skills-studio-docked';
@@ -76,18 +82,7 @@ export function capabilities() {
 }
 
 async function readCatalog() {
-  const out = { items: [], roots: [], diagnostics: [], truncated: false };
-  let cursor = null;
-  for (let page = 0; page < 10; page++) {
-    const res = await api.fetchSkillsCatalog({ cursor, limit: 500 });
-    out.items.push(...(res.items || []));
-    out.roots = res.roots || out.roots;
-    out.diagnostics = res.diagnostics || out.diagnostics;
-    out.truncated = !!res.truncated;
-    if (!res.nextCursor || res.cursorReset) break;
-    cursor = res.nextCursor;
-  }
-  return out;
+  return readWholeCatalog(api.fetchSkillsCatalog);
 }
 
 /** What this app version ships of each bundled skill: its upstream revision and the digest of its SKILL.md. */
@@ -108,18 +103,26 @@ export function loadData() {
   if (S.loading) return S.loading;
   const run = (async () => {
     await capabilities();
-    const [catalog, skills, status, reviews] = await Promise.all([
+    const [catalog, skills, status, reviews, config, notice, archived] = await Promise.all([
       readCatalog(),
       api.fetchSkillsList().then((r) => r.skills || []),
       api.fetchSkillsStatus().catch(() => null),
       api.fetchSkillsReviews({}).then((r) => r.reviews || []).catch(() => []),
+      // The skills settings (the shared folder on or off): what a review's install goes to is decided with them.
+      api.fetchSkillsConfig().then((r) => r.config || {}).catch(() => ({ sharedAgentsRoot: false })),
+      // The start-up move of the old bridges, said once (a server from before it has no notice: nothing is shown).
+      S.caps?.has('auto-migration') ? api.fetchSkillsMigrationNotice().then((r) => r.notice || null).catch(() => null) : Promise.resolve(null),
+      // The skills deleted from the library (a server from before Restore lists none).
+      S.caps?.has('library-restore') ? api.fetchSkillsArchived().then((r) => (Array.isArray(r.archived) ? r.archived : [])).catch(() => []) : Promise.resolve([]),
     ]);
     const upstream = await readUpstream(skills);
-    _cache = { catalog, skills, status, reviews, upstream, at: Date.now() };
+    _cache = { catalog, skills, status, reviews, upstream, config, notice, archived, at: Date.now() };
     return _cache;
   })();
   S.loading = run;
-  run.then(() => { S.loadError = null; }, (err) => { S.loadError = err; }).finally(() => { if (S.loading === run) S.loading = null; });
+  // Settle the loading state before callers render the fulfilled/rejected request.
+  // A chained finally runs after an awaiting caller's catch and could leave the Library stuck on Loading.
+  run.then(() => { S.loadError = null; if (S.loading === run) S.loading = null; }, (err) => { S.loadError = err; if (S.loading === run) S.loading = null; });
   return run;
 }
 
@@ -132,13 +135,16 @@ function deriveRows() {
   const kept = readJson(KEPT_UPDATES_KEY, {});
   S.rows = buildRows({ entries: d.catalog.items, skills: d.skills, status: d.status, reviews: d.reviews.filter((r) => ['pending', 'changes_requested', 'approved', 'partial', 'publish_failed'].includes(r.state)), upstream: d.upstream, kept });
   S.counts = countRows(S.rows);
+  S.counts.views.archived = Array.isArray(d.archived) ? d.archived.length : 0;
   S.projects = projectsOf(d.catalog.roots, S.rows);
   S.updates = updateCards(S.rows, kept);
   S.lib.selected = keepSelection(S.lib.selected, S.rows);
   // An open workspace follows its row (a new library state, installations, a review).
   for (const ws of S.workspaces.values()) {
     const row = S.rows.find((r) => r.key === ws.key) || (ws.skill ? S.rows.find((r) => r.skill?.skillId === ws.skill.skillId) : null);
-    if (row) { ws.row = row; if (row.skill) ws.skill = { ...row.skill, ...(ws.skill?.skillId === row.skill.skillId ? ws.skill : {}) }; }
+    // The Library's summary is what was just read: its installations and pointers win over what the workspace read
+    // earlier (the earlier reading keeps only what the summary lacks, its log).
+    if (row) { ws.row = row; if (row.skill) ws.skill = { ...(ws.skill?.skillId === row.skill.skillId ? ws.skill : {}), ...row.skill }; }
   }
 }
 
@@ -168,7 +174,7 @@ export async function openStudio(detail = {}) {
   S.opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   S.docked = storage.getItem(DOCK_KEY) === 'true';
   S.dim = storage.getItem(DIM_KEY) === 'true' && !S.docked;
-  S.lib = { ...S.lib, ...readJson(LIB_KEY, {}), selected: new Set(), focus: null };
+  S.lib = { ...S.lib, ...readJson(LIB_KEY, {}), selected: new Set(), focus: null, installNotice: null };
   S.backdrop = document.createElement('div');
   S.backdrop.className = `studio-backdrop sx-backdrop${S.dim ? '' : ' backdrop-hidden'}`;
   document.body.appendChild(S.backdrop);
@@ -220,11 +226,10 @@ export async function openStudioWithImport(file) {
 function placeWindow() {
   const panel = S.panel;
   if (S.docked) { panel.style.left = ''; panel.style.top = ''; panel.style.width = ''; panel.style.height = ''; return; }
-  const navbar = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--navbar-height')) || 48;
   // Where the shared panel system saved it the last time it was moved or resized (ui-panels.js savePanelLayout).
   let saved = null;
   try { saved = JSON.parse(storage.getItem(`${KEYS.PANEL_PREFIX}${PANEL_ID}`) || 'null'); } catch { saved = null; }
-  const rect = initialRect({ vw: window.innerWidth, vh: window.innerHeight, navbar, saved });
+  const rect = initialRect({ vw: window.innerWidth, vh: window.innerHeight, saved, frame: frameRect() });
   Object.assign(panel.style, { left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`, height: `${rect.height}px` });
 }
 
@@ -251,7 +256,7 @@ export async function requestCloseStudio() {
         try {
           const res = await saveTab(ws, tab, api, { key: idempotencyKey });
           if (res.status === 'conflict' || res.status === 'gone') { toast(t('skillsStudio.toast.saveConflict', { file: tab.label }), 'error'); return; }
-        } catch (err) { toast(t('skillsStudio.toast.saveFailed', { file: tab.label, error: err.message }), 'error'); return; }
+        } catch (err) { toast(t('skillsStudio.toast.saveFailed', { file: tab.label, error: studioErrorText(t, err) }), 'error'); return; }
       }
     } else if (answer === 'discard') {
       for (const { ws, tab } of dirty) dropDraft(ws, tab);
@@ -272,7 +277,8 @@ export function closeStudio() {
   // The workspaces and the window's editor go now (the editor's view and listeners would outlive the panel).
   disposeStudio(S.workspaces.values());
   // The place drawn last ends its listeners, timers and follow-ups too (a creation's clock would tick on a removed panel).
-  leaveLibraryPlace(); leaveReviewPlace(); leaveCreatePlace();
+  leaveLibraryPlace(); leaveReviewPlace(); leaveCreatePlace(); leaveTestTab(); leaveOperationsPlace();
+  forgetReviewOutcomes();
   S.life?.abort();
   S.life = null;
   S.unload?.remove();
@@ -328,6 +334,7 @@ function wireShell() {
     else if (act === 'place') goPlace(el.dataset.place);
     else if (act === 'view') { S.lib.view = el.dataset.view; S.lib.focus = null; goPlace('library'); }
     else if (act === 'runtime-filter') { S.lib.runtime = el.dataset.runtime; S.lib.view = 'all'; goPlace('library'); }
+    else if (act === 'runtime-fix') openSkillFolders();
   }, { signal });
   // Keys only while the focus is in the Studio: the window is not modal, and the page beside it keeps its own.
   document.addEventListener('keydown', onKeydown, { signal });
@@ -336,8 +343,7 @@ function wireShell() {
 
 function placeWithinViewport() {
   if (!S.panel) return;
-  const navbar = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--navbar-height')) || 48;
-  const r = initialRect({ vw: window.innerWidth, vh: window.innerHeight, navbar, saved: { left: S.panel.style.left, top: S.panel.style.top, width: S.panel.style.width, height: S.panel.style.height } });
+  const r = initialRect({ vw: window.innerWidth, vh: window.innerHeight, frame: frameRect(), saved: { left: S.panel.style.left, top: S.panel.style.top, width: S.panel.style.width, height: S.panel.style.height } });
   Object.assign(S.panel.style, { left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px` });
 }
 
@@ -421,7 +427,7 @@ function toggleRail() {
 // ── Navigation ──
 
 function goPlace(place) {
-  if (!['library', 'review', 'create'].includes(place)) return;
+  if (!['library', 'review', 'create', 'discover', 'health'].includes(place)) return;
   S.place = place;
   render();
   focusPlace();
@@ -487,7 +493,7 @@ function railHTML() {
   const place = S.place === 'workspace' ? 'library' : S.place;
   const item = (id, icon, label, count, extra = '') => html`<li><button type="button" class="sx-rail-item" data-act="place" data-place="${id}"${place === id ? html` aria-current="page"` : ''} title="${label}">
       <span class="sx-rail-icon">${icon}</span><span class="sx-rail-label">${label}</span>${count !== null ? html`<span class="sx-rail-count">${count}${extra ? html`<span class="sx-sr"> ${extra}</span>` : ''}</span>` : ''}</button></li>`;
-  const views = ['attention', 'mine', 'synabun', 'plugins', 'account', 'drafts'].map((v) => html`<li><button type="button" class="sx-rail-view" data-act="view" data-view="${v}"${S.place === 'library' && S.lib.view === v ? html` aria-current="true"` : ''}>
+  const views = ['attention', 'mine', 'synabun', 'plugins', 'account', 'drafts', ...(S.caps?.has('library-restore') ? ['archived'] : [])].map((v) => html`<li><button type="button" class="sx-rail-view" data-act="view" data-view="${v}"${S.place === 'library' && S.lib.view === v ? html` aria-current="true"` : ''}>
       <span class="sx-rail-label">${t(`skillsStudio.rail.views.${v}`)}</span><span class="sx-rail-count">${c.views[v] ?? 0}</span></button></li>`);
   const projects = S.projects.map((p) => html`<li><button type="button" class="sx-rail-view" data-act="view" data-view="${`project:${p.path}`}"${S.place === 'library' && S.lib.view === `project:${p.path}` ? html` aria-current="true"` : ''} title="${p.path}">
       <span class="sx-rail-label">${p.label}</span><span class="sx-rail-count">${p.count}</span></button></li>`);
@@ -496,6 +502,8 @@ function railHTML() {
       ${item('library', ICONS.library, t('skillsStudio.rail.library'), c.total, '')}
       ${item('review', ICONS.review, t('skillsStudio.rail.review'), waiting || null, t('skillsStudio.rail.waiting'))}
       ${item('create', ICONS.create, t('skillsStudio.rail.create'), null)}
+      ${item('discover', ICONS.search, t('skillsStudio.operations.discover'), null)}
+      ${item('health', ICONS.history, t('skillsStudio.operations.health'), null)}
     </ul>
     <div class="sx-rail-groups">
       <p class="sx-rail-group-label" id="sx-rail-views">${t('skillsStudio.rail.viewsTitle')}</p>
@@ -505,7 +513,21 @@ function railHTML() {
     ${runtimeFootHTML()}`;
 }
 
-/** The runtimes at the foot of the rail: ready, reached through an old bridge only, or not set up. */
+/**
+ * Settings → Skills → Skill folders, where the old bridge files are moved to skill folders (Move). The settings
+ * module is loaded when asked for (never at the Studio's load: it is the page's, and heavy).
+ */
+async function openSkillFolders() {
+  try {
+    const m = await import('../../ui-settings.js');
+    await m.openSettingsModal({ tab: 'tool-access', expand: ['stg-sec-skills'], scrollTo: 'stg-skill-folders' });
+  } catch { toast(t('skillsStudio.rail.runtimeFixFailed'), 'error'); }
+}
+
+/**
+ * The runtimes at the foot of the rail: ready, reached through old bridge files only (the old format: the row opens
+ * Settings → Skills → Skill folders, where Move gives each skill a folder of its own), empty, or not set up.
+ */
 function runtimeFootHTML() {
   const roots = S.data?.catalog?.roots || [];
   const state = (runtime) => {
@@ -518,9 +540,10 @@ function runtimeFootHTML() {
   };
   const rows = ['claude', 'codex', 'opencode'].map((rt) => {
     const st = state(rt);
-    const label = `${t(`skillsStudio.runtime.${rt}`)}: ${t(`skillsStudio.rail.runtimeState.${st}`)}`;
-    return html`<button type="button" class="sx-rt-row" data-act="runtime-filter" data-runtime="${rt}" aria-label="${label}" title="${label}">
-      <span class="sx-rt-dot sx-rt-${st}" aria-hidden="true"></span><span class="sx-rt-name">${t(`skillsStudio.runtime.${rt}`)}</span><span class="sx-rt-state">${t(`skillsStudio.rail.runtimeState.${st}`)}</span></button>`;
+    const name = t(`skillsStudio.runtime.${rt}`);
+    const label = st === 'bridge' ? t('skillsStudio.rail.runtimeFix', { runtime: name }) : `${name}: ${t(`skillsStudio.rail.runtimeState.${st}`)}`;
+    return html`<button type="button" class="sx-rt-row${st === 'bridge' ? ' sx-rt-row--fix' : ''}" data-act="${st === 'bridge' ? 'runtime-fix' : 'runtime-filter'}" data-runtime="${rt}" aria-label="${label}" title="${label}">
+      <span class="sx-rt-dot sx-rt-${st}" aria-hidden="true"></span><span class="sx-rt-name">${name}</span><span class="sx-rt-state">${t(`skillsStudio.rail.runtimeState.${st}`)}</span></button>`;
   });
   return html`<div class="sx-rail-foot" role="group" aria-label="${t('skillsStudio.rail.runtimesTitle')}">${rows}</div>`;
 }
@@ -546,10 +569,11 @@ export function render({ keepFocus = false } = {}) {
   if (S.capsFailed && !_cache) { renderOlderServer(main); return; }
   // Every place listens on the one main area: the one drawn before ends its listeners first (a Library listener left
   // on would also answer inside a workspace: a dropdown opened and closed by the same click).
-  leaveLibraryPlace(); leaveReviewPlace(); leaveCreatePlace();
+  leaveLibraryPlace(); leaveReviewPlace(); leaveCreatePlace(); leaveTestTab(); leaveOperationsPlace();
   if (S.place === 'library') renderLibraryPlace(main, c);
   else if (S.place === 'review') renderReviewPlace(main, c);
   else if (S.place === 'create') renderCreatePlace(main, c);
+  else if (S.place === 'discover' || S.place === 'health') renderOperationsPlace(main, c, S.place);
   else if (S.place === 'workspace' && S.ws) renderWorkspace(main, c, S.ws);
   else { S.place = 'library'; renderLibraryPlace(main, c); }
   if (activeId) { const again = S.panel.querySelector(`#${CSS.escape(activeId)}`); if (again) again.focus({ preventScroll: true }); }
@@ -568,6 +592,18 @@ function renderOlderServer(main) {
 }
 
 // ── Changes made elsewhere ──
+
+// An install taken up or let go on any surface (sx-install-flow.js): the surfaces on screen draw it as on its way,
+// or not, so no second one starts from a button that still looks free.
+onInstallBusy(({ skillId }) => {
+  if (!S.panel) return;
+  if (S.place === 'review') { render({ keepFocus: true }); return; }
+  if (S.place === 'workspace' && S.ws && S.ws.skill?.skillId === skillId) {
+    const c = ctx();
+    refreshWorkspaceChrome(c, S.ws);
+    if (S.ws.tab === 'publish') refreshPublishBusy(c, S.ws);
+  }
+});
 
 /** A skill changed somewhere (another window, the Assistant, an install, a review): read again, a moment later. */
 export function onSkillsChanged(event = {}) {
@@ -633,7 +669,7 @@ function ctx() {
     render, goPlace, openRow, toast, announce, ask,
     // Review, with one submission brought forward (a finished AI draft's "Open in Review").
     openReview: (reviewId) => { S.reviewFocus = reviewId || null; goPlace('review'); },
-    reload: async () => { const gen = S.gen; try { await loadData(); } catch (err) { if (gen === S.gen) toast(t('skillsStudio.toast.loadFailed', { error: err.message }), 'error'); } if (gen !== S.gen || !S.panel) return; deriveRows(); render({ keepFocus: true }); },
+    reload: async () => { const gen = S.gen; try { await loadData(); } catch (err) { if (gen === S.gen) toast(t('skillsStudio.toast.loadFailed', { error: studioErrorText(t, err) }), 'error'); } if (gen !== S.gen || !S.panel) return; deriveRows(); render({ keepFocus: true }); },
     keepUpdate: (name, revisionId) => { const kept = readJson(KEPT_UPDATES_KEY, {}); kept[name] = revisionId; storage.setItem(KEPT_UPDATES_KEY, JSON.stringify(kept)); deriveRows(); },
     saveLibraryView: () => storage.setItem(LIB_KEY, JSON.stringify({ view: S.lib.view, kind: S.lib.kind, source: S.lib.source, runtime: S.lib.runtime, health: S.lib.health, sort: S.lib.sort })),
     keptDrafts: () => keptDrafts(),

@@ -9,6 +9,7 @@
 import { on, emit } from './state.js';
 import { KEYS } from './constants.js';
 import { storage } from './storage.js';
+import { clampToFrame } from './app-frame.js';
 
 // ── State ──
 
@@ -39,10 +40,10 @@ export function initCostWidget() {
   if (!_docked) {
     const savedPos = _loadPos();
     if (savedPos) {
-      const maxLeft = window.innerWidth - 270;
-      const maxTop = window.innerHeight - 60;
-      _widget.style.left = Math.max(0, Math.min(savedPos.left, maxLeft)) + 'px';
-      _widget.style.top = Math.max(0, Math.min(savedPos.top, maxTop)) + 'px';
+      // Inside the app frame (about 270 × 60 of it on screen)
+      const at = clampToFrame(savedPos.left, savedPos.top, 270, 60);
+      _widget.style.left = at.x + 'px';
+      _widget.style.top = at.y + 'px';
     } else {
       _widget.style.right = '24px';
       _widget.style.bottom = '24px';
@@ -532,7 +533,7 @@ function _toggleCollapse() {
 // ── Drag ──
 
 function _makeDraggable(header) {
-  header.style.cursor = 'grab';
+  header.style.cursor = 'move';
 
   header.addEventListener('mousedown', (e) => {
     if (e.target.closest('.cw-collapse') || e.target.closest('.cw-scan')) return;
@@ -569,7 +570,7 @@ function _makeDraggable(header) {
       }
       applyDrag();
     };
-    header.style.cursor = 'grabbing';
+    header.style.cursor = 'move';
 
     // Reset right/bottom positioning and switch to left/top
     _widget.style.right = 'auto';
@@ -583,18 +584,15 @@ function _makeDraggable(header) {
       const dy = ev.clientY - _drag.startY;
       let newLeft = _drag.origLeft + dx;
       let newTop = _drag.origTop + dy;
-      // Constrain to viewport
-      const ww = _drag.width;
-      const wh = _drag.height;
-      newLeft = Math.max(0, Math.min(window.innerWidth - ww, newLeft));
-      newTop = Math.max(0, Math.min(window.innerHeight - wh, newTop));
+      // Constrain to the app frame
+      ({ x: newLeft, y: newTop } = clampToFrame(newLeft, newTop, _drag.width, _drag.height));
       scheduleDrag(newLeft, newTop);
     };
 
     const onUp = () => {
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
-      header.style.cursor = 'grab';
+      header.style.cursor = 'move';
       if (_drag) {
         flushDrag();
         _savePos(parseInt(_widget.style.left), parseInt(_widget.style.top));

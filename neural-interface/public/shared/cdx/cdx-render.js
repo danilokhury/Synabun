@@ -1,3 +1,4 @@
+import { cxpText } from './cdx-copy.js';
 // ═══════════════════════════════════════════
 // SynaBun — Codex Panel: Render Module
 // Text utilities, card rendering, delta appending, and history rendering.
@@ -174,7 +175,7 @@ function extractCompactAssistantSummary(text) {
     .replace(/^[#>\-\*\d\.\s]+/gm, '')
     .replace(/\s+/g, ' ')
     .trim();
-  if (!value) return 'Working through the next step';
+  if (!value) return cxpText('working', 'Working through the next step');
   return value;
 }
 
@@ -620,7 +621,7 @@ function resolveFileChangeSummary(item) {
   const changes = Array.isArray(item?.changes) ? item.changes.slice(0, OUTPUT_LIMITS.files) : [];
   const lines = changes.map((change) => describeFileChange(change)).filter(Boolean);
   if (lines.length) return lines.join('\n');
-  return 'Pending file changes';
+  return cxpText('pendingFiles', 'Pending file changes');
 }
 
 function collectStructuredText(value, seen = new Set()) {
@@ -808,14 +809,27 @@ export function sanitizeStoredTranscriptDom(container) {
   });
   if (!_ctx.running) container.querySelectorAll('.cxp-reasoning').forEach(card => {
     const body = card.querySelector('.cxp-reasoning-body');
-    if (body && /^Waiting for reasoning summary/.test(body.textContent)) body.textContent = 'No reasoning summary was provided.';
+    const text = body?.textContent.trim() || '';
+    if (!text || ['Waiting for reasoning summary...', 'No reasoning summary was provided.', cxpText('waitingReasoning', 'Waiting for reasoning summary...'), cxpText('noReasoning', 'No reasoning summary was provided.')].includes(text)) { card.remove(); return; }
+    const title = card.querySelector('.cxp-card-title');
+    if (title) title.textContent = cxpText('reasoning', 'Reasoning Summary');
     const pill = card.querySelector('.cxp-status-pill');
-    if (pill?.textContent === 'live') pill.textContent = 'complete';
+    if (pill) pill.textContent = cxpText('status_complete', 'complete');
   });
   syncStatusPillTones(container);
   cleanOutputBlocks(container);
   // Old snapshots retain their classes; replace just their verbose diff body.
   container.querySelectorAll('[data-item-type="fileChange"]').forEach(card => {
+    const title = card.querySelector('.cxp-card-title');
+    if (title) title.textContent = cxpText('fileChange', 'File change');
+    const pill = card.querySelector('.cxp-status-pill');
+    const completed = ['completed', cxpText('status_completed', 'completed')].includes(pill?.textContent);
+    const subtitle = card.querySelector('.cxp-card-subtitle');
+    if (subtitle) subtitle.textContent = fileChangeSubtitle({ status: completed ? 'completed' : '' });
+    if (completed && pill) pill.textContent = cxpText('status_completed', 'completed');
+    const meta = card.querySelector('.cxp-card-meta');
+    const count = meta?.textContent.match(/^(\d+) file changes?$/)?.[1];
+    if (count) meta.textContent = cxpText(Number(count) === 1 ? 'oneFileChange' : 'fileChanges', Number(count) === 1 ? '1 file change' : '{count} file changes', { count });
     const fold = card.querySelector('.cxp-fold-diff');
     const raw = fold?.querySelector('.cxp-card-pre-diff')?.textContent;
     if (!raw) return;
@@ -2033,14 +2047,17 @@ function getReasoningPreviewText(state) {
   const contentText = Array.isArray(state?.contentLines)
     ? state.contentLines.map((line) => String(line || '').trim()).filter(Boolean).join(' ')
     : '';
-  return _ctx.cleanPreview(summaryText || contentText || 'Working through the next step');
+  return _ctx.cleanPreview(summaryText || contentText || cxpText('working', 'Working through the next step'));
 }
 
 function updateReasoningChrome(state, { complete = false } = {}) {
   if (!state) return;
-  if (state.summaryEl) state.summaryEl.textContent = complete && !state.summaryLines?.some(line => String(line).trim()) && !state.contentLines?.some(line => String(line).trim()) ? 'No reasoning summary was provided.' : getReasoningPreviewText(state);
-  if (state.pillEl) state.pillEl.textContent = complete ? 'complete' : 'live';
-  if (state.el) state.el.classList.toggle('cxp-reasoning-done', !!complete);
+  if (state.summaryEl) state.summaryEl.textContent = complete && !state.summaryLines?.some(line => String(line).trim()) && !state.contentLines?.some(line => String(line).trim()) ? cxpText('noReasoning', 'No reasoning summary was provided.') : getReasoningPreviewText(state);
+  if (state.pillEl) state.pillEl.textContent = complete ? cxpText('status_complete', 'complete') : cxpText('live', 'live');
+  if (state.el) {
+    state.el.hidden = !state.summaryLines?.some(line => String(line).trim()) && !state.contentLines?.some(line => String(line).trim());
+    state.el.classList.toggle('cxp-reasoning-done', !!complete);
+  }
 }
 
 function cacheCollapsedCardState(state, item, itemType) {
@@ -2100,15 +2117,9 @@ function cacheCollapsedCardState(state, item, itemType) {
     case 'fileChange': {
       const changes = Array.isArray(item.changes) ? item.changes : [];
       if (hasOwnField(item, 'changes')) {
-        state.fileMetaText = changes.length ? `${changes.length} file change${changes.length > 1 ? 's' : ''}` : 'Pending file changes';
+        state.fileMetaText = changes.length ? cxpText(changes.length === 1 ? 'oneFileChange' : 'fileChanges', changes.length === 1 ? '1 file change' : '{count} file changes', { count: changes.length }) : cxpText('pendingFiles', 'Pending file changes');
         state.filesText = resolveFileChangeSummary(item);
-        const diffText = changes
-          .map((change) => extractStructuredText(change?.diff || change?.patch || change?.content || change?.output || ''))
-          .filter(Boolean)
-          .join('\n\n');
-        if (item.aggregatedOutput != null || diffText) {
-          state.outputBuf = extractStructuredText(item.aggregatedOutput) || item.aggregatedOutput || diffText;
-        }
+        if (item.aggregatedOutput != null) state.outputBuf = extractStructuredText(item.aggregatedOutput) || item.aggregatedOutput || '';
       } else if (item.aggregatedOutput != null) {
         state.outputBuf = extractStructuredText(item.aggregatedOutput) || item.aggregatedOutput || '';
       }
@@ -2162,8 +2173,8 @@ export function flushCardBody(state) {
       setOptionalSection(state.resultSectionEl, state.resultEl, state.resultText || '');
       break;
     case 'fileChange':
-      if (state.metaEl) state.metaEl.textContent = state.fileMetaText || 'Pending file changes';
-      if (state.filesEl) state.filesEl.textContent = state.filesText || 'Pending file changes';
+      if (state.metaEl) state.metaEl.textContent = state.fileMetaText || cxpText('pendingFiles', 'Pending file changes');
+      if (state.filesEl) state.filesEl.textContent = state.filesText || cxpText('pendingFiles', 'Pending file changes');
       refreshFileChangeView(state);
       break;
     case 'collabAgentToolCall':
@@ -2388,6 +2399,7 @@ export function ensureReasoningState(item) {
 
   const details = document.createElement('details');
   details.className = 'cxp-card cxp-reasoning';
+  details.hidden = true;
   details.dataset.itemId = item.id || '';
   details.dataset.expanded = '1';
 
@@ -2395,8 +2407,8 @@ export function ensureReasoningState(item) {
   summary.innerHTML = `
     <span class="cxp-card-icon">${ICON_SPARK}</span>
     <span class="cxp-card-titles">
-      <span class="cxp-card-title">Reasoning Summary</span>
-      <span class="cxp-card-subtitle">Working through the next step</span>
+      <span class="cxp-card-title">${cxpText('reasoning', 'Reasoning Summary')}</span>
+      <span class="cxp-card-subtitle">${cxpText('working', 'Working through the next step')}</span>
     </span>
     <span class="cxp-think-dots"><span></span><span></span><span></span></span>
     <span class="cxp-status-pill">live</span>
@@ -2643,10 +2655,14 @@ export function completeTurnOutputs(turnId) {
   }
 }
 
+function fileChangeSubtitle(item) {
+  return item.status === 'completed' ? cxpText('filesUpdated', 'File updates applied') : cxpText('fileUpdates', 'File updates');
+}
+
 export function ensureFileChangeState(item) {
   let state = _ctx.items.get(item.id);
   if (state) return state;
-  const card = createCard(item, ICON_FILES, 'File change', 'Proposed file updates');
+  const card = createCard(item, ICON_FILES, cxpText('fileChange', 'File change'), fileChangeSubtitle(item));
   setCardExpanded(card.el, true);
 
   const summary = document.createElement('div');
@@ -2657,7 +2673,7 @@ export function ensureFileChangeState(item) {
   filesSection.className = 'cxp-card-section';
   const filesLabel = document.createElement('div');
   filesLabel.className = 'cxp-card-section-label';
-  filesLabel.textContent = 'Files changed';
+  filesLabel.textContent = cxpText('filesChanged', 'Files changed');
   const filesBody = document.createElement('div');
   filesBody.className = 'cxp-card-meta';
   filesSection.append(filesLabel, filesBody);
@@ -2672,6 +2688,7 @@ export function ensureFileChangeState(item) {
     type: 'fileChange',
     el: card.el,
     pillEl: card.pill,
+    subtitleEl: card.subtitleEl,
     metaEl: summary,
     filesEl: filesBody,
     outputSectionEl: outputEl,
@@ -2889,8 +2906,9 @@ export function updateItemFromData(item) {
       state.titleEl.textContent = head?.title || h.detail || item.type || 'Item';
       if (head && state.subtitleEl) state.subtitleEl.textContent = head.subtitle;
     }
+    if (itemType === 'fileChange' && state.subtitleEl) state.subtitleEl.textContent = fileChangeSubtitle(state._lastItem);
     if (state.pillEl && item.status != null) state.pillEl.textContent = _ctx.formatStatus(item.status);
-    if (isCardBodyHidden(state)) { state._bodyDirty = true; _ctx.scheduleThreadSnapshotSave(_ctx.boundTab); return; }
+    if (itemType !== 'reasoning' && isCardBodyHidden(state)) { state._bodyDirty = true; _ctx.scheduleThreadSnapshotSave(_ctx.boundTab); return; }
   }
 
   switch (itemType) {
@@ -2978,8 +2996,8 @@ export function updateItemFromData(item) {
     }
     case 'fileChange': {
       state.pillEl.textContent = _ctx.formatStatus(item.status);
-      state.metaEl.textContent = state.fileMetaText || 'Pending file changes';
-      if (state.filesEl) state.filesEl.textContent = state.filesText || 'Pending file changes';
+      state.metaEl.textContent = state.fileMetaText || cxpText('pendingFiles', 'Pending file changes');
+      if (state.filesEl) state.filesEl.textContent = state.filesText || cxpText('pendingFiles', 'Pending file changes');
       if (item.aggregatedOutput != null) {
         state.outputBuf = extractStructuredText(item.aggregatedOutput) || item.aggregatedOutput || '';
       }
@@ -3104,26 +3122,26 @@ export function appendAgentDelta(itemId, delta) {
 
 export function appendPlanDelta(itemId, delta) {
   const state = ensurePlanState({ id: itemId });
-  if (state.pillEl) state.pillEl.textContent = 'live';
+  if (state.pillEl) state.pillEl.textContent = cxpText('live', 'live');
   state.buffer += delta || '';
   if (isCardBodyHidden(state)) { state._bodyDirty = true; return; }
   setMarkdownBuffer(state, state.buffer, false);
 }
 
 export function getReasoningBodyText(state, { complete = false } = {}) {
-  if (!state) return complete ? 'No reasoning summary was provided.' : 'Waiting for reasoning summary...';
+  if (!state) return complete ? cxpText('noReasoning', 'No reasoning summary was provided.') : cxpText('waitingReasoning', 'Waiting for reasoning summary...');
   const contentText = Array.isArray(state.contentLines) ? state.contentLines.join('').trim() : '';
   if (contentText) return contentText;
   const summaryText = Array.isArray(state.summaryLines)
     ? state.summaryLines.map((line) => String(line || '').trim()).filter(Boolean).join('\n')
     : '';
-  return summaryText || (complete ? 'No reasoning summary was provided.' : 'Waiting for reasoning summary...');
+  return summaryText || (complete ? cxpText('noReasoning', 'No reasoning summary was provided.') : cxpText('waitingReasoning', 'Waiting for reasoning summary...'));
 }
 
 export function appendReasoningDelta(itemId, delta, isSummary = false, summaryIndex = null) {
   const state = ensureReasoningState({ id: itemId });
   state.el?.classList.remove('cxp-reasoning-done');
-  if (state.pillEl) state.pillEl.textContent = 'live';
+  if (state.pillEl) state.pillEl.textContent = cxpText('live', 'live');
   if (!state.userToggled && state.el && !state.el.open) {
     state.suppressToggleTracking = true;
     state.el.open = true;

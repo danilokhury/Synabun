@@ -23,7 +23,7 @@ const TOOL_KEYS = ['claude-code', 'codex', 'opencode', 'gemini'];
 const CLI_DOC_URLS = {
   'claude-code': 'https://code.claude.com/docs/en/setup',
   'codex':       'https://learn.chatgpt.com/docs/codex/cli',
-  'opencode':    'https://opencode.ai/docs/',
+  'opencode':    'https://opencode.ai/v2/docs',
   'gemini':      'https://github.com/google-gemini/gemini-cli',
 };
 
@@ -35,7 +35,7 @@ const CLI_DOC_URLS = {
 const CLI_INSTALL_CMDS = {
   'claude-code': { posix: 'curl -fsSL https://claude.ai/install.sh | bash', windows: 'irm https://claude.ai/install.ps1 | iex' },
   'codex':       { posix: 'curl -fsSL https://chatgpt.com/codex/install.sh | sh', windows: 'powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"' },
-  'opencode':    { posix: 'curl -fsSL https://opencode.ai/install | bash', windows: 'npm install -g opencode-ai' },
+  'opencode':    { posix: 'curl -fsSL https://opencode.ai/v2/install | bash', windows: 'winget install --id Anomaly.OpenCode --exact' },
   'gemini':      { posix: 'npm install -g @google/gemini-cli', windows: 'npm install -g @google/gemini-cli' },
 };
 

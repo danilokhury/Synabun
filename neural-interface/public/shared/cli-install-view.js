@@ -34,7 +34,6 @@ export const CLI_INSTALL_COPY = Object.freeze({
   stepPath: 'Adding the CLI folder to your PATH…',
   stepPathAdded: 'Added {dir} to your PATH',
   bodyMissing: 'Install it with one click from {vendor}\'s official installer, or run:',
-  bodyMissingArchive: 'Install it with one click from {vendor}\'s official release, or run:',
   bodyMissingManual: 'Install it with this command, then re-check:',
   bodyBroken: '{label} was found at {path}, but it could not be started:',
   bodyBrokenVersion: '{label} {version} was found at {path}, but it could not be started:',
@@ -50,8 +49,6 @@ export const CLI_INSTALL_COPY = Object.freeze({
   stepDownloadReceived: 'Downloading: {received} MB',
   stepVerify: 'Checking the download…',
   stepRun: 'Running the official installer…',
-  stepExtract: 'Unpacking…',
-  stepPlace: 'Putting it in place…',
   stepCheck: 'Checking that it starts…',
   errorOffline: 'The download server could not be reached. Check the connection and try again.',
   errorHttp: 'The download server answered with an error. Try again in a moment.',
@@ -60,7 +57,6 @@ export const CLI_INSTALL_COPY = Object.freeze({
   errorTimeout: 'The installer took too long and was stopped.',
   errorInstallerFailed: 'The official installer stopped with an error.',
   errorNotFound: 'The installer finished, but SynaBun does not find {label} afterwards.',
-  errorUnpack: 'The download could not be unpacked, so it was removed.',
   errorDisk: 'The files could not be written. Check free space and permissions, then try again.',
   errorCancelled: 'The installation was stopped.',
   errorUnsupported: 'There is no one-click install for this system. Use the command below or the install guide.',
@@ -91,17 +87,17 @@ export const CLI_VENDORS = Object.freeze({
 export const INSTALLABLE_CLIS = Object.freeze(['claude-code', 'codex', 'opencode']);
 
 /** The steps an install reports (`{ type: 'step' }`), in the order they can come. */
-export const INSTALL_STEPS = Object.freeze(['start', 'download', 'verify', 'run', 'extract', 'place', 'check', 'path']);
+export const INSTALL_STEPS = Object.freeze(['start', 'download', 'verify', 'run', 'check', 'path']);
 
 const STEP_COPY = Object.freeze({
   start: 'stepStart', download: 'stepDownload', verify: 'stepVerify', run: 'stepRun',
-  extract: 'stepExtract', place: 'stepPlace', check: 'stepCheck', path: 'stepPath',
+  check: 'stepCheck', path: 'stepPath',
 });
 
 const ERROR_COPY = Object.freeze({
   offline: 'errorOffline', http: 'errorHttp', checksum: 'errorChecksum', interrupted: 'errorInterrupted',
   timeout: 'errorTimeout', 'installer-failed': 'errorInstallerFailed', 'not-found-after-install': 'errorNotFound',
-  unpack: 'errorUnpack', disk: 'errorDisk', cancelled: 'errorCancelled', unsupported: 'errorUnsupported',
+  disk: 'errorDisk', cancelled: 'errorCancelled', unsupported: 'errorUnsupported',
   refused: 'errorRefused', connection: 'errorConnection',
 });
 
@@ -376,7 +372,7 @@ export function cliBannerView({ toolKey, label = '', info = null, forced = null,
       });
     }
     const text = offer
-      ? t(offer.method === 'archive' ? 'bodyMissingArchive' : 'bodyMissing', { vendor: CLI_VENDORS[toolKey] || name, label: name })
+      ? t('bodyMissing', { vendor: CLI_VENDORS[toolKey] || name, label: name })
       : t('bodyMissingManual');
     return Object.assign(view, {
       show: true, blocked: true, kind: 'missing', tone: 'warn', icon: '!',

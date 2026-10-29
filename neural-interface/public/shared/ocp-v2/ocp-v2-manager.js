@@ -28,7 +28,7 @@ import { on } from '../state.js';
 import { setSidepanelVisible } from '../ui-sidepanel-windows.js';
 import { createPanelStore } from './ocp-v2-state.js';
 import { createChildPanel } from './ocp-v2-childpanel.js';
-import { inheritChildPanelMcpProfile } from './ocp-v2-profile-inheritance.js';
+import { inheritChildPanelTools } from './ocp-v2-tools-inheritance.js';
 import { notify as uiNotify, NOTIF_TYPE } from '../ui-notifications.js';
 import {
   isAutomationSession, onAutomationSessionRegistered, shouldMaterializeChildPanel,
@@ -513,12 +513,12 @@ function parentTitleFor(reg, parentSid) {
   } catch { return 'parent'; }
 }
 
-// The tool profile the user chose for a session (the project bar saves it
+// The tool list the user chose for a session (the project bar saves it
 // under this key): what a sub-agent of a session that is not on screen inherits.
-const MCP_SESSION_PROFILE_KEY = 'synabun-opencode-session-mcp-profiles';
-function savedSessionProfile(sessionId) {
+const MCP_SESSION_TOOLS_KEY = 'synabun-opencode-session-tools';
+function savedSessionTools(sessionId) {
   try {
-    const parsed = JSON.parse(storage.getItem(MCP_SESSION_PROFILE_KEY) || '{}');
+    const parsed = JSON.parse(storage.getItem(MCP_SESSION_TOOLS_KEY) || '{}');
     return (parsed && typeof parsed === 'object' && parsed[sessionId]) || null;
   } catch { return null; }
 }
@@ -529,8 +529,8 @@ function spawnChildPanel({ childSessionId, childInfo, parentPanelId, parentSessi
   store.setSession(childSessionId, childInfo || null);
   store.setParentSession(parentSessionId, parentPanelId);
   // The parent's profile: the primary store's only while it is bound to that
-  // parent (see inheritChildPanelMcpProfile).
-  inheritChildPanelMcpProfile(store, _primary?.store, childInfo, { parentSessionId, savedProfile: savedSessionProfile });
+  // parent (see inheritChildPanelTools).
+  inheritChildPanelTools(store, _primary?.store, childInfo, { parentSessionId, savedTools: savedSessionTools });
 
   const wsUnsub = subscribeSession(childSessionId, store);
 

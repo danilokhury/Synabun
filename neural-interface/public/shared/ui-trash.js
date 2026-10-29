@@ -9,6 +9,7 @@ import { fetchTrash, restoreFromTrash, purgeTrash, deleteMemoryPermanent } from 
 import { formatTrashAge, formatMemoryContent }  from './utils.js';
 import { storage } from './storage.js';
 import { isGuest, hasPermission, showGuestToast } from './ui-sync.js';
+import { centeredInFrame, frameRect } from './app-frame.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -96,7 +97,7 @@ function openTrashPanel() {
     return;
   }
   const existing = $('trash-window');
-  if (existing) { existing.style.zIndex = '50101'; return; }
+  if (existing) { existing.style.zIndex = '49901'; return; }
 
   trashPanelOpen   = true;
   trashSelectedId  = null;
@@ -110,12 +111,13 @@ function openTrashPanel() {
   const saved = JSON.parse(storage.getItem('neural-panel-trash-window') || 'null');
   if (saved) {
     if (saved.left && saved.left !== 'auto') win.style.left = saved.left;
-    if (saved.top)    win.style.top    = Math.max(48, parseInt(saved.top)) + 'px';
+    if (saved.top)    win.style.top    = Math.max(frameRect().top, parseInt(saved.top)) + 'px';
     if (saved.width)  win.style.width  = saved.width;
     if (saved.height) win.style.height = saved.height;
   } else {
-    win.style.left = Math.max(20, (window.innerWidth  - 640) / 2) + 'px';
-    win.style.top  = Math.max(48, (window.innerHeight - 480) / 2) + 'px';
+    const at = centeredInFrame(640, 480);   // in the app frame
+    win.style.left = at.left + 'px';
+    win.style.top  = at.top + 'px';
   }
 
   win.innerHTML = `

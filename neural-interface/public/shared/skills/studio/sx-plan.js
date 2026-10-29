@@ -11,7 +11,16 @@
 // Nothing is confirmed by default. No DOM and no imports.
 
 export const BLOCK_CODES = Object.freeze(['no_root', 'shared_root_off', 'root_read_only', 'root_unusable', 'lint_errors', 'scan_blocked', 'review_required', 'approval_stale', 'destination_unreadable']);
-export const REFRESH_KINDS = Object.freeze(['automatic', 'reload-skills', 'new-session']);
+// panel-reload: SynaBun's own Codex / OpenCode panel lists the skill now (Codex: a forced reload of its skill list on
+// skills:changed; OpenCode: its serve reads the folders again on every listing); a session open in a terminal needs a
+// new one. new-session stays for a server from before this.
+// terminal-only: a Claude Code folder OpenCode reads only outside SynaBun (its own serves start with
+// OPENCODE_DISABLE_CLAUDE_CODE=1): install for OpenCode for SynaBun's panel and an OpenCode Assistant.
+export const REFRESH_KINDS = Object.freeze(['automatic', 'reload-skills', 'new-session', 'panel-reload', 'terminal-only']);
+// Why a runtime could not be asked on Verify (lib/skills/runtime-checks.js probe, deploy.js verify): each has its words.
+export const PROBE_CODES = Object.freeze(['not-installed', 'not-running', 'no-answer', 'no-list', 'terminal-only']);
+export const ELIGIBILITY_STATES = Object.freeze(['enabled', 'disabled', 'unknown']);
+export const ELIGIBILITY_REASONS = Object.freeze(['codex-config', 'claude-override', 'claude-deny', 'opencode-permission', 'unreadable', 'invalid-json']);
 export const RESULT_STATES = Object.freeze(['committed', 'skipped', 'needs-confirmation', 'failed']);
 
 const list = (v) => (Array.isArray(v) ? v : []);
@@ -22,9 +31,12 @@ const list = (v) => (Array.isArray(v) ? v : []);
 // last install's outcome, the verifies, and whether a request is on its way (`busy`: the targets and the version
 // are locked meanwhile).
 
-/** Publish as it starts: nothing ticked yet, no plan, nothing confirmed. */
+/**
+ * Publish as it starts: nothing ticked yet (the first drawing picks the defaults), every project in one scope, no
+ * plan and none on its way, nothing confirmed, Advanced and Export folded.
+ */
 export function newPublishState() {
-  return { checked: null, projects: [], plan: null, planTargets: null, planRevision: null, confirmed: { replace: new Set(), scan: new Set() }, results: null, verify: {}, busy: false, config: null };
+  return { checked: null, projects: [], scope: 'user', plan: null, planTargets: null, planRevision: null, planning: null, planError: null, planTimer: 0, confirmed: { replace: new Set(), scan: new Set() }, results: null, verify: {}, busy: false, config: null, advanced: false, exportOpen: false };
 }
 
 /** Forget a plan and what was confirmed of it: a plan is installed only for what it was asked for. */
@@ -33,6 +45,7 @@ export function clearPlan(pub) {
   pub.plan = null;
   pub.planTargets = null;
   pub.planRevision = null;
+  pub.planError = null;
   pub.confirmed = { replace: new Set(), scan: new Set() };
 }
 
@@ -71,10 +84,16 @@ export function planModel(plan) {
       replace: replace ? { currentDigest: replace.currentDigest ?? null, state: t.destinationState?.state || null, message: String(replace.message ?? '') } : null,
       scanAck: scanAck ? { digest: scanAck.digest, findings: list(t.scan?.findings).slice(0, 12) } : null,
       transforms: list(t.export?.transforms).map((tr) => ({ op: tr.op, key: tr.key || null, file: tr.file || null, reason: String(tr.reason ?? '') })),
-      overlap: list(t.overlap).map((o) => ({ path: o.path, runtimes: list(o.runtimes), why: String(o.why ?? '') })),
+      overlap: list(t.overlap).map((o) => ({ path: o.path, runtimes: list(o.runtimes), name: typeof o.name === 'string' ? o.name : (t.name || plan?.name || ''), why: String(o.why ?? '') })),
+      name: typeof t.name === 'string' ? t.name : (plan?.name || ''),
       lint: { errors: Number(t.lint?.errors) || 0, warnings: Number(t.lint?.warnings) || 0, diagnostics: list(t.lint?.diagnostics).slice(0, 50) },
       scan: { status: t.scan?.status || null, gate: t.scan?.gate || null, counts: t.scan?.counts || {}, trusted: !!t.scan?.trustedBundled, disclosure: t.scan?.disclosure || '' },
       refresh: list(t.refresh).map((r) => ({ runtime: r.runtime, kind: REFRESH_KINDS.includes(r.kind) ? r.kind : 'unknown', message: String(r.message ?? '') })),
+      // Whether each runtime's own settings let the skill through (a server from before this says nothing: unknown).
+      eligibility: Object.fromEntries(Object.entries(t.eligibility && typeof t.eligibility === 'object' ? t.eligibility : {}).map(([runtime, e]) => [runtime, {
+        state: ELIGIBILITY_STATES.includes(e?.state) ? e.state : 'unknown',
+        reason: e?.reason && typeof e.reason === 'object' ? { kind: ELIGIBILITY_REASONS.includes(e.reason.kind) ? e.reason.kind : 'other', file: typeof e.reason.file === 'string' ? e.reason.file : null, pattern: typeof e.reason.pattern === 'string' ? e.reason.pattern : null, rule: typeof e.reason.rule === 'string' ? e.reason.rule : null, key: typeof e.reason.key === 'string' ? e.reason.key : null } : null,
+      }])),
     };
   });
   return { planDigest: plan?.planDigest || null, revisionId: plan?.revisionId || null, name: plan?.name || '', rows };
@@ -113,7 +132,7 @@ export function resultModel(result) {
     installationId: r.installationId || null,
     backupId: r.backupId || null,
     reasons: list(r.reasons).map((x) => ({ code: x.code || 'other', message: String(x.message ?? '') })),
-    error: r.error ? String(r.error) : null,
+    error: r.error ? String(r.error) : null, ...(r.code ? { code: r.code } : {}),
     refresh: list(r.refresh).map((x) => ({ runtime: x.runtime, kind: REFRESH_KINDS.includes(x.kind) ? x.kind : 'unknown', message: String(x.message ?? '') })),
   }));
 }
@@ -123,7 +142,7 @@ export function verifyFacts(installation) {
   const s = installation?.state || {};
   const written = s.writtenCheck || (s.written === true ? 'verified' : s.written === false ? 'changed' : 'unknown');
   const discovered = s.discovered && typeof s.discovered === 'object'
-    ? Object.entries(s.discovered).map(([runtime, v]) => ({ runtime, discovered: v?.discovered ?? (typeof v === 'boolean' ? v : null), error: v?.error || null }))
+    ? Object.entries(s.discovered).map(([runtime, v]) => ({ runtime, discovered: v?.discovered ?? (typeof v === 'boolean' ? v : null), error: v?.error || null, code: PROBE_CODES.includes(v?.code) ? v.code : null }))
     : [];
   return {
     written,

@@ -8,6 +8,7 @@
 // in it named), take a library skill out of the library (never one that is installed somewhere), and export. A copy
 // never drops a file it could not read: it says so and makes nothing.
 
+import { studioErrorText } from './sx-errors.js';
 import { createFrontmatter } from '../ss-frontmatter.js';
 import { checkName } from './sx-create.js';
 import { adoptWorkspace, dirtyTabs, dropDraft, HEAD } from './sx-docs.js';
@@ -105,7 +106,7 @@ export async function customizeCopy(ctx, ws) {
     if (!ctx.alive(gen)) return;
     await ctx.openRow(`lib:${res.skillId}`, { tab: 'edit' });
     if (taken.includes(name)) ctx.toast(t('skillsStudio.customize.nameInUse', { name }));
-  } catch (e) { if (ctx.alive(gen)) ctx.toast(t('skillsStudio.customize.failed', { error: e.message }), 'error'); }
+  } catch (e) { if (ctx.alive(gen)) ctx.toast(t('skillsStudio.customize.failed', { error: studioErrorText(ctx.t, e) }), 'error'); }
 }
 
 /** Take an owner's folder into the library (Versions and Publish then work for it). */
@@ -117,7 +118,7 @@ export async function adoptNow(ctx, ws) {
     if (!ctx.alive(gen)) return;
     ctx.toast(t('skillsStudio.toast.adopted', { name: ws.label }));
     await ctx.reload();
-  } catch (e) { if (ctx.alive(gen)) ctx.toast(t('skillsStudio.toast.adoptFailed', { error: e.message }), 'error'); }
+  } catch (e) { if (ctx.alive(gen)) ctx.toast(t('skillsStudio.toast.adoptFailed', { error: studioErrorText(ctx.t, e) }), 'error'); }
 }
 
 /** Delete an agent, a command or a skill folder of the owner's, where it is (asked first, Cancel first). */
@@ -142,7 +143,7 @@ export async function deleteSubject(ctx, ws) {
     ctx.toast(t('skillsStudio.toast.deleted', { name: ws.label }));
     ctx.closeWorkspace(ws);
     await ctx.reload();
-  } catch (e) { if (ctx.alive(gen)) ctx.toast(t('skillsStudio.toast.deleteFailed', { error: e.message }), 'error'); }
+  } catch (e) { if (ctx.alive(gen)) ctx.toast(t('skillsStudio.toast.deleteFailed', { error: studioErrorText(ctx.t, e) }), 'error'); }
 }
 
 /** Whether a workspace's skill can be taken out of the library from here (a library skill, not SynaBun's). */
@@ -160,7 +161,7 @@ export async function deleteFromLibrary(ctx, ws) {
   if (!ctx.caps.has('library-delete')) { ctx.toast(t('skillsStudio.ws.libraryDeleteRestart'), 'error'); return; }
   const gen = ctx.gen();
   let skill;
-  try { skill = (await ctx.api.fetchSkill(ws.skill.skillId)).skill; } catch (e) { if (ctx.alive(gen)) ctx.toast(t('skillsStudio.toast.deleteFailed', { error: e.message }), 'error'); return; }
+  try { skill = (await ctx.api.fetchSkill(ws.skill.skillId)).skill; } catch (e) { if (ctx.alive(gen)) ctx.toast(t('skillsStudio.toast.deleteFailed', { error: studioErrorText(ctx.t, e) }), 'error'); return; }
   if (!ctx.alive(gen)) return;
   const installs = skill.installations || [];
   if (installs.length) {
@@ -200,7 +201,7 @@ export async function deleteFromLibrary(ctx, ws) {
     if (!ctx.alive(gen)) return;
     const words = e?.code === 'skill_installed' ? t('skillsStudio.toast.libraryDeleteInstalled', { name: ws.label })
       : e?.code === 'skill_conflict' ? t('skillsStudio.toast.libraryDeleteChanged', { name: ws.label })
-      : t('skillsStudio.toast.deleteFailed', { error: e.message });
+      : t('skillsStudio.toast.deleteFailed', { error: studioErrorText(ctx.t, e) });
     ctx.toast(words, 'error');
   }
 }

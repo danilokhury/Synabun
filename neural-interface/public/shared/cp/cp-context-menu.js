@@ -12,6 +12,7 @@
 
 import { cpCtx } from './cp-ctx.js';
 import { contextReading, contextMenuModel, isUnset } from './cp-context-model.js';
+import { frameRect } from '../app-frame.js';
 
 const POP_ID = 'cp-context-popover';
 const LABEL = 'Context settings';
@@ -149,24 +150,24 @@ function tipClipped() {
 }
 
 // Below the cog, its right edge on the cog's; above it when there is more room
-// there; always inside the viewport, scrolling inside when it is taller.
+// there; always inside the app frame, scrolling inside when it is taller.
 function place() {
   const $cog = cog();
   if (!_open || !_pop || !$cog) return;
   const r = $cog.getBoundingClientRect();
-  const vw = window.innerWidth;
-  const vh = window.innerHeight;
-  const width = Math.max(0, Math.min(WIDTH, vw - MARGIN * 2));
+  // Inside the app frame (app-frame.js; the whole window on a page without it)
+  const f = frameRect();
+  const width = Math.max(0, Math.min(WIDTH, f.width - MARGIN * 2));
   _pop.style.width = `${width}px`;
-  const below = vh - r.bottom - GAP - MARGIN;
-  const above = r.top - GAP - MARGIN;
+  const below = f.bottom - r.bottom - GAP - MARGIN;
+  const above = r.top - f.top - GAP - MARGIN;
   const up = below < 220 && above > below;
   _pop.style.maxHeight = `${Math.max(120, up ? above : below)}px`;
   const height = _pop.offsetHeight;
-  const left = Math.max(MARGIN, Math.min(r.right - width, vw - width - MARGIN));
+  const left = Math.max(f.left + MARGIN, Math.min(r.right - width, f.right - width - MARGIN));
   const top = up
-    ? Math.max(MARGIN, r.top - GAP - height)
-    : Math.max(MARGIN, Math.min(r.bottom + GAP, vh - MARGIN - height));
+    ? Math.max(f.top + MARGIN, r.top - GAP - height)
+    : Math.max(f.top + MARGIN, Math.min(r.bottom + GAP, f.bottom - MARGIN - height));
   _pop.style.left = `${Math.round(left)}px`;
   _pop.style.top = `${Math.round(top)}px`;
   // Once it has its width: only now is a cut value known.

@@ -20,6 +20,12 @@
 //   sleep           the hero only, after 90 s with no input while nothing runs;
 //                   the rig wakes itself on a pointer move or a key
 //
+// present(true) hands the character to a presenter (the Workspace tour,
+// public/shared/tour/): while it lasts the director dresses nothing, never
+// puts the hero to sleep, does not watch the caret and ignores chip
+// attention; present(false) gives it back and the director dresses it again
+// for whatever is true by then.
+//
 // Anything else is the renderer's pose: the hero idles, the "Thinking" row's
 // character thinks, the stage acts out its call. A pose the director sets is
 // held: the renderer leaves it alone until the director lets go and asks it
@@ -106,6 +112,7 @@ export function createMascotDirector({ getTarget = () => null, caret = () => nul
   let sleepTimer = 0;
   let lastInput = now();
   let stopInput = null;
+  let presenting = false; // a presenter (the tour) owns the character's pose
 
   const safe = (fn) => { try { return fn(); } catch { return undefined; } };
   const boxOf = (t) => safe(() => t.el?.getBoundingClientRect?.()) || null;
@@ -137,7 +144,7 @@ export function createMascotDirector({ getTarget = () => null, caret = () => nul
     if (destroyed) return;
     const t = safe(getTarget) || null;
     if (t !== target) {
-      if (target && holding) safe(() => target.hold(false));
+      if (target && holding && !presenting) safe(() => target.hold(false));
       target = t;
       holding = false;
       shown = '';
@@ -145,7 +152,7 @@ export function createMascotDirector({ getTarget = () => null, caret = () => nul
       listenInput();
       armSleep();
     }
-    if (!t) return;
+    if (!t || presenting) return; // a presenter holds the pose: nothing is dressed until it lets go
     const want = desired(t);
     if (!want) {
       if (!holding) return;
@@ -175,7 +182,7 @@ export function createMascotDirector({ getTarget = () => null, caret = () => nul
 
   function canSleep() {
     const t = target;
-    return !destroyed && !!t && t.kind === 'hero' && !safe(() => t.parked?.()) && !turnActive && !typing && !attention?.open && !blocked && !offline && !oneShot;
+    return !destroyed && !presenting && !!t && t.kind === 'hero' && !safe(() => t.parked?.()) && !turnActive && !typing && !attention?.open && !blocked && !offline && !oneShot;
   }
 
   function armSleep() {
@@ -206,7 +213,7 @@ export function createMascotDirector({ getTarget = () => null, caret = () => nul
   function type(present = true, pointOf = null) {
     if (destroyed) return;
     noteInput();
-    if (!present) { stopTyping(); return; }
+    if (!present || presenting) { stopTyping(); return; }
     if (oneShot?.control) dropOneShot(); // a new edit resumes watching after an acknowledgement
     const first = !typing;
     typing = true;
@@ -256,7 +263,7 @@ export function createMascotDirector({ getTarget = () => null, caret = () => nul
     stopTyping,
     /** Chip previews relax after a short dwell; only open menus hold attention and block sleep. */
     attend(owner, spec) {
-      if (destroyed || (attention?.open && attention.owner !== owner && !spec.open)) return;
+      if (destroyed || presenting || (attention?.open && attention.owner !== owner && !spec.open)) return;
       noteInput();
       clearAttention();
       attention = { owner, ...spec };
@@ -276,7 +283,7 @@ export function createMascotDirector({ getTarget = () => null, caret = () => nul
     },
     /** Only acknowledged user commits call this; loads, live updates and keystrokes do not. */
     controlCommitted({ pose, options = {}, reaction = 'nod' }) {
-      if (destroyed) return;
+      if (destroyed || presenting) return;
       const t = safe(getTarget);
       if (!t || t.kind !== 'hero' || safe(() => t.parked?.()) || turnActive || offline || blocked) return;
       stopTyping();
@@ -323,8 +330,34 @@ export function createMascotDirector({ getTarget = () => null, caret = () => nul
     retarget() { apply(); },
     /** The user is here (focus, a click): a sleeping hero wakes, the quiet starts over. */
     touch() { if (!destroyed) noteInput(); },
+    /**
+     * A presenter takes the character (true) or gives it back (false). While on:
+     * no pose, sleep, caret watch, chip attention or acknowledgement from here;
+     * the hold this director had is handed over as it is (the presenter holds it).
+     */
+    present(on) {
+      const next = !!on;
+      if (destroyed || next === presenting) return;
+      presenting = next;
+      if (presenting) {
+        clearAttention();
+        dropOneShot();
+        if (typingTimer) { cancel(typingTimer); typingTimer = 0; }
+        if (lookTimer) { cancel(lookTimer); lookTimer = 0; }
+        typing = false;
+        typingPoint = null;
+        sleeping = false;
+        if (sleepTimer) { cancel(sleepTimer); sleepTimer = 0; }
+        holding = false;
+        shown = '';
+        return;
+      }
+      lastInput = now();
+      apply();
+      armSleep();
+    },
     /** For tests and devtools: what the director holds right now. */
-    state: () => ({ target: target?.kind || null, pose: shown.split('|')[0] || null, typing, attention: attention?.pose || null, menuOpen: !!attention?.open, blocked: !!blocked, offline, sleeping, oneShot: oneShot?.pose || null }),
+    state: () => ({ target: target?.kind || null, presenting, pose: shown.split('|')[0] || null, typing, attention: attention?.pose || null, menuOpen: !!attention?.open, blocked: !!blocked, offline, sleeping, oneShot: oneShot?.pose || null }),
     destroy() {
       if (destroyed) return;
       if (target && holding) safe(() => target.hold(false));

@@ -2,6 +2,7 @@
 import { emit, on } from './state.js';
 import { KEYS, COLOR_PALETTE } from './constants.js';
 import { storage } from './storage.js';
+import { frameRect, clampBox } from './app-frame.js';
 import { commandLaunchPayload, selectCommandGroups, isCommandLaunchAvailable } from './command-runner-model.js';
 
 const $ = id => document.getElementById(id);
@@ -35,9 +36,11 @@ export function initCommandRunner() { return on('command-runner:open', openPanel
 function clampPanel() {
   if (!_panel) return;
   const width = _panel.offsetWidth, height = _panel.offsetHeight;
-  const top = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--navbar-height')) || 48;
-  _panel.style.left = Math.max(8, Math.min(parseFloat(_panel.style.left) || 8, window.innerWidth - width - 8)) + 'px';
-  _panel.style.top = Math.max(top + 8, Math.min(parseFloat(_panel.style.top) || top + 8, window.innerHeight - height - 8)) + 'px';
+  // Inside the app frame (8px from the window and the bar, as before, and clear of an open explorer)
+  const f = frameRect();
+  const at = clampBox(parseFloat(_panel.style.left) || f.left, parseFloat(_panel.style.top) || f.top, width, height, f);
+  _panel.style.left = at.x + 'px';
+  _panel.style.top = at.y + 'px';
 }
 function openPanel() {
   if (_panel) { $('cr-search')?.focus(); return; }

@@ -19,6 +19,9 @@ export async function measureBrowserPhase(name, work) {
 
 export function assertBrowserRequestActive(req) {
   const state = req?.browserRequest || requests.getStore();
+  if (state?.protectionError) {
+    throw Object.assign(new Error(`Browser network protection unavailable: ${state.protectionError}`), { code: 'BROWSER_NETWORK_GUARD_UNAVAILABLE' });
+  }
   if (state && (state.signal.aborted || Date.now() >= state.deadline)) {
     const error = new Error(state.actionStarted
       ? 'Browser request expired after execution began; outcome is uncertain. Inspect the page before retrying.'
@@ -48,9 +51,13 @@ export async function runBrowserRequest(req, work, fallback = 10000) {
   let timer, abort;
   try {
     return await Promise.race([
-      Promise.resolve().then(work),
+      Promise.resolve().then(() => { assertBrowserRequestActive(req); return work(); }),
       new Promise((_, reject) => {
-        const fail = () => reject(Object.assign(new Error('Browser operation deadline exceeded; inspect state before retrying.'), { code: 'BROWSER_OPERATION_TIMEOUT' }));
+        const fail = () => {
+          if (state?.protectionError) {
+            try { assertBrowserRequestActive(req); } catch (error) { reject(error); }
+          } else reject(Object.assign(new Error('Browser operation deadline exceeded; inspect state before retrying.'), { code: 'BROWSER_OPERATION_TIMEOUT' }));
+        };
         timer = setTimeout(fail, Math.max(1, Math.min(fallback, state ? state.deadline - Date.now() : fallback)));
         abort = fail;
         state?.signal.addEventListener('abort', abort, { once: true });
@@ -89,6 +96,7 @@ export function browserRequestMiddleware(req, res, next) {
   const deadline = Number.isFinite(requestedDeadline) && requestedDeadline > 0
     ? Math.min(requestedDeadline, Date.now() + 120_000) : Date.now() + 120_000;
   const state = { requestId, deadline, signal: controller.signal, actionStarted: false, phases: {}, counts: {} };
+  state.cancelForProtection = reason => { state.protectionError = String(reason); controller.abort(); };
   req.browserRequest = state;
   res.setHeader('X-Synabun-Request-Id', requestId);
   let responseBytes = 0;

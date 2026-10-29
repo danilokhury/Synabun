@@ -1,19 +1,17 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// OpenCode 2 client — the OpenCode 1 SDK's interface over OpenCode 2's API.
+// OpenCode 2 client — the one client SynaBun speaks to `opencode serve` with.
 //
-// Every OpenCode client in SynaBun is built by lib/opencode-v2-client.js
-// (`connect`, `createClientInstance`) from the pinned @opencode-ai/sdk, which
-// speaks OpenCode 1. For an OpenCode 2 serve it builds this instead: an object
-// with the same groups and methods SynaBun calls on the SDK client
-// (`session.prompt`, `global.event`, `permission.reply`, …), the same
-// arguments, and the same `{ data, error, response }` results, in OpenCode 1's
-// shapes (lib/opencode2-translate.js). So the wrapper, and everything above it
-// (the OpenCode panel, the Assistant's OpenCode brain, workers, loops, the
-// usage meter), runs unchanged on either major.
+// lib/opencode-v2-client.js (`connect`, `createClientInstance`) builds it for
+// every serve. It has the groups and methods SynaBun calls (`session.prompt`,
+// `global.event`, `permission.reply`, …) with the `{ data, error, response }`
+// results SynaBun's consumers read, in the shapes they were written for
+// (OpenCode 1's: lib/opencode2-translate.js). So the wrapper, and everything
+// above it (the OpenCode panel, the Assistant's OpenCode brain, workers, loops,
+// the usage meter), reads one set of shapes.
 //
-// What OpenCode 2 needs that OpenCode 1 did not:
+// What OpenCode 2's API needs:
 //   • HTTP Basic auth (user `opencode`, the launch's password) on every call;
-//   • the project folder as `location[directory]` (OpenCode 1: `directory`);
+//   • the project folder as `location[directory]`;
 //   • a prompt carries no model, agent or system prompt: the session is switched
 //     to the model and agent first (only when they change), and a system prompt
 //     is the session's instruction entry `synabun-system`;
@@ -22,15 +20,18 @@
 //     `session.command` (a slash command only queues its prompt);
 //   • a permission or a question is answered under its session, which the
 //     event translator remembers (or the pending lists say).
-// Things OpenCode 2 does not have answer like an older serve would: an empty
-// list (todos, LSP, formatters, symbols) or an error that says so (share).
+// Things OpenCode 2 does not have answer with an empty list (todos, LSP,
+// formatters, symbols) or an error that says so (share).
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { basicAuthHeader } from './opencode-protocol.js';
+import { opencodeMcpServerEntry } from './opencode-config.js';
 import {
   answersToForm,
   createEventTranslator,
   formToQuestionV1,
+  integrationEnvNames,
+  integrationsToAuthMethods,
   messagesToV1,
   modelRefToV2,
   permissionToV1,
@@ -119,13 +120,15 @@ export function createOpencode2Client({ baseUrl, password, fetchImpl = globalThi
 
   /** `{ data }` with `data` mapped, errors passed through. */
   const map = (result, fn) => (result.error ? result : { ...result, data: fn(result.data) });
+  /** The rows of an /api/integration answer (none when it failed: a provider list does not wait on it). */
+  const integrationRows = (result) => (result && !result.error && Array.isArray(result.data?.data) ? result.data.data : []);
   const ok = (result, data) => (result.error ? result : { ...result, data });
 
   // ── Sessions ──
 
   const noteAll = (rows) => rows.map((info) => translator.noteSession(info));
 
-  async function listSessions({ directory, roots, search, limit, parentID } = {}) {
+  async function listSessions({ directory, roots, search, limit, parentID, archived } = {}) {
     const max = Number(limit) > 0 ? Number(limit) : Infinity;
     const out = [];
     let cursor = null;
@@ -140,6 +143,8 @@ export function createOpencode2Client({ baseUrl, password, fetchImpl = globalThi
           limit: String(Math.min(PAGE_LIMIT, Number.isFinite(max) ? max - out.length : PAGE_LIMIT)),
           order: 'desc',
           ...(parentID ? { parentID } : (roots === true || roots === 'true' ? { parentID: 'null' } : {})),
+          // Archived sessions only (OpenCode lists live ones by default).
+          ...(archived === true ? { archived: 'true' } : {}),
         };
       last = await call('GET', '/api/session', { query });
       if (last.error) return last;
@@ -452,25 +457,39 @@ export function createOpencode2Client({ baseUrl, password, fetchImpl = globalThi
     return out;
   }
 
-  /** OpenCode 1's provider list from OpenCode 2's providers, enabled models and default model. */
+  /**
+   * The provider list SynaBun reads (`{ all, connected, defaults }`) from OpenCode 2's providers, enabled models,
+   * default model and integrations: every integration a provider can be connected through is in `all` (with the
+   * variables it reads its key from), the ones with models are `connected`.
+   */
   async function providerCatalog(directory) {
-    const [providers, models, fallback] = await Promise.all([
+    const [providers, models, fallback, integrations] = await Promise.all([
       call('GET', '/api/provider', { query: located(directory) }),
       call('GET', '/api/model', { query: located(directory) }),
       call('GET', '/api/model/default', { query: located(directory) }),
+      call('GET', '/api/integration', { query: located(directory) }),
     ]);
     if (providers.error) return { error: providers.error, response: providers.response };
     if (models.error) return { error: models.error, response: models.response };
+    const envOf = new Map();
+    for (const integration of integrationRows(integrations)) {
+      envOf.set(str(integration.id), integrationEnvNames(integration));
+    }
     const byProvider = new Map();
     for (const provider of Array.isArray(providers.data?.data) ? providers.data.data : []) {
       byProvider.set(provider.id, {
         id: str(provider.id),
         name: str(provider.name || provider.id),
         source: provider.activation === 'enabled' ? 'config' : 'api',
-        env: [],
+        env: envOf.get(str(provider.integrationID || provider.id)) || [],
         options: {},
         models: {},
       });
+    }
+    for (const integration of integrationRows(integrations)) {
+      const id = str(integration.id);
+      if (!id || byProvider.has(id)) continue;
+      byProvider.set(id, { id, name: str(integration.name || id), source: 'api', env: envOf.get(id) || [], options: {}, models: {} });
     }
     for (const model of Array.isArray(models.data?.data) ? models.data.data : []) {
       if (!model?.id || !model.providerID || model.enabled === false) continue;
@@ -524,16 +543,24 @@ export function createOpencode2Client({ baseUrl, password, fetchImpl = globalThi
     },
     get: ({ sessionID } = {}) => getSession(sessionID),
     update: async ({ sessionID, title, permission, metadata, time } = {}) => {
-      // OpenCode 2's update takes a title, metadata and permissions: archiving is not in its API.
-      if (time && typeof time === 'object' && 'archived' in time) return notSupported('Archiving a session');
       const body = {};
       if (typeof title === 'string') body.title = title;
       if (metadata && typeof metadata === 'object') body.metadata = metadata;
       const rules = rulesToV2(permission);
       if (rules) body.permissions = rules;
+      // Archiving: `archived: true | false` (OpenCode 1's `time.archived`, a time or 0 to bring a session back).
+      // 2.1.4 does it; 2.0.32 answers the same request 204 and keeps the session as it was, so the session is read
+      // back and an archive that did not happen is refused with a sentence, never a silent success.
+      const archive = time && typeof time === 'object' && 'archived' in time ? Boolean(Number(time.archived)) : null;
+      if (archive !== null) body.archived = archive;
       const patched = await call('PATCH', `/api/session/${encodeURIComponent(sessionID)}`, { body });
       if (patched.error) return patched;
-      return getSession(sessionID);
+      const read = await getSession(sessionID);
+      if (archive !== null && !read.error && Boolean(read.data?.time?.archived) !== archive) {
+        const error = { _tag: 'NotSupportedError', message: `This OpenCode answered without ${archive ? 'archiving' : 'unarchiving'} the session: it needs a newer OpenCode 2 (run: opencode upgrade).` };
+        return { data: undefined, error, response: { status: 501, ok: false } };
+      }
+      return read;
     },
     delete: async ({ sessionID } = {}) => {
       const removed = await call('DELETE', `/api/session/${encodeURIComponent(sessionID)}`);
@@ -573,8 +600,6 @@ export function createOpencode2Client({ baseUrl, password, fetchImpl = globalThi
       if (cleared.error) return cleared;
       return getSession(sessionID);
     },
-    share: async () => notSupported('Sharing a session'),
-    unshare: async () => notSupported('Sharing a session'),
     summarize: async ({ sessionID } = {}) => ok(await call('POST', `/api/session/${encodeURIComponent(sessionID)}/compact`, { body: {} }), true),
     init: async ({ sessionID } = {}) => ok(await call('POST', `/api/session/${encodeURIComponent(sessionID)}/command`, { body: { name: 'init', text: '' } }), true),
     command: (p, o) => runCommand(p, o),
@@ -583,11 +608,9 @@ export function createOpencode2Client({ baseUrl, password, fetchImpl = globalThi
       if (failed) return failed;
       return ok(await call('POST', `/api/session/${encodeURIComponent(sessionID)}/shell`, { body: { command: String(command || '') } }), { info: null, parts: [] });
     },
-    deleteMessage: async () => notSupported('Deleting one message'),
   };
 
   const client = {
-    protocol: 2,
     global: {
       event: globalEvent,
       health: async () => map(await call('GET', '/api/info'), (body) => ({ healthy: true, version: str(body?.version) })),
@@ -645,11 +668,8 @@ export function createOpencode2Client({ baseUrl, password, fetchImpl = globalThi
       connect: async ({ name, directory } = {}) => ok(await call('POST', `/api/experimental/mcp/${encodeURIComponent(name)}/connect`, { query: located(directory) }), true),
       disconnect: async ({ name, directory } = {}) => ok(await call('POST', `/api/experimental/mcp/${encodeURIComponent(name)}/disconnect`, { query: located(directory) }), true),
       add: async ({ name, config, directory } = {}) => {
-        const c = obj(config);
-        const server = c.url || c.type === 'remote'
-          ? { type: 'remote', url: str(c.url), ...(c.headers ? { headers: obj(c.headers) } : {}), ...(c.enabled === false ? { disabled: true } : {}) }
-          : { type: 'local', command: Array.isArray(c.command) ? c.command.map(str) : [str(c.command), ...(Array.isArray(c.args) ? c.args.map(str) : [])].filter(Boolean), ...(c.environment || c.env ? { environment: obj(c.environment || c.env) } : {}), ...(c.enabled === false ? { disabled: true } : {}) };
-        if (Number(c.timeout) > 0) server.timeout = { startup: Number(c.timeout), catalog: Number(c.timeout), execution: Number(c.timeout) };
+        // OpenCode 2's MCP server entry, whatever SynaBun described (lib/opencode-config.js).
+        const server = opencodeMcpServerEntry(obj(config));
         const added = await call('PUT', `/api/experimental/mcp/${encodeURIComponent(name)}`, { query: located(directory), body: { config: server } });
         if (added.error) return added;
         return client.mcp.status({ directory });
@@ -703,7 +723,29 @@ export function createOpencode2Client({ baseUrl, password, fetchImpl = globalThi
         if (catalog.error) return { data: undefined, error: catalog.error, response: catalog.response };
         return { data: { all: catalog.all, default: catalog.defaults, connected: catalog.connected }, error: undefined, response: catalog.response };
       },
-      auth: async () => ({ data: {}, error: undefined, response: { status: 200, ok: true } }),
+      // How each provider is connected (OpenCode 1's shape: { [id]: [{ type: 'api' | 'oauth', label, id }] }).
+      auth: async ({ directory } = {}) => map(await call('GET', '/api/integration', { query: located(directory) }), (body) => integrationsToAuthMethods(Array.isArray(body?.data) ? body.data : [])),
+    },
+    // OpenCode 2's integrations (how a provider is connected) and the credentials they stored. Secrets never come
+    // back from here: an integration's `connections` name a credential, never its value.
+    integration: {
+      list: async ({ directory } = {}) => map(await call('GET', '/api/integration', { query: located(directory) }), (body) => (Array.isArray(body?.data) ? body.data : [])),
+      connectKey: async ({ integrationID, key, label, answer, directory } = {}) => ok(await call('POST', `/api/integration/${encodeURIComponent(integrationID)}/connect/key`, {
+        query: located(directory),
+        body: { key: str(key), ...(label ? { label: str(label) } : {}), ...(answer && typeof answer === 'object' ? { answer } : {}) },
+      }), true),
+      connectOAuth: async ({ integrationID, methodID, answer, directory } = {}) => map(await call('POST', `/api/integration/${encodeURIComponent(integrationID)}/connect/oauth`, {
+        query: located(directory),
+        body: { methodID: str(methodID), ...(answer && typeof answer === 'object' ? { answer } : {}) },
+      }), (body) => obj(body?.data)),
+      oauthStatus: async ({ integrationID, attemptID, directory } = {}) => map(await call('GET', `/api/integration/${encodeURIComponent(integrationID)}/connect/oauth/${encodeURIComponent(attemptID)}`, { query: located(directory) }), (body) => obj(body?.data)),
+      oauthComplete: async ({ integrationID, attemptID, code, directory } = {}) => ok(await call('POST', `/api/integration/${encodeURIComponent(integrationID)}/connect/oauth/${encodeURIComponent(attemptID)}/complete`, {
+        query: located(directory),
+        body: { code: code == null ? null : str(code) },
+      }), true),
+    },
+    credential: {
+      remove: async ({ credentialID } = {}) => ok(await call('DELETE', `/api/credential/${encodeURIComponent(credentialID)}`), true),
     },
     find: {
       files: async ({ query, directory, limit, type } = {}) => map(await call('GET', '/api/fs/find', { query: located(directory, { query: str(query), ...(type ? { type } : { type: 'file' }), ...(limit ? { limit: String(limit) } : {}) }) }), (body) => (Array.isArray(body?.data) ? body.data : []).map((entry) => str(entry?.path || entry?.name || entry))),
@@ -733,12 +775,6 @@ export function createOpencode2Client({ baseUrl, password, fetchImpl = globalThi
       // OpenCode 1's 'git' (the working tree against HEAD) is OpenCode 2's 'working', 'branch' (against the
       // default branch) its 'branch'. OpenCode 2 refuses a diff that names no mode.
       diff: async ({ directory, mode } = {}) => map(await call('GET', '/api/vcs/diff', { query: located(directory, { mode: vcsModeToV2(mode) }) }), (body) => (Array.isArray(body?.data) ? body.data : []).map((row) => ({ file: str(row.file), patch: str(row.patch), additions: Number(row.additions) || 0, deletions: Number(row.deletions) || 0, status: row.status }))),
-    },
-    worktree: {
-      list: async ({ directory } = {}) => map(await call('GET', '/api/worktree', { query: located(directory) }), (body) => (Array.isArray(body?.data) ? body.data : []).map((row) => str(row?.directory || row))),
-      create: async () => notSupported('Creating a worktree from SynaBun'),
-      remove: async () => notSupported('Removing a worktree from SynaBun'),
-      reset: async () => notSupported('Resetting a worktree from SynaBun'),
     },
     lsp: { status: async () => ({ data: [], error: undefined, response: { status: 200, ok: true } }) },
     formatter: { status: async () => ({ data: [], error: undefined, response: { status: 200, ok: true } }) },

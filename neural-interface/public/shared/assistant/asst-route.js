@@ -16,6 +16,7 @@
 // open. `synabun.route` events (phase card|auto|decided|pending|expired|
 // declined|cancelled) update the line in place by routeId.
 
+import { fetchClaudeAccounts, fetchCodexAccounts, getEffortLevelsForModel } from '../agent-runtime-options.js';
 import { getProviderMeta } from '../provider-icons.js';
 import { fetchManageCatalog, patchHiddenModels } from './asst-api.js';
 import { catalogModelRow, fmtModelPrice, hiddenModelFor, ICON_CARET, invalidateModelCatalog, openModelMenu } from './asst-brain-picker.js';
@@ -107,7 +108,7 @@ function normalizeRouteOption(o) {
     provider: normalizeProvider(src.provider, str(src.provider) || null),
     model: str(src.model),
     effort: str(src.effort) || null,
-    ...(Object.hasOwn(src, 'accountId') ? { accountId: src.accountId, account: obj(src.account), accountError: obj(src.accountError) } : {}),
+    ...(Object.hasOwn(src, 'accountId') ? { accountId: src.accountId, accountChoice: src.accountChoice || null, account: obj(src.account), accountError: obj(src.accountError) } : {}),
     label: str(src.label),
     badge: str(src.badge) || null,
     tier: str(src.tier) || null,
@@ -303,6 +304,7 @@ export function buildRouteResponse(n, choice = {}) {
       provider: normalizeProvider(target.provider, str(target.provider) || null),
       model: str(target.model),
       effort: str(target.effort) || null,
+      accountId: str(target.accountId) || null,
     };
   }
   return out;
@@ -804,11 +806,12 @@ export function renderRouteCard(container, input, hooks = {}) {
       row.classList.toggle('selected', on);
       row.tabIndex = on ? 0 : -1;
     }
+    syncFields();
     runBtn.disabled = state.pending || state.resolved || state.expired || !state.selectedId;
   }
 
   function select(id, { focus = false } = {}) {
-    if (state.pending || state.resolved) return;
+    if (state.pending || state.resolved || state.expired) return;
     const o = allOptions().find(x => x.id === id);
     if (!o || o.disabled) return;
     state.selectedId = id;
@@ -816,8 +819,62 @@ export function renderRouteCard(container, input, hooks = {}) {
     if (focus) list.querySelector(`.asst-route-option[data-option-id="${CSS.escape(id)}"]`)?.focus();
   }
 
-  // Other model…
-  const otherBtn = el('button', 'asst-link asst-route-other', tr('assistant.routes.other', 'Other model…'));
+  // Task-local controls; these never edit the routing preference table.
+  const fields = el('div', 'asst-route-fields');
+  function taskField(className) {
+    const button = el('button', `asst-dd ${className}`);
+    button.type = 'button';
+    button.setAttribute('aria-haspopup', 'menu');
+    button.innerHTML = `<span class="asst-dd-label"></span><span class="asst-dd-caret" aria-hidden="true">${ICON_CARET}</span>`;
+    return button;
+  }
+  const effortBtn = taskField('asst-route-effort');
+  const accountBtn = taskField('asst-route-account');
+  const setFieldLabel = (button, text) => { button.querySelector('.asst-dd-label').textContent = text; button.title = text; };
+  const selected = () => allOptions().find(o => o.id === state.selectedId);
+  function editTarget(patch) {
+    if (state.pending || state.resolved || state.expired) return;
+    state.other = { ...selected(), accountId: selected()?.accountChoice || selected()?.accountId || null, accountChoice: Object.hasOwn(patch, 'accountId') ? patch.accountId : selected()?.accountChoice || null, disabled: false, disabledReason: null, accountError: null, ...patch, id: 'other', number: options.length + 1, badge: null, badgeText: tr('assistant.routes.badge.other', 'Your choice') };
+    state.selectedId = 'other';
+    renderOptions();
+  }
+  function syncFields() {
+    const target = selected();
+    setFieldLabel(otherBtn, target ? routeTargetLabel(target) : tr('assistant.routes.other', 'Other model…'));
+    otherBtn.setAttribute('aria-label', tr('assistant.brain.model', 'Model'));
+    otherBtn.disabled = state.pending || state.resolved || state.expired;
+    setFieldLabel(effortBtn, target?.effort || tr('assistant.routes.editorEffortAuto', 'Auto'));
+    effortBtn.setAttribute('aria-label', tr('assistant.brain.effort', 'Thinking effort'));
+    setFieldLabel(accountBtn, routeDisplayAccount(target, hooks.t) || tr('assistant.routes.account.workersDefault', 'Workers default'));
+    accountBtn.setAttribute('aria-label', tr('assistant.brain.account', 'Account profile'));
+    const levels = target ? getEffortLevelsForModel(target.provider, catalogModelRow(target.provider, target.model)) : [];
+    effortBtn.disabled = state.pending || state.resolved || state.expired || !levels.some(e => e.id !== 'off');
+    accountBtn.hidden = !['claude-code', 'codex'].includes(target?.provider);
+    accountBtn.disabled = state.pending || state.resolved || state.expired;
+  }
+  effortBtn.addEventListener('click', () => {
+    const target = selected();
+    const levels = getEffortLevelsForModel(target.provider, catalogModelRow(target.provider, target.model));
+    openMenu(effortBtn, { title: tr('assistant.brain.effort', 'Thinking effort'), placement: 'auto', items: [
+      { kind: 'radio', label: tr('assistant.routes.editorEffortAuto', 'Auto'), selected: !target.effort, onSelect: () => editTarget({ effort: null }) },
+      ...levels.filter(e => e.id !== 'off').map(e => ({ kind: 'radio', label: e.label || e.id, selected: target.effort === e.id, onSelect: () => editTarget({ effort: e.id }) })),
+    ] });
+  });
+  accountBtn.addEventListener('click', async () => {
+    const target = selected();
+    try {
+      const rows = await (target.provider === 'codex' ? fetchCodexAccounts() : fetchClaudeAccounts());
+      if (!card.isConnected || state.pending || state.resolved || state.expired || selected() !== target) return;
+      openMenu(accountBtn, { title: tr('assistant.brain.account', 'Account profile'), placement: 'auto', items: [
+        { kind: 'radio', label: tr('assistant.routes.account.workersDefault', 'Workers default'), selected: !(target.accountChoice || target.accountId), onSelect: () => editTarget({ accountId: null, account: null }) },
+        { kind: 'radio', label: autoAccountLabel(hooks.t), selected: (target.accountChoice || target.accountId) === 'auto', onSelect: () => editTarget({ accountId: 'auto', account: null }) },
+        ...(Array.isArray(rows) ? rows : []).map(a => ({ kind: 'radio', label: accountSummary(a, target.provider === 'codex' ? 'codex' : 'claude'), disabled: a.signedIn === false, selected: (target.accountChoice || target.accountId) === a.id, onSelect: () => editTarget({ accountId: a.id, account: a }) })),
+      ] });
+    } catch (error) { hooks.onToast?.(error.message); }
+  });
+
+  // Model menu, scoped to this task.
+  const otherBtn = taskField('asst-route-other');
   otherBtn.type = 'button';
   otherBtn.setAttribute('aria-haspopup', 'menu');
   otherBtn.hidden = !n.other.allowed;
@@ -827,21 +884,24 @@ export function renderRouteCard(container, input, hooks = {}) {
     const brain = normalizeBrain(hooks.getBrain?.() || { provider: n.brain.provider || 'claude-code', model: n.brain.model });
     openModelMenu(otherBtn, {
       brain,
+      shouldOpen: () => card.isConnected && !state.pending && !state.resolved && !state.expired,
       t: hooks.t,
       title: tr('assistant.routes.otherTitle', 'Run on another model'),
       placement: 'auto',
       providers: n.other.providers.length ? n.other.providers.map(p => normalizeProvider(p, p)) : null,
-      current: state.other ? { provider: state.other.provider, model: state.other.model } : null,
+      current: selected() ? { provider: selected().provider, model: selected().model } : null,
       onToast: hooks.onToast,
       // Image / video creation: only models that generate the medium (no custom id: its output is unknown).
       ...(n.requires ? { accept: (_p, m) => m?.outputs?.[n.requires] === true, allowCustom: false, emptyLabel: tr('assistant.routes.noCapableModel', 'No model in your catalog can make {medium} yet.', { medium: mediumWords(n.requires, tr) }) } : {}),
       // Design: only models that can see.
       ...(!n.requires && n.visionOnly ? { accept: (_p, m) => m?.vision === true && m?.status !== 'unavailable', allowCustom: false, emptyLabel: tr('assistant.routes.noSeeingModel', 'No model in your catalog can see images yet.') } : {}),
       onSelect: (target) => {
-        if (!target?.model) return;
-        const kind = n.dispatchOnly || (target.provider && target.provider !== brain.provider) ? 'dispatch' : 'direct';
+        if (!target?.model || !card.isConnected) return;
+        if (state.pending || state.resolved || state.expired) return;
+        const previous = selected();
+        const kind = n.dispatchOnly || previous?.kind === 'dispatch' || (target.provider && target.provider !== brain.provider) ? 'dispatch' : 'direct';
         state.other = {
-          id: 'other', kind, provider: target.provider, model: target.model, effort: null,
+          id: 'other', kind, provider: target.provider, model: target.model, effort: null, accountId: previous?.provider === target.provider ? previous.accountChoice || previous.accountId || null : null, account: previous?.provider === target.provider ? previous.account || null : null,
           label: target.label || '', badge: null, number: options.length + 1, here: false,
           title: target.label || target.model, badgeText: tr('assistant.routes.badge.other', 'Your choice'),
           vision: target.vision === true, price: target.price || null, reason: '', warning: null, disabled: false,
@@ -852,7 +912,8 @@ export function renderRouteCard(container, input, hooks = {}) {
       },
     });
   });
-  card.appendChild(otherBtn);
+  fields.append(otherBtn, effortBtn, accountBtn);
+  card.appendChild(fields);
 
   // Remember for ‹class› tasks
   let rememberInput = null;
@@ -906,7 +967,7 @@ export function renderRouteCard(container, input, hooks = {}) {
       decidedBy: 'user',
       optionId: state.selectedId,
       remembered: state.remember,
-      target: o ? { kind: o.kind || 'direct', provider: o.provider, model: o.model, effort: o.effort, label: o.label || (o.here ? routeTargetLabel(o) : o.title) } : null,
+      target: o ? { kind: o.kind || 'direct', provider: o.provider, model: o.model, effort: o.effort, accountId: o.accountId || null, label: o.label || (o.here ? routeTargetLabel(o) : o.title) } : null,
       alternatives: allOptions().filter(x => x.id !== state.selectedId).map(x => ({ provider: x.provider, model: x.model, effort: x.effort, label: x.label })),
     };
   }
@@ -926,6 +987,9 @@ export function renderRouteCard(container, input, hooks = {}) {
     state.line = line;
     state.collapsed = true;
     state.resolved = true;
+    // No longer waits: the renderer puts it back from the open card's slot at the transcript's bottom
+    // (asst-ask-tail.js) before it becomes the route line in its own place.
+    try { card._ask?.onChange?.(); } catch { /* the renderer is gone */ }
     if (card.isConnected) card.replaceWith(line.el);
     try { hooks.onCollapse?.(n.routeId, line); } catch { /* ignore */ }
     if (hadFocus) { try { hooks.onDone?.(); } catch { /* ignore */ } }
@@ -937,6 +1001,8 @@ export function renderRouteCard(container, input, hooks = {}) {
     if (state.line?.el?.isConnected) state.line.el.replaceWith(card);
     state.collapsed = false;
     state.resolved = false;
+    // Open again (ROUTE_INVALID): it waits on the user, so it goes back to the bottom slot.
+    try { card._ask?.onChange?.(); } catch { /* the renderer is gone */ }
   }
 
   function clearTimers() {
@@ -955,7 +1021,7 @@ export function renderRouteCard(container, input, hooks = {}) {
   }
 
   function cancel() {
-    if (state.pending || state.resolved) return;
+    if (state.pending || state.resolved || state.expired) return;
     if (!n.decline.allowed) {
       // Nothing to cancel on the server: leave the card and hand focus back.
       try { hooks.onCancel?.(buildRouteCancel(n, 'user'), n); } catch { /* ignore */ }
@@ -1021,11 +1087,16 @@ export function renderRouteCard(container, input, hooks = {}) {
       state.timer = null;
       countdown.textContent = tr('assistant.routes.state.expired', 'route expired');
       syncSelection();
+      // No answer is coming from the user any more: it goes back to its own place (asst-ask-tail.js).
+      try { card._ask?.onChange?.(); } catch { /* the renderer is gone */ }
     }
   }
-  if (expires && Number.isFinite(expires)) { tick(); state.timer = setInterval(tick, 1000); }
+  if (expires && Number.isFinite(expires)) { tick(); if (!state.expired) state.timer = setInterval(tick, 1000); }
 
   renderOptions();
+  // The renderer lifts a card that waits on the user to the transcript's bottom while it is open
+  // (asst-ask-tail.js): a route card waits like a follow-ups set or a question does.
+  card._ask = { el: card, presenter: null, isOpen: () => !state.collapsed && !state.resolved && !state.expired, onChange: null };
   if (container) container.appendChild(card);
   try { hooks.scrollEnd?.(); } catch { /* ignore */ }
 

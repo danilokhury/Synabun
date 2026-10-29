@@ -774,6 +774,7 @@ export function injectStyles() {
     /* ── Project bar and dropdowns ── */
     .cxp-projectbar {
       display: flex;
+      flex-wrap: wrap;
       align-items: center;
       gap: 4px;
       padding: 4px 10px 0;
@@ -796,7 +797,6 @@ export function injectStyles() {
       transition: background var(--cxp-dur-fast);
     }
     .cxp-dropdown-sm { max-width: 72px; }
-    #cxp-profile { max-width: 80px; }
     .cxp-dropdown:hover {
       background: var(--cxp-surface-1);
     }
@@ -1691,6 +1691,7 @@ export function injectStyles() {
     .cxp-thinking .cxp-msg-think-dots span:nth-child(2) { animation-delay: 0.2s; }
     .cxp-think-dots span:nth-child(3),
     .cxp-thinking .cxp-msg-think-dots span:nth-child(3) { animation-delay: 0.4s; }
+    .cxp-reasoning[hidden] { display: none; }
     .cxp-reasoning.cxp-reasoning-done .cxp-think-dots { display: none; }
     .cxp-thinking {
       display: flex;
@@ -2521,7 +2522,7 @@ export function injectStyles() {
     }
     /* The wrap draws the input's edge: 1px of padding over a border-coloured fill. */
     .cxp-input-wrap {
-      flex: 1; position: relative;
+      flex: 0 0 auto; position: relative;
       margin: 8px 8px 2px;
       border-radius: var(--cxp-radius-lg);
       padding: 1px;
@@ -2687,6 +2688,7 @@ export function injectStyles() {
       background: var(--cxp-surface-2);
     }
     .cxp-projectbar-actions {
+      flex-shrink: 0;
       display: flex;
       align-items: center;
       gap: 2px;
@@ -3087,7 +3089,7 @@ export function injectStyles() {
       color: var(--cxp-text-2);
       background: var(--cxp-surface-1);
       margin-bottom: 2px;
-      cursor: grab;
+      cursor: move;
     }
     .cxp-queue-item.dragging { opacity: 0.4; }
     .cxp-queue-item.drag-over { box-shadow: inset 0 2px 0 var(--cxp-text-2); }

@@ -8,7 +8,7 @@ const MCP_VIEW = {
   connected: { label: 'connected', tone: 'ok', action: 'disconnect', actionLabel: 'Disconnect' },
   disabled: { label: 'disabled', tone: 'muted', action: 'connect', actionLabel: 'Connect' },
   failed: { label: 'failed', tone: 'error', action: 'connect', actionLabel: 'Retry' },
-  needs_auth: { label: 'needs sign-in', tone: 'warn', action: 'authenticate', actionLabel: 'Sign in' },
+  needs_auth: { label: 'needs sign-in', tone: 'warn', action: null, actionLabel: '' },
   needs_client_registration: { label: 'needs client registration', tone: 'warn', action: null, actionLabel: '' },
 };
 
@@ -247,101 +247,3 @@ export function isProviderCatalogEvent(eventType) {
   return PROVIDER_CATALOG_EVENTS.includes(type) || type.startsWith('integration.');
 }
 
-// ── Sign-in pages OpenCode could not open itself ────────────────────────────
-// `mcp.browser.open.failed` carries a server name and a URL and nothing about
-// who asked. The URL is a sign-in for one server of one session's serve, so it
-// is shown only there. What identifies the attempt on this page is the request
-// that is out for it: the popover opens an attempt (`expect`) before its
-// request leaves and closes it (`done()`) when the request has ended. A
-// failure is attributed only while exactly one session has an attempt open for
-// that server name. When two sessions are signing in to a server of the same
-// name at once, nothing says whose page it is, and it is shown to neither; one
-// nobody on this page has open (another window, the CLI, a request that has
-// already ended) has no owner here and is not shown either.
-// The link is kept on the attempt it was attributed to and lives exactly as
-// long: it goes when the attempt ends (`done()`), when it expires (a request
-// that never ends), when its session is forgotten, and when another attempt
-// for the same server name begins (the same session asks again: the earlier
-// page is no longer the one to open; another session asks: nothing says any
-// more whose page a link is). `onChange` is called whenever a link went that
-// way, so that open popovers are painted again.
-export const SIGN_IN_EXPECT_MS = 10 * 60 * 1000;
-
-export function createSignInFailures({ now = () => Date.now(), ttlMs = SIGN_IN_EXPECT_MS, onChange = () => {} } = {}) {
-  let attempts = [];                // open attempts: { id, sessionId, mcpName, at, url, timer }
-  let seq = 0;
-  const changed = () => { try { onChange(); } catch { /* listener's problem */ } };
-  // These attempts are over. Their links go with them.
-  const close = (list) => {
-    const over = list.filter((e) => attempts.includes(e));
-    if (!over.length) return;
-    attempts = attempts.filter((e) => !over.includes(e));
-    for (const e of over) clearTimeout(e.timer);
-    if (over.some((e) => e.url)) changed();
-  };
-  const expired = (e) => now() - e.at > ttlMs;
-  // A request that never ends (a socket that died under it) does not keep its
-  // attempt open for ever.
-  const prune = () => close(attempts.filter(expired));
-  const closed = Object.freeze({ id: 0, done() {} });
-  return {
-    /**
-     * `sessionId` is about to ask its serve to sign in to (or start) `mcpName`.
-     * Returns the attempt: call `done()` when the request has ended, however
-     * it ended. (Several attempts of one session for one server may be open.)
-     */
-    expect(sessionId, mcpName) {
-      const sid = String(sessionId || '');
-      const name = String(mcpName || '');
-      if (!sid || !name) return closed;
-      prune();
-      // A new attempt for this server name: no link recorded for an earlier
-      // one is offered any more, in this session or in another.
-      const outdated = attempts.filter((e) => e.mcpName === name && e.url);
-      for (const e of outdated) e.url = '';
-      seq += 1;
-      const attempt = { id: seq, sessionId: sid, mcpName: name, at: now(), url: '', timer: null };
-      // It expires by itself, should nobody call anything until then.
-      attempt.timer = setTimeout(prune, ttlMs + 1);
-      attempt.timer?.unref?.();
-      attempts.push(attempt);
-      if (outdated.length) changed();
-      return { id: attempt.id, done() { close([attempt]); } };
-    },
-    /** The event. Returns the session it was attributed to, or '' (shown nowhere). */
-    record({ mcpName, url } = {}) {
-      const name = String(mcpName || '');
-      const link = String(url || '');
-      if (!name || !link) return '';
-      prune();
-      const open = attempts.filter((e) => e.mcpName === name);
-      const owners = new Set(open.map((e) => e.sessionId));
-      // Nobody here has it open, or more than one session does: no owner.
-      if (owners.size !== 1) return '';
-      for (const e of open) e.url = link;
-      return open[0].sessionId;
-    },
-    /** The pages to offer in `sessionId`'s popover: only for servers it lists. */
-    forSession(sessionId, rows = []) {
-      const sid = String(sessionId || '');
-      if (!sid) return [];
-      const out = [];
-      for (const row of Array.isArray(rows) ? rows : []) {
-        const name = String(row?.name || '');
-        const held = attempts.filter((e) => e.sessionId === sid && e.mcpName === name && e.url && !expired(e)).pop();
-        // Signed in meanwhile: nothing left to open.
-        if (held && row?.status !== 'connected') out.push({ mcpName: name, url: held.url });
-      }
-      return out;
-    },
-    /** The session is gone. */
-    forget(sessionId) {
-      const sid = String(sessionId || '');
-      close(attempts.filter((e) => e.sessionId === sid));
-    },
-    /** Links on offer. */
-    size: () => attempts.filter((e) => e.url && !expired(e)).length,
-    /** Attempts still open (their request has not ended). */
-    open: () => { prune(); return attempts.length; },
-  };
-}

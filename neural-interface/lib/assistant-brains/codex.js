@@ -159,7 +159,7 @@ export function createCodexBrain({ session, sink, deps = {}, persona = '' } = {}
       readyResolve = () => { clearTimeout(timer); resolve(true); };
     });
     send({
-      type: 'bootstrap', windowId, accountId: brain.accountId || 'default', mcpProfile: brain.mcpProfile || null,
+      type: 'bootstrap', windowId, accountId: brain.accountId || 'default',
       cwd: brain.cwd || deps.PACKAGE_ROOT || undefined, threadId: threadId || null, role: 'assistant',
       // Unlocks the capability-gated `computer` MCP group for this brain only.
       desktopGrant: deps.desktopGrant || null,

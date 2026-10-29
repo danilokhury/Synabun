@@ -1,3 +1,5 @@
+import { fetchToolCatalog } from './agent-runtime-options.js';
+import { configureToolPickerTranslation, toolPickerHTML, readToolPicker, toolWord } from './tool-list-picker.js';
 import { mountMemoryMaintenance } from './ui-memory-maintenance.js';
 import { buildJudgmentsTab, wireJudgmentsTab } from './ui-judgments.js';
 import { buildWhatsAppTab, wireWhatsAppTab } from './ui-whatsapp.js';
@@ -9,12 +11,16 @@ import * as kit from './settings/settings-kit.js';
 import { skillFoldersHTML, wireSkillFolders, refreshSkillChips, chipState, installedToast } from './settings/settings-skill-folders-pane.js';
 import { RULES_HOST_LABELS, describeRulesHost, describeRulesInstall, describeRulesInstallAll } from './settings/settings-rules.js';
 import { readUserContextResponse, describeUserContext, describeUserContextSaveFailure } from './settings/settings-user-context.js';
+import { readWorkerGuardResponse, describeWorkerGuard, describeWorkerGuardSaveFailure } from './settings/settings-worker-guard.js';
+import { CLAUDE_HOOK_ROWS, readClaudeHooksResponse, describeClaudeHooks, describeClaudeHooksSaveFailure } from './settings/settings-claude-hooks.js';
 import { readGreetingStatus, describeGreeting, describeGreetingSaveFailure } from './settings/settings-greeting.js';
+import { describeOpencodeInstall } from './settings/settings-opencode.js';
 import { renderGreeting, clearGreeting } from './greeting/greeting-card.js';
 import { createTunnelCard, drawInto, mcpKeyNeededText, readTunnel } from './ui-tunnel.js';
 import { remoteMcpAddress } from './tunnel-view.js';
 import { recheckCliStatus, getCliStatus, addCliToPath } from './cli-status.js';
 import { cliInstallText, setCliInstallTranslator } from './cli-install-view.js';
+import { dropdownHTML, wireDropdowns } from './cc-dropdown.js';
 setCliInstallTranslator((key, params) => kit.tx(`cliInstall.${key}`, params));
 import { setGitBashTranslator } from './git-bash-view.js';
 import { gitBashRowHtml, wireGitBashRow } from './ui-git-bash.js';
@@ -38,6 +44,7 @@ import { state, emit, on } from './state.js';
 import { getSettingsTabs } from './registry.js';
 import { escapeHtml } from './utils.js';
 import { storage } from './storage.js';
+import { normalizeViewConfig } from './view-variant.js';
 import { KEYS } from './constants.js';
 import { registerAction } from './ui-keybinds.js';
 import { CLI_PROFILES, ensureModelsForProfile, getModelsForProfile } from './agent-runtime-options.js';
@@ -48,6 +55,7 @@ import { getNotifSettings, playTestSound, sendTestBanner, SOUND_PRESETS } from '
 import {
   fetchRulesStatus, fetchRulesTextWithFallback, installRules, removeRules, installAllRules, setRulesAutoUpdate, removeLegacyRules,
 } from './api.js';
+import { centeredInFrame } from './app-frame.js';
 
 // ── SVG icon constants ──
 
@@ -114,6 +122,7 @@ function showCCToast(msg, duration = 3500) {
 // INTERFACE CUSTOMIZATION — config, presets, apply
 // ═══════════════════════════════════════════
 
+// Optional legacy view preferences must never reintroduce a 2D selection.
 const IFACE_DEFAULTS = {
   visualizationEnabled: true,
   scale: 1,
@@ -162,7 +171,7 @@ const IFACE_SLIDERS = {
 export function loadIfaceConfig() {
   try {
     const raw = storage.getItem('neural-interface-config');
-    if (raw) return { ...IFACE_DEFAULTS, ...JSON.parse(raw) };
+    if (raw) return { ...IFACE_DEFAULTS, ...normalizeViewConfig(JSON.parse(raw)) };
     // Migrate legacy ui-scale if present
     const legacyScale = storage.getItem('neural-ui-scale');
     if (legacyScale) {
@@ -175,7 +184,7 @@ export function loadIfaceConfig() {
 }
 
 export function saveIfaceConfig(cfg) {
-  storage.setItem('neural-interface-config', JSON.stringify(cfg));
+  storage.setItem('neural-interface-config', JSON.stringify(normalizeViewConfig(cfg)));
   // Keep legacy key in sync for backwards compat
   storage.setItem('neural-ui-scale', cfg.scale);
 }
@@ -552,7 +561,7 @@ function buildSearchHTML() {
 }
 
 // What search reads from the panel beside its index (settings-search.js): the labelled rows of the panes that draw
-// themselves, and the names of what the panes load (projects, providers, tools, tool profiles and servers, skills,
+// themselves, and the names of what the panes load (projects, providers, tools, tool lists and servers, skills,
 // browser profiles, themes, the linked WhatsApp account). Labels and names only: a source names label elements and
 // the shell reads their text, never a value; `help` is given only where it is the app's own copy. `named` rows may
 // sit inside an inventory control (a list it tags).
@@ -958,7 +967,7 @@ function buildSetupTab(setupStatus) {
     { id: 'claude',   name: 'Claude',   icon: ANTHROPIC_ICON, file: '~/.claude.json',                 ids: { toggle: 'SET004', cli: 'SET005',                      primary: 'SET006', remove: 'SET007', view: 'SET008', copy: 'SET009' } },
     { id: 'gemini',   name: 'Gemini',   icon: GEMINI_ICON,    file: '~/.gemini/settings.json',        ids: { toggle: 'SET010',                    config: 'SET011', primary: 'SET012', remove: 'SET013', view: 'SET014', copy: 'SET015' } },
     { id: 'codex',    name: 'Codex',    icon: OPENAI_ICON,    file: '~/.codex/config.toml',           ids: { toggle: 'SET016', cli: 'SET017', config: 'SET018', primary: 'SET019', remove: 'SET020', view: 'SET021', copy: 'SET022' } },
-    { id: 'opencode', name: 'OpenCode', icon: OPENCODE_ICON,  file: '~/.config/opencode/config.json', ids: { toggle: 'SET023',                    config: 'SET024', primary: 'SET025', remove: 'SET026', view: 'SET027', copy: 'SET028' } },
+    { id: 'opencode', name: 'OpenCode', icon: OPENCODE_ICON,  file: '~/.config/opencode/opencode.json', ids: { toggle: 'SET023',                    config: 'SET024', primary: 'SET025', remove: 'SET026', view: 'SET027', copy: 'SET028' } },
   ].map((p) => ({ ...p, on: setupStatus[p.id]?.connected || false }));
 
   const copyLabel = (invId) => `${COPY_ICON} ${kit.L(invId)}`;
@@ -1176,23 +1185,23 @@ function buildMcpTab() {
   return `
       <div class="stg-pane" data-stg-pane="mcp">
         <div class="stg-mcp-page-tabs" role="tablist" aria-label="${kit.L('MCP001')}" ${kit.inv('MCP001')}>
-          ${tab('stg-mcp-page-tab', 'data-pane', 'profiles', m('tab.profiles'), true)}
+          ${tab('stg-mcp-page-tab', 'data-pane', 'tools', m('tab.tools'), true)}
           ${tab('stg-mcp-page-tab', 'data-pane', 'installed', m('tab.installed'), false)}
         </div>
 
-        <div class="stg-mcp-pane" data-pane="profiles" data-stg-reveal='.stg-mcp-page-tab[data-pane="profiles"]'>
+        <div class="stg-mcp-pane" data-pane="tools" data-stg-reveal='.stg-mcp-page-tab[data-pane="tools"]'>
           ${kit.card({
-            id: 'stg-sec-tool-profiles', section: 'connected_tools.tool_profiles',
+            id: 'stg-sec-default-tools', section: 'connected_tools.default_tools',
             body: `
             <div class="stg-mcp-intro">
-              <div class="stg-help" style="margin-top:0">${m('profilesHelp')}</div>
+              <div class="stg-help" style="margin-top:0">${m('defaultToolsHelp')}</div>
               <div class="stg-mcp-note">
                 <strong>${m('noteTitle')}</strong>
                 <span>${m('noteBody')}</span>
               </div>
             </div>
-            <div id="stg-mcp-matrix-wrap" class="stg-mcp-matrix-wrap stg-mcp-block" ${kit.inv('MCP022')} role="group" aria-label="${kit.L('MCP022')}">
-              <div class="stg-mcp-matrix-empty">${m('loading')}</div>
+            <div id="stg-mcp-default-tools" class="stg-mcp-default-tools stg-mcp-block" ${kit.inv('MCP022')} role="group" aria-label="${kit.L('MCP022')}">
+              <div class="stg-mcp-empty-note">${m('loading')}</div>
             </div>
             <div id="stg-mcp-always-on" class="stg-mcp-subsection" ${kit.inv('MCP024')}></div>
             <div class="stg-mcp-subsection stg-mcp-servers-section">
@@ -1304,6 +1313,7 @@ function buildOpencodeTab() {
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
               </button>
             </span>`, { forId: 'stg-ocp-port', className: 'ocp-server-bar' })}
+            <div class="stg-help ocp-install-note" id="stg-ocp-install" role="status" aria-live="polite" hidden></div>
           </div>
 
           <div class="ocp-group-head">
@@ -1329,9 +1339,10 @@ function buildOpencodeTab() {
           <div class="ocp-group">
           ${kit.advanced(`
           <div class="ocp-config-footer" ${kit.inv('OCP019')}>
-            <span class="ocp-config-path">${kit.th('settings.redesign.opencode.configPath', { path: '<code class="stg-code">~/.config/opencode/config.json</code>' })}</span>
+            <span class="ocp-config-path">${kit.th('settings.redesign.opencode.configPath', { path: '<code class="stg-code" id="stg-ocp-config-path">~/.config/opencode/opencode.json</code>' })}</span>
             <button type="button" class="ocp-config-link" id="stg-ocp-open-config" aria-describedby="stg-ocp-open-config-help">${kit.L('OCP019')}</button>
           </div>
+          <p class="stg-help" id="stg-ocp-config-jsonc" hidden></p>
           ${kit.help('OCP019', { forId: 'stg-ocp-open-config' })}`)}
           </div>`,
         })}
@@ -1342,8 +1353,7 @@ function buildOpencodeTab() {
           body: `
           <div class="ocp-compact-group ocp-rows">
             ${check('OCP013', 'stg-ocp-compact-auto')}
-            ${check('OCP014', 'stg-ocp-compact-prune')}
-            ${kit.field('OCP015', `<input type="number" class="ocp-reserved-input" id="stg-ocp-compact-reserved" value="10000" min="1000" max="50000" step="1000" aria-describedby="stg-ocp-compact-reserved-help">`, { forId: 'stg-ocp-compact-reserved' })}
+            ${kit.field('OCP015', `<input type="number" class="ocp-reserved-input" id="stg-ocp-compact-reserved" value="" placeholder="${kit.te('settings.redesign.opencode.bufferDefault')}" min="0" max="1000000" step="1000" aria-describedby="stg-ocp-compact-reserved-help">`, { forId: 'stg-ocp-compact-reserved' })}
             ${kit.toggleField('OCP016', `<button type="button" class="cc-toggle on" id="stg-ocp-snapshot-toggle" aria-labelledby="stg-ocp-snapshot-toggle-label" aria-describedby="stg-ocp-snapshot-toggle-help"></button>`, { forId: 'stg-ocp-snapshot-toggle', className: 'ocp-snapshot-row' })}
           </div>
           <p class="ocp-footnote">${kit.te('settings.redesign.opencode.snapshotDetail')}</p>`,
@@ -1834,6 +1844,52 @@ const userContextDigestHTML = (digest) => (digest.rows.length
   ? digest.rows.map(row => `<button type="button" class="uc-digest-row" role="listitem" data-uc-memory="${kit.esc(row.id)}" title="${kit.te('settings.redesign.hooks.uc.openMemory')}"><span class="uc-digest-statement">${kit.esc(row.statement)}</span><span class="uc-digest-facet">${kit.esc(row.facet)}${row.seed ? ` · ${kit.te('settings.redesign.hooks.uc.seed')}` : ''}</span></button>`).join('')
   : `<div class="stg-help uc-digest-message" role="listitem" style="margin:0">${kit.esc(digest.message)}</div>`);
 
+/**
+ * Put a view (describeClaudeHooks) on the section: the line above, the switch, its notes and Repair, and the
+ * per-moment rows and their count in the Hooks card, which show nothing on or off that was not read.
+ */
+function drawClaudeHooks(overlay, view) {
+  const section = overlay.querySelector('#stg-sec-automation-behavior');
+  if (!section) return;
+  const note = section.querySelector('#ch-status-note');
+  if (note) { note.hidden = !view.note; note.textContent = view.note?.text || ''; note.dataset.chState = view.state; }
+  const rowBox = section.querySelector('#ch-row');
+  if (rowBox) { rowBox.dataset.chReady = view.ready ? '1' : '0'; rowBox.dataset.chState = view.state; }
+  const toggle = section.querySelector('.cc-toggle[data-ch-master]');
+  if (toggle) {
+    toggle.classList.toggle('on', view.on);
+    toggle.setAttribute('aria-pressed', view.on ? 'true' : 'false');
+    toggle.disabled = view.disabled;
+    toggle.setAttribute('aria-describedby', `ch-master-help ch-notes${view.note ? ' ch-status-note' : ''}`);
+    const item = toggle.closest('.cc-integration-item');
+    item?.classList.toggle('enabled', view.on);
+    item?.classList.toggle('uc-disabled', view.disabled);
+  }
+  const notes = section.querySelector('#ch-notes');
+  if (notes) notes.innerHTML = userContextNotesHTML(view.notes);
+  const repair = section.querySelector('#ch-repair');
+  if (repair) repair.hidden = !(view.repair && !view.disabled);
+  const applies = section.querySelector('#ch-applies');
+  if (applies) applies.textContent = view.applies;
+  const locked = !view.ready || view.disabled;
+  for (const row of CLAUDE_HOOK_ROWS) {
+    const rowToggle = section.querySelector(`.cc-toggle[data-cc-hook="${row.key}"]`);
+    if (!rowToggle) continue;
+    const on = !!view.rows?.[row.key];
+    rowToggle.classList.toggle('on', on);
+    rowToggle.setAttribute('aria-pressed', on ? 'true' : 'false');
+    rowToggle.disabled = locked;
+    const item = rowToggle.closest('.cc-integration-item');
+    item?.classList.toggle('enabled', on);
+    item?.classList.toggle('uc-disabled', locked);
+  }
+  const badge = section.querySelector('#cc-hooks-badge');
+  if (badge) {
+    badge.textContent = view.ready ? `${view.onRows}/${view.totalRows}` : '—';
+    badge.classList.toggle('all-on', view.ready && view.onRows === view.totalRows);
+  }
+}
+
 /** Put a view (describeUserContext) on the section: the note, each switch and its notes, the digest. */
 function drawUserContext(overlay, view) {
   const section = overlay.querySelector('#stg-sec-automation-behavior');
@@ -1910,16 +1966,19 @@ function tunnelExtraHtml(view, mcpKeyInfo) {
   ].filter(Boolean).join('');
 }
 
-function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo, openclawBridge, greeting, toolPermissions, toolCategories, userContext = null) {
-  const gh = ccIntegrations.global.hooks || {};
-  const ssOn = !!gh.SessionStart;
-  const psOn = !!gh.UserPromptSubmit;
-  const pcOn = !!gh.PreCompact;
-  const stOn = !!gh.Stop;
-  const prOn = !!gh.PreToolUse && !!gh.PostToolBatch;
-  const ptOn = !!gh.PostToolUse;
-  const subStartOn = !!gh.SubagentStart;
-  const subStopOn = !!gh.SubagentStop;
+function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo, openclawBridge, greeting, toolPermissions, toolCategories, userContext = null, workerGuard = null, claudeHooks = null) {
+  // SynaBun's Claude Code hooks (settings-claude-hooks.js): the switch and the rows below show what is really in the
+  // settings files, and nothing (disabled, with the reason) when that could not be read: never "off" by default.
+  const ch = claudeHooks || describeClaudeHooks(null, { tx: kit.tx });
+  const rowOn = (key) => !!ch.rows?.[key];
+  const ssOn = rowOn('SessionStart');
+  const psOn = rowOn('UserPromptSubmit');
+  const pcOn = rowOn('PreCompact');
+  const stOn = rowOn('Stop');
+  const prOn = rowOn('PreToolUse');
+  const ptOn = rowOn('PostToolUse');
+  const subStartOn = rowOn('SubagentStart');
+  const subStopOn = rowOn('SubagentStop');
   const hf = ccIntegrations.hookFeatures || {};
   const cmOn = hf.conversationMemory !== false;
   const ulOn = hf.userLearning !== false;
@@ -1936,7 +1995,8 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
     { key: 'SubagentStart', on: subStartOn, inv: 'AUT034' }, { key: 'SubagentStop', on: subStopOn, inv: 'AUT035' },
   ];
   const onCount = hookRows.filter(r => r.on).length;
-  const allOn = onCount === hookRows.length;
+  const allOn = ch.ready && onCount === hookRows.length;
+  const hookRowsLocked = !ch.ready || ch.disabled;
 
   const copyIcon = COPY_ICON;
 
@@ -2061,6 +2121,44 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
             <button type="button" class="conn-add-btn" id="uc-digest-all" ${kit.inv('AUT057')} title="${kit.H('AUT057')}" style="margin:0;width:auto;padding:4px 10px;border-style:solid">${kit.L('AUT057')}</button>
           </div>`;
 
+  // Protect workers (lib/worker-guard-setting.js): what capability read-only / workspace means for every worker the
+  // Assistant dispatches. `workerGuard` is the view of what the server answered (describeWorkerGuard): a server
+  // started before the setting shows the default, disabled, under a line that says a restart is missing.
+  const wg = workerGuard || describeWorkerGuard(null, { tx: kit.tx });
+  const workerGuardBlock = `
+          <div class="cc-hook-toggles" id="wg-row" data-wg-ready="${wg.ready ? '1' : '0'}">
+            <div class="cc-integration-item enabled${wg.disabled ? ' uc-disabled' : ''}" data-wg-row>
+              <div class="cc-integration-info">
+                <div class="cc-integration-label" id="wg-mode-label">${kit.L('AUT061')}</div>
+                <div class="cc-integration-path" id="wg-mode-help">${kit.H('AUT061')}</div>
+                <div class="uc-layer-notes" id="wg-notes" data-stg-data>${userContextNotesHTML(wg.note ? [wg.note] : [])}</div>
+                <div class="stg-help" id="wg-mode-detail" data-stg-data style="margin:4px 0 0">${kit.esc(wg.options.find(o => o.value === wg.mode)?.help || '')}</div>
+              </div>
+              ${kit.dropdown('wg-mode', wg.options.map(o => ({ value: o.value, label: kit.esc(o.label) })), { value: wg.mode, classes: 'stg-dropdown stg-dropdown-inline', label: kit.L('AUT061'), attrs: `${kit.inv('AUT061')} aria-describedby="wg-mode-help wg-notes"`, disabled: wg.disabled })}
+            </div>
+          </div>
+          <div class="stg-help uc-save-status" id="wg-save-status" role="alert" data-stg-data hidden></div>
+          <div class="stg-help" id="wg-applies">${kit.esc(wg.applies)}</div>`;
+
+  // SynaBun's hooks in Claude Code: one switch for all of them (POST / DELETE /api/claude-code/integrations, target
+  // global), what is really installed under it, and Repair when the files are out of step. Outside the collapsed
+  // card below, so it can be found; the per-moment rows stay in that card.
+  const claudeHooksBlock = `
+          <div class="stg-help uc-status-note" id="ch-status-note" role="status" data-ch-state="${ch.state}" data-stg-data${ch.note ? '' : ' hidden'}>${ch.note ? kit.esc(ch.note.text) : ''}</div>
+          <div class="cc-hook-toggles" id="ch-row" data-ch-ready="${ch.ready ? '1' : '0'}" data-ch-state="${ch.state}">
+            <div class="cc-integration-item${ch.on ? ' enabled' : ''}${ch.disabled ? ' uc-disabled' : ''}" data-ch-master-row>
+              <div class="cc-integration-info">
+                <div class="cc-integration-label" id="ch-master-label">${kit.L('AUT062')}</div>
+                <div class="cc-integration-path" id="ch-master-help">${kit.H('AUT062')}</div>
+                <div class="uc-layer-notes" id="ch-notes" data-stg-data>${userContextNotesHTML(ch.notes)}</div>
+                <button type="button" class="cc-copy-btn stg-text-btn ch-repair" id="ch-repair" title="${kit.te('settings.redesign.hooks.claudeHooks.repair.title')}"${ch.repair && !ch.disabled ? '' : ' hidden'}>${kit.te('settings.redesign.hooks.claudeHooks.repair.action')}</button>
+              </div>
+              <button type="button" class="cc-toggle${ch.on ? ' on' : ''}" data-ch-master ${kit.inv('AUT062')} aria-pressed="${ch.on ? 'true' : 'false'}" aria-labelledby="ch-master-label" aria-describedby="ch-master-help ch-notes${ch.note ? ' ch-status-note' : ''}"${ch.disabled ? ' disabled' : ''}></button>
+            </div>
+          </div>
+          <div class="stg-help uc-save-status" id="ch-save-status" role="alert" data-stg-data hidden></div>
+          <div class="stg-help uc-applies" id="ch-applies">${kit.esc(ch.applies)}</div>`;
+
   return `
       <div class="stg-pane" data-stg-pane="hooks">
 
@@ -2075,11 +2173,16 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
           body: `
           ${userContextBlock}
 
+          ${workerGuardBlock}
+
+          ${claudeHooksBlock}
+
           ${kit.card({
             id: 'stg-sec-hooks', level: 'h4', collapsible: true, collapsed: true, advanced: true, attrs: 'data-cc-target="global"',
             title: h('hooksTitle'), purpose: h('hooksPurpose'),
             // These hooks are Claude Code's own (~/.claude/settings.json, hooks/claude-code): no other assistant runs them.
-            status: `<span class="cc-hooks-badge${allOn ? ' all-on' : ''}" id="cc-hooks-badge">${onCount}/${hookRows.length}</span>${providerBadge({ cli: true, vscode: true, web: false, cowork: false, codex: false })}`,
+            // A count only from a state that was read: "—" otherwise, never "0/8".
+            status: `<span class="cc-hooks-badge${allOn ? ' all-on' : ''}" id="cc-hooks-badge">${ch.ready ? `${onCount}/${hookRows.length}` : '—'}</span>${providerBadge({ cli: true, vscode: true, web: false, cowork: false, codex: false })}`,
             body: `
             <div class="stg-help" style="margin:0 0 10px">${h('claudeOnly')}</div>
             <div class="cc-hook-toggles">
@@ -2098,12 +2201,12 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
             </div>
             <div class="cc-hook-toggles" style="margin-top:10px">
               ${hookRows.map(r => `
-              <div class="cc-integration-item${r.on ? ' enabled' : ''}" data-hook="${r.key}">
+              <div class="cc-integration-item${r.on ? ' enabled' : ''}${hookRowsLocked ? ' uc-disabled' : ''}" data-hook="${r.key}">
                 <div class="cc-integration-info">
                   <div class="cc-integration-label" id="cc-hook-${r.key}-label">${kit.L(r.inv)}</div>
                   <div class="cc-integration-path" id="cc-hook-${r.key}-help">${kit.H(r.inv)}</div>
                 </div>
-                <button type="button" class="cc-toggle${r.on ? ' on' : ''}" data-cc-hook="${r.key}" data-cc-scope="global" ${kit.inv(r.inv)} aria-labelledby="cc-hook-${r.key}-label" aria-describedby="cc-hook-${r.key}-help"></button>
+                <button type="button" class="cc-toggle${r.on ? ' on' : ''}" data-cc-hook="${r.key}" data-cc-scope="global" ${kit.inv(r.inv)} aria-pressed="${r.on ? 'true' : 'false'}" aria-labelledby="cc-hook-${r.key}-label" aria-describedby="cc-hook-${r.key}-help"${hookRowsLocked ? ' disabled' : ''}></button>
               </div>`).join('')}
             </div>`,
           })}`,
@@ -3255,6 +3358,10 @@ async function openSettingsModalNow(options = {}) {
   // The Assistant's user context (lib/assistant-user-context.js): what its endpoint answered, as a reading.
   // No answer is a reading too: the section says what is true instead of showing switches that do nothing.
   let userContextReading = readUserContextResponse({ status: 0 });
+  // Protect workers (lib/worker-guard-setting.js): what its endpoint answered, as a reading.
+  let workerGuardReading = readWorkerGuardResponse({ status: 0 });
+  // SynaBun's Claude Code hooks (lib/claude-hooks-status.js): the `claudeHooks` of the integrations read, as a reading.
+  let claudeHooksReading = readClaudeHooksResponse({ status: 0 });
 
   try {
     // Read through the page's data cache (settings/settings-data.js): kept answers at once (each open its own
@@ -3264,15 +3371,19 @@ async function openSettingsModalNow(options = {}) {
     const readingOf = (entry, make) => ({ status: 'fulfilled', value: entry?.status === 'fulfilled' ? make(entry.value) : make({ status: 0, error: entry?.reason?.message }) });
     const greetRes = readingOf(reads.greeting, readGreetingStatus);
     const userContextRes = readingOf(reads.userContext, readUserContextResponse);
+    const workerGuardRes = readingOf(reads.workerGuard, readWorkerGuardResponse);
     const settingsRes = reads.settings, connRes = reads.connections, ccRes = reads.integrations, skillsRes = reads.skills;
     const tunnelRes = reads.tunnel, keyRes = reads.mcpKey, bridgeRes = reads.openclaw, setupRes = reads.setup, cliRes = reads.cli;
     const toolPermsRes = reads.toolPermissions, toolCatsRes = reads.toolCategories, discordRes = reads.discord, skinsRes = reads.skins;
     const iconsRes = reads.icons, youtubeRes = reads.youtube, typesafeRes = reads.typesafe;
     if (typesafeRes.status === 'fulfilled' && typesafeRes.value.ok) typesafeConfig = typesafeRes.value;
     if (userContextRes.status === 'fulfilled') userContextReading = userContextRes.value;
+    if (workerGuardRes.status === 'fulfilled') workerGuardReading = workerGuardRes.value;
     if (settingsRes.status === 'fulfilled') settings = settingsRes.value;
     if (connRes.status === 'fulfilled' && connRes.value.connections) connections = connRes.value.connections;
-    if (ccRes.status === 'fulfilled' && ccRes.value.ok) ccIntegrations = ccRes.value;
+    // Read as it came (status and body): a refusal or an old server is said as what it is, never as hooks that are off.
+    if (ccRes.status === 'fulfilled' && ccRes.value?.status >= 200 && ccRes.value.status < 300 && ccRes.value.body?.ok) ccIntegrations = ccRes.value.body;
+    claudeHooksReading = readingOf(ccRes, readClaudeHooksResponse).value;
     if (skillsRes.status === 'fulfilled' && skillsRes.value.ok) ccSkills = skillsRes.value.skills || [];
     if (tunnelRes.status === 'fulfilled' && tunnelRes.value.ok) tunnelStatus = tunnelRes.value;
     if (keyRes.status === 'fulfilled' && keyRes.value.ok) mcpKeyInfo = keyRes.value;
@@ -3305,9 +3416,10 @@ async function openSettingsModalNow(options = {}) {
   overlay.className = 'settings-panel glass resizable';
   overlay.id = 'settings-panel';
 
-  // Always open centered at default size
-  overlay.style.left = Math.max(20, (window.innerWidth - 900) / 2) + 'px';
-  overlay.style.top = Math.max(48, (window.innerHeight - 650) / 2) + 'px';
+  // Always open centered at default size, in the app frame
+  const at = centeredInFrame(900, 650);
+  overlay.style.left = at.left + 'px';
+  overlay.style.top = at.top + 'px';
 
   // ── Assemble HTML ──
   overlay.innerHTML = `
@@ -3340,7 +3452,7 @@ async function openSettingsModalNow(options = {}) {
         <div class="settings-content">
           ${buildPagesHTML({
             server: buildServerTab(settings, connections),
-            hooks: buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo, openclawBridge, describeGreeting(greetingReading, null, { tx: kit.tx, t: kit.tx }), toolPermissions, toolCategories, describeUserContext(userContextReading, { tx: kit.tx })),
+            hooks: buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo, openclawBridge, describeGreeting(greetingReading, null, { tx: kit.tx, t: kit.tx }), toolPermissions, toolCategories, describeUserContext(userContextReading, { tx: kit.tx }), describeWorkerGuard(workerGuardReading, { tx: kit.tx }), describeClaudeHooks(claudeHooksReading, { tx: kit.tx })),
             terminal: buildTerminalTab(cliConfig),
             opencode: buildOpencodeTab(),
             notifications: buildNotificationsTab(),
@@ -4649,9 +4761,14 @@ async function openSettingsModalNow(options = {}) {
           });
           const data = await res.json();
           showPathAction(profileId, data);
+          const refusal = profileId === 'opencode' && data.support ? describeOpencodeInstall(data.support, { th: kit.th, tx: kit.tx }) : null;
           if (data.ok && data.found && data.path && data.state === 'broken') {
             // Found, but it does not start: not put in the field, so a broken path is never saved by accident.
             showCCToast(kit.tx('settings.redesign.terminal.detectionFailed', { message: data.error ? `${data.path}: ${data.error}` : data.path }));
+          } else if (data.ok && data.found && data.path && refusal?.status === 'notSupported') {
+            // An OpenCode SynaBun does not drive (OpenCode 1, say): put in the field, with the sentence that says why it will not start.
+            input.value = data.path;
+            showCCToast(refusal.text, 12000);
           } else if (data.ok && data.found && data.path) {
             input.value = data.path;
             showCCToast(kit.tx('settings.redesign.terminal.found', { path: data.version ? `${data.path} (${data.version})` : data.path }));
@@ -4909,9 +5026,15 @@ async function openSettingsModalNow(options = {}) {
       if (data.ok) {
         const nowOn = !isOn;
         toggleBtn.classList.toggle('on');
+        toggleBtn.setAttribute('aria-pressed', nowOn ? 'true' : 'false');
         const row = toggleBtn.closest('.cc-integration-item');
         if (row) row.classList.toggle('enabled', nowOn);
-        if (target === 'global') { updateGlobalHookBadge(); }
+        if (target === 'global') {
+          updateGlobalHookBadge();
+          // The answer's state of every hook (a server from before it sends none): the switch above follows it.
+          if (data.claudeHooks) { claudeHooksReading = readClaudeHooksResponse({ status: res.status, body: { ok: true, claudeHooks: data.claudeHooks } }); redrawClaudeHooks(); }
+          refreshSettingsData(['integrations']);
+        }
         else { toggleBtn.textContent = nowOn ? kit.tx('settings.redesign.hooks.enabled') : kit.tx('settings.redesign.hooks.enable'); if (panel) panel.classList.toggle('enabled'); const badge = panel?.querySelector('.cc-panel-status'); if (badge) { badge.textContent = nowOn ? kit.tx('settings.redesign.hooks.active') : kit.tx('settings.redesign.hooks.off'); badge.className = 'cc-panel-status ' + (nowOn ? 'active' : 'inactive'); } updateProjectCount(); }
       } else { alert(data.error || kit.tx('settings.redesign.hooks.failedToToggleHook')); }
     } catch (err) { alert(kit.tx('settings.redesign.hooks.failed2', { message: err.message })); }
@@ -4922,6 +5045,41 @@ async function openSettingsModalNow(options = {}) {
   overlay.querySelectorAll('.cc-toggle[data-cc-scope="global"]').forEach(toggle => {
     toggle.addEventListener('click', () => { ccToggleHook('global', null, toggle, overlay.querySelector('.iface-section[data-cc-target="global"]'), toggle.dataset.ccHook); });
   });
+
+  // ── SynaBun hooks in Claude Code: one switch for all of them, and Repair ──
+  // Each change is the server's: the row is drawn again from the state its answer carries (what the files hold now),
+  // and a change that failed leaves the row as it was, with the reason under it. One change at a time.
+  function redrawClaudeHooks() { drawClaudeHooks(overlay, describeClaudeHooks(claudeHooksReading, { tx: kit.tx })); }
+  const setClaudeHooksSaveStatus = (text = '') => {
+    const status = overlay.querySelector('#ch-save-status');
+    if (status) { status.hidden = !text; status.textContent = text; }
+  };
+  let claudeHooksBusy = false;
+  async function changeClaudeHooks(action) {
+    if (claudeHooksBusy || claudeHooksReading.state !== 'ready') return;
+    claudeHooksBusy = true;
+    setClaudeHooksSaveStatus('');
+    const row = overlay.querySelector('[data-ch-master-row]');
+    if (row) row.style.opacity = '0.6';
+    let failure = null;
+    try {
+      // On and Repair ask for the hooks to run (unblock: Claude Code's own disableAllHooks in the same file goes too).
+      const payload = action === 'off' ? { target: 'global' } : { target: 'global', unblock: true };
+      const res = await fetch('/api/claude-code/integrations', { method: action === 'off' ? 'DELETE' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const body = await res.json().catch(() => null);
+      if (res.ok && body?.ok) {
+        claudeHooksReading = readClaudeHooksResponse({ status: res.status, body: { ok: true, claudeHooks: body.claudeHooks } });
+        refreshSettingsData(['integrations']);
+      } else failure = { status: res.status, body };
+    } catch (err) { failure = { status: 0, error: err?.message }; }
+    finally { claudeHooksBusy = false; if (row) row.style.opacity = ''; }
+    redrawClaudeHooks();
+    if (failure) setClaudeHooksSaveStatus(describeClaudeHooksSaveFailure({ action, ...failure }, { tx: kit.tx }));
+  }
+  overlay.querySelector('.cc-toggle[data-ch-master]')?.addEventListener('click', (e) => {
+    changeClaudeHooks(e.currentTarget.classList.contains('on') ? 'off' : 'on');
+  });
+  overlay.querySelector('#ch-repair')?.addEventListener('click', () => changeClaudeHooks('repair'));
 
   // ── The Assistant's user context: layers and the digest preview ──
   const ucRowsEl = overlay.querySelector('#uc-digest-rows');
@@ -4949,6 +5107,47 @@ async function openSettingsModalNow(options = {}) {
     if (!link) return;
     try { applySettingsOpenOptions(overlay, JSON.parse(link.dataset.ucGoto)); } catch { /* a malformed target goes nowhere */ }
   });
+  // Protect workers: the choice is saved at once and follows the server's answer; a save that failed puts the
+  // dropdown back where it was, with the reason under it. Saves go one after the other, in the order of the picks.
+  {
+    const input = overlay.querySelector('#wg-mode');
+    const dd = overlay.querySelector('.cc-dropdown[data-for="wg-mode"]');
+    const status = overlay.querySelector('#wg-save-status');
+    const detail = overlay.querySelector('#wg-mode-detail');
+    const setStatus = (text) => { if (status) { status.textContent = text; status.hidden = !text; } };
+    const showMode = (mode) => {
+      if (input) input.value = mode;
+      const view = describeWorkerGuard(workerGuardReading, { tx: kit.tx });
+      const option = view.options.find(o => o.value === mode);
+      dd?.querySelector('.cc-dropdown-value') && (dd.querySelector('.cc-dropdown-value').textContent = option?.label || mode);
+      dd?.querySelectorAll('.cc-dropdown-item').forEach(item => item.classList.toggle('active', item.dataset.value === mode));
+      if (detail) detail.textContent = option?.help || '';
+    };
+    let saves = Promise.resolve();
+    input?.addEventListener('change', () => {
+      if (workerGuardReading.state !== 'ready') return;
+      const mode = String(input.value || '');
+      if (!mode || mode === workerGuardReading.mode) { showMode(workerGuardReading.mode); return; }
+      setStatus('');
+      showMode(mode);
+      if (dd) dd.style.opacity = '0.4';
+      saves = saves.then(async () => {
+        let failure = null;
+        try {
+          const res = await fetch('/api/assistant/worker-guard', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode }) });
+          const body = await res.json().catch(() => null);
+          const reading = readWorkerGuardResponse({ status: res.status, body });
+          if (res.ok && reading.state === 'ready') workerGuardReading = reading;
+          else failure = { status: res.status, body };
+        } catch (err) {
+          failure = { status: 0, error: err?.message };
+        }
+        if (dd) dd.style.opacity = '';
+        showMode(workerGuardReading.mode);
+        if (failure) setStatus(describeWorkerGuardSaveFailure({ ...failure, mode }, { tx: kit.tx }));
+      });
+    });
+  }
   // The switch moves at once and follows the server's answer: the stored settings when the save went through,
   // back where it was (with the reason next to the switches) when it did not. Saves go one after the other, in
   // the order of the clicks, so a second click made before the first was answered is kept, not dropped.
@@ -5414,7 +5613,7 @@ async function openSettingsModalNow(options = {}) {
         // An edited copy is removed only on an explicit yes (force). A file without SynaBun's markers is the
         // user's own and stays whatever is sent, so there is nothing to confirm for it.
         const edited = info?.state === 'modified' && info.replaceable !== false;
-        // OpenCode: a line in config.json that SynaBun did not add keeps the file on a plain remove (the answer
+        // OpenCode: a line in opencode.json that SynaBun did not add keeps the file on a plain remove (the answer
         // says so, and the host is then no longer managed). Asked again, the confirm sends force, which takes that line too.
         const listed = info?.entry === 'user';
         const force = edited || (listed && info.managed === false);
@@ -5557,8 +5756,8 @@ async function openSettingsModalNow(options = {}) {
     wireRulesControls('codex', 'codex');
 
     // ── OpenCode ──
-    wireSetupMcpToggle('opencode', '/api/opencode/mcp', '~/.config/opencode/config.json');
-    // Config preview — OpenCode stores MCP servers under the "mcp" key of config.json
+    wireSetupMcpToggle('opencode', '/api/opencode/mcp', '~/.config/opencode/opencode.json');
+    // Config preview — OpenCode 2 keeps MCP servers under "mcp" → "servers" of opencode.json
     {
       const preview = overlay.querySelector('#setup-opencode-config-preview');
       let cachedConfig = '';
@@ -5566,15 +5765,18 @@ async function openSettingsModalNow(options = {}) {
         const ep = setupStatus.paths?.envPath || '<path-to>/synabun/.env';
         fetch('/api/opencode/mcp').then(r => r.json()).then(data => {
           if (data.ok && data.data && Object.keys(data.data).length) {
-            cachedConfig = JSON.stringify({ mcp: data.data }, null, 2);
+            cachedConfig = JSON.stringify({ mcp: { servers: data.data } }, null, 2);
             preview.textContent = cachedConfig;
           } else if (data.ok) {
+            const launch = mcpLaunch();
             cachedConfig = JSON.stringify({
               mcp: {
-                SynaBun: {
-                  type: 'stdio',
-                  ...mcpLaunch(),
-                  env: { DOTENV_PATH: ep },
+                servers: {
+                  SynaBun: {
+                    type: 'local',
+                    command: [launch.command, ...launch.args],
+                    environment: { DOTENV_PATH: ep },
+                  },
                 },
               },
             }, null, 2);
@@ -7351,6 +7553,9 @@ async function openSettingsModalNow(options = {}) {
     const ocpToolsEl = overlay.querySelector('#stg-ocp-tools');
     const ocpHistoryMetaEl = overlay.querySelector('#stg-ocp-history-meta');
     const ocpHistoryClearBtn = overlay.querySelector('#stg-ocp-clear-history');
+    const ocpInstallEl = overlay.querySelector('#stg-ocp-install');
+    const ocpConfigPathEl = overlay.querySelector('#stg-ocp-config-path');
+    const ocpConfigJsoncEl = overlay.querySelector('#stg-ocp-config-jsonc');
     const esc = s => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
     // ── Helpers ──
@@ -7373,6 +7578,7 @@ async function openSettingsModalNow(options = {}) {
     let _ollamaConfiguring = false;
     let _ollamaPollTimer = null;
     let _ollamaLastModelNames = '';
+    let _ollamaConfigureError = '';
     let _ocpHistoryStats = null;
 
     function formatBytes(bytes) {
@@ -7403,7 +7609,7 @@ async function openSettingsModalNow(options = {}) {
           ocpHistoryMetaEl.textContent = kit.tx('settings.redesign.opencode.historyWipeInProgress');
           return;
         }
-        const totalBytes = (Number(data.databaseBytes) || 0) + (Number(data.artifactBytes) || 0);
+        const totalBytes = Number(data.databaseBytes) || 0;
         ocpHistoryMetaEl.textContent = kit.tx('settings.redesign.opencode.stored', { formatCount: formatCount(data.sessions, 'session'), formatBytes: formatBytes(totalBytes) });
         ocpHistoryClearBtn.disabled = false;
       } catch (error) {
@@ -7415,8 +7621,7 @@ async function openSettingsModalNow(options = {}) {
       if (document.querySelector('.ocp-history-clear-overlay')) return;
       const confirmation = _ocpHistoryStats?.confirmationPhrase || 'DELETE OPENCODE HISTORY';
       const sessionCount = Number(_ocpHistoryStats?.sessions) || 0;
-      const totalBytes = (Number(_ocpHistoryStats?.databaseBytes) || 0)
-        + (Number(_ocpHistoryStats?.artifactBytes) || 0);
+      const totalBytes = Number(_ocpHistoryStats?.databaseBytes) || 0;
       const modal = document.createElement('div');
       modal.className = 'tag-delete-overlay ocp-history-clear-overlay';
       modal.innerHTML = `
@@ -7430,9 +7635,9 @@ async function openSettingsModalNow(options = {}) {
               <p class="ocp-history-modal-subtitle">${formatCount(sessionCount, 'session')} ${kit.th('settings.redesign.opencode.currentlyStored', { formatBytes: formatBytes(totalBytes) })}</p>
             </div>
           </div>
-          <div class="ocp-history-warning"><strong>${kit.te('settings.redesign.opencode.thisCannotBeUndone')}</strong> ${kit.te('settings.redesign.opencode.activeConversationsOrAutomationsMustBe')}</div>
+          <div class="ocp-history-warning"><strong>${kit.te('settings.redesign.opencode.thisCannotBeUndone')}</strong> ${kit.te('settings.redesign.opencode.historyClearSteps')}</div>
           <ul class="ocp-history-scope">
-            <li>${kit.te('settings.redesign.opencode.deletesConversationsMessagesToolOutputTo')}</li>
+            <li>${kit.te('settings.redesign.opencode.historyClearDeletes')}</li>
             <li>${kit.te('settings.redesign.opencode.deletesSynabunSDerivedOpencodeResume')}</li>
             <li>${kit.te('settings.redesign.opencode.keepsProviderCredentialsAccountConfigSet')}</li>
           </ul>
@@ -7480,7 +7685,7 @@ async function openSettingsModalNow(options = {}) {
         confirmButton.disabled = true;
         confirmButton.textContent = kit.tx('settings.redesign.opencode.clearing');
         feedback.dataset.state = 'working';
-        feedback.textContent = kit.tx('settings.redesign.opencode.stoppingOpencodeAndClearingItsHistory');
+        feedback.textContent = kit.tx('settings.redesign.opencode.historyClearWorking');
         const requestId = crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
         sessionStorage.setItem('synabun-opencode-history-clear-request', requestId);
         try {
@@ -7493,9 +7698,7 @@ async function openSettingsModalNow(options = {}) {
           if (!response.ok || !data.ok) throw new Error(data.error || kit.tx('settings.redesign.opencode.historyWipeFailedHttp', { status: response.status }));
 
           const result = data.result || {};
-          const reclaimed = Math.max(0,
-            (Number(result.databaseBytesBefore) || 0) - (Number(result.databaseBytesAfter) || 0)
-              + (Number(result.artifactBytesDeleted) || 0));
+          const reclaimed = Math.max(0, (Number(result.databaseBytesBefore) || 0) - (Number(result.databaseBytesAfter) || 0));
           const warnings = Array.isArray(result.warnings) ? result.warnings.filter(Boolean) : [];
           feedback.dataset.state = warnings.length ? 'warning' : 'working';
           feedback.textContent = warnings.length
@@ -7536,7 +7739,7 @@ async function openSettingsModalNow(options = {}) {
         dotColor = '#facc15';
         statusText = kit.tx('settings.redesign.opencode.configuring');
         statusCls = 'stg-provider-status-key';
-        bodyHtml = '<div class="stg-provider-note">' + kit.te('settings.redesign.opencode.writingProviderConfigAndRestartingOpenco') + '</div>';
+        bodyHtml = '<div class="stg-provider-note">' + kit.te('settings.redesign.opencode.writingProviderConfig') + '</div>';
       } else if (!_ollamaRunning) {
         dotColor = 'rgba(248,113,113,0.7)';
         statusText = kit.tx('settings.redesign.opencode.notDetected');
@@ -7547,6 +7750,11 @@ async function openSettingsModalNow(options = {}) {
         statusText = kit.tx('settings.redesign.opencode.runningVersion', { version: _ollamaVersion ? ' v' + _ollamaVersion : '' });
         statusCls = 'stg-provider-status-key';
         bodyHtml = '<div class="stg-provider-note">' + kit.te('settings.redesign.opencode.noModelsRun') + ' <code class="stg-code">ollama pull &lt;model&gt;</code></div>';
+      } else if (_ollamaConfigureError) {
+        dotColor = 'rgba(248,113,113,0.7)';
+        statusText = kit.tx('settings.redesign.opencode.runningVersion', { version: _ollamaVersion ? ' v' + _ollamaVersion : '' });
+        statusCls = 'stg-provider-status-disconnected';
+        bodyHtml = '<div class="stg-provider-note">' + esc(kit.tx('settings.redesign.opencode.error2', { message: _ollamaConfigureError })) + '</div>';
       } else if (_ollamaConfigured) {
         dotColor = '#4ade80';
         statusText = kit.tx('settings.redesign.opencode.runningVersion', { version: _ollamaVersion ? ' v' + _ollamaVersion : '' });
@@ -7582,27 +7790,16 @@ async function openSettingsModalNow(options = {}) {
         const btn = existing.querySelector('.stg-ollama-remove');
         if (btn) { btn.disabled = true; btn.textContent = kit.tx('settings.redesign.opencode.removing'); }
         try {
-          await fetch('/api/ollama/configure', { method: 'DELETE' });
+          const resp = await fetch('/api/ollama/configure', { method: 'DELETE' });
+          const data = await resp.json().catch(() => ({}));
+          if (!resp.ok || data.ok === false) throw new Error(data.error || `HTTP ${resp.status}`);
           _ollamaConfigured = false;
           _ollamaConfiguredCount = 0;
           _ollamaUserRemoved = true;
           renderOllamaCard();
-          showCCToast(kit.tx('settings.redesign.opencode.ollamaProviderRemovedServerRestarting'));
-          // Poll for server restart then refresh providers
-          let polls = 0;
-          const pollId = setInterval(async () => {
-            polls++;
-            if (polls > 8) { clearInterval(pollId); return; }
-            try {
-              const sr = await fetch('/api/opencode/status');
-              const sd = await sr.json();
-              if (sd.running) {
-                clearInterval(pollId);
-                await refreshOcpProviders();
-                document.dispatchEvent(new CustomEvent('ocp-providers-changed'));
-              }
-            } catch {}
-          }, 2000);
+          showCCToast(kit.tx('settings.redesign.opencode.ollamaProviderRemoved'));
+          await refreshOcpProviders();
+          document.dispatchEvent(new CustomEvent('ocp-providers-changed'));
         } catch (e) {
           showCCToast(kit.tx('settings.redesign.opencode.error2', { message: e.message }));
         }
@@ -7636,7 +7833,9 @@ async function openSettingsModalNow(options = {}) {
 
         // Auto-configure if: running + has models + not configured + not user-removed
         // Also re-configure if models changed while already configured
-        const shouldConfigure = _ollamaRunning && _ollamaModels.length > 0 && !_ollamaUserRemoved
+        // A refusal (an opencode.json SynaBun cannot change now) is asked again only when the models change.
+        if (modelsChanged) _ollamaConfigureError = '';
+        const shouldConfigure = _ollamaRunning && _ollamaModels.length > 0 && !_ollamaUserRemoved && !_ollamaConfigureError
           && (!_ollamaConfigured || modelsChanged);
 
         if (shouldConfigure && !_ollamaConfiguring) {
@@ -7644,31 +7843,16 @@ async function openSettingsModalNow(options = {}) {
           renderOllamaCard();
           try {
             const cfgResp = await fetch('/api/ollama/configure', { method: 'POST' });
-            const cfgData = await cfgResp.json();
-            if (cfgData.ok) {
+            const cfgData = await cfgResp.json().catch(() => ({}));
+            _ollamaConfiguring = false;
+            if (cfgResp.ok && cfgData.ok) {
+              // OpenCode reads the provider at once: its models are listed now.
               _ollamaConfigured = true;
               _ollamaConfiguredCount = cfgData.modelsConfigured;
-              // Wait for OpenCode server restart then refresh providers
-              setTimeout(async () => {
-                let polls = 0;
-                const pollId = setInterval(async () => {
-                  polls++;
-                  if (polls > 8) { clearInterval(pollId); _ollamaConfiguring = false; renderOllamaCard(); return; }
-                  try {
-                    const sr = await fetch('/api/opencode/status');
-                    const sd = await sr.json();
-                    if (sd.running) {
-                      clearInterval(pollId);
-                      _ollamaConfiguring = false;
-                      await refreshOcpProviders();
-                      renderOllamaCard();
-                      document.dispatchEvent(new CustomEvent('ocp-providers-changed'));
-                    }
-                  } catch {}
-                }, 2000);
-              }, 1000);
+              await refreshOcpProviders();
+              document.dispatchEvent(new CustomEvent('ocp-providers-changed'));
             } else {
-              _ollamaConfiguring = false;
+              _ollamaConfigureError = cfgData.error || `HTTP ${cfgResp.status}`;
             }
           } catch {
             _ollamaConfiguring = false;
@@ -7920,7 +8104,7 @@ async function openSettingsModalNow(options = {}) {
           }
           for (const om of oauthMethods) {
             const label = om.label || om.name || kit.tx('settings.redesign.opencode.reconnectProvider', { name });
-            btns.push(`<button type="button" class="stg-action-btn compact stg-text-btn stg-ocp-oauth-btn" data-provider="${esc(id)}" data-method="${om._idx}">${esc(label)}</button>`);
+            btns.push(`<button type="button" class="stg-action-btn compact stg-text-btn stg-ocp-oauth-btn" data-provider="${esc(id)}" data-method="${om._idx}" data-method-id="${esc(om.id || '')}">${esc(label)}</button>`);
           }
           authHtml = btns.join('');
           removeHtml = `<button type="button" class="stg-action-btn compact stg-text-btn stg-text-btn-danger stg-ocp-remove-btn" data-provider="${esc(id)}" data-env="${esc(primaryEnv)}">${kit.te('settings.redesign.opencode.removeConfirm')}</button>`;
@@ -7934,7 +8118,7 @@ async function openSettingsModalNow(options = {}) {
           }
           for (const om of oauthMethods) {
             const label = om.label || om.name || kit.tx('settings.redesign.opencode.loginWith', { name: name });
-            btns.push(`<button type="button" class="stg-action-btn compact stg-ocp-oauth-btn" data-provider="${esc(id)}" data-method="${om._idx}">${esc(label)}</button>`);
+            btns.push(`<button type="button" class="stg-action-btn compact stg-ocp-oauth-btn" data-provider="${esc(id)}" data-method="${om._idx}" data-method-id="${esc(om.id || '')}">${esc(label)}</button>`);
           }
           authHtml = btns.join('');
         }
@@ -7950,9 +8134,16 @@ async function openSettingsModalNow(options = {}) {
         </div>`;
 
         // OAuth wait indicator (hidden via inline style — JS removes it to show)
+        // OAuth wait (hidden via inline style — JS removes it to show): OpenCode's instructions (a device code),
+        // and, for a sign-in that ends with a code the provider shows, the field it is pasted in.
         const oauthWaitHtml = `<div class="stg-ocp-oauth-wait" data-provider="${esc(id)}" style="display:none">
-          ${kit.te('settings.redesign.opencode.waitingForAuthorization')}
+          <span class="stg-ocp-oauth-status">${kit.te('settings.redesign.opencode.waitingForAuthorization')}</span>
           <span class="stg-ocp-oauth-code" style="display:none"></span>
+          <div class="stg-ocp-key-row stg-ocp-oauth-code-row" style="display:none">
+            <input type="text" class="stg-input stg-input-sm stg-ocp-oauth-code-input" placeholder="${kit.te('settings.redesign.opencode.oauthCodePlaceholder')}" aria-label="${kit.te('settings.redesign.opencode.oauthCodeFor', { name })}" autocomplete="off" spellcheck="false" style="flex:1">
+            <button type="button" class="stg-action-btn compact stg-ocp-oauth-code-submit">${kit.te('settings.redesign.opencode.oauthConnect')}</button>
+          </div>
+          <div class="stg-ocp-key-error"></div>
         </div>`;
 
         const hiddenSet = getHiddenModels();
@@ -8148,28 +8339,15 @@ async function openSettingsModalNow(options = {}) {
           try {
             const resp = await fetch(`/api/opencode/auth/${encodeURIComponent(provId)}`, {
               method: 'PUT', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ type: 'api', key }),
+              body: JSON.stringify({ key }),
             });
-            const data = await resp.json();
+            const data = await resp.json().catch(() => ({}));
             if (resp.ok && data.ok !== false) {
               form.style.display = 'none';
               input.value = '';
-              showCCToast(kit.tx('settings.redesign.opencode.apiKeySavedForServerRestarting', { provId: provId }));
-              // Poll until server is back (takeover kills + respawns, ~5-6s)
-              let polls = 0;
-              const pollId = setInterval(async () => {
-                polls++;
-                if (polls > 8) { clearInterval(pollId); return; }
-                try {
-                  const sr = await fetch('/api/opencode/status');
-                  const sd = await sr.json();
-                  if (sd.running) {
-                    clearInterval(pollId);
-                    await refreshOcpProviders();
-                    document.dispatchEvent(new CustomEvent('ocp-providers-changed'));
-                  }
-                } catch {}
-              }, 2000);
+              showCCToast(kit.tx('settings.redesign.opencode.apiKeySaved', { provId: provId }));
+              await refreshOcpProviders();
+              document.dispatchEvent(new CustomEvent('ocp-providers-changed'));
             } else {
               const msg = data.error || kit.tx('settings.redesign.opencode.failedToSaveKey');
               if (errEl) { errEl.textContent = msg; errEl.style.display = ''; }
@@ -8202,24 +8380,11 @@ async function openSettingsModalNow(options = {}) {
               method: 'DELETE',
               headers: { 'Content-Type': 'application/json' },
             });
-            const data = await resp.json();
+            const data = await resp.json().catch(() => ({}));
             if (resp.ok && data.ok !== false) {
-              showCCToast(kit.tx('settings.redesign.opencode.apiKeyRemovedForServerRestarting', { provId: provId }));
-              // Poll until server is back (takeover kills + respawns, ~5-6s)
-              let polls = 0;
-              const pollId = setInterval(async () => {
-                polls++;
-                if (polls > 8) { clearInterval(pollId); return; }
-                try {
-                  const sr = await fetch('/api/opencode/status');
-                  const sd = await sr.json();
-                  if (sd.running) {
-                    clearInterval(pollId);
-                    await refreshOcpProviders();
-                    document.dispatchEvent(new CustomEvent('ocp-providers-changed'));
-                  }
-                } catch {}
-              }, 2000);
+              showCCToast(kit.tx('settings.redesign.opencode.apiKeyRemoved', { provId: provId }));
+              await refreshOcpProviders();
+              document.dispatchEvent(new CustomEvent('ocp-providers-changed'));
             } else {
               showCCToast(data.error || kit.tx('settings.redesign.opencode.failedToRemoveKey'));
             }
@@ -8236,43 +8401,22 @@ async function openSettingsModalNow(options = {}) {
         btn.addEventListener('click', async () => {
           const provId = btn.dataset.provider;
           const methodIdx = parseInt(btn.dataset.method, 10);
+          const card = btn.closest('.stg-provider-card');
+          const providerName = card?.querySelector('.stg-provider-name')?.textContent?.trim() || provId;
           btn.disabled = true; btn.textContent = kit.tx('settings.redesign.opencode.connecting');
-          const waitEl = ocpProvidersEl.querySelector(`.stg-ocp-oauth-wait[data-provider="${provId}"]`);
-          const codeEl = waitEl?.querySelector('.stg-ocp-oauth-code');
           try {
             const resp = await fetch(`/api/opencode/oauth/${encodeURIComponent(provId)}/authorize`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ method: isNaN(methodIdx) ? 0 : methodIdx }),
+              body: JSON.stringify({ methodID: btn.dataset.methodId || undefined, method: isNaN(methodIdx) ? 0 : methodIdx }),
             });
-            const data = await resp.json();
-            const authData = data.data || data;
-            if (authData.url) {
-              window.open(authData.url, '_blank');
-              if (waitEl) waitEl.style.display = '';
-              if (authData.code && codeEl) { codeEl.textContent = authData.code; codeEl.style.display = ''; }
-              if (authData.instructions) showCCToast(authData.instructions);
-              // Poll for completion
-              let attempts = 0;
-              const poll = setInterval(async () => {
-                attempts++;
-                if (attempts > 60) { clearInterval(poll); if (waitEl) waitEl.style.display = 'none'; return; }
-                try {
-                  // Only `connected` is read: the compact view (connected providers), not the whole catalog every 2 s.
-                  const pr = await fetch('/api/opencode/providers/full?view=compact');
-                  const pd = await pr.json();
-                  const connected = pd.data?.connected || [];
-                  if (connected.includes(provId)) {
-                    clearInterval(poll);
-                    if (waitEl) waitEl.style.display = 'none';
-                    showCCToast(kit.tx('settings.redesign.opencode.connected', { provId: provId }));
-                    await refreshOcpProviders();
-                    document.dispatchEvent(new CustomEvent('ocp-providers-changed'));
-                  }
-                } catch {}
-              }, 2000);
+            const data = await resp.json().catch(() => ({}));
+            const auth = data.data || {};
+            if (resp.ok && data.ok !== false && auth.url) {
+              window.open(auth.url, '_blank', 'noopener');
+              showOcpOAuthWait(provId, providerName, auth);
             } else {
-              showCCToast(authData.error || data.error || kit.tx('settings.redesign.opencode.oauthFailedNoAuthorizationUrlReturned'));
+              showCCToast(data.error || kit.tx('settings.redesign.opencode.oauthFailedNoAuthorizationUrlReturned'));
             }
           } catch (e) {
             showCCToast(kit.tx('settings.redesign.opencode.oauthError', { message: e.message }));
@@ -8281,6 +8425,81 @@ async function openSettingsModalNow(options = {}) {
         });
       });
     }
+
+    // ── A sign-in under way (OpenCode 2's attempt: `auto` finishes by itself, `code` with the code pasted) ──
+    const _ocpOAuthPolls = new Map(); // provider id → timer
+    function endOcpOAuth(provId) {
+      clearInterval(_ocpOAuthPolls.get(provId));
+      _ocpOAuthPolls.delete(provId);
+      const waitEl = ocpProvidersEl?.querySelector(`.stg-ocp-oauth-wait[data-provider="${CSS.escape(provId)}"]`);
+      if (waitEl) waitEl.style.display = 'none';
+    }
+    async function finishOcpOAuth(provId) {
+      endOcpOAuth(provId);
+      showCCToast(kit.tx('settings.redesign.opencode.connected', { provId: provId }));
+      await refreshOcpProviders();
+      document.dispatchEvent(new CustomEvent('ocp-providers-changed'));
+    }
+    function showOcpOAuthWait(provId, providerName, auth) {
+      endOcpOAuth(provId);
+      const waitEl = ocpProvidersEl?.querySelector(`.stg-ocp-oauth-wait[data-provider="${CSS.escape(provId)}"]`);
+      const codeEl = waitEl?.querySelector('.stg-ocp-oauth-code');
+      const codeRow = waitEl?.querySelector('.stg-ocp-oauth-code-row');
+      const errEl = waitEl?.querySelector('.stg-ocp-key-error');
+      if (waitEl) waitEl.style.display = '';
+      if (codeEl) { codeEl.textContent = auth.instructions || ''; codeEl.style.display = auth.instructions ? '' : 'none'; }
+      if (errEl) errEl.textContent = '';
+      if (auth.method === 'code') {
+        if (!codeRow) return;
+        codeRow.style.display = '';
+        const input = codeRow.querySelector('.stg-ocp-oauth-code-input');
+        const submit = codeRow.querySelector('.stg-ocp-oauth-code-submit');
+        input?.focus();
+        const send = async () => {
+          const code = input?.value?.trim();
+          if (!code) return;
+          submit.disabled = true;
+          try {
+            const resp = await fetch(`/api/opencode/oauth/${encodeURIComponent(provId)}/callback`, {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ attemptID: auth.attemptID, code }),
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || data.ok === false) throw new Error(data.error || `HTTP ${resp.status}`);
+            input.value = '';
+            await finishOcpOAuth(provId);
+          } catch (e) {
+            if (errEl) errEl.textContent = kit.tx('settings.redesign.opencode.oauthFailed', { message: e.message });
+          } finally {
+            submit.disabled = false;
+          }
+        };
+        if (submit) submit.onclick = send;
+        if (input) input.onkeydown = (event) => { if (event.key === 'Enter') { event.preventDefault(); send(); } };
+        return;
+      }
+      if (codeRow) codeRow.style.display = 'none';
+      if (!auth.attemptID) return;
+      // Every 2 s for five minutes: then the attempt is let go (OpenCode's own attempt ends by itself).
+      let attempts = 0;
+      _ocpOAuthPolls.set(provId, setInterval(async () => {
+        attempts++;
+        if (attempts > 150) { endOcpOAuth(provId); showCCToast(kit.tx('settings.redesign.opencode.oauthGaveUp')); return; }
+        try {
+          const resp = await fetch(`/api/opencode/oauth/${encodeURIComponent(provId)}/status?attemptID=${encodeURIComponent(auth.attemptID)}`);
+          const data = await resp.json().catch(() => ({}));
+          if (!resp.ok || data.ok === false) throw new Error(data.error || `HTTP ${resp.status}`);
+          const status = data.data?.status;
+          if (status === 'complete') await finishOcpOAuth(provId);
+          else if (status === 'expired') { endOcpOAuth(provId); showCCToast(kit.tx('settings.redesign.opencode.oauthExpired')); }
+          else if (status === 'failed') { endOcpOAuth(provId); showCCToast(kit.tx('settings.redesign.opencode.oauthFailed', { message: data.data?.message || status })); }
+        } catch (e) {
+          endOcpOAuth(provId);
+          showCCToast(kit.tx('settings.redesign.opencode.oauthFailed', { message: e.message }));
+        }
+      }, 2000));
+    }
+    panelLife.signal.addEventListener('abort', () => { for (const provId of [..._ocpOAuthPolls.keys()]) endOcpOAuth(provId); });
 
     // ── Delegated card click-to-expand (survives re-renders) ──
     if (ocpProvidersEl) {
@@ -8299,64 +8518,60 @@ async function openSettingsModalNow(options = {}) {
     }
 
     // ── Tools/Permissions rendering ──
+    // What each of OpenCode's own tools may do: the rules of OpenCode's global opencode.json
+    // (GET /api/opencode/config: `actions`, `tools`), read and written there whether or not OpenCode runs.
+    const OCP_EFFECTS = ['allow', 'ask', 'deny'];
+    if (ocpToolsEl) {
+      wireDropdowns(ocpToolsEl, { signal: panelLife.signal });
+      ocpToolsEl.addEventListener('change', async (event) => {
+        const input = event.target;
+        const action = input?.dataset?.tool;
+        if (!action || !OCP_EFFECTS.includes(input.value)) return;
+        try {
+          const resp = await fetch('/api/opencode/config', {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tools: { [action]: input.value } }),
+          });
+          const data = await resp.json().catch(() => ({}));
+          if (!resp.ok || data.ok === false) throw new Error(data.error || `HTTP ${resp.status}`);
+          applyOcpConfig(data.data);
+        } catch (err) {
+          showCCToast(kit.tx('settings.redesign.opencode.saveFailed', { message: err.message }));
+          renderToolPermissions();
+        }
+      }, { signal: panelLife.signal });
+    }
+
+    function renderToolPermissionsFrom(view) {
+      if (!ocpToolsEl) return;
+      const actions = Array.isArray(view?.actions) ? view.actions : [];
+      if (!actions.length) {
+        ocpToolsEl.innerHTML = '<div class="settings-hint" style="opacity:0.4">' + kit.te('settings.redesign.opencode.noToolsAvailable') + '</div>';
+        return;
+      }
+      const tools = view.tools || {};
+      const labels = { allow: kit.tx('settings.redesign.opencode.allow'), ask: kit.tx('settings.redesign.opencode.ask'), deny: kit.tx('settings.redesign.opencode.deny') };
+      ocpToolsEl.innerHTML = `<div class="stg-tool-grid">${actions.map((action) => {
+        const current = OCP_EFFECTS.includes(tools[action]) ? tools[action] : 'allow';
+        const id = `stg-ocp-tool-${String(action).replace(/[^a-z0-9_-]/gi, '-')}`;
+        return `<div class="stg-tool-row">
+            <span class="stg-tool-name">${esc(action)}</span>
+            ${dropdownHTML(id, OCP_EFFECTS.map((effect) => ({ value: effect, label: labels[effect], selected: effect === current })), {
+              classes: 'stg-dropdown stg-dropdown-inline stg-ocp-tool-perm',
+              label: kit.tx('settings.redesign.opencode.permissionFor', { tool: action }),
+              inputAttrs: `data-tool="${esc(action)}"`,
+            })}
+          </div>`;
+      }).join('')}</div>`;
+    }
+
     async function renderToolPermissions() {
       if (!ocpToolsEl) return;
       try {
-        const [toolsResp, configResp] = await Promise.all([
-          fetch('/api/opencode/tools'),
-          fetch('/api/opencode/config'),
-        ]);
-        const toolsData = await toolsResp.json();
-        const configData = await configResp.json();
-        _ocpConfig = configData.data || {};
-        const toolIds = Array.isArray(toolsData.data) ? toolsData.data : (toolsData.data?.ids || []);
-        const permissions = _ocpConfig.permission || {};
-        const tools = _ocpConfig.tools || {};
-
-        if (!toolIds.length) {
-          ocpToolsEl.innerHTML = '<div class="settings-hint" style="opacity:0.4">' + kit.te('settings.redesign.opencode.noToolsAvailable') + '</div>';
-          return;
-        }
-
-        ocpToolsEl.innerHTML = `<div class="stg-tool-grid">${toolIds.map(t => {
-          const tid = typeof t === 'string' ? t : (t.id || t.name || '');
-          if (!tid) return '';
-          let currentVal = 'allow';
-          if (tools[tid] === false) currentVal = 'deny';
-          else if (permissions[tid] === 'ask') currentVal = 'ask';
-          return `<div class="stg-tool-row">
-            <span class="stg-tool-name">${esc(tid)}</span>
-            <select class="stg-tool-select stg-ocp-tool-perm" data-tool="${esc(tid)}" aria-label="${kit.te('settings.redesign.opencode.permissionFor', { tool: tid })}">
-              <option value="allow"${currentVal === 'allow' ? ' selected' : ''}>${kit.te('settings.redesign.opencode.allow')}</option>
-              <option value="ask"${currentVal === 'ask' ? ' selected' : ''}>${kit.te('settings.redesign.opencode.ask')}</option>
-              <option value="deny"${currentVal === 'deny' ? ' selected' : ''}>${kit.te('settings.redesign.opencode.deny')}</option>
-            </select>
-          </div>`;
-        }).join('')}</div>`;
-
-        // Wire change events
-        ocpToolsEl.querySelectorAll('.stg-ocp-tool-perm').forEach(sel => {
-          sel.addEventListener('change', async () => {
-            const tid = sel.dataset.tool;
-            const val = sel.value;
-            const patchBody = {};
-            const newPerms = { ...(_ocpConfig.permission || {}) };
-            const newTools = { ...(_ocpConfig.tools || {}) };
-            if (val === 'deny') { newTools[tid] = false; delete newPerms[tid]; }
-            else if (val === 'ask') { delete newTools[tid]; newPerms[tid] = 'ask'; }
-            else { delete newTools[tid]; delete newPerms[tid]; }
-            patchBody.permission = newPerms;
-            patchBody.tools = newTools;
-            try {
-              await fetch('/api/opencode/config', {
-                method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(patchBody),
-              });
-              _ocpConfig.permission = newPerms;
-              _ocpConfig.tools = newTools;
-            } catch {}
-          });
-        });
+        const resp = await fetch('/api/opencode/config');
+        const data = await resp.json();
+        if (!resp.ok || data.ok === false) throw new Error(data.error || `HTTP ${resp.status}`);
+        applyOcpConfig(data.data);
       } catch {
         ocpToolsEl.innerHTML = '<div class="settings-hint" style="opacity:0.4">' + kit.te('settings.redesign.opencode.failedToLoadTools') + '</div>';
       }
@@ -8374,155 +8589,37 @@ async function openSettingsModalNow(options = {}) {
       return null;
     }
 
-    function renderMcpMatrix() {
-      const wrap = overlay.querySelector('#stg-mcp-matrix-wrap');
-      if (!wrap || !_mcpRegistry) return;
-      const tg = _mcpRegistry.toolGroups || {};
-      const profiles = _mcpRegistry.profiles || {};
-      const active = _mcpRegistry.activeProfile || '';
-      const profEntries = Object.entries(profiles);
-      const switchable = Object.entries(tg).filter(([, info]) => !info.alwaysOn);
-
-      if (!profEntries.length) {
-        wrap.innerHTML = '<div class="stg-mcp-matrix-empty">' + kit.te('settings.redesign.mcp.noProfiles') + '</div>';
-        return;
-      }
-
-      // Build table header
-      let thead = '<tr><th class="stg-mx-label-th"><div class="stg-mx-corner-head">' + kit.te('settings.redesign.mcp.toolGroups') + '</div></th>';
-      for (const [name, prof] of profEntries) {
-        const isActive = name === active;
-        thead += `<th class="stg-mx-profile-th${isActive ? ' active' : ''}" data-profile="${esc(name)}">
-          <div class="stg-mx-profile-head" data-profile="${esc(name)}">
-            <span class="stg-mx-profile-dot${isActive ? ' on' : ''}"></span>
-            <span class="stg-mx-profile-name">${esc(prof.label || name)}</span>
-            ${isActive ? '' : `<button class="stg-mx-profile-del" data-profile="${esc(name)}" title="${kit.te('settings.redesign.mcp.deleteProfile')}">\u00d7</button>`}
-          </div>
-        </th>`;
-      }
-      thead += '<th class="stg-mx-add-th"><button class="stg-mx-add-btn" title="' + kit.te('settings.redesign.mcp.newProfile') + '">+</button></th></tr>';
-
-      // Build table body — switchable groups
-      let tbody = '';
-      for (const [key, info] of switchable) {
-        tbody += `<tr>`;
-        tbody += `<td class="stg-mx-label-td"><div class="stg-mx-label-inner">
-          <span class="stg-mx-grp-name">${esc(info.label)}</span>
-          <span class="stg-mx-grp-count">${info.tools}</span>
-        </div></td>`;
-        for (const [profName, prof] of profEntries) {
-          const isOn = (prof.groups || []).includes(key);
-          tbody += `<td class="stg-mx-cell" data-profile="${esc(profName)}" data-group="${esc(key)}" data-kind="group">
-            <span class="stg-mx-toggle${isOn ? ' on' : ''}"></span>
-          </td>`;
-        }
-        tbody += '<td class="stg-mx-add-spacer"></td></tr>';
-      }
-
-      wrap.innerHTML = `<div class="stg-mcp-matrix-scroll"><table id="stg-mcp-matrix"><thead>${thead}</thead><tbody>${tbody}</tbody></table></div>`;
-
-      // --- Event handlers ---
-
-      // Toggle cells
-      wrap.querySelectorAll('.stg-mx-cell').forEach(cell => {
-        cell.addEventListener('click', async () => {
-          const profName = cell.dataset.profile;
-          const prof = _mcpRegistry.profiles[profName];
-          if (!prof) return;
-          const kind = cell.dataset.kind;
-          if (kind === 'group') {
-            const g = cell.dataset.group;
-            if ((prof.groups || []).includes(g)) {
-              prof.groups = prof.groups.filter(x => x !== g);
-            } else {
-              prof.groups = [...(prof.groups || []), g];
-            }
-          } else {
-            const s = cell.dataset.server;
-            if ((prof.servers || []).includes(s)) {
-              prof.servers = prof.servers.filter(x => x !== s);
-            } else {
-              prof.servers = [...(prof.servers || []), s];
-            }
-          }
-          await fetch(`/api/mcp/registry/profiles/${encodeURIComponent(profName)}`, {
-            method: 'PUT', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(prof),
-          });
-          await refreshMcpTab();
-        });
+    let _settingsToolCatalog = null;
+    const defaultToolsWrap = overlay.querySelector('#stg-mcp-default-tools');
+    if (defaultToolsWrap) wireDropdowns(defaultToolsWrap, { signal: panelLife.signal });
+    function renderDefaultTools() {
+      const wrap = overlay.querySelector('#stg-mcp-default-tools');
+      if (!wrap) return;
+      wrap.innerHTML = _settingsToolCatalog ? toolPickerHTML('stg-default-tools', _settingsToolCatalog.defaultTools, { catalog: _settingsToolCatalog, provider: 'all', label: toolWord('defaultTools') }) : '';
+      wrap.querySelector('#stg-default-tools')?.addEventListener('change', async (event) => {
+        const tools = readToolPicker(event.target, { inherit: false });
+        try {
+          const response = await fetch('/api/mcp/tools/default', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tools }) });
+          const result = await response.json();
+          if (!response.ok || !result.ok) throw new Error(result.error || toolWord('saveFailed'));
+          _settingsToolCatalog.defaultTools = result.tools;
+          showCCToast(toolWord('saved'));
+        } catch (error) { showCCToast(error.message || toolWord('saveFailed')); }
+        renderDefaultTools();
       });
-
-      // Activate profile on name click
-      wrap.querySelectorAll('.stg-mx-profile-head').forEach(head => {
-        head.addEventListener('click', async (e) => {
-          if (e.target.closest('.stg-mx-profile-del')) return;
-          const name = head.dataset.profile;
-          if (name === _mcpRegistry.activeProfile) return;
-          await fetch('/api/mcp/registry/activate', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ profile: name }),
-          });
-          showCCToast(kit.tx('settings.redesign.mcp.profileSwitchedTo', { name: name }));
-          await refreshMcpTab();
-        });
-      });
-
-      // Delete profile
-      wrap.querySelectorAll('.stg-mx-profile-del').forEach(btn => {
-        btn.addEventListener('click', async (e) => {
-          e.stopPropagation();
-          await fetch(`/api/mcp/registry/profiles/${encodeURIComponent(btn.dataset.profile)}`, { method: 'DELETE' });
-          await refreshMcpTab();
-        });
-      });
-
-      // Inline add profile
-      const addBtn = wrap.querySelector('.stg-mx-add-btn');
-      if (addBtn) {
-        addBtn.addEventListener('click', () => {
-          const th = addBtn.closest('th');
-          th.innerHTML = `<input class="stg-mx-inline-input" type="text" placeholder="${kit.te('settings.redesign.mcp.name')}" autofocus>`;
-          const input = th.querySelector('input');
-          input.focus();
-          const create = async () => {
-            const name = input.value.trim();
-            if (!name) { await refreshMcpTab(); return; }
-            await fetch(`/api/mcp/registry/profiles/${encodeURIComponent(name)}`, {
-              method: 'PUT', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ label: name, groups: [], servers: [] }),
-            });
-            await refreshMcpTab();
-          };
-          input.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); create(); }
-            if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); refreshMcpTab(); }
-          });
-          input.addEventListener('blur', create);
-        });
-      }
     }
 
     function renderAlwaysOn() {
       const el = overlay.querySelector('#stg-mcp-always-on');
-      if (!el || !_mcpRegistry) return;
-      const tg = _mcpRegistry.toolGroups || {};
-      const alwaysOn = Object.entries(tg).filter(([, info]) => info.alwaysOn);
-      if (!alwaysOn.length) { el.innerHTML = ''; return; }
-      el.innerHTML = `
-        <div class="stg-mcp-section-header">${kit.te('settings.redesign.mcp.alwaysOn')}</div>
-        <div class="stg-mx-always-on-row">
-          ${alwaysOn.map(([, info]) =>
-            `<span class="stg-mx-always-chip">${esc(info.label)}<span class="stg-mx-grp-count">${info.tools}</span></span>`
-          ).join('')}
-        </div>`;
+      if (!el) return;
+      el.innerHTML = _settingsToolCatalog ? `<div class="stg-mcp-section-header">${esc(toolWord('alwaysOn'))}</div><div class="stg-mx-always-on-row">${_settingsToolCatalog.alwaysOnTools.map(name => `<span class="stg-mx-always-chip">${esc(name)}</span>`).join('')}</div>` : '';
     }
 
     function renderExtServerList() {
       const el = overlay.querySelector('#stg-mcp-ext-servers');
       if (!el || !_mcpRegistry) return;
-      const servers = _mcpRegistry.servers || {};
-      const profiles = Object.entries(_mcpRegistry.profiles || {});
+      const servers = { ...(_mcpRegistry.servers || {}) };
+      for (const row of _settingsToolCatalog?.servers || []) { const name = row.ref.slice(4); if (!servers[name]) servers[name] = { type: toolWord('configuredExternally'), discovered: true }; }
       const entries = Object.entries(servers).filter(([, info]) => !info.builtin);
       if (!entries.length) {
         el.innerHTML = '<div class="stg-mcp-empty-note">' + kit.te('settings.redesign.mcp.noExternalServersConfigured') + '</div>';
@@ -8537,38 +8634,31 @@ async function openSettingsModalNow(options = {}) {
                 <span class="stg-mx-ext-name">${esc(name)}</span>
                 <span class="stg-mx-ext-type">${esc(info.type || '?')}</span>
               </div>
-              <div class="stg-mx-ext-sub">${kit.te('settings.redesign.mcp.availableToAnyProfileYouEnable')}</div>
+              <div class="stg-mx-ext-sub">${esc(toolWord('agentAccessHelp'))}</div>
             </div>
-            <button class="stg-mx-srv-del stg-mx-ext-remove" data-server="${esc(name)}" title="${kit.te('settings.redesign.mcp.removeServer')}">\u00d7</button>
+            ${info.discovered ? '' : `<button class="stg-mx-srv-del stg-mx-ext-remove" ${kit.inv('MCP004')} data-server="${esc(name)}" title="${kit.te('settings.redesign.mcp.removeServer')}">\u00d7</button>`}
           </div>
-          <div class="stg-mx-ext-profiles">
-            ${profiles.map(([profName, prof]) => {
-              const isOn = (prof.servers || []).includes(name);
-              return `<button class="stg-mx-ext-toggle${isOn ? ' on' : ''}" data-profile="${esc(profName)}" data-server="${esc(name)}" title="${isOn ? kit.te('settings.redesign.mcp.disable') : kit.te('settings.redesign.mcp.enable')} ${esc(name)} ${kit.te('settings.redesign.mcp.for')} ${esc(prof.label || profName)}">
-                <span class="stg-mx-ext-toggle-name">${esc(prof.label || profName)}</span>
-              </button>`;
-            }).join('')}
+          <div class="stg-field"><span>${esc(toolWord('agentAccess'))}</span>
+            <button type="button" class="cc-toggle${_mcpRegistry.agentAccess?.[name] === false ? '' : ' on'}" role="switch" ${kit.inv('MCP005')} data-agent-server="${esc(name)}" aria-label="${esc(toolWord('agentAccess'))}: ${esc(name)}" aria-checked="${_mcpRegistry.agentAccess?.[name] !== false}"></button>
           </div>
         </div>`
       ).join('');
 
-      el.querySelectorAll('.stg-mx-ext-toggle').forEach(btn => {
-        btn.addEventListener('click', async () => {
-          const profName = btn.dataset.profile;
-          const srvName = btn.dataset.server;
-          const prof = _mcpRegistry.profiles[profName];
-          if (!prof || !srvName) return;
-          if ((prof.servers || []).includes(srvName)) {
-            prof.servers = prof.servers.filter(x => x !== srvName);
-          } else {
-            prof.servers = [...(prof.servers || []), srvName];
-          }
-          await fetch(`/api/mcp/registry/profiles/${encodeURIComponent(profName)}`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(prof),
-          });
-          await refreshMcpTab();
+      el.querySelectorAll('[data-agent-server]').forEach(input => {
+        input.addEventListener('click', async () => {
+          const enabled = input.getAttribute('aria-checked') !== 'true';
+          input.disabled = true;
+          try {
+            const response = await fetch(`/api/mcp/registry/agent-access/${encodeURIComponent(input.dataset.agentServer)}`, {
+              method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }),
+            });
+            const result = await response.json();
+            if (!response.ok || !result.ok) throw new Error(result.error || toolWord('saveFailed'));
+            _mcpRegistry.agentAccess = result.agentAccess;
+            input.classList.toggle('on', enabled);
+            input.setAttribute('aria-checked', String(enabled));
+          } catch (error) { showCCToast(error.message || toolWord('saveFailed')); }
+          finally { input.disabled = false; }
         });
       });
 
@@ -8723,7 +8813,8 @@ async function openSettingsModalNow(options = {}) {
 
     async function refreshMcpTab() {
       await fetchMcpRegistry();
-      renderMcpMatrix();
+      _settingsToolCatalog = await fetchToolCatalog(true);
+      renderDefaultTools();
       renderAlwaysOn();
       renderExtServerList();
       renderPluginsList();
@@ -9235,55 +9326,62 @@ async function openSettingsModalNow(options = {}) {
     });
 
     // ── Config save helpers ──
+    // PATCH /api/opencode/config (OpenCode 2's global opencode.json): the answer is the configuration as it is now.
     async function saveOcpConfig(patch) {
       try {
-        await fetch('/api/opencode/config', {
+        const resp = await fetch('/api/opencode/config', {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(patch),
         });
-      } catch {}
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || data.ok === false) throw new Error(data.error || `HTTP ${resp.status}`);
+        applyOcpConfig(data.data);
+        return true;
+      } catch (err) {
+        showCCToast(kit.tx('settings.redesign.opencode.saveFailed', { message: err.message }));
+        loadOcpConfig();
+        return false;
+      }
     }
 
     // ── Compaction handlers ──
     const compactAutoEl = overlay.querySelector('#stg-ocp-compact-auto');
-    const compactPruneEl = overlay.querySelector('#stg-ocp-compact-prune');
     const compactReservedEl = overlay.querySelector('#stg-ocp-compact-reserved');
 
+    // An emptied field is OpenCode's own default again (buffer: null).
     function saveCompaction() {
-      saveOcpConfig({
-        compaction: {
-          auto: compactAutoEl?.checked ?? true,
-          prune: compactPruneEl?.checked ?? true,
-          reserved: Number(compactReservedEl?.value) || 10000,
-        },
-      });
+      const raw = String(compactReservedEl?.value ?? '').trim();
+      const buffer = raw === '' ? null : Math.round(Number(raw));
+      if (buffer !== null && !(Number.isFinite(buffer) && buffer >= 0 && buffer <= 1_000_000)) { loadOcpConfig(); return; }
+      saveOcpConfig({ compaction: { auto: compactAutoEl?.checked ?? true, buffer } });
     }
     compactAutoEl?.addEventListener('change', saveCompaction);
-    compactPruneEl?.addEventListener('change', saveCompaction);
     compactReservedEl?.addEventListener('change', saveCompaction);
 
-    // ── Snapshot toggle (persists to config.json; read by OpenCode at startup) ──
+    // ── Snapshot toggle (OpenCode's `snapshots`, read at once) ──
     const snapshotToggle = overlay.querySelector('#stg-ocp-snapshot-toggle');
-    if (snapshotToggle) {
-      // Reflect the persisted state on load (defaults on).
-      fetch('/api/opencode/snapshot')
-        .then(r => r.json())
-        .then(d => { if (d && d.ok) snapshotToggle.classList.toggle('on', d.snapshot !== false); })
-        .catch(() => {});
-      snapshotToggle.addEventListener('click', async () => {
-        const next = !snapshotToggle.classList.contains('on');
-        snapshotToggle.classList.toggle('on', next); // optimistic
-        try {
-          const r = await fetch('/api/opencode/snapshot', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ enabled: next }),
-          });
-          const d = await r.json();
-          if (!d || !d.ok) throw new Error(d?.error || 'failed');
-        } catch {
-          snapshotToggle.classList.toggle('on', !next); // revert on failure
-        }
-      });
+    snapshotToggle?.addEventListener('click', () => {
+      const next = !snapshotToggle.classList.contains('on');
+      snapshotToggle.classList.toggle('on', next); // optimistic; the answer (or a failed save's reload) sets it
+      saveOcpConfig({ snapshots: next });
+    });
+
+    // The configuration as GET / PATCH /api/opencode/config give it: the file SynaBun edits, compaction,
+    // snapshots and the tools' permissions.
+    function applyOcpConfig(view) {
+      if (!view || typeof view !== 'object') return;
+      _ocpConfig = view;
+      const comp = view.compaction || {};
+      if (compactAutoEl) compactAutoEl.checked = comp.auto !== false;
+      if (compactReservedEl && document.activeElement !== compactReservedEl) compactReservedEl.value = Number.isFinite(comp.buffer) ? String(comp.buffer) : '';
+      snapshotToggle?.classList.toggle('on', view.snapshots !== false);
+      if (ocpConfigPathEl && view.file) ocpConfigPathEl.textContent = view.file;
+      const jsonc = (Array.isArray(view.files) ? view.files : []).find((file) => file?.exists && /\.jsonc$/i.test(String(file.path || '')));
+      if (ocpConfigJsoncEl) {
+        ocpConfigJsoncEl.hidden = !jsonc;
+        ocpConfigJsoncEl.innerHTML = jsonc ? kit.th('settings.redesign.opencode.jsoncWins', { path: `<code class="stg-code">${esc(jsonc.path)}</code>` }) : '';
+      }
+      renderToolPermissionsFrom(view);
     }
 
     // Capability filter pills — use CSS vars, not inline color
@@ -9321,28 +9419,16 @@ async function openSettingsModalNow(options = {}) {
     });
 
     // ── Open config file in Synabun's editor ──
+    // OpenCode 2's global opencode.json (made with its $schema when there is none yet).
     overlay.querySelector('#stg-ocp-open-config')?.addEventListener('click', async () => {
       try {
-        let filePath = '';
-
-        const revealResp = await fetch('/api/opencode/config/reveal', { method: 'POST' });
-        let revealData = null;
-        try { revealData = await revealResp.json(); } catch {}
-
-        if (revealResp.ok && revealData?.path) {
-          const basePath = String(revealData.path).replace(/\\/g, '/').replace(/\/+$/, '');
-          filePath = basePath.endsWith('/config.json') ? basePath : `${basePath}/config.json`;
-        } else {
-          const fileResp = await fetch('/api/opencode/config/file');
-          const fileData = await fileResp.json();
-          if (!fileResp.ok || !fileData?.path) {
-            showCCToast(fileData?.error || revealData?.error || kit.tx('settings.redesign.opencode.failedToOpenOpencodeConfig'));
-            return;
-          }
-          filePath = fileData.path;
+        const fileResp = await fetch('/api/opencode/config/file');
+        const fileData = await fileResp.json().catch(() => ({}));
+        if (!fileResp.ok || !fileData?.path) {
+          showCCToast(fileData?.error || kit.tx('settings.redesign.opencode.failedToOpenOpencodeConfig'));
+          return;
         }
-
-        emit('open-file-editor', { filePath });
+        emit('open-file-editor', { filePath: fileData.path });
       } catch (err) {
         console.error('[settings] Failed to open OpenCode config:', err);
         showCCToast(kit.tx('settings.redesign.opencode.failedToOpenOpencodeConfig'));
@@ -9370,38 +9456,46 @@ async function openSettingsModalNow(options = {}) {
       } catch {}
     }
 
-    // ── Load config values into UI ──
+    // ── Load config values into UI (read from the files: OpenCode need not run) ──
     async function loadOcpConfig() {
-      try {
-        const resp = await fetch('/api/opencode/config');
-        const data = await resp.json();
-        _ocpConfig = data.data || {};
-        const comp = _ocpConfig.compaction || {};
-        if (compactAutoEl) compactAutoEl.checked = comp.auto !== false;
-        if (compactPruneEl) compactPruneEl.checked = comp.prune !== false;
-        if (compactReservedEl) compactReservedEl.value = comp.reserved || 10000;
-      } catch {}
+      await renderToolPermissions();
+    }
+
+    // The OpenCode SynaBun found: its version, or why SynaBun does not drive it and how to get OpenCode 2.
+    function renderOcpInstall(installed) {
+      const note = describeOpencodeInstall(installed, { th: kit.th, tx: kit.tx });
+      if (ocpInstallEl) {
+        ocpInstallEl.hidden = !note.html;
+        ocpInstallEl.dataset.tone = note.tone;
+        ocpInstallEl.innerHTML = note.html;
+      }
+      return note;
     }
 
     // ── Master refresh ──
     async function refreshOcpStatus() {
       setOcpStatus(kit.tx('settings.redesign.opencode.checking'), 'dim');
+      loadOcpConfig();
       try {
         const resp = await fetch('/api/opencode/status');
         const data = await resp.json();
+        const note = renderOcpInstall(data.installed);
         if (data.clearingHistory) {
           setOcpStatus(kit.tx('settings.redesign.opencode.clearingHistory'), 'warn');
         } else if (data.running) {
           setOcpStatus(kit.tx('settings.redesign.opencode.runningVersion', { version: data.version ? ' v' + data.version : '' }), 'ok');
-          await Promise.all([
-            refreshOcpProviders(),
-            loadOcpConfig(),
-            renderToolPermissions(),
-          ]);
+          await refreshOcpProviders();
         } else {
-          setOcpStatus(kit.tx('settings.redesign.opencode.offline'), 'dim');
+          if (note.status === 'notSupported') setOcpStatus(kit.tx('settings.redesign.opencode.notSupportedStatus'), 'err');
+          else if (note.status === 'notInstalled') setOcpStatus(kit.tx('settings.redesign.opencode.notInstalledStatus'), 'dim');
+          else setOcpStatus(kit.tx('settings.redesign.opencode.offline'), 'dim');
           if (ocpProvidersEl) ocpProvidersEl.innerHTML = '<div class="settings-hint" style="opacity:0.4">' + kit.te('settings.redesign.opencode.startTheServerToSeeProviders') + '</div>';
-          if (ocpToolsEl) ocpToolsEl.innerHTML = '<div class="settings-hint" style="opacity:0.4">' + kit.te('settings.redesign.opencode.startTheServerToLoadTools') + '</div>';
+          // Something else stands in the way (another serve on the port, a serve that did not answer): the server's sentence.
+          if (!note.html && data.problem && ocpInstallEl) {
+            ocpInstallEl.hidden = false;
+            ocpInstallEl.dataset.tone = 'warn';
+            ocpInstallEl.textContent = data.problem;
+          }
         }
       } catch (err) {
         setOcpStatus(kit.tx('settings.redesign.opencode.error'), 'err');
@@ -9671,3 +9765,5 @@ export function initSettings() {
   window.checkSyncStatus = checkSyncStatus;
   window.copySyncPrompt = copySyncPrompt;
 }
+
+configureToolPickerTranslation((key, params) => kit.tx(key, params));

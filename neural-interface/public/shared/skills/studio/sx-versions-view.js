@@ -9,6 +9,8 @@
 // version first, or replaced: the owner says); candidate and best are marked by the owner. Approved moves only
 // through Review, and SynaBun's own versions only through an update of the app.
 
+import { scanText, scanFindingText, scanReasonText } from './sx-scan.js';
+import { studioErrorText } from './sx-errors.js';
 import { dropdownHTML, wireDropdowns } from '../../cc-dropdown.js';
 import { html, raw, setHTML, ICONS, relativeTime, fullTime } from './sx-dom.js';
 import { serviceDiff, changedFiles, lineDiff } from './sx-diff.js';
@@ -29,15 +31,16 @@ function authorWords(t, a) {
 }
 
 function installedOn(ws, revisionId, t) {
-  return (ws.skill?.installations || []).filter((i) => i.sourceRevisionId === revisionId).map((i) => t(`skillsStudio.runtime.${i.runtime}`));
+  return [...new Set((ws.skill?.installations || []).filter((i) => i.sourceRevisionId === revisionId).map((i) => t(`skillsStudio.runtime.${i.runtime}`)))];
 }
 
 function revisionRow(ctx, ws, rev, i, list) {
   const { t, locale } = ctx;
   const labels = (rev.labels || []).filter((l) => LABELS.includes(l));
   const installed = installedOn(ws, rev.revisionId, t);
-  const prev = list[i + 1] || null;
-  const owner = !ctx.guest && ws.subject.mode === 'library';
+  const prev = list.slice(i + 1).find((r) => r.integrity !== 'damaged') || null;
+  const damaged = rev.integrity === 'damaged';
+  const owner = !damaged && !ctx.guest && ws.subject.mode === 'library';
   return html`<li class="sx-version" data-rev="${rev.revisionId}">
     <div class="sx-version-main">
       <span class="sx-version-id" title="${rev.revisionId}">${t('skillsStudio.versions.rev', { id: shortDigest(rev.contentDigest) })}</span>
@@ -46,13 +49,15 @@ function revisionRow(ctx, ws, rev, i, list) {
       <span class="sx-spacer"></span>
       <time class="sx-dim" datetime="${rev.createdAt}" title="${fullTime(rev.createdAt, locale)}">${relativeTime(rev.createdAt, locale)}</time>
     </div>
-    <p class="sx-version-meta">${authorWords(t, rev.author)} · ${t(`skillsStudio.versions.source.${['bundled', 'adopted', 'draft', 'assistant', 'import', 'restore', 'customize', 'local', 'github'].includes(rev.source?.kind) ? rev.source.kind : 'local'}`)}${rev.source?.appVersion ? ` ${rev.source.appVersion}` : ''} · ${ctx.tp('skillsStudio.versions.files', rev.files || 0)}${rev.note ? html` · <span class="sx-version-note">${rev.note}</span>` : ''}</p>
+    <p class="sx-version-meta">${authorWords(t, rev.author)} · ${t(`skillsStudio.versions.source.${['bundled', 'adopted', 'draft', 'assistant', 'import', 'restore', 'customize', 'local', 'github'].includes(rev.source?.kind) ? rev.source.kind : 'local'}`)}${rev.source?.appVersion ? ` ${rev.source.appVersion}` : ''} · ${ctx.tp('skillsStudio.versions.files', rev.files || 0)}${rev.note && rev.noteCode !== 'bundled' ? html` · <span class="sx-version-note">${rev.note}</span>` : ''}</p>
+    ${damaged ? html`<p class="sx-note sx-note--warn" role="status">${t('skillsStudio.errors.revisionDamaged')}</p>` : ''}
+    <button type="button" class="sx-btn sx-btn--sm" ${damaged ? raw('disabled') : ''} data-ver="scan" aria-controls="sx-ver-scan" data-rev="${rev.revisionId}">${scanText(t, rev.scan, rev.contentDigest)}</button>
     <div class="sx-version-actions">
-      ${prev ? html`<button type="button" class="sx-btn sx-btn--sm" data-ver="diff-prev" data-rev="${rev.revisionId}" data-prev="${prev.revisionId}">${t('skillsStudio.versions.diffPrev')}</button>` : ''}
+      ${prev && !damaged && prev.integrity !== 'damaged' ? html`<button type="button" class="sx-btn sx-btn--sm" data-ver="diff-prev" data-rev="${rev.revisionId}" data-prev="${prev.revisionId}">${t('skillsStudio.versions.diffPrev')}</button>` : ''}
       ${owner ? html`<button type="button" class="sx-btn sx-btn--sm" data-ver="restore" data-rev="${rev.revisionId}">${t('skillsStudio.versions.restore')}</button>
         ${labels.includes('candidate') ? '' : html`<button type="button" class="sx-btn sx-btn--sm sx-btn--ghost" data-ver="candidate" data-rev="${rev.revisionId}">${t('skillsStudio.versions.markCandidate')}</button>`}
         ${labels.includes('best') ? '' : html`<button type="button" class="sx-btn sx-btn--sm sx-btn--ghost" data-ver="best" data-rev="${rev.revisionId}">${t('skillsStudio.versions.markBest')}</button>`}` : ''}
-      ${ws.subject.canPublish ? html`<button type="button" class="sx-btn sx-btn--sm" data-ver="publish" data-rev="${rev.revisionId}">${t('skillsStudio.versions.publishThis')}</button>` : ''}
+      ${ws.subject.canPublish && !damaged ? html`<button type="button" class="sx-btn sx-btn--sm" data-ver="publish" data-rev="${rev.revisionId}">${t('skillsStudio.versions.publishThis')}</button>` : ''}
     </div>
   </li>`;
 }
@@ -79,21 +84,22 @@ export function renderVersionsTab(panel, ctx, ws) {
     draw(panel, ctx, ws, signal);
   }).catch((err) => {
     if (!ctx.alive(gen) || ws.tab !== 'versions') return;
-    setHTML(panel, html`<div class="sx-empty" role="alert"><p>${t('skillsStudio.versions.loadFailed', { error: err.message })}</p></div>`);
+    setHTML(panel, html`<div class="sx-empty" role="alert"><p>${t('skillsStudio.versions.loadFailed', { error: studioErrorText(ctx.t, err) })}</p></div>`);
   });
 }
 
 function draw(panel, ctx, ws, signal) {
   const { t } = ctx;
   const list = ws.revisions || [];
+  const comparable = list.filter((r) => r.integrity !== 'damaged');
   const draftChanges = ws.draft && ws.revision ? changedFiles(ws.revision.manifest?.files || [], ws.draft.files || []) : [];
-  const pick = (id, label, selected) => raw(dropdownHTML(id, list.map((r, i) => ({ value: r.revisionId, label: `${t('skillsStudio.versions.rev', { id: shortDigest(r.contentDigest) })}${r.labels?.length ? ` · ${r.labels.filter((l) => LABELS.includes(l)).map((l) => t(`skillsStudio.versions.label.${l}`)).join(', ')}` : ''}`, selected: selected ? r.revisionId === selected : i === 0 })), { label }));
+  const pick = (id, label, selected) => raw(dropdownHTML(id, comparable.map((r, i) => ({ value: r.revisionId, label: `${t('skillsStudio.versions.rev', { id: shortDigest(r.contentDigest) })}${r.labels?.length ? ` · ${r.labels.filter((l) => LABELS.includes(l)).map((l) => t(`skillsStudio.versions.label.${l}`)).join(', ')}` : ''}`, selected: selected ? r.revisionId === selected : i === 0 })), { label }));
   setHTML(panel, html`<div class="sx-versions">
     <div class="sx-versions-head">
       <h4 class="sx-section-title">${ctx.tp('skillsStudio.versions.title', list.length)}</h4>
       <span class="sx-spacer"></span>
-      ${list.length > 1 ? html`<div class="sx-compare-pick"><span class="sx-filter-key">${t('skillsStudio.versions.from')}</span>${pick('sx-ver-from', t('skillsStudio.versions.from'), list[1]?.revisionId)}
-        <span class="sx-filter-key">${t('skillsStudio.versions.to')}</span>${pick('sx-ver-to', t('skillsStudio.versions.to'), list[0]?.revisionId)}
+      ${comparable.length > 1 ? html`<div class="sx-compare-pick"><span class="sx-filter-key">${t('skillsStudio.versions.from')}</span>${pick('sx-ver-from', t('skillsStudio.versions.from'), comparable[1]?.revisionId)}
+        <span class="sx-filter-key">${t('skillsStudio.versions.to')}</span>${pick('sx-ver-to', t('skillsStudio.versions.to'), comparable[0]?.revisionId)}
         <button type="button" class="sx-btn sx-btn--sm" data-ver="diff-pick">${t('skillsStudio.versions.compare')}</button></div>` : ''}
     </div>
     <ol class="sx-timeline">
@@ -108,6 +114,7 @@ function draw(panel, ctx, ws, signal) {
       ${list.map((rev, i) => revisionRow(ctx, ws, rev, i, list))}
     </ol>
     ${list.length ? '' : html`<p class="sx-help">${t('skillsStudio.versions.noRevisions')}</p>`}
+    <section class="sx-diff-box" id="sx-ver-scan" aria-live="polite"></section>
     <section class="sx-diff-box" id="sx-ver-diff" aria-live="polite"></section>
   </div>`);
   wireDropdowns(panel, { signal });
@@ -128,7 +135,7 @@ async function showDiff(panel, ctx, from, to) {
     const res = await ctx.api.fetchSkillsDiff(from, to);
     if (!ctx.alive(gen) || !box.isConnected) return;
     setHTML(box, html`<h4 class="sx-section-title">${t('skillsStudio.versions.diffTitle')}</h4>${diffHTML(t, serviceDiff(res.diff))}`);
-  } catch (err) { if (box.isConnected) setHTML(box, html`<p class="sx-note sx-note--warn" role="alert">${t('skillsStudio.versions.diffFailed', { error: err.message })}</p>`); }
+  } catch (err) { if (box.isConnected) setHTML(box, html`<p class="sx-note sx-note--warn" role="alert">${t('skillsStudio.versions.diffFailed', { error: studioErrorText(ctx.t, err) })}</p>`); }
 }
 
 async function showDraftDiff(panel, ctx, ws) {
@@ -156,6 +163,22 @@ async function showDraftDiff(panel, ctx, ws) {
 
 async function onAction(act, btn, panel, ctx, ws, signal) {
   const { t, tp } = ctx;
+  if (act === 'scan') {
+    const box = panel.querySelector('#sx-ver-scan');
+    const gen = ctx.gen();
+    setHTML(box, html`<p role="status">${t('skillsStudio.scan.loading')}</p>`);
+    ws.scanRequest = btn.dataset.rev;
+    try {
+      const { revision } = await ctx.api.fetchSkillsRevision(btn.dataset.rev);
+      if (!ctx.alive(gen) || signal.aborted || !box.isConnected || ws.scanRequest !== btn.dataset.rev) return;
+      setHTML(box, html`<h4 class="sx-section-title">${t('skillsStudio.scan.title', { id: shortDigest(revision.contentDigest) })}</h4>
+        <p>${scanText(t, revision.scan, revision.contentDigest)}</p>
+        <ul class="sx-plain-list">${(revision.scan?.findings || []).map((f) => html`<li>${t(`skillsStudio.scan.severity.${f.severity}`)} · ${f.ruleId} · ${f.file || ''}${f.line ? `:${f.line}` : ''} — ${scanFindingText(t, f)}</li>`)}</ul>
+        <ul class="sx-plain-list">${(revision.scan?.coverage?.skipped || []).map((f) => html`<li>${f.path} · ${scanReasonText(t, f.reason)}</li>`)}</ul>`);
+      box.scrollIntoView({ block: 'nearest' });
+    } catch (err) { if (ctx.alive(gen) && !signal.aborted && box.isConnected && ws.scanRequest === btn.dataset.rev) setHTML(box, html`<p role="alert">${studioErrorText(ctx.t, err)}</p>`); }
+    return;
+  }
   if (act === 'diff-prev') { showDiff(panel, ctx, btn.dataset.prev, btn.dataset.rev); return; }
   if (act === 'diff-pick') {
     const from = panel.querySelector('#sx-ver-from')?.value; const to = panel.querySelector('#sx-ver-to')?.value;
@@ -169,7 +192,7 @@ async function onAction(act, btn, panel, ctx, ws, signal) {
     if (dirtyTabs(ws).length) { ctx.toast(t('skillsStudio.toast.saveFirst'), 'error'); return; }
     const gen = ctx.gen();
     try { const out = await saveVersion(ws, ctx.api, { key: ctx.key }); if (!ctx.alive(gen)) return; ctx.toast(out.unchanged ? t('skillsStudio.toast.versionUnchanged') : t('skillsStudio.toast.versionSaved')); await ctx.reload(); }
-    catch (err) { if (ctx.alive(gen)) ctx.toast(t('skillsStudio.toast.versionFailed', { error: err.message }), 'error'); }
+    catch (err) { if (ctx.alive(gen)) ctx.toast(t('skillsStudio.toast.versionFailed', { error: studioErrorText(ctx.t, err) }), 'error'); }
     return;
   }
   if (act === 'candidate' || act === 'best') {
@@ -181,7 +204,7 @@ async function onAction(act, btn, panel, ctx, ws, signal) {
       ctx.toast(t(`skillsStudio.versions.marked.${act}`));
       ws.skill = (await ctx.api.fetchSkill(ws.skill.skillId)).skill;
       if (ws.shown && ws.tab === 'versions') renderVersionsTab(panel, ctx, ws);
-    } catch (err) { if (ctx.alive(gen)) ctx.toast(t('skillsStudio.versions.markFailed', { error: err.message }), 'error'); }
+    } catch (err) { if (ctx.alive(gen)) ctx.toast(t('skillsStudio.versions.markFailed', { error: studioErrorText(ctx.t, err) }), 'error'); }
     return;
   }
   if (act === 'restore') {
@@ -212,7 +235,7 @@ async function onAction(act, btn, panel, ctx, ws, signal) {
       ctx.toast(t('skillsStudio.versions.restored', { id: shortDigest(ws.revisions.find((r) => r.revisionId === btn.dataset.rev)?.contentDigest) }));
       await ctx.reload();
       if (ws.shown) ctx.render();
-    } catch (err) { if (ctx.alive(gen)) ctx.toast(t('skillsStudio.versions.restoreFailed', { error: err.message }), 'error'); }
+    } catch (err) { if (ctx.alive(gen)) ctx.toast(t('skillsStudio.versions.restoreFailed', { error: studioErrorText(ctx.t, err) }), 'error'); }
   }
   void signal;
 }

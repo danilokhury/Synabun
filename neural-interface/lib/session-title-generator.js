@@ -111,10 +111,32 @@ async function generateClaudeTitle(input, deps) {
   }
 }
 
+/**
+ * Why a `codex exec` title run failed, in one short line: never its command
+ * line (the arguments name the project folder) and never its whole stderr.
+ */
+export function codexTitleFailure(error) {
+  const lines = String(error?.stderr || '').split(/\r?\n/).map(line => line.trim())
+    .filter(line => line && !/^Reading (?:prompt|additional input) from stdin/i.test(line));
+  const said = lines.length ? `: ${lines.at(-1).slice(0, 200)}` : '';
+  if (error?.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') return new Error('codex exec wrote more than its title run may');
+  if (error?.killed || error?.signal === 'SIGTERM') return new Error(`codex exec did not answer within ${SESSION_TITLE_TIMEOUT_MS / 1000} s${said}`);
+  if (error?.code === 'ENOENT') return new Error('codex was not found');
+  const status = Number.isInteger(error?.code) ? `exit code ${error.code}` : error?.code || error?.signal || 'an error';
+  return new Error(`codex exec failed (${status})${said}`);
+}
+
 async function generateCodexTitle(input, deps) {
   if (typeof deps.execFile !== 'function' || typeof deps.getCodexBin !== 'function') {
     throw new Error('Codex title runner is unavailable');
   }
+  // The prompt goes in on stdin, which is then ended, as the Codex SDK does,
+  // never as an argument. `codex exec` reads stdin whenever it is not a
+  // terminal: given a prompt argument it waits for stdin to end to add it to
+  // the prompt ("Reading additional input from stdin..."), so an open pipe held
+  // every title request until its timeout, whose error message then carried
+  // the whole command line (the person's prompt) into the server log. Windows
+  // also limits a command line to 32,767 characters.
   const args = [
     'exec', '--ephemeral', '--skip-git-repo-check', '--ignore-rules',
     '--sandbox', 'read-only', '--color', 'never', '--json',
@@ -125,20 +147,39 @@ async function generateCodexTitle(input, deps) {
   if (input.model) args.push('-m', input.model);
   const effort = codexReasoningEffort(input.effort);
   if (effort) args.push('-c', `model_reasoning_effort="${effort}"`);
-  args.push(titlePrompt(input));
   let env = {
     ...(deps.env || process.env),
     CODEX_HOME: deps.getCodexAccountHome?.(input.accountId || 'default'),
   };
   if (typeof deps.getAugmentedPath === 'function') env = withPathEnv(env, deps.getAugmentedPath());
-  const { stdout } = await deps.execFile(deps.getCodexBin(), args, {
+  // util.promisify(execFile) hands the child over as `.child`.
+  const running = deps.execFile(deps.getCodexBin(), args, {
     cwd: input.cwd || process.cwd(),
     env,
     timeout: SESSION_TITLE_TIMEOUT_MS,
     maxBuffer: 2 * 1024 * 1024,
     windowsHide: true,
   });
-  return extractCodexText(stdout);
+  // Handled before anything else is done with the child: the run rejects when codex fails, is stopped or times out,
+  // and a rejection nobody handles ends the server (server.js handleProcessFailure).
+  const settled = Promise.resolve(running).then(result => ({ result }), error => ({ error }));
+  try {
+    const stdin = running?.child?.stdin;
+    if (stdin) {
+      // A Codex that ended before reading it: its exit says why, not this pipe.
+      stdin.on?.('error', () => {});
+      stdin.end(titlePrompt(input));
+    }
+  } catch (error) {
+    // The prompt could not be handed over: the run is stopped (it would wait for its stdin until the timeout) and
+    // its end awaited, never left behind.
+    try { running?.child?.kill?.(); } catch {}
+    await settled;
+    throw new Error(`codex exec could not be given the prompt (${error?.code || 'stdin'})`);
+  }
+  const { result, error } = await settled;
+  if (error) throw codexTitleFailure(error);
+  return extractCodexText(result?.stdout);
 }
 
 async function generateOpenCodeTitle(input, deps) {
@@ -152,42 +193,24 @@ async function generateOpenCodeTitle(input, deps) {
   const timer = setTimeout(() => controller.abort(new Error('Session title request timed out')), SESSION_TITLE_TIMEOUT_MS);
   timer.unref?.();
   let sessionId = null;
-  // OpenCode 2 (lib/opencode2-client.js): its one-shot generator when the model
-  // allows it (OpenCode's free tier answers it 503), else a temporary session
-  // whose permissions deny every tool: OpenCode 2 has no tool switch per prompt.
-  const opencode2 = deps.openCodeClient.getProtocol?.() === 2;
-  if (opencode2) {
-    const raw = deps.openCodeClient.getClient?.();
-    try {
-      const generated = await raw?.generate?.({
-        prompt: `${TITLE_SYSTEM_PROMPT}\n\n${titlePrompt(input)}`,
-        model: input.model || undefined,
-        directory: input.cwd || undefined,
-        signal: controller.signal,
-      });
-      const text = String(generated?.data?.text || '').trim();
-      if (!generated?.error && text) { clearTimeout(timer); return text; }
-    } catch { /* the session below */ }
-  }
+  // The client's one-shot generator when the model allows it (OpenCode's free
+  // tier answers it 503), else a temporary session whose rules deny every tool:
+  // OpenCode has no tool switch per prompt.
   try {
-    const toolIds = new Set([
-      'bash', 'edit', 'write', 'patch', 'apply_patch', 'multiedit', 'read',
-      'glob', 'grep', 'list', 'task', 'webfetch', 'question', 'skill',
-      'todowrite', 'todoread',
-    ]);
-    try {
-      const toolResult = await deps.openCodeClient.getClient?.()?.tool?.ids(
-        { directory: input.cwd || undefined },
-        { signal: controller.signal },
-      );
-      for (const id of (toolResult?.data || [])) if (id) toolIds.add(String(id));
-    } catch {}
-    const disabledTools = Object.fromEntries([...toolIds].map((id) => [id, false]));
-
+    const generated = await deps.openCodeClient.getClient?.()?.generate?.({
+      prompt: `${TITLE_SYSTEM_PROMPT}\n\n${titlePrompt(input)}`,
+      model: input.model || undefined,
+      directory: input.cwd || undefined,
+      signal: controller.signal,
+    });
+    const text = String(generated?.data?.text || '').trim();
+    if (!generated?.error && text) { clearTimeout(timer); return text; }
+  } catch { /* the session below */ }
+  try {
     const created = await deps.openCodeClient.session.create({
       directory: input.cwd || undefined,
       title: 'SessionTitleDraft',
-      ...(opencode2 ? { permission: [{ permission: '*', pattern: '*', action: 'deny' }] } : {}),
+      permission: [{ action: '*', resource: '*', effect: 'deny' }],
     });
     sessionId = created?.data?.id || created?.data?.sessionID || created?.id || created?.sessionID;
     if (!sessionId) throw new Error('OpenCode did not create a temporary title session');
@@ -199,7 +222,6 @@ async function generateOpenCodeTitle(input, deps) {
       variant: input.variant || undefined,
       system: TITLE_SYSTEM_PROMPT,
       directory: input.cwd || undefined,
-      tools: disabledTools,
       signal: controller.signal,
     });
     return extractOpenCodeText(response);

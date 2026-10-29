@@ -9,6 +9,7 @@
 // A new skill starts as a draft in SynaBun's library and reaches a runtime only when it is published; an agent or a
 // command is one file, written where the owner picks.
 
+import { studioErrorText } from './sx-errors.js';
 import { dropdownHTML, wireDropdowns } from '../../cc-dropdown.js';
 import { decodeArtifactId } from '../ss-ids.js';
 import { html, raw, setHTML, ICONS, attr } from './sx-dom.js';
@@ -196,7 +197,7 @@ async function createBlank(host, ctx, st) {
   } catch (err) {
     if (!ctx.alive(gen)) return;
     if (btn) btn.disabled = false;
-    ctx.toast(t('skillsStudio.create.failed', { error: err.message }), 'error');
+    ctx.toast(t('skillsStudio.create.failed', { error: studioErrorText(ctx.t, err) }), 'error');
   }
 }
 
@@ -249,5 +250,5 @@ async function pasteSkill(ctx) {
     ctx.toast(t('skillsStudio.create.created', { name: chosen.name }));
     await ctx.reload();
     if (ctx.alive(gen)) await ctx.openRow(`lib:${res.skillId}`, { tab: 'edit' });
-  } catch (e) { if (ctx.alive(gen)) ctx.toast(t('skillsStudio.create.failed', { error: e.message }), 'error'); }
+  } catch (e) { if (ctx.alive(gen)) ctx.toast(t('skillsStudio.create.failed', { error: studioErrorText(ctx.t, e) }), 'error'); }
 }

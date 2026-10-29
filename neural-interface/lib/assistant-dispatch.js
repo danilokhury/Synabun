@@ -1,3 +1,5 @@
+import { retainExternalRefs } from './mcp-external-servers.js';
+import { readStoredToolListRecord } from './tool-lists.js';
 // ═══════════════════════════════════════════
 // SynaBun — Assistant dispatcher (task-mode runs on NativeLoopRuntime)
 // ═══════════════════════════════════════════
@@ -18,14 +20,22 @@
 // It never touches server.js internals directly — every server dependency is
 // injected.
 
+import { isBrowserGroup } from '../../mcp-server/dist/services/tool-catalog.js';
+import { browserToolsConflict, dispatchTools, launchTools, toolsView } from './assistant-tools.js';
+import { storedToolList, toolListRecord } from './tool-lists.js';
 import { randomBytes } from 'node:crypto';
 import { chooseUsageAccount } from './account-usage.js';
-import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmdirSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import {
-  RESULT_STATUSES, buildTaskPrompt, buildFollowUpPrompt, buildResultRetryPrompt, parseResultContract,
+  RESULT_STATUSES, buildTaskPrompt, buildFollowUpPrompt, buildResultRetryPrompt, buildResumePrompt, parseResultContract,
 } from './assistant-task-prompt.js';
+import { MAX_RESUMES, clockTime, endOrphanProcess, endProcessTree, findClaudeTranscript, isInside, readCostState, resumeRefusal } from './worker-resume.js';
 import { normalizeCapability, normalizePermissionPolicy } from './native-loop-providers.js';
+import { WORKER_GUARD_DEFAULT, describeConfinementEvent, normalizeWorkerGuardMode } from './worker-confinement.js';
+import { draftConfinementSupport } from './skills/draft-confinement.js';
+import { EVAL_CONFINEMENT, EVAL_ROLES, evalConfinementSupport } from './skills/eval-confinement.js';
+import { initOf as evalInitOf, toolCallsOf as evalToolCallsOf } from './skills/eval-trace.js';
 import { contextVariantOf, defaultIsHidden, defaultModelRow, findModel, hiddenModelId, providerAllHidden, providerEmpty, rowMakes } from './assistant-catalog.js';
 import { TASK_CLASS_META, classPlaybook, collectedMedia, describeTarget, designFit, requiredOutput, requiresVision, runContract } from './assistant-router.js';
 import { MAX_MEDIA_BYTES, MAX_RUN_MEDIA_BYTES, copyRunMedia, mediaType, mediaUrl, servableRunMedia } from './assistant-media.js';
@@ -45,21 +55,26 @@ import { limitFromText } from '../public/shared/assistant/asst-limit.js';
 export const NATIVE_PROVIDERS = new Set(['claude-code', 'codex', 'opencode']);
 // awaiting_route: an un-routed dispatch held until the user picks a model on
 // the route card (ask modes). It is active but consumes no rails.
-export const ACTIVE_STATES = new Set(['queued', 'awaiting_route', 'starting', 'running', 'idle', 'awaiting_permission']);
+// suspended: a native worker the server suspended as it went down (its CLI
+// ended); resuming: the next start continues it (resumeRun). Neither is an end.
+export const ACTIVE_STATES = new Set(['queued', 'awaiting_route', 'starting', 'running', 'idle', 'awaiting_permission', 'suspended', 'resuming']);
 export const TERMINAL_STATES = new Set(['completed', 'failed', 'stopped', 'interrupted']);
 const WAITING_STATES = new Set(['queued', 'awaiting_route']);
+// What a run can be suspended from at a shutdown: its worker is up, in a turn or between turns.
+const SUSPENDABLE_STATES = new Set(['starting', 'running', 'idle', 'awaiting_permission']);
 
 /**
  * The run status a view reports beside its state (the agent_status contract:
  * queued, starting, running, completed, failed, stopped, interrupted). A warm
- * worker between turns (idle, awaiting_permission) is still running; a run
- * held for the user's model choice is still queued.
+ * worker between turns (idle, awaiting_permission) is still running, and so is
+ * one the server suspended while it restarts; a run held for the user's model
+ * choice is still queued; one being resumed after a restart is starting.
  */
 export function runStatusFromState(state) {
   const value = String(state || '');
   if (TERMINAL_STATES.has(value)) return value;
   if (WAITING_STATES.has(value)) return 'queued';
-  if (value === 'starting') return 'starting';
+  if (value === 'starting' || value === 'resuming') return 'starting';
   return ACTIVE_STATES.has(value) ? 'running' : null;
 }
 
@@ -106,47 +121,13 @@ export const DEFAULT_LIMITS = Object.freeze({
   mediaRunBytes: MAX_RUN_MEDIA_BYTES,
 });
 
-/**
- * What a class's run gets when the dispatch leaves a field out (undefined, null
- * or ''): a design run works in its project with the SynaBun browser for an hour.
- * Explicit values win. The browser profile comes with the browser: an explicit
- * uses_browser:false keeps the run off it (no `browser` profile, which would turn
- * browser use back on, and no tab), on the normal default profile. The browser
- * rule for capability "full" (QUARANTINE_VIOLATION) still applies. Any class's
- * browser run on Codex / OpenCode without an mcp_profile gets BROWSER_PROFILE
- * (normalizeSpec): the stock default profiles have no browser tools.
- */
+/** Class defaults; the shared resolver owns automatic groups. */
 export const CLASS_DEFAULTS = Object.freeze({
-  design: Object.freeze({ capability: 'workspace', usesBrowser: true, mcpProfile: 'browser', maxMinutes: 60 }),
+  design: Object.freeze({ capability: 'workspace', usesBrowser: true, maxMinutes: 60 }),
 });
-/** The MCP profile of a Codex / OpenCode browser run that names none (Claude workers always get 'full'). */
-export const BROWSER_PROFILE = 'browser';
-// MCP presets that turn browser use on (normalizeSpec reads a run on one as a browser run),
-// and the stock presets with no browser tools (profiles.ts: core, standard).
-const BROWSER_PROFILE_RE = /^(browser|twitter|facebook|tiktok|whatsapp|instagram|linkedin|bluesky|gsc|youtube)$/i;
-const NO_BROWSER_PRESETS = new Set(['core', 'standard']);
-function turnsBrowserOn(profile) {
-  const name = String(profile || '');
-  return BROWSER_PROFILE_RE.test(name) || /browser/i.test(name);
-}
-/**
- * Browser settings of a run (any class) that cannot work together, after CLASS_DEFAULTS (so a
- * uses_browser false and any mcp_profile are the brain's own): the text of a
- * BROWSER_SETTINGS_CONFLICT (400) that says what to change, else null. An explicit browser
- * profile would turn an explicit uses_browser:false back on; a stock profile without the browser
- * tools leaves a Codex / OpenCode worker unable to use the browser the run gets (Claude workers
- * always get the full catalog). `provider` null: only the first check (it does not depend on it).
- */
-export function browserSettingsConflict(spec, provider = null) {
-  const profile = String(spec?.mcpProfile || '').trim();
-  if (!profile) return null;
-  if (spec.usesBrowser === false && turnsBrowserOn(profile)) {
-    return `uses_browser is false, but mcp_profile "${profile}" is a browser profile, which turns browser use back on (the run would take a browser tab). Drop mcp_profile or pick one without the browser (such as "standard"), or set uses_browser to true.`;
-  }
-  if (provider && provider !== 'claude-code' && spec.usesBrowser === true && NO_BROWSER_PRESETS.has(profile.toLowerCase())) {
-    return `This run uses the SynaBun browser (uses_browser is on), but mcp_profile "${profile}" has no browser tools, so the ${provider} worker could not use it. Use mcp_profile "browser" or drop mcp_profile, or set uses_browser to false.`;
-  }
-  return null;
+export function browserSettingsConflict(spec) {
+  try { return browserToolsConflict(spec); }
+  catch (error) { throw new DispatchError(error.code, error.message, { status: error.status || 400, problems: error.problems }); }
 }
 /** `spec` with its class's defaults filled in where it leaves a field out. */
 export function withClassDefaults(spec, taskClass) {
@@ -161,7 +142,6 @@ export function withClassDefaults(spec, taskClass) {
   if (!defaults) return out;
   for (const [key, value] of Object.entries(defaults)) {
     if (!(out[key] === undefined || out[key] === null || out[key] === '')) continue;
-    if (key === 'mcpProfile' && out.usesBrowser === false) continue;
     out[key] = value;
   }
   return out;
@@ -219,6 +199,43 @@ function clip(value, max = 160) {
 }
 function isDirectory(path) { try { return statSync(path).isDirectory(); } catch { return false; } }
 
+/** Internal Skills workers own their runtime selection and confinement. */
+function isSkillsRun(entry) { return ['skill-eval', 'skill-draft'].includes(entry?.confinement?.kind); }
+
+function requireConfinementProvider(entry) {
+  if (entry.confinement && entry.confinement.provider !== entry.provider) {
+    throw new DispatchError('CONFINEMENT_PROVIDER_MISMATCH', `Confinement was built for ${entry.confinement.provider || 'an unknown provider'}, but the run uses ${entry.provider}. The run was refused.`, { status: 409 });
+  }
+}
+
+/** A skill-evaluation run: its own prompt, result, memory and escalation rules. */
+export function isEvalRun(entry) { return entry?.confinement?.kind === EVAL_CONFINEMENT; }
+
+/**
+ * Keep an evaluation run's tool calls (one entry per call id: a later update of the same call replaces its earlier
+ * one, so a command's "done" with its exit code wins over its "started") and the catalog its init named. Bounded.
+ */
+export function recordEvalCalls(liveState, payload = {}) {
+  const init = evalInitOf(payload);
+  if (init && !liveState.evalInit) liveState.evalInit = init;
+  const calls = evalToolCallsOf(payload);
+  if (!calls.length) return;
+  if (!liveState.evalCalls) { liveState.evalCalls = []; liveState.evalCallIndex = new Map(); }
+  for (const call of calls) {
+    const key = call.id ? `${call.tool}:${call.id}` : null;
+    const at = key ? liveState.evalCallIndex.get(key) : undefined;
+    if (at !== undefined) {
+      const prev = liveState.evalCalls[at];
+      // An update without the input (an OpenCode part's later state) keeps the input seen first.
+      liveState.evalCalls[at] = { ...prev, ...call, input: call.input && Object.keys(call.input).length ? call.input : prev.input };
+      continue;
+    }
+    if (liveState.evalCalls.length >= 300) return;
+    if (key) liveState.evalCallIndex.set(key, liveState.evalCalls.length);
+    liveState.evalCalls.push(call);
+  }
+}
+
 /** One-line human summary of a provider stream event (used for transcript tails). */
 export function summarizeProviderEvent(payload = {}) {
   const event = payload.event || {};
@@ -227,6 +244,7 @@ export function summarizeProviderEvent(payload = {}) {
   if (eventType === 'synabun.permission_request') return `permission requested: ${event.toolName || event.kind || 'tool'} ${clip(JSON.stringify(event.input || {}), 120)}`;
   if (eventType === 'synabun.permission_resolved') return `permission ${event.behavior || 'resolved'}: ${event.toolName || ''}`;
   if (eventType === 'synabun.error') return `error: ${clip(event.message, 200)}`;
+  if (eventType === 'synabun.confinement') return describeConfinementEvent(event);
   if (payload.provider === 'claude-code') {
     if (event.type === 'assistant') {
       const blocks = Array.isArray(event.message?.content) ? event.message.content : [];
@@ -331,9 +349,12 @@ function parseJsonObject(text) {
  */
 export function createAssistantDispatcher({
   getRuntime,
+  resolveExternalTools = () => ({ names: [], disabled: [] }),
   dataDir,
   loopDir = null,
   broadcastSync = () => {},
+  observeSkillEvent = () => {},
+  completeSkillUsage = () => {},
   log = () => {},
   PACKAGE_ROOT = process.cwd(),
   findCodexAccount = () => null,
@@ -346,9 +367,13 @@ export function createAssistantDispatcher({
   codexAccounts = null,
   accountUsage = null,
   codexWorkerAccount = () => null,
-  isValidMcpProfileValue = () => true,
-  normalizeMcpProfileName = (value) => value,
-  readActiveMcpProfile = () => 'full',
+  // The Protect workers setting (lib/worker-guard-setting.js) as a run starts: 'enforce' | 'warn' | 'off'.
+  workerGuard = () => WORKER_GUARD_DEFAULT,
+  // SynaBun's own port: a guarded worker's shell may not call it (lib/worker-confinement.js).
+  serverPort = null,
+  // The ports SynaBun keeps for its OpenCode serves ({ from, to }): a guarded worker's shell calls none of them.
+  localPortRange = null,
+  toolListOptions = () => ({}),
   acquireLoopBrowserAndTab = null,
   releaseSharedBrowserTab = async () => {},
   reconcileKeepAwake = () => {},
@@ -399,6 +424,9 @@ export function createAssistantDispatcher({
   // The session's Test density (assistant-test-density.js): (assistantSessionId) => level | null.
   // Read when a prompt is composed; null or an unknown value is the default level.
   testDensity = () => null,
+  // After a restart, resolves once this server answers its workers (a resumed CLI connects to SynaBun's MCP as it
+  // starts): runs are resumed only then. null: at once.
+  serverReady = null,
 } = {}) {
   if (typeof getRuntime !== 'function') throw new Error('createAssistantDispatcher requires getRuntime()');
   if (!dataDir) throw new Error('createAssistantDispatcher requires dataDir');
@@ -420,6 +448,8 @@ export function createAssistantDispatcher({
   const registryPath = resolve(dataDir, 'assistant-dispatches.json');
   // What image / video creation runs generated, and design runs' screenshots: <dataDir>/media/<runId>/<n>-<name>.
   const mediaRoot = resolve(dataDir, 'media');
+  // A guarded worker's own scratch folder (lib/worker-confinement.js): <dataDir>/scratch/<runId>, removed when empty.
+  const scratchRoot = resolve(dataDir, 'scratch');
   /** A known task class, else null. */
   const knownClass = (value) => (Object.prototype.hasOwnProperty.call(TASK_CLASS_META, String(value || '')) ? String(value) : null);
   const entries = new Map();          // runId → entry (persisted shape)
@@ -439,28 +469,92 @@ export function createAssistantDispatcher({
   let persistTimer = null;
   let stalledTimer = null;
   let unsubscribeRuntime = null;
+  // A server restart: the runs this start resumes (resumeOnBoot), and the ones it ends whose end is said once the
+  // Assistant listens (both filled by loadRegistry). Follow-ups sent to a run while it is away wait here for it.
+  const bootResumes = [];
+  const bootInterrupts = [];
+  const awaitingResume = new Map(); // runId → follow-up items (sendTurn) for a suspended or resuming run
+  const resumeInProgress = new Set(); // runIds resumeRun works on (they hold their slot; the others waiting do not)
+  // The server is going down (suspendForShutdown ran): a resume under way stops where it is, for the next start.
+  let closing = false;
 
   // ── persistence ────────────────────────────────────────────────────────────
+  /** Why the original provider account of a run cannot be used now ('' when it can). */
+  function providerAccountUnusable(accountId, provider = 'claude-code', entry = null) {
+    if (provider === 'codex') {
+      const home = codexAccounts?.homeFor?.(accountId);
+      if (home && entry?.codexHome && resolve(home) !== resolve(entry.codexHome)) return 'its CODEX_HOME changed';
+      return codexAccounts?.unusableReason?.(accountId) || '';
+    }
+    try { return typeof claudeAccounts?.unusableReason === 'function' ? String(claudeAccounts.unusableReason(accountId || 'default') || '') : ''; } catch (error) { return error?.message || 'it could not be read'; }
+  }
   function loadRegistry() {
     const rows = readJson(registryPath, []);
     if (!Array.isArray(rows)) return;
     for (const row of rows) {
       if (!row?.runId) continue;
-      const entry = { ...row };
+      let entry = { ...row };
+      try {
+        entry = readStoredToolListRecord(row, toolListOptions());
+        entry.toolsRequested = row.toolsRequested !== undefined ? row.toolsRequested : storedToolList(row, toolListOptions());
+        dispatchTools({ tools: entry.toolsRequested ?? undefined });
+        if (row.rawSpec) entry.rawSpec = toolListRecord(row.rawSpec, toolListOptions());
+        if (!entry.tools) entry.tools = launchTools(dispatchTools({ ...entry, tools: entry.toolsRequested ?? undefined }));
+      } catch (error) {
+        entry.tools = []; entry.toolsRequested = [];
+        entry.toolListError = { code: error.code, message: error.message, original: row.tools ?? row.mcpProfile };
+        delete entry.mcpProfile; delete entry.rawSpec;
+        entry.state = 'failed'; entry.completionReason = 'tools_invalid';
+      }
       // A failure cause being judged when the server went down is never coming.
       delete entry.judging;
-      if (ACTIVE_STATES.has(entry.state)) {
-        entry.state = 'interrupted';
-        entry.completionReason = entry.completionReason || 'server_restart';
-        entry.finishedAt = entry.finishedAt || iso(now());
-        entry.pending = [];
-        entry.turnState = 'terminal';
-        closeUsageState(entry);
-      }
-      // A turn cut off by the restart worked until the run was last updated (as far as anything shows).
+      // When the server was last seen with the run live: its last update, or the last beat() after it.
+      const lastSeen = Math.max(Date.parse(entry.updatedAt || '') || 0, Math.min(now(), Date.parse(entry.aliveAt || '') || 0));
+      delete entry.aliveAt;
+      // A turn cut off by the restart worked until then (as far as anything shows).
       if (entry.workingSince) {
-        entry.workMs = workUsedMs(entry, Math.max(Date.parse(entry.workingSince) || 0, Date.parse(entry.updatedAt || '') || 0));
+        entry.workMs = workUsedMs(entry, Math.max(Date.parse(entry.workingSince) || 0, lastSeen));
         entry.workingSince = null;
+      }
+      // A run the last shutdown could not suspend ended then (suspendForShutdown): it is said now, as a refusal here is.
+      if (entry.refusedAtShutdown) {
+        delete entry.refusedAtShutdown;
+        if (entry.resumeRefused && TERMINAL_STATES.has(entry.state)) bootInterrupts.push(entry.runId);
+      }
+      if (ACTIVE_STATES.has(entry.state)) {
+        // What the restart cut off: a run the last shutdown suspended, one a crash left working (no shutdown ran), or
+        // one a restart caught while it resumed. A native worker that may continue is resumed (resumeOnBoot);
+        // everything else ends as interrupted, as every cut-off run did before, with why in its notes.
+        const candidate = entry.state === 'suspended' || entry.state === 'resuming' || SUSPENDABLE_STATES.has(entry.state);
+        // A crash suspended nothing: such a run was left when the server was last seen with it.
+        const crashed = candidate && entry.state !== 'suspended' && entry.state !== 'resuming';
+        const leftAt = crashed ? iso(lastSeen || now()) : null;
+        const why = candidate
+          ? resumeRefusal(crashed ? { ...entry, suspendedAt: leftAt } : entry, { now: now(), workLeftMs: workLeftMs(entry), isDirectory, accountUnusable: providerAccountUnusable })
+          : null;
+        if (candidate && !why) {
+          if (crashed) {
+            entry.suspendedAt = leftAt;
+            entry.suspendReason = 'server_restart';
+            entry.crashed = true;
+          }
+          entry.state = 'resuming';
+          entry.turnState = 'resuming';
+          entry.pending = [];
+          bootResumes.push(entry.runId);
+        } else {
+          entry.state = 'interrupted';
+          entry.completionReason = entry.completionReason || 'server_restart';
+          entry.finishedAt = entry.finishedAt || iso(now());
+          entry.pending = [];
+          entry.turnState = 'terminal';
+          if (why) {
+            entry.notes = [...(Array.isArray(entry.notes) ? entry.notes : []), `not resumed: ${why}`];
+            entry.resumeRefused = why;
+            bootInterrupts.push(entry.runId);
+          }
+          closeUsageState(entry);
+        }
       }
       entries.set(entry.runId, entry);
     }
@@ -480,6 +574,21 @@ export function createAssistantDispatcher({
     if (persistTimer) return;
     persistTimer = setTimeout(() => { persistTimer = null; write(); }, 200);
     persistTimer.unref?.();
+  }
+  /**
+   * Every minute, on each live run (a worker up or about to be): the server is alive with it now (aliveAt, saved, not an
+   * update). After a crash loadRegistry measures from it, which can be long after the run's last update (a warm worker
+   * idle for a follow-up, a long silent turn).
+   */
+  function beat() {
+    const at = iso(now());
+    let alive = 0;
+    for (const entry of entries.values()) {
+      if (!ACTIVE_STATES.has(entry.state) || WAITING_STATES.has(entry.state)) continue;
+      entry.aliveAt = at;
+      alive += 1;
+    }
+    if (alive) persist();
   }
 
   // ── views + events ─────────────────────────────────────────────────────────
@@ -509,10 +618,13 @@ export function createAssistantDispatcher({
     const startedAt = entry.startedAt || entry.createdAt;
     const end = entry.finishedAt ? new Date(entry.finishedAt).getTime() : at;
     const elapsedMs = startedAt ? Math.max(0, end - new Date(startedAt).getTime()) : 0;
-    // The brief goes to the worker's prompt; views name it only. The meters' state stays inside.
-    const { rawSpec: _rawSpec, brief: _brief, usageState: _usageState, ...rest } = entry;
+    // The brief goes to the worker's prompt; views name it only. The meters' state stays inside, and so does what a
+    // resume after a restart needs (resumeInfo: the CLI's pid, the turn in progress); `resumes` counts them.
+    const { rawSpec: _rawSpec, brief: _brief, usageState: _usageState, resumeInfo: _resumeInfo, crashed: _crashed, refusedAtShutdown: _refusedAtShutdown, aliveAt: _aliveAt, ...rest } = entry;
     return {
       ...rest,
+      tools: toolsView({ ...entry, tools: runtimeRun?.tools ?? entry.tools }),
+      resumes: Number(entry.resumes) || 0,
       briefId: entry.brief?.briefId || null,
       taskId: entry.taskId || null,
       // The task of the turn in progress (or the last one started): a follow-up may work for a
@@ -595,6 +707,7 @@ export function createAssistantDispatcher({
     touch(entry);
     persist({ force: TERMINAL_STATES.has(entry.state) });
     const payload = { type: 'assistant:dispatch', reason, run: view(entry), ...extra };
+    if (['turn_completed', 'idle', 'failed', 'stopped', 'completed'].includes(reason)) { try { completeSkillUsage(entry); } catch {} }
     try { broadcastSync(payload); } catch {}
     for (const listener of listeners) { try { listener(payload); } catch {} }
     notifyWaiters(entry.runId, reason);
@@ -688,6 +801,7 @@ export function createAssistantDispatcher({
       throw new DispatchError('PROVIDER_NOT_CONNECTED', `No ${provider} model is connected. Pick another provider from agent_catalog, or ask the user to connect one.`, { status: 400 });
     }
     if (!model && catalogValue && defaultIsHidden(catalogValue, provider)) {
+      if (isSkillsRun(spec)) throw new DispatchError('MODEL_DISABLED', `The ${provider} default model is disabled; the Skills run cannot substitute another model.`, { status: 400 });
       // No model = the provider default, which the user hid: pin the first visible model.
       const pinned = defaultModelRow(catalogValue, provider);
       if (pinned) {
@@ -722,25 +836,43 @@ export function createAssistantDispatcher({
     // an unsupported level becomes the nearest one it runs, recorded on the run.
     const checked = normalizeEffort({ provider, model, effort: spec.effort, catalog: catalogValue });
     const effortCorrection = checked.corrected || null;
+    if (isSkillsRun(spec) && effortCorrection) throw new DispatchError('EFFORT_UNSUPPORTED', `The Skills run requested effort ${spec.effort}, which ${provider}/${model || 'default'} cannot run.`, { status: 400 });
     if (effortCorrection) notes.push(`effort "${effortCorrection.from}" is not supported by ${model || `the ${provider} default model`}; using ${effortCorrection.to ? `"${effortCorrection.to}"` : 'the model default'}`);
     // The run's own browser settings must agree on the provider it gets, whatever its class.
     const conflict = browserSettingsConflict(spec, provider);
     if (conflict) throw new DispatchError('BROWSER_SETTINGS_CONFLICT', conflict, { status: 400 });
-    const usesBrowser = !!spec.usesBrowser || turnsBrowserOn(spec.mcpProfile);
+    const selection = dispatchTools({ ...spec, taskClass, provider });
+    const externalServers = resolveExternalTools({ ...spec, provider }, selection.servers);
+    const usesBrowser = spec.usesBrowser === true || selection.groups.some(isBrowserGroup);
     const usesComputer = spec.usesComputer === true || spec.usesComputer === 'true';
     const tags = Array.isArray(spec.tags) ? spec.tags.map((tag) => String(tag).trim()).filter(Boolean).slice(0, 10) : [];
     if ((usesBrowser || usesComputer) && capability === 'full' && !tags.includes('user-authorized-full')) {
       throw new DispatchError('QUARANTINE_VIOLATION', `${usesComputer ? 'Computer-use' : 'Browser-reading'} runs must use capability "read-only" or "workspace" unless tagged "user-authorized-full" by explicit user request.`);
     }
-    // A skill-drafting run (lib/skills/creation.js): held to its folder by lib/skills/draft-confinement.js, which only
-    // Claude Code enforces (Codex starts MCP servers outside its sandbox, OpenCode answers its own permission prompts).
-    // It reads no page, drives no computer and is never asked anything: refused otherwise, never started unconfined.
+    // A skill-drafting run (lib/skills/creation.js): held to its folder by lib/skills/draft-confinement.js, each
+    // provider the way it can (draftConfinementSupport); one that cannot is refused, never started unconfined.
+    // It reads no page, drives no computer and is never asked anything.
     let confinement = null;
     if (spec.confinement !== undefined && spec.confinement !== null) {
-      if (spec.confinement?.kind !== 'skill-draft') throw new DispatchError('CONFINEMENT_INVALID', 'Unknown confinement.', { status: 400 });
-      if (provider !== 'claude-code') throw new DispatchError('CONFINEMENT_UNSUPPORTED', `A skill-drafting run runs on Claude Code only: ${provider} cannot be held to its folder.`, { status: 400 });
-      if (usesBrowser || usesComputer) throw new DispatchError('CONFINEMENT_UNSUPPORTED', 'A skill-drafting run reads no page and drives no computer.', { status: 400 });
-      confinement = { kind: 'skill-draft' };
+      if (spec.confinement.provider) requireConfinementProvider({ provider, confinement: spec.confinement });
+      if (spec.confinement?.kind === EVAL_CONFINEMENT) {
+        // A skill-evaluation run (lib/skills/evals.js): held to its job folder by lib/skills/eval-confinement.js, the
+        // same way on every provider that can hold it; its task is sent as it is (the case's own words), and it has
+        // no Result contract, no Jev reading, no result retry and no escalation.
+        const support = evalConfinementSupport(provider);
+        if (!support.ok) throw new DispatchError('CONFINEMENT_UNSUPPORTED', `A skill-evaluation run cannot run on ${provider}: ${support.reason}`, { status: 400 });
+        if (usesBrowser || usesComputer) throw new DispatchError('CONFINEMENT_UNSUPPORTED', 'A skill-evaluation run reads no page and drives no computer.', { status: 400 });
+        const role = EVAL_ROLES.includes(spec.confinement.role) ? spec.confinement.role : null;
+        if (!role) throw new DispatchError('CONFINEMENT_INVALID', 'Unknown evaluation role.', { status: 400 });
+        const skill = typeof spec.confinement.skill === 'string' && /^[a-z0-9][a-z0-9._-]{0,63}$/.test(spec.confinement.skill) ? spec.confinement.skill : null;
+        confinement = { kind: EVAL_CONFINEMENT, provider, role, shell: role === 'trial' && spec.confinement.shell === true, skill };
+      } else {
+        if (spec.confinement?.kind !== 'skill-draft') throw new DispatchError('CONFINEMENT_INVALID', 'Unknown confinement.', { status: 400 });
+        const support = draftConfinementSupport(provider);
+        if (!support.ok) throw new DispatchError('CONFINEMENT_UNSUPPORTED', `A skill-drafting run cannot run on ${provider}: ${support.reason}`, { status: 400 });
+        if (usesBrowser || usesComputer) throw new DispatchError('CONFINEMENT_UNSUPPORTED', 'A skill-drafting run reads no page and drives no computer.', { status: 400 });
+        confinement = { kind: 'skill-draft', provider };
+      }
       capability = 'workspace';
       permissionPolicy = 'auto';
     }
@@ -763,13 +895,6 @@ export function createAssistantDispatcher({
     const sightRefusal = designRefusal(catalogValue, provider, model, taskClass);
     if (sightRefusal) throw sightRefusal;
     const agent = provider === 'opencode' && spec.agent ? String(spec.agent).trim().slice(0, 60) || null : null;
-    let mcpProfile = null;
-    if (provider === 'claude-code') mcpProfile = 'full';
-    else {
-      // A browser run needs the browser tools: the active profile (core by default) has none.
-      mcpProfile = normalizeMcpProfileName(spec.mcpProfile || (usesBrowser ? BROWSER_PROFILE : readActiveMcpProfile()));
-      if (mcpProfile && !isValidMcpProfileValue(mcpProfile)) throw new DispatchError('MCP_PROFILE_INVALID', `Invalid MCP profile: ${mcpProfile}`);
-    }
     let codexAccount = null;
     let claudeAccount = null;
     const accountId = spec.accountId || spec.codexAccountId || spec.claudeAccountId || null;
@@ -822,7 +947,7 @@ export function createAssistantDispatcher({
       model, modelContextWindow, pricingModel,
       effort: checked.effort || null, effortCorrection,
       agent, modelInfo, notes,
-      mcpProfile, permissionPolicy, capability, usesBrowser, usesComputer, confinement,
+      toolsRequested: selection.requested, tools: launchTools(selection), externalMcpVersion: 2, externalServers, permissionPolicy, capability, usesBrowser, usesComputer, confinement,
       codexAccountId: codexAccount?.id || null,
       codexHome: codexAccount ? (codexAccount.home || CODEX_DEFAULT_HOME) : null,
       claudeAccountId: claudeAccount?.id || (provider === 'claude-code' ? 'default' : null),
@@ -839,21 +964,39 @@ export function createAssistantDispatcher({
   }
 
   // ── rails ──────────────────────────────────────────────────────────────────
+  // A suspended run holds no slot (its worker is gone with the server); one being resumed holds its own again.
   function activeEntries(filter = () => true) {
-    return [...entries.values()].filter((entry) => ACTIVE_STATES.has(entry.state) && !WAITING_STATES.has(entry.state) && filter(entry));
+    return [...entries.values()].filter((entry) => ACTIVE_STATES.has(entry.state) && !WAITING_STATES.has(entry.state) && entry.state !== 'suspended' && filter(entry));
   }
-  function railBlock(spec, assistantSessionId) {
+  /**
+   * The runs that hold a provider's slots, as a queued note says them: every Assistant session's runs
+   * count (a warm worker waiting for a follow-up too; never a brain, which is no run), so a slot taken
+   * in another session is named as such.
+   */
+  function slotHolders(holders, assistantSessionId) {
+    const named = holders.map((e) => `${String(e.runId).slice(0, 8)}${(e.assistantSessionId || null) !== (assistantSessionId || null) ? ' (another session)' : ''}${e.state === 'idle' ? ' (idle, waiting for a follow-up)' : ''}`);
+    return `held by ${named.join(', ')}`;
+  }
+  /**
+   * `except`: a run being resumed, which counts the others but not itself, nor the runs still waiting for their resume
+   * (resumeRun has not taken them up): runs that wait for a slot never hold each other back. A new dispatch counts them,
+   * so it waits behind them.
+   */
+  function railBlock(spec, assistantSessionId, { except = null } = {}) {
+    const others = (filter) => activeEntries((e) => e.runId !== except && (!except || e.state !== 'resuming' || resumeInProgress.has(e.runId)) && filter(e));
     // One desktop, one controller: computer-use runs never overlap.
-    if (spec.usesComputer && activeEntries((e) => e.usesComputer).length >= 1) return 'another computer-use run is active (one at a time)';
+    if (spec.usesComputer && others((e) => e.usesComputer).length >= 1) return 'another computer-use run is active (one at a time)';
     const perProvider = limits.perProvider[spec.provider] ?? 3;
-    if (activeEntries((e) => e.provider === spec.provider).length >= perProvider) return `provider ${spec.provider} at its concurrency limit (${perProvider})`;
-    if (spec.provider === 'codex' && activeEntries((e) => e.provider === 'codex' && e.accountId === spec.accountId).length >= limits.perCodexAccount) {
-      return `Codex account ${spec.accountId} at its concurrency limit (${limits.perCodexAccount})`;
+    const providerRuns = others((e) => e.provider === spec.provider);
+    if (providerRuns.length >= perProvider) return `provider ${spec.provider} at its concurrency limit (${perProvider}), ${slotHolders(providerRuns, assistantSessionId)}`;
+    const accountRuns = spec.provider === 'codex' ? others((e) => e.provider === 'codex' && e.accountId === spec.accountId) : [];
+    if (spec.provider === 'codex' && accountRuns.length >= limits.perCodexAccount) {
+      return `Codex account ${spec.accountId} at its concurrency limit (${limits.perCodexAccount}), ${slotHolders(accountRuns, assistantSessionId)}`;
     }
-    if (assistantSessionId && activeEntries((e) => e.assistantSessionId === assistantSessionId).length >= limits.perSession) {
+    if (assistantSessionId && others((e) => e.assistantSessionId === assistantSessionId).length >= limits.perSession) {
       return `assistant session at its concurrency limit (${limits.perSession})`;
     }
-    if (spec.workflowId && activeEntries((e) => e.workflowId === spec.workflowId).length >= limits.maxFanOut) {
+    if (spec.workflowId && others((e) => e.workflowId === spec.workflowId).length >= limits.maxFanOut) {
       return `workflow ${spec.workflowId} at its fan-out limit (${limits.maxFanOut})`;
     }
     return null;
@@ -1002,13 +1145,15 @@ export function createAssistantDispatcher({
   /**
    * The Claude CLI's own stop (--max-budget-usd) for a Claude worker under a budget: the run's ceiling,
    * never more than the session has left when it starts. A backstop: the dispatcher stops the run at its
-   * provider's share between model calls. null under No limit (no CLI cap at all).
+   * provider's share between model calls. null under No limit (no CLI cap at all). `spentUsd`: what the run
+   * spent already (a resume after a restart): its ceiling less that is what it may still spend.
    */
-  function claudeBackstop(entry) {
+  function claudeBackstop(entry, { spentUsd = 0 } = {}) {
     if (!limitedNow()) return null;
     const cap = Number(entry.budgetUsd) || 0;
+    const capLeft = cap > 0 ? Math.max(0, cap - Math.max(0, Number(spentUsd) || 0)) : Infinity;
     const left = entry.assistantSessionId ? (budget.coverage(entry.assistantSessionId)?.leftUsd ?? null) : null;
-    const value = Math.min(cap > 0 ? cap : Infinity, left === null ? Infinity : left);
+    const value = Math.min(capLeft, left === null ? Infinity : left);
     if (!Number.isFinite(value)) return cap > 0 ? cap : null;
     return Math.max(MIN_SPEND_USD, floorCents(value) / 100);
   }
@@ -1016,8 +1161,8 @@ export function createAssistantDispatcher({
    * The Claude CLI's stop for a run: claudeBackstop() under a budget; a skill-drafting run (confined) also stops at its
    * own ceiling whatever the session's mode, No limit included (its budget_usd, or what No limit set aside).
    */
-  function claudeRunCap(entry) {
-    const backstop = claudeBackstop(entry);
+  function claudeRunCap(entry, options = {}) {
+    const backstop = claudeBackstop(entry, options);
     if (!entry.confinement) return backstop;
     const own = Number(entry.budgetUsd) || Number(entry.budgetIgnoredUsd) || 0;
     const caps = [backstop, own > 0 ? own : null].filter((v) => Number(v) > 0);
@@ -1082,7 +1227,7 @@ export function createAssistantDispatcher({
     return {
       provider: spec.provider, model: spec.model, effort: spec.effort, effortCorrection: spec.effortCorrection || null, agent: spec.agent || null, accountId: spec.accountId,
       codexAccountId: spec.codexAccountId, codexHome: spec.codexHome, claudeAccountId: spec.claudeAccountId, claudeConfigDir: spec.claudeConfigDir,
-      cwd: spec.cwd, project: spec.project, mcpProfile: spec.mcpProfile,
+      cwd: spec.cwd, project: spec.project, toolsRequested: spec.toolsRequested, tools: spec.tools, externalMcpVersion: 2, externalServers: spec.externalServers,
       permissionPolicy: spec.permissionPolicy, capability: spec.capability, usesBrowser: spec.usesBrowser, usesComputer: !!spec.usesComputer,
       confinement: spec.confinement || null,
       title: spec.title, task: spec.task, context: spec.context, tags: spec.tags,
@@ -1188,7 +1333,8 @@ export function createAssistantDispatcher({
     const catalogValue = await catalogSnapshot();
     // Routing (ask modes may hold the run until the user picks a model).
     let routed = null;
-    if (router && origin !== 'ui' && sessionId) {
+    // Skills owns the runtime selection and its provider-specific workspace. Never bind Assistant routes.
+    if (router && !isSkillsRun(rawSpec) && origin !== 'ui' && sessionId) {
       routed = await router.resolveDispatch({ sessionId, spec: rawSpec, origin });
       // A hold names an open card, but an answer that was already in flight (it waited on the same
       // catalog read) can decide that card before this continuation runs. Approved for this
@@ -1355,6 +1501,12 @@ export function createAssistantDispatcher({
     };
     const heldClass = knownClass(routed.route?.taskClass) || knownClass(input.taskClass);
     if (heldClass) entry.taskClass = heldClass;
+    const selection = dispatchTools({ ...input, taskClass: heldClass });
+    entry.externalServers = resolveExternalTools({ ...entry, ...input }, selection.servers);
+    entry.externalMcpVersion = 2;
+    entry.toolsRequested = selection.requested;
+    entry.tools = launchTools(selection);
+    entry.usesBrowser = input.usesBrowser === true || selection.groups.some(isBrowserGroup);
     if (brief) entry.brief = brief;
     // A held run belongs to the task that asked for it, whenever the user picks its model.
     entry.taskId = taskAtDispatch(sessionId);
@@ -1399,7 +1551,7 @@ export function createAssistantDispatcher({
     const entry = entries.get(runId);
     if (!entry || entry.state !== 'awaiting_route' || !target?.provider) return { ok: false, code: 'NOT_HELD' };
     const catalogValue = await catalogSnapshot();
-    let input = { ...(entry.rawSpec || {}), provider: target.provider, model: target.model || null, effort: target.effort ?? entry.rawSpec?.effort ?? null, ...(target.accountId ? { accountId: target.accountId, codexAccountId: null, claudeAccountId: null } : {}) };
+    let input = { ...(entry.rawSpec || {}), provider: target.provider, model: target.model || null, effort: target.effort ?? null, accountId: target.accountId || null, codexAccountId: null, claudeAccountId: null };
     let spec;
     // The picked provider may need another clamp (Codex under strict worker approvals), or the level fell meanwhile.
     const remoteNotes = [];
@@ -1438,6 +1590,7 @@ export function createAssistantDispatcher({
   /** Re-dispatch a failed/blocked run one tier up, or on the same model after a transient failure (the user pressed Escalate / Retry). */
   async function escalate(runId, { target = null } = {}) {
     const entry = requireEntry(runId);
+    if (isSkillsRun(entry)) throw new DispatchError('NO_ESCALATION', 'Skills runs cannot change runtime or model through escalation.', { status: 409 });
     const to = target?.provider ? target : entry.escalation?.to;
     if (!to?.provider) throw new DispatchError('NO_ESCALATION', `Run ${runId} has no escalation target`, { status: 409 });
     // A transient failure (timeout, rate limit, outage) is retried as it was, not escalated.
@@ -1451,12 +1604,10 @@ export function createAssistantDispatcher({
       provider: to.provider, model: to.model || null, effort: to.effort || null, task: entry.task, cwd: entry.cwd, context,
       accountId: to.accountId || (to.provider === entry.provider ? entry.accountId : null),
       title: clip(`${entry.title} ${retry ? '↻' : '↑'}`, 80), tags: entry.tags, workflowId: entry.workflowId, parentRunId: runId,
-      mcpProfile: entry.provider === to.provider ? entry.mcpProfile : undefined, capability: entry.capability,
+      tools: entry.tools?.some(item => item.startsWith('mcp:')) ? retainExternalRefs(entry.toolsRequested ?? dispatchTools({}).items, entry.tools) : entry.toolsRequested ?? undefined, capability: entry.capability,
       permissionPolicy: to.provider === 'codex' && entry.permissionPolicy === 'ask' ? 'restricted' : entry.permissionPolicy,
       usesBrowser: entry.usesBrowser, usesComputer: entry.usesComputer, maxMinutes: entry.maxMinutes, budgetUsd: entry.budgetUsd,
       outputSchema: entry.outputSchema, taskClass: entry.taskClass || null,
-      // A skill-drafting run escalates confined or not at all (normalizeSpec refuses another provider).
-      ...(entry.confinement ? { confinement: entry.confinement } : {}),
     }, { assistantSessionId: entry.assistantSessionId, origin: 'ui', brief: entry.brief || null });
     const child = entries.get(result?.run?.runId);
     if (child) { child.escalationDepth = (Number(entry.escalationDepth) || 0) + 1; child.escalatedFrom = runId; }
@@ -1466,13 +1617,15 @@ export function createAssistantDispatcher({
     return result;
   }
   function computeEscalation(entry, stateOverride = null) {
-    if (!router?.escalationFor) return null;
+    if (isSkillsRun(entry) || !router?.escalationFor) return null;
     let found = null;
     try { found = router.escalationFor({ run: stateOverride ? { ...entry, state: stateOverride } : entry, depth: Number(entry.escalationDepth) || 0 }) || null; }
     catch { return null; }
-    // A skill-drafting run is confined to Claude Code: no escalation is offered onto another provider.
-    if (found && entry.confinement && found.to?.provider && found.to.provider !== 'claude-code') return null;
     return found;
+  }
+  /** The Protect workers setting now, or the default when the host cannot say. */
+  function safeWorkerGuard() {
+    try { return workerGuard?.() ?? WORKER_GUARD_DEFAULT; } catch { return WORKER_GUARD_DEFAULT; }
   }
   /**
    * A run a provider's usage limit stopped (failed, or a turn that ended blocked or without a result):
@@ -1578,7 +1731,7 @@ export function createAssistantDispatcher({
    */
   function emitFailed(entry, evidenceAcc = null) {
     const done = () => { delete entry.judging; noteLimit(entry); entry.escalation = computeEscalation(entry); emit(entry, 'failed'); };
-    if (!judge?.workerOutcome || budgetStopReason(entry.completionReason)) { done(); return Promise.resolve(); }
+    if (!judge?.workerOutcome || budgetStopReason(entry.completionReason) || isEvalRun(entry)) { done(); return Promise.resolve(); }
     entry.judging = true;
     const evidence = evidenceSnapshot(evidenceAcc);
     const error = [entry.error, ...(entry.notes || []).slice(-3)].filter(Boolean).map((line) => String(line)).join('\n');
@@ -1610,6 +1763,12 @@ export function createAssistantDispatcher({
   }
 
   async function start(entry) {
+    try { requireConfinementProvider(entry); } catch (error) {
+      entry.state = 'failed'; entry.error = error.message; entry.completionReason = 'confinement_provider_mismatch';
+      entry.finishedAt = iso(now()); entry.turnState = 'terminal';
+      emit(entry, 'failed');
+      throw error;
+    }
     const runtime = safeRuntime();
     if (!runtime) throw new DispatchError('RUNTIME_UNAVAILABLE', 'Native loop runtime is not available', { status: 503 });
     // A queued or held run starts under the budget as it is now (its provider's share included).
@@ -1637,51 +1796,18 @@ export function createAssistantDispatcher({
     }
     entry.browserSessionId = browserSessionId;
     entry.browserTabId = browserTabId;
-    const liveState = {
-      entry, ctx: null, ring: [], ringChars: 0, followUps: [], waitResolve: null, idleTimer: null,
-      pendingResolvers: new Map(), dead: false, lastEventAt: now(), stalledFlagged: false, turnCounter: 0, abortReason: null,
-      evidence: null, // the current turn's commands / tool results / edited files (assistant-evidence.js)
-      completed: false, // its turn loop ended on a completion (agent_complete, a closed finished tab, a removal)
-    };
+    const liveState = newLiveState(entry);
     live.set(entry.runId, liveState);
-    const extraEnv = {};
-    if (entry.claudeConfigDir) extraEnv.CLAUDE_CONFIG_DIR = entry.claudeConfigDir;
-    // Computer use: an unforgeable per-run grant unlocks the `computer` MCP
-    // group for this worker only. Passed as a function so the loop runtime's
-    // JSON state file never contains it.
-    let desktopGrant = null;
-    if (entry.usesComputer && desktop?.mintGrant) {
-      try { desktopGrant = desktop.mintGrant({ kind: 'run', assistantSessionId: entry.assistantSessionId, runId: entry.runId, provider: entry.provider, model: entry.model, vision: entry.modelInfo?.vision ?? null }); }
-      catch (error) { entry.notes.push(`desktop grant failed: ${error?.message || error}`); }
-    }
-    const state = {
-      active: true, task: entry.task, context: entry.context, totalIterations: 1, currentIteration: 0,
-      maxMinutes: entry.maxMinutes, startedAt: iso(now()), lastIterationAt: null, retries: 0, pending: false,
-      terminalSessionId: entry.runId, usesBrowser: entry.usesBrowser, usesComputer: !!entry.usesComputer, browserSessionId, browserTabId,
-      profile: entry.provider, provider: entry.provider, agent: entry.agent || null,
-      model: entry.model, modelContextWindow: entry.modelContextWindow || null, effort: entry.effort, mcpProfile: entry.mcpProfile,
-      codexAccountId: entry.codexAccountId, codexHome: entry.provider === 'codex' ? (entryCodexHome(entry)) : null,
-      claudeAccountId: entry.claudeAccountId, claudeConfigDir: entry.claudeConfigDir,
-      driverType: 'native', runtimeType: 'native', surface: 'sidepanel', runId: entry.runId, cwd: entry.cwd,
-      runMode: 'task', assistantSessionId: entry.assistantSessionId, permissionPolicy: entry.permissionPolicy,
-      // A Claude worker's CLI stop (--max-budget-usd): a backstop under a budget, none under No limit.
-      capability: entry.capability, budgetUsd: entry.budgetUsd, maxBudgetUsd: entry.provider === 'claude-code' ? claudeRunCap(entry) : null,
-      // A skill-drafting run's confinement (lib/skills/draft-confinement.js): its adapter enforces it, or refuses to start.
-      confinement: entry.confinement || null,
-      idleTimeoutMs: entry.idleTimeoutMs, maxTurns: entry.maxTurns, outputSchema: entry.outputSchema, project: entry.project,
-      title: entry.title, tags: entry.tags, workflowId: entry.workflowId, parentRunId: entry.parentRunId,
-      // The user's brief after a clarification (assistant-task-prompt.js briefBlock).
-      brief: entry.brief || null,
-      // Image / video creation: the prompt's media block and what the adapter collects ('image' | 'video');
-      // design collects its screenshots and images the same way ('image').
-      taskClass: entry.taskClass || null, collectMedia: collectedMedia(entry.taskClass),
-      // extraEnv is a plain object, so it IS written to the loop state file;
-      // keep secrets out of it. The desktop grant rides as a function instead.
-      extraEnv,
-      desktopGrantProvider: desktopGrant ? () => desktopGrant : null,
-      // What the adapter reports while it starts (a Codex worker whose browser-policy hook is not trusted).
-      onNote: (text) => { const note = String(text || '').trim(); if (note && !entry.notes.includes(note)) entry.notes.push(note); },
-    };
+    // The guard a read-only / workspace run starts under (never for full, never for a drafting run): the setting
+    // now, and a scratch folder of its own. Recorded on the run so the panel and the brain can see it.
+    entry.guardMode = normalizeWorkerGuardMode(safeWorkerGuard());
+    if (entry.provider === 'opencode' && !entry.confinement) resumeInfoOf(entry).persistentOpenCode = true;
+    if ((!entry.confinement || isEvalRun(entry)) && entry.guardMode !== 'off' && (entry.capability === 'read-only' || entry.capability === 'workspace')) {
+      const scratch = resolve(scratchRoot, entry.runId);
+      try { mkdirSync(scratch, { recursive: true }); entry.scratchDir = scratch; } catch (error) { entry.scratchDir = null; entry.notes.push(`scratch folder not made: ${error?.message || error}`); }
+    } else entry.scratchDir = null;
+    const desktopGrant = mintDesktopGrant(entry);
+    const state = runState(entry, { browserSessionId, browserTabId, desktopGrant, startedAt: iso(now()) });
     if (entry.permissionPolicy === 'ask') state.permissionBroker = createBroker(entry.runId);
     // A class's rules (design), read now so an edited override applies without a restart;
     // they go to the prompt only, not into the loop state file.
@@ -1699,7 +1825,9 @@ export function createAssistantDispatcher({
         source: 'assistant',
         focus: entry.focus === true,
         title: entry.title,
-        buildPrompt: () => buildTaskPrompt({ ...state, ...(playbook ? { playbook } : {}), ...(styleGuide ? { styleGuide } : {}), testDensity: briefTestDensity(entry) }),
+        // A skill-evaluation run gets its task as written (a case's request, a grader's brief): the worker preamble and
+        // the Result contract would change what is measured.
+        buildPrompt: () => (isEvalRun(entry) ? entry.task : buildTaskPrompt({ ...state, ...(playbook ? { playbook } : {}), ...(styleGuide ? { styleGuide } : {}), testDensity: briefTestDensity(entry) })),
         wrapAdapter: (adapter, ctx) => createTaskAdapter(adapter, ctx, liveState, state),
       });
       entry.runtime = { status: descriptor.status };
@@ -1715,6 +1843,97 @@ export function createAssistantDispatcher({
       emitFailed(entry, liveState.evidence || null);
       throw error;
     }
+  }
+  /** What a run's worker keeps in memory while it lives (never saved): its turn loop, transcript tail, waits. */
+  function newLiveState(entry) {
+    return {
+      entry, ctx: null, ring: [], ringChars: 0, followUps: [], waitResolve: null, idleTimer: null,
+      pendingResolvers: new Map(), dead: false, lastEventAt: now(), stalledFlagged: false, turnCounter: 0, abortReason: null,
+      evidence: null, // the current turn's commands / tool results / edited files (assistant-evidence.js)
+      completed: false, // its turn loop ended on a completion (agent_complete, a closed finished tab, a removal)
+    };
+  }
+  /**
+   * Computer use: an unforgeable per-run grant unlocks the `computer` MCP group for this worker only. Passed as a
+   * function so the loop runtime's JSON state file never contains it. null for a run without computer use.
+   */
+  function mintDesktopGrant(entry) {
+    if (!entry.usesComputer || !desktop?.mintGrant) return null;
+    try { return desktop.mintGrant({ kind: 'run', assistantSessionId: entry.assistantSessionId, runId: entry.runId, provider: entry.provider, model: entry.model, vision: entry.modelInfo?.vision ?? null }) || null; }
+    catch (error) { entry.notes.push(`desktop grant failed: ${error?.message || error}`); return null; }
+  }
+  /**
+   * The loop state a run starts (or resumes, with `extra`) with: what its provider factory and its prompt read. Its
+   * functions (notes, the CLI's process, the desktop grant) stay in memory: the runtime writes the rest to the run's
+   * state file.
+   */
+  function runState(entry, { browserSessionId = null, browserTabId = null, desktopGrant = null, startedAt = iso(now()), extra = {} } = {}) {
+    const extraEnv = {};
+    if (entry.claudeConfigDir) extraEnv.CLAUDE_CONFIG_DIR = entry.claudeConfigDir;
+    return {
+      active: true, task: entry.task, context: entry.context, totalIterations: 1, currentIteration: 0,
+      maxMinutes: entry.maxMinutes, startedAt, lastIterationAt: null, retries: 0, pending: false,
+      terminalSessionId: entry.runId, usesBrowser: entry.usesBrowser, usesComputer: !!entry.usesComputer, browserSessionId, browserTabId,
+      profile: entry.provider, provider: entry.provider, agent: entry.agent || null,
+      model: entry.model, modelContextWindow: entry.modelContextWindow || null, effort: entry.effort, tools: entry.tools,
+      codexAccountId: entry.codexAccountId, codexHome: entry.provider === 'codex' ? (entryCodexHome(entry)) : null,
+      claudeAccountId: entry.claudeAccountId, claudeConfigDir: entry.claudeConfigDir,
+      driverType: 'native', runtimeType: 'native', surface: 'sidepanel', runId: entry.runId, cwd: entry.cwd,
+      runMode: 'task', assistantSessionId: entry.assistantSessionId, permissionPolicy: entry.permissionPolicy,
+      // A Claude worker's CLI stop (--max-budget-usd): a backstop under a budget, none under No limit.
+      capability: entry.capability, budgetUsd: entry.budgetUsd, maxBudgetUsd: entry.provider === 'claude-code' ? claudeRunCap(entry) : null,
+      // A skill-drafting run's confinement (lib/skills/draft-confinement.js): its adapter enforces it, or refuses to start.
+      confinement: entry.confinement || null,
+      // The worker confinement (lib/worker-confinement.js): the Protect workers setting as the run starts, kept for
+      // its life, and the run's own scratch folder (writable beside the working directory and the temp folder).
+      persistentOpenCode: !!entry.resumeInfo?.persistentOpenCode,
+      sandboxPlan: entry.resumeInfo?.sandboxPlan || null,
+      providerTurnBase: Number(entry.resumeInfo?.providerTurn) || 0,
+      adminSandbox: entry.resumeInfo?.adminSandbox === true,
+      onCodexSandbox: (value) => { resumeInfoOf(entry).adminSandbox = value === true; persist({ force: true }); },
+      onSandboxPlan: (plan) => { resumeInfoOf(entry).sandboxPlan = plan; persist({ force: true }); },
+      guardMode: entry.guardMode, scratchDir: entry.scratchDir || null, serverPort: Number(serverPort) > 0 ? Number(serverPort) : null,
+      localPortRange: localPortRange && Number(localPortRange.from) > 0 && Number(localPortRange.to) >= Number(localPortRange.from) ? { from: Number(localPortRange.from), to: Number(localPortRange.to) } : null,
+      idleTimeoutMs: entry.idleTimeoutMs, maxTurns: entry.maxTurns, outputSchema: entry.outputSchema, project: entry.project,
+      title: entry.title, tags: entry.tags, workflowId: entry.workflowId, parentRunId: entry.parentRunId,
+      // The user's brief after a clarification (assistant-task-prompt.js briefBlock).
+      brief: entry.brief || null,
+      // Image / video creation: the prompt's media block and what the adapter collects ('image' | 'video');
+      // design collects its screenshots and images the same way ('image').
+      taskClass: entry.taskClass || null, collectMedia: collectedMedia(entry.taskClass),
+      // extraEnv is a plain object, so it IS written to the loop state file;
+      // keep secrets out of it. The desktop grant rides as a function instead.
+      extraEnv,
+      desktopGrantProvider: desktopGrant ? () => desktopGrant : null,
+      // What the adapter reports while it starts (a Codex worker whose browser-policy hook is not trusted).
+      onNote: (text) => { const note = String(text || '').trim(); if (note && !entry.notes.includes(note)) entry.notes.push(note); },
+      // A Claude Code worker's CLI (lib/native-loop-providers.js onProcess): saved with the run at once, so the next
+      // start can end it should it outlive this server (a crash ends no process) before the session is resumed.
+      onProcess: (info) => {
+        const pid = Number(info?.pid);
+        if (!Number.isInteger(pid) || pid <= 0) return;
+        resumeInfoOf(entry).pid = pid;
+        entry.resumeInfo.pidStartedAt = info.startedAt || iso(now());
+        persist({ force: true });
+      },
+      ...extra,
+    };
+  }
+  /** What a resume after a restart needs that is saved with the run (the CLI's pid, the turn in progress). */
+  function resumeInfoOf(entry) {
+    if (!entry.resumeInfo || typeof entry.resumeInfo !== 'object') entry.resumeInfo = {};
+    return entry.resumeInfo;
+  }
+  /** The number of the run's last recorded turn (0 before its first): a resumed run's turns go on from it. */
+  function lastTurnNumber(entry) {
+    return (Array.isArray(entry.turns) ? entry.turns : []).reduce((max, turn) => Math.max(max, Number(turn?.n) || 0), 0);
+  }
+  /**
+   * The turns a run away for a restart will have had when a follow-up reaches it (as turnCounter counts a turn in
+   * progress): its recorded turns, the one the restart cut off (its resume continues it), or its first, not yet run.
+   */
+  function awayTurns(entry) {
+    return Math.max(lastTurnNumber(entry), Number(entry.resumeInfo?.inFlight?.turn) || 0, 1);
   }
   /**
    * What the run's prompt says about its project's Style Guide (lib/style-guide/store.js): the
@@ -1867,6 +2086,8 @@ export function createAssistantDispatcher({
       // Saved with the run: a result that arrives after a restart belongs to the turn that was
       // started, whether or not it was ever recorded.
       usageStateOf(entry).turn = { n: turnNumber, taskId };
+      // So is the turn in progress: a restart in it is resumed with the continuation prompt (resumeRun).
+      resumeInfoOf(entry).inFlight = { turn: turnNumber, taskId, origin, startedAt };
       liveState.turnUsage = null;
       liveState.turnTokens = zeroTokens();
       liveState.turnOpen = true;
@@ -1877,6 +2098,7 @@ export function createAssistantDispatcher({
       startWork(entry, liveState);
       ctx.setTurnState('running');
       emit(entry, 'turn_started', { turn: turnNumber });
+      persist({ force: true });
       // What this turn runs (commands, tool results, edited files): the evidence behind a "done".
       liveState.evidence = createTurnEvidence();
       // Money booked while this turn runs (OpenCode steps, Codex rollout records).
@@ -1884,14 +2106,23 @@ export function createAssistantDispatcher({
       let raw = await inner.runTurn(prompt, { ...meta, turn: turnNumber, outputSchema: entry.outputSchema || undefined });
       if (entry.provider === 'codex') settleCodexTurn(entry, liveState, raw);
       let text = typeof raw?.text === 'string' ? raw.text : '';
-      let parsed = parseResultContract(text);
+      const evalRun = isEvalRun(entry);
+      let parsed = evalRun ? { found: false } : parseResultContract(text);
       parsed.source = parsed.found ? 'contract' : null;
       // A run with an output schema answers with bare JSON: that object is its result, no retry turn.
       if (!parsed.found) parsed = structuredResult(entry, raw, text) || parsed;
+      // A skill-evaluation run's answer is what is measured: it is its result as it is (no contract to find).
+      if (evalRun && !parsed.found) parsed = { found: true, parseFailed: false, status: 'done', summary: clip(text, 2000), changes: [], files: [], follow_ups: [], media: [], question: '', json: null, jsonError: null, raw: text, source: 'eval' };
+      // The server is going down (suspendForShutdown) as the turn ended without its ## Result block: no retry turn can
+      // run now. The turn stays in flight, so the resumed worker is asked to finish it; what it spent is booked.
+      if (liveState.suspending && !parsed.found) {
+        accumulateCost(entry, raw);
+        throw Object.assign(new Error('suspended for a server restart'), { name: 'AbortError' });
+      }
       const noBlock = !parsed.found && strictResult && !!text.trim() && !liveState.dead;
       const evidence = evidenceSnapshot(liveState.evidence);
-      // One Jev request before any retry turn (null without Jev: today's behaviour).
-      const judged = await judgeTurn(entry, { text, parsed, noBlock, evidence, followUp });
+      // One Jev request before any retry turn (null without Jev: today's behaviour). Never for an evaluation run.
+      const judged = evalRun ? null : await judgeTurn(entry, { text, parsed, noBlock, evidence, followUp });
       let retried = false;
       let retryCost = 0;
       if (judged?.status) {
@@ -1914,7 +2145,8 @@ export function createAssistantDispatcher({
         } catch (error) {
           // Stopped during the retry: the run ends here (handleTurnError books the retry), with no
           // turn_completed or follow-up after it. The first provider turn was paid for: book it first.
-          if (liveState.abortReason) { accumulateCost(entry, raw); throw error; }
+          // Suspended for a server restart during it: the turn stays in flight for the resume.
+          if (liveState.abortReason || liveState.suspending) { accumulateCost(entry, raw); throw error; }
           retryCost = accumulateCost(entry, error);
           if (entry.provider === 'codex') settleCodexTurn(entry, liveState, error);
           entry.notes.push(`result retry failed: ${error?.message || error}`);
@@ -1955,6 +2187,7 @@ export function createAssistantDispatcher({
       // Rows that settle from here on (a late rollout record) go to the record itself.
       liveState.turnTokens = null;
       entry.turns = [...(entry.turns || []), turn].slice(-50);
+      if (entry.resumeInfo) delete entry.resumeInfo.inFlight;
       entry.lastResult = parsed;
       // The run's own descriptor (lib/native-loop-runtime.js) carries it too, for the surfaces that read that one
       // (the OpenCode panel's pill): a warm worker whose turn ended asking waits on the user, it does not rest.
@@ -1991,13 +2224,24 @@ export function createAssistantDispatcher({
       isAlive: () => !liveState.dead && (typeof inner.isAlive === 'function' ? inner.isAlive() : true),
       describe: () => ({ ...(typeof inner.describe === 'function' ? inner.describe() : {}), runMode: 'task' }),
       async runTurn(prompt, meta = {}) {
-        try {
-          await runInnerTurn(prompt, meta, { origin: 'dispatch' });
-        } catch (error) {
-          pauseWork(entry, liveState);
-          return handleTurnError(error, liveState, entry, ctx);
+        // A run resumed after a server restart (resumeRun): one that was in a turn sends the continuation prompt (the
+        // runtime's buildPrompt for it) as a turn of its own; one that waited for a follow-up waits again, with a fresh
+        // idle timer; one that never got its first turn going sends its task as a new run would.
+        const resume = liveState.resume || null;
+        liveState.resume = null;
+        if (resume?.mode !== 'idle') {
+          try {
+            await runInnerTurn(prompt, meta, resume?.mode === 'mid_turn'
+              ? { origin: 'resume', label: 'resumed after a server restart', taskId: resume.taskId || entry.taskId || null }
+              : { origin: 'dispatch' });
+          } catch (error) {
+            pauseWork(entry, liveState);
+            return handleTurnError(error, liveState, entry, ctx);
+          }
         }
         for (;;) {
+          // Suspended for a server shutdown (suspendForShutdown): the next start resumes it; nothing ends here.
+          if (liveState.suspending) return { providerSessionId: null };
           // Stopped while the turn ran (a stop that did not fail it): never idle, never take a queued follow-up.
           if (liveState.abortReason) { entry.completionReason = entry.completionReason || liveState.abortReason; return { providerSessionId: inner.identity?.()?.providerSessionId }; }
           // Out of money (its own ceiling, the session's budget, unpriced usage): stop instead of idling
@@ -2010,6 +2254,7 @@ export function createAssistantDispatcher({
           ctx.setTurnState('idle');
           emit(entry, 'idle');
           const next = await waitForFollowUp();
+          if (liveState.suspending) return { providerSessionId: null };
           if (next.kind === 'abort') { entry.completionReason = entry.completionReason || liveState.abortReason || 'aborted'; return { providerSessionId: inner.identity?.()?.providerSessionId }; }
           if (next.kind === 'complete') { entry.completionReason = next.reason || 'complete'; liveState.completed = true; return { providerSessionId: inner.identity?.()?.providerSessionId }; }
           if (next.kind === 'timeout') { entry.completionReason = 'idle_timeout'; return { providerSessionId: inner.identity?.()?.providerSessionId }; }
@@ -2121,6 +2366,14 @@ export function createAssistantDispatcher({
   }
 
   function handleTurnError(error, liveState, entry, ctx) {
+    // Suspended for a server shutdown (suspendForShutdown): the turn the shutdown cut off is resumed on the next start
+    // (its in-flight mark stays), and what it spent was settled when it was suspended. Nothing ends here.
+    if (liveState.suspending) {
+      liveState.turnOpen = false;
+      stopUsagePolling(liveState);
+      return { providerSessionId: null };
+    }
+    if (entry.resumeInfo) delete entry.resumeInfo.inFlight;
     // A failed turn was still paid for (a budget-capped run used to read $0).
     liveState.turnOpen = false;
     stopUsagePolling(liveState);
@@ -2502,8 +2755,8 @@ export function createAssistantDispatcher({
   // OpenCode: every session of the run's own serve (the root and the `task` tool's child sessions).
   function openCodeMeterOf(entry) {
     const held = metersOf(entry);
-    // Its state is not saved with the run: a run does not outlive the process that holds its serve.
-    if (!held.opencode) held.opencode = createOpenCodeMeter();
+    // Message and mark snapshots survive with the session; replayed history must not be charged again.
+    if (!held.opencode) held.opencode = createOpenCodeMeter({ state: entry.usageState?.opencode });
     return held.opencode;
   }
   /** The run's own session id, for a message that names none. */
@@ -2561,7 +2814,7 @@ export function createAssistantDispatcher({
   function bookOpenCodeMessage(entry, liveState, info) {
     // A finished run keeps no message book: what comes late is dropped, not booked from zero.
     if (entry.usageState?.closed) return;
-    const book = liveState.meter || (liveState.meter = new Map());
+    const book = liveState.meter || (liveState.meter = new Map(Object.entries(entry.usageState?.opencodeMessages || {})));
     const key = `${info.sessionID || ''}:${info.id}`;
     const prev = book.get(key) || { cost: 0, usage: null, completed: false, estimate: 0 };
     const reported = Number(info.cost);
@@ -2592,6 +2845,8 @@ export function createAssistantDispatcher({
       } else markUnpriced(entry, `OpenCode reported no cost for ${model || 'its default model'} and it has no list price`);
     }
     book.set(key, { cost, usage: used, completed, estimate });
+    usageStateOf(entry).opencodeMessages = Object.fromEntries(book);
+    usageStateOf(entry).opencode = openCodeMeterOf(entry).state();
     if (delta > 0 || completed) enforceMidTurn(entry, liveState);
   }
   /**
@@ -2603,6 +2858,7 @@ export function createAssistantDispatcher({
     if (entry.usageState?.closed) return null;
     const meter = openCodeMeterOf(entry);
     const delta = meter.markTurn();
+    usageStateOf(entry).opencode = meter.state();
     const fidelity = reconciled ? 'exact' : 'partial';
     const reason = reconciled ? null : 'opencode-not-reconciled';
     const source = reconciled ? 'opencode-messages' : 'opencode-events';
@@ -2751,6 +3007,335 @@ export function createAssistantDispatcher({
     return true;
   }
 
+  // ── server restart: suspend, then resume ───────────────────────────────────
+  // Every restart ends the provider processes of its workers (they are its children). A native worker that may
+  // continue (lib/worker-resume.js resumeRefusal) is suspended as the server goes down and resumed on the next start
+  // as the same run: its runId, provider conversation and sidepanel tab. See docs/assistant.md.
+
+  /**
+   * The server is going down (`reason`: the shutdown's): every eligible native worker is suspended
+   * (state 'suspended', no end, no end card), and its runId returned for the runtime to keep (native-loop-runtime.js
+   * shutdown's `keep`: its CLI is ended, its record kept). Called first by the graceful shutdown (server.js), and by
+   * shutdown() for an exit that skipped it. Idempotent.
+   */
+  function suspendForShutdown(reason = 'server_shutdown') {
+    closing = true;
+    const kept = [];
+    for (const entry of entries.values()) {
+      if (!SUSPENDABLE_STATES.has(entry.state)) continue;
+      const liveState = live.get(entry.runId) || null;
+      // Only a run whose worker is up, or whose resume is starting it (its session is known): one still starting for
+      // the first time has no session to resume yet.
+      if (!liveState || liveState.dead || (!liveState.inner && !liveState.resuming)) continue;
+      // Skill evaluation and drafting runs end as before (the runtime stops them).
+      if (entry.confinement) continue;
+      const refused = resumeRefusal(entry, { atShutdown: true, workLeftMs: workLeftMs(entry) });
+      if (refused) {
+        if (entry.refusedAtShutdown) continue;
+        // A Claude Code worker that may not continue (resumed too often, out of work time) ends interrupted with why
+        // when the runtime stops it (finalize), and is said again once the server is back (loadRegistry): the brain's
+        // mailbox goes down with this server.
+        entry.resumeRefused = refused;
+        entry.refusedAtShutdown = true;
+        entry.completionReason = entry.completionReason || 'server_restart';
+        entry.error = `Not resumed after the server restart: ${refused}`;
+        entry.notes.push(`not resumed: ${refused}`);
+        continue;
+      }
+      // A resume still starting keeps what it was resuming: the turn the earlier restart cut off (resumeInfo.inFlight)
+      // or the wait for a follow-up.
+      const midTurn = entry.state !== 'idle' && liveState.resume?.mode !== 'idle';
+      pauseWork(entry, liveState);
+      liveState.suspending = true;
+      if (liveState.idleTimer) { clearTimeout(liveState.idleTimer); liveState.idleTimer = null; }
+      entry.state = 'suspended';
+      entry.turnState = 'suspended';
+      entry.suspendedAt = iso(now());
+      entry.suspendReason = String(reason || 'server_shutdown');
+      delete entry.crashed;
+      // An open permission request goes with the process: the resumed worker asks again.
+      entry.pending = [];
+      // What the cut-off turn spent so far is booked now (an estimate per call the stream showed: no result will
+      // count them); the meter takes the resumed CLI's counters as its new baseline (rebaseClaudeUsage).
+      try { suspendUsage(entry, liveState); } catch (error) { log(entry.runId, 'assistant:meter-error', error?.message || String(error)); }
+      entry.notes.push(`suspended: the server went down (${entry.suspendReason}) ${midTurn ? 'during a turn' : 'while it waited for a follow-up'}; it resumes when the server is back`);
+      emit(entry, 'suspended', { text: 'suspended: SynaBun is restarting; this run resumes as soon as the server is back (no action needed)' });
+      kept.push(entry.runId);
+    }
+    if (kept.length) persist({ force: true });
+    return kept;
+  }
+  /** Book pending provider usage and save the meter baseline before the process ends. */
+  function suspendUsage(entry, liveState) {
+    if (entry.provider === 'codex') pollCodex(entry, liveState, { discover: true });
+    if (entry.provider === 'opencode' && liveState) bookOpenCodeTurn(entry, liveState);
+    stopUsagePolling(liveState);
+    if (liveState) liveState.turnOpen = false;
+    const claude = meters.get(entry.runId)?.claude;
+    if (claude && typeof claude.settlePending === 'function') {
+      const rows = claude.settlePending({ reason: 'no-result' });
+      if (rows.length) settleClaudeRows(entry, rows);
+      usageStateOf(entry).claude = claude.state();
+    }
+    if (ledger && entry.assistantSessionId) { try { ledger.clearPending(entry.assistantSessionId, entry.runId); } catch { /* nothing pending */ } }
+  }
+  /**
+   * The process of a suspended run's CLI, if it still runs: told to stop (an exit handler cannot wait for it). Not
+   * when the runtime is ending it already (its record is suspended): a second signal could cut its clean exit short.
+   * Windows has no SIGTERM (a signal ends the CLI alone and leaves its tool's processes): the tree is ended with
+   * taskkill, which returns once it is done.
+   */
+  function signalWorkerProcess(entry) {
+    try { if (safeRuntime()?.get?.(entry.runId)?.status === 'suspended') return; } catch { /* no runtime: signal it */ }
+    let pid = null;
+    try { pid = live.get(entry.runId)?.inner?.processInfo?.()?.pid || null; } catch { pid = null; }
+    if (!pid) return;
+    if (process.platform === 'win32') { try { endProcessTree(pid); } catch { /* gone, or not allowed */ } return; }
+    try { process.kill(pid, 'SIGTERM'); } catch { /* gone */ }
+  }
+
+  /**
+   * The resumed CLI starts its counters where its transcript's last cost-state left them (lib/worker-resume.js
+   * readCostState): the Claude meter takes that as its baseline and the adapter its cost counter, so the first turn
+   * after the resume is charged for itself only. What the cut-off turn spent was booked when the run was suspended; a
+   * crash booked nothing, so what the CLI counted after the run's last settled result is settled now, from its own
+   * counts (one result made of the cost-state). Returns the cost base for the adapter (costBaseUsd).
+   */
+  function rebaseClaudeUsage(entry) {
+    let costState = null;
+    try {
+      const transcript = findClaudeTranscript({ sessionId: entry.providerSessionId, configDir: entry.claudeConfigDir || null });
+      costState = transcript ? readCostState(transcript, entry.providerSessionId) : null;
+    } catch { costState = null; }
+    const state = usageStateOf(entry);
+    if (entry.crashed && costState?.modelUsage) {
+      try {
+        const meter = claudeMeterOf(entry);
+        const before = meter.state().snapshot;
+        if (!before || countersCover(costState.modelUsage, before)) {
+          const { settled } = meter.onEvent({ type: 'result', subtype: 'success', uuid: `resume:${entry.runId}:${Number(entry.resumes) || 0}`, session_id: entry.providerSessionId, modelUsage: costState.modelUsage, usage: {} });
+          if (settled) { settleClaudeRows(entry, settled.rows, settled); bookCost(entry, Number(settled.costUsd) || 0, 'reported'); }
+        }
+      } catch (error) { log(entry.runId, 'assistant:meter-error', error?.message || String(error)); }
+    }
+    const held = metersOf(entry);
+    const saved = held.claude ? held.claude.state() : (state.claude || {});
+    state.claude = { ...saved, snapshot: costState?.modelUsage || null, unbaselined: null, history: false };
+    held.claude = null;
+    delete entry.crashed;
+    persist({ force: true });
+    return costState ? costState.totalCostUsd : 0;
+  }
+  /** Whether per-model counters `now` are at or above `before` for every model and counter (the same process went on). */
+  function countersCover(nowUsage, before) {
+    const keys = ['inputTokens', 'outputTokens', 'cacheReadInputTokens', 'cacheCreationInputTokens'];
+    return Object.entries(before || {}).every(([model, counters]) => {
+      const current = nowUsage?.[model];
+      return !!current && keys.every((key) => (Number(current[key]) || 0) >= (Number(counters?.[key]) || 0));
+    });
+  }
+
+  /**
+   * After a restart (loadRegistry filled bootResumes / bootInterrupts): the runs that will not resume are said
+   * ('interrupted', with why) and their runtime records ended; the others are resumed one at a time, in the order they
+   * were dispatched, ahead of every queued dispatch. Runs a lowered concurrency limit holds back wait at the head of
+   * the queue (processQueue resumes them).
+   */
+  async function resumeOnBoot() {
+    // The limits as the user set them (assistant-config.json), not the defaults.
+    refreshLimits();
+    const runtime = safeRuntime();
+    const ids = bootResumes.splice(0)
+      .map((runId) => entries.get(runId)).filter((entry) => entry?.state === 'resuming')
+      .sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')))
+      .map((entry) => entry.runId);
+    // Held for this dispatcher from here on: the runtime's own hold no longer ends them.
+    for (const runId of ids) { try { runtime?.keepSuspended?.(runId); } catch { /* ended meanwhile */ } }
+    for (const runId of bootInterrupts.splice(0)) {
+      const entry = entries.get(runId);
+      if (!entry) continue;
+      // A CLI a crash left behind goes with the run.
+      await endOldProcess(entry);
+      try { await runtime?.endSuspended?.(runId, 'server_restart', { error: entry.resumeRefused ? `not resumed: ${entry.resumeRefused}` : null }); } catch { /* not held */ }
+      emit(entry, 'interrupted', { text: `not resumed after the server restart: ${entry.resumeRefused || 'it could not continue'}` });
+    }
+    // A resumed CLI connects to SynaBun's MCP as it starts: not before this server answers.
+    if (ids.length && typeof serverReady === 'function') { try { await serverReady(); } catch { /* resume anyway */ } }
+    const held = [];
+    for (const runId of ids) {
+      const entry = entries.get(runId);
+      if (!entry || entry.state !== 'resuming') continue;
+      const spec = { provider: entry.provider, accountId: entry.accountId, workflowId: entry.workflowId, usesComputer: !!entry.usesComputer };
+      const block = railBlock(spec, entry.assistantSessionId, { except: runId });
+      if (block) { entry.notes.push(`resume queued: ${block}`); held.push(runId); persist(); continue; }
+      // What it threw (a folder that cannot be made, a full disk) ends it, with why: nothing else would.
+      try { await resumeRun(entry); } catch (error) { log(runId, 'assistant:resume-error', error?.message || String(error)); notResumed(entry, error?.message || String(error)); }
+    }
+    if (held.length) { queue.unshift(...held); processQueue().catch(() => {}); }
+  }
+
+  /**
+   * Continue a run a server restart cut off (state 'resuming'): what start() does for a new run (the budget as it is
+   * now, a browser tab, the desktop grant, the permission broker), then the runtime resumes the run's record with its
+   * Claude session (resumeSessionId). A run that was in a turn gets the continuation prompt (buildResumePrompt) as its
+   * next turn; one that waited for a follow-up waits again; one that never got its first turn going is sent its task.
+   * A run that cannot be resumed ends as interrupted, with why. It holds its provider's slot from the call on (the
+   * callers check the rails just before it, in the same tick).
+   */
+  async function resumeRun(entry) {
+    if (entry.state !== 'resuming') return null;
+    resumeInProgress.add(entry.runId);
+    try { return await continueRun(entry); } finally { resumeInProgress.delete(entry.runId); }
+  }
+  async function continueRun(entry) {
+    if (closing) return null;
+    const runtime = safeRuntime();
+    if (!runtime?.resume) return notResumed(entry, 'the native loop runtime is not available');
+    refreshLimits();
+    const refusal = resumeRefusal(entry, { now: now(), workLeftMs: workLeftMs(entry), isDirectory, accountUnusable: providerAccountUnusable });
+    if (refusal) return notResumed(entry, refusal);
+    try { await fitBudget(entry, { routed: true }); } catch (error) { return notResumed(entry, `the budget does not allow it (${error?.message || error})`); }
+    if (entry.state !== 'resuming' || closing) return null; // stopped meanwhile, or the server is going down again
+    // Its own ceiling (budget_usd), with what its cut-off turn was booked at the suspension (fitBudget checks the
+    // session and the share only): a run out of money is not resumed, as a turn that ends out of money does not idle.
+    const spentOut = budgetBlock(entry);
+    if (spentOut && spentOut.code !== 'BUDGET_SHARE_EXHAUSTED') {
+      entry.completionReason = spentOut.reason;
+      return notResumed(entry, `the budget does not allow it (${spentOut.message})`);
+    }
+    if (!runtime.isSuspended?.(entry.runId)) return notResumed(entry, 'its runtime record is gone');
+    // A crash ended no process: the CLI the run had may still be there, finishing the cut-off tool call. It is ended
+    // first; one that cannot be checked keeps the run from resuming (two processes on one session would both write its
+    // transcript).
+    const orphan = await endOldProcess(entry);
+    if (orphan.state === 'unknown' || orphan.state === 'still_running') {
+      return notResumed(entry, `its old ${providerName(entry.provider)} process (pid ${orphan.pid}) ${orphan.state === 'unknown' ? 'may still be running and could not be checked' : 'did not stop'}`);
+    }
+    if (entry.state !== 'resuming' || closing) return null;
+    const costBaseUsd = entry.provider === 'claude-code' ? rebaseClaudeUsage(entry) : 0;
+    if (loopDir && !existsSync(loopDir)) mkdirSync(loopDir, { recursive: true });
+    // Its browser session went with the server: a new one (the resume prompt names it).
+    let browserSessionId = null;
+    let browserTabId = null;
+    if (entry.usesBrowser && typeof acquireLoopBrowserAndTab === 'function') {
+      const acq = await acquireLoopBrowserAndTab({ requestedBrowserSessionId: entry.requestedBrowserSessionId, terminalSessionId: entry.runId, logTag: 'assistant:browser' }).catch((error) => ({ error: error?.message || String(error) }));
+      if (acq?.error) return notResumed(entry, `no browser tab: ${acq.error}`);
+      browserSessionId = acq.browserSessionId || null;
+      browserTabId = acq.browserTabId || null;
+    }
+    if (entry.state !== 'resuming' || closing) {
+      if (browserSessionId) await releaseSharedBrowserTab(browserSessionId, entry.runId).catch(() => {});
+      return null;
+    }
+    entry.browserSessionId = browserSessionId;
+    entry.browserTabId = browserTabId;
+    if (entry.scratchDir) { try { mkdirSync(entry.scratchDir, { recursive: true }); } catch { /* the guard says so when it needs it */ } }
+    const inFlight = entry.resumeInfo?.inFlight || null;
+    const turned = lastTurnNumber(entry);
+    const mode = inFlight ? 'mid_turn' : turned > 0 ? 'idle' : 'fresh';
+    const liveState = newLiveState(entry);
+    liveState.turnCounter = turned;
+    liveState.resume = { mode, taskId: inFlight?.taskId || null };
+    // Follow-ups sent while it was away wait for it like any queued follow-up.
+    const waiting = awaitingResume.get(entry.runId) || [];
+    awaitingResume.delete(entry.runId);
+    liveState.followUps.push(...waiting);
+    live.set(entry.runId, liveState);
+    const desktopGrant = mintDesktopGrant(entry);
+    const state = runState(entry, {
+      browserSessionId, browserTabId, desktopGrant,
+      startedAt: entry.startedAt || iso(now()),
+      extra: { resumeSessionId: entry.providerSessionId, resumeThreadId: entry.providerThreadId, costBaseUsd, resumingWorker: true },
+    });
+    // The CLI's spend stop (--max-budget-usd) counts from the total the resumed CLI restores (costBaseUsd): what the run
+    // may still spend (its ceiling less what it spent, never more than the session has left) goes on top of that. A
+    // backstop only: the dispatcher holds the run to its ceiling and its share between calls.
+    const allowanceUsd = claudeRunCap(entry, { spentUsd: entry.costUsd });
+    if (Number(allowanceUsd) > 0) state.maxBudgetUsd = Number((Number(allowanceUsd) + Math.max(0, Number(costBaseUsd) || 0)).toFixed(2));
+    if (entry.permissionPolicy === 'ask') state.permissionBroker = createBroker(entry.runId);
+    const at = clockTime(entry.suspendedAt);
+    const selfRestarts = isInside(entry.cwd, PACKAGE_ROOT);
+    const playbook = mode === 'fresh' ? playbookFor(entry) : null;
+    const styleGuide = mode === 'fresh' ? styleGuideFor(entry) : null;
+    const prompt = () => (mode === 'mid_turn'
+      ? buildResumePrompt(state, { at, selfRestarts })
+      : buildTaskPrompt({ ...state, ...(playbook ? { playbook } : {}), ...(styleGuide ? { styleGuide } : {}), testDensity: briefTestDensity(entry) }));
+    entry.resumes = (Number(entry.resumes) || 0) + 1;
+    entry.resumedAt = iso(now());
+    entry.state = 'starting';
+    entry.turnState = 'starting';
+    entry.notes.push(`resumed after the server restart${at ? ` at ${at}` : ''} (${entry.resumes} of ${MAX_RESUMES}): ${mode === 'mid_turn' ? 'it continues the turn the restart cut off' : mode === 'idle' ? 'it waits for a follow-up again' : 'its first turn starts again'}`);
+    // A shutdown while its CLI starts suspends it again (suspendForShutdown): the next start resumes it.
+    liveState.resuming = true;
+    try {
+      const descriptor = await runtime.resume({
+        runId: entry.runId,
+        state,
+        buildPrompt: prompt,
+        wrapAdapter: (adapter, ctx) => createTaskAdapter(adapter, ctx, liveState, state),
+      });
+      entry.runtime = { status: descriptor.status };
+    } catch (error) {
+      // Suspended again by a shutdown while its CLI started: the start was cancelled, nothing ended.
+      if (entry.state === 'suspended') return null;
+      // The runtime ended its record (resume_failed): its run-stopped event ended the run here too.
+      const why = error?.message || String(error);
+      if (browserSessionId) await releaseSharedBrowserTab(browserSessionId, entry.runId).catch(() => {});
+      if (!TERMINAL_STATES.has(entry.state)) return notResumed(entry, why);
+      entry.notes.push(`not resumed: ${why}`);
+      persist();
+      return null;
+    }
+    if (entry.state === 'suspended') return null;
+    delete entry.suspendedAt;
+    delete entry.suspendReason;
+    emit(entry, 'resumed', {
+      resumes: entry.resumes,
+      text: `resumed after the server restart${at ? ` at ${at}` : ''} (${entry.resumes} of ${MAX_RESUMES}): ${mode === 'mid_turn' ? 'it continues the turn the restart cut off; its result arrives as usual' : mode === 'idle' ? 'it waits for a follow-up again' : 'it starts its task again'}. Nothing to do.`,
+    });
+    reconcileKeepAwake();
+    return view(entry);
+  }
+  /**
+   * The CLI a run had before a crash may still be there, finishing its cut-off tool call (a crash ends no process): it
+   * is ended once its command line shows it is this run's (lib/worker-resume.js endOrphanProcess), before a resume and
+   * when a run a restart cut off ends without one. → { state, pid } ('gone' without a saved pid).
+   */
+  async function endOldProcess(entry) {
+    const pid = Number(entry?.resumeInfo?.pid) || null;
+    if (!pid) return { state: 'gone', pid: null };
+    let orphan = null;
+    try { orphan = await endOrphanProcess({ pid, runId: entry.runId }); } catch { orphan = { state: 'unknown' }; }
+    if (orphan.state === 'ended' || orphan.state === 'killed') entry.notes.push(`its old ${providerName(entry.provider)} process (pid ${pid}) still ran after the restart and was ${orphan.state}`);
+    if (orphan.state !== 'unknown' && orphan.state !== 'still_running' && entry.resumeInfo) {
+      delete entry.resumeInfo.pid;
+      delete entry.resumeInfo.pidStartedAt;
+    }
+    return { ...orphan, pid };
+  }
+  /** A run that could not be resumed after a restart ends as interrupted, with why (its notes, its error, its event). */
+  function notResumed(entry, why) {
+    if (TERMINAL_STATES.has(entry.state)) return null;
+    const index = queue.indexOf(entry.runId);
+    if (index !== -1) queue.splice(index, 1);
+    // Follow-ups accepted for it while it was away (agent_send) reach nobody: its end says so, with the first of them.
+    const waiting = awaitingResume.get(entry.runId) || [];
+    awaitingResume.delete(entry.runId);
+    const undelivered = waiting.length ? `; ${waiting.length} follow-up${waiting.length === 1 ? '' : 's'} sent while it was away ${waiting.length === 1 ? 'was' : 'were'} not delivered (${waiting.length === 1 ? '' : 'the first: '}"${clip(waiting[0].text, 160)}")` : '';
+    // Nothing of it may go on: a CLI a crash left behind is ended too.
+    endOldProcess(entry).then(() => persist()).catch(() => {});
+    entry.notes.push(`not resumed: ${why}${undelivered}`);
+    entry.resumeRefused = why;
+    entry.completionReason = entry.completionReason || 'server_restart';
+    const error = `Not resumed after the server restart: ${why}${undelivered}`;
+    let ended = false;
+    try { ended = !!safeRuntime()?.isSuspended?.(entry.runId); } catch { ended = false; }
+    // The runtime's run-stopped event finalizes the run here (onRuntimeMessage); without a record it is done here.
+    if (ended) safeRuntime().endSuspended(entry.runId, 'server_restart', { error }).catch(() => {});
+    if (!TERMINAL_STATES.has(entry.state)) finalize(entry, { status: 'interrupted', stoppedReason: 'server_restart', error });
+    return null;
+  }
+
   // ── follow-ups / lifecycle controls ────────────────────────────────────────
   function requireEntry(runId) {
     const entry = entries.get(runId);
@@ -2764,9 +3349,12 @@ export function createAssistantDispatcher({
     if (message.length > 20_000) throw new DispatchError('MESSAGE_TOO_LONG', 'text must be at most 20000 characters');
     if (TERMINAL_STATES.has(entry.state)) throw new DispatchError('RUN_NOT_ACTIVE', `Run ${runId} is ${entry.state}; dispatch a new run with the previous result as context.`, { status: 409, resumable: false });
     if (entry.state === 'queued') throw new DispatchError('RUN_NOT_STARTED', `Run ${runId} is still queued`, { status: 409 });
-    const liveState = live.get(runId);
-    if (!liveState) throw new DispatchError('RUN_NOT_ACTIVE', `Run ${runId} has no live worker`, { status: 409 });
-    if (liveState.turnCounter >= entry.maxTurns) throw new DispatchError('MAX_TURNS', `Run ${runId} reached its max turns (${entry.maxTurns})`, { status: 409 });
+    // Away for a server restart (suspended, or being resumed): the follow-up waits for the run and goes to it after
+    // its resume, like a follow-up queued behind a turn. Should the run not resume, it ends and says why.
+    const away = entry.state === 'suspended' || entry.state === 'resuming';
+    const liveState = away ? null : live.get(runId);
+    if (!away && !liveState) throw new DispatchError('RUN_NOT_ACTIVE', `Run ${runId} has no live worker`, { status: 409 });
+    if ((away ? awayTurns(entry) : liveState.turnCounter) >= entry.maxTurns) throw new DispatchError('MAX_TURNS', `Run ${runId} reached its max turns (${entry.maxTurns})`, { status: 409 });
     refreshLimits();
     const blocked = budgetBlock(entry);
     if (blocked) {
@@ -2784,6 +3372,14 @@ export function createAssistantDispatcher({
     // A follow-up works for the task in progress when it is sent, which may be a later one than the run's.
     const item = { kind: 'follow-up', text: message, origin, at: iso(now()), taskId: taskNow(entry.assistantSessionId) || entry.taskId || null };
     if (origin === 'user') emit(entry, 'user_intervened', { text: clip(message, 200) });
+    if (away) {
+      if (!allowQueue) throw new DispatchError('TURN_ACTIVE', `Run ${runId} is ${entry.state === 'suspended' ? 'suspended while the server restarts' : 'being resumed after a server restart'}; retry when it is idle or pass queue:true`, { status: 409 });
+      const waiting = awaitingResume.get(runId) || [];
+      waiting.push(item);
+      awaitingResume.set(runId, waiting);
+      emit(entry, 'follow_up_queued', { queued: waiting.length });
+      return { ok: true, queued: true, position: waiting.length, run: view(entry), note: 'The run resumes after the server restart; this follow-up goes to it then.' };
+    }
     if (liveState.waitResolve) { liveState.waitResolve(item); return { ok: true, queued: false, turn: liveState.turnCounter + 1, run: view(entry) }; }
     if (!allowQueue) throw new DispatchError('TURN_ACTIVE', `Run ${runId} is busy; retry when idle or pass queue:true`, { status: 409 });
     liveState.followUps.push(item);
@@ -2841,6 +3437,15 @@ export function createAssistantDispatcher({
     }
     if (TERMINAL_STATES.has(entry.state)) return { ok: true, run: view(entry), alreadyTerminal: true };
     entry.completionReason = entry.completionReason || reason;
+    // A run waiting for its resume after a restart leaves the queue and drops the follow-ups that waited for it; its
+    // runtime record (suspended) ends as stopped.
+    if (entry.state === 'resuming' || entry.state === 'suspended') {
+      const index = queue.indexOf(runId);
+      if (index !== -1) queue.splice(index, 1);
+      awaitingResume.delete(runId);
+      // A CLI a crash left behind (this start has not ended it yet) goes with the run.
+      if (entry.state === 'resuming') await endOldProcess(entry);
+    }
     const runtime = safeRuntime();
     const stopped = runtime ? await runtime.stop(runId, reason) : false;
     if (!stopped) finalize(entry, { status: 'stopped', stoppedReason: reason });
@@ -2859,11 +3464,15 @@ export function createAssistantDispatcher({
   function finalize(entry, runtimeRun) {
     if (TERMINAL_STATES.has(entry.state)) return;
     const liveState = live.get(entry.runId);
+    // Follow-ups that waited for its resume after a restart go with it.
+    awaitingResume.delete(entry.runId);
     pauseWork(entry, liveState);
     let status = runtimeRun?.status || 'completed';
     // A completed worker whose loop file was swept meanwhile (a stale-file cleanup) reaches the
     // runtime's next check as "stopped": its turn loop had already ended on the completion.
     if (status === 'stopped' && liveState?.completed && /^state_(removed|inactive)$/.test(String(runtimeRun?.stoppedReason || ''))) status = 'completed';
+    // A Claude Code worker the shutdown could not suspend (suspendForShutdown) ends interrupted, with why.
+    if (status === 'stopped' && entry.refusedAtShutdown) status = 'interrupted';
     entry.state = TERMINAL_STATES.has(status) ? status : 'completed';
     entry.turnState = 'terminal';
     entry.finishedAt = iso(now());
@@ -2878,9 +3487,11 @@ export function createAssistantDispatcher({
     }
     entry.pending = [];
     releaseDesktop(entry);
+    // The run's scratch folder goes when it left nothing there (what it wrote is the user's to look at).
+    if (entry.scratchDir) { try { rmdirSync(entry.scratchDir); } catch { /* not empty, or already gone */ } }
     // A run that ended gives back what it did not spend: the session's split is made again (debounced).
     if (entry.assistantSessionId) { try { budget.onRunEnded(entry.assistantSessionId); } catch { /* the split stays as it is */ } }
-    if (entry.state === 'failed' && !budgetStopReason(entry.completionReason) && judge?.workerOutcome) {
+    if (entry.state === 'failed' && !budgetStopReason(entry.completionReason) && judge?.workerOutcome && !isEvalRun(entry)) {
       // State, queue and desktop move on now; the 'failed' event waits for its cause.
       emitFailed(entry, liveState?.evidence || null);
       processQueue().catch(() => {});
@@ -2889,7 +3500,8 @@ export function createAssistantDispatcher({
     if (entry.state === 'failed' || entry.lastResult?.status === 'blocked') { noteLimit(entry); entry.escalation = computeEscalation(entry); }
     emit(entry, entry.state);
     // A memory already stored for the run (by the worker or the brain) is the run's memory.
-    if (memory?.rememberDispatch && !syncMemory(entry, { announce: true }) && (entry.state === 'completed' || (entry.state === 'stopped' && entry.lastResult))) {
+    // An evaluation run (lib/skills/evals.js) is a measurement, not work to remember: it stores no memory.
+    if (memory?.rememberDispatch && !isEvalRun(entry) && !syncMemory(entry, { announce: true }) && (entry.state === 'completed' || (entry.state === 'stopped' && entry.lastResult))) {
       Promise.resolve(memory.rememberDispatch(view(entry))).then((memoryId) => {
         if (!memoryId) return;
         entry.memoryId = memoryId;
@@ -2904,6 +3516,8 @@ export function createAssistantDispatcher({
     if (!runId || !entries.has(runId)) return;
     const entry = entries.get(runId);
     if (message.type === 'sidepanel:provider-event') {
+      if (!isEvalRun(entry)) { try { observeSkillEvent(entry, message.event || {}); } catch {} }
+      if (entry.provider === 'codex' && Number(message.event?.providerTurn) > 0) resumeInfoOf(entry).providerTurn = Number(message.event.providerTurn);
       const liveState = live.get(runId);
       // Not tied to the live turn: a result that arrives after an abort is still settled.
       if (entry.provider === 'claude-code') { try { meterClaude(entry, message.event?.event); } catch (error) { log(runId, 'assistant:meter-error', error?.message || String(error)); } }
@@ -2911,8 +3525,18 @@ export function createAssistantDispatcher({
         liveState.lastEventAt = now();
         liveState.stalledFlagged = false;
         if (liveState.evidence) { try { recordProviderEvent(liveState.evidence, message.event); } catch {} }
+        // A skill-evaluation run: its tool calls (one entry per call id) and the catalog it started with, for its
+        // trigger reading (lib/skills/eval-trace.js; read with transcript format 'tools').
+        if (isEvalRun(entry)) { try { recordEvalCalls(liveState, message.event || {}); } catch {} }
         if (entry.provider === 'opencode') { try { meterOpenCode(entry, liveState, message.event || {}); } catch (error) { log(runId, 'assistant:meter-error', error?.message || String(error)); } }
         const summary = summarizeProviderEvent(message.event || {});
+        // A guard decision (lib/worker-confinement.js) is also a note of the run: what was refused or warned about,
+        // with its reason, so the brain and the panel see it without the transcript. The first twenty.
+        if ((message.event?.eventType || message.event?.event?.type) === 'synabun.confinement') {
+          const count = (liveState.guardEvents = (liveState.guardEvents || 0) + 1);
+          if (count <= 20) entry.notes.push(`guard ${message.event.event?.action || 'refused'}: ${clip(summary, 300)}`);
+          else if (count === 21) entry.notes.push('guard: more decisions follow in the transcript');
+        }
         if (summary) {
           const line = `${iso(now()).slice(11, 19)} ${summary}`;
           liveState.ring.push(line);
@@ -2926,9 +3550,20 @@ export function createAssistantDispatcher({
       return;
     }
     const run = message.run;
+    if (message.reason === 'mcp-tools' && Array.isArray(run.tools)) {
+      entry.tools = storedToolList({ tools: retainExternalRefs(run.tools, entry.tools) }, toolListOptions());
+      // Keep the original request for escalation, and the current selection for restart.
+      persist({ force: true });
+      emit(entry, 'tools_changed');
+    }
     entry.runtime = { status: run.status, turnState: run.turnState, stoppedReason: run.stoppedReason, error: run.error, claimedBy: run.claimedBy, providerSessionId: run.providerSessionId, providerThreadId: run.providerThreadId };
+    // A new provider identity is saved at once: a crash before the run's next write (its first alive mark comes up to
+    // a minute later) would otherwise leave no session to resume.
+    const newIdentity = (run.providerSessionId && run.providerSessionId !== entry.providerSessionId)
+      || (run.providerThreadId && run.providerThreadId !== entry.providerThreadId);
     if (run.providerSessionId) entry.providerSessionId = run.providerSessionId;
     if (run.providerThreadId) entry.providerThreadId = run.providerThreadId;
+    if (newIdentity) persist({ force: true });
     if (message.type === 'sidepanel:run-updated' && message.reason === 'started' && entry.state === 'starting') {
       entry.state = 'running';
       entry.turnState = 'running';
@@ -2950,10 +3585,13 @@ export function createAssistantDispatcher({
     refreshLimits();
     for (const runId of [...queue]) {
       const entry = entries.get(runId);
-      if (!entry || entry.state !== 'queued') { queue.splice(queue.indexOf(runId), 1); continue; }
+      // A run a restart cut off and a lowered limit held back (resumeOnBoot) waits at the head of the queue.
+      const resuming = entry?.state === 'resuming';
+      if (!entry || (entry.state !== 'queued' && !resuming)) { queue.splice(queue.indexOf(runId), 1); continue; }
       const spec = { provider: entry.provider, accountId: entry.accountId, workflowId: entry.workflowId, usesComputer: !!entry.usesComputer };
-      if (railBlock(spec, entry.assistantSessionId)) continue;
+      if (railBlock(spec, entry.assistantSessionId, resuming ? { except: runId } : {})) continue;
       queue.splice(queue.indexOf(runId), 1);
+      if (resuming) { try { await resumeRun(entry); } catch (error) { notResumed(entry, error?.message || String(error)); } continue; }
       try { await start(entry); emit(entry, 'queue_started'); } catch (error) { entry.notes.push(`queue start failed: ${error?.message || error}`); }
     }
   }
@@ -3026,6 +3664,8 @@ export function createAssistantDispatcher({
       return { ...base, text: text.length > cap ? text.slice(-cap) : text, truncated: text.length > cap };
     }
     if (format === 'files') return { ...base, files: entry.lastResult?.files || [] };
+    // A skill-evaluation run's tool calls and its start catalog (kept while the run lives).
+    if (format === 'tools') return { ...base, calls: liveState?.evalCalls ? [...liveState.evalCalls] : [], init: liveState?.evalInit || null, unavailable: !liveState ? 'tool calls are only kept for live runs' : null };
     if (format === 'events' || format === 'tail') {
       const lines = liveState ? liveState.ring.slice(-Math.max(1, Math.min(500, Number(tail) || 40))) : [];
       const joined = lines.join('\n');
@@ -3135,7 +3775,13 @@ export function createAssistantDispatcher({
   async function shutdown(reason = 'server_shutdown') {
     if (stalledTimer) clearInterval(stalledTimer);
     if (unsubscribeRuntime) { try { unsubscribeRuntime(); } catch {} unsubscribeRuntime = null; }
+    // An exit the graceful shutdown did not run before (a crash, an exit handler): the runs that may continue are
+    // suspended here as well, and their CLIs told to stop (an exit handler cannot wait for them; the next start ends
+    // what is left). A run waiting for its resume stays as it is, for the next start.
+    suspendForShutdown(reason);
     for (const entry of entries.values()) {
+      if (entry.state === 'suspended') { signalWorkerProcess(entry); continue; }
+      if (entry.state === 'resuming') continue;
       if (ACTIVE_STATES.has(entry.state)) {
         pauseWork(entry);
         entry.state = 'interrupted'; entry.completionReason = reason; entry.finishedAt = iso(now()); entry.turnState = 'terminal'; entry.pending = [];
@@ -3150,12 +3796,17 @@ export function createAssistantDispatcher({
 
   loadRegistry();
   attachRuntime();
-  stalledTimer = setInterval(() => { attachRuntime(); checkStalled(); }, 60_000);
+  stalledTimer = setInterval(() => { attachRuntime(); checkStalled(); beat(); }, 60_000);
   stalledTimer.unref?.();
+  // After a restart: the cut-off runs are resumed, or said to have ended, once the Assistant listens (server.js makes
+  // its runtime, which subscribes, right after this dispatcher, in the same tick).
+  if (bootResumes.length || bootInterrupts.length) {
+    setTimeout(() => { resumeOnBoot().catch((error) => log(null, 'assistant:resume-error', error?.message || String(error))); }, 0);
+  }
 
   return {
     dispatch, sendTurn, complete, completeClosedTab, stop, killAll, get, peek, list, totals, wait, transcript, pendingPermissions,
-    respondPermission, subscribe, shutdown, limits,
+    respondPermission, subscribe, shutdown, limits, suspendForShutdown,
     sessionBudget, checkSession, refreshLimits, providerSpend, coverFollowUp, budget,
     resolveRoute, declineRoute, heldRouteRefusal, escalate,
     markDelivered, deliveryState,

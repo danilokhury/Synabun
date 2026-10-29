@@ -2,18 +2,25 @@
 // SynaBun Neural Interface — Skills Studio 2.0: a workspace
 // ═══════════════════════════════════════════
 //
-// What opens from the Library: a breadcrumb back (the open documents stay), the name with its kind, where it comes
-// from and its health, the actions (Save, Publish, more), four tabs (Edit · Test · Versions · Publish; Alt+1…4
-// outside a text field, the arrows on the tab bar) and the banners that say what this is: read-only and why, an
-// update SynaBun ships, a folder not in the library yet, a draft not installed, a submission in review.
+// What opens from the Library: a breadcrumb back (the open documents stay), the name with its kind and, for a
+// library skill, one status (draft, in review, approved · not installed, installed where: sx-install.js
+// installStatus; it opens Publish) and its health only when something is wrong; the actions (Save, more), four tabs
+// (Edit · Test · Versions · Publish; Alt+1…4 outside a text field, the arrows on the tab bar) and the banners that
+// say what this is: read-only and why, an update SynaBun ships, a folder not in the library yet, a draft not
+// installed, a submission in review, and an approved one with "Install for …" (sx-install-flow.js: the plan, one
+// question only when the plan asks one, then the install; the banner then says where it went).
 
+import { studioErrorText } from './sx-errors.js';
 import { html, setHTML, ICONS } from './sx-dom.js';
 import { loadWorkspace, dirtyTabs, saveVersion } from './sx-docs.js';
-import { healthCapsule, sourceLabel } from './sx-library-view.js';
+import { healthCapsule, sourceLabel, statusPill } from './sx-library-view.js';
+import { installStatus } from './sx-install.js';
+import { reviewTargets, installFlow, flowWords, installBusy, acquireInstall, alsoInstall, alsoInstallNow } from './sx-install-flow.js';
 import { changedFiles } from './sx-diff.js';
 import { renderEditTab, editShortcut, disposeEditor, forgetEditorWorkspace, saveActive, editTabsDirty, onEditExternalChange } from './sx-edit-view.js';
 import { renderVersionsTab } from './sx-versions-view.js';
 import { renderPublishTab } from './sx-publish-view.js';
+import { renderTestTab, leaveTestTab, testShortcut } from './sx-test-view.js';
 import { reviewUpdateFlow } from './sx-review-view.js';
 import { customizeCopy, adoptNow, deleteSubject, exportSubject, canDeleteFromLibrary, deleteFromLibrary } from './sx-actions.js';
 
@@ -44,6 +51,7 @@ export function disposeWorkspace(ws) {
  * object URL). Called before the panel is removed, so it cannot ask the page whether the panel is still there.
  */
 export function disposeStudio(workspaces) {
+  leaveTestTab();
   for (const ws of workspaces) disposeWorkspace(ws);
   disposeEditor();
 }
@@ -58,6 +66,7 @@ export function workspaceShortcut(e, ctx) {
     switchTab(ctx, ws, TABS[Number(e.code.slice(5)) - 1]);
     return true;
   }
+  if (testShortcut(e, ctx, ws)) return true;
   return editShortcut(e, ctx, ws);
 }
 
@@ -102,10 +111,45 @@ function bannersHTML(ctx, ws) {
   } else if (s.mode === 'library' && ws.skill && !ws.skill.revisions) {
     out.push(banner('draft', ICONS.draft, t('skillsStudio.ws.banner.newDraft'), html`<button type="button" class="sx-btn" data-ws="go-publish">${t('skillsStudio.ws.publish')}</button>`));
   }
-  if (row.review) {
-    out.push(banner('info', ICONS.review, t(`skillsStudio.ws.banner.review.${row.review.state}`), html`<button type="button" class="sx-btn" data-ws="open-review">${t('skillsStudio.ws.openReview')}</button>`));
+  // Installed for one assistant, not the others in effect: one press adds them (never a second copy of what is there).
+  if (!ctx.guest && (ws.skill || row.skill) && row.source !== 'synabun') {
+    const status = installStatus({ skill: ws.skill || row.skill, row });
+    const also = ['installed', 'outdated'].includes(status?.code) ? alsoInstall(ctx, { skill: ws.skill || row.skill, row }) : { targets: [] };
+    if (also.targets.length) {
+      const busy = installBusy((ws.skill || row.skill)?.skillId);
+      const where = [...new Set(status.where.map((w) => t(`skillsStudio.runtime.${['claude', 'codex', 'opencode', 'agents'].includes(w.runtime) ? w.runtime : 'claude'}`)))].join(' · ');
+      out.push(banner('info', ICONS.publish, t('skillsStudio.ws.banner.alsoInstall', { where, targets: also.words }),
+        html`<button type="button" class="sx-btn sx-btn--primary" data-ws="also-install" id="sx-ws-also-install"${busy ? ' disabled' : ''} aria-disabled="${busy ? 'true' : 'false'}">${ICONS.publish}<span>${busy ? t('skillsStudio.review.installing') : t('skillsStudio.ws.alsoInstallFor', { targets: also.words })}</span></button>`));
+    }
   }
-  if (ws.notice) out.push(banner(ws.notice.kind || 'info', ICONS.info, ws.notice.text, html`<button type="button" class="sx-btn sx-btn--ghost" data-ws="dismiss-notice">${t('skillsStudio.dialog.dismiss')}</button>`));
+  if (row.review) {
+    const status = installStatus({ skill: ws.skill || row.skill, row });
+    if (status?.code === 'approved' && !ctx.guest) {
+      // Approved, not installed: one press installs it to the targets the submission named (the plan, one question
+      // only when it asks one). The label names where it goes, from the very targets the press sends
+      // (sx-install-flow.js reviewTargets: the same roots and the same settings); when none of what it named is
+      // available here, the banner says so and offers Publish instead of installing elsewhere.
+      const dest = reviewTargets(ctx, { review: row.review, skill: ws.skill || row.skill, row });
+      const busy = installBusy((ws.skill || row.skill)?.skillId);
+      const where = dest.words.join(', ');
+      const unavailable = dest.missing.map((m) => t('skillsStudio.review.targetUnavailable', { target: m.words, reason: m.why }));
+      const text = unavailable.length
+        ? html`<span class="sx-block">${t('skillsStudio.ws.banner.review.approved')}</span><ul class="sx-plain-list sx-banner-lines">${unavailable.map((l) => html`<li class="sx-warn-text">${l}</li>`)}${!dest.targets.length ? html`<li>${t('skillsStudio.review.noDestination')}</li>` : ''}</ul>`
+        : t('skillsStudio.ws.banner.review.approved');
+      out.push(banner('info', ICONS.review, text,
+        html`${dest.targets.length ? html`<button type="button" class="sx-btn sx-btn--primary" data-ws="install-review" id="sx-ws-install"${busy ? ' disabled' : ''} aria-disabled="${busy ? 'true' : 'false'}">${ICONS.publish}<span>${busy ? t('skillsStudio.review.installing') : t('skillsStudio.ws.installFor', { targets: where })}</span></button>`
+          : html`<button type="button" class="sx-btn sx-btn--primary" data-ws="go-publish">${t('skillsStudio.review.openPublish')}</button>`}
+          <button type="button" class="sx-btn sx-btn--ghost" data-ws="open-review">${t('skillsStudio.ws.openReview')}</button>`));
+    } else {
+      out.push(banner('info', ICONS.review, t(`skillsStudio.ws.banner.review.${row.review.state}`), html`<button type="button" class="sx-btn" data-ws="open-review">${t('skillsStudio.ws.openReview')}</button>`));
+    }
+  }
+  if (ws.notice) {
+    const lines = Array.isArray(ws.notice.lines) ? ws.notice.lines : [];
+    out.push(banner(ws.notice.kind || 'info', ws.notice.kind === 'ok' ? ICONS.ok : ws.notice.kind === 'warn' ? ICONS.warn : ICONS.info,
+      lines.length ? html`<span class="sx-block">${ws.notice.text}</span><ul class="sx-plain-list sx-banner-lines">${lines.map((l) => html`<li>${l}</li>`)}</ul>` : ws.notice.text,
+      html`<button type="button" class="sx-btn sx-btn--ghost" data-ws="dismiss-notice">${t('skillsStudio.dialog.dismiss')}</button>`));
+  }
   return out;
 }
 
@@ -116,6 +160,10 @@ function headHTML(ctx, ws) {
   const src = sourceLabel(row, t);
   const dirty = dirtyTabs(ws).length;
   const kind = row.kind === 'command' ? t('skillsStudio.kind.commandLegacy') : t(`skillsStudio.kind.${row.kind}`);
+  // A library skill shows one status (it opens Publish) and its health only when something is wrong; the rest shows
+  // where it comes from and its health.
+  const status = installStatus({ skill: ws.skill || row.skill, row });
+  const worst = row.health[0] || { sev: 'ok' };
   return html`<div class="sx-ws-head">
     <nav class="sx-crumb" aria-label="${t('skillsStudio.ws.breadcrumb')}">
       <button type="button" class="sx-link" data-ws="back">${ICONS.back}<span>${t('skillsStudio.rail.library')}</span></button>
@@ -124,31 +172,15 @@ function headHTML(ctx, ws) {
     <div class="sx-ws-title">
       <h3 class="sx-ws-name" id="sx-ws-name" tabindex="-1">${ws.label}</h3>
       <span class="sx-tag">${kind}</span>
-      <span class="sx-tag" title="${src.detail}">${src.label}${src.detail ? html` · ${src.detail}` : ''}</span>
-      ${healthCapsule(row, t)}
+      ${status ? statusPill(status, ctx, { button: s.canPublish ? 'go-publish' : null, id: 'sx-ws-status' }) : html`<span class="sx-tag" title="${src.detail}">${src.label}${src.detail ? html` · ${src.detail}` : ''}</span>`}
+      ${!status || worst.sev === 'err' || worst.sev === 'warn' ? healthCapsule(row, t) : ''}
       <span class="sx-spacer"></span>
       ${s.editable ? html`<button type="button" class="sx-btn" data-ws="save" id="sx-save"${dirty ? '' : ' disabled'} aria-keyshortcuts="${ctx.mac ? 'Meta+S' : 'Control+S'}">${t('skillsStudio.ws.save')} <kbd>${ctx.mac ? '⌘S' : 'Ctrl+S'}</kbd></button>` : ''}
-      ${s.canPublish ? html`<button type="button" class="sx-btn sx-btn--primary" data-ws="go-publish">${ICONS.publish}<span>${t('skillsStudio.ws.publish')}</span></button>` : ''}
       <button type="button" class="sx-icon-btn" data-ws="more" aria-haspopup="menu" aria-expanded="false" aria-label="${t('skillsStudio.ws.more')}" title="${t('skillsStudio.ws.more')}">${ICONS.more}</button>
     </div>
     <div class="sx-tabs" role="tablist" aria-label="${ws.label}">
       ${TABS.map((tab, i) => html`<button type="button" class="sx-tab" role="tab" id="sx-tab-${tab}" aria-controls="sx-tabpanel" aria-selected="${ws.tab === tab ? 'true' : 'false'}" tabindex="${ws.tab === tab ? '0' : '-1'}" data-tab="${tab}" aria-keyshortcuts="Alt+${i + 1}">${t(`skillsStudio.ws.tabs.${tab}`)}${tab === 'edit' && dirty ? html`<span class="sx-dot" role="img" aria-label="${t('skillsStudio.ws.unsaved')}"></span>` : ''}</button>`)}
     </div>
-  </div>`;
-}
-
-function testTabHTML(ctx) {
-  const { t } = ctx;
-  return html`<div class="sx-placeholder">
-    <span class="sx-placeholder-icon" aria-hidden="true">${ICONS.test}</span>
-    <h4 class="sx-placeholder-title">${t('skillsStudio.test.title')}</h4>
-    <p>${t('skillsStudio.test.body')}</p>
-    <ul class="sx-plain-list sx-placeholder-list">
-      <li>${t('skillsStudio.test.trigger')}</li>
-      <li>${t('skillsStudio.test.sample')}</li>
-      <li>${t('skillsStudio.test.compare')}</li>
-    </ul>
-    <p class="sx-dim">${t('skillsStudio.test.meanwhile')}</p>
   </div>`;
 }
 
@@ -158,6 +190,8 @@ export function renderWorkspace(host, ctx, ws) {
   // A "more" menu open in the drawing before (opened while the workspace was still loading) goes with it: kept, it
   // would stay pointed at markup that is gone, and the next click on More would only close it.
   closeWorkspaceMenus(null);
+  // The Test tab's listeners, timers and long polls end with every drawing (drawn again below when it is shown).
+  leaveTestTab();
   const { t } = ctx;
   if (!ws.loaded && !ws.loadingPromise) {
     const gen = ctx.gen();
@@ -177,11 +211,11 @@ export function renderWorkspace(host, ctx, ws) {
   </section>`);
   const panel = host.querySelector('#sx-tabpanel');
   if (ws.error && !ws.loaded) {
-    setHTML(panel, html`<div class="sx-empty" role="alert"><h4 class="sx-empty-title">${t('skillsStudio.ws.loadFailed')}</h4><p class="sx-dim">${ws.error.message || ''}</p><button type="button" class="sx-btn" data-ws="retry">${t('skillsStudio.shell.retry')}</button></div>`);
+    setHTML(panel, html`<div class="sx-empty" role="alert"><h4 class="sx-empty-title">${t('skillsStudio.ws.loadFailed')}</h4><p class="sx-dim">${studioErrorText(ctx.t, ws.error)}</p><button type="button" class="sx-btn" data-ws="retry">${t('skillsStudio.shell.retry')}</button></div>`);
   } else if (!ws.loaded) {
     setHTML(panel, html`<div class="sx-empty" role="status"><p>${t('skillsStudio.ws.loading')}</p></div>`);
   } else if (ws.tab === 'edit') renderEditTab(panel, ctx, ws);
-  else if (ws.tab === 'test') setHTML(panel, testTabHTML(ctx));
+  else if (ws.tab === 'test') renderTestTab(panel, ctx, ws);
   else if (ws.tab === 'versions') renderVersionsTab(panel, ctx, ws);
   else if (ws.tab === 'publish') renderPublishTab(panel, ctx, ws);
   wireHead(host, ctx, ws);
@@ -261,7 +295,9 @@ async function onAction(act, btn, ctx, ws) {
     case 'more': openMore(btn, ctx, ws); return;
     case 'customize': customizeCopy(ctx, ws); return;
     case 'adopt': adoptNow(ctx, ws); return;
-    case 'open-review': ctx.goPlace('review'); return;
+    case 'open-review': ctx.openReview(ws.row.review?.reviewId || null); return;
+    case 'install-review': installFromBanner(ctx, ws); return;
+    case 'also-install': installAlsoFromBanner(ctx, ws); return;
     case 'dismiss-notice': ws.notice = null; refreshWorkspaceChrome(ctx, ws); return;
     case 'update-review': reviewUpdateFlow(ctx, ws.row, 'review'); return;
     case 'update-apply': reviewUpdateFlow(ctx, ws.row, 'apply'); return;
@@ -274,7 +310,7 @@ async function onAction(act, btn, ctx, ws) {
         if (!ctx.alive(gen)) return;
         ctx.toast(out.unchanged ? t('skillsStudio.toast.versionUnchanged') : t('skillsStudio.toast.versionSaved'));
         await ctx.reload();
-      } catch (err) { if (ctx.alive(gen)) ctx.toast(t('skillsStudio.toast.versionFailed', { error: err.message }), 'error'); }
+      } catch (err) { if (ctx.alive(gen)) ctx.toast(t('skillsStudio.toast.versionFailed', { error: studioErrorText(ctx.t, err) }), 'error'); }
       return;
     }
     default: return;
@@ -340,4 +376,50 @@ async function closeWorkspace(ctx, ws) {
     if (answer !== 'keep') return;
   }
   ctx.closeWorkspace(ws);
+}
+
+/**
+ * The banner's Install: the approved version to the targets the submission named, in one go (the plan, one question
+ * only when it asks one, then exactly that plan). The banner then says where it went and what a running session
+ * needs; Publish starts over from the new state.
+ */
+/** The banner's "Also install for …": the installed version to the assistants that lack it, in one go. */
+async function installAlsoFromBanner(ctx, ws) {
+  const gen = ctx.gen();
+  const words = await alsoInstallNow(ctx, { skill: ws.skill || ws.row.skill, row: ws.row });
+  if (!ctx.alive(gen) || !words) return;
+  ws.notice = { kind: words.kind === 'info' ? 'ok' : 'warn', text: words.line, lines: words.lines };
+  ctx.toast(words.line, words.kind);
+  ctx.announce(words.line);
+  ws.pub = null;
+  try { ws.skill = (await ctx.api.fetchSkill(ws.skill.skillId)).skill; } catch { /* the reload */ }
+  await ctx.reload();
+}
+
+async function installFromBanner(ctx, ws) {
+  const { t } = ctx;
+  const review = ws.row.review;
+  if (!review || ctx.guest) return;
+  const skillId = (ws.skill || ws.row.skill)?.skillId;
+  // One install of a skill at a time, from whichever surface: a second press anywhere is refused while it is on its way.
+  const release = acquireInstall(skillId);
+  if (!release) { ctx.toast(t('skillsStudio.publish.busyElsewhere'), 'error'); return; }
+  const gen = ctx.gen();
+  let out;
+  try {
+    const { targets } = reviewTargets(ctx, { review, skill: ws.skill || ws.row.skill, row: ws.row });
+    if (!targets.length) { release(); ctx.toast(t('skillsStudio.review.noDestination'), 'error'); switchTab(ctx, ws, 'publish'); return; }
+    out = await installFlow(ctx, { revisionId: review.submittedRevisionId, targets, reviewId: review.reviewId });
+  } catch (err) { out = { status: 'failed', error: studioErrorText(ctx.t, err) }; }
+  finally { release(); }
+  if (!ctx.alive(gen)) return;
+  const words = flowWords(ctx, out);
+  if (words) {
+    ws.notice = { kind: words.kind === 'info' ? 'ok' : 'warn', text: words.line, lines: words.lines };
+    ctx.toast(words.line, words.kind);
+    ctx.announce(words.line);
+  }
+  if (out.status === 'done') { ws.pub = null; ws.publishReviewId = null; ws.publishRevisionId = null; }
+  try { ws.skill = (await ctx.api.fetchSkill(ws.skill.skillId)).skill; } catch { /* the reload */ }
+  await ctx.reload();
 }

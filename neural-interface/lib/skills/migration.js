@@ -4,10 +4,13 @@
 // read real skill folders (verified with codex-cli 0.163.0 and opencode 2.0.32), so a bridge moves to a native
 // install of the same skill (owner decision, 2026-10-22). The move is:
 //
-//   - owned first: a bridge is SynaBun's only when the install ledger recorded exactly these bytes, or they are
-//     exactly what SynaBun writes for that bundled skill today, or they carry the bridge's own signature and name
-//     a skill SynaBun ships (then the plan shows the file's digest, and moving it is the owner's confirmation of
-//     those bytes). A file without that proof is not SynaBun's: it is listed and left alone.
+//   - owned first: a bridge moves by itself only when the install ledger recorded exactly these bytes, they are
+//     exactly what SynaBun writes for that bundled skill today, or exactly what an earlier SynaBun version wrote for
+//     that runtime and skill from this install's folder (`ledger`, `generated-current`, `generated-previous`: the
+//     shipped list of earlier generations, lib/skills/known-bridges.js). One that only carries the bridge's own
+//     signature banner (`generated-signature`: SynaBun's wording, but edited since, or bytes no list knows) is offered
+//     like any unproven file of a shipped skill, and moves only when the owner confirms its exact bytes (`confirm`).
+//     A file without any of that is not SynaBun's: it is listed and left alone.
 //   - native before anything is removed: the skill is installed into the runtime's skills folder through
 //     lib/skills/deploy.js (plan, digest, backup of anything there) and checked by digest;
 //   - backup-first: the bridge's exact bytes are copied into the migration's journal folder and read back before
@@ -18,21 +21,29 @@
 //   - reversible: revert(journalId) puts every bridge back where it was (only into a free place) and rolls back
 //     each native install the migration made (only while it still holds what was installed).
 //
-// Nothing here runs by itself: the server never migrates at start. The owner starts it from Settings → Skills
-// (plan, then "Move to skill folders"), or through POST /api/skills-studio/v2/migrations/bridges with the plan's
-// digest from the app's own page.
+// When it runs (owner decision 2026-10-22: switch to native folders with backups, and 2026-10-23: by itself): once at
+// every server start, `autoMigrate()` moves the bridges that are proven SynaBun's (and only those), journaled and
+// reversible as above, and leaves a one-time notice (`notice()`) the Studio shows with Undo. A bridge that is not
+// proven SynaBun's is never moved by itself: the plan lists it with `offer` when SynaBun ships a skill of its name,
+// and the owner may move it from the Studio or Settings by confirming its exact bytes (`confirm[bridgeId] =
+// digest`). Undoing an automatic move pauses the automatic run (`autoPaused`) until the owner moves by hand again,
+// so a move the owner took back never comes back by itself. The routes are the owner's, from the app's own page
+// (POST /api/skills-studio/v2/migrations/bridges with the plan's digest); the server runs only `autoMigrate`.
 
 import { createHash, randomBytes } from 'node:crypto';
-import { lstatSync, mkdirSync, readdirSync, unlinkSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { lstatSync, mkdirSync, readdirSync, realpathSync, unlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve, sep } from 'node:path';
 import { PathConfineError } from '../path-confine.js';
 import { readConfinedFile, replaceFileAtomic, writeConfinedFile } from '../confined-fs.js';
 import { fileEntry, manifestDigest, sha256 } from './digest.js';
 import { digestOf } from './library.js';
+import { matchPreviousBridge } from './known-bridges.js';
 
 export const MIGRATION_SCHEMA = 1;
 const JOURNAL_RE = /^mig_[0-9a-f]{20}$/;
 const BRIDGE_MAX_BYTES = 2 * 1024 * 1024;
+const AUTO_STATE = 'auto-state.json';
 
 export class MigrationError extends PathConfineError {
   constructor(status, message, code, extra = {}) {
@@ -42,8 +53,9 @@ export class MigrationError extends PathConfineError {
   }
 }
 
-// The text SynaBun's bridges carried (lib/skill-prompt-bridge.js and server.js buildCliSkillPrompt, every version
-// since they shipped): the Codex pointer and the OpenCode banner.
+// The text SynaBun's bridges carried (lib/skill-prompt-bridge.js and server.js buildCliSkillPrompt): the Codex pointer
+// (since 2026-07-13) and the OpenCode banner. Codex bridges written before 2026-07-13 were the OpenCode text with an
+// invocation note: no Codex signature, so only the list of earlier generations (proof generated-previous) knows them.
 const CODEX_SIGNATURE = /\n# SynaBun Skill Bridge\n\nRead `([^`\n]+)` with the local file tools and follow it exactly\./;
 const OPENCODE_SIGNATURE = /\n> SynaBun skill bridge — full instructions live in the bundled SynaBun repo at\n> ([^\n]+)\. Load any referenced module files using your runtime's file-read tool\.\n/;
 
@@ -75,14 +87,39 @@ export function bridgeSignature(text, { name, family }) {
  * @param {object} o.deployer lib/skills/deploy.js
  * @param {(name: string) => object|null} o.bundledRevision the library revision of a bundled skill (its upstream)
  * @param {(name: string, runtime: string) => string|null} [o.currentBridge] what SynaBun's bridge for it would be today
+ * @param {(name: string) => string|null} [o.bundledSkillDir] the bundled skill's folder as the generator wrote it into
+ *   a bridge; by default read from today's bridges (OpenCode's banner names it, Codex's pointer its SKILL.md)
+ * @param {Map<string, object[]>} [o.knownBridges] the earlier generations (lib/skills/known-bridges.js readKnownBridges);
+ *   by default the shipped list
  */
-export function createBridgeMigration({ dataDir, roots, ownership, deployer, bundledRevision, currentBridge = () => null, emit = () => {}, now = () => new Date().toISOString(), newId = () => `mig_${randomBytes(10).toString('hex')}` }) {
+export function createBridgeMigration({ dataDir, roots, ownership, deployer, bundledRevision, currentBridge = () => null, bundledSkillDir = null, knownBridges = undefined, emit = () => {}, now = () => new Date().toISOString(), newId = () => `mig_${randomBytes(10).toString('hex')}` }) {
   const home = join(dataDir, 'migrations');
+
+  /** The bundled folder of a skill as its bridges name it, or null (then no earlier generation can be proven). */
+  function skillDirOf(name) {
+    const safe = (fn) => { try { return fn(); } catch { return null; } };
+    if (bundledSkillDir) { const dir = safe(() => bundledSkillDir(name)); return typeof dir === 'string' && dir ? dir : null; }
+    const oc = safe(() => currentBridge(name, 'opencode'));
+    const banner = typeof oc === 'string' ? bridgeSignature(oc, { name, family: 'opencode' }) : null;
+    if (banner) return banner.pointsTo;
+    const cx = safe(() => currentBridge(name, 'codex'));
+    const pointer = typeof cx === 'string' ? bridgeSignature(cx, { name, family: 'codex' }) : null;
+    // join(folder, 'SKILL.md'): the folder is the pointer without its last separator and file name.
+    if (pointer && /[\\/]SKILL\.md$/.test(pointer.pointsTo)) return pointer.pointsTo.slice(0, -'/SKILL.md'.length);
+    return null;
+  }
 
   /** Every old bridge in the runtimes' folders, with its proof of being SynaBun's. */
   function findBridges() {
     const out = [];
     const seen = new Set();
+    const dirs = new Map();
+    const dirOf = (name) => { if (!dirs.has(name)) dirs.set(name, skillDirOf(name)); return dirs.get(name); };
+    // Exactly the bytes an earlier SynaBun version wrote for this runtime and skill, from this install's folder.
+    const earlierGeneration = (bytes, name, runtime) => {
+      const dir = dirOf(name);
+      return dir ? matchPreviousBridge(bytes, { runtime, name, skillDir: dir, ...(knownBridges ? { known: knownBridges } : {}) }) : null;
+    };
     for (const root of roots.listRoots()) {
       if (root.sourceKind !== 'legacy-bridge' || root.status !== 'ok') continue;
       const where = root.resolvedPath || root.path;
@@ -107,22 +144,37 @@ export function createBridgeMigration({ dataDir, roots, ownership, deployer, bun
         const today = (() => { try { return currentBridge(name, root.family); } catch { return null; } })();
         const signature = bridgeSignature(text, { name, family: root.family });
         let proof = 'none';
+        let previous = null;
         if (ledgerOwned) proof = 'ledger';
         else if (today !== null && today === text) proof = 'generated-current';
+        else if ((previous = earlierGeneration(bytes, name, root.family))) proof = 'generated-previous';
         else if (signature) proof = 'generated-signature';
-        out.push({ ...row, digest, size: bytes.length, proof, signature, ledgerRecord: !!record, why: proof === 'none' ? (record ? 'SynaBun installed a bridge here, but it was changed since: left as it is.' : 'Not one of SynaBun\'s bridges: left as it is.') : '' });
+        out.push({ ...row, digest, size: bytes.length, proof, signature, ...(previous ? { previous: { since: previous.firstDate || null, firstCommit: previous.firstCommit || null } } : {}), ledgerRecord: !!record, why: proof === 'none' ? (record ? 'SynaBun installed a bridge here, but it was changed since: left as it is.' : 'Not one of SynaBun\'s bridges: left as it is.') : '' });
       }
     }
     return out;
   }
 
-  /** What a migration would do, bridge by bridge, with the native install plan of each. */
-  async function plan() {
+  /**
+   * What a migration would do, bridge by bridge, with the native install plan of each. A bridge that is not proven
+   * SynaBun's is left (`action: 'leave'`) and, when SynaBun ships a skill of its name, offered (`offer: { digest }`):
+   * `confirm[bridgeId] === digest` is the owner's word for exactly those bytes, and the step then moves (proof
+   * `owner-confirmed`). The plan's digest covers the proofs, so a confirmation is part of what a move is taken by.
+   * @param {{ confirm?: Record<string, string> }} [o]
+   */
+  async function plan({ confirm = {} } = {}) {
     const bridges = findBridges();
     const steps = [];
     for (const b of bridges) {
-      const step = { ...b, action: 'skip', native: null };
-      if (b.proof === 'none') { step.action = 'leave'; steps.push(step); continue; }
+      const step = { ...b, action: 'skip', native: null, offer: null };
+      // By itself only on exact bytes (the ledger's, today's generation, or an earlier version's). A signature-only
+      // bridge (edited since, or bytes no list knows) and any other file of a shipped skill wait for the owner's word.
+      if (b.proof === 'none' || b.proof === 'generated-signature') {
+        const shipped = b.kind === 'file' && b.digest ? bundledRevision(b.name) : null;
+        if (shipped) step.offer = { digest: b.digest, revisionId: shipped.revisionId, signature: b.proof === 'generated-signature' };
+        if (shipped && confirm && typeof confirm === 'object' && confirm[b.bridgeId] === b.digest) step.proof = 'owner-confirmed';
+        else { step.action = 'leave'; if (b.proof === 'generated-signature' && !step.why) step.why = 'It has SynaBun\'s bridge wording but not the bytes SynaBun writes today (edited, or an older version): moved only when you confirm it.'; steps.push(step); continue; }
+      }
       const revision = bundledRevision(b.name);
       if (!revision) { step.action = 'leave'; step.why = `SynaBun no longer ships a "${b.name}" skill to install in its place: left as it is.`; steps.push(step); continue; }
       const target = { runtime: b.runtime, scope: 'user', accountId: b.runtime === 'codex' ? b.accountId : 'default' };
@@ -137,7 +189,72 @@ export function createBridgeMigration({ dataDir, roots, ownership, deployer, bun
       steps.push(step);
     }
     const subject = steps.map((s) => [s.bridgeId, s.path, s.digest, s.proof, s.action, s.native?.planDigest || null]);
-    return { steps, planDigest: digestOf(subject), counts: { migrate: steps.filter((s) => s.action === 'migrate').length, leave: steps.filter((s) => s.action === 'leave').length, blocked: steps.filter((s) => s.action === 'blocked').length }, createdAt: now() };
+    return { steps, planDigest: digestOf(subject), counts: { migrate: steps.filter((s) => s.action === 'migrate').length, leave: steps.filter((s) => s.action === 'leave').length, blocked: steps.filter((s) => s.action === 'blocked').length, offered: steps.filter((s) => s.action === 'leave' && s.offer).length }, createdAt: now() };
+  }
+
+  // ── The automatic run and its notice ──
+
+  function readAutoState() {
+    try { return { autoPaused: false, lastAuto: null, noticeDismissedAt: null, ...JSON.parse(readConfinedFile(home, join(home, AUTO_STATE), { maxBytes: 1024 * 1024, encoding: 'utf-8' })) }; } catch { return { autoPaused: false, lastAuto: null, noticeDismissedAt: null }; }
+  }
+  function writeAutoState(state) {
+    mkdirSync(home, { recursive: true, mode: 0o700 });
+    replaceFileAtomic(join(home, AUTO_STATE), `${JSON.stringify({ schemaVersion: 1, ...state, updatedAt: now() }, null, 2)}\n`, { mode: 0o600 });
+  }
+
+  /**
+   * The server's one run at start: move what is proven SynaBun's, if anything, and leave the notice. Nothing moves
+   * while the owner's undo of an earlier automatic move stands (`autoPaused`). Never throws.
+   * @returns {Promise<{ ran: boolean, reason?: string, result?: object, plan?: object }>}
+   */
+  async function autoMigrate() {
+    const state = readAutoState();
+    if (state.autoPaused) return { ran: false, reason: 'paused' };
+    let fresh;
+    try { fresh = await plan(); } catch (err) { return { ran: false, reason: 'plan-failed', error: err?.message || String(err) }; }
+    if (!fresh.counts.migrate) return { ran: false, reason: 'nothing', plan: fresh };
+    let result;
+    try { result = await migrate({ planDigest: fresh.planDigest, principal: { kind: 'system' }, auto: true }); } catch (err) { return { ran: false, reason: 'failed', error: err?.message || String(err), plan: fresh }; }
+    let noticeError = null;
+    if (result.journalId) {
+      // The move stands whatever happens to the notice: a notice that cannot be written is said, never thrown.
+      try {
+        writeAutoState({ ...state, lastAuto: { journalId: result.journalId, at: now(), status: result.status, migrated: result.results.filter((r) => r.outcome === 'migrated').map((r) => ({ runtime: r.runtime, name: r.name, path: r.path, destination: r.destination, proof: r.proof })), notMoved: result.results.filter((r) => r.outcome !== 'migrated').map((r) => ({ runtime: r.runtime, name: r.name, path: r.path, outcome: r.outcome, error: r.error || null })) }, noticeDismissedAt: null });
+      } catch (err) { noticeError = err?.message || String(err); }
+    }
+    return { ran: true, result, plan: fresh, ...(noticeError ? { noticeError } : {}) };
+  }
+
+  /**
+   * What the Studio shows once: the last automatic move while it stands (not undone, not dismissed), the bridges
+   * left behind that the owner may move by confirming them (`offers`, with the plan digest a confirmed move is
+   * taken by), and whether the automatic run is paused by an undo.
+   */
+  async function notice() {
+    const state = readAutoState();
+    let pending = null;
+    if (state.lastAuto && !state.noticeDismissedAt) {
+      let journal = null;
+      try { journal = readJournal(state.lastAuto.journalId); } catch { journal = null; }
+      if (journal && !['reverted', 'partially-reverted'].includes(journal.status)) pending = { ...state.lastAuto, status: journal.status };
+    }
+    let offers = [];
+    let planDigest = null;
+    let left = 0;
+    try {
+      const fresh = await plan();
+      planDigest = fresh.planDigest;
+      offers = fresh.steps.filter((s) => s.action === 'leave' && s.offer).map((s) => ({ bridgeId: s.bridgeId, runtime: s.runtime, name: s.name, path: s.path, digest: s.offer.digest, why: s.why || '' }));
+      left = fresh.steps.filter((s) => s.action === 'leave' && !s.offer).length;
+    } catch { /* no offers: the plan could not be made */ }
+    return { pending, offers, planDigest, left, autoPaused: !!state.autoPaused };
+  }
+
+  /** The owner read the notice: it is not shown again (the journal stays, Undo stays in Settings). */
+  function dismissNotice() {
+    const state = readAutoState();
+    writeAutoState({ ...state, noticeDismissedAt: now() });
+    return { ok: true };
   }
 
   function journalDir(id) {
@@ -166,12 +283,14 @@ export function createBridgeMigration({ dataDir, roots, ownership, deployer, bun
    * Move every bridge the plan marks `migrate`. `planDigest` must be the plan's: anything that changed since
    * (a file, a proof, a destination) makes it 409 with the new plan, and nothing happens.
    */
-  async function migrate({ planDigest, principal = { kind: 'owner' } }) {
-    const fresh = await plan();
+  async function migrate({ planDigest, confirm = {}, principal = { kind: 'owner' }, auto = false }) {
+    const fresh = await plan({ confirm });
     if (typeof planDigest !== 'string' || planDigest !== fresh.planDigest) throw new MigrationError(409, 'The bridges or their destinations changed since the plan was shown. Nothing was moved; look at the new plan.', 'plan_changed', { plan: fresh });
     const todo = fresh.steps.filter((s) => s.action === 'migrate');
     if (!todo.length) return { ok: true, journalId: null, results: [], plan: fresh, nothingToDo: true };
-    const journal = { schemaVersion: MIGRATION_SCHEMA, journalId: newId(), createdAt: now(), status: 'running', by: principal?.kind || 'owner', planDigest, steps: [], events: [] };
+    // A move the owner asks for by hand lifts the pause an undo of an automatic move left.
+    if (!auto) { const state = readAutoState(); if (state.autoPaused) writeAutoState({ ...state, autoPaused: false, pausedBy: null }); }
+    const journal = { schemaVersion: MIGRATION_SCHEMA, journalId: newId(), createdAt: now(), status: 'running', by: principal?.kind || 'owner', auto: !!auto, planDigest, steps: [], events: [] };
     if (!JOURNAL_RE.test(journal.journalId)) throw new MigrationError(500, 'Bad migration id.', 'bad_id');
     writeJournal(journal);
     const event = (text) => { journal.events.push({ at: now(), text }); };
@@ -203,6 +322,10 @@ export function createBridgeMigration({ dataDir, roots, ownership, deployer, bun
         const again = lstatSync(s.path);
         const now2 = readConfinedFile(dirname(s.path), s.path, { maxBytes: BRIDGE_MAX_BYTES });
         if (again.ino !== st.ino || sha256(now2) !== s.digest) { step.outcome = 'bridge-changed'; event(`${s.path}: changed while it was moved; left in place.`); writeJournal(journal); continue; }
+        // The intent first: a crash between the removal and its record would otherwise leave a bridge gone that an
+        // undo believes was never removed (revert restores from the kept copy whenever the file is missing).
+        step.removing = true;
+        writeJournal(journal);
         unlinkSync(s.path);
         step.bridgeRemoved = true;
         step.outcome = 'migrated';
@@ -231,13 +354,15 @@ export function createBridgeMigration({ dataDir, roots, ownership, deployer, bun
     const results = [];
     for (const step of [...journal.steps].reverse()) {
       const out = { bridgeId: step.bridgeId, path: step.path, bridge: 'untouched', native: 'untouched' };
-      if (step.bridgeRemoved && !step.bridgeRestored) {
+      if ((step.bridgeRemoved || step.removing) && step.bridgeBackup && !step.bridgeRestored) {
         try {
           const bytes = readConfinedFile(dir, join(dir, step.bridgeBackup), { maxBytes: BRIDGE_MAX_BYTES });
           if (sha256(bytes) !== step.digest) throw new MigrationError(500, 'The kept copy does not match.', 'backup_corrupt');
           let present = true;
           try { lstatSync(step.path); } catch { present = false; }
-          if (present) { out.bridge = 'conflict'; out.why = `${step.path} exists again: the kept bridge was not put over it (it stays in ${join(dir, step.bridgeBackup)}).`; }
+          // Present and never recorded as removed: the move stopped before the removal; nothing to put back.
+          if (present && !step.bridgeRemoved) { out.bridge = 'untouched'; }
+          else if (present) { out.bridge = 'conflict'; out.why = `${step.path} exists again: the kept bridge was not put over it (it stays in ${join(dir, step.bridgeBackup)}).`; }
           else {
             mkdirSync(dirname(step.path), { recursive: true });
             writeConfinedFile(dirname(step.path), step.path, bytes, { exclusive: true, mode: step.bridgeMode || 0o644 });
@@ -263,15 +388,46 @@ export function createBridgeMigration({ dataDir, roots, ownership, deployer, bun
     journal.status = clean ? 'reverted' : 'partially-reverted';
     journal.events.push({ at: now(), text: `Reverted by ${principal?.kind || 'owner'}: ${clean ? 'everything is back' : 'some steps could not be undone'}.` });
     writeJournal(journal);
+    // An automatic move the owner took back stays taken back: the next start moves nothing by itself.
+    if (journal.auto) { const state = readAutoState(); writeAutoState({ ...state, autoPaused: true, pausedBy: journalId }); }
     ownership.note({ action: 'revert-migration', journalId, result: journal.status });
     emit({ type: 'migration.changed', journalId });
     return { ok: clean, journalId, status: journal.status, results };
   }
 
-  return { findBridges, plan, migrate, revert, readJournal, listJournals, paths: { home } };
+  return { findBridges, plan, migrate, revert, autoMigrate, notice, dismissNotice, readJournal, listJournals, paths: { home } };
 }
 
 /** The one-file manifest digest an install records for a bridge (lib/skills/ownership.js payloadFromText). */
 function digestManifest(bytes, executable) {
   return manifestDigest([fileEntry('.', bytes, { executable })]);
+}
+
+/**
+ * Whether the server may move the owner's bridges by itself at this start: never under a test run (NODE_TEST_CONTEXT,
+ * VITEST), never with the kill switch (SYNABUN_SKILLS_AUTO_MIGRATE=off|0), and never from a temporary data home, whatever
+ * HOME is: a dev or test boot with the real HOME and a data home under the system's temporary folders (os.tmpdir(),
+ * TMPDIR, /tmp, /private/tmp, /var/tmp, /var/folders and their /private twins) must not touch the owner's real
+ * folders. Paths are compared as real paths (macOS keeps /tmp and /var behind /private).
+ */
+export function autoMigrationAllowed({ env = process.env, dataHome = null, tmp = tmpdir() } = {}) {
+  if (env.SYNABUN_SKILLS_AUTO_MIGRATE === 'off' || env.SYNABUN_SKILLS_AUTO_MIGRATE === '0') return false;
+  if (env.NODE_TEST_CONTEXT || env.VITEST) return false;
+  if (!dataHome) return false;
+  const real = (p) => {
+    // A path that is not there yet (a data home about to be made): its nearest existing ancestor's real path, then the rest.
+    let head = resolve(String(p));
+    const tail = [];
+    for (;;) {
+      try { return tail.length ? join(realpathSync(head), ...tail) : realpathSync(head); } catch { /* not there: one up */ }
+      const parent = dirname(head);
+      if (parent === head) return resolve(String(p));
+      tail.unshift(head.slice(parent.length).replace(/^[\\/]/, ''));
+      head = parent;
+    }
+  };
+  const inside = (child, parent) => { const c = real(child); const p = real(parent); return c === p || c.startsWith(p.endsWith(sep) ? p : `${p}${sep}`); };
+  const roots = [tmp, env.TMPDIR, '/tmp', '/private/tmp', '/var/tmp', '/private/var/tmp', '/var/folders', '/private/var/folders'].filter(Boolean);
+  for (const root of roots) { try { if (inside(dataHome, root)) return false; } catch { /* a root that cannot be read is not the data home's */ } }
+  return true;
 }

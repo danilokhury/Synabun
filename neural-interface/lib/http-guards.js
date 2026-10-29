@@ -407,7 +407,10 @@ export function isOwnerOrigin(origin, { port, machineName = thisMachine.names, o
  * proxy's (`publicOrigins`, left out of the listed names), never a listed name
  * on another port, whatever Sec-Fetch-Site says or leaves out: BAD_ORIGIN.
  * `localAddresses` gives this computer's addresses (thisMachineAddresses when
- * it is left out). A request without Origin still passes.
+ * it is left out). A request without Origin still passes, unless `requireOrigin`
+ * is set: then a write must carry one (every browser sends it on a write; a
+ * local process that fetched a page for its cookie and sends none is refused,
+ * ORIGIN_REQUIRED). First users: the Skills Studio's owner-only writes.
  *
  * `allowedOrigins` (an array or a function) are the tunnel's and the invite
  * proxy's public URLs: their host names count as ours, as for a WebSocket.
@@ -418,7 +421,7 @@ export function isOwnerOrigin(origin, { port, machineName = thisMachine.names, o
  */
 export function ownerRouteGuard({
   isGuestRequest = null, port, allowedOrigins = [], machineName, refuseCrossSite = false,
-  ownOriginsOnly = false, publicOrigins = [], localAddresses = thisMachineAddresses,
+  ownOriginsOnly = false, publicOrigins = [], localAddresses = thisMachineAddresses, requireOrigin = false,
 } = {}) {
   // The names the owner listed for this computer: the listed ones, without the tunnel's and the invite proxy's.
   const ownNames = () => { const theirs = listedNames(publicOrigins); return listedNames(allowedOrigins).filter((name) => !theirs.includes(name)); };
@@ -426,6 +429,9 @@ export function ownerRouteGuard({
     || isOwnerOrigin(req.headers.origin, { port, machineName, ownNames, addresses: localAddresses });
   function refusal(req) {
     if (!isAllowedHost(req?.headers?.host, { allowedHosts: allowedOrigins, machineName })) return { status: 403, code: 'BAD_HOST', error: 'Unexpected Host header.' };
+    if (requireOrigin && !SAFE_METHODS.has(req.method) && typeof req?.headers?.origin !== 'string') {
+      return { status: 403, code: 'ORIGIN_REQUIRED', error: 'This change is made from SynaBun\'s own page, which sends its Origin.' };
+    }
     if (!SAFE_METHODS.has(req.method) && !(ownOriginsOnly ? ownerOrigin(req) : isAllowedWebSocketOrigin(req, { port, allowedOrigins, machineName }))) {
       return { status: 403, code: 'BAD_ORIGIN', error: 'Unexpected Origin header.' };
     }

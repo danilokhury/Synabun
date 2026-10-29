@@ -1,0 +1,144 @@
+/* The Workspace tour (public/shared/tour/): the Assistant panel's transcript as a
+   whiteboard, its mascot as the narrator. Only --asst-* tokens: ink is text-2,
+   pointers and handwriting accents are the brand gold, the caption is the
+   panel's own glass. Motion is transform, opacity and SVG path data; every
+   curve is one of the Assistant's (asst-styles.js). Under reduced motion the
+   panel's own blanket (asst-styles.js) stops CSS motion, and the engine places
+   everything finished. */
+
+/* ── The panel while the tour runs: the transcript holds still and becomes the board ── */
+.asst-root.tour-on .asst-transcript { position: relative; overflow: hidden; scroll-behavior: auto; }
+/* The empty state makes no stacking layer of its own, so its mascot (below) stacks over the board and the caption. */
+.asst-root.tour-on .asst-empty { position: relative; }
+/* The empty state's words step aside (the mascot stays in its own box, moved by transform only)… */
+.asst-root.tour-on .asst-empty > :not(.asst-empty-mascot) {
+  transition: opacity var(--asst-dur-base) var(--asst-ease-exit), visibility 0s linear var(--asst-dur-base);
+}
+.asst-root.tour-on.tour-board-live .asst-empty > :not(.asst-empty-mascot) { opacity: 0; visibility: hidden; pointer-events: none; }
+/* …and come back at the hand-off, one after another (--i: the starters' own stagger). */
+.asst-root.tour-on:not(.tour-board-live) .asst-empty > :not(.asst-empty-mascot) {
+  transition: opacity var(--asst-dur-moderate) var(--asst-ease-enter) calc(var(--i, 0) * 40ms), visibility 0s linear 0s;
+}
+/* The project beat puts the empty state's context line (Project · Budget, the real control) on the board. */
+.asst-root.tour-on.tour-board-live.tour-show-context .asst-empty > .asst-empty-project {
+  opacity: 1; visibility: visible;
+  transition: opacity var(--asst-dur-moderate) var(--asst-ease-enter), visibility 0s linear 0s;
+}
+.asst-root.tour-on .asst-empty-mascot { position: relative; z-index: 5; transform-origin: 50% 50%; will-change: transform; } /* the top-most thing in the panel: over the board (2) and the caption (4); it takes no pointer */
+.asst-root.tour-on .asst-empty-mascot svg { overflow: visible; }
+
+/* The hand-off, with the caption at the head of the board: the empty state comes back below it, clear of it
+   (tour-engine.js makeRoom: --tour-room is the caption's foot below the transcript's top). */
+.asst-root.tour-on.tour-room .asst-empty { padding-top: calc(var(--tour-room, 0px) + 12px); }
+
+/* A session-free preview covers the panel's own tab while the tour presents on it (asst-sidepanel.js). */
+.assistant-panel.tour-covering :is(.asp-viewport, .asp-tab-bar):not(.tour-preview),
+.assistant-panel.tour-covering .asp-placeholder { display: none !important; }
+
+/* ── The layers: the board over the panel root (under the mascot), the page layer over everything; both keep a
+   hole where the mascot is (tour-stage.js setKeepOut), so no ink ever paints over it ── */
+.tour-board { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 2; overflow: visible; pointer-events: none; }
+.tour-page { position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: 11001; overflow: visible; pointer-events: none; }
+.tour-ink { fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+.tour-ink.ink { color: var(--asst-text-2); }
+.tour-ink.gold { color: var(--asst-brand); }
+.tour-ink.faint { color: var(--asst-text-4); }
+.tour-highlight { color: var(--asst-brand); filter: drop-shadow(0 0 6px color-mix(in srgb, var(--asst-brand) 28%, transparent)); }
+.tour-hand { font: 700 21px/1 Caveat, cursive; fill: var(--asst-text); letter-spacing: .01em; }
+.tour-hand.gold { fill: var(--asst-brand); }
+.tour-hand.quiet { font-weight: 400; font-size: 17px; fill: var(--asst-text-3); }
+.tour-hand.big { font-size: 28px; }
+.tour-hand.small { font-size: 18px; }
+@container asst (max-width: 340px) {
+  .tour-hand { font-size: 18px; }
+  .tour-hand.big { font-size: 24px; }
+  .tour-hand.quiet, .tour-hand.small { font-size: 16px; }
+}
+
+/* ── The caption: the narration, the chapter, the way on. A glass surface the engine morphs (FLIP). ── */
+.tour-caption {
+  position: absolute; left: var(--asst-inline); right: var(--asst-inline); bottom: 8px; z-index: 4;
+  animation: tour-caption-in var(--asst-dur-moderate) var(--asst-ease-enter) both;
+}
+.tour-caption[data-place="head"] { top: 8px; bottom: auto; }
+.tour-caption-bg {
+  position: absolute; inset: 0; transform-origin: 0 0;
+  border-radius: var(--asst-r-card);
+  background: color-mix(in srgb, var(--asst-bg) 86%, transparent);
+  box-shadow: inset 0 0 0 1px var(--asst-line), 0 10px 28px rgba(0, 0, 0, .35);
+  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+}
+.tour-caption-body { position: relative; display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 10px 12px; transform-origin: 0 0; }
+@keyframes tour-caption-in { from { opacity: 0; transform: translateY(8px) scale(.98); } }
+.tour-caption-meta { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 20px; }
+.tour-chapter-btn {
+  display: inline-flex; flex: 0 1 auto; align-items: center; gap: 4px; min-width: 0; max-width: 100%; height: 20px; margin: 0 0 0 -6px; padding: 0 6px;
+  border: 0; border-radius: var(--asst-pill-r-sm); background: transparent; color: var(--asst-text-3);
+  font: 500 11px/1.3 Inter, system-ui, sans-serif; cursor: pointer;
+  transition: background-color var(--asst-dur-fast) var(--asst-ease-standard), color var(--asst-dur-fast) var(--asst-ease-standard);
+}
+.tour-chapter-btn:hover { background: var(--asst-fill-1); color: var(--asst-text-2); }
+.tour-chapter-btn svg { width: 10px; height: 10px; flex-shrink: 0; transition: transform var(--asst-dur-base) var(--asst-ease-standard); }
+.tour-chapter-btn[aria-expanded="true"] svg { transform: rotate(180deg); }
+.tour-chapter-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tour-dots { display: inline-flex; gap: 4px; margin-left: auto; flex-shrink: 0; }
+.tour-dot { position: relative; width: 14px; height: 3px; overflow: hidden; border-radius: 2px; background: var(--asst-fill-3); }
+.tour-dot-fill { position: absolute; inset: 0; border-radius: inherit; background: var(--asst-brand); opacity: 0; transform: scaleX(.2); transform-origin: 0 50%; transition: opacity var(--asst-dur-moderate) var(--asst-ease-standard), transform var(--asst-dur-slow) var(--asst-ease-emphasized); }
+.tour-dot.done .tour-dot-fill { opacity: .45; transform: none; }
+.tour-dot.on .tour-dot-fill { opacity: 1; transform: none; }
+.tour-line { min-height: calc(1.5em * 2); font-size: 13px; line-height: 1.5; color: var(--asst-text); overflow-wrap: anywhere; }
+.tour-caption.is-list .tour-line { display: none; }
+.tour-word { display: inline-block; }
+
+.tour-list { display: grid; gap: 2px; }
+.tour-list-row {
+  display: flex; align-items: center; gap: 10px; min-height: 30px; padding: 4px 8px;
+  border: 0; border-radius: var(--asst-pill-r-md); background: transparent; color: var(--asst-text-2);
+  font: 400 13px/1.3 Inter, system-ui, sans-serif; text-align: left; cursor: pointer;
+  transition: background-color var(--asst-dur-fast) var(--asst-ease-standard), color var(--asst-dur-fast) var(--asst-ease-standard);
+}
+.tour-list-row:is(:hover, :focus-visible) { background: var(--asst-fill-1); color: var(--asst-text); }
+.tour-list-row[aria-current] { background: var(--asst-pill-on-fill); box-shadow: inset 0 0 0 1px var(--asst-pill-on-ring); color: var(--asst-text); }
+.tour-list-n { display: inline-grid; place-items: center; width: 18px; height: 18px; flex-shrink: 0; border-radius: 50%; background: var(--asst-fill-2); color: var(--asst-text-3); font: 500 11px/1 Inter, system-ui, sans-serif; }
+.tour-list-row[aria-current] .tour-list-n { background: color-mix(in srgb, var(--asst-brand) 22%, transparent); color: var(--asst-brand); }
+.tour-list-name { flex: 1 1 auto; min-width: 0; }
+.tour-list-note { flex-shrink: 0; color: var(--asst-brand); font-size: 11px; }
+.tour-list-explore { color: var(--asst-text-3); font-size: 12px; }
+
+.tour-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; min-width: 0; min-height: 28px; }
+.tour-hint { flex: 1 1 auto; min-width: 0; overflow: hidden; font-size: 11px; color: var(--asst-text-4); white-space: nowrap; text-overflow: ellipsis; }
+.tour-hint:empty { display: none; }
+/* A narrow panel: the first beat's hint ("Tap or press →", longer in pt-BR) takes a line of its own over the buttons, whole, never cut to "Toque …". */
+@container asst (max-width: 340px) {
+  .tour-actions { flex-wrap: wrap; row-gap: 2px; }
+  .tour-hint { flex: 1 0 100%; }
+}
+.tour-hint kbd { font: 500 10px/1 var(--asst-mono); padding: 2px 4px; border-radius: 3px; background: var(--asst-fill-2); color: var(--asst-text-3); }
+.tour-caption button.tour-skip, .tour-caption button.tour-back, .tour-caption button.tour-next {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px; flex-shrink: 0; height: 28px; padding: 0 10px;
+  border: 0; border-radius: var(--asst-pill-r-md); background: transparent; color: var(--asst-text-3);
+  font: 500 12px/1 Inter, system-ui, sans-serif; white-space: nowrap; cursor: pointer;
+  transition: opacity var(--asst-dur-base) var(--asst-ease-standard), transform var(--asst-dur-base) var(--asst-ease-standard),
+    background-color var(--asst-dur-fast) var(--asst-ease-standard), color var(--asst-dur-fast) var(--asst-ease-standard);
+}
+.tour-caption button.tour-back { width: 28px; padding: 0; }
+.tour-caption button.tour-back svg { width: 13px; height: 13px; }
+.tour-caption :is(.tour-skip, .tour-back):hover { background: var(--asst-fill-1); color: var(--asst-text); }
+.tour-caption button:active { transform: scale(.97); }
+.tour-caption button.tour-next { padding: 0 12px; background: var(--asst-pill-on-fill); box-shadow: inset 0 0 0 1px var(--asst-pill-on-ring); color: var(--asst-text); opacity: 0; transform: translateX(-4px); pointer-events: none; }
+.tour-caption.is-ready button.tour-next { opacity: 1; transform: none; pointer-events: auto; }
+.tour-caption.is-ready button.tour-next:active { transform: scale(.97); }
+.tour-caption button.tour-next svg { width: 12px; height: 12px; }
+.tour-caption button[hidden] { display: none; }
+.tour-caption button.is-off { opacity: 0; visibility: hidden; pointer-events: none; transition: opacity var(--asst-dur-base) var(--asst-ease-exit), visibility 0s linear var(--asst-dur-base); }
+.tour-caption.is-list .tour-hint { visibility: hidden; }
+.tour-caption.is-leaving { pointer-events: none; }
+
+/* A just-in-time tip (tour-tips.js): the caption's glass, one line, over the transcript's foot; it takes no pointer. */
+.asst-root > .tour-tip { z-index: 6; pointer-events: none; }
+.tour-tip .tour-line { min-height: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  .tour-caption, .tour-caption * { animation: none !important; transition: none !important; }
+  .asst-root.tour-on .asst-empty > :not(.asst-empty-mascot) { transition: none !important; }
+}

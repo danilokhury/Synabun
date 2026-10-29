@@ -8,6 +8,7 @@
 // never a default. Files already there are replaced only when the owner ticks the box (a backup is kept). A file
 // is picked in the click that asked for it (the browser's rule); what the server can do is asked once it is chosen.
 
+import { studioErrorText } from './sx-errors.js';
 import { dropdownHTML, wireDropdowns } from '../../cc-dropdown.js';
 import { revealHidden } from '../ss-unicode.js';
 import { decodeArtifactId } from '../ss-ids.js';
@@ -120,7 +121,7 @@ export async function runImport(ctx, bundle, fileName) {
         lines: [t('skillsStudio.import.refusedIntro'), ...problems.slice(0, 12).map((p) => `• ${p.path ? `${revealHidden(p.path)}: ` : ''}${p.message}`), problems.length > 12 ? `• ${t('skillsStudio.dialog.andMore', { count: problems.length - 12 })}` : ''],
         buttons: [{ id: 'cancel', label: t('skillsStudio.dialog.close'), kind: 'primary' }],
       });
-    } else ctx.toast(t('skillsStudio.import.failed', { error: err.message }), 'error');
+    } else ctx.toast(t('skillsStudio.import.failed', { error: studioErrorText(ctx.t, err) }), 'error');
     return;
   }
   if (!ctx.panel?.isConnected) { api.discardSkillsImport(staged.stagingId).catch(() => {}); return; }
@@ -164,7 +165,7 @@ export async function runImport(ctx, bundle, fileName) {
     const row = ctx.rows.find((r) => r.entries.some((e) => e.path === path));
     if (row && ctx.panel?.isConnected) ctx.openRow(row.key, { tab: 'edit' });
   } catch (err) {
-    ctx.toast(t('skillsStudio.import.failed', { error: err.message }), 'error');
+    ctx.toast(t('skillsStudio.import.failed', { error: studioErrorText(ctx.t, err) }), 'error');
   }
 }
 

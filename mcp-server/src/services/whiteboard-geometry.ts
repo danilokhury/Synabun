@@ -28,7 +28,7 @@ export interface WbRect { x: number; y: number; width: number; height: number }
 /** Persisted whiteboard element — the union of every element type's fields. */
 export interface WbElement {
   id: string; type: string; x?: number; y?: number; width?: number; height?: number;
-  content?: string; items?: string[]; ordered?: boolean; fontSize?: number; color?: string;
+  content?: string; items?: string[]; levels?: number[]; ordered?: boolean; fontSize?: number; color?: string;
   bold?: boolean; italic?: boolean; shape?: string; points?: WbPoint[]; pathD?: string;
   startAnchor?: string | null; endAnchor?: string | null; strokeWidth?: number; rotation?: number;
   zIndex?: number; dataUrl?: string; dataUrlBytes?: number; url?: string; sectionType?: string; label?: string;
@@ -145,8 +145,91 @@ function contentString(v: unknown): string | undefined {
   return v == null ? undefined : String(v);
 }
 
-function itemStrings(v: unknown): string[] | undefined {
-  return Array.isArray(v) ? v.map(item => (typeof item === 'string' ? item : String(item ?? ''))) : undefined;
+// ── List nesting ──
+// A list stores `items: string[]` and, only while some item is nested, `levels: number[]` beside them (levels[i]
+// is the depth of items[i], 0 = top level; no `levels` = all 0, so older boards read unchanged). Callers may send
+// items as { text, level } objects. Rules: the first item is level 0, an item is at most one level deeper than
+// the item above it, no item is deeper than LIST_MAX_LEVEL. The browser and server.js read the same format
+// through neural-interface/public/shared/whiteboard-list.js; keep the two on the same rules.
+
+/** Deepest list level (the client's WB_LIST_MAX_LEVEL). */
+export const LIST_MAX_LEVEL = 4;
+
+/** One list item as a caller may send it: a plain string (level 0) or { text, level }. */
+export type WbListItemInput = string | { text: string; level?: number };
+
+function listItemText(item: unknown): string {
+  if (typeof item === 'string') return item;
+  if (item && typeof item === 'object') {
+    const t = (item as { text?: unknown }).text;
+    return t == null ? '' : String(t);
+  }
+  return item == null ? '' : String(item);
+}
+
+function listLevelOf(value: unknown): number {
+  const n = Math.floor(Number(value));
+  return Number.isFinite(n) && n > 0 ? Math.min(n, LIST_MAX_LEVEL) : 0;
+}
+
+/**
+ * A list's items in either form -> `{ items, levels }` that keep the nesting rules (levels as long as items).
+ * A plain string takes `levels[i]` (0 without one); a { text, level } object's own level wins.
+ */
+export function normalizeListItems(items: unknown, levels?: unknown): { items: string[]; levels: number[] } {
+  const list = Array.isArray(items) ? items : [];
+  const given = Array.isArray(levels) ? levels : [];
+  const out: number[] = [];
+  let above = -1;
+  list.forEach((item, i) => {
+    const own = item && typeof item === 'object' ? (item as { level?: unknown }).level : undefined;
+    const level = Math.min(listLevelOf(own !== undefined ? own : given[i]), above + 1);
+    out.push(level);
+    above = level;
+  });
+  return { items: list.map(listItemText), levels: out };
+}
+
+/** True when some item of the list is nested (only then is `levels` stored). */
+export function hasNestedLevels(levels: readonly number[] | undefined): boolean {
+  return Array.isArray(levels) && levels.some(level => level > 0);
+}
+
+/**
+ * The marker before each list item: a bullet per level (disc, circle, square, cycling) or the item's number in
+ * its level's style (1, a, i, cycling) with ".". Numbering restarts under every item above, as in the browser.
+ */
+export function listMarkers(levels: readonly number[], ordered: boolean): string[] {
+  const bullets = ['•', '◦', '▪'];
+  const counters: number[] = [];
+  return levels.map((raw) => {
+    const level = listLevelOf(raw);
+    if (!ordered) return bullets[level % 3];
+    counters.length = level + 1;
+    counters[level] = (counters[level] || 0) + 1;
+    const n = counters[level];
+    const style = level % 3;
+    return `${style === 1 ? alphaCounter(n) : style === 2 ? romanCounter(n) : String(n)}.`;
+  });
+}
+
+function alphaCounter(n: number): string {
+  let out = '';
+  while (n > 0) { n -= 1; out = String.fromCharCode(97 + (n % 26)) + out; n = Math.floor(n / 26); }
+  return out;
+}
+
+function romanCounter(n: number): string {
+  const table: [number, string][] = [[1000, 'm'], [900, 'cm'], [500, 'd'], [400, 'cd'], [100, 'c'], [90, 'xc'], [50, 'l'], [40, 'xl'], [10, 'x'], [9, 'ix'], [5, 'v'], [4, 'iv'], [1, 'i']];
+  let out = '';
+  for (const [value, digits] of table) while (n >= value) { out += digits; n -= value; }
+  return out;
+}
+
+/** Size estimate of a list element from its stored items and levels. */
+function estimateListElement(el: WbElement): { width: number; height: number } {
+  const list = normalizeListItems(el.items, el.levels);
+  return estimateListSize(Array.isArray(el.items) ? list.items : undefined, positiveDim(el.fontSize) ?? 18, list.levels);
 }
 
 /** Stored size, or the type's fallback when a dimension is missing (see `elementBox`). */
@@ -160,7 +243,7 @@ function storedOrDefaultSize(el: WbElement): { width: number; height: number } {
       return { width: w ?? est.width, height: h ?? est.height };
     }
     case 'list': {
-      const est = estimateListSize(itemStrings(el.items), positiveDim(el.fontSize) ?? 18);
+      const est = estimateListElement(el);
       return { width: w ?? est.width, height: h ?? est.height };
     }
     case 'shape':
@@ -240,14 +323,16 @@ export function estimateTextSize(content: string | undefined, fontSize = 22): { 
 
 /**
  * Estimate the rendered size of a list element before the browser measures it.
- * Same font metrics as text, plus the 1.4em bullet indent; line-height 1.5.
+ * Same font metrics as text, plus the 1.4em bullet indent and 1.4em more per
+ * nesting level (`levels[i]`, 0 when missing); line-height 1.5.
  */
-export function estimateListSize(items: string[] | undefined, fontSize = 18): { width: number; height: number } {
+export function estimateListSize(items: string[] | undefined, fontSize = 18, levels?: readonly number[]): { width: number; height: number } {
   const list = items ?? [];
   const rows = Math.max(1, list.length);
-  const maxChars = list.length ? Math.max(...list.map(codePointLength)) : 0;
+  const indents = list.map((item, i) => codePointLength(item) * 0.6 + (1 + listLevelOf(levels?.[i])) * 1.4);
+  const widest = list.length ? Math.max(...indents) : 1.4;
   return {
-    width: Math.max(120, Math.round(maxChars * fontSize * 0.6 + 1.4 * fontSize + 30)),
+    width: Math.max(120, Math.round(widest * fontSize + 30)),
     height: Math.max(30, Math.round(rows * fontSize * 1.5 + 22)),
   };
 }
@@ -277,7 +362,7 @@ export function ensureElementGeometry(el: WbElement, opts: { force?: boolean } =
       if (force || el.measured !== true || missing) {
         const size = el.type === 'text'
           ? estimateTextSize(contentString(el.content), positiveDim(el.fontSize) ?? 22)
-          : estimateListSize(itemStrings(el.items), positiveDim(el.fontSize) ?? 18);
+          : estimateListElement(el);
         el.width = size.width;
         el.height = size.height;
         el.estimated = true;

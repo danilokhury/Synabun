@@ -4,20 +4,18 @@
 // input tokens before a line of code, and every request would show up as a
 // session in the OpenCode panel. So completions get a serve of their own:
 //
-//   - its own XDG_CONFIG_HOME (DATA_HOME/data/editor-complete/) whose config
-//     holds what makes the user's models reachable (their `provider` blocks and
-//     the provider allow / deny lists) and one agent, `synabun-complete`: the
-//     completion instruction as its prompt, every tool denied. No MCP servers,
-//     no instruction files, no plugins. A provider block that names a file by
-//     a path relative to the user's configuration ({file:./key}) is written
-//     with that path made whole: here it would be looked for in this folder;
+//   - its own XDG_CONFIG_HOME (DATA_HOME/data/editor-complete/) whose
+//     opencode.json holds what makes the user's models reachable (their
+//     provider blocks and the provider allow / deny rules, as the user wrote
+//     them) and one agent, `synabun-complete`: the completion instruction as
+//     its system prompt, every tool denied. No MCP servers, no instruction
+//     files, no plugins. A provider block that names a file by a path relative
+//     to the user's configuration ({file:./key}) is written with that path
+//     made whole: here it would be looked for in this folder;
 //   - OPENCODE_DISABLE_CLAUDE_CODE and OPENCODE_DISABLE_PROJECT_CONFIG, so no
 //     CLAUDE.md, AGENTS.md or opencode.json of a folder above is read either;
 //   - the user's own data home, so stored provider credentials keep working.
 //
-// Measured on OpenCode 1.18.34 (2026-10-12): about 200 input tokens of overhead
-// per request against 5,500 with the tools left on, and 810 with an AGENTS.md
-// one folder up and project configuration left on.
 //
 // Started on the first request, stopped after ten idle minutes and at server
 // shutdown. One request is one session in an empty working folder: create,
@@ -35,13 +33,12 @@
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, resolve, sep } from 'node:path';
-import { checkOpencodeServer, newServePassword } from './opencode-protocol.js';
+import { checkOpencodeServer, newServePassword, servePasswordReader } from './opencode-protocol.js';
+import { OPENCODE_CONFIG_FILE, OPENCODE_CONFIG_SCHEMA } from './opencode-config.js';
 
-// OpenCode 2 (lib/opencode-protocol.js) runs the same way: the serve gets a
-// password of its own, is healthy only when its /api answers JSON, and is
-// spoken to through lib/opencode2-client.js; its configuration is the OpenCode
-// 1 file below, which OpenCode 2 reads (agent → agents, prompt → system,
-// temperature → request body).
+// The serve gets a password of its own, is healthy only when OpenCode 2's /api
+// answers JSON (lib/opencode-protocol.js), and is spoken to through
+// lib/opencode2-client.js; its configuration is OpenCode 2's opencode.json.
 
 export const COMPLETION_AGENT = 'synabun-complete';
 /** Every session of this serve carries this title: no title is generated, and leftovers of a crash are recognisable. */
@@ -53,8 +50,10 @@ export const SWEEP_TIMEOUT_MS = 5000;
 /** How many ports a start tries when another server takes the one it was given. */
 export const START_ATTEMPTS = 3;
 
-// What of the user's OpenCode configuration decides which models can be reached.
-const CARRIED_KEYS = ['provider', 'disabled_providers', 'enabled_providers'];
+// What of the user's OpenCode configuration decides which models can be reached: the provider blocks and the
+// provider allow / deny rules, in either shape the user wrote them (OpenCode 2 reads both).
+const PROVIDER_KEYS = ['providers', 'provider'];
+const CARRIED_LISTS = ['policies', 'disabled_providers', 'enabled_providers'];
 // Reasoning settings a model may offer, the lightest first: a completion wants the least.
 const LIGHT_VARIANTS = ['none', 'minimal', 'low'];
 
@@ -87,18 +86,21 @@ function rebaseFileReferences(value, dir, seen) {
 }
 
 /**
- * The configuration of the dedicated serve.
- * @param {object | null} userConfig the user's own OpenCode configuration (~/.config/opencode/config.json)
+ * The configuration of the dedicated serve (its opencode.json).
+ * @param {object | null} userConfig the user's own OpenCode configuration (opencode.json, then opencode.jsonc over it)
  * @param {{ system: string, configDir?: string | null, log?: (tag: string, message: string) => void }} o `system`:
  *   the completion instruction, the agent's whole prompt; `configDir`: the folder the user's configuration is in,
  *   which a relative {file:…} reference of a provider is resolved against. Without it, a provider that holds such
  *   a reference is left out (and logged): from the serve's own folder it would name another file, or none.
  */
 export function buildCompletionServeConfig(userConfig, { system, configDir = null, log = () => {} }) {
-  const config = { $schema: 'https://opencode.ai/config.json', autoupdate: false, share: 'disabled', snapshot: false };
-  for (const key of CARRIED_KEYS) {
+  const config = { $schema: OPENCODE_CONFIG_SCHEMA, update: 'disable', share: 'disabled', snapshots: false };
+  for (const key of CARRIED_LISTS) {
     const value = isObject(userConfig) ? userConfig[key] : undefined;
-    if (key !== 'provider') { if (Array.isArray(value)) config[key] = structuredClone(value); continue; }
+    if (Array.isArray(value)) config[key] = structuredClone(value);
+  }
+  for (const key of PROVIDER_KEYS) {
+    const value = isObject(userConfig) ? userConfig[key] : undefined;
     if (!isObject(value)) continue;
     const providers = {};
     for (const [id, definition] of Object.entries(value)) {
@@ -110,15 +112,15 @@ export function buildCompletionServeConfig(userConfig, { system, configDir = nul
       }
       providers[id] = carried;
     }
-    if (Object.keys(providers).length || !Object.keys(value).length) config.provider = providers;
+    if (Object.keys(providers).length || !Object.keys(value).length) config[key] = providers;
   }
-  config.agent = {
+  config.agents = {
     [COMPLETION_AGENT]: {
       description: 'SynaBun code editor autocomplete',
       mode: 'primary',
-      prompt: system,
-      temperature: 0.1,
-      permission: { '*': 'deny' },
+      system,
+      request: { body: { temperature: 0.1 } },
+      permissions: [{ action: '*', resource: '*', effect: 'deny' }],
     },
   };
   return config;
@@ -128,7 +130,7 @@ export function buildCompletionServeConfig(userConfig, { system, configDir = nul
  * The environment of the dedicated serve: the server's own, pointed at the lean configuration and told to read
  * nothing else.
  * @param {object} base the environment to start from (process.env)
- * @param {{ configHome: string }} o the XDG_CONFIG_HOME that holds opencode/config.json
+ * @param {{ configHome: string }} o the XDG_CONFIG_HOME that holds opencode/opencode.json
  */
 export function completionServeEnvironment(base, { configHome }) {
   const env = { ...base };
@@ -160,7 +162,7 @@ export function splitModelId(id) {
   return { providerID: text.slice(0, slash), modelID: text.slice(slash + 1) };
 }
 
-/** Each connected model's variant names, from the serve's /provider answer: Map("provider/model" → string[]). */
+/** Each connected model's variant names, from the serve's provider list: Map("provider/model" → string[]). */
 export function variantsByModel(providers) {
   const out = new Map();
   const body = isObject(providers?.data) && (providers.data.all || providers.data.connected) ? providers.data : providers;
@@ -176,7 +178,7 @@ export function variantsByModel(providers) {
 }
 
 /**
- * The text and the token counts of a prompt's answer (`POST /session/{id}/message`).
+ * The text and the token counts of a prompt's answer (the client's `session.prompt`).
  * @returns {{ text: string, tokens: { input: number, output: number }, error: string | null }} `input` counts the
  *   tokens read from and written to the provider's cache too; `output` counts reasoning
  */
@@ -202,23 +204,24 @@ function abortError() {
 
 /**
  * @param {object} deps
- * @param {string} deps.dataDir DATA_HOME/data/editor-complete: holds opencode/config.json and the empty work folder
+ * @param {string} deps.dataDir DATA_HOME/data/editor-complete: holds opencode/opencode.json and the empty work folder
  * @param {string} deps.system the completion instruction (the agent's prompt)
  * @param {() => object | null} deps.readUserConfig the user's OpenCode configuration, read at each start
  * @param {() => string | null} [deps.userConfigDir] the folder that configuration is in (relative {file:…}
  *   references of its providers are resolved against it)
  * @param {() => number | null | Promise<number | null>} deps.allocPort a free port (server.js: what an earlier
  *   SynaBun left running goes first, then allocOpencodeIsoPort)
- * @param {(o: { port: number, env: object, cwd: string, protocol: 1 | 2 | null, password: string | null }) => object}
- *   deps.spawnServe starts `opencode serve` on the port (OpenCode 2: with that password) and returns its process
+ * @param {(o: { port: number, env: object, cwd: string, password: string }) => object}
+ *   deps.spawnServe starts `opencode serve` on the port with that password and returns its process
  *   (`on('exit')`, `kill()`)
  * @param {(proc: object, signal?: string) => void} [deps.killServe] stops that process: SIGTERM, or SIGKILL for a
  *   failed start's process that did not end (default: proc.kill(signal))
- * @param {(o: { port: number, protocol?: number, password?: string | null, version?: string }) => object}
+ * @param {(o: { port: number, password?: string | null, version?: string }) => object}
  *   deps.createClient lib/opencode-v2-client.js createClientInstance
- * @param {() => Promise<number | null | { protocol: number | null, major?: number | null, supported?: boolean, reason?: string }>}
- *   [deps.detectProtocol] the OpenCode major the serve will be (server.js detectOpencodeProtocol); 1 when not given
- * @param {(protocol: number | null, run: () => Promise<any>) => Promise<any>} [deps.startOneAtATime] runs a start
+ * @param {() => Promise<{ major?: number | null, supported?: boolean, reason?: string } | null>}
+ *   [deps.detectOpencode] which OpenCode the serve will be (server.js detectOpencode): one SynaBun does not drive
+ *   never starts
+ * @param {(run: () => Promise<any>) => Promise<any>} [deps.startOneAtATime] runs a start
  *   in its turn among every serve SynaBun starts (server.js oneOpencodeStartAtATime); by itself when not given
  * @param {number} [deps.exitWaitMs] how long a failed start waits for its process to exit after SIGTERM, and again
  *   after SIGKILL, before its turn ends
@@ -238,8 +241,9 @@ export function createOpencodeCompletionEngine({
   killServe = (proc, signal = 'SIGTERM') => { try { proc.kill(signal); } catch { /* gone */ } },
   createClient, fetchImpl = (...args) => fetch(...args), env = process.env, now = Date.now,
   idleMs = IDLE_STOP_MS, startTimeoutMs = START_TIMEOUT_MS, sweepTimeoutMs = SWEEP_TIMEOUT_MS, healthPollMs = 100, log = () => {},
-  detectProtocol = async () => 1, newPassword = newServePassword,
-  startOneAtATime = (_protocol, run) => run(), exitWaitMs = 3000, trackServe = () => {},
+  detectOpencode = async () => null, newPassword = newServePassword,
+  passwordFrom = 'env', checkServer = checkOpencodeServer,
+  startOneAtATime = (run) => run(), exitWaitMs = 3000, trackServe = () => {},
 } = {}) {
   if (!dataDir || !system) throw new Error('createOpencodeCompletionEngine requires dataDir and system');
   if (typeof allocPort !== 'function' || typeof spawnServe !== 'function' || typeof createClient !== 'function') {
@@ -256,7 +260,6 @@ export function createOpencodeCompletionEngine({
   const deleting = new Set();   // session deletions on their way: a stop waits for them (drain)
 
   const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
-  const serveUrl = (port, path) => `http://127.0.0.1:${port}${path}${path.includes('?') ? '&' : '?'}directory=${encodeURIComponent(workDir)}`;
 
   function touch() {
     lastUsed = now();
@@ -301,22 +304,22 @@ export function createOpencodeCompletionEngine({
     try { userConfig = readUserConfig(); } catch (error) { log('editor-complete:serve', `could not read the OpenCode configuration: ${error?.message || error}`); }
     let configDir = null;
     try { configDir = userConfigDir() || null; } catch { configDir = null; }
-    writeFileSync(join(dataDir, 'opencode', 'config.json'), `${JSON.stringify(buildCompletionServeConfig(userConfig, { system, configDir, log }), null, 2)}\n`, 'utf8');
+    writeFileSync(join(dataDir, 'opencode', OPENCODE_CONFIG_FILE), `${JSON.stringify(buildCompletionServeConfig(userConfig, { system, configDir, log }), null, 2)}\n`, 'utf8');
 
-    // Which OpenCode this is (null: not known, told apart by what answers); a major SynaBun does not speak never starts.
-    const detected = await detectProtocol();
-    const protocol = detected && typeof detected === 'object' ? (detected.protocol ?? null) : (detected ?? null);
+    // An OpenCode SynaBun does not drive (OpenCode 1, an OpenCode 2 older than the minimum) never starts; a version
+    // not known here (a command line in Settings) is told by what answers.
+    const detected = await detectOpencode();
     if (detected && typeof detected === 'object' && detected.supported === false && detected.major != null) {
       throw new Error(detected.reason || `OpenCode ${detected.major} is not supported`);
     }
     if (mine !== epoch) throw new Error('The completion server was stopped while it was starting');
-    const password = protocol === 1 ? null : newPassword();
+    const password = passwordFrom === 'stdout' ? null : newPassword();
 
     // Another server that takes the port while the serve boots is a start collision: it is left running, this start's
     // own process is ended, and the start tries another port (START_ATTEMPTS ports at most).
     for (let attempt = 1; ; attempt++) {
       try {
-        return await startOn(port, { mine, protocol, password });
+        return await startOn(port, { mine, password });
       } catch (error) {
         if (!error?.portTaken || attempt >= START_ATTEMPTS || mine !== epoch) throw error;
         log('editor-complete:serve', `another server answers on port ${port}: it is left running, and the completion server tries another port`);
@@ -343,8 +346,8 @@ export function createOpencodeCompletionEngine({
     return false;
   }
 
-  async function startOn(port, { mine, protocol, password }) {
-    const started = { port, proc: null, client: null, variants: new Map(), providers: null, providersAt: 0, exited: false, killed: false, halt: null, protocol, password };
+  async function startOn(port, { mine, password }) {
+    const started = { port, proc: null, client: null, variants: new Map(), providers: null, providersAt: 0, exited: false, killed: false, halt: null, password };
     // What a stop wakes: a start that waits (for the serve to answer, for the next look) goes on at once.
     const halted = new Promise((done) => { started.halt = done; });
     // Both are checked before and after each wait: a stop may have been asked for, or the process may be gone.
@@ -357,9 +360,13 @@ export function createOpencodeCompletionEngine({
       // One start at a time with every other serve SynaBun starts (OpenCode 2 cannot open its database while
       // another serve is opening it): from the spawn until this serve answers, or until a failed start's process
       // is gone.
-      const check = await startOneAtATime(protocol, async () => {
+      const check = await startOneAtATime(async () => {
         stillWanted();
-        started.proc = spawnServe({ port, env: completionServeEnvironment(env, { configHome: dataDir }), cwd: workDir, protocol, password });
+        started.proc = spawnServe({ port, env: completionServeEnvironment(env, { configHome: dataDir }), cwd: workDir, password, passwordFrom });
+        if (passwordFrom === 'stdout') {
+          const readPassword = servePasswordReader();
+          started.proc?.stdout?.on('data', chunk => { started.password = readPassword(chunk); });
+        }
         starts++;
         spawned = started;
         started.proc?.on?.('exit', () => {
@@ -371,8 +378,9 @@ export function createOpencodeCompletionEngine({
           const deadline = now() + startTimeoutMs;
           for (;;) {
             stillWanted();
-            // The right API answering JSON, never a web page (lib/opencode-protocol.js).
-            const answer = await Promise.race([checkOpencodeServer({ port, protocol, password, fetchImpl, timeoutMs: 2000 }), halted]);
+            // OpenCode 2's API answering JSON, never a web page (lib/opencode-protocol.js).
+            const answer = passwordFrom === 'stdout' && !started.password ? null
+              : await Promise.race([checkServer({ port, password: started.password, fetchImpl, timeoutMs: 2000 }), halted]);
             if (answer?.ok) {
               // Only this start's own process counts: another server that took the port answers for itself.
               let verdict = null;
@@ -395,8 +403,7 @@ export function createOpencodeCompletionEngine({
       });
       stillWanted();
 
-      started.protocol = check.protocol || protocol || 1;
-      started.client = createClient({ port, protocol: started.protocol, password, version: check.version || '' });
+      started.client = createClient({ port, password: started.password, version: check.version || '' });
       // It answers, and takes no request yet. First the sessions a crash left behind go: a sweep that ran beside the
       // first requests would find their sessions in its listing and delete them under the model call. Meanwhile,
       // which lighter reasoning setting each model offers; worth a short wait, as without it the first completions
@@ -423,18 +430,11 @@ export function createOpencodeCompletionEngine({
 
   async function loadProviders(serve, { signal } = {}) {
     if (serve.providers && now() - serve.providersAt < 60_000) return serve.providers;
-    if (serve.protocol === 2) {
-      // OpenCode 2 has no /provider: its client answers in OpenCode 1's shape ({ all, default, connected }).
-      const listed = await serve.client.getClient().provider.list({ directory: workDir });
-      if (listed?.error) throw new Error(`The completion server answered ${listed.response?.status || 'an error'} for its model list`);
-      serve.providers = listed.data;
-      serve.providersAt = now();
-      serve.variants = variantsByModel(serve.providers);
-      return serve.providers;
-    }
-    const res = await fetchImpl(serveUrl(serve.port, '/provider'), { signal: signal || AbortSignal.timeout(8000) });
-    if (!res.ok) throw new Error(`The completion server answered ${res.status} for its model list`);
-    serve.providers = await res.json();
+    if (signal?.aborted) throw abortError();
+    // The client answers with the provider list SynaBun reads ({ all, default, connected }).
+    const listed = await serve.client.getClient().provider.list({ directory: workDir });
+    if (listed?.error) throw new Error(`The completion server answered ${listed.response?.status || 'an error'} for its model list`);
+    serve.providers = listed.data;
     serve.providersAt = now();
     serve.variants = variantsByModel(serve.providers);
     return serve.providers;
@@ -517,7 +517,7 @@ export function createOpencodeCompletionEngine({
   return {
     complete,
     /**
-     * The serve's /provider answer (every known provider, and which are connected), or null while the serve is
+     * The serve's provider list (every known provider, and which are connected), or null while the serve is
      * not running and `start` is not set.
      */
     async providers({ start: startIt = false, signal } = {}) {

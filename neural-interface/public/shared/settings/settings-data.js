@@ -21,7 +21,8 @@ const okBody = (body) => !!body && typeof body === 'object' && body.ok !== false
 export const SETTINGS_READS = Object.freeze({
   settings: { url: '/api/settings', accept: okBody },
   connections: { url: '/api/connections', accept: (body) => Array.isArray(body?.connections) },
-  integrations: { url: '/api/claude-code/integrations', accept: (body) => body?.ok === true },
+  // Raw: the hooks' row tells a refusal, an old server and an unreadable file apart (settings-claude-hooks.js).
+  integrations: { url: '/api/claude-code/integrations', raw: true },
   skills: { url: '/api/claude-code/skills', accept: (body) => body?.ok === true },
   // The tunnel changes by itself (starting, stopping from the Share menu): asked again after a few seconds.
   tunnel: { url: '/api/tunnel/status', accept: (body) => body?.ok === true, ttlMs: 10_000 },
@@ -38,6 +39,7 @@ export const SETTINGS_READS = Object.freeze({
   youtube: { url: '/api/youtube/config', accept: (body) => body?.ok === true },
   typesafe: { url: '/api/typesafe/config', accept: (body) => body?.ok === true },
   userContext: { url: '/api/assistant/user-context', raw: true },
+  workerGuard: { url: '/api/assistant/worker-guard', raw: true },
 });
 
 const caches = Object.fromEntries(Object.entries(SETTINGS_READS).map(([name, spec]) => [name, createDataCache(`settings:${name}`, {

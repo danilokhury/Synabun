@@ -1,3 +1,4 @@
+import { resolveToolList } from '../services/tool-list.js';
 import { z } from 'zod/v3';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import * as ni from '../services/neural-interface.js';
@@ -10,7 +11,7 @@ import { text } from './response.js';
 //
 // Thin proxies over /api/assistant/* (neural-interface/lib/assistant-api.js).
 // The group is advertised only to runtimes bound to the `assistant` role
-// (profiles.ts ROLE_GATED_GROUPS), and every handler re-checks the caller's
+// (tool-runtime.ts ROLE_GATED_GROUPS), and every handler re-checks the caller's
 // role per request: a worker run that somehow lists these tools still cannot
 // dispatch further workers (no recursion). Handlers never throw — the brain
 // receives every failure (HTTP error JSON, transport error) as data.
@@ -101,7 +102,7 @@ export const agentDispatchSchema = {
   uses_computer: z.boolean().optional().describe(
     'true when the worker must operate desktop apps on this Mac (the computer tools): one computer run at a time, a vision-capable model, capability read-only or workspace. Requires the Computer toggle on.'
   ),
-  agent: z.string().max(60).optional().describe('OpenCode only: the agent to run (default "build"; "plan" for read-only).'),
+  agent: z.string().max(60).optional().describe('OpenCode only: the agent to run (default "build" at every capability, including read-only). Use "plan" only for an explicitly requested planning workflow; capability enforces read-only.'),
   task: z.string().min(1).max(16000).describe(
     'Self-contained instructions for the worker: goal, constraints, acceptance criteria, and that it must end with a ## Result block. The worker cannot see this conversation.'
   ),
@@ -117,8 +118,8 @@ export const agentDispatchSchema = {
   effort: z.string().max(40).optional().describe(
     'Reasoning effort for the chosen model, per agent_catalog (e.g. low…max/ultra; OpenCode uses the model\'s variant names). Unsupported values are corrected to the nearest level the model runs. Omit for the default.'
   ),
-  mcp_profile: z.string().max(200).optional().describe(
-    'SynaBun MCP profile preset for the worker (agent_catalog mcpPresets): "core" for memory-only work, "standard" for coding, a platform preset for browser/social jobs (design runs default to "browser" unless uses_browser is false).'
+  tools: z.array(z.string().min(1).max(72)).max(32).optional().describe(
+    'SynaBun group ids plus mcp:<exact server name> or mcp:* from agent_catalog.tools.servers. Omitted = core with no external servers; [] = always-on only. Unnamed external servers are off on Codex, OpenCode and Claude. Browser use adds browser; design adds browser, styleguide and image. OpenCode loads the list strictly; Claude Code and Codex keep every SynaBun tool on demand and group choices set focus only; external-server selection is strict.'
   ),
   account_id: z.string().max(200).optional().describe(
     'Account profile id, or "auto" for the signed-in subscription with most usage left (API keys excluded; limited pinned/default accounts fall back within the provider, with corrections). An approved route binds its resolved account unless it becomes limited before dispatch. A Codex account for provider "codex" or a Claude account for provider "claude-code" (ignored for opencode), an id from agent_catalog accounts["codex"] / accounts["claude-code"]. The worker uses that account\'s own mode (its ChatGPT or Claude subscription, or its API key). Omit to use the user\'s worker account for that provider (agent_catalog codexWorkerAccount / claudeWorkerAccount; Default when null). A signed-out account is refused with ACCOUNT_SIGNED_OUT.'
@@ -136,7 +137,7 @@ export const agentDispatchSchema = {
     'Optional ceiling in USD for this one run (0.01-1000), inside its provider\'s share of the session budget. Omit it: the run may use what its provider\'s share has left (nothing is reserved; idle runs hold no money). Every provider is held to it: Claude between model calls, OpenCode per step, Codex per rollout record or turn (at list price). Ignored, with a correction, when the user chose No limit.'
   ),
   uses_browser: z.boolean().optional().describe(
-    'true when the worker drives the SynaBun browser: it gets a loop browser tab and the browser enforcement block; page content is treated as untrusted data. Design runs default to true; false keeps one off the browser (no tab, no browser profile).'
+    'true when the worker drives the SynaBun browser: it gets a loop browser tab and the browser enforcement block; page content is treated as untrusted data. Design runs default to true; false keeps one off the browser (no tab, no automatic browser group).'
   ),
   focus: z.boolean().optional().describe(
     'true to bring the worker\'s sidepanel tab to the front on attach. Default false: runs attach without stealing focus.'
@@ -232,7 +233,7 @@ export const agentUsageSchema = {
 // ── Descriptions (routing instructions) ──
 
 export const agentCatalogDescription =
-  'Discover what you can route to: providers (claude-code, codex, opencode) with models (tier, price per 1M tokens, vision, context, efforts), accounts with subscription usage remaining (or usage unknown; API keys are n/a), registered projects (cwd candidates), MCP profile presets, rails/limits and active runs. Without arguments it returns a compact routing view (OpenCode sampled); pass provider and/or search to list more models. Call it when the routing sheet in your instructions lacks a model, or after a MODEL_UNKNOWN rejection. Returns JSON.';
+  'Discover what you can route to: providers (claude-code, codex, opencode) with models (tier, price per 1M tokens, vision, context, efforts), accounts with subscription usage remaining (or usage unknown; API keys are n/a), registered projects (cwd candidates), SynaBun tool groups and each host\'s effect, rails/limits and active runs. Without arguments it returns a compact routing view (OpenCode sampled); pass provider and/or search to list more models. Call it when the routing sheet in your instructions lacks a model, or after a MODEL_UNKNOWN rejection. Returns JSON.';
 
 export const agentRouteDescription =
   'Route an actionable task BEFORE starting it (you are the planner). Give task_class, a one-line summary, your honest confidence (0-1) and 1-3 proposals (direct = here on your model; dispatch = a worker provider/model). proposals.account_id accepts an account id or "auto" (most subscription usage left); limited pinned/default accounts fall back within the provider. The returned target.account includes usage and corrections explain the choice. The server applies the session\'s route mode (always ask / ask when unsure / never ask): it approves at once, or shows the user a route card and waits briefly. Follow the returned status and next: approved+dispatch → agent_dispatch with route_id; approved+direct → do it yourself; continuation → end your turn (SynaBun continues on the chosen model); pending → end your turn, the choice arrives as a [SynaBun Mailbox] route_decided event; declined → do not start (reason no_capable_model: no model can make the image or video, or see for design; tell the user which Model routes row needs one); clarifying → end your turn, the user has not answered your agent_clarify questions yet (independent:true for a task that does not depend on them). image_gen / video_gen always route to a worker whose model generates the medium, design to a worker whose model can see. With a session budget, a provider whose share is used up cannot take the task: SynaBun first divides the unspent budget again, then moves the task to the next capable provider with money left (your next proposal, the same tier on another provider, then a free model) and says so in corrections (reason budget_share, "budget: codex share used up -> claude-code/sonnet"); the saved routes yield to this. When no provider can pay it declines with reason budget_exhausted and names the dry providers (dry). The result carries budget: each provider\'s share, spent and left. Never use it for conversation or bookkeeping. Returns JSON.';
@@ -241,22 +242,22 @@ export const agentClarifyDescription =
   'Ask the user 1-3 targeted questions BEFORE routing a new request that is materially ambiguous: two plausible readings with different results, an unclear target (project, feature, files, audience), destructive or irreversible scope, spend, or memories that conflict with it. Not for clear requests, details a sensible default covers, anything the request, memory or the project answers, or the model (agent_route asks that). Each question gets 2-4 options (recommended first; the user can always type their own); add constraints (what the request fixes) and assumptions (what you will assume for the rest). The card waits briefly. Follow the returned status and next: answered → route, then agent_dispatch with the brief_id (SynaBun adds the user\'s original words, their answers, the constraints and assumptions to the worker\'s context); declined → proceed on your assumptions; pending → end your turn, the answers arrive as a [SynaBun Mailbox] clarify_answered event or as the user\'s next message, and dependent routes and dispatches wait until then. Returns JSON.';
 
 export const agentListDescription =
-  'List dispatched worker runs with status, provider/model, title, elapsed time, work time left (workLeftMs) and cost. Use it before dispatching more work, to recover run ids, or after a mailbox event. Filter with active_only, assistant_session_id (your own session) or workflow_id. Returns JSON.';
+  'List dispatched worker runs with status, state, provider/model, title, elapsed time, work time left (workLeftMs), cost and resumes (how often a server restart cut the run off and it was resumed). Use it before dispatching more work, to recover run ids, or after a mailbox event. Filter with active_only, assistant_session_id (your own session) or workflow_id. Returns JSON.';
 
 export const agentDispatchDescription =
-  'Dispatch a task to a worker agent (Claude Code, Codex or OpenCode). Route it first with agent_route and pass the approved route_id (the server applies that provider/model/effort); without one, the dispatch may be held until the user picks a model (awaitingRoute:true — do not dispatch it again). After agent_clarify, pass its brief_id: the worker gets the user\'s own words and answers; while its questions are open a dependent dispatch is refused (CLARIFICATION_PENDING). The run attaches as a live automation tab in the matching sidepanel without stealing focus. Write a self-contained task that ends with a ## Result block, pass the absolute cwd and your assistant_session_id. Defaults: permission_policy "auto", capability "full", 45 minutes of work time (max_minutes, at least 20), no per-run dollar ceiling (with a budget the run draws from its provider\'s share; a provider whose share is used up and cannot get more is refused with BUDGET_SHARE_EXHAUSTED: route again). Use "ask" only for sensitive scopes (Codex cannot ask: use "restricted"). uses_computer:true for desktop work (one at a time, vision model). An image_gen / video_gen run makes the asset with its model\'s own generation tool; SynaBun collects the files into the run\'s result (media: path + url); with no model that generates the medium an un-routed dispatch is refused (NO_CAPABLE_MODEL), and a route_id approved for other work is refused for image_gen / video_gen / design (and the other way round: ROUTE_CLASS_MISMATCH; route the task again with its own class). A design run gets SynaBun\'s design rules and the project\'s style guide, defaults to capability "workspace", uses_browser true, mcp_profile "browser" and 60 minutes of work time (explicit values win), runs only on a model confirmed to see (MODEL_CANNOT_SEE otherwise), and its screenshots land in the result\'s media. Group fan-outs with workflow_id, chain with parent_run_id, retry safely with idempotency_key. Over-limit dispatches are queued (queued:true, position). After dispatching, block with agent_wait rather than polling. Returns JSON.';
+  'Dispatch a task to a worker agent (Claude Code, Codex or OpenCode). Route it first with agent_route and pass the approved route_id (the server applies that provider/model/effort); without one, the dispatch may be held until the user picks a model (awaitingRoute:true — do not dispatch it again). After agent_clarify, pass its brief_id: the worker gets the user\'s own words and answers; while its questions are open a dependent dispatch is refused (CLARIFICATION_PENDING). The run attaches as a live automation tab in the matching sidepanel without stealing focus. Write a self-contained task that ends with a ## Result block, pass the absolute cwd and your assistant_session_id. Defaults: permission_policy "auto", capability "full", 45 minutes of work time (max_minutes, at least 20), no per-run dollar ceiling (with a budget the run draws from its provider\'s share; a provider whose share is used up and cannot get more is refused with BUDGET_SHARE_EXHAUSTED: route again). Use "ask" only for sensitive scopes (Codex cannot ask: use "restricted"). uses_computer:true for desktop work (one at a time, vision model). An image_gen / video_gen run makes the asset with its model\'s own generation tool; SynaBun collects the files into the run\'s result (media: path + url); with no model that generates the medium an un-routed dispatch is refused (NO_CAPABLE_MODEL), and a route_id approved for other work is refused for image_gen / video_gen / design (and the other way round: ROUTE_CLASS_MISMATCH; route the task again with its own class). A design run gets SynaBun\'s design rules and the project\'s style guide, defaults to capability "workspace", uses_browser true, browser, styleguide and image groups, and 60 minutes of work time (explicit values win), runs only on a model confirmed to see (MODEL_CANNOT_SEE otherwise), and its screenshots land in the result\'s media. Group fan-outs with workflow_id, chain with parent_run_id, retry safely with idempotency_key. Over-limit dispatches are queued (queued:true, position). After dispatching, block with agent_wait rather than polling. Returns JSON.';
 
 export const agentStatusDescription =
-  'Get one run\'s current descriptor: status (queued, running, completed, failed, stopped, interrupted), turnState (running, idle, awaiting_permission), provider/model/account, elapsed time (elapsedMs, wall clock), work time used and left of max_minutes (workMs, workLeftMs), cost, the last parsed result summary and any pending permission or question requests. Cheap; use it between agent_wait calls or before agent_send / agent_stop. Returns JSON.';
+  'Get one run\'s current descriptor: status (queued, starting, running, completed, failed, stopped, interrupted), state (the detail: also idle, awaiting_permission, and suspended / resuming while a SynaBun server restart cuts a Claude Code worker off and the next start resumes it as the same run, its Claude session and its tab; resumes counts that, at most 3; a run that could not be resumed ends interrupted, with why in notes), turnState (running, idle, awaiting_permission), provider/model/account, elapsed time (elapsedMs, wall clock), work time used and left of max_minutes (workMs, workLeftMs), cost, the last parsed result summary and any pending permission or question requests. Cheap; use it between agent_wait calls or before agent_send / agent_stop. Returns JSON.';
 
 export const agentReadDescription =
   'Read a run\'s output. format "result" (default) returns the parsed ## Result contract (status, summary, changes, follow_ups, question, json, and media: the images / videos an image_gen or video_gen run generated or a design run captured, each { kind, path, url, mime, bytes } — show one with ![](url) plus its path); "tail" returns the last transcript events; "text" the worker\'s assistant text; "files" the files it reported. Call after agent_wait reports idle or terminal; keep max_chars small and read again if truncated. Returns JSON.';
 
 export const agentSendDescription =
-  'Continue a worker\'s conversation. text sends a follow-up turn (queue:true enqueues it while the worker is still running). reply answers a pending permission or question request: decision allow/deny for tools, answer (with answers) for questions, note as an optional message. Obtain request ids from agent_status or agent_wait until="event". A follow-up to a run whose work time (max_minutes) is used up is refused with TIME_CAP: dispatch a new run with its result as context. Returns JSON.';
+  'Continue a worker\'s conversation. text sends a follow-up turn (queue:true enqueues it while the worker is still running, or while it is suspended / resuming after a server restart: it goes to the worker once resumed). reply answers a pending permission or question request: decision allow/deny for tools, answer (with answers) for questions, note as an optional message. Obtain request ids from agent_status or agent_wait until="event". A follow-up to a run whose work time (max_minutes) is used up is refused with TIME_CAP: dispatch a new run with its result as context. Returns JSON.';
 
 export const agentWaitDescription =
-  'Blocking barrier for orchestration. Waits up to timeout_seconds (max 120) for one run (run_id), several runs (run_ids with mode all/any) or a whole workflow to reach until="idle" (turn finished; default), "terminal" (completed, failed, stopped) or "event" (next mailbox event: result, needs_input, permission_request, failed). Returns the run descriptors and whether the wait timed out; call again to keep waiting. Prefer this over polling agent_status. Returns JSON.';
+  'Blocking barrier for orchestration. Waits up to timeout_seconds (max 120) for one run (run_id), several runs (run_ids with mode all/any) or a whole workflow to reach until="idle" (turn finished; default), "terminal" (completed, failed, stopped, interrupted) or "event" (next mailbox event: result, needs_input, permission_request, failed). A run suspended or resuming after a SynaBun server restart is still working: keep waiting (a wait cut off by the restart is simply called again). Returns the run descriptors and whether the wait timed out; call again to keep waiting. Prefer this over polling agent_status. Returns JSON.';
 
 export const agentStopDescription =
   'Stop work. run_id stops one run; all:true with your assistant_session_id stops every run of this assistant session, workflow_id every run of a workflow (kill-all). Use when the user cancels, a worker misbehaves, or a time/budget rail is at risk. Returns JSON.';
@@ -338,7 +339,12 @@ export function handleAgentList(args: AgentListArgs): Promise<ToolResult> {
 
 export function handleAgentDispatch(args: AgentDispatchArgs): Promise<ToolResult> {
   return guarded(async () => {
+    if (Object.hasOwn(args, 'mcp_profile') || Object.hasOwn(args, 'mcpProfile')) {
+      return { ...json({ ok: false, code: 'MCP_PROFILE_REMOVED', message: 'MCP profiles were removed; pass tools: [group ids].' }), isError: true };
+    }
     if (!args.provider && !args.route_id) return invalid('Provide provider, or the route_id of an approved agent_route.');
+    const selection = resolveToolList(args.tools, { source: 'dispatch', provider: args.provider, usesBrowser: args.uses_browser, taskClass: args.task_class });
+    if (!selection.ok) return { ...json(selection), isError: true };
     return json(await ni.assistantDispatch({
     provider: args.provider,
     task: args.task,
@@ -346,7 +352,7 @@ export function handleAgentDispatch(args: AgentDispatchArgs): Promise<ToolResult
     assistantSessionId: args.assistant_session_id,
     model: args.model,
     effort: args.effort,
-    mcpProfile: args.mcp_profile,
+    tools: args.tools,
     routeId: args.route_id,
     taskClass: args.task_class,
     confidence: args.confidence,
@@ -538,7 +544,7 @@ export function handleAgentUsage(args: AgentUsageArgs): Promise<ToolResult> {
 
 /**
  * Register the agent_* tools on a server. Returned handles are stored as the
- * `agents` tool group so ProfileRuntime can gate them on the caller role.
+ * `agents` tool group so ToolRuntime can gate them on the caller role.
  */
 export function registerAgentTools(server: McpServer) {
   return [
@@ -546,7 +552,9 @@ export function registerAgentTools(server: McpServer) {
     server.tool('agent_list',     agentListDescription,     agentListSchema,     (args) => handleAgentList(args)),
     server.tool('agent_route',    agentRouteDescription,    agentRouteSchema,    (args) => handleAgentRoute(args)),
     server.tool('agent_clarify',  agentClarifyDescription,  agentClarifySchema,  (args) => handleAgentClarify(args)),
-    server.tool('agent_dispatch', agentDispatchDescription, agentDispatchSchema, (args) => handleAgentDispatch(args)),
+    // Preserve unknown input until the handler can reject retired fields from cached client schemas.
+    // Neither retired spelling is advertised or accepted as a working dispatch field.
+    server.registerTool('agent_dispatch', { description: agentDispatchDescription, inputSchema: z.object(agentDispatchSchema).passthrough() }, (args) => handleAgentDispatch(args)),
     server.tool('agent_status',   agentStatusDescription,   agentStatusSchema,   (args) => handleAgentStatus(args)),
     server.tool('agent_read',     agentReadDescription,     agentReadSchema,     (args) => handleAgentRead(args)),
     server.tool('agent_send',     agentSendDescription,     agentSendSchema,     (args) => handleAgentSend(args)),

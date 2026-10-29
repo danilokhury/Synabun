@@ -8,9 +8,12 @@
 // and bulk actions that say per item what they did. The keyboard moves through the rows with the arrows (one row
 // in the tab order), Enter opens, Space selects. At a narrow window the rows are cards (CSS).
 
+import { studioErrorText } from './sx-errors.js';
 import { dropdownHTML, wireDropdowns } from '../../cc-dropdown.js';
-import { filterRows, sortRows, worstHealth, SORTS, KINDS, SOURCES, RUNTIMES, HEALTH_FILTERS } from './sx-library.js';
+import { searchLibrary, filterRows, sortRows, worstHealth, SORTS, KINDS, SOURCES, RUNTIMES, HEALTH_FILTERS } from './sx-library.js';
 import { subjectOf } from './sx-subject.js';
+import { installStatus } from './sx-install.js';
+import { alsoInstall, alsoInstallNow } from './sx-install-flow.js';
 import { html, raw, setHTML, ICONS, healthIcon, relativeTime, fullTime, rovingFocus, plural } from './sx-dom.js';
 import { dropKept, dropDraft } from './sx-docs.js';
 import { encodeArtifactId } from '../ss-ids.js';
@@ -67,6 +70,30 @@ export function healthCapsule(row, t) {
   const rest = row.health.filter((h) => h !== worst && h.sev !== 'ok');
   const all = row.health.map((h) => { const why = healthWhy(h, t); return why ? `${healthWords(h, t)}: ${why}` : healthWords(h, t); }).join(' · ');
   return html`<span class="sx-health sx-health--${worst.sev}" title="${all}">${healthIcon(worst.code)}<span>${healthWords(worst, t)}</span>${rest.length ? html`<span class="sx-health-more">+${rest.length}</span>` : ''}</span>`;
+}
+
+/**
+ * The one status of a library skill (sx-install.js installStatus) as a pill: draft, in review, changes asked for,
+ * approved · not installed, installed (where, in its title), installed with an update, not installed. A button
+ * when it opens something (`button`: the data-ws action).
+ */
+export function statusPill(status, ctx, { button = null, id = null } = {}) {
+  const { t } = ctx;
+  const where = status.where.map((w) => {
+    const runtime = t(`skillsStudio.runtime.${['claude', 'codex', 'opencode', 'agents'].includes(w.runtime) ? w.runtime : 'claude'}`);
+    if (w.scope === 'project') return t('skillsStudio.publish.targetProject', { runtime, project: ctx.projects?.find((p) => p.path === w.projectPath)?.label || w.projectPath || '' });
+    if (w.accountId && w.accountId !== 'default') return t('skillsStudio.publish.targetAccount', { runtime, account: w.accountId });
+    return t('skillsStudio.publish.targetUser', { runtime });
+  });
+  const runtimes = [...new Set(status.where.map((w) => t(`skillsStudio.runtime.${['claude', 'codex', 'opencode', 'agents'].includes(w.runtime) ? w.runtime : 'claude'}`)))].join(', ');
+  const text = status.code === 'installed' ? t('skillsStudio.status.installed', { where: runtimes }) : status.code === 'outdated' ? t('skillsStudio.status.outdated', { where: runtimes }) : t(`skillsStudio.status.${status.code}`);
+  const title = where.length ? where.join(', ') : t(`skillsStudio.status.help.${status.code}`);
+  // Not installed is no tick: the dashed circle (healthIcon has no 'off' and would fall through to the tick).
+  const icon = status.code === 'installed' ? healthIcon('ok') : status.code === 'outdated' ? healthIcon('update') : status.code === 'review' || status.code === 'changes' ? healthIcon('review') : status.code === 'draft' ? healthIcon('draft') : status.code === 'approved' ? ICONS.publish : ICONS.off;
+  const inner = html`${icon}<span>${text}</span>`;
+  return button
+    ? html`<button type="button" class="sx-status sx-status--${status.code}" data-ws="${button}"${id ? html` id="${id}"` : ''} title="${title}">${inner}</button>`
+    : html`<span class="sx-status sx-status--${status.code}"${id ? html` id="${id}"` : ''} title="${title}">${inner}</span>`;
 }
 
 /** The runtime capsules of a row (C X O), each named in full. */
@@ -129,10 +156,98 @@ function rowHTML(row, ctx, selected, first) {
     </td>
     <td class="sx-col-kind">${kindLabel(row, t)}</td>
     <td class="sx-col-source"><span class="sx-source">${src.label}</span>${src.detail ? html`<span class="sx-source-detail" title="${src.detail}">${src.detail}</span>` : ''}</td>
-    <td class="sx-col-health">${healthCapsule(row, t)}</td>
+    <td class="sx-col-health">${healthCellHTML(row, ctx)}</td>
     <td class="sx-col-rt">${runtimeCapsules(row, t)}</td>
     <td class="sx-col-updated">${updated ? html`<time datetime="${row.updatedAt}" title="${fullTime(row.updatedAt, locale)}">${updated}</time>` : html`<span class="sx-dim" role="img" aria-label="${unknown}" title="${unknown}">—</span>`}</td>
   </tr>`;
+}
+
+/**
+ * The health cell: a library skill shows its one status (the same as its workspace header) and its health only when
+ * something is wrong, with Install when it is approved and not installed yet; the rest shows its health.
+ */
+function healthCellHTML(row, ctx) {
+  const { t } = ctx;
+  const status = installStatus({ skill: row.skill, row });
+  if (!status) return healthCapsule(row, t);
+  const worst = worstHealth(row);
+  // Installed for one assistant and not the others in effect: one press from the row adds them.
+  const also = ['installed', 'outdated'].includes(status.code) && !ctx.guest ? alsoInstall(ctx, { skill: row.skill, row }) : { targets: [], words: '' };
+  return html`<span class="sx-health-cell">${statusPill(status, ctx)}${worst.sev === 'err' || worst.sev === 'warn' ? healthCapsule(row, t) : ''}${status.code === 'approved' && !ctx.guest ? html`<button type="button" class="sx-btn sx-btn--sm sx-btn--primary" data-install="${row.key}" tabindex="-1" title="${t('skillsStudio.library.installHelp')}">${t('skillsStudio.library.install')}</button>` : ''}${also.targets.length ? html`<button type="button" class="sx-btn sx-btn--sm" data-also-install="${row.key}" tabindex="-1" title="${t('skillsStudio.library.alsoInstallHelp')}">${t('skillsStudio.library.alsoInstall', { targets: also.words })}</button>` : ''}</span>`;
+}
+
+/**
+ * The start-up move of the old Codex prompt / OpenCode command bridges (lib/skills/migration.js autoMigrate), said
+ * once: what moved, with Undo (the bridges come back, the folders it made go) and OK; and the bridge files of shipped
+ * skills that SynaBun did not move by itself because they are not proven its own, each with "Move it too" (the owner
+ * confirms exactly those bytes). Drawn from GET /v2/migrations/notice (read with the Library); nothing on an older server.
+ */
+export function migrationNoticeHTML(ctx) {
+  const n = ctx.data?.notice;
+  if (!n || ctx.guest) return '';
+  const { t, tp } = ctx;
+  const out = [];
+  if (n.pending) {
+    const label = (m) => `${t(`skillsStudio.runtime.${['claude', 'codex', 'opencode'].includes(m.runtime) ? m.runtime : 'claude'}`)} /${m.name}`;
+    const moved = (n.pending.migrated || []).map(label);
+    // Moved by itself because its bytes were exactly an earlier SynaBun version's bridge (proof generated-previous).
+    const earlier = (n.pending.migrated || []).filter((m) => m.proof === 'generated-previous').map(label);
+    const failed = (n.pending.notMoved || []).map((m) => `/${m.name}`);
+    out.push(html`<div class="sx-notice sx-notice--info" role="status" data-notice-box="auto">
+      ${ICONS.ok}<span class="sx-notice-text">${tp('skillsStudio.notice.autoMoved', moved.length, { names: moved.join(', ') })}${earlier.length ? ` ${tp('skillsStudio.notice.autoEarlier', earlier.length, { names: earlier.join(', ') })}` : ''} ${t('skillsStudio.notice.autoWhy')}${failed.length ? ` ${tp('skillsStudio.notice.autoNotMoved', failed.length, { names: failed.join(', ') })}` : ''}</span>
+      <button type="button" class="sx-btn" data-notice="undo" data-journal="${n.pending.journalId}">${t('skillsStudio.notice.undo')}</button>
+      <button type="button" class="sx-btn sx-btn--ghost" data-notice="dismiss">${t('skillsStudio.notice.ok')}</button>
+    </div>`);
+  }
+  for (const o of n.offers || []) {
+    const runtime = t(`skillsStudio.runtime.${['claude', 'codex', 'opencode'].includes(o.runtime) ? o.runtime : 'claude'}`);
+    out.push(html`<div class="sx-notice sx-notice--warn" role="note" data-notice-box="offer" data-bridge="${o.bridgeId}">
+      ${ICONS.warn}<span class="sx-notice-text">${t('skillsStudio.notice.offer', { runtime, name: `/${o.name}`, path: shortPath(o.path) })}</span>
+      <button type="button" class="sx-btn" data-notice="move" data-bridge="${o.bridgeId}" data-digest="${o.digest}">${t('skillsStudio.notice.moveToo')}</button>
+    </div>`);
+  }
+  return html`${out}`;
+}
+
+/**
+ * What the row's "Also install for …" did, kept above the list until OK: where it went and, per runtime, what a
+ * session needs to see it (SynaBun's own panels list it at once; a terminal session needs a new one). A toast alone
+ * would be gone before those lines are read.
+ */
+function installNoticeHTML(ctx) {
+  const n = ctx.lib.installNotice;
+  if (!n || ctx.guest) return '';
+  return html`<div class="sx-notice sx-notice--${n.kind === 'info' ? 'info' : 'warn'}" role="status" data-notice-box="install">
+    ${n.kind === 'info' ? ICONS.ok : ICONS.warn}<span class="sx-notice-text"><strong>${n.name}</strong>: ${n.line}${n.lines.map((l) => html`<span class="sx-block">${l}</span>`)}</span>
+    <button type="button" class="sx-btn sx-btn--ghost" data-lib="install-notice-ok">${ctx.t('skillsStudio.notice.ok')}</button>
+  </div>`;
+}
+
+/** The home folder as ~ (the full path stays in the element's title). */
+function shortPath(path) { return String(path || '').replace(/^\/Users\/[^/]+(?=\/)/, '~').replace(/^\/home\/[^/]+(?=\/)/, '~'); }
+
+/** A button of the start-up move's notice: Undo, OK, or Move it too (a confirmed move: the plan with the confirmation, then exactly that plan). */
+async function onNoticeAction(btn, ctx) {
+  const { t } = ctx;
+  const act = btn.dataset.notice;
+  const box = btn.closest('[data-notice-box]');
+  for (const b of box?.querySelectorAll('button') || []) b.disabled = true;
+  const gen = ctx.gen();
+  try {
+    if (act === 'dismiss') { await ctx.api.dismissSkillsMigrationNotice(); }
+    else if (act === 'undo') {
+      const out = await ctx.api.revertSkillsMigration(btn.dataset.journal);
+      if (ctx.alive(gen)) ctx.toast(out.status === 'reverted' ? t('skillsStudio.notice.undone') : t('skillsStudio.notice.undonePartly'), out.status === 'reverted' ? 'info' : 'error');
+    } else if (act === 'move') {
+      const confirm = { [btn.dataset.bridge]: btn.dataset.digest };
+      const planned = await ctx.api.planSkillsBridgeMigrationConfirmed(confirm);
+      const out = await ctx.api.runSkillsBridgeMigration(planned.plan.planDigest, confirm);
+      if (ctx.alive(gen)) ctx.toast(out.status === 'done' ? t('skillsStudio.notice.moved') : t('skillsStudio.notice.movedPartly'), out.status === 'done' ? 'info' : 'error');
+    }
+  } catch (err) {
+    if (ctx.alive(gen)) ctx.toast(t('skillsStudio.notice.failed', { error: studioErrorText(ctx.t, err) }), 'error');
+  }
+  if (ctx.alive(gen)) ctx.reload();
 }
 
 function keptNoticeHTML(ctx) {
@@ -188,11 +303,61 @@ function bulkHTML(ctx, rows) {
   </div>`;
 }
 
+/** The Archived view: the skills deleted from the library, each with Restore (its versions never left). */
+function archivedHTML(ctx) {
+  const { t, locale } = ctx;
+  const list = Array.isArray(ctx.data?.archived) ? ctx.data.archived : [];
+  if (!list.length) return html`<div class="sx-empty"><h4 class="sx-empty-title">${t('skillsStudio.library.archivedTitle')}</h4><p>${t('skillsStudio.library.archivedEmpty')}</p></div>`;
+  return html`<section class="sx-archived" aria-labelledby="sx-archived-title">
+    <h4 class="sx-section-title" id="sx-archived-title">${t('skillsStudio.library.archivedTitle')}</h4>
+    <p class="sx-help">${t('skillsStudio.library.archivedHelp')}</p>
+    <ul class="sx-installs sx-archived-list">${list.map((a) => html`<li class="sx-install-row" data-archived="${a.skillId}">
+      <span class="sx-install-where"><strong>${revealHidden(String(a.name || a.skillId))}</strong></span>
+      <span class="sx-dim">${t('skillsStudio.library.archivedWhen', { when: relativeTime(a.archivedAt, locale), by: a.archivedBy || 'owner' })} · ${plural(t, 'skillsStudio.library.archivedVersions', Number(a.revisions) || 0)}</span>
+      ${ctx.guest ? '' : html`<span class="sx-install-actions"><button type="button" class="sx-btn sx-btn--sm sx-btn--primary" data-restore="${a.skillId}">${t('skillsStudio.library.restore')}</button></span>`}
+    </li>`)}</ul>
+  </section>`;
+}
+
+/** The row's "Also install for …": one press, the installed version to the assistants that lack it. */
+async function onAlsoInstall(btn, host, ctx) {
+  const row = ctx.rows.find((r) => r.key === btn.dataset.alsoInstall);
+  if (!row?.skill) return;
+  btn.disabled = true;
+  const gen = ctx.gen();
+  const words = await alsoInstallNow(ctx, { skill: row.skill, row });
+  if (!ctx.alive(gen)) return;
+  if (words) {
+    ctx.lib.installNotice = { kind: words.kind, name: row.name || row.skill.name || '', line: words.line, lines: Array.isArray(words.lines) ? words.lines : [] };
+    ctx.toast(words.line, words.kind);
+    ctx.announce([words.line, ...ctx.lib.installNotice.lines].join(' '));
+  }
+  ctx.reload();
+}
+
+/** Restore from the Archived view: the record and its draft are back, the versions never left. */
+async function onRestore(btn, host, ctx) {
+  const { t } = ctx;
+  btn.disabled = true;
+  const gen = ctx.gen();
+  try {
+    const out = await ctx.api.restoreSkillsSkill(btn.dataset.restore);
+    if (!ctx.alive(gen)) return;
+    ctx.toast(t('skillsStudio.library.restored', { name: out.name || '' }));
+    ctx.announce(t('skillsStudio.library.restored', { name: out.name || '' }));
+  } catch (err) {
+    if (!ctx.alive(gen)) return;
+    ctx.toast(t('skillsStudio.library.restoreFailed', { error: studioErrorText(ctx.t, err) }), 'error');
+  }
+  ctx.reload();
+}
+
 function tableHTML(ctx, shown) {
   const { t, lib } = ctx;
+  if (lib.view === 'archived') return archivedHTML(ctx);
   if (ctx.loading) return html`<div class="sx-empty" role="status"><p>${t('skillsStudio.library.loading')}</p></div>`;
   if (ctx.loadError && !ctx.rows.length) {
-    return html`<div class="sx-empty" role="alert"><h4 class="sx-empty-title">${t('skillsStudio.library.loadFailed')}</h4><p class="sx-dim">${ctx.loadError.message || ''}</p><button type="button" class="sx-btn" data-lib="retry">${t('skillsStudio.shell.retry')}</button></div>`;
+    return html`<div class="sx-empty" role="alert"><h4 class="sx-empty-title">${t('skillsStudio.library.loadFailed')}</h4><p class="sx-dim">${studioErrorText(ctx.t, ctx.loadError)}</p><button type="button" class="sx-btn" data-lib="retry">${t('skillsStudio.shell.retry')}</button></div>`;
   }
   if (!ctx.rows.length) {
     return html`<div class="sx-empty"><h4 class="sx-empty-title">${t('skillsStudio.library.emptyTitle')}</h4><p>${t('skillsStudio.library.emptyHelp')}</p>${ctx.guest ? '' : html`<button type="button" class="sx-btn sx-btn--primary" data-lib="new">${t('skillsStudio.library.new')}</button>`}</div>`;
@@ -229,7 +394,7 @@ export function renderLibraryPlace(host, ctx) {
   const shown = visible(ctx);
   setHTML(host, html`<section class="sx-place sx-place--library" aria-labelledby="sx-lib-title">
     ${filterHeadHTML(ctx)}
-    <div class="sx-place-notices">${keptNoticeHTML(ctx)}${updateNoticeHTML(ctx)}</div>
+    <div class="sx-place-notices">${installNoticeHTML(ctx)}${migrationNoticeHTML(ctx)}${keptNoticeHTML(ctx)}${updateNoticeHTML(ctx)}</div>
     <div class="sx-place-scroll" id="sx-lib-scroll">
       <div id="sx-lib-summary">${summaryHTML(ctx, shown)}</div>
       <div id="sx-lib-table">${tableHTML(ctx, shown)}</div>
@@ -246,7 +411,7 @@ export function renderLibraryPlace(host, ctx) {
     }, { signal });
   }
   const search = host.querySelector('#sx-lib-search');
-  search?.addEventListener('input', () => { ctx.lib.q = search.value; redrawRows(host, ctx); }, { signal });
+  search?.addEventListener('input', () => { const starting = !ctx.lib.q.trim() && search.value.trim(); searchLibrary(ctx.lib, search.value); ctx.saveLibraryView(); if (starting) ctx.render({ keepFocus: true }); else redrawRows(host, ctx); }, { signal });
   host.addEventListener('click', (e) => onClick(e, host, ctx), { signal });
   host.addEventListener('change', (e) => onCheck(e, host, ctx), { signal });
   host.addEventListener('keydown', (e) => onRowKey(e, host, ctx), { signal });
@@ -277,6 +442,14 @@ function updateNoticeHTML(ctx) {
 }
 
 async function onClick(e, host, ctx) {
+  const notice = e.target.closest?.('[data-notice]');
+  if (notice && !notice.disabled) { onNoticeAction(notice, ctx); return; }
+  const install = e.target.closest?.('[data-install]');
+  if (install && host.contains(install)) { ctx.lib.focus = install.dataset.install; ctx.openRow(install.dataset.install, { tab: 'publish' }); return; }
+  const also = e.target.closest?.('[data-also-install]');
+  if (also && host.contains(also) && !also.disabled) { onAlsoInstall(also, host, ctx); return; }
+  const restore = e.target.closest?.('[data-restore]');
+  if (restore && host.contains(restore) && !restore.disabled) { onRestore(restore, host, ctx); return; }
   const open = e.target.closest?.('[data-open]');
   if (open && host.contains(open)) { ctx.lib.focus = open.dataset.open; ctx.openRow(open.dataset.open); return; }
   const btn = e.target.closest?.('[data-lib]');
@@ -284,6 +457,7 @@ async function onClick(e, host, ctx) {
   const act = btn.dataset.lib;
   if (act === 'new') ctx.goPlace('create');
   else if (act === 'retry') ctx.reload();
+  else if (act === 'install-notice-ok') { ctx.lib.installNotice = null; ctx.render(); }
   else if (act === 'clear-filters') { Object.assign(ctx.lib, { view: 'all', kind: 'all', source: 'all', runtime: 'all', health: 'any', q: '' }); ctx.saveLibraryView(); ctx.render(); }
   else if (act === 'bulk-clear') { ctx.lib.selected.clear(); redrawRows(host, ctx); }
   else if (act === 'diagnostics') showDiagnostics(ctx);
@@ -379,7 +553,7 @@ async function bulkAdopt(ctx) {
   const gen = ctx.gen();
   let done = 0; const failed = [];
   for (const row of chosen) {
-    try { await api.adoptSkillsArtifact(row.primary.id, { idempotencyKey: ctx.key('adopt') }); done++; } catch (err) { failed.push(`${row.label}: ${err.message}`); }
+    try { await api.adoptSkillsArtifact(row.primary.id, { idempotencyKey: ctx.key('adopt') }); done++; } catch (err) { failed.push(`${row.label}: ${studioErrorText(ctx.t, err)}`); }
   }
   if (!ctx.alive(gen)) return;
   ctx.toast(failed.length ? t('skillsStudio.library.bulk.adoptPartial', { done, failed: failed.length, first: failed[0] }) : tp('skillsStudio.library.bulk.adoptDone', done), failed.length ? 'error' : 'info');
@@ -453,7 +627,7 @@ async function bulkDelete(ctx) {
       done++;
       const ws = ctx.workspaces.get(x.row.key);
       if (ws) { for (const tab of ws.tabs) dropDraft(ws, tab); ctx.closeWorkspace(ws); }
-    } catch (e) { failed.push(`${x.row.label}: ${e.message}`); }
+    } catch (e) { failed.push(`${x.row.label}: ${studioErrorText(ctx.t, e)}`); }
   }
   if (!ctx.alive(gen)) return;
   ctx.toast(failed.length ? t('skillsStudio.library.bulk.deletePartial', { done, failed: failed.length, first: failed[0] }) : tp('skillsStudio.library.bulk.deleted', done), failed.length ? 'error' : 'info');

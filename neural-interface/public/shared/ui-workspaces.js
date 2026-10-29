@@ -24,6 +24,7 @@ import { storage } from './storage.js';
 import { t } from './i18n.js';
 import { posStore } from './node-positions-store.js';
 import { getVariant } from './registry.js';
+import { normalizeWorkspaceVariant } from './view-variant.js';
 import {
   getOpenCardsSnapshot,
   closeAllCards,
@@ -51,14 +52,14 @@ let _isOpen = false;
 
 function getWorkspaces() {
   try {
-    return JSON.parse(storage.getItem(KEYS.WORKSPACES) || '[]');
+    return JSON.parse(storage.getItem(KEYS.WORKSPACES) || '[]').map(normalizeWorkspaceVariant);
   } catch {
     return [];
   }
 }
 
 function saveWorkspacesToStorage(list) {
-  storage.setItem(KEYS.WORKSPACES, JSON.stringify(list));
+  storage.setItem(KEYS.WORKSPACES, JSON.stringify(list.map(normalizeWorkspaceVariant)));
 }
 
 function _readStoredPositions(key) {

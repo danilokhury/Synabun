@@ -1006,7 +1006,7 @@ export function mountCompose(rootEl, store = getDefaultStore(), opts = {}) {
           if (s.running) { store.pushError({ message: 'Wait for the current turn to finish before compacting.' }); return; }
           const at = captureBinding(store);
           const res = await api.compact({
-            sessionId: at.sessionId, cwd: at.cwd || undefined, mcpProfile: at.mcpProfile || undefined, model: at.model || undefined,
+            sessionId: at.sessionId, cwd: at.cwd || undefined, tools: at.tools || undefined,
           });
           // A failure of the session the panel has left is not this one's banner.
           if (at.isCurrent() && (res?.error || res?.ok === false)) store.pushError({ message: res?.error || 'Compact failed' });
@@ -1092,7 +1092,7 @@ export function mountCompose(rootEl, store = getDefaultStore(), opts = {}) {
       variant: turn.variant || undefined,
       parts: parts.length ? parts : undefined,
       cwd: turn.cwd || undefined,
-      mcpProfile: turn.mcpProfile || undefined,
+      tools: turn.tools || undefined,
     }), outcome);
   }
 
@@ -1130,7 +1130,7 @@ export function mountCompose(rootEl, store = getDefaultStore(), opts = {}) {
       agent: turn.agent || undefined,
       model: turn.model || undefined,
       cwd: turn.cwd || undefined,
-      mcpProfile: turn.mcpProfile || undefined,
+      tools: turn.tools || undefined,
     }));
   }
 
@@ -1467,7 +1467,7 @@ export function mountCompose(rootEl, store = getDefaultStore(), opts = {}) {
         mode,
         variant: turn.variant || undefined,
         cwd: options.cwd || turn.cwd || undefined,
-        mcpProfile: turn.mcpProfile || undefined,
+        tools: turn.tools || undefined,
         // A person's own message (the greeting engine keeps when they were last here), and the
         // greeting this session opened with, told to the model once.
         human: true,

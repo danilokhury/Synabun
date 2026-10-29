@@ -10,6 +10,7 @@
 // ═══════════════════════════════════════════
 
 import { joinSections, quoteSelection } from './context-menu-logic.js';
+import { resolveViewVariant } from './view-variant.js';
 
 const svg = (body) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
 
@@ -72,7 +73,7 @@ export const WHITEBOARD_TOOLS = ['select', 'text', 'list', 'arrow', 'shape', 'pe
 /** The whiteboard's fixed keys, written as the keybind registry writes a key (Ctrl stands for Cmd on a Mac too). */
 export const WHITEBOARD_KEYS = { multi: 'M', undo: 'Ctrl + Z', redo: 'Ctrl + Shift + Z', selectAll: 'Ctrl + A' };
 
-/** The memory map's switches in Map options ›, per page: the 3D map's (Apps › Map) and the 2D graph's (View). */
+/** Map options. The deprecated 2D definitions remain for the archived source; current contexts resolve to 3D. */
 export const MAP_OPTIONS = { '3d': ['neighbors', 'recency', 'grid'], '2d': ['minimap', 'regionGlow'] };
 // A switch with a registered key shows it.
 const MAP_OPTION_ACTIONS = { minimap: 'toggle-minimap' };
@@ -273,7 +274,7 @@ function memoryItems(memory, { t }, act) {
 
 function mapItems(map, { t, shortcut }, act) {
   const options = map.options || {};
-  const variant = map.variant === '2d' ? '2d' : '3d';
+  const variant = resolveViewVariant(map.variant);
   const toggle = (key) => ({
     id: `map-${key}`,
     label: t(`contextMenu.map.${key}`),
@@ -287,12 +288,6 @@ function mapItems(map, { t, shortcut }, act) {
     { id: 'map-options', label: t('contextMenu.map.options'), icon: ICONS.sliders, submenu: MAP_OPTIONS[variant].map(toggle) },
     map.searching && { id: 'map-clear-search', label: t('contextMenu.map.clearSearch'), icon: ICONS.clear, run: () => act.clearSearch() },
     map.selected && { id: 'map-clear-selection', label: t('contextMenu.map.clearSelection'), icon: ICONS.clear, run: () => act.clearSelection() },
-    {
-      id: 'map-switch-view',
-      label: t(variant === '2d' ? 'contextMenu.map.switchTo3d' : 'contextMenu.map.switchTo2d'),
-      icon: ICONS.layers,
-      run: () => act.switchView(),
-    },
   ];
 }
 

@@ -1,3 +1,6 @@
+import { migrateStoredTools } from './tool-list-storage.js';
+import { wireDropdowns } from './cc-dropdown.js';
+import { configureToolPickerTranslation, toolPickerHTML, readToolPicker, updateToolPicker, taskToolHost as strictToolHost, toolWord } from './tool-list-picker.js';
 // ═══════════════════════════════════════════
 // SynaBun Neural Interface — Automation Studio
 // Browse, configure, launch, and track loop automations.
@@ -18,7 +21,8 @@ import {
 import {
   CLI_PROFILES,
   ensureModelsForProfile,
-  fetchMcpProfilePresets,
+  fetchToolCatalog,
+  getCachedToolCatalog,
   fetchCodexAccounts,
   getCachedCodexAccounts,
   getEffortLevelsForProfile,
@@ -68,6 +72,7 @@ import {
   cancelQuickTimer,
   triggerQuickTimerNow,
 } from './api.js';
+import { centeredInFrame, placementArea } from './app-frame.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -210,10 +215,10 @@ let _launchContextMode = _initialLaunchSelection.contextMode || 'default';
 storage.setItem('as-launch-model', _launchModel || '');
 storage.setItem('as-launch-context-mode', _launchContextMode);
 let _launchEffort = storage.getItem('as-launch-effort') || 'off';
-let _launchMcpProfile = storage.getItem('as-launch-mcp-profile') || 'full';
+let _launchTools = (() => { try { return JSON.parse(storage.getItem('as-launch-tools') || 'null'); } catch { return null; } })();
 let _launchAccount = storage.getItem('as-launch-account') || 'default'; // Codex ChatGPT account (CODEX_HOME)
 let _qtAccountsRequested = false; // lazy-fetch guard for quick-timer account chips
-let _mcpProfilePresets = null; // cached presets from API
+let _dropdownAbort = null;
 
 // Render the Codex account selector chips (one button per saved ChatGPT account).
 function renderAccountChips(selectedId) {
@@ -263,34 +268,17 @@ function loadLaunchAccounts(root) {
   }).catch(() => {});
 }
 
-async function fetchMcpProfiles() {
-  if (_mcpProfilePresets) return _mcpProfilePresets;
-  try {
-    const presets = await fetchMcpProfilePresets();
-    if (presets && Object.keys(presets).length) {
-      _mcpProfilePresets = presets;
-      return _mcpProfilePresets;
-    }
-  } catch {}
-  return {};
-}
-
-function renderMcpProfileChips(presets, selected) {
-  const entries = Object.entries(presets);
-  if (entries.length > 5) {
-    const options = entries.map(([id, p]) => ({
-      id,
-      label: p.label || id,
-      desc: `${p.tools} tools`,
-    }));
-    return renderLaunchSelect('mcp', options, selected);
-  }
-  return entries.map(([id, p]) => `
-    <button class="as-launch-mcp-profile${id === selected ? ' active' : ''}" data-mcp-profile="${_escLaunch(id)}">
-      <span class="as-launch-mcp-profile-name">${_escLaunch(p.label || id)}</span>
-      <span class="as-launch-mcp-profile-tools">${_escLaunch(p.tools)} tools</span>
-    </button>
-  `).join('');
+async function renderLaunchToolPicker(root, provider) {
+  let catalog = await fetchToolCatalog(false, { cwd: _pendingLaunchParams?.cwd || '' });
+  if (_launchMode === 'agent' && !root.querySelector('#as-agent-synabun')?.checked && catalog) catalog = { ...catalog, defaultTools: [] };
+  const container = root.querySelector('#as-launch-tools');
+  if (!container) return;
+  container.innerHTML = strictToolHost(provider) ? toolPickerHTML('as-launch-tool-list', _launchTools, { catalog, provider, inheritLabel: toolWord('default'), usesBrowser: !!_pendingLaunchParams?.usesBrowser }) : toolWord('focus');
+  container.querySelector('#as-launch-tool-list')?.addEventListener('change', (event) => {
+    _launchTools = readToolPicker(event.target);
+    storage.setItem('as-launch-tools', JSON.stringify(_launchTools));
+    updateToolPicker(event.target, _launchTools, { inheritLabel: toolWord('default'), usesBrowser: !!_pendingLaunchParams?.usesBrowser });
+  });
 }
 
 // ── Preset Templates with Wizard Steps ──
@@ -893,7 +881,7 @@ function showLaunchInline(params) {
   if (params.usesBrowser && (!params.context || !params.context.includes('BROWSER REQUIRED'))) {
     params.context = BROWSER_CONTEXT;
   }
-  // Apply template-preset launch defaults (CLI / model / effort / MCP profile)
+  // Apply template-preset launch defaults (CLI / model / effort / tool list)
   if (params.profile) {
     if (params.profile !== _launchProfile && !params.model) {
       _launchModel = null;
@@ -909,7 +897,7 @@ function showLaunchInline(params) {
     storage.setItem('as-launch-model', _launchModel || '');
   }
   if (params.effort)  { _launchEffort = params.effort; storage.setItem('as-launch-effort', _launchEffort); }
-  if (params.mcpProfile) { _launchMcpProfile = params.mcpProfile; storage.setItem('as-launch-mcp-profile', _launchMcpProfile); }
+  if (params.tools !== undefined) { _launchTools = params.tools; storage.setItem('as-launch-tools', JSON.stringify(_launchTools)); }
   if (params.codexAccountId) { _launchAccount = params.codexAccountId; storage.setItem('as-launch-account', _launchAccount); }
   _pendingLaunchParams = params;
   _launchPanelActive = true;
@@ -984,11 +972,9 @@ function showLaunchInline(params) {
             ${renderEffortChips(profile, _launchEffort)}
           </div>
         </div>
-        <div class="as-launch-section" id="as-launch-mcp-section" style="${profile !== 'claude-code' ? '' : 'display:none'}">
-          <label class="as-launch-label">MCP Profile</label>
-          <div class="as-launch-mcp-profiles" id="as-launch-mcp-profiles">
-            <span class="as-launch-mcp-loading">Loading profiles...</span>
-          </div>
+        <div class="as-launch-section" id="as-launch-tools-section">
+          <label class="as-launch-label">${toolWord('label')}</label>
+          <div id="as-launch-tools">${strictToolHost(profile) ? '' : toolWord('focus')}</div>
         </div>
         <div class="as-launch-section" id="as-launch-account-section" style="${profile === 'codex' ? '' : 'display:none'}">
           <label class="as-launch-label">OpenAI Account</label>
@@ -1055,16 +1041,7 @@ function showLaunchInline(params) {
 
   wireLaunchInline(contentEl);
 
-  // Async-load MCP profiles for codex/gemini
-  if (profile !== 'claude-code') {
-    fetchMcpProfiles().then(presets => {
-      const container = contentEl.querySelector('#as-launch-mcp-profiles');
-      if (container && presets && Object.keys(presets).length) {
-        container.innerHTML = renderMcpProfileChips(presets, _launchMcpProfile);
-        wireMcpProfileChips(contentEl);
-      }
-    });
-  }
+  void renderLaunchToolPicker(contentEl, profile);
 
   // Async-load dynamic models and re-render chips when ready.
   // Retries a couple of times in case OpenCode is still booting.
@@ -1346,6 +1323,7 @@ function wireLaunchInline(container) {
   const root = container.querySelector('.as-launch-inline');
   if (!root) return;
   applyAgentModeGating(root, _launchProfile);
+  root.querySelector('#as-agent-synabun')?.addEventListener('change', () => { void renderLaunchToolPicker(root, _launchProfile); });
 
   // Mode toggle (Loop vs Agent)
   root.querySelectorAll('.as-launch-mode').forEach(btn => {
@@ -1359,6 +1337,7 @@ function wireLaunchInline(container) {
       if (agentFields) agentFields.style.display = _launchMode === 'agent' ? '' : 'none';
       const confirmBtn = root.querySelector('#as-launch-confirm-btn');
       if (confirmBtn) confirmBtn.textContent = _launchMode === 'agent' ? 'Launch Agent' : 'Launch';
+      void renderLaunchToolPicker(root, _launchProfile);
     });
   });
 
@@ -1418,20 +1397,7 @@ function wireLaunchInline(container) {
         }
       }
       applyAgentModeGating(root, profileId);
-      // Show/hide MCP profile section (Codex/Gemini only — Claude Code has tool search)
-      const mcpSection = root.querySelector('#as-launch-mcp-section');
-      if (mcpSection) {
-        mcpSection.style.display = profileId !== 'claude-code' ? '' : 'none';
-        if (profileId !== 'claude-code') {
-          fetchMcpProfiles().then(presets => {
-            const container = root.querySelector('#as-launch-mcp-profiles');
-            if (container && presets && Object.keys(presets).length) {
-              container.innerHTML = renderMcpProfileChips(presets, _launchMcpProfile);
-              wireMcpProfileChips(root);
-            }
-          });
-        }
-      }
+      void renderLaunchToolPicker(root, profileId);
       // Show/hide OpenAI account section (Codex only — selects which ChatGPT login the loop runs under)
       const accountSection = root.querySelector('#as-launch-account-section');
       if (accountSection) {
@@ -1495,21 +1461,6 @@ function wireEffortChips(container) {
   });
 }
 
-function wireMcpProfileChips(container) {
-  container.querySelectorAll('.as-launch-mcp-profile').forEach(btn => {
-    btn.addEventListener('click', () => {
-      container.querySelectorAll('.as-launch-mcp-profile').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      _launchMcpProfile = btn.dataset.mcpProfile;
-      storage.setItem('as-launch-mcp-profile', _launchMcpProfile);
-    });
-  });
-  wireLaunchSelect(container, 'mcp', (value) => {
-    _launchMcpProfile = value;
-    storage.setItem('as-launch-mcp-profile', _launchMcpProfile);
-  });
-}
-
 function closeLaunchInline() {
   _pendingLaunchParams = null;
   _launchPanelActive = false;
@@ -1533,7 +1484,7 @@ async function confirmLaunch() {
     return;
   }
   const effort = normalizeEffortForProfile(_launchProfile, _launchEffort) || undefined;
-  const mcpProfile = _launchProfile !== 'claude-code' ? _launchMcpProfile : undefined;
+  const tools = strictToolHost(_launchProfile) ? _launchTools : undefined;
   const codexAccountId = _launchProfile === 'codex' ? (_launchAccount || 'default') : undefined;
   const params = {
     ..._pendingLaunchParams,
@@ -1541,7 +1492,7 @@ async function confirmLaunch() {
     model: _launchModel,
     contextMode: _launchContextMode,
     effort,
-    mcpProfile,
+    tools,
     codexAccountId,
     sidepanelWindowId: getNativeLoopRouterWindowId(),
     sidepanelClaimToken: getNativeLoopRouterClaimToken(),
@@ -1570,6 +1521,7 @@ async function confirmLaunch() {
         cwd: params.cwd || undefined,
         maxTurns: params.usesBrowser ? 100 : 75,
         withSynabun,
+        tools: tools ?? (withSynabun ? getCachedToolCatalog()?.defaultTools ?? ['mcp:*'] : []),
         browserProfile: (withSynabun && params.usesBrowser) ? true : undefined,
         mode: agentSubmode,
         iterations: agentSubmode === 'loop' ? agentIterations : 1,
@@ -1757,14 +1709,31 @@ async function openPanel(opts = {}) {
   document.body.appendChild(_backdrop);
 
   _panel = document.createElement('div');
+  _dropdownAbort?.abort();
+  _dropdownAbort = new AbortController();
+  wireDropdowns(_panel, { signal: _dropdownAbort.signal });
+  _panel.addEventListener('change', event => {
+    if (event.target.id === 'as-qt-tools') {
+      _launchTools = readToolPicker(event.target);
+      storage.setItem('as-launch-tools', JSON.stringify(_launchTools));
+      updateToolPicker(event.target, _launchTools, { inheritLabel: toolWord('templateDefault'), usesBrowser: !!$('as-qt-browser')?.checked });
+    }
+    if (['as-qt-browser', 'as-qt-template', 'as-f-browser'].includes(event.target.id)) queueMicrotask(() => {
+      const detail = event.target.id === 'as-f-browser';
+      const input = $(detail ? 'as-f-mcp' : 'as-qt-tools');
+      updateToolPicker(input, readToolPicker(input, { requested: true }), { inheritLabel: toolWord(detail ? 'default' : 'templateDefault'), usesBrowser: !!$(detail ? 'as-f-browser' : 'as-qt-browser')?.checked });
+    });
+  }, { signal: _dropdownAbort.signal });
+  void fetchToolCatalog();
   _panel.className = 'automation-studio-panel glass resizable';
   _panel.id = 'automation-studio-panel';
   _panel.innerHTML = buildPanelHTML();
   document.body.appendChild(_panel);
 
-  // Always open centered at default size
-  _panel.style.left = Math.max(20, (window.innerWidth - 900) / 2) + 'px';
-  _panel.style.top = Math.max(48, (window.innerHeight - 520) / 2) + 'px';
+  // Always open centered at default size, in the app frame
+  const at = centeredInFrame(900, 520);
+  _panel.style.left = at.left + 'px';
+  _panel.style.top = at.top + 'px';
 
   wirePanel();
   const kept = _keptData;
@@ -1814,6 +1783,7 @@ function closePanel() {
   for (const [evt, fn] of _docListeners) document.removeEventListener(evt, fn);
   _docListeners = [];
   if (_backdrop) { _backdrop.remove(); _backdrop = null; }
+  _dropdownAbort?.abort();
   _panel.remove(); _panel = null;
   _templates = []; _activeLoop = null;
   _view = 'welcome'; _selected = null;
@@ -2177,11 +2147,12 @@ function positionFloating(el, x, y) {
   el.style.left = `${x}px`;
   el.style.top = `${y}px`;
   el.style.zIndex = '300010';
-  // Adjust after mounting to keep in viewport
+  // Adjust after mounting to keep in the app frame (the window for a point outside it)
   requestAnimationFrame(() => {
     const r = el.getBoundingClientRect();
-    if (r.right > window.innerWidth - 8) el.style.left = `${Math.max(8, window.innerWidth - r.width - 8)}px`;
-    if (r.bottom > window.innerHeight - 8) el.style.top = `${Math.max(8, window.innerHeight - r.height - 8)}px`;
+    const b = placementArea(x, y);
+    if (r.right > b.right - 8) el.style.left = `${Math.max(b.left + 8, b.right - r.width - 8)}px`;
+    if (r.bottom > b.bottom - 8) el.style.top = `${Math.max(b.top + 8, b.bottom - r.height - 8)}px`;
   });
 }
 
@@ -2363,6 +2334,8 @@ async function promptCreateFolder() {
 // ═══════════════════════════════════════════
 
 async function loadData() {
+  _launchTools = await migrateStoredTools(storage, 'as-launch-tools', 'as-launch-mcp-profile');
+  await fetchToolCatalog();
   // One round trip for the three lists (they were asked one after another), then the agents.
   const [templates, folders, active] = await Promise.allSettled([fetchLoopTemplates(), fetchLoopFolders(), fetchActiveLoop()]);
   _templates = templates.status === 'fulfilled' ? templates.value : [];
@@ -2720,7 +2693,7 @@ function buildDetailMeta(t, isPreset) {
   const tModel = (t.model && tModelsList.some(m => modelMatchesSelector(m, t.model))) ? normalizeAutomationSelection(tProfile, t.model).model : (modelSelectorValue(tDefaultModel) || '');
   const tContextMode = t.contextMode || normalizeAutomationSelection(tProfile, t.model).contextMode || 'default';
   const tEffort = t.effort || 'off';
-  const tMcp = t.mcpProfile || 'full';
+  const tTools = t.tools ?? null;
   return `
     <div class="as-meta-section">
       <div class="as-field">
@@ -2837,11 +2810,9 @@ function buildDetailMeta(t, isPreset) {
               ${getEffortLevelsForProfile(tProfile).map(e => `<option value="${esc(e.id)}"${e.id === tEffort ? ' selected' : ''}>${esc(e.label)} \u2014 ${esc(e.desc)}</option>`).join('')}
             </select>
           </div>
-          <div class="as-runtime-field" id="as-f-mcp-field" style="${tProfile !== 'claude-code' ? '' : 'display:none'}">
-            <label>MCP</label>
-            <select class="as-input as-select" id="as-f-mcp">
-              <option value="${esc(tMcp)}" selected>${esc(tMcp)} (loading\u2026)</option>
-            </select>
+          <div class="as-runtime-field" id="as-f-mcp-field">
+            <label>${toolWord('label')}</label>
+            ${strictToolHost(tProfile) ? toolPickerHTML('as-f-mcp', tTools, { provider: tProfile, inheritLabel: toolWord('default'), usesBrowser: t.usesBrowser }) : toolWord('focus')}
           </div>
         </div>
       </div>
@@ -2900,7 +2871,7 @@ function wireDetailView(isPreset) {
   wireCategoryPicker(isPreset);
   wireFolderPicker(isPreset);
 
-  // Launch defaults (CLI profile / model / effort / MCP profile)
+  // Launch defaults (CLI profile / model / effort / tool list)
   wireLaunchDefaults(isPreset);
 
   // Markdown toolbar
@@ -3049,7 +3020,7 @@ function wireLaunchDefaults(isPreset) {
   const modelSel = $('as-f-model');
   const contextSel = $('as-f-context');
   const effortSel = $('as-f-effort');
-  const mcpSel = $('as-f-mcp');
+  let mcpSel = $('as-f-mcp');
   const effortField = $('as-f-effort-field');
   const mcpField = $('as-f-mcp-field');
   const templateAccountId = _selected?.codexAccountId || 'default';
@@ -3057,23 +3028,14 @@ function wireLaunchDefaults(isPreset) {
 
   effortSel?.addEventListener('change', () => { if (!isPreset) markDirty(); });
 
-  const loadMcpOptions = () => {
-    if (!mcpSel) return;
-    const current = mcpSel.value || 'full';
-    fetchMcpProfiles().then(presets => {
-      if (!presets || !Object.keys(presets).length) return;
-      const opts = Object.entries(presets).map(([id, p]) => {
-        const label = p.label || id;
-        const tools = p.tools != null ? ` — ${p.tools} tools` : '';
-        const sel = id === current ? ' selected' : '';
-        return `<option value="${esc(id)}"${sel}>${esc(label)}${esc(tools)}</option>`;
-      }).join('');
-      mcpSel.innerHTML = opts;
-      if (!presets[current]) {
-        const first = Object.keys(presets)[0];
-        if (first) mcpSel.value = first;
-      }
-    });
+  const loadToolOptions = async () => {
+    const tools = mcpSel ? readToolPicker(mcpSel) : _selected?.tools ?? null;
+    const catalog = await fetchToolCatalog();
+    if (!mcpField?.isConnected) return;
+    const provider = profileSel.value;
+    mcpField.innerHTML = `<label>${toolWord('label')}</label>${strictToolHost(provider) ? toolPickerHTML('as-f-mcp', tools, { catalog, provider, inheritLabel: toolWord('default'), usesBrowser: !!$('as-f-browser')?.checked }) : toolWord('focus')}`;
+    mcpSel = $('as-f-mcp');
+    mcpSel?.addEventListener('change', () => { if (!isPreset) markDirty(); updateToolPicker(mcpSel, readToolPicker(mcpSel), { inheritLabel: toolWord('default'), usesBrowser: !!$('as-f-browser')?.checked }); });
   };
 
   const renderModelOptions = (profileId, preferredId) => {
@@ -3123,8 +3085,7 @@ function wireLaunchDefaults(isPreset) {
     renderEffortOptions(profileId, 'off');
     if (effortField) effortField.style.display = profileSupportsEffort(profileId) ? '' : 'none';
     if (mcpField) {
-      mcpField.style.display = profileId !== 'claude-code' ? '' : 'none';
-      if (profileId !== 'claude-code') loadMcpOptions();
+      void loadToolOptions();
     }
     if (!isPreset) markDirty();
   });
@@ -3136,7 +3097,7 @@ function wireLaunchDefaults(isPreset) {
   contextSel?.addEventListener('change', () => { if (!isPreset) markDirty(); });
   mcpSel?.addEventListener('change', () => { if (!isPreset) markDirty(); });
 
-  if (profileSel.value !== 'claude-code') loadMcpOptions();
+  void loadToolOptions();
   renderEffortOptions(profileSel.value, effortSel?.value || 'off');
   if (effortField) effortField.style.display = profileSupportsEffort(profileSel.value) ? '' : 'none';
   refreshDynamicModelOptionsIfNeeded(profileSel.value, modelSel?.value || null);
@@ -3174,7 +3135,7 @@ async function saveCurrentTemplate() {
   const model = $('as-f-model')?.value || null;
   const contextMode = $('as-f-context')?.value || 'default';
   const effort = normalizeEffortForProfile(profile || 'claude-code', $('as-f-effort')?.value || null);
-  const mcpProfile = profile && profile !== 'claude-code' ? ($('as-f-mcp')?.value || null) : null;
+  const tools = strictToolHost(profile) ? ($('as-f-mcp') ? readToolPicker($('as-f-mcp')) : _selected?.tools ?? null) : null;
   const folderIdRaw = $('as-f-folder')?.value;
   const folderId = folderIdRaw ? folderIdRaw : null;
 
@@ -3187,7 +3148,7 @@ async function saveCurrentTemplate() {
     showToast('This context window is unavailable for the selected model'); return;
   }
 
-  const payload = { name, icon: iconKey, category, task, context: '', description: description || task.slice(0, 120), iterations, maxMinutes, usesBrowser, profile, model, contextMode, effort, mcpProfile, folderId };
+  const payload = { name, icon: iconKey, category, task, context: '', description: description || task.slice(0, 120), iterations, maxMinutes, usesBrowser, profile, model, contextMode, effort, tools, folderId };
 
   try {
     if (_selected.id) { await updateLoopTemplate(_selected.id, payload); }
@@ -3294,7 +3255,7 @@ async function customizePreset(preset) {
       model: $('as-f-model')?.value || null,
       contextMode: $('as-f-context')?.value || 'default',
       effort: normalizeEffortForProfile($('as-f-profile')?.value || 'claude-code', $('as-f-effort')?.value || null),
-      mcpProfile: ($('as-f-profile')?.value || 'claude-code') !== 'claude-code' ? ($('as-f-mcp')?.value || null) : null,
+      tools: strictToolHost($('as-f-profile')?.value) ? readToolPicker($('as-f-mcp')) : null,
     };
     const result = await createLoopTemplate(payload);
     if (result?.id) {
@@ -3321,13 +3282,13 @@ function handleTestRun() {
   const model = $('as-f-model')?.value || _selected.model || null;
   const contextMode = $('as-f-context')?.value || _selected.contextMode || 'default';
   const effort = normalizeEffortForProfile(profile || 'claude-code', $('as-f-effort')?.value || _selected.effort || null);
-  const mcpProfile = profile && profile !== 'claude-code' ? ($('as-f-mcp')?.value || _selected.mcpProfile || null) : null;
+  const tools = strictToolHost(profile) ? ($('as-f-mcp') ? readToolPicker($('as-f-mcp')) : _selected?.tools ?? null) : null;
   serverLaunchLoop({
     task: cmd,
     context: null,
     iterations: 1, maxMinutes: 10,
     usesBrowser,
-    profile, model, contextMode, effort, mcpProfile,
+    profile, model, contextMode, effort, tools,
   });
 }
 
@@ -3356,12 +3317,12 @@ function proceedWithLaunch() {
   const model = $('as-f-model')?.value || _selected.model || null;
   const contextMode = $('as-f-context')?.value || _selected.contextMode || 'default';
   const effort = normalizeEffortForProfile(profile || 'claude-code', $('as-f-effort')?.value || _selected.effort || null);
-  const mcpProfile = profile && profile !== 'claude-code' ? ($('as-f-mcp')?.value || _selected.mcpProfile || null) : null;
+  const tools = strictToolHost(profile) ? ($('as-f-mcp') ? readToolPicker($('as-f-mcp')) : _selected?.tools ?? null) : null;
   serverLaunchLoop({
     task: cmd,
     context: null,
     iterations, maxMinutes, usesBrowser,
-    profile, model, contextMode, effort, mcpProfile,
+    profile, model, contextMode, effort, tools,
   });
 }
 
@@ -3959,7 +3920,7 @@ function setupScheduleWebSocket() {
   // Quick timer events
   on('sync:quick-timer:set', (data) => {
     if (data?.timerId && !_quickTimers.some(t => t.id === data.timerId)) {
-      _quickTimers.push({ id: data.timerId, templateName: data.templateName, firesAt: data.firesAt, minutes: data.minutes, profile: data.profile, model: data.model, contextMode: data.contextMode, effort: data.effort, mcpProfile: data.mcpProfile, usesBrowser: data.usesBrowser });
+      _quickTimers.push({ id: data.timerId, templateName: data.templateName, firesAt: data.firesAt, minutes: data.minutes, profile: data.profile, model: data.model, contextMode: data.contextMode, effort: data.effort, tools: data.tools, usesBrowser: data.usesBrowser });
       if (_view === 'schedules') renderSchedulesMain();
     }
   });
@@ -4418,13 +4379,13 @@ async function handlePanelClick(e) {
       if (!automationContextAvailable(qtProfile, qtModel, qtContextMode)) { showToast('This context window is unavailable for the selected model and account'); break; }
       const qtBrowser = !!$('as-qt-browser')?.checked;
       const qtEffort = normalizeEffortForProfile(qtProfile, _launchEffort) || undefined;
-      const qtMcpProfile = qtProfile !== 'claude-code' ? _launchMcpProfile : undefined;
+      const qtTools = strictToolHost(qtProfile) ? readToolPicker($('as-qt-tools')) : undefined;
       const qtAccount = qtProfile === 'codex' ? (_launchAccount || 'default') : undefined;
       try {
-        const result = await createQuickTimer(templateId, mins, { profile: qtProfile, model: qtModel, contextMode: qtContextMode, usesBrowser: qtBrowser, effort: qtEffort, mcpProfile: qtMcpProfile, codexAccountId: qtAccount });
+        const result = await createQuickTimer(templateId, mins, { profile: qtProfile, model: qtModel, contextMode: qtContextMode, usesBrowser: qtBrowser, effort: qtEffort, tools: qtTools, codexAccountId: qtAccount });
         // Guard: WebSocket sync:quick-timer:set may arrive before this HTTP response
         if (!_quickTimers.some(t => t.id === result.timerId)) {
-          _quickTimers.push({ id: result.timerId, templateId, templateName: result.templateName, firesAt: result.firesAt, minutes: result.minutes, profile: result.profile, model: result.model, contextMode: result.contextMode, effort: result.effort, mcpProfile: result.mcpProfile, usesBrowser: result.usesBrowser });
+          _quickTimers.push({ id: result.timerId, templateId, templateName: result.templateName, firesAt: result.firesAt, minutes: result.minutes, profile: result.profile, model: result.model, contextMode: result.contextMode, effort: result.effort, tools: result.tools, usesBrowser: result.usesBrowser });
         }
         _selectedQtMinutes = null;
         _qtUsesBrowser = null;
@@ -4445,7 +4406,7 @@ async function handlePanelClick(e) {
       if (!automationContextAvailable(qtProfile, qtModel, qtContextMode)) { showToast('This context window is unavailable for the selected model and account'); break; }
       const qtBrowser = !!$('as-qt-browser')?.checked;
       const qtEffort = normalizeEffortForProfile(qtProfile, _launchEffort) || undefined;
-      const qtMcpProfile = qtProfile !== 'claude-code' ? _launchMcpProfile : undefined;
+      const qtTools = strictToolHost(qtProfile) ? readToolPicker($('as-qt-tools')) : undefined;
       const qtAccount = qtProfile === 'codex' ? (_launchAccount || 'default') : undefined;
       try {
         const result = await triggerQuickTimerNow(templateId, {
@@ -4454,7 +4415,7 @@ async function handlePanelClick(e) {
           contextMode: qtContextMode,
           usesBrowser: qtBrowser,
           effort: qtEffort,
-          mcpProfile: qtMcpProfile,
+          tools: qtTools,
           codexAccountId: qtAccount,
           sidepanelWindowId: getNativeLoopRouterWindowId(),
           sidepanelClaimToken: getNativeLoopRouterClaimToken(),
@@ -4727,7 +4688,7 @@ function renderSchedulesMain() {
       const profileLabel = CLI_PROFILES.find(p => p.id === qt.profile)?.label || qt.profile || 'Claude Code';
       const modelObj = qt.model ? getModelsForProfile(qt.profile || 'claude-code').find(m => modelMatchesSelector(m, qt.model)) : null;
       const modelLabel = modelObj?.label || (qt.profile === 'opencode' ? qt.model : '');
-      const metaParts = [profileLabel, modelLabel, qt.contextMode && qt.contextMode !== 'default' ? `context:${qt.contextMode}` : '', qt.effort ? `think:${qt.effort}` : '', qt.mcpProfile ? `mcp:${qt.mcpProfile}` : '', qt.usesBrowser ? 'Browser' : ''].filter(Boolean);
+      const metaParts = [profileLabel, modelLabel, qt.contextMode && qt.contextMode !== 'default' ? `context:${qt.contextMode}` : '', qt.effort ? `think:${qt.effort}` : '', qt.tools ? `${toolWord('label')}: ${qt.tools.join(', ')}` : '', qt.usesBrowser ? 'Browser' : ''].filter(Boolean);
       timerCards += `
         <div class="as-qt-active-card">
           <div class="as-qt-active-pulse"></div>
@@ -4833,6 +4794,7 @@ function renderSchedulesMain() {
         <span class="as-launch-label">Think</span>
         <div class="as-launch-efforts" id="as-qt-efforts">${qtEffortChips}</div>
       </div>
+      <div class="as-qt-group"><label>${toolWord('label')}</label>${strictToolHost(qtProfile) ? toolPickerHTML('as-qt-tools', _launchTools, { provider: qtProfile, inheritLabel: toolWord('templateDefault'), usesBrowser: qtBrowserDefault }) : toolWord('focus')}</div>
       <div class="as-qt-group" id="as-qt-account-section" style="${qtProfile === 'codex' ? '' : 'display:none'}">
         <span class="as-launch-label">OpenAI Account</span>
         <div class="as-launch-accounts" id="as-qt-accounts">${qtAccountChips}</div>
@@ -5142,3 +5104,5 @@ function triggerImport() {
   document.body.appendChild(input);
   input.click();
 }
+
+configureToolPickerTranslation(t);

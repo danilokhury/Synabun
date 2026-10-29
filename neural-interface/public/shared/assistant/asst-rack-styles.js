@@ -8,9 +8,9 @@
 // mascot stands over its task class's scene (asst-scenes.js; the motion is
 // asst-scene-styles.js): one column, as wide as the scene.
 //
-// Rules: gold only means live (the awake row's ring and tick, the caret, the
-// sweep); a rack a card holds (data-state="waiting") drops its gold: "Waiting
-// for you" in the warn tone with ◆, no caret, stopped clocks. Motion answers
+// Rules: gold only means live (the awake row's ring and tick, the bubble's
+// verb, the sweep); a rack a card holds (data-state="waiting") drops its gold:
+// "Waiting for you" in the warn tone with ◆, stopped clocks. Motion answers
 // events and stays under 300 ms; infinite animations run only on the live
 // rack, pause while the UI is dragged (body.ui-interacting) and everything is
 // static under prefers-reduced-motion (the sweep is not drawn at all). No
@@ -117,6 +117,7 @@ export const RACK_CSS = `
     grid-area: caption;
     align-self: end;
     min-width: 0;
+    margin-left: 8px; /* flush with the bubble's body (its notch takes the first 8px) */
     margin-bottom: 6px; /* the gap over the bubble: an empty caption takes no room */
     overflow: hidden;
     display: -webkit-box;
@@ -128,95 +129,107 @@ export const RACK_CSS = `
   }
   .asst-rack-caption:empty { display: none; }
 
+  /* ── The bubble: one 18px line (verb · subject · clock), 32px tall at one line, the ledger row's height.
+     The verb is gold only while the call runs; the mascot (and the sweep) carry the motion, the bubble
+     carries the words and, at the end of the line in the quietest tone, the numbers. Opaque fill (the
+     card under the panel tint), so the notch can cover the ring where it meets the edge: no seam. */
   .asst-bubble {
+    --rk-bubble-bg: linear-gradient(var(--rk-fill-1), var(--rk-fill-1)), var(--rk-card);
     grid-area: bubble;
     position: relative;
     justify-self: start;
     align-self: start;
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    align-items: baseline;
-    column-gap: 7px;
-    row-gap: 1px;
+    display: block; /* a block, not a flex column: a flex item's -webkit-box is blockified and loses its line clamp */
     max-width: calc(100% - 8px);
     min-width: 0;
     margin-left: 8px;
-    padding: 6px 11px 7px;
-    border-radius: 3px 12px 12px 12px;
-    background: var(--rk-fill-1);
+    padding: 7px 10px;
+    border-radius: 3px 10px 10px 10px;
+    background: var(--rk-bubble-bg);
     box-shadow: inset 0 0 0 1px var(--rk-line);
   }
-  /* The tail: an 8px notch on the bubble's edge pointing at the mascot (left beside it, up under it). */
+  /* The tail: a 7px notch pointing at the mascot (left beside it, up under it), centred on the first line and
+     on the mascot's eyes. An 11px square turned 45° and cut to a triangle, 1px into the bubble so it paints
+     over the ring: the ring stops at the notch's legs, no double edge. */
   .asst-bubble::before {
     content: '';
     position: absolute;
-    left: -5.5px;
-    top: 7px;
+    left: -4.5px;
+    top: 10.5px;
     width: 11px;
     height: 11px;
-    background: var(--rk-fill-1);
+    background: var(--rk-bubble-bg);
     box-shadow: inset 1px -1px 0 var(--rk-line);
     clip-path: polygon(0 0, 0 100%, 100% 100%);
     transform: rotate(45deg);
     pointer-events: none;
   }
-  .asst-bubble-verb { color: var(--rk-text-2); font-size: 12px; font-weight: 500; line-height: 1.5; white-space: nowrap; }
+  /* The line: one text flow, two lines at most (six opened), of the verb, the subject (cut by asst-render.js
+     until nothing is clamped) and the numbers, which take the end of the subject's last line and wrap
+     under it as a unit when they are long (a computer action and its clock). 2px of room around it for
+     the subject's focus ring. */
+  .asst-bubble-line {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    min-width: 0;
+    margin: -2px -3px;
+    padding: 2px 3px;
+    overflow: hidden;
+    /* The strut sets the 18px pitch; the words inside sit at line-height 1, so no mix of sizes or fonts grows a line. */
+    font-size: 12px;
+    line-height: 18px;
+    overflow-wrap: anywhere;
+  }
+  .asst-bubble-line:has(> .asst-bubble-subject[aria-expanded="true"]) { -webkit-line-clamp: 6; }
+  .asst-bubble-verb { color: var(--rk-text-2); font-size: 12px; font-weight: 500; line-height: 1; white-space: nowrap; }
+  .asst-bubble-verb:not(:empty) { margin-right: 7px; }
   .asst-bubble[data-state="running"] .asst-bubble-verb { color: var(--rk-gold); }
-  /* A card holds the call: no gold, no caret, the clock stopped (asst-render.js), "◆ Waiting for you". */
+  /* A card holds the call: no gold, the clock stopped (asst-render.js), "◆ Waiting for you". */
   .asst-bubble[data-state="waiting"] .asst-bubble-verb { color: var(--rk-warn); }
   .asst-bubble[data-state="waiting"] .asst-bubble-verb::before { content: '◆'; margin-right: 5px; font-size: 9px; vertical-align: 1px; }
   .asst-bubble-subject {
     --rk-cut: middle; /* where asst-render.js cuts a long subject: the middle; the head on a narrow stage */
     position: relative;
-    min-width: 0;
-    overflow: hidden;
-    display: -webkit-box;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
     border-radius: 4px;
     color: var(--rk-text);
     font-size: 12px;
-    line-height: 1.5;
-    overflow-wrap: anywhere;
+    line-height: 1;
     cursor: pointer;
   }
   .asst-bubble-subject.is-mono { font-family: var(--rk-mono); font-size: 11.5px; }
   .asst-bubble-subject.is-muted { color: var(--rk-text-3); }
-  .asst-bubble-subject[aria-expanded="true"] { -webkit-line-clamp: 6; cursor: text; user-select: text; }
+  .asst-bubble-subject[aria-expanded="true"] { cursor: text; user-select: text; }
   .asst-bubble-subject .is-dim { color: var(--rk-text-3); }
   .asst-bubble-subject .is-strong { color: var(--rk-text); font-weight: 600; }
-  /* Streaming thinking fades in from its cut edge. */
-  .asst-bubble[data-kind="think"][data-state="running"] .asst-bubble-subject {
+  /* A URL or path: one piece per span, a <wbr> between them (asst-render.js writeSubject), so it wraps after "/"
+     and at its other separators, never mid-word; a piece wider than its line is cut instead (fitSubject). The
+     rest of the subject wraps as the line says. Opened, the whole literal shows: a piece may break again. */
+  .asst-bubble-piece { white-space: nowrap; }
+  .asst-bubble-subject[aria-expanded="true"] .asst-bubble-piece { white-space: normal; }
+  /* Streaming thinking cut from its head ("…the end of the thought") fades in from the cut; whole text is left alone. */
+  .asst-bubble[data-kind="think"][data-state="running"] .asst-bubble-subject.is-cut {
     -webkit-mask-image: linear-gradient(90deg, transparent, #000 12px);
     mask-image: linear-gradient(90deg, transparent, #000 12px);
   }
-  .asst-bubble-caret {
-    display: none;
-    width: 6px;
-    height: 12px;
-    margin-left: 3px;
-    vertical-align: -2px;
-    background: var(--rk-gold);
-  }
-  .asst-bubble[data-state="running"] .asst-bubble-caret { display: inline-block; animation: asst-rk-caret 1.06s steps(1) infinite; }
   .asst-bubble-meta {
-    grid-column: 2;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 2px 12px;
+    display: inline-flex;
+    gap: 0 8px;
+    margin-left: 7px;
     color: var(--rk-text-3);
     font-size: 11px;
-    line-height: 1.5;
+    line-height: 1; /* inside the 18px strut: the smaller type never grows the line */
+    white-space: nowrap;
     font-variant-numeric: tabular-nums;
   }
   .asst-bubble-meta:empty { display: none; }
   .asst-bubble-num { white-space: nowrap; }
   .asst-bubble-err {
-    grid-column: 1 / -1;
     display: -webkit-box;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 2;
     min-width: 0;
+    margin-top: 2px;
     overflow: hidden;
     color: var(--rk-red);
     font-family: var(--rk-mono);
@@ -228,8 +241,8 @@ export const RACK_CSS = `
   .asst-bubble-copy {
     position: relative;
     isolation: isolate;
-    grid-column: 1 / -1;
-    justify-self: start;
+    display: inline-flex;
+    align-items: center;
     height: var(--rk-pill-h);
     margin-top: 4px;
     padding: 0 var(--rk-pill-px);
@@ -242,7 +255,9 @@ export const RACK_CSS = `
     cursor: pointer;
   }
   .asst-bubble-copy:hover { color: var(--rk-text); }
-  .asst-odo { display: inline-flex; font-variant-numeric: tabular-nums; white-space: pre; }
+  /* The clock: tabular digits that roll in place (asst-render.js); its cell keeps "59 s" of room, right-aligned, so
+     "9 s" → "10 s" moves nothing. */
+  .asst-odo { display: inline-flex; justify-content: flex-end; min-width: 2.4em; font-variant-numeric: tabular-nums; white-space: pre; }
   .asst-odo-d { display: inline-block; }
 
   .asst-rack-sweep { position: absolute; left: 0; right: 0; bottom: 0; height: 1.5px; overflow: hidden; pointer-events: none; }
@@ -553,9 +568,9 @@ export const RACK_CSS = `
     .asst-rack-stage { grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "face caption" "bubble bubble"; column-gap: 8px; row-gap: 6px; }
     .asst-rack-set { align-self: center; flex-direction: row; }
     .asst-rack.is-staged > .asst-rack-stage { padding: 10px 10px 10px; }
-    .asst-rack-caption { align-self: center; margin-bottom: 0; }
-    .asst-bubble { justify-self: stretch; max-width: 100%; margin: 4px 0 0; border-radius: 3px 12px 12px 12px; }
-    .asst-bubble::before { left: 30px; top: -5.5px; box-shadow: inset 1px 1px 0 var(--rk-line); clip-path: polygon(0 100%, 0 0, 100% 0); }
+    .asst-rack-caption { align-self: center; margin-left: 0; margin-bottom: 0; }
+    .asst-bubble { justify-self: stretch; max-width: 100%; margin: 4px 0 0; border-radius: 3px 10px 10px 10px; }
+    .asst-bubble::before { left: 30px; top: -4.5px; box-shadow: inset 1px 1px 0 var(--rk-line); clip-path: polygon(0 100%, 0 0, 100% 0); }
     .asst-station-hdr { gap: 8px; padding: 0 6px; }
     .asst-station-time { display: none; }
     .asst-tick.is-old { display: none; }
@@ -565,7 +580,8 @@ export const RACK_CSS = `
     .asst-station-sub { margin-left: 12px; }
   }
   @container asst (max-width: 320px) {
-    .asst-bubble { padding: 5px 9px 6px; }
+    .asst-bubble { padding: 6px 9px; }
+    .asst-bubble::before { top: -4.5px; }
     .asst-bubble-subject { --rk-cut: head; }
     .asst-bubble-meta { display: none; }
   }
@@ -576,6 +592,7 @@ export const RACK_CSS = `
   }
 
   /* ── Motion ─────────────────────────────────────────────────────── */
+  /* The caret blink belongs to the scenes' code caret (asst-scene-styles.js); the bubble has none. */
   @keyframes asst-rk-caret { 0% { opacity: 1; } 50% { opacity: 0; } }
   @keyframes asst-rk-sweep { from { transform: translateX(-100%); } to { transform: translateX(270%); } }
   @keyframes asst-rk-tick { 0%, 100% { opacity: 1; } 50% { opacity: .4; } }

@@ -154,7 +154,7 @@ export function lastUserMessageId(state) {
 /**
  * Action ids a message offers, in display order. `supports(type)` is the
  * capability check; `canOpenSessions` is false in a sub-agent panel.
- *   user:      copy, undo (revert to here + text back in the composer), fork, delete
+ *   user:      copy, undo (revert to here + text back in the composer), fork
  *   assistant: copy, retry (revert to the turn's prompt and send it again)
  */
 export function messageActionsFor(msg, state, { supports = () => false, canOpenSessions = true, canCompose = true } = {}) {
@@ -167,7 +167,6 @@ export function messageActionsFor(msg, state, { supports = () => false, canOpenS
   if (role === 'user') {
     if (idle && canCompose && supports('session:revert')) actions.push('undo');
     if (canOpenSessions && supports('session:fork')) actions.push('fork');
-    if (idle && supports('message:delete')) actions.push('delete');
   } else if (idle && canCompose && supports('session:revert') && turnStartFor(state, msg.id)) {
     actions.push('retry');
   }
@@ -207,86 +206,6 @@ export function pickReusableEmptySession(sessions, cwd, { excludeIds = [] } = {}
   )) || null;
 }
 
-// ── Share ───────────────────────────────────────────────────────────────────
-
-/** What the menu offers for sharing. `policy` is OpenCode's `share` setting. */
-export function shareView(sessionInfo, policy, supports = () => false) {
-  const url = typeof sessionInfo?.share?.url === 'string' ? sessionInfo.share.url : '';
-  const available = supports('session:share') && supports('session:unshare') && policy !== 'disabled';
-  return {
-    url,
-    canShare: available && !url && !!sessionInfo?.id,
-    canUnshare: available && !!url,
-    // A link that exists stays visible even when sharing has since been disabled.
-    showLink: !!url,
-  };
-}
-
-export const SHARE_CONFIRM_TEXT = 'Share this session?\n\nThe whole transcript (your prompts, the replies, tool output and file contents the model read) is uploaded to OpenCode and published at a public URL. Anyone with the link can read it until you stop sharing.';
-
-// ── Sharing that was stopped ────────────────────────────────────────────────
-// On unshare OpenCode (1.18.34) removes the share and its public page, but the
-// link stays in the session row: the row update skips an absent `share`, so
-// `share_url` is never cleared. Every later read of that session says it is
-// shared again: session:get, the session list, the reply to the unshare
-// itself, and each session.updated that is built from the stored row. So the
-// panel remembers the link it stopped, and that link is no share wherever
-// session info is read (the store, the session menu, the tab cache).
-
-export const STOPPED_SHARES_MAX = 200;
-
-/**
- *   stop(sessionId, url)       sharing of this link was stopped (the unshare
- *                              was answered ok)
- *   resume(sessionId)          the session was shared again from the panel, or
- *                              is gone
- *   isStopped(sessionId, url)  `url` is the link that was stopped
- *   clean(info)                session info with a stopped link taken out
- *                              (`share: undefined`, so a merge clears it);
- *                              `info` itself when there is nothing to take out.
- *                              A session that reports another link was shared
- *                              again somewhere else: that one is real.
- * `load()` → `{ sessionId: url }` and `save(entries)` keep it across a reload.
- * The oldest entries go first once there are more than `max`.
- */
-export function createStoppedShares({ load = () => null, save = () => {}, max = STOPPED_SHARES_MAX } = {}) {
-  const stopped = new Map();        // sessionId → the link that was stopped
-  try {
-    const saved = load();
-    for (const [id, url] of Object.entries(saved && typeof saved === 'object' ? saved : {})) {
-      if (id && typeof url === 'string' && url) stopped.set(id, url);
-    }
-  } catch { /* nothing saved, or not readable: nothing is hidden */ }
-  const persist = () => { try { save(Object.fromEntries(stopped)); } catch { /* kept in memory */ } };
-  const idOf = (info) => String(info?.id || info?.sessionID || '');
-  const resume = (sessionId) => {
-    if (!stopped.delete(String(sessionId || ''))) return false;
-    persist();
-    return true;
-  };
-  return {
-    stop(sessionId, url) {
-      const id = String(sessionId || '');
-      if (!id || typeof url !== 'string' || !url) return false;
-      stopped.delete(id);
-      stopped.set(id, url);
-      while (stopped.size > max) stopped.delete(stopped.keys().next().value);
-      persist();
-      return true;
-    },
-    resume,
-    isStopped: (sessionId, url) => !!url && stopped.get(String(sessionId || '')) === url,
-    clean(info) {
-      const id = idOf(info);
-      const url = info?.share?.url;
-      if (!id || typeof url !== 'string' || !url || !stopped.has(id)) return info;
-      if (stopped.get(id) !== url) { resume(id); return info; }
-      return { ...info, share: undefined };
-    },
-    size: () => stopped.size,
-  };
-}
-
 // ── Tabs that are not on screen ─────────────────────────────────────────────
 // The panel shows one session; its other tabs go on running their turns in
 // OpenCode. What each of them does comes from OpenCode's own run events (every
@@ -323,6 +242,7 @@ export function sessionBusyFromStatus(res) {
  * each iteration starts the next.
  */
 export function automationTurnPhase(run) {
+  if (run?.status === 'suspended') return 'idle';
   if (run?.status !== 'starting' && run?.status !== 'running') return null;
   switch (run.turnState) {
     case 'awaiting_permission': case 'needs_input': return 'waiting';
@@ -345,15 +265,6 @@ export function tabPillState({ sessionId, activeSessionId, running = false, busy
   if (automation === 'working' || automation === 'waiting' || automation === 'idle') return automation;
   const turn = sessionId && sessionId === activeSessionId ? !!running : !!busy;
   return turn ? 'working' : 'idle';
-}
-
-// ── Deleting a message ──────────────────────────────────────────────────────
-
-/** The question before a message is deleted: which one, and that it is final. */
-export function deleteMessageConfirmText(msg) {
-  const text = messageText(msg).replace(/\s+/g, ' ').trim();
-  const excerpt = text.length > 80 ? `${text.slice(0, 80)}…` : text;
-  return `Delete ${excerpt ? `the message “${excerpt}”` : 'this message'} from the session? This cannot be undone.`;
 }
 
 // ── Renames that are waiting for their answer ───────────────────────────────

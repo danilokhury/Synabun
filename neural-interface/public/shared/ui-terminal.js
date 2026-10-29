@@ -14,6 +14,7 @@ import { registerAction } from './ui-keybinds.js';
 import { isGuest, hasPermission } from './ui-sync.js';
 import { getWhiteboardElementById } from './ui-whiteboard.js';
 import { createFrameRenderer } from './utils.js';
+import { frameRect, onFrameChange, clampBox, clampBoxLoose } from './app-frame.js';
 import { notify, NOTIF_TYPE } from './ui-notifications.js';
 import { getProviderMeta } from './provider-icons.js';
 import { readinessKind, typeWhenReady } from './term-ready.js';
@@ -27,7 +28,6 @@ import { initAssistant, registerAssistantHost, openAssistant, assistantOwnerOf, 
 const $ = (id) => document.getElementById(id);
 const CLI_PROFILES = new Set(['claude-code', 'codex', 'gemini', 'opencode']);
 const NOTIF_TRACKED_CLI_PROFILES = new Set(['claude-code', 'codex', 'gemini', 'opencode']);
-const CLI_PROFILES_NEED_PROFILER = new Set(['codex', 'gemini']); // Claude Code has tool search — no profiler needed
 const CLI_PROFILES_NEED_RECALL = new Set(['claude-code', 'codex', 'gemini', 'opencode']);
 
 // ── Platform ──
@@ -615,79 +615,6 @@ function _cliBadgeHtml(sessionId) {
   return _cliSessionStatus.has(sessionId)
     ? `<span class="cli-status-badge" data-status="${_cliSessionStatus.get(sessionId).status}"><span class="cli-status-dot"></span><span class="cli-status-label">${_CLI_LABELS[_cliSessionStatus.get(sessionId).status] || ''}</span></span>`
     : '';
-}
-
-// ── Floating terminal MCP profile dropdown ──
-
-let _floatProfileCache = null;
-let _floatProfileCacheTime = 0;
-
-async function _fetchFloatProfiles() {
-  const now = Date.now();
-  if (_floatProfileCache && now - _floatProfileCacheTime < 60000) return _floatProfileCache;
-  try {
-    const resp = await fetch('/api/mcp/profile');
-    const data = await resp.json();
-    if (data.ok) {
-      _floatProfileCache = { current: data.profile || 'full', presets: data.presets || {} };
-      _floatProfileCacheTime = now;
-    }
-  } catch {}
-  return _floatProfileCache || { current: 'full', presets: {} };
-}
-
-function _initFloatProfileDropdown(dd) {
-  const btn = dd.querySelector('.term-float-profile-btn');
-  const menu = dd.querySelector('.term-float-profile-menu');
-  const label = dd.querySelector('.term-float-profile-label');
-
-  // Load current profile label
-  _fetchFloatProfiles().then(data => {
-    const p = data.presets[data.current];
-    label.textContent = p?.label || data.current;
-  });
-
-  btn.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    const wasOpen = menu.classList.contains('open');
-    // Close all other open profile menus
-    document.querySelectorAll('.term-float-profile-menu.open').forEach(m => m.classList.remove('open'));
-    if (wasOpen) return;
-
-    const data = await _fetchFloatProfiles();
-    menu.innerHTML = '';
-    for (const [id, preset] of Object.entries(data.presets)) {
-      const opt = document.createElement('div');
-      opt.className = 'term-float-profile-option' + (id === data.current ? ' selected' : '');
-      opt.innerHTML = `<span class="tfp-name">${_escHtml(String(preset.label || id))}</span><span class="tfp-hint">${_escHtml(String(preset.tools))} tools</span>`;
-      opt.addEventListener('click', async (ev) => {
-        ev.stopPropagation();
-        menu.classList.remove('open');
-        if (id === data.current) return;
-        label.textContent = preset.label || id;
-        try {
-          await fetch('/api/mcp/profile', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ profile: id }),
-          });
-          _floatProfileCache = null; // bust cache
-          // Update all other floating profile dropdowns
-          document.querySelectorAll('.term-float-profile-label').forEach(lbl => {
-            lbl.textContent = preset.label || id;
-          });
-        } catch {}
-      });
-      menu.appendChild(opt);
-    }
-    menu.classList.add('open');
-
-    // Close on outside click
-    const close = (ev) => {
-      if (!dd.contains(ev.target)) { menu.classList.remove('open'); document.removeEventListener('mousedown', close); }
-    };
-    setTimeout(() => document.addEventListener('mousedown', close), 0);
-  });
 }
 
 // ── Floating terminal Recall profile dropdown ──
@@ -2322,24 +2249,22 @@ function detachPanel() {
   // so left margin matches right margin — accounts for left sidebars and right sidepanel)
   let pos;
   try { pos = JSON.parse(storage.getItem(KEYS.TERMINAL_FLOAT_POS)); } catch {}
+  const f = frameRect();
   if (!pos) {
-    const cs = getComputedStyle(document.documentElement);
-    const leftEdge = (parseFloat(cs.getPropertyValue('--explorer-width')) || 0)
-                   + (parseFloat(cs.getPropertyValue('--file-explorer-width')) || 0);
-    const rightEdge = window.innerWidth - getRightPanelReservedWidth(cs);
+    const { left: leftEdge, right: rightEdge } = _usableArea(f);
     const usableW = Math.max(0, rightEdge - leftEdge);
     const w = Math.min(800, usableW * 0.6);
     const h = Math.min(500, dockedH);
     pos = {
       left: leftEdge + (usableW - w) / 2,
-      top: Math.max(48, (window.innerHeight - h) / 2),
+      top: Math.max(f.top, f.top + (f.height - h) / 2),
       width: w, height: h,
     };
   }
 
   _panel.classList.add('detached');
-  _panel.style.left = pos.left + 'px';
-  _panel.style.top = Math.max(48, pos.top) + 'px';
+  _panel.style.left = Math.max(f.left, Math.min(pos.left, f.right - 80)) + 'px';
+  _panel.style.top = Math.max(f.top, Math.min(pos.top, f.bottom - 80)) + 'px';
   _panel.style.width = pos.width + 'px';
   _panel.style.height = pos.height + 'px';
 
@@ -2436,7 +2361,7 @@ function initFloatDrag() {
   // Header drag for floating mode
   function _startPanelDrag(x, y) {
     const rect = _panel.getBoundingClientRect();
-    _floatDrag = { startX: x, startY: y, startL: rect.left, startT: rect.top };
+    _floatDrag = { startX: x, startY: y, startL: rect.left, startT: rect.top, w: rect.width, h: rect.height, frame: frameRect() };
     pendingPanelDrag = null;
     _panel.classList.add('float-dragging');
     document.body.classList.add('ui-interacting');
@@ -2452,7 +2377,10 @@ function initFloatDrag() {
       finalL = Math.round(finalL / gs) * gs;
       finalT = Math.round(finalT / gs) * gs;
     }
-    finalT = Math.max(48, finalT);
+    // Inside the app frame: the header stays below the bar, 80px of the window stays in reach
+    const f = _floatDrag.frame || (_floatDrag.frame = frameRect());
+    const w = _floatDrag.w || 0, h = _floatDrag.h || 0;
+    ({ x: finalL, y: finalT } = clampBoxLoose(finalL, finalT, w, h, f, 80));
     // Transform during drag (composited, no layout); committed on dragend
     _floatDrag.lastL = finalL;
     _floatDrag.lastT = finalT;
@@ -2546,7 +2474,11 @@ function initFloatResize() {
       nl = Math.round(nl / gs) * gs; nt = Math.round(nt / gs) * gs;
       nw = Math.round(nw / gs) * gs; nh = Math.round(nh / gs) * gs;
     }
-    nt = Math.max(48, nt);
+    const f = frameRect();
+    if (nt < f.top) { if (dir.includes('n')) nh -= f.top - nt; nt = f.top; }
+    if (nl < f.left) { if (dir.includes('w')) nw -= f.left - nl; nl = f.left; }
+    nw = Math.max(MIN_W, Math.min(nw, f.right - nl));
+    nh = Math.max(MIN_H, Math.min(nh, f.bottom - nt));
     _panel.style.left = nl + 'px';
     _panel.style.top = nt + 'px';
     _panel.style.width = nw + 'px';
@@ -2653,10 +2585,12 @@ function initResizeHandle() {
     _draggingResize = true;
     document.body.classList.add('ui-interacting');
     graphLayers = [$('graph-container'), $('static-bg')].filter(Boolean);
+    // Up to 80% of the window, and never past the top of the app frame (its 12px inner padding kept)
+    const dockBottom = _panel.getBoundingClientRect().bottom;
+    const maxH = Math.max(MIN_HEIGHT, Math.min(window.innerHeight * 0.8, dockBottom - frameRect().top - 12));
 
     const onMove = (e) => {
       const dy = startY - e.clientY;
-      const maxH = window.innerHeight * 0.8;
       const newH = Math.max(MIN_HEIGHT, Math.min(maxH, startH + dy));
       scheduleHeight(newH);
     };
@@ -4180,12 +4114,13 @@ function initContextMenu(viewport, term, getWs) {
     menu.style.top = '0px';
     menu.classList.add('open');
     const rect = menu.getBoundingClientRect();
+    const f = frameRect();
     let x = e.clientX;
     let y = e.clientY;
-    if (x + rect.width > window.innerWidth) x = window.innerWidth - rect.width - 4;
-    if (y + rect.height > window.innerHeight) y = e.clientY - rect.height;
-    if (x < 0) x = 4;
-    if (y < 0) y = 4;
+    if (x + rect.width > f.right) x = f.right - rect.width - 4;
+    if (y + rect.height > f.bottom) y = e.clientY - rect.height;
+    if (x < f.left) x = f.left + 4;
+    if (y < f.top) y = f.top + 4;
     menu.style.left = x + 'px';
     menu.style.top = y + 'px';
 
@@ -4552,10 +4487,11 @@ function _placeFloatColorPicker(picker, colorBtn) {
   const inset = first ? first.left + first.width / 2 - box.left : 0;
   const margin = 8, gap = 6;
   const left = btn.left + btn.width / 2 - inset;
+  const f = frameRect();
   let top = btn.top - gap - box.height;
-  if (top < margin) top = btn.bottom + gap;
-  picker.style.left = Math.max(margin, Math.min(left, window.innerWidth - box.width - margin)) + 'px';
-  picker.style.top = Math.max(margin, Math.min(top, window.innerHeight - box.height - margin)) + 'px';
+  if (top < f.top + margin) top = btn.bottom + gap;
+  picker.style.left = Math.max(f.left + margin, Math.min(left, f.right - box.width - margin)) + 'px';
+  picker.style.top = Math.max(f.top + margin, Math.min(top, f.bottom - box.height - margin)) + 'px';
 }
 
 function getRightPanelReservedWidth(cs = getComputedStyle(document.documentElement)) {
@@ -4564,17 +4500,24 @@ function getRightPanelReservedWidth(cs = getComputedStyle(document.documentEleme
     || 0;
 }
 
+/** The app frame's area left for the floats: right of the explorers, left of a docked right sidepanel (its reserved
+ *  width counts from the window's right edge), below the bar. */
+function _usableArea(f = frameRect(), cs = getComputedStyle(document.documentElement)) {
+  const reserved = getRightPanelReservedWidth(cs);
+  return { left: f.left, top: f.top, right: Math.max(f.left, Math.min(f.right, window.innerWidth - reserved)), bottom: f.bottom };
+}
+
 /** Update snapped-edge classes on all floating tabs based on adjacency */
-/** Compute viewport/panel snap boundaries (getComputedStyle reads — cache during drag) */
+/** Compute frame/panel snap boundaries (getComputedStyle reads — cache during drag) */
 function _snapEnv() {
-  const cs = getComputedStyle(document.documentElement);
-  const explorerW = parseFloat(cs.getPropertyValue('--explorer-width')) || 0;
-  const fileExplorerW = parseFloat(cs.getPropertyValue('--file-explorer-width')) || 0;
+  const f = frameRect();
+  const area = _usableArea(f);
   return {
-    leftPanelEdge: explorerW + fileExplorerW,
-    rightPanelEdge: window.innerWidth - getRightPanelReservedWidth(cs),
-    topEdge: parseFloat(cs.getPropertyValue('--navbar-height')) || 48,
-    bottomEdge: window.innerHeight,
+    leftPanelEdge: f.left,
+    rightPanelEdge: area.right,
+    frameRight: f.right,
+    topEdge: f.top,
+    bottomEdge: f.bottom,
   };
 }
 
@@ -4592,7 +4535,7 @@ function _updateSnappedEdges(rectsOverride, envOverride) {
     }
   }
 
-  const { leftPanelEdge, rightPanelEdge, topEdge, bottomEdge } = envOverride || _snapEnv();
+  const { leftPanelEdge, rightPanelEdge, frameRight, topEdge, bottomEdge } = envOverride || _snapEnv();
 
   for (const [sid, dt] of _detachedTabs) {
     if (!dt.el || dt.minimized) continue;
@@ -4612,8 +4555,8 @@ function _updateSnappedEdges(rectsOverride, envOverride) {
     }
 
     // Check adjacency to viewport / panel edges
-    if (Math.abs(me.left - leftPanelEdge) < TOLERANCE || Math.abs(me.left) < TOLERANCE) edges.left = true;
-    if (Math.abs(me.right - rightPanelEdge) < TOLERANCE || Math.abs(me.right - window.innerWidth) < TOLERANCE) edges.right = true;
+    if (Math.abs(me.left - leftPanelEdge) < TOLERANCE) edges.left = true;
+    if (Math.abs(me.right - rightPanelEdge) < TOLERANCE || Math.abs(me.right - frameRight) < TOLERANCE) edges.right = true;
     if (Math.abs(me.top - topEdge) < TOLERANCE) edges.top = true;
     if (Math.abs(me.bottom - bottomEdge) < TOLERANCE) edges.bottom = true;
 
@@ -4669,20 +4612,16 @@ export function tileFloatingTerminals() {
   }
   if (entries.length === 0) return;
 
-  // Compute available whiteboard area (respect open panels)
-  const cs = getComputedStyle(document.documentElement);
-  const explorerW = parseFloat(cs.getPropertyValue('--explorer-width')) || 0;
-  const fileExplorerW = parseFloat(cs.getPropertyValue('--file-explorer-width')) || 0;
-  const sidebarW = explorerW + fileExplorerW;
-  const rightPanelW = getRightPanelReservedWidth(cs);
+  // Compute the available area: the app frame, minus a docked right sidepanel and the docked terminal (which sits
+  // 12px inside the frame's bottom: the tiles stop at its top)
+  const area = _usableArea();
   const termPanel = document.getElementById('terminal-panel');
-  const termH = (termPanel && !termPanel.classList.contains('hidden') && !termPanel.classList.contains('detached'))
-    ? termPanel.getBoundingClientRect().height : 0;
-  const TOP_PAD = parseFloat(cs.getPropertyValue('--navbar-height')) || 48;
-  const areaL = sidebarW;
-  const areaT = TOP_PAD;
-  const areaW = window.innerWidth - sidebarW - rightPanelW;
-  const areaH = window.innerHeight - TOP_PAD - termH;
+  const termTop = (termPanel && !termPanel.classList.contains('hidden') && !termPanel.classList.contains('detached'))
+    ? termPanel.getBoundingClientRect().top : area.bottom;
+  const areaL = area.left;
+  const areaT = area.top;
+  const areaW = Math.max(0, area.right - area.left);
+  const areaH = Math.max(0, Math.min(area.bottom, termTop) - area.top);
 
   // Calculate grid: find best cols/rows to fill the space
   const n = entries.length;
@@ -4733,17 +4672,16 @@ function _defaultFloatRect(kind = {}) {
   const offset = _detachedTabs.size * 30;
   const isBrowser = kind.profile === 'browser';
   const isAssistant = !!kind._isAssistant || kind.profile === 'assistant';
-  const cs = getComputedStyle(document.documentElement);
-  const leftEdge = (parseFloat(cs.getPropertyValue('--explorer-width')) || 0)
-                 + (parseFloat(cs.getPropertyValue('--file-explorer-width')) || 0);
-  const rightEdge = window.innerWidth - getRightPanelReservedWidth(cs);
+  const f = frameRect();
+  const { left: leftEdge, right: rightEdge } = _usableArea(f);
   const usableW = Math.max(0, rightEdge - leftEdge);
   // Assistant floats default to 780×560 (chat + agents dock need more room than a TUI)
   const w = Math.round(Math.min(isBrowser ? 960 : (isAssistant ? 780 : 700), usableW * (isBrowser ? 0.65 : (isAssistant ? 0.6 : 0.5))));
-  const h = Math.round(Math.min(isBrowser ? 640 : (isAssistant ? 560 : 420), window.innerHeight * (isBrowser ? 0.6 : (isAssistant ? 0.7 : 0.5))));
+  const h = Math.round(Math.min(isBrowser ? 640 : (isAssistant ? 560 : 420), f.height * (isBrowser ? 0.6 : (isAssistant ? 0.7 : 0.5))));
+  const at = clampBox(leftEdge + (usableW - w) / 2 + offset, f.top + (f.height - h) / 2 + offset, w, h, f);
   return {
-    left: Math.round(leftEdge + (usableW - w) / 2 + offset),
-    top: Math.round(Math.max(48, (window.innerHeight - h) / 2 + offset)),
+    left: Math.round(at.x),
+    top: Math.round(at.y),
     width: w,
     height: h,
   };
@@ -4793,10 +4731,6 @@ function detachTab(idx, opts = {}) {
       <span class="term-float-tab-icon">${prof?.svg || SVG_SHELL}</span>
       <button class="term-float-color-strip" data-tooltip="Change color"></button>
       <span class="term-float-tab-title">${_escHtml(_displayLabel(session))}</span>${session._isAssistant ? '<span class="term-float-brain-chip" data-tooltip="Brain" hidden></span>' : ''}${_cliBadgeHtml(session.id)}
-      ${CLI_PROFILES_NEED_PROFILER.has(session.profile) ? `<div class="term-float-profile-dd" data-tooltip="Tool profile">
-        <button class="term-float-profile-btn"><span class="term-float-profile-label">...</span><span class="term-float-profile-arrow">&#x25BE;</span></button>
-        <div class="term-float-profile-menu"></div>
-      </div>` : ''}
       ${CLI_PROFILES_NEED_RECALL.has(session.profile) ? `<div class="term-float-recall-dd" data-tooltip="Recall profile">
         <button class="term-float-recall-btn"><span class="term-float-recall-label">...</span><span class="term-float-recall-arrow">&#x25BE;</span></button>
         <div class="term-float-recall-menu"></div>
@@ -5019,11 +4953,6 @@ function detachTab(idx, opts = {}) {
     });
   }
 
-  // Wire MCP profile dropdown (CLI profiles only)
-  const profileDd = win.querySelector('.term-float-profile-dd');
-  if (profileDd) {
-    _initFloatProfileDropdown(profileDd);
-  }
 
   // Wire recall profile dropdown
   const recallDd = win.querySelector('.term-float-recall-dd');
@@ -5307,7 +5236,7 @@ function initTabFloatDrag(win, sessionId) {
 
   function _checkHeader(target) {
     const header = target.closest('.term-float-tab-header');
-    if (!header || target.closest('button, .term-float-profile-dd')) return false;
+    if (!header || target.closest('button')) return false;
     const session = _sessions.find(s => s.id === sessionId);
     return !session?.pinned;
   }
@@ -5344,8 +5273,9 @@ function initTabFloatDrag(win, sessionId) {
     const KEEP = 80;
     const w = drag.startW || parseFloat(win.style.width) || 700;
     const h = drag.startH || parseFloat(win.style.height) || 420;
-    finalL = Math.max(KEEP - w, Math.min(finalL, window.innerWidth - KEEP));
-    finalT = Math.max(48, Math.min(finalT, window.innerHeight - KEEP));
+    const env = drag.snapEnv;
+    const frame = { left: env.leftPanelEdge, top: env.topEdge, right: env.frameRight, bottom: env.bottomEdge };
+    ({ x: finalL, y: finalT } = clampBoxLoose(finalL, finalT, w, h, frame, KEEP));
 
     // Snap to other floating windows (rects cached at drag start)
     const SNAP_DIST = 12;
@@ -5376,11 +5306,12 @@ function initTabFloatDrag(win, sessionId) {
         else if (Math.abs(myB - or.bottom) < SNAP_DIST) { finalT = or.bottom - h; snapped = true; }
       }
     }
-    // Also snap to viewport edges
-    if (Math.abs(finalL) < SNAP_DIST) { finalL = 0; snapped = true; }
-    if (Math.abs(finalT - 48) < SNAP_DIST) { finalT = 48; snapped = true; }
-    if (Math.abs(myR - window.innerWidth) < SNAP_DIST) { finalL = window.innerWidth - w; snapped = true; }
-    if (Math.abs(myB - window.innerHeight) < SNAP_DIST) { finalT = window.innerHeight - h; snapped = true; }
+    // Also snap to the app frame's edges (and a docked right sidepanel's)
+    if (Math.abs(finalL - frame.left) < SNAP_DIST) { finalL = frame.left; snapped = true; }
+    if (Math.abs(finalT - frame.top) < SNAP_DIST) { finalT = frame.top; snapped = true; }
+    if (Math.abs(myR - frame.right) < SNAP_DIST) { finalL = frame.right - w; snapped = true; }
+    else if (Math.abs(myR - env.rightPanelEdge) < SNAP_DIST) { finalL = env.rightPanelEdge - w; snapped = true; }
+    if (Math.abs(myB - frame.bottom) < SNAP_DIST) { finalT = frame.bottom - h; snapped = true; }
 
     win.classList.toggle('float-snapping', snapped);
     // Transform-based positioning: left/top force layout every frame; a
@@ -5499,7 +5430,9 @@ function initTabFloatResize(win, sessionId) {
       nl = Math.round(nl / gs) * gs; nt = Math.round(nt / gs) * gs;
       nw = Math.round(nw / gs) * gs; nh = Math.round(nh / gs) * gs;
     }
-    nt = Math.max(48, nt);
+    // The header never goes above the app frame's top (a top edge stops there, the bottom edge stays put)
+    const frameTop = frameRect().top;
+    if (nt < frameTop) { if (dir.includes('n')) nh = Math.max(MIN_H, nh - (frameTop - nt)); nt = frameTop; }
     win.style.left = nl + 'px';
     win.style.top = nt + 'px';
     win.style.width = nw + 'px';
@@ -5842,40 +5775,47 @@ export async function initTerminal() {
     }
   });
 
-  // ── Window resize — clamp floating tabs on screen, refit all terminals ──
+  // ── Window resize, an explorer opening or closing — keep the floats in the app frame, refit all terminals ──
+  const clampFloatsToFrame = () => {
+    const f = frameRect();
+    const KEEP = 80; // min px of tab that must remain visible
+    const floats = [..._detachedTabs.values()].filter(tabState => !tabState.minimized).map(tabState => tabState.el);
+    if (_detached && _panel && !_panel.classList.contains('hidden')) floats.push(_panel);
+
+    for (const el of floats) {
+      if (!el) continue;
+      let l = parseFloat(el.style.left) || 0;
+      let t = parseFloat(el.style.top) || 0;
+      let w = parseFloat(el.style.width) || 700;
+      let h = parseFloat(el.style.height) || 420;
+
+      // Clamp dimensions to the frame
+      w = Math.min(w, f.width);
+      h = Math.min(h, f.height);
+
+      // Clamp position so the header stays reachable, below the title bar and right of the explorers
+      ({ x: l, y: t } = clampBoxLoose(l, t, w, h, f, KEEP));
+
+      el.style.left = l + 'px';
+      el.style.top = t + 'px';
+      el.style.width = w + 'px';
+      el.style.height = h + 'px';
+    }
+
+    // Refit all terminals to new dimensions
+    _sessions.forEach(s => _scheduleFit(s));
+  };
   window.addEventListener('resize', () => {
     if (_windowResizeTimer) clearTimeout(_windowResizeTimer);
     _windowResizeTimer = setTimeout(() => {
       _windowResizeTimer = null;
-      const vw = window.innerWidth;
-      const vh = window.innerHeight;
-      const KEEP = 80; // min px of tab that must remain visible
-
-      for (const [, tabState] of _detachedTabs) {
-        if (tabState.minimized) continue;
-        const el = tabState.el;
-        let l = parseFloat(el.style.left) || 0;
-        let t = parseFloat(el.style.top) || 0;
-        let w = parseFloat(el.style.width) || 700;
-        let h = parseFloat(el.style.height) || 420;
-
-        // Clamp dimensions to viewport
-        w = Math.min(w, vw);
-        h = Math.min(h, vh);
-
-        // Clamp position so header stays reachable and below title bar
-        l = Math.max(KEEP - w, Math.min(l, vw - KEEP));
-        t = Math.max(48, Math.min(t, vh - KEEP));
-
-        el.style.left = l + 'px';
-        el.style.top = t + 'px';
-        el.style.width = w + 'px';
-        el.style.height = h + 'px';
-      }
-
-      // Refit all terminals to new dimensions
-      _sessions.forEach(s => _scheduleFit(s));
+      clampFloatsToFrame();
     }, 150);
+  });
+  onFrameChange(() => {
+    if (_windowResizeTimer) return; // the resize pass runs shortly
+    clampFloatsToFrame();
+    _updateSnappedEdges();
   });
 
   // ── Visibility change — flow control, warm renderers, one focus target ──
@@ -6483,11 +6423,13 @@ async function attachDetached(terminalSessionId, profile, initialMessage, autoSu
       if (dt?.el) {
         const panelWidth = getRightPanelReservedWidth();
         if (panelWidth > 0) {
-          const availWidth = window.innerWidth - panelWidth - 16;
-          const w = Math.min(700, availWidth * 0.6);
-          const h = Math.min(500, window.innerHeight - 96);
-          dt.el.style.left = (window.innerWidth - panelWidth - w - 24) + 'px';
-          dt.el.style.top = '56px';
+          // Beside the panel, 24px from its slot, at the top of the app frame
+          const f = frameRect();
+          const area = _usableArea(f);
+          const w = Math.min(700, Math.max(0, area.right - area.left - 16) * 0.6);
+          const h = Math.min(500, f.height - 40);
+          dt.el.style.left = Math.max(f.left, area.right - w - 24) + 'px';
+          dt.el.style.top = f.top + 'px';
           dt.el.style.width = w + 'px';
           dt.el.style.height = h + 'px';
         }
@@ -6670,10 +6612,11 @@ function applyTerminalLayout(snap) {
         const minW = 280, minH = 160;
         const w = Math.max(minW, dt.width || minW);
         const h = Math.max(minH, dt.height || minH);
-        const maxL = window.innerWidth - 80;
-        const maxT = window.innerHeight - 40;
-        const l = Math.max(0, Math.min(dt.left || 0, maxL));
-        const t = Math.max(48, Math.min(dt.top || 0, maxT));
+        const f = frameRect();
+        const maxL = f.right - 80;
+        const maxT = f.bottom - 40;
+        const l = Math.max(f.left, Math.min(dt.left || 0, maxL));
+        const t = Math.max(f.top, Math.min(dt.top || 0, maxT));
 
         tabState.el.style.left = l + 'px';
         tabState.el.style.top = t + 'px';

@@ -1,12 +1,12 @@
 {
-  "version": "2.1.0",
-  "updatedAt": "2026-10-02",
-  "summary": "Adds a Design section: read the project's DESIGN.md (or call style_guide) before UI, copy and image work, and propose changes instead of editing it",
+  "version": "2.2.0",
+  "updatedAt": "2026-10-27",
+  "summary": "Tool groups replace MCP profiles: get and add the needed group in this runtime on every host.",
   "hashes": {
-    "claude": "2206c97cf003",
-    "codex": "939571cf2095",
-    "opencode": "49865561dc6e",
-    "gemini": "49865561dc6e",
-    "cursor": "49865561dc6e"
+    "claude": "31c14f4a19f7",
+    "codex": "cffc3de6b060",
+    "opencode": "cffc3de6b060",
+    "gemini": "cffc3de6b060",
+    "cursor": "cffc3de6b060"
   }
 }

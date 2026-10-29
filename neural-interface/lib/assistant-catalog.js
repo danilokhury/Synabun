@@ -1,3 +1,5 @@
+import { EXTERNAL_SERVER_LIMITATIONS } from './mcp-external-servers.js';
+import { toolCatalogView } from '../../mcp-server/dist/services/tool-catalog.js';
 // ═══════════════════════════════════════════
 // SynaBun — Assistant model catalog (providers · models · tier · price · vision)
 // ═══════════════════════════════════════════
@@ -610,6 +612,7 @@ export function compactRow(row) {
  */
 export function createAssistantCatalog({
   fetchJson,
+  getExternalServers = () => [],
   claudePricing = null,
   codexPrice = (model) => listPrice('codex', model),
   listAccounts = () => ({}),
@@ -659,14 +662,11 @@ export function createAssistantCatalog({
   async function build({ deep = false } = {}) {
     // `deep` also drops the providers' own discovery caches (a CLI or app-server round trip).
     const fresh = deep ? '?refresh=1' : '';
-    const [claudeModels, codexModels, opencodeProviders, projects, mcpProfile] = await Promise.all([
+    const [claudeModels, codexModels, opencodeProviders, projects] = await Promise.all([
       fetchJson(`/api/claude/models${fresh}`), fetchJson(`/api/codex/models${fresh}`), fetchJson('/api/opencode/providers/full'),
-      fetchJson('/api/projects'), fetchJson('/api/mcp/profile'),
+      fetchJson('/api/projects'),
     ]);
     const filter = (() => { try { return readFilter() || {}; } catch { return {}; } })();
-    const presets = mcpProfile?.presets && typeof mcpProfile.presets === 'object'
-      ? Object.entries(mcpProfile.presets).map(([name, preset]) => ({ name, label: preset?.label || name, groups: preset?.groups || [], tools: preset?.tools || null }))
-      : [];
     let accounts = {};
     try { accounts = listAccounts() || {}; } catch (error) { log('catalog:accounts-error', error?.message || String(error)); }
     // Models the user hid (Assistant → Models, Settings → OpenCode) never reach
@@ -737,8 +737,7 @@ export function createAssistantCatalog({
       opencodeListed: listedCounts.opencode,
       opencodeHidden: hidden.opencode,
       projects: pickArray(projects, ['projects']),
-      profiles: presets,
-      mcpProfiles: { presets, default: mcpProfile?.defaultProfile || mcpProfile?.profile || 'full' },
+      tools: { ...toolCatalogView(), servers: getExternalServers(pickArray(projects, ['projects'])), externalServerLimitations: EXTERNAL_SERVER_LIMITATIONS },
       accounts,
       // Efforts are per model (row.efforts); a provider's list is the union of its rows'.
       providers: [

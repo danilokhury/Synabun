@@ -29,7 +29,11 @@ import { getDataHome } from '../../lib/paths.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_HOME = getDataHome();
 const LOOP_DIR = join(DATA_HOME, 'data', 'loop');
-const NI_BASE = process.env.SYNABUN_NI_URL || 'http://localhost:3344';
+// A guarded worker's sandbox blocks :3344, so SynaBun gives it the worker-only channel (its browser proxy forwards
+// /api/browser/*). Inside such a worker the browser-only policy must NOT fail open: if SynaBun cannot be reached
+// even over the channel, apply the worker default and deny WebSearch/WebFetch.
+const WORKER_CHANNEL = process.env.SYNABUN_WORKER_CHANNEL || null;
+const NI_BASE = WORKER_CHANNEL || process.env.SYNABUN_NI_URL || 'http://localhost:3344';
 
 const BLOCK_REASON = (toolName) =>
   `BLOCKED: ${toolName} is not allowed while a SynaBun browser session is open. Use the SynaBun browser tools (browser_navigate, browser_click, browser_content, etc.) instead. If the page requires login or CAPTCHA, STOP and tell the user what they need to do in the browser panel. Do NOT fall back to web search.`;
@@ -69,6 +73,13 @@ async function handleInput() {
     }
 
     if (!niReachable) {
+      // A guarded worker that cannot reach SynaBun even over its channel: apply the worker default (deny), so the
+      // sandbox's inability to reach :3344 never becomes a way to bypass the browser-only policy. Outside a guarded
+      // worker (no channel var) this stays fail-open and quiet — a stale loop file must not block the owner.
+      if (WORKER_CHANNEL) {
+        process.stdout.write(JSON.stringify({ decision: 'block', reason: BLOCK_REASON(tool_name) }));
+        return;
+      }
       process.stdout.write(JSON.stringify({}));
       return;
     }

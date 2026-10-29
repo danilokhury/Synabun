@@ -84,9 +84,58 @@ export function rulesToV1(rules) {
     .map((rule) => ({ permission: v1ToolName(rule.action), pattern: str(rule.resource || '*'), action: str(rule.effect) }));
 }
 
+/** The variables an OpenCode 2 integration reads a provider's key from (its `env` methods). */
+export function integrationEnvNames(integration) {
+  const names = [];
+  for (const method of Array.isArray(integration?.methods) ? integration.methods : []) {
+    if (method?.type !== 'env' || !Array.isArray(method.names)) continue;
+    for (const name of method.names) if (typeof name === 'string' && name && !names.includes(name)) names.push(name);
+  }
+  return names;
+}
+
 /**
- * OpenCode 1 rules (`[{ permission, pattern, action }]`, or the config's
- * `{ bash: 'ask', edit: { '*.md': 'allow' } }` map) → OpenCode 2 rules.
+ * How each provider is connected, from OpenCode 2's integrations, in OpenCode 1's shape:
+ * `{ [id]: [{ type: 'api', label? } | { type: 'oauth', label, id }] }` — a key method is `api`, a sign-in method
+ * `oauth` (its `id` is the method SynaBun starts). Methods that take a form of their own (an AWS profile, a
+ * Google Cloud project) or run a command are left out; so is an integration with no method left.
+ */
+export function integrationsToAuthMethods(integrations) {
+  const out = {};
+  for (const integration of Array.isArray(integrations) ? integrations : []) {
+    const id = str(integration?.id);
+    if (!id) continue;
+    const methods = [];
+    for (const method of Array.isArray(integration.methods) ? integration.methods : []) {
+      if (method?.type === 'key' && !(Array.isArray(method.form) && method.form.length)) methods.push({ type: 'api', ...(method.label ? { label: str(method.label) } : {}) });
+      else if (method?.type === 'oauth' && method.id && !(Array.isArray(method.form) && method.form.some((field) => field?.required && !field.hidden && field.default === undefined))) {
+        methods.push({ type: 'oauth', label: str(method.label || 'Sign in'), id: str(method.id) });
+      }
+    }
+    if (methods.length) out[id] = methods;
+  }
+  return out;
+}
+
+/** The integrations with a credential of their own stored (an `env` connection is the user's environment, not one). */
+export function integrationsWithCredentials(integrations) {
+  return (Array.isArray(integrations) ? integrations : [])
+    .filter((integration) => integration?.id && (Array.isArray(integration.connections) ? integration.connections : []).some((connection) => connection?.type === 'credential' && connection.id))
+    .map((integration) => str(integration.id));
+}
+
+/** The credential ids an integration stored. */
+export function integrationCredentialIds(integration) {
+  return (Array.isArray(integration?.connections) ? integration.connections : [])
+    .filter((connection) => connection?.type === 'credential' && connection.id)
+    .map((connection) => str(connection.id));
+}
+
+/**
+ * Permission rules as OpenCode 2 takes them: its own `{ action, resource,
+ * effect }` as they are, the OpenCode 1 shapes a caller or a user's file may
+ * still hold (`[{ permission, pattern, action }]`, or the
+ * `{ bash: 'ask', edit: { '*.md': 'allow' } }` map) converted.
  */
 export function rulesToV2(rules) {
   if (rules == null) return undefined;

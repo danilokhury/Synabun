@@ -1,14 +1,12 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Which OpenCode database SynaBun is reading.
+// The tables of OpenCode's database SynaBun reads.
 //
 // SynaBun reads OpenCode's own SQLite database ($XDG_DATA_HOME/opencode/
 // opencode.db) for the session lists of every registered project and for the
-// Resume cache. OpenCode 1 keeps sessions in `session` / `message` / `part`;
-// OpenCode 2 keeps them in `session_v2` / `session_message`, in the same file.
-// An OpenCode 2 that opened an OpenCode 1 database copies its sessions into
-// `session_v2` and leaves the old tables behind, frozen: read by OpenCode 1's
-// queries they would show yesterday's sessions and none of today's. So the
-// tables are picked by the OpenCode SynaBun talks to, and by what the file has.
+// Resume cache. OpenCode 2 keeps its sessions in `session_v2` and their
+// messages in `session_message`. A file OpenCode 2 migrated from OpenCode 1
+// also holds OpenCode 1's `session` / `message` / `part` tables, frozen: they
+// are never read (they would show yesterday's sessions and none of today's).
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** The table names of an open node:sqlite database, or an empty set. */
@@ -20,38 +18,23 @@ export function tableNamesOf(db) {
   }
 }
 
-/**
- * 'v2' (OpenCode 2's tables), 'v1' (OpenCode 1's) or null (neither). `protocol`
- * is the major SynaBun talks to (1, 2, or null when it is not known): with 2,
- * OpenCode 2's tables are read when the file has them; with 1, OpenCode 1's;
- * not known, OpenCode 2's when there are any.
- */
-export function opencodeDbFlavor(db, protocol = null) {
-  if (!db) return null;
+/** Whether a database holds OpenCode 2's session tables (false for none, or for OpenCode 1's alone). */
+export function hasOpencodeSessionTables(db) {
+  if (!db) return false;
   const tables = tableNamesOf(db);
-  const v2 = tables.has('session_v2') && tables.has('session_message');
-  const v1 = tables.has('session') && tables.has('message');
-  if (protocol === 1) return v1 ? 'v1' : null;
-  if (protocol === 2) return v2 ? 'v2' : null;
-  if (v2) return 'v2';
-  return v1 ? 'v1' : null;
+  return tables.has('session_v2') && tables.has('session_message');
 }
 
-/** The session table and the message-count expression (`s` is the session row) of a flavor. */
-export function sessionTablesFor(flavor) {
-  if (flavor === 'v2') {
-    return {
-      session: 'session_v2',
-      messageCount: "(SELECT COUNT(*) FROM session_message m WHERE m.session_id = s.id AND m.type IN ('user', 'assistant'))",
-    };
-  }
-  return { session: 'session', messageCount: '(SELECT COUNT(*) FROM message m WHERE m.session_id = s.id)' };
-}
+/** The session table and the message-count expression (`s` is the session row). */
+export const OPENCODE_SESSION_TABLES = Object.freeze({
+  session: 'session_v2',
+  messageCount: "(SELECT COUNT(*) FROM session_message m WHERE m.session_id = s.id AND m.type IN ('user', 'assistant'))",
+});
 
 /**
- * The visible text of one OpenCode 2 `session_message` row (its `type` and
- * JSON `data`) as `{ role, text }`, or null for a row without any (a switch, an
- * idle marker, a tool-only step).
+ * The visible text of one `session_message` row (its `type` and JSON `data`)
+ * as `{ role, text }`, or null for a row without any (a switch, an idle
+ * marker, a tool-only step).
  */
 export function v2MessageText(type, data) {
   let body = data;

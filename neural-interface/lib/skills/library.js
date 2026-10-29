@@ -1,3 +1,6 @@
+import { effectiveInstallName, nameChecks } from './scan-context.js';
+import { scanArtifact, withExternalScans } from './scan.js';
+import { frontmatterData } from './frontmatter.js';
 // ── The managed skill library: complete folders, immutable revisions ──
 // SynaBun's own copy of every skill it manages (owner decision, 2026-10-22): a skill is a whole folder, kept as
 // immutable revisions under the data home, and installed into each runtime's folders from there
@@ -233,6 +236,33 @@ export function unifiedDiff(before, after, { context = 3 } = {}) {
  * @param {(prefix: string) => string} [o.newId]
  */
 export function createSkillLibrary({ dir, now = () => new Date().toISOString(), newId = (prefix) => `${prefix}_${randomBytes(10).toString('hex')}` }) {
+  let shippedNames = () => listSkills().filter((s) => s.origin?.kind === 'bundled').map((s) => s.origin.name || s.name);
+  let externalEvidence = () => [];
+  function setExternalEvidence(read) { externalEvidence = read; }
+  const scanCache = new Map();
+  function setShippedNames(read) { shippedNames = read; scanCache.clear(); }
+  function scanSkill(skillId, fallback) {
+    const active = readSkill(skillId);
+    if (active) return active;
+    // Archived revisions remain readable by reviews and installations.
+    let files = [];
+    try { files = readdirSync(archiveDir).filter((n) => n.startsWith(`${skillId}.`) && n.endsWith('.json')).sort().reverse(); } catch { /* no archive */ }
+    for (const file of files) { const record = readJson(archiveDir, file); if (record?.skill?.skillId === skillId) return record.skill; }
+    return { name: fallback || 'unknown', origin: null };
+  }
+  function scanFolderEvidence(folder, skill, digest) {
+    const fm = frontmatterData(folder.files.find((f) => f.path === 'SKILL.md')?.bytes.toString('utf-8') || '').data;
+    let name;
+    try { name = effectiveInstallName(skill, folder.files); } catch { name = skill.name; }
+    const shipped = shippedNames();
+    const names = nameChecks(skill, name, shipped);
+    const key = JSON.stringify([digest, name, names]);
+    if (!scanCache.has(key)) {
+      if (scanCache.size >= 200) scanCache.clear();
+      scanCache.set(key, scanArtifact({ type: 'skill', name, files: folder.files, frontmatter: fm, digest, ...names }));
+    }
+    return withExternalScans(structuredClone(scanCache.get(key)), externalEvidence(digest));
+  }
   const blobsDir = join(dir, 'blobs');
   const revisionsDir = join(dir, 'revisions');
   const skillsDir = join(dir, 'skills');
@@ -329,7 +359,11 @@ export function createSkillLibrary({ dir, now = () => new Date().toISOString(), 
   function readRevision(revisionId) {
     if (!isRevisionId(revisionId)) return null;
     const rec = readJson(revisionsDir, `${revisionId}.json`);
-    return rec && rec.schemaVersion === LIBRARY_SCHEMA && rec.revisionId === revisionId ? rec : null;
+    if (!rec || rec.schemaVersion !== LIBRARY_SCHEMA || rec.revisionId !== revisionId) return null;
+    const folder = { files: rec.manifest.files.map((e) => ({ path: e.path, bytes: getBlob(e.blobId), executable: e.mode === '0755' })), dirs: rec.manifest.dirs || [] };
+    if (folderDigest(folder) !== rec.contentDigest) throw new LibraryError(500, 'This revision does not read back as it was written.', 'revision_corrupt');
+    rec.scan = scanFolderEvidence(folder, scanSkill(rec.skillId, rec.scan?.name), rec.contentDigest);
+    return rec;
   }
   function getRevision(revisionId) {
     const rec = readRevision(revisionId);
@@ -338,10 +372,12 @@ export function createSkillLibrary({ dir, now = () => new Date().toISOString(), 
   }
 
   /**
-   * A new immutable revision of a skill from whole files.
+   * A new immutable revision of a skill from whole files. It becomes `latest` unless `asCandidate`: a proposal (an
+   * evaluation's optimised description) is labelled `candidate` and leaves `latest` (what the editor opens, what an
+   * install offers first) where it was, so nothing it proposes is applied by itself.
    * @returns the revision record
    */
-  function putRevision(skillId, { files, dirs = [], parentRevisionId = null, source, author, profiles = [], invocationIntent = null, note = '' }) {
+  function putRevision(skillId, { files, dirs = [], parentRevisionId = null, source, author, profiles = [], invocationIntent = null, note = '', asCandidate = false }) {
     const rec = getSkill(skillId);
     const folder = checkFolder({ files, dirs });
     if (parentRevisionId !== null && !rec.revisions.includes(parentRevisionId)) throw new LibraryError(400, 'The parent revision is not one of this skill\'s.', 'invalid_parent');
@@ -355,25 +391,37 @@ export function createSkillLibrary({ dir, now = () => new Date().toISOString(), 
     const revision = {
       schemaVersion: LIBRARY_SCHEMA, skillId, revisionId, parentRevisionId, contentDigest, entrypoint: 'SKILL.md',
       manifest: { digest: contentDigest, files: entries, dirs: folder.dirs },
+      scan: scanFolderEvidence(folder, rec, contentDigest),
       source: normalizeSource(source), author: normalizeAuthor(author),
       profiles: (Array.isArray(profiles) ? profiles : []).filter((p) => p && typeof p.id === 'string').map((p) => ({ id: p.id, version: String(p.version || '') })),
       invocationIntent: invocationIntent && typeof invocationIntent === 'object' ? { user: invocationIntent.user !== false, model: invocationIntent.model !== false } : null,
-      note: String(note || '').slice(0, 2000), createdAt: now(),
+      note: String(note || '').slice(0, 2000), noteCode: source?.kind === 'bundled' && /^Shipped with SynaBun(?: [\d.]+)?\.$/.test(note) ? 'bundled' : null, createdAt: now(),
     };
     ensure();
     writeConfinedFile(revisionsDir, join(revisionsDir, `${revisionId}.json`), `${JSON.stringify(revision, null, 2)}\n`, { exclusive: true, mode: 0o600 });
     rec.revisions.push(revisionId);
-    const from = rec.pointers.latest;
-    rec.pointers.latest = revisionId;
+    const pointer = asCandidate ? 'candidate' : 'latest';
+    const from = rec.pointers[pointer];
+    rec.pointers[pointer] = revisionId;
     rec.etag += 1;
-    logPointer(rec, { pointer: 'latest', from, to: revisionId, by: revision.author.kind, reason: 'revision created' });
+    logPointer(rec, { pointer, from, to: revisionId, by: revision.author.kind, reason: asCandidate ? 'proposed by an evaluation' : 'revision created' });
     saveSkill(rec);
     return revision;
   }
 
   function listRevisions(skillId) {
     const rec = getSkill(skillId);
-    return rec.revisions.map((id) => readRevision(id)).filter(Boolean);
+    return rec.revisions.map((id) => {
+      try {
+        const revision = readRevision(id);
+        if (revision) return { ...revision, integrity: 'intact' };
+      } catch (err) {
+        if (!['blob_missing', 'blob_corrupt', 'blob_invalid', 'revision_corrupt'].includes(err.code)) throw err;
+        const metadata = readJson(revisionsDir, `${id}.json`);
+        return { ...metadata, revisionId: id, scan: null, integrity: 'damaged', error: { code: err.code } };
+      }
+      return { revisionId: id, skillId, scan: null, integrity: 'damaged', error: { code: 'revision_not_found' } };
+    });
   }
 
   /** A revision's files, read back from their blobs and checked. */
@@ -461,14 +509,44 @@ export function createSkillLibrary({ dir, now = () => new Date().toISOString(), 
     return { skillId, archivedAt, archived };
   }
 
-  /** The skills taken out of the library, newest first: `{ skillId, name, archivedAt, archivedBy, archived }`. */
+  /**
+   * The skills taken out of the library, newest first: `{ skillId, name, archivedAt, archivedBy, archived, revisions }`
+   * (`revisions`: how many of its versions still read back, the ones a Restore brings with it).
+   */
   function listArchived() {
     let names = [];
     try { names = readdirSync(archiveDir).filter((n) => /^skl_[0-9a-f]{20}\.[0-9]+\.[0-9a-f]{8}\.json$/.test(n)); } catch { names = []; }
     return names.map((n) => {
       const rec = readJson(archiveDir, n);
-      return rec?.skill?.skillId ? { skillId: rec.skill.skillId, name: rec.skill.name, archivedAt: rec.archivedAt, archivedBy: rec.archivedBy, archived: n } : null;
+      if (!rec?.skill?.skillId) return null;
+      const revisions = (Array.isArray(rec.skill.revisions) ? rec.skill.revisions : []).filter((id) => isRevisionId(id) && readRevision(id)).length;
+      return { skillId: rec.skill.skillId, name: rec.skill.name, archivedAt: rec.archivedAt, archivedBy: rec.archivedBy, archived: n, revisions };
     }).filter(Boolean).sort((a, b) => String(b.archivedAt).localeCompare(String(a.archivedAt)));
+  }
+
+  /**
+   * Put an archived skill back as it was: its record and its draft, over the revisions and blobs that never left.
+   * 404 when nothing of it is archived (`archive_not_found`: a second Restore of the same deletion); refused while a
+   * skill of that id is in the library (409 `skill_exists`: never two records of one id). The newest archive file of
+   * the id is the one restored and then removed (an older one of the same id stays, readable).
+   * @returns {{ skillId: string, name: string, restoredAt: string, archivedAt: string }}
+   */
+  function restoreSkill(skillId) {
+    if (!isSkillId(skillId)) throw new LibraryError(400, 'Not a skill id.', 'invalid_id');
+    const entry = listArchived().find((a) => a.skillId === skillId);
+    if (!entry) throw new LibraryError(404, 'Nothing of that skill is archived.', 'archive_not_found');
+    if (readSkill(skillId)) throw new LibraryError(409, 'A skill of that id is in the library already.', 'skill_exists');
+    const rec = readJson(archiveDir, entry.archived);
+    if (!rec?.skill?.skillId || rec.skill.skillId !== skillId) throw new LibraryError(500, 'The archive file does not read back.', 'archive_corrupt');
+    const skill = { ...rec.skill };
+    skill.log = [...(Array.isArray(skill.log) ? skill.log : []), { at: now(), by: 'owner', action: 'restored', note: `restored from the archive (deleted ${rec.archivedAt})` }].slice(-200);
+    skill.etag = (Number(skill.etag) || 0) + 1;
+    ensure();
+    if (rec.draft?.draftId && !readDraft(rec.draft.draftId)) writeJson(join(draftsDir, `${rec.draft.draftId}.json`), rec.draft);
+    else if (!rec.draft?.draftId) skill.pointers = { ...skill.pointers, draft: null };
+    saveSkill(skill);
+    try { unlinkSync(join(archiveDir, entry.archived)); } catch { /* the record is back: an archive file left behind is listed no more than once */ }
+    return { skillId, name: skill.name, restoredAt: now(), archivedAt: rec.archivedAt };
   }
 
   // ── Drafts ──
@@ -476,7 +554,10 @@ export function createSkillLibrary({ dir, now = () => new Date().toISOString(), 
   function readDraft(draftId) {
     if (!isDraftId(draftId)) return null;
     const rec = readJson(draftsDir, `${draftId}.json`);
-    return rec && rec.schemaVersion === LIBRARY_SCHEMA && rec.draftId === draftId ? rec : null;
+    if (!rec || rec.schemaVersion !== LIBRARY_SCHEMA || rec.draftId !== draftId) return null;
+    const folder = { files: rec.files.map((f) => ({ path: f.path, bytes: getBlob(f.blobId), executable: !!f.executable })), dirs: rec.dirs };
+    rec.scan = scanFolderEvidence(folder, getSkill(rec.skillId), folderDigest(folder));
+    return rec;
   }
   function getDraft(draftId) {
     const rec = readDraft(draftId);
@@ -488,6 +569,8 @@ export function createSkillLibrary({ dir, now = () => new Date().toISOString(), 
     ensure();
     rec.updatedAt = now();
     rec.etag = draftTag(rec.files, rec.dirs);
+    const folder = { files: rec.files.map((f) => ({ path: f.path, bytes: getBlob(f.blobId), executable: !!f.executable })), dirs: rec.dirs };
+    rec.scan = scanFolderEvidence(folder, getSkill(rec.skillId), folderDigest(folder));
     writeJson(join(draftsDir, `${rec.draftId}.json`), rec);
     return rec;
   }
@@ -718,9 +801,10 @@ export function createSkillLibrary({ dir, now = () => new Date().toISOString(), 
   }
 
   return {
+    setShippedNames, setExternalEvidence,
     paths: { dir, blobsDir, revisionsDir, skillsDir, draftsDir, archiveDir },
     putBlob, getBlob,
-    getSkill, readSkill, listSkills, findSkill, createSkill, labelsOf, archiveSkill, listArchived,
+    getSkill, readSkill, listSkills, findSkill, createSkill, labelsOf, archiveSkill, listArchived, restoreSkill,
     getRevision, readRevision, putRevision, listRevisions, readRevisionFiles, readRevisionFile,
     setPointer,
     createDraft, getDraft, readDraft, patchDraft, readDraftFiles, snapshotDraft,

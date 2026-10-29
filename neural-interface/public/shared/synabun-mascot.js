@@ -52,6 +52,27 @@
  * - `look(x, y)` — gaze in [-1, 1] on both axes. Idle: a cursor that moved in
  *   the last 2.5 s wins. watch / computer / runs / wait / blocked follow it.
  * - `blink()` — one blink.
+ * - `point(target | null, { poke, gap })` — rubber-hose arms (rig v3): the
+ *   arm on the side of `target` (an element, a client rect or a client point)
+ *   sprouts from the face's lower outer side with a springy overshoot, grows
+ *   until its fingertip stops `gap` px short of the target and aims its hand
+ *   (a round palm, one index pill and a thumb nub, in the eyes' pill
+ *   language) along the line from the hand to the target, on a spring; the
+ *   eyes look there too, never far enough to come to the arm; null (or a
+ *   target on the other side) sends it back into the body, quicker than it
+ *   grew. Pointing again re-measures and carries on from the springs' state.
+ *   Rects are read when it is called and again after a resize or scroll,
+ *   never per frame. No part of an arm ever crosses an eye or the smile. Only
+ *   on a rig at least 96 px wide (`opts.arms` overrides): never a mini, a
+ *   cameo or a still. Under reduced motion the arm shows its final pose at once.
+ * - `poke()` — two quick pokes along the line to the target (a beat landed).
+ * - `nudge(vx, vy)` — the host moved the character's box and its velocity
+ *   changed by (vx, vy) px/s: the arms trail, then wobble back.
+ * - `shift(dx, dy)` — the host moved the box by (dx, dy) px since the last
+ *   measure: the hand keeps pointing at the same place (no layout read).
+ * - `remeasure()` — read the rects again (the host's move has landed).
+ * - `armExtent()` — the client box the pointing arm takes once grown, or null.
+ * - `pointing` — the target, or null.
  * - `setActive(bool)` — false unsubscribes and shows the pose's still frame
  *   (no loops, no tracking); true resumes.
  * - `pose` — the current pose name (also the SVG's `data-pose`); `fps` — the
@@ -74,6 +95,11 @@
  *   (never a pause glyph); the host's CSS animates them.
  * - `mascotPropSvg(kind, { width, height })` + `paintMascotProp(svg, kind)`
  *   — a kind's prop alone, framed to its own box: the ledger's row glyphs.
+ * - `mascotBounds(pose)` — the face-unit box a pose can draw in (the eyes over
+ *   their travel, the smile, its prop): what a host keeps its drawing out of.
+ * - Arms: `createArmSim`, `armRest`, `armAim`, `armSide`, `armTargeting`,
+ *   `armWidths`, `armPath`, `armHandPath`, `armDrawPath`, `armGaze`,
+ *   `armKeepOut`, `MASCOT_ARM`.
  * - v1: `mascotSvg`, `mascotRefs`, `poseMascot`, `blinkAmount`, `MASCOT_VIEWBOX`.
  */
 
@@ -89,7 +115,7 @@ export const MASCOT_KINDS = Object.freeze(['shell', 'read', 'edit', 'search', 'w
 export const MASCOT_STATES = Object.freeze(['idle', 'sleep', 'watch', 'wait', 'success', 'error', 'blocked', 'offline']);
 /** The Assistant's cards the mascot presents (asst-ask.js): next steps and confirms, decisions, questions. */
 export const MASCOT_CARD_POSES = Object.freeze(['present', 'pick', 'ask']);
-export const MASCOT_POSES = Object.freeze([...MASCOT_KINDS, ...MASCOT_STATES, 'project', 'budget', ...MASCOT_CARD_POSES]);
+export const MASCOT_POSES = Object.freeze([...MASCOT_KINDS, ...MASCOT_STATES, 'project', 'budget', 'skill', ...MASCOT_CARD_POSES]);
 export const MASCOT_REACTIONS = Object.freeze(['hop', 'wince', 'nod', 'pop', 'startle', 'pulse', 'click']);
 
 /** The character's SVG. Colour comes from `currentColor` (the mouth at 25 %). */
@@ -155,6 +181,7 @@ export function mascotCameoSvg({ className = '' } = {}) {
 const PROP_BOX = Object.freeze({
   project: [204, 77, 62, 48],
   budget: [212, 65, 54, 60],
+  skill: [209, 25, 71, 96],
   ask: [210, 0, 46, 66],
   shell: [144, 116, 42, 26], // the last keycap and the caret
   read: [65, 20, 150, 88],
@@ -348,6 +375,20 @@ const POSES = {
       f.mouth = mouth(o.unlimited ? 48 : 34, o.unlimited ? 20 : 11);
       gaze(f, o.look, { x: 16, y: 10 });
       f.prop = { name: 'budget', lift, unlimited: o.unlimited };
+      return f;
+    },
+  },
+  skill: { // writing a reusable skill: a little scroll, then a pleased sparkle
+    motion: 'loop', blinks: true,
+    frame(t, o) {
+      const f = blankFrame();
+      const c = mod(t, 3000);
+      const draw = o.still ? 0.85 : clamp01(c / 1800);
+      const spark = o.still ? 1 : bump(c, 1800, 900);
+      f.face.rot = -3 * (1 - spark);
+      f.eyes = [eye(5 + 2 * draw, 6, 1, 0.8 - 0.18 * spark, -3), eye(5 + 2 * draw, 6, 1, 0.94 - 0.2 * spark, 2)];
+      f.mouth = mouth(30 + 10 * spark, 8 + 8 * spark, 3, -1);
+      f.prop = { name: 'skill', draw, spark, jig: o.still || draw >= 1 ? 0 : Math.sin(TAU * c / 300) };
       return f;
     },
   },
@@ -696,6 +737,32 @@ export function stillFrame(name, opts = {}) {
   return poseFrame(name, 0, { ...opts, still: true });
 }
 
+// The face-unit box the eyes and the smile can reach: the eyes (80-200 × 24-96) over their whole travel
+// (±20 × ±14, the widest pose's) and swell, the smile at its widest and lowest.
+const FACE_REACH = Object.freeze({ left: 58, top: 6, right: 222, bottom: 134 });
+
+/**
+ * The box (face units: { left, top, right, bottom }) pose `name` can draw in:
+ * its eyes over their whole travel, the smile and its prop, at the face's own
+ * offset (the subagent pose steps aside for its minis). Arms aside. What a
+ * host keeps its own drawing out of, so nothing is drawn over the character.
+ */
+export function mascotBounds(name, opts = {}) {
+  const f = stillFrame(POSES[name] ? name : 'idle', opts);
+  const box = { ...FACE_REACH };
+  const prop = PROP_BOX[f.prop?.name];
+  if (prop) {
+    const [x, y, w, h] = prop;
+    box.left = Math.min(box.left, x);
+    box.top = Math.min(box.top, y);
+    box.right = Math.max(box.right, x + w);
+    box.bottom = Math.max(box.bottom, y + h);
+  }
+  const dx = f.face?.dx || 0;
+  const dy = f.face?.dy || 0;
+  return { left: box.left + dx, top: box.top + dy, right: box.right + dx, bottom: box.bottom + dy };
+}
+
 /** The mouth's quadratic stroke: `w` wide, control `c` below the corners. */
 export function mouthPath(m) {
   const hw = m.w / 2;
@@ -827,6 +894,22 @@ const PROPS = {
       put(r.coin, 'display', p.unlimited ? 'none' : null);
       put(r.infinity, 'display', p.unlimited ? null : 'none');
       put(p.unlimited ? r.infinity : r.coin, 'transform', `translate(0,${n(-3 * p.lift)})`);
+    },
+  },
+  skill: {
+    markup: () => '<path d="M218 107V57q0-5 5-5h29q5 0 5 5v50M212 107h45v4q0 7-7 7h-31q-7 0-7-7z" fill="none" stroke="currentColor" stroke-opacity=".7" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>'
+      + '<path class="syna-skill-ink" d="M225 72h21M225 85h21M225 98h21" pathLength="1" fill="none" stroke="currentColor" stroke-opacity=".55" stroke-width="3" stroke-linecap="round" stroke-dasharray="1 1"/>'
+      + '<g class="syna-skill-pen" fill="currentColor" fill-opacity=".75"><rect x="-3" y="-28" width="6" height="20" rx="3"/><path d="M-2.8,-9 L0,-1 L2.8,-9 Z"/></g>'
+      + '<path class="syna-skill-spark" d="M266 28l2.4 7.6L276 38l-7.6 2.4L266 48l-2.4-7.6L256 38l7.6-2.4z" fill="currentColor"/>',
+    refs: g => ({ ink: g.querySelector('.syna-skill-ink'), pen: g.querySelector('.syna-skill-pen'), spark: g.querySelector('.syna-skill-spark') }),
+    update(r, p, put) {
+      const row = Math.min(2, Math.floor(p.draw * 3));
+      const x = 225 + 21 * (p.draw * 3 - row);
+      const y = 72 + 13 * row + p.jig - 3 * p.spark;
+      put(r.ink, 'stroke-dashoffset', n(1 - p.draw));
+      put(r.pen, 'transform', `translate(${n(x)},${n(y)}) rotate(35)`);
+      put(r.spark, 'transform', `translate(266,38) scale(${n(0.65 + 0.35 * p.spark)}) translate(-266,-38)`);
+      put(r.spark, 'fill-opacity', n(0.25 + 0.6 * p.spark));
     },
   },
   shell: { // three keycaps and a block caret under the chin
@@ -979,6 +1062,755 @@ const PROPS = {
   },
 };
 
+// ── Arms: rubber-hose noodles the rig grows only while it points ──
+// One arm at each lower outer side of the face, below and outside the eyes,
+// where a body's sides would be: a fine line (CSS px, so it stays fine at every
+// size, about the smile's own stroke) from a shoulder anchor, no elbow or joint,
+// that swells into a hand built from pills like the eyes: a round palm, one
+// index pill that unfurls to point, a thumb nub. They exist only while a host
+// points (rig.point): the arm on the target's side sprouts with a springy
+// overshoot and grows until its fingertip stops just short of the target; the
+// index aims along the line from the hand to the target, its angle on its own
+// spring so it never snaps; the other arm may give a tiny balancing flick (a
+// relaxed hand, index folded); when the pointing ends or the target changes
+// side the arm goes back into the body, quicker than it grew. Every control
+// point is a damped spring (the hand the loosest), so an arm lags when the body
+// travels (rig.nudge), wobbles when it lands and settles into a low idle wiggle
+// while it is held; a poke moves the hand along the hand-to-target line and
+// squashes it there; a new target continues from the springs' state. Whatever
+// the springs do, every point of an arm stays inside its shoulder's free wedge
+// (ARM_BOUND): the eyes and the smile are never crossed, and while an arm is
+// out the eyes keep to MASCOT_ARM.gaze so they never come to it; a prop drawn
+// over a shoulder (the project folder, the budget, the edit pen) moves that
+// arm's root under it (armShoulder), on a spring, so no arm comes out of a
+// prop. Noodle and
+// hand are one path (a nonzero union: no seam where they meet, whatever alpha
+// the colour carries). Pure here (createArmSim, armRest, armPath, armHandPath,
+// armDrawPath: no DOM); the rig measures, steps the sim on its own frames and
+// paints it.
+
+export const MASCOT_ARM = Object.freeze({
+  // Left, right (face units): outside the eyes (x 80-118, 162-200), below them (y 24-96) and level with the
+  // smile's corners (x 118-162, y 116), so neither eye nor the smile is ever near the root of an arm. A prop
+  // drawn over one (PROP_BOX) moves that root under it: armShoulder.
+  shoulders: Object.freeze([Object.freeze({ x: 62, y: 106 }), Object.freeze({ x: 218, y: 106 })]),
+  reach: 96, // a grown arm, shoulder to the wrist
+  // The line's width in CSS px, at the shoulder and at the wrist: a fine line, about the smile's stroke
+  // (2.5 face units, .86-1.07 px on the hero), with a slight taper. Face units are px / the rig's px per
+  // unit, kept within `units` on a very small or very large character.
+  px: Object.freeze({ w0: 1.2, w1: 0.95 }),
+  units: Object.freeze({ min: 1.8, max: 4.6 }),
+  unitPx: 120 / 280, // px per face unit when a caller says nothing: the empty state's 120 px character
+  // The hand (armHandPath), in the pill language of the eyes: a round palm, one index pill that
+  // unfurls to point along the aim, and a thumb nub. Radii and lengths in face units, around the wrist.
+  hand: Object.freeze({ palm: 6.6, index: 2.9, indexLen: 15, thumb: 2.6, thumbLen: 6.5 }),
+  raise: 1.35, // radians an arm may aim above straight out (never up across the eyes)…
+  lower: 2.3, // …and below it (down and in, under the smile, never across it)
+  // While an arm is out the eyes travel at most this far (face units) and swell at most this much,
+  // so an eye never comes to an arm.
+  gaze: Object.freeze({ x: 12, y: 10, sx: 1.04, sy: 1.08 }),
+});
+
+const ARM_T = [1 / 3, 2 / 3, 1];
+const ARM_SPRINGS = [[520, 0.72], [400, 0.5], [310, 0.36]]; // per control point: stiffness (1/s²), damping ratio
+const ARM_GROW = [19, 0.46]; // the sprout: ω (rad/s), ζ (≈ 18 % overshoot)
+const ARM_SHRINK = [27, 1]; // going home: critically damped, quicker
+const ARM_WIGGLE = [[1.1, 1.05, 0.2], [1.4, 1.45, 1.7], [1.7, 0.8, 3.1]]; // per point: amplitude (units), Hz, phase
+const ARM_NUDGE = [0.25, 0.55, 0.9]; // how much of a body jolt each point keeps (the hand lags most)
+const ARM_POKE = { dist: 13, dur: 0.13, gap: 0.24, share: [0.2, 0.55, 1] }; // each poke: units along the aim, s out and back, s between the two, per point
+const ARM_FLICK = { e: 0.24, angle: 1.05, hold: 0.22 }; // the other arm's balancing flick: reach, aim (down and out), s held
+const ARM_MAX_SPEED = 900; // units/s a jolt can give a point
+// Where any point of an arm may be, as seen from its shoulder (0 straight out, + down): the aim's range and a
+// little more for overshoot, wiggle and trailing. The eyes (at their MASCOT_ARM.gaze limits) and the smile lie
+// outside it with room to spare; consecutive points never turn more than ARM_KINK, so no segment cuts across.
+const ARM_BOUND = [-(MASCOT_ARM.raise + 0.12), MASCOT_ARM.lower + 0.1];
+const ARM_KINK = 2.2;
+const ARM_HOLD = [0.25, 0.3, 0.35]; // a jolt never folds a point closer to the shoulder than this share of where it rests
+// What an arm keeps away from (face units, rounded boxes: centre, half sizes, corner radius): each eye over
+// its MASCOT_ARM.gaze travel and swell, and the smile at its widest and lowest. Every part of an arm (the
+// line, the palm, the index, the thumb) stays ARM_CLEAR outside them, whatever the springs do.
+const ARM_KEEP_OUT = Object.freeze([
+  ...[99, 181].map(cx => Object.freeze({ cx, cy: 60, hw: 19 * MASCOT_ARM.gaze.sx + MASCOT_ARM.gaze.x, hh: 36 * MASCOT_ARM.gaze.sy + MASCOT_ARM.gaze.y, r: 19 * MASCOT_ARM.gaze.sx })),
+  Object.freeze({ cx: 140, cy: 120.5, hw: 34, hh: 12.5, r: 6 }),
+]);
+const ARM_CLEAR = 2.5; // face units, about a CSS px on the hero
+const ARM_MIN_REACH = 0.42; // a target close by: the arm grows at least this much of its reach
+const ARM_FOCUS = 0.32; // the index aims at the target's middle, this much in from each side, leaning toward the arm
+const HAND_SQUASH = 0.16; // how much a poke squashes the hand at its peak (shorter along the aim, wider across)
+const HAND_SQUASH_SPRING = [42, 0.42]; // ω (rad/s), ζ: the squash rebounds a little (a stretch), then settles
+const HAND_POINT_RATE = 18; // 1/s: how fast the index unfurls on a held arm, or folds once it is let go
+const HAND_TURN = [20, 0.9]; // ω (rad/s), ζ: the hand's angle follows the line to the target, fluid, never a snap
+const ARM_FLARE = 18; // units of arm, before the wrist, over which the line swells into the palm
+// The fingertip's distance past the wrist with the index out, at full size (armHandPath's index pill).
+const HAND_TIP = (4 + MASCOT_ARM.hand.indexLen + MASCOT_ARM.hand.index) * 1.08;
+
+/** What an arm keeps away from: the eyes over their travel while it is out, and the smile (face units, rounded boxes). */
+export function armKeepOut() {
+  return ARM_KEEP_OUT.map(b => ({ ...b }));
+}
+
+const ARM_ROOT_MAX_Y = 138; // a root moved under a prop never leaves the face's own box (140 high)
+const ARM_ROOT_SPRING = [16, 0.9]; // ω (rad/s), ζ: a root that moves under a prop glides there, no pop
+
+/**
+ * Where the arm on `side` (0 left, 1 right) roots while the face shows `prop`:
+ * its shoulder (MASCOT_ARM.shoulders), or, when that prop's box (PROP_BOX: the
+ * project folder, the budget pill and the edit pen sit at the face's lower
+ * side, over the right shoulder) covers the shoulder, just under the box, so an
+ * arm never comes out of a prop. A prop clear of the shoulder moves nothing.
+ */
+export function armShoulder(side, prop = null) {
+  const s = MASCOT_ARM.shoulders[side ? 1 : 0];
+  const box = prop ? PROP_BOX[prop] : null;
+  if (!box) return { x: s.x, y: s.y };
+  const [x, y, w, h] = box;
+  const root = MASCOT_ARM.units.max / 2; // the line's radius at its widest
+  if (s.x < x - root || s.x > x + w + root || s.y < y - root || s.y > y + h + root) return { x: s.x, y: s.y };
+  return { x: s.x, y: Math.min(ARM_ROOT_MAX_Y, y + h + root + ARM_CLEAR) };
+}
+
+/** Signed distance from (x, y) to a rounded box `b` (negative inside), and the unit normal out of it. */
+function boxDistance(x, y, b) {
+  const sx = x >= b.cx ? 1 : -1;
+  const sy = y >= b.cy ? 1 : -1;
+  const qx = Math.abs(x - b.cx) - (b.hw - b.r);
+  const qy = Math.abs(y - b.cy) - (b.hh - b.r);
+  if (qx > 0 && qy > 0) {
+    const l = Math.hypot(qx, qy);
+    return { d: l - b.r, nx: (sx * qx) / l, ny: (sy * qy) / l };
+  }
+  if (qx > qy) return { d: qx - b.r, nx: sx, ny: 0 };
+  return { d: qy - b.r, nx: 0, ny: sy };
+}
+
+/** How close a disc (x, y, radius r) comes to the face (ARM_KEEP_OUT): the smallest gap, negative when it overlaps. */
+function faceGap(x, y, r) {
+  let gap = Infinity;
+  for (const b of ARM_KEEP_OUT) gap = Math.min(gap, boxDistance(x, y, b).d - r);
+  return gap;
+}
+
+/** The hand's size for an arm `e` of the way out (armDrawPath's). */
+const handScale = e => clamp(e * 1.5, 0, 1.08);
+
+/**
+ * The discs a hand covers (face units), turned to `angle` at `wrist` on `side`,
+ * `hs` its size and `pt` how far its index is out: the palm's front, points along
+ * the index and the thumb's tip. armHandPath's pills, sampled.
+ */
+function handDiscs(wrist, angle, side, hs, pt) {
+  const H = MASCOT_ARM.hand;
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  const flip = side ? -1 : 1;
+  const at = (x, y, r) => ({ x: wrist.x + (x * cos - y * flip * sin) * hs, y: wrist.y + (x * sin + y * flip * cos) * hs, r: r * hs });
+  const open = 0.5 + 0.5 * pt;
+  const discs = [at(3.5, 0, H.palm), at(0.5 + 3 * open, 4 + H.thumbLen * open, H.thumb)];
+  for (let i = 0; i <= 4; i += 1) discs.push(at(4 + (H.indexLen * pt * i) / 4, 0, H.index));
+  return discs;
+}
+
+/** Does a hand at `angle` keep ARM_CLEAR from the face? */
+function handClear(wrist, angle, side, hs, pt) {
+  return handDiscs(wrist, angle, side, hs, pt).every(c => faceGap(c.x, c.y, c.r) >= ARM_CLEAR);
+}
+
+/** The direction an arm on `side` (0 left, 1 right) points at `angle` (0 straight out, + down). */
+function armDir(side, angle) {
+  return { x: (side ? 1 : -1) * Math.cos(angle), y: Math.sin(angle) };
+}
+
+/** Which arm faces `point` (face units): the side of the face it is on. */
+export function armSide(point) {
+  return Number(point?.x) >= 140 ? 1 : 0;
+}
+
+const clampAim = a => clamp(Number(a) || 0, -MASCOT_ARM.raise, MASCOT_ARM.lower);
+
+/** The angle the arm on `side` aims at `point` (face units), kept within its swing; `shoulder` is where it roots (armShoulder). */
+export function armAim(side, point, shoulder = MASCOT_ARM.shoulders[side ? 1 : 0]) {
+  const s = shoulder;
+  const dx = (Number(point?.x) - s.x) * (side ? 1 : -1);
+  const dy = Number(point?.y) - s.y;
+  if (!Number.isFinite(dx) || !Number.isFinite(dy) || (Math.abs(dx) < 1e-6 && Math.abs(dy) < 1e-6)) return 0;
+  return clampAim(Math.atan2(dy, dx));
+}
+
+/**
+ * How the arm on `side` meets a target `rect` (face units: { left, top, right,
+ * bottom }): the angle it aims at, the point its index aims at (the target's
+ * middle, leaning toward the arm: its near side for a wide one) and how much of
+ * its reach it grows so the fingertip stops `gap` units short of the target.
+ * `shoulder` is where the arm roots (armShoulder: under a prop that covers it).
+ */
+export function armTargeting(side, rect, gap = 0, shoulder = MASCOT_ARM.shoulders[side ? 1 : 0]) {
+  const s = shoulder;
+  const l = Number(rect?.left);
+  const t = Number(rect?.top);
+  const r = Number.isFinite(Number(rect?.right)) ? Number(rect.right) : l;
+  const b = Number.isFinite(Number(rect?.bottom)) ? Number(rect.bottom) : t;
+  if (![l, t, r, b].every(Number.isFinite)) return null;
+  const inset = (lo, hi) => { const m = (hi - lo) * ARM_FOCUS; return [lo + m, hi - m]; };
+  const [fx0, fx1] = inset(l, r);
+  const [fy0, fy1] = inset(t, b);
+  const focus = { x: clamp(s.x, fx0, fx1), y: clamp(s.y, fy0, fy1) };
+  const g = Math.max(0, Number(gap) || 0);
+  const dx = Math.max(l - g - s.x, 0, s.x - r - g);
+  const dy = Math.max(t - g - s.y, 0, s.y - b - g);
+  const reach = clamp((Math.hypot(dx, dy) - HAND_TIP) / MASCOT_ARM.reach, ARM_MIN_REACH, 1);
+  return { angle: armAim(side, focus, s), focus, reach };
+}
+
+/**
+ * Where the arm's three control points rest (a third, two thirds, the hand):
+ * along its aim, `extension` of its reach, bowed a little like a hose away
+ * from the face. With `wiggleAt` (s) they sway in the low idle wiggle.
+ * `shoulder` is where the arm roots (armShoulder).
+ */
+export function armRest(side, angle, extension, wiggleAt = null, shoulder = MASCOT_ARM.shoulders[side ? 1 : 0]) {
+  const s = shoulder;
+  const d = armDir(side, angle);
+  // The hose bows away from the face: down for a level arm, outward for a raised or a lowered one.
+  // Its size follows how far that perpendicular leans out-and-down, so it never flips at once.
+  const nx = -d.y;
+  const ny = d.x;
+  const ox = (side ? 1 : -1) * 0.857;
+  const oy = 0.514;
+  const e = Math.max(0, Number(extension) || 0);
+  const len = MASCOT_ARM.reach * e;
+  const bow = 0.16 * len * (nx * ox + ny * oy);
+  const mirror = side ? -1 : 1; // the right arm's perpendicular is the left one's mirror turned round: the wiggle mirrors too
+  return ARM_T.map((t, i) => {
+    let off = Math.sin(Math.PI * t) * bow;
+    let along = len * t;
+    if (wiggleAt != null) {
+      const [a, f, p] = ARM_WIGGLE[i];
+      const k = Math.min(1, e);
+      off += mirror * a * k * Math.sin(TAU * f * wiggleAt + p);
+      along += 0.5 * a * k * Math.sin(TAU * f * 0.7 * wiggleAt + p * 1.7);
+    }
+    return { x: s.x + d.x * along + nx * off, y: s.y + d.y * along + ny * off };
+  });
+}
+
+/** A point `t` (0-1) along the Catmull-Rom segment p1 → p2. */
+function catmull(p0, p1, p2, p3, t) {
+  const t2 = t * t;
+  const t3 = t2 * t;
+  const f = (a, b, c, d) => 0.5 * ((2 * b) + (-a + c) * t + (2 * a - 5 * b + 4 * c - d) * t2 + (-a + 3 * b - 3 * c + d) * t3);
+  return { x: f(p0.x, p1.x, p2.x, p3.x), y: f(p0.y, p1.y, p2.y, p3.y) };
+}
+
+const smoothstep = (u) => { const v = clamp01(u); return v * v * (3 - 2 * v); };
+
+/** The line's width (face units) at the shoulder and at the wrist, for a character drawn at `unitPx` px per unit. */
+export function armWidths(unitPx = MASCOT_ARM.unitPx) {
+  const k = Number(unitPx) > 0 ? Number(unitPx) : MASCOT_ARM.unitPx;
+  const u = px => clamp(px / k, MASCOT_ARM.units.min, MASCOT_ARM.units.max);
+  return { w0: u(MASCOT_ARM.px.w0), w1: u(MASCOT_ARM.px.w1) };
+}
+
+/**
+ * The noodle's two edges through `points` (shoulder first, hand last, face
+ * units), × `scale`: armWidths(unitPx) w0 wide at the shoulder, tapering to w1
+ * at the wrist, and with `cuff` (a half-width, drawn units) swelling over the
+ * last ARM_FLARE units into the palm, so the hand grows out of the arm with no
+ * step. Also the direction the arm ends in (`tangent`, radians) and the
+ * shoulder's radius. null when the arm is too short to draw.
+ */
+function armOutline(points, scale = 1, cuff = 0, unitPx = MASCOT_ARM.unitPx) {
+  if (!Array.isArray(points) || points.length < 2) return null;
+  const k = clamp(Number(scale) || 0, 0, 1.2);
+  const { w0, w1 } = armWidths(unitPx);
+  const line = [];
+  const steps = 6;
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const p0 = points[Math.max(0, i - 1)];
+    const p3 = points[Math.min(points.length - 1, i + 2)];
+    for (let j = 0; j < steps; j += 1) line.push(catmull(p0, points[i], points[i + 1], p3, j / steps));
+  }
+  line.push(points[points.length - 1]);
+  const at = [0];
+  for (let i = 1; i < line.length; i += 1) at.push(at[i - 1] + Math.hypot(line[i].x - line[i - 1].x, line[i].y - line[i - 1].y));
+  const total = at[at.length - 1];
+  if (!(total > 0.5) || k <= 0.01) return null;
+  const swell = Math.max(0, Number(cuff) || 0);
+  const left = [];
+  const right = [];
+  for (let i = 0; i < line.length; i += 1) {
+    const a = line[Math.max(0, i - 1)];
+    const b = line[Math.min(line.length - 1, i + 1)];
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const dl = Math.hypot(dx, dy) || 1;
+    let hw = (w0 + (w1 - w0) * (at[i] / total)) * k / 2;
+    if (swell > hw) hw += (swell - hw) * smoothstep((at[i] - (total - ARM_FLARE)) / ARM_FLARE);
+    left.push({ x: line[i].x - (dy / dl) * hw, y: line[i].y + (dx / dl) * hw });
+    right.push({ x: line[i].x + (dy / dl) * hw, y: line[i].y - (dx / dl) * hw });
+  }
+  const end = line[line.length - 1];
+  const before = line[line.length - 2];
+  return { left, right, r0: w0 * k / 2, tangent: Math.atan2(end.y - before.y, end.x - before.x) };
+}
+
+/** An outline's path data: smooth edges (quadratics through the midpoints) and a round shoulder. */
+function outlinePath(o) {
+  const edge = (pts) => {
+    let d = '';
+    for (let i = 1; i < pts.length - 1; i += 1) {
+      const m = { x: (pts[i].x + pts[i + 1].x) / 2, y: (pts[i].y + pts[i + 1].y) / 2 };
+      d += ` Q${n(pts[i].x)},${n(pts[i].y)} ${n(m.x)},${n(m.y)}`;
+    }
+    const last = pts[pts.length - 1];
+    return `${d} L${n(last.x)},${n(last.y)}`;
+  };
+  const back = o.right.slice().reverse();
+  return `M${n(o.left[0].x)},${n(o.left[0].y)}${edge(o.left)} L${n(back[0].x)},${n(back[0].y)}${edge(back)}`
+    + ` A${n(o.r0)},${n(o.r0)} 0 0 1 ${n(o.left[0].x)},${n(o.left[0].y)}Z`;
+}
+
+/**
+ * The noodle's outline as path data: one smooth tapered shape, w0 wide at the
+ * shoulder (a rounded end that goes into the body) and w1 at the wrist, × `scale`,
+ * swelling into a `cuff` half-width at the wrist when one is given (armOutline).
+ * '' when the arm is too short to draw. The hand is armHandPath's.
+ */
+export function armPath(points, scale = 1, cuff = 0, unitPx = MASCOT_ARM.unitPx) {
+  const o = armOutline(points, scale, cuff, unitPx);
+  return o ? outlinePath(o) : '';
+}
+
+/** Twice a polygon's signed area (the shoelace sum): its sign is which way round it goes. */
+const shoelace = (pts) => pts.reduce((s, p, i) => { const q = pts[(i + 1) % pts.length]; return s + p.x * q.y - q.x * p.y; }, 0);
+const wrapAngle = (a) => Math.atan2(Math.sin(a), Math.cos(a));
+
+/** A pill from `a` to `b` of radius `r`, as a polygon (local units). */
+function pillPolygon(a, b, r, segs = 10) {
+  const ang = Math.atan2(b.y - a.y, b.x - a.x);
+  const pts = [];
+  for (let i = 0; i <= segs; i += 1) { const t = ang - Math.PI / 2 + (Math.PI * i) / segs; pts.push({ x: b.x + r * Math.cos(t), y: b.y + r * Math.sin(t) }); }
+  for (let i = 0; i <= segs; i += 1) { const t = ang + Math.PI / 2 + (Math.PI * i) / segs; pts.push({ x: a.x + r * Math.cos(t), y: a.y + r * Math.sin(t) }); }
+  return pts;
+}
+
+/**
+ * The hand at `wrist` (face units), pointing along `angle` (radians, screen
+ * coordinates) on the arm of `side` (0 left, 1 right): a round palm the noodle
+ * swells into, one index pill out `point` (0-1) of its length, on the line
+ * through the wrist at `angle` (so the index aims exactly where the hand is
+ * turned), and a thumb nub that opens with it. Built from pills like the eyes.
+ * The thumb is on top for a level arm and outward for a lowered one, on either
+ * side (left mirrors right). `scale` grows it with the arm; `squash` (a poke
+ * landing) shortens it along the aim and widens it across. Path data of three
+ * pills, each the same way round (`sign`, the noodle's, so a nonzero fill
+ * paints the union once, whatever alpha `currentColor` carries). '' when too
+ * small to draw.
+ */
+export function armHandPath(wrist, angle, side, { scale = 1, point = 1, squash = 0, sign = -1 } = {}) {
+  const H = MASCOT_ARM.hand;
+  const hs = clamp(Number(scale) || 0, 0, 1.2);
+  if (hs <= 0.01 || !Number.isFinite(Number(wrist?.x)) || !Number.isFinite(Number(wrist?.y))) return '';
+  const pt = clamp01(Number(point) || 0);
+  const sq = clamp(Number(squash) || 0, -0.3, 0.3);
+  const th = Number(angle) || 0;
+  const cos = Math.cos(th);
+  const sin = Math.sin(th);
+  const sx = hs * (1 - sq);
+  const sy = hs * (1 + sq) * (side ? -1 : 1); // +y is the thumb's side
+  const toWorld = (p) => { const x = p.x * sx; const y = p.y * sy; return { x: wrist.x + x * cos - y * sin, y: wrist.y + x * sin + y * cos }; };
+  const open = 0.5 + 0.5 * pt; // the thumb: tucked on a relaxed hand, out when it points
+  const pills = [
+    pillPolygon({ x: -0.5, y: 0 }, { x: 3.5, y: 0 }, H.palm),
+    pillPolygon({ x: 4, y: 0 }, { x: 4 + H.indexLen * pt, y: 0 }, H.index),
+    pillPolygon({ x: 0.5, y: 4 }, { x: 0.5 + 3 * open, y: 4 + H.thumbLen * open }, H.thumb),
+  ];
+  const way = sign < 0 ? -1 : 1;
+  return pills.map((poly) => {
+    const w = poly.map(toWorld);
+    if (Math.sign(shoelace(w)) !== way) w.reverse();
+    return `M${w.map(p => `${n(p.x)},${n(p.y)}`).join('L')}Z`;
+  }).join('');
+}
+
+/**
+ * Everything one arm draws, as one path: the noodle swelling into the palm, then
+ * the hand at the wrist (armHandPath), turned to the frame's `hand` angle (the
+ * line from the hand to what it points at, on its own spring; the arm's end
+ * when there is none). `frame` is one side of createArmSim().frame(); `side` 0
+ * left, 1 right; `unitPx` the character's px per face unit (the line's width is
+ * in px). One path, every subpath the same way round. '' when there is nothing
+ * to draw.
+ */
+export function armDrawPath(frame, side, { unitPx = MASCOT_ARM.unitPx } = {}) {
+  if (!frame || !Array.isArray(frame.points) || !(frame.e > 0)) return '';
+  const grown = frame.e / Math.max(0.05, Number(frame.span) > 0 ? Number(frame.span) : 1);
+  const hs = handScale(grown);
+  const sq = clamp(Number(frame.squash) || 0, -0.3, 0.3);
+  const pt = clamp01(frame.point == null ? 1 : Number(frame.point) || 0);
+  const o = armOutline(frame.points, clamp01(grown * 1.7), MASCOT_ARM.hand.palm * hs * (1 + sq), unitPx);
+  if (!o) return '';
+  const wrist = frame.points[frame.points.length - 1];
+  const angle = Number.isFinite(frame.hand) ? frame.hand : o.tangent;
+  const sign = Math.sign(shoelace([...o.left, ...o.right.slice().reverse()])) || -1;
+  return outlinePath(o) + armHandPath(wrist, angle, side, { scale: hs, point: pt, squash: sq, sign });
+}
+
+/**
+ * The eyes of `frame` kept to MASCOT_ARM.gaze, `amount` (0-1) of the way (an arm
+ * on its way out or home eases them in and out): while an arm is out an eye
+ * never travels to it. A new frame; `frame` is left as it is.
+ */
+export function armGaze(frame, amount = 1) {
+  const g = clamp01(Number(amount) || 0);
+  if (!frame?.eyes || g <= 0) return frame;
+  const G = MASCOT_ARM.gaze;
+  const f = cloneFrame(frame);
+  for (const e of f.eyes) {
+    e.dx += (clamp(e.dx, -G.x, G.x) - e.dx) * g;
+    e.dy += (clamp(e.dy, -G.y, G.y) - e.dy) * g;
+    e.sx += (Math.min(e.sx, G.sx) - e.sx) * g;
+    e.sy += (Math.min(e.sy, G.sy) - e.sy) * g;
+  }
+  return f;
+}
+
+/**
+ * The arms' motion, with no DOM: two arms of damped springs. aim(side, angle,
+ * { target, reach }) grows that arm `reach` (0-1) of the way and turns its hand
+ * toward `target` (face units; the other one goes home, or flicks once for
+ * balance), release() sends both home, poke() pokes twice, nudge(vx, vy) is a
+ * jolt of the body (units/s: the points keep part of their speed, so they lag),
+ * step(dt) advances, finish() jumps to the end (reduced motion: no overshoot,
+ * no wiggle), frame() says what to draw.
+ */
+export function createArmSim() {
+  // Per arm: the reach e (0 home, 1 grown) and its speed, the three spring points, the target its index
+  // aims at, and the hand's own numbers: pt (0 a relaxed hand, 1 the index out), sq (the poke's squash,
+  // a small spring) and ha (its angle, on a spring that follows the line to the target).
+  // `span` is the reach the arm was last sent to (1 for the flick): the hand and the index grow with e / span.
+  const arms = [0, 1].map(side => ({
+    side, e: 0, ve: 0, goal: 0, span: 1, angle: 0, pts: null, held: false, flickUntil: -1, pokeAt: -1,
+    pt: 0, sq: 0, vsq: 0, target: null, ha: 0, vha: 0, sh: null,
+  }));
+  const grownOf = a => a.e / Math.max(0.05, a.span);
+  // The face's prop (PROP_BOX's name): an arm whose shoulder it covers roots under it (armShoulder). The
+  // root `sh` is a spring toward that place, so a prop arriving while the arm is out slides it, never pops.
+  let prop = null;
+  const rootGoal = a => armShoulder(a.side, prop);
+  const rootOf = (a) => {
+    if (!a.sh) { const g = rootGoal(a); a.sh = { x: g.x, y: g.y, vx: 0, vy: 0 }; }
+    return a.sh;
+  };
+  /** The two pokes' push (0-1) `t` s after they began: two quick bumps, then nothing. */
+  const pokeBump = (t) => {
+    const bump = (x) => (x > 0 && x < ARM_POKE.dur ? Math.sin(Math.PI * x / ARM_POKE.dur) : 0);
+    return bump(t) + bump(t - ARM_POKE.gap);
+  };
+  let time = 0;
+  const restOf = (a, wiggle) => armRest(a.side, a.angle, a.e, wiggle ? time : null, rootOf(a));
+  const ensurePts = (a) => {
+    if (a.pts) return;
+    a.sh = null; // a fresh sprout roots where the prop lets it, at once
+    a.pts = restOf(a, false).map(p => ({ x: p.x, y: p.y, vx: 0, vy: 0 }));
+    a.ha = Math.atan2(Math.sin(a.angle), (a.side ? 1 : -1) * Math.cos(a.angle)); // the hand comes out along the arm
+    a.vha = 0;
+  };
+  const moving = (a) => !!a.pts && (a.held || a.e > 1e-3 || Math.abs(a.ve) > 1e-3 || Math.abs(a.sq) > 0.002 || Math.abs(a.vsq) > 0.02
+    || Math.abs(a.vha) > 0.02 || (!!a.sh && Math.abs(a.sh.vx) + Math.abs(a.sh.vy) > 0.05)
+    || a.pts.some(p => Math.abs(p.vx) + Math.abs(p.vy) > 0.05));
+
+  /** Where the hand should point: the arm's own end, turned toward the target as far as the index is out. */
+  function handGoal(a) {
+    const hand = a.pts[2];
+    const prev = a.pts[1];
+    const along = Math.hypot(hand.x - prev.x, hand.y - prev.y) > 0.3
+      ? Math.atan2(hand.y - prev.y, hand.x - prev.x)
+      : Math.atan2(Math.sin(a.angle), (a.side ? 1 : -1) * Math.cos(a.angle));
+    if (!a.target) return along;
+    const dx = a.target.x - hand.x;
+    const dy = a.target.y - hand.y;
+    if (Math.hypot(dx, dy) < 4) return a.ha;
+    return along + wrapAngle(Math.atan2(dy, dx) - along) * smoothstep(a.pt);
+  }
+
+  /**
+   * Keep every point inside the shoulder's free wedge (ARM_BOUND, ARM_KINK), no
+   * nearer the shoulder than ARM_HOLD of its rest, and clear of the face
+   * (ARM_KEEP_OUT, by the line's or the palm's radius): a point stopped there
+   * loses the speed that took it out, a little of it coming back as a bounce.
+   */
+  function bound(a, rest) {
+    const s = rootOf(a);
+    const out = a.side ? 1 : -1;
+    const hs = handScale(grownOf(a));
+    let prev = null;
+    a.pts.forEach((p, i) => {
+      const stop = (nx, ny) => { // the speed into (nx, ny)'s opposite is spent
+        const vn = p.vx * nx + p.vy * ny;
+        if (vn < 0) { p.vx -= 1.2 * vn * nx; p.vy -= 1.2 * vn * ny; }
+      };
+      const dx = (p.x - s.x) * out;
+      const dy = p.y - s.y;
+      const r = Math.hypot(dx, dy);
+      const hold = ARM_HOLD[i] * Math.hypot(rest[i].x - s.x, rest[i].y - s.y);
+      if (r >= 0.5) {
+        const th = Math.atan2(dy, dx);
+        let c = th;
+        if (c < ARM_BOUND[0] || c > ARM_BOUND[1]) {
+          c = Math.abs(wrapAngle(th - ARM_BOUND[0])) <= Math.abs(wrapAngle(th - ARM_BOUND[1])) ? ARM_BOUND[0] : ARM_BOUND[1];
+        }
+        if (prev != null && Math.abs(c - prev) > ARM_KINK) c = prev + Math.sign(c - prev) * ARM_KINK;
+        const rr = Math.max(r, hold);
+        if (c !== th || rr !== r) {
+          p.x = s.x + out * rr * Math.cos(c);
+          p.y = s.y + rr * Math.sin(c);
+          // Keep the speed along the radius (outward only, when it was folded in); the sideways part is spent.
+          const ux = out * Math.cos(c);
+          const uy = Math.sin(c);
+          let vr = p.vx * ux + p.vy * uy;
+          if (rr !== r && vr < 0) vr = 0;
+          const vtx = p.vx - (p.vx * ux + p.vy * uy) * ux;
+          const vty = p.vy - (p.vx * ux + p.vy * uy) * uy;
+          const keep = c !== th ? -0.2 : 1;
+          p.vx = vr * ux + keep * vtx;
+          p.vy = vr * uy + keep * vty;
+        }
+        prev = c;
+      } else prev = null;
+      // Clear of the eyes and the smile: by the line's half-width, by the palm for the hand.
+      const need = ARM_CLEAR + (i === 2 ? MASCOT_ARM.hand.palm * hs * 1.16 : MASCOT_ARM.units.max / 2);
+      for (const b of ARM_KEEP_OUT) {
+        const g = boxDistance(p.x, p.y, b);
+        if (g.d < need) { p.x += g.nx * (need - g.d); p.y += g.ny * (need - g.d); stop(g.nx, g.ny); }
+      }
+    });
+  }
+
+  /**
+   * The hand's angle, kept clear of the face: as asked when its palm, index and
+   * thumb keep ARM_CLEAR from ARM_KEEP_OUT (always, for anything beside the
+   * face); otherwise turned the least toward the arm's own end until they do.
+   */
+  function clearAngle(a, angle) {
+    const wrist = a.pts[2];
+    const hs = handScale(grownOf(a));
+    if (hs <= 0.01 || handClear(wrist, angle, a.side, hs, a.pt)) return angle;
+    const prev = a.pts[1];
+    const along = Math.atan2(wrist.y - prev.y, wrist.x - prev.x);
+    const toward = Math.sign(wrapAngle(along - angle)) || 1;
+    for (let k = 1; k <= 24; k += 1) {
+      for (const way of [toward, -toward]) {
+        const c = angle + way * k * 0.07;
+        if (handClear(wrist, c, a.side, hs, a.pt)) return wrapAngle(c);
+      }
+    }
+    return along;
+  }
+
+  function stepArm(a, h) {
+    if (a.flickUntil >= 0 && time >= a.flickUntil) { a.goal = 0; a.flickUntil = -1; }
+    let push = 0;
+    let squash = 0;
+    if (a.pokeAt >= 0) {
+      const since = time - a.pokeAt;
+      if (since > ARM_POKE.gap + ARM_POKE.dur) a.pokeAt = -1;
+      else {
+        push = pokeBump(since);
+        squash = HAND_SQUASH * push; // the hand lands on the target at the bump's peak
+      }
+    }
+    const [w, z] = a.held || a.flickUntil >= 0 ? ARM_GROW : ARM_SHRINK;
+    a.ve += (w * w * (a.goal - a.e) - 2 * z * w * a.ve) * h;
+    a.e += a.ve * h;
+    if (!a.held && a.e < 0) { a.e = 0; a.ve = 0; } // home: into the body, never out the other side
+    // The hand: the index unfurls as a held arm grows (and folds once it is let go: the flick arm and
+    // a retreating one show a relaxed hand); a poke squashes it, and the squash rebounds and settles.
+    a.pt += ((a.held ? clamp01((grownOf(a) - 0.25) / 0.45) : 0) - a.pt) * (1 - Math.exp(-HAND_POINT_RATE * h));
+    const [sw, sz] = HAND_SQUASH_SPRING;
+    a.vsq += (sw * sw * (squash - a.sq) - 2 * sz * sw * a.vsq) * h;
+    a.sq += a.vsq * h;
+    // The root glides to where the face's prop lets it be (armShoulder); it never jumps.
+    const sh = rootOf(a);
+    const g = rootGoal(a);
+    const [rw, rz] = ARM_ROOT_SPRING;
+    sh.vx += (rw * rw * (g.x - sh.x) - 2 * rz * rw * sh.vx) * h;
+    sh.vy += (rw * rw * (g.y - sh.y) - 2 * rz * rw * sh.vy) * h;
+    sh.x += sh.vx * h;
+    sh.y += sh.vy * h;
+    if (Math.abs(sh.x - g.x) + Math.abs(sh.y - g.y) < 0.05 && Math.abs(sh.vx) + Math.abs(sh.vy) < 0.5) { sh.x = g.x; sh.y = g.y; sh.vx = 0; sh.vy = 0; }
+    const rest = restOf(a, a.held);
+    if (push > 0) {
+      // A poke goes along the line the index aims down, the hand most.
+      const ux = Math.cos(a.ha);
+      const uy = Math.sin(a.ha);
+      rest.forEach((p, i) => { p.x += ux * ARM_POKE.dist * ARM_POKE.share[i] * push; p.y += uy * ARM_POKE.dist * ARM_POKE.share[i] * push; });
+    }
+    a.pts.forEach((p, i) => {
+      const [k, zeta] = ARM_SPRINGS[i];
+      const c = 2 * zeta * Math.sqrt(k);
+      p.vx += (k * (rest[i].x - p.x) - c * p.vx) * h;
+      p.vy += (k * (rest[i].y - p.y) - c * p.vy) * h;
+      p.x += p.vx * h;
+      p.y += p.vy * h;
+    });
+    bound(a, rest);
+    const [tw, tz] = HAND_TURN;
+    a.vha += (tw * tw * wrapAngle(clearAngle(a, handGoal(a)) - a.ha) - 2 * tz * tw * a.vha) * h;
+    const turned = wrapAngle(a.ha + a.vha * h);
+    a.ha = clearAngle(a, turned);
+    if (a.ha !== turned) a.vha *= 0.3; // turned back off the face: the swing is spent
+    if (!a.held && a.flickUntil < 0 && a.e < 1e-3 && Math.abs(a.ve) < 1e-3 && a.pts.every(p => Math.abs(p.vx) + Math.abs(p.vy) < 0.05)) {
+      a.e = 0;
+      a.ve = 0;
+      a.pt = 0;
+      a.sq = 0;
+      a.vsq = 0;
+      a.vha = 0;
+      a.pts = null; // home and still: nothing to draw
+      a.sh = null;
+    }
+  }
+
+  return {
+    /** The prop the face shows (PROP_BOX's name, or null): an arm whose shoulder it covers roots under it (armShoulder). */
+    prop(name) {
+      prop = name && PROP_BOX[name] ? name : null;
+      return prop;
+    },
+    /** Where the arm on `side` roots for the prop shown (face units; the glide there is the sim's own). */
+    root(side) { return rootGoal(arms[side ? 1 : 0]); },
+    aim(side, angle, { target = null, reach = 1 } = {}) {
+      const a = arms[side ? 1 : 0];
+      const other = arms[side ? 0 : 1];
+      const sprouting = !a.held && a.e < 0.15;
+      a.angle = clampAim(angle);
+      ensurePts(a);
+      a.held = true;
+      a.goal = clamp(Number.isFinite(Number(reach)) ? Number(reach) : 1, ARM_MIN_REACH, 1);
+      a.span = a.goal;
+      a.target = target && Number.isFinite(Number(target.x)) && Number.isFinite(Number(target.y)) ? { x: Number(target.x), y: Number(target.y) } : null;
+      a.flickUntil = -1;
+      if (other.held) { other.held = false; other.goal = 0; other.pokeAt = -1; } // the target changed side
+      else if (sprouting && other.e < 0.05 && other.flickUntil < 0) {
+        other.angle = ARM_FLICK.angle;
+        other.target = null;
+        ensurePts(other);
+        other.goal = ARM_FLICK.e;
+        other.span = 1;
+        other.flickUntil = time + ARM_FLICK.hold;
+      }
+    },
+    release() {
+      for (const a of arms) { a.held = false; a.goal = 0; a.pokeAt = -1; if (a.flickUntil >= 0) a.flickUntil = time; }
+    },
+    poke() {
+      const a = arms.find(x => x.held);
+      if (a) a.pokeAt = time;
+    },
+    nudge(vx, vy) {
+      const dx = Number.isFinite(Number(vx)) ? Number(vx) : 0;
+      const dy = Number.isFinite(Number(vy)) ? Number(vy) : 0;
+      for (const a of arms) {
+        if (!a.pts) continue;
+        a.pts.forEach((p, i) => {
+          p.vx -= dx * ARM_NUDGE[i];
+          p.vy -= dy * ARM_NUDGE[i];
+          const sp = Math.hypot(p.vx, p.vy);
+          if (sp > ARM_MAX_SPEED) { p.vx *= ARM_MAX_SPEED / sp; p.vy *= ARM_MAX_SPEED / sp; }
+        });
+      }
+    },
+    step(dt) {
+      let left = clamp(Number(dt) || 0, 0, 0.064);
+      while (left > 1e-6) {
+        const h = Math.min(1 / 240, left);
+        left -= h;
+        time += h;
+        for (const a of arms) if (a.pts) stepArm(a, h);
+      }
+    },
+    /** The end of the motion at once: a held arm grown and still, its hand on the target, everything else home. */
+    finish() {
+      for (const a of arms) {
+        a.pokeAt = -1;
+        a.flickUntil = -1;
+        a.ve = 0;
+        a.e = a.held ? a.goal : 0;
+        a.pt = a.held ? 1 : 0;
+        a.sq = 0;
+        a.vsq = 0;
+        a.vha = 0;
+        a.sh = a.held ? { ...rootGoal(a), vx: 0, vy: 0 } : null;
+        a.pts = a.held ? restOf(a, false).map(p => ({ x: p.x, y: p.y, vx: 0, vy: 0 })) : null;
+        if (a.pts) a.ha = clearAngle(a, handGoal(a));
+      }
+    },
+    /** Something still moves (or is held out). */
+    awake: () => arms.some(moving),
+    /** Only the held wiggle is left: no growth, poke, flick, squash, turn or jolt in flight. */
+    settled() {
+      return arms.every((a) => {
+        if (!a.pts) return true;
+        if (!a.held || a.pokeAt >= 0 || a.flickUntil >= 0 || Math.abs(a.ve) > 0.03 || Math.abs(a.e - a.goal) > 0.004) return false;
+        if (Math.abs(a.sq) > 0.004 || Math.abs(a.vsq) > 0.05 || Math.abs(a.pt - 1) > 0.01 || Math.abs(a.vha) > 1) return false; // the wiggle turns it slowly
+        const g = rootGoal(a);
+        if (!a.sh || Math.abs(a.sh.x - g.x) + Math.abs(a.sh.y - g.y) > 0.3) return false; // the root still slides under a prop
+        const rest = restOf(a, true);
+        return a.pts.every((p, i) => Math.abs(p.x - rest[i].x) + Math.abs(p.y - rest[i].y) < 1.6); // the springs trail the wiggle a little
+      });
+    },
+    /** How far out the arms are (0 both home, 1 one grown): the eyes keep to MASCOT_ARM.gaze this much. */
+    presence() {
+      let e = 0;
+      for (const a of arms) if (a.pts) e = Math.max(e, a.held ? 1 : a.e);
+      return clamp01(e * 2.5);
+    },
+    /**
+     * The face-unit box the held arm takes once it has grown (its rest at full
+     * stretch, the hand turned to its target, the fingertip), or null: what a
+     * host keeps its own drawing out of.
+     */
+    extent() {
+      const a = arms.find(x => x.held);
+      if (!a) return null;
+      const s = rootGoal(a);
+      const pts = [s, ...armRest(a.side, a.angle, a.goal, null, s)];
+      const hand = pts[3];
+      const dir = a.target ? Math.atan2(a.target.y - hand.y, a.target.x - hand.x) : Math.atan2(hand.y - pts[2].y, hand.x - pts[2].x);
+      const tip = { x: hand.x + Math.cos(dir) * HAND_TIP, y: hand.y + Math.sin(dir) * HAND_TIP };
+      const r = MASCOT_ARM.hand.palm * 1.1;
+      const xs = [...pts.map(p => p.x), tip.x];
+      const ys = [...pts.map(p => p.y), tip.y];
+      return { left: Math.min(...xs) - r, top: Math.min(...ys) - r, right: Math.max(...xs) + r, bottom: Math.max(...ys) + r };
+    },
+    /** The side held out (0 left, 1 right), or -1. */
+    get side() { const a = arms.find(x => x.held); return a ? a.side : -1; },
+    /**
+     * Per side: null (nothing to draw) or { e, span, points: [shoulder, a third, two thirds, hand], aim,
+     * point, squash, hand, target }: `span` the reach it was sent to (the hand grows with e / span), `aim` the angle the arm was asked for (0 straight out, + down),
+     * `point` 0-1 how far the hand points (1 the index out, 0 a relaxed hand), `squash` the poke's
+     * squash, `hand` the hand's angle (radians, screen coordinates), `target` the point (face units)
+     * its index aims at, or null.
+     */
+    frame() {
+      return arms.map((a) => {
+        if (!a.pts || a.e <= 0.004) return null;
+        const sh = rootOf(a);
+        return {
+          e: a.e,
+          span: a.span,
+          points: [{ x: sh.x, y: sh.y }, ...a.pts.map(p => ({ x: p.x, y: p.y }))],
+          aim: a.angle,
+          point: a.pt,
+          squash: a.sq,
+          hand: a.ha,
+          target: a.target ? { ...a.target } : null,
+        };
+      });
+    },
+  };
+}
+
 // ── Painter: frame → attributes, each written only when it changed ──
 
 let uidSeq = 0;
@@ -1129,6 +1961,7 @@ function unregister(rig) {
 
 const BLEND_MS = 160;
 const AIM_K = 140; // px: the cursor distance at which the eyes travel half way
+const ARM_GAP_PX = 6; // px: how far short of what it points at a fingertip stops, unless the host says
 const GLANCES = [[-0.8, -0.35], [0.85, -0.25], [0.45, 0.6], [-0.5, 0.55], [0.1, -0.7]];
 const TRACK_TAU = 200; // the v1 lerp of .08 per 60 Hz frame
 const SETTLE_UNITS = 0.25; // gaze closer than this (viewBox units, a tenth of a pixel at 120 px) has arrived
@@ -1150,7 +1983,7 @@ export function createMascot(container, options) {
   }
   const {
     width = 128, height = 64, rangeX, rangeY, className = 'synabun-mascot',
-    pose: firstPose = 'idle', poseOptions: firstOptions, active: startActive,
+    pose: firstPose = 'idle', poseOptions: firstOptions, active: startActive, arms: armsOption,
   } = opts || {};
   const markup = mascotSvg({ width, height, className });
   let svg;
@@ -1197,6 +2030,9 @@ export function createMascot(container, options) {
   let stopPointer = null;
   let stopKey = null;
   let wakeTimer = 0;
+  // Arms only on a character big enough to read them (the empty state's, 120 px): never a mini, a cameo or a still.
+  const armsAllowed = armsOption != null ? !!armsOption : Number(width) >= 96;
+  let arms = null; // { sim, parts, target, unitPx, box, frame, stopWatch } once point() was first called
 
   const def = () => POSES[pose.name];
   const animating = () => !destroyed && active && visible && !isReducedMotion();
@@ -1267,12 +2103,15 @@ export function createMascot(container, options) {
   function nextRate() {
     if (!animating()) return 0;
     if (blend || blinkStart >= 0 || reactions.length || aim || easing() || miniPopping()) return 60;
+    const armRate = arms?.sim.awake() ? (arms.sim.settled() ? 30 : 60) : 0;
+    if (armRate === 60) return 60;
     const d = def();
     const t = poseTime();
-    if (d.motion === 'loop') return 30;
-    if (d.motion === 'blink') return d.idleFor(t) > 0 ? 0 : 30;
-    if (d.motion === 'once') return t < d.settle ? 60 : 0;
-    return 0;
+    let rate = 0;
+    if (d.motion === 'loop') rate = 30;
+    else if (d.motion === 'blink') rate = d.idleFor(t) > 0 ? 0 : 30;
+    else if (d.motion === 'once') rate = t < d.settle ? 60 : 0;
+    return Math.max(rate, armRate);
   }
 
   function clearWake() {
@@ -1407,7 +2246,15 @@ export function createMascot(container, options) {
     clearTempClasses();
     look = def().look ? { ...hostLook } : { x: 0, y: 0 };
     lastFrame = stillFrameNow();
-    painter.paint(lastFrame);
+    if (arms) { arms.sim.prop(lastFrame?.prop?.name || null); arms.sim.finish(); }
+    paintFace(lastFrame);
+    if (arms) paintArms();
+  }
+
+  /** Paint a face frame; while an arm is out its eyes keep to MASCOT_ARM.gaze (never toward an arm). */
+  function paintFace(f) {
+    if (arms) arms.sim.prop(f?.prop?.name || null); // an arm whose shoulder this prop covers roots under it
+    painter.paint(arms ? armGaze(f, arms.sim.presence()) : f);
   }
 
   function compose() {
@@ -1478,7 +2325,9 @@ export function createMascot(container, options) {
     handleDue();
     if (aim) { aimAt(aim); aim = null; }
     easeLook(dt);
-    painter.paint(compose());
+    if (arms) arms.sim.step(dt / 1000);
+    paintFace(compose());
+    if (arms) paintArms();
     const rate = nextRate();
     setRate(rate);
     if (!rate) armWake();
@@ -1509,7 +2358,7 @@ export function createMascot(container, options) {
     const rate = nextRate();
     setRate(rate);
     if (!rate) {
-      painter.paint(compose());
+      paintFace(compose());
       armWake();
     } else clearWake();
   }
@@ -1538,6 +2387,162 @@ export function createMascot(container, options) {
 
   function onKeyDown() {
     if (!destroyed && pose.name === 'sleep') setPose('idle');
+  }
+
+  // ── Arms (rig.point): measured once per target, stepped on this rig's own frames ──
+
+  function ensureArms() {
+    if (arms) return arms;
+    const face = svg.querySelector('.syna-face');
+    if (!face) return null;
+    face.insertAdjacentHTML('afterbegin', '<g class="syna-arms">'
+      + ['left', 'right'].map(side => `<g class="syna-arm" data-side="${side}" display="none"><path class="syna-arm-noodle" fill="currentColor" fill-rule="nonzero"/></g>`).join('')
+      + '</g>');
+    const parts = Array.from(face.firstElementChild.children).map(g => ({ g, noodle: g.firstElementChild, shown: false, d: '', reach: '' }));
+    // box / rect: this SVG's and the target's client rects as last read (shift() moves the box without a read).
+    arms = { sim: createArmSim(), parts, target: null, gap: ARM_GAP_PX, unitPx: 0, box: null, rect: null, frame: 0, stopWatch: null };
+    arms.sim.prop((lastFrame || stillFrameNow())?.prop?.name || null);
+    return arms;
+  }
+
+  /** Draw what the sim holds: one path per arm (noodle and hand), written only when it changed; `data-reach` is the arm's e. */
+  function paintArms() {
+    if (!arms) return;
+    const frame = arms.sim.frame();
+    const unitPx = arms.unitPx || MASCOT_ARM.unitPx;
+    frame.forEach((f, side) => {
+      const part = arms.parts[side];
+      const d = f ? armDrawPath(f, side, { unitPx }) : '';
+      if (!d) {
+        if (part.shown) { part.g.setAttribute('display', 'none'); part.shown = false; }
+        return;
+      }
+      if (!part.shown) { part.g.removeAttribute('display'); part.shown = true; }
+      if (d !== part.d) { part.d = d; part.noodle.setAttribute('d', d); }
+      const reach = f.e.toFixed(3);
+      if (reach !== part.reach) { part.reach = reach; part.g.setAttribute('data-reach', reach); }
+    });
+    if (!arms.sim.awake() && !arms.target) stopArmWatch();
+  }
+
+  /** A target's client rect: an element (read now), a rect, or a point. */
+  function targetBox(target) {
+    if (!target) return null;
+    if (typeof target.getBoundingClientRect === 'function') {
+      if (target.isConnected === false) return null;
+      const r = target.getBoundingClientRect();
+      return r.width || r.height ? r : null;
+    }
+    if (Number.isFinite(target.left) && Number.isFinite(target.top)) {
+      const w = Number(target.width) || Math.max(0, (Number(target.right) || target.left) - target.left);
+      const h = Number(target.height) || Math.max(0, (Number(target.bottom) || target.top) - target.top);
+      return { left: target.left, top: target.top, right: target.left + w, bottom: target.top + h, width: w, height: h };
+    }
+    if (Number.isFinite(target.x) && Number.isFinite(target.y)) return { left: target.x, top: target.y, right: target.x, bottom: target.y, width: 0, height: 0 };
+    return null;
+  }
+
+  /**
+   * Two layout reads (this SVG and the target), never per frame: then aim
+   * (aimArms) from what was read.
+   */
+  function measureArms() {
+    if (!arms?.target || destroyed) return;
+    const box = svg.getBoundingClientRect();
+    const r = targetBox(arms.target);
+    if (!box.width || !r) return;
+    arms.box = { left: box.left, top: box.top, width: box.width, height: box.height };
+    arms.rect = { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+    aimArms();
+  }
+
+  /**
+   * From the last rects, no layout read: where the target is in face units, the
+   * arm on its side aims there (its index at the target's middle, its fingertip
+   * stopping `gap` px short of it) and the eyes look the same way.
+   */
+  function aimArms() {
+    const box = arms?.box;
+    const r = arms?.rect;
+    if (!box || !r) return;
+    const k = box.width / 280; // CSS px per face unit: the viewBox is 280 wide, the SVG keeps its ratio
+    arms.unitPx = k;
+    const rect = { left: (r.left - box.left) / k, top: (r.top - box.top) / k, right: (r.right - box.left) / k, bottom: (r.bottom - box.top) / k };
+    const side = armSide({ x: (rect.left + rect.right) / 2 });
+    const aimAt = armTargeting(side, rect, arms.gap / k, arms.sim.root(side));
+    if (!aimAt) return;
+    arms.sim.aim(side, aimAt.angle, { target: aimAt.focus, reach: aimAt.reach });
+    // The eyes go the same way, through the rig's own gaze.
+    const vx = (r.left + r.right) / 2 - (box.left + box.width / 2);
+    const vy = (r.top + r.bottom) / 2 - (box.top + box.height / 2);
+    const dist = Math.hypot(vx, vy);
+    if (dist >= 1) {
+      const m = (dist / (dist + AIM_K)) * 1.25;
+      lookAt((vx / dist) * m, (vy / dist) * m);
+    }
+  }
+
+  /** While pointing, a resize or a scroll measures again on the next frame (coalesced). */
+  function watchArms() {
+    if (!arms || arms.stopWatch || typeof window === 'undefined') return;
+    const again = () => {
+      if (!arms || arms.frame) return;
+      arms.frame = requestAnimationFrame(() => { if (!arms) return; arms.frame = 0; measureArms(); wakeArms(); });
+    };
+    window.addEventListener('resize', again, { passive: true });
+    document.addEventListener('scroll', again, { passive: true, capture: true });
+    arms.stopWatch = () => {
+      window.removeEventListener('resize', again);
+      document.removeEventListener('scroll', again, true);
+    };
+  }
+
+  function stopArmWatch() {
+    if (!arms?.stopWatch) return;
+    arms.stopWatch();
+    arms.stopWatch = null;
+    if (arms.frame) { cancelAnimationFrame(arms.frame); arms.frame = 0; }
+  }
+
+  function wakeArms() {
+    if (destroyed || !arms) return;
+    if (!animating()) {
+      const f = lastFrame || stillFrameNow();
+      arms.sim.prop(f?.prop?.name || null);
+      arms.sim.finish();
+      paintArms();
+      paintFace(f);
+      return;
+    }
+    syncClock();
+    ensureRate(arms.sim.settled() ? 30 : 60);
+    requestFrames(BLEND_MS);
+  }
+
+  /**
+   * Point at `target` (an element, a client rect or a client point) with the
+   * arm on its side; null puts the arms away. `gap` (CSS px, default
+   * ARM_GAP_PX) is how far short of the target the fingertip stops (a host that
+   * rings the target keeps it outside the ring). Pointing again (the same target
+   * or a new one) measures again and carries on from the springs' state.
+   */
+  function point(target, { poke: andPoke = false, gap } = {}) {
+    if (destroyed || !armsAllowed) return api;
+    if (target == null) {
+      if (!arms) return api;
+      arms.target = null;
+      arms.sim.release();
+      wakeArms();
+      return api;
+    }
+    if (!ensureArms()) return api;
+    if (gap != null || target !== arms.target) arms.gap = Number(gap) >= 0 ? Number(gap) : ARM_GAP_PX;
+    arms.target = target;
+    measureArms();
+    watchArms();
+    if (andPoke) arms.sim.poke();
+    wakeArms();
+    return api;
   }
 
   // ── Public API ──
@@ -1625,6 +2630,7 @@ export function createMascot(container, options) {
     stopKey?.();
     stopKey = null;
     unobserve(svg);
+    stopArmWatch();
     svg.removeEventListener('animationend', onAnimationEnd);
     clearTempClasses();
     reactions.length = 0;
@@ -1656,6 +2662,58 @@ export function createMascot(container, options) {
     setPose,
     react,
     setActive,
+    point,
+    /** Two quick pokes toward what the arm points at (the beat landed). */
+    poke() {
+      if (destroyed || !arms?.target) return api;
+      arms.sim.poke();
+      wakeArms();
+      return api;
+    },
+    /**
+     * The body was jolted: its velocity changed by (vx, vy) CSS px/s (a host
+     * moving the character's box: + on take-off, − on landing). The arms keep
+     * part of their old speed, so they trail and then wobble back.
+     */
+    nudge(vx, vy) {
+      if (destroyed || !arms?.unitPx || !animating()) return api;
+      arms.sim.nudge((Number(vx) || 0) / arms.unitPx, (Number(vy) || 0) / arms.unitPx);
+      wakeArms();
+      return api;
+    },
+    /**
+     * The host moved the character's box by (dx, dy) CSS px since the last
+     * measure (its own transform: no layout read here): the hand keeps
+     * pointing at the same place on the page.
+     */
+    shift(dx, dy) {
+      if (destroyed || !arms?.target || !arms.box) return api;
+      const x = Number(dx) || 0;
+      const y = Number(dy) || 0;
+      if (!x && !y) return api;
+      arms.box.left += x;
+      arms.box.top += y;
+      aimArms();
+      wakeArms();
+      return api;
+    },
+    /** The client box the pointing arm takes once grown (from the last measure: no layout read), or null. */
+    armExtent() {
+      if (destroyed || !arms?.target || !arms.box) return null;
+      const e = arms.sim.extent();
+      if (!e) return null;
+      const k = arms.box.width / 280;
+      return { left: arms.box.left + e.left * k, top: arms.box.top + e.top * k, right: arms.box.left + e.right * k, bottom: arms.box.top + e.bottom * k };
+    },
+    /** Read the rects again (the host's move has landed, its scale settled) and aim from them. */
+    remeasure() {
+      if (destroyed || !arms?.target) return api;
+      measureArms();
+      wakeArms();
+      return api;
+    },
+    /** What the arms point at (null when they are away). */
+    get pointing() { return arms?.target || null; },
     /** The current pose name. */
     get pose() { return pose.name; },
     /** The frame rate this rig asks of the ticker right now (0 = still). */

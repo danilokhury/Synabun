@@ -58,7 +58,8 @@ export function drawBackground(ctx, time, w, h) {
     const maxDim = Math.max(w, h);
     _bgGrad = ctx.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, maxDim * 0.7);
     _bgGrad.addColorStop(0, '#0e1218');
-    _bgGrad.addColorStop(1, '#070709');
+    // The app frame's interior (styles.css --frame-surface): the card's edge reads as one surface with the 3D map's
+    _bgGrad.addColorStop(1, '#07080b');
     _bgGradW = w;
     _bgGradH = h;
   }

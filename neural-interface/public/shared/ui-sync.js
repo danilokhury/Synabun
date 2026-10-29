@@ -1,3 +1,4 @@
+import { updateCachedToolDefault, invalidateToolCatalog } from './agent-runtime-options.js';
 // ═══════════════════════════════════════════
 // SynaBun Neural Interface — Real-time Sync
 // ═══════════════════════════════════════════
@@ -24,7 +25,7 @@ function clearOpenCodeHistoryClientState(message) {
     'opencode-v2-windows',
     'synabun-ocp-windows',
     'synabun-ocp-session-snapshots',
-    'synabun-opencode-session-mcp-profiles',
+    'synabun-opencode-session-tools',
   ]);
   const prefixes = [
     'opencode-v2-tabs-',
@@ -157,10 +158,12 @@ const SYNC_HANDLERS = {
   // Browser auto-open (triggered by menu/keybind manual open)
   'browser:open': (msg) => emit('browser:open', msg),
 
-  // MCP profile sync
-  'mcp:profile-changed': (msg) => {
-    emit('mcp:profile-changed', msg);
-    emit('sync:mcp:profile-changed', msg);
+  // Default tools sync
+  'mcp:servers-changed': (msg) => { invalidateToolCatalog(msg); emit('mcp:servers-changed', msg); },
+  'mcp:tools-default-changed': (msg) => {
+    updateCachedToolDefault(msg.tools);
+    emit('mcp:tools-default-changed', msg);
+    emit('sync:mcp:tools-default-changed', msg);
   },
 
   // Terminal link events
@@ -211,6 +214,10 @@ const SYNC_HANDLERS = {
   // The server says it is restarting, before it goes: every window shows the
   // restart, not only the one that asked for it (ui-loading.js).
   'server:restarting': (msg) => emit('server:restarting', msg),
+
+  // The notice after an automatic restart was dismissed in some window: every
+  // other one drops it too (ui-crash-notice.js).
+  'crash-notice:changed': (msg) => emit('sync:crash-notice:changed', msg),
 
   // Session indexing progress
   'indexing:started':          (msg) => emit('ws:message', msg),

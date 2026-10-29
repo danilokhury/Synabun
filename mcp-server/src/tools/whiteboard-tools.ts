@@ -1,7 +1,17 @@
 import { z } from 'zod/v3';
 import * as ni from '../services/neural-interface.js';
 import { text, image } from './response.js';
-import { SHAPE_TYPES, SECTION_TYPE_NAMES, ELEMENT_TYPES, DEFAULT_VIEWPORT, type WbElement, type WbViewport } from '../services/whiteboard-geometry.js';
+import {
+  SHAPE_TYPES,
+  SECTION_TYPE_NAMES,
+  ELEMENT_TYPES,
+  DEFAULT_VIEWPORT,
+  LIST_MAX_LEVEL,
+  hasNestedLevels,
+  normalizeListItems,
+  type WbElement,
+  type WbViewport,
+} from '../services/whiteboard-geometry.js';
 import {
   formatReadText,
   formatReadJson,
@@ -27,6 +37,29 @@ const coordModeSchema = z.enum(['px', 'pct']).optional().describe(
 );
 
 const COLOR_HELP = 'CSS color. Default rgba(255,255,255,0.85). Palette: #ef4444 red, #f97316 orange, #eab308 yellow, #22c55e green, #3b82f6 blue, #a855f7 purple, #ec4899 pink, #06b6d4 cyan';
+
+// One list bullet: a plain string (top level, as always) or { text, level } for a nested one.
+const listItemSchema = z.union([
+  z.string(),
+  z.object({
+    text: z.string(),
+    level: z.number().int().min(0).max(LIST_MAX_LEVEL).optional().describe(`Nesting level, 0 = top (default). At most one deeper than the item above (deeper is lowered); the first item is always 0. Max ${LIST_MAX_LEVEL}.`),
+  }),
+]);
+const LIST_ITEMS_HELP = `One entry per bullet: a string (top level) or {text, level} for a nested bullet (level 0-${LIST_MAX_LEVEL}; sub-items of the item above). Nested levels are indented with their own bullet / numbering style.`;
+
+/**
+ * List items as the store keeps them: `items` strings, plus `levels` only when something is nested. A caller
+ * that sends plain strings sends exactly what it always did (an older server never sees an object).
+ */
+function storedListFields(fields: Record<string, unknown>): Record<string, unknown> {
+  if (!Array.isArray(fields.items)) return fields;
+  const { items, levels } = normalizeListItems(fields.items);
+  const out: Record<string, unknown> = { ...fields, items };
+  if (hasNestedLevels(levels)) out.levels = levels;
+  else delete out.levels;
+  return out;
+}
 
 /** After a mutation, re-read the board (no image payloads) for scoped warnings. */
 async function warningsFor(ids: string[]): Promise<string[]> {
@@ -85,7 +118,7 @@ const addElementSchema = z.object({
   width: z.number().optional().describe('Width (shape/image/section). Ignored for text/list — they auto-size.'),
   height: z.number().optional().describe('Height (shape/image/section). Ignored for text/list.'),
   content: z.string().optional().describe('Text content (text). \\n = line break. Text does not wrap: long single lines get wide.'),
-  items: z.array(z.string()).optional().describe('List items (list). One string per bullet.'),
+  items: z.array(listItemSchema).optional().describe(`List items (list). ${LIST_ITEMS_HELP}`),
   ordered: z.boolean().optional().describe('Numbered list instead of bullets (list). Default false.'),
   fontSize: z.number().optional().describe('Font size px. Defaults: text 22, list 18.'),
   color: z.string().optional().describe(COLOR_HELP),
@@ -117,7 +150,8 @@ export const whiteboardAddDescription =
   + 'Guidance: keep content within ~70-80% of the usable width, centered, fit vertically, ~20px margins.';
 
 export async function handleWhiteboardAdd(args: { elements: Record<string, unknown>[]; coordMode?: string; layout?: string }) {
-  const result = await ni.addWhiteboardElements(args.elements, args.coordMode, args.layout);
+  const elements = args.elements.map(el => (el && el.type === 'list' ? storedListFields(el) : el));
+  const result = await ni.addWhiteboardElements(elements, args.coordMode, args.layout);
   if (result.error) {
     const errors = Array.isArray(result.errors) ? (result.errors as { index: number; type?: string; error: string }[]) : [];
     const detail = errors.length ? '\n' + errors.map(e => `  #${e.index + 1} ${e.type || '?'} — ${e.error}`).join('\n') : '';
@@ -141,7 +175,7 @@ const updateFieldsSchema = z.object({
   width: z.number().optional().describe('Ignored for text/list (auto-sized).'),
   height: z.number().optional().describe('Ignored for text/list (auto-sized).'),
   content: z.string().optional().describe('New text content (text). \\n = line break.'),
-  items: z.array(z.string()).optional().describe('New list items (list).'),
+  items: z.array(listItemSchema).optional().describe(`New list items (list); they replace all of them, levels included (plain strings make the list flat). ${LIST_ITEMS_HELP}`),
   ordered: z.boolean().optional(),
   fontSize: z.number().optional(),
   color: z.string().optional().describe(COLOR_HELP),
@@ -194,7 +228,7 @@ export async function handleWhiteboardUpdate(args: { id?: string; updates?: Reco
     return text('updates is empty — nothing to change.');
   }
 
-  const ops = items.map(it => ({ op: 'update', id: it.id, updates: it.updates, ...(it.parent ? { parent: it.parent } : {}) }));
+  const ops = items.map(it => ({ op: 'update', id: it.id, updates: storedListFields(it.updates || {}), ...(it.parent ? { parent: it.parent } : {}) }));
   const result = await ni.batchWhiteboardOps(ops, args.coordMode);
   if (result.error) {
     return text(`Failed to update: ${result.error}`);

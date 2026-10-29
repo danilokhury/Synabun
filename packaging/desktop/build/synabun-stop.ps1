@@ -17,8 +17,10 @@
 #   1. graceful  - ask every SynaBun server (a loopback port owned by one of our
 #                  processes) to shut down through POST /api/server/shutdown, so
 #                  SQLite and the server's children close cleanly and the
-#                  supervisor exits by itself (it exits on a clean stop; it never
-#                  respawns one we did not ask it to restart).
+#                  supervisor exits by itself (the shutdown leaves its stop
+#                  marker, and the supervisor never starts again a server that
+#                  was asked to stop; it starts again only one that crashed,
+#                  which the force step's loop below also catches).
 #   2. force     - end whatever still runs from the folder(s), whole process
 #                  trees (taskkill /T), in a loop that defeats a respawn and
 #                  catches a process that started while we were killing.

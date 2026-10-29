@@ -207,59 +207,6 @@ export async function forkSession(store, api, messageId) {
   return at.isCurrent() ? { ok: true, session: out.data } : { ok: true, session: out.data, moved: true };
 }
 
-export async function deleteMessage(store, api, messageId) {
-  const at = captureBinding(store);
-  if (!at.sessionId || !messageId) return { ok: false, error: 'No message.' };
-  if (store.getState().running) return { ok: false, error: 'Stop the running turn before you delete a message.' };
-  const out = await call(() => api.messageDelete({ ...targetOf(at), messageID: messageId }), 'Delete failed');
-  if (!at.isCurrent()) return MOVED;
-  if (!out.ok) return out;
-  // message.removed does this too; doing it here keeps the panel right if that event is lost.
-  store.removeMessage(messageId);
-  return { ok: true };
-}
-
-/**
- * Publish the transcript. `confirm()` must resolve true first, every time:
- * the caller asks in the panel (ocp-v2-confirm-logic.js), this function never
- * shares without it. `stopped` is the panel's createStoppedShares().
- */
-export async function shareSession(store, api, confirm, { stopped = null } = {}) {
-  // The session the question is about, captured before the question is asked:
-  // a confirm answered after the panel moved publishes nothing.
-  const at = captureBinding(store);
-  if (!at.sessionId) return { ok: false, error: 'No session.' };
-  let agreed = false;
-  try { agreed = (await confirm()) === true; } catch { agreed = false; }
-  if (!agreed) return { ok: false, cancelled: true };
-  if (!at.isCurrent()) return { ok: false, cancelled: true, moved: true };
-  const out = await call(() => api.sessionShare(targetOf(at)), 'Share failed');
-  // Shared again, for that session whatever is on screen by now: a link the
-  // panel had stopped before is a share once more.
-  if (out.ok) stopped?.resume(at.sessionId);
-  if (!at.isCurrent()) return MOVED;
-  if (!out.ok) return out;
-  applySession(store, at, out.data);
-  const url = out.data?.share?.url || '';
-  return url ? { ok: true, url } : { ok: false, error: 'OpenCode did not return a share link.' };
-}
-
-export async function unshareSession(store, api, { stopped = null } = {}) {
-  const at = captureBinding(store);
-  if (!at.sessionId) return { ok: false, error: 'No session.' };
-  const out = await call(() => api.sessionUnshare(targetOf(at)), 'Could not stop sharing');
-  // Sharing stopped, for that session whatever is on screen by now. OpenCode
-  // keeps the link in the session row and reports it again with every later
-  // read (createStoppedShares): the panel remembers which one it stopped.
-  if (out.ok) stopped?.stop(at.sessionId, at.sessionInfo?.share?.url || out.data?.share?.url || '');
-  if (!at.isCurrent()) return MOVED;
-  if (!out.ok) return out;
-  // The answer is read from that row too, so it can still carry the link.
-  if (out.data) applySession(store, at, { ...out.data, share: undefined });
-  else store.setSessionInfo({ share: undefined });
-  return { ok: true };
-}
-
 /**
  * The transcript of the session on screen as a download: `{ ok, filename,
  * json }`. Session id, metadata and file name are the ones captured before the
@@ -294,7 +241,7 @@ export async function loadSelectedSession(store, api, sessionId, info, apply) {
 }
 
 // ── Navigation ──────────────────────────────────────────────────────────────
-// "New session", a project change and a new worktree all end by binding the
+// "New session" and a project change both end by binding the
 // panel to a session they create. They own the panel only as long as nobody
 // navigated meanwhile: `nav` is the binding captured at the user's gesture.
 
@@ -353,27 +300,27 @@ export async function renameSession(store, api, title, { binding } = {}) {
 }
 
 /**
- * Switch the MCP profile of the session the panel is on. The answer belongs to
+ * Switch the tool list of the session the panel is on. The answer belongs to
  * the session it was asked for: `save(sessionId, profile)` records it under
  * that session's key whatever is on screen by then, and the store takes it
  * only while it is still on that binding (`applied`). Throws when the server
  * refuses (as before). Resolves `{ sessionId, profile, applied }`, or null
  * when there is no session.
  */
-export async function setSessionMcpProfile(store, api, profile, { save } = {}) {
+export async function setSessionTools(store, api, tools, { save } = {}) {
   const at = captureBinding(store);
   if (!at.sessionId) return null;
-  const result = await api.mcpProfileSet(at.sessionId, profile);
+  const result = await api.toolsSet(at.sessionId, tools);
   if (result?.error || result?.ok === false || Number(result?.status || 200) >= 400) {
-    const error = new Error(result?.error || result?.data?.error || `Could not switch MCP profile (${result?.status || 'unknown error'})`);
+    const error = new Error(result?.error || result?.data?.error || `Could not switch tools (${result?.status || 'unknown error'})`);
     error.stale = !at.isCurrent();
     throw error;
   }
-  const effective = result?.data?.profile || profile;
+  const effective = result?.data?.tools || tools;
   if (typeof save === 'function') save(at.sessionId, effective);
   const applied = at.isCurrent();
-  if (applied) store.setMcpProfile(effective);
-  return { sessionId: at.sessionId, profile: effective, applied };
+  if (applied) store.setTools(effective);
+  return { sessionId: at.sessionId, tools: effective, applied };
 }
 
 /**

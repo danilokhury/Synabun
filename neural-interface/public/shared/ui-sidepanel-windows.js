@@ -3,6 +3,7 @@ import { state } from './state.js';
 import { hostedSidepanelId, sidepanelHost } from './ui-sidepanel-runtime.js';
 import { reserveRightPanelLayout, clearRightPanelLayout, setRightPanelResizing } from './ui-sidepanel-layout.js';
 import { createSidepanelController, clampSidepanelRect, resizeSidepanelRect } from './ui-sidepanel-state.js';
+import { FRAMED_CLASS, frameRect } from './app-frame.js';
 
 const STORAGE_PREFIX = 'synabun-sidepanel-layout-';
 const surfaces = new Map();
@@ -36,11 +37,14 @@ const controller = createSidepanelController({
   },
 });
 
+// A floating panel stays inside the app frame (below the bar, right of the explorers, the gutter around it). A page
+// without the frame keeps the old rule: the window below the bar.
 function viewport() {
-  return {
-    width: window.innerWidth, height: window.innerHeight,
-    top: parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--navbar-height')) || 48,
-  };
+  const f = frameRect();
+  const top = document.documentElement.classList.contains(FRAMED_CLASS)
+    ? f.top
+    : parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--navbar-height')) || 48;
+  return { left: f.left, top, right: f.right, bottom: f.bottom, width: f.right, height: f.bottom };
 }
 
 function injectStyles() {
@@ -57,8 +61,8 @@ function injectStyles() {
     .sp-sidepanel.sp-floating.sp-window-focused { border-color: rgba(148,163,184,.38); }
     .sp-sidepanel.sp-floating > :is(.cp-resize-handle,.cxp-resize-handle,.ocpv2-resize-handle,.asp-resize-handle) { display: none; }
     .sp-window-move { display: none !important; }
-    .sp-floating .sp-window-move { display: inline-flex !important; cursor: grab; flex-shrink: 0; }
-    .sp-floating > :is(.cp-header,.cxp-header,.ocpv2-header,.asp-header) { cursor: grab; touch-action: none; }
+    .sp-floating .sp-window-move { display: inline-flex !important; cursor: move; flex-shrink: 0; }
+    .sp-floating > :is(.cp-header,.cxp-header,.ocpv2-header,.asp-header) { cursor: move; touch-action: none; }
     .sp-window-toggle svg, .sp-window-move svg { width: 13px; height: 13px; pointer-events: none; }
     .sp-window-resize { display: none; position: absolute; z-index: 20; touch-action: none; }
     .sp-floating > .sp-window-resize { display: block; }
@@ -229,7 +233,7 @@ function ensureFloatingRect(owner) {
   const view = controller.get(owner);
   if (view.layout.mode !== 'floating') return;
   const element = surfaces.get(owner).element;
-  const rect = view.layout.rect || { x: window.innerWidth - element.offsetWidth - 44, y: viewport().top + 44,
+  const rect = view.layout.rect || { x: viewport().right - element.offsetWidth - 36, y: viewport().top + 36,
     width: element.offsetWidth, height: element.offsetHeight };
   const clamped = clampSidepanelRect(rect, viewport());
   if (!view.layout.rect || Object.keys(clamped).some(key => clamped[key] !== view.layout.rect[key])) {
@@ -284,7 +288,7 @@ function startInteraction(id, kind, event) {
   element.classList.add('sp-window-interacting');
   document.body.classList.add('ui-interacting');
   document.body.style.userSelect = 'none';
-  document.body.style.cursor = kind === 'move' ? 'grabbing' : kind === 'dock' ? 'col-resize' : `${kind}-resize`;
+  document.body.style.cursor = kind === 'move' ? 'move' : kind === 'dock' ? 'col-resize' : `${kind}-resize`;
   if (kind === 'dock') setRightPanelResizing(true);
 }
 
@@ -372,11 +376,12 @@ function refreshViewport() {
 }
 window.addEventListener('resize', refreshViewport);
 
-// UI settings and the measured title bar can change without a window resize.
-// Inspect only those inline variables so reservation writes cannot retrigger us.
+// UI settings, the measured title bar and the explorers (the app frame's left edge) can change without a window
+// resize. Inspect only those inline variables so reservation writes cannot retrigger us.
 function viewportStyleKey() {
   const style = document.documentElement.style;
-  return `${style.getPropertyValue('--ui-scale')}|${style.getPropertyValue('--navbar-height')}`;
+  return ['--ui-scale', '--navbar-height', '--explorer-width', '--file-explorer-width']
+    .map(name => style.getPropertyValue(name)).join('|');
 }
 let lastViewportStyle = viewportStyleKey();
 new MutationObserver(() => {

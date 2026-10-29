@@ -16,6 +16,7 @@ import * as agents from './sg-agents.js';
 import * as preview from './sg-preview.js';
 import * as importExport from './sg-import-export.js';
 import * as history from './sg-history.js';
+import { clampBox, windowArea } from '../app-frame.js';
 export const SECTIONS = [['brand', brand], ['colors', colors], ['typography', typography], ['layout', layout], ['shape', shape], ['motion', motion], ['icons-logo', iconsLogo], ['imagery', imagery], ['components', components], ['rules', rules], ['agents', agents], ['preview', preview], ['import-export', importExport], ['history', history]];
 const icons = ['◈', '◉', 'Aa', '▦', '▢', '↝', '◇', '▧', '⊞', '✓', '⌘', '▣', '⇄', '↶'];
 export function createPanel({ onClosed, projectPath } = {}) {
@@ -190,8 +191,9 @@ export function createPanel({ onClosed, projectPath } = {}) {
             return;
         panel.style.maxHeight = '';
         const r = panel.getBoundingClientRect();
-        panel.style.left = Math.max(8, Math.min(r.left, window.innerWidth - r.width - 8)) + 'px';
-        panel.style.top = Math.max(8, Math.min(r.top, window.innerHeight - r.height - 8)) + 'px';
+        const at = clampBox(r.left, r.top, r.width, r.height, windowArea(r.width, r.height));
+        panel.style.left = at.x + 'px';
+        panel.style.top = at.y + 'px';
     };
     window.addEventListener('resize', fit);
     async function close() { if (closed || closing)

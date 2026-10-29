@@ -5,6 +5,7 @@
 
 import { getVariant } from './registry.js';
 import { t } from './i18n.js';
+import { FRAMED_CLASS } from './app-frame.js';
 
 /**
  * The File Explorer's editor panel (slides from the file explorer's right edge).
@@ -86,6 +87,10 @@ export function getSharedHTML() {
   const is3D = variant === '3d';
 
   return `
+<!-- App frame (styles.css APP FRAME): the card's interior under the graph, its border and gutter over the windows -->
+<div id="app-frame-surface" aria-hidden="true"></div>
+<div id="app-frame" aria-hidden="true"></div>
+
 <!-- Loading Overlay -->
 <div id="loading-overlay">
   <div id="loading-mascot" data-state="asleep">
@@ -147,12 +152,6 @@ export function getSharedHTML() {
 <div id="title-bar">
   <div class="bar-left">
     <img src="synabun.png?v=2" alt="SynaBun" id="titlebar-logo" style="height:24px;width:auto;cursor:pointer;" data-tooltip="${t('tooltip.toggleExplorer')}">
-    <div class="bar-sep"></div>
-    <div class="view-toggle">
-      <a class="view-toggle-btn${is3D ? '' : ' active'}" href="${is3D ? '/index2d.html' : '#'}" id="nav-2d-link">${t('nav.toggle2d')}</a>
-      <a class="view-toggle-btn${is3D ? ' active' : ''}" href="${is3D ? '#' : '/'}" id="nav-3d-link">${t('nav.toggle3d')}</a>
-      <span class="view-toggle-sep"></span>
-    </div>
     <div class="bar-sep"></div>
 
     <!-- OS-style menubar -->
@@ -244,7 +243,7 @@ export function getSharedHTML() {
           </div>
           <div class="menu-sep"></div>
 ${is3D ? `          <!-- Map (3D memory map) -->
-          <div class="menu-item menu-submenu-parent" id="menu-map-label" data-submenu="map" aria-haspopup="menu" aria-expanded="false">
+          <div class="menu-item menu-submenu-parent" id="menu-map-label" data-menu="graph" data-submenu="map" aria-haspopup="menu" aria-expanded="false">
             <span class="menu-check"></span>
             <span class="menu-text"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg></span> ${t('nav.map')}</span>
             <span class="menu-submenu-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg></span>
@@ -858,5 +857,8 @@ ${getEditorPanelHTML()}
  * Call this once at the start of variant main.js, BEFORE any DOM queries.
  */
 export function injectSharedHTML() {
+  // The workspace sits in the inset rounded frame (app-frame.js): set before the shell lands, so nothing is laid
+  // out once without it.
+  document.documentElement.classList.add(FRAMED_CLASS);
   document.body.insertAdjacentHTML('afterbegin', getSharedHTML());
 }

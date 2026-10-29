@@ -102,32 +102,3 @@ export function mergeGeminiMcpConfig(existing, definition) {
     },
   };
 }
-
-export function toOpenCodeMcpEntry(mcpConfig) {
-  const source = asObject(mcpConfig);
-  const { type: _type, command, args, env, environment, headers, oauth: _oauth, url, ...rest } = source;
-  if (isRemoteMcp(source)) {
-    // OpenCode names the URL-addressed transport "remote"; there is no http/sse split.
-    const entry = { type: 'remote', url, ...rest };
-    const hdrs = hasKeys(headers);
-    if (hdrs) entry.headers = { ...hdrs };
-    if (entry.enabled === undefined) entry.enabled = true;
-    return entry;
-  }
-  const entry = { type: 'local', ...rest };
-  if (command) entry.command = Array.isArray(command) ? [...command] : [command, ...(args || [])];
-  const envObj = environment || env;
-  if (envObj && Object.keys(envObj).length > 0) entry.environment = { ...envObj };
-  return entry;
-}
-
-export function mergeOpenCodeMcpConfig(existing, name, mcpConfig) {
-  const config = asObject(existing);
-  return {
-    ...config,
-    mcp: {
-      ...asObject(config.mcp),
-      [name]: toOpenCodeMcpEntry(mcpConfig),
-    },
-  };
-}

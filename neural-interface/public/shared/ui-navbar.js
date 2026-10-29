@@ -1,12 +1,11 @@
 import { initDetachedAgentSessions } from './ui-sidepanel-sessions.js';
 // ═══════════════════════════════════════════
 // SynaBun Neural Interface — Navbar
-// Initializes the 2D/3D view toggle, right-side icon buttons, and menubar action buttons.
+// Initializes right-side icon buttons and menubar action buttons. The memory map is 3D only.
 // Menu items (View, Graph, Bookmarks, Layouts) are handled by ui-menubar.js.
 // ═══════════════════════════════════════════
 
 import { state, emit, on } from './state.js';
-import { getVariant } from './registry.js';
 import { KEYS } from './constants.js';
 import { storage } from './storage.js';
 import { t } from './i18n.js';
@@ -23,6 +22,7 @@ import { toggleImageGallery } from './ui-image-gallery.js';
 import { toggleScheduleQueue } from './ui-schedule-queue.js';
 import { initUpdate } from './ui-update.js';
 import { initToolUpdates } from './ui-tool-updates.js';
+import { initCrashNotice } from './ui-crash-notice.js';
 import { initSidepanelTrayPlaceholders } from './ui-sidepanel-tray.js';
 import { initDesktopTitleBar } from './desktop-titlebar.js';
 
@@ -30,28 +30,6 @@ const $ = (id) => document.getElementById(id);
 
 export function initNavbar() {
   initDetachedAgentSessions();
-  const variant = getVariant() || '3d';
-
-  // ── View toggle ──
-  const nav2d = $('nav-2d-link');
-  const nav3d = $('nav-3d-link');
-
-  const activeLink = variant === '3d' ? nav3d : nav2d;
-  const inactiveLink = variant === '3d' ? nav2d : nav3d;
-
-  if (activeLink) {
-    activeLink.addEventListener('click', (e) => e.preventDefault());
-  }
-  if (inactiveLink) {
-    inactiveLink.addEventListener('click', (e) => {
-      e.preventDefault();
-      if (state.selectedNodeId) {
-        sessionStorage.setItem(KEYS.SELECTED_SWITCH, state.selectedNodeId);
-      }
-      window.location.href = inactiveLink.getAttribute('href');
-    });
-  }
-
   // ── Claude panel toggle (topright workspace toolbar) ──
   const assistantPanelBtn = $('topright-assistant-panel-btn');
   const claudePanelBtn = $('topright-claude-panel-btn');
@@ -380,4 +358,6 @@ export function initNavbar() {
   // ── Update alert ──
   initUpdate();
   initToolUpdates();
+  // ── The notice after an automatic restart (the server crashed and its supervisor started it again) ──
+  initCrashNotice();
 }

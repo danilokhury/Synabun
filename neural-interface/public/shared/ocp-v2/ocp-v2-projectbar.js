@@ -1,3 +1,8 @@
+import { t } from '../i18n.js';
+import { migrateStoredTools } from '../tool-list-storage.js';
+import { wireDropdowns, closeDropdowns, setDropdownDisabled, dropdownOf } from '../cc-dropdown.js';
+import { configureToolPickerTranslation, toolPickerHTML, readToolPicker, updateToolPicker, toolWord } from '../tool-list-picker.js';
+import { fetchToolCatalog } from '../agent-runtime-options.js';
 // ─────────────────────────────────────────────────────────────────────────────
 // OpenCode V2 — Project bar (project + branch dropdowns)
 // Lives at the top of the .ocpv2-compose card, mirroring legacy ocp-projectbar.
@@ -7,9 +12,9 @@
 
 import { getDefaultStore } from './ocp-v2-state.js';
 import { sendTextMessage } from './ocp-v2-send.js';
-import { api, onEvent } from './ocp-v2-ws.js';
+import { api, onEvent, capabilities, supports } from './ocp-v2-ws.js';
 import { captureBinding, latestOnly } from './ocp-v2-binding.js';
-import { setSessionMcpProfile } from './ocp-v2-session-actions.js';
+import { setSessionTools } from './ocp-v2-session-actions.js';
 import { storage } from '../storage.js';
 import { on } from '../state.js';
 import { escapeHtml } from '../utils.js';
@@ -21,11 +26,11 @@ const subscribe = (l) => _currentStore.subscribe(l);
 let _root = null;
 let _projectDd = null;
 let _branchDd = null;
-let _profileDd = null;
+let _toolsDd = null;
 let _recallDd = null;
 let _ctx = null;
 let _unsubscribe = null;
-let _profileSyncUnsub = null;
+let _toolsSyncUnsub = null;
 let _branchCache = new Map();   // path → { branches, current, ts }
 let _docClickWired = false;
 let _docClickHandler = null;
@@ -33,58 +38,35 @@ let _docClickHandler = null;
 let _recallProfile = 'balanced';
 let _recallLoaded = false;
 
-let _currentProfile = 'full';
-let _defaultProfile = 'full';
-let _mcpProfiles = [];          // [{ id, label, hint }]
-let _profileLoaded = false;
-let _profileSyncVersion = 0;
-const MCP_SESSION_PROFILE_KEY = 'synabun-opencode-session-mcp-profiles';
-
-function readSessionProfiles() {
-  try {
-    const parsed = JSON.parse(storage.getItem(MCP_SESSION_PROFILE_KEY) || '{}');
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch { return {}; }
+let _toolCatalog = null;
+let _toolsSyncVersion = 0;
+let _toolsAbort = null;
+let _capsUnsub = null;
+const MCP_SESSION_TOOLS_KEY = 'synabun-opencode-session-tools';
+function readSessionTools() {
+  try { return JSON.parse(storage.getItem(MCP_SESSION_TOOLS_KEY) || '{}') || {}; } catch { return {}; }
 }
-
-function savedSessionProfile(sessionId) {
-  if (!sessionId) return null;
-  return readSessionProfiles()[sessionId] || null;
+function savedSessionTools(sessionId) { const value = readSessionTools()[sessionId]; return Array.isArray(value) ? value : null; }
+function saveSessionTools(sessionId, tools) {
+  if (!sessionId || !Array.isArray(tools)) return;
+  storage.setItem(MCP_SESSION_TOOLS_KEY, JSON.stringify({ ...readSessionTools(), [sessionId]: tools }));
 }
-
-function saveSessionProfile(sessionId, profile) {
-  if (!sessionId || !profile) return;
-  const profiles = readSessionProfiles();
-  profiles[sessionId] = profile;
-  storage.setItem(MCP_SESSION_PROFILE_KEY, JSON.stringify(profiles));
-}
-
-async function syncProfileForActiveSession() {
-  const version = ++_profileSyncVersion;
-  const state = getState();
-  // The session this read is for (ocp-v2-binding.js): its answer is that
-  // session's, and reaches the selector only while the panel is still on it.
+async function syncToolsForActiveSession() {
+  const version = ++_toolsSyncVersion;
   const at = captureBinding(_currentStore);
-  const sessionId = at.sessionId;
-  const profile = state.sessionInfo?.mcpProfile
-    || savedSessionProfile(sessionId)
-    || _defaultProfile;
-  _currentProfile = profile;
-  _currentStore.setMcpProfile(profile);
-  applyProfileLabel();
-  if (!sessionId) return;
+  const state = getState();
+  if (at.sessionId) await migrateStoredTools(storage, MCP_SESSION_TOOLS_KEY, 'synabun-opencode-session-mcp-profiles', { entry: at.sessionId });
+  if (!at.isCurrent() || version !== _toolsSyncVersion) return;
+  const tools = state.sessionInfo?.tools ?? savedSessionTools(at.sessionId) ?? (at.sessionId ? null : state.tools) ?? _toolCatalog?.defaultTools;
+  if (tools) _currentStore.setTools(tools);
+  paintTools();
+  if (!at.sessionId || !supports('mcp:tools:get')) return;
   try {
-    const result = await api.mcpProfileGet(sessionId);
-    const remote = result?.data;
-    // A running serve is authoritative across windows. If no serve is pinned
-    // yet, retain the session's persisted browser-side choice for first launch.
-    if (!remote?.pinned || !remote.profile) return;
-    if (version !== _profileSyncVersion || !at.isCurrent()) return;
-    saveSessionProfile(sessionId, remote.profile);
-    _currentStore.setMcpProfile(remote.profile);
-    _currentProfile = remote.profile;
-    applyMcpProfileState(remote.profile, remote.presets);
-  } catch { /* socket may still be booting; local session state remains valid */ }
+    const result = await api.toolsGet(at.sessionId);
+    if (!result?.data?.pinned || !Array.isArray(result.data.tools) || version !== _toolsSyncVersion || !at.isCurrent()) return;
+    _currentStore.setTools(result.data.tools);
+    saveSessionTools(at.sessionId, result.data.tools);
+  } catch { /* reconnect keeps the local selection */ }
 }
 
 const RECALL_PROFILES_META = [
@@ -116,8 +98,10 @@ export function mountProjectBar(rootEl, ctx, store = getDefaultStore()) {
   _branchDd = makeDropdown('ocpv2-branch-dd', 'branch', 'Branch', 'ocpv2-dropdown-sm');
   bar.appendChild(_branchDd);
 
-  _profileDd = makeDropdown('ocpv2-profile-dd', 'profile', 'Tool profile', 'ocpv2-dropdown-sm');
-  bar.appendChild(_profileDd);
+  _toolsDd = document.createElement('div');
+  _toolsDd.className = 'ocpv2-tools-picker';
+  _toolsDd.addEventListener('pointerdown', event => { if (event.target.closest('.cc-dropdown-trigger')) closeAllDropdowns(event.target.closest('.cc-dropdown')); });
+  bar.appendChild(_toolsDd);
 
   _recallDd = makeDropdown('ocpv2-recall-dd', 'recall', 'Recall profile', 'ocpv2-dropdown-sm');
   bar.appendChild(_recallDd);
@@ -149,35 +133,46 @@ export function mountProjectBar(rootEl, ctx, store = getDefaultStore()) {
 
   wireProjectDd();
   wireBranchDd();
-  wireProfileDd();
+  _toolsAbort = new AbortController();
+  wireDropdowns(_toolsDd, { signal: _toolsAbort.signal });
+  _capsUnsub = capabilities.subscribe(() => paintTools());
+  _toolsDd.addEventListener('change', async (event) => {
+    const previous = getState().tools;
+    const tools = readToolPicker(event.target, { inherit: false });
+    const at = captureBinding(_currentStore);
+    try {
+      if (at.sessionId) await setSessionTools(_currentStore, api, tools, { save: saveSessionTools });
+      else _currentStore.setTools(tools);
+    } catch (error) {
+      if (at.isCurrent()) { _currentStore.setTools(previous); _currentStore.pushError({ message: error.message || toolWord('saveFailed') }); }
+    }
+    if (at.isCurrent()) paintTools();
+  }, { signal: _toolsAbort.signal });
   wireRecallDd();
   wireDocClick();
 
-  // Shared broadcasts update only the default for future sessions. A live
-  // session keeps its own profile until its scoped serve is restarted.
-  _profileSyncUnsub = on('mcp:profile-changed', (msg = {}) => {
-    _defaultProfile = msg.defaultProfile || msg.profile || _defaultProfile;
-    applyMcpProfileState(getState().sessionId ? null : _defaultProfile, msg.presets);
+  _toolsSyncUnsub = on('mcp:tools-default-changed', (msg = {}) => {
+    if (_toolCatalog && Array.isArray(msg.tools)) _toolCatalog.defaultTools = msg.tools;
   });
 
   _unsubscribe = subscribe((event) => {
     if (event?.type === 'config:cwd') {
       syncToCwd(getState().cwd || '');
     } else if (event?.type === 'session:set') {
+      closeDropdowns(_toolsDd, { cancel: true });
       // Session switch may carry a new directory — sync best-effort.
       // panel.js owns the canonical setCwd; this is just a defensive refresh.
       const s = getState();
       const dir = s.sessionInfo?.directory;
       if (dir && dir !== getState().cwd) syncToCwd(dir);
-      syncProfileForActiveSession();
-    } else if (event?.type === 'config:mcp-profile') {
+      syncToolsForActiveSession();
+    } else if (event?.type === 'config:tools') {
+      closeDropdowns(_toolsDd, { cancel: true });
       const state = getState();
-      const profile = state.mcpProfile || _defaultProfile;
-      if (state.sessionId) saveSessionProfile(state.sessionId, profile);
-      _currentProfile = profile;
-      applyProfileLabel();
-      if (ddIsOpen(_profileDd)) paintProfileMenu();
-    }
+      if (state.sessionId) saveSessionTools(state.sessionId, state.tools);
+      paintTools();
+    } else { paintTools(); }
+
   });
 
   // Initial paint
@@ -186,8 +181,8 @@ export function mountProjectBar(rootEl, ctx, store = getDefaultStore()) {
   Promise.resolve(_ctx.ensureProjectsLoaded?.()).catch(() => {});
   // Load saved recall profile so the DD shows the current selection on first open
   loadRecallProfile().catch(() => {});
-  // Load active MCP tool profile so its label is correct on first paint
-  loadCurrentProfile().catch(() => {});
+  // Load active SynaBun tool list so its label is correct on first paint
+  fetchToolCatalog(false, { cwd: getState().cwd || '' }).then(catalog => { if (!_toolsDd) return; _toolCatalog = catalog; return syncToolsForActiveSession(); }).catch(() => {});
 
   return {
     refresh: () => syncToCwd(getState().cwd || ''),
@@ -196,9 +191,9 @@ export function mountProjectBar(rootEl, ctx, store = getDefaultStore()) {
 }
 
 export function unmountProjectBar() {
-  _profileSyncVersion += 1;
+  _toolsSyncVersion += 1;
   if (_unsubscribe) { try { _unsubscribe(); } catch {} }
-  if (_profileSyncUnsub) { try { _profileSyncUnsub(); } catch {} }
+  if (_toolsSyncUnsub) { try { _toolsSyncUnsub(); } catch {} }
   if (_docClickWired && _docClickHandler) {
     document.removeEventListener('mousedown', _docClickHandler);
     _docClickWired = false;
@@ -208,16 +203,15 @@ export function unmountProjectBar() {
   _root = null;
   _projectDd = null;
   _branchDd = null;
-  _profileDd = null;
+  _toolsDd = null;
   _recallDd = null;
   _ctx = null;
   _unsubscribe = null;
-  _profileSyncUnsub = null;
+  _toolsSyncUnsub = null;
   _branchCache = new Map();
-  _profileLoaded = false;
-  _currentProfile = 'full';
-  _defaultProfile = 'full';
-  _mcpProfiles = [];
+  _toolsAbort?.abort();
+  _capsUnsub?.();
+  _toolCatalog = null;
 }
 
 // ── Dropdown construction ──────────────────────────────────────────────────
@@ -244,7 +238,7 @@ function ddSetLabel(dd, text, hasValue) {
 }
 
 // A menu that has to load something before it opens (the project list, the
-// tool profiles, the recall setting) opens only when it is still the one the
+// tool lists, the recall setting) opens only when it is still the one the
 // user asked for last: not after another menu was opened or everything was
 // closed while it loaded.
 const _menuOpenings = latestOnly();
@@ -257,6 +251,7 @@ function ddOpen(dd) {
 }
 
 function ddClose(dd) {
+  if (dd?.classList.contains('cc-dropdown')) { closeDropdowns(dd.parentElement); return; }
   dd?.classList.remove('open');
   dd?.querySelector('.ocpv2-dd-menu')?.classList.remove('open');
 }
@@ -435,132 +430,28 @@ function syncToCwd(cwd) {
   }
 }
 
-// ── MCP Profile dropdown wiring ────────────────────────────────────────────
-
-function wireProfileDd() {
-  _profileDd.addEventListener('click', async (event) => {
-    if (event.target.closest('.ocpv2-dd-menu')) return;
-    if (getState().running) return;
-    if (ddIsOpen(_profileDd)) { ddClose(_profileDd); return; }
-    const wanted = _menuOpenings.begin();
-    if (!_profileLoaded) {
-      try { await loadCurrentProfile(); } catch {}
-    }
-    // The menu changes the profile of the session on screen: it does not open
-    // over a turn that started while the profiles loaded.
-    if (!wanted() || getState().running) return;
-    paintProfileMenu();
-    ddOpen(_profileDd);
-  });
-}
-
-function mcpProfileItemsFromPresets(presets) {
-  if (!presets || typeof presets !== 'object') return null;
-  return Object.entries(presets).map(([id, p]) => ({
-    id,
-    label: p?.label || id,
-    hint: `${p?.tools ?? '?'} tools`,
-  }));
-}
-
-function applyMcpProfileState(profile, presets) {
-  if (profile) _currentProfile = profile;
-  const items = mcpProfileItemsFromPresets(presets);
-  if (items) _mcpProfiles = items;
-  applyProfileLabel();
-  if (ddIsOpen(_profileDd)) paintProfileMenu();
-}
-
-function applyProfileLabel() {
-  const matched = _mcpProfiles.find((p) => p.id === _currentProfile);
-  ddSetLabel(_profileDd, matched ? matched.label : _currentProfile, !!_currentProfile);
-}
-
-async function loadCurrentProfile() {
-  try {
-    const data = await fetch('/api/mcp/profile').then((r) => r.json());
-    if (data?.ok) {
-      _defaultProfile = data.defaultProfile || data.profile || 'full';
-      applyMcpProfileState(null, data.presets);
-      await syncProfileForActiveSession();
-    }
-  } catch (err) {
-    console.warn('[ocp-v2-projectbar] loadCurrentProfile failed', err);
-  } finally {
-    _profileLoaded = true;
-    applyProfileLabel();
-  }
-}
-
-function paintProfileMenu() {
-  const menu = _profileDd?.querySelector('.ocpv2-dd-menu');
-  if (!menu) return;
-  menu.innerHTML = '';
-  if (!_mcpProfiles.length) {
-    const empty = document.createElement('div');
-    empty.className = 'ocpv2-dd-option';
-    empty.style.cssText = 'opacity:0.4;cursor:default';
-    empty.textContent = '(empty)';
-    menu.appendChild(empty);
-    return;
-  }
-  for (const p of _mcpProfiles) {
-    const opt = document.createElement('div');
-    opt.className = 'ocpv2-dd-option' + (p.id === _currentProfile ? ' selected' : '');
-    opt.style.gap = '6px';
-    opt.innerHTML = `<span>${escapeHtml(p.label)}</span><span class="ocpv2-dd-hint">${escapeHtml(p.hint)}</span>`;
-    opt.addEventListener('click', async (event) => {
-      event.stopPropagation();
-      ddClose(_profileDd);
-      if (p.id === _currentProfile) return;
-      const previous = _currentProfile;
-      const at = captureBinding(_currentStore);
-      _currentProfile = p.id;
-      applyProfileLabel();
-      try { await updateMcpProfile(p.id); }
-      catch (err) {
-        // The label is rolled back only where it was changed: after a move the
-        // selector already shows the profile of the session on screen.
-        if (at.isCurrent()) {
-          _currentProfile = previous;
-          applyProfileLabel();
-        }
-        console.error('[ocp-v2-projectbar] updateMcpProfile failed', err);
-      }
-    });
-    menu.appendChild(opt);
-  }
-}
-
-async function updateMcpProfile(profile) {
+// ── Tool lists: cc-dropdown multiple mode inside the OpenCode project bar ──
+function paintTools() {
+  if (!_toolsDd) return;
+  _toolsDd.hidden = !supports('mcp:tools:set') || !_toolCatalog;
+  if (_toolsDd.hidden) return;
   const state = getState();
-  if (state.running) throw new Error('Wait for the active turn to finish before changing its MCP profile.');
-  let effective = profile;
-  if (state.sessionId) {
-    // The change is for the session it was asked on (setSessionMcpProfile
-    // captures it before the request): the answer is saved under that
-    // session's key, and the store and the selector take it only while the
-    // panel is still on that binding.
-    const changed = await setSessionMcpProfile(_currentStore, api, profile, { save: saveSessionProfile });
-    if (changed?.applied) {
-      _currentProfile = changed.profile;
-      applyProfileLabel();
-    }
-    return;
+  const catalogCwd = state.cwd || '';
+  if (_toolCatalog._cwd !== catalogCwd) {
+    _toolCatalog._cwd = catalogCwd;
+    fetchToolCatalog(false, { cwd: catalogCwd }).then(catalog => { if (catalog && (getState().cwd || '') === catalogCwd) { catalog._cwd = catalogCwd; _toolCatalog = catalog; paintTools(); } }).catch(() => {});
   }
-  // With no active session the selector intentionally edits only the default
-  // used by runtimes created later.
-  const response = await fetch('/api/mcp/profile', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ profile: effective }),
-  });
-  const payload = await response.json().catch(() => null);
-  if (!response.ok || payload?.ok === false) {
-    throw new Error(payload?.error || `Could not update the future-runtime MCP default (${response.status})`);
+  let input = _toolsDd.querySelector('input');
+  if (!input) {
+    // One project bar per panel mount; ids need to remain unique across windows.
+    const id = `ocpv2-tools-${globalThis.crypto.randomUUID()}`;
+    _toolsDd.innerHTML = toolPickerHTML(id, state.tools ?? _toolCatalog.defaultTools, { catalog: _toolCatalog, classes: 'ocpv2-dropdown ocpv2-dropdown-sm' });
+    _toolsDd.querySelector('.cc-dropdown-menu')?.classList.add('ocpv2-dd-menu');
+    input = _toolsDd.querySelector('input');
+  } else if (!dropdownOf(input)?.classList.contains('open')) {
+    updateToolPicker(input, state.tools ?? _toolCatalog.defaultTools, { catalog: _toolCatalog });
   }
-  _defaultProfile = effective;
-  applyProfileLabel();
+  setDropdownDisabled(input, !!state.running);
 }
 
 // ── Recall dropdown wiring ─────────────────────────────────────────────────
@@ -648,3 +539,5 @@ function wireDocClick() {
   document.addEventListener('mousedown', _docClickHandler);
   _docClickWired = true;
 }
+
+configureToolPickerTranslation(t);

@@ -17,6 +17,10 @@
 // and current step. A mini scene or a lane brings that run's card into view
 // in the transcript (hooks.onReveal). hooks.onRunChange hears every change
 // to a run, whatever its source, so the transcript's card follows the tray.
+// "Stop all" asks twice (asst-stop.js createConfirmGate): the first press
+// turns it into "Stop N agents?", a second press within a few seconds stops
+// every run of the session at once. It sits right under the transcript's
+// last card, so one stray click or key there must not end the session's work.
 
 import { on } from '../state.js';
 import { getProviderMeta } from '../provider-icons.js';
@@ -26,6 +30,7 @@ import { awaitsAnswer, compactActivity, isLivePhase, phaseLine, sceneFor, sceneS
 import { injectSceneStyles } from './asst-scene-styles.js';
 import { plural } from './asst-tool-kinds.js';
 import { isRemovableRun, isRunIdle, isTerminalRunStatus, mergeRunDescriptor, runFromPayload, runNeedsAttention, sortRuns } from './asst-state.js';
+import { createConfirmGate } from './asst-stop.js';
 
 const TICK_MS = 5000;
 const SHOW_ALL_LIMIT = 40;
@@ -47,7 +52,8 @@ function esc(value) {
 
 /**
  * createAgentsDock(hostEl, hooks)
- * hooks: { t, sessionId, onFocus(runId), onStop(runId), onRead(runId), onEscalate(runId, target), onStopAll(),
+ * hooks: { t, sessionId, onFocus(runId), onStop(runId), onRead(runId), onEscalate(runId, target),
+ *          onStopAll() (the second press of "Stop all"; stopAllConfirmMs / stopAllMinGapMs time it),
  *          onRemove(runId), onClearFinished(runIds), onReveal(runId), onRunChange(run),
  *          open, showAll, onToggle(open), onShowAllChange(showAll),
  *          onCountChange({ total, active, attention, answer, idle, working, waiting, visible }) }
@@ -83,6 +89,20 @@ export function createAgentsDock(hostEl, hooks = {}) {
   const stopAllBtn = root.querySelector('.asst-dock-stopall');
   const clearBtn = root.querySelector('.asst-dock-clear');
   const body = root.querySelector('.asst-dock-body');
+  // Armed, "Stop all" says what it would stop and waits for the second press (then lapses by itself).
+  const stopAllGate = createConfirmGate({ windowMs: hooks.stopAllConfirmMs, minGapMs: hooks.stopAllMinGapMs, onChange: () => paintStopAll() });
+  function paintStopAll(active = counts().active) {
+    const armed = stopAllGate.isArmed();
+    const label = armed
+      ? plural(t, 'assistant.dock.stopAllConfirm', active, 'Stop {count} agent?', 'Stop {count} agents?')
+      : t('assistant.dock.stopAll', 'Stop all');
+    const tip = armed
+      ? t('assistant.dock.stopAllConfirmTip', 'Press again to stop every agent of this session')
+      : t('assistant.dock.stopAllTip', 'Stop every agent of this session (asks once more)');
+    if (stopAllBtn.textContent !== label) stopAllBtn.textContent = label;
+    stopAllBtn.dataset.armed = armed ? 'true' : 'false';
+    stopAllBtn.setAttribute('data-tooltip', tip);
+  }
 
   const runs = new Map();   // runId → descriptor
   const cards = new Map();  // runId → element
@@ -181,6 +201,8 @@ export function createAgentsDock(hostEl, hooks = {}) {
     summaryEl.textContent = summaryText(c);
     root.classList.toggle('attention', c.attention > 0);
     stopAllBtn.hidden = c.active === 0;
+    if (stopAllBtn.hidden) stopAllGate.reset();
+    paintStopAll(c.active);
     clearBtn.hidden = !open || typeof hooks.onClearFinished !== 'function' || ![...runs.values()].some(isRemovableRun);
     showAllBtn.hidden = !open;
     showAllBtn.setAttribute('aria-pressed', showAll ? 'true' : 'false');
@@ -390,7 +412,15 @@ export function createAgentsDock(hostEl, hooks = {}) {
 
   toggle.addEventListener('click', () => setOpen(!open));
   showAllBtn.addEventListener('click', () => { showAll = !showAll; hooks.onShowAllChange?.(showAll); refresh().finally(render); });
-  stopAllBtn.addEventListener('click', () => hooks.onStopAll?.());
+  stopAllBtn.addEventListener('click', () => {
+    if (stopAllBtn.hidden || destroyed) return;
+    if (stopAllGate.press() === 'confirmed') hooks.onStopAll?.();
+  });
+  stopAllBtn.addEventListener('keydown', (e) => {
+    // A held Enter repeats its click: only the first press of a key counts.
+    if (e.repeat && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); return; }
+    if (e.key === 'Escape' && stopAllGate.reset()) { e.preventDefault(); e.stopPropagation(); }
+  });
   clearBtn.addEventListener('click', () => {
     const ids = [...runs.values()].filter(isRemovableRun).map(r => r.runId);
     if (ids.length) hooks.onClearFinished?.(ids);
@@ -443,6 +473,7 @@ export function createAgentsDock(hostEl, hooks = {}) {
     destroy() {
       destroyed = true;
       if (ticker) clearInterval(ticker);
+      stopAllGate.destroy();
       activities.clear();
       unsubs.forEach(off => { try { off(); } catch { /* ignore */ } });
       root.remove();

@@ -1491,7 +1491,7 @@ const TOOLS = [
   { id: 'claude',   name: 'Claude Code', api: '/api/claude-code/mcp', configPath: '~/.claude.json' },
   { id: 'gemini',   name: 'Gemini CLI',  api: '/api/setup/gemini/mcp', configPath: '~/.gemini/settings.json' },
   { id: 'codex',    name: 'Codex CLI',   api: '/api/setup/codex/mcp',  configPath: '~/.codex/config.toml' },
-  { id: 'opencode', name: 'OpenCode',    api: '/api/opencode/mcp',     configPath: '~/.config/opencode/config.json' },
+  { id: 'opencode', name: 'OpenCode',    api: '/api/opencode/mcp',     configPath: '~/.config/opencode/opencode.json' },
 ];
 
 // ═══════════════════════════════════════════
@@ -2636,7 +2636,7 @@ function showToggleRules(id, rules, { connected, wanted }) {
     else if (rules.path) text = `Rules installed: ${rules.path}`;
   } else if (rules && rules.ok !== false && rules.kept && rules.kept.length) {
     // Disconnected. A copy the user edited is theirs: SynaBun left it where it is (and for OpenCode, so is a copy
-    // their own line in config.json points at).
+    // their own line in opencode.json points at).
     text = `Your ${rules.kept[0].reason === 'listed-in-config' ? '' : 'edited '}rules were left in place: ${rules.kept[0].path}`;
   } else if (rules && rules.ok === false && rules.error) {
     // Disconnected, but rules could not be taken out (damaged markers, a symlink): say which and why.

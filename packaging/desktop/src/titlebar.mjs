@@ -53,8 +53,12 @@ export function compositeHex(foreground, background) {
   return toHex({ r: mix(top.r, under.r), g: mix(top.g, under.g), b: mix(top.b, under.b) });
 }
 
-/** What the caption buttons look like over the Neural Interface's bar until the page says otherwise (DESIGN.md nav-bar). */
-export const APP_OVERLAY = Object.freeze({ color: '#101012', symbolColor: compositeHex('#ffffffb3', '#101012') });
+/** The Neural Interface's chrome: its bar, the explorers and the gutter around the app frame (styles.css
+ *  --frame-chrome, DESIGN.md neutral-800). The bar is opaque in it, so it is also what the window shows behind the
+ *  page while it is resized. */
+export const APP_BACKGROUND = '#121214';
+/** What the caption buttons look like over the Neural Interface's bar until the page says otherwise. */
+export const APP_OVERLAY = Object.freeze({ color: APP_BACKGROUND, symbolColor: compositeHex('#ffffffb3', APP_BACKGROUND) });
 /** Over the app's own status page (packaging/desktop/src/pages: background #050505, the same text tone). */
 export const STATUS_OVERLAY = Object.freeze({ color: '#050505', symbolColor: compositeHex('#ffffffb3', '#050505') });
 

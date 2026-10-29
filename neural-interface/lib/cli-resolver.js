@@ -198,7 +198,10 @@ export function describeConfigured(value, toolKey, {
   return { value: raw, kind: 'command', name: text };
 }
 
-/** OpenCode's npm package: its command file runs node_modules\opencode-ai\bin\opencode.exe, the platform build its postinstall put there. */
+/**
+ * npm's opencode-ai (OpenCode 1): its command file runs node_modules\opencode-ai\bin\opencode.exe, the platform build
+ * its postinstall put there. Still found, so that SynaBun can say which version it is when it refuses it.
+ */
 export function windowsOpencodeTargets(launcher, arch = process.arch) {
   const pathImpl = path.win32;
   const folder = pathImpl.dirname(String(launcher || ''));

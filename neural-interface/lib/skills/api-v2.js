@@ -9,7 +9,8 @@
 //                rejecting a review, migrating the old bridges, moving a pointer, deleting a skill from the
 //                library, the settings. A request that
 //                carries an agent's headers is refused (403 UI_ONLY) whatever else it says, as is a guest, another
-//                site's page, or a request without the page's X-SynaBun-UI header. An agent asks for a plan
+//                site's page, a request without the page's X-SynaBun-UI header, or one without this boot's page
+//                secret cookie (lib/page-session.js, 403 PAGE_SECRET_REQUIRED). An agent asks for a plan
 //                (POST /installations/plan) and submits for review; the owner installs.
 //
 // Ids in paths are opaque (`skl_`, `rev_`, `drf_`, `rvw_`, `ins_`, `mig_`, `art_`) and checked by shape before
@@ -19,15 +20,12 @@
 // key from the same caller within ten minutes gets the first answer again, and nothing is made twice.
 
 import { join } from 'node:path';
-import AdmZip from 'adm-zip';
 import { AGENT_HEADERS, sendGuardError } from '../http-guards.js';
 import { PathConfineError } from '../path-confine.js';
 import { readConfinedFile } from '../confined-fs.js';
 import { isArtifactId } from './catalog.js';
 import { checkFolder, folderDigest, isDraftId, isRevisionId, isSkillId } from './library.js';
-import { buildBundle, bundlePathProblem, collectFolder } from './bundle.js';
-import { buildExport } from './export.js';
-import { effectiveInstallName } from './deploy.js';
+import { bundlePathProblem, collectFolder } from './bundle.js';
 import { isEditableText } from '../../public/shared/skills/ss-doc.js';
 
 /** The largest file of a catalog skill the Studio reads (a SKILL.md's bound, as the P0 routes read one). */
@@ -81,8 +79,9 @@ function authorOf(principal, body = {}) {
 function fail(res, err) {
   const status = err instanceof PathConfineError ? err.status : (Number.isInteger(err?.status) && err.status >= 400 && err.status < 600 ? err.status : 500);
   const body = { ok: false, error: status >= 500 && !(err instanceof PathConfineError) ? `The skills service failed: ${err?.message || err}` : (err?.message || String(err)) };
+  if (err?.reason === 'lint' && Array.isArray(err.diagnostics)) { body.reason = 'lint'; body.diagnostics = err.diagnostics.slice(0, 30); }
   if (typeof err?.code === 'string' && !/^E[A-Z]+$/.test(err.code)) body.code = err.code;
-  for (const key of ['problems', 'currentEtag', 'currentDigest', 'currentRevision', 'plan', 'notRestored', 'installations']) if (err?.[key] !== undefined) body[key] = err[key];
+  for (const key of ['problems', 'currentEtag', 'currentDigest', 'currentRevision', 'plan', 'notRestored', 'installations', 'file', 'rule']) if (err?.[key] !== undefined) body[key] = err[key];
   return res.status(status).json(body);
 }
 
@@ -94,7 +93,7 @@ function fail(res, err) {
  * @param {Function} [o.ownerGuard] lib/http-guards.js ownerRouteGuard(…) of this server (Host, Origin, guests)
  * @param {(req) => string|null} [o.assistantOf] the Assistant session a request's brain credential belongs to (principalOf)
  */
-export function registerSkillsV2Routes(app, { service, isGuestRequest = null, ownerGuard = null, assistantOf = null } = {}) {
+export function registerSkillsV2Routes(app, { service, isGuestRequest = null, ownerGuard = null, assistantOf = null, pageSession = null } = {}) {
   const idem = new Map();
 
   const json = (req, res, next) => {
@@ -106,7 +105,8 @@ export function registerSkillsV2Routes(app, { service, isGuestRequest = null, ow
     }
     next();
   };
-  const reader = (req, res, next) => { req.principal = principalOf(req, isGuestRequest, assistantOf); next(); };
+  // A read of the owner's page hands it the page secret (lib/page-session.js), which its writes then carry.
+  const reader = (req, res, next) => { req.principal = principalOf(req, isGuestRequest, assistantOf); if (req.principal.kind === 'owner') pageSession?.attach?.(res); next(); };
   const writer = (req, res, next) => {
     req.principal = principalOf(req, isGuestRequest, assistantOf);
     if (req.principal.kind === 'guest') return sendGuardError(res, 403, 'GUEST_FORBIDDEN', 'Available to the owner only.');
@@ -116,6 +116,8 @@ export function registerSkillsV2Routes(app, { service, isGuestRequest = null, ow
     req.principal = principalOf(req, isGuestRequest, assistantOf);
     if (req.principal.kind !== 'owner') return sendGuardError(res, 403, req.principal.kind === 'guest' ? 'GUEST_FORBIDDEN' : 'UI_ONLY', req.principal.kind === 'guest' ? 'Available to the owner only.' : 'Installing, approving and migrating are the owner\'s, from SynaBun\'s own page: ask the owner to review it in Skills Studio.');
     if (req.headers['x-synabun-ui'] !== '1') return sendGuardError(res, 403, 'UI_HEADER_REQUIRED', 'Send the X-SynaBun-UI: 1 header.');
+    // The page secret: what a local process that merely left the agent headers out lacks.
+    if (pageSession && !pageSession.verify(req)) return pageSession.require(req, res, next);
     if (!ownerGuard) return next();
     return ownerGuard(req, res, next);
   };
@@ -145,6 +147,24 @@ export function registerSkillsV2Routes(app, { service, isGuestRequest = null, ow
   };
   const safe = (fn) => async (req, res) => { try { await fn(req, res); } catch (err) { fail(res, err); } };
   const route = (method, path, ...handlers) => app[method](`${V2_BASE}${path}`, ...handlers);
+
+  // P5: reads share the feature gate; settings, outbound access and health checks require the owner's page.
+  // The authenticated Assistant can read evidence and preview packages. It cannot enable a source or scanner.
+  route('get', '/operations', reader, safe(async (req, res) => res.json({ ok: true, settings: service.operations.settings(), scanners: service.scanners.list() })));
+  route('put', '/operations', json, owner, safe(async (req, res) => res.json({ ok: true, settings: service.operations.configure(req.body) })));
+  route('get', '/usage', reader, safe(async (req, res) => res.json({ ok: true, ...service.telemetry.summary({ skillId: isSkillId(req.query?.skillId) ? req.query.skillId : null }) })));
+  route('delete', '/usage', json, owner, safe(async (req, res) => { service.telemetry.clear(); res.json({ ok: true }); }));
+  route('get', '/health', reader, safe(async (req, res) => res.json({ ok: true, ...service.health.view(), proposals: service.operations.proposals() })));
+  route('post', '/health/check', json, owner, safe(async (req, res) => res.json({ ok: true, ...await service.health.check({ probe: req.body?.probe === true }) })));
+  route('get', '/discover', reader, safe(async (req, res) => res.json({ ok: true, ...service.discover.list({ sourceId: req.query?.sourceId, q: req.query?.q }) })));
+  route('post', '/discover/refresh', json, owner, safe(async (req, res) => res.json({ ok: true, ...await service.discover.refresh(req.body?.sourceId) })));
+  route('post', '/discover/catalog', json, owner, safe(async (req, res) => res.json({ ok: true, ...service.discover.importCatalog(req.body?.sourceId, req.body?.entries) })));
+  route('post', '/discover/stage', json, owner, once(safe(async (req, res) => res.status(201).json({ ok: true, ...await service.discover.stage(req.body?.itemId, { kind: 'owner' }) }))));
+  route('get', '/revisions/:revisionId/package', reader, ids('revisionId'), safe(async (req, res) => res.json({ ok: true, package: service.packages.preview(req.params.revisionId, { format: req.query?.format || 'bundle', profile: req.query?.profile || null, excludeEvals: req.query?.excludeEvals === 'true' }) })));
+  route('post', '/revisions/:revisionId/external-scans', json, owner, ids('revisionId'), safe(async (req, res) => {
+    const folder = service.library.readRevisionFiles(req.params.revisionId);
+    res.json({ ok: true, results: await service.scanners.scan(folder.revision, folder) });
+  }));
 
   // ── Reading ──
   route('get', '/capabilities', reader, safe(async (req, res) => res.json({ ok: true, version: service.version, capabilities: service.capabilities })));
@@ -194,8 +214,9 @@ export function registerSkillsV2Routes(app, { service, isGuestRequest = null, ow
     res.json({ ok: true, diff: service.library.diffRevisionFolder(from, { files, dirs }, { path: entry.path }) });
   }));
   route('post', '/catalog/rescan', json, writer, safe(async (req, res) => { const s = await service.catalogScan({ force: true }); res.json({ ok: true, generation: s.generation, generatedAt: s.generatedAt, entries: s.entries.length, truncated: s.truncated }); }));
-  route('get', '/config', reader, safe(async (req, res) => res.json({ ok: true, config: service.getConfig() })));
-  route('put', '/config', json, owner, safe(async (req, res) => res.json({ ok: true, config: service.setConfig(req.body || {}) })));
+  // The settings, with the assistants on this computer (detected, chosen, in effect): what Publish ticks by default.
+  route('get', '/config', reader, safe(async (req, res) => res.json({ ok: true, config: service.getConfig(), assistants: service.assistantsView() })));
+  route('put', '/config', json, owner, safe(async (req, res) => res.json({ ok: true, config: service.setConfig(req.body || {}), assistants: service.assistantsView() })));
 
   // ── The library ──
   route('get', '/skills', reader, safe(async (req, res) => res.json({ ok: true, skills: service.listSkills() })));
@@ -214,10 +235,13 @@ export function registerSkillsV2Routes(app, { service, isGuestRequest = null, ow
     service.announce({ type: 'skill.changed', skillId: draft.skillId });
     res.status(201).json({ ok: true, skillId: draft.skillId, draft: draftView(draft) });
   })));
+  // The skills deleted from the library (their versions kept): before /skills/:skillId, which it is not.
+  route('get', '/skills/archived', reader, safe(async (req, res) => res.json({ ok: true, archived: service.listArchived() })));
   route('get', '/skills/:skillId', reader, ids('skillId'), safe(async (req, res) => res.json({ ok: true, skill: service.getSkill(req.params.skillId) })));
   // Taking a skill out of the library: the owner's, from the page. `expectedEtag` (optional, the record as read)
   // guards against deleting something changed since; an installed skill (409 skill_installed, with its
   // installations) and one SynaBun ships (403 skill_bundled) are refused. Its versions go to the library's archive.
+  route('post', '/skills/:skillId/restore', json, owner, ids('skillId'), safe(async (req, res) => res.json({ ok: true, ...service.restoreSkill(req.params.skillId) })));
   route('delete', '/skills/:skillId', json, owner, ids('skillId'), safe(async (req, res) => {
     const expectedEtag = req.body?.expectedEtag ?? null;
     if (expectedEtag !== null && !Number.isInteger(expectedEtag)) return res.status(400).json({ ok: false, error: 'expectedEtag is the etag number the skill was read with.', code: 'invalid_etag' });
@@ -226,7 +250,7 @@ export function registerSkillsV2Routes(app, { service, isGuestRequest = null, ow
   route('get', '/skills/:skillId/revisions', reader, ids('skillId'), safe(async (req, res) => {
     const list = service.library.listRevisions(req.params.skillId);
     const skill = service.library.getSkill(req.params.skillId);
-    res.json({ ok: true, revisions: list.map((r) => ({ revisionId: r.revisionId, parentRevisionId: r.parentRevisionId, contentDigest: r.contentDigest, createdAt: r.createdAt, author: r.author, source: r.source, files: r.manifest.files.length, labels: service.library.labelsOf(skill, r.revisionId), note: r.note })) });
+    res.json({ ok: true, revisions: list.map((r) => ({ revisionId: r.revisionId, parentRevisionId: r.parentRevisionId, contentDigest: r.contentDigest, createdAt: r.createdAt, author: r.author, source: r.source, files: r.manifest?.files?.length || 0, integrity: r.integrity, error: r.error || null, labels: service.library.labelsOf(skill, r.revisionId), note: r.note, noteCode: r.noteCode || (r.source?.kind === 'bundled' && /^Shipped with SynaBun(?: [\d.]+)?\.$/.test(r.note) ? 'bundled' : null), scan: r.scan ? { status: r.scan.status, gate: r.scan.gate, counts: r.scan.counts, digest: r.scan.digest, coverage: { complete: r.scan.coverage?.complete } } : null })) });
   }));
   route('post', '/skills/:skillId/pointers', json, owner, ids('skillId'), safe(async (req, res) => {
     const { pointer, revisionId, expectedEtag = null, reason = '' } = req.body || {};
@@ -252,28 +276,15 @@ export function registerSkillsV2Routes(app, { service, isGuestRequest = null, ow
   // (`claude-upload` for Claude.ai) through the same transforms an install applies, on the copy only: the revision
   // is never rewritten. The name is the one the revision installs as.
   route('get', '/revisions/:revisionId/export', reader, ids('revisionId'), safe(async (req, res) => {
-    const format = req.query?.format === 'skill' ? 'skill' : req.query?.format === undefined || req.query?.format === 'bundle' ? 'bundle' : null;
-    if (!format) return res.status(400).json({ ok: false, error: 'format is bundle or skill.', code: 'invalid_format' });
-    const profile = typeof req.query?.profile === 'string' && req.query.profile ? req.query.profile : null;
-    if (profile && !service.profileIds().includes(profile)) return res.status(400).json({ ok: false, error: 'There is no such profile.', code: 'invalid_profile' });
-    const { files, dirs, revision } = service.library.readRevisionFiles(req.params.revisionId);
-    const skill = service.library.getSkill(revision.skillId);
-    let folder = { files, dirs };
-    if (profile) { const out = buildExport(folder, profile); folder = { files: out.files, dirs: out.dirs }; }
-    let name;
-    try { name = effectiveInstallName(skill, folder.files); } catch { name = skill.name; }
-    if (format === 'bundle') {
-      const { json } = buildBundle({ type: 'skill', name, files: folder.files, dirs: folder.dirs });
-      res.setHeader('Content-Type', 'application/json');
-      res.setHeader('Content-Disposition', `attachment; filename="${name}.skill.json"`);
-      return res.send(json);
-    }
-    const zip = new AdmZip();
-    for (const d of folder.dirs || []) zip.addFile(`${name}/${d}/`, Buffer.alloc(0), '', 0o755);
-    for (const f of folder.files) zip.addFile(`${name}/${f.path}`, f.bytes, '', f.executable ? 0o755 : 0o644);
-    res.setHeader('Content-Type', 'application/zip');
-    res.setHeader('Content-Disposition', `attachment; filename="${name}${profile === 'claude-upload' ? '-claude' : ''}.${profile === 'claude-upload' ? 'zip' : 'skill'}"`);
-    return res.send(zip.toBuffer());
+    const out = service.packages.download(req.params.revisionId, {
+      format: req.query?.format || 'bundle', profile: req.query?.profile || null,
+      excludeEvals: req.query?.excludeEvals === 'true', acknowledgedDigest: req.query?.acknowledgedDigest || null,
+    });
+    res.setHeader('Content-Type', out.contentType);
+    res.setHeader('Content-Disposition', `attachment; filename="${out.filename}"`);
+    res.setHeader('X-SynaBun-Artifact-Digest', out.manifest.artifactDigest);
+    res.setHeader('X-SynaBun-Archive-Digest', out.manifest.archiveDigest);
+    return res.send(out.bytes);
   }));
 
   // ── Drafts ──
@@ -390,14 +401,38 @@ export function registerSkillsV2Routes(app, { service, isGuestRequest = null, ow
   }));
 
   // ── The old bridges ──
+  // The server moves what is proven SynaBun's by itself at start (migration.js autoMigrate) and leaves a notice; the
+  // owner undoes it (revert), dismisses the notice, or moves a bridge that is not proven SynaBun's by confirming its
+  // bytes (`confirm`: bridgeId → digest, as the plan's `offer` names them).
+  const confirmOf = (body) => {
+    const raw = body?.confirm;
+    if (raw === undefined || raw === null) return {};
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new PathConfineError(400, 'confirm maps a bridge id to the digest of its bytes.');
+    const out = {};
+    for (const [id, digest] of Object.entries(raw)) {
+      if (!/^brg_[0-9a-f]{20}$/.test(id) || typeof digest !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(digest)) throw new PathConfineError(400, 'confirm maps a bridge id to the digest of its bytes.');
+      out[id] = digest;
+    }
+    return out;
+  };
   route('get', '/migrations', reader, safe(async (req, res) => res.json({ ok: true, migrations: service.migration.listJournals() })));
+  route('get', '/migrations/notice', reader, safe(async (req, res) => { service.syncBundled(); res.json({ ok: true, notice: await service.migration.notice() }); }));
+  route('post', '/migrations/notice/dismiss', json, owner, safe(async (req, res) => res.json({ ok: true, ...service.migration.dismissNotice() })));
   route('get', '/migrations/bridges/plan', reader, safe(async (req, res) => { service.syncBundled(); res.json({ ok: true, plan: await service.migration.plan() }); }));
+  // The plan with the owner's confirmations of bridges that are not proven SynaBun's (a reading: nothing moves).
+  route('post', '/migrations/bridges/plan', json, reader, safe(async (req, res) => { service.syncBundled(); res.json({ ok: true, plan: await service.migration.plan({ confirm: confirmOf(req.body) }) }); }));
   route('post', '/migrations/bridges', json, owner, once(safe(async (req, res) => {
     service.syncBundled();
-    const out = await service.migration.migrate({ planDigest: req.body?.planDigest, principal: { kind: 'owner' } });
+    const out = await service.migration.migrate({ planDigest: req.body?.planDigest, confirm: confirmOf(req.body), principal: { kind: 'owner' } });
     service.announce({ type: 'migration.changed', journalId: out.journalId });
     res.json({ ok: out.ok, ...out });
   })));
+  // The one-click fix of a runtime setting that turns a skill off (runtime-checks.js enable): the owner's, from the
+  // page; the answer names the file, its backup and the lines that changed. Never silently.
+  route('post', '/eligibility/enable', json, owner, safe(async (req, res) => {
+    const b = req.body || {};
+    res.json(service.enableEligibility({ runtime: b.runtime, name: b.name, skillMd: b.skillMd, accountId: b.accountId === undefined || b.accountId === null || b.accountId === '' ? 'default' : b.accountId, projectPath: b.projectPath ?? null, confirmDenyAll: b.confirmDenyAll === true }));
+  }));
   route('get', '/migrations/:journalId', reader, ids('journalId'), safe(async (req, res) => res.json({ ok: true, migration: service.migration.readJournal(req.params.journalId) })));
   route('post', '/migrations/:journalId/revert', json, owner, ids('journalId'), safe(async (req, res) => {
     const out = await service.migration.revert(req.params.journalId, { principal: { kind: 'owner' } });

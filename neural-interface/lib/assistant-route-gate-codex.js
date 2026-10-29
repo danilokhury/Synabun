@@ -100,6 +100,9 @@ function probe({ codexBin, command, timeoutMs, spawnImpl }) {
     const timer = setTimeout(() => finish(null), timeoutMs);
     timer.unref?.();
     const send = (message) => { try { proc.stdin.write(`${JSON.stringify(message)}\n`); } catch {} };
+    // A Codex that exits as a request is written fails the pipe after write() returned (EPIPE): unhandled,
+    // that error would end the server. Its exit settles the probe.
+    proc.stdin?.on?.('error', () => finish(null));
     proc.on('error', () => finish(null));
     proc.on('exit', () => finish(null));
     proc.stdout.setEncoding?.('utf8');

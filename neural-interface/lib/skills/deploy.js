@@ -23,6 +23,8 @@
 // the refresh a running session needs. A rollback puts back exactly what the install replaced; an uninstall
 // removes only what SynaBun installed and still holds those bytes (or what the owner confirmed as it is now).
 
+import { effectiveInstallName, nameChecks } from './scan-context.js';
+export { effectiveInstallName, nameChecks } from './scan-context.js';
 import { randomBytes } from 'node:crypto';
 import { chmodSync, lstatSync, mkdirSync, renameSync, rmSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -31,7 +33,7 @@ import { makeConfinedDir, readConfinedFile, removeConfinedEntry, replaceFileAtom
 import { readManifest } from './digest.js';
 import { LibraryError, digestOf } from './library.js';
 import { buildExport, readHeadOf, readSidecar } from './export.js';
-import { scanArtifact, scanAllows } from './scan.js';
+import { scanArtifact, scanAllows, withExternalScans, scanEvidenceKey } from './scan.js';
 import { bundleNameProblem } from './bundle.js';
 import { PORTABLE_NAME_RE, TARGET_PROFILE, getProfile, lintForProfile } from '../../public/shared/skills/ss-profiles.js';
 import { analyzeResources, argumentDiagnostics } from '../../public/shared/skills/ss-resources.js';
@@ -49,12 +51,21 @@ export class DeployError extends PathConfineError {
   }
 }
 
+// How a running session sees a change (checked 2026-10-23 in temporary homes: codex-cli 0.164.0's app-server lists
+// a new or changed skill only when skills/list is asked with forceReload, which SynaBun's Codex panel does on every
+// skills:changed; opencode 2.1.4's serve reads its skill folders again on every /api/skill, so SynaBun's OpenCode panel
+// lists it at once. A Codex or OpenCode session open elsewhere, in a terminal, is not SynaBun's to refresh: it needs a
+// new session. Claude Code watches the folders that existed when it started. A Claude Code skills folder is read by
+// a terminal OpenCode only: SynaBun starts every OpenCode serve of its own, the panel's and an Assistant brain's, with
+// OPENCODE_DISABLE_CLAUDE_CODE=1, so those never see it, `terminal-only`.)
 const REFRESH = {
   claude: (rootExisted) => (rootExisted
     ? { kind: 'automatic', message: 'Claude Code picks up the change in sessions that are already open.' }
     : { kind: 'reload-skills', message: 'This skills folder did not exist before: run /reload-skills in Claude Code sessions that are already open (new sessions see it).' }),
-  codex: () => ({ kind: 'automatic', message: 'Codex picks up new and changed skill files by itself; restart it if the skill does not appear.' }),
-  opencode: () => ({ kind: 'new-session', message: 'Start a new OpenCode session (or restart OpenCode) to be sure it sees the skill.' }),
+  codex: () => ({ kind: 'panel-reload', message: 'SynaBun\'s Codex panel reloads its skills now; a Codex open in a terminal needs a new session.' }),
+  opencode: (rootExisted, root) => (root?.family === 'claude'
+    ? { kind: 'terminal-only', message: 'An OpenCode open in a terminal reads Claude Code\'s folder (new session); SynaBun\'s own OpenCode panel and an OpenCode Assistant do not: install for OpenCode for those.' }
+    : { kind: 'panel-reload', message: 'SynaBun\'s OpenCode panel lists it now; an OpenCode open in a terminal needs a new session.' }),
 };
 
 const RUNTIME_LABEL = { claude: 'Claude Code', codex: 'Codex', opencode: 'OpenCode', agents: 'the shared agents folder' };
@@ -154,29 +165,6 @@ export function swapFolderIn({ root, anchor = null, name, folder, digest, expect
 }
 
 /**
- * The name a revision is installed under (its folder's name): its SKILL.md name when that can be a folder name,
- * else the library's. The plan, the review's evidence and an approval all use this one name.
- */
-export function effectiveInstallName(skill, files) {
-  const { parsed } = readHeadOf(files);
-  const fmName = typeof parsed.data?.name === 'string' ? parsed.data.name.trim() : '';
-  const candidate = fmName && !bundleNameProblem(fmName) ? fmName : skill?.name;
-  if (!candidate || bundleNameProblem(candidate)) throw new DeployError(422, 'This skill has no name that can be a folder\'s name: give its SKILL.md a "name".', 'invalid_name');
-  return candidate;
-}
-
-/**
- * The names a scan checks a skill's install name against: every name SynaBun ships (look-alikes), and those it
- * must not take (all of them but the skill's own when it is that shipped skill, in the library as bundled).
- */
-export function nameChecks(skill, name, shipped = []) {
-  const all = [...new Set((shipped || []).filter((n) => typeof n === 'string' && n))];
-  const own = skill?.origin?.kind === 'bundled' ? String(skill.origin.name || skill.name || '').toLowerCase() : '';
-  const notOwn = all.filter((n) => n.toLowerCase() !== own || own !== String(name || '').toLowerCase());
-  return { knownNames: notOwn, reservedNames: notOwn };
-}
-
-/**
  * @param {object} o
  * @param {object} o.library lib/skills/library.js
  * @param {object} o.roots lib/skills/roots.js resolver
@@ -186,12 +174,15 @@ export function nameChecks(skill, name, shipped = []) {
  * @param {(id: string) => Promise<object|null>} [o.catalogEntries] every catalog entry (for what else a runtime sees)
  * @param {(o) => Promise<object|null>} [o.probe] ask a runtime itself whether it lists the skill
  * @param {(o) => string} [o.eligibility] 'enabled' | 'disabled' | 'unknown' from the runtime's settings
+ * @param {(o) => { state: string, reason: object|null }} [o.eligibilityDetail] the same, with the setting that turns it off
  * @param {(event) => void} [o.emit]
  * @param {() => string[]} [o.shippedNames] the names of the skills SynaBun ships (what a scan checks names against)
  * @param {(revisionId: string) => ({ installName: string|null }|null)} [o.approvalOf] the approval a revision has
  *   (lib/skills/reviews.js approvalOf): an agent's revision installs only under the name it was approved for
  */
-export function createDeployer({ library, roots, ownership, dataDir, config = () => ({}), catalogEntries = async () => [], probe = null, eligibility = () => 'unknown', emit = () => {}, now = () => new Date().toISOString(), newId = (p) => `${p}_${randomBytes(10).toString('hex')}`, shippedNames = () => [], approvalOf = null }) {
+export function createDeployer({ library, roots, ownership, dataDir, config = () => ({}), catalogEntries = async () => [], probe = null, eligibility = () => 'unknown', eligibilityDetail = null, emit = () => {}, now = () => new Date().toISOString(), newId = (p) => `${p}_${randomBytes(10).toString('hex')}`, shippedNames = () => [], approvalOf = null }) {
+  let externalScanner = async () => [];
+  function setExternalScanner(scan) { externalScanner = scan; }
   const storePath = join(dataDir, 'installations.json');
 
   function readStore() {
@@ -307,10 +298,10 @@ export function createDeployer({ library, roots, ownership, dataDir, config = ()
       const exportDiagnostics = exported.diagnostics;
       if (lint.errors || exportDiagnostics.some((d) => d.severity === 'error')) blocked.push({ code: 'lint_errors', message: `${lint.errors + exportDiagnostics.filter((d) => d.severity === 'error').length} problem(s) keep it from working in ${runtimes.map((r) => RUNTIME_LABEL[r]).join(' and ')}.` });
       const { parsed } = readHeadOf(exported.files);
-      const scan = scanArtifact({ type: 'skill', name, files: exported.files, frontmatter: parsed.data, digest: exported.digest, knownNames: names.knownNames, reservedNames: names.reservedNames });
+      const scan = withExternalScans(scanArtifact({ type: 'skill', name, files: exported.files, frontmatter: parsed.data, digest: exported.digest, knownNames: names.knownNames, reservedNames: names.reservedNames }), await externalScanner({ ...revision, contentDigest: exported.digest }, exported));
       // What SynaBun ships was reviewed with the app it ships in: its findings are shown, not asked about again.
       // Everything else (an import, a folder of the user's, an agent's revision) needs the findings confirmed.
-      const trustedBundled = revision.source?.kind === 'bundled' && scan.status !== 'error';
+      const trustedBundled = revision.source?.kind === 'bundled' && !scan.external?.length && !['error', 'incomplete'].includes(scan.status);
       if (scan.gate === 'blocked') blocked.push({ code: 'scan_blocked', message: scan.status === 'error' ? `The scan failed (${scan.error}): nothing is installed without one.` : 'The scan found something that blocks this install.' });
       else if (scan.gate === 'review' && !trustedBundled) needs.push({ code: 'acknowledge_scan', digest: exported.digest, message: 'Review the scan\'s findings and confirm them for these exact files.' });
       if (reviewNeeded) blocked.push({ code: 'review_required', message: 'The Assistant made this revision: approve it in the Review queue before it is installed.' });
@@ -323,20 +314,35 @@ export function createDeployer({ library, roots, ownership, dataDir, config = ()
       if (state === 'modified' || state === 'unowned') needs.push({ code: 'confirm_replace', currentDigest, message: `"${destination}" ${state === 'modified' ? 'was installed by SynaBun but has been changed since' : 'was not installed by SynaBun'}. Replace it? A backup is kept.` });
       // What else these runtimes see under this name, elsewhere.
       const overlap = entries.filter((e) => e.kind === 'skill' && (e.invocationName === name || e.name === name) && e.rootId !== root.rootId && e.runtimes.some((r) => runtimes.includes(r)))
-        .map((e) => ({ id: e.id, path: e.path, scope: e.scope, runtimes: e.runtimes.filter((r) => runtimes.includes(r)), why: `${e.runtimes.filter((r) => runtimes.includes(r)).map((r) => RUNTIME_LABEL[r]).join(' and ')} already ${e.runtimes.length > 1 ? 'see' : 'sees'} a "${name}" skill at ${e.path}.` }));
-      const refresh = runtimes.map((r) => ({ runtime: r, ...(REFRESH[r] ? REFRESH[r](root.status === 'ok') : { kind: 'unknown', message: '' }) }));
+        .map((e) => {
+          // The page words it from `code`, `name`, `runtimes` and `path` (skillsStudio.publish.overlapOne / overlapMany);
+          // `why` is the English for a caller without the page's strings (the MCP tool, a log).
+          const seen = e.runtimes.filter((r) => runtimes.includes(r));
+          return { id: e.id, code: 'overlap', name, path: e.path, scope: e.scope, runtimes: seen, why: `${seen.map((r) => RUNTIME_LABEL[r]).join(' and ')} also ${seen.length > 1 ? 'see' : 'sees'} a "${name}" skill at ${e.path}.` };
+        });
+      const refresh = runtimes.map((r) => ({ runtime: r, ...(REFRESH[r] ? REFRESH[r](root.status === 'ok', root) : { kind: 'unknown', message: '' }) }));
+      // Whether each runtime's own settings let a skill of this name, at this place, through (read statically; the
+      // page offers the one-click fix for a runtime that turns it off). Not part of the plan's digest: it changes
+      // nothing of what is written.
+      const eligible = {};
+      for (const r of runtimes) {
+        try {
+          const d = typeof eligibilityDetail === 'function' ? eligibilityDetail({ runtime: r, name, skillMd: join(destination, 'SKILL.md'), accountId: target.accountId, projectPath: target.projectPath }) : { state: eligibility({ runtime: r, name, skillMd: join(destination, 'SKILL.md'), accountId: target.accountId, projectPath: target.projectPath }) || 'unknown', reason: null };
+          eligible[r] = { state: ['enabled', 'disabled', 'unknown'].includes(d?.state) ? d.state : 'unknown', reason: d?.reason || null };
+        } catch { eligible[r] = { state: 'unknown', reason: null }; }
+      }
       out.push({
         targetKey: target.key, ...target, name,
         root: { rootId: root.rootId, path: root.path, status: root.status, scope: root.scope, sourceKind: root.sourceKind, policy: root.policy },
         destination, affectedRuntimes: runtimes, overlap,
         export: { profileId, profileVersion: getProfile(profileId)?.version || null, artifactDigest: exported.digest, sourceDigest: revision.contentDigest, transforms: exported.transforms },
         lint: { profiles: lint.profiles, errors: lint.errors, warnings: lint.warnings, diagnostics: [...exportDiagnostics, ...lint.diagnostics].slice(0, 300) },
-        scan: { status: scan.status, gate: scan.gate, digest: scan.digest, counts: scan.counts, findings: scan.findings.slice(0, 50), coverage: scan.coverage, disclosure: scan.disclosure, trustedBundled },
+        scan: { status: scan.status, gate: scan.gate, digest: scan.digest, engineVersion: scan.engineVersion, policy: scan.policy, evidenceKey: scanEvidenceKey(scan), external: scan.external || [], counts: scan.counts, findings: scan.findings.slice(0, 50), coverage: scan.coverage, disclosure: scan.disclosure, trustedBundled },
         destinationState: { state, currentDigest, installedBySynabun: !!inspected.record, activeInstallationId: activeAt(destination)?.installationId || null },
-        refresh, blocked, needs, ready: !blocked.length && !needs.length,
+        refresh, eligibility: eligible, blocked, needs, ready: !blocked.length && !needs.length,
       });
     }
-    const subject = { revisionId, contentDigest: revision.contentDigest, targets: out.map((t) => [t.targetKey, t.destination || null, t.export?.artifactDigest || null, t.destinationState?.currentDigest ?? null, t.destinationState?.state || null, t.blocked.map((b) => b.code)]) };
+    const subject = { revisionId, contentDigest: revision.contentDigest, targets: out.map((t) => [t.targetKey, t.destination || null, t.export?.artifactDigest || null, t.destinationState?.currentDigest ?? null, t.destinationState?.state || null, t.blocked.map((b) => b.code), t.scan?.evidenceKey || null, t.needs.map((n) => [n.code, n.digest || null])]) };
     return {
       skillId: skill.skillId, skillName: skill.name, revisionId, contentDigest: revision.contentDigest, author: revision.author, name,
       targets: out, planDigest: digestOf(subject), createdAt: now(),
@@ -393,6 +399,7 @@ export function createDeployer({ library, roots, ownership, dataDir, config = ()
           previousInstallationId: previous?.installationId || null,
           backup: backupId ? { backupId, manifestDigest: t.destinationState.currentDigest } : null,
           migration, reviewId,
+          scanAcknowledgement: (decision.acknowledgedDigest === t.scan.digest || t.scan.trustedBundled) ? { digest: t.scan.digest, evidenceKey: t.scan.evidenceKey, engineVersion: t.scan.engineVersion, policy: t.scan.policy, at: now() } : null,
           authorization: { principal: principal?.kind || 'owner', planDigest },
           transaction: { state: 'committed', at: now(), leftover: swap.leftover },
           state: { written: true, verifiedDigest: t.export.artifactDigest, discoverable: null, eligibility: 'unknown', discovered: null, loadedRevisionId: null, refresh: t.refresh, tested: false, checkedAt: now() },
@@ -508,10 +515,10 @@ export function createDeployer({ library, roots, ownership, dataDir, config = ()
     const written = current.kind === 'absent' ? 'missing' : (current.digest === inst.export.artifactDigest ? 'verified' : 'changed');
     const checks = [];
     let discoverable = written === 'verified';
+    let live = null;
     if (written === 'verified') {
       // The folder must still be one the runtime reads: OPENCODE_CONFIG_DIR set after the install, or an account
       // folder that moved, leaves the skill where nothing looks.
-      let live = null;
       try { live = roots.listRoots().find((r) => resolve(r.path) === resolve(inst.destination.root)) || null; } catch { live = null; }
       for (const runtime of inst.destination.affectedRuntimes) {
         if (live && live.runtimes.includes(runtime)) continue;
@@ -536,7 +543,10 @@ export function createDeployer({ library, roots, ownership, dataDir, config = ()
     const discovered = {};
     if (probeRuntime && typeof probe === 'function' && written === 'verified') {
       for (const runtime of inst.destination.affectedRuntimes) {
-        try { discovered[runtime] = await probe({ runtime, name: inst.destination.relativePath, skillMd: join(destination, 'SKILL.md'), accountId: inst.target.accountId, projectPath: inst.target.projectPath }); } catch (err) { discovered[runtime] = { discovered: null, error: err?.message || String(err) }; }
+        // A Claude Code folder reaches a terminal OpenCode only: SynaBun's own serve (OPENCODE_DISABLE_CLAUDE_CODE=1)
+        // would answer "not listed" for a folder it never reads, so it is not asked (REFRESH `terminal-only`).
+        if (runtime === 'opencode' && live?.family === 'claude') { discovered[runtime] = { discovered: null, code: 'terminal-only', method: 'none', reason: 'SynaBun\'s OpenCode never reads Claude Code\'s folder; an OpenCode in a terminal does.' }; continue; }
+        try { discovered[runtime] = await probe({ runtime, name: inst.destination.relativePath, skillMd: join(destination, 'SKILL.md'), accountId: inst.target.accountId, projectPath: inst.target.projectPath }); } catch (err) { discovered[runtime] = { discovered: null, code: 'no-answer', error: err?.message || String(err) }; }
       }
     }
     const store = readStore();
@@ -550,5 +560,5 @@ export function createDeployer({ library, roots, ownership, dataDir, config = ()
     return rec;
   }
 
-  return { plan, install, rollback, uninstall, verify, listInstallations, getInstallation, activeAt, paths: { storePath } };
+  return { setExternalScanner, plan, install, rollback, uninstall, verify, listInstallations, getInstallation, activeAt, paths: { storePath } };
 }

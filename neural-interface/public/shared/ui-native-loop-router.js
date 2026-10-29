@@ -13,7 +13,10 @@ import {
 const DISMISSED_KEY = 'synabun-native-loop-dismissed';
 const CLAIM_TTL_MS = 90_000;
 const TERMINAL_RESTORE_LIMIT = 10;
+// 'suspended' is not among them: a dispatched worker a server restart cut off keeps its tab until the next start
+// resumes it (or ends it as interrupted).
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'stopped', 'interrupted']);
+const LIVE_STATUSES = new Set(['starting', 'running', 'suspended']);
 const _windowId = nativeLoopWindowId;
 
 const _attached = new Map();
@@ -355,7 +358,7 @@ async function reconcileRuns() {
     const newestFirst = (data.runs || [])
       .filter(hasIdentity)
       .sort((a, b) => String(b.updatedAt || b.startedAt || '').localeCompare(String(a.updatedAt || a.startedAt || '')));
-    const activeRuns = newestFirst.filter((run) => run.status === 'starting' || run.status === 'running');
+    const activeRuns = newestFirst.filter((run) => LIVE_STATUSES.has(run.status));
     const terminalRuns = newestFirst.filter((run) => {
       if (!TERMINAL_STATUSES.has(run.status)) return false;
       if (new Date(run.updatedAt || run.startedAt || 0).getTime() < cutoff) return false;
@@ -403,6 +406,9 @@ export function initNativeLoopRouter() {
   on('sync:sidepanel:run-completed', route);
   on('sync:sidepanel:run-failed', route);
   on('sync:sidepanel:run-stopped', route);
+  // The sync socket (re)connected (ui-sync.js 'connected'): after a server restart the runs are read again at once,
+  // not at the next 30 s heartbeat, so a tab whose run was suspended sees it resume (or end) as soon as it can.
+  on('session:info', () => { scheduleReconcile(); });
   on('sync:sidepanel:provider-event', (message) => {
     // An OpenCode worker's panel streams from its own serve: the sync copy of its tool calls is the Assistant's.
     if (message?.event?.provider === 'opencode') return;

@@ -23,7 +23,7 @@ import { createStickyScrollController } from './ui-scroll-follow.js';
 import { requestGeneratedSessionTitle } from './session-title.js';
 import { wireFileLinks } from './ui-file-links.js';
 import { WORKER_END_CLASS, backToAssistant, buildWorkerEndCard, endWorkerRunOnClose, forgetWorkerEnd, trackWorkerEnd, updateWorkerEndBusy } from './ui-worker-end.js';
-import { isDispatchedRun, isEndOfRunAbort } from './worker-end.js';
+import { isDispatchedRun, isEndOfRunAbort, workerEndView } from './worker-end.js';
 import { runAwaitsAnswer } from './sidepanel-session-status.js';
 // ── cp/ feature modules (SDK-engine CLI parity: diffs, agents, bash, perms, statusline) ──
 import { setCpCtx } from './cp/cp-ctx.js';
@@ -2600,7 +2600,7 @@ function injectStyles() {
       border: 0.5px solid rgba(255,255,255,0.05);
       border-radius: 6px;
       font-size: 11px; color: rgba(255,255,255,0.7);
-      cursor: grab;
+      cursor: move;
       transition: background 0.15s, border-color 0.15s;
     }
     .cp-queue-item:hover {
@@ -2614,7 +2614,7 @@ function injectStyles() {
       background: rgba(120,180,255,0.08);
     }
     .cp-queue-drag {
-      color: rgba(255,255,255,0.2); cursor: grab;
+      color: rgba(255,255,255,0.2); cursor: move;
       font-size: 10px; user-select: none; flex-shrink: 0;
     }
     .cp-queue-text {
@@ -5442,7 +5442,8 @@ function _processTabMsg(tab, msg) {
         if (expectRunning && !(tab.sendStartedAt > tab._reattachSentAt)) {
           console.log('[claude-panel] No orphan to reattach — the turn ended while disconnected');
           finishTab(tab, true);
-          appendStatus(tab, 'Connection lost — this turn did not survive the disconnect.');
+          // A dispatched worker's session says what became of its run (resumed, or how it ended), not only this.
+          _lostTurnLine(tab).then((line) => { if (!tab.closed) appendStatus(tab, line); });
         }
         // Prompts queued behind a Compact when the socket closed: nothing says it finished.
         if (tab._queueWaits === 'session') _compactQueue.after(tab, 'lost');
@@ -10452,8 +10453,11 @@ export async function attachClaudeAutomation(run, { focus = !!run?.focus, isCanc
   }
   if (!tab) return { ok: false, reason: 'tab_limit' };
   const running = run.status === 'starting' || run.status === 'running';
+  // A dispatched worker a server restart cut off: suspended until the next start resumes it as the same run
+  // (lib/assistant-dispatch.js). It still owns this tab; nothing of its cut-off turn runs any more.
+  const suspended = run.status === 'suspended';
   tab.automationRunId = run.runId;
-  tab.automationActive = running;
+  tab.automationActive = running || suspended;
   tab.automationOwnerId = nativeLoopWindowId;
   tab.releasedRunId = null;
   tab.sdkMode = true;
@@ -10467,6 +10471,12 @@ export async function attachClaudeAutomation(run, { focus = !!run?.focus, isCanc
   setRunning(tab, running);
   updatePillLabel(tab);
   tab._automationIteration = run.currentIteration;
+  // Resumed after a server restart: what the run did while this window was away (the continuation prompt, its first
+  // steps: events sent before the page reconnected) is in its transcript, not in this tab, which reads it again.
+  // That holds for a run that resumed and ended while this window was away too.
+  const resumes = Number(run.resumes) || 0;
+  const resumedSinceSeen = resumes > (tab._automationResumes || 0);
+  if (tab._automationHydrated && resumedSinceSeen) tab._automationHydrated = false;
   if (!tab._automationHydrated) {
     tab._automationHydrated = true;
     if (tab.messagesEl) tab.messagesEl.innerHTML = '';
@@ -10476,6 +10486,10 @@ export async function attachClaudeAutomation(run, { focus = !!run?.focus, isCanc
       return { ok: false, reason: 'dismissed' };
     }
   }
+  if (running && resumedSinceSeen && tab._automationResumes !== undefined) appendStatus(tab, 'Resumed after the server restart — the run continues here.');
+  tab._automationResumes = Math.max(tab._automationResumes || 0, resumes);
+  if (suspended) _showRunSuspended(tab, run);
+  else tab._automationSuspendedAt = null;
   // (A dispatched worker's failure, with its reason, is on its end card.)
   if (run.status === 'failed' && run.error && !isDispatchedRun(run) && tab._automationLifecycleError !== run.error) {
     tab._automationLifecycleError = run.error;
@@ -10525,6 +10539,64 @@ function hasLiveBackgroundWork(tab) {
     if (task && !task.ambient && isTaskRunning(task)) return true;
   }
   return false;
+}
+
+const LOST_TURN_LINE = 'Connection lost — this turn did not survive the disconnect.';
+// What a tab says when the turn it showed did not survive a lost connection. When its session is a dispatched worker's
+// (a tab opened on that session), the line says what became of the run: resumed after a server restart (in its own
+// tab), or how it ended, with its reason. A tab the user continued by hand after its run ended keeps the generic line:
+// the turn that was cut off was the user's own.
+async function _lostTurnLine(tab) {
+  if (!tab?.sessionId || tab.releasedRunId) return LOST_TURN_LINE;
+  try {
+    const res = await fetch('/api/sidepanel-runs');
+    const runs = res.ok ? ((await res.json())?.runs || []) : [];
+    const run = runs.find((item) => item?.providerSessionId === tab.sessionId && isDispatchedRun(item));
+    if (!run) return LOST_TURN_LINE;
+    if (run.status === 'suspended') return 'SynaBun restarted — this worker run is being resumed in its own tab.';
+    if (run.status === 'starting' || run.status === 'running') {
+      return Number(run.resumes) > 0 ? 'SynaBun restarted — this worker run was resumed and continues in its own tab.' : LOST_TURN_LINE;
+    }
+    let dispatch = null;
+    try {
+      const reply = await fetch(`/api/assistant/runs/${encodeURIComponent(run.runId)}`);
+      if (reply.ok) dispatch = (await reply.json())?.run || null;
+    } catch {}
+    const view = workerEndView(run, dispatch);
+    return view ? `This session's worker run ended: ${view.title}${view.detail ? ` — ${view.detail}` : ''}` : LOST_TURN_LINE;
+  } catch {
+    return LOST_TURN_LINE;
+  }
+}
+
+// A run tab whose run the server suspended as it restarted (status 'suspended'): its turn was cut off, so the tab
+// stops looking busy (spinner, a tool row and its timer, background shells: all went with the CLI) and says the run
+// resumes. Once per suspension.
+function _showRunSuspended(tab, run) {
+  const key = run?.suspendedAt || 'suspended';
+  if (tab._automationSuspendedAt === key) return;
+  tab._automationSuspendedAt = key;
+  finishTab(tab, true);
+  _closeCutOffTools(tab);
+  appendStatus(tab, 'SynaBun restarted — resuming this run…');
+}
+
+// Every tool call of the tab still waiting for its result is closed as cut off, through the path a result takes (the
+// card's state, its timer, an agent card), and the background work the tab showed is over.
+function _closeCutOffTools(tab) {
+  const $msgs = tab?.messagesEl;
+  if (!$msgs) return;
+  for (const card of $msgs.querySelectorAll('.tool-card[data-tool-id]')) {
+    if (card.classList.contains('tool-ok') || card.classList.contains('tool-error') || card.dataset.resolved === '1') continue;
+    if (!card.dataset.toolId) continue;
+    try { updateToolResult(tab, { type: 'tool_result', tool_use_id: card.dataset.toolId, is_error: true, content: 'Cut off by the server restart.' }); } catch {}
+  }
+  let shells = false;
+  for (const task of tab.bgTasks?.values?.() || []) {
+    if (task?.status === 'running') { task.status = 'stopped'; shells = true; }
+  }
+  if (shells) { try { renderBgTray(tab); } catch {} }
+  _setBackgroundWork(tab, []);
 }
 
 // The end of a worker the Assistant dispatched (ui-worker-end.js): one card,

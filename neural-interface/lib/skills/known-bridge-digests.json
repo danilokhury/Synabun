@@ -1,0 +1,387 @@
+{
+  "schemaVersion": 1,
+  "about": "Bridge files earlier SynaBun versions wrote for Codex (~/.codex/prompts/<name>.md) and OpenCode (~/.config/opencode/command/<name>.md): the SHA-256 of each text with the bundled skill folder as `placeholder`, per runtime and skill name. A file whose bytes are one of these (with this install's folder) moves to a native skill folder by itself (lib/skills/migration.js proof generated-previous). Computed by scripts/skills/compute-bridge-digests.mjs from git history; do not edit by hand.",
+  "placeholder": "\u0000SYNABUN_SKILL_DIR\u0000",
+  "generators": [
+    {
+      "id": "g1",
+      "sha256": "9427c9c061eb411f3577b7606fe0cf7843dbe07fcb93fed3c3c84956dcf288a6",
+      "firstCommit": "0f9487a15761",
+      "firstDate": "2026-04-20"
+    },
+    {
+      "id": "g2",
+      "sha256": "5c6328c33cea7c8b8808d685e2de0ad2151b790562655a9b1c00d0106a308b43",
+      "firstCommit": "9331cbab34e3",
+      "firstDate": "2026-07-13"
+    },
+    {
+      "id": "g3",
+      "sha256": "c01fc125e147f693cc2fad080f6765f93ccaaa8afccb9b4661c08a5fbabd7f4c",
+      "firstCommit": "ae9acec31b71",
+      "firstDate": "2026-10-23"
+    }
+  ],
+  "bridges": {
+    "codex": {
+      "leonardo": [
+        {
+          "digest": "7865862f6cb04aba6b68641bfa5d308b16c9c78ac3bbc7f486a8d12d0094724b",
+          "sep": "any",
+          "generators": [
+            "g1"
+          ],
+          "skillMd": [
+            "be0428175b95"
+          ],
+          "firstCommit": "0f9487a15761",
+          "firstDate": "2026-04-20"
+        },
+        {
+          "digest": "e79b64d4abc7a114fedebfacce46bc824c18ac27d78dcd4bf67164d0061d8307",
+          "sep": "any",
+          "generators": [
+            "g1"
+          ],
+          "skillMd": [
+            "b2a0d731bf20"
+          ],
+          "firstCommit": "0374cf2ae6f2",
+          "firstDate": "2026-04-25"
+        },
+        {
+          "digest": "10d6b72ce424fafe8eb3b9b8a3c65eb8234892295cd88701f8f9c26a11a128b1",
+          "sep": "/",
+          "generators": [
+            "g2"
+          ],
+          "skillMd": [
+            "b2a0d731bf20"
+          ],
+          "firstCommit": "9331cbab34e3",
+          "firstDate": "2026-07-13"
+        },
+        {
+          "digest": "fc0eba6adf510ef478e18c7c57b335091ee02545ddb1a9552e35ea18ab5da140",
+          "sep": "\\",
+          "generators": [
+            "g2"
+          ],
+          "skillMd": [
+            "b2a0d731bf20"
+          ],
+          "firstCommit": "9331cbab34e3",
+          "firstDate": "2026-07-13"
+        }
+      ],
+      "skill-forge": [
+        {
+          "digest": "50b590fdd8749ed83381bbd0b5b1b8c718ab5e83475a76086dfad4110f4f8e55",
+          "sep": "\\",
+          "generators": [
+            "g3"
+          ],
+          "skillMd": [
+            "78ebb9f149ff",
+            "a28ce5188f4b"
+          ],
+          "firstCommit": "ae9acec31b71",
+          "firstDate": "2026-10-23"
+        },
+        {
+          "digest": "b253e5c435de87c156c535615cdc6256ee8f54e34bd3807d9e599b26cdee22f6",
+          "sep": "/",
+          "generators": [
+            "g3"
+          ],
+          "skillMd": [
+            "78ebb9f149ff",
+            "a28ce5188f4b"
+          ],
+          "firstCommit": "ae9acec31b71",
+          "firstDate": "2026-10-23"
+        }
+      ],
+      "synabun": [
+        {
+          "digest": "0c6fcf648dfdc159ea33740600b2db5dc8cffbca696ac111b2839e9803fbd32c",
+          "sep": "any",
+          "generators": [
+            "g1"
+          ],
+          "skillMd": [
+            "3dd1befbc19b"
+          ],
+          "firstCommit": "0f9487a15761",
+          "firstDate": "2026-04-20"
+        },
+        {
+          "digest": "dc270602a208eac8c84ba722473552bbbeadc6cdbd6968db9c4b3f31701c73c9",
+          "sep": "any",
+          "generators": [
+            "g1"
+          ],
+          "skillMd": [
+            "ec0c17ece213"
+          ],
+          "firstCommit": "0374cf2ae6f2",
+          "firstDate": "2026-04-25"
+        },
+        {
+          "digest": "cf4f4d22ab61219de00e33334f5023a28ed1a875b4850bea6e68fc0598f9b007",
+          "sep": "any",
+          "generators": [
+            "g1"
+          ],
+          "skillMd": [
+            "8d262753dd16"
+          ],
+          "firstCommit": "357e1723955c",
+          "firstDate": "2026-06-28"
+        },
+        {
+          "digest": "1514555510138fd42bc28d44d626105108773471e46c70f321691cfd91ac2b66",
+          "sep": "\\",
+          "generators": [
+            "g2",
+            "g3"
+          ],
+          "skillMd": [
+            "8d262753dd16",
+            "a9ac8e43510e",
+            "ea38ed171e73",
+            "f4fb172b9006"
+          ],
+          "firstCommit": "9331cbab34e3",
+          "firstDate": "2026-07-13"
+        },
+        {
+          "digest": "c95f4d4fc9216dde3cb39d8959ccc14be5aa01bf2d7a9d2997c692316e07659b",
+          "sep": "/",
+          "generators": [
+            "g2",
+            "g3"
+          ],
+          "skillMd": [
+            "8d262753dd16",
+            "a9ac8e43510e",
+            "ea38ed171e73",
+            "f4fb172b9006"
+          ],
+          "firstCommit": "9331cbab34e3",
+          "firstDate": "2026-07-13"
+        },
+        {
+          "digest": "0d154ea718f26cebe98413f5b5074b79f9e164235b1f230f9f9163ff1adbadb7",
+          "sep": "/",
+          "generators": [
+            "g2",
+            "g3"
+          ],
+          "skillMd": [
+            "1019fc5ef755",
+            "2a5ae45388b6",
+            "740fdb3985fd",
+            "b5380300a1f5"
+          ],
+          "firstCommit": "636f18afbe6b",
+          "firstDate": "2026-07-21"
+        },
+        {
+          "digest": "26937c83a9f8edc06d3354d1e649b7b5cf6ea2ba16e8c74c9eafde48fda210a5",
+          "sep": "\\",
+          "generators": [
+            "g2",
+            "g3"
+          ],
+          "skillMd": [
+            "1019fc5ef755",
+            "2a5ae45388b6",
+            "740fdb3985fd",
+            "b5380300a1f5"
+          ],
+          "firstCommit": "636f18afbe6b",
+          "firstDate": "2026-07-21"
+        }
+      ]
+    },
+    "opencode": {
+      "leonardo": [
+        {
+          "digest": "64b005834dd226dfc4287e2b27e8a6931a386268a5907494c30ccbaec4aeab32",
+          "sep": "any",
+          "generators": [
+            "g1"
+          ],
+          "skillMd": [
+            "be0428175b95"
+          ],
+          "firstCommit": "0f9487a15761",
+          "firstDate": "2026-04-20"
+        },
+        {
+          "digest": "6367df5db047344dc713916d5f194b200d77ff6e25b89c6a647fb533ee519263",
+          "sep": "any",
+          "generators": [
+            "g1",
+            "g2"
+          ],
+          "skillMd": [
+            "b2a0d731bf20"
+          ],
+          "firstCommit": "0374cf2ae6f2",
+          "firstDate": "2026-04-25"
+        }
+      ],
+      "skill-forge": [
+        {
+          "digest": "18dddd06a4c22d401ac651606c0740e477a780cceaf251f5f5bed1657a4733fb",
+          "sep": "any",
+          "generators": [
+            "g3"
+          ],
+          "skillMd": [
+            "78ebb9f149ff"
+          ],
+          "firstCommit": "ae9acec31b71",
+          "firstDate": "2026-10-23"
+        },
+        {
+          "digest": "4b619a432fc38e95310399f2d59a0f1501a3984b67007febd8ff92634afffa8f",
+          "sep": "any",
+          "generators": [
+            "g3"
+          ],
+          "skillMd": [
+            "a28ce5188f4b"
+          ],
+          "firstCommit": "worktree",
+          "firstDate": null
+        }
+      ],
+      "synabun": [
+        {
+          "digest": "3660306f72cbf653a6bbda770412b017ae33eb05e845370ee8982bc3bf449ef5",
+          "sep": "any",
+          "generators": [
+            "g1"
+          ],
+          "skillMd": [
+            "3dd1befbc19b"
+          ],
+          "firstCommit": "0f9487a15761",
+          "firstDate": "2026-04-20"
+        },
+        {
+          "digest": "3d36728bc4e1d48007a9822afc5c95742b447c0a691cfdcc4c0ee61397c6317f",
+          "sep": "any",
+          "generators": [
+            "g1"
+          ],
+          "skillMd": [
+            "ec0c17ece213"
+          ],
+          "firstCommit": "0374cf2ae6f2",
+          "firstDate": "2026-04-25"
+        },
+        {
+          "digest": "07f365336e58e40dd89eb801ca3407a0be6d8a6f2978031a13c41eae9c8694ba",
+          "sep": "any",
+          "generators": [
+            "g1",
+            "g2"
+          ],
+          "skillMd": [
+            "8d262753dd16"
+          ],
+          "firstCommit": "357e1723955c",
+          "firstDate": "2026-06-28"
+        },
+        {
+          "digest": "2437a359858367b341199d0a1ec2ed9c83c3aea1dfe9ae2eb3d5f1fd804391c2",
+          "sep": "any",
+          "generators": [
+            "g2"
+          ],
+          "skillMd": [
+            "ea38ed171e73"
+          ],
+          "firstCommit": "9331cbab34e3",
+          "firstDate": "2026-07-13"
+        },
+        {
+          "digest": "de80108812b6ac44adfdb17f0241d552a686ecc44320c6a442bf68902d4fdcd5",
+          "sep": "any",
+          "generators": [
+            "g2"
+          ],
+          "skillMd": [
+            "740fdb3985fd"
+          ],
+          "firstCommit": "636f18afbe6b",
+          "firstDate": "2026-07-21"
+        },
+        {
+          "digest": "3f585859c54e1b1765ef73016963e44d5ad042ed2770a5c50ed6e7140bf66923",
+          "sep": "any",
+          "generators": [
+            "g2"
+          ],
+          "skillMd": [
+            "1019fc5ef755"
+          ],
+          "firstCommit": "1e8d4a7b438c",
+          "firstDate": "2026-07-31"
+        },
+        {
+          "digest": "97c5b4024f224725f38c654ccaab1b508a2e0eee9d3b379fb2b8207537e18940",
+          "sep": "any",
+          "generators": [
+            "g2"
+          ],
+          "skillMd": [
+            "a9ac8e43510e"
+          ],
+          "firstCommit": "38b4830aeeea",
+          "firstDate": "2026-08-16"
+        },
+        {
+          "digest": "43e7f9f6735eb0dd5a1f3da91a091a934361a0ed343b7b6b6e0f0bf788a7a010",
+          "sep": "any",
+          "generators": [
+            "g2"
+          ],
+          "skillMd": [
+            "2a5ae45388b6"
+          ],
+          "firstCommit": "9bddbafa7715",
+          "firstDate": "2026-09-01"
+        },
+        {
+          "digest": "6521bff3e17b32e0c56fea1a7b32690aaebe8a9a384e23ee6a92ca90e9324f66",
+          "sep": "any",
+          "generators": [
+            "g3"
+          ],
+          "skillMd": [
+            "f4fb172b9006"
+          ],
+          "firstCommit": "ae9acec31b71",
+          "firstDate": "2026-10-23"
+        },
+        {
+          "digest": "b595148289a6c6761cc18a7966ccd974c86e035825e62d7463720ca9bcc5fd27",
+          "sep": "any",
+          "generators": [
+            "g3"
+          ],
+          "skillMd": [
+            "b5380300a1f5"
+          ],
+          "firstCommit": "6776e42b885c",
+          "firstDate": "2026-10-23"
+        }
+      ]
+    }
+  }
+}

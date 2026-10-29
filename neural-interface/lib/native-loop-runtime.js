@@ -1,3 +1,5 @@
+import { retainExternalRefs } from './mcp-external-servers.js';
+import { storedToolList, toolListRecord, readStoredToolListRecord } from './tool-lists.js';
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
@@ -30,7 +32,9 @@ function cleanDescriptor(record) {
     contextMode: record.contextMode || null,
     modelContextWindow: record.modelContextWindow || null,
     effort: record.effort || null,
-    mcpProfile: record.mcpProfile || null,
+    tools: storedToolList(record),
+    externalMcpVersion: 2,
+    ...(record.toolListError ? { toolListError: record.toolListError } : {}),
     accountId: record.accountId || null,
     currentIteration: record.currentIteration || 0,
     totalIterations: record.totalIterations || 0,
@@ -53,8 +57,17 @@ function cleanDescriptor(record) {
     // lastResult.status): an idle warm worker whose turn ended asking waits on the user.
     outcome: record.outcome || null,
     assistantSessionId: record.assistantSessionId || null,
+    // A dispatched worker a server restart cut off (status 'suspended') waits for its resume on the next start;
+    // `resumes` counts how often it was resumed (assistant-dispatch.js resumeRun).
+    suspendedAt: record.suspendedAt || null,
+    suspendReason: record.suspendReason || null,
+    resumes: Number(record.resumes) || 0,
+    resumedAt: record.resumedAt || null,
   };
 }
+
+/** Run statuses that hold a run in the ledger as live: it runs, or waits for its resume after a restart. */
+const LIVE_STATUSES = new Set(['starting', 'running', 'suspended']);
 
 function readJson(path, fallback = null) {
   try { return JSON.parse(readFileSync(path, 'utf8')); }
@@ -76,6 +89,7 @@ export class NativeLoopRuntime {
   constructor({
     stateDir,
     ledgerPath,
+    toolListOptions = () => ({}),
     providerFactories = {},
     buildPrompt,
     onEvent = () => {},
@@ -95,10 +109,14 @@ export class NativeLoopRuntime {
     // A truthy `met` ends the run early with stoppedReason 'goal_met'; the
     // iteration and time caps stay the fallback.
     judgeGoal = null,
+    // How long a dispatched worker the restart cut off waits, from this start, for its dispatcher to resume it
+    // (or end it) before it ends as interrupted by itself.
+    resumeHoldMs = 60_000,
   } = {}) {
     if (!stateDir) throw new Error('NativeLoopRuntime requires stateDir');
     if (typeof buildPrompt !== 'function') throw new Error('NativeLoopRuntime requires buildPrompt');
     this.stateDir = stateDir;
+    this.toolListOptions = toolListOptions;
     this.judgeGoal = typeof judgeGoal === 'function' ? judgeGoal : null;
     this.ledgerPath = ledgerPath || resolve(dirname(stateDir), 'native-loop-runs.json');
     this.providerFactories = { ...providerFactories };
@@ -113,6 +131,8 @@ export class NativeLoopRuntime {
     this.providerStartupTimeoutMs = providerStartupTimeoutMs;
     this.claimTtlMs = claimTtlMs;
     this.ledgerFlushMs = Math.max(50, Number(ledgerFlushMs) || 200);
+    this.resumeHoldMs = Math.max(1000, Number(resumeHoldMs) || 60_000);
+    this._holdTimers = new Map();
     this.records = new Map();
     this._pendingPersist = false;
     this._persistTimer = null;
@@ -184,8 +204,32 @@ export class NativeLoopRuntime {
     if (!Array.isArray(rows)) return;
     for (const row of rows) {
       if (!row?.runId) continue;
-      const record = { ...row, adapter: null, timer: null, execution: null };
-      if (record.status === 'starting' || record.status === 'running') {
+      let stored;
+      try { stored = readStoredToolListRecord(row, this.toolListOptions()); }
+      catch (error) {
+        // A historical run may name a custom preset the owner has since deleted. Refuse that
+        // run, preserve the original selection for diagnosis, and keep the rest of the server up.
+        stored = { ...row, tools: [], status: 'failed', stoppedReason: 'tools_invalid',
+          error: error.message, toolListError: { code: error.code, message: error.message,
+            original: row.tools ?? row.mcpProfile ?? null } };
+        delete stored.mcpProfile;
+      }
+      const record = { ...stored, adapter: null, timer: null, execution: null };
+      const cutOff = record.status === 'starting' || record.status === 'running' || record.status === 'suspended';
+      if (cutOff && record.runMode === 'task' && isNativeLoopProfile(record.provider)) {
+        // A dispatched Claude Code worker the restart cut off (suspended by the last shutdown, or left running by a
+        // crash): held for its dispatcher, which resumes it (assistant-dispatch.js resumeRun) or ends it. Its state file
+        // stays as it is. Nobody takes it within resumeHoldMs: it ends as interrupted, as every cut-off run did before.
+        record.status = 'suspended';
+        record.suspendedAt = record.suspendedAt || iso(this.now());
+        record.suspendReason = record.suspendReason || 'server_restart';
+        record.turnState = 'suspended';
+        record.stopping = false;
+        this.records.set(record.runId, record);
+        this._hold(record);
+        continue;
+      }
+      if (cutOff) {
         record.status = 'interrupted';
         record.stoppedReason = 'server_restart';
         record.completedAt = record.completedAt || iso(this.now());
@@ -208,9 +252,9 @@ export class NativeLoopRuntime {
 
   _writeLedgerNow() {
     const records = [...this.records.values()];
-    const active = records.filter((record) => ['starting', 'running'].includes(record.status));
+    const active = records.filter((record) => LIVE_STATUSES.has(record.status));
     const terminal = records
-      .filter((record) => !['starting', 'running'].includes(record.status))
+      .filter((record) => !LIVE_STATUSES.has(record.status))
       .sort((a, b) => String(b.startedAt || '').localeCompare(String(a.startedAt || '')));
     const retained = [...active, ...terminal.slice(0, Math.max(0, 500 - active.length))];
     const retainedIds = new Set(retained.map((record) => record.runId));
@@ -221,7 +265,7 @@ export class NativeLoopRuntime {
       }
     }
     const rows = retained
-      .map(cleanDescriptor)
+      .map(record => toolListRecord(cleanDescriptor(record)))
       .sort((a, b) => String(b.startedAt || '').localeCompare(String(a.startedAt || '')));
     try { writeJsonAtomic(this.ledgerPath, rows); }
     catch (error) { this.log(null, 'ledger:error', error.message); }
@@ -265,11 +309,12 @@ export class NativeLoopRuntime {
 
   _readState(runId) {
     const path = this._statePath(runId);
-    return existsSync(path) ? readJson(path, null) : null;
+    const state = existsSync(path) ? readJson(path, null) : null;
+    return state ? readStoredToolListRecord(state, this.toolListOptions()) : null;
   }
 
   _writeState(runId, state) {
-    writeJsonAtomic(this._statePath(runId), state);
+    writeJsonAtomic(this._statePath(runId), toolListRecord(state, this.toolListOptions()));
   }
 
   _writeTerminalState(record, patch) {
@@ -285,8 +330,9 @@ export class NativeLoopRuntime {
     record.version = (Number(record.version) || 0) + 1;
     record.updatedAt = iso(this.now());
     // Force-flush on terminal transitions (a crash between throttled flushes
-    // would otherwise leave the run listed as running after a restart).
-    const terminal = ['completed', 'failed', 'stopped', 'interrupted'].includes(record.status);
+    // would otherwise leave the run listed as running after a restart), and on
+    // a suspension (the next start resumes the run from this ledger).
+    const terminal = ['completed', 'failed', 'stopped', 'interrupted', 'suspended'].includes(record.status);
     this._persistLedger({ force: terminal });
     const descriptor = cleanDescriptor(record);
     const message = { type, run: descriptor, ...extra };
@@ -333,7 +379,7 @@ export class NativeLoopRuntime {
     mkdirSync(this.stateDir, { recursive: true });
     const startedAt = state.startedAt || iso(this.now());
     const nativeState = {
-      ...state,
+      ...toolListRecord(state, this.toolListOptions()),
       runId,
       terminalSessionId: runId,
       active: true,
@@ -361,7 +407,7 @@ export class NativeLoopRuntime {
       contextMode: state.contextMode || null,
       modelContextWindow: state.modelContextWindow || null,
       effort: state.effort || null,
-      mcpProfile: state.mcpProfile || null,
+      tools: storedToolList(state, this.toolListOptions()),
       accountId: state.codexAccountId || null,
       currentIteration: Number(state.currentIteration) || 0,
       totalIterations: Number(state.totalIterations) || 1,
@@ -400,6 +446,24 @@ export class NativeLoopRuntime {
       record.timer.unref?.();
     }
 
+    this._bootstrap(record, factory, nativeState, { source, profile: state.profile });
+
+    // For back-compat: callers that awaited launch() to know whether the run was
+    // accepted can observe the descriptor. The failure (if any) is delivered via
+    // sidepanel:run-failed and via record.bootstrap rejecting with the original
+    // startup error. The descriptor itself resolves immediately with the
+    // 'starting' state so the HTTP caller is never gated on provider boot.
+    return cleanDescriptor(record);
+  }
+
+  /**
+   * Start the provider of a run whose record is in place (launch, resume) and drive it. Sets record.bootstrap: it
+   * resolves once the provider started and rejects with the startup error. A provider that cannot start ends the
+   * run as failed, or (`failAs: 'interrupted'`, a resume) as interrupted with the reason resume_failed.
+   */
+  _bootstrap(record, factory, nativeState, { source = record.source, profile = record.provider, failAs = 'failed' } = {}) {
+    const runId = record.runId;
+    const state = { profile };
     const startupSignal = record.startupAbortController.signal;
     const factoryPromise = Promise.resolve().then(() => factory({
         ...nativeState,
@@ -418,7 +482,8 @@ export class NativeLoopRuntime {
       if (!adapter || candidateCleaned) return;
       candidateCleaned = true;
       try { await adapter.abort?.(reason); } catch {}
-      try { await adapter.dispose?.({ preserveSession: true }); } catch {}
+      // Suspended for a server shutdown while it started (suspend): its process is ended now, as a started one's is.
+      try { await adapter.dispose?.({ preserveSession: true, ...(record.status === 'suspended' ? { terminate: true } : {}) }); } catch {}
     };
     const finishBootstrap = async () => {
       clearTimeout(startupTimer);
@@ -497,11 +562,15 @@ export class NativeLoopRuntime {
           if (candidate) await cleanupCandidate(candidate, error?.code || 'startup_failed');
           else factoryPromise.then((adapter) => cleanupCandidate(adapter, error?.code || 'startup_failed')).catch(() => {});
         }
-        await this._fail(
-          record,
-          error,
-          error?.code === 'NATIVE_LOOP_PROVIDER_START_TIMEOUT' ? 'provider_startup_timeout' : 'provider_error',
-        );
+        if (failAs === 'interrupted') {
+          await this._fail(record, error, 'resume_failed', { status: 'interrupted' });
+        } else {
+          await this._fail(
+            record,
+            error,
+            error?.code === 'NATIVE_LOOP_PROVIDER_START_TIMEOUT' ? 'provider_startup_timeout' : 'provider_error',
+          );
+        }
       } finally {
         await finishBootstrap();
         // Re-throw so record.bootstrap rejects with the original startup error.
@@ -516,13 +585,144 @@ export class NativeLoopRuntime {
     // timer holds the process until cleanup. Swallow the unhandled rejection
     // here because callers that care must await record.bootstrap explicitly.
     bootstrap.catch(() => {});
+    return bootstrap;
+  }
 
-    // For back-compat: callers that awaited launch() to know whether the run was
-    // accepted can observe the descriptor. The failure (if any) is delivered via
-    // sidepanel:run-failed and via record.bootstrap rejecting with the original
-    // startup error. The descriptor itself resolves immediately with the
-    // 'starting' state so the HTTP caller is never gated on provider boot.
+  /**
+   * Continue a suspended run (a dispatched worker a server restart cut off; assistant-dispatch.js resumeRun) as the
+   * same record: its runId, tab, claim, title and startedAt stay, its version keeps growing. The state file is written
+   * again at iteration 0 of 1, so the drive runs the run's one task iteration again (the dispatcher's wrapper decides
+   * what that turn sends), and the provider factory gets what `state` carries to continue the provider session
+   * (resumeSessionId, costBaseUsd). Resolves with the descriptor once the provider started; a provider that cannot
+   * start ends the run as interrupted (resume_failed) and the promise rejects with why.
+   */
+  async resume({ runId, state, buildPrompt = null, wrapAdapter = null } = {}) {
+    const record = this.records.get(runId);
+    if (!record) throw new Error(`Native loop ${runId} is not known`);
+    if (record.status !== 'suspended') throw new Error(`Native loop ${runId} is ${record.status}, not suspended`);
+    if (buildPrompt !== null && typeof buildPrompt !== 'function') throw new Error('Native loop buildPrompt override must be a function');
+    if (wrapAdapter !== null && typeof wrapAdapter !== 'function') throw new Error('Native loop wrapAdapter override must be a function');
+    if (!state?.profile || !isNativeLoopProfile(state.profile)) throw new Error(`Unsupported native loop profile: ${state?.profile || 'unknown'}`);
+    const factory = this.providerFactories[state.profile];
+    if (!factory) throw new Error(`Native provider unavailable: ${state.profile}`);
+    this._clearHold(record);
+    mkdirSync(this.stateDir, { recursive: true });
+    const totalIterations = Number(state.totalIterations) || 1;
+    const nativeState = {
+      ...toolListRecord(state, this.toolListOptions()),
+      runId,
+      terminalSessionId: runId,
+      active: true,
+      pending: false,
+      driverType: 'native',
+      runtimeType: 'native',
+      surface: 'sidepanel',
+      startedAt: record.startedAt || state.startedAt || iso(this.now()),
+      currentIteration: 0,
+      totalIterations,
+    };
+    this._writeState(runId, nativeState);
+    Object.assign(record, {
+      status: 'starting',
+      stoppedReason: null,
+      completedAt: null,
+      error: null,
+      adapter: null,
+      timer: null,
+      execution: null,
+      stopping: false,
+      startupAbortController: new AbortController(),
+      turnState: 'starting',
+      currentIteration: 0,
+      totalIterations,
+      browserSessionId: state.browserSessionId || null,
+      browserTabId: state.browserTabId || null,
+      suspendedAt: null,
+      suspendReason: null,
+      resumes: (Number(record.resumes) || 0) + 1,
+      resumedAt: iso(this.now()),
+      buildPrompt,
+      wrapAdapter,
+    });
+    record.identityPromise = new Promise((resolveIdentity) => { record._resolveIdentity = resolveIdentity; });
+    record.startupCancelPromise = new Promise((resolveCancel) => { record._cancelStartup = resolveCancel; });
+    this._emit('sidepanel:run-updated', record, { reason: 'resuming' });
+    await this._bootstrap(record, factory, nativeState, { profile: state.profile, failAs: 'interrupted' });
     return cleanDescriptor(record);
+  }
+
+  /** The hold of a run the restart cut off: it ends as interrupted when nobody resumes it in time. */
+  _hold(record) {
+    this._clearHold(record);
+    const timer = setTimeout(() => {
+      this._holdTimers.delete(record.runId);
+      this.endSuspended(record.runId, record.suspendReason || 'server_restart').catch(() => {});
+    }, this.resumeHoldMs);
+    timer.unref?.();
+    this._holdTimers.set(record.runId, timer);
+  }
+
+  _clearHold(record) {
+    const timer = this._holdTimers.get(record?.runId);
+    if (timer) { clearTimeout(timer); this._holdTimers.delete(record.runId); }
+  }
+
+  /** Whether a run waits for its resume after a restart (suspended). */
+  isSuspended(runId) {
+    return this.records.get(runId)?.status === 'suspended';
+  }
+
+  /**
+   * The dispatcher takes a suspended run over (it resumes it or ends it itself): its hold no longer ends it.
+   * Returns whether the run is suspended.
+   */
+  keepSuspended(runId) {
+    const record = this.records.get(runId);
+    if (!record || record.status !== 'suspended') return false;
+    this._clearHold(record);
+    return true;
+  }
+
+  /**
+   * A suspended run that will not be resumed ends as interrupted (`reason`, by default why it was suspended), with an
+   * event, so a tab that waited for its resume shows how it ended. `error`: why it was not resumed.
+   */
+  async endSuspended(runId, reason = null, { error = null } = {}) {
+    const record = this.records.get(runId);
+    if (!record || record.status !== 'suspended') return false;
+    this._clearHold(record);
+    record.status = 'interrupted';
+    record.stoppedReason = reason || record.suspendReason || 'server_restart';
+    record.completedAt = iso(this.now());
+    if (error) record.error = String(error);
+    this._writeTerminalState(record, { active: false, pending: false, completedAt: record.completedAt, stoppedReason: record.stoppedReason, ...(error ? { error: record.error } : {}) });
+    this._releaseRuntimeRefs(record);
+    this._emit('sidepanel:run-stopped', record);
+    try { await this.onFinish(cleanDescriptor(record)); } catch {}
+    return true;
+  }
+
+  /**
+   * Suspend a running dispatched worker for a server shutdown (shutdown's `keep`): its CLI is ended (the adapter's
+   * dispose with terminate), its state file stays active, and the record waits as suspended for the next start to
+   * resume it. No run-stopped event and no end: a run-updated with the reason 'suspended'.
+   */
+  async suspend(runId, reason = 'server_shutdown') {
+    const record = this.records.get(runId);
+    if (!record || !['starting', 'running'].includes(record.status) || record.stopping) return false;
+    record.stopping = true;
+    clearTimeout(record.timer);
+    record.status = 'suspended';
+    record.suspendedAt = iso(this.now());
+    record.suspendReason = reason;
+    if (record._resolveIdentity) { record._resolveIdentity(null); record._resolveIdentity = null; }
+    try { record.startupAbortController?.abort(reason); } catch {}
+    if (record._cancelStartup) { record._cancelStartup(reason); record._cancelStartup = null; }
+    try { await record.adapter?.dispose?.({ preserveSession: true, terminate: true }); } catch {}
+    this._releaseRuntimeRefs(record, { turnState: 'suspended' });
+    record.stopping = false;
+    this._emit('sidepanel:run-updated', record, { reason: 'suspended' });
+    return true;
   }
 
   async _drive(record) {
@@ -618,7 +818,7 @@ export class NativeLoopRuntime {
     }
   }
 
-  _releaseRuntimeRefs(record) {
+  _releaseRuntimeRefs(record, { turnState = 'terminal' } = {}) {
     if (!record) return;
     record.adapter = null;
     record.timer = null;
@@ -630,7 +830,8 @@ export class NativeLoopRuntime {
     record.startupAbortController = null;
     record.buildPrompt = null;
     record.wrapAdapter = null;
-    if (record.turnState && record.turnState !== 'terminal') record.turnState = 'terminal';
+    if (turnState === 'suspended') record.turnState = 'suspended';
+    else if (record.turnState && record.turnState !== 'terminal') record.turnState = 'terminal';
   }
 
   async _complete(record, reason = 'completed') {
@@ -646,10 +847,11 @@ export class NativeLoopRuntime {
     try { await this.onFinish(cleanDescriptor(record)); } catch {}
   }
 
-  async _fail(record, error, reason = 'provider_error') {
-    if (!record || ['completed', 'failed', 'stopped', 'interrupted'].includes(record.status)) return;
+  /** `status`: 'failed', or 'interrupted' for a resume that could not start (reason resume_failed). */
+  async _fail(record, error, reason = 'provider_error', { status = 'failed' } = {}) {
+    if (!record || ['completed', 'failed', 'stopped', 'interrupted', 'suspended'].includes(record.status)) return;
     clearTimeout(record.timer);
-    record.status = 'failed';
+    record.status = status === 'interrupted' ? 'interrupted' : 'failed';
     record.error = error?.message || String(error);
     record.stoppedReason = reason;
     record.completedAt = iso(this.now());
@@ -660,12 +862,27 @@ export class NativeLoopRuntime {
     try { await record.adapter?.abort?.(reason); } catch {}
     try { await record.adapter?.dispose?.({ preserveSession: true }); } catch {}
     this._releaseRuntimeRefs(record);
-    this._emit('sidepanel:run-failed', record);
+    this._emit(record.status === 'interrupted' ? 'sidepanel:run-stopped' : 'sidepanel:run-failed', record);
     try { await this.onFinish(cleanDescriptor(record)); } catch {}
   }
 
-  async stop(runId, reason = 'user') {
+  /**
+   * `terminate` (a server shutdown): the provider's process is ended at once (the Claude adapter's dispose), never
+   * left to finish its tool call after the server is gone. A suspended run (waiting for its resume) ends as stopped.
+   */
+  async stop(runId, reason = 'user', { terminate = false } = {}) {
     const record = this.records.get(runId);
+    if (record?.status === 'suspended' && !record.stopping) {
+      this._clearHold(record);
+      record.status = 'stopped';
+      record.stoppedReason = reason;
+      record.completedAt = iso(this.now());
+      this._writeTerminalState(record, { active: false, pending: false, completedAt: record.completedAt, stoppedReason: reason });
+      this._releaseRuntimeRefs(record);
+      this._emit('sidepanel:run-stopped', record);
+      try { await this.onFinish(cleanDescriptor(record)); } catch {}
+      return true;
+    }
     if (!record || !['starting', 'running'].includes(record.status) || record.stopping) return false;
     record.stopping = true;
     clearTimeout(record.timer);
@@ -677,7 +894,7 @@ export class NativeLoopRuntime {
     if (record._cancelStartup) { record._cancelStartup(reason); record._cancelStartup = null; }
     this._writeTerminalState(record, { active: false, pending: false, completedAt: record.completedAt, stoppedReason: reason });
     try { await record.adapter?.abort?.(reason); } catch {}
-    try { await record.adapter?.dispose?.({ preserveSession: true }); } catch {}
+    try { await record.adapter?.dispose?.({ preserveSession: true, ...(terminate ? { terminate: true } : {}) }); } catch {}
     this._releaseRuntimeRefs(record);
     this._emit('sidepanel:run-stopped', record);
     try { await this.onFinish(cleanDescriptor(record)); } catch {}
@@ -735,19 +952,21 @@ export class NativeLoopRuntime {
     return released;
   }
 
-  setMcpProfile(runId, profile) {
+  setTools(runId, tools) {
     const record = this.records.get(runId);
-    const normalized = String(profile || '').toLowerCase().trim();
-    if (!record || !normalized) return null;
-    if (record.mcpProfile === normalized) return cleanDescriptor(record);
-    record.mcpProfile = normalized;
+    if (!record) return null;
+    if (!Array.isArray(tools)) throw Object.assign(new Error('tools must be an array'), { code: 'TOOLS_INVALID', status: 400 });
+    const normalized = storedToolList({ tools: retainExternalRefs(tools, record.tools) });
+    if (JSON.stringify(record.tools) === JSON.stringify(normalized)) return cleanDescriptor(record);
+    record.tools = normalized;
+    delete record.mcpProfile;
     try {
       const state = this._readState(record.runId);
-      if (state) this._writeState(record.runId, { ...state, mcpProfile: normalized });
+      if (state) this._writeState(record.runId, { ...state, tools: normalized });
     } catch (error) {
       this.log(record.runId, 'native:state-write-error', error?.message || String(error));
     }
-    return this._emit('sidepanel:run-updated', record, { reason: 'mcp-profile' });
+    return this._emit('sidepanel:run-updated', record, { reason: 'mcp-tools' });
   }
 
   get(runId) {
@@ -757,15 +976,23 @@ export class NativeLoopRuntime {
 
   list({ activeOnly = false } = {}) {
     return [...this.records.values()]
-      .filter((record) => !activeOnly || ['starting', 'running'].includes(record.status))
+      .filter((record) => !activeOnly || LIVE_STATUSES.has(record.status))
       .map(cleanDescriptor)
       .sort((a, b) => String(b.startedAt || '').localeCompare(String(a.startedAt || '')));
   }
 
-  async shutdown(reason = 'server_shutdown') {
+  /**
+   * The server is going down. `keep`: the runs its dispatcher suspends to resume on the next start
+   * (assistant-dispatch.js suspendForShutdown); every other running run is stopped. Either way each provider process
+   * is ended now (terminate), so nothing outlives the server. A run still waiting for its resume stays suspended.
+   */
+  async shutdown(reason = 'server_shutdown', { keep = [] } = {}) {
+    const kept = new Set((Array.isArray(keep) ? keep : []).map(String));
     await Promise.allSettled([...this.records.values()]
       .filter((record) => ['starting', 'running'].includes(record.status))
-      .map((record) => this.stop(record.runId, reason)));
+      .map((record) => (kept.has(record.runId) ? this.suspend(record.runId, reason) : this.stop(record.runId, reason, { terminate: true }))));
+    for (const timer of this._holdTimers.values()) clearTimeout(timer);
+    this._holdTimers.clear();
     this._persistLedger({ force: true });
   }
 }

@@ -11,7 +11,7 @@ import { api, supports, onEvent, capabilities } from './ocp-v2-ws.js';
 import { getDefaultStore } from './ocp-v2-state.js';
 import { replyFailed, replyError } from './ocp-v2-caps.js';
 import {
-  mcpRowView, updateNoticeText, isProviderCatalogEvent, addMcpServer, createSignInFailures,
+  mcpRowView, updateNoticeText, isProviderCatalogEvent, addMcpServer,
 } from './ocp-v2-status-logic.js';
 import { openProviderSettings } from './ocp-v2-settings-link.js';
 import { captureBinding, boundReader, onRebind } from './ocp-v2-binding.js';
@@ -24,17 +24,10 @@ const _listeners = new Set();
 const notifyAll = () => { for (const fn of _listeners) { try { fn(); } catch { /* listener's problem */ } } };
 /** The OpenCode version an update notice named, '' when there is none. */
 export const updateAvailableVersion = () => _updateAvailable;
-// Sign-in pages OpenCode could not open itself, each kept for the session and
-// the server whose sign-in it is (never one global link for every popover),
-// and only for as long as that sign-in's request is out: when a link goes
-// (the request ended, expired, or another one for that server name began),
-// every open popover is painted again.
-const _signInFailures = createSignInFailures({ onChange: () => notifyAll() });
 
 onEvent((eventType, ev) => {
   if (eventType === 'installation.update-available' && ev?.version) { _updateAvailable = String(ev.version); notifyAll(); }
   else if (eventType === 'installation.updated') { _updateAvailable = ''; notifyAll(); }
-  else if (eventType === 'mcp.browser.open.failed' && ev?.url) { if (_signInFailures.record({ mcpName: ev.mcpName, url: ev.url })) notifyAll(); }
   else if (eventType === 'mcp.tools.changed' || eventType === 'lsp.updated') notifyAll();
   // The model catalog or a provider connection changed: every picker re-reads it.
   else if (isProviderCatalogEvent(eventType) && typeof document !== 'undefined') {
@@ -97,15 +90,8 @@ export function mountEnvironmentPopover(panelEl, store = getDefaultStore(), opts
   async function switchMcp(row, view) {
     const at = captureBinding(store);
     const params = { sessionId: at.sessionId, name: row.name, cwd: at.cwd || undefined };
-    // Connecting or signing in may need a browser page: should OpenCode fail
-    // to open it, the link is this session's and this server's.
-    // The attempt is open for as long as its request is out, and no longer.
-    const attempt = view.action !== 'disconnect' ? _signInFailures.expect(at.sessionId, row.name) : null;
-    const call = view.action === 'authenticate' ? api.mcpAuthenticate(params)
-      : view.action === 'disconnect' ? api.mcpDisconnect(params)
-      : api.mcpConnect(params);
+    const call = view.action === 'disconnect' ? api.mcpDisconnect(params) : api.mcpConnect(params);
     const res = await call.catch((err) => ({ ok: false, error: err?.message }));
-    attempt?.done();
     // The answer is about that session's serve. On another binding the
     // popover already shows (or is reading) the new session's servers.
     if (!at.isCurrent()) return;
@@ -162,13 +148,9 @@ export function mountEnvironmentPopover(panelEl, store = getDefaultStore(), opts
         // Settings route is not used: it would start the server a second time
         // on the shared serve.
         canPersist: supports('feature:mcp-add-persist'),
-        register: ({ name: serverName, config, persist }) => {
-          // A remote server may ask for a sign-in as soon as it starts.
-          const attempt = _signInFailures.expect(targetSessionId, serverName);
-          return api.mcpAdd({
-            sessionId: targetSessionId, name: serverName, config, persist, cwd: targetCwd || undefined,
-          }).finally(() => attempt.done());
-        },
+        register: ({ name: serverName, config, persist }) => api.mcpAdd({
+          sessionId: targetSessionId, name: serverName, config, persist, cwd: targetCwd || undefined,
+        }),
       });
       // The server was added to (or refused by) the session the form was
       // submitted on. On another binding its note is not shown: the form
@@ -246,18 +228,6 @@ export function mountEnvironmentPopover(panelEl, store = getDefaultStore(), opts
           action.addEventListener('click', () => { action.disabled = true; switchMcp(row, view); });
           node.appendChild(action);
         }
-      }
-      // Only the sign-in pages of this session's own servers (`at` is the
-      // binding these rows were read for).
-      for (const failed of _signInFailures.forSession(at.sessionId, rows)) {
-        const manual = el('div', 'ocpv2-env-note');
-        manual.appendChild(document.createTextNode(`Open this page to sign in to ${failed.mcpName || 'the server'}: `));
-        const link = el('a', 'ocpv2-inline-action', 'Open');
-        if (/^https?:\/\//i.test(failed.url)) link.href = failed.url;
-        link.target = '_blank';
-        link.rel = 'noopener noreferrer';
-        manual.appendChild(link);
-        mcp.appendChild(manual);
       }
       renderAddServer(mcp, at);
     }

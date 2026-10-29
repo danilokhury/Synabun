@@ -7,6 +7,8 @@
 
 import { state, emit, on } from '../../shared/state.js';
 import { getAllCards } from './graph.js';
+import { frameRect } from '../../shared/app-frame.js';
+import { placeMenu } from '../../shared/context-menu-logic.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -51,9 +53,13 @@ export function showContextMenu(node, event) {
   if (!_contextMenu) return;
 
   _contextMenuNode = node;
-  _contextMenu.style.left = event.clientX + 'px';
-  _contextMenu.style.top = event.clientY + 'px';
   _contextMenu.classList.add('open');
+  // At the pointer, flipped and kept inside the app frame (the card is in it)
+  const box = _contextMenu.getBoundingClientRect();
+  const at = placeMenu({ x: event.clientX, y: event.clientY, width: box.width, height: box.height,
+    viewportWidth: window.innerWidth, viewportHeight: window.innerHeight, bounds: frameRect() });
+  _contextMenu.style.left = at.left + 'px';
+  _contextMenu.style.top = at.top + 'px';
 
   // Update pin text based on card pinned state
   const pinItem = _contextMenu.querySelector('[data-action="pin"]');

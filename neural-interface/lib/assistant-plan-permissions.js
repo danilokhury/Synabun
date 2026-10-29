@@ -56,7 +56,7 @@ const SYNABUN_REPLY_TOOLS = new Set(REPLY_TOOLS);
 const SYNABUN_READ_ACTIONS = {
   memories: new Set(['recent', 'stats', 'by-category', 'by-project', 'get', 'get-batch', 'history', 'context', 'triage']),
   category: new Set(['list']),
-  profile: new Set(['get']),
+  tool_groups: new Set(['get']),
   computer: new Set(['screenshot', 'cursor_position']),
   computer_apps: new Set(['list', 'windows', 'frontmost']),
   computer_ax: new Set(['snapshot']),

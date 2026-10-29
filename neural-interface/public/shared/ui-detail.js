@@ -14,7 +14,8 @@ import { storage } from './storage.js';
 import { catColor } from './colors.js';
 import { truncate, formatMemoryContent, exportMemoryAsMarkdown, rafThrottle, escapeHtml } from './utils.js';
 import { t, getLocale } from './i18n.js';
-import { savePanelLayout, restorePanelLayout } from './ui-panels.js';
+import { savePanelLayout, restorePanelLayout, clampPanelToFrame } from './ui-panels.js';
+import { frameRect } from './app-frame.js';
 import { sendSync as _sendSync, hasPermission, isGuest } from './ui-sync.js';
 
 // Wrap sendSync — skip card events when guest lacks cards permission
@@ -546,9 +547,11 @@ function bringToFront(cardEl) {
 function getNextCardPosition() {
   const count = _openCards.size;
   const offset = count * 30;
+  // Cascading from 200 / 80 px of the window (192 / 24 px into the app frame), inside the frame.
+  const f = frameRect();
   return {
-    left: Math.min(window.innerWidth - 540, 200 + (offset % 300)) + 'px',
-    top: Math.min(window.innerHeight - 300, 80 + (offset % 200)) + 'px',
+    left: Math.max(f.left, Math.min(f.right - 540, f.left + 192 + (offset % 300))) + 'px',
+    top: Math.max(f.top, Math.min(f.bottom - 300, f.top + 24 + (offset % 200))) + 'px',
   };
 }
 
@@ -1069,6 +1072,8 @@ export function openMemoryCard(node, savedPosition) {
   // ── Add to DOM and state ──
   _openCards.set(node.id, cardState);
   document.body.appendChild(card);
+  // A position saved in another window size, or with the explorers closed, comes back inside the app frame.
+  if (savedPosition) clampPanelToFrame(card);
   bringToFront(card);
 
   // Trigger entrance animation on next frame

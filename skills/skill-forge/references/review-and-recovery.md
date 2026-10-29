@@ -30,6 +30,20 @@ Read this when a step fails, when the owner asks for changes, or before you repo
 | A scan that blocks | Fix what it names (a remote installer, a decode-and-run chain, an embedded secret); a blocked revision cannot be approved. |
 | Lint errors you cannot fix | Keep the draft (it is recoverable), submit nothing, and say what is wrong. |
 
+## When an evaluation fails
+
+| What happened | What to do |
+|---|---|
+| `no_suite`, `suite_invalid` | The version has no `evals/evals.json`, or it has problems (listed): fix the draft, `snapshot`, start again. |
+| `runtime_unavailable`, `nothing_can_run` | No runtime here can run it (a case with `"shell": true` needs the OS sandbox): say so and leave the test gate pending. |
+| `budget_below_estimate`, `time_below_estimate` | The estimate is above the ceiling: run fewer cases (`kinds`, `caseIds`) or ask the user for a higher one. |
+| `no_held_out`, or a problem `test-sealed` | Held-out (test) cases run only with `purpose` "final", and "final" needs some. |
+| `optimise_unavailable` | Optimising needs a positive and a near-miss trigger in train and one in validation. |
+| `queue_full` | Wait for an evaluation to finish (`eval_status`) or cancel yours (`eval_cancel`). |
+| `stopped` | It reached its spend or time ceiling: what it measured is kept, and `eval_report` says which cases did not run. |
+| `interrupted` | SynaBun stopped while it ran: start it again. |
+| Graded "not independent" | Only the author's provider could grade it: say so, the scores are weaker evidence. |
+
 ## Partial results
 
 A creation that was cancelled, stopped at its spend ceiling, or cut short because SynaBun stopped keeps what the
@@ -41,6 +55,8 @@ made, what was checked and what was not.
 - The skill's name and ids (skill, revision, review).
 - The checks: errors and warnings per runtime, the scan's status and gate, the test prompts (task, positive,
   near-miss).
+- The evaluation, when one ran: its id, the pass rate with the skill and without it, the triggers picked and
+  missed, the grader, the cost; or "not evaluated" and why.
 - The assumptions you made and the sources you used.
 - What the owner does next: review it in Skills Studio → Review, approve, then publish to the runtimes they choose.
 - Never say it is installed, tested or approved unless the service says so. After a publish, `installations` says

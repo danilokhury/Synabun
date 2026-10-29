@@ -16,6 +16,7 @@ import { registerVariant, registerHelpSection } from '../../shared/registry.js';
 import { normalizeNodes } from '../../shared/utils.js';
 import { injectSharedHTML } from '../../shared/html-shell.js';
 import { KEYS } from '../../shared/constants.js';
+import { migrateViewPreferences, normalizeViewUrl } from '../../shared/view-variant.js';
 import { initI18n, t } from '../../shared/i18n.js';
 
 // ── Shared UI modules (side-effect: each registers its own event listeners) ──
@@ -68,7 +69,14 @@ import { fetchMap, requestRebuild } from './map-data.js';
 // 1. REGISTER VARIANT
 // ═══════════════════════════════════════════
 
-registerVariant({ variant: '3d', capabilities: ['memory-map'] });
+// storage.js has hydrated before this runs. Rewrite legacy choices once, before any UI is built.
+let localPreferences;
+try { if (storage.persists !== false) localPreferences = window.localStorage; } catch {}
+registerVariant({ variant: migrateViewPreferences(storage, localPreferences), capabilities: ['memory-map'] });
+const canonicalUrl = normalizeViewUrl(window.location.href);
+if (canonicalUrl !== window.location.pathname + window.location.search + window.location.hash) {
+  window.history.replaceState(window.history.state, '', canonicalUrl);
+}
 
 
 // ═══════════════════════════════════════════
@@ -400,7 +408,6 @@ const mapActions = {
   flyToIsland: (name) => view?.flyToIsland(name),
   clearSearch: () => clearSearch(),
   clearSelection: () => view?.clearSelection(),
-  switchView: () => document.getElementById('nav-2d-link')?.click(), // the navbar hands the selection over
 };
 
 /** The map's part of the menu for what a press resolved to (map-controls.js resolve), null before the map exists. */
@@ -507,7 +514,7 @@ async function boot() {
     emit('data-loaded', data);
     restoreOpenCards();
 
-    // Handed over from the 2D view
+    // Recover a selected memory handed over by a legacy 2D tab
     const switchNodeId = sessionStorage.getItem('neural-selected-node-switch');
     if (switchNodeId) {
       sessionStorage.removeItem('neural-selected-node-switch');

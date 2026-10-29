@@ -24,7 +24,7 @@ import {
 } from './db.js';
 import { parseLine } from './session-chunker.js';
 import { listCodexSessionsFromAccounts } from './codex-session-catalog.js';
-import { opencodeDbFlavor, sessionTablesFor, v2MessageText } from './opencode-db-schema.js';
+import { OPENCODE_SESSION_TABLES, hasOpencodeSessionTables, v2MessageText } from './opencode-db-schema.js';
 
 const MAX_BODY = 256 * 1024;
 const MAX_MSG_CHARS = 8 * 1024;
@@ -381,18 +381,15 @@ export function rebuildCodexCache({ project, projects, accounts, onProgress } = 
 
 // --- OpenCode ---
 
-// `protocol`: the OpenCode major SynaBun talks to (lib/opencode-db-schema.js
-// opencodeDbFlavor): OpenCode 2 keeps its sessions in session_v2 and their text
-// in session_message rows, in the same database file as OpenCode 1's tables.
-export function rebuildOpencodeCache({ getOpencodeDb, onProgress, protocol = null } = {}) {
+// OpenCode 2 keeps its sessions in session_v2 and their text in session_message rows
+// (lib/opencode-db-schema.js); a file without those tables has nothing to index.
+export function rebuildOpencodeCache({ getOpencodeDb, onProgress } = {}) {
   const emit = onProgress || (() => {});
   if (typeof getOpencodeDb !== 'function') return { sessions: 0, updated: 0 };
 
   const ocdb = getOpencodeDb();
-  if (!ocdb) return { sessions: 0, updated: 0 };
-  const flavor = opencodeDbFlavor(ocdb, protocol);
-  if (!flavor) return { sessions: 0, updated: 0 };
-  const tables = sessionTablesFor(flavor);
+  if (!ocdb || !hasOpencodeSessionTables(ocdb)) return { sessions: 0, updated: 0 };
+  const tables = OPENCODE_SESSION_TABLES;
 
   let sessions;
   try {
@@ -409,29 +406,19 @@ export function rebuildOpencodeCache({ getOpencodeDb, onProgress, protocol = nul
   let total = sessions.length;
   let updated = 0;
 
-  // OpenCode 1 schema: message.data (JSON w/ role+metadata) + part.data (JSON w/ type+text).
-  // Pull parts per message, decode JSON, grab text where type === 'text'.
-  // OpenCode 2: one session_message row per message, its text in `data`
-  // (v2MessageText); read as the same { part_id, part_created, pdata, mdata } rows.
+  // One session_message row per message, its text in `data` (v2MessageText); read as
+  // { part_id, part_created, pdata, mdata } rows.
   let partStmt;
   try {
-    partStmt = flavor === 'v2'
-      ? (() => {
-        const rows = ocdb.prepare(`SELECT id, type, time_created, data FROM session_message
-                                   WHERE session_id = ? AND type IN ('user', 'assistant')
-                                   ORDER BY seq ASC`);
-        return {
-          all: (sessionId) => rows.all(sessionId).map((row) => {
-            const said = v2MessageText(row.type, row.data);
-            return said ? { part_id: row.id, part_created: row.time_created, pdata: JSON.stringify({ type: 'text', text: said.text }), mdata: JSON.stringify({ role: said.role }) } : null;
-          }).filter(Boolean),
-        };
-      })()
-      : ocdb.prepare(`SELECT p.id AS part_id, p.time_created AS part_created, p.data AS pdata, m.data AS mdata
-                             FROM part p
-                             LEFT JOIN message m ON m.id = p.message_id
-                             WHERE p.session_id = ?
-                             ORDER BY p.time_created ASC`);
+    const rows = ocdb.prepare(`SELECT id, type, time_created, data FROM session_message
+                               WHERE session_id = ? AND type IN ('user', 'assistant')
+                               ORDER BY seq ASC`);
+    partStmt = {
+      all: (sessionId) => rows.all(sessionId).map((row) => {
+        const said = v2MessageText(row.type, row.data);
+        return said ? { part_id: row.id, part_created: row.time_created, pdata: JSON.stringify({ type: 'text', text: said.text }), mdata: JSON.stringify({ role: said.role }) } : null;
+      }).filter(Boolean),
+    };
   } catch { partStmt = null; }
 
   for (const row of sessions) {

@@ -6,67 +6,74 @@
 import { KEYS } from './constants.js';
 import { storage } from './storage.js';
 import { state, emit } from './state.js';
+import { frameRect, onFrameChange } from './app-frame.js';
 
 const MIN_W = 140;
 const MIN_H = 100;
 
-/** Read the dynamically-measured navbar height from the CSS variable */
-function getNavbarHeight() {
-  return parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--navbar-height')) || 48;
-}
+// ── Frame clamping ──
+// A window stays inside the app frame (app-frame.js): its top-left corner never leaves it and its size shrinks to
+// what is left of it. Flush against an edge is allowed: the frame's rounded corners cut a window that reaches them.
+// left/top are the element's own (style) coordinates; with --ui-scale its box is drawn scaled from its
+// transform-origin, so visual offsets are turned into style offsets through the box's measured position.
 
-// ── Viewport clamping ──
+/** Keep one .resizable window inside the frame. */
+export function clampPanelToFrame(el, f = frameRect()) {
+  if (!el?.isConnected) return;
+  const minHeight = MIN_H;
+  const minWidth = MIN_W;
+  const s = getElScale(el);
 
-export function clampPanelsToViewport() {
-  document.querySelectorAll('.resizable').forEach(el => {
-    const minVisible = 60;
-    const minHeight = 100;
-    const minWidth = 140;
+  let rect = el.getBoundingClientRect();
+  // Not drawn (display: none): nothing to measure, and its place is checked again when it shows.
+  if (!rect.width && !rect.height) return;
 
-    let rect = el.getBoundingClientRect();
+  if (el.style.left) {
+    const currentLeft = parseFloat(el.style.left);
+    // Style left of the box's visual left at the frame's left / right edge.
+    const toStyle = currentLeft - rect.left;
+    const minLeft = f.left + toStyle;
+    const maxLeft = Math.max(minLeft, f.right - rect.width + toStyle);
+    if (currentLeft < minLeft) el.style.left = minLeft + 'px';
+    else if (currentLeft > maxLeft) el.style.left = maxLeft + 'px';
+  }
 
-    if (el.style.left) {
-      const currentLeft = parseInt(el.style.left);
-      const maxLeft = Math.max(0, window.innerWidth - rect.width - 10);
-      if (currentLeft > maxLeft) {
-        el.style.left = maxLeft + 'px';
-      }
+  if (el.style.top) {
+    const currentTop = parseFloat(el.style.top);
+    const toStyle = currentTop - rect.top;
+    const minTop = f.top + toStyle;
+    const maxTop = Math.max(minTop, f.bottom - rect.height + toStyle);
+    if (currentTop < minTop) el.style.top = minTop + 'px';
+    else if (currentTop > maxTop) el.style.top = maxTop + 'px';
+  }
+
+  rect = el.getBoundingClientRect();
+
+  if (rect.right > f.right + 0.5 && el.style.width) {
+    const maxWidth = (f.right - rect.left) / s;
+    if (maxWidth > minWidth) {
+      el.style.width = maxWidth + 'px';
     }
+  }
 
-    if (el.style.top) {
-      const navH = getNavbarHeight();
-      const currentTop = parseInt(el.style.top);
-      const maxTop = Math.max(navH, window.innerHeight - rect.height - 10);
-      if (currentTop < navH) {
-        el.style.top = navH + 'px';
-      } else if (currentTop > maxTop) {
-        el.style.top = maxTop + 'px';
-      }
-    }
-
-    rect = el.getBoundingClientRect();
-
-    if (rect.right > window.innerWidth && el.style.width) {
-      const maxWidth = window.innerWidth - rect.left - 10;
-      if (maxWidth > minWidth) {
-        el.style.width = maxWidth + 'px';
-      }
-    }
-
-    rect = el.getBoundingClientRect();
-    if (rect.bottom > window.innerHeight) {
-      const maxHeight = window.innerHeight - rect.top - 10;
-      if (maxHeight > minHeight) {
-        el.style.maxHeight = maxHeight + 'px';
-        if (el.style.height && el.style.height !== 'auto') {
-          const currentHeight = parseInt(el.style.height);
-          if (currentHeight > maxHeight) {
-            el.style.height = maxHeight + 'px';
-          }
+  rect = el.getBoundingClientRect();
+  if (rect.bottom > f.bottom + 0.5) {
+    const maxHeight = (f.bottom - rect.top) / s;
+    if (maxHeight > minHeight) {
+      el.style.maxHeight = maxHeight + 'px';
+      if (el.style.height && el.style.height !== 'auto') {
+        const currentHeight = parseFloat(el.style.height);
+        if (currentHeight > maxHeight) {
+          el.style.height = maxHeight + 'px';
         }
       }
     }
-  });
+  }
+}
+
+export function clampPanelsToViewport() {
+  const f = frameRect();
+  document.querySelectorAll('.resizable').forEach(el => clampPanelToFrame(el, f));
 }
 
 // ── Save/Restore panel layout ──
@@ -90,12 +97,15 @@ export function restorePanelLayout(el, sizeOnly) {
   try {
     const data = JSON.parse(saved);
     if (!sizeOnly) {
-      if (data.left && data.left !== 'auto') el.style.left = data.left;
-      if (data.top) { const nh = getNavbarHeight(); el.style.top = Math.max(nh, parseInt(data.top)) + 'px'; }
+      const f = frameRect();
+      if (data.left && data.left !== 'auto') el.style.left = Math.max(f.left, parseFloat(data.left) || 0) + 'px';
+      if (data.top) el.style.top = Math.max(f.top, parseFloat(data.top) || 0) + 'px';
       if (data.right) el.style.right = data.right;
     }
     if (data.width) el.style.width = data.width;
     if (data.height) el.style.height = data.height;
+    // A layout saved in a bigger window, or with the explorers closed, comes back inside the frame.
+    if (!sizeOnly && el.isConnected) clampPanelToFrame(el);
   } catch {}
 }
 
@@ -147,7 +157,9 @@ export function initPanelSystem() {
       startW: parseFloat(cs.width), startH: parseFloat(cs.height),
       startL: parseFloat(cs.left), startT: parseFloat(cs.top),
       minW: elMinW, minH: elMinH,
-      navH: getNavbarHeight(),
+      frame: frameRect(),
+      // Scaled from its top-right corner (the category sidebar) or its top-left (every other window)
+      originRight: Math.abs((parseFloat(cs.transformOrigin) || 0) - parseFloat(cs.width)) < 1,
     };
     document.body.style.cursor = getComputedStyle(handle).cursor;
     document.body.style.userSelect = 'none';
@@ -177,7 +189,7 @@ export function initPanelSystem() {
       startLeft: parseFloat(cs.left), startTop: parseFloat(cs.top),
       startVisualLeft: rect.left, startVisualTop: rect.top,
       startW: rect.width, startH: rect.height,
-      navH: getNavbarHeight(),
+      frame: frameRect(),
     };
     document.body.style.cursor = 'move';
     document.body.style.userSelect = 'none';
@@ -190,21 +202,36 @@ export function initPanelSystem() {
     const my = latestMouseY;
 
     if (resizing) {
-      const { el, dir, scale: rScale, startX, startY, startW, startH, startL, startT, minW: rMinW, minH: rMinH, navH: rNavH } = resizing;
+      const { el, dir, scale: rScale, startX, startY, startW, startH, startL, startT, minW: rMinW, minH: rMinH, frame: f, originRight } = resizing;
       const dx = (mx - startX) / rScale;
       const dy = (my - startY) / rScale;
 
       let newW = startW, newH = startH, newL = startL, newT = startT;
 
+      // Widths are the element's own (unscaled) pixels; left/top are viewport pixels. A left or top edge moves
+      // against the opposite edge, which stays where it is on screen: drawn from a top-left origin, right = left +
+      // width × scale; from a top-right one (scaled towards its right edge), right = left + width.
+      const span = (w) => (originRight ? w : w * rScale);   // style left → drawn right edge
       if (dir === 'r' || dir === 'br' || dir === 'tr') newW = Math.max(rMinW, startW + dx);
-      if (dir === 'l' || dir === 'bl' || dir === 'tl') { newW = Math.max(rMinW, startW - dx); newL = startL + startW - newW; }
+      if (dir === 'l' || dir === 'bl' || dir === 'tl') {
+        const right = startL + span(startW);
+        newW = Math.max(rMinW, startW - dx);
+        newL = right - span(newW);
+        const drawnLeft = right - newW * rScale;
+        if (drawnLeft < f.left) { newW = Math.max(rMinW, (right - f.left) / rScale); newL = right - span(newW); }
+      }
       if (dir === 'b' || dir === 'br' || dir === 'bl') newH = Math.max(rMinH, startH + dy);
-      if (dir === 't' || dir === 'tr' || dir === 'tl') { newH = Math.max(rMinH, startH - dy); newT = startT + startH - newH; }
+      if (dir === 't' || dir === 'tr' || dir === 'tl') {
+        const bottom = startT + startH * rScale;
+        newH = Math.max(rMinH, startH - dy);
+        newT = bottom - newH * rScale;
+        if (newT < f.top) { newT = f.top; newH = Math.max(rMinH, (bottom - f.top) / rScale); }
+      }
 
-      newL = Math.max(0, newL);
-      newT = Math.max(rNavH, newT);
-      const maxWidth = window.innerWidth / rScale - newL - 10;
-      const maxHeight = window.innerHeight / rScale - newT - 10;
+      if (!originRight) newL = Math.max(f.left, newL);
+      newT = Math.max(f.top, newT);
+      const maxWidth = originRight ? f.right - newL : (f.right - newL) / rScale;
+      const maxHeight = (f.bottom - newT) / rScale;
       newW = Math.min(newW, maxWidth);
       newH = Math.min(newH, maxHeight);
 
@@ -216,12 +243,13 @@ export function initPanelSystem() {
     }
 
     if (dragging) {
-      const { el, startX, startY, startLeft, startTop, startVisualLeft, startVisualTop, startW, startH, navH } = dragging;
+      const { el, startX, startY, startLeft, startTop, startVisualLeft, startVisualTop, startW, startH, frame: f } = dragging;
       const dx = mx - startX;
       const dy = my - startY;
 
-      const clampedDx = Math.max(-startVisualLeft, Math.min(window.innerWidth - startW - 10 - startVisualLeft, dx));
-      const clampedDy = Math.max(-startVisualTop, Math.min(window.innerHeight - startH - 10 - startVisualTop, dy));
+      // The visual box (startW × startH, scaled) moves inside the frame; flush against its edges is allowed.
+      const clampedDx = Math.max(f.left - startVisualLeft, Math.min(f.right - startW - startVisualLeft, dx));
+      const clampedDy = Math.max(f.top - startVisualTop, Math.min(f.bottom - startH - startVisualTop, dy));
 
       let finalLeft = startLeft + clampedDx;
       let finalTop  = startTop + clampedDy;
@@ -232,8 +260,9 @@ export function initPanelSystem() {
         finalTop  = Math.round(finalTop / gs) * gs;
       }
 
-      // Keep panels below the title bar
-      finalTop = Math.max(navH, finalTop);
+      // A grid step never takes the window past the frame's left or top edge (below the bar, right of the explorers)
+      finalLeft = Math.max(startLeft + f.left - startVisualLeft, finalLeft);
+      finalTop = Math.max(startTop + f.top - startVisualTop, finalTop);
       el.style.left = finalLeft + 'px';
       el.style.top  = finalTop + 'px';
     }
@@ -280,6 +309,8 @@ export function initPanelSystem() {
     emit('window:resize', { width: window.innerWidth, height: window.innerHeight });
     clampPanelsToViewport();
   });
+  // An explorer opening or closing, or the bar changing height, moves the frame without a window resize.
+  onFrameChange(() => clampPanelsToViewport());
 
   // Pause all CSS animations while the tab is hidden (body.app-hidden rule)
   document.addEventListener('visibilitychange', () => {

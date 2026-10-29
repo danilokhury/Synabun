@@ -20,6 +20,7 @@ import { state, emit } from '../state.js';
 import { injectStyles } from './ocp-v2-styles.js';
 import { getDefaultStore } from './ocp-v2-state.js';
 import { wireFileLinks } from '../ui-file-links.js';
+import { frameRect } from '../app-frame.js';
 import { mountRenderer } from './ocp-v2-render.js';
 import { mountCompose } from './ocp-v2-send.js';
 import { trackContextGauge } from './ocp-v2-context-gauge.js';
@@ -205,6 +206,7 @@ export function createChildPanel({
     _contextGauge = trackContextGauge(store);
     _compactControl = createCompactControl(store);
     _contextMenu = mountContextMenu(actions, panel, store, {
+      bounds: frameRect,   // the popover stays in the app frame
       compact: _compactControl,
       agent: () => _taskInfo?.subagentType || '',
     });

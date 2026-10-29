@@ -16,12 +16,12 @@ export function readOpenCodeSessionLink(event = {}) {
   };
 }
 
-export function bindOpenCodeChildSessionProfile({
+export function bindOpenCodeChildSessionTools({
   eventType,
   event,
   sourceRuntime,
   sessionToRuntime,
-  sessionProfiles,
+  sessionTools,
   runtimes,
 }) {
   if (!CHILD_LINK_EVENT_TYPES.has(eventType)) return { bound: false, reason: 'event-type' };
@@ -41,10 +41,10 @@ export function bindOpenCodeChildSessionProfile({
     runtimes?.get(previousRuntimeId)?.sessions?.delete(childSessionId);
   }
 
-  const profile = sourceRuntime.mcpProfile || sessionProfiles?.get(parentSessionId) || null;
+  const tools = sourceRuntime.tools || sessionTools?.get(parentSessionId) || null;
   sessionToRuntime.set(childSessionId, sourceRuntimeId);
-  if (profile) sessionProfiles.set(childSessionId, profile);
-  else sessionProfiles.delete(childSessionId);
+  if (tools) sessionTools.set(childSessionId, tools);
+  else sessionTools.delete(childSessionId);
   sourceRuntime.sessions?.add(childSessionId);
 
   return {
@@ -52,27 +52,27 @@ export function bindOpenCodeChildSessionProfile({
     childSessionId,
     parentSessionId,
     runtimeId: sourceRuntimeId,
-    profile,
+    tools,
   };
 }
 
 /**
- * The MCP profile a sub-agent panel starts with: its parent's. The primary
+ * The MCP tools a sub-agent panel starts with: its parent's. The primary
  * panel's store speaks for the parent only while it is bound to that parent
- * (`parentSessionId`): after a switch its profile is another session's, and
- * then the parent's saved choice (`savedProfile(parentSessionId)`) or what the
+ * (`parentSessionId`): after a switch its tools is another session's, and
+ * then the parent's saved choice (`savedTools(parentSessionId)`) or what the
  * child session itself carries is used. Without `parentSessionId` the parent
  * store is trusted as before.
  */
-export function inheritChildPanelMcpProfile(childStore, parentStore, childInfo = null, { parentSessionId, savedProfile } = {}) {
+export function inheritChildPanelTools(childStore, parentStore, childInfo = null, { parentSessionId, savedTools } = {}) {
   const parentState = parentStore?.getState?.() || null;
   const parentIsBound = !parentSessionId || parentState?.sessionId === parentSessionId;
-  const parentProfile = parentIsBound ? (parentState?.mcpProfile || null) : null;
+  const parentTools = parentIsBound ? (parentState?.tools || null) : null;
   let saved = null;
-  if (!parentProfile && parentSessionId && typeof savedProfile === 'function') {
-    try { saved = savedProfile(parentSessionId) || null; } catch { saved = null; }
+  if (!parentTools && parentSessionId && typeof savedTools === 'function') {
+    try { saved = savedTools(parentSessionId) || null; } catch { saved = null; }
   }
-  const profile = parentProfile || saved || childInfo?.mcpProfile || null;
-  if (profile) childStore?.setMcpProfile?.(profile);
-  return profile;
+  const tools = parentTools || saved || childInfo?.tools || null;
+  if (tools) childStore?.setTools?.(tools);
+  return tools;
 }

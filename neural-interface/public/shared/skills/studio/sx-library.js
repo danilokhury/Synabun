@@ -23,7 +23,8 @@ export const SORTS = Object.freeze(['attention', 'name', 'updated', 'kind', 'sou
 export const KINDS = Object.freeze(['skill', 'agent', 'command']);
 export const SOURCES = Object.freeze(['mine', 'project', 'synabun', 'plugin', 'account', 'system', 'shared', 'library']);
 export const HEALTH_FILTERS = Object.freeze(['attention', 'invalid', 'warnings', 'update', 'duplicates', 'drafts', 'readonly', 'ok']);
-export const VIEWS = Object.freeze(['all', 'attention', 'mine', 'synabun', 'plugins', 'account', 'drafts']);
+// 'archived' lists the skills deleted from the library (their versions kept), from GET /v2/skills/archived, not rows.
+export const VIEWS = Object.freeze(['all', 'attention', 'mine', 'synabun', 'plugins', 'account', 'drafts', 'archived']);
 
 import { revealHidden } from '../ss-unicode.js';
 
@@ -356,6 +357,7 @@ export function viewMatches(row, view) {
     case 'plugins': return row.source === 'plugin';
     case 'account': return row.source === 'account';
     case 'drafts': return row.health.some((h) => h.code === 'draft');
+    case 'archived': return false;   // not rows: the view draws the archived list
     default: return true;
   }
 }
@@ -435,4 +437,39 @@ export const worstHealth = (row) => row.health[0] || { code: 'ok', sev: 'ok' };
 export function keepSelection(selected, rows) {
   const keys = new Set(rows.map((r) => r.key));
   return new Set([...selected].filter((k) => keys.has(k)));
+}
+
+/** Start a catalog search without a saved view silently excluding matches. Explicit filters can then narrow it. */
+export function searchLibrary(lib, query) {
+  const starting = !String(lib.q || '').trim() && String(query).trim();
+  if (starting) Object.assign(lib, { view: 'all', kind: 'all', source: 'all', runtime: 'all', health: 'any' });
+  lib.q = query;
+  lib.focus = null;
+  return lib;
+}
+
+/** Load every catalog page before exposing searchable rows. A catalog reset restarts once, never blends generations. */
+export async function readWholeCatalog(fetchPage) {
+  let reset = false;
+  for (;;) {
+    const out = { items: [], roots: [], diagnostics: [], truncated: false };
+    const seen = new Set();
+    let cursor = null;
+    for (;;) {
+      const res = await fetchPage({ cursor, limit: 500 });
+      if (res.cursorReset) {
+        if (reset) throw Object.assign(new Error('catalog_incomplete'), { code: 'catalog_incomplete' });
+        reset = true;
+        break;
+      }
+      out.items.push(...(res.items || []));
+      out.roots = res.roots || out.roots;
+      out.diagnostics = res.diagnostics || out.diagnostics;
+      out.truncated ||= !!res.truncated;
+      if (!res.nextCursor) return out;
+      if (seen.has(res.nextCursor)) throw Object.assign(new Error('catalog_incomplete'), { code: 'catalog_incomplete' });
+      seen.add(res.nextCursor);
+      cursor = res.nextCursor;
+    }
+  }
 }

@@ -1,20 +1,23 @@
+import { OPENCODE_BRAIN_TOOLS } from '../assistant-tools.js';
 // ═══════════════════════════════════════════
 // SynaBun — Assistant brain: OpenCode (isolated serve + SDK client)
 // ═══════════════════════════════════════════
 //
 // One isolated `opencode serve` per assistant session (same helpers the
 // OpenCode sidepanel uses). The persona is installed as a custom primary agent
-// (`agent.assistant.prompt`) in the per-serve config so the model sees it as
-// its system prompt; SSE events are translated to the unified envelope.
+// (`agents.assistant.system`) in the per-serve opencode.json so the model sees
+// it as its system prompt; SSE events are translated to the unified envelope.
 
-import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { normalizeOpenCodeModel } from '../native-loop-providers.js';
-import { compactOrSummarize } from '../opencode-v2-client.js';
+import { agentOf, mcpServersOf, opencodeConfigFilePath, readOpencodeConfigDocument, setAgent, setMcpServer, withPlugin, withoutPlugin } from '../opencode-config.js';
 import { createOpenCodeEnvelopeTranslator, opencodeControlResponse } from '../assistant-envelope.js';
 import { opencodePlanPermission, opencodeReadOnlyPermission, planDenyMessage, readOnlyDenyMessage } from '../assistant-plan-permissions.js';
 import { planModeInstructions } from '../assistant-persona.js';
+import { waitForSynabunTools, synabunConfigured, synabunToolsTimeoutText, OPENCODE_MCP_READY_TIMEOUT_MS, OPENCODE_MCP_SETTLE_MS, OPENCODE_MCP_LIST_GRACE_MS } from '../opencode-mcp-ready.js';
+export { synabunMcpState } from '../opencode-mcp-ready.js';
 
 /** The MCP terminal pin of an assistant session's OpenCode brain. */
 export function opencodeTermIdFor(sessionId) {
@@ -34,14 +37,8 @@ export function opencodeImageParts(images = []) {
   return parts;
 }
 
-/** The route-gate plugin (opencode-route-gate.js) as a file URL the serve can load. */
-export const OPENCODE_ROUTE_GATE_PLUGIN = pathToFileURL(resolve(dirname(fileURLToPath(import.meta.url)), 'opencode-route-gate.js')).href;
-/**
- * The same gate for OpenCode 2 (opencode2-route-gate/: OpenCode 2 loads a plugin
- * folder from the config's `plugins` list). Both entries are written: OpenCode 1
- * ignores `plugins`, OpenCode 2 skips the 1.x file (a warning in its log).
- */
-export const OPENCODE2_ROUTE_GATE_PLUGIN = pathToFileURL(resolve(dirname(fileURLToPath(import.meta.url)), 'opencode2-route-gate')).href;
+/** The route-gate plugin (opencode2-route-gate/, a plugin folder OpenCode loads from `plugins`) as a file URL. */
+export const OPENCODE_ROUTE_GATE_PLUGIN = pathToFileURL(resolve(dirname(fileURLToPath(import.meta.url)), 'opencode2-route-gate')).href;
 
 /**
  * SynaBun's plan agent. OpenCode adds its own read-only reminder ("commands may
@@ -52,20 +49,52 @@ export const OPENCODE2_ROUTE_GATE_PLUGIN = pathToFileURL(resolve(dirname(fileURL
  */
 export const OPENCODE_PLAN_AGENT = 'synabun-plan';
 
+/**
+ * Tools this brain's agents must never call. Code Mode's `execute` runs arbitrary code (a `fetch`
+ * included) that no argument check can read, so the route gate refuses it before routing - and this
+ * brain's SynaBun tools are direct (codemode: false), so the only thing `execute` can do here is earn
+ * that refusal. Denied at the agent, the model is not offered it at all.
+ */
+export const OPENCODE_BRAIN_DENIED_TOOLS = Object.freeze(['execute']);
+
 /** The brain's SynaBun MCP tool-call timeout (ms): as long as the Codex brain's tool_timeout_sec (server.js). */
 export const OPENCODE_BRAIN_MCP_TIMEOUT_MS = 180_000;
 
+// Compatibility exports for the brain's existing consumers and tests.
+export const OPENCODE_BRAIN_MCP_READY_TIMEOUT_MS = OPENCODE_MCP_READY_TIMEOUT_MS;
+export const OPENCODE_BRAIN_MCP_SETTLE_MS = OPENCODE_MCP_SETTLE_MS;
+export const OPENCODE_BRAIN_MCP_LIST_GRACE_MS = OPENCODE_MCP_LIST_GRACE_MS;
+export const assistantSynabunConfigured = synabunConfigured;
+export { OPENCODE_BRAIN_TOOLS } from '../assistant-tools.js';
+
+/**
+ * Why the brain's serve would start with SynaBun behind Code Mode (`execute` only, which the route gate
+ * refuses before routing, so agent_route would be unreachable), read back from the written config; null
+ * when it is fine. No config file at all: the serve has no SynaBun server, the gate turns itself off.
+ */
+export function assistantConfigProblem(xdgRoot) {
+  let doc;
+  try { doc = readOpencodeConfigDocument(opencodeConfigFilePath(resolve(xdgRoot, 'opencode'))); } catch (err) { return `its OpenCode configuration could not be read (${err?.message || err})`; }
+  if (!doc.exists) return null;
+  if (doc.error) return 'its OpenCode configuration could not be read';
+  const synabun = mcpServersOf(doc.config).SynaBun;
+  if (synabun && synabun.codemode !== false) return 'SynaBun\'s tools could not be set up for direct use (OpenCode Code Mode stayed on)';
+  return null;
+}
+
 /**
  * `routeGate` ({ url, session, token }) installs the route-gate plugin in this
- * isolated serve's config only (assistant brains; never the shared sidepanel setup).
+ * isolated serve's opencode.json only (assistant brains; never the shared
+ * sidepanel setup). Everything is written in OpenCode 2's schema.
  */
 export function patchOpenCodeAssistantConfig(xdgRoot, { persona = '', role = 'assistant', model = null, desktopGrant = null, routeGate = null, brainCredential = null } = {}) {
-  const configPath = resolve(xdgRoot, 'opencode', 'config.json');
-  if (!existsSync(configPath)) return false;
-  const config = JSON.parse(readFileSync(configPath, 'utf8'));
-  if (config.mcp?.SynaBun && typeof config.mcp.SynaBun === 'object') {
-    const envKey = config.mcp.SynaBun.environment ? 'environment' : (config.mcp.SynaBun.env ? 'env' : 'environment');
-    const env = { ...(config.mcp.SynaBun[envKey] || {}), SYNABUN_ROLE: role };
+  const configPath = opencodeConfigFilePath(resolve(xdgRoot, 'opencode'));
+  const doc = readOpencodeConfigDocument(configPath);
+  if (!doc.exists || doc.error) return false;
+  const config = doc.config;
+  const synabun = mcpServersOf(config).SynaBun;
+  if (synabun) {
+    const env = { ...(synabun.environment || {}), SYNABUN_ROLE: role };
     // Computer use: an unforgeable per-brain grant unlocks the `computer` group.
     if (desktopGrant) env.SYNABUN_DESKTOP_GRANT = desktopGrant;
     else delete env.SYNABUN_DESKTOP_GRANT;
@@ -74,48 +103,56 @@ export function patchOpenCodeAssistantConfig(xdgRoot, { persona = '', role = 'as
     // neither this file (it is in every backup of data/) nor OPENCODE_CONFIG_CONTENT ever holds it.
     if (brainCredential) env.SYNABUN_BRAIN_TOKEN = '{env:SYNABUN_BRAIN_TOKEN}';
     else delete env.SYNABUN_BRAIN_TOKEN;
-    config.mcp.SynaBun[envKey] = env;
     // OpenCode gives an MCP tool call 60 s unless the server says otherwise; agent_route may wait on the
     // user's route card and whatsapp_send_file on an upload (130 s): the Codex brain's 180 s here too.
-    config.mcp.SynaBun.timeout = OPENCODE_BRAIN_MCP_TIMEOUT_MS;
+    // OpenCode 2.1's MCP default is Code Mode: only `execute` reaches these tools. The route gate must
+    // refuse arbitrary execute code until routed, so wrapping agent_route (and exempt memory tools) deadlocks
+    // the brain. Expose this brain's SynaBun tools directly instead. The serve's OPENCODE_CONFIG_CONTENT
+    // overlay carries this entry past project config too; other servers, workers and sidepanels keep their mode.
+    setMcpServer(config, 'SynaBun', { ...synabun, codemode: false, environment: env, timeout: { ...(synabun.timeout || {}), execution: OPENCODE_BRAIN_MCP_TIMEOUT_MS } });
   }
-  config.agent = { ...(config.agent || {}) };
-  config.agent.assistant = {
-    ...(config.agent.assistant || {}),
+  const rule = (action, effect, resource = '*') => ({ action, resource, effect });
+  // An agent's rules with ours last, in place of any it had for the same tools (as OpenCode 1's
+  // `permission.<tool>` replaced the user's value): every command asks whatever was allowed before, and the
+  // list stays as it is when the config is patched again.
+  const withOurRules = (agent, ours) => [...(agent.permissions || []).filter((own) => !ours.some((r) => r.action === own?.action)), ...ours];
+  const withoutExecute = OPENCODE_BRAIN_DENIED_TOOLS.map((name) => rule(name, 'deny'));
+  const assistant = agentOf(config, 'assistant');
+  setAgent(config, 'assistant', {
+    ...assistant,
     mode: 'primary',
     description: 'SynaBun central assistant',
-    prompt: persona || undefined,
+    ...(persona ? { system: persona } : {}),
     ...(model ? { model } : {}),
-  };
+    permissions: withOurRules(assistant, withoutExecute),
+  });
   // SynaBun's plan agent (desktop plan turns): no code changes, anything else as the approval mode says.
-  config.agent[OPENCODE_PLAN_AGENT] = {
-    ...(config.agent[OPENCODE_PLAN_AGENT] || {}),
+  const synabunPlan = agentOf(config, OPENCODE_PLAN_AGENT);
+  setAgent(config, OPENCODE_PLAN_AGENT, {
+    ...synabunPlan,
     mode: 'primary',
     hidden: true,
     description: 'SynaBun plan mode: explore, run commands and use every tool; no code changes',
-    prompt: persona || undefined,
+    ...(persona ? { system: persona } : {}),
     ...(model ? { model } : {}),
-    permission: { ...(config.agent[OPENCODE_PLAN_AGENT]?.permission || {}), edit: 'deny', bash: 'ask', question: 'allow', task: { general: 'deny' } },
-  };
+    permissions: withOurRules(synabunPlan, [...withoutExecute, rule('edit', 'deny'), rule('shell', 'ask'), rule('question', 'allow'), rule('subagent', 'deny', 'general')]),
+  });
   // OpenCode's own plan agent (a WhatsApp session's read-only brain) refuses only
   // edits and runs any command without asking: here every command asks, so the
   // read-only classifier decides on the whole line.
-  config.agent.plan = { ...(config.agent.plan || {}), permission: { ...(config.agent.plan?.permission || {}), bash: 'ask' } };
-  const plugins = (Array.isArray(config.plugin) ? config.plugin : []).filter((entry) => (Array.isArray(entry) ? entry[0] : entry) !== OPENCODE_ROUTE_GATE_PLUGIN);
-  const plugins2 = (Array.isArray(config.plugins) ? config.plugins : []).filter((entry) => (entry && typeof entry === 'object' ? entry.package : entry) !== OPENCODE2_ROUTE_GATE_PLUGIN);
+  const plan = agentOf(config, 'plan');
+  setAgent(config, 'plan', { ...plan, permissions: withOurRules(plan, [rule('shell', 'ask')]) });
+  withoutPlugin(config, OPENCODE_ROUTE_GATE_PLUGIN);
   // `remote`: a WhatsApp session's serve — the plugin refuses a call it could not check (fail closed).
   if (routeGate?.url && routeGate?.session && routeGate?.token) {
-    const options = { url: routeGate.url, session: routeGate.session, token: routeGate.token, ...(routeGate.remote === true ? { remote: true } : {}) };
-    plugins.push([OPENCODE_ROUTE_GATE_PLUGIN, options]);
-    plugins2.push({ package: OPENCODE2_ROUTE_GATE_PLUGIN, options });
+    withPlugin(config, OPENCODE_ROUTE_GATE_PLUGIN, { url: routeGate.url, session: routeGate.session, token: routeGate.token, ...(routeGate.remote === true ? { remote: true } : {}) });
   }
-  if (plugins.length) config.plugin = plugins; else delete config.plugin;
-  if (plugins2.length) config.plugins = plugins2; else delete config.plugins;
-  writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n', 'utf8');
+  writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
   // It carries this brain's grants (the desktop grant): readable by this user only.
   try { chmodSync(configPath, 0o600); } catch { /* a filesystem without modes */ }
   return true;
 }
+
 
 /** The assistant's OpenCode approval mode: 'auto' (auto-accept) or 'default'. */
 export function opencodeApprovalMode(mode) {
@@ -169,8 +206,13 @@ export function createOpenCodeBrain({ session, sink, deps = {}, persona = '' } =
   let keepAliveTimer = null;
   let costUsd = 0;
   let startPromise = null;
-  // The model the last turn ran on: what a compaction summarises with.
-  let lastTurnModel = null;
+  let synabunExpected = false;
+  let stops = 0;
+  let waitingAbort = null;
+  const mcpWait = {
+    readyTimeoutMs: deps.mcpReadyTimeoutMs, settleMs: deps.mcpSettleMs,
+    listGraceMs: deps.mcpListGraceMs, pollMs: deps.mcpPollMs,
+  };
   // Plan mode runs SynaBun's plan agent (OPENCODE_PLAN_AGENT; OpenCode's own
   // `plan` agent, the persona riding as `system`, when the config patch failed).
   let approvalMode = opencodeApprovalMode(brain.permissionMode);
@@ -219,17 +261,29 @@ export function createOpenCodeBrain({ session, sink, deps = {}, persona = '' } =
   }
 
   /** The serve's MCP servers as an `mcp_status` event (the runtime reads whether SynaBun, and so agent_route, is reachable). */
+  function sendMcpStatus(servers) { sink.send({ type: 'event', event: { type: 'system', subtype: 'mcp_status', servers } }); }
   async function reportMcpStatus() {
-    try { const status = await client?.mcp?.status?.({ directory: cwd }); sink.send({ type: 'event', event: { type: 'system', subtype: 'mcp_status', servers: status?.data || status || [] } }); } catch {}
+    try { const status = await client?.mcp?.status?.({ directory: cwd }); sendMcpStatus(status?.data || status || []); } catch {}
   }
 
   async function start() {
     if (disposed) throw new Error('OpenCode brain disposed');
     if (startPromise) return startPromise;
     startPromise = (async () => {
-      const xdgRoot = deps.setupOpencodeSidepanelConfig(termId, brain.mcpProfile || null);
-      try { personaInstalled = patchOpenCodeAssistantConfig(xdgRoot, { persona, model: null, desktopGrant: deps.desktopGrant || null, routeGate: deps.routeGate || null, brainCredential: deps.brainCredential || null }); } catch { personaInstalled = false; }
-      entry = await deps.ensureIsolatedServe(termId, { xdgRoot, keepAlive: true, mcpProfile: brain.mcpProfile || null, brainCredential: deps.brainCredential || null });
+      const xdgRoot = deps.setupOpencodeSidepanelConfig(termId, brain.tools ?? OPENCODE_BRAIN_TOOLS, { cwd: brain.cwd, scopeExternal: false });
+      // A brain whose config could not be patched would start with Code Mode on: SynaBun's tools only behind
+      // `execute`, which the route gate refuses before routing, so agent_route is unreachable. Refuse to start.
+      let patchError = null;
+      try { personaInstalled = patchOpenCodeAssistantConfig(xdgRoot, { persona, model: null, desktopGrant: deps.desktopGrant || null, routeGate: deps.routeGate || null, brainCredential: deps.brainCredential || null }); } catch (err) { personaInstalled = false; patchError = err; }
+      const unready = assistantConfigProblem(xdgRoot);
+      if (unready) {
+        throw new Error(`OpenCode Assistant could not start: ${unready}${patchError?.message ? ` (${patchError.message})` : ''}. Check Settings → OpenCode, or switch the Assistant to another provider.`);
+      }
+      // Its turns go out once SynaBun's tools are on the model's list (waitForSynabunTools).
+      synabunExpected = assistantSynabunConfigured(xdgRoot);
+      // An inherited OPENCODE_CONFIG_DIR would replace this isolated configuration (route-gate plugin,
+      // the assistant and plan agents): the brain's serve never reads it.
+      entry = await deps.ensureIsolatedServe(termId, { xdgRoot, keepAlive: true, tools: brain.tools ?? OPENCODE_BRAIN_TOOLS, brainCredential: deps.brainCredential || null, extraEnv: { OPENCODE_CONFIG_DIR: null } });
       if (!entry?.client) throw new Error('OpenCode isolated serve failed to start');
       client = entry.client;
       await client.waitUntilConnected?.(20_000);
@@ -253,7 +307,9 @@ export function createOpenCodeBrain({ session, sink, deps = {}, persona = '' } =
     kind: 'opencode',
     start,
     async sendUserTurn({ text, images = [], model = null, effort = null, permissionMode: mode = null, planMode: plan = null } = {}) {
+      const stop = stops;
       await start();
+      if (disposed || stops !== stop) return false;
       applyModes(mode, plan);
       turnActive = true;
       // The runtime passes the effective model/effort on every turn (the record
@@ -262,7 +318,6 @@ export function createOpenCodeBrain({ session, sink, deps = {}, persona = '' } =
       const request = {
         sessionID: sessionId, parts, model: normalizeOpenCodeModel(model || brain.model), directory: cwd,
       };
-      if (request.model) lastTurnModel = request.model;
       if (effort) request.variant = String(effort);
       turnPlanned = planMode && !remoteReadOnly;
       if (turnPlanned && personaInstalled) {
@@ -277,14 +332,25 @@ export function createOpenCodeBrain({ session, sink, deps = {}, persona = '' } =
       else if (personaInstalled) request.agent = brain.agent || 'assistant';
       else { request.agent = brain.agent || 'build'; if (persona) request.system = persona; }
       if (entry) entry.lastUsed = Date.now();
-      // SynaBun may have connected (or failed) since the last turn: the route gate follows it.
-      await reportMcpStatus();
+      // SynaBun's tools on the model's list first (a fresh serve may still be connecting them); the route gate
+      // follows what was seen. Stopped meanwhile (its `aborted` is out) or disposed: the turn never goes out.
+      const controller = new AbortController();
+      waitingAbort = controller;
+      let ready;
+      try {
+        ready = await waitForSynabunTools(client, { ...mcpWait, directory: cwd, expected: synabunExpected,
+          signal: controller.signal, stopped: () => disposed || stops !== stop,
+          onStatus: sendMcpStatus,
+          onTimeout: (ms) => sink.send({ type: 'event', event: { type: 'system', subtype: 'status', text: synabunToolsTimeoutText(ms, 'brain') } }),
+        });
+      } finally { if (waitingAbort === controller) waitingAbort = null; }
+      if (!ready || disposed || stops !== stop) { turnActive = false; return false; }
       const response = await client.session.promptAsync(request);
       const status = Number(response?.status);
       if (Number.isFinite(status) && status >= 400) { turnActive = false; throw new Error(`OpenCode prompt failed (${status})`); }
       return true;
     },
-    async abort() { if (client && sessionId) await client.session.abort({ sessionID: sessionId, directory: cwd }).catch(() => {}); emit({ type: 'aborted' }); },
+    async abort() { stops += 1; waitingAbort?.abort(); if (client && sessionId) await client.session.abort({ sessionID: sessionId, directory: cwd }).catch(() => {}); emit({ type: 'aborted' }); },
     async setPermissionMode(mode, { planMode: plan = null } = {}) { applyModes(mode, plan); sink.send({ type: 'mode_changed', mode: approvalMode, planMode }); },
     respondControl(requestId, response) {
       const pending = pendingControls.get(String(requestId));
@@ -296,12 +362,11 @@ export function createOpenCodeBrain({ session, sink, deps = {}, persona = '' } =
         : client.permission.reply({ requestID: body.requestID, reply: body.reply, directory: cwd });
       Promise.resolve(call).catch((error) => sink.send({ type: 'error', message: `OpenCode reply failed: ${error?.message || error}` }));
     },
-    // OpenCode 1.18.34 answers v2.session.compact with 503 "not available yet":
-    // compactOrSummarize then summarises on the model of the last turn.
+    // OpenCode compacts the session on the model it runs on.
     async compact() {
       await start();
       turnPlanned = false;
-      await compactOrSummarize(client, { sessionID: sessionId, directory: cwd, model: lastTurnModel || normalizeOpenCodeModel(brain.model) });
+      await client.session.compact({ sessionID: sessionId, directory: cwd });
     },
     async mcpStatus() { await reportMcpStatus(); },
     async reconcileUsage(meter) {
@@ -337,6 +402,7 @@ export function createOpenCodeBrain({ session, sink, deps = {}, persona = '' } =
     async dispose() {
       if (disposed) return;
       disposed = true;
+      waitingAbort?.abort();
       if (keepAliveTimer) clearInterval(keepAliveTimer);
       if (unsubscribe) { try { unsubscribe(); } catch {} }
       try { deps.stopIsolatedServe(termId); } catch {}

@@ -25,6 +25,8 @@
 // closes and moves on, the choice as it was. An open menu is placed `fixed` against its trigger,
 // so a scrolling pane never cuts it off, and kept inside the box that clips it (a window).
 
+import { placementArea } from './app-frame.js';
+
 const ARROW = '<svg class="cc-dropdown-arrow" viewBox="0 0 24 24" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>';
 const GAP = 4;          // between the trigger and its menu
 const EDGE = 6;         // the least room left between a menu and the edge of what clips it
@@ -94,13 +96,39 @@ export function matchIndex(options, typed, from = -1) {
   return -1;
 }
 
+/** Multi-choice values in menu order. Disabled selected rows are mandatory. */
+export function multipleValues(options) {
+  const exclusive = options.find(o => o.selected && o.exclusive && !o.scope);
+  if (exclusive) return [String(exclusive.value ?? '')];
+  const scoped = new Set(options.filter(o => o.selected && o.exclusive && o.scope).map(o => o.scope));
+  return options.filter(o => o.selected && (!scoped.has(o.scope) || o.exclusive)).map(o => String(o.value ?? ''));
+}
+
+/** Exclusive rows may apply globally (inheritance) or within a named section. */
+export function toggleMultiple(options, values, index) {
+  const option = options[index];
+  if (!option || option.disabled) return [...values];
+  if (option.exclusive && !option.scope) return [String(option.value ?? '')];
+  const selected = new Set(values);
+  for (const row of options) {
+    if ((row.exclusive && !row.scope) || (option.exclusive && row.scope === option.scope) || (!option.exclusive && row.exclusive && row.scope === option.scope)) selected.delete(String(row.value ?? ''));
+  }
+  const value = String(option.value ?? '');
+  if (option.exclusive) selected.add(value);
+  else if (selected.has(value)) selected.delete(value); else selected.add(value);
+  return multipleValues(options.map(row => ({ ...row, selected: selected.has(String(row.value ?? '')) || (!option.exclusive && row.disabled && row.selected) })));
+}
+
+const multipleText = (options, values) => options.filter(o => values.includes(String(o.value ?? '')))
+  .map(o => o.label).join(', ');
+
 // ── Markup ──
 
 function optionHTML(id, option, index, chosen) {
   const label = String(option.label ?? '');
-  const active = index === chosen;
+  const active = Array.isArray(chosen) ? (chosen.includes(String(option.value ?? '')) || (option.automatic && option.selected)) : index === chosen;
   return `<div class="cc-dropdown-item${active ? ' active' : ''}" id="${esc(id)}-opt-${index}" role="option" aria-selected="${active}"`
-    + `${option.disabled ? ' aria-disabled="true"' : ''} data-value="${esc(option.value ?? '')}" data-index="${index}" title="${esc(label)}">${esc(label)}</div>`;
+    + `${option.disabled ? ' aria-disabled="true"' : ''} data-value="${esc(option.value ?? '')}" data-index="${index}"${option.exclusive ? ' data-exclusive="true"' : ''}${option.scope ? ` data-scope="${esc(option.scope)}"` : ''}${option.automatic ? ' data-automatic="true"' : ''} data-label="${esc(label)}" title="${esc(option.caption || label)}">${Array.isArray(chosen) ? '<span class="cc-dropdown-check" aria-hidden="true"></span>' : ''}<span>${esc(label)}${option.caption ? `<small class="cc-dropdown-caption">${esc(option.caption)}</small>` : ''}</span></div>`;
 }
 
 /** The menu's options (and headings) for `entries`, the `chosen` index marked. */
@@ -120,17 +148,17 @@ export function menuHTML(id, entries, chosen = chosenIndex(flatOptions(entries))
  * Name it with `labelledBy` (the id of its visible label) or `label`. `classes` and `attrs` go on
  * the `.cc-dropdown`.
  */
-export function dropdownHTML(id, entries, { classes = '', labelledBy = '', label = '', attrs = '', inputAttrs = '', disabled = false } = {}) {
+export function dropdownHTML(id, entries, { classes = '', labelledBy = '', label = '', attrs = '', inputAttrs = '', disabled = false, multiple = false, summary = '' } = {}) {
   const options = flatOptions(entries);
-  const chosen = chosenIndex(options);
+  const chosen = multiple ? multipleValues(options) : chosenIndex(options);
   const current = chosen >= 0 ? options[chosen] : null;
   const name = labelledBy ? ` aria-labelledby="${esc(labelledBy)}"` : label ? ` aria-label="${esc(label)}"` : '';
-  const text = String(current?.label ?? '');
-  return `<input type="hidden" id="${esc(id)}" value="${esc(current?.value ?? '')}"${disabled ? ' disabled' : ''}${inputAttrs ? ` ${inputAttrs}` : ''}>`
-    + `<div class="cc-dropdown${classes ? ` ${classes}` : ''}${disabled ? ' disabled' : ''}" data-for="${esc(id)}"${attrs ? ` ${attrs}` : ''}>`
+  const text = multiple ? (summary || multipleText(options, chosen)) : String(current?.label ?? '');
+  return `<input type="hidden" id="${esc(id)}" value="${esc(multiple ? chosen.join(',') : current?.value ?? '')}"${disabled ? ' disabled' : ''}${inputAttrs ? ` ${inputAttrs}` : ''}>`
+    + `<div class="cc-dropdown${classes ? ` ${classes}` : ''}${disabled ? ' disabled' : ''}" data-for="${esc(id)}"${multiple ? ' data-multiple="true"' : ''}${attrs ? ` ${attrs}` : ''}>`
     + `<button type="button" class="cc-dropdown-trigger" id="${esc(id)}-trigger" role="combobox" aria-haspopup="listbox" aria-expanded="false" aria-controls="${esc(id)}-menu"${name}${disabled ? ' disabled' : ''}>`
     + `<span class="cc-dropdown-value" title="${esc(text)}">${esc(text)}</span>${ARROW}</button>`
-    + `<div class="cc-dropdown-menu" id="${esc(id)}-menu" role="listbox"${name} tabindex="-1">${menuHTML(id, entries, chosen)}</div>`
+    + `<div class="cc-dropdown-menu" id="${esc(id)}-menu" role="listbox"${multiple ? ' aria-multiselectable="true"' : ''}${name} tabindex="-1">${menuHTML(id, entries, chosen)}</div>`
     + '</div>';
 }
 
@@ -143,7 +171,7 @@ const partsOf = (dd) => ({
   input: dd.dataset.for ? document.getElementById(dd.dataset.for) : null,
 });
 const itemsOf = (dd) => [...(partsOf(dd).menu?.querySelectorAll('.cc-dropdown-item') || [])];
-const optionsOf = (items) => items.map(el => ({ value: el.dataset.value ?? '', label: el.textContent, disabled: el.getAttribute('aria-disabled') === 'true' }));
+const optionsOf = (items) => items.map(el => ({ value: el.dataset.value ?? '', label: el.dataset.label ?? el.textContent, disabled: el.getAttribute('aria-disabled') === 'true', exclusive: el.dataset.exclusive === 'true', scope: el.dataset.scope || undefined, selected: el.classList.contains('active') }));
 const highlightedOf = (items) => items.findIndex(el => el.classList.contains('highlight'));
 const chosenOf = (items) => items.findIndex(el => el.classList.contains('active'));
 const isOpen = (dd) => !!dd?.classList.contains('open');
@@ -194,6 +222,21 @@ function showChosen(dd, index) {
   }
 }
 
+function showMultiple(dd, values) {
+  const { label, input } = partsOf(dd);
+  const items = itemsOf(dd);
+  items.forEach(el => {
+    const active = values.includes(el.dataset.value ?? '') || el.dataset.automatic === 'true';
+    el.classList.toggle('active', active);
+    el.setAttribute('aria-selected', String(active));
+  });
+  if (input) input.value = values.join(',');
+  if (label) {
+    label.textContent = multipleText(optionsOf(items), values);
+    label.title = label.textContent;
+  }
+}
+
 function highlight(dd, index) {
   const { trigger, menu } = partsOf(dd);
   const items = itemsOf(dd);
@@ -227,7 +270,9 @@ function place(dd) {
   Object.assign(style, { position: 'fixed', left: '0px', top: '0px', right: 'auto', bottom: 'auto', width: 'auto', maxHeight: 'none', minWidth: '0px', maxWidth: 'none' });
   const origin = menu.getBoundingClientRect(); // where the containing block's (0, 0) is on screen
   const t = trigger.getBoundingClientRect();
-  let room = { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
+  // The app frame for a trigger inside it (app-frame.js), else the window; then whatever clips the menu
+  const area = placementArea(t.left + t.width / 2, t.top + t.height / 2);
+  let room = { left: area.left, top: area.top, right: area.right, bottom: area.bottom };
   const box = fixedContainer(dd);
   if (box) {
     const cs = getComputedStyle(box);
@@ -268,8 +313,12 @@ function open(dd, index = null) {
   if (!trigger || trigger.disabled || dd.classList.contains('disabled')) return;
   for (const other of document.querySelectorAll('.cc-dropdown.open')) if (other !== dd) close(other);
   ensureAria(dd);
+  dd._ccBefore = partsOf(dd).input?.value;
+  dd._ccBeforeLabel = partsOf(dd).label?.textContent;
+  dd._ccBeforeMenu = partsOf(dd).menu?.innerHTML;
   dd.classList.add('open');
   trigger.setAttribute('aria-expanded', 'true');
+  partsOf(dd).input?.dispatchEvent(new Event('cc-dropdown-open', { bubbles: true }));
   if (document.activeElement !== trigger) trigger.focus({ preventScroll: true });
   place(dd);
   const items = itemsOf(dd);
@@ -278,8 +327,14 @@ function open(dd, index = null) {
   highlight(dd, index ?? (chosen >= 0 && !options[chosen].disabled ? chosen : edgeIndex(options, 'first')));
 }
 
-function close(dd, { focus = false } = {}) {
-  const { trigger, menu } = partsOf(dd);
+function close(dd, { focus = false, cancel = false } = {}) {
+  const { trigger, menu, input, label } = partsOf(dd);
+  const changed = isOpen(dd) && dd.dataset.multiple === 'true' && input && input.value !== dd._ccBefore;
+  if (cancel && changed) {
+    if (menu && dd._ccBeforeMenu != null) menu.innerHTML = dd._ccBeforeMenu;
+    showMultiple(dd, dd._ccBefore === '' ? [''] : dd._ccBefore.split(','));
+    if (label) { label.textContent = dd._ccBeforeLabel; label.title = label.textContent; }
+  }
   dd.classList.remove('open', 'drop-up');
   trigger?.setAttribute('aria-expanded', 'false');
   trigger?.removeAttribute('aria-activedescendant');
@@ -287,6 +342,10 @@ function close(dd, { focus = false } = {}) {
   menu?.removeAttribute('style');
   dd._ccPlacedAt = null;
   if (focus && trigger?.isConnected) trigger.focus({ preventScroll: true });
+  if (changed && !cancel) {
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }
 }
 
 /** The user's choice: shown, the menu closed, the focus on the trigger, then `input` and `change` when it changed. */
@@ -295,6 +354,12 @@ function choose(dd, index) {
   const item = items[index];
   const { input } = partsOf(dd);
   if (!item || item.getAttribute('aria-disabled') === 'true') { close(dd, { focus: true }); return; }
+  if (dd.dataset.multiple === 'true') {
+    showMultiple(dd, toggleMultiple(optionsOf(items), items.filter(el => el.classList.contains('active')).map(el => el.dataset.value), index));
+    input?.dispatchEvent(new Event('cc-dropdown-draft', { bubbles: true }));
+    highlight(dd, index);
+    return;
+  }
   const changed = !!input && input.value !== (item.dataset.value ?? '');
   showChosen(dd, index);
   close(dd, { focus: true });
@@ -315,20 +380,25 @@ export function setDropdownItems(input, entries) {
   const wasOpen = isOpen(dd);
   const before = wasOpen ? itemsOf(dd)[highlightedOf(itemsOf(dd))]?.dataset.value : undefined;
   const options = flatOptions(entries);
-  const chosen = chosenIndex(options);
+  const multiple = dd.dataset.multiple === 'true';
+  const chosen = multiple ? multipleValues(options) : chosenIndex(options);
   menu.innerHTML = menuHTML(input.id, entries, chosen);
-  showChosen(dd, chosen);
+  if (multiple) showMultiple(dd, chosen); else showChosen(dd, chosen);
   if (!wasOpen) return;
   place(dd);
   const items = itemsOf(dd);
   const again = before === undefined ? -1 : items.findIndex(el => el.dataset.value === before);
-  highlight(dd, again >= 0 ? again : chosen);
+  highlight(dd, again >= 0 ? again : chosenOf(items));
 }
 
 /** `select.value = …`: the first choice with that value, or none (the value is then ''). No event. */
 export function setDropdownValue(input, value) {
   const dd = dropdownOf(input);
   if (!dd) { if (input) input.value = value ?? ''; return; }
+  if (dd.dataset.multiple === 'true') {
+    showMultiple(dd, Array.isArray(value) ? value.map(String) : String(value ?? '').split(','));
+    return;
+  }
   showChosen(dd, itemsOf(dd).findIndex(el => el.dataset.value === String(value ?? '')));
 }
 
@@ -337,16 +407,16 @@ export function setDropdownDisabled(input, disabled) {
   const dd = dropdownOf(input);
   if (input) input.disabled = !!disabled;
   if (!dd) return;
-  if (disabled && isOpen(dd)) close(dd);
+  if (disabled && isOpen(dd)) close(dd, { cancel: true });
   dd.classList.toggle('disabled', !!disabled);
   const { trigger } = partsOf(dd);
   if (trigger) trigger.disabled = !!disabled;
 }
 
 /** Closes every open dropdown under `root`; true when one was open. `focus` puts the focus back on its trigger. */
-export function closeDropdowns(root = document, { focus = false } = {}) {
+export function closeDropdowns(root = document, { focus = false, cancel = false } = {}) {
   const open = [...root.querySelectorAll('.cc-dropdown.open')];
-  for (const dd of open) close(dd, { focus });
+  for (const dd of open) close(dd, { focus, cancel });
   return open.length > 0;
 }
 
@@ -446,7 +516,7 @@ export function wireDropdowns(root, { signal } = {}) {
       case 'Escape':
         e.preventDefault();
         e.stopPropagation();
-        close(dd, { focus: true });
+        close(dd, { focus: true, cancel: true });
         break;
       case 'Tab':
         close(dd); // the focus moves on as usual; the choice stays as it was

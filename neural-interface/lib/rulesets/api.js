@@ -27,7 +27,7 @@
 // lock file that cannot be used at all is `LOCK_UNAVAILABLE`, a 500: nothing
 // was changed, and trying again will not help until the data home is fixed. A
 // remove that leaves a copy to the user (an edited one, or for OpenCode one
-// that the user's own line in config.json points at) is not a refusal: 200,
+// that the user's own line in opencode.json points at) is not a refusal: 200,
 // `ok: true`, `kept: [{path, reason}]`.
 //
 // Every installer call is synchronous and runs to its end inside the handler,

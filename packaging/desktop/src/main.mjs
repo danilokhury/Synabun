@@ -68,9 +68,10 @@ import { backendUrl, isBackendUrl, isSafeExternal, navigationDecision, permissio
 import { boundsToSave, MIN_SIZE, relaunchIntent, restoreBounds, splashCloseAction } from './window-state.mjs';
 import { pickLocale, translate } from './i18n.mjs';
 import { appMenuTemplate, MENU_IDS, trayMenuTemplate } from './menu.mjs';
-import { APP_OVERLAY, appMenuPosition, overlayColors, STATUS_OVERLAY, titleBarArgument, titleBarWindowOptions, windowStateOf } from './titlebar.mjs';
+import { APP_BACKGROUND, APP_OVERLAY, appMenuPosition, overlayColors, STATUS_OVERLAY, titleBarArgument, titleBarWindowOptions, windowStateOf } from './titlebar.mjs';
 import { fetchActivity, pidAlive, runBackendHelper, stopBackend, watchBackend } from './backend.mjs';
 import { createFileTail, createStartLog, fileSize, helperEventLine, lastLinesOf } from './start-log.mjs';
+import { readSupervisorRecord, stoppedExplanation, supervisorGaveUp } from './server-exit-view.mjs';
 import { redactSecrets } from './log-redact.mjs';
 import { createUpdateController, RELEASES_URL } from './updater/controller.mjs';
 import { feedFromEnv, isNewer } from './updater/feed.mjs';
@@ -383,6 +384,12 @@ function startApp() {
     return true;
   }
 
+  /** What the window shows where the page has not drawn yet (a resize): the page's own background. */
+  function applyBackground(color) {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    try { mainWindow.setBackgroundColor(color); } catch (error) { log(`the window background could not be set: ${error.message}`); }
+  }
+
   function sendWindowState() {
     if (!mainWindow || mainWindow.isDestroyed()) return;
     if (backend && isBackendUrl(mainWindow.webContents.getURL(), backend.port)) mainWindow.webContents.send('synabun:window:state', windowStateOf(mainWindow));
@@ -477,6 +484,8 @@ function startApp() {
         backendShown = true;
         // The bar's colours from the style guide until the page reports the ones it draws (desktop-titlebar.js).
         applyOverlay(APP_OVERLAY, 'the interface');
+        // Behind the page: the chrome around the app frame, not the status page's black.
+        applyBackground(APP_BACKGROUND);
         if (!revealed) {
           clearTimeout(interfaceTimer);
           interfaceTimer = setTimeout(() => revealMainWindow('the page loaded and said nothing more'), INTERFACE_READY_WAIT_MS);
@@ -485,7 +494,7 @@ function startApp() {
         if (updater) mainWindow.webContents.send('synabun:updates:changed', updater.state);
       } else {
         backendShown = false;
-        if (isStatusPage(url)) applyOverlay(STATUS_OVERLAY, 'the status page');
+        if (isStatusPage(url)) { applyOverlay(STATUS_OVERLAY, 'the status page'); applyBackground(BACKGROUND); }
       }
     });
     mainWindow.webContents.on('did-fail-load', (_event, code, description, url, isMainFrame) => {
@@ -765,17 +774,29 @@ function startApp() {
         }
         mainWindow.loadURL(backendUrl(result.port, firstPath));
         firstPath = '/';
+        const attachedAt = Date.now();
+        backend.attachedAt = attachedAt;
         watcher = watchBackend({
           port: result.port, supervisorPid: backend.supervisorPid, launcherPid: backend.launcherPid,
+          // A supervisor that gave up (its record says so) has no server to bring back: the page shows at once,
+          // while it still writes its logs.
+          supervisorEnded: () => supervisorGaveUp(readSupervisorRecord(join(logsDir, 'supervisor.json')), { supervisorPid: backend?.supervisorPid, since: attachedAt }),
           onStopped: () => {
             if (quitting || updater?.state.status === 'installing') return;
-            log('the server stopped');
+            // A crash is started again by the supervisor; this shows when it gave up, and its record says why
+            // (server-exit-view.mjs). A stop that was asked for leaves no reason, and the page says what it did.
+            const record = readSupervisorRecord(join(logsDir, 'supervisor.json'));
+            const scope = { supervisorPid: backend?.supervisorPid, since: attachedAt };
+            const said = stoppedExplanation(record, { ...scope, t });
+            const english = said && stoppedExplanation(record, { ...scope, t: (key, params) => translate('en', key, params) });
+            log(`the server stopped${english ? `: ${english.exit}` : ''}`);
             backendShown = false;
             serverStopped = true;
             startLog.add('app', t('logServerStopped', { file: launcherLog }));
             startLog.add('server', lastLinesOf(launcherLog, 40));
+            if (said) startLog.add('app', said.log);
             showStatus({
-              state: 'stopped', heading: t('headingStopped'), line: t('stopped'),
+              state: 'stopped', heading: t('headingStopped'), line: t('stopped'), hint: said?.hint || '',
               actions: [{ id: 'start', label: t('startAgain'), primary: true }, { id: 'logs', label: t('openLogs') }, { id: 'quit', label: t('quit') }],
             });
           },
@@ -803,7 +824,12 @@ function startApp() {
     if (!backend) return;
     if (!backend.owned && !always) { log(`leaving the server on port ${backend.port} running: this app did not start it`); return; }
     log(`stopping the server on port ${backend.port} (${reason})`);
-    const result = await stopBackend({ port: backend.port, launcherPid: backend.launcherPid, supervisorPid: backend.supervisorPid, log });
+    const { supervisorPid } = backend;
+    const since = backend.attachedAt || 0;
+    const result = await stopBackend({
+      port: backend.port, launcherPid: backend.launcherPid, supervisorPid, log,
+      supervisorEnded: () => supervisorGaveUp(readSupervisorRecord(join(logsDir, 'supervisor.json')), { supervisorPid, since }),
+    });
     log(`server stop: ${result.stopped ? 'stopped' : 'NOT stopped'}${result.forced ? ' (forced)' : ''}`);
     writeState({ backend: null });
     backend = null;

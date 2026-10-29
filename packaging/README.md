@@ -658,7 +658,8 @@ installs or updates one on its own (the update buttons in Settings act only
 when pressed, and on the user's installation).
 
 What a build does contain is the JavaScript client of each tool that has one:
-`@anthropic-ai/claude-agent-sdk`, `@openai/codex-sdk`, `@opencode-ai/sdk`. As
+`@anthropic-ai/claude-agent-sdk`, `@openai/codex-sdk` (OpenCode 2 has none:
+SynaBun speaks to its serve itself, `neural-interface/lib/opencode2-client.js`). As
 published, the first brings the Claude Code executable as a per-platform
 optional package and the second depends on the whole Codex CLI. npm cannot
 express "the client without the program", so the rule lives in one list,
@@ -681,7 +682,7 @@ to search its own packages:
 | --- | --- | --- |
 | Claude Code | `lib/cli-resolver.js` (through `getClaudeBin()`): the path in Settings > Terminal, else the first `claude` on PATH or the OS PATH, else a known install folder; never one inside SynaBun or from a `node_modules/.bin` folder. On Windows an npm `claude.cmd` is followed to the `claude.exe` (or `cli.js`) it runs (`lib/claude-executable.js`) | `pathToClaudeCodeExecutable`, for the side panel, the Assistant, native loops and session titles; the same file answers the model list |
 | Codex | `lib/cli-resolver.js` (through `getCodexBin` / `getNativeCodexBin` in `server.js`), on Windows the native `codex.exe` of the global npm package (`lib/codex-runtime-path.js`) | `codexPathOverride`; the side panel and the model list start that executable themselves |
-| OpenCode | `lib/cli-resolver.js` (through `opencodeServeLaunch` in `server.js`), started through the user's login shell by its full path (on Windows the `.exe` directly) | `opencode serve`, which `@opencode-ai/sdk` then talks to over HTTP |
+| OpenCode | `lib/cli-resolver.js` (through `opencodeServeLaunch` in `server.js`), started through the user's login shell by its full path (on Windows the `.exe` directly) | `opencode serve` (OpenCode 2), which SynaBun's own client (`neural-interface/lib/opencode2-client.js`) then talks to over HTTP |
 | Gemini CLI | the command from Settings > Terminal | a terminal tab |
 
 PATH here is the process's PATH, then the OS PATH a new terminal would have

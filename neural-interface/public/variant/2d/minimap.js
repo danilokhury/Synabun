@@ -10,6 +10,7 @@ import { storage } from '../../shared/storage.js';
 import { catColor } from '../../shared/colors.js';
 import { getViewport, getAllCards, getGraph } from './graph.js';
 import { CARD_W, CARD_H } from './layout.js';
+import { clampToFrame } from '../../shared/app-frame.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -125,13 +126,15 @@ export function drawMinimap() {
     ctx.fill();
   }
 
-  // Draw viewport rectangle (offset is in buffer coords, convert CSS to buffer)
+  // Draw viewport rectangle: the main canvas's buffer (the app frame's size × DPR, the offsets' unit)
   const vp = getViewport();
   const dpr = vp.dpr || 1;
-  const vpWorldCenterX = (window.innerWidth * dpr / 2 - vp.offsetX) / vp.scale;
-  const vpWorldCenterY = (window.innerHeight * dpr / 2 - vp.offsetY) / vp.scale;
-  const vpW = window.innerWidth * dpr / vp.scale;
-  const vpH = window.innerHeight * dpr / vp.scale;
+  const bufW = vp.width || window.innerWidth * dpr;
+  const bufH = vp.height || window.innerHeight * dpr;
+  const vpWorldCenterX = (bufW / 2 - vp.offsetX) / vp.scale;
+  const vpWorldCenterY = (bufH / 2 - vp.offsetY) / vp.scale;
+  const vpW = bufW / vp.scale;
+  const vpH = bufH / vp.scale;
   const vpX = (vpWorldCenterX - vpW / 2 - minX) * scale + offsetX;
   const vpY = (vpWorldCenterY - vpH / 2 - minY) * scale + offsetY;
   ctx.strokeStyle = 'rgba(255,255,255,0.5)';
@@ -210,14 +213,10 @@ function _onDragMove(e) {
   const newLeft = _dragStartLeft + dx;
   const newTop = _dragStartTop + dy;
 
-  // Clamp to viewport
-  const vw = window.innerWidth;
-  const vh = window.innerHeight;
+  // Clamp to the app frame
   const mw = _minimapEl.offsetWidth;
   const mh = _minimapEl.offsetHeight;
-
-  const clampedLeft = Math.max(0, Math.min(newLeft, vw - mw));
-  const clampedTop = Math.max(0, Math.min(newTop, vh - mh));
+  const { x: clampedLeft, y: clampedTop } = clampToFrame(newLeft, newTop, mw, mh);
 
   // Switch from right/bottom positioning to left/top for drag
   _minimapEl.style.right = 'auto';
@@ -264,8 +263,7 @@ function _restorePosition() {
 
     const mw = _minimapEl.offsetWidth;
     const mh = _minimapEl.offsetHeight;
-    const clampedLeft = Math.max(0, Math.min(left, window.innerWidth - mw));
-    const clampedTop = Math.max(0, Math.min(top, window.innerHeight - mh));
+    const { x: clampedLeft, y: clampedTop } = clampToFrame(left, top, mw, mh);
 
     _minimapEl.style.right = 'auto';
     _minimapEl.style.bottom = 'auto';

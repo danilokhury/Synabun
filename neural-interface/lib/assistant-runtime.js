@@ -1,3 +1,5 @@
+import { OPENCODE_BRAIN_TOOLS } from './assistant-tools.js';
+import { storedToolList, toolListRecord } from './tool-lists.js';
 // ═══════════════════════════════════════════
 // SynaBun — Assistant runtime (sessions, brains, unified WebSocket, mailbox)
 // ═══════════════════════════════════════════
@@ -31,6 +33,7 @@ import { codexRouteGateBootstrap } from './assistant-route-gate-codex.js';
 import { proposedPlanText } from './assistant-envelope.js';
 import { clampBrainModes, clampRouteMode, defaultRemotePolicyRegistry, effectiveLevel, isComputerTool, readRegisteredProjects, remoteBrainLimited, remoteComputerDenial, remoteComputerUse, remoteToolDenial, runExceedsPolicy } from './remote-policy.js';
 import { browserToolDenial } from './browser-tool-policy.js';
+import { browserPolicyRoots } from './browser-policy-roots.js';
 import { stripFollowups } from '../public/shared/assistant/asst-followups.js';
 
 export const BRAIN_PROVIDERS = new Set(['claude-code', 'codex', 'opencode']);
@@ -38,7 +41,9 @@ export const BRAIN_PROVIDERS = new Set(['claude-code', 'codex', 'opencode']);
 // the first prompt. Legacy "Assistant N" titles still count as unnamed.
 export const DEFAULT_SESSION_TITLE = 'SynaBun';
 export function isDefaultSessionTitle(title) { return !title || /^(?:SynaBun|Assistant(?: \d+)?)$/.test(String(title).trim()); }
-const MAILBOX_REASONS = new Set(['turn_completed', 'needs_input', 'permission_request', 'failed', 'interrupted', 'stalled', 'budget_warning', 'budget_exceeded', 'budget_unpriced', 'queue_started', 'user_intervened', 'stopped']);
+// suspended / resumed: a Claude Code worker a server restart cut off, and its resume on the next start
+// (lib/assistant-dispatch.js); a run that could not be resumed arrives as interrupted, with why.
+const MAILBOX_REASONS = new Set(['turn_completed', 'needs_input', 'permission_request', 'failed', 'interrupted', 'stalled', 'budget_warning', 'budget_exceeded', 'budget_unpriced', 'queue_started', 'user_intervened', 'stopped', 'suspended', 'resumed']);
 // A stopped run reaches the brain when the user stopped it or it ran out of money.
 const MAILBOX_STOP_REASONS = new Set(['user', 'budget_cap', 'session_budget_cap', 'budget_unpriced', 'budget_share']);
 /** The `[SynaBun Budget]` line: a change of the session budget reaches the brain as one line before its next turn. */
@@ -148,7 +153,7 @@ export function checkBrainEffort(provider, model, effort, catalog) {
 }
 
 /** `catalog` (a catalog value) checks the effort against the brain's model (effort-levels.js). */
-export function normalizeBrain(input = {}, defaults = {}, { catalog = null } = {}) {
+export function normalizeBrain(input = {}, defaults = {}, { catalog = null, customPresets = null } = {}) {
   // Plan mode is a flag beside the approval mode ('plan' as a mode is the legacy form).
   const legacyPlan = input?.permissionMode === 'plan';
   const provider = BRAIN_PROVIDERS.has(input?.provider) ? input.provider : (BRAIN_PROVIDERS.has(defaults.provider) ? defaults.provider : 'claude-code');
@@ -161,7 +166,7 @@ export function normalizeBrain(input = {}, defaults = {}, { catalog = null } = {
     agent: input?.agent ? String(input.agent) : null,
     accountId: input?.accountId ? String(input.accountId) : (provider === 'opencode' ? null : 'default'),
     cwd: input?.cwd ? String(input.cwd) : (input?.project ? String(input.project) : (defaults.cwd || null)),
-    mcpProfile: input?.mcpProfile ? String(input.mcpProfile) : (provider === 'claude-code' ? 'full' : (defaults.mcpProfile || null)),
+    tools: provider === 'opencode' ? (storedToolList(input, { customPresets }) ?? storedToolList(defaults, { customPresets }) ?? [...OPENCODE_BRAIN_TOOLS]) : ['all'],
     permissionMode: input?.permissionMode && !legacyPlan ? String(input.permissionMode) : 'default',
     planMode: typeof input?.planMode === 'boolean' ? input.planMode : (legacyPlan || defaults?.planMode === true),
   };
@@ -189,6 +194,7 @@ export function mergeHooks(a, b) {
 }
 
 export function createAssistantRuntime({
+  toolListOptions = () => ({}),
   dispatcher = null,
   claudeAccounts = null,
   // lib/codex-accounts.js: a Codex brain whose account cannot run is refused before it starts.
@@ -251,6 +257,7 @@ export function createAssistantRuntime({
   adminSandbox = null,
 } = {}) {
   if (!dataDir) throw new Error('createAssistantRuntime requires dataDir');
+  const normalizeSessionBrain = (input, defaults, options) => normalizeBrain(input, defaults, { ...options, ...toolListOptions() });
   const settings = {
     idleDisposeMs: Math.max(60_000, Number(config.idleDisposeMinutes || 120) * 60_000),
     // A draft (a session the panel opened, before its first prompt) with no socket attached goes after this.
@@ -321,6 +328,8 @@ export function createAssistantRuntime({
     let dropped = 0;
     for (const row of rows) {
       if (!row?.id) continue;
+      try { row.brain = normalizeSessionBrain(row.brain); }
+      catch (error) { row.brain = { ...row.brain, tools: [], toolListError: { code: error.code, message: error.message, original: row.brain?.tools ?? row.brain?.mcpProfile } }; delete row.brain.mcpProfile; }
       if (settleLegacyRow(row) === 'empty') { dropped += 1; continue; }
       sessions.set(row.id, makeLive({ ...row, status: row.status === 'ended' ? 'ended' : 'idle', windowIds: [] }));
       // A remote session nobody registered again since the restart reads as read-only.
@@ -904,17 +913,19 @@ export function createAssistantRuntime({
     if (!disabled && !defaultIsHidden(value, provider) && !providerAllHidden(value, provider)) return { brain, fallback: null };
     const note = (reason, row, to) => ({ reason, from: reason === 'model' ? model : provider, fromProvider: provider, to: row.id, provider: to, label: row.label || row.id });
     const same = enabledStandIn(value, provider, model);
-    if (same) return { brain: normalizeBrain({ ...brain, model: same.id }, {}, { catalog: value }), fallback: disabled ? note('model', same, provider) : null };
+    if (same) return { brain: normalizeSessionBrain({ ...brain, model: same.id }, {}, { catalog: value }), fallback: disabled ? note('model', same, provider) : null };
     // Every model of this provider is disabled (or an OpenCode model is, whose default is OpenCode's own).
     if (!fallback) throw disabled ? modelDisabledError(model) : everyModelDisabledError(provider);
     const other = [settings.defaultBrain.provider, 'claude-code'].find((p) => BRAIN_PROVIDERS.has(p) && p !== provider);
     const row = other ? enabledStandIn(value, other) : null;
     if (!row) throw disabled ? modelDisabledError(model) : everyModelDisabledError(provider);
-    const next = normalizeBrain({ provider: other, model: row.id, cwd: brain.cwd, mcpProfile: brain.mcpProfile, permissionMode: 'default' }, {}, { catalog: value });
+    const next = normalizeSessionBrain({ provider: other, model: row.id, cwd: brain.cwd, tools: brain.tools, permissionMode: 'default' }, {}, { catalog: value });
     return { brain: next, fallback: note(disabled ? 'model' : 'provider', row, other) };
   }
   function publicRecord(record, { withLive = true, live = null, persisted = false } = {}) {
     const out = { ...record };
+    // Run 4 removes the old brain picker projection; persisted records use only tools.
+    if (!persisted) out.brain = toolListRecord(record.brain, toolListOptions());
     if (!persisted) delete out.usageState;
     // The user-context state (frozen digest, delivery ledgers) is the server's own.
     if (!persisted) delete out.userContext;
@@ -1013,7 +1024,8 @@ export function createAssistantRuntime({
       // A run the dispatcher dropped has ended: its tokens stay, under a short name.
       if (!run) return { ...agent, title: `Run ${String(agent.runId || agent.key).slice(0, 8)}`, state: 'done' };
       const state = run.state || 'idle';
-      const displayState = state === 'completed' ? 'done' : state === 'starting' || state === 'awaiting_route' ? 'queued' : state === 'awaiting_permission' ? 'running' : state === 'interrupted' ? 'stopped' : state;
+      // A run a server restart cut off: suspended (its turn waits for the server) reads as running, resuming as queued.
+      const displayState = state === 'completed' ? 'done' : state === 'starting' || state === 'awaiting_route' || state === 'resuming' ? 'queued' : state === 'awaiting_permission' || state === 'suspended' ? 'running' : state === 'interrupted' ? 'stopped' : state;
       return { ...agent, title: run.title || agent.runId, state: ['queued', 'running', 'idle', 'done', 'failed', 'stopped'].includes(displayState) ? displayState : 'idle' };
     });
     if (live?.running && currentTask(sessionId) === view.task.id && !view.task.agents.some((agent) => agent.key === 'brain')) {
@@ -1939,7 +1951,7 @@ export function createAssistantRuntime({
       brain,
       project: live.record.project || 'global',
       toolPrefix: brain.provider === 'claude-code' ? 'mcp__SynaBun__' : 'SynaBun_',
-      catalog: { models: catalogValue.models || {}, accounts: catalogValue.accounts || {}, projects: catalogValue.projects || [], profiles: catalogValue.profiles || catalogValue.mcpProfiles?.presets || [] },
+      catalog: { models: catalogValue.models || {}, accounts: catalogValue.accounts || {}, projects: catalogValue.projects || [], tools: catalogValue.tools },
       limits: dispatcher?.refreshLimits?.() || dispatcher?.limits || {},
       defaults: settings.defaultBrain,
       extra: settings.personaExtra,
@@ -2783,8 +2795,9 @@ export function createAssistantRuntime({
     return { ...brain, accountId: row.id };
   }
   async function createSession({ brain = {}, label = null, cwd = null, windowId = null, fallback = false, channel = null, draft = false } = {}, internal = {}) {
+    if (brain?.mcpProfile !== undefined) throw Object.assign(new Error('Use tools: [group ids].'), { code: 'MCP_PROFILE_REMOVED', status: 400 });
     const id = `assistant-${randomUUID()}`;
-    const requested = normalizeBrain({ ...brain, cwd: brain?.cwd || cwd || settings.defaultBrain.cwd || PACKAGE_ROOT }, settings.defaultBrain, { catalog: catalog?.peek?.() || null });
+    const requested = normalizeSessionBrain({ ...brain, cwd: brain?.cwd || cwd || settings.defaultBrain.cwd || PACKAGE_ROOT }, settings.defaultBrain, { catalog: catalog?.peek?.() || null });
     const enabled = await enabledBrain(requested, { fallback: fallback === true, named: !!brain?.model });
     const normalized = await resolveAutoAccount(enabled.brain);
     const record = {
@@ -2861,14 +2874,17 @@ export function createAssistantRuntime({
       // default, never from the old provider's model id.
       const switching = BRAIN_PROVIDERS.has(patch.brain.provider) && patch.brain.provider !== live.record.brain.provider;
       const base = switching && !patch.brain.model ? { ...live.record.brain, model: null } : live.record.brain;
-      let next = normalizeBrain({ ...base, ...patch.brain, model: patch.brain.model || base.model }, base, { catalog: catalog?.peek?.() || null });
+      // Public picker updates use arrays; stored records still convert on read.
+      const input = { ...base, ...patch.brain, model: patch.brain.model || base.model };
+      if (patch.brain.mcpProfile !== undefined) throw Object.assign(new Error('Use tools: [group ids].'), { code: 'MCP_PROFILE_REMOVED', status: 400 });
+      let next = normalizeSessionBrain(input, base, { catalog: catalog?.peek?.() || null });
       next = await resolveAutoAccount(next);
       const modelChanged = next.model !== live.record.brain.model || next.provider !== live.record.brain.provider;
       if (modelChanged) next = (await enabledBrain(next)).brain;
       // A remote session keeps what was asked for and runs what its level allows.
       if ('permissionMode' in patch.brain || 'planMode' in patch.brain) next = clampModeWrite(live, next);
       else next = clampedBrain(live, next);
-      const providerChanged = patch.restartBrain === true || next.provider !== live.record.brain.provider || next.accountId !== live.record.brain.accountId || next.cwd !== live.record.brain.cwd || next.mcpProfile !== live.record.brain.mcpProfile;
+      const providerChanged = patch.restartBrain === true || next.provider !== live.record.brain.provider || next.accountId !== live.record.brain.accountId || next.cwd !== live.record.brain.cwd || JSON.stringify(next.tools) !== JSON.stringify(live.record.brain.tools);
       // A usage limit is the account's: another provider or account starts without the notice.
       if (next.provider !== live.record.brain.provider || next.accountId !== live.record.brain.accountId) setLimit(live, null);
       live.record.brain = next;
@@ -3378,7 +3394,7 @@ export function createAssistantRuntime({
         for (const card of clarifier?.pendingCards?.(live.record.id) || []) { try { ws.send(JSON.stringify(card)); } catch {} }
         return;
       case 'switch_brain':
-        await updateSession(live.record.id, { brain: { provider: msg.brain || msg.provider, model: msg.model, effort: msg.effort, accountId: msg.accountId, mcpProfile: msg.mcpProfile, cwd: msg.cwd, agent: msg.agent, permissionMode: msg.permissionMode, planMode: typeof msg.planMode === 'boolean' ? msg.planMode : undefined } });
+        await updateSession(live.record.id, { brain: { provider: msg.brain || msg.provider, model: msg.model, effort: msg.effort, accountId: msg.accountId, tools: msg.tools, cwd: msg.cwd, agent: msg.agent, permissionMode: msg.permissionMode, planMode: typeof msg.planMode === 'boolean' ? msg.planMode : undefined } });
         return;
       case 'list_sessions': {
         const rows = listSessions();
@@ -3687,6 +3703,9 @@ export function createAssistantRuntime({
     let reason = null;
     if (host === 'opencode' && REMOTE_OPENCODE_WEB_TOOLS.has(String(tool || '').toLowerCase())) {
       reason = `${tool}: a WhatsApp conversation on OpenCode is read-only and does not reach the web on its own; use SynaBun's browser tools, or switch the WhatsApp brain to Claude.`;
+    } else if (host === 'opencode' && String(tool || '').toLowerCase() === 'execute') {
+      // Code Mode's `execute` runs arbitrary code (fetch included) that no argument check can read: never remote.
+      reason = `${tool}: a WhatsApp conversation on OpenCode does not run Code Mode; call SynaBun's tools directly, or switch the WhatsApp brain to Claude.`;
     } else if (isComputerTool(tool)) {
       // `computer`: what computerAccess said for this call (the Claude hook passes it). Any other
       // caller (the Codex hook, the OpenCode plugin) asks here: those brains never get past "off".
@@ -3701,16 +3720,30 @@ export function createAssistantRuntime({
     log('assistant:remote-policy', `${live.record.id}: refused ${tool} (${reason})`);
     return { allow: false, remote: true, reason: `${reason} Tell the user to do this in SynaBun on their computer if they need it.` };
   }
+  // The registered code projects a brain's test runners may run in besides its session's project
+  // (lib/browser-policy-roots.js): read again at most every 10 s, so a project registered while a
+  // session lives counts from its next calls on.
+  const BROWSER_ROOTS_TTL_MS = 10_000;
+  let browserRoots = { at: -Infinity, roots: [] };
+  function browserTestRoots() {
+    const at = now();
+    if (at - browserRoots.at < BROWSER_ROOTS_TTL_MS && at >= browserRoots.at) return browserRoots.roots;
+    let roots = [];
+    try { roots = browserPolicyRoots(registeredProjectPaths()); } catch { roots = []; }
+    browserRoots = { at, roots };
+    return roots;
+  }
   /**
    * The browser policy (lib/browser-tool-policy.js) for one brain tool call:
    * { allow:false, browser:true, reason } or null. Every provider and session,
    * plan mode and subagents included; scripts resolve against the session's
-   * project cwd. `argsComplete: false` (the host sent only the command /
+   * project cwd, and test runners run there or in a registered code project
+   * (browserTestRoots). `argsComplete: false` (the host sent only the command /
    * action of an oversized call): checked on what arrived.
    */
   function browserGate(live, tool, input = {}, { host = null, argsComplete = true } = {}) {
     const kind = host || (live.brainProvider === 'claude-code' ? 'claude' : live.brainProvider);
-    const reason = browserToolDenial(tool, input && typeof input === 'object' ? input : {}, { host: kind, cwd: live.record.brain?.cwd || PACKAGE_ROOT });
+    const reason = browserToolDenial(tool, input && typeof input === 'object' ? input : {}, { host: kind, cwd: live.record.brain?.cwd || PACKAGE_ROOT, roots: browserTestRoots() });
     if (!reason) return null;
     log('assistant:browser-policy', `${live.record.id}: refused ${tool}${argsComplete ? '' : ' (partial arguments)'}`);
     return { allow: false, browser: true, reason };

@@ -9,11 +9,11 @@
 // deps (all supplied by handleOpencodeV2Ws):
 //   send(data)                     write one JSON message to this socket
 //   shared                         the shared-serve client (opencode-v2-client).
-//                                  SDK calls added for the panel are under
+//                                  Client calls added for the panel are under
 //                                  `client.extra.<group>.<method>`
 //   bound(sessionId)               the serve currently hosting the session's
 //                                  turn, else the shared client; never spawns
-//   turn(sessionId, mcpProfile)    the session's dedicated serve; may spawn it
+//   turn(sessionId, tools)    the session's dedicated serve; may spawn it
 //   proxy(method, path, body, timeoutMs, baseUrl)   raw HTTP to a serve
 //   baseUrlFor(sessionId)          base URL of the serve hosting the session
 //   directoryQuery(cwd)            `?directory=…` or ''
@@ -31,19 +31,15 @@
 // a type only when that type is listed.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { compactOrSummarize, lastModelOf } from './opencode-v2-client.js';
-import { sessionTablesFor } from './opencode-db-schema.js';
-
-export { lastModelOf };
+import { OPENCODE_SESSION_TABLES } from './opencode-db-schema.js';
+import { opencodeMcpServerEntry } from './opencode-config.js';
+import { storedToolList } from './tool-lists.js';
 
 // Types answered by the switch in server.js.
 export const OPENCODE_V2_WS_INLINE_TYPES = Object.freeze([
   'init', 'identify',
   'session:list', 'session:create', 'session:get', 'session:update', 'session:delete', 'session:messages',
-  'mcp:profile:get', 'mcp:profile:set',
+  'mcp:tools:get', 'mcp:tools:set',
   'message:send', 'message:abort',
   'question:list', 'question:reject',
 ]);
@@ -71,6 +67,10 @@ const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
  */
 export function canonicalizeOpencodeV2Message(msg) {
   if (!msg || typeof msg !== 'object') return failure(400, 'malformed request');
+  if (msg.tools !== undefined && msg.tools !== null) {
+    try { msg.tools = storedToolList({ tools: msg.tools }); }
+    catch (error) { return failure(400, error.message, { code: error.code, problems: error.problems }); }
+  }
   const raw = msg.sessionId;
   if (raw === undefined || raw === null) {
     msg.sessionId = undefined;
@@ -134,18 +134,11 @@ function modelOf(value) {
   return providerID && modelID ? { providerID, modelID } : null;
 }
 
-// session.compact with the session.summarize fallback (see compactOrSummarize).
+// OpenCode compacts a session on the model it runs on.
 async function compactSession(msg, deps) {
-  const client = await deps.turn(sessionKeyOf(msg), msg.mcpProfile);
-  try {
-    return await compactOrSummarize(client, {
-      sessionID: sessionIdOf(msg), directory: directoryOf(msg), model: modelOf(msg.model),
-    });
-  } catch (err) {
-    // "Pick a model first" is an answer for the user, not a server error.
-    if (err?.status === 400) return failure(400, err.message);
-    throw err;
-  }
+  const client = await deps.turn(sessionKeyOf(msg), msg.tools);
+  const r = await client.session.compact({ sessionID: sessionIdOf(msg), directory: directoryOf(msg) });
+  return { status: r?.status, data: r?.data };
 }
 
 const PERMISSION_REPLIES = new Set(['once', 'always', 'reject']);
@@ -230,45 +223,18 @@ async function sessionStatus(msg, deps) {
   return { status: r.status, data: { status: statusForSession(r.data, sessionIdOf(msg)) } };
 }
 
-// What the relay forwards to panels. OpenCode 1.18 mirrors every bus event as
-// a `sync` envelope ({ type: 'sync', syncEvent }); the panel acts on the bus
-// event itself, so the mirror is dropped. Everything else passes.
-export function shouldRelayOpencodeV2Message(data) {
-  return !(data?.type === 'event' && data.eventType === 'sync');
-}
-
-// Body of `POST /mcp` for a server SynaBun describes as { command, args, env }
-// or { url, headers }. OpenCode takes McpLocalConfig (`type: 'local'`, the
-// command as one array, `environment`) or McpRemoteConfig; `type: 'stdio'` with
-// a string command is answered 400.
+// An MCP server as OpenCode 2 takes it (`mcp.servers.<name>`, lib/opencode-config.js), from what SynaBun
+// describes as { command, args, env } or { url, headers }: type local with the command as one array and its
+// `environment`, or type remote. Every word goes through as it is: an argument may be empty or carry spaces on
+// purpose, and what is registered must be what was typed.
 export function buildOpencodeRuntimeMcpConfig(config = {}) {
-  if (config.type === 'local' || config.type === 'remote') return { ...config };
-  if (typeof config.url === 'string' && config.url) {
-    return {
-      type: 'remote',
-      url: config.url,
-      ...(config.headers && typeof config.headers === 'object' ? { headers: config.headers } : {}),
-      enabled: config.enabled !== false,
-    };
-  }
-  // Every word goes through as it is: an argument may be empty or carry
-  // spaces on purpose, and what is registered must be what was typed.
-  const head = Array.isArray(config.command) ? config.command : [config.command];
-  const command = [...head, ...(Array.isArray(config.args) ? config.args : [])]
-    .filter((part) => typeof part === 'string');
-  const environment = config.environment || config.env;
-  return {
-    type: 'local',
-    command,
-    ...(environment && typeof environment === 'object' ? { environment } : {}),
-    enabled: config.enabled !== false,
-  };
+  return opencodeMcpServerEntry(config);
 }
 
 // ── Session list (read straight from OpenCode's SQLite) ─────────────────────
-// The SDK's session.list only answers for the serve's own project; the panel
-// lists every project, so server.js reads the `session` table. The query and
-// the row mapping live here so they can be tested against a real table.
+// The client's session.list only answers for the serve's own project; the panel
+// lists every project, so server.js reads OpenCode's `session_v2` table. The
+// query and the row mapping live here so they can be tested against a real table.
 export const SESSION_LIST_MAX = 500;
 
 /**
@@ -278,10 +244,8 @@ export const SESSION_LIST_MAX = 500;
  *   search    case-insensitive match on title, slug or directory
  * Un-archiving writes time_archived = 0, so "live" is NULL or 0.
  */
-// `flavor` 'v2' reads OpenCode 2's tables (session_v2, session_message; the
-// columns this query names are the same), anything else OpenCode 1's.
-export function buildSessionListQuery(options = {}, { flavor = 'v1' } = {}) {
-  const tables = sessionTablesFor(flavor);
+export function buildSessionListQuery(options = {}) {
+  const tables = OPENCODE_SESSION_TABLES;
   const where = [];
   const params = [];
   where.push(options.archived === true
@@ -297,7 +261,7 @@ export function buildSessionListQuery(options = {}, { flavor = 'v1' } = {}) {
   const requested = Number(options.limit);
   const limit = Number.isInteger(requested) && requested > 0 ? Math.min(requested, SESSION_LIST_MAX) : null;
   const sql = `
-    SELECT s.id, s.title, s.directory, s.slug, s.project_id, s.parent_id, s.share_url,
+    SELECT s.id, s.title, s.directory, s.slug, s.project_id, s.parent_id,
            s.time_created, s.time_updated, s.time_archived,
            ${tables.messageCount} AS message_count
     FROM ${tables.session} s
@@ -321,20 +285,19 @@ export function mapSessionListRow(row) {
     time: { created: epochMs(row.time_created), updated: epochMs(row.time_updated) },
   };
   if (row.parent_id) out.parentID = row.parent_id;
-  if (row.share_url) out.share = { url: row.share_url };
   const archived = epochMs(row.time_archived);
   if (archived) out.time.archived = archived;
   return out;
 }
 
-// ── Session lifecycle (revert, fork, share, children, delete message) ───────
+// ── Session lifecycle (revert, fork, children) ──────────────────────────────
 
 const messageIdOf = (msg) => (typeof msg?.messageID === 'string' && msg.messageID.trim()
   ? msg.messageID.trim()
   : (typeof msg?.messageId === 'string' ? msg.messageId.trim() : ''));
 
-// Reverting or deleting under a running turn would pull the transcript out
-// from under the model.
+// Reverting under a running turn would pull the transcript out from under the
+// model.
 function refuseWhileRunning(msg, deps, what) {
   return deps.isTurnActive?.(sessionIdOf(msg))
     ? failure(409, `Stop the running turn before you ${what}.`)
@@ -372,48 +335,6 @@ async function sessionChildren(msg, deps) {
   return { status: r.status, data: Array.isArray(r.data) ? r.data : [] };
 }
 
-async function messageDelete(msg, deps) {
-  const busy = refuseWhileRunning(msg, deps, 'delete a message');
-  if (busy) return busy;
-  const messageID = messageIdOf(msg);
-  if (!messageID) return failure(400, 'messageID is required');
-  const r = await deps.bound(sessionKeyOf(msg)).extra.session.deleteMessage({
-    sessionID: sessionIdOf(msg), messageID, directory: directoryOf(msg),
-  });
-  return { status: r.status, data: r.data };
-}
-
-// OpenCode's `share` setting: manual (default), auto, or disabled.
-export function sharePolicyOf(config) {
-  const value = config?.share;
-  if (value === 'disabled' || value === 'auto' || value === 'manual') return value;
-  return 'manual';
-}
-
-async function readSharePolicy(msg, deps) {
-  const r = await deps.shared.extra.config.get({ directory: directoryOf(msg) });
-  return sharePolicyOf(r.data);
-}
-
-async function sessionSharePolicy(msg, deps) {
-  return { status: 200, data: { share: await readSharePolicy(msg, deps) } };
-}
-
-// Publishes the transcript at a public opencode URL. The panel confirms with
-// the user every time; the server refuses when the config forbids sharing.
-async function sessionShare(msg, deps) {
-  if (await readSharePolicy(msg, deps) === 'disabled') {
-    return failure(403, 'Sharing is disabled in the OpenCode config.');
-  }
-  const r = await deps.shared.extra.session.share({ sessionID: sessionIdOf(msg), directory: directoryOf(msg) });
-  return { status: r.status, data: r.data };
-}
-
-async function sessionUnshare(msg, deps) {
-  const r = await deps.shared.extra.session.unshare({ sessionID: sessionIdOf(msg), directory: directoryOf(msg) });
-  return { status: r.status, data: r.data };
-}
-
 // ── Composer: slash commands, shell, file search ────────────────────────────
 
 /** What the slash menu needs of a Command; the template can be 16 KB and is not sent. */
@@ -442,10 +363,12 @@ function modelRef(value) {
 
 // Run something that occupies the session like a prompt does: on the
 // session's dedicated serve, inside the same turn bookkeeping as message:send.
-async function withTurn(msg, deps, run) {
+async function withTurn(msg, deps, run, { needsMcp = true } = {}) {
   const scope = deps.turnScope(sessionIdOf(msg));
   try {
-    const client = await deps.turn(sessionKeyOf(msg), msg.mcpProfile);
+    const client = await deps.turn(sessionKeyOf(msg), msg.tools);
+    if (needsMcp) await deps.waitForTools?.(client, sessionIdOf(msg), directoryOf(msg), scope.signal);
+    if (scope.signal?.aborted) throw Object.assign(new Error('OpenCode turn stopped before sending'), { name: 'AbortError', status: 499 });
     const r = await run(client, scope.signal ? { signal: scope.signal } : undefined);
     return { status: r.status, data: r.data };
   } finally {
@@ -483,7 +406,7 @@ async function sessionShell(msg, deps) {
     agent: typeof msg.agent === 'string' && msg.agent ? msg.agent : 'build',
     model: modelOf(msg.model) || undefined,
     directory: directoryOf(msg),
-  }, options));
+  }, options), { needsMcp: false });
 }
 
 export const FIND_FILES_LIMIT = 50;
@@ -651,55 +574,6 @@ async function vcsDiff(msg, deps) {
   return { status: r.status, data: capFileDiffs(r.data) };
 }
 
-// ── Worktrees ───────────────────────────────────────────────────────────────
-
-// worktree.create answers a Worktree { name, branch, directory }; worktree.list
-// answers the directories only (confirmed on 1.18.34).
-function worktreeRow(w) {
-  const directory = typeof w === 'string' ? w : (w && typeof w.directory === 'string' ? w.directory : '');
-  if (!directory) return null;
-  const leaf = directory.split(/[\\/]/).filter(Boolean).pop() || directory;
-  return {
-    name: typeof w === 'object' && w.name ? String(w.name) : leaf,
-    branch: typeof w === 'object' && typeof w.branch === 'string' ? w.branch : '',
-    directory,
-  };
-}
-
-async function worktreeList(msg, deps) {
-  if (!directoryOf(msg)) return failure(400, 'cwd is required');
-  const r = await deps.shared.extra.worktree.list({ directory: directoryOf(msg) });
-  return { status: r.status, data: (Array.isArray(r.data) ? r.data : []).map(worktreeRow).filter(Boolean) };
-}
-
-async function worktreeCreate(msg, deps) {
-  if (!directoryOf(msg)) return failure(400, 'cwd is required');
-  const name = typeof msg.name === 'string' ? msg.name.trim() : '';
-  if (name && !/^[A-Za-z0-9][\w.-]{0,63}$/.test(name)) {
-    return failure(400, 'A worktree name may use letters, digits, ".", "_" and "-".');
-  }
-  const r = await deps.shared.extra.worktree.create({
-    directory: directoryOf(msg),
-    worktreeCreateInput: name ? { name } : {},
-  });
-  const row = worktreeRow(r.data);
-  if (!row) return failure(502, 'OpenCode did not return the new worktree.');
-  return { status: r.status, data: row };
-}
-
-// Removing deletes a directory, so only one OpenCode itself lists as a worktree
-// of this project is accepted.
-async function worktreeRemove(msg, deps) {
-  const cwd = directoryOf(msg);
-  const target = typeof msg.directory === 'string' ? msg.directory.trim() : '';
-  if (!cwd || !target) return failure(400, 'cwd and directory are required');
-  const listed = await deps.shared.extra.worktree.list({ directory: cwd });
-  const known = (Array.isArray(listed.data) ? listed.data : []).some((w) => worktreeRow(w)?.directory === target);
-  if (!known) return failure(404, 'That directory is not a worktree of this project.');
-  const r = await deps.shared.extra.worktree.remove({ directory: cwd, worktreeRemoveInput: { directory: target } });
-  return { status: r.status, data: true };
-}
-
 // ── Environment: MCP servers, LSP, formatters ───────────────────────────────
 
 // SynaBun's own MCP entry is pinned by the runtime (profile, terminal identity,
@@ -744,19 +618,6 @@ async function mcpSwitch(msg, deps, connect) {
   return { status: r.status, data: after ? mcpRows(after.data) : [] };
 }
 
-// OAuth for a remote MCP server: OpenCode opens the browser itself and waits
-// for the callback, so the request can take minutes.
-async function mcpAuthenticate(msg, deps) {
-  const name = mcpNameOf(msg);
-  if (!name) return failure(400, 'MCP server name is required');
-  if (isManagedMcpName(name)) return failure(403, `${name} is managed by SynaBun.`);
-  const path = `/mcp/${encodeURIComponent(name)}/auth/authenticate${deps.directoryQuery(msg.cwd)}`;
-  const r = await deps.proxy('POST', path, {}, 5 * 60 * 1000, deps.baseUrlFor(sessionKeyOf(msg)));
-  if (r.status >= 400 || typeof r.data === 'string') {
-    return failure(r.status >= 400 ? r.status : 502, proxyErrorText(r.data, 'Authentication did not complete'));
-  }
-  return { status: r.status, data: r.data };
-}
 
 const MCP_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
 const stringMap = (value) => value && typeof value === 'object' && !Array.isArray(value)
@@ -864,10 +725,6 @@ const HANDLERS = {
   'session:unrevert': { session: true, mutates: true, run: sessionUnrevert },
   'session:fork': { session: true, mutates: true, run: sessionFork },
   'session:children': { session: true, run: sessionChildren },
-  'session:share': { session: true, mutates: true, run: sessionShare },
-  'session:unshare': { session: true, mutates: true, run: sessionUnshare },
-  'session:share:policy': { run: sessionSharePolicy },
-  'message:delete': { session: true, mutates: true, run: messageDelete },
   'command:list': { run: commandList },
   'command:run': { session: true, mutates: true, run: commandRun },
   'session:shell': { session: true, mutates: true, run: sessionShell },
@@ -880,13 +737,9 @@ const HANDLERS = {
   'vcs:get': { run: vcsGet },
   'vcs:status': { run: vcsStatus },
   'vcs:diff': { run: vcsDiff },
-  'worktree:list': { run: worktreeList },
-  'worktree:create': { run: worktreeCreate },
-  'worktree:remove': { run: worktreeRemove },
   'mcp:status': { run: mcpStatus },
   'mcp:connect': { session: true, mutates: true, run: (msg, deps) => mcpSwitch(msg, deps, true) },
   'mcp:disconnect': { session: true, mutates: true, run: (msg, deps) => mcpSwitch(msg, deps, false) },
-  'mcp:authenticate': { session: true, mutates: true, run: mcpAuthenticate },
   'mcp:add': { session: true, mutates: true, run: mcpAdd },
   'env:status': { run: envStatus },
 };
@@ -902,42 +755,15 @@ export const OPENCODE_V2_WS_MODULE_TYPES = Object.freeze(Object.keys(HANDLERS));
 // Behaviours of an existing type that an older server lacks. Listed next to
 // the types so the panel can gate on them the same way; never a request type.
 export const OPENCODE_V2_WS_FEATURES = Object.freeze([
+  'feature:tool-lists',
   'feature:permission-reply-message',   // permission:reply forwards a rejection reason
-  'feature:compact-summarize',          // session:compact falls back to session.summarize
   'feature:session-list-filters',       // session:list takes search / archived / roots / limit, rows carry parentID
   'feature:mcp-add-persist',            // mcp:add with persist:true saves the server without starting it a second time
 ]);
 
-// The version of the @opencode-ai/sdk this server talks to OpenCode through,
-// for the panel's Versions rows ('' when its package.json cannot be read).
-let _sdkVersion;
-export function opencodeSdkVersion() {
-  if (_sdkVersion !== undefined) return _sdkVersion;
-  _sdkVersion = '';
-  try {
-    let dir = dirname(fileURLToPath(import.meta.resolve('@opencode-ai/sdk/v2')));
-    for (let i = 0; i < 6 && dir !== dirname(dir); i += 1, dir = dirname(dir)) {
-      let pkg = null;
-      try { pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')); } catch { /* not the package root */ }
-      if (pkg?.name === '@opencode-ai/sdk') { _sdkVersion = String(pkg.version || ''); break; }
-    }
-  } catch { /* stays '' */ }
-  return _sdkVersion;
-}
-
 // Everything this server answers, for the panel's feature gating.
-// What an OpenCode 2 serve has no counterpart for (lib/opencode2-client.js
-// answers them with "not available"): the panel hides them, as it hides a
-// feature an older SynaBun server lacks.
-export const OPENCODE2_UNSUPPORTED_TYPES = Object.freeze([
-  'session:share', 'session:unshare', 'session:share:policy', 'message:delete',
-  'worktree:create', 'worktree:remove', 'mcp:authenticate',
-]);
-
-/** `protocol`: the OpenCode major the shared serve speaks (2 leaves out OPENCODE2_UNSUPPORTED_TYPES). */
-export function opencodeV2WsCapabilities({ protocol = null } = {}) {
-  const all = [...OPENCODE_V2_WS_INLINE_TYPES, ...OPENCODE_V2_WS_MODULE_TYPES, ...OPENCODE_V2_WS_FEATURES];
-  return protocol === 2 ? all.filter((type) => !OPENCODE2_UNSUPPORTED_TYPES.includes(type)) : all;
+export function opencodeV2WsCapabilities() {
+  return [...OPENCODE_V2_WS_INLINE_TYPES, ...OPENCODE_V2_WS_MODULE_TYPES, ...OPENCODE_V2_WS_FEATURES];
 }
 
 export function ownsOpencodeV2Request(type) {

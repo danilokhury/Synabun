@@ -7,7 +7,11 @@
 // ─── Helpers ─────────────────────────────
 
 async function jsonFetch(url, options = {}) {
-  const res = await fetch(url, options);
+  return jsonOf(await fetch(url, options), url);
+}
+
+/** An answer as JSON, or the error jsonFetch throws for it (a 403 also tells the page, for its guest notice). */
+async function jsonOf(res, url) {
   if (!res.ok) {
     let errMsg = `HTTP ${res.status}`;
     let errBody = null;
@@ -630,7 +634,26 @@ function skillsV2(path, { method = 'GET', body, idempotencyKey } = {}) {
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   // A write that creates something is sent once: the same key within ten minutes answers the first result again.
   if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey;
+  if (method === 'GET') return skillsV2Read(`/api/skills-studio/v2${path}`, headers);
   return jsonFetch(`/api/skills-studio/v2${path}`, { method, headers, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
+}
+
+/**
+ * A Studio read. Some are the owner's page's only (an evaluation's answers and files: lib/skills/evals-api.js): a tab
+ * left open across a server restart holds the earlier boot's page secret, so a read refused for it asks this boot's
+ * once (GET /api/page-session, public/shared/page-session.js does the same for writes) and is sent again.
+ */
+async function skillsV2Read(url, headers) {
+  let res = await fetch(url, { method: 'GET', headers });
+  if (res.status === 403) {
+    let code = null;
+    try { code = (await res.clone().json())?.code || null; } catch { code = null; }
+    if (code === 'PAGE_SECRET_REQUIRED') {
+      const refreshed = await fetch('/api/page-session', { method: 'GET', credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'application/json' } }).then((r) => r.ok, () => false);
+      if (refreshed) res = await fetch(url, { method: 'GET', headers });
+    }
+  }
+  return jsonOf(res, url);
 }
 
 export function fetchSkillsStatus() { return skillsV2('/status'); }
@@ -645,7 +668,14 @@ export function fetchSkillsInstallations({ active = null } = {}) { return skills
 export function rollbackSkillsInstallation(id, body = {}) { return skillsV2(`/installations/${encodeURIComponent(id)}/rollback`, { method: 'POST', body }); }
 export function verifySkillsInstallation(id, { probe = false } = {}) { return skillsV2(`/installations/${encodeURIComponent(id)}/verify`, { method: 'POST', body: { probe } }); }
 export function planSkillsBridgeMigration() { return skillsV2('/migrations/bridges/plan'); }
-export function runSkillsBridgeMigration(planDigest) { return skillsV2('/migrations/bridges', { method: 'POST', body: { planDigest } }); }
+export function runSkillsBridgeMigration(planDigest, confirm = null) { return skillsV2('/migrations/bridges', { method: 'POST', body: confirm && Object.keys(confirm).length ? { planDigest, confirm } : { planDigest } }); }
+// The plan with the owner's confirmations of bridges that are not proven SynaBun's (a reading; nothing moves).
+export function planSkillsBridgeMigrationConfirmed(confirm) { return skillsV2('/migrations/bridges/plan', { method: 'POST', body: { confirm: confirm || {} } }); }
+// The start-up move's one-time notice (what moved, what is offered), and the owner's dismissal of it.
+export function fetchSkillsMigrationNotice() { return skillsV2('/migrations/notice'); }
+export function dismissSkillsMigrationNotice() { return skillsV2('/migrations/notice/dismiss', { method: 'POST', body: {} }); }
+// The owner's "Enable for <runtime>": the runtime setting that turns a skill off, changed over a backup.
+export function enableSkillsEligibility(body) { return skillsV2('/eligibility/enable', { method: 'POST', body }); }
 export function revertSkillsMigration(journalId) { return skillsV2(`/migrations/${encodeURIComponent(journalId)}/revert`, { method: 'POST', body: {} }); }
 export function fetchSkillsMigrations() { return skillsV2('/migrations'); }
 export function fetchSkillsConfig() { return skillsV2('/config'); }
@@ -662,6 +692,9 @@ export function fetchSkillsCatalogFile(artifactId, path) { return skillsV2(`/cat
 export function fetchSkillsCompare(fromRevisionId, artifactId) { return skillsV2(`/compare?from=${enc(fromRevisionId)}&artifactId=${enc(artifactId)}`); }
 export function rescanSkillsCatalog() { return skillsV2('/catalog/rescan', { method: 'POST', body: {} }); }
 export function fetchSkillsList() { return skillsV2('/skills'); }
+// The skills deleted from the library (their versions kept), and the owner's Restore of one.
+export function fetchSkillsArchived() { return skillsV2('/skills/archived'); }
+export function restoreSkillsSkill(skillId) { return skillsV2(`/skills/${enc(skillId)}/restore`, { method: 'POST', body: {} }); }
 export function fetchSkill(skillId) { return skillsV2(`/skills/${enc(skillId)}`); }
 // Out of the library (its versions kept in the library's archive): 409 `skill_installed` while it is installed
 // somewhere, 403 `skill_bundled` for one SynaBun ships, 409 `skill_conflict` when `expectedEtag` is not its etag now.
@@ -678,7 +711,7 @@ export function snapshotSkillsDraft(draftId, { expectedEtag, note = '' }, { idem
 export function lintSkillsFolder(body) { return skillsV2('/lint', { method: 'POST', body }); }
 export function uninstallSkillsInstallation(id, body = {}) { return skillsV2(`/installations/${enc(id)}/uninstall`, { method: 'POST', body }); }
 export function commentSkillsReview(reviewId, body) { return skillsV2(`/reviews/${enc(reviewId)}/comment`, { method: 'POST', body: { body } }); }
-export function getSkillsRevisionExportUrl(revisionId, { format = 'bundle', profile = '' } = {}) { return `/api/skills-studio/v2/revisions/${enc(revisionId)}/export${query({ format, profile })}`; }
+export function getSkillsRevisionExportUrl(revisionId, { format = 'bundle', profile = '', acknowledgedDigest = '', excludeEvals = false } = {}) { return `/api/skills-studio/v2/revisions/${enc(revisionId)}/export${query({ format, profile, acknowledgedDigest, excludeEvals })}`; }
 
 // AI drafting (P3, lib/skills/creation-api.js): a creation from the owner's words and sources, one worker drafting it,
 // the result checked and put in the Review queue. Followed by a long poll (`wait`); cancelled and retried from here.
@@ -690,6 +723,27 @@ export function fetchSkillCreation(id) { return skillsV2(`/creations/${enc(id)}`
 export function waitSkillCreation(id, { since = -1, seconds = 20 } = {}) { return skillsV2(`/creations/${enc(id)}/wait${query({ since, seconds })}`); }
 export function cancelSkillCreation(id) { return skillsV2(`/creations/${enc(id)}/cancel`, { method: 'POST', body: {} }); }
 export function retrySkillCreation(id, { idempotencyKey } = {}) { return skillsV2(`/creations/${enc(id)}/retry`, { method: 'POST', body: {}, idempotencyKey }); }
+
+// Evaluations (P4, lib/skills/evals-api.js): the Test tab's runs of a revision's evals/evals.json, followed by a long poll
+// (`wait`); estimated before they start, cancelled, reviewed trial by trial, compared, exported.
+export function fetchSkillEvalOptions() { return skillsV2('/evals/options'); }
+export function estimateSkillEval(body) { return skillsV2('/evals/estimate', { method: 'POST', body }); }
+export function startSkillEval(body, { idempotencyKey } = {}) { return skillsV2('/evals', { method: 'POST', body, idempotencyKey }); }
+export function fetchSkillEvals({ skillId = '', revisionId = '', limit = 30 } = {}) { return skillsV2(`/evals${query({ skillId, revisionId, limit })}`); }
+export function fetchSkillEvalQueue() { return skillsV2('/evals/queue'); }
+export function fetchSkillEval(id) { return skillsV2(`/evals/${enc(id)}`); }
+export function waitSkillEval(id, { since = -1, seconds = 20, full = false } = {}) { return skillsV2(`/evals/${enc(id)}/wait${query({ since, seconds, full: full ? '1' : '' })}`); }
+export function cancelSkillEval(id) { return skillsV2(`/evals/${enc(id)}/cancel`, { method: 'POST', body: {} }); }
+export function fetchSkillEvalTrial(id, trialId) { return skillsV2(`/evals/${enc(id)}/trials/${enc(trialId)}`); }
+export function fetchSkillEvalTrialFile(id, trialId, path) { return skillsV2(`/evals/${enc(id)}/trials/${enc(trialId)}/file${query({ path })}`); }
+export function saveSkillEvalFeedback(id, { trialId, text, reviewed }) { return skillsV2(`/evals/${enc(id)}/feedback`, { method: 'POST', body: { trialId, text, reviewed } }); }
+export function compareSkillEvals(a, b) { return skillsV2(`/evals/compare${query({ a, b })}`); }
+export function importSkillEvalSuite(body) { return skillsV2('/evals/import', { method: 'POST', body }); }
+export function getSkillEvalExportUrl(id, format = 'native') { return `/api/skills-studio/v2/evals/${enc(id)}/export${query({ format })}`; }
+// Codex is the owner's opt-in per skill version (its shell can read files anywhere on the computer): whether it is
+// confirmed for versions, and the owner's confirmation (or its withdrawal).
+export function fetchSkillEvalCodexTrust(revisionIds) { return skillsV2(`/evals/codex-trust${query({ revisionIds: (revisionIds || []).join(',') })}`); }
+export function setSkillEvalCodexTrust(revisionIds, trusted = true) { return skillsV2('/evals/codex-trust', { method: 'POST', body: { revisionIds, trusted } }); }
 
 // ─── MCP Key ─────────────────────────────
 
@@ -1405,10 +1459,10 @@ export async function fetchScheduleTimers() {
 
 // ── Quick Timers ──
 
-export async function createQuickTimer(templateId, minutes, { profile, model, contextMode, effort, mcpProfile, usesBrowser, codexAccountId } = {}) {
+export async function createQuickTimer(templateId, minutes, { profile, model, contextMode, effort, tools, usesBrowser, codexAccountId } = {}) {
   return jsonFetch('/api/quick-timer', {
     method: 'POST',
-    ...jsonBody({ templateId, minutes, profile, model, contextMode, effort, mcpProfile, usesBrowser, codexAccountId }),
+    ...jsonBody({ templateId, minutes, profile, model, contextMode, effort, tools, usesBrowser, codexAccountId }),
   });
 }
 
@@ -1423,13 +1477,13 @@ export async function cancelQuickTimer(id) {
 }
 
 export async function triggerQuickTimerNow(templateId, {
-  profile, model, contextMode, effort, mcpProfile, usesBrowser, codexAccountId,
+  profile, model, contextMode, effort, tools, usesBrowser, codexAccountId,
   sidepanelWindowId, sidepanelClaimToken,
 } = {}) {
   return jsonFetch('/api/quick-timer/now', {
     method: 'POST',
     ...jsonBody({
-      templateId, profile, model, contextMode, effort, mcpProfile, usesBrowser, codexAccountId,
+      templateId, profile, model, contextMode, effort, tools, usesBrowser, codexAccountId,
       sidepanelWindowId, sidepanelClaimToken,
     }),
   });
@@ -1476,3 +1530,16 @@ export async function toggleImageFavorite(filename, favorite) {
 export async function deleteImage(filename) {
   return jsonFetch(`/api/images/${encodeURIComponent(filename)}`, { method: 'DELETE' });
 }
+
+// Skills Studio P5: local operations and explicit Discover requests.
+export function fetchSkillOperations() { return skillsV2('/operations'); }
+export function configureSkillOperations(body) { return skillsV2('/operations', { method: 'PUT', body }); }
+export function fetchSkillUsage() { return skillsV2('/usage'); }
+export function clearSkillUsage() { return skillsV2('/usage', { method: 'DELETE', body: {} }); }
+export function fetchSkillHealth() { return skillsV2('/health'); }
+export function checkSkillHealth() { return skillsV2('/health/check', { method: 'POST', body: {} }); }
+export function fetchSkillDiscover() { return skillsV2('/discover'); }
+export function refreshSkillDiscover(sourceId) { return skillsV2('/discover/refresh', { method: 'POST', body: { sourceId } }); }
+export function importSkillDiscoverCatalog(sourceId, entries) { return skillsV2('/discover/catalog', { method: 'POST', body: { sourceId, entries } }); }
+export function stageSkillDiscover(itemId) { return skillsV2('/discover/stage', { method: 'POST', body: { itemId } }); }
+export function previewSkillPackage(revisionId, { format = 'bundle', excludeEvals = false } = {}) { return skillsV2(`/revisions/${encodeURIComponent(revisionId)}/package${query({ format, excludeEvals })}`); }

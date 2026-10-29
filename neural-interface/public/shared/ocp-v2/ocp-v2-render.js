@@ -30,10 +30,10 @@ import {
   compactionLabel, inlinePartText, reasoningPreview, createCardDrafts,
 } from './ocp-v2-render-logic.js';
 import {
-  visibleMessageOrder, revertBannerView, messageText, messageActionsFor, deleteMessageConfirmText,
+  visibleMessageOrder, revertBannerView, messageText, messageActionsFor,
 } from './ocp-v2-sessions-logic.js';
 import {
-  revertToMessage, restoreReverted, retryFromMessage, forkSession, deleteMessage,
+  revertToMessage, restoreReverted, retryFromMessage, forkSession,
 } from './ocp-v2-session-actions.js';
 
 const _expandedReasoningIds = new Set();
@@ -486,13 +486,12 @@ function renderMessage(msg, store, actions = [], opts = {}) {
   return wrap;
 }
 
-// ── Message actions (copy / undo / fork / delete / retry) ───────────────────
+// ── Message actions (copy / undo / fork / retry) ────────────────────────────
 
 const ACTION_LABELS = {
   copy: 'Copy',
   undo: 'Undo to here',
   fork: 'Fork from here',
-  delete: 'Delete',
   retry: 'Retry',
 };
 
@@ -573,16 +572,6 @@ async function runMessageAction(action, msg, store, opts, btn) {
       const result = report(await forkSession(store, api, msg.id), 'Fork failed');
       // A fork made while the user moved on is kept as a tab, not put on screen.
       if (result?.ok) await opts.onOpenSession?.(result.session, { activate: !result.moved, nav });
-      return;
-    }
-    case 'delete': {
-      // Two steps, both in the panel: this click only asks, naming the
-      // message. A panel that cannot ask deletes nothing.
-      const agreed = typeof opts.confirm === 'function' && (await opts.confirm({
-        key: `message-delete:${msg.id}`, text: deleteMessageConfirmText(msg), confirmLabel: 'Delete message',
-      })) === true;
-      if (!agreed) return;
-      report(await deleteMessage(store, api, msg.id), 'Delete failed');
       return;
     }
     default:
@@ -1128,7 +1117,7 @@ function renderMessageError(msg, view, store) {
       const at = captureBinding(store);
       if (!at.sessionId) return;
       const res = await api.compact({
-        sessionId: at.sessionId, cwd: at.cwd || undefined, mcpProfile: at.mcpProfile || undefined, model: at.model || undefined,
+        sessionId: at.sessionId, cwd: at.cwd || undefined, tools: at.tools || undefined,
       });
       if (at.isCurrent() && (res?.error || res?.ok === false)) store.pushError({ message: res?.error || 'Compact failed' });
     }, store));
@@ -1325,7 +1314,7 @@ function renderPermissionCard(perm, store) {
       code.textContent = pattern;
       always.appendChild(code);
     });
-    // How long it lasts: OpenCode keeps the answer in the running serve, not in a saved list.
+    // How far it reaches: OpenCode 2 saves the answer for the project (its saved permissions).
     always.appendChild(document.createTextNode(` ${ALWAYS_ALLOW_SCOPE}.`));
     body.appendChild(always);
   }

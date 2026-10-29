@@ -8,6 +8,7 @@
 import { api, capabilities, supports } from './ocp-v2-ws.js';
 import { buildSlashCatalog, createSlashCatalogCache } from './ocp-v2-composer-logic.js';
 import { replyFailed } from './ocp-v2-caps.js';
+import { on } from '../state.js';
 
 // The catalog is built by buildSlashCatalog (ocp-v2-composer-logic.js):
 //   local    a panel action                → options.onLocalSelect / send.js
@@ -33,17 +34,9 @@ async function fetchLegacyLists() {
 
 async function fetchCatalog(cwd) {
   if (supports('command:list', 'command:run')) {
-    const [res, policy] = await Promise.all([
-      api.commandList({ cwd: cwd || undefined }),
-      // /share is not offered when the OpenCode config disables sharing.
-      api.sessionSharePolicy({ cwd: cwd || undefined }).catch(() => null),
-    ]);
+    const res = await api.commandList({ cwd: cwd || undefined });
     if (replyFailed(res)) throw new Error(res?.error || 'command list failed');
-    return buildSlashCatalog({
-      serverCommands: res.data,
-      supports,
-      sharePolicy: replyFailed(policy) ? null : policy.data?.share,
-    });
+    return buildSlashCatalog({ serverCommands: res.data, supports });
   }
   return buildSlashCatalog({ legacy: await fetchLegacyLists(), supports });
 }
@@ -67,13 +60,21 @@ export async function loadSlashCatalog(cwd = '') {
   return catalog;
 }
 
-// A restarted server may list more (or fewer) request types: every catalog is
-// built again, each composer asking for its own directory.
-capabilities.subscribe(() => {
+/** Every catalog built again, each composer asking for its own directory (the server or the skills changed). */
+export function reloadSlashCatalogs() {
   _catalogs.invalidate();
   const wanted = new Set([..._instances].map((inst) => String(inst.getCwd() || '')));
-  for (const cwd of wanted) loadSlashCatalog(cwd).catch((err) => console.warn('[ocp-v2-slash-hints] catalog load failed', err));
-});
+  for (const cwd of wanted) loadSlashCatalog(cwd).then(() => { for (const inst of _instances) if (String(inst.getCwd() || '') === cwd) inst.refresh(); }).catch((err) => console.warn('[ocp-v2-slash-hints] catalog load failed', err));
+}
+
+// A restarted server may list more (or fewer) request types: every catalog is
+// built again, each composer asking for its own directory.
+capabilities.subscribe(() => reloadSlashCatalogs());
+
+// A skill was installed, removed or changed (Skills Studio, Settings, an agent): OpenCode's serve reads its skill
+// folders again on every listing (opencode 2.1.4, checked 2026-10-23), so asking again is enough for the slash
+// hints to list it; nothing waits for the next "/".
+on('sync:skills:changed', () => reloadSlashCatalogs());
 
 // ── Public mount API ────────────────────────────────────────────────────────
 

@@ -5,19 +5,26 @@
 // What waits for the owner (sx-review.js): submissions of the Review queue (a new skill or a change from the SynaBun
 // Assistant or another agent: what it does, who made it, its checks, its scan findings, what it can do that the
 // approved revision could not, the name it installs as, every file it changes with its lines) and the updates
-// SynaBun ships for skills that are installed. Approve, ask for changes (the Assistant reads why) or reject; an
-// approved one is installed from Publish, through a plan, never by itself. An update is read file by file before it
-// is applied; "Keep mine" leaves the copy as it is until SynaBun ships another version.
+// SynaBun ships for skills that are installed. Approving installs: "Approve & install" approves and installs to the
+// targets the submission named (sx-install-flow.js: the service's plan, one question only when the plan asks one,
+// then exactly that plan), and the card then says where it went and what a running session needs; "Approve only"
+// leaves it approved with Install on its card. Ask for changes (the Assistant reads why) or reject. An update is
+// read file by file before it is applied; "Keep mine" leaves the copy as it is until SynaBun ships another version.
 
+import { scanFindingText } from './sx-scan.js';
+import { studioErrorText } from './sx-errors.js';
 import { html, setHTML, ICONS, relativeTime, fullTime, plural } from './sx-dom.js';
 import { reviewCardModel, sortReviews, updateTargetKeys } from './sx-review.js';
 import { serviceDiff, invertDiff, lineDiff } from './sx-diff.js';
 import { diffHTML, textDiffModel } from './sx-diff-view.js';
+import { targetWords, keyWords, reviewTargets, installFlow, flowWords, installBusy, acquireInstall, refreshSkillWorkspaces } from './sx-install-flow.js';
 
 let _life = null;
 const FILTERS = ['waiting', 'all', 'decided'];
 /** Scan codes whose words carry the number of findings. */
 const SCAN_COUNTED = ['blocked', 'incomplete', 'review', 'findings'];
+/** What an install from a card said, by review id, for as long as the page lives: the card shows it after the reload. */
+const _said = new Map();
 
 function authorWords(t, a) {
   if (a.kind === 'owner') return t('skillsStudio.review.author.owner');
@@ -26,16 +33,38 @@ function authorWords(t, a) {
   return bits ? `${who} (${bits})` : who;
 }
 
-function targetWords(t, tg) {
-  const runtime = t(`skillsStudio.runtime.${['claude', 'codex', 'opencode', 'agents'].includes(tg.runtime) ? tg.runtime : 'claude'}`);
-  if (tg.scope === 'project' && tg.projectPath) return t('skillsStudio.publish.targetProject', { runtime, project: tg.projectPath });
-  // Another account of the runtime than its default: named (an install there goes to that account's folder).
-  if (tg.accountId && tg.accountId !== 'default') return t('skillsStudio.publish.targetAccount', { runtime, account: tg.accountId });
-  return t('skillsStudio.publish.targetUser', { runtime });
+/**
+ * Where a card's install goes, said whole: what the submission named, what of that is not available here and why,
+ * where it then goes (never a silent fallback), or that nothing of it is available (then Publish is the way).
+ */
+function destinationHTML(ctx, card, dest) {
+  const { t } = ctx;
+  if (!dest) return '';
+  const lines = [];
+  if (card.targets.length) lines.push(html`<li>${t('skillsStudio.review.forTargets', { targets: card.targets.map((tg) => targetWords(ctx, tg)).join(', ') })}</li>`);
+  for (const m of dest.missing) lines.push(html`<li class="sx-warn-text">${t('skillsStudio.review.targetUnavailable', { target: m.words, reason: m.why })}</li>`);
+  if (!dest.targets.length) lines.push(html`<li class="sx-warn-text">${t('skillsStudio.review.noDestination')}</li>`);
+  else if (dest.missing.length || !card.targets.length) {
+    const why = dest.fallback === 'installed' ? t('skillsStudio.review.fallbackInstalled') : dest.fallback === 'claude' ? t('skillsStudio.review.fallbackDefault') : dest.fallback === 'assistants' ? t('skillsStudio.review.fallbackAssistants') : '';
+    lines.push(html`<li>${t('skillsStudio.review.installsFor', { targets: dest.words.join(', ') })}${why ? html` <span class="sx-dim">${why}</span>` : ''}</li>`);
+  }
+  // One tile per runtime, as Publish shows them: where this card's install goes (Codex and OpenCode are first-class).
+  if (dest.targets.length) {
+    const picked = (rt) => [...dest.keys].some((k) => String(k).startsWith(`${rt}:`));
+    lines.push(html`<li class="sx-dest-tiles" role="group" aria-label="${t('skillsStudio.review.destTilesLabel')}">${['claude', 'codex', 'opencode'].map((rt) => html`<span class="sx-dest-tile${picked(rt) ? ' is-on' : ''}" title="${picked(rt) ? t('skillsStudio.review.destTileOn', { runtime: t(`skillsStudio.runtime.${rt}`) }) : t('skillsStudio.review.destTileOff', { runtime: t(`skillsStudio.runtime.${rt}`) })}">${picked(rt) ? ICONS.ok : ''}<span>${t(`skillsStudio.runtime.${rt}`)}</span></span>`)}</li>`);
+  }
+  return html`${lines}`;
 }
 
 function cardHTML(ctx, card, focused) {
   const { t, locale } = ctx;
+  const installs = card.actions.includes('approve_install') || card.actions.includes('install');
+  const review = installs ? (ctx.data?.reviews || []).find((r) => r.reviewId === card.id) : null;
+  const row = review ? ctx.rows.find((r) => r.skill?.skillId === review.skillId) || null : null;
+  const dest = review ? reviewTargets(ctx, { review, skill: row?.skill || null, row }) : null;
+  const canInstall = !!dest && dest.targets.length > 0;
+  // An install of this skill on its way from any surface: its buttons are off here too, however the card is drawn again.
+  const busy = installs && installBusy(card.skillId);
   const authority = card.authority.map((a) => html`<li>${a.added.length ? t('skillsStudio.review.authorityAdds', { what: t(`skillsStudio.review.authority.${a.kind}`), items: a.added.slice(0, 6).join(', ') }) : ''}${a.removed.length ? t('skillsStudio.review.authorityRemoves', { what: t(`skillsStudio.review.authority.${a.kind}`), items: a.removed.slice(0, 6).join(', ') }) : ''}</li>`);
   return html`<article class="sx-card sx-card--${card.state}${focused ? ' is-focused' : ''}" id="sx-review-${card.id}" aria-labelledby="sx-review-${card.id}-h" tabindex="-1">
     <header class="sx-card-top">
@@ -48,24 +77,38 @@ function cardHTML(ctx, card, focused) {
     ${card.assumptions.length ? html`<ul class="sx-plain-list sx-card-assumptions">${card.assumptions.map((a) => html`<li>${t('skillsStudio.review.assumed', { text: a })}</li>`)}</ul>` : ''}
     <ul class="sx-facts sx-card-facts">
       ${card.installAs ? html`<li>${t('skillsStudio.review.installsAs')} <span class="sx-mono">/${card.installAs}</span></li>` : ''}
-      ${card.targets.length ? html`<li>${t('skillsStudio.review.forTargets', { targets: card.targets.map((tg) => targetWords(t, tg)).join(', ') })}</li>` : ''}
+      ${dest ? destinationHTML(ctx, card, dest) : card.targets.length ? html`<li>${t('skillsStudio.review.forTargets', { targets: card.targets.map((tg) => targetWords(ctx, tg)).join(', ') })}</li>` : ''}
       <li class="${card.lint.errors ? 'sx-err-text' : ''}">${card.lint.errors ? ctx.tp('skillsStudio.review.lintErrors', card.lint.errors) : t('skillsStudio.review.lintOk')}${card.lint.warnings ? ` · ${ctx.tp('skillsStudio.review.lintWarnings', card.lint.warnings)}` : ''}</li>
       <li class="sx-scan-${card.scan.sev}">${SCAN_COUNTED.includes(card.scan.code) ? plural(t, `skillsStudio.review.scan.${card.scan.code}`, card.scan.found) : t(`skillsStudio.review.scan.${card.scan.code}`)}</li>
     </ul>
-    ${card.scan.findings.length ? html`<details class="sx-details"><summary>${ctx.tp('skillsStudio.review.findings', card.scan.findings.length)}</summary><ul class="sx-findings">${card.scan.findings.map((f) => html`<li class="sx-finding sx-finding--${f.severity}"><span class="sx-finding-sev">${t(`skillsStudio.review.severity.${f.severity === 'info' ? 'low' : f.severity}`)}</span> ${f.message}${f.file ? html` <span class="sx-mono sx-dim">${f.file}${f.line ? `:${f.line}` : ''}</span>` : ''}</li>`)}</ul></details>` : ''}
+    ${card.scan.findings.length ? html`<details class="sx-details"><summary>${ctx.tp('skillsStudio.review.findings', card.scan.findings.length)}</summary><ul class="sx-findings">${card.scan.findings.map((f) => html`<li class="sx-finding sx-finding--${f.severity}"><span class="sx-finding-sev">${t(`skillsStudio.review.severity.${f.severity === 'info' ? 'low' : f.severity}`)}</span> ${scanFindingText(t, f)}${f.file ? html` <span class="sx-mono sx-dim">${f.file}${f.line ? `:${f.line}` : ''}</span>` : ''}</li>`)}</ul></details>` : ''}
     ${authority.length ? html`<div class="sx-authority"><p class="sx-help">${t('skillsStudio.review.authorityTitle')}</p><ul class="sx-plain-list">${authority}</ul></div>` : ''}
     <details class="sx-details" data-review-diff="${card.id}"><summary>${card.files.length ? ctx.tp('skillsStudio.review.filesChanged', card.files.length) : t('skillsStudio.review.showFiles')}</summary><div class="sx-diff-box" data-diff-box="${card.id}"><p class="sx-help">${t('skillsStudio.review.loadingDiff')}</p></div></details>
     ${card.comments.length ? html`<ul class="sx-plain-list sx-card-comments">${card.comments.map((c) => html`<li><span class="sx-dim">${c.by === 'owner' ? t('skillsStudio.review.author.owner') : t('skillsStudio.review.author.assistant')}:</span> ${c.body}</li>`)}</ul>` : ''}
     ${card.reason ? html`<p class="sx-help">${t('skillsStudio.review.yourNote', { text: card.reason })}</p>` : ''}
-    ${card.publication.length ? html`<ul class="sx-plain-list">${card.publication.map((p) => html`<li class="${p.status === 'committed' ? '' : 'sx-warn-text'}"><span class="sx-mono">${p.targetKey}</span>: ${t(`skillsStudio.publish.result.${['committed', 'skipped', 'needs-confirmation', 'failed'].includes(p.status) ? p.status : 'failed'}`)}${p.error ? ` · ${p.error}` : ''}</li>`)}</ul>` : ''}
-    ${card.actions.length ? html`<div class="sx-card-actions">
-      ${card.actions.includes('approve') ? html`<button type="button" class="sx-btn sx-btn--primary" data-review="approve" data-id="${card.id}">${t('skillsStudio.review.approve')}</button>` : ''}
-      ${card.actions.includes('install') ? html`<button type="button" class="sx-btn sx-btn--primary" data-review="install" data-id="${card.id}">${t('skillsStudio.review.install')}</button>` : ''}
-      ${card.actions.includes('request_changes') ? html`<button type="button" class="sx-btn" data-review="request_changes" data-id="${card.id}">${t('skillsStudio.review.requestChanges')}</button>` : ''}
-      ${card.actions.includes('reject') ? html`<button type="button" class="sx-btn sx-btn--ghost sx-btn--danger" data-review="reject" data-id="${card.id}">${t('skillsStudio.review.reject')}</button>` : ''}
+    ${saidHTML(ctx, card)}
+    ${card.publication.length && !_said.has(card.id) ? html`<ul class="sx-plain-list">${card.publication.map((p) => html`<li class="${p.status === 'committed' ? '' : 'sx-warn-text'}">${keyWords(ctx, p.targetKey)}: ${t(`skillsStudio.publish.result.${['committed', 'skipped', 'needs-confirmation', 'failed'].includes(p.status) ? p.status : 'failed'}`)}${p.error ? ` · ${p.error}` : ''}</li>`)}</ul>` : ''}
+    ${card.actions.length ? html`<div class="sx-card-actions" data-card-actions="${card.id}" data-busy="${busy ? '1' : '0'}">
+      ${card.actions.includes('approve_install') && canInstall ? html`<button type="button" class="sx-btn sx-btn--primary" data-review="approve_install" data-id="${card.id}"${busy ? ' disabled' : ''}>${ICONS.publish}<span>${busy ? t('skillsStudio.review.installing') : t('skillsStudio.review.approveInstall')}</span></button>` : ''}
+      ${card.actions.includes('install') && canInstall ? html`<button type="button" class="sx-btn sx-btn--primary" data-review="install" data-id="${card.id}"${busy ? ' disabled' : ''}>${ICONS.publish}<span>${busy ? t('skillsStudio.review.installing') : t('skillsStudio.review.installNow')}</span></button>` : ''}
+      ${card.actions.includes('approve') ? html`<button type="button" class="sx-btn${canInstall ? '' : ' sx-btn--primary'}" data-review="approve" data-id="${card.id}"${busy ? ' disabled' : ''}>${canInstall ? t('skillsStudio.review.approveOnly') : t('skillsStudio.review.approveOnlyPrimary')}</button>` : ''}
+      ${card.actions.includes('request_changes') ? html`<button type="button" class="sx-btn" data-review="request_changes" data-id="${card.id}"${busy ? ' disabled' : ''}>${t('skillsStudio.review.requestChanges')}</button>` : ''}
+      ${card.actions.includes('reject') ? html`<button type="button" class="sx-btn sx-btn--ghost sx-btn--danger" data-review="reject" data-id="${card.id}"${busy ? ' disabled' : ''}>${t('skillsStudio.review.reject')}</button>` : ''}
+      ${card.actions.includes('install') ? html`<button type="button" class="sx-btn${canInstall ? ' sx-btn--ghost' : ' sx-btn--primary'}" data-review="publish" data-id="${card.id}"${busy ? ' disabled' : ''}>${t('skillsStudio.review.openPublish')}</button>` : ''}
       <button type="button" class="sx-btn sx-btn--ghost" data-review="open" data-id="${card.id}">${t('skillsStudio.review.open')}</button>
     </div>` : ''}
   </article>`;
+}
+
+/** What the last install from this card said: where it went and what a running session needs, or why it did not go. */
+function saidHTML(ctx, card) {
+  const said = _said.get(card.id);
+  if (!said) return '';
+  return html`<div class="sx-outcome sx-outcome--${said.kind}" role="status" data-card-said="${card.id}">
+    <p class="sx-outcome-line">${said.kind === 'info' ? ICONS.ok : ICONS.warn}<strong>${said.line}</strong></p>
+    ${said.lines.length ? html`<ul class="sx-plain-list sx-outcome-notes">${said.lines.map((x) => html`<li>${x}</li>`)}</ul>` : ''}
+    ${said.kind !== 'info' ? html`<p class="sx-help">${ctx.t('skillsStudio.review.notInstalledHelp')}</p>` : ''}
+  </div>`;
 }
 
 function updateCardHTML(ctx, u) {
@@ -91,6 +134,9 @@ function updateCardHTML(ctx, u) {
 /** Review is left for another place: its listeners on the shared main area end. */
 export function leaveReviewPlace() { _life?.abort(); _life = null; }
 
+/** The window closed: what the cards said of their installs goes with it. */
+export function forgetReviewOutcomes() { _said.clear(); }
+
 export function renderReviewPlace(host, ctx) {
   const { t } = ctx;
   _life?.abort();
@@ -98,7 +144,9 @@ export function renderReviewPlace(host, ctx) {
   const signal = _life.signal;
   const filter = ctx.lib.reviewFilter || 'waiting';
   const { open, decided } = sortReviews(ctx.data?.reviews || []);
-  const cards = (filter === 'decided' ? decided : filter === 'all' ? [...open, ...decided] : open).map((r) => reviewCardModel(r, { guest: ctx.guest }));
+  // A submission installed from its card stays in the waiting list, saying where it went, until the window closes.
+  const justInstalled = decided.filter((r) => _said.has(r.reviewId));
+  const cards = (filter === 'decided' ? decided : filter === 'all' ? [...open, ...decided] : [...open, ...justInstalled]).map((r) => reviewCardModel(r, { guest: ctx.guest }));
   const updates = filter === 'decided' ? [] : ctx.updates;
   const focus = ctx.reviewFocus;
   setHTML(host, html`<section class="sx-place sx-place--review" aria-labelledby="sx-review-title">
@@ -152,7 +200,7 @@ async function loadReviewDiff(host, ctx, id) {
       if (!ctx.alive(gen) || !box.isConnected) return;
       setHTML(box, diffHTML(t, { files }, { open: 2 }));
     }
-  } catch (err) { if (box.isConnected) setHTML(box, html`<p class="sx-note sx-note--warn" role="alert">${t('skillsStudio.review.diffFailed', { error: err.message })}</p>`); }
+  } catch (err) { if (box.isConnected) setHTML(box, html`<p class="sx-note sx-note--warn" role="alert">${t('skillsStudio.review.diffFailed', { error: studioErrorText(ctx.t, err) })}</p>`); }
 }
 
 /** The changes an update makes, from the installed copy's side (what updating it would change). */
@@ -181,7 +229,7 @@ async function loadUpdateDiff(host, ctx, key) {
     const { model, partial } = await updateDiffModel(ctx, row);
     if (!ctx.alive(gen) || !box.isConnected) return;
     setHTML(box, html`${partial ? html`<p class="sx-note" role="note">${t('skillsStudio.review.partialDiff')}</p>` : ''}${diffHTML(t, model)}`);
-  } catch (err) { if (box.isConnected) setHTML(box, html`<p class="sx-note sx-note--warn" role="alert">${t('skillsStudio.review.diffFailed', { error: err.message })}</p>`); }
+  } catch (err) { if (box.isConnected) setHTML(box, html`<p class="sx-note sx-note--warn" role="alert">${t('skillsStudio.review.diffFailed', { error: studioErrorText(ctx.t, err) })}</p>`); }
 }
 
 /**
@@ -198,7 +246,7 @@ export async function reviewUpdateFlow(ctx, row, mode) {
     try {
       const { model, partial } = await updateDiffModel(ctx, row);
       if (box.isConnected) setHTML(box, html`${partial ? html`<p class="sx-note" role="note">${t('skillsStudio.review.partialDiff')}</p>` : ''}${diffHTML(t, model)}`);
-    } catch (err) { if (box.isConnected) box.textContent = t('skillsStudio.review.diffFailed', { error: err.message }); }
+    } catch (err) { if (box.isConnected) box.textContent = t('skillsStudio.review.diffFailed', { error: studioErrorText(ctx.t, err) }); }
     await shown;
     return;
   }
@@ -258,7 +306,9 @@ async function onClick(e, host, ctx) {
   const action = btn.dataset.review;
   const row = ctx.rows.find((r) => r.skill?.skillId === review.skillId);
   if (action === 'open') { if (row) ctx.openRow(row.key, { tab: 'versions' }); return; }
-  if (action === 'install') { if (row) ctx.openRow(row.key, { tab: 'publish', revisionId: card.revisionId, reviewId: card.id }); return; }
+  if (action === 'publish') { if (row) ctx.openRow(row.key, { tab: 'publish', revisionId: card.revisionId, reviewId: card.id }); return; }
+  if (action === 'install' || action === 'approve_install') { await installFromCard(ctx, host, card, review, btn, { approve: action === 'approve_install' }); return; }
+  if (installBusy(review.skillId) && action !== 'open') { ctx.toast(t('skillsStudio.publish.busyElsewhere'), 'error'); return; }
   let reason = '';
   if (action !== 'approve') {
     reason = await askReason(ctx, {
@@ -278,6 +328,42 @@ async function onClick(e, host, ctx) {
   } catch (err) {
     if (!ctx.alive(gen)) return;
     btn.disabled = false;
-    ctx.toast(t('skillsStudio.review.decideFailed', { error: err.message }), 'error');
+    ctx.toast(t('skillsStudio.review.decideFailed', { error: studioErrorText(ctx.t, err) }), 'error');
   }
+}
+
+/**
+ * Approve (when asked) and install to the targets the submission named, in one go; then the card says where it went
+ * and what a running session needs, or why it did not go. Nothing is asked unless the plan asks it.
+ */
+async function installFromCard(ctx, host, card, review, btn, { approve }) {
+  const { t } = ctx;
+  const row = ctx.rows.find((r) => r.skill?.skillId === review.skillId) || null;
+  // Where it goes is decided before anything is approved: nothing of what it named available here means no install
+  // (and no approval from this button), never an install elsewhere.
+  const dest = reviewTargets(ctx, { review, skill: row?.skill || null, row });
+  if (!dest.targets.length) { ctx.toast(t('skillsStudio.review.noDestination'), 'error'); return; }
+  // One install of a skill at a time, from whichever surface (the lock covers the approval too, and is let go
+  // however this ends); while it is held every card and banner of the skill shows it as on its way.
+  const release = acquireInstall(review.skillId);
+  if (!release) { ctx.toast(t('skillsStudio.publish.busyElsewhere'), 'error'); return; }
+  const gen = ctx.gen();
+  let out = null;
+  try {
+    if (approve) {
+      try { await ctx.api.decideSkillsReview(card.id, 'approve', ''); } catch (err) {
+        if (ctx.alive(gen)) ctx.toast(t('skillsStudio.review.decideFailed', { error: studioErrorText(ctx.t, err) }), 'error');
+        return;
+      }
+      if (!ctx.alive(gen)) return;
+    }
+    out = await installFlow(ctx, { revisionId: card.revisionId, targets: dest.targets, reviewId: card.id });
+  } finally { release(); }
+  if (!ctx.alive(gen) || out.status === 'gone') return;
+  const words = flowWords(ctx, out);
+  if (words) { _said.set(card.id, words); ctx.toast(words.line, words.kind); ctx.announce(words.line); }
+  else if (approve) ctx.toast(t('skillsStudio.review.decided.approve', { name: card.name }));
+  // The skill's open workspace reads it again: its header pill, banners and Publish say what the Library row says.
+  if (out.status === 'done') await refreshSkillWorkspaces(ctx, review.skillId, { resetPublish: true });
+  await ctx.reload();
 }

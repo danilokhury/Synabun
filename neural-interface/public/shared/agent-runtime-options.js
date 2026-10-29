@@ -145,8 +145,11 @@ let _opencodeModelsCache = null;
 let _opencodeModelsLoading = null;
 let _claudeModelsCache = null;
 let _claudeModelsLoading = null;
-let _mcpProfilePresets = null;
-let _mcpProfilePresetsLoading = null;
+let _toolCatalog = null;
+const _toolCatalogLoads = new Map();
+const _toolCatalogByCwd = new Map();
+const _toolCatalogAt = new Map();
+let _toolCatalogEpoch = 0;
 
 // The verified Claude and Codex lists are also kept in sessionStorage (this tab only): after a reload the
 // pickers paint from them at once (a list read back is due, so the first load still asks the server).
@@ -633,27 +636,40 @@ export function normalizeEffortForProfile(profileId, effort) {
   return levels.some(e => e.id === value) ? value : null;
 }
 
-export async function fetchMcpProfilePresets(force = false) {
-  if (!force && _mcpProfilePresets) return _mcpProfilePresets;
-  // Callers asking at the same time share one request.
-  if (_mcpProfilePresetsLoading) return _mcpProfilePresetsLoading;
-  _mcpProfilePresetsLoading = (async () => {
+export async function fetchToolCatalog(force = false, { cwd = '' } = {}) {
+  const key = String(cwd || '');
+  if (force) invalidateToolCatalog();
+  const epoch = _toolCatalogEpoch;
+  if (!force && _toolCatalogAt.get(key) === epoch && _toolCatalogByCwd.has(key)) { _toolCatalog = _toolCatalogByCwd.get(key); return _toolCatalog; }
+  if (_toolCatalogLoads.has(key)) return _toolCatalogLoads.get(key);
+  const loading = (async () => {
     try {
-      const resp = await fetch('/api/mcp/profile');
+      const resp = await fetch(`/api/mcp/tools${key ? `?cwd=${encodeURIComponent(key)}` : ''}`);
       const data = await resp.json().catch(() => ({}));
-      _mcpProfilePresets = data?.ok && data.presets ? data.presets : {};
-      return _mcpProfilePresets;
-    } catch {
-      return {};
-    } finally {
-      _mcpProfilePresetsLoading = null;
-    }
+      let catalog = resp.ok && data?.ok && Array.isArray(data.groups) ? data : null;
+      if (epoch !== _toolCatalogEpoch) return fetchToolCatalog(false, { cwd: key });
+      if (catalog) { const previous = _toolCatalogByCwd.get(key); if (previous) catalog = Object.assign(previous, catalog); _toolCatalogByCwd.set(key, catalog); _toolCatalogAt.set(key, epoch); _toolCatalog = catalog; }
+      return catalog;
+    } catch { return null; }
+    finally { if (epoch === _toolCatalogEpoch) _toolCatalogLoads.delete(key); }
   })();
-  return _mcpProfilePresetsLoading;
+  _toolCatalogLoads.set(key, loading);
+  return loading;
 }
 
-export function getCachedMcpProfilePresets() {
-  return _mcpProfilePresets || {};
+export function invalidateToolCatalog(change) {
+  _toolCatalogEpoch++; _toolCatalogLoads.clear();
+  if (change?.name && typeof change.enabled === 'boolean') for (const catalog of _toolCatalogByCwd.values()) {
+    const row = catalog.servers?.find(row => row.ref === `mcp:${change.name}`); if (row) row.blocked = !change.enabled;
+  }
+}
+
+export function updateCachedToolDefault(tools) {
+  if (Array.isArray(tools)) for (const catalog of _toolCatalogByCwd.values()) catalog.defaultTools = [...tools];
+}
+
+export function getCachedToolCatalog(cwd) {
+  return cwd === undefined ? _toolCatalog : _toolCatalogByCwd.get(String(cwd || '')) || null;
 }
 
 export function clearRuntimeOptionCaches() {
@@ -663,7 +679,7 @@ export function clearRuntimeOptionCaches() {
   opencodeProviders.invalidate('');
   _claudeModelsCache = null;
   _modelListAt.clear();
-  _mcpProfilePresets = null;
+  invalidateToolCatalog(); _toolCatalog = null; _toolCatalogByCwd.clear(); _toolCatalogAt.clear();
   _claudeAccountsCache = null;
   _opencodeAgentsCache = null;
 }

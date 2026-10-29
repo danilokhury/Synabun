@@ -3,7 +3,7 @@
 // ═══════════════════════════════════════════
 //
 // The rules installer edits files that belong to the user and to other CLIs
-// (~/.codex/AGENTS.md, ~/.gemini/GEMINI.md, OpenCode's config.json). These
+// (~/.codex/AGENTS.md, ~/.gemini/GEMINI.md, OpenCode's opencode.json). These
 // helpers make each write all-or-nothing, keep a symlinked file a symlink,
 // refuse to write through a link that points at nothing, keep a copy of what
 // was there before, never read a corrupt JSON file as `{}`, and never write

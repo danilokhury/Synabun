@@ -3,6 +3,8 @@
 // Body-appended, overflow-proof tooltip for data-tooltip attributes
 // ═══════════════════════════════════════════
 
+import { boundsForPoint, frameRect } from './app-frame.js';
+
 /**
  * Initialize the tooltip system.
  * Creates a body-appended tooltip element and delegates
@@ -41,13 +43,16 @@ export function initTooltip() {
     const th = tip.offsetHeight;
     const gap = 8;
     const preferred = el.getAttribute('data-tooltip-pos');
+    // Kept inside the app frame for a control in it; one on the bar or an explorer keeps the window.
+    const b = boundsForPoint(frameRect(), r.left + r.width / 2, r.top + r.height / 2)
+      || { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
 
     // Left-side placement (session dropdowns in sidepanels)
     // Anchor to the left edge of the containing sidepanel so tooltip always appears fully outside
     if (preferred === 'left') {
       const panel = el.closest('.claude-panel, .codex-panel, .ocp-panel, .assistant-panel, .menubar-dropdown--resume');
       const anchorLeft = panel ? panel.getBoundingClientRect().left : r.left;
-      if (anchorLeft - gap - tw > 4) {
+      if (anchorLeft - gap - tw > b.left + 4) {
         setPlacement('left');
         tip.style.top = (r.top + r.height / 2 - th / 2) + 'px';
         tip.style.left = (anchorLeft - gap - tw) + 'px';
@@ -60,7 +65,7 @@ export function initTooltip() {
     const inWbToolbar = !!el.closest('#wb-toolbar');
     const rightAnchor = el.closest('.menubar-dropdown--resume');
     const anchorRight = rightAnchor ? rightAnchor.getBoundingClientRect().right : r.right;
-    if ((preferred === 'right' || inWbToolbar) && anchorRight + gap + tw < window.innerWidth - 4) {
+    if ((preferred === 'right' || inWbToolbar) && anchorRight + gap + tw < b.right - 4) {
       setPlacement('right');
       tip.style.top = (r.top + r.height / 2 - th / 2) + 'px';
       tip.style.left = (anchorRight + gap) + 'px';
@@ -72,13 +77,13 @@ export function initTooltip() {
     const forceBelow = preferred === 'below' || el.closest('#title-bar');
     let top = forceBelow ? r.bottom + gap : r.top - th - gap;
     let placement = forceBelow ? 'below' : 'above';
-    if (!forceBelow && top < 4) {
+    if (!forceBelow && top < b.top + 4) {
       top = r.bottom + gap;
       placement = 'below';
     }
     let left = r.left + r.width / 2 - tw / 2;
-    if (left < 4) left = 4;
-    if (left + tw > window.innerWidth - 4) left = window.innerWidth - 4 - tw;
+    if (left + tw > b.right - 4) left = b.right - 4 - tw;
+    if (left < b.left + 4) left = b.left + 4;
     setPlacement(placement);
     tip.style.top = top + 'px';
     tip.style.left = left + 'px';

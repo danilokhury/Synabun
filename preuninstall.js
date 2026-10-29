@@ -72,7 +72,7 @@ async function tryGracefulServerShutdown() {
 // ── Step 1b: kill any orphaned processes holding file handles ──
 //
 // Even after a graceful server shutdown (or when no server is running),
-// orphaned children can survive: opencode-ai sidecars spawned via cmd.exe,
+// orphaned children can survive: opencode sidecars spawned via cmd.exe,
 // MCP servers (claude-memory-mcp) spawned by Claude Code instances rather
 // than by SynaBun itself, agent processes, etc. On Windows these orphans
 // keep file handles inside the install dir open, causing EBUSY when npm

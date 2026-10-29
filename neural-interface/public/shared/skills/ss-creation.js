@@ -21,7 +21,8 @@ export const CONVERSATION_PROVIDERS = Object.freeze(['claude-code', 'codex', 'op
  * only (lib/skills/draft-confinement.js), which Claude Code enforces before any permission mode; Codex starts MCP
  * servers outside its sandbox and OpenCode answers its own permission prompts, so neither can be held there yet.
  */
-export const DRAFT_PROVIDERS = Object.freeze(['claude-code']);
+/** The providers a drafting run can be held to its folder on (lib/skills/draft-confinement.js draftConfinementSupport). */
+export const DRAFT_PROVIDERS = Object.freeze(['claude-code', 'codex', 'opencode']);
 export const CREATION_TARGET_RUNTIMES = Object.freeze(['claude', 'codex', 'opencode', 'agents']);
 
 /** The stages of a creation, in order; the last four end it. */

@@ -1,3 +1,4 @@
+import { fetchToolCatalog } from '../agent-runtime-options.js';
 // ═══════════════════════════════════════════
 // SynaBun Assistant — panel (mount / lifecycle)
 // ═══════════════════════════════════════════
@@ -40,6 +41,7 @@ import { getWhiteboardElementById } from '../ui-whiteboard.js';
 import { focusNativeLoopRun } from '../ui-native-loop-router.js';
 import { wireFileLinks } from '../ui-file-links.js';
 import { injectAssistantStyles } from './asst-styles.js';
+import { tipsSeen, tourOffered } from '../tour/tour-state.js';
 import { createAssistantSocket } from './asst-ws.js';
 import { createRenderer, ICON_ASSISTANT, mdInto } from './asst-render.js';
 import { createMascotDirector, MASCOT_TIMING, turnEndPose } from './asst-mascot.js';
@@ -47,6 +49,8 @@ import { lastInputAt, onKey, onPointer } from '../synabun-ticker.js';
 import { buildControlResponse, closedControlState, normalizeControlRequest, renderControlCard } from './asst-control.js';
 import { buildPromptText, createComposer } from './asst-composer.js';
 import { buildDispatchSpec, parseSlashCommand, slashHelpMarkdown } from './asst-slash.js';
+import { resolveStopTarget } from './asst-stop.js';
+import { plural } from './asst-tool-kinds.js';
 import { cachedProjects, createBrainPicker, testDensityLabel } from './asst-brain-picker.js';
 import { createRovingToolbar } from './asst-roving.js';
 import { openAccountsManager } from './asst-accounts.js';
@@ -243,6 +247,23 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
   const providerIcon = (p) => getProviderMeta(p).icon;
   const providerColor = (p) => getProviderMeta(p).color;
   const visible = () => { try { return host.isVisible ? !!host.isVisible() : true; } catch { return true; } };
+
+  // ── Just-in-time tips (../tour/tour-tips.js): once each, ever; never in a replay or while the tour runs ──
+  function tip(id, targetOf) {
+    if (destroyed || replaying || !visible() || guestBlocked() || tipsSeen(storage).has(id)) return;
+    requestAnimationFrame(() => {
+      if (destroyed) return;
+      let target = null;
+      try { target = targetOf(); } catch { target = null; }
+      if (!target?.isConnected) return;
+      import('../tour/tour-tips.js')
+        .then(async ({ ensureTourStyles, showTip }) => {
+          await ensureTourStyles();
+          if (!destroyed && target.isConnected) showTip(id, { storage, tr: (key) => t(key), root, target, renderer, reduced: () => matchMedia('(prefers-reduced-motion: reduce)').matches });
+        })
+        .catch(() => { /* a tip is never worth an error */ });
+    });
+  }
   const hostId = host.id || null; // routing only (assistant:new / resume / focused) — never a feature switch
 
   function persist() {
@@ -506,7 +527,11 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
       emptyBudgetChip?.destroy();
       emptyBudgetChip = null;
     },
-    onSuggestion: (template) => composer.fillTemplate(template),
+    // The first-visit row asks for the Workspace tour on this panel (ui-tutorial.js); the others fill the composer.
+    onSuggestion: (template, s) => {
+      if (s?.action === 'tour') { emit('tour:open', { host: controller.tourHost(), from: 'starter' }); return; }
+      composer.fillTemplate(template);
+    },
     // A follow-up under a finished message, or Retry now on a usage-limit card: sent as the user's next
     // message (queued while a turn runs, like a typed one). "Something else…" is the composer.
     onFollowup: (text) => { submit(clickPayload(text)); },
@@ -551,9 +576,12 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
   function emptySuggestions() {
     const project = projectLabel(st.brain.project, cachedProjects()) || tt('assistant.empty.thisProject', 'this project');
     const list = [];
+    // Until the Workspace tour is completed or skipped, its starter comes first. It never opens by itself.
+    if (tourOffered(storage) && !guestBlocked()) list.push({ id: 'tour', action: 'tour', kind: 'ask', label: tt('tour.starter', 'Show me the workspace'), meta: tt('tour.starterTime', '2 min') });
     if (computerAvailable()) list.push({ id: 'computer', label: tt('assistant.empty.suggestComputer', 'Use my Mac to…'), template: tt('assistant.empty.templateComputer', 'Use my Mac to {caret}') });
     list.push({ id: 'web', label: tt('assistant.empty.suggestWeb', 'Look up … on the web'), template: tt('assistant.empty.templateWeb', 'Look up {caret} on the web') });
     list.push({ id: 'fix', label: tt('assistant.empty.suggestFix', 'Fix … in {project}', { project }), template: tt('assistant.empty.templateFix', 'Fix {caret} in {project}', { project }) });
+    list.push({ id: 'skill', label: tt('assistant.empty.suggestSkill', 'Create Skill'), template: tt('assistant.empty.templateSkill', 'Create a skill that {caret}') });
     list.push({ id: 'schedule', label: tt('assistant.empty.suggestSchedule', 'Schedule …'), template: tt('assistant.empty.templateSchedule', 'Schedule {caret}') });
     list.push({ id: 'remember', label: tt('assistant.empty.suggestRemember', 'Remember …'), template: tt('assistant.empty.templateRemember', 'Remember {caret}') });
     return list;
@@ -603,6 +631,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
   const accountHooks = () => ({ t, onChanged: () => picker.refresh(true), onSelect: (id) => applyBrain({ ...st.brain, accountId: id }, { requiresSwitch: true, field: 'account' }) });
   // Model · effort · permission mode · account sit in the composer row next to attach; project and MCP in the toolbar.
   const picker = createBrainPicker({ brain: composer.el.querySelector('.asst-composer-brain'), context: barGroups.context }, {
+    getSessionId: () => st.sessionId,
     t,
     mascot: () => director,
     getBrain: () => st.brain,
@@ -689,6 +718,17 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
   agentsBtn.setAttribute('aria-pressed', st.dockOpen ? 'true' : 'false');
 
   const usage = createUsageGauge(root.querySelector('.asst-usage-host'), { t, sessionId });
+  // The first usage strip on screen gets its tip (once, ever).
+  const usageHostEl = root.querySelector('.asst-usage-host');
+  if (typeof MutationObserver === 'function' && !tipsSeen(storage).has('usage')) {
+    const usageTipWatch = new MutationObserver(() => {
+      if (usageHostEl.hidden) return;
+      usageTipWatch.disconnect();
+      tip('usage', () => usageHostEl.querySelector('.asst-usage-strip') || usageHostEl);
+    });
+    usageTipWatch.observe(usageHostEl, { attributes: true, attributeFilter: ['hidden'] });
+    unsubs.push(() => usageTipWatch.disconnect());
+  }
   if (st.usageView) { usage.apply({ type: 'assistant:usage', ...st.usageView }); usage.setConnection('reconnecting'); }
   let usageFetchSeq = 0;
   let usageSocketOpened = false;
@@ -883,7 +923,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
         return;
       case 'assistant:dispatch': {
         const run = runFromPayload(packet);
-        if (run) { dock.upsertRun(run); renderer.upsertRunCard(dock.getRun(run.runId) || run); }
+        if (run) { dock.upsertRun(run); renderer.upsertRunCard(dock.getRun(run.runId) || run); tip('run', () => renderer.getRunCard(run.runId)); }
         return;
       }
       case 'assistant:permission-request':
@@ -927,7 +967,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     switch (ev.type) {
       case 'synabun.dispatch': {
         const run = runFromPayload(ev);
-        if (run) { dock.upsertRun(run); renderer.upsertRunCard(dock.getRun(run.runId) || run); }
+        if (run) { dock.upsertRun(run); renderer.upsertRunCard(dock.getRun(run.runId) || run); tip('run', () => renderer.getRunCard(run.runId)); }
         return;
       }
       case 'synabun.dispatch_result': {
@@ -985,7 +1025,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
       const next = normalizeBrain({ ...st.brain, ...meta.brain, provider: meta.brain.provider || meta.brain.brain || st.brain.provider });
       if (JSON.stringify(next) !== JSON.stringify(st.brain)) { st.brain = next; picker.render(); host.setBrain?.(next); persist(); }
     } else if (typeof meta.brain === 'string') {
-      const next = normalizeBrain({ ...st.brain, provider: meta.brain, model: meta.model ?? st.brain.model, effort: meta.effort ?? st.brain.effort, accountId: meta.accountId ?? st.brain.accountId, mcpProfile: meta.mcpProfile ?? st.brain.mcpProfile, project: meta.cwd ?? st.brain.project });
+      const next = normalizeBrain({ ...st.brain, provider: meta.brain, model: meta.model ?? st.brain.model, effort: meta.effort ?? st.brain.effort, accountId: meta.accountId ?? st.brain.accountId, tools: meta.tools ?? st.brain.tools, project: meta.cwd ?? st.brain.project });
       if (JSON.stringify(next) !== JSON.stringify(st.brain)) { st.brain = next; picker.render(); host.setBrain?.(next); persist(); }
     }
     if (meta.budget && typeof meta.budget === 'object') budgetController.receiveSession(meta.budget);
@@ -1169,6 +1209,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     if (st.computerRemote) { explainRemoteComputer(); return; }
     const next = enabled === true;
     const wasActive = st.desktopActive;
+    if (next && !st.computerEffective) tip('computer', () => (isRendered(computerToggle.el) ? computerToggle.el : moreBtn));
     st.computerUse = next;
     st.computerEffective = next;
     persist();
@@ -1277,6 +1318,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     renderer.appendNode(card.el);
     routeCards.set(card.routeId, card);
     routeChip.render();
+    tip('route', () => card.el);
     requestAnimationFrame(() => { if (!destroyed && !card.collapsed) card.focusIfIdle(); });
     return card;
   }
@@ -1445,8 +1487,9 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
         else renames.settled().then(() => { if (!destroyed) sock.send({ type: 'list_sessions' }); }); // a rename on its way is in the list
         return true;
       case 'stop':
+        // /stop all: every run of the session, at once. /stop <target>: the one run it names, or nothing.
         if (parsed.all) await stopAll();
-        else if (parsed.target) await stopRun(parsed.target);
+        else if (parsed.target) await stopNamedRun(parsed.target);
         else abort();
         return true;
       case 'agents': {
@@ -1529,7 +1572,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
   }
 
   async function dispatch(parsed, payload) {
-    const spec = buildDispatchSpec(parsed, st.brain, { assistantSessionId: sessionId });
+    const spec = buildDispatchSpec(parsed, st.brain, { assistantSessionId: sessionId, toolCatalog: await fetchToolCatalog() });
     renderer.appendUser(payload.text);
     try {
       const res = await dispatchAssistantRun(spec);
@@ -1600,7 +1643,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     if (meta.silent) return;
     if (meta.requiresSwitch) {
       const b = st.brain;
-      if (!meta.restartBrain) sock.send({ type: 'switch_brain', brain: b.provider, model: b.model || undefined, effort: b.effort || undefined, accountId: b.accountId || undefined, mcpProfile: b.mcpProfile || undefined, cwd: b.project || undefined, agent: b.agent || undefined, permissionMode: b.permissionMode, planMode: b.planMode === true });
+      if (!meta.restartBrain) sock.send({ type: 'switch_brain', brain: b.provider, model: b.model || undefined, effort: b.effort || undefined, accountId: b.accountId || undefined, tools: b.tools ?? undefined, cwd: b.project || undefined, agent: b.agent || undefined, permissionMode: b.permissionMode, planMode: b.planMode === true });
       renderer.appendDivider(`${tt('assistant.status.brain', 'brain')} → ${brainLabel(b)}`);
       renderer.forgetSeen(); // the new brain's ids start over
     } else if (before.permissionMode !== st.brain.permissionMode || !!before.planMode !== !!st.brain.planMode) {
@@ -1653,9 +1696,29 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     }
   }
 
+  /**
+   * /stop <target>: the run of this session it names (its id or the start of it, its title, the words
+   * of its title: asst-stop.js), and only that one. A target that fits none, or more than one, stops nothing.
+   */
+  async function stopNamedRun(target) {
+    const found = resolveStopTarget(target, dock.getRuns());
+    if (found.run && !found.error) return stopRun(found.run.runId);
+    if (found.passthrough) return stopRun(found.passthrough); // a full id the tray has not loaded: the server knows
+    const name = (run) => `${run.title || run.runId}${run.title ? ` (${String(run.runId).slice(0, 8)})` : ''}`;
+    const message = found.error === 'ambiguous'
+      ? tt('assistant.slash.stopAmbiguous', '"{target}" matches {count} agents: {list}. Nothing was stopped; name one of them.', { target, count: found.matches.length, list: found.matches.map(name).join(', ') })
+      : found.error === 'finished'
+        ? tt('assistant.slash.stopFinished', '{name} has already finished.', { name: name(found.run) })
+        : tt('assistant.slash.stopNoMatch', 'No agent of this session matches "{target}". Nothing was stopped; /agents lists them.', { target });
+    renderer.appendStatus(message);
+  }
+
   async function stopAll() {
-    try { await killAllAssistantRuns(sessionId); toast(tt('assistant.status.stopAllRequested', 'Stopping all dispatched agents…')); }
-    catch (err) { renderer.appendError(`${tt('assistant.status.stopFailed', 'Stop failed')}: ${err?.message || err}`); }
+    try {
+      const res = await killAllAssistantRuns(sessionId);
+      const count = Array.isArray(res?.stopped) ? res.stopped.length : null;
+      toast(count === null ? tt('assistant.status.stopAllRequested', 'Stopping all dispatched agents…') : plural(tt, 'assistant.status.stopAllDone', count, 'Stopped {count} agent.', 'Stopped {count} agents.'));
+    } catch (err) { renderer.appendError(`${tt('assistant.status.stopFailed', 'Stop failed')}: ${err?.message || err}`); }
   }
 
   async function escalateRun(runId, target) {
@@ -1867,6 +1930,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     items.push({ kind: 'info', label: tt('assistant.topbar.cost', 'Session cost'), value: fmtCost(totalCost()) || '$0.00' });
     if (Number(st.dispatchUsd) > 0) items.push({ kind: 'info', label: tt('assistant.topbar.agentsCost', 'Agents'), value: fmtCost(st.dispatchUsd) });
     openMenu(moreBtn, { label: tt('assistant.toolbar.more', 'More options'), items, role: 'menu', placement: 'below', width: 280 });
+    tip('more', () => document.querySelector('.asst-dd-menu'));
   }
 
   // Assistant → Models: switch models off (hidden from routing, dispatch and every model menu).
@@ -2160,6 +2224,22 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     resume,
     setRouteMode: (mode) => setRouteMode(mode),
     setComputerUse: (enabled) => setComputerUse(enabled),
+    /**
+     * What the Workspace tour presents on (public/shared/tour/): this panel's own board,
+     * its controls and its director, while the empty state shows its character and nothing
+     * runs. null otherwise (the tour then uses a session-free preview).
+     */
+    tourHost() {
+      const hero = renderer.mascot();
+      if (destroyed || st.running || hero?.kind !== 'hero' || hero.parked?.()) return null;
+      return {
+        root, transcript: transcriptEl, announcer, bar: barEl, renderer, director, composer,
+        live: true,
+        computer: computerAvailable(),
+        refreshStarters: () => renderer.refreshEmpty(),
+        focusComposer: () => composer.focus(),
+      };
+    },
     attachMemory: (node) => composer.addMemory(node),
     attachImageDataUrl: (dataUrl, name) => composer.addImageDataUrl(dataUrl, name),
     insertText: (text) => composer.insertText(text),

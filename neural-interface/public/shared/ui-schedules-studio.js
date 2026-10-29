@@ -1,3 +1,5 @@
+import { migrateStoredTools } from './tool-list-storage.js';
+import { configureToolPickerTranslation, toolPickerHTML, readToolPicker, updateToolPicker, taskToolHost as strictToolHost, toolWord } from './tool-list-picker.js';
 // SynaBun Neural Interface — the Schedules window.
 // A rail of views (Up next, All, Needs attention, Paused, Timers, Activity) and of groups, one
 // list of schedules with their details on demand, and the editors in place of the list. What a
@@ -5,6 +7,7 @@
 
 import { emit, on } from './state.js';
 import { storage } from './storage.js';
+import { frameRect, clampBox } from './app-frame.js';
 import { t, tp, getLocale } from './i18n.js';
 import { KEYS } from './constants.js';
 import { isGuest, hasPermission, showGuestToast } from './ui-sync.js';
@@ -18,10 +21,10 @@ import {
 import {
   CLI_PROFILES,
   ensureModelsForProfile,
-  fetchMcpProfilePresets,
+  fetchToolCatalog,
   fetchCodexAccounts,
   getCachedCodexAccounts,
-  getCachedMcpProfilePresets,
+  getCachedToolCatalog,
   getEffortLevelsForProfile,
   getModelsForProfile,
   formatModelOptionLabel,
@@ -149,7 +152,7 @@ let _launchContextMode = _storedLaunchSelection.contextMode || 'default';
 storage.setItem('as-launch-model', _launchModel || '');
 storage.setItem('as-launch-context-mode', _launchContextMode);
 let _launchEffort = storage.getItem('as-launch-effort') || 'off';
-let _launchMcpProfile = storage.getItem('as-launch-mcp-profile') || 'full';
+let _launchTools = (() => { try { return JSON.parse(storage.getItem('as-launch-tools') || 'null'); } catch { return null; } })();
 let _launchAccount = storage.getItem('as-launch-account') || 'default'; // Codex ChatGPT account (CODEX_HOME)
 let _codexAccountsRequested = false; // lazy-fetch guard for account selects
 
@@ -418,7 +421,6 @@ function applyOpenOptions(opts = {}) {
 }
 
 function placePanel() {
-  const navH = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--navbar-height')) || 48;
   const saved = readJson(LAYOUT_KEY, null);
   if (saved && saved.w > 0 && saved.h > 0) {
     _panel.style.width = saved.w + 'px';
@@ -426,10 +428,13 @@ function placePanel() {
   }
   const width = _panel.offsetWidth;
   const height = _panel.offsetHeight;
-  const left = saved && Number.isFinite(saved.x) ? saved.x : (window.innerWidth - width) / 2;
-  const top = saved && Number.isFinite(saved.y) ? saved.y : navH + Math.max(8, (window.innerHeight - navH - height) / 2);
-  _panel.style.left = Math.round(Math.max(8, Math.min(left, window.innerWidth - width - 8))) + 'px';
-  _panel.style.top = Math.round(Math.max(navH + 8, Math.min(top, window.innerHeight - height - 8))) + 'px';
+  // Inside the app frame (8px from the window and the bar, as before, and clear of an open explorer)
+  const f = frameRect();
+  const left = saved && Number.isFinite(saved.x) ? saved.x : f.left + (f.width - width) / 2;
+  const top = saved && Number.isFinite(saved.y) ? saved.y : f.top + Math.max(0, (f.height - height) / 2);
+  const at = clampBox(left, top, width, height, f);
+  _panel.style.left = Math.round(at.x) + 'px';
+  _panel.style.top = Math.round(at.y) + 'px';
 }
 
 function saveLayout() {
@@ -532,6 +537,14 @@ function wirePanel() {
   _panel.addEventListener('keydown', handlePanelKeydown, { signal });
   // The popups (cc-dropdown.js): one set of listeners for every one the window draws.
   wireDropdowns(_panel, { signal });
+  _panel.addEventListener('change', event => {
+    if (!['sched-ge-browser', 'sched-ed-browser'].includes(event.target.id)) return;
+    const group = event.target.id === 'sched-ge-browser';
+    const inherited = group ? false : getGroup(_scheduleEditor?.groupId)?.usesBrowser ?? getTemplate(_scheduleEditor?.templateId)?.usesBrowser;
+    const usesBrowser = event.target.value === '' ? !!inherited : event.target.value === 'true';
+    const input = $(group ? 'sched-ge-mcp' : 'sched-ed-mcp');
+    updateToolPicker(input, readToolPicker(input, { requested: true }), { inheritLabel: toolWord(group ? 'noOverride' : 'templateDefault'), usesBrowser });
+  }, { signal });
   // Capture: the menubar's own Escape (it closes an open menu) has run by the time a bubbling
   // listener hears the key, so a menu that was open is seen here first.
   window.addEventListener('keydown', handleEscape, { capture: true, signal });
@@ -562,6 +575,7 @@ function withDeadline(request) {
 const failureReason = (result) => String(result.reason?.message || t('schedules.load.unexpected')).replace(/\.$/, '');
 
 async function loadData() {
+  _launchTools = await migrateStoredTools(storage, 'as-launch-tools', 'as-launch-mcp-profile');
   const seq = ++_loadSeq;
   loadTimers();
   const [schedules, templates, groups] = await Promise.allSettled([
@@ -829,7 +843,7 @@ function groupOverridesText(group) {
   if (group.model) parts.push(group.model);
   if (group.contextMode && group.contextMode !== 'default') parts.push(t('schedules.overrides.context', { value: group.contextMode }));
   if (group.effort) parts.push(t('schedules.overrides.thinking', { value: group.effort }));
-  if (group.mcpProfile) parts.push(t('schedules.overrides.mcp', { value: group.mcpProfile }));
+  if (group.tools) parts.push(t('schedules.overrides.mcp', { value: group.tools.join(', ') }));
   if (group.usesBrowser === true) parts.push(t('schedules.overrides.browserOn'));
   else if (group.usesBrowser === false) parts.push(t('schedules.overrides.browserOff'));
   return parts.join(' · ');
@@ -1182,9 +1196,8 @@ function rowHTML(s, { now = Date.now(), showGroup = false } = {}) {
 function detailHTML(s, now, run) {
   const template = getTemplate(s.templateId);
   const group = getGroup(s.groupId);
-  const presets = getCachedMcpProfilePresets();
-  const mcpLabels = Object.fromEntries(Object.entries(presets).map(([id, p]) => [id, p.label || id]));
-  const facts = launchFacts(s, { group, template, profiles: CLI_PROFILES, mcpLabels });
+  const toolCatalog = getCachedToolCatalog();
+  const facts = launchFacts(s, { group, template, profiles: CLI_PROFILES, toolCatalog, translate: t });
   const sourceNote = (source) => (['group', 'automation', 'default'].includes(source)
     ? ` <span class="sched-source">${te(`schedules.detail.source.${source}`)}</span>` : '');
   const next = s.enabled
@@ -1312,10 +1325,9 @@ function renderTimersView() {
   const modelOptions = renderModelOptions(_launchProfile, _launchModel, { accountId: _launchAccount });
   const contextOptions = renderContextOptions(_launchProfile, _launchModel, _launchContextMode, { accountId: _launchAccount });
   const effortOptions = renderEffortOptions(_launchProfile, _launchEffort);
-  const mcpOptions = renderMcpOptions(_launchMcpProfile);
   const accountOptions = renderAccountOptions(_launchAccount, false);
   const showEffort = profileSupportsEffort(_launchProfile);
-  const showMcp = _launchProfile !== 'claude-code';
+  const showMcp = strictToolHost(_launchProfile);
   const showAccount = _launchProfile === 'codex';
   const usesBrowser = _qtUsesBrowser !== null ? _qtUsesBrowser : !!getTemplate(selectedTemplate)?.usesBrowser;
   const qtPresetButtons = [5, 15, 30, 60, 120, 240]
@@ -1328,8 +1340,8 @@ function renderTimersView() {
     ensureModelsForProfile(_launchProfile, false, _launchAccount).then(() => { if (_panel && _frame === 'timers') renderTimersView(); });
   }
   if (showAccount) ensureCodexAccountsLoaded(() => { if (_panel && _frame === 'timers') renderTimersView(); });
-  if (showMcp && !Object.keys(getCachedMcpProfilePresets()).length) {
-    fetchMcpProfilePresets().then(() => { if (_panel && _frame === 'timers') renderTimersView(); });
+  if (showMcp && !getCachedToolCatalog()) {
+    fetchToolCatalog().then(catalog => { if (catalog && _panel && _frame === 'timers') renderTimersView(); });
   }
 
   main.innerHTML = `
@@ -1354,7 +1366,7 @@ function renderTimersView() {
             ${dropdownRow('sched-qt-model', t('schedules.form.model'), modelOptions)}
             ${dropdownRow('sched-qt-context', t('schedules.form.context'), contextOptions)}
             ${dropdownRow('sched-qt-effort', t('schedules.form.thinking'), effortOptions, { hidden: !showEffort })}
-            ${dropdownRow('sched-qt-mcp', t('schedules.form.mcp'), mcpOptions, { hidden: !showMcp })}
+            ${toolRow('sched-qt-mcp', _launchTools, { provider: _launchProfile, usesBrowser })}
             ${dropdownRow('sched-qt-account', t('schedules.form.account'), accountOptions, { hidden: !showAccount, rowId: 'sched-qt-account-field' })}
             ${formRow('sched-qt-browser', t('schedules.timers.usesBrowser'), toggleHTML('sched-qt-browser', usesBrowser), { toggle: true })}
             ${formRow('sched-qt-custom-min', t('schedules.timers.startIn'), `<span class="sched-chip-list" role="group" aria-label="${te('schedules.timers.delay')}">${qtPresetButtons}</span>
@@ -1412,8 +1424,9 @@ function renderTimersView() {
     storage.setItem('as-launch-effort', _launchEffort);
   });
   $('sched-qt-mcp')?.addEventListener('change', (e) => {
-    _launchMcpProfile = e.target.value || 'full';
-    storage.setItem('as-launch-mcp-profile', _launchMcpProfile);
+    _launchTools = readToolPicker(e.target);
+    storage.setItem('as-launch-tools', JSON.stringify(_launchTools));
+    updateToolPicker(e.target, _launchTools, { inheritLabel: toolWord('templateDefault'), usesBrowser });
   });
   $('sched-qt-account')?.addEventListener('change', (e) => {
     _launchAccount = e.target.value || 'default';
@@ -1430,13 +1443,19 @@ function renderTimersView() {
       if (contextPopup) setDropdownItems(contextPopup, renderContextOptions('codex', _launchModel, _launchContextMode, { accountId: _launchAccount }));
     });
   });
-  $('sched-qt-browser')?.addEventListener('change', (e) => { _qtUsesBrowser = e.target.checked; });
+  $('sched-qt-browser')?.addEventListener('change', (e) => {
+    _qtUsesBrowser = e.target.checked;
+    const input = $('sched-qt-mcp');
+    updateToolPicker(input, readToolPicker(input, { requested: true }), { inheritLabel: toolWord('templateDefault'), usesBrowser: _qtUsesBrowser });
+  });
   $('sched-qt-template')?.addEventListener('change', (e) => {
     const template = getTemplate(e.target.value);
     const browser = $('sched-qt-browser');
     if (browser && template) {
       browser.checked = !!template.usesBrowser;
       _qtUsesBrowser = null;
+      const input = $('sched-qt-mcp');
+      updateToolPicker(input, readToolPicker(input, { requested: true }), { inheritLabel: toolWord('templateDefault'), usesBrowser: browser.checked });
     }
   });
 }
@@ -1512,23 +1531,10 @@ function renderEffortOptions(profile, selected, { inheritLabel = null } = {}) {
   return opts;
 }
 
-function renderMcpOptions(selected) {
-  const presets = getCachedMcpProfilePresets();
-  const entries = Object.entries(presets);
-  if (!entries.length) {
-    if (!selected) return [opt('', t('schedules.launch.loading'))];
-    return [opt(selected, t('schedules.launch.loadingValue', { value: selected }), true)];
-  }
-  const known = !!selected && !!presets[selected];
-  const options = entries.map(([id, p]) => {
-    const label = p.label || id;
-    // `tools` is an estimate the server writes ("~38"): a count to show, not to count by.
-    return opt(id, p.tools != null ? t('schedules.launch.mcpTools', { label, count: p.tools }) : label, known && id === selected);
-  });
-  // A saved tool list that is not a preset ("browser,browser_twitter") stays selected, so saving
-  // the form cannot quietly replace it with another preset (the model popup does the same).
-  if (selected && !known) options.push(opt(selected, t('schedules.launch.saved', { value: selected }), true));
-  return options;
+function toolRow(id, tools, { provider, inheritLabel = toolWord('templateDefault'), usesBrowser } = {}) {
+  return formRow(id, toolWord('label'), strictToolHost(provider)
+    ? toolPickerHTML(id, tools, { labelledBy: `${id}-label`, provider, inheritLabel, usesBrowser })
+    : `<span>${esc(toolWord('focus'))}</span>`, { labelId: `${id}-label` });
 }
 
 // The choices of the Codex account popup. `allowInherit` adds a
@@ -1580,7 +1586,7 @@ function renderActiveTimersInto() {
       timer.model,
       timer.contextMode && timer.contextMode !== 'default' ? t('schedules.overrides.context', { value: timer.contextMode }) : '',
       timer.effort ? t('schedules.overrides.thinking', { value: timer.effort }) : '',
-      timer.mcpProfile ? t('schedules.overrides.mcp', { value: timer.mcpProfile }) : '',
+      timer.tools ? t('schedules.overrides.mcp', { value: timer.tools.join(', ') }) : '',
     ].filter(Boolean).join(' · ');
     return `
       <div class="sched-timer-row" data-timer-id="${esc(timer.id)}" data-timer-kind="quick">
@@ -1668,8 +1674,8 @@ function openGroupEditor(id) {
   // `_original` is the group as it was when the editor opened: a save sends only what the user
   // changed from it, so a change made elsewhere meanwhile (a sync update) is never undone.
   _groupEditorDraft = group
-    ? { name: group.name, color: group.color, mutualExclusion: !!group.mutualExclusion, profile: group.profile || null, model: group.model || null, contextMode: group.contextMode || null, effort: group.effort || null, mcpProfile: group.mcpProfile || null, codexAccountId: group.codexAccountId || null, usesBrowser: group.usesBrowser, _original: JSON.parse(JSON.stringify(group)) }
-    : { name: '', color: DEFAULT_GROUP_COLOR, mutualExclusion: false, profile: null, model: null, contextMode: null, effort: null, mcpProfile: null, codexAccountId: null, usesBrowser: undefined };
+    ? { name: group.name, color: group.color, mutualExclusion: !!group.mutualExclusion, profile: group.profile || null, model: group.model || null, contextMode: group.contextMode || null, effort: group.effort || null, tools: group.tools || null, codexAccountId: group.codexAccountId || null, usesBrowser: group.usesBrowser, _original: JSON.parse(JSON.stringify(group)) }
+    : { name: '', color: DEFAULT_GROUP_COLOR, mutualExclusion: false, profile: null, model: null, contextMode: null, effort: null, tools: null, codexAccountId: null, usesBrowser: undefined };
   ensureModelsForProfile(_groupEditorDraft.profile || 'claude-code', false, _groupEditorDraft.codexAccountId || 'default').then(() => {
     if (_panel && _groupEditorDraft) {
       collectGroupEditorDraft();
@@ -1689,7 +1695,7 @@ function collectGroupEditorDraft() {
     model: $('sched-ge-model')?.value || null,
     contextMode: $('sched-ge-context')?.value || null,
     effort: $('sched-ge-effort')?.value || null,
-    mcpProfile: $('sched-ge-mcp')?.value || null,
+    tools: readEditorTools('sched-ge-mcp', _groupEditorDraft?.tools),
     codexAccountId: $('sched-ge-account')?.value || null,
     usesBrowser: browserRaw === '' ? undefined : browserRaw === 'true',
   });
@@ -1711,14 +1717,13 @@ function renderGroupEditor(group) {
   const modelOptions = renderModelOptions(profileForModels, d.model || '', { showService: true, accountId });
   const contextOptions = renderContextOptions(profileForModels, d.model, d.contextMode, { accountId, inherit: true });
   const effortOptions = renderEffortOptions(profileForModels, d.effort || '', { inheritLabel: t('schedules.launch.noOverride') });
-  const mcpOptions = renderMcpOptions(d.mcpProfile || '');
   const accountOptions = renderAccountOptions(d.codexAccountId || '', true);
   const showEffort = profileSupportsEffort(profileForModels);
-  const showMcp = profileForModels !== 'claude-code';
+  const showMcp = strictToolHost(profileForModels);
   const showAccount = profileForModels === 'codex';
   const rerender = () => { if (_panel && _groupEditorDraft) { collectGroupEditorDraft(); renderGroupEditor(_groupEditorId ? getGroup(_groupEditorId) : null); } };
   if (showAccount) ensureCodexAccountsLoaded(rerender);
-  if (showMcp && !Object.keys(getCachedMcpProfilePresets()).length) fetchMcpProfilePresets().then(rerender);
+  if (showMcp && !getCachedToolCatalog()) fetchToolCatalog().then(catalog => { if (catalog) rerender(); });
   const browserValue = d.usesBrowser === true ? 'true' : d.usesBrowser === false ? 'false' : '';
   const ordered = orderedGroups();
   const position = group ? ordered.findIndex(g => g.id === group.id) : -1;
@@ -1746,7 +1751,7 @@ function renderGroupEditor(group) {
               ${dropdownRow('sched-ge-model', t('schedules.form.model'), modelOptions)}
               ${dropdownRow('sched-ge-context', t('schedules.form.context'), contextOptions)}
               ${dropdownRow('sched-ge-effort', t('schedules.form.thinking'), effortOptions, { hidden: !showEffort })}
-              ${dropdownRow('sched-ge-mcp', t('schedules.form.mcp'), [opt('', t('schedules.launch.noOverride'), !d.mcpProfile), ...mcpOptions], { hidden: !showMcp })}
+              ${toolRow('sched-ge-mcp', d.tools, { provider: profileForModels, inheritLabel: toolWord('noOverride'), usesBrowser: d.usesBrowser })}
               ${dropdownRow('sched-ge-account', t('schedules.form.account'), accountOptions, { hidden: !showAccount, rowId: 'sched-ge-account-field' })}
               ${dropdownRow('sched-ge-browser', t('schedules.form.browser'), [
                 opt('', t('schedules.launch.noOverride'), browserValue === ''),
@@ -1797,7 +1802,7 @@ function wireGroupEditor() {
     _groupEditorDraft.model = null;
     _groupEditorDraft.contextMode = _groupEditorDraft.profile ? 'default' : null;
     _groupEditorDraft.effort = null;
-    _groupEditorDraft.mcpProfile = null;
+    _groupEditorDraft.tools = null;
     _groupEditorDraft.codexAccountId = null;
     const rerender = () => { if (_panel && _groupEditorDraft) renderGroupEditor(_groupEditorId ? getGroup(_groupEditorId) : null); };
     ensureModelsForProfile(_groupEditorDraft.profile || 'claude-code', false, 'default').then(() => { collectGroupEditorDraft(); rerender(); });
@@ -1857,10 +1862,9 @@ function renderScheduleEditor() {
   const modelOptions = renderModelOptions(profileForModels, s.model || '', { showService: true, accountId });
   const contextOptions = renderContextOptions(profileForModels, effectiveModel, s.contextMode, { accountId, inherit: true });
   const effortOptions = renderEffortOptions(profileForModels, s.effort || '', { inheritLabel: t('schedules.launch.templateOrDefault') });
-  const mcpOptions = renderMcpOptions(s.mcpProfile || '');
   const accountOptions = renderAccountOptions(s.codexAccountId || '', true);
   const showEffort = profileSupportsEffort(profileForModels);
-  const showMcp = profileForModels !== 'claude-code';
+  const showMcp = strictToolHost(profileForModels);
   const showAccount = profileForModels === 'codex';
   if (showAccount) ensureCodexAccountsLoaded(() => { if (_panel && _scheduleEditor) { collectScheduleEditorDraft(); renderScheduleEditor(); } });
   const browserValue = s.usesBrowser === true ? 'true' : s.usesBrowser === false ? 'false' : '';
@@ -1898,8 +1902,8 @@ function renderScheduleEditor() {
       if (_panel && _scheduleEditor) { collectScheduleEditorDraft(); renderScheduleEditor(); }
     });
   }
-  if (showMcp && !Object.keys(getCachedMcpProfilePresets()).length) {
-    fetchMcpProfilePresets().then(() => { if (_panel && _scheduleEditor) { collectScheduleEditorDraft(); renderScheduleEditor(); } });
+  if (showMcp && !getCachedToolCatalog()) {
+    fetchToolCatalog().then(catalog => { if (catalog && _panel && _scheduleEditor) { collectScheduleEditorDraft(); renderScheduleEditor(); } });
   }
 
   redrawEditor(main, `
@@ -1944,7 +1948,7 @@ function renderScheduleEditor() {
               ${dropdownRow('sched-ed-model', t('schedules.form.model'), modelOptions)}
               ${dropdownRow('sched-ed-context', t('schedules.form.context'), contextOptions)}
               ${dropdownRow('sched-ed-effort', t('schedules.form.thinking'), effortOptions, { hidden: !showEffort })}
-              ${dropdownRow('sched-ed-mcp', t('schedules.form.mcp'), [opt('', t('schedules.launch.templateOrDefault'), !s.mcpProfile), ...mcpOptions], { hidden: !showMcp })}
+              ${toolRow('sched-ed-mcp', s.tools, { provider: profileForModels, usesBrowser: s.usesBrowser ?? group?.usesBrowser ?? template?.usesBrowser })}
               ${dropdownRow('sched-ed-account', t('schedules.form.account'), accountOptions, { hidden: !showAccount, rowId: 'sched-ed-account-field' })}
               ${dropdownRow('sched-ed-browser', t('schedules.form.browser'), [
                 opt('', t('schedules.launch.templateDefault'), browserValue === ''),
@@ -1975,7 +1979,7 @@ function renderScheduleEditor() {
     _scheduleEditor.model = null;
     _scheduleEditor.contextMode = null;
     _scheduleEditor.effort = null;
-    _scheduleEditor.mcpProfile = null;
+    _scheduleEditor.tools = null;
     _scheduleEditor.codexAccountId = null;
     renderScheduleEditor();
   });
@@ -1990,7 +1994,7 @@ function renderScheduleEditor() {
     _scheduleEditor.model = null;
     _scheduleEditor.contextMode = _scheduleEditor.profile ? 'default' : null;
     _scheduleEditor.effort = null;
-    _scheduleEditor.mcpProfile = null;
+    _scheduleEditor.tools = null;
     _scheduleEditor.codexAccountId = null;
     renderScheduleEditor();
   });
@@ -2032,12 +2036,18 @@ function updateCronDesc() {
 // group pushes every changed launch field onto its schedules). So an edit sends a field only when
 // the form's value differs from the saved one: a popup that cannot show a saved value yet, or a
 // save of an untouched form, never clears anything.
-const LAUNCH_FIELDS = ['profile', 'model', 'contextMode', 'effort', 'mcpProfile', 'codexAccountId', 'usesBrowser'];
+const LAUNCH_FIELDS = ['profile', 'model', 'contextMode', 'effort', 'tools', 'codexAccountId', 'usesBrowser'];
 // What a CLI's choice decides: a model, context, thinking level, tool list or account of one CLI
 // means nothing to another, so a change of CLI resets them (the editors' CLI popups do the same).
-const CLI_DEPENDENT = ['model', 'contextMode', 'effort', 'mcpProfile', 'codexAccountId'];
+const CLI_DEPENDENT = ['model', 'contextMode', 'effort', 'tools', 'codexAccountId'];
+// A missing picker is not a request to clear tools (focus hosts and catalog loading).
+function readEditorTools(id, saved) {
+  const input = $(id);
+  return input ? readToolPicker(input) : saved ?? null;
+}
+
 const blankToNull = (value) => (value === undefined || value === null || value === '' ? null : value);
-const sameValue = (a, b) => blankToNull(a) === blankToNull(b);
+const sameValue = (a, b) => stableJson(blankToNull(a)) === stableJson(blankToNull(b));
 
 function stableJson(value) {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
@@ -2080,7 +2090,7 @@ function collectScheduleEditorDraft() {
     model: $('sched-ed-model')?.value || null,
     contextMode: $('sched-ed-context')?.value || null,
     effort: $('sched-ed-effort')?.value || null,
-    mcpProfile: $('sched-ed-mcp')?.value || null,
+    tools: readEditorTools('sched-ed-mcp', _scheduleEditor?.tools),
     codexAccountId: $('sched-ed-account')?.value || null,
     usesBrowser: browserRaw === '' ? undefined : browserRaw === 'true',
     enabled: $('sched-ed-enabled')?.checked ?? _scheduleEditor.enabled,
@@ -2111,7 +2121,7 @@ async function saveScheduleFromEditor() {
     contextMode: $('sched-ed-context')?.value || null,
     // 'off' is a choice of its own (no thinking), never the same as "no override".
     effort: $('sched-ed-effort')?.value || null,
-    mcpProfile: $('sched-ed-mcp')?.value || null,
+    tools: readEditorTools('sched-ed-mcp', _scheduleEditor?.tools),
     // Read whatever the CLI: a saved account is kept while its row is hidden, never cleared by it.
     codexAccountId: $('sched-ed-account')?.value || null,
     usesBrowser: browserRaw === '' ? null : browserRaw === 'true',
@@ -2689,7 +2699,7 @@ async function saveGroupFromEditor(id) {
     model: $('sched-ge-model')?.value || null,
     contextMode: $('sched-ge-context')?.value || null,
     effort: $('sched-ge-effort')?.value || null, // 'off' stays explicit
-    mcpProfile: $('sched-ge-mcp')?.value || null,
+    tools: readEditorTools('sched-ge-mcp', _groupEditorDraft?.tools),
     codexAccountId: $('sched-ge-account')?.value || null, // read whatever the CLI: hidden is not cleared
     usesBrowser: browserRaw === '' ? null : browserRaw === 'true',
   };
@@ -2790,7 +2800,7 @@ const RESET_KEYS = ['profile', ...CLI_DEPENDENT];
 function captureMembers(groupId, launch) {
   return _schedules.filter(s => s.groupId === groupId)
     .map(s => ({ id: s.id, name: s.name || s.id, values: Object.fromEntries(RESET_KEYS.map(k => [k, blankToNull(s[k])])) }))
-    .filter(m => RESET_KEYS.some(k => m.values[k] !== null && m.values[k] !== blankToNull(launch[k])));
+    .filter(m => RESET_KEYS.some(k => m.values[k] !== null && !sameValue(m.values[k], launch[k])));
 }
 
 // server.js pushes a group field onto the group's schedules only when the group's own value
@@ -2818,11 +2828,11 @@ async function resetSchedulesForCli(groupId, launch, members) {
     const moved = !fresh || fresh.groupId !== groupId;
     const changed = moved || RESET_KEYS.some(key => {
       const now = blankToNull(fresh[key]);
-      return now !== member.values[key] && now !== target(key);
+      return !sameValue(now, member.values[key]) && !sameValue(now, target(key));
     });
     if (changed) { report.changed.push(name); continue; }
     const reset = {};
-    for (const key of RESET_KEYS) if (blankToNull(fresh[key]) !== null && blankToNull(fresh[key]) !== target(key)) reset[key] = launch[key];
+    for (const key of RESET_KEYS) if (blankToNull(fresh[key]) !== null && !sameValue(fresh[key], target(key))) reset[key] = launch[key];
     if (!Object.keys(reset).length) continue; // the save's own push already did it
     try {
       const saved = await updateSchedule(member.id, reset);
@@ -2990,21 +3000,21 @@ async function createQuickTimerFromForm(runNow) {
   }
   const effortRaw = $('sched-qt-effort')?.value || null;
   const effort = normalizeEffortForProfile(profile, effortRaw);
-  const mcpProfile = profile !== 'claude-code' ? ($('sched-qt-mcp')?.value || _launchMcpProfile || null) : null;
+  const tools = strictToolHost(profile) ? readToolPicker($('sched-qt-mcp')) : null;
   const codexAccountId = profile === 'codex' ? ($('sched-qt-account')?.value || _launchAccount || 'default') : undefined;
   const usesBrowser = _qtUsesBrowser !== null ? _qtUsesBrowser : !!template?.usesBrowser;
   try {
     if (runNow) {
       const result = await triggerQuickTimerNow(templateId, {
-        profile, model, contextMode, effort, mcpProfile, usesBrowser, codexAccountId,
+        profile, model, contextMode, effort, tools, usesBrowser, codexAccountId,
         sidepanelWindowId: getNativeLoopRouterWindowId(),
         sidepanelClaimToken: getNativeLoopRouterClaimToken(),
       });
       showToast(t('schedules.toast.runningNow', { name: result.templateName }));
     } else {
-      const result = await createQuickTimer(templateId, minutes, { profile, model, contextMode, effort, mcpProfile, usesBrowser, codexAccountId });
+      const result = await createQuickTimer(templateId, minutes, { profile, model, contextMode, effort, tools, usesBrowser, codexAccountId });
       if (!_quickTimers.some(t => t.id === result.timerId)) {
-        _quickTimers.push({ id: result.timerId, templateId, templateName: result.templateName, firesAt: result.firesAt, minutes: result.minutes, profile: result.profile, model: result.model, contextMode: result.contextMode, effort: result.effort, mcpProfile: result.mcpProfile, usesBrowser: result.usesBrowser });
+        _quickTimers.push({ id: result.timerId, templateId, templateName: result.templateName, firesAt: result.firesAt, minutes: result.minutes, profile: result.profile, model: result.model, contextMode: result.contextMode, effort: result.effort, tools: result.tools, usesBrowser: result.usesBrowser });
       }
       _selectedQtMinutes = null;
       _panel?.querySelectorAll('[data-action="qt-select"]').forEach(chip => chip.setAttribute('aria-pressed', 'false'));
@@ -3161,7 +3171,7 @@ function setupSync() {
   });
   on('sync:quick-timer:set', (data) => {
     if (data?.timerId && !_quickTimers.some(t => t.id === data.timerId)) {
-      _quickTimers.push({ id: data.timerId, templateName: data.templateName, firesAt: data.firesAt, minutes: data.minutes, profile: data.profile, model: data.model, contextMode: data.contextMode, effort: data.effort, mcpProfile: data.mcpProfile, usesBrowser: data.usesBrowser });
+      _quickTimers.push({ id: data.timerId, templateName: data.templateName, firesAt: data.firesAt, minutes: data.minutes, profile: data.profile, model: data.model, contextMode: data.contextMode, effort: data.effort, tools: data.tools, usesBrowser: data.usesBrowser });
       if (_panel) { renderRail(); renderActiveTimersInto(); }
     }
   });
@@ -3182,3 +3192,5 @@ function setupSync() {
   });
 }
 
+
+configureToolPickerTranslation(t);

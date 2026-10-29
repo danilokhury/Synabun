@@ -183,7 +183,7 @@ export function initDetachedAgentSessions() {
       display:flex; flex-direction:column; background:#121214; border:1px solid #ffffff18;
       border-radius:16px; box-shadow:0 12px 40px #0008; }
     .sp-session-header { display:flex; align-items:center; gap:6px; padding:8px; flex-shrink:0;
-      cursor:grab; touch-action:none; color:#cbd5e1; font:11px 'JetBrains Mono',monospace; }
+      cursor:move; touch-action:none; color:#cbd5e1; font:11px 'JetBrains Mono',monospace; }
     .sp-session-title { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .sp-session-actions { display:flex; gap:3px; }
     .sp-session-button { display:inline-flex; justify-content:center; align-items:center; width:25px;

@@ -164,6 +164,7 @@ function build(m, { copied = false } = {}) {
  *   opts.onManage()    opens the MCP servers; without it there is no "Manage"
  *   opts.onSettings()  opens Codex settings; without it there is no "Settings"
  *   opts.onAccount()   opens the account menu; without it there is no Account row
+ *   opts.bounds()      the area the popover stays in ({ left, top, right, bottom }: the app frame); the window without it
  * Returns { element, open(), close({ focus }), isOpen(), sync(), destroy() }.
  */
 export function mountContextMenu(actionsEl, panelEl, opts = {}) {
@@ -215,23 +216,23 @@ export function mountContextMenu(actionsEl, panelEl, opts = {}) {
   }
 
   // Below the cog, its right edge on the cog's; above it when there is more room
-  // there; always inside the viewport, scrolling inside when it is taller.
+  // there; always inside the app frame, scrolling inside when it is taller.
   function place() {
     if (!open || !pop) return;
     const r = cog.getBoundingClientRect();
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    const width = Math.max(0, Math.min(WIDTH, vw - MARGIN * 2));
+    // Inside the area the panel names (the app frame), else the window
+    const f = opts.bounds?.() || { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight, width: window.innerWidth };
+    const width = Math.max(0, Math.min(WIDTH, f.width - MARGIN * 2));
     pop.style.width = `${width}px`;
-    const below = vh - r.bottom - GAP - MARGIN;
-    const above = r.top - GAP - MARGIN;
+    const below = f.bottom - r.bottom - GAP - MARGIN;
+    const above = r.top - f.top - GAP - MARGIN;
     const up = below < 220 && above > below;
     pop.style.maxHeight = `${Math.max(120, up ? above : below)}px`;
     const height = pop.offsetHeight;
-    const left = Math.max(MARGIN, Math.min(r.right - width, vw - width - MARGIN));
+    const left = Math.max(f.left + MARGIN, Math.min(r.right - width, f.right - width - MARGIN));
     const top = up
-      ? Math.max(MARGIN, r.top - GAP - height)
-      : Math.max(MARGIN, Math.min(r.bottom + GAP, vh - MARGIN - height));
+      ? Math.max(f.top + MARGIN, r.top - GAP - height)
+      : Math.max(f.top + MARGIN, Math.min(r.bottom + GAP, f.bottom - MARGIN - height));
     pop.style.left = `${Math.round(left)}px`;
     pop.style.top = `${Math.round(top)}px`;
     // Once it has its width: only now is a cut value known.

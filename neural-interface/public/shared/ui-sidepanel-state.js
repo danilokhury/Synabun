@@ -2,34 +2,45 @@
 const MIN_SIZE = 320;
 const MARGIN = 8;
 
+// `viewport` is the area a floating panel stays in: { top, width, height } (the window below the bar), or the app
+// frame's edges { left, top, right, bottom } (app-frame.js frameRect()). MARGIN keeps it clear of those edges.
+function boundsOf(viewport) {
+  const left = Number.isFinite(viewport.left) ? viewport.left : 0;
+  const right = Number.isFinite(viewport.right) ? viewport.right : viewport.width;
+  const bottom = Number.isFinite(viewport.bottom) ? viewport.bottom : viewport.height;
+  return { left, top: viewport.top || 0, right, bottom };
+}
+
 export function clampSidepanelRect(rect, viewport) {
-  const left = MARGIN;
-  const top = Math.max(MARGIN, viewport.top + MARGIN);
-  const availableWidth = Math.max(1, viewport.width - MARGIN * 2);
-  const availableHeight = Math.max(1, viewport.height - top - MARGIN);
+  const b = boundsOf(viewport);
+  const left = b.left + MARGIN;
+  const top = Math.max(MARGIN, b.top + MARGIN);
+  const availableWidth = Math.max(1, b.right - b.left - MARGIN * 2);
+  const availableHeight = Math.max(1, b.bottom - top - MARGIN);
   const width = Math.min(availableWidth, Math.max(Math.min(MIN_SIZE, availableWidth), rect.width));
   const height = Math.min(availableHeight, Math.max(Math.min(MIN_SIZE, availableHeight), rect.height));
   return {
-    x: Math.max(left, Math.min(viewport.width - MARGIN - width, rect.x)),
-    y: Math.max(top, Math.min(viewport.height - MARGIN - height, rect.y)),
+    x: Math.max(left, Math.min(b.right - MARGIN - width, rect.x)),
+    y: Math.max(top, Math.min(b.bottom - MARGIN - height, rect.y)),
     width, height,
   };
 }
 
 export function resizeSidepanelRect(rect, edge, dx, dy, viewport) {
-  const minWidth = Math.min(MIN_SIZE, Math.max(1, viewport.width - MARGIN * 2));
-  const minHeight = Math.min(MIN_SIZE, Math.max(1, viewport.height - viewport.top - MARGIN * 2));
+  const b = boundsOf(viewport);
+  const minWidth = Math.min(MIN_SIZE, Math.max(1, b.right - b.left - MARGIN * 2));
+  const minHeight = Math.min(MIN_SIZE, Math.max(1, b.bottom - b.top - MARGIN * 2));
   let { x, y, width, height } = rect;
   if (edge.includes('w')) {
-    x = Math.max(MARGIN, Math.min(rect.x + dx, rect.x + rect.width - minWidth));
+    x = Math.max(b.left + MARGIN, Math.min(rect.x + dx, rect.x + rect.width - minWidth));
     width = rect.x + rect.width - x;
   }
-  if (edge.includes('e')) width = Math.max(minWidth, Math.min(viewport.width - MARGIN - x, rect.width + dx));
+  if (edge.includes('e')) width = Math.max(minWidth, Math.min(b.right - MARGIN - x, rect.width + dx));
   if (edge.includes('n')) {
-    y = Math.max(viewport.top + MARGIN, Math.min(rect.y + dy, rect.y + rect.height - minHeight));
+    y = Math.max(b.top + MARGIN, Math.min(rect.y + dy, rect.y + rect.height - minHeight));
     height = rect.y + rect.height - y;
   }
-  if (edge.includes('s')) height = Math.max(minHeight, Math.min(viewport.height - MARGIN - y, rect.height + dy));
+  if (edge.includes('s')) height = Math.max(minHeight, Math.min(b.bottom - MARGIN - y, rect.height + dy));
   return clampSidepanelRect({ x, y, width, height }, viewport);
 }
 

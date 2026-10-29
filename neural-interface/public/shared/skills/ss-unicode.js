@@ -42,19 +42,18 @@ export function describeCodePoint(cp) {
 /**
  * The hidden characters of a text.
  * @param {string} text
- * @param {{ identifier?: boolean, limit?: number }} [o] `identifier`: the text is a name (every invisible
- *   character counts, a joiner too); `limit`: stop after this many
+ * @param {{ identifier?: boolean, limit?: number, onHit?: (hit: object) => void }} [o] `identifier`: the text is a name (every invisible
+ *   character counts, a joiner too); `limit`: retain this many; with `onHit`, visit every hit without retaining the whole result
  * @returns {{ index: number, line: number, column: number, codePoint: number, kind: 'bidi'|'tag'|'invisible'|'control'|'joiner', label: string }[]}
  */
-export function findHiddenChars(text, { identifier = false, limit = 200 } = {}) {
+export function findHiddenChars(text, { identifier = false, limit = 200, onHit = null } = {}) {
   const s = String(text ?? '');
   const out = [];
   let line = 1; let column = 1;
   let prev = 0;
-  const cps = Array.from(s, (ch) => ch.codePointAt(0));
   let index = 0;
-  for (let i = 0; i < cps.length; i++) {
-    const cp = cps[i];
+  for (const ch of s) {
+    const cp = ch.codePointAt(0);
     let kind = null;
     if (isBidi(cp)) kind = 'bidi';
     else if (isTag(cp) || isVariationSupplement(cp)) kind = 'tag';
@@ -62,12 +61,14 @@ export function findHiddenChars(text, { identifier = false, limit = 200 } = {}) 
     else if (cp === 0xFEFF && index === 0 && !identifier) kind = null;   // a byte-order mark where one belongs
     else if (isInvisible(cp)) kind = 'invisible';
     else if (isJoiner(cp)) {
-      const next = cps[i + 1] || 0;
+      const next = s.codePointAt(index + ch.length) || 0;
       if (identifier || (isAsciiLetter(prev) && isAsciiLetter(next))) kind = 'joiner';
     }
     if (kind) {
-      out.push({ index, line, column, codePoint: cp, kind, label: describeCodePoint(cp) });
-      if (out.length >= limit) break;
+      const hit = { index, line, column, codePoint: cp, kind, label: describeCodePoint(cp) };
+      if (onHit) onHit(hit);
+      if (out.length < limit) out.push(hit);
+      if (!onHit && out.length >= limit) break;
     }
     if (cp === 10) { line++; column = 1; } else column++;
     prev = cp;

@@ -10,6 +10,7 @@
 // editing is where the keyboard starts). The preview is the shared Markdown renderer (escaped first, links limited
 // to http, https and mailto), Mermaid blocks drawn by the vendored Mermaid in strict mode.
 
+import { studioErrorText } from './sx-errors.js';
 import { createFrontmatter } from '../ss-frontmatter.js';
 import { toEditing } from '../ss-doc.js';
 import { refreshDirty } from '../ss-tabs.js';
@@ -310,7 +311,7 @@ async function showActive(ctx, ws) {
 function mountFallback(host, ctx, ws, tab, err) {
   const { t } = ctx;
   setHTML(host, html`<div class="sx-fallback">
-    <p class="sx-note sx-note--warn" role="alert">${t('skillsStudio.edit.editorFailed', { error: err?.message || '' })} <button type="button" class="sx-link" data-edit="retry-editor">${t('skillsStudio.shell.retry')}</button></p>
+    <p class="sx-note sx-note--warn" role="alert">${t('skillsStudio.edit.editorFailed', { error: studioErrorText(ctx.t, err) })} <button type="button" class="sx-link" data-edit="retry-editor">${t('skillsStudio.shell.retry')}</button></p>
     <label class="sx-sr" for="sx-fallback-text">${tab.label}</label>
     <textarea class="sx-input sx-fallback-text" id="sx-fallback-text" spellcheck="false"${tab.readOnly || !ws.subject.editable ? ' readonly' : ''}>${tab.content}</textarea>
   </div>`);
@@ -479,7 +480,7 @@ async function openDocument(ctx, ws, path) {
     if (!ctx.alive(gen)) return;
     const words = err.code === 'needs-restart' ? ctx.t('skillsStudio.edit.needsRestart')
       : err.code === 'needs-library' ? ctx.t('skillsStudio.edit.needsLibrary')
-      : ctx.t('skillsStudio.edit.openFailed', { file: path, error: err.message });
+      : ctx.t('skillsStudio.edit.openFailed', { file: path, error: studioErrorText(ctx.t, err) });
     ctx.toast(words, 'error');
     return;
   }
@@ -549,7 +550,7 @@ export async function saveDocument(ctx, ws, tab, { over = null } = {}) {
   scheduleStatus(ctx, ws);
   let res;
   try { res = await pending; } catch (err) {
-    if (ctx.alive(gen)) { ctx.toast(t('skillsStudio.toast.saveFailed', { file: tab.label, error: err.message }), 'error'); refreshWorkspaceChrome(ctx, ws); scheduleStatus(ctx, ws); }
+    if (ctx.alive(gen)) { ctx.toast(t('skillsStudio.toast.saveFailed', { file: tab.label, error: studioErrorText(ctx.t, err) }), 'error'); refreshWorkspaceChrome(ctx, ws); scheduleStatus(ctx, ws); }
     return false;
   }
   if (!ctx.alive(gen)) return res.status === 'saved';
@@ -594,7 +595,7 @@ async function resolveConflict(ctx, ws, tab, res) {
   if (answer === 'overwrite') return saveDocument(ctx, ws, tab, { over: res.current || 'absent' });
   if (answer === 'reload') {
     const gen = ctx.gen();
-    try { await reloadTab(ws, tab, ctx.api); } catch (err) { if (ctx.alive(gen)) ctx.toast(t('skillsStudio.toast.reloadFailed', { error: err.message }), 'error'); return false; }
+    try { await reloadTab(ws, tab, ctx.api); } catch (err) { if (ctx.alive(gen)) ctx.toast(t('skillsStudio.toast.reloadFailed', { error: studioErrorText(ctx.t, err) }), 'error'); return false; }
     tab.cmState = null; tab.cmLanguage = false; tab.cmLint = false;
     if (ctx.alive(gen) && editShows(ctx, ws)) ctx.render();
   }
@@ -677,7 +678,7 @@ async function newFile(ctx, ws, kind) {
   const gen = ctx.gen();
   try {
     await putFiles(ws, [{ path, content: kind === 'script' ? STARTERS.script('x').content : (kind === 'reference' && path.endsWith('.md') ? `# ${path.split('/').pop().replace(/\.md$/, '')}\n\n` : ''), executable: kind === 'script' }], ctx.api, { key: ctx.key });
-  } catch (err) { if (ctx.alive(gen)) ctx.toast(t('skillsStudio.edit.createFailed', { error: err.message }), 'error'); return; }
+  } catch (err) { if (ctx.alive(gen)) ctx.toast(t('skillsStudio.edit.createFailed', { error: studioErrorText(ctx.t, err) }), 'error'); return; }
   if (!ctx.alive(gen)) return;
   ctx.toast(t('skillsStudio.edit.created', { file: path }));
   await openDocument(ctx, ws, path);
@@ -692,7 +693,7 @@ async function uploadFile(ctx, ws, file) {
     const { base64, bytes } = await fileToBase64(file);
     const item = isTextFile(bytes) ? { path, content: new TextDecoder().decode(bytes) } : { path, contentBase64: base64 };
     await putFiles(ws, [item], ctx.api, { key: ctx.key });
-  } catch (err) { if (ctx.alive(gen)) ctx.toast(t('skillsStudio.edit.uploadFailed', { error: err.message }), 'error'); return; }
+  } catch (err) { if (ctx.alive(gen)) ctx.toast(t('skillsStudio.edit.uploadFailed', { error: studioErrorText(ctx.t, err) }), 'error'); return; }
   if (!ctx.alive(gen)) return;
   ctx.toast(t('skillsStudio.edit.uploaded', { file: path }));
   await openDocument(ctx, ws, path);
@@ -712,7 +713,7 @@ async function removeFile(ctx, ws, path) {
   });
   if (answer !== 'delete' && answer !== 'keep') return;
   const gen = ctx.gen();
-  try { await deleteFile(ws, path, ctx.api, { key: ctx.key }); } catch (err) { if (ctx.alive(gen)) ctx.toast(t('skillsStudio.edit.deleteFailed', { error: err.message }), 'error'); return; }
+  try { await deleteFile(ws, path, ctx.api, { key: ctx.key }); } catch (err) { if (ctx.alive(gen)) ctx.toast(t('skillsStudio.edit.deleteFailed', { error: studioErrorText(ctx.t, err) }), 'error'); return; }
   if (open) {
     if (answer === 'keep' && open.dirty) {
       // The text stays open, unsaved: the next save puts the file back.
@@ -731,7 +732,7 @@ async function renameDraftFile(ctx, ws, from) {
   const to = await askName(ctx, { title: t('skillsStudio.edit.renameTitle', { file: from }), label: t('skillsStudio.edit.renameLabel'), value: from, ws });
   if (!to || to === from) return;
   const gen = ctx.gen();
-  try { await renameFile(ws, from, to, ctx.api, { key: ctx.key }); } catch (err) { if (ctx.alive(gen)) ctx.toast(t('skillsStudio.edit.renameFailed', { error: err.message }), 'error'); return; }
+  try { await renameFile(ws, from, to, ctx.api, { key: ctx.key }); } catch (err) { if (ctx.alive(gen)) ctx.toast(t('skillsStudio.edit.renameFailed', { error: studioErrorText(ctx.t, err) }), 'error'); return; }
   if (!ctx.alive(gen)) return;
   ctx.toast(t('skillsStudio.edit.renamed', { from, to }));
   if (editShows(ctx, ws)) ctx.render();

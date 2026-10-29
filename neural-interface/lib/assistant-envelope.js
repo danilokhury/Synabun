@@ -130,7 +130,9 @@ export function codexControlRequestFromServerRequest(packet = {}) {
     request: {
       subtype: 'can_use_tool', provider: 'codex', kind, method, tool_name: toolName, input,
       // rpcId: the app-server's JSON-RPC id as sent (a number); request_id above is its string key.
-      brain_native: { method, params, rpcId: packet.requestId ?? null, threadId: packet.threadId || null, turnId: packet.turnId || null, toolCallId: params.toolCallId || params.itemId || null, availableDecisions: params.availableDecisions || null },
+      // Match the skin bridge's correlation precedence. Dropping callId makes
+      // automatic plan-mode replies stale even though the policy allowed them.
+      brain_native: { method, params, rpcId: packet.requestId ?? null, threadId: packet.threadId || null, turnId: packet.turnId || null, toolCallId: params.toolCallId || params.callId || params.itemId || null, availableDecisions: params.availableDecisions || null },
     },
   };
 }

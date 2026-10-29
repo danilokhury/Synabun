@@ -12,8 +12,8 @@
 // never under a plan the owner is reading.
 
 import * as kit from './settings-kit.js';
-import { chipState, installedToast, lastUndoable, readFoldersStatus, readMigrationOutcome, readMigrationPlan, readRevertOutcome } from './settings-skill-folders.js';
-import { fetchClaudeCodeSkills, fetchSkillsMigrations, fetchSkillsStatus, planSkillsBridgeMigration, revertSkillsMigration, runSkillsBridgeMigration, saveSkillsConfig } from '../api.js';
+import { chipState, installedToast, lastUndoable, readFoldersStatus, readMigrationOutcome, readMigrationPlan, readRevertOutcome, toggledAssistants } from './settings-skill-folders.js';
+import { fetchClaudeCodeSkills, fetchSkillsConfig, fetchSkillsMigrations, fetchSkillsStatus, planSkillsBridgeMigration, planSkillsBridgeMigrationConfirmed, revertSkillsMigration, runSkillsBridgeMigration, saveSkillsConfig } from '../api.js';
 import { on } from '../state.js';
 
 export { chipState, installedToast };
@@ -34,6 +34,13 @@ export function skillFoldersHTML() {
               <button type="button" class="cc-skill-target" id="stg-skill-folders-move" hidden>${kit.te('settings.redesign.skills.folders.move')}</button>
               <button type="button" class="cc-skill-target" id="stg-skill-folders-cancel" hidden>${kit.te('settings.redesign.skills.folders.cancel')}</button>
               <button type="button" class="cc-skill-target" id="stg-skill-folders-undo" hidden>${kit.te('settings.redesign.skills.folders.undo')}</button>
+            </div>
+            <div class="cc-skill-row" id="stg-skill-folders-assistants" hidden>
+              <div class="cc-skill-info">
+                <span class="cc-skill-name">${kit.te('settings.redesign.skills.assistants.title')}</span>
+                <span class="cc-skill-desc" id="stg-skill-folders-assistants-help">${kit.te('settings.redesign.skills.assistants.help')}</span>
+              </div>
+              <div class="cc-skill-targets" role="group" aria-label="${kit.te('settings.redesign.skills.assistants.title')}" id="stg-skill-folders-assistants-chips"></div>
             </div>
             <div class="cc-skill-row" id="stg-skill-folders-shared" hidden>
               <div class="cc-skill-info">
@@ -90,31 +97,103 @@ export async function wireSkillFolders(root, { toast = () => {}, onChanged = () 
   const undo = $('stg-skill-folders-undo');
   const shared = $('stg-skill-folders-shared');
   const sharedToggle = $('stg-skill-folders-shared-toggle');
+  const assistantsRow = $('stg-skill-folders-assistants');
+  const assistantChips = $('stg-skill-folders-assistants-chips');
+  const assistantsHelp = $('stg-skill-folders-assistants-help');
   let plan = null;
   let undoable = null;
   let working = false;
+  let assistants = null;
+  const ticked = new Set();   // the offered bridges the owner ticked ("Move it too")
 
-  const busy = (yes) => { working = yes; for (const b of [review, move, cancel, undo, sharedToggle]) if (b) b.disabled = yes; };
+  const busy = (yes) => { working = yes; for (const b of [review, move, cancel, undo, sharedToggle, ...assistantChips.querySelectorAll('button'), ...planList.querySelectorAll('input')]) if (b) b.disabled = yes; };
   const showPlan = (reading) => {
-    planList.replaceChildren(...reading.lines.map((line) => { const li = document.createElement('li'); li.textContent = say(line); li.dataset.tone = line.tone; return li; }));
+    planList.replaceChildren(...reading.lines.map((line) => {
+      const li = document.createElement('li');
+      li.dataset.tone = line.tone;
+      if (line.offer) {
+        // A bridge file of a shipped skill that is not proven SynaBun's: moved only when the owner ticks it here.
+        const label = document.createElement('label');
+        label.className = 'stg-skill-folders-offer';
+        const box = document.createElement('input');
+        box.type = 'checkbox'; box.checked = !!line.offer.on; box.dataset.bridge = line.bridgeId; box.dataset.digest = line.offer.digest;
+        box.setAttribute('aria-label', kit.tx('settings.redesign.skills.folders.offerTick', { name: line.params.name }));
+        const text = document.createElement('span');
+        text.textContent = say(line);
+        label.append(box, text);
+        li.append(label);
+      } else li.textContent = say(line);
+      return li;
+    }));
     planList.hidden = !reading.lines.length;
   };
   // A plan on screen: its lines, Move only when something would move, Cancel to put the block back.
   const present = (next) => {
     plan = next;
-    const reading = readMigrationPlan(plan);
+    const reading = readMigrationPlan(plan, ticked);
     showPlan(reading);
     if (reading.empty) status.textContent = say(reading.empty);
     move.hidden = reading.movable === 0;
     cancel.hidden = false;
     review.hidden = true;
   };
+  // An offer ticked or unticked: the plan is asked again with the confirmations (a confirmed plan is another plan,
+  // taken by its own digest), and shown.
+  planList.addEventListener('change', async (e) => {
+    const box = e.target;
+    if (!box?.dataset?.bridge) return;
+    if (box.checked) ticked.add(box.dataset.bridge); else ticked.delete(box.dataset.bridge);
+    busy(true);
+    try {
+      const confirm = Object.fromEntries([...planList.querySelectorAll('input[data-bridge]')].filter((b) => ticked.has(b.dataset.bridge)).map((b) => [b.dataset.bridge, b.dataset.digest]));
+      present((await planSkillsBridgeMigrationConfirmed(confirm)).plan);
+    } catch (err) { toast(kit.tx('settings.redesign.skills.folders.failed', { message: err.message }), 6000); }
+    finally { busy(false); }
+  });
+  const drawAssistants = () => {
+    if (!assistants) { assistantsRow.hidden = true; return; }
+    assistantsRow.hidden = false;
+    assistantChips.replaceChildren(...assistants.chips.map((chip) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = `cc-skill-target${chip.on ? ' on' : ''}`;
+      b.dataset.assistant = chip.id;
+      b.setAttribute('aria-pressed', chip.on ? 'true' : 'false');
+      b.textContent = kit.tx(chip.key);
+      b.title = kit.tx(chip.on ? 'settings.redesign.skills.assistants.chipOn' : 'settings.redesign.skills.assistants.chipOff', { assistant: kit.tx(chip.key) });
+      return b;
+    }));
+    const detected = assistants.detectedWords.map((w) => kit.tx(w.key)).join(', ');
+    assistantsHelp.textContent = `${kit.tx('settings.redesign.skills.assistants.help')} ${kit.tx(assistants.auto ? 'settings.redesign.skills.assistants.detected' : 'settings.redesign.skills.assistants.chosen', { detected })}`;
+    if (!assistants.auto) {
+      const reset = document.createElement('button');
+      reset.type = 'button'; reset.className = 'cc-skill-target'; reset.dataset.assistant = 'auto';
+      reset.textContent = kit.tx('settings.redesign.skills.assistants.useDetected');
+      reset.title = kit.tx('settings.redesign.skills.assistants.detected', { detected });
+      assistantChips.append(reset);
+    }
+  };
+  assistantChips.addEventListener('click', async (e) => {
+    const chip = e.target.closest?.('button[data-assistant]');
+    if (!chip || chip.disabled || !assistants) return;
+    const next = chip.dataset.assistant === 'auto' ? null : toggledAssistants(assistants.effective, chip.dataset.assistant);
+    busy(true);
+    try { await saveSkillsConfig({ assistants: next }); }
+    catch (err) { toast(kit.tx('settings.redesign.skills.folders.failed', { message: err.message }), 6000); }
+    finally { busy(false); }
+    await refresh();
+  });
   async function refresh() {
     let answer = null;
     try { answer = await fetchSkillsStatus(); } catch { answer = null; }
     const reading = readFoldersStatus(answer);
     status.textContent = say(reading.message);
-    if (!reading.available) { for (const el of [others, planList, review, move, cancel, undo, shared]) el.hidden = true; return; }
+    if (!reading.available) { for (const el of [others, planList, review, move, cancel, undo, shared, assistantsRow]) el.hidden = true; return; }
+    // The owner's assistants: the status carries them on a server with the preference; GET /config is the fuller read.
+    assistants = reading.assistants;
+    if (assistants) { try { const cfg = await fetchSkillsConfig(); if (cfg?.assistants) assistants = readFoldersStatus({ ok: true, bridges: {}, assistants: cfg.assistants }).assistants; } catch { /* the status' view */ } }
+    drawAssistants();
+    ticked.clear();
     others.hidden = !reading.others;
     others.textContent = say(reading.others);
     review.hidden = !reading.canReview;
@@ -136,11 +215,11 @@ export async function wireSkillFolders(root, { toast = () => {}, onChanged = () 
   });
   cancel.addEventListener('click', () => refresh());
   move.addEventListener('click', async () => {
-    const reading = readMigrationPlan(plan);
+    const reading = readMigrationPlan(plan, ticked);
     if (!reading.planDigest) return;
     busy(true);
     try {
-      const out = await runSkillsBridgeMigration(reading.planDigest);
+      const out = await runSkillsBridgeMigration(reading.planDigest, reading.confirm);
       toast(say(readMigrationOutcome(out)), 8000);
       onChanged();
     } catch (err) {

@@ -1,4 +1,5 @@
 // ═══════════════════════════════════════════
+// DEPRECATED: 2D memory map retained for compatibility; no supported page boots this entry point.
 // SynaBun Neural Interface — 2D Variant Entry Point
 // ═══════════════════════════════════════════
 //

@@ -6,7 +6,7 @@
 // keeps an untouched copy current:
 //
 //   claude    owned file  ~/.claude/rules/synabun.md (and each Claude account's config dir)
-//   opencode  owned file  <opencode config dir>/synabun.md + one `instructions` entry in config.json
+//   opencode  owned file  <opencode config dir>/synabun.md + one `instructions` entry in opencode.json
 //   codex     block       ~/.codex/AGENTS.md (account homes link to it, or get their own block)
 //   gemini    block       ~/.gemini/GEMINI.md
 //   cursor    none        User Rules live inside the app: copy and paste ("manual")
@@ -29,7 +29,7 @@
 // (the user opted out) or null (never asked). `created` lists the files and
 // directories install made, `links` the symlinks it made and where each
 // pointed. OpenCode's row also holds `instructionsEntry`, the exact string
-// SynaBun added to config.json. `removal` on a row is a removal that is not
+// SynaBun added to opencode.json. `removal` on a row is a removal that is not
 // over: it is saved, with the paths it is about to take, before the first
 // copy goes, and it stays when a copy was refused (damaged markers, an
 // unreadable file). The next boot finishes it (reconcile), and the record is
@@ -74,6 +74,7 @@ import { loadLegacyHashes, normalise, renderRuleset, RULESET_HOSTS } from './ren
 import { findBlocks, findLegacy, isPristine, removeBlock, removeRange, replaceRange, upsertBlock, wrap } from './managed-text.js';
 import { backupFile, findBrokenLink, readBytes, readJsonStrict, unlinkIfUnchanged, writeTextAtomic } from './fs-safe.js';
 import { addToJsonList, countJsonKey, removeFromJsonList } from './json-edit.js';
+import { mcpServersOf, mergedOpencodeConfig, opencodeConfigDir, opencodeConfigFilePath, readOpencodeConfigDocuments } from '../opencode-config.js';
 import { createWriterLock, DEFAULT_LOCK_TIMEOUT_MS, LOCK_FILE_NAME } from './lock.js';
 
 export const RULESET_STATES = Object.freeze(['not-installed', 'installed', 'newer', 'outdated', 'modified', 'conflict', 'shadowed', 'error', 'manual']);
@@ -190,7 +191,7 @@ export function createRulesetInstaller({
   // `hooks` are seams for tests, each a point where another program could act
   // (or where a test holds an operation still, inside the lock):
   // afterInspect(host, path, status) once a carrier was read and is about to be
-  // written, beforeCommit(path) right before a file (a carrier, config.json,
+  // written, beforeCommit(path) right before a file (a carrier, opencode.json,
   // the state file) is checked against what was read and replaced or deleted,
   // afterCheck(path) between that check and a delete, afterSave(revision) once
   // the state file was saved.
@@ -351,12 +352,14 @@ export function createRulesetInstaller({
 
   // ── Where things live ──────────────────────────────────────────────────────
   // Resolved the way the MCP toggle routes resolve them: Claude, Codex and
-  // Gemini under the home directory, OpenCode under XDG_CONFIG_HOME when set.
+  // Gemini under the home directory, OpenCode in its configuration folder
+  // (OPENCODE_CONFIG_DIR, else XDG_CONFIG_HOME/opencode, else ~/.config/opencode),
+  // whose opencode.json OpenCode 2 reads (lib/opencode-config.js).
   function layout() {
     // The server passes the resolver its /api/opencode/mcp toggle uses, so both always edit the same file.
     const opencodeConfig = opencodeConfigPath
       ? resolve(opencodeConfigPath())
-      : join(env?.XDG_CONFIG_HOME ? join(env.XDG_CONFIG_HOME, 'opencode') : join(home, '.config', 'opencode'), 'config.json');
+      : opencodeConfigFilePath(opencodeConfigDir({ env: env || {}, home }));
     return {
       claudeDir: join(home, '.claude'),
       codexHome: join(home, '.codex'),
@@ -427,7 +430,7 @@ export function createRulesetInstaller({
       if (host === 'claude') return !!JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'))?.mcpServers?.SynaBun;
       if (host === 'gemini') return !!JSON.parse(readFileSync(join(where.geminiDir, 'settings.json'), 'utf8'))?.mcpServers?.SynaBun;
       if (host === 'codex') return /^\[mcp_servers\.SynaBun\]/m.test(readFileSync(join(where.codexHome, 'config.toml'), 'utf8'));
-      if (host === 'opencode') return !!JSON.parse(readFileSync(where.opencodeConfig, 'utf8'))?.mcp?.SynaBun;
+      if (host === 'opencode') return !!mcpServersOf(mergedOpencodeConfig(readOpencodeConfigDocuments(where.opencodeDir))).SynaBun;
     } catch { /* no config, no registration */ }
     return false;
   }
@@ -511,7 +514,7 @@ export function createRulesetInstaller({
   /**
    * The file an `instructions` entry of `configPath` names, or null when the entry is not one plain path: a URL, or
    * a pattern with glob characters. A leading `~` is the installer's home, and a relative path starts at the
-   * directory of config.json (never at this process's working directory).
+   * directory of opencode.json (never at this process's working directory).
    */
   function entryFile(value, configPath) {
     if (typeof value !== 'string' || !value) return null;
@@ -530,8 +533,7 @@ export function createRulesetInstaller({
     if (path === resolve(owned)) return true;
     try { return realpathSync(path) === realpathSync(owned); } catch { return false; }
   }
-  function readOpencodeConfig() {
-    const path = layout().opencodeConfig;
+  function readOpencodeConfig(path = layout().opencodeConfig) {
     const entry = opencodeEntry();
     const refuse = (why) => ({ path, exists: true, hasEntry: false, cfg: null, text: null, bytes: null, error: `${path} ${why}. SynaBun will not rewrite it: fix the file, or add "${entry}" to its "instructions" list by hand.` });
     let bytes;
@@ -558,7 +560,7 @@ export function createRulesetInstaller({
     return { path, exists: true, hasEntry: (cfg.instructions || []).some((value) => entryIsOwnedFile(value, path)), cfg, text, bytes, error: null };
   }
   /**
-   * The text of config.json after `edit()`, accepted only when it parses to
+   * The text of opencode.json after `edit()`, accepted only when it parses to
    * exactly `cfg`. There is no other way to write this file: when the edit
    * cannot be made on the text, SynaBun refuses rather than write the whole
    * object out again and lose what the user's file spells its own way.
@@ -570,7 +572,7 @@ export function createRulesetInstaller({
     } catch { /* text the editor could not follow */ }
     throw new Error(`${path} could not be edited safely, so SynaBun did not write it. Change its "instructions" list by hand: the entry is "${opencodeEntry()}".`);
   }
-  /** What install writes when there is no config.json yet: remove deletes the file only while it still holds exactly this. */
+  /** What install writes when there is no opencode.json yet: remove deletes the file only while it still holds exactly this. */
   function newConfigText(value) {
     return addToJsonList('{}\n', 'instructions', value);
   }
@@ -582,7 +584,7 @@ export function createRulesetInstaller({
   }
   /**
    * The `instructions` entries that resolve to SynaBun's owned file and that SynaBun has no record of adding: the
-   * user's own lines, however they are spelled (`~/...`, relative to config.json, a symlink to the file). One listing
+   * user's own lines, however they are spelled (`~/...`, relative to opencode.json, a symlink to the file). One listing
    * of the recorded string is SynaBun's; every other is theirs. A URL or a glob pattern is never one of them.
    */
   function userEntries(row, config) {
@@ -592,13 +594,13 @@ export function createRulesetInstaller({
     return list.filter((value, index) => index !== mine && entryIsOwnedFile(value, config.path));
   }
   /**
-   * One change to config.json. `plan(config)` answers null (nothing to do) or
+   * One change to opencode.json. `plan(config)` answers null (nothing to do) or
    * {text, done?}; `text: null` deletes the file. The file is replaced only
    * while it still holds the bytes that were read: a change by another program
-   * in between is CHANGED_UNDERNEATH, and config.json is left to it.
+   * in between is CHANGED_UNDERNEATH, and opencode.json is left to it.
    */
-  function editOpencodeConfig(tally, plan) {
-    const config = readOpencodeConfig();
+  function editOpencodeConfig(tally, plan, path = layout().opencodeConfig) {
+    const config = readOpencodeConfig(path);
     if (config.error) throw new Error(config.error);
     const step = plan(config);
     if (!step) return;
@@ -611,7 +613,7 @@ export function createRulesetInstaller({
     tally.changed = true;
     if (step.done) step.done();
   }
-  /** Lists synabun.md in config.json unless it is listed already, and records the string SynaBun added. */
+  /** Lists synabun.md in opencode.json unless it is listed already, and records the string SynaBun added. */
   function addOpencodeEntry(row, tally) {
     const value = opencodeEntry();
     let listed = null;
@@ -645,7 +647,7 @@ export function createRulesetInstaller({
       const mine = ownedEntry(row, config);
       const others = theirs ? userEntries(row, config) : [];
       if (mine === null && !others.length) return null;
-      // A config.json install created goes only while its bytes are still what install wrote. Anything the user
+      // An opencode.json install created goes only while its bytes are still what install wrote. Anything the user
       // added since makes it their file: the entries are edited out and the file stays.
       if (mine !== null && row.created.includes(config.path) && config.text === newConfigText(mine)) return { text: null };
       const dropKey = row.created.includes(`${config.path}#instructions`);
@@ -659,6 +661,60 @@ export function createRulesetInstaller({
           (text, value, index) => removeFromJsonList(text, 'instructions', value, { dropEmptyKey: dropKey && index === drop.length - 1 }), config.text)),
       };
     });
+  }
+
+  // ── OpenCode 1's config.json ───────────────────────────────────────────────
+  // An older SynaBun listed synabun.md in config.json, which OpenCode 2 never reads. A copy SynaBun manages whose
+  // recorded entry is there is moved, at the next boot (reconcile) or install: listed in opencode.json, then the one
+  // string SynaBun added is taken out of config.json (the file goes when SynaBun made it and it still holds only that
+  // string). A remove takes that string out too. A line the user wrote in config.json is never touched. At a boot, a
+  // copy config.json no longer lists (the user took the line out, or the file) is an opt-out, as it was with
+  // OpenCode 1: never put back in opencode.json. An install, which the user asked for, lists it whatever config.json says.
+  function opencode1ConfigPath() {
+    return join(layout().opencodeDir, 'config.json');
+  }
+  /** The entry an older SynaBun recorded adding to config.json, or null. */
+  function opencode1Record(row) {
+    const owned = row.instructionsEntry;
+    return owned && typeof owned.value === 'string' && samePath(owned.config, opencode1ConfigPath()) ? { config: owned.config, value: owned.value } : null;
+  }
+  /**
+   * Whether config.json still lists the copy (`legacy`: opencode1Record), by any spelling: the line SynaBun added or
+   * one of the user's. A config.json SynaBun cannot read as plain JSON cannot say it does not, so it counts as listing.
+   */
+  function opencode1Listed(legacy) {
+    const config = readOpencodeConfig(legacy.config);
+    return !!config.error || config.hasEntry;
+  }
+  /** Takes the string of `legacy` (opencode1Record) out of config.json, and SynaBun's record of what it made there. */
+  function removeOpencode1Entry(row, tally, legacy) {
+    editOpencodeConfig(tally, (config) => {
+      if (!config.exists || !config.cfg) return null;
+      const list = [...(config.cfg.instructions || [])];
+      const at = list.lastIndexOf(legacy.value);
+      if (at < 0) return null;
+      if (row.created.includes(config.path) && config.text === newConfigText(legacy.value)) return { text: null };
+      const dropKey = row.created.includes(`${config.path}#instructions`);
+      list.splice(at, 1);
+      const cfg = { ...config.cfg, instructions: list };
+      if (!list.length && dropKey) delete cfg.instructions;
+      return { text: configText(config.path, cfg, () => removeFromJsonList(config.text, 'instructions', legacy.value, { dropEmptyKey: dropKey })) };
+    }, legacy.config);
+    row.created = row.created.filter((path) => !samePath(path, legacy.config) && path !== `${legacy.config}#instructions`);
+  }
+  /**
+   * A managed copy listed in config.json only: listed in opencode.json, and SynaBun's string taken out of
+   * config.json (a failure there leaves it with a warning: OpenCode 2 does not read that file). False when the row
+   * has no such record.
+   */
+  function moveOpencode1Entry(row, tally) {
+    const legacy = opencode1Record(row);
+    if (!legacy) return false;
+    addOpencodeEntry(row, tally);
+    try { removeOpencode1Entry(row, tally, legacy); } catch (error) {
+      tally.warnings.push(`${legacy.config} still lists ${legacy.value} under "instructions" (OpenCode 2 does not read that file): ${error?.message || error}`);
+    }
+    return true;
   }
 
   // ── Writing ────────────────────────────────────────────────────────────────
@@ -847,8 +903,7 @@ export function createRulesetInstaller({
     if (first.block) out.installedVersion = first.block.version;
     if (host === 'opencode') {
       const config = readOpencodeConfig();
-      const sideFiles = ['opencode.json', 'opencode.jsonc'].filter((name) => existsSync(join(primary.dir, name)));
-      if (sideFiles.length) out.notes = [`OpenCode also reads ${sideFiles.join(' and ')} in ${primary.dir}; SynaBun writes config.json, the same file its MCP toggle uses.`];
+      if (existsSync(join(primary.dir, 'opencode.jsonc'))) out.notes = [`OpenCode also reads opencode.jsonc in ${primary.dir}; SynaBun writes opencode.json, the same file its MCP toggle uses.`];
       if (config.error) return { ...out, state: 'error', error: config.error, detail: config.error };
       if (first.status !== 'missing' && !config.hasEntry) {
         unlisted = `${config.path} does not list it under "instructions", so OpenCode does not load it.`;
@@ -858,7 +913,7 @@ export function createRulesetInstaller({
           return { ...out, state: 'not-installed', installedVersion: null, detail: `${primary.path} exists, but ${unlisted}` };
         }
       }
-      // A line in config.json that SynaBun did not add points at the file: a remove keeps both unless it is forced.
+      // A line in opencode.json that SynaBun did not add points at the file: a remove keeps both unless it is forced.
       if (first.status !== 'missing' && userEntries(row, config).length) out.entry = 'user';
     }
     if (first.status === 'missing' && RANK[worst.status] < RANK.error) return { ...out, installedVersion: null };
@@ -991,7 +1046,7 @@ export function createRulesetInstaller({
           stripLegacy(host, target.legacyFile, tally);
         }
       }
-      if (host === 'opencode') addOpencodeEntry(row, tally);
+      if (host === 'opencode' && !moveOpencode1Entry(row, tally)) addOpencodeEntry(row, tally);
 
       Object.assign(row, {
         managed: true,
@@ -1055,10 +1110,10 @@ export function createRulesetInstaller({
    * first; damaged markers, a block stamped for another tool, a symlinked owned
    * file and a file that cannot be read are refused either way.
    *
-   * OpenCode: a line in config.json that points at the owned file and that
+   * OpenCode: a line in opencode.json that points at the owned file and that
    * SynaBun did not add keeps the file too (`kept`, reason `listed-in-config`):
    * nothing is ever left pointing at a file SynaBun deleted. With `force` that
-   * line goes as well, after a backup of config.json, and then the file.
+   * line goes as well, after a backup of opencode.json, and then the file.
    *
    * Symlinks at a block carrier (AGENTS.md, GEMINI.md): the block is taken out
    * of the file the link points at and the link stays, exactly as install wrote
@@ -1076,7 +1131,7 @@ export function createRulesetInstaller({
    * True while a copy that keeps a removal open is still on disk: one SynaBun
    * should have taken and could not. That is damaged markers, a file that
    * cannot be read, an untouched copy of this host's rules (behind a symlink,
-   * or held back by another refusal), and for OpenCode a config.json that
+   * or held back by another refusal), and for OpenCode an opencode.json that
    * cannot be edited while SynaBun's entry is on record. A copy the user
    * edited, a file without markers and a block stamped for another tool are
    * not: the keep rule leaves the first two to the user, and the third was
@@ -1169,6 +1224,11 @@ export function createRulesetInstaller({
         if (go && doomed.length) recordIntent(doomed.map((entry) => entry.path));
         if (go && together) {
           try { removeOpencodeEntry(row, tally, { theirs: force && doomed.length > 0 }); } catch (error) { refuse(layout().opencodeConfig, 'error', error?.message || String(error)); }
+          // The string an older SynaBun added to OpenCode 1's config.json goes too (OpenCode 2 never read it).
+          const legacy = opencode1Record(row);
+          if (legacy) {
+            try { removeOpencode1Entry(row, tally, legacy); } catch (error) { tally.warnings.push(`${legacy.config} still lists ${legacy.value} under "instructions": ${error?.message || error}`); }
+          }
         }
         if (!(together && refused.length)) {
           for (const { path, text } of go ? doomed : []) {
@@ -1253,7 +1313,7 @@ export function createRulesetInstaller({
       // (`created`, OpenCode's entry) stays on record, so a forced remove or a Replace can still clean up. The same
       // row for a refusal that leaves nothing to wait for (a block stamped for another tool, a copy that turned out
       // edited): the host is opted out, and no removal is kept open over a file that was never SynaBun's to take.
-      // `paths` are places a copy of the rules is: config.json, which a refusal can name, is not one of them.
+      // `paths` are places a copy of the rules is: opencode.json, which a refusal can name, is not one of them.
       const config = host === 'opencode' ? layout().opencodeConfig : null;
       Object.assign(row, {
         managed: false, installedVersion: null, installedSha: null, path: primary.path,
@@ -1349,7 +1409,11 @@ export function createRulesetInstaller({
         const config = host === 'opencode' ? readOpencodeConfig() : null;
         if (config?.error) { states[host] = 'error'; continue; }
         const first = isDir(primary.dir) ? inspect(host, primary, expected) : { status: 'missing' };
-        if (first.status === 'missing' || (config && !config.hasEntry)) {
+        // Listed by an older SynaBun in OpenCode 1's config.json only: moved to opencode.json, never an opt-out. A copy
+        // config.json does not list any more is not moved: the user took it out, which is the opt-out below.
+        const older = config && first.status !== 'missing' && !config.hasEntry ? opencode1Record(row) : null;
+        const moving = older !== null && opencode1Listed(older);
+        if (first.status === 'missing' || (config && !config.hasEntry && !moving)) {
           // The user deleted it: an opt-out, never a reason to put it back. (A copy SynaBun's own removal took is
           // not this case: that removal is on record and was dealt with above.)
           Object.assign(row, { managed: false, optedOutAt: stamp() });
@@ -1358,6 +1422,7 @@ export function createRulesetInstaller({
           continue;
         }
         const tally = call.tally(host);
+        if (moving) moveOpencode1Entry(row, tally);
         const known = new Set(row.paths.map((path) => realKey(path)));
         let primaryCurrent = first.status === 'current';
         for (const target of list) {

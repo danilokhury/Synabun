@@ -5,8 +5,10 @@
 // Each variant (3D / 2D) registers its identity, capabilities, and UI
 // extensions on boot. Shared UI reads the registry to decide what to render.
 
+import { resolveViewVariant } from './view-variant.js';
+
 const _registry = {
-  variant: null,            // '3d' | '2d' | future variants
+  variant: resolveViewVariant(), // 3D only; the 2D implementation is deprecated
   capabilities: new Set(),  // e.g. 'camera-hud', 'minimap', 'hulls', 'lasso', 'controls-panel'
   navbarButtons: [],        // { zone, order, html, init }  (legacy, kept for compat)
   menuItems: [],            // { menu, order, type, id, label, shortcut?, init }
@@ -23,7 +25,7 @@ const _registry = {
  * @param {{ variant: string, capabilities?: string[] }} config
  */
 export function registerVariant(config) {
-  _registry.variant = config.variant;
+  _registry.variant = resolveViewVariant(config.variant);
   _registry.capabilities = new Set(config.capabilities || []);
 }
 
@@ -72,7 +74,7 @@ export function registerKeyboardShortcut(spec) {
 
 // ── Query API ──
 
-export function getVariant() { return _registry.variant; }
+export function getVariant() { return resolveViewVariant(_registry.variant); }
 export function hasCapability(name) { return _registry.capabilities.has(name); }
 export function getNavbarButtons() { return _registry.navbarButtons; }
 export function getMenuItems() { return _registry.menuItems; }

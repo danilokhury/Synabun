@@ -1,3 +1,4 @@
+import { toolListView } from './tool-list-view.js';
 // SynaBun Neural Interface — what the Schedules window shows, without the page.
 // Which schedules a view lists and in which order, how a schedule's state reads, and the cron
 // in plain words. ui-schedules-studio.js draws it; tests import this file under Node, so it
@@ -69,7 +70,7 @@ export const SCHEDULES_VIEW_COPY = Object.freeze({
   factModel: 'Model',
   factContext: 'Context',
   factThinking: 'Thinking',
-  factMcp: 'MCP tools',
+  factMcp: 'Tools and MCP servers',
   factAccount: 'OpenAI account',
   factBrowser: 'Browser',
   valueDefault: 'Default',
@@ -416,9 +417,9 @@ export function effortWord(value) {
 
 /**
  * The launch settings a run will use and where each comes from: the schedule's own value wins,
- * then its group's, then the automation's. `labels` names CLIs (`profiles`) and MCP presets.
+ * then its group's, then the automation's. `labels` names CLIs (`profiles`) and tool groups.
  */
-export function launchFacts(schedule, { group = null, template = null, profiles = [], mcpLabels = {} } = {}) {
+export function launchFacts(schedule, { group = null, template = null, profiles = [], toolCatalog = null, translate } = {}) {
   const pick = (field) => {
     for (const [source, owner] of [['schedule', schedule], ['group', group], ['automation', template]]) {
       const value = owner?.[field];
@@ -436,10 +437,10 @@ export function launchFacts(schedule, { group = null, template = null, profiles 
   if (context.value && context.value !== 'default') facts.push({ key: 'contextMode', label: scheduleWord('factContext'), value: contextWord(context.value), source: context.source });
   const effort = pick('effort');
   if (effort.value && effort.value !== 'off') facts.push({ key: 'effort', label: scheduleWord('factThinking'), value: effortWord(effort.value), source: effort.source });
-  const mcp = pick('mcpProfile');
+  const mcp = pick('tools');
   if (mcp.value) {
-    const value = mcpLabels[mcp.value] || String(mcp.value).split(',').map(x => x.trim()).filter(Boolean).join(', ');
-    facts.push({ key: 'mcpProfile', label: scheduleWord('factMcp'), value, source: mcp.source });
+    const value = toolCatalog ? toolListView(toolCatalog, mcp.value, { translate }).summary : mcp.value.filter(id => !id.startsWith('mcp:')).join(', ') || scheduleWord('valueDefault');
+    facts.push({ key: 'tools', label: scheduleWord('factMcp'), value, source: mcp.source });
   }
   if (profileId === 'codex') {
     const account = pick('codexAccountId');

@@ -14,6 +14,8 @@ import { isGuest, hasPermission } from './ui-sync.js';
 import { openSettingsModal } from './ui-settings.js';
 import { fetchRulesStatus } from './api.js';
 import { registerContextMenuArea } from './context-menu-areas.js';
+import { frameRect } from './app-frame.js';
+import { readListItems, writeListItems, fitListLevels, indentListItem, outdentListItem, listMarkers } from './whiteboard-list.js';
 
 // ── Helpers ──
 
@@ -413,9 +415,29 @@ function flushListEdits() {
   const elId = dom.dataset.wbId;
   const el = _elements.find(e => e.id === elId);
   if (el && ul) {
-    el.items = [...ul.querySelectorAll('li')].map(li => li.innerText.trimEnd());
-    if (!el.items.length) el.items = [''];
+    const { items, levels } = _readListDom(ul);
+    if (items.length) writeListItems(el, items, levels);
+    else writeListItems(el, [''], [0]);
   }
+}
+
+/** Text and level of every <li> of a list, an edit in progress included (levels: whiteboard-list.js). */
+function _readListDom(ul) {
+  const lis = [...ul.querySelectorAll('li')];
+  return {
+    items: lis.map(li => li.innerText.trimEnd()),
+    levels: lis.map(li => Number(li.dataset.level) || 0),
+  };
+}
+
+// The list being edited as it was when editing began (the "before" of its undo entry).
+let _listEditBefore = null;
+
+/** A copy of a list element for an undo entry: its own items and levels arrays. */
+function _listSnapshot(el) {
+  const copy = { ...el, items: [...(el.items || [])] };
+  if (Array.isArray(el.levels)) copy.levels = [...el.levels];
+  return copy;
 }
 
 /** Flush in-progress text edits from contenteditable DOM back into _elements (without exiting edit mode). */
@@ -875,7 +897,8 @@ function updateElementDOM(dom, el) {
   } else if (el.type === 'list') {
     let list = dom.querySelector('ul, ol');
     if (list && !dom.classList.contains('editing')) {
-      const items = el.items && el.items.length ? el.items : [''];
+      // Plain strings without `levels` (every older board) read as level 0.
+      const { items, levels } = readListItems(el.items && el.items.length ? el.items : [''], el.levels);
       const wantTag = el.ordered ? 'OL' : 'UL';
       if (list.tagName !== wantTag) {
         // ordered flag changed — swap the container (never while editing)
@@ -884,10 +907,10 @@ function updateElementDOM(dom, el) {
         list = swapped;
         dom._wbListKey = null;
       }
-      const key = wantTag + '|' + JSON.stringify(items);
+      const key = wantTag + '|' + JSON.stringify(items) + '|' + levels.join(',');
       if (dom._wbListKey !== key) {
-        list.innerHTML = items.map(item =>
-          `<li>${item.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</li>`
+        list.innerHTML = items.map((item, i) =>
+          `<li${levels[i] ? ` data-level="${levels[i]}"` : ''}>${item.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</li>`
         ).join('');
         dom._wbListKey = key;
       }
@@ -2061,25 +2084,28 @@ function exitEditMode() {
   if (editing) editing.blur();
 }
 
-function enterListEditMode(dom, elId) {
+/**
+ * Edit a list. `point` ({ x, y }, viewport px) is where the double-click that opened it landed: the caret goes
+ * exactly there (that item, that line, that character). The items were not editable when the press came, so the
+ * browser placed no caret of its own. Without a point (a list the list tool just made) the caret goes to the end
+ * of the last item.
+ */
+function enterListEditMode(dom, elId, point = null) {
   const ul = dom.querySelector('ul, ol');
   if (!ul) return;
   dom.classList.add('editing');
+  // The undo entry of this edit starts from here: the saves made while editing (Tab, Enter, Backspace call
+  // persistDebounced, which flushes the items into the element) must not become its "before".
+  const el = _elements.find(e => e.id === elId);
+  _listEditBefore = el ? _listSnapshot(el) : null;
 
   // Make all existing items editable
   [...ul.querySelectorAll('li')].forEach(li => li.setAttribute('contenteditable', 'true'));
 
-  // Focus last item, cursor at end
+  if (point && _placeListCaretAt(dom, point.x, point.y)) return;
   const lis = [...ul.querySelectorAll('li')];
   const target = lis[lis.length - 1] || null;
-  if (target) {
-    target.focus();
-    const range = document.createRange();
-    range.selectNodeContents(target);
-    range.collapse(false);
-    window.getSelection().removeAllRanges();
-    window.getSelection().addRange(range);
-  }
+  if (target) _placeCaret(target, 'end');
 }
 
 function exitListEditMode() {
@@ -2094,16 +2120,154 @@ function exitListEditMode() {
   if (document.activeElement?.closest('.wb-list')) document.activeElement.blur();
 
   const el = _elements.find(e => e.id === elId);
+  const editBefore = _listEditBefore;
+  _listEditBefore = null;
   if (el) {
-    const before = { ...el, items: [...(el.items || [])] };
-    const rawItems = [...ul.querySelectorAll('li')].map(li => li.innerText.trimEnd());
-    el.items = rawItems.filter((t, i, arr) => t !== '' || arr.length === 1);
-    if (!el.items.length) el.items = [''];
-    pushUndo('edit', before, { ...el, items: [...el.items] });
+    const before = editBefore?.id === el.id ? editBefore : _listSnapshot(el);
+    const { items, levels } = _readListDom(ul);
+    // Empty items are dropped (the only item stays); the levels of what is left are fitted again.
+    const kept = items.map((text, i) => ({ text, level: levels[i] })).filter((it, i, arr) => it.text !== '' || arr.length === 1);
+    if (kept.length) writeListItems(el, kept.map(it => it.text), kept.map(it => it.level));
+    else writeListItems(el, [''], [0]);
+    pushUndo('edit', before, _listSnapshot(el));
     dom._wbListKey = null;   // editing mutated the <li>s directly — force a clean rewrite
     renderElements();
     persistDebounced();
   }
+}
+
+/** A collapsed range at a viewport point (the standard call, then the WebKit/Blink one), or null. */
+function _caretRangeAtPoint(x, y) {
+  if (typeof document.caretPositionFromPoint === 'function') {
+    const pos = document.caretPositionFromPoint(x, y);
+    if (pos?.offsetNode) {
+      const range = document.createRange();
+      range.setStart(pos.offsetNode, pos.offset);
+      range.collapse(true);
+      return range;
+    }
+  }
+  if (typeof document.caretRangeFromPoint === 'function') return document.caretRangeFromPoint(x, y);
+  return null;
+}
+
+/** Focus an item being edited with the caret at its start or end. */
+function _placeCaret(li, where) {
+  li.focus({ preventScroll: true });
+  const range = document.createRange();
+  range.selectNodeContents(li);
+  range.collapse(where === 'start');
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+/**
+ * Put the caret of a list being edited under a viewport point: in the item on that row, at the character under
+ * the point. A point beside the text (the padding, a bullet, past the end of a line) lands on the nearest spot
+ * of the nearest item. Returns false when the list has no item.
+ */
+function _placeListCaretAt(listDom, x, y) {
+  const lis = [...listDom.querySelectorAll('li')];
+  if (!lis.length) return false;
+  let li = lis[0], best = Infinity;
+  for (const item of lis) {
+    const r = item.getBoundingClientRect();
+    const d = y < r.top ? r.top - y : y > r.bottom ? y - r.bottom : 0;
+    if (d < best) { best = d; li = item; }
+  }
+  const r = li.getBoundingClientRect();
+  const cx = Math.min(Math.max(x, r.left + 1), r.right - 1);
+  const cy = Math.min(Math.max(y, r.top + 1), r.bottom - 1);
+  let range = _caretRangeAtPoint(cx, cy);
+  if (!range || !li.contains(range.startContainer)) {
+    range = document.createRange();
+    range.selectNodeContents(li);
+    range.collapse(x < r.left + r.width / 2);
+  }
+  li.focus({ preventScroll: true });
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+  return true;
+}
+
+/** Write levels onto <li>s (level 0 is no attribute, as the render writes it). */
+function _applyListLevels(lis, levels) {
+  lis.forEach((li, i) => {
+    const level = levels[i] || 0;
+    if (level) li.dataset.level = String(level);
+    else delete li.dataset.level;
+  });
+}
+
+/** Fit the levels of a list being edited after an item was removed or merged (whiteboard-list.js rules). */
+function _refitListDom(ul) {
+  const lis = [...ul.querySelectorAll('li')];
+  _applyListLevels(lis, fitListLevels(lis.map(li => Number(li.dataset.level) || 0), lis.length));
+}
+
+/** Tab / Shift+Tab on an item being edited: one level deeper (+1) or shallower (-1). False when it cannot move. */
+function _shiftListItemLevel(li, dir) {
+  const lis = [...li.parentElement.querySelectorAll('li')];
+  const levels = lis.map(n => Number(n.dataset.level) || 0);
+  const index = lis.indexOf(li);
+  const next = dir > 0 ? indentListItem(levels, index) : outdentListItem(levels, index);
+  if (!next) return false;
+  _applyListLevels(lis, next);
+  return true;
+}
+
+/** An item left with no text holds nothing (no stray <br>), so the empty placeholder shows. */
+function _tidyEmptyItem(li) {
+  if (li.textContent === '' && !li.querySelector('img')) li.replaceChildren();
+}
+
+/** Whether the caret (collapsed) sits at the very start of an item being edited. */
+function _caretAtItemStart(li) {
+  const sel = window.getSelection();
+  if (!sel.rangeCount || !sel.isCollapsed) return false;
+  const caret = sel.getRangeAt(0);
+  if (!li.contains(caret.startContainer)) return false;
+  const before = document.createRange();
+  before.setStart(li, 0);
+  before.setEnd(caret.startContainer, caret.startOffset);
+  return before.toString() === '' && !before.cloneContents().querySelector('br, img');
+}
+
+/** Enter: what follows the caret (the selection removed first) leaves the item, for the new one. */
+function _cutAfterCaret(li) {
+  const sel = window.getSelection();
+  if (!sel.rangeCount) return null;
+  const range = sel.getRangeAt(0);
+  if (!li.contains(range.startContainer)) return null;
+  if (!li.contains(range.endContainer)) range.collapse(true);
+  else if (!range.collapsed) range.deleteContents();
+  const tail = document.createRange();
+  tail.setStart(range.startContainer, range.startOffset);
+  tail.setEnd(li, li.childNodes.length);
+  return tail.extractContents();
+}
+
+/** Backspace at the start of an item that has text: it joins the end of the item above, the caret at the seam. */
+function _mergeIntoPrevious(li) {
+  const prev = li.previousElementSibling;
+  if (!prev) return false;
+  _tidyEmptyItem(prev);
+  const seam = prev.childNodes.length;
+  _tidyEmptyItem(li);
+  while (li.firstChild) prev.appendChild(li.firstChild);
+  const ul = li.parentElement;
+  li.remove();
+  _refitListDom(ul);
+  prev.focus({ preventScroll: true });
+  const range = document.createRange();
+  range.setStart(prev, seam);
+  range.collapse(true);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+  return true;
 }
 
 
@@ -2172,6 +2336,19 @@ function onMouseDown(e) {
   if (e.button !== 0) return;
   // Block drawing for guests without whiteboard permission (select/view still allowed)
   if (isGuest() && !hasPermission('whiteboard') && _activeTool !== 'select') return;
+
+  // A press inside the list being edited belongs to its text, as in a text editor: the browser puts the caret
+  // under the pointer (any item, any line, any character) and a drag selects. Leaving edit mode here, starting
+  // a move and preventDefault() (below, for any press on an element) is what threw the caret onto the end of
+  // the last item. A press beside the items (padding, bullets) is placed on the nearest item by hand.
+  const editingList = e.target.closest?.('.wb-list.editing');
+  if (editingList) {
+    if (!e.target.closest('li')) {
+      e.preventDefault();
+      _placeListCaretAt(editingList, e.clientX, e.clientY);
+    }
+    return;
+  }
 
   // Steal focus from terminal/other elements so Ctrl+V paste works on whiteboard
   _root.focus({ preventScroll: true });
@@ -2800,12 +2977,14 @@ function onDblClick(e) {
     return;
   }
 
-  // Double-click list → edit
+  // Double-click list → edit, the caret where the double-click landed
   const listEl = e.target.closest('.wb-list[data-wb-id]');
   if (listEl && _activeTool === 'select') {
+    // Already editing: the double-click is the text's (the browser selects the word under it).
+    if (listEl.classList.contains('editing')) return;
     const id = listEl.dataset.wbId;
     selectElement(id);
-    enterListEditMode(listEl, id);
+    enterListEditMode(listEl, id, { x: e.clientX, y: e.clientY });
     e.preventDefault();
     return;
   }
@@ -2916,35 +3095,63 @@ function onKeyDown(e) {
   const editingListLi = document.activeElement?.closest('.wb-list.editing li') || null;
   const isEditing = isEditingText || !!editingListLi;
 
-  // List Enter → insert new item
-  if (editingListLi && e.key === 'Enter') {
+  // Keys of a list item being edited (an IME composition keeps its own Enter / Tab / Backspace).
+  // Tab / Shift+Tab → one level deeper / shallower (whiteboard-list.js rules). Always taken here: Tab never
+  // leaves the list or types a tab, even when the item cannot move.
+  if (editingListLi && e.key === 'Tab' && !e.isComposing && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    if (_shiftListItemLevel(editingListLi, e.shiftKey ? -1 : 1)) persistDebounced();
+    return;
+  }
+
+  // List Enter → a new item at the same level; what follows the caret moves into it
+  if (editingListLi && e.key === 'Enter' && !e.isComposing) {
     e.preventDefault();
     e.stopImmediatePropagation();
     const newLi = document.createElement('li');
     newLi.setAttribute('contenteditable', 'true');
+    if (editingListLi.dataset.level) newLi.dataset.level = editingListLi.dataset.level;
+    const tail = _cutAfterCaret(editingListLi);
+    if (tail) newLi.appendChild(tail);
+    _tidyEmptyItem(editingListLi);
+    _tidyEmptyItem(newLi);
     editingListLi.after(newLi);
-    newLi.focus();
+    _placeCaret(newLi, 'start');
+    persistDebounced();
     return;
   }
 
-  // List Backspace on empty item → remove item (keep at least 1)
-  if (editingListLi && e.key === 'Backspace' && editingListLi.textContent === '') {
+  // List Backspace at the start of an item: an indented item goes one level up first; then an empty item is
+  // removed (keep at least 1) and one with text joins the item above.
+  if (editingListLi && e.key === 'Backspace' && !e.isComposing
+    && (editingListLi.textContent === '' || _caretAtItemStart(editingListLi))) {
     const ul = editingListLi.parentElement;
-    if (ul && ul.children.length > 1) {
+    const plain = !e.ctrlKey && !e.metaKey && !e.altKey;
+    if (plain && (Number(editingListLi.dataset.level) || 0) > 0) {
       e.preventDefault();
       e.stopImmediatePropagation();
-      const prev = editingListLi.previousElementSibling;
-      const next = editingListLi.nextElementSibling;
-      editingListLi.remove();
-      const focusTarget = prev || next;
-      if (focusTarget) {
-        focusTarget.focus();
-        const range = document.createRange();
-        range.selectNodeContents(focusTarget);
-        range.collapse(false);
-        window.getSelection().removeAllRanges();
-        window.getSelection().addRange(range);
+      if (_shiftListItemLevel(editingListLi, -1)) persistDebounced();
+      return;
+    }
+    if (editingListLi.textContent === '') {
+      if (ul && ul.children.length > 1) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        const prev = editingListLi.previousElementSibling;
+        const next = editingListLi.nextElementSibling;
+        editingListLi.remove();
+        _refitListDom(ul);
+        const focusTarget = prev || next;
+        if (focusTarget) _placeCaret(focusTarget, 'end');
+        persistDebounced();
       }
+      return;
+    }
+    if (plain && editingListLi.previousElementSibling) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (_mergeIntoPrevious(editingListLi)) persistDebounced();
     }
     return;
   }
@@ -3656,27 +3863,31 @@ function _cssPx(name) {
 }
 
 /** Usable whiteboard viewport in CSS px relative to #wb-root's top-left: the
- *  root minus the left tool rail, the navbar and the docked right-side agent
- *  panel (its reserved width is published as --right-panel-width by
- *  ui-sidepanel-layout.js; 0 when hidden or floating). #wb-root already ends
- *  above a docked terminal (--terminal-height). Sent to the server so MCP
- *  coordinate math and screenshots describe what the user can actually see. */
+ *  part of the root inside the app frame (below the navbar, right of the
+ *  explorers, the gutter around it: app-frame.js), minus the left tool rail
+ *  and the docked right-side agent panel (its reserved width is published as
+ *  --right-panel-width by ui-sidepanel-layout.js; 0 when hidden or floating).
+ *  #wb-root already ends above a docked terminal (--terminal-height). Sent to
+ *  the server so MCP coordinate math and screenshots describe what the user
+ *  can actually see. */
 function _computeViewport() {
   const rect = _root.getBoundingClientRect();
-  const titleBar = document.getElementById('title-bar');
   const toolbar = document.getElementById('wb-toolbar');
-  const navH = titleBar ? titleBar.getBoundingClientRect().height : _cssPx('--navbar-height');
-  const tbW = toolbar ? Math.max(0, toolbar.getBoundingClientRect().right - rect.left + 12) : 60;
   const rightW = Math.max(0, _cssPx('--right-panel-width') || _cssPx('--claude-panel-width'));
+  const f = frameRect();
+  const top = Math.max(rect.top, f.top);
+  const left = Math.max(rect.left, f.left, toolbar ? toolbar.getBoundingClientRect().right + 12 : rect.left + 60);
+  const right = Math.min(rect.right, f.right, window.innerWidth - rightW);
+  const bottom = Math.min(rect.bottom, f.bottom);
   return {
     type: 'viewport',
     clientId: _clientId,
     focusActive: isWhiteboardActive(),
     visible: document.visibilityState === 'visible',
-    width: Math.max(0, Math.round(rect.width - tbW - rightW)),
-    height: Math.max(0, Math.round(rect.height - navH)),
-    xOffset: Math.round(tbW),
-    yOffset: Math.round(navH),
+    width: Math.max(0, Math.round(right - left)),
+    height: Math.max(0, Math.round(bottom - top)),
+    xOffset: Math.round(left - rect.left),
+    yOffset: Math.round(top - rect.top),
     rootWidth: Math.round(rect.width),
     rootHeight: Math.round(rect.height),
     rightPanelWidth: Math.round(rightW),
@@ -3733,6 +3944,7 @@ function _handleExternalCommand(msg) {
       const before = { ...el, points: el.points ? el.points.map(p => [...p]) : undefined };
       for (const [key, value] of Object.entries(msg.updates || {})) {
         if (key === 'id' || key === 'type') continue;
+        if (key === 'levels' && value == null) { delete el.levels; continue; }   // the list went flat
         el[key] = value;
       }
       pushUndo('edit', before, { ...el, points: el.points ? el.points.map(p => [...p]) : undefined });
@@ -3794,6 +4006,7 @@ function _handleExternalCommand(msg) {
           befores.push(copyEl(el));
           for (const [key, value] of Object.entries(op.updates || {})) {
             if (key === 'id' || key === 'type') continue;
+            if (key === 'levels' && value == null) { delete el.levels; continue; }   // the list went flat
             el[key] = value;
           }
           afters.push(copyEl(el));
@@ -4018,20 +4231,22 @@ async function _captureScreenshot(requestId, { crop } = {}) {
             lineTop += lineH;
           }
         } else if (el.type === 'list') {
-          // .wb-list: same box, line-height 1.5, <ul>/<ol> padding-left 1.4em
+          // .wb-list: same box, line-height 1.5, <ul>/<ol> padding-left 1.4em, plus 1.4em per nesting level;
+          // each level's bullet / numbering as styles.css draws it (whiteboard-list.js listMarkers)
           const fs = el.fontSize || 18;
           ctx.font = `400 ${fs}px ${mono}`;
           ctx.fillStyle = el.color || 'rgba(255,255,255,0.85)';
           ctx.textBaseline = 'alphabetic';
           const lineH = fs * 1.5;
           const baseOff = _lineBaseline(ctx, fs, lineH);
-          const items = el.items && el.items.length ? el.items : [''];
-          const contentLeft = el.x + 15 + 1.4 * fs;
+          const { items, levels } = readListItems(el.items && el.items.length ? el.items : [''], el.levels);
+          const markers = listMarkers(levels, !!el.ordered);
           let lineTop = el.y + 11;
           items.forEach((item, i) => {
             const baseline = lineTop + baseOff;
+            const contentLeft = el.x + 15 + 1.4 * fs * (1 + levels[i]);
             ctx.textAlign = 'right';
-            ctx.fillText(el.ordered ? `${i + 1}.` : '•', contentLeft - 0.6 * fs, baseline);
+            ctx.fillText(markers[i], contentLeft - 0.6 * fs, baseline);
             ctx.textAlign = 'left';
             if (item) ctx.fillText(item, contentLeft, baseline);
             lineTop += lineH;

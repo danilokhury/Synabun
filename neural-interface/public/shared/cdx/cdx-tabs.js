@@ -1,3 +1,4 @@
+import { cxpText, cxpSessionLabel } from './cdx-copy.js';
 import { mountCodexSettings } from './cdx-settings.js';
 import { t } from '../i18n.js';
 import { getCliState, isCliInstalling } from '../cli-status.js';
@@ -31,7 +32,7 @@ import {
 } from '../agent-runtime-options.js';
 import { CodexModelCatalog, codexModelAccountKey, codexContextAvailability } from './cdx-model-catalog.js';
 import { nativeLoopWindowId } from '../ui-native-window-id.js';
-import { skillHintEntries, skillsForPrompt } from './cdx-skill-hints.js';
+import { skillHintEntries, skillsForPrompt, skillsListRequest } from './cdx-skill-hints.js';
 import { syncSidepanelLayout, focusSidepanel, isHostedSessionFocused } from '../ui-sidepanel-windows.js';
 import { notify, NOTIF_TYPE } from '../ui-notifications.js';
 import { createStickyScrollController } from '../ui-scroll-follow.js';
@@ -299,7 +300,6 @@ function buildWsCallbacks(tab, options = {}) {
           userVerification: true,
           windowId: windowId,
           accountId: _accountId || 'default',
-          mcpProfile: tab.mcpProfile || null,
           ...codexRuntimeSelection(tab),
         });
       } else {
@@ -311,7 +311,6 @@ function buildWsCallbacks(tab, options = {}) {
           threadId: _threadId || null,
           cwd: _project || null,
           accountId: _accountId || 'default',
-          mcpProfile: tab.mcpProfile || null,
           ...codexRuntimeSelection(tab),
         });
       }
@@ -370,7 +369,6 @@ function buildWsCallbacks(tab, options = {}) {
           _accountId = msg.accountId;
           if (_boundTab) _boundTab.accountId = _accountId;
         }
-        if (msg.mcpProfile && _boundTab) _boundTab.mcpProfile = msg.mcpProfile;
         // A reattached app-server can still have a different process-active
         // thread. Preserve the tab's displayed thread instead of adopting it.
         _threadId = _threadId || msg.threadId || null;
@@ -396,7 +394,6 @@ function buildWsCallbacks(tab, options = {}) {
           threadId: _threadId || null,
           cwd: _project || null,
           accountId: _accountId || 'default',
-          mcpProfile: tab.mcpProfile || null,
           ...codexRuntimeSelection(tab),
         });
       } else {
@@ -409,7 +406,6 @@ function buildWsCallbacks(tab, options = {}) {
           threadId: _threadId || null,
           cwd: _project || null,
           accountId: _accountId || 'default',
-          mcpProfile: tab.mcpProfile || null,
           ...codexRuntimeSelection(tab),
         });
       }
@@ -427,10 +423,6 @@ function buildWsCallbacks(tab, options = {}) {
       restoreMcpAppCards(_messagesEl, { tab: _boundTab, items: _items, request: requestSocketPayloadForTab, draft: setMcpAppDraft });
       if (_boundTab) _boundTab.bootstrapped = true;
       ensureCodexTerminalAuth(tab);
-      if (msg.mcpProfile && _boundTab) {
-        _boundTab.mcpProfile = msg.mcpProfile;
-        if (activeTab() === _boundTab) _onActiveTabChanged?.(_boundTab);
-      }
       if (Object.prototype.hasOwnProperty.call(msg, 'threadId')) {
         _threadId = msg.threadId || null;
         if (_boundTab) _boundTab.threadId = _threadId;
@@ -695,11 +687,6 @@ function buildWsCallbacks(tab, options = {}) {
         }
         renderStatusChrome();
       }
-      if (msg.type === 'mcp_profile_changed' && msg.profile) {
-        if (_boundTab) _boundTab.mcpProfile = msg.profile;
-        if (activeTab() === _boundTab) _onActiveTabChanged?.(_boundTab);
-        saveTabs();
-      }
       if (msg.type === 'mcp_approval_updated' && msg.name) {
         const server = _mcpServers.get(msg.name);
         if (server) {
@@ -849,6 +836,9 @@ let _interruptRetried = false;
 let _prevInputTokens = 0;
 let _skillsCache = null;
 let _skillsPromise = null;
+// A skills:changed arrived since the list was last read: the next skills_list asks the app-server to reload its skills
+// (cdx-skill-hints.js skillsListRequest).
+let _skillsChanged = false;
 let _blockingServerRequests = new Map();
 let _bufferedSocketMessages = [];
 
@@ -1862,14 +1852,19 @@ async function restoreCanonicalPlan(tab, thread) {
 }
 
 // ── Formatting & helpers (lines 1148-1421) ──
+function codexStatusText(status) {
+  const known = {"pending": "pending", "completed": "completed", "complete": "complete", "inProgress": "in progress", "failed": "failed", "declined": "declined"};
+  return Object.hasOwn(known, status) ? cxpText(`status_${status}`, known[status]) : status;
+}
+
 export function formatStatus(status) {
-  if (!status) return 'pending';
-  if (typeof status === 'string') return status;
+  if (!status) return codexStatusText('pending');
+  if (typeof status === 'string') return codexStatusText(status);
   if (typeof status === 'object') {
     const [key, val] = Object.entries(status)[0] || [];
-    if (!key) return 'pending';
-    if (val && typeof val === 'object' && val.message) return `${key}: ${val.message}`;
-    return key;
+    if (!key) return codexStatusText('pending');
+    if (val && typeof val === 'object' && val.message) return `${codexStatusText(key)}: ${val.message}`;
+    return codexStatusText(key);
   }
   return String(status);
 }
@@ -2458,10 +2453,10 @@ export function setSessionLabel(label, { persist = true } = {}) {
   }
   if (isActiveTab(_boundTab)) {
     const labelEl = panelEl('#cxp-session-label');
-    if (labelEl) labelEl.replaceChildren(document.createTextNode(_sessionLabel));
+    if (labelEl) labelEl.replaceChildren(document.createTextNode(cxpSessionLabel(_sessionLabel)));
     // The whole name, for when the header shows only part of it.
     const sessionBtn = panelEl('#cxp-session-btn');
-    if (sessionBtn) sessionBtn.title = _sessionLabel;
+    if (sessionBtn) sessionBtn.title = cxpSessionLabel(_sessionLabel);
     syncLegacyState();
   }
   updateTrayPillLabel();
@@ -2509,6 +2504,11 @@ function scheduleCodexTitleReassert(tab) {
 
 function applyCodexProviderTitle(title) {
   const tab = _boundTab;
+  // Dispatch metadata owns the panel label; reading history must never rename the provider thread.
+  if (tab?.automationRunId) {
+    setSessionLabel(tab.automationTitle || tab.sessionLabel);
+    return;
+  }
   const incoming = normalizeSessionLabel(title || '');
   const desiredTitle = normalizeSessionLabel(tab?.pendingSessionLabel || tab?.sessionLabel || '');
   const authoritative = tab
@@ -2789,7 +2789,6 @@ export function createTab(saved = {}, { autoSwitch = true } = {}) {
   const inheritedAccountId = saved.accountId ?? activeTab()?.accountId ?? 'default';
   const inheritedEffort = saved.effort ?? activeTab()?.effort ?? (storage.getItem(STOR.effort) || 'off');
   const inheritedAutoAccept = codexNewTabAutoAccept(saved, activeTab(), storedAutoAccept());
-  const inheritedMcpProfile = saved.mcpProfile ?? null;
   const automationRunId = saved.automationRunId || null;
   const inheritedPlanMode = automationRunId ? false : (saved.planMode ?? activeTab()?.planMode ?? false);
   const hasExplicitTitle = !!title && !['new session', 'saved session', 'untitled session', 'codex'].includes(title.toLowerCase());
@@ -2817,7 +2816,6 @@ export function createTab(saved = {}, { autoSwitch = true } = {}) {
     extendedContextVerificationArmed: false,
     effort: inheritedEffort,
     autoAccept: inheritedAutoAccept,
-    mcpProfile: inheritedMcpProfile,
     planMode: inheritedPlanMode,
     sessionListRequest: null,
     threadStartRequest: null,
@@ -2899,6 +2897,7 @@ export function createTab(saved = {}, { autoSwitch = true } = {}) {
     isolationRejections: {},
     ownedThreadIds: new Set(),
     automationRunId,
+    automationTitle: automationRunId ? (saved.automationTitle || title || '') : '',
     automationActive: !!saved.automationActive,
     automationAwaits: false, // the run's turn ended asking the user (runAwaitsAnswer, set by its attach): the pill needs you
     automationOwnerId: saved.automationOwnerId || null,
@@ -3040,7 +3039,6 @@ export function saveTabs() {
           contextMode: normalizeCodexContextMode(tab.contextMode),
           effort: tab.effort || 'off',
           autoAccept: !!tab.autoAccept,
-          mcpProfile: tab.mcpProfile || null,
           planMode: !!tab.planMode,
           planFilePath: tab.planFilePath || '',
           planContent: tab.planContent || '',
@@ -3063,6 +3061,7 @@ export function saveTabs() {
           postCompactionPending: tab.postCompactionPromptSource === 'manual' && !!tab.postCompactionPending,
           postCompactionPromptSource: tab.postCompactionPromptSource === 'manual' ? 'manual' : '',
           automationRunId: tab.automationRunId || null,
+          automationTitle: tab.automationTitle || '',
           automationActive: !!tab.automationActive,
           automationOwnerId: tab.automationOwnerId || null,
           releasedRunId: tab.releasedRunId || null,
@@ -3521,7 +3520,7 @@ export function setThread(thread) {
   _freshThread = false;
   // History and a new thread carry the provider's name or, without one, the
   // first prompt. A name the user gave stays, and is sent to the provider again.
-  if (_boundTab?.titleByUser && hasCustomSessionLabel(_boundTab)) {
+  if (_boundTab?.automationRunId || (_boundTab?.titleByUser && hasCustomSessionLabel(_boundTab))) {
     applyCodexProviderTitle(getThreadLabel(thread, _sessionLabel || 'New session'));
   } else {
     setSessionLabel(getThreadLabel(thread, 'New session'));
@@ -5973,7 +5972,7 @@ export function syncToolbarState() {
     effortBtn.title = `Reasoning effort: ${selected?.label || effort}`;
     effortBtn.classList.toggle('active', effort !== 'off');
     const label = effortBtn.querySelector('.cxp-btn-label');
-    if (label) label.textContent = effort === 'off' ? 'Effort' : (selected?.label || effort);
+    if (label) label.textContent = effort === 'off' ? cxpText('effortLabel', 'Effort') : cxpText(`effort_${effort}`, selected?.label || effort);
     const dots = effortBtn.querySelectorAll('.cxp-effort-dots i');
     const litCount = Math.max(0, options.findIndex((option) => option.id === effort));
     dots.forEach((d, i) => d.classList.toggle('lit', i < litCount));
@@ -6004,7 +6003,7 @@ export function syncToolbarState() {
     contextBtn.disabled = !!(tab?.running || tab?.startingThread || tab?.compacting)
       || (mode !== 'extended' && !supportsExtended);
     const label = contextBtn.querySelector('.cxp-btn-label');
-    if (label) label.textContent = mode === 'extended' ? 'Extended' : 'Default';
+    if (label) label.textContent = mode === 'extended' ? cxpText('extended', 'Extended') : cxpText('default', 'Default');
     if (availability.reason) {
       contextBtn.title = availability.reason;
     } else if (mode !== 'extended') {
@@ -7220,8 +7219,14 @@ export function renderImageStrip() {
 // ── Whiteboard "Send to Panel" — receive image via event bus ──
 // Any window or surface changed a Codex account (signed in or out, a key, its mode, renamed, added,
 // removed): the menu re-reads the list, and the tabs on that account re-check sign-in.
-// A skill was installed, removed or changed: the skill hints are read again on the next "/".
-appOn('sync:skills:changed', () => { _skillsCache = null; _skillsPromise = null; });
+// A skill was installed, removed or changed (Skills Studio, Settings, an agent): the app-server is asked to reload its
+// skills at once (it does not watch the folders itself), so the hints and the thread's skills are current before the
+// next "/" is typed.
+appOn('sync:skills:changed', () => {
+  _skillsCache = null; _skillsPromise = null; _skillsChanged = true;
+  if (!activeTab()) return;
+  _skillsPromise = loadSlashCommands().catch(() => {}).finally(() => { _skillsPromise = null; });
+});
 
 appOn('sync:codex:accounts-changed', (msg = {}) => {
   refreshCodexAccounts().catch(() => {});
@@ -7499,7 +7504,9 @@ export async function loadSlashCommands() {
     if (!tab) return commands;
     const capabilities = await getCodexCapabilities(tab);
     commands = codexCommandHints(capabilities);
-    const data = await requestSocketPayloadForTab(tab, 'skills_list', { cwds: tab.project ? [tab.project] : [] });
+    const reload = _skillsChanged;
+    const data = await requestSocketPayloadForTab(tab, 'skills_list', skillsListRequest(tab, reload));
+    if (reload) _skillsChanged = false;
     const seen = new Set(BUILTIN_SLASH_COMMANDS.map((entry) => entry.cmd));
     // Each native skill keeps its SKILL.md path: picking it sends Codex's own skill input (cdx-skill-hints.js).
     const skillCommands = skillHintEntries(flattenNativeCatalog(data, 'skills'), seen);

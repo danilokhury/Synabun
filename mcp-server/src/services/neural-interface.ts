@@ -164,11 +164,18 @@ async function requestOnce(
     // orchestrator apart from a worker run (workers must never dispatch).
     const role = callerRole();
     if (role) headers['X-Synabun-Role'] = role;
+    // A brain whose pin no session resolves (the Codex brain's MCP child, codex-sp-<uuid>) is known to
+    // /api/assistant/* by its launch credential: the role header alone names nobody there. Sent with the
+    // assistant role on those routes only; a worker has no role and no credential (its environment is stripped).
+    if (role === 'assistant' && path.startsWith('/api/assistant/')) {
+      const credential = callerBrainCredential();
+      if (credential) headers['X-Synabun-Brain-Token'] = credential;
+    }
     headers['X-Synabun-Request-Id'] = requestId;
     headers['X-Synabun-Deadline'] = String(deadline);
     // Lets the server refuse advisory payloads and auto-heal for a batch step on its own authority.
     if (batchContext.getStore()) headers['X-Synabun-Batch'] = '1';
-    // One request's own headers (whatsappSendFile's brain credential): never sent on any other request.
+    // One request's own headers (whatsappSendFile's brain credential, the skills requests'): sent on that request only.
     for (const [name, value] of Object.entries(extraHeaders)) if (value) headers[name] = value;
     const opts: RequestInit = {
       method,
@@ -279,37 +286,74 @@ async function request(
 }
 
 /**
- * Best-effort reconciliation for an MCP process that changed its own tool
- * profile. Only sidepanel/automation children carry an explicit terminal id;
- * standalone CLI processes stay process-local without contacting Neural
- * Interface. The server derives the owning runtime from X-Synabun-Terminal.
+ * Best-effort reconciliation for an MCP runtime that changed its own tools
+ * (tool_groups). Only runtimes SynaBun launched carry a terminal pin (the
+ * stdio child's SYNABUN_TERMINAL_SESSION, an HTTP session's X-Synabun-Terminal);
+ * any other runtime stays local without contacting the Neural Interface, which
+ * derives the owning runtime from that pin and never from the body.
  */
-export type RuntimeMcpProfileReport = {
+export type RuntimeToolsReport = {
   reported: boolean;
   hostRefresh: 'scheduled' | 'notification' | 'not-needed' | 'unavailable';
-  runtimeKind?: 'opencode' | 'codex' | 'loop';
+  runtimeKind?: 'opencode' | 'codex' | 'loop' | 'channel';
   correlationId?: string;
+  /** The route that took it: runtime-profile is a Neural Interface from before tool lists. */
+  route?: 'runtime-tools' | 'runtime-profile';
   error?: string;
 };
 
-export async function reportRuntimeMcpProfile(
-  profile: string,
-  options: { catalogMode?: 'profiled' | 'deferred' } = {}
-): Promise<RuntimeMcpProfileReport> {
-  if (!String(process.env.SYNABUN_TERMINAL_SESSION || '').trim()) {
+const RUNTIME_REPORT_TIMEOUT = 2_000;
+
+/** One report: its status and its JSON body, or null for a body that is not JSON (a route the server does not have). */
+async function postRuntimeReport(path: string, body: Record<string, unknown>): Promise<{ status: number; json: NiResponse | null; error?: string }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), RUNTIME_REPORT_TIMEOUT);
+  try {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json', 'X-Synabun-Terminal': terminalIdFor(getIdentity()) };
+    const role = callerRole();
+    if (role) headers['X-Synabun-Role'] = role;
+    const res = await fetch(`${BASE_URL}${path}`, { method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal });
+    const text = await res.text();
+    let json: NiResponse | null = null;
+    try {
+      const parsed = JSON.parse(text);
+      json = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as NiResponse : null;
+    } catch { /* not JSON */ }
+    return { status: res.status, json };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { status: 0, json: null, error: controller.signal.aborted ? `Runtime tools report timed out after ${RUNTIME_REPORT_TIMEOUT}ms` : `Neural Interface unreachable: ${msg}` };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function reportRuntimeTools(
+  groups: readonly string[],
+  options: { mode: 'strict' | 'focus'; legacyProfile: string; refresh?: 'in-band' },
+): Promise<RuntimeToolsReport> {
+  if (!effectivePins(getIdentity()).terminalSessionId) {
     return { reported: false, hostRefresh: 'notification' };
   }
-  const result = await request('POST', '/api/mcp/runtime-profile', {
-    profile,
-    catalogMode: options.catalogMode || 'profiled',
-  }, 2_000);
-  if (result.ok) {
+  let route: 'runtime-tools' | 'runtime-profile' = 'runtime-tools';
+  let answer = await postRuntimeReport('/api/mcp/runtime-tools', { tools: [...groups], mode: options.mode, ...(options.refresh ? { refresh: options.refresh } : {}) });
+  // A Neural Interface from before tool lists has no such route (its 404 is not JSON); its own route takes the
+  // old shape. Its runtime-profile 404 for a runtime that is gone is JSON, so it is never retried.
+  if (answer.status === 404 && !answer.json) {
+    route = 'runtime-profile';
+    answer = await postRuntimeReport('/api/mcp/runtime-profile', {
+      profile: options.legacyProfile,
+      catalogMode: options.mode === 'focus' ? 'deferred' : 'profiled',
+    });
+  }
+  const result = answer.json;
+  if (result?.ok && answer.status >= 200 && answer.status < 300) {
     const hostRefresh = result.hostRefresh === 'scheduled'
       || result.hostRefresh === 'notification'
       || result.hostRefresh === 'not-needed'
       ? result.hostRefresh
       : 'unavailable';
-    const runtimeKind = result.runtimeKind === 'opencode' || result.runtimeKind === 'codex' || result.runtimeKind === 'loop'
+    const runtimeKind = result.runtimeKind === 'opencode' || result.runtimeKind === 'codex' || result.runtimeKind === 'loop' || result.runtimeKind === 'channel'
       ? result.runtimeKind
       : undefined;
     return {
@@ -317,12 +361,14 @@ export async function reportRuntimeMcpProfile(
       hostRefresh,
       runtimeKind,
       correlationId: typeof result.correlationId === 'string' ? result.correlationId : undefined,
+      route,
     };
   }
   return {
     reported: false,
     hostRefresh: 'unavailable',
-    error: typeof result.error === 'string' ? result.error : 'Runtime profile report failed',
+    route,
+    error: typeof result?.error === 'string' ? result.error : (answer.error || `Runtime tools report failed (HTTP ${answer.status})`),
   };
 }
 
@@ -1370,7 +1416,7 @@ export type AssistantDispatchBody = {
   assistantSessionId: string;
   model?: string;
   effort?: string;
-  mcpProfile?: string;
+  tools?: string[];
   routeId?: string;
   taskClass?: string;
   confidence?: number;

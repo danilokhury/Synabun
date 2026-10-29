@@ -222,6 +222,24 @@
       "lines": 12,
       "firstLine": "## Memory: SynaBun MCP",
       "host": "opencode"
+    },
+    {
+      "sha": "2206c97cf003",
+      "lines": 28,
+      "firstLine": "## SynaBun",
+      "host": "claude"
+    },
+    {
+      "sha": "939571cf2095",
+      "lines": 26,
+      "firstLine": "## SynaBun",
+      "host": "codex"
+    },
+    {
+      "sha": "49865561dc6e",
+      "lines": 27,
+      "firstLine": "## SynaBun",
+      "host": "opencode"
     }
   ]
 }

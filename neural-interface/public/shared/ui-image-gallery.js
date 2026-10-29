@@ -8,6 +8,7 @@ import { emit, on } from './state.js';
 import { fetchImages, toggleImageFavorite, deleteImage } from './api.js';
 import { addImageToWhiteboard } from './ui-whiteboard.js';
 import { escapeHtml } from './utils.js';
+import { centeredInFrame } from './app-frame.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -425,8 +426,10 @@ function openPanel() {
   _panel.innerHTML = buildPanelHTML();
   document.body.appendChild(_panel);
 
-  _panel.style.left = Math.max(20, (window.innerWidth - 780) / 2) + 'px';
-  _panel.style.top = Math.max(48, (window.innerHeight - 560) / 2) + 'px';
+  // Centred in the app frame
+  const at = centeredInFrame(780, 560);
+  _panel.style.left = at.left + 'px';
+  _panel.style.top = at.top + 'px';
 
   wirePanel();
   isVisible = true;

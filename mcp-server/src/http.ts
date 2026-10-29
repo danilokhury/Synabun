@@ -23,7 +23,12 @@ import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { ensureDatabase } from './services/sqlite.js';
 import { initCategoryCache } from './services/categories.js';
 import { warmupEmbeddings } from './services/local-embeddings.js';
-import { createMcpServer, refreshServerSchemas, onSchemaRefresh, setServerRole, setServerCapabilities } from './index.js';
+import {
+  createMcpServer, refreshServerSchemas, onSchemaRefresh, setServerRole, setServerCapabilities, setServerSelection, httpDefaultSelection, getServerToolRuntime,
+} from './index.js';
+import { ToolListRefreshBarrier } from './services/tool-list-refresh-barrier.js';
+import { selectionFromList, unreadableSelection, type ToolMode, type ToolSelection } from './services/tool-runtime.js';
+import { TOOL_LIST_LIMITS } from './services/tool-catalog.js';
 import {
   type CallerIdentity,
   markHttpMode,
@@ -46,16 +51,61 @@ let initPromise: Promise<void> | null = null;
 // drop it when category schemas change. With stateful sessions this is
 // consumed once per CLIENT SESSION (initialize), not per request.
 let warmServer: ReturnType<typeof createMcpServer> | null = null;
+const toolListBarriers = new WeakMap<ReturnType<typeof createMcpServer>, ToolListRefreshBarrier>();
 
+// Built with focus on every group: Claude Code reaches every SynaBun tool
+// through ToolSearch. Each session's own selection is bound at initialize.
 function takeServer(): ReturnType<typeof createMcpServer> {
-  const server = warmServer ?? createMcpServer('full');
+  const server = warmServer ?? createMcpServer({ selection: httpDefaultSelection() });
   warmServer = null;
   setImmediate(() => {
     try {
-      if (!warmServer) warmServer = createMcpServer('full');
+      if (!warmServer) warmServer = createMcpServer({ selection: httpDefaultSelection() });
     } catch { /* next request builds inline */ }
   });
   return server;
+}
+
+/** A selection the worker channel resolves for its run: group ids, strict unless it says focus. */
+export interface McpSessionSelection {
+  groups: readonly string[];
+  mode?: ToolMode;
+}
+
+export interface McpRoutesOptions {
+  /**
+   * The worker channel's resolver: a request's selection from its own run-token map, never from a header. When it
+   * answers, the session has exactly that selection and X-Synabun-Tools is ignored.
+   */
+  selectionFor?: (req: Request) => McpSessionSelection | null | undefined;
+}
+
+/**
+ * A session's tools, decided once, at initialize: the resolver's answer (strict), else the X-Synabun-Tools header
+ * (focus only: it steers the instructions, never what the session can reach), else focus on every group.
+ */
+export function sessionSelection(req: Request, options: McpRoutesOptions = {}): ToolSelection {
+  if (options.selectionFor) {
+    let answer: McpSessionSelection | null | undefined;
+    try {
+      answer = options.selectionFor(req);
+    } catch (err) {
+      return unreadableSelection('channel', `its run's tool list could not be resolved (${err instanceof Error ? err.message : String(err)})`, 'strict');
+    }
+    if (answer) {
+      const mode = answer.mode === 'focus' ? 'focus' : 'strict';
+      return Array.isArray(answer.groups)
+        ? selectionFromList([...answer.groups], mode, 'channel')
+        : unreadableSelection('channel', 'its run names no tool list', mode);
+    }
+  }
+  const header = req.get('x-synabun-tools');
+  if (header === undefined || !header.trim()) return httpDefaultSelection();
+  const selection = Buffer.byteLength(header, 'utf8') > TOOL_LIST_LIMITS.maxSerializedBytes
+    ? unreadableSelection('header', `longer than ${TOOL_LIST_LIMITS.maxSerializedBytes} bytes`, 'focus')
+    : selectionFromList(header, 'focus', 'header');
+  // A header that cannot be read narrows nothing: the session keeps reaching every tool and is told why.
+  return selection.listError ? { ...selection, mode: 'focus', hostMode: 'focus' } : selection;
 }
 
 // ── MCP client sessions (one per connected Claude Code process) ──
@@ -174,8 +224,9 @@ export async function ensureInit() {
  * Create Express routes for the MCP HTTP endpoint.
  * Auth is handled externally (URL-embedded key in server.js).
  * Can be mounted on an existing Express app: app.use('/mcp', createMcpRoutes());
+ * The worker channel passes `selectionFor`, so its sessions are strict to their run's list.
  */
-export function createMcpRoutes(): Router {
+export function createMcpRoutes(options: McpRoutesOptions = {}): Router {
   markHttpMode();
   startIdentitySweeper();
   startSessionSweeper();
@@ -196,6 +247,10 @@ export function createMcpRoutes(): Router {
           return jsonRpcError(res, 404, -32001, 'Session not found');
         }
         entry.lastSeen = Date.now();
+        if (req.body?.method === 'tools/list' && req.body.id !== undefined) {
+          // finish means the fresh schemas have left this session's HTTP response.
+          res.once('finish', () => { if (res.statusCode === 200) toolListBarriers.get(entry.server)?.listed(); });
+        }
         await runRequest(req, sid, () =>
           entry.transport.handleRequest(req, res, req.body)
         );
@@ -208,16 +263,23 @@ export function createMcpRoutes(): Router {
       }
 
       const server = takeServer();
+      const barrier = new ToolListRefreshBarrier();
+      toolListBarriers.set(server, barrier);
+      getServerToolRuntime(server)?.setInBandRefresh(() => barrier.refresh(() =>
+        server.server.notification({ method: 'notifications/tools/list_changed' })
+      ));
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (newSid) => {
           mcpSessions.set(newSid, { transport, server, lastSeen: Date.now() });
           deriveIdentity(req, newSid);
           const terminal = sanitizePin(req.get('x-synabun-terminal'));
-          // The warm server was built role-less. The SDK awaits this hook
-          // BEFORE dispatching the initialize request, so binding the role
-          // here makes the handshake instructions and the client's first
-          // tools/list already advertise the role-gated `agents` group.
+          // The warm server was built role-less, on focus. The SDK awaits this
+          // hook BEFORE dispatching the initialize request, so binding the
+          // selection and the role here makes the handshake instructions and
+          // the client's first tools/list already right.
+          const selection = sessionSelection(req, options);
+          setServerSelection(server, selection);
           const remote = !!req.get('cf-connecting-ip');
           const role = remote ? null : sanitizeRole(req.get('x-synabun-role'));
           if (role) setServerRole(server, role);
@@ -225,7 +287,8 @@ export function createMcpRoutes(): Router {
           // presenting a desktop grant (re-checked server-side on every call).
           const grant = remote ? null : sanitizeDesktopGrant(req.get('x-synabun-desktop-grant'));
           if (grant) setServerCapabilities(server, { computer: true });
-          console.error(`[mcp-http] session ${newSid} init (terminal=${terminal || 'none'}${role ? `, role=${role}` : ''}${grant ? ', computer' : ''}, sessions=${mcpSessions.size})`);
+          const tools = selection.source === 'http' ? '' : `, tools=${selection.mode}:${selection.groups.join(',') || 'memory'}${selection.listError ? ' (unreadable)' : ''}`;
+          console.error(`[mcp-http] session ${newSid} init (terminal=${terminal || 'none'}${role ? `, role=${role}` : ''}${grant ? ', computer' : ''}${tools}, sessions=${mcpSessions.size})`);
         },
       });
       // Re-entry guard: server.close() closes its transport, which fires
@@ -283,9 +346,9 @@ export function createMcpRoutes(): Router {
   return router;
 }
 
-// If run directly, start a standalone HTTP server
-const isMain = process.argv[1]?.replace(/\\/g, '/').endsWith('/http.js')
-  || process.argv[1]?.replace(/\\/g, '/').endsWith('/http.ts');
+// If run directly, start a standalone HTTP server: `node dist/http.js`, or `npm run start:http` / `dev:http`, whose
+// preload-http entry loads the data home's .env and then this module (argv[1] names the preload then).
+const isMain = /\/(?:preload-)?http\.[jt]s$/.test(process.argv[1]?.replace(/\\/g, '/') || '');
 
 if (isMain) {
   const PORT = parseInt(process.env.MCP_HTTP_PORT || '3345', 10);

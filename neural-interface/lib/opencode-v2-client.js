@@ -1,44 +1,37 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// OpenCode V2 SDK Wrapper — the only OpenCode client (the v1 wrapper,
-// lib/opencode-client.js, was removed on 2026-10-04)
+// OpenCode client wrapper — the only OpenCode client SynaBun has (the "v2" in
+// the name is the OpenCode panel's generation, not OpenCode's version).
 //
-// Wraps @opencode-ai/sdk/v2's createOpencodeClient and exposes:
-//   • connect({ port }) / disconnect()
+// Wraps lib/opencode2-client.js (OpenCode 2's API: /api/*, a password per
+// launch) and exposes:
+//   • connect({ port, password, version }) / disconnect()
 //   • event.onEvent(listener)        — broadcast SSE envelopes
 //   • session.list/create/get/delete/abort/prompt
 //   • permission.reply
 //   • mcp.status/connect/disconnect
 //
-// Pass-through philosophy — NO event normalizers, NO system-prompt injection,
-// NO legacy shape translation. Whatever the SDK emits, we forward verbatim
-// in `{ eventType, event }` envelopes (event = SDK part's `properties`).
+// Pass-through philosophy — NO event normalizers, NO system-prompt injection.
+// Whatever the client emits, we forward verbatim in `{ eventType, event }`
+// envelopes (event = the event's `properties`). The client answers in the
+// shapes SynaBun's consumers read (lib/opencode2-translate.js), so the panel,
+// the Assistant's OpenCode brain, workers and loops read one set of shapes.
 // Anything beyond what's listed above is reachable via getClient().
 //
-// SDK 1.18.34 additions (all additive; the methods above are unchanged):
-//   • EXTRA_SDK_METHODS — one table of further SDK calls (session.status /
-//     revert / fork / share / …, permission.list, command.list, …) exposed as
+//   • EXTRA_CLIENT_METHODS — one table of further client calls (session.status
+//     / revert / fork / …, permission.list, command.list, …) exposed as
 //     `extra.<group>.<method>` on the singleton and on every
 //     createClientInstance(), with the same `{ status, data }` contract.
 //     They live under `extra` on purpose: the loop runtime and the Assistant's
 //     OpenCode brain feature-detect `client.session.children`, so adding a
 //     method to an existing group would change what they do.
-//   • describeSdkError() — the message for an SDK error body. 1.18 errors come
-//     as `{ name, data: { message } }` or `{ _tag, message }`; a body with
-//     neither used to surface as the literal "opencode SDK error".
-//
-// OpenCode 2 (a different API: /api/*, a password per launch) gets the same
-// wrapper: `connect` and `createClientInstance` take `{ protocol: 2, password }`
-// and build lib/opencode2-client.js instead of the SDK client. It has the
-// SDK client's methods and answers in OpenCode 1's shapes, so nothing below
-// (and nothing that uses this module) changes with the major.
+//   • describeOpencodeError() — the message for an error body (`{ _tag,
+//     message }`, `{ name, data: { message } }`, a string or nothing).
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { createOpencodeClient } from '@opencode-ai/sdk/v2';
 import { createOpencode2Client } from './opencode2-client.js';
 
 let _client = null;
 let _port = null;
-let _protocol = 1;
 let _password = null;
 let _abort = null;
 let _running = false;
@@ -67,26 +60,22 @@ export const event = {
   },
 };
 
-/** The SDK client for an OpenCode 1 serve, the OpenCode 2 client for an OpenCode 2 serve. */
-function clientFor({ port, protocol, password, version, clientFactory = createOpencodeClient, fetchImpl }) {
-  const baseUrl = `http://127.0.0.1:${port}`;
-  if (protocol === 2) return createOpencode2Client({ baseUrl, password, version, ...(fetchImpl ? { fetchImpl } : {}) });
-  return clientFactory({ baseUrl });
+/** The OpenCode 2 client of the serve on `port`. `clientFactory` builds it (tests pass a stand-in). */
+function clientFor({ port, password, version, clientFactory = createOpencode2Client, fetchImpl }) {
+  return clientFactory({ baseUrl: `http://127.0.0.1:${port}`, password, version, ...(fetchImpl ? { fetchImpl } : {}) });
 }
 
-export async function connect({ port, protocol = 1, password = null, version = '' }) {
+export async function connect({ port, password = null, version = '' }) {
   if (!port) throw new Error('opencode-v2-client.connect: port required');
-  const wanted = protocol === 2 ? 2 : 1;
-  if (_client && _port === port && _running && _protocol === wanted && _password === (wanted === 2 ? password : null)) {
+  if (_client && _port === port && _running && _password === password) {
     logv('connect: already connected to', port);
     return;
   }
   await disconnect();
   _stopRequested = false;
   _port = port;
-  _protocol = wanted;
-  _password = wanted === 2 ? password : null;
-  _client = clientFor({ port, protocol: wanted, password, version });
+  _password = password;
+  _client = clientFor({ port, password, version });
   _attempt = 0;
   startSubscribeLoop().catch((err) => {
     console.error('[ocp-v2-client] subscribe loop crashed:', err);
@@ -101,7 +90,6 @@ export async function disconnect() {
   _abort = null;
   _client = null;
   _port = null;
-  _protocol = 1;
   _password = null;
   _connected = false;
   _running = false;
@@ -110,8 +98,6 @@ export async function disconnect() {
 export function getClient() { return _client; }
 export function isConnected() { return _connected; }
 export function getPort() { return _port; }
-/** 1 or 2: the OpenCode major the shared client speaks. */
-export function getProtocol() { return _protocol; }
 
 async function startSubscribeLoop() {
   _running = true;
@@ -119,9 +105,7 @@ async function startSubscribeLoop() {
   while (_client && !_stopRequested) {
     try {
       _abort = new AbortController();
-      // Use /global/event (persistent stream), NOT /event (snapshot endpoint
-      // that emits server.connected then writes the chunked terminator and
-      // closes — which produces a 1Hz reconnect loop).
+      // The serve's one event stream (GET /api/event), every session's events.
       const result = await _client.global.event({ signal: _abort.signal });
       _connected = true;
       _attempt = 0;
@@ -130,7 +114,7 @@ async function startSubscribeLoop() {
 
       for await (const raw of result.stream) {
         if (_stopRequested) break;
-        // /global/event wraps each event as { payload: { id, type, properties } }
+        // Each event comes as { payload: { id, type, properties } } (lib/opencode2-translate.js)
         const ev = (raw && typeof raw === 'object' && 'payload' in raw) ? raw.payload : raw;
         const eventType = String(ev?.type || 'unknown');
         const eventPayload = (ev && typeof ev === 'object' && 'properties' in ev) ? ev.properties : ev;
@@ -155,11 +139,11 @@ async function startSubscribeLoop() {
   log('subscribe-loop ended, totalEvents=', _evCount);
 }
 
-// The text and tag of an SDK error body. OpenCode 1.18 answers a failed call
-// with `{ name, data: { message } }` (NamedError) or `{ _tag, message }` (the
-// newer tagged errors, e.g. SessionBusyError); an empty body arrives as `{}`
-// and a non-JSON body as a string.
-export function describeSdkError(error, status) {
+// The text and tag of an error body. OpenCode answers a failed call with
+// `{ _tag, message }` (a tagged error, e.g. SessionBusyError); a body in the
+// `{ name, data: { message } }` shape is read too, an empty body arrives as
+// `{}` and a non-JSON body as a string.
+export function describeOpencodeError(error, status) {
   const tag = (error && typeof error === 'object')
     ? String(error._tag || error.name || '')
     : '';
@@ -169,12 +153,12 @@ export function describeSdkError(error, status) {
     if (typeof error.message === 'string' && error.message) message = error.message;
     else if (typeof error.data?.message === 'string' && error.data.message) message = error.data.message;
   }
-  if (!message) message = tag || (status ? `opencode SDK error (HTTP ${status})` : 'opencode SDK error');
+  if (!message) message = tag || (status ? `OpenCode error (HTTP ${status})` : 'OpenCode error');
   return { message: message.length > 2000 ? `${message.slice(0, 2000)}…` : message, tag };
 }
 
-// Hey-api wraps responses as { data, error, response }. Throw on error;
-// otherwise return { status, data } so callers can match server.js conventions.
+// The client answers { data, error, response }. Throw on error; otherwise
+// return { status, data } so callers can match server.js conventions.
 async function unwrap(promise) {
   let result;
   try { result = await promise; }
@@ -185,7 +169,7 @@ async function unwrap(promise) {
   }
   if (result && result.error) {
     const status = result.response?.status;
-    const described = describeSdkError(result.error, status);
+    const described = describeOpencodeError(result.error, status);
     const err = new Error(described.message);
     err.cause = result.error;
     err.status = status;
@@ -207,15 +191,16 @@ const requireClient = () => {
   return _client;
 };
 
-// Further SDK calls, by group. Each becomes `extra.<group>.<method>(params,
+// Further client calls, by group. Each becomes `extra.<group>.<method>(params,
 // options)` on the singleton and on every instance, resolving `{ status, data }`
 // like the hand-written wrappers. The existing groups (`session`, `permission`,
 // `mcp`, …) keep exactly the methods they had.
 // tests/opencode-v2-client-extra.test.mjs checks every entry against the
-// pinned SDK, so a rename upstream fails there instead of at runtime.
-export const EXTRA_SDK_METHODS = Object.freeze({
-  session: ['status', 'children', 'todo', 'diff', 'fork', 'revert', 'unrevert', 'share', 'unshare',
-    'summarize', 'init', 'command', 'shell', 'message', 'deleteMessage'],
+// OpenCode 2 client (lib/opencode2-client.js), so a missing method fails there
+// instead of at runtime.
+export const EXTRA_CLIENT_METHODS = Object.freeze({
+  session: ['status', 'children', 'todo', 'diff', 'fork', 'revert', 'unrevert', 'summarize', 'init',
+    'command', 'shell', 'message'],
   permission: ['list'],
   command: ['list'],
   app: ['agents', 'skills'],
@@ -223,7 +208,6 @@ export const EXTRA_SDK_METHODS = Object.freeze({
   find: ['text', 'files', 'symbols'],
   file: ['list', 'read', 'status'],
   vcs: ['get', 'status', 'diff'],
-  worktree: ['list', 'create', 'remove', 'reset'],
   mcp: ['add'],
   lsp: ['status'],
   formatter: ['status'],
@@ -231,86 +215,19 @@ export const EXTRA_SDK_METHODS = Object.freeze({
 
 function extraGroups(getRaw) {
   const out = {};
-  for (const [group, methods] of Object.entries(EXTRA_SDK_METHODS)) {
+  for (const [group, methods] of Object.entries(EXTRA_CLIENT_METHODS)) {
     out[group] = {};
     for (const method of methods) {
       out[group][method] = async (params = {}, options) => {
         const target = getRaw()?.[group];
         if (typeof target?.[method] !== 'function') {
-          throw new Error(`OpenCode SDK does not expose ${group}.${method}`);
+          throw new Error(`The OpenCode client does not expose ${group}.${method}`);
         }
         return unwrap(target[method](clean(params), options));
       };
     }
   }
   return out;
-}
-
-// v2.session.compact answers 503 "Session compact is not available yet" on
-// OpenCode 1.18.34, so compaction of a v1 session has to go through
-// session.summarize, which needs the model to summarise with.
-export function isCompactUnavailable(err) {
-  return err?.status === 503
-    || err?.tag === 'ServiceUnavailableError'
-    || /not available yet/i.test(String(err?.message || ''));
-}
-
-// `{ providerID, modelID }` from that object or from a "provider/model" string.
-function modelRefOf(value) {
-  if (typeof value === 'string') {
-    const slash = value.trim().indexOf('/');
-    const text = value.trim();
-    return slash > 0 && slash < text.length - 1
-      ? { providerID: text.slice(0, slash), modelID: text.slice(slash + 1) }
-      : null;
-  }
-  const providerID = typeof value?.providerID === 'string' ? value.providerID.trim() : '';
-  const modelID = typeof value?.modelID === 'string' ? value.modelID.trim() : '';
-  return providerID && modelID ? { providerID, modelID } : null;
-}
-
-// The model a transcript last ran on: assistant rows carry providerID/modelID,
-// user rows carry `model: { providerID, modelID }`.
-export function lastModelOf(rows) {
-  const list = Array.isArray(rows) ? rows : [];
-  for (let i = list.length - 1; i >= 0; i--) {
-    const info = list[i]?.info;
-    const found = modelRefOf(info) || modelRefOf(info?.model);
-    if (found) return found;
-  }
-  return null;
-}
-
-/**
- * Compact a session on any serve: `client.session.compact`, and when the serve
- * answers "not available yet" (isCompactUnavailable), `session.summarize` on
- * `model` (an object or "provider/model"), else on the model the transcript
- * last ran on. `client` is this module or a createClientInstance().
- * Resolves `{ status, data, via: 'compact' | 'summarize' }`. Throws what compact
- * threw for any other failure, and a 400 when no model can be found.
- * The sidepanel and the Assistant's OpenCode brain both compact through here;
- * `session.compact` itself is left as it was for every other caller.
- */
-export async function compactOrSummarize(client, { sessionID, directory, model } = {}) {
-  try {
-    const r = await client.session.compact({ sessionID, directory });
-    return { status: r?.status, data: r?.data, via: 'compact' };
-  } catch (err) {
-    const summarize = client?.extra?.session?.summarize;
-    if (!isCompactUnavailable(err) || typeof summarize !== 'function') throw err;
-    let target = modelRefOf(model);
-    if (!target) {
-      const transcript = await Promise.resolve(client.session.messages({ sessionID, directory })).catch(() => null);
-      target = lastModelOf(transcript?.data);
-    }
-    if (!target) {
-      const noModel = new Error('Pick a model first: OpenCode needs one to summarise this session.');
-      noModel.status = 400;
-      throw noModel;
-    }
-    const r = await summarize({ sessionID, directory, ...target });
-    return { status: r?.status, data: r?.data, via: 'summarize' };
-  }
 }
 
 export const session = {
@@ -361,19 +278,7 @@ export const session = {
     const t = Date.now();
     log(`session.compact -> sid=${sessionID}`);
     try {
-      const client = requireClient();
-      let target = client.v2?.session;
-      let endpoint = target?.compact;
-      if (!endpoint && client.session?.compact) {
-        target = client.session;
-        endpoint = target.compact;
-      }
-      if (!endpoint && client.session?.summarize) {
-        target = client.session;
-        endpoint = target.summarize;
-      }
-      if (!endpoint) throw new Error('OpenCode SDK does not expose session compact');
-      const r = await unwrap(endpoint.call(target, clean({ sessionID, ...rest })));
+      const r = await unwrap(requireClient().v2.session.compact(clean({ sessionID, ...rest })));
       log(`session.compact <- status=${r?.status} ms=${Date.now() - t}`);
       return r;
     } catch (err) {
@@ -399,7 +304,7 @@ export const mcp = {
   disconnect: (params = {}) => unwrap(requireClient().mcp.disconnect(clean(params))),
 };
 
-// extra.<group>.<method> — see EXTRA_SDK_METHODS.
+// extra.<group>.<method> — see EXTRA_CLIENT_METHODS.
 export const extra = extraGroups(requireClient);
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -409,10 +314,9 @@ export const extra = extraGroups(requireClient);
 // completely untouched — it remains the shared-serve default, so the common path
 // carries zero risk from this addition. Reuses the module-level unwrap()/clean().
 // ─────────────────────────────────────────────────────────────────────────────
-export function createClientInstance({ port, clientFactory = createOpencodeClient, protocol = 1, password = null, version = '', fetchImpl = null }) {
+export function createClientInstance({ port, clientFactory = createOpencode2Client, password = null, version = '', fetchImpl = null }) {
   if (!port) throw new Error('createClientInstance: port required');
-  const wanted = protocol === 2 ? 2 : 1;
-  let client = clientFor({ port, protocol: wanted, password, version, clientFactory, fetchImpl });
+  let client = clientFor({ port, password, version, clientFactory, fetchImpl });
   let abort = null;
   let stopRequested = false;
   let connected = false;
@@ -453,8 +357,7 @@ export function createClientInstance({ port, clientFactory = createOpencodeClien
 
   const instance = {
     port,
-    protocol: wanted,
-    /** The client underneath (the SDK's, or the OpenCode 2 one): raw requests the wrapper has no method for. */
+    /** The client underneath (lib/opencode2-client.js): raw requests the wrapper has no method for. */
     getClient: () => client,
     onEvent(fn) { listeners.add(fn); return () => listeners.delete(fn); },
     start() { subscribeLoop().catch((e) => console.error('[ocp-v2-iso] subscribe crashed:', e)); },
@@ -479,14 +382,7 @@ export function createClientInstance({ port, clientFactory = createOpencodeClien
       context:  (p)      => unwrap(req().v2.session.context(clean(p))),
       prompt:      ({ signal, ...rest } = {}) => unwrap(req().session.prompt(clean(rest), signal ? { signal } : undefined)),
       promptAsync: ({ signal, ...rest } = {}) => unwrap(req().session.promptAsync(clean(rest), signal ? { signal } : undefined)),
-      compact: ({ ...rest } = {}) => {
-        const c = req();
-        let target = c.v2?.session; let endpoint = target?.compact;
-        if (!endpoint && c.session?.compact) { target = c.session; endpoint = target.compact; }
-        if (!endpoint && c.session?.summarize) { target = c.session; endpoint = target.summarize; }
-        if (!endpoint) throw new Error('OpenCode SDK does not expose session compact');
-        return unwrap(endpoint.call(target, clean(rest)));
-      },
+      compact:  (p)      => unwrap(req().v2.session.compact(clean(p))),
     },
     permission: { reply: (p) => unwrap(req().permission.reply(clean(p))) },
     question: {
@@ -506,8 +402,7 @@ export function createClientInstance({ port, clientFactory = createOpencodeClien
 }
 
 export default {
-  connect, disconnect, getClient, isConnected, getPort, getProtocol,
+  connect, disconnect, getClient, isConnected, getPort,
   event, session, permission, question, mcp, createClientInstance,
-  extra, describeSdkError, isCompactUnavailable, EXTRA_SDK_METHODS,
-  compactOrSummarize, lastModelOf,
+  extra, describeOpencodeError, EXTRA_CLIENT_METHODS,
 };

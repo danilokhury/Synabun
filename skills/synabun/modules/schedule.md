@@ -37,8 +37,8 @@ These exist because group-level launch overrides historically clobbered per-sche
 All bodies + responses are JSON. Capture the returned `id` from each POST.
 
 **Accepted fields (never invent others):**
-- **Template** — required `name`, `task`. Optional: `description, context, iterations(=10), maxMinutes(=30), usesBrowser, icon(=🔄), category(=custom), profile, model, effort, mcpProfile, folderId, codexAccountId`. Server generates `id`.
-- **Schedule** — required `name`, `templateId`, `cron` (exactly 5 whitespace fields). Optional top-level launch overrides: `profile, model, effort, mcpProfile, usesBrowser, codexAccountId`; plus `groupId, timezone, enabled, dayThemes, overrides`. Only `{iterations, maxMinutes}` go inside `overrides{}`.
+- **Template** — required `name`, `task`. Optional: `description, context, iterations(=10), maxMinutes(=30), usesBrowser, icon(=🔄), category(=custom), profile, model, effort, tools, folderId, codexAccountId`. Server generates `id`.
+- **Schedule** — required `name`, `templateId`, `cron` (exactly 5 whitespace fields). Optional top-level launch overrides: `profile, model, effort, tools, usesBrowser, codexAccountId`; plus `groupId, timezone, enabled, dayThemes, overrides`. Only `{iterations, maxMinutes}` go inside `overrides{}`.
 - **Group** — required `name`. Optional `color`. Returns `id` = `sg_…`.
 
 **Vocabularies:**
@@ -125,7 +125,7 @@ Capture `id` → `$GROUP_ID`.
 ```bash
 curl -s -X POST http://localhost:3344/api/loop/templates \
   -H 'Content-Type: application/json' \
-  -d '{"name":"<name>","description":"<one-line>","task":"<full task block>","iterations":<n|10>,"maxMinutes":<n|30>,"usesBrowser":<true|false>,"icon":"<icon>","category":"<social|productivity|monitoring|custom>","profile":"<profile>","model":"<model>","effort":<"off"|null>,"mcpProfile":<"full"|null>}'
+  -d '{"name":"<name>","description":"<one-line>","task":"<full task block>","iterations":<n|10>,"maxMinutes":<n|30>,"usesBrowser":<true|false>,"icon":"<icon>","category":"<social|productivity|monitoring|custom>","profile":"<profile>","model":"<model>","effort":<"off"|null>,"tools":["all","mcp:*"]}'
 ```
 Capture `id` → `$TEMPLATE_ID`. (No `codexAccountId` unless the user named one.)
 

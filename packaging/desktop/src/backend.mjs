@@ -132,18 +132,56 @@ export function pidAlive(pid) {
  * and only then end what is left by force. The launcher process of a
  * background start leads its own process group (POSIX) or job object
  * (Windows), so ending it ends everything it started.
+ *
+ * A server that does not take the request while its supervisor lives is
+ * between a crash and the start that replaces it (or still starting): it is
+ * asked again as soon as it answers, so quitting then is a graceful stop of the
+ * new server, not a wait for the deadline. So is a server that answers after
+ * the one that took the request went away, or under another boot id: that stop
+ * did not hold (a restart was under way, or it crashed on its way out and was
+ * started again). A supervisor whose record says it gave up (`supervisorEnded`)
+ * has no server to bring back: with its server gone, that is stopped, even
+ * while it takes a moment more to write its logs.
  */
 export async function stopBackend({
   port, launcherPid = null, supervisorPid = null, timeoutMs = 20000, platform = process.platform,
   health = fetchHealth, shutdown = requestShutdown, alive = pidAlive, kill = process.kill.bind(process), spawn = nodeSpawn,
+  supervisorEnded = () => false,
   sleep = (ms) => new Promise(done => setTimeout(done, ms)), now = () => Date.now(), log = () => {},
 }) {
-  const asked = port ? await shutdown(port) : false;
+  const bootOf = (answer) => (answer && typeof answer.bootId === 'string' && answer.bootId ? answer.bootId : null);
+  // Which server took the request (its boot id, when it says one), and whether it has been seen gone since.
+  let askedBoot = port ? bootOf(await health(port, { timeoutMs: 700 })) : null;
+  let asked = port ? await shutdown(port) : false;
+  let askedAt = now();
+  let away = false;
   log(`backend stop: shutdown request ${asked ? 'accepted' : 'not answered'} (port ${port})`);
   const deadline = now() + timeoutMs;
+  const ended = () => { try { return supervisorEnded() === true; } catch { return false; } };
   const gone = async () => !(await health(port, { timeoutMs: 700 })) && !alive(supervisorPid) && !alive(launcherPid);
   while (now() < deadline) {
-    if (await gone()) { log('backend stop: stopped'); return { stopped: true, forced: false }; }
+    const answer = port ? await health(port, { timeoutMs: 700 }) : null;
+    if (!answer) {
+      if (asked) away = true;
+      if (!alive(supervisorPid) && !alive(launcherPid)) { log('backend stop: stopped'); return { stopped: true, forced: false }; }
+      if (ended()) { log('backend stop: stopped (its supervisor had given up)'); return { stopped: true, forced: false }; }
+    } else {
+      const boot = bootOf(answer);
+      // Another server than the one that took the request: by its boot id, or (a server that says none) by having
+      // been seen gone in between.
+      if (asked && (boot && askedBoot ? boot !== askedBoot : away)) {
+        asked = false;
+        log(`backend stop: a server answers again after the stop (port ${port}); asking it too`);
+      }
+      if (!asked && now() - askedAt >= 1000) {
+        // Back after a crash or a restart, or done starting: now it can take the request.
+        asked = await shutdown(port);
+        askedAt = now();
+        askedBoot = boot;
+        away = false;
+        log(`backend stop: shutdown request ${asked ? 'accepted' : 'not answered'} on a new try (port ${port})`);
+      }
+    }
     await sleep(300);
   }
   log('backend stop: still running after the graceful stop; ending it');
@@ -169,12 +207,15 @@ export async function stopBackend({
 
 /**
  * Watches the server the window shows. A server that does not answer while its
- * supervisor lives is restarting (Restart Server, an update of its own); one
- * whose supervisor is gone and that does not answer has stopped. `onStopped`
- * runs once, after `graceMs` of silence with no supervisor.
+ * supervisor lives is restarting (Restart Server, an update of its own, a crash
+ * it is started again after); one whose supervisor is gone and that does not
+ * answer has stopped. `onStopped` runs once, after `graceMs` of silence with no
+ * supervisor, or at once when the supervisor's record says it gave up
+ * (`supervisorEnded`: the crash-loop guard, a start that failed), even while
+ * that supervisor still takes a moment to write its logs.
  */
 export function watchBackend({
-  port, supervisorPid = null, launcherPid = null, onStopped, health = fetchHealth, alive = pidAlive,
+  port, supervisorPid = null, launcherPid = null, onStopped, health = fetchHealth, alive = pidAlive, supervisorEnded = () => false,
   intervalMs = 3000, graceMs = 8000, restartLimitMs = 3 * 60 * 1000, setIntervalImpl = setInterval, clearIntervalImpl = clearInterval, now = () => Date.now(),
 }) {
   let silentSince = null;
@@ -187,12 +228,14 @@ export function watchBackend({
       const answer = await health(port, { timeoutMs: 1500 });
       if (answer?.ok) { silentSince = null; return; }
       silentSince ??= now();
-      const supervised = alive(supervisorPid) || alive(launcherPid);
+      let gaveUp = false;
+      try { gaveUp = supervisorEnded() === true; } catch {}
+      const supervised = !gaveUp && (alive(supervisorPid) || alive(launcherPid));
       const quiet = now() - silentSince;
-      if ((!supervised && quiet >= graceMs) || quiet >= restartLimitMs) {
+      if (gaveUp || (!supervised && quiet >= graceMs) || quiet >= restartLimitMs) {
         fired = true;
         clearIntervalImpl(timer);
-        onStopped?.({ supervised });
+        onStopped?.(gaveUp ? { supervised: false, gaveUp: true } : { supervised });
       }
     } finally {
       busy = false;

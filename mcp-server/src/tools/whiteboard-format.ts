@@ -10,6 +10,9 @@ import {
   elementBox,
   resolveArrowPoints,
   formatBox,
+  hasNestedLevels,
+  listMarkers,
+  normalizeListItems,
   type WbAnalysis,
   type WbElement,
   type WbPoint,
@@ -150,10 +153,13 @@ export function formatElement(el: WbElement, byId: Map<string, WbElement>, opts:
       break;
     }
     case 'list': {
-      const items = Array.isArray(el.items) ? el.items : [];
-      lines.push(`[${el.id}] LIST ${formatBox(box, est)}${z}${rot} ${el.fontSize || 18}px ${el.ordered ? 'numbered' : 'bulleted'} ${plural(items.length, 'item')}${color}`);
+      // Nested items are indented two spaces per level, with their level's bullet / numbering.
+      const { items, levels } = normalizeListItems(el.items, el.levels);
+      const markers = listMarkers(levels, !!el.ordered);
+      const nested = hasNestedLevels(levels) ? `, nested ${Math.max(...levels) + 1} levels` : '';
+      lines.push(`[${el.id}] LIST ${formatBox(box, est)}${z}${rot} ${el.fontSize || 18}px ${el.ordered ? 'numbered' : 'bulleted'} ${plural(items.length, 'item')}${nested}${color}`);
       const shown = opts.verbose ? items : items.slice(0, LIST_PREVIEW_ITEMS);
-      shown.forEach((item, i) => lines.push(`    ${el.ordered ? `${i + 1}.` : '•'} ${item}`));
+      shown.forEach((item, i) => lines.push(`    ${'  '.repeat(levels[i])}${markers[i]} ${item}`));
       if (shown.length < items.length) lines.push(`    … +${items.length - shown.length} more`);
       if (!items.length) lines.push('    (empty)');
       break;

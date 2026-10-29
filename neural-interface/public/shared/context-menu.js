@@ -12,6 +12,7 @@
 import {
   anchorPoint, firstIndex, lastIndex, normalizeItems, placeMenu, placeSubmenu, stepIndex, typeaheadIndex,
 } from './context-menu-logic.js';
+import { boundsForPoint, frameRect } from './app-frame.js';
 
 const SUBMENU_OPEN_DELAY = 120; // hover intent before a submenu opens
 const SUBMENU_GRACE = 300;      // the pointer may cross other rows on its way into an open submenu
@@ -50,6 +51,7 @@ export function openContextMenu({ items, x, y, anchorRect = null, label = '', ke
   if (!list.length) return null;
 
   const levels = []; // [{ el, items, rows, active, parentRow }]
+  let bounds = null;  // the app frame for a menu opened inside it (it and its submenus stay in it), else the window
   let closed = false;
   let subTimer = 0;
   let subPending = null;
@@ -179,7 +181,7 @@ export function openContextMenu({ items, x, y, anchorRect = null, label = '', ke
       const rowRect = row.getBoundingClientRect();
       const box = sub.el.getBoundingClientRect();
       const at = placeSubmenu({ menuRect, rowRect, width: box.width, height: box.height,
-        viewportWidth: window.innerWidth, viewportHeight: window.innerHeight });
+        viewportWidth: window.innerWidth, viewportHeight: window.innerHeight, bounds });
       sub.el.style.left = `${at.left}px`;
       sub.el.style.top = `${at.top}px`;
       sub.el.dataset.side = at.side;
@@ -347,8 +349,9 @@ export function openContextMenu({ items, x, y, anchorRect = null, label = '', ke
   let px = x;
   let py = y;
   if (!Number.isFinite(px) || !Number.isFinite(py)) ({ x: px, y: py } = anchorPoint(anchorRect, window.innerWidth, window.innerHeight));
+  bounds = boundsForPoint(frameRect(), px, py);
   const at = placeMenu({ x: px, y: py, width: box.width, height: box.height,
-    viewportWidth: window.innerWidth, viewportHeight: window.innerHeight });
+    viewportWidth: window.innerWidth, viewportHeight: window.innerHeight, bounds });
   root.el.style.left = `${at.left}px`;
   root.el.style.top = `${at.top}px`;
   root.el.style.visibility = '';

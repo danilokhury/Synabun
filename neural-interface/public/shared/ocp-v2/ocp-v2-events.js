@@ -1,3 +1,4 @@
+import { toolWord } from '../tool-list-picker.js';
 // ─────────────────────────────────────────────────────────────────────────────
 // OpenCode V2 — events → store (no DOM, no socket)
 // One function per concern so node:test can drive them with a real store:
@@ -188,12 +189,15 @@ export function applyEvent(store, eventType, ev = {}, hooks = {}) {
     case 'session.diff':
       store.setSessionDiff(ev.diff);
       break;
-    case 'mcp.profile.changed':
-      store.setMcpProfile(ev.profile || null);
+    case 'synabun.mcp.status':
+      if (ev.text) store.pushError({ message: ev.text, notice: true });
       break;
-    case 'mcp.profile.refresh.failed':
+    case 'mcp.tools.changed':
+      store.setTools(ev.tools ?? null);
+      break;
+    case 'mcp.tools.refresh.failed':
       store.pushError({
-        message: ev.error || `MCP profile changed to ${ev.profile || 'the requested profile'}, but OpenCode could not reload its tools.`,
+        message: ev.error || toolWord('reloadFailed'),
         raw: ev,
       });
       break;

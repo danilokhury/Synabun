@@ -63,7 +63,7 @@ function frozenCopy(value, seen = new Map()) {
  *   isCurrent()  an extra veto, e.g. "this child panel is still the open one"
  * Returns a frozen token:
  *   binding, sessionId, cwd, directory (cwd, else the session's directory),
- *   model, variant, agent, mode, mcpProfile, sessionInfo (model and
+ *   model, variant, agent, mode, tools, sessionInfo (model and
  *   sessionInfo are frozen copies, nested objects included)
  *   isCurrent()  the store is still on this binding
  *   isStale()    the opposite
@@ -90,7 +90,7 @@ export function captureBinding(store, { sessionId, isCurrent } = {}) {
     variant: s.variant || null,
     agent: s.agent || null,
     mode: s.mode || null,
-    mcpProfile: s.mcpProfile || null,
+    tools: s.tools ? frozenCopy(s.tools) : null,
     sessionInfo: s.sessionInfo ? frozenCopy(s.sessionInfo) : null,
     isCurrent: current,
     isStale: () => !current(),
@@ -218,8 +218,8 @@ export function boundReader(store) {
 // another tab after it. Both were started on the same binding.
 //
 // So where the panel goes has an identity of its own. Every choice of the user
-// (a tab, a session in the menu, New session, another project, a new worktree)
-// begins an intent, and a navigation binds the panel only while its intent is
+// (a tab, a session in the menu, New session, another project) begins an
+// intent, and a navigation binds the panel only while its intent is
 // the latest one: after every wait it checks `isCurrent()`, and it binds
 // through `apply()`. A later choice always wins over an older one that is
 // still in flight. A rebinding nobody announced (the active tab was closed)

@@ -26,7 +26,7 @@ let _recording = null;            // { actionId, originalCombo } when recording
 let _pendingBindings = null;      // working copy during modal editing
 let _modalOpen = false;
 // Actions that were removed ("toggle-toolbar" was "Hide all toolbars"): a saved key for one is dropped on load.
-const RETIRED_ACTIONS = ['toggle-toolbar'];
+const RETIRED_ACTIONS = ['toggle-toolbar', 'toggle-minimap'];
 
 // ── Combo building ──
 

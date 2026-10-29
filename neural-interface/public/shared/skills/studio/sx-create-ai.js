@@ -182,14 +182,39 @@ export function pollSeconds(job) {
 }
 
 /**
- * The model dropdown: the owner's route first (when it is one that drafts), then the models of each provider that can
- * draft (Claude Code only: the one held to the drafting folder) from the Assistant's catalog.
+ * The providers that draft, as the server lists them (GET /creations/options `drafting.providers`, Claude Code first
+ * and the default) with what it says of each (`providerStatus`: one that cannot start here now is greyed out with its
+ * plain reason and cannot be picked). A server without the list: Claude Code alone. A provider the server says nothing
+ * of on its own takes what it says of drafting as a whole (an older server: `available: false` and why).
+ * @returns {{ provider: string, available: boolean, reason: string|null }[]}
  */
-export function modelEntries({ defaultTarget = null, catalog = null, selected = '', words }) {
-  const routed = defaultTarget?.provider && DRAFT_PROVIDERS.includes(defaultTarget.provider) && defaultTarget.route === true;
-  const entries = [{ value: '', label: routed ? words.route(defaultTarget) : words.fallback, selected: !selected }];
-  const providers = [...DRAFT_PROVIDERS];
-  for (const provider of providers) {
+export function draftingProviders(drafting) {
+  const listed = Array.isArray(drafting?.providers) ? drafting.providers.filter((p) => typeof p === 'string' && DRAFT_PROVIDERS.includes(p)) : [];
+  const providers = listed.length ? [...new Set(listed)] : ['claude-code'];
+  const status = new Map((Array.isArray(drafting?.providerStatus) ? drafting.providerStatus : []).filter((p) => p && typeof p.provider === 'string').map((p) => [p.provider, p]));
+  const allOff = drafting?.available === false;
+  return providers.sort((a, b) => (a === 'claude-code' ? -1 : b === 'claude-code' ? 1 : 0)).map((provider) => {
+    const st = status.get(provider);
+    if (st) return { provider, available: st.available === true, reason: st.available === true ? null : String(st.reason || '') };
+    return allOff ? { provider, available: false, reason: String(drafting.reason || '') } : { provider, available: true, reason: null };
+  });
+}
+
+
+/**
+ * The model dropdown: the owner's route first (when it is one that drafts and can start here), then the models of
+ * each provider the server lists from the Assistant's catalog; a provider that cannot draft here now is one greyed
+ * option with its reason, never selectable. The default (Claude Code's own model, when there is no route) is greyed
+ * too when Claude Code cannot start here, so the first provider that can is what the list then shows chosen.
+ */
+export function modelEntries({ defaultTarget = null, catalog = null, selected = '', words, providers = null }) {
+  const list_ = Array.isArray(providers) && providers.length ? providers : [{ provider: 'claude-code', available: true, reason: null }];
+  const can = (p) => list_.some((x) => x.provider === p && x.available);
+  const routed = defaultTarget?.provider && can(defaultTarget.provider) && defaultTarget.route === true;
+  const defaultOff = !routed && !can('claude-code');
+  const entries = [{ value: '', label: routed ? words.route(defaultTarget) : words.fallback, selected: !selected && !defaultOff, ...(defaultOff ? { disabled: true } : {}) }];
+  for (const { provider, available, reason } of list_) {
+    if (!available) { entries.push({ group: words.provider(provider), options: [{ value: provider, label: words.providerOff(provider, reason || ''), disabled: true, selected: false }] }); continue; }
     const rows = Array.isArray(catalog?.[provider]) ? catalog[provider] : [];
     const options = [{ value: provider, label: words.providerDefault(provider), selected: selected === provider }];
     for (const row of rows.slice(0, 60)) {
@@ -199,10 +224,13 @@ export function modelEntries({ defaultTarget = null, catalog = null, selected = 
     }
     entries.push({ group: words.provider(provider), options });
   }
-  // A choice kept from before that the catalog no longer lists stays visible (and chosen), never silently swapped.
+  // A choice kept from before that the catalog no longer lists stays visible (and chosen), never silently swapped;
+  // one of a provider that cannot draft here now is shown greyed and the default is chosen instead.
   if (selected && !entries.some((e) => (e.options || [e]).some((o) => o.value === selected))) {
     const t = targetOf(selected);
-    entries.push({ value: selected, label: `${words.provider(t.provider)} · ${t.model || ''}`.trim(), selected: true });
+    const off = !can(t.provider);
+    entries.push({ value: selected, label: `${words.provider(t.provider)} · ${t.model || ''}`.trim(), selected: !off, disabled: off });
+    if (off && !defaultOff) entries[0].selected = true;
   }
   return entries;
 }

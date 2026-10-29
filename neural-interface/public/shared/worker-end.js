@@ -47,6 +47,7 @@ export const WORKER_END_COPY = Object.freeze({
   reasonMaxTurns: 'The run reached its turn limit.',
   reasonIdle: 'The worker waited for a follow-up that did not come, and closed.',
   reasonRestart: 'The server restarted while the run was open.',
+  reasonRestartNotResumed: 'The server restarted while the run was open, and it could not continue: {reason}',
   reasonKillAll: 'Stopped together with every other run.',
   reasonCleared: 'The run\'s state was removed.',
   reasonOther: 'Stopped ({reason}).',
@@ -61,8 +62,9 @@ export const WORKER_END_CLASS = 'worker-end-card';
 /** The run states (runtime and dispatcher alike) after which nothing more happens. */
 export const TERMINAL_STATES = new Set(['completed', 'failed', 'stopped', 'interrupted']);
 const TERMINAL = TERMINAL_STATES;
-// Dispatcher states in which a turn is in progress (or about to be): the card waits.
-const WORKING = new Set(['queued', 'awaiting_route', 'starting', 'running', 'awaiting_permission']);
+// Dispatcher states in which a turn is in progress (or about to be): the card waits. A run a server restart cut off
+// (suspended) and one the next start resumes (resuming) are not over either.
+const WORKING = new Set(['queued', 'awaiting_route', 'starting', 'running', 'awaiting_permission', 'suspended', 'resuming']);
 const SUMMARY_CHARS = 320;
 
 /** A WORKER_END_COPY sentence with its `{params}` filled in: the translator when the page gives none. */
@@ -85,6 +87,7 @@ export function isRunWorking(run, dispatch = null) {
   if (TERMINAL.has(state) || TERMINAL.has(String(run?.status || ''))) return false;
   if (state) return WORKING.has(state);
   const status = String(run?.status || '');
+  if (status === 'suspended') return true;
   if (status !== 'starting' && status !== 'running') return false;
   return run?.turnState !== 'idle' && run?.turnState !== 'terminal';
 }
@@ -159,7 +162,7 @@ function stopReason(reason, t) {
     case 'budget_share': return t('reasonBudgetShare');
     case 'max_turns': return t('reasonMaxTurns');
     case 'idle_timeout': return t('reasonIdle');
-    case 'server_restart': case 'server_shutdown': return t('reasonRestart');
+    case 'server_restart': case 'server_shutdown': case 'resume_failed': return t('reasonRestart');
     case 'kill_all': return t('reasonKillAll');
     case 'state_removed': case 'state_inactive': return t('reasonCleared');
     case '': return '';
@@ -226,6 +229,10 @@ export function workerEndView(run, dispatch = null, { t = fillWorkerEndCopy, bus
   } else {
     kind = endState === 'interrupted' ? 'interrupted' : 'stopped';
     detail = stopReason(dispatch?.completionReason || run?.stoppedReason || '', t);
+    // A Claude Code worker the server could not resume after a restart says why (lib/worker-resume.js; a resume that
+    // failed to start has the reason resume_failed and the error).
+    const notResumed = dispatch?.resumeRefused || (dispatch?.completionReason === 'resume_failed' ? (dispatch?.error || run?.error || '') : '');
+    if (kind === 'interrupted' && notResumed) detail = t('reasonRestartNotResumed', { reason: plain(notResumed, 200) });
   }
 
   if (kind === 'complete' || kind === 'blocked') detail = plain(result?.summary || '');

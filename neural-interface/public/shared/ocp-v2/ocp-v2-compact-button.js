@@ -40,9 +40,7 @@ export function createCompactControl(store = getDefaultStore()) {
       const res = await api.compact({
         sessionId: at.sessionId,
         cwd: s.cwd || undefined,
-        mcpProfile: s.mcpProfile || undefined,
-        // OpenCode 1.18 compacts through session.summarize, which needs a model.
-        model: s.model || undefined,
+        tools: s.tools || undefined,
       });
       if (at.isCurrent() && (res?.error || res?.ok === false)) {
         const msg = res?.error || res?.data?.error || 'Compact failed';

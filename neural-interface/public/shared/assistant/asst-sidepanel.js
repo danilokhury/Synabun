@@ -30,6 +30,7 @@ import { brainLabel, readStoredBrain, restoredSessionName } from './asst-state.j
 import { closeMenu, isMenuOpen, openMenu } from './asst-menu.js';
 import { injectAssistantSidepanelStyles } from './asst-sidepanel-styles.js';
 import { createMascot, mascotCameoSvg } from '../synabun-mascot.js';
+import { createTutorialPreview } from '../ui-tutorial-preview.js';
 
 const PANEL_OWNER = 'assistant-sidepanel';
 const HOST_ID = 'sidepanel';
@@ -55,6 +56,7 @@ let _toastTimer = null;
 let _renaming = false;
 const _tabs = [];   // { sessionId, viewport, toolbar, ctl, pill, label, userRenamed, status, brain }
 let _activeIdx = -1;
+let _tourPresenting = false;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -408,13 +410,13 @@ function focusSession(sessionId, { prompt = '' } = {}) {
   if (prompt) _tabs[idx].ctl?.send(prompt);
 }
 
-async function startSession() {
+async function startSession(prompt = '') {
   if (_starting || _tabs.length) return;
   _starting = true;
   _startError = '';
   renderPlaceholder('starting');
   try {
-    const res = await openAssistant({ host: HOST_ID });
+    const res = await openAssistant(prompt ? { host: HOST_ID, prompt } : { host: HOST_ID });
     if (!_tabs.length) renderPlaceholder(res ? null : 'failed');
   } finally {
     _starting = false;
@@ -563,8 +565,8 @@ function applyVisibility(nextVisible) {
   const tab = activeTab();
   if (_visible) {
     state.lastActivePanel = 'assistant';
-    if (!_tabs.length) startSession();
-    else if (tab) {
+    if (!_tabs.length && !_tourPresenting) startSession();
+    else if (tab && !_tourPresenting) {
       if (tab.status === 'done') tab.status = 'idle';
       try { tab.ctl?.onShown(); } catch { /* ignore */ }
       noteAssistantFocus(tab.sessionId, HOST_ID);
@@ -615,6 +617,67 @@ export function isAssistantPanelOpen() {
 /** Showing the panel starts nothing: it has a session tab to show (with none, opening it starts a session). */
 export function assistantPanelPeekable() {
   return !assistantBlocked() && _tabs.length > 0;
+}
+
+/**
+ * Present the panel for the Workspace tour (ui-tutorial.js), reversibly: it never
+ * creates a session. The tour plays on the active tab when its empty state shows
+ * its character (the tab's own controls, composer and director: tourHost());
+ * otherwise (no tab, or a conversation on screen) on a session-free preview laid
+ * over the tab. Returns { host, live, restore({ reason }) } or null when the
+ * Assistant is blocked. restore() puts back the panel's visibility, the docked
+ * peers and the last-active panels, unless the tour ended on its hand-off to a
+ * live tab ('done'): then the panel stays and the tab's composer takes the focus.
+ */
+export function beginAssistantTour({ onPreviewSend = () => {} } = {}) {
+  if (assistantBlocked()) return null;
+  ensurePanel();
+  const wasVisible = _visible;
+  const previousPanel = state.lastActivePanel;
+  const previousSidepanel = state.lastActiveSidepanel;
+  const peers = ['#topright-claude-panel-btn', '#topright-codex-panel-btn', '#topright-opencode-panel-btn']
+    .map(s => document.querySelector(s)).filter(b => b?.classList.contains('active'));
+  _tourPresenting = true;
+  const tab = activeTab();
+  let liveHost = null;
+  try { liveHost = tab?.ctl?.tourHost?.() || null; } catch { liveHost = null; }
+  const preview = liveHost ? null : createTutorialPreview(_panel, { onSend: (text) => onPreviewSend(text) });
+  if (preview) _panel.classList.add('tour-covering');
+  setVisible(true);
+  let restored = false;
+  const host = liveHost || preview.host;
+  return {
+    host,
+    live: !!liveHost,
+    /**
+     * The user sent `text` from the preview's composer (after restore({ reason: 'sent' })):
+     * with no session, it starts one with that message (the user's own send); with a
+     * conversation on screen, it becomes that conversation's draft, never sent for them.
+     */
+    deliver(text) {
+      const message = String(text || '').trim();
+      if (!message) return;
+      const current = activeTab();
+      if (current?.ctl) { focusSession(current.sessionId); current.ctl.insertText?.(message); current.ctl.focus?.(); return; }
+      startSession(message);
+    },
+    restore({ reason = 'skip' } = {}) {
+      if (restored) return;
+      restored = true;
+      closeMenu();
+      preview?.destroy();
+      _panel.classList.remove('tour-covering');
+      _tourPresenting = false;
+      const keep = (reason === 'done' && !!liveHost) || reason === 'sent';
+      if (keep) {
+        if (tab && findTab(tab.sessionId)) { try { tab.ctl?.onShown(); } catch { /* ignore */ } }
+        return;
+      }
+      if (!wasVisible) setVisible(false);
+      for (const button of peers) if (!button.classList.contains('active')) button.click();
+      state.lastActivePanel = previousPanel; state.lastActiveSidepanel = previousSidepanel;
+    },
+  };
 }
 
 /** The top-right SynaBun button. */

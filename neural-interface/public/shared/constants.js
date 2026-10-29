@@ -29,6 +29,7 @@ export const KEYS = {
   PANEL_PREFIX:        'neural-panel-',
   NODE_POS_3D:         'synabun-node-positions',
   NODE_POS_2D:         'synabun-node-positions-2d',
+  VIEW_VARIANT:        'neural-view-variant',    // canonical memory map variant; legacy 2D preferences migrate at boot
   MAP_VIEW:            'neural-map-view',        // 3D memory map options {neighbors, recency, grid}
   INTERFACE_CONFIG:    'neural-interface-config',
   EXPLORER_CAT_ORDER:  'neural-explorer-cat-order',
@@ -72,6 +73,7 @@ export const KEYS = {
   TUTORIAL_SKIPPED:    'neural-tutorial-skipped',
   TUTORIAL_STEP:       'neural-tutorial-step',
   TUTORIAL_STARTED:    'neural-tutorial-started',
+  TOUR_TIPS:           'neural-tour-tips',
   ONBOARDING_EXPLORE:  'neural-onboarding-explore',
   ONBOARDING_CLI:      'neural-onboarding-cli',
   ONBOARDING_MODEL:    'neural-onboarding-model',
@@ -120,7 +122,6 @@ export const DEFAULT_KEYBINDS = {
   'toggle-help':         '?',
   'toggle-explorer':     'f',
   'toggle-focus-mode':   'v',
-  'toggle-minimap':      'm',
   'open-keybinds':       'n',
   'launch-assistant':    'a',
   'toggle-assistant':    'Ctrl+a',
@@ -146,7 +147,6 @@ export const KEYBIND_META = {
   'toggle-help':         { label: 'Toggle Help',           group: 'Navigation' },
   'toggle-explorer':     { label: 'Toggle Explorer',       group: 'Navigation' },
   'toggle-focus-mode':   { label: 'Toggle Focus Mode',     group: 'Navigation' },
-  'toggle-minimap':      { label: 'Toggle Minimap',        group: 'View' },
   'open-settings':       { label: 'Open Settings',          group: 'Settings' },
   'open-keybinds':       { label: 'Open Keybinds',         group: 'Settings' },
   'launch-assistant':    { label: 'Assistant',             group: 'Launch App', icon: 'assistant' },

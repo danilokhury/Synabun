@@ -64,7 +64,7 @@ export const DEFAULT_BRAIN = Object.freeze({
   effort: null,
   agent: null,
   project: null,
-  mcpProfile: '',
+  tools: Object.freeze(['all']),
   accountId: null,
   permissionMode: 'default',
   planMode: false,
@@ -105,7 +105,7 @@ export function normalizeBrain(raw, fallback = DEFAULT_BRAIN) {
     effort: str(src.effort) || null,
     agent: provider === 'opencode' ? (str(src.agent) || null) : null,
     project: str(src.project ?? src.cwd) || null,
-    mcpProfile: str(src.mcpProfile),
+    tools: provider === 'opencode' ? (Array.isArray(src.tools) ? [...src.tools] : null) : ['all'],
     accountId: ACCOUNT_PROVIDERS.has(provider) ? (str(src.accountId) || null) : null,
     permissionMode: modes.some(m => m.id === mode) ? mode : 'default',
     planMode: PLAN_MODE_PROVIDERS.has(provider) && (src.planMode === true || legacyPlan),
@@ -145,7 +145,7 @@ function pickDefault(list) {
  *   efforts: { [provider]: [{ id, tier? }] },
  *   accounts: { [provider]: [{ id, label }] },
  *   agents: [{ name, mode? }],                 // OpenCode
- *   mcpProfiles: { [id]: { label } }, defaultMcpProfile,
+ *   toolCatalog: { default, groups },
  *   projects: [{ path, label }],
  * }
  */
@@ -188,14 +188,8 @@ export function resolveBrainDefaults(brain, catalog = {}) {
     b.accountId = null;
   }
 
-  const profiles = catalog.mcpProfiles && typeof catalog.mcpProfiles === 'object' ? catalog.mcpProfiles : null;
-  if (profiles) {
-    const ids = Object.keys(profiles);
-    if (ids.length && !ids.includes(b.mcpProfile)) {
-      b.mcpProfile = ids.includes(catalog.defaultMcpProfile) ? catalog.defaultMcpProfile : (ids.includes('full') ? 'full' : ids[0]);
-    }
-  } else if (!b.mcpProfile && catalog.defaultMcpProfile) {
-    b.mcpProfile = catalog.defaultMcpProfile;
+  if (b.provider === 'opencode' && b.tools == null && catalog.toolCatalog) {
+    b.tools = [...new Set([...(catalog.toolCatalog.default || []).filter(id => id !== 'git'), 'browser'])];
   }
 
   if (!b.project && Array.isArray(catalog.projects) && catalog.projects.length === 1) {
@@ -285,7 +279,7 @@ export function emptyProjectView(project, projects = [], tr = (_key, fallback, p
 export function brainRequiresSwitch(a, b) {
   const x = normalizeBrain(a);
   const y = normalizeBrain(b);
-  return x.provider !== y.provider || x.accountId !== y.accountId || x.mcpProfile !== y.mcpProfile;
+  return x.provider !== y.provider || x.accountId !== y.accountId || JSON.stringify(x.tools) !== JSON.stringify(y.tools);
 }
 
 // ── Runs ────────────────────────────────────────────────────────────────────
@@ -295,9 +289,11 @@ export function isTerminalRunStatus(status) {
 }
 
 // Dispatcher views carry `state` (queued, awaiting_route, starting, running,
-// idle, awaiting_permission, completed, failed, stopped, interrupted); runtime
-// descriptors (sidepanel:run-*) carry `status`. The tray reads `status`.
-const STATE_STATUS = { queued: 'queued', awaiting_route: 'queued', starting: 'starting', running: 'running', idle: 'running', awaiting_permission: 'running' };
+// idle, awaiting_permission, suspended, resuming, completed, failed, stopped,
+// interrupted); runtime descriptors (sidepanel:run-*) carry `status`. The tray
+// reads `status`. A run a server restart suspended is still running; one being
+// resumed is starting.
+const STATE_STATUS = { queued: 'queued', awaiting_route: 'queued', starting: 'starting', running: 'running', idle: 'running', awaiting_permission: 'running', suspended: 'running', resuming: 'starting' };
 
 export function runStatusFromState(state) {
   const value = str(state);

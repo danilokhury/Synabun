@@ -7,7 +7,7 @@
 import { normalizeComputerMode, normalizeProvider, normalizeRouteMode } from './asst-state.js';
 
 export const SLASH_COMMANDS = [
-  { name: 'dispatch', usage: '/dispatch <provider> [--model m] [--effort e] [--agent a] [--project p] [--mcp profile] [--account id] [--ask] [--title "t"] <task>', descKey: 'assistant.slash.dispatch', desc: 'Dispatch a task to a sidepanel agent' },
+  { name: 'dispatch', usage: '/dispatch <provider> [--model m] [--effort e] [--agent a] [--project p] [--tools a,b] [--account id] [--ask] [--title "t"] <task>', descKey: 'assistant.slash.dispatch', desc: 'Dispatch a task to a sidepanel agent' },
   { name: 'agents', usage: '/agents [all]', descKey: 'assistant.slash.agents', desc: 'List dispatched runs' },
   { name: 'recall', usage: '/recall <query>', descKey: 'assistant.slash.recall', desc: 'Search memories' },
   { name: 'remember', usage: '/remember <text>', descKey: 'assistant.slash.remember', desc: 'Store a memory' },
@@ -17,7 +17,7 @@ export const SLASH_COMMANDS = [
   { name: 'models', usage: '/models [list | archived | hide <id…> | show <id…>]', descKey: 'assistant.slash.models', desc: 'Switch models off or on for the Assistant (or open the Models list)' },
   { name: 'budget', usage: '/budget', descKey: 'assistant.slash.budget', desc: 'Set the session budget and view provider shares' },
   { name: 'computer', usage: '/computer [on|off]', descKey: 'assistant.slash.computer', desc: 'Let the assistant use your Mac' },
-  { name: 'stop', usage: '/stop [runId|all]', descKey: 'assistant.slash.stop', desc: 'Stop a run, everything, or the current turn' },
+  { name: 'stop', usage: '/stop [runId|title|all]', descKey: 'assistant.slash.stop', desc: 'Stop a run, everything, or the current turn' },
   { name: 'new', usage: '/new [provider]', descKey: 'assistant.slash.new', desc: 'Start a fresh session' },
   { name: 'resume', usage: '/resume [sessionId]', descKey: 'assistant.slash.resume', desc: 'Resume a previous session' },
   { name: 'compact', usage: '/compact', descKey: 'assistant.slash.compact', desc: 'Compact the context' },
@@ -33,7 +33,7 @@ export const DISPATCH_FLAGS = {
   effort: 'effort', e: 'effort',
   agent: 'agent',
   project: 'project', p: 'project', cwd: 'project',
-  mcp: 'mcp', profile: 'mcp',
+  tools: 'tools',
   account: 'account', a: 'account',
   title: 'title', t: 'title',
   budget: 'budget',
@@ -219,10 +219,10 @@ export function matchSlashCommands(query) {
 
 /**
  * Build the POST /api/assistant/dispatch body from a parsed /dispatch command.
- * Only explicit flags set model/effort — the brain's project, MCP profile and
+ * Only explicit flags set model/effort — the brain's project and
  * (same-provider) account are inherited, models are left to the server default.
  */
-export function buildDispatchSpec(parsed, brain = {}, { assistantSessionId = null } = {}) {
+export function buildDispatchSpec(parsed, brain = {}, { assistantSessionId = null, toolCatalog = null } = {}) {
   if (!parsed || parsed.name !== 'dispatch' || parsed.error) return null;
   const o = parsed.options || {};
   const spec = {
@@ -236,8 +236,7 @@ export function buildDispatchSpec(parsed, brain = {}, { assistantSessionId = nul
   if (o.model) spec.model = o.model;
   if (o.effort) spec.effort = o.effort;
   if (o.agent) spec.agent = o.agent;
-  const mcp = o.mcp || brain.mcpProfile;
-  if (mcp) spec.mcpProfile = mcp;
+  if (o.tools !== undefined) spec.tools = String(o.tools).split(',').map(id => id.trim()).filter(Boolean);
   const account = o.account || (brain.provider === parsed.provider ? brain.accountId : null);
   if (account) {
     if (parsed.provider === 'codex') spec.codexAccountId = account;
@@ -247,6 +246,9 @@ export function buildDispatchSpec(parsed, brain = {}, { assistantSessionId = nul
   if (o.budget !== undefined && Number.isFinite(Number(o.budget))) spec.budgetUsd = Number(o.budget);
   if (o.minutes !== undefined && Number.isFinite(Number(o.minutes))) spec.maxMinutes = Number(o.minutes);
   if (o.browser) spec.usesBrowser = true;
+  // A browser-reading slash launch uses the workspace guard, just like a routed browser task.
+  // Group metadata comes from the catalog, never from a second list of browser ids.
+  if (o.browser || (spec.tools || []).some(id => id === 'all' || toolCatalog?.groups?.some(group => group.id === id && group.browser))) spec.capability = 'workspace';
   if (assistantSessionId) spec.assistantSessionId = assistantSessionId;
   return spec;
 }

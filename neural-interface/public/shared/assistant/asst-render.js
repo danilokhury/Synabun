@@ -35,7 +35,10 @@
 // effort its prose: asst-followups.js) and, under an error that is a usage
 // limit, the waiting card with its countdown (asst-limit-wait.js); a limited
 // run's card shows the same waiting card. The user's next prompt answers
-// them or leaves them stale, and so does a new turn (settleOffers).
+// them or leaves them stale, and so does a new turn (settleOffers). A card
+// that asks and is still open is lifted to the transcript's bottom while it
+// waits (asst-ask-tail.js), so text and tool output streaming in after it
+// never bury it; once answered it goes back under its row.
 // A follow-ups card and the question cards the panel appends (appendNode with
 // an `_ask`) are presented by the mascot (asst-ask.js): the newest one still
 // open is the character on screen, its face a live rig (liveAsk,
@@ -47,7 +50,7 @@ import { closeMenu, isMenuOpen } from './asst-menu.js';
 import { computerToolName, describeComputerAction, frameUrls, markerPercent, openFrameLightbox, parseComputerResult, swapImage } from './asst-computer.js';
 import * as mascotLib from '../synabun-mascot.js';
 import { isReducedMotion, subscribe } from '../synabun-ticker.js';
-import { KIND_SPECS, callOutcome, commandOf, editDiff, editPaths, fmtDuration, groupSubject, joinCut, kindOf, maskEcho, mcpServerOf, middleEllipsis, planState, plural, prettyServer, receiptSentence, redactInput, resultDetail, sayCall, shouldFoldNarration, stationAggregate, stationKey, targetKey, toolWords, verbText } from './asst-tool-kinds.js';
+import { KIND_SPECS, callOutcome, commandOf, editDiff, editPaths, fmtDuration, groupSubject, headEllipsis, kindOf, maskEcho, mcpServerOf, middleEllipsis, planState, plural, prettyServer, receiptSentence, redactInput, resultDetail, sayCall, shouldFoldNarration, stationAggregate, stationKey, targetKey, toolWords, verbText, wrapRuns } from './asst-tool-kinds.js';
 import { injectRackStyles } from './asst-rack-styles.js';
 import { injectSceneStyles } from './asst-scene-styles.js';
 import { activityScene, compactActivity, isLivePhase, runChip, sceneOfClass, sceneSvg, stagePhase } from './asst-scenes.js';
@@ -57,7 +60,9 @@ import { sanitizeHtmlString, sanitizeInto } from './asst-sanitize.js';
 import { automationView } from './asst-automation.js';
 import { guessFollowups, splitFollowups } from './asst-followups.js';
 import { createFollowupsCard } from './asst-followups-card.js';
+import { createAskTail } from './asst-ask-tail.js';
 import { limitFromText } from './asst-limit.js';
+import { createLimitDock } from './asst-limit-dock.js';
 import { createLimitWait } from './asst-limit-wait.js';
 
 // ── Markdown (lazy marked, the vendored build the sidepanels use too) ───────────────
@@ -348,8 +353,8 @@ function limitRetryTarget(run) {
 
 /**
  * A run a provider's usage limit stopped (run.limit, lib/assistant-dispatch.js): the waiting card
- * (asst-limit-wait.js) under its meta line, counting to the reset; Retry now runs it again on the
- * same model. Never while the run works again, and not in the agents tray (compact). → shown or not.
+ * is registered with the conversation's single bottom dock; a standalone card can own its wait.
+ * Retry now runs it again on the same model. Never while running or in the compact agents tray.
  */
 function syncRunLimit(card, run, opts, t) {
   const limit = run.limit && typeof run.limit === 'object' ? run.limit : null;
@@ -357,9 +362,12 @@ function syncRunLimit(card, run, opts, t) {
   const show = !opts.compact && !!limit && tone !== 'running' && tone !== 'queued' && !run.removed;
   let wait = card._limitWait || null;
   if (!show) {
+    (opts.onLimitWait || card._runOpts?.onLimitWait)?.(run, null);
     if (wait) { wait.destroy(); wait.el.remove(); card._limitWait = null; }
     return false;
   }
+  const shared = opts.onLimitWait || card._runOpts?.onLimitWait;
+  if (shared) { shared(run, show && !limit.retriedAt && !run.escalation?.started ? limit : null); return show; }
   if (!wait || !wait.el.isConnected) {
     const onEscalate = opts.onEscalate || card._runOpts?.onEscalate;
     wait = createLimitWait({
@@ -481,7 +489,7 @@ const PREVIEW_LINES = 5;
 const THINK_PREVIEW_LINES = 10;
 const MAX_DIFF_LINES = 400; // an edit's mini diff draws this many lines; "Show full input" draws the rest
 // The empty state's suggestions (asst-panel.js ids) and the kind each one is about.
-const SUGGESTION_KINDS = { computer: 'computer', web: 'web', fix: 'edit', schedule: 'plan', remember: 'memory' };
+const SUGGESTION_KINDS = { computer: 'computer', web: 'web', fix: 'edit', skill: 'skill', schedule: 'plan', remember: 'memory' };
 
 /**
  * createRenderer(transcriptEl, hooks)
@@ -510,6 +518,9 @@ export function createRenderer(transcriptEl, hooks = {}) {
   const autoRows = new Map(); // traceId → the turn's automation trace row
   let working = null;
   let workingFace = null; // the "Thinking" row's character: { still, rig?, el, target? } (syncWorkingFace)
+  // The open card's slot under every row (asst-ask-tail.js): a card that waits on the user is drawn
+  // there, above the "Working…" row, until it is answered; rows appended meanwhile go above it.
+  const askTail = createAskTail($msgs, { anchor: () => (working?.parentNode === $msgs ? working : null) });
   let followTail = true;
   let emptyEl = null;
   let hero = null; // the empty state's character: { rig, el, box, parked, leaving, held, dock, egg, target }
@@ -531,8 +542,8 @@ export function createRenderer(transcriptEl, hooks = {}) {
   let lastDirect = null; // the last one approved since the user's prompt: a "do it here" continuation turn takes it again
   let turnSeq = 0; // turns this renderer has seen start (showWorking)
   let reattachRunning = null; // what the last reattach said: a turn runs (true), none (false), not asked yet (null)
-  // What a turn left for the user to click: follow-up cards under its messages (asst-followups-card.js) and
-  // the waiting card of a usage limit (asst-limit-wait.js). The user's next prompt answers them or they go
+  // What a turn left for the user to click: follow-up cards under its messages (asst-followups-card.js).
+  // The user's next prompt answers them or they go
   // stale, and so does a new turn; live and from the journal alike, so a reload draws the same states.
   const offers = new Set(); // { el, set, settle(text) → answered, stale() }
   // The cards the mascot presents (asst-ask.js): follow-ups cards and the question cards the panel appends.
@@ -540,8 +551,6 @@ export function createRenderer(transcriptEl, hooks = {}) {
   const askCards = new Set(); // { el, presenter, isOpen(), onChange, seq }
   let askSeq = 0;
   let lastTextRow = null; // the newest root message since the user's last prompt: the one a guess reads
-  let turnLimit = null; // the Assistant's own limit card of this turn (one per turn: its error and its result agree)
-  let latestLimit = null; // the newest such card, past its turn too: a limit report that arrives late still sets its clock
 
   // ── Activity racks ──
   // Every burst of agent work (tool calls, thinking, short narration) is one
@@ -611,6 +620,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
     if (step.ghost && step.type === 'call' && !Object.keys(step.input || {}).length) { say.text = '…'; say.detail = '…'; say.segments = null; say.mono = false; say.meta = []; }
     return say;
   };
+  const limitDock = createLimitDock($msgs, { t });
   const nowMs = () => (clockAt ?? Date.now());
   const isTimed = () => !muted || clockAt != null;
   const locale = () => (typeof document !== 'undefined' && document.documentElement?.lang) || 'en';
@@ -815,34 +825,40 @@ export function createRenderer(transcriptEl, hooks = {}) {
   function visibleMascot() {
     if (hero?.rig) return hero.target;
     const ask = liveAsk();
-    if (ask?.presenter.isLive()) return ask.presenter.target;
+    if (ask?.presenter?.isLive?.()) return ask.presenter.target;
     return newestStage()?.target || workingFace?.target || null;
   }
 
   // ── Cards the mascot presents ──
-  /** A follow-ups card or a question card (its `_ask`): its face may be the character on screen while it is open. */
+  /**
+   * A follow-ups card or a question card (its `_ask`): its face may be the character on screen while it is
+   * open. Every ask — a route card too, which has no face — waits at the transcript's bottom until answered.
+   */
   function registerAsk(handle) {
-    if (!handle?.presenter || askCards.has(handle)) return;
+    if (!handle?.el || askCards.has(handle)) return;
     handle.seq = (askSeq += 1);
-    handle.onChange = () => mascotChanged();
+    handle.onChange = () => { askTail.sync(); mascotChanged(); };
     askCards.add(handle);
+    askTail.pin(handle);
     mascotChanged();
   }
 
-  /** The newest card that is still open (answers can still be picked): the one whose face is live. */
+  /** The newest card with a face that is still open (answers can still be picked): the one whose face is live. */
   function liveAsk() {
     let best = null;
     for (const handle of [...askCards]) {
-      if (!handle.el?.isConnected) { askCards.delete(handle); handle.presenter.destroy(); continue; }
-      if (!handle.isOpen() || (best && best.seq > handle.seq)) continue;
+      if (!handle.el?.isConnected) { askCards.delete(handle); handle.presenter?.destroy?.(); continue; }
+      // A route card asks, but has no face of its own: it waits at the bottom without taking the character.
+      if (!handle.presenter || !handle.isOpen() || (best && best.seq > handle.seq)) continue;
       best = handle;
     }
     return best;
   }
 
   function dropAsks() {
-    for (const handle of askCards) { try { handle.presenter.destroy(); } catch { /* gone */ } }
+    for (const handle of askCards) { try { handle.presenter?.destroy?.(); } catch { /* gone */ } }
     askCards.clear();
+    askTail.clear();
   }
 
   function mascotChanged() {
@@ -855,12 +871,12 @@ export function createRenderer(transcriptEl, hooks = {}) {
     while (rows.length > MAX_MESSAGES && rows[0] !== working) rows[0].remove();
   }
 
-  /** Insert a row before "Working…" so the indicator stays the last row. */
+  /** Insert a row before the open cards (if any) and before "Working…", so the indicator stays the last row. */
   function append(node, scope = rootScope, { park = false } = {}) {
     hideEmpty({ park });
-    if (scope.container === $msgs && working && working.parentNode === $msgs) $msgs.insertBefore(node, working);
+    if (scope.container === $msgs) askTail.insert(node);
     else scope.container.appendChild(node);
-    if (scope === rootScope) prune();
+    if (scope === rootScope) { prune(); askTail.sync(); }
     // Text, a card, a notice…: the parked hero would sit on it. The prompt and a rack leave it to settleHero().
     if (hero?.parked && scope === rootScope && !node._rack && !node.classList.contains('msg-user')) dismissHero();
     if (racks.size) syncRacks();
@@ -993,49 +1009,29 @@ export function createRenderer(transcriptEl, hooks = {}) {
   const sameText = (a, b) => String(a ?? '').replace(/\s+/g, ' ').trim().toLowerCase() === String(b ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
 
   /**
-   * An error that is a provider's usage limit (asst-limit.js): the waiting card right under it, one per
-   * turn. The reset time is the session's own limit report while live (hooks.limitInfo: the Claude SDK's
+   * A provider's usage limit (asst-limit.js) updates the conversation's single bottom countdown.
+   * The reset time is the session's own limit report while live (hooks.limitInfo: the Claude SDK's
    * rate_limit_info), else the one the message names, read from when it was written. Retry now sends one
    * message that retries the blocked work.
    */
-  function offerLimitWait(text, { brainError = false } = {}) {
+  function offerLimitWait(text, { brainError = false, limit = null } = {}) {
     const read = limitFromText(text, { now: nowMs() });
-    let info = null;
-    if (!muted) { try { info = hooks.limitInfo?.() || null; } catch { info = null; } }
-    const reported = info?.status === 'rejected' && Number(info.resetsAt) > nowMs();
+    let info = limit;
+    if (!info && !muted) { try { info = hooks.limitInfo?.() || null; } catch { info = null; } }
+    const reported = info?.status === 'rejected';
     // The brain's own error while the session's report says the limit holds is that limit, whatever its words.
     if (!read && !(brainError && reported)) return null;
-    const resetsAt = reported ? info.resetsAt : read.resetsAt;
-    if (turnLimit?.wait.el.isConnected) {
-      if (resetsAt) turnLimit.wait.update({ resetsAt });
-      return turnLimit.wait;
-    }
+    const resetsAt = reported ? info.resetsAt : read?.resetsAt;
     const retryText = t('assistant.limitWait.continue', 'The usage limit has reset. Retry what was blocked and continue where you left off.');
     let provider = '';
-    try { provider = providerShortLabel(hooks.brainProvider?.() || ''); } catch { provider = ''; }
-    const wait = createLimitWait({ t, resetsAt, since: nowMs(), provider, onRetry: () => hooks.onLimitRetry?.(retryText) });
-    const { row, wrap } = assistantRow(rootScope);
-    row.classList.add('asst-limit-row');
-    wrap.appendChild(wait.el);
-    const offer = {
-      el: wait.el,
-      set: null,
-      wait,
-      settle: (reply) => { if (sameText(reply, retryText)) { wait.retried(); return true; } wait.stale(); return false; },
-      stale: () => wait.stale(),
-    };
-    turnLimit = offer;
-    latestLimit = offer;
-    offers.add(offer);
-    enterRow(row);
-    return wait;
+    try { provider = providerShortLabel(hooks.brainProvider?.() || ''); } catch { /* unknown */ }
+    return limitDock.set('brain', { resetsAt, since: nowMs(), provider, onRetry: () => { limitDock.set('brain', null); hooks.onLimitRetry?.(retryText); } });
   }
 
   /** The session's limit report changed (assistant:limit): this turn's waiting card counts to its reset time. */
   function noteLimit(limit) {
-    // update() leaves a card that was retried or left behind as it is.
-    if (!latestLimit?.wait.el.isConnected || limit?.status !== 'rejected' || !limit.resetsAt) return;
-    latestLimit.wait.update({ resetsAt: limit.resetsAt });
+    if (limit?.status === 'rejected') offerLimitWait('', { brainError: true, limit });
+    else if (limit?.status && limit.status !== 'rejected') limitDock.set('brain', null);
   }
 
   function copyText(text) {
@@ -1437,10 +1433,10 @@ export function createRenderer(transcriptEl, hooks = {}) {
     return prev;
   }
 
-  /** The scope's last row, skipping "Working…" and rows folding into a rack. */
+  /** The scope's last row, skipping "Working…", the open card's slot and rows folding into a rack. */
   function tailRow(scope) {
     let node = scope.container.lastElementChild;
-    while (node && (node === working || node.classList.contains('asst-folding'))) node = node.previousElementSibling;
+    while (node && (node === working || node === askTail.slot || node.classList.contains('asst-folding'))) node = node.previousElementSibling;
     return node;
   }
 
@@ -1550,7 +1546,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
     row.innerHTML = `<div class="asst-rack-stage">
         <div class="asst-rack-set"><div class="asst-rack-face" aria-hidden="true"></div><div class="asst-rack-scene" aria-hidden="true"></div></div>
         <div class="asst-rack-caption"></div>
-        <div class="asst-bubble" aria-live="off" hidden><span class="asst-bubble-verb"></span><span class="asst-bubble-subject" role="button" tabindex="-1" aria-expanded="false"><span class="asst-bubble-text"></span><span class="asst-bubble-caret" aria-hidden="true"></span></span><span class="asst-bubble-meta"></span><span class="asst-bubble-err" hidden></span></div>
+        <div class="asst-bubble" aria-live="off" hidden><span class="asst-bubble-line"><span class="asst-bubble-verb"></span><span class="asst-bubble-subject" role="button" tabindex="-1" aria-expanded="false"><span class="asst-bubble-text"></span></span><span class="asst-bubble-meta"></span></span><span class="asst-bubble-err" hidden></span></div>
         <div class="asst-rack-sweep" aria-hidden="true"></div>
       </div>
       <button type="button" class="asst-rack-receipt" aria-expanded="false" aria-controls="${ledgerId}"><span class="asst-rack-receipt-face" aria-hidden="true"></span><span class="asst-rack-receipt-text"></span><span class="asst-rack-receipt-failed" hidden></span><span class="asst-rack-receipt-clock"></span><span class="asst-rack-chev" aria-hidden="true">&#x203A;</span></button>
@@ -1564,7 +1560,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
       // The direct route's class whose scene the stage shows: set here, or once when a reopened conversation's route
       // resumes (lendRouteScene); a rack never loses its scene.
       sceneClass: nested ? '' : directSceneClass(), sceneId: '', sceneAt: -Infinity,
-      stage: { el: q('.asst-rack-stage'), set: q('.asst-rack-set'), face: q('.asst-rack-face'), scene: q('.asst-rack-scene'), caption: q('.asst-rack-caption'), bubble: q('.asst-bubble'), verb: q('.asst-bubble-verb'), subject: q('.asst-bubble-subject'), text: q('.asst-bubble-text'), meta: q('.asst-bubble-meta'), err: q('.asst-bubble-err') },
+      stage: { el: q('.asst-rack-stage'), set: q('.asst-rack-set'), face: q('.asst-rack-face'), scene: q('.asst-rack-scene'), caption: q('.asst-rack-caption'), bubble: q('.asst-bubble'), line: q('.asst-bubble-line'), verb: q('.asst-bubble-verb'), subject: q('.asst-bubble-subject'), text: q('.asst-bubble-text'), meta: q('.asst-bubble-meta'), err: q('.asst-bubble-err') },
       receipt: { btn: q('.asst-rack-receipt'), face: q('.asst-rack-receipt-face'), text: q('.asst-rack-receipt-text'), failed: q('.asst-rack-receipt-failed'), clock: q('.asst-rack-receipt-clock'), faceBuilt: false, pose: '', svg: null },
       ledger: q('.asst-rack-ledger'), statusEl: q('.asst-rack-status'), alertEl: q('.asst-rack-alert'), timelineEl: null, timelineSig: '',
       rig: null, target: null, held: false, holdUntil: 0, holdTimer: 0, pose: null, awake: null, awakeKey: null,
@@ -1855,6 +1851,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
     s.text.textContent = '';
     s.subject.removeAttribute('title');
     s.subject.className = 'asst-bubble-subject';
+    s.subject.hidden = false;
     s.subject.setAttribute('aria-expanded', 'false');
     s.meta.textContent = '';
     s.err.textContent = '';
@@ -1873,8 +1870,8 @@ export function createRenderer(transcriptEl, hooks = {}) {
   function activateRigs() {
     const ask = hero?.rig ? null : liveAsk();
     const askLive = !!ask && !calm();
-    for (const handle of askCards) handle.presenter.setLive(askLive && handle === ask);
-    const asking = askLive && ask.presenter.isLive();
+    for (const handle of askCards) handle.presenter?.setLive?.(askLive && handle === ask);
+    const asking = askLive && !!ask.presenter?.isLive?.();
     const newest = hero?.rig || asking ? null : newestStage();
     for (const rack of racks) if (rack.rig) rack.rig.setActive?.(rack === newest);
     hero?.rig?.setActive?.(true);
@@ -1988,29 +1985,38 @@ export function createRenderer(transcriptEl, hooks = {}) {
     const held = rack.waiting && step === waitingStep(rack);
     const verb = held ? t('assistant.rack.waiting', 'Waiting for you') : verbText(say.verb, running, t);
     const grouped = groupedSubject(rack, step);
-    const full = grouped || say.text;
+    // A thought with no words yet says only "Thinking" (the mascot's thought dots are the one busy sign):
+    // the subject's "…" placeholder stays for a call whose input is still streaming.
+    const bare = step.type === 'think' && say.text === '…';
+    // A command as the stage says it: one "…" however many paths its summary shortens (say.stage).
+    const full = bare ? '' : grouped || say.stage || say.text;
     const literal = !grouped && say.full ? say.full : full; // the command as written: the title and the opened bubble
     const open = rack.bubble.open;
-    // Narrow stages cut from the head, so the file name (the tail) survives. A small budget keeps a
-    // shorter tail (24 chars of it would not fit beside the verb).
-    const cut = subjectCut(rack);
-    const cutTo = (n) => (open ? literal : cut === 'head' ? headEllipsis(full, n) : middleEllipsis(full, n, Math.min(24, Math.max(8, n - 6))));
-    const shownText = cutTo(subjectBudget(rack, verb, cut));
-    const key = `${step.id}|${verb}|${shownText}|${say.muted ? 1 : 0}`;
     s.bubble.hidden = !full && !verb;
     s.bubble.dataset.state = held ? 'waiting' : running ? 'running' : step.state;
     s.bubble.dataset.kind = step.kind;
+    // The numbers first: they share the subject's line, so the cut below measures the room they leave.
+    paintBubbleMeta(rack, step, say, now);
+    // Narrow stages cut from the head, so the file name (the tail) survives. A small budget keeps a
+    // shorter tail (24 chars of it would not fit beside the verb). A subject already cut from its head
+    // (a streamed thought's tail) is cut from the head again: one "…", never two.
+    const cut = full.startsWith('…') ? 'head' : subjectCut(rack);
+    const cutTo = (n) => (open ? literal : cut === 'head' ? headEllipsis(full, n) : middleEllipsis(full, n, Math.min(24, Math.max(8, n - 6))));
+    const shownText = bare ? '' : cutTo(subjectBudget(rack, verb, cut));
+    const key = `${step.id}|${verb}|${shownText}|${say.muted ? 1 : 0}|${bare ? 1 : 0}`;
     if (key !== rack.bubble.key) {
       const changedStep = !rack.bubble.key.startsWith(`${step.id}|`);
       rack.bubble.key = key;
       const write = () => {
         s.verb.textContent = verb;
         s.subject.className = `asst-bubble-subject${say.mono ? ' is-mono' : ''}${say.muted ? ' is-muted' : ''}`;
+        s.subject.hidden = bare;
         const segments = grouped || open ? null : say.segments;
         writeSubject(s.text, segments, shownText);
         // The budget is an estimate (a long token wraps whole to the next line): what the two-line
         // clamp would hide is cut here instead, so the subject is never cut a second time.
-        const fitted = open ? shownText : fitSubject(s, shownText, cutTo, segments);
+        const fitted = open || bare ? shownText : fitSubject(s, shownText, cutTo, segments);
+        s.subject.classList.toggle('is-cut', fitted.startsWith('…'));
         if (literal !== fitted || open) s.subject.title = literal; else s.subject.removeAttribute('title');
       };
       if (swap && changedStep && !calm() && typeof s.subject.animate === 'function' && s.text.textContent) {
@@ -2023,7 +2029,6 @@ export function createRenderer(transcriptEl, hooks = {}) {
         };
       } else write();
     }
-    paintBubbleMeta(rack, step, say, now);
     const err = step.state === 'error' ? (step.detail || exitText(step)) : '';
     s.err.hidden = !err;
     if (s.err.textContent !== err) s.err.textContent = err;
@@ -2034,10 +2039,11 @@ export function createRenderer(transcriptEl, hooks = {}) {
   }
 
   /**
-   * How many characters of subject fit the bubble: two lines of the column
-   * beside the verb, measured on the laid-out stage. The text is cut in the
-   * middle so its tail (the file, the last argument) stays; on a narrow stage
-   * from the head (subjectCut).
+   * How many characters of subject fit the bubble: two lines of its one
+   * text flow, less the verb at the head and the numbers at the end,
+   * measured on the laid-out stage. The text is cut in the middle so its
+   * tail (the file, the last argument) stays; on a narrow stage from the
+   * head (subjectCut).
    */
   function subjectBudget(rack, verb, cut = 'middle') {
     const s = rack.stage;
@@ -2047,11 +2053,18 @@ export function createRenderer(transcriptEl, hooks = {}) {
     const bubble = s.bubble.hidden ? null : s.bubble.getBoundingClientRect();
     const beside = !bubble || bubble.left >= face.right - 1;
     const verbPx = Math.max(s.verb.getBoundingClientRect().width, verb.length * 7);
-    const column = width - 28 - 22 - (beside ? face.width + 8 : 0) - verbPx - 7;
+    // The numbers at the end of the line (painted first): a running call keeps a clock's room before it shows.
+    const metaPx = s.meta.textContent ? s.meta.getBoundingClientRect().width : 0;
+    const numbersPx = Math.max(metaPx, rack.bubble.step?.state === 'running' ? 28 : 0);
+    // The bubble's text column: the stage's 14px sides, the notch's 8px, the bubble's 10px sides.
+    const column = width - 28 - 8 - 20 - (beside ? face.width + 8 : 0);
     const perLine = Math.max(12, Math.floor(column / 7));
-    // Two lines, less what wrapping at token boundaries wastes (a head cut wraps anywhere: two full lines).
-    const lines = getComputedStyle(s.subject).whiteSpace === 'nowrap' ? 1 : cut === 'head' ? 2 : 1.7;
-    return Math.max(24, Math.min(240, Math.floor(perLine * lines) - 1));
+    // Two lines, less what wrapping at token boundaries wastes (a head cut is one tail: close to two full
+    // lines, a path's pieces wrapping at its separators); a guess on the generous side, since fitSubject
+    // cuts what the clamp would hide or a piece would push past the edge.
+    const lines = getComputedStyle(s.line).whiteSpace === 'nowrap' ? 1 : cut === 'head' ? 2 : 1.85;
+    const taken = Math.ceil((verbPx + 7 + (numbersPx ? numbersPx + 7 : 0)) / 7);
+    return Math.max(24, Math.min(240, Math.floor(perLine * lines) - taken - 1));
   }
 
   /** 'head' where the stylesheet says so (≤320 px: keep the tail), else 'middle'. */
@@ -2060,30 +2073,53 @@ export function createRenderer(transcriptEl, hooks = {}) {
   }
 
   /**
-   * "…ender-events.browser.mjs": the last `max` chars, from a token boundary when one is near. One "…":
-   * a token the subject already shortened at the start of that tail goes with the cut ("……/x.js").
+   * The subject's text, in its segments' spans (a read's dim folder, its
+   * bold name). A URL or path in it is one `.asst-bubble-piece` (nowrap) per
+   * piece with a <wbr> between them (wrapRuns): it wraps after "/" and at
+   * its other separators, never mid-word.
    */
-  function headEllipsis(text, max) {
-    const s = String(text ?? '');
-    if (s.length <= max) return s;
-    let tail = s.slice(s.length - Math.max(8, max - 1));
-    const cut = tail.search(/[\s/]/);
-    if (cut > 0 && cut < tail.length * 0.4) tail = tail.slice(tail[cut] === '/' ? cut : cut + 1);
-    return joinCut('', tail);
-  }
-
   function writeSubject(node, segments, text) {
     node.textContent = '';
-    if (Array.isArray(segments) && segments.length && segments.map(x => x.text).join('') === text) {
-      for (const seg of segments) node.appendChild(el('span', seg.cls ? `is-${seg.cls}` : '', seg.text));
-    } else node.textContent = text;
+    const segs = Array.isArray(segments) && segments.length && segments.map(x => x.text).join('') === text ? segments : null;
+    let end = 0;
+    const bounds = segs ? segs.map(seg => [end += seg.text.length, seg.cls]) : [[text.length, null]];
+    // text[from, to) into `host`, one span per segment it crosses.
+    const put = (host, from, to) => {
+      for (const [stop, cls] of bounds) {
+        if (from >= to) break;
+        if (stop <= from) continue;
+        const slice = text.slice(from, Math.min(stop, to));
+        host.appendChild(segs ? el('span', cls ? `is-${cls}` : '', slice) : document.createTextNode(slice));
+        from += slice.length;
+      }
+    };
+    let at = 0;
+    for (const run of wrapRuns(text)) {
+      if (!run.pieces) { put(node, at, at += run.text.length); continue; }
+      run.pieces.forEach((piece, i) => {
+        if (i) node.appendChild(document.createElement('wbr'));
+        put(node.appendChild(el('span', 'asst-bubble-piece')), at, at += piece.length);
+      });
+    }
   }
 
-  /** The bubble's subject cut shorter (`cutTo`, six steps at most) until its clamp hides none of it; the text it shows. */
+  /** A path piece wider than what is left of its line: it runs past the line's edge, where the line's overflow hides it. */
+  function pieceOverflows(s) {
+    const pieces = s.text.getElementsByClassName('asst-bubble-piece');
+    if (!pieces.length) return false;
+    const right = s.line.getBoundingClientRect().right + 0.5;
+    for (const piece of pieces) for (const r of piece.getClientRects()) if (r.right > right) return true;
+    return false;
+  }
+
+  /**
+   * The bubble's subject cut shorter (`cutTo`, six steps at most) until the line's clamp hides none of it
+   * (nor the numbers after it) and no path piece runs past its edge; the text it shows.
+   */
   function fitSubject(s, text, cutTo, segments) {
     let shown = text;
     let budget = shown.length;
-    for (let i = 0; i < 6 && budget > 12 && s.subject.scrollHeight > s.subject.clientHeight + 1; i += 1) {
+    for (let i = 0; i < 6 && budget > 12 && (s.line.scrollHeight > s.line.clientHeight + 1 || pieceOverflows(s)); i += 1) {
       budget = Math.floor(budget * 0.85);
       shown = cutTo(budget);
       writeSubject(s.text, segments, shown);
@@ -2112,7 +2148,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
     // A subagent's bubble follows its child: the step the agent is on now.
     if (step.kind === 'subagent' && step.children?.length) {
       const child = step.children.filter(c => c.type === 'call' || (c.state === 'running' && !c.stale)).reduce((a, b) => (!a || b.startedAt >= a.startedAt ? b : a), null);
-      if (child) parts.push(['m', middleEllipsis(stepSentence(child, child.state === 'running' && !child.stale), 60, 24)]);
+      if (child) parts.push(['m', middleEllipsis(stepSentence(child, child.state === 'running' && !child.stale, { stage: true }), 60, 24)]);
     }
     // ×N only for the same target again (a re-run, a re-read): a number the ledger agrees with.
     // Other calls in the same 800 ms burst read as a sentence instead.
@@ -2406,10 +2442,10 @@ export function createRenderer(transcriptEl, hooks = {}) {
     return t('assistant.rack.state.done', 'done');
   }
 
-  /** "Running npm test" / "Ran npm test". */
-  function stepSentence(step, running) {
+  /** "Running npm test" / "Ran npm test"; `stage`: as the stage bubble says it (say.stage). */
+  function stepSentence(step, running, { stage = false } = {}) {
     const say = sayOf(step);
-    return `${verbText(say.verb, running, t)} ${String(say.text || '').replace(/^\$ /, '')}`.trim();
+    return `${verbText(say.verb, running, t)} ${String((stage && say.stage) || say.text || '').replace(/^\$ /, '')}`.trim();
   }
 
   /** The receipt: one call says what it did; a burst says it in one sentence. */
@@ -2913,7 +2949,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
   function appendUser(text, { images = [], files = [], memories = [], origin = null, imageCount = 0 } = {}) {
     // The prompt answers what the last turn offered (one of its follow-ups, a retry), or it leaves it behind.
     settleOffers(String(text ?? ''));
-    turnLimit = null;
+    limitDock.set('brain', null);
     turnFrames = [];
     directRoute = null; // a new prompt is a new task: its own route decides
     lastDirect = null;
@@ -2983,7 +3019,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
     if (!turnActive) {
       // A new turn: what the last one offered and nobody took is no longer clickable.
       settleOffers();
-      turnLimit = null;
+      limitDock.set('brain', null);
       turn = { calls: 0, last: null, errored: false, answerRow: null };
       turnSeq += 1;
       if (directRoute && directRoute.turn == null) { // a route picked while no turn ran, or one the journal left running, is this turn's
@@ -3071,6 +3107,12 @@ export function createRenderer(transcriptEl, hooks = {}) {
       onStop: hooks.onStopRun,
       onRead: hooks.onReadRun,
       onEscalate: hooks.onEscalateRun,
+      onLimitWait: (run, limit) => limitDock.set(`run:${run.runId}`, limit ? {
+        resetsAt: limit.resetsAt || null,
+        since: Date.parse(limit.detectedAt || run.completedAt || '') || nowMs(),
+        provider: providerShortLabel(run.provider || 'claude-code'),
+        onRetry: () => { limitDock.set(`run:${run.runId}`, null); hooks.onEscalateRun?.(run.runId, limitRetryTarget(run)); },
+      } : null),
       result,
       keepSummary: true,
     };
@@ -3116,7 +3158,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
     if (!run?.runId) return null;
     noteRun(run);
     const card = runCards.get(run.runId);
-    if (!card?.isConnected) return null;
+    if (!card?.isConnected) { limitDock.set(`run:${run.runId}`, null); return null; }
     updateRunCard(card, run, runCardOpts()); // fresh options: the run's own lastResult, never a result the card was built with
     syncStage(run.runId, card, run);
     return card;
@@ -3456,8 +3498,8 @@ export function createRenderer(transcriptEl, hooks = {}) {
     // Under the reply once the turn has ended; a later snapshot (learning) never moves it again.
     const ended = ev.phase !== 'sent';
     if (fresh || (ended && !row.atEnd)) {
-      // Placed like any row (before "Working…"), but a status line of the harness never dismisses the hero.
-      if (working && working.parentNode === $msgs) $msgs.insertBefore(row.el, working);
+      // Placed like any row (above the open cards and before "Working…"), but a status line of the harness never dismisses the hero.
+      if (askTail.slot || (working && working.parentNode === $msgs)) askTail.insert(row.el);
       else $msgs.appendChild(row.el);
       if (ended) row.atEnd = true;
       prune();
@@ -3546,10 +3588,14 @@ export function createRenderer(transcriptEl, hooks = {}) {
         chip.addEventListener('blur', () => previewHero(null));
       }
       chip.appendChild(el('span', 'asst-chip-text', s.label));
+      if (s.meta) chip.appendChild(el('span', 'asst-chip-meta', s.meta));
       chip.addEventListener('click', () => {
-        // The picked starter keeps the gold on-state while its text is the draft (setDrafting clears it).
-        for (const other of host.querySelectorAll('.is-picked')) other.classList.remove('is-picked');
-        chip.classList.add('is-picked');
+        // The picked starter keeps the gold on-state while its text is the draft (setDrafting clears it);
+        // a row with an action (the Workspace tour) fills nothing, so it is never "picked".
+        if (!s.action) {
+          for (const other of host.querySelectorAll('.is-picked')) other.classList.remove('is-picked');
+          chip.classList.add('is-picked');
+        }
         hooks.onSuggestion?.(s.template, s);
       });
       host.appendChild(chip);
@@ -3800,7 +3846,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
         if (!parentId && !ev.is_error && !String(ev.subtype || '').startsWith('error')) guessOffer();
         hooks.onResult?.(ev);
         if (errorText && errorText !== lastErrorText) appendError(errorText);
-        if (!parentId) { lastErrorText = ''; rootScope.kept = null; turnLimit = null; releaseGrace(); }
+        if (!parentId) { lastErrorText = ''; rootScope.kept = null; releaseGrace(); }
         return true;
       }
       case 'system':
@@ -4002,12 +4048,11 @@ export function createRenderer(transcriptEl, hooks = {}) {
     if (rootScope.stream?.thinkTimer) clearTimeout(rootScope.stream.thinkTimer);
     scopes.clear();
     dropStages();
+    limitDock.clear();
     for (const offer of offers) { try { offer.wait?.destroy(); } catch { /* gone */ } }
     offers.clear();
     dropAsks();
     lastTextRow = null;
-    turnLimit = null;
-    latestLimit = null;
     for (const card of runCards.values()) { try { card._limitWait?.destroy(); } catch { /* gone */ } }
     runActivity.clear();
     runCards.clear();
@@ -4040,7 +4085,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
   return {
     el: $msgs,
     clear,
-    destroy: () => { hideWorking(); dropHero(); dropAll(); dropStages(); dropAsks(); },
+    destroy: () => { clear(); limitDock.destroy(); },
     appendUser,
     appendAssistantMarkdown,
     appendStatus,

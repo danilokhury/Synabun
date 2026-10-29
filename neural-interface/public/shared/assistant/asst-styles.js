@@ -345,6 +345,13 @@ export function injectAssistantStyles() {
     .asst-transcript > .asst-status + .asst-status,
     .asst-transcript > .asst-route-line + .asst-route-line { margin-top: 4px; }
     .asst-transcript > .asst-working { margin-top: 8px; }
+    /* The open card waits at the bottom (asst-ask-tail.js): under every row that arrives after it,
+       above the "Working…" row, until it is answered and goes back under its message. */
+    .asst-ask-tail { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+    .asst-ask-tail > * { margin-top: 0; }
+    /* The card sheet is injected after this one: restate its own gap margin at its specificity. */
+    .asst-ask-tail > .asst-followups.asst-ask,
+    .asst-ask-tail > .asst-control.asst-ask { margin-top: 0; }
 
     /* ── Empty state ────────────────────────────────────────────────────
        One column, one hierarchy: the character and the heading, then the
@@ -381,6 +388,9 @@ export function injectAssistantStyles() {
     .asst-suggestions .asst-chip.asst-suggestion.is-picked { background: var(--asst-pill-on-fill); box-shadow: inset 0 0 0 1px var(--asst-pill-on-ring); color: var(--asst-text); }
     .asst-suggestions .asst-chip.asst-suggestion.is-picked > .asst-icon { color: var(--asst-brand); }
     .asst-empty.is-drafting .asst-chip.asst-suggestion:not(.is-picked):not(:hover):not(:focus-visible) { opacity: .55; }
+    /* A starter's quiet aside (the Workspace tour's "· 2 min"): the row's own font, the faint tone. */
+    .asst-suggestions .asst-chip.asst-suggestion .asst-chip-meta { flex-shrink: 0; margin-left: 2px; color: var(--asst-text-4); font: inherit; font-size: 11.5px; white-space: nowrap; }
+    .asst-suggestions .asst-chip.asst-suggestion .asst-chip-meta::before { content: '· '; }
     /* The context line: the toolbar's Project field drawn once more, and Budget, as quiet sm text controls. */
     .asst-empty-project { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 2px 8px; max-width: 100%; margin-top: 10px; animation: asst-empty-in var(--asst-dur-moderate) var(--asst-ease-enter) backwards; animation-delay: calc(var(--i, 0) * 40ms); }
     .asst-empty-project .asst-dd.asst-empty-control-btn { --cap-h: var(--asst-pill-h-sm); --cap-r: var(--asst-pill-r-sm); --cap-px: var(--asst-pill-px-xs); --cap-gap: 4px; --cap-icon: 12px; --cap-fs: 11.5px; isolation: isolate; max-width: min(100%, 320px); color: var(--asst-text-2); }
@@ -1018,6 +1028,12 @@ export function injectAssistantStyles() {
     .asst-usage-run-tokens { color: var(--asst-text-3); font-family: var(--asst-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
 
     /* The provider's usage limit: one line under the gauge, replaced in place (never a transcript row). */
+    .asst-route-fields { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+    .asst-route-fields .asst-dd { min-width: 0; max-width: 100%; }
+    .asst-route-fields .asst-dd-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    .asst-limit-dock { position: sticky; bottom: 0; flex: none; z-index: 2; background: var(--asst-bg); }
+    .asst-limit-dock[hidden] { display: none; }
+    .asst-limit-dock .asst-limit-wait { margin: 8px 12px; }
     .asst-limit {
       flex: 0 0 auto;
       display: flex;
@@ -1421,6 +1437,8 @@ export function injectAssistantStyles() {
     /* Deny / Decline: a neutral ghost with ✕ (red only ever means failed). */
     .asst-btn-danger { background: transparent; box-shadow: inset 0 0 0 1px var(--asst-line-2); color: var(--asst-text-2); }
     .asst-btn-danger:hover:not(:disabled) { background: var(--asst-fill-1); box-shadow: inset 0 0 0 1px var(--asst-text-3); color: var(--asst-text); }
+    /* "Stop all" armed: it waits for a second press (asst-agents-dock.js), in the attention tone. */
+    .asst-dock-stopall[data-armed="true"], .asst-dock-stopall[data-armed="true"]:hover:not(:disabled) { background: var(--asst-fill-1); box-shadow: inset 0 0 0 1px var(--asst-pill-warn-ring); color: var(--asst-warn); }
     .asst-btn-icon { display: inline-flex; margin-left: -2px; }
     .asst-btn-icon svg { width: 12px; height: 12px; }
 

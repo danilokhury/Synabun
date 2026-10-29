@@ -239,7 +239,9 @@ function _toastEsc(s) {
 }
 
 export function showUpdateToast({ updates, errors, onClick } = {}) {
-  document.querySelectorAll('.update-check-toast').forEach(el => el.remove());
+  // One update toast at a time; the notice after an automatic restart (ui-crash-notice.js) wears the same toast
+  // and stays until it is dismissed.
+  document.querySelectorAll('.update-check-toast').forEach(el => { if (!el.classList.contains('crash-notice')) el.remove(); });
 
   const toast = document.createElement('div');
   toast.className = 'update-check-toast';

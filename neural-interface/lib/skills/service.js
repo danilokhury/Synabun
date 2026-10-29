@@ -1,3 +1,4 @@
+import { attachSkillOperations } from './operations.js';
 // ── The Skills Service ──
 // One service for everything that reads, drafts, checks, reviews and installs skills: the Studio (HTTP v2,
 // lib/skills/api-v2.js), the MCP `skill` tool (which calls HTTP v2), and the legacy install routes of server.js.
@@ -12,22 +13,22 @@
 // installation.changed, migration.changed), which drops the catalog's cache and reaches the pages as
 // `skills:changed` on the sync socket.
 
-import { mkdirSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdirSync, readdirSync, statSync } from 'node:fs';
+import { dirname, join, relative, sep } from 'node:path';
 import { PathConfineError, isPlainName, realPathOf } from '../path-confine.js';
 import { readConfinedFile, replaceFileAtomic } from '../confined-fs.js';
 import { collectFolder } from './bundle.js';
 import { folderDigest } from './library.js';
 import { readHeadOf, readSidecar } from './export.js';
 import { lintText, frontmatterData, asText } from './frontmatter.js';
-import { scanArtifact } from './scan.js';
+import { scanArtifact, withExternalScans, SCAN_ENGINE, SCAN_ENGINE_VERSION, SCAN_POLICY } from './scan.js';
 import { authorityDelta } from './reviews.js';
 import { effectiveInstallName, nameChecks } from './deploy.js';
 import { PROFILES, TARGET_PROFILE, lintForProfile, profileList, readInvocationIntent, getProfile } from '../../public/shared/skills/ss-profiles.js';
 import { analyzeResources, argumentDiagnostics } from '../../public/shared/skills/ss-resources.js';
 import { isEditableText } from '../../public/shared/skills/ss-doc.js';
 
-export const SERVICE_VERSION = 'skills-service-p3-2026-10-23';
+export const SERVICE_VERSION = 'skills-service-p5-2026-10-27';
 export const SERVICE_CAPABILITIES = Object.freeze([
   'roots', 'catalog', 'library', 'revisions', 'drafts', 'diff', 'profiles', 'lint-profiles', 'scan', 'reviews',
   'install-plan', 'install-native', 'rollback', 'verify', 'bridge-migration', 'shared-root-opt-in', 'events',
@@ -36,7 +37,20 @@ export const SERVICE_CAPABILITIES = Object.freeze([
   'catalog-file', 'compare-folder', 'export', 'catalog-updated', 'library-delete',
   // P3: drafting a skill with AI from sources (/creations, lib/skills/creation.js) and the skill-forge guide (/guide).
   'ai-create', 'skill-guide',
+  // Codex and OpenCode parity (2026-10-23): the automatic move of SynaBun's old bridges at start with its one-time
+  // notice and confirmed moves (/migrations/notice, `confirm`), the owner's assistants (config `assistants`), the
+  // one-click fix of a runtime setting that turns a skill off (/eligibility/enable; plans carry `eligibility`), the
+  // Codex picker words in agents/openai.yaml, and the `panel-reload` refresh kind.
+  'auto-migration', 'assistants-preference', 'eligibility-fix', 'codex-sidecar', 'runtime-refresh',
+  // The archived skills (deleted from the library) listed, and put back with their versions (GET /skills/archived,
+  // POST /skills/:id/restore).
+  'library-restore',
+  // P4: evaluations from the Test tab (/evals, lib/skills/evals.js): task and trigger cases, the description
+  // optimiser, results, history, export and the suite import.
+  'evals', 'usage', 'health', 'discover', 'packages', 'external-scanner-status',
 ]);
+
+export const ASSISTANT_RUNTIMES = Object.freeze(['claude', 'codex', 'opencode']);
 
 export class ServiceError extends PathConfineError {
   constructor(status, message, code, extra = {}) {
@@ -54,18 +68,25 @@ export class ServiceError extends PathConfineError {
  * @param {string|null} [o.bundledDir] PACKAGE_ROOT/skills
  * @param {string} [o.appVersion]
  * @param {(event) => void} [o.broadcast]
+ * @param {() => ({ claude?: boolean, codex?: boolean, opencode?: boolean }|null)} [o.installedRuntimes] which CLIs are
+ *   installed on this computer (server.js: the CLI resolver); null when not known
+ * @param {object} [o.runtimeChecks] lib/skills/runtime-checks.js (the owner's enable)
  */
-export function createSkillsService({ dataDir, roots, catalog, library, deployer, reviews, migration, ownership, bundledDir = null, appVersion = '', broadcast = () => {}, now = () => new Date().toISOString() }) {
+export function createSkillsService({ dataDir, roots, catalog, library, deployer, reviews, migration, ownership, bundledDir = null, appVersion = '', broadcast = () => {}, installedRuntimes = () => null, runtimeChecks = null, operationsOptions = {}, now = () => new Date().toISOString() }) {
+  library.setShippedNames(bundledNames);
   const configPath = join(dataDir, 'config.json');
   let bundledSyncedAt = 0;
 
   // ── Configuration ──
 
+  function readConfigFile() {
+    try { return JSON.parse(readConfinedFile(dataDir, configPath, { maxBytes: 64 * 1024, encoding: 'utf-8' })) || {}; } catch { return {}; }
+  }
+  /** The owner's choices: the shared folder, and the assistants installs go to by default (null: as detected). */
   function getConfig() {
-    try {
-      const parsed = JSON.parse(readConfinedFile(dataDir, configPath, { maxBytes: 64 * 1024, encoding: 'utf-8' }));
-      return { sharedAgentsRoot: parsed?.sharedAgentsRoot === true };
-    } catch { return { sharedAgentsRoot: false }; }
+    const parsed = readConfigFile();
+    const assistants = Array.isArray(parsed?.assistants) ? [...new Set(parsed.assistants.filter((r) => ASSISTANT_RUNTIMES.includes(r)))] : null;
+    return { sharedAgentsRoot: parsed?.sharedAgentsRoot === true, assistants };
   }
   function setConfig(patch = {}) {
     const next = { ...getConfig() };
@@ -73,11 +94,42 @@ export function createSkillsService({ dataDir, roots, catalog, library, deployer
       if (typeof patch.sharedAgentsRoot !== 'boolean') throw new ServiceError(400, 'sharedAgentsRoot is true or false.', 'invalid_config');
       next.sharedAgentsRoot = patch.sharedAgentsRoot;
     }
+    if (patch.assistants !== undefined) {
+      if (patch.assistants !== null && !(Array.isArray(patch.assistants) && patch.assistants.every((r) => ASSISTANT_RUNTIMES.includes(r)))) throw new ServiceError(400, `assistants is null (as detected) or a list of ${ASSISTANT_RUNTIMES.join(', ')}.`, 'invalid_config');
+      next.assistants = patch.assistants === null ? null : [...new Set(patch.assistants)];
+    }
     mkdirSync(dataDir, { recursive: true, mode: 0o700 });
     replaceFileAtomic(configPath, `${JSON.stringify({ schemaVersion: 1, ...next, updatedAt: now() }, null, 2)}\n`, { mode: 0o600 });
     announce({ type: 'skill.changed', reason: 'config' });
     return next;
   }
+
+  /**
+   * The assistants on this computer: `detected` are the runtimes that are installed (the CLI is found; Claude Code
+   * when its config folder is there too) and used (their skills or settings folder exists); `chosen` is the
+   * owner's list (Settings → Skills → My assistants), `effective` is chosen ?? detected, never empty (Claude Code).
+   */
+  function assistantsView() {
+    const config = getConfig();
+    let installed = null;
+    try { installed = installedRuntimes() || null; } catch { installed = null; }
+    const used = usedRuntimes();
+    const detected = ASSISTANT_RUNTIMES.filter((r) => (installed ? installed[r] !== false : true) && used[r]);
+    const fallback = detected.length ? detected : ['claude'];
+    return { chosen: config.assistants, detected: fallback, effective: config.assistants && config.assistants.length ? config.assistants : fallback, installed: installed ? ASSISTANT_RUNTIMES.filter((r) => installed[r] === true) : null };
+  }
+  /** Which runtimes have a home on this computer (their skills folder or its parent exists), from the roots. */
+  function usedRuntimes() {
+    const out = { claude: false, codex: false, opencode: false };
+    let list = [];
+    try { list = roots.listRoots(); } catch { list = []; }
+    for (const r of list) {
+      if (r.scope !== 'user' || !['native', 'legacy-bridge', 'compat', 'system'].includes(r.sourceKind)) continue;
+      if (!out[r.family] && (r.status === 'ok' || folderExists(dirname(r.path)))) out[r.family] = true;
+    }
+    return out;
+  }
+  function folderExists(path) { try { return statSync(path).isDirectory(); } catch { return false; } }
 
   function announce(event) {
     try { catalog.invalidate(); } catch {}
@@ -152,7 +204,7 @@ export function createSkillsService({ dataDir, roots, catalog, library, deployer
   function scanFolder({ files }, { name, digest, skill = null }) {
     const { parsed } = readHeadOf(files);
     const names = nameChecks(skill, name, bundledNames());
-    return scanArtifact({ type: 'skill', name, files, frontmatter: parsed.data, digest, knownNames: names.knownNames, reservedNames: names.reservedNames });
+    return withExternalScans(scanArtifact({ type: 'skill', name, files, frontmatter: parsed.data, digest, knownNames: names.knownNames, reservedNames: names.reservedNames }), service.scanners?.evidence(digest));
   }
 
   /** The name a revision installs under, or null when it has none a folder can take (lint says why). */
@@ -194,14 +246,21 @@ export function createSkillsService({ dataDir, roots, catalog, library, deployer
   }
 
   function skillSummary(skill) {
-    const latest = skill.pointers.latest ? library.readRevision(skill.pointers.latest) : null;
+    let latest = null;
+    if (skill.pointers.latest) {
+      try { latest = library.readRevision(skill.pointers.latest); }
+      catch (err) {
+        if (!['blob_missing', 'blob_corrupt', 'blob_invalid', 'revision_corrupt'].includes(err.code)) throw err;
+        latest = library.listRevisions(skill.skillId).find((r) => r.revisionId === skill.pointers.latest);
+      }
+    }
     const installs = deployer.listInstallations({ skillId: skill.skillId, active: true });
     const upstream = skill.pointers.upstream;
     return {
       skillId: skill.skillId, name: skill.name, origin: skill.origin, createdAt: skill.createdAt, updatedAt: skill.updatedAt, etag: skill.etag,
       description: latest ? revisionDescription(latest) : draftDescription(skill.pointers.draft),
       pointers: skill.pointers, revisions: skill.revisions.length,
-      latest: latest ? { revisionId: latest.revisionId, contentDigest: latest.contentDigest, createdAt: latest.createdAt, author: latest.author } : null,
+      latest: latest ? { integrity: latest.integrity, error: latest.error || null, revisionId: latest.revisionId, contentDigest: latest.contentDigest, createdAt: latest.createdAt, author: latest.author } : null,
       installations: installs.map((i) => ({ installationId: i.installationId, runtime: i.target.runtime, scope: i.target.scope, accountId: i.target.accountId, projectPath: i.target.projectPath, destination: i.destination.path, sourceRevisionId: i.sourceRevisionId, updateAvailable: !!upstream && i.sourceRevisionId !== upstream && skill.origin?.kind === 'bundled' })),
     };
   }
@@ -247,6 +306,7 @@ export function createSkillsService({ dataDir, roots, catalog, library, deployer
    */
   function removeSkill(skillId, { expectedEtag = null, by = { kind: 'owner' } } = {}) {
     const skill = library.getSkill(skillId);
+    if (service.operations.settings().protectedSkillIds.includes(skillId)) throw new ServiceError(409, 'This skill is protected from retirement.', 'skill_protected');
     if (skill.origin?.kind === 'bundled') throw new ServiceError(403, 'A skill SynaBun ships stays in the library: customize a copy to have one of your own.', 'skill_bundled');
     const installs = deployer.listInstallations({ skillId, active: true });
     if (installs.length) {
@@ -263,6 +323,26 @@ export function createSkillsService({ dataDir, roots, catalog, library, deployer
     return { ...out, withdrawnReviews: withdrawn };
   }
 
+  /**
+   * The skills deleted from the library, newest first (library.js listArchived), with how many versions each keeps:
+   * one entry per skill (its newest deletion, the one Restore brings back), none for a skill that is in the library.
+   */
+  function listArchived() {
+    const seen = new Set();
+    return library.listArchived().filter((a) => {
+      if (seen.has(a.skillId)) return false;
+      seen.add(a.skillId);
+      return !library.readSkill(a.skillId);
+    });
+  }
+
+  /** Put a deleted skill back in the library as it was (the owner's Restore in the Library's Archived view). */
+  function restoreSkill(skillId) {
+    const out = library.restoreSkill(skillId);
+    announce({ type: 'skill.changed', skillId, action: 'restored' });
+    return { ...out, skill: skillSummary(library.getSkill(skillId)) };
+  }
+
   function putRevisionIfChanged(skillId, opts) {
     const skill = library.getSkill(skillId);
     if (skill.pointers.latest) {
@@ -277,6 +357,30 @@ export function createSkillsService({ dataDir, roots, catalog, library, deployer
   }
 
   // ── Reviews ──
+
+  function reviewScanEvidence(scan) {
+    return { status: scan.status, gate: scan.gate, digest: scan.digest, counts: scan.counts,
+      engine: scan.engine, engineVersion: scan.engineVersion, policy: scan.policy,
+      // Already redacted by the scanner. Keep every field the text renderer needs.
+      findings: scan.findings.slice(0, 10) };
+  }
+
+  function currentReview(rec) {
+    const old = rec.evidence?.scan;
+    if (old?.engineVersion === SCAN_ENGINE_VERSION && old?.policy === SCAN_POLICY) return rec;
+    let scan;
+    try {
+      const { files, revision } = library.readRevisionFiles(rec.submittedRevisionId);
+      const skill = library.getSkill(revision.skillId);
+      scan = scanFolder({ files }, { name: installNameOf(skill, files) || skill.name, digest: revision.contentDigest, skill });
+    } catch (err) {
+      // One damaged submission must not crash the entire Review page or keep a stale pass.
+      scan = { engine: SCAN_ENGINE, engineVersion: SCAN_ENGINE_VERSION, policy: SCAN_POLICY,
+        status: 'error', gate: 'blocked', digest: rec.submittedDigest, counts: {}, findings: [] };
+    }
+    // Submission evidence stays historical on disk; reads show the current scanner's answer.
+    return { ...rec, evidence: { ...rec.evidence, scan: reviewScanEvidence(scan) } };
+  }
 
   function submitReview({ revisionId, targets = [], releaseNotes = '', assumptions = [], author, previousReviewId = null }) {
     const { files, dirs, revision } = library.readRevisionFiles(revisionId);
@@ -295,15 +399,14 @@ export function createSkillsService({ dataDir, roots, catalog, library, deployer
     const diff = skill.pointers.approved && skill.pointers.approved !== revisionId ? library.diffRevisions(skill.pointers.approved, revisionId) : null;
     const evidence = {
       lint: { studioErrors: lint.studio.errors, profiles: Object.fromEntries(Object.entries(lint.profiles).map(([id, p]) => [id, { errors: p.errors, warnings: p.warnings }])), resourceProblems: lint.resources.diagnostics.length },
-      scan: { status: scan.status, gate: scan.gate, digest: scan.digest, counts: scan.counts, engine: scan.engine, engineVersion: scan.engineVersion, policy: scan.policy,
-        findings: scan.findings.slice(0, 10).map(({ ruleId, severity, message, file, line }) => ({ ruleId, severity, message, file: file || null, line: line || null })) },
+      scan: reviewScanEvidence(scan),
       installName,
       authority: delta,
       diff: diff ? { from: diff.from, to: diff.to, files: diff.files.map((f) => ({ path: f.path, status: f.status })) } : null,
       invocation: lint.invocation,
     };
     const res = reviews.submit({ revisionId, targets, releaseNotes, assumptions, author, evidence, previousReviewId });
-    return { ...res, scan, lint };
+    return { ...res, review: currentReview(res.review), scan, lint };
   }
 
   function decideReview(reviewId, { decision, reason, by }) {
@@ -350,11 +453,40 @@ export function createSkillsService({ dataDir, roots, catalog, library, deployer
       if (skill?.origin?.kind === 'bundled' && skill.pointers.upstream && skill.pointers.upstream !== i.sourceRevisionId) updates.push({ installationId: i.installationId, skillId: i.skillId, name: skill.name, from: i.sourceRevisionId, to: skill.pointers.upstream });
     }
     return {
-      version: SERVICE_VERSION, capabilities: SERVICE_CAPABILITIES, config: getConfig(),
+      version: SERVICE_VERSION, capabilities: SERVICE_CAPABILITIES, config: getConfig(), assistants: assistantsView(),
       installations: installs.length, reviewsOpen: pending.length,
       bridges: { total: bridges.length, synabun: bridges.filter((b) => b.proof !== 'none').length, other: bridges.filter((b) => b.proof === 'none').length },
       updatesAvailable: updates, library: library.stats(),
     };
+  }
+
+  // ── The automatic move of the old bridges, and the one-click eligibility fix ──
+
+  /** The server's one run at start (lib/skills/migration.js autoMigrate): announced when something moved. */
+  async function autoMigrateBridges() {
+    syncBundled();
+    const out = await migration.autoMigrate();
+    if (out.ran) announce({ type: 'migration.changed', journalId: out.result?.journalId || null, auto: true });
+    return out;
+  }
+
+  /**
+   * The owner pressed "Enable for <runtime>": the runtime's setting that turns the skill off is changed, over a
+   * backup, and the answer says what changed (lib/skills/runtime-checks.js enable).
+   */
+  function enableEligibility({ runtime, name, skillMd, accountId = 'default', projectPath = null, confirmDenyAll = false }) {
+    if (!['claude', 'codex', 'opencode'].includes(runtime)) throw new ServiceError(400, 'runtime is claude, codex or opencode.', 'invalid_target');
+    if (typeof name !== 'string' || !isPlainName(name)) throw new ServiceError(400, 'name is a skill\'s folder name.', 'invalid_name');
+    if (typeof skillMd !== 'string' || !skillMd || !/[\\/]SKILL\.md$/.test(skillMd)) throw new ServiceError(400, 'skillMd is the path of the skill\'s SKILL.md.', 'invalid_path');
+    // Only a skill at a place SynaBun installs to (one of its install roots, or a folder a runtime reads): never an
+    // arbitrary path of the request.
+    const inRoot = roots.listRoots().some((r) => r.kind === 'skills' && relative(r.path, skillMd).split(sep).join('/') === `${name}/SKILL.md`);
+    if (!inRoot) throw new ServiceError(403, 'That SKILL.md is not in a folder SynaBun manages.', 'outside_roots');
+    if (typeof accountId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(accountId)) throw new ServiceError(400, 'Not an account id.', 'invalid_target');
+    if (!runtimeChecks || typeof runtimeChecks.enable !== 'function') throw new ServiceError(501, 'This server cannot change a runtime\'s settings.', 'not_supported');
+    const out = runtimeChecks.enable({ runtime, name, skillMd, accountId, projectPath: typeof projectPath === 'string' && projectPath ? projectPath : null, confirmDenyAll: confirmDenyAll === true });
+    announce({ type: 'skill.changed', reason: 'eligibility', runtime, name });
+    return out;
   }
 
   /** The legacy chips' view of one bundled skill: what each runtime has of it (native folder, old bridge, neither). */
@@ -373,16 +505,18 @@ export function createSkillsService({ dataDir, roots, catalog, library, deployer
     return out;
   }
 
-  return {
+  const service = {
     version: SERVICE_VERSION, capabilities: SERVICE_CAPABILITIES,
-    getConfig, setConfig, announce,
+    getConfig, setConfig, assistantsView, announce,
     roots: () => roots.listRoots(), installRoot: (t) => roots.installRoot(t),
     catalogPage: (q) => catalog.page(q), catalogDetail: (id) => catalog.detail(id), catalogFind: (id) => catalog.find(id), catalogScan: (o) => catalog.scan(o),
     profiles: () => profileList(), profileIds: () => Object.keys(PROFILES),
     syncBundled, bundledRevision, shippedSkills,
-    listSkills, getSkill, revisionView, adopt, removeSkill, lintFolder, scanFolder,
-    library, deployer, reviews, migration,
+    listSkills, getSkill, revisionView, adopt, removeSkill, listArchived, restoreSkill, lintFolder, scanFolder,
+    library, deployer, reviews: { ...reviews, get: (id) => currentReview(reviews.get(id)), list: (opts) => reviews.list(opts).map(currentReview) }, migration,
     submitReview, decideReview, installPlan, install, status, legacyTargetStates,
+    autoMigrateBridges, enableEligibility,
   };
+  return attachSkillOperations(service, { dataDir, ...operationsOptions });
 }
 

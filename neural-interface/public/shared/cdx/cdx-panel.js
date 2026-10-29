@@ -1,6 +1,9 @@
+import { cxpText, cxpSessionLabel, setCodexTranslator } from './cdx-copy.js';
 // SynaBun — Codex Panel: DOM, Events & Lifecycle
 // ═══════════════════════════════════════════
 
+import { workerRestart } from '../worker-restart.js';
+import { t } from '../i18n.js';
 import { storage } from '../storage.js';
 import { state, emit, on } from '../state.js';
 import { registerSidepanel, setSidepanelVisible, sidepanelAcceptsKeyboard, openAnotherSidepanelSession } from '../ui-sidepanel-windows.js';
@@ -8,6 +11,7 @@ import { mountCliBanner } from '../ui-cli-banner.js';
 import { nativeLoopWindowId } from '../ui-native-window-id.js';
 import { createStickyScrollController, getStickyScrollController } from '../ui-scroll-follow.js';
 import { wireFileLinks } from '../ui-file-links.js';
+import { frameRect } from '../app-frame.js';
 import { trackWorkerEnd } from '../ui-worker-end.js';
 import { isDispatchedRun } from '../worker-end.js';
 import { runAwaitsAnswer } from '../sidepanel-session-status.js';
@@ -255,6 +259,8 @@ export function panelEl(selector) {
 //  buildPanel — DOM Construction
 // ═══════════════════════════════════════════
 
+setCodexTranslator(t);
+
 function buildPanel() {
   const panel = document.createElement('div');
   panel.id = 'codex-panel';
@@ -262,18 +268,18 @@ function buildPanel() {
   panel.innerHTML = `
     <div class="cxp-resize-handle"></div>
     <div class="cxp-header">
-      <button class="cxp-session-btn" id="cxp-session-btn" type="button" title="${esc(_sessionLabel)}">
-        <span class="cxp-session-label" id="cxp-session-label">${esc(_sessionLabel)}</span>
+      <button class="cxp-session-btn" id="cxp-session-btn" type="button" title="${esc(cxpSessionLabel(_sessionLabel))}">
+        <span class="cxp-session-label" id="cxp-session-label">${esc(cxpSessionLabel(_sessionLabel))}</span>
         <span class="cxp-dd-arrow">&#x25BE;</span>
       </button>
-      <button class="cxp-header-rename" id="cxp-header-rename" type="button" title="Rename session">
+      <button class="cxp-header-rename" id="cxp-header-rename" type="button" title="${cxpText('rename', 'Rename session')}">
         ${ICON_EDIT}
       </button>
       <div class="cxp-actions">
-        <button class="cxp-btn" id="cxp-new" title="New Codex tab">${ICON_PLUS}</button>
-        <button class="cxp-btn" id="cxp-minimize" title="Minimize to pill">${ICON_MINIMIZE}</button>
-        <button class="cxp-btn cxp-btn-danger" id="cxp-close" title="Close current tab">${ICON_X}</button>
-        <button class="cxp-btn" id="cxp-slide" title="Slide panel"><svg viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg></button>
+        <button class="cxp-btn" id="cxp-new" title="${cxpText('newTab', 'New Codex tab')}">${ICON_PLUS}</button>
+        <button class="cxp-btn" id="cxp-minimize" title="${cxpText('minimize', 'Minimize to pill')}">${ICON_MINIMIZE}</button>
+        <button class="cxp-btn cxp-btn-danger" id="cxp-close" title="${cxpText('closeTab', 'Close current tab')}">${ICON_X}</button>
+        <button class="cxp-btn" id="cxp-slide" title="${cxpText('slide', 'Slide panel')}"><svg viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg></button>
       </div>
       <div class="cxp-session-menu" id="cxp-session-menu"></div>
     </div>
@@ -290,28 +296,23 @@ function buildPanel() {
         <div class="cxp-queue-list" id="cxp-queue-list"></div>
       </div>
       <div class="cxp-projectbar">
-        <div class="cxp-dropdown" id="cxp-project" data-placeholder="project..." data-tooltip="Project">
+        <div class="cxp-dropdown" id="cxp-project" data-placeholder="project..." data-tooltip="${cxpText('project', 'Project')}">
           <span class="cxp-dd-label">project...</span>
           <span class="cxp-dd-arrow">&#x25BE;</span>
           <div class="cxp-dd-menu"></div>
         </div>
-        <div class="cxp-dropdown cxp-dropdown-sm" id="cxp-branch" data-placeholder="branch" data-tooltip="Branch">
+        <div class="cxp-dropdown cxp-dropdown-sm" id="cxp-branch" data-placeholder="branch" data-tooltip="${cxpText('branch', 'Branch')}">
           <span class="cxp-dd-label">branch</span>
           <span class="cxp-dd-arrow">&#x25BE;</span>
           <div class="cxp-dd-menu"></div>
         </div>
-        <div class="cxp-dropdown cxp-dropdown-sm" id="cxp-profile" data-placeholder="profile" data-tooltip="Tool profile">
-          <span class="cxp-dd-label">full</span>
-          <span class="cxp-dd-arrow">&#x25BE;</span>
-          <div class="cxp-dd-menu"></div>
-        </div>
-        <div class="cxp-dropdown cxp-dropdown-sm" id="cxp-recall" data-placeholder="recall" data-tooltip="Recall profile">
+        <div class="cxp-dropdown cxp-dropdown-sm" id="cxp-recall" data-placeholder="recall" data-tooltip="${cxpText('recallProfile', 'Recall profile')}">
           <span class="cxp-dd-label">recall</span>
           <span class="cxp-dd-arrow">&#x25BE;</span>
           <div class="cxp-dd-menu"></div>
         </div>
         <div class="cxp-projectbar-actions">
-          <button class="cxp-bar-action" id="cxp-action-changelog" title="Generate changelog"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 1.5h8.5v13H4a1.5 1.5 0 01-1.5-1.5V3A1.5 1.5 0 014 1.5z"/><path d="M5.5 5h5M5.5 7.5h3M5.5 10h4"/></svg></button>
+          <button class="cxp-bar-action" id="cxp-action-changelog" title="${cxpText('changelog', 'Generate changelog')}"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 1.5h8.5v13H4a1.5 1.5 0 01-1.5-1.5V3A1.5 1.5 0 014 1.5z"/><path d="M5.5 5h5M5.5 7.5h3M5.5 10h4"/></svg></button>
         </div>
       </div>
       <div class="cxp-image-strip" id="cxp-image-strip" hidden></div>
@@ -319,11 +320,11 @@ function buildPanel() {
       <div class="cxp-input-wrap">
         <div class="cxp-input-shell">
           <input type="file" id="cxp-file-input" accept="image/*" multiple hidden />
-          <textarea class="cxp-input" id="cxp-input" rows="1" placeholder="Message Codex…" spellcheck="false"></textarea>
-          <button class="cxp-mic-btn" id="cxp-mic-btn" title="Hold to talk" hidden>
+          <textarea class="cxp-input" id="cxp-input" rows="1" placeholder="${cxpText('message', 'Message Codex…')}" spellcheck="false"></textarea>
+          <button class="cxp-mic-btn" id="cxp-mic-btn" title="${cxpText('talk', 'Hold to talk')}" hidden>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="9" y="1" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4M8 21h8"/></svg>
           </button>
-          <button class="cxp-send" id="cxp-send" disabled title="Send">
+          <button class="cxp-send" id="cxp-send" disabled title="${cxpText('send', 'Send')}">
             <svg class="cxp-send-icon" viewBox="0 0 24 24"><path d="M12 5v14"/><path d="m5 12 7-7 7 7"/></svg>
             <svg class="cxp-stop-icon" viewBox="0 0 24 24" style="display:none"><rect x="7" y="7" width="10" height="10" rx="2"/></svg>
           </button>
@@ -332,21 +333,21 @@ function buildPanel() {
       <div class="cxp-slash-hints" id="cxp-slash-hints" hidden></div>
       <div class="cxp-footer-toolbar">
         <div class="cxp-footer-left">
-          <a class="cxp-brand-link" href="https://chatgpt.com/codex/settings/usage" target="_blank" rel="noopener noreferrer" title="Open Codex usage settings">
+          <a class="cxp-brand-link" href="https://chatgpt.com/codex/settings/usage" target="_blank" rel="noopener noreferrer" title="${cxpText('usage', 'Open Codex usage settings')}">
             <svg class="cxp-brand" viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M22.282 9.821a5.985 5.985 0 0 0-.516-4.91 6.046 6.046 0 0 0-6.51-2.9A6.065 6.065 0 0 0 4.981 4.18a5.998 5.998 0 0 0-3.998 2.9 6.046 6.046 0 0 0 .743 7.097 5.98 5.98 0 0 0 .51 4.911 6.051 6.051 0 0 0 6.515 2.9A5.985 5.985 0 0 0 13.26 24a6.056 6.056 0 0 0 5.772-4.206 5.99 5.99 0 0 0 3.997-2.9 6.056 6.056 0 0 0-.747-7.073zM13.26 22.43a4.476 4.476 0 0 1-2.876-1.04l.141-.081 4.779-2.758a.795.795 0 0 0 .392-.681v-6.737l2.02 1.168a.071.071 0 0 1 .038.052v5.583a4.504 4.504 0 0 1-4.494 4.494zM3.6 18.304a4.47 4.47 0 0 1-.535-3.014l.142.085 4.783 2.759a.771.771 0 0 0 .78 0l5.843-3.369v2.332a.08.08 0 0 1-.033.062L9.74 19.95a4.5 4.5 0 0 1-6.14-1.646zM2.34 7.896a4.485 4.485 0 0 1 2.366-1.973V11.6a.766.766 0 0 0 .388.676l5.815 3.355-2.02 1.168a.076.076 0 0 1-.071 0l-4.83-2.786A4.504 4.504 0 0 1 2.34 7.872zm16.597 3.855l-5.833-3.387L15.119 7.2a.076.076 0 0 1 .071 0l4.83 2.791a4.494 4.494 0 0 1-.676 8.105v-5.678a.79.79 0 0 0-.407-.667zm2.01-3.023l-.141-.085-4.774-2.782a.776.776 0 0 0-.785 0L9.409 9.23V6.897a.066.066 0 0 1 .028-.061l4.83-2.787a4.5 4.5 0 0 1 6.68 4.66zm-12.64 4.135l-2.02-1.164a.08.08 0 0 1-.038-.057V6.075a4.5 4.5 0 0 1 7.375-3.453l-.142.08L8.704 5.46a.795.795 0 0 0-.393.681zm1.097-2.365l2.602-1.5 2.607 1.5v2.999l-2.597 1.5-2.607-1.5z"/></svg>
           </a>
-          <button class="cxp-attach-btn" id="cxp-attach-btn" title="Attach images">
+          <button class="cxp-attach-btn" id="cxp-attach-btn" title="${cxpText('attach', 'Attach images')}">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
           </button>
         </div>
         <div class="cxp-footer-right">
           <div class="cxp-effort-wrap">
-            <button class="cxp-toolbar-toggle" id="cxp-effort-toggle" title="Reasoning effort" data-effort="off" type="button">${ICON_BRAIN}<span class="cxp-btn-label">Effort</span><span class="cxp-effort-dots"><i></i><i></i><i></i><i></i><i></i></span></button>
+            <button class="cxp-toolbar-toggle" id="cxp-effort-toggle" title="${cxpText('effort', 'Reasoning effort')}" data-effort="off" type="button">${ICON_BRAIN}<span class="cxp-btn-label">${cxpText('effortLabel', 'Effort')}</span><span class="cxp-effort-dots"><i></i><i></i><i></i><i></i><i></i></span></button>
             <div class="cxp-effort-menu" id="cxp-effort-menu"></div>
           </div>
-          <button class="cxp-toolbar-toggle" id="cxp-plan-toggle" title="Plan mode: off">${ICON_PLAN}<span class="cxp-btn-label">Plan</span></button>
-          <button class="cxp-toolbar-toggle" id="cxp-autoaccept-toggle" title="Auto-accept: off">${ICON_SHIELD}<span class="cxp-btn-label">Auto</span></button>
-          <button class="cxp-toolbar-toggle" id="cxp-context-toggle" type="button" aria-pressed="false" title="Context: provider default">${ICON_SPARK}<span class="cxp-btn-label">Default</span></button>
+          <button class="cxp-toolbar-toggle" id="cxp-plan-toggle" title="${cxpText('planOff', 'Plan mode: off')}">${ICON_PLAN}<span class="cxp-btn-label">${cxpText('plan', 'Plan')}</span></button>
+          <button class="cxp-toolbar-toggle" id="cxp-autoaccept-toggle" title="${cxpText('autoOff', 'Auto-accept: off')}">${ICON_SHIELD}<span class="cxp-btn-label">${cxpText('auto', 'Auto')}</span></button>
+          <button class="cxp-toolbar-toggle" id="cxp-context-toggle" type="button" aria-pressed="false" title="${cxpText('contextDefault', 'Context: provider default')}">${ICON_SPARK}<span class="cxp-btn-label">${cxpText('default', 'Default')}</span></button>
           <button class="cxp-toolbar-toggle" id="cxp-context-retry" type="button" hidden aria-label="Retry model capabilities" title="Reload model capabilities">Retry</button>
           <div class="cxp-dropdown" id="cxp-model" data-placeholder="model...">
             <span class="cxp-dd-label">model...</span>
@@ -518,7 +519,6 @@ function applyVisibility(nextVisible) {
     if (!_tabs.length) createTab({ project: storage.getItem(STOR.project) || '' });
     state.lastActivePanel = 'codex';
     updateActiveTabView();
-    loadCurrentProfile();
     loadRecallProfile();
     panelEl('#cxp-input')?.focus();
     refreshCliBanner();
@@ -552,111 +552,6 @@ async function loadBranches(path) {
 }
 
 // ═══════════════════════════════════════════
-//  MCP Profile — live profile switching
-// ═══════════════════════════════════════════
-
-let _mcpProfiles = [];
-let _currentProfile = 'full';
-let _defaultMcpProfile = 'full';
-
-function mcpProfileItemsFromPresets(presets) {
-  if (!presets || typeof presets !== 'object') return null;
-  return Object.entries(presets).map(([value, p]) => ({
-    value,
-    label: p?.label || value,
-    hint: `${p?.tools || '?'} tools`,
-  }));
-}
-
-function applyMcpProfileState(profile, presets) {
-  if (profile) _currentProfile = profile;
-  const items = mcpProfileItemsFromPresets(presets);
-  if (items) _mcpProfiles = items;
-  const $profile = panelEl('#cxp-profile');
-  if ($profile) populateProfileDropdown($profile);
-}
-
-async function loadCurrentProfile() {
-  const $profile = panelEl('#cxp-profile');
-  if (!$profile) return;
-  try {
-    const resp = await fetch('/api/mcp/profile');
-    const data = await resp.json();
-    if (data.ok) {
-      _defaultMcpProfile = data.defaultProfile || data.profile || 'full';
-      const tab = activeTab();
-      if (tab && !tab.mcpProfile) {
-        tab.mcpProfile = _defaultMcpProfile;
-        saveTabs();
-      }
-      applyMcpProfileState(tab?.mcpProfile || _defaultMcpProfile, data.presets);
-      return;
-    }
-  } catch {}
-  populateProfileDropdown($profile);
-}
-
-function populateProfileDropdown($dd) {
-  const menu = $dd.querySelector('.cxp-dd-menu');
-  const label = $dd.querySelector('.cxp-dd-label');
-  if (!menu || !label) return;
-  menu.innerHTML = '';
-  const matched = _mcpProfiles.find(p => p.value === _currentProfile);
-  label.textContent = matched ? matched.label : _currentProfile;
-  $dd.classList.add('has-value');
-  $dd._value = _currentProfile;
-  for (const p of _mcpProfiles) {
-    const el = document.createElement('div');
-    el.className = 'cxp-dd-item' + (p.value === _currentProfile ? ' selected' : '');
-    el.dataset.value = p.value;
-    el.innerHTML = `<span>${p.label}</span><span style="opacity:0.35;margin-left:auto;font-size:9px">${p.hint}</span>`;
-    el.style.display = 'flex'; el.style.gap = '6px';
-    el.addEventListener('click', async () => {
-      if (p.value === _currentProfile) { $dd.classList.remove('open'); return; }
-      const previous = _currentProfile;
-      _currentProfile = p.value;
-      $dd._value = p.value;
-      label.textContent = p.label;
-      $dd.classList.remove('open');
-      menu.querySelectorAll('.cxp-dd-item').forEach(o => o.classList.remove('selected'));
-      el.classList.add('selected');
-      try {
-        await updateMcpProfile(p.value);
-        populateProfileDropdown($dd);
-      } catch (err) {
-        _currentProfile = previous;
-        populateProfileDropdown($dd);
-        _host.appendSystem?.(err.message || 'Could not switch MCP profile', 'error');
-      }
-    });
-    menu.appendChild(el);
-  }
-}
-
-async function updateMcpProfile(profile) {
-  const tab = activeTab();
-  if (!tab) throw new Error('No active Codex tab');
-  if (tab.running || tab.startingThread || tab.automationActive) {
-    throw new Error('Wait for the active Codex turn or automation to finish before changing its MCP profile.');
-  }
-  const result = await requestSocketPayload('mcp_profile_set', {
-    profile,
-    threadId: tab.threadId || null,
-    cwd: tab.project || null,
-    model: tab.model || null,
-    contextMode: tab.contextMode === 'extended' ? 'extended' : 'default',
-  });
-  const effective = result?.profile || profile;
-  tab.mcpProfile = effective;
-  _currentProfile = effective;
-  saveTabs();
-  // This selector is tab-scoped. The shared default is changed only through
-  // an explicit future-runtime/default control, never as a side effect of
-  // restarting the active Codex app-server.
-  return effective;
-}
-
-// ═══════════════════════════════════════════
 //  Recall Profile — live recall preset switching
 // ═══════════════════════════════════════════
 
@@ -666,6 +561,7 @@ const RECALL_PROFILES_META = [
   { value: 'deep',     label: 'Deep',     hint: '10 results' },
   { value: 'custom',   label: 'Custom',   hint: 'custom' },
 ];
+function recallLabel(p) { return cxpText(p.value, p.label); }
 const RECALL_PROFILE_DEFAULTS = {
   quick:    { limit: 3,  minImportance: 5, minScore: 0.45, maxChars: 300,  includeSessions: 'never',  recencyBoost: false },
   balanced: { limit: 5,  minImportance: 0, minScore: 0.30, maxChars: 0,    includeSessions: 'auto',   recencyBoost: false },
@@ -690,20 +586,20 @@ function populateRecallDropdown($dd) {
   if (!menu || !label) return;
   menu.innerHTML = '';
   const matched = RECALL_PROFILES_META.find(p => p.value === _recallProfile);
-  label.textContent = matched ? matched.label : _recallProfile;
+  label.textContent = matched ? recallLabel(matched) : _recallProfile;
   $dd.classList.add('has-value');
   $dd._value = _recallProfile;
   for (const p of RECALL_PROFILES_META) {
     const el = document.createElement('div');
     el.className = 'cxp-dd-item' + (p.value === _recallProfile ? ' selected' : '');
     el.dataset.value = p.value;
-    el.innerHTML = `<span>${p.label}</span><span style="opacity:0.35;margin-left:auto;font-size:9px">${p.hint}</span>`;
+    el.innerHTML = `<span>${recallLabel(p)}</span><span style="opacity:0.35;margin-left:auto;font-size:9px">${p.hint}</span>`;
     el.style.display = 'flex'; el.style.gap = '6px';
     el.addEventListener('click', () => {
       if (p.value === _recallProfile) { $dd.classList.remove('open'); return; }
       _recallProfile = p.value;
       $dd._value = p.value;
-      label.textContent = p.label;
+      label.textContent = recallLabel(p);
       $dd.classList.remove('open');
       menu.querySelectorAll('.cxp-dd-item').forEach(o => o.classList.remove('selected'));
       el.classList.add('selected');
@@ -841,6 +737,7 @@ function wireEvents() {
   // Context settings: the cog and its popover take the place of the context bar.
   _contextMenu?.destroy();
   _contextMenu = mountContextMenu(panelEl('.cxp-actions'), _panel, {
+    bounds: frameRect,   // the popover stays in the app frame
     reading: contextMenuReading,
     data: () => {
       const data = contextMenuData();
@@ -940,8 +837,6 @@ function wireEvents() {
       branchDd.classList.remove('cxp-dropdown--busy');
     }
   });
-  const profileDd = panelEl('#cxp-profile');
-  ddSetup(profileDd);
   const recallDd = panelEl('#cxp-recall');
   ddSetup(recallDd);
   loadRecallProfile();
@@ -1030,10 +925,6 @@ function wireEvents() {
   // Initialize voice input
   initVoiceInput();
 
-  on('mcp:profile-changed', (msg = {}) => {
-    _defaultMcpProfile = msg.defaultProfile || msg.profile || _defaultMcpProfile;
-    applyMcpProfileState(activeTab()?.mcpProfile || _defaultMcpProfile, msg.presets);
-  });
 
   on('codex-panel:show', async (data) => {
     setVisible(true);
@@ -1182,9 +1073,6 @@ function ensurePanel() {
     emit,
     on,
     loadBranches,
-    activeTabChanged: (tab) => {
-      applyMcpProfileState(tab?.mcpProfile || _defaultMcpProfile, null);
-    },
     contextMenuSync: () => _contextMenu?.sync(),
   });
 
@@ -1233,6 +1121,7 @@ export async function attachCodexAutomation(run, {
   await ensureProjectsLoaded();
   if (isCancelled()) return { ok: false, reason: 'dismissed' };
   const running = run.status === 'starting' || run.status === 'running';
+  const restart = workerRestart(run);
   // The user continued this run's thread by hand after the run ended: the tab stays theirs. The
   // dock's Focus raises it; the run is let go again, and nothing in the tab changes.
   const own = allTabs().find((entry) => !entry.automationRunId && entry.releasedRunId === run.runId && entry.threadId === threadId);
@@ -1255,7 +1144,6 @@ export async function attachCodexAutomation(run, {
       accountId: run.accountId || 'default',
       model: run.model || '',
       effort: run.effort || 'off',
-      mcpProfile: run.mcpProfile || null,
       autoAccept: true,
       planMode: false,
       title: run.title || 'Automation',
@@ -1266,26 +1154,34 @@ export async function attachCodexAutomation(run, {
   // on a question needs you, like one with an approval card up (setRunning and renderPills repaint).
   const working = running && run.turnState !== 'idle' && run.turnState !== 'terminal';
   tab.automationRunId = run.runId;
-  tab.automationActive = running;
+  tab.automationActive = restart.active;
   tab.automationAwaits = runAwaitsAnswer(run);
   tab.automationOwnerId = nativeLoopWindowId;
   tab.threadId = threadId;
   tab.project = run.cwd || tab.project;
-  tab.mcpProfile = run.mcpProfile || tab.mcpProfile || _defaultMcpProfile;
-  tab.sessionLabel = run.title || tab.sessionLabel || 'Automation';
+  tab.automationTitle = run.title || tab.automationTitle || tab.sessionLabel || 'Automation';
+  tab.sessionLabel = tab.automationTitle;
   tab._automationIteration = run.currentIteration;
   tab.planMode = false;
-  if (focus) applyMcpProfileState(tab.mcpProfile, null);
   clearPlanHandoffState(tab);
   withTab(tab, () => setRunning(working));
   // The router replays what it buffered right after this attach; when that
   // reaches back to the first prompt, history would only render it twice.
+  if (restart.resumes > (tab._automationResumes || 0)) {
+    tab._automationHydrated = false;
+    tab._automationLiveEvents = false;
+  }
+  tab._automationResumes = restart.resumes;
   if (running && !tab._automationHydrated && !codexAutomationBufferCoversRun(bufferedEvents, bufferTruncated)) {
     await hydrateCodexAutomationHistory(tab);
     if (isCancelled() || tab.closed) {
       await detachCodexAutomation(run.runId);
       return { ok: false, reason: 'dismissed' };
     }
+  }
+  if (restart.key && tab._restartStamp !== restart.stamp) {
+    withTab(tab, () => appendSystem(t(restart.key)));
+    tab._restartStamp = restart.stamp;
   }
   // (A dispatched worker's failure, with its reason, is on its end card.)
   if (run.status === 'failed' && run.error && !isDispatchedRun(run) && tab._automationLifecycleError !== run.error) {
@@ -1300,7 +1196,7 @@ export async function attachCodexAutomation(run, {
     const idx = allTabs().indexOf(tab);
     if (idx >= 0) switchTab(idx);
   }
-  if (!running && isActiveTab(tab) && _visible) connectTab(tab);
+  if (!restart.active && isActiveTab(tab) && _visible) connectTab(tab);
   return { ok: true, tabId: tab.id };
 }
 

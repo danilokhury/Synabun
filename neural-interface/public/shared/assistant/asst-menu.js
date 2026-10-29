@@ -17,7 +17,7 @@
 // `footer`: items under the list that stay in view while the list scrolls.
 // Every menu is measured at the width it is shown at, never wider than its box less the margins,
 // and opens where that box has room (the list scrolls inside it). The box is the Assistant
-// panel or root around the anchor, else the window.
+// panel or root around the anchor, else the app frame (app-frame.js; the window on a page without it).
 // `bounds`: an element (or () => DOMRect) to use as that box instead: the menu is then exactly
 // `width` wide (or the box's room) and follows the box on resize.
 // `onEscape`: returns true when it handled Esc (e.g. went back a view): the menu stays open.
@@ -43,6 +43,8 @@
 // to the anchor), Tab closes. The optional filter hides non-matching items and
 // any group left empty. The handle's update({ title, items, footer, focus }) redraws
 // an open menu in place (focus: the data-id to land on; the filter's text still applies).
+
+import { frameRect } from '../app-frame.js';
 
 let _open = null;
 let _uid = 0;
@@ -290,14 +292,13 @@ const BOUNDED_MIN_WIDTH = 248;
 const MENU_MIN_HEIGHT = 96;
 const BOUNDED_MIN_HEIGHT = 140;
 
-/** The box a menu stays inside: its bounds clipped to the window (the window when it has none). */
+/** The box a menu stays inside: its bounds clipped to the app frame (the frame when it has none). */
 function boundsBox(bounds) {
-  const vw = window.innerWidth;
-  const vh = window.innerHeight;
+  const f = frameRect();
   let r = null;
   try { r = typeof bounds === 'function' ? bounds() : bounds?.getBoundingClientRect?.(); } catch { r = null; }
-  if (!r || !(r.width > 0) || !(r.height > 0)) return { left: 0, top: 0, right: vw, bottom: vh };
-  return { left: Math.max(0, r.left), top: Math.max(0, r.top), right: Math.min(vw, r.right), bottom: Math.min(vh, r.bottom) };
+  if (!r || !(r.width > 0) || !(r.height > 0)) return { left: f.left, top: f.top, right: f.right, bottom: f.bottom };
+  return { left: Math.max(f.left, r.left), top: Math.max(f.top, r.top), right: Math.min(f.right, r.right), bottom: Math.min(f.bottom, r.bottom) };
 }
 
 /** Where a menu without `bounds` stays: the Assistant around its anchor (the sidepanel, or a tab's own root). */

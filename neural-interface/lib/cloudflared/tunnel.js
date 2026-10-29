@@ -28,6 +28,15 @@
 //
 // An ended process is not forgotten: it is asked to end (SIGTERM), killed when
 // it is still there a moment later (SIGKILL), and kept until it has exited.
+//
+// Each cloudflared it starts is on record from its spawn until it has exited
+// (`records`: lib/opencode-serve-records.js, kind 'quick', in
+// DATA_HOME/runtime/tunnels), with a token of its start in its environment. A
+// server that ends without its exit handlers (a native crash) leaves its
+// cloudflared running on macOS and Linux (Windows ends a child with its parent),
+// the old address still pointing at the port the next server listens on: the
+// next server ends it by that record (server.js sweepLeftoverTunnels), and only
+// while the OS still reports that very process.
 
 import { spawn as nodeSpawn } from 'node:child_process';
 
@@ -69,6 +78,22 @@ export function tunnelArguments(port, source) {
   return ['tunnel', ...(source === 'system' ? [] : ['--no-autoupdate']), '--url', `http://localhost:${port}`];
 }
 
+/** The kind of the tunnel's records (lib/opencode-serve-records.js createServeRecords `kinds`). */
+export const TUNNEL_KINDS = Object.freeze(['quick']);
+
+/**
+ * Are `args` (a command line's arguments, as the platform reads them: lib/opencode-serve-records.js commandArgs) a
+ * quick tunnel to this server's `port` (`… tunnel … --url http://localhost:<port>`, as tunnelArguments makes them)?
+ * What a tunnel record must name.
+ */
+export function tunnelsToPort(args, port) {
+  const p = Number(port);
+  if (!Array.isArray(args) || !Number.isInteger(p) || p <= 0 || p > 65535) return false;
+  if (!args.includes('tunnel')) return false;
+  const url = `http://localhost:${p}`;
+  return args.some((arg, i) => arg === `--url=${url}` || (arg === '--url' && args[i + 1] === url));
+}
+
 /** What cloudflared said last that reads like a reason: its last error line, without the timestamp. */
 function lastReason(output) {
   const lines = output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
@@ -85,8 +110,10 @@ function lastReason(output) {
  * @param {number} [o.urlTimeoutMs] how long a started cloudflared may take to print its address
  * @param {number} [o.killAfterMs] how long an ended cloudflared has to exit before it is killed
  * @param {(line: string) => void} [o.log]
+ * @param {{ newToken: () => string, tokenEnv: string, record: (entry: object) => Promise<object|null>, remove: (entry: object) => boolean }} [o.records]
+ *   where each cloudflared it starts is kept on record until it has exited (lib/opencode-serve-records.js, kind 'quick')
  */
-export function createQuickTunnel({ cloudflared, port, onUrl = () => {}, spawn = nodeSpawn, urlTimeoutMs = 90_000, killAfterMs = 1000, log = () => {} }) {
+export function createQuickTunnel({ cloudflared, port, onUrl = () => {}, spawn = nodeSpawn, urlTimeoutMs = 90_000, killAfterMs = 1000, log = () => {}, records = null }) {
   let phase = 'idle';   // idle | preparing | starting | running | failed
   let child = null;
   let url = null;
@@ -117,7 +144,19 @@ export function createQuickTunnel({ cloudflared, port, onUrl = () => {}, spawn =
     log(`  Tunnel:  ${code === 'ended' ? 'stopped' : 'not started'} (${code}): ${message}`);
   }
 
+  // On record from its spawn until it has exited: what the next server ends when this one crashed (see above).
+  function keepOnRecord(proc, token) {
+    const pid = Number(proc?.pid) || null;
+    if (!pid) return;
+    const kept = Promise.resolve().then(() => records.record({ kind: TUNNEL_KINDS[0], port: Number(port), pid, token })).catch(() => null);
+    proc.once('exit', () => { kept.then((entry) => { if (entry) records.remove(entry); }).catch(() => {}); });
+  }
+
   function launch(found, mine) {
+    // The token of this start, in its environment: made before the check below, so nothing runs between them.
+    let token = null;
+    try { token = records?.tokenEnv ? records.newToken() : null; } catch { token = null; }
+    const options = { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, ...(token ? { env: { ...process.env, [records.tokenEnv]: token } } : {}) };
     // Checked once more as it is about to run (the manager's confirm: the very file its check read, still where
     // nobody else can change it), and started at once by the real path that was checked: nothing runs in between.
     let path = found.path;
@@ -128,10 +167,11 @@ export function createQuickTunnel({ cloudflared, port, onUrl = () => {}, spawn =
     }
     let proc;
     try {
-      proc = spawn(path, tunnelArguments(port, found.source), { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+      proc = spawn(path, tunnelArguments(port, found.source), options);
     } catch (failure) {
       return fail('launch', `cloudflared could not be started (${failure?.code || failure?.message || failure}).`);
     }
+    if (token) keepOnRecord(proc, token);
     child = proc;
     copy = { source: found.source, version: found.version };
     phase = 'starting';

@@ -31,8 +31,7 @@ export function initHulls(graphInstance) {
   if (!_hullCanvas) return;
   _hullCtx = _hullCanvas.getContext('2d');
 
-  _hullCanvas.width = window.innerWidth;
-  _hullCanvas.height = window.innerHeight;
+  _sizeHullCanvas();
 
   // Toggle button
   const toggleBtn = $('hull-toggle-btn');
@@ -68,8 +67,7 @@ export function drawHulls() {
 
   if (!_hullCanvas || !_hullCtx) return;
 
-  _hullCanvas.width = window.innerWidth;
-  _hullCanvas.height = window.innerHeight;
+  _sizeHullCanvas();
   const ctx = _hullCtx;
   ctx.clearRect(0, 0, _hullCanvas.width, _hullCanvas.height);
 
@@ -86,11 +84,12 @@ export function drawHulls() {
     catGroups[cat].push(n);
   });
 
-  // Convert graph coords to screen coords
+  // Convert graph coords to the overlay's own (it covers the graph's box, centred on the same point)
+  const halfW = _hullCanvas.width / 2, halfH = _hullCanvas.height / 2;
   function toScreen(gx, gy) {
     return {
-      x: (gx - center.x) * zoom + window.innerWidth / 2,
-      y: (gy - center.y) * zoom + window.innerHeight / 2,
+      x: (gx - center.x) * zoom + halfW,
+      y: (gy - center.y) * zoom + halfH,
     };
   }
 
@@ -186,8 +185,14 @@ export function isHullsVisible() {
 
 function _onResize() {
   if (!_hullCanvas) return;
-  _hullCanvas.width = window.innerWidth;
-  _hullCanvas.height = window.innerHeight;
+  _sizeHullCanvas();
+}
+
+/** The overlay's buffer follows its CSS box (the graph's, inside the app frame); no box: the window's size. */
+function _sizeHullCanvas() {
+  const box = _hullCanvas.getBoundingClientRect();
+  _hullCanvas.width = Math.round(box.width || window.innerWidth);
+  _hullCanvas.height = Math.round(box.height || window.innerHeight);
 }
 
 /**

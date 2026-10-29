@@ -242,7 +242,7 @@ export const HELP = Object.freeze({
     'Stuck on "Reconnecting"? Check this computer\'s internet connection, then press Reconnect now.',
     'Voice notes not transcribed? This computer needs whisper.cpp, its speech model and FFmpeg, which you install yourself; the line under "Transcribe voice notes" says what is missing.',
   ],
-  browserTools: 'Not the same as the WhatsApp browser tools. The whatsapp MCP profile lets agents read WhatsApp Web in SynaBun\'s browser; this tab is you chatting with SynaBun from your phone. They do not share a session.',
+  browserTools: 'Not the same as the WhatsApp browser tools. The browser_whatsapp tool group lets agents read WhatsApp Web in SynaBun\'s browser; this tab is you chatting with SynaBun from your phone. They do not share a session.',
   uninstall: 'Uninstalling SynaBun does not unlink WhatsApp. Use Unlink or Remove here first, or log SynaBun out under WhatsApp → Settings → Linked devices.',
 });
 

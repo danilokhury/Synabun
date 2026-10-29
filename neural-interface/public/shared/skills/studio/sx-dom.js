@@ -145,6 +145,12 @@ export function formatNumber(n, locale) {
   try { return Number(n).toLocaleString(locale || 'en'); } catch { return String(n); }
 }
 
+/** Names as one phrase of the page's language ("A, B and C", "A e B"); `type` is Intl.ListFormat's (conjunction / disjunction). */
+export function listText(names, locale = 'en', type = 'conjunction') {
+  const list = (names || []).filter(Boolean).map(String);
+  try { return new Intl.ListFormat(locale || 'en', { style: 'long', type }).format(list); } catch { return list.join(', '); }
+}
+
 // ── Keyboard ──
 
 /**

@@ -131,17 +131,24 @@ const _panInertia = {
 // COORDINATE TRANSFORMS
 // ═══════════════════════════════════════════
 
+// The canvas fills the app frame (index2d.html #canvas-main), not the window: a pointer's client coordinates are
+// turned into the canvas's own by its box (kept from the last resize: the canvas moves only when it is resized).
+let _box = { left: 0, top: 0 };
+let _boxMeasured = false;
+
+/** Client (viewport) coordinates → world. */
 export function screenToWorld(sx, sy) {
   return {
-    x: (sx * _dpr - _viewport.offsetX) / _viewport.scale,
-    y: (sy * _dpr - _viewport.offsetY) / _viewport.scale,
+    x: ((sx - _box.left) * _dpr - _viewport.offsetX) / _viewport.scale,
+    y: ((sy - _box.top) * _dpr - _viewport.offsetY) / _viewport.scale,
   };
 }
 
+/** World → client (viewport) coordinates. */
 export function worldToScreen(wx, wy) {
   return {
-    x: (wx * _viewport.scale + _viewport.offsetX) / _dpr,
-    y: (wy * _viewport.scale + _viewport.offsetY) / _dpr,
+    x: (wx * _viewport.scale + _viewport.offsetX) / _dpr + _box.left,
+    y: (wy * _viewport.scale + _viewport.offsetY) / _dpr + _box.top,
   };
 }
 
@@ -163,7 +170,10 @@ function _getVisibleBounds(margin = 0) {
 // PUBLIC API: Viewport accessors
 // ═══════════════════════════════════════════
 
-export function getViewport() { return { ..._viewport, dpr: _dpr }; }
+export function getViewport() {
+  // width / height: the canvas buffer (device pixels, like the offsets)
+  return { ..._viewport, dpr: _dpr, width: _canvas?.width || 0, height: _canvas?.height || 0 };
+}
 export function getAllCards() { return _cards; }
 export function getRegions() { return _regions; }
 
@@ -187,7 +197,7 @@ export function initGraph(container, callbacks = {}) {
   if (!_canvas) {
     _canvas = document.createElement('canvas');
     _canvas.id = 'canvas-main';
-    _canvas.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:1;';
+    _canvas.style.cssText = 'position:fixed;top:var(--frame-top);left:var(--frame-left);width:calc(100% - var(--sidebar-total-width, 0px) - 2 * var(--frame-gap));height:calc(100dvh - var(--frame-top) - var(--frame-gap));border-radius:var(--frame-radius);z-index:1;';
     container.appendChild(_canvas);
   }
   _ctx = _canvas.getContext('2d');
@@ -210,6 +220,8 @@ export function initGraph(container, callbacks = {}) {
   _canvas.addEventListener('dblclick', _onDblClick);
   _canvas.addEventListener('contextmenu', _onContextMenu);
   window.addEventListener('resize', _scheduleCanvasResize);
+  // The frame changes the canvas's box without a window resize (an explorer opening, the bar's height)
+  if (typeof ResizeObserver === 'function') new ResizeObserver(_scheduleCanvasResize).observe(_canvas);
 
   // Hidden tab → stop the loop entirely; resume on return unless externally stopped
   document.addEventListener('visibilitychange', () => {
@@ -1397,7 +1409,7 @@ const _scheduleHover2D = rafThrottle(() => {
   if (newHoverId !== state.hoveredNodeId) {
     state.hoveredNodeId = newHoverId;
   }
-  _canvas.style.cursor = hit ? 'pointer' : 'grab';
+  _canvas.style.cursor = hit ? 'pointer' : 'move';
   if (newHoverId) emit('node-hover', hit.node);
   else if (!hit) emit('node-hover', null);
 });
@@ -1469,7 +1481,7 @@ function _onPointerLeave() {
   if (_focusPaused) return;
   if (state.hoveredNodeId) {
     state.hoveredNodeId = null;
-    _canvas.style.cursor = 'grab';
+    _canvas.style.cursor = 'move';
     emit('node-hover', null);
   }
 }
@@ -1483,9 +1495,9 @@ function _onWheel(e) {
     _viewport.minScale,
     Math.min(_viewport.maxScale, (_smoothZoom.active ? _smoothZoom.targetScale : _viewport.scale) * zoomFactor)
   );
-  // Update anchor to cursor position (buffer coords)
-  _smoothZoom.anchorX = e.clientX * _dpr;
-  _smoothZoom.anchorY = e.clientY * _dpr;
+  // Update anchor to cursor position (buffer coords, from the canvas's own corner)
+  _smoothZoom.anchorX = (e.clientX - _box.left) * _dpr;
+  _smoothZoom.anchorY = (e.clientY - _box.top) * _dpr;
   _smoothZoom.active = true;
 }
 
@@ -1625,14 +1637,20 @@ function _resizeCanvas() {
   if (!_canvas) return;
   _resizePending = false;
   _dpr = Math.min(window.devicePixelRatio || 1, MAX_DPR);
-  const w = window.innerWidth;
-  const h = window.innerHeight;
+  // The CSS box is the app frame's (index2d.html); the buffer follows it. Hidden (no box): the window's size.
+  const box = _canvas.getBoundingClientRect();
+  const w = box.width || window.innerWidth;
+  const h = box.height || window.innerHeight;
+  // The world stays where it was on screen when the canvas's corner moves (an explorer opening or closing):
+  // what was under the pointer is still under it, as when the canvas was the whole window.
+  if (box.width && box.height && _boxMeasured) {
+    _viewport.offsetX -= (box.left - _box.left) * _dpr;
+    _viewport.offsetY -= (box.top - _box.top) * _dpr;
+  }
+  if (box.width && box.height) { _box = { left: box.left, top: box.top }; _boxMeasured = true; }
   // Set canvas buffer size to DPR-scaled resolution for crisp rendering
   _canvas.width = Math.round(w * _dpr);
   _canvas.height = Math.round(h * _dpr);
-  // CSS display size stays at viewport dimensions
-  _canvas.style.width = w + 'px';
-  _canvas.style.height = h + 'px';
 }
 
 // Window resizes arrive many times per frame while a window or sidepanel is
@@ -1695,12 +1713,13 @@ function _getPublicAPI() {
       })),
       links: state.allLinks,
     }),
+    // The canvas's size is the app frame's (CSS): a value given here only measures it again.
     width: (w) => {
-      if (w != null) { _canvas.style.width = w + 'px'; _resizeCanvas(); }
+      if (w != null) _resizeCanvas();
       return _canvas ? Math.round(_canvas.width / _dpr) : 0;
     },
     height: (h) => {
-      if (h != null) { _canvas.style.height = h + 'px'; _resizeCanvas(); }
+      if (h != null) _resizeCanvas();
       return _canvas ? Math.round(_canvas.height / _dpr) : 0;
     },
     // No-ops for compatibility

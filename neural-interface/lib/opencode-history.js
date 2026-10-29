@@ -1,46 +1,18 @@
 // OpenCode history maintenance.
 //
-// This module deliberately owns a very small allowlist of history tables and
-// artifact directories. Provider credentials, account state, project records,
-// OpenCode configuration, user project files, and git repositories outside the
-// OpenCode data directory are never touched.
-
-// The server runs the destructive operation in a worker so VACUUM can reclaim
-// a large history database without freezing SynaBun's HTTP/WebSocket loop.
+// OpenCode 2 keeps its sessions in its own database (opencode.db: session_v2,
+// session_message, its event log, its instruction and inbox tables). SynaBun
+// reads how many there are, read-only, and clears them through OpenCode's own
+// API (DELETE /api/session/:id, which takes a session's child sessions and its
+// rows with it); it never writes OpenCode's database or deletes its folders.
+// Provider credentials, account state, projects, configuration and user files
+// are never touched.
 
 import { DatabaseSync } from 'node:sqlite';
-import { existsSync, lstatSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs';
-import { basename, dirname, parse, resolve, sep } from 'node:path';
-import { isMainThread, parentPort, Worker, workerData } from 'node:worker_threads';
+import { existsSync, statSync } from 'node:fs';
+import { basename, dirname, parse, resolve } from 'node:path';
 
 export const OPENCODE_HISTORY_CONFIRMATION = 'DELETE OPENCODE HISTORY';
-
-// OpenCode 2 keeps its sessions in other tables of the same file (session_v2,
-// session_message, its event log): the OpenCode 1 list below would delete its
-// messages and events and leave its sessions, which breaks that database. So an
-// OpenCode 2 database is never cleared here.
-export const OPENCODE2_HISTORY_REFUSAL = 'This OpenCode data belongs to OpenCode 2, whose history SynaBun does not clear. Delete OpenCode 2 sessions from OpenCode itself.';
-const isOpencode2Database = (tables) => tables.has('session_v2');
-
-const HISTORY_TABLES_CHILD_FIRST = [
-  'part',
-  'message',
-  'todo',
-  'session_share',
-  'session_input',
-  'session_message',
-  'session_context_epoch',
-  'event',
-  'event_sequence',
-  'session',
-];
-
-const HISTORY_ARTIFACT_PATHS = [
-  ['snapshot'],
-  ['repos'],
-  ['storage', 'session_diff'],
-  ['tool-output'],
-];
 
 function fileBytes(path) {
   try {
@@ -54,25 +26,12 @@ function databaseBytes(dbPath) {
   return fileBytes(dbPath) + fileBytes(`${dbPath}-wal`) + fileBytes(`${dbPath}-shm`);
 }
 
-function entryBytes(path) {
-  let stat;
-  try {
-    stat = lstatSync(path);
-  } catch {
-    return 0;
-  }
-  if (!stat.isDirectory() || stat.isSymbolicLink()) return stat.size || 0;
-  let total = 0;
-  for (const name of readdirSync(path)) total += entryBytes(resolve(path, name));
-  return total;
-}
-
 function assertSafePaths(dbPath, dataRoot) {
   const root = resolve(dataRoot);
   const database = resolve(dbPath);
-  if (root === parse(root).root) throw new Error('Refusing to clear an unsafe OpenCode data root');
+  if (root === parse(root).root) throw new Error('Refusing to read an unsafe OpenCode data root');
   if (basename(root).toLowerCase() !== 'opencode') {
-    throw new Error('Refusing to clear a data root that is not the OpenCode directory');
+    throw new Error('Refusing to read a data root that is not the OpenCode directory');
   }
   if (database !== resolve(root, 'opencode.db')) {
     throw new Error('OpenCode database must be the opencode.db file inside its data root');
@@ -80,51 +39,19 @@ function assertSafePaths(dbPath, dataRoot) {
   return { database, root };
 }
 
-function tableNames(db) {
-  return new Set(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all()
-    .map((row) => String(row?.name || '')));
-}
-
-function countRows(db, table, tables) {
-  if (!tables.has(table)) return 0;
-  const row = db.prepare(`SELECT COUNT(*) AS count FROM "${table}"`).get();
-  return Number(row?.count || 0);
-}
-
-function artifactStats(dataRoot) {
-  let bytes = 0;
-  let entries = 0;
-  for (const segments of HISTORY_ARTIFACT_PATHS) {
-    const path = resolve(dataRoot, ...segments);
-    if (!existsSync(path)) continue;
-    bytes += entryBytes(path);
-    entries += 1;
-  }
-  return { bytes, entries };
-}
-
+/** `{ sessions, databaseBytes }`: OpenCode's sessions (session_v2 rows, child sessions included) and its database's size. */
 export function getOpenCodeHistoryStats({ dbPath, dataRoot = dirname(dbPath) }) {
-  const { database, root } = assertSafePaths(dbPath, dataRoot);
-  const artifacts = artifactStats(root);
-  const stats = {
-    sessions: 0,
-    databaseBytes: databaseBytes(database),
-    artifactBytes: artifacts.bytes,
-  };
+  const { database } = assertSafePaths(dbPath, dataRoot);
+  const stats = { sessions: 0, databaseBytes: databaseBytes(database) };
   if (!existsSync(database)) return stats;
-
   let db;
   try {
     db = new DatabaseSync(database, { readOnly: true });
     db.exec('PRAGMA busy_timeout = 2000');
-    const tables = tableNames(db);
-    if (isOpencode2Database(tables)) {
-      stats.sessions = countRows(db, 'session_v2', tables);
-      stats.opencode2 = true;
-      stats.clearable = false;
-      stats.reason = OPENCODE2_HISTORY_REFUSAL;
-    } else {
-      stats.sessions = countRows(db, 'session', tables);
+    const tables = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((row) => String(row?.name || '')));
+    if (tables.has('session_v2')) {
+      const row = db.prepare('SELECT COUNT(*) AS count FROM "session_v2"').get();
+      stats.sessions = Number(row?.count || 0);
     }
   } finally {
     try { db?.close(); } catch {}
@@ -132,137 +59,40 @@ export function getOpenCodeHistoryStats({ dbPath, dataRoot = dirname(dbPath) }) 
   return stats;
 }
 
-function clearArtifactDirectory(path, warnings) {
-  if (!existsSync(path)) return { files: 0, bytes: 0 };
-  const stat = lstatSync(path);
+const errorText = (error) => (typeof error === 'string' ? error : error?.message || error?.data?.message || error?._tag || 'unknown error');
 
-  // Never traverse a symlink out of the OpenCode data directory. Removing the
-  // link still detaches it from OpenCode, but the external target is retained.
-  if (stat.isSymbolicLink()) {
-    const bytes = stat.size || 0;
-    rmSync(path, { force: true });
-    mkdirSync(path, { recursive: true });
-    warnings.push(`Removed linked artifact directory ${path} without following its external target`);
-    return { files: 1, bytes };
-  }
-  if (!stat.isDirectory()) {
-    const bytes = stat.size || 0;
-    rmSync(path, { force: true });
-    mkdirSync(path, { recursive: true });
-    return { files: 1, bytes };
-  }
-
-  let files = 0;
-  let bytes = 0;
-  for (const name of readdirSync(path)) {
-    const target = resolve(path, name);
-    if (target !== path && !target.startsWith(`${path}${sep}`)) {
-      throw new Error(`Refusing to clear unsafe artifact path: ${target}`);
-    }
-    bytes += entryBytes(target);
-    rmSync(target, { recursive: true, force: true });
-    files += 1;
-  }
-  return { files, bytes };
-}
-
-export function clearOpenCodeHistory({ dbPath, dataRoot = dirname(dbPath), vacuum = true }) {
-  const { database, root } = assertSafePaths(dbPath, dataRoot);
-  const warnings = [];
-  const result = {
-    sessionsDeleted: 0,
-    messagesDeleted: 0,
-    partsDeleted: 0,
-    databaseBytesBefore: databaseBytes(database),
-    databaseBytesAfter: 0,
-    artifactEntriesDeleted: 0,
-    artifactBytesDeleted: 0,
-    vacuumed: false,
-    warnings,
-  };
-
-  if (existsSync(database)) {
-    let db;
-    try {
-      db = new DatabaseSync(database);
-      db.exec('PRAGMA foreign_keys = ON');
-      db.exec('PRAGMA busy_timeout = 10000');
-      const tables = tableNames(db);
-      if (isOpencode2Database(tables)) throw new Error(OPENCODE2_HISTORY_REFUSAL);
-      result.sessionsDeleted = countRows(db, 'session', tables);
-      result.messagesDeleted = countRows(db, 'message', tables);
-      result.partsDeleted = countRows(db, 'part', tables);
-
-      db.exec('BEGIN IMMEDIATE');
-      try {
-        for (const table of HISTORY_TABLES_CHILD_FIRST) {
-          if (tables.has(table)) db.exec(`DELETE FROM "${table}"`);
-        }
-        db.exec('COMMIT');
-      } catch (error) {
-        try { db.exec('ROLLBACK'); } catch {}
-        throw error;
-      }
-
-      if (vacuum) {
-        try {
-          try { db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch {}
-          db.exec('VACUUM');
-          try { db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch {}
-          result.vacuumed = true;
-        } catch (error) {
-          warnings.push(`History was deleted, but database compaction failed: ${error.message}`);
+/**
+ * Delete every OpenCode session through `client` (lib/opencode2-client.js: `session.list` and `session.delete`,
+ * answering `{ data, error, response }`): a page of root sessions at a time, newest first, live ones and then
+ * archived ones; a root takes its child sessions with it. A session already gone (404) counts as deleted. Stops on
+ * a page where nothing could be deleted; what failed is in `failed`. Resolves
+ * `{ sessionsDeleted, failed: [{ id, error }], warnings }`; throws when the list itself cannot be read.
+ */
+export async function clearOpenCodeHistory(client, { pageSize = 100, maxPages = 1000 } = {}) {
+  const result = { sessionsDeleted: 0, failed: [], warnings: [] };
+  const failedIds = new Set();
+  for (const archived of [false, true]) {
+    for (let page = 0; page < maxPages; page++) {
+      const listed = await client.session.list({ roots: true, limit: pageSize, ...(archived ? { archived: true } : {}) });
+      if (listed?.error) throw new Error(`OpenCode did not list its sessions: ${errorText(listed.error)}`);
+      const ids = (Array.isArray(listed?.data) ? listed.data : []).map((session) => session?.id).filter((id) => id && !failedIds.has(id));
+      if (!ids.length) break;
+      let deleted = 0;
+      for (const id of ids) {
+        const removed = await client.session.delete({ sessionID: id });
+        if (removed?.error && Number(removed.response?.status) !== 404) {
+          failedIds.add(id);
+          result.failed.push({ id, error: errorText(removed.error) });
+        } else {
+          result.sessionsDeleted += 1;
+          deleted += 1;
         }
       }
-    } finally {
-      try { db?.close(); } catch {}
+      if (!deleted) break;
     }
   }
-
-  for (const segments of HISTORY_ARTIFACT_PATHS) {
-    const artifactPath = resolve(root, ...segments);
-    if (artifactPath !== root && !artifactPath.startsWith(`${root}${sep}`)) {
-      throw new Error(`Refusing to clear unsafe artifact path: ${artifactPath}`);
-    }
-    try {
-      const cleared = clearArtifactDirectory(artifactPath, warnings);
-      result.artifactEntriesDeleted += cleared.files;
-      result.artifactBytesDeleted += cleared.bytes;
-    } catch (error) {
-      warnings.push(`Could not clear ${artifactPath}: ${error.message}`);
-    }
+  if (result.failed.length) {
+    result.warnings.push(`${result.failed.length} OpenCode session(s) could not be deleted (${result.failed[0].error}).`);
   }
-
-  result.databaseBytesAfter = databaseBytes(database);
   return result;
-}
-
-export function clearOpenCodeHistoryInWorker(options) {
-  return new Promise((resolvePromise, rejectPromise) => {
-    const worker = new Worker(new URL(import.meta.url), {
-      workerData: { operation: 'clear-opencode-history', options },
-    });
-    let settled = false;
-    worker.once('message', (message) => {
-      settled = true;
-      if (message?.ok) resolvePromise(message.result);
-      else rejectPromise(new Error(message?.error || 'OpenCode history worker failed'));
-    });
-    worker.once('error', (error) => {
-      settled = true;
-      rejectPromise(error);
-    });
-    worker.once('exit', (code) => {
-      if (!settled && code !== 0) rejectPromise(new Error(`OpenCode history worker exited with code ${code}`));
-      else if (!settled) rejectPromise(new Error('OpenCode history worker exited before returning a result'));
-    });
-  });
-}
-
-if (!isMainThread && workerData?.operation === 'clear-opencode-history') {
-  try {
-    parentPort?.postMessage({ ok: true, result: clearOpenCodeHistory(workerData.options) });
-  } catch (error) {
-    parentPort?.postMessage({ ok: false, error: error?.message || String(error) });
-  }
 }

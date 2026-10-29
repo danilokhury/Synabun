@@ -12,6 +12,7 @@
 import { isGraphPointerActivity } from '../../shared/graph-activity.js';
 import { clearSearch } from '../../shared/ui-search.js';
 import { escapeHtml } from '../../shared/utils.js';
+import { frameRect } from '../../shared/app-frame.js';
 
 const CLICK_SLOP = 5; // px a press may move and still count as a click
 
@@ -61,10 +62,12 @@ export function initMapControls({ renderer, view, labels, onContextMenu = null }
     }
     const pad = 16;
     const w = tip.offsetWidth || 260, h = tip.offsetHeight || 80;
-    const x = Math.min(e.clientX + pad, window.innerWidth - w - 8);
-    const y = e.clientY + pad + h > window.innerHeight ? e.clientY - h - pad : e.clientY + pad;
-    tip.style.left = `${Math.max(8, x)}px`;
-    tip.style.top = `${Math.max(8, y)}px`;
+    // Inside the app frame, where the map is
+    const f = frameRect();
+    const x = Math.min(e.clientX + pad, f.right - w - 8);
+    const y = e.clientY + pad + h > f.bottom - 8 ? e.clientY - h - pad : e.clientY + pad;
+    tip.style.left = `${Math.max(f.left + 8, x)}px`;
+    tip.style.top = `${Math.max(f.top + 8, y)}px`;
     tip.classList.add('visible');
   }
 

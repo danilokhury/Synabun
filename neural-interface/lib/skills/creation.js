@@ -7,7 +7,8 @@
 //   gathering   the server reads every source (a session transcript, memories, a registered project, an existing
 //               skill, a web page through the SynaBun browser) into the job's workspace, as untrusted data with
 //               secrets taken out (lib/skills/creation-sources.js), before the worker starts.
-//   drafting    ONE Claude Code worker of the Assistant's dispatcher (lib/assistant-dispatch.js; no second runner)
+//   drafting    ONE worker of the Assistant's dispatcher (lib/assistant-dispatch.js; no second runner): Claude Code by
+//               default, or the owner's saved Coding route / the request's provider when it can be confined
 //               writes the package into the workspace's out/<name>/ (lib/skills/creation-brief.js is its brief),
 //               confined (lib/skills/draft-confinement.js): Read, Write, Edit, Glob and Grep in its workspace, writes
 //               in out/ only, no shell, no web, no MCP server, no settings files. Nothing it reads can make it touch
@@ -33,7 +34,7 @@ import { checkFolder, folderDigest } from './library.js';
 import { frontmatterData, renameSkillDocument } from './frontmatter.js';
 import { OUT_DIR, REQUEST_FILE, SOURCES_DIR, buildDraftingBrief, buildRepairPrompt, checkBriefFits, checkDraftPackage } from './creation-brief.js';
 import { SOURCE_BUDGET, importSourceFiles, memoriesMarkdown, pageMarkdown, readRepoSnapshot, transcriptMarkdown } from './creation-sources.js';
-import { DRAFT_CONFINEMENT } from './draft-confinement.js';
+import { DRAFT_CONFINEMENT, draftConfinementSupport } from './draft-confinement.js';
 import { CREATION_LIMITS, DRAFT_PROVIDERS, isActiveCreation, normalizeCreationRequest, sourceSummary } from '../../public/shared/skills/ss-creation.js';
 import { redactSecrets } from '../../../lib/log-redact.js';
 
@@ -263,7 +264,9 @@ export function createSkillCreations({
     const d = dispatcher();
     if (!d) throw new CreationError(503, 'The Assistant\'s workers stopped.', 'drafting_unavailable');
     const target = resolveTarget(job.request.target);
-    if (!DRAFT_PROVIDERS.includes(target.provider)) throw new CreationError(400, `Drafting runs on Claude Code only (${target.provider} cannot be held to the drafting folder).`, 'provider_unsupported');
+    if (!DRAFT_PROVIDERS.includes(target.provider)) throw new CreationError(400, `Drafting runs on ${DRAFT_PROVIDERS.join(', ')} (${target.provider} cannot be held to the drafting folder).`, 'provider_unsupported');
+    const support = draftConfinementSupport(target.provider);
+    if (!support.ok) throw new CreationError(400, `The drafting worker cannot be confined on ${target.provider}: ${support.reason}`, 'provider_unsupported');
     const task = buildDraftingBrief({ jobId: job.jobId, request: job.request, sources: gathered });
     // Confined (lib/skills/draft-confinement.js): file tools in its workspace, writes in out/, nothing else; every
     // source is already in the workspace, so it gets no browser and no MCP server. Its ceiling is the request's.
@@ -271,8 +274,8 @@ export function createSkillCreations({
       provider: target.provider, model: target.model || undefined, effort: target.effort || undefined,
       ...(target.accountId ? { accountId: target.accountId } : {}),
       task, title: `Draft skill${job.request.name ? ` ${job.request.name}` : ''}`,
-      cwd: job.workspace, capability: 'workspace', permissionPolicy: 'auto', confinement: { kind: DRAFT_CONFINEMENT },
-      usesBrowser: false, maxMinutes: job.request.maxMinutes, budgetUsd: job.request.budgetUsd,
+      cwd: job.workspace, capability: 'workspace', permissionPolicy: 'auto', confinement: { kind: DRAFT_CONFINEMENT, provider: target.provider },
+      tools: [], usesBrowser: false, maxMinutes: job.request.maxMinutes, budgetUsd: job.request.budgetUsd,
       maxTurns: 2 + limits.repairRounds, idleTimeoutMs: limits.idleTimeoutMs,
       tags: ['skill-draft'], focus: false, queueIfBusy: true,
     };

@@ -2,7 +2,8 @@
 // The routes of lib/skills/creation.js, beside the rest of the Skills Service's v2 routes (lib/skills/api-v2.js),
 // and the skill-forge guide the Assistant's `skill` tool reads (`GET /guide`). Who may do what:
 //
-//   the owner        from SynaBun's own page (no agent header, X-SynaBun-UI: 1, the owner route guard): starts,
+//   the owner        from SynaBun's own page (no agent header, X-SynaBun-UI: 1, this boot's page secret cookie,
+//                    lib/page-session.js, the owner route guard): starts,
 //                    reads, waits on, cancels and retries every creation; lists the sessions a conversation source
 //                    can use.
 //   the Assistant    a request carrying the credential an Assistant brain's launch was given (X-Synabun-Brain-Token,
@@ -42,10 +43,12 @@ function fail(res, err) {
  * @param {(req) => ({ kind: 'assistant', assistantSessionId: string } | { kind: 'worker' } | null)} [o.assistantCaller]
  *   who an agent request is: an Assistant brain (the session its credential belongs to), a dispatched worker, or nobody
  * @param {() => object} [o.options] what can run now: { conversation: string[] (providers), url: boolean, urlReason,
- *   repo: { path, label }[], memory: boolean, import: boolean, defaultTarget, drafting: { available, reason } }
+ *   repo: { path, label }[], memory: boolean, import: boolean, defaultTarget, drafting: { available, reason, providers } }
+ * @param {{ verify(req): boolean, require(req, res, next), attach(res) }} [o.pageSession] lib/page-session.js: the owner's
+ *   writes carry this boot's page secret; the owner's reads hand it to the page
  * @param {(q) => Promise<object[]>} [o.sessions] the sessions a conversation source can use
  */
-export function registerSkillCreationRoutes(app, { creations, service, isGuestRequest = null, ownerGuard = null, assistantCaller = null, options = () => ({}), sessions = null } = {}) {
+export function registerSkillCreationRoutes(app, { creations, service, isGuestRequest = null, ownerGuard = null, assistantCaller = null, options = () => ({}), sessions = null, pageSession = null } = {}) {
   const idem = new Map();
   const route = (method, path, ...handlers) => app[method](`${V2_BASE}${path}`, ...handlers);
   const safe = (fn) => async (req, res) => { try { await fn(req, res); } catch (err) { fail(res, err); } };
@@ -67,8 +70,10 @@ export function registerSkillCreationRoutes(app, { creations, service, isGuestRe
     if (principal.kind === 'guest') return sendGuardError(res, 403, 'GUEST_FORBIDDEN', 'Available to the owner only.');
     if (principal.kind === 'owner') {
       req.creator = { kind: 'owner', assistantSessionId: null };
-      if (!write) return next();
+      if (!write) { pageSession?.attach?.(res); return next(); }
       if (req.headers['x-synabun-ui'] !== '1') return sendGuardError(res, 403, 'UI_HEADER_REQUIRED', 'Send the X-SynaBun-UI: 1 header.');
+      // The page secret (lib/page-session.js): what a local process that merely left the agent headers out lacks.
+      if (pageSession && !pageSession.verify(req)) return pageSession.require(req, res, next);
       return ownerGuard ? ownerGuard(req, res, next) : next();
     }
     // An agent: only an Assistant brain, by its credential (never by a header any local process can send), and never
@@ -108,8 +113,14 @@ export function registerSkillCreationRoutes(app, { creations, service, isGuestRe
       conversation: Array.isArray(o.conversation) ? o.conversation.filter((p) => CONVERSATION_PROVIDERS.includes(p)) : [],
       url: o.url === true, ...(o.url !== true && typeof o.urlReason === 'string' && o.urlReason ? { urlReason: o.urlReason.slice(0, 400) } : {}),
       memory: o.memory === true, import: o.import === true,
-      // Who drafts (Claude Code only: the one runtime held to the drafting folder) and whether it can run here now.
-      drafting: { providers: DRAFT_PROVIDERS, available: o.drafting?.available !== false, ...(o.drafting?.available === false && typeof o.drafting?.reason === 'string' ? { reason: o.drafting.reason.slice(0, 400) } : {}) },
+      // Who drafts (every provider a drafting run can be held to its folder on: lib/skills/draft-confinement.js), whether
+      // one can run here now, and, when the host says, each provider's own answer (`providerStatus`: installed or not,
+      // with why, and how it is confined) so the page can grey out what cannot run.
+      drafting: {
+        providers: DRAFT_PROVIDERS, available: o.drafting?.available !== false,
+        ...(o.drafting?.available === false && typeof o.drafting?.reason === 'string' ? { reason: o.drafting.reason.slice(0, 400) } : {}),
+        ...(Array.isArray(o.drafting?.providers) && o.drafting.providers.every((p) => p && typeof p === 'object') ? { providerStatus: o.drafting.providers.filter((p) => DRAFT_PROVIDERS.includes(p.provider)).map((p) => ({ provider: p.provider, available: p.available === true, ...(p.reason ? { reason: String(p.reason).slice(0, 400) } : {}), ...(p.level ? { level: String(p.level) } : {}), ...(p.note ? { note: String(p.note).slice(0, 400) } : {}) })) } : {}),
+      },
       repo: (Array.isArray(o.repo) ? o.repo : []).map((p) => ({ path: String(p.path), label: String(p.label || p.path) })).slice(0, 200),
       defaultTarget: o.defaultTarget && typeof o.defaultTarget === 'object' ? { provider: o.defaultTarget.provider, model: o.defaultTarget.model || null, effort: o.defaultTarget.effort || null, route: o.defaultTarget.route === true } : null,
     });

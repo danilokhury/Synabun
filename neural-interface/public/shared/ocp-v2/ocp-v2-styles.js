@@ -3564,27 +3564,6 @@ const PARITY_CSS = `
 .ocpv2-changes-deleted { color: rgba(220,140,140,0.82); }
 .ocpv2-changes-file .ocpv2-tool-output { max-height: 320px; }
 
-/* ── New-session dialog: worktree option ──────────────────────────────── */
-.ocpv2-name-modal-worktree[hidden],
-.ocpv2-name-modal-worktrees[hidden] { display: none; }
-.ocpv2-name-modal-check {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  color: rgba(255,255,255,0.78);
-  cursor: pointer;
-}
-.ocpv2-name-modal-worktrees {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  font-size: 10px;
-  color: rgba(255,255,255,0.4);
-  max-height: 72px;
-  overflow-y: auto;
-}
-
 /* ── Environment popover ("Manage" in Context settings), under the header ── */
 .ocpv2-env-popover {
   position: absolute;

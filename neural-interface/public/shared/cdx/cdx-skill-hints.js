@@ -41,3 +41,14 @@ export function skillsForPrompt(prompt, pending) {
   if (text !== pending.cmd && !text.startsWith(`${pending.cmd} `) && !text.startsWith(`${pending.cmd}\n`)) return [];
   return [{ name: pending.name, path: pending.path }];
 }
+
+/**
+ * The skills_list request the panel sends for a tab: Codex's app-server (0.164.0, checked 2026-10-23) keeps its skill
+ * list until asked with forceReload, and sends no notification of its own when a skill folder appears or changes, so
+ * after SynaBun installed, removed or changed a skill (skills:changed) the next request forces the reload; otherwise
+ * the cached list is enough. The forced reload also refreshes the skills the app-server offers its threads.
+ * @param {{ project?: string|null }} tab @param {boolean} changed whether a skills:changed arrived since the last list
+ */
+export function skillsListRequest(tab, changed) {
+  return { cwds: tab?.project ? [tab.project] : [], forceReload: changed === true };
+}

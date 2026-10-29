@@ -7,6 +7,7 @@
 // composer attachments, Claude/Codex account management, and the sidepanel tab registry.
 // Mounted from server.js with `app.use('/api/assistant', createAssistantApi(deps))`.
 
+import { dispatchInput } from './assistant-tools.js';
 import { Router } from 'express';
 import { DispatchError } from './assistant-dispatch.js';
 import { openServable } from './assistant-media.js';
@@ -42,7 +43,7 @@ const NO_CATALOG = Object.freeze({});
 function sendError(res, error, fallbackStatus = 500) {
   if (error instanceof DispatchError || (error && error.code && error.status)) {
     const status = Number(error.status) || fallbackStatus;
-    const body = typeof error.toJSON === 'function' ? error.toJSON() : { code: error.code, message: error.message };
+    const body = typeof error.toJSON === 'function' ? error.toJSON() : { code: error.code, message: error.message, ...(error.problems ? { problems: error.problems } : {}) };
     return res.status(status).json({ ok: false, error: body.message, ...body });
   }
   return res.status(fallbackStatus).json({ ok: false, error: error?.message || String(error), code: error?.code || 'INTERNAL' });
@@ -96,7 +97,7 @@ export function slimRunView(run) {
  * @param {object} [deps.runtime]        createAssistantRuntime() (sessions; optional until wired)
  * @param {object} [deps.claudeAccounts] createClaudeAccounts()
  * @param {object} [deps.codexAccounts]  createCodexAccounts() (lib/codex-accounts.js)
- * @param {Function} [deps.buildCatalog] async () => catalog object (models/accounts/projects/profiles)
+ * @param {Function} [deps.buildCatalog] async () => catalog object (models/accounts/projects/tools)
  * @param {Function} [deps.createLoginTerminal] async ({ env, cwd, profile, accountId }) => { terminalSessionId, profile }
  * @param {Function} [deps.claudeSignIn]  async (accountId) => { sessionId, status, error } — Claude Code's own
  *   `auth login` in a SynaBun terminal under the account's config directory (lib/provider-panel-terminal-auth.js)
@@ -153,6 +154,11 @@ export function createAssistantApi({
   port = 3344,
   // The Admin sandbox setting (lib/agent-sandbox-setting.js): one global value for every agent SynaBun starts.
   adminSandbox = null,
+  // Protect workers (lib/worker-guard-setting.js): what capability read-only / workspace means for every worker.
+  workerGuard = null,
+  // The page secret (lib/page-session.js): a request without an agent pin is the owner's page only when it carries
+  // this boot's cookie; a local process that merely sends no headers is nobody (never 'ui').
+  pageSession = null,
 } = {}) {
   if (!dispatcher) throw new Error('createAssistantApi requires a dispatcher');
   const router = Router();
@@ -164,20 +170,31 @@ export function createAssistantApi({
     next();
   });
 
-  // Resolve who is calling: the UI (no pin), an assistant brain (assistant-<uuid>
-  // pin), or a dispatched worker (run id pin → forbidden for orchestration).
+  // Resolve who is calling: the UI (the page secret cookie, no pin), a dispatched worker (run id pin →
+  // forbidden for orchestration), or nobody known. A brain is NOT decided here: a pin only records which
+  // session a request *claims* to be (for attribution), never that the request is that session's brain.
+  // Brain authority is the per-launch credential alone (brainCaller) — the final pre-restart review
+  // (run f283e53b) showed a forged `X-Synabun-Terminal: assistant-*`, and equally a real but non-secret
+  // session id (a worker's environment and its task text both carry one), would otherwise pass as the brain.
   function callerContext(req) {
     const pin = String(req.get('x-synabun-terminal') || req.get('x-synabun-assistant') || '').trim();
     const bodySession = req.body?.assistantSessionId || req.body?.assistant_session_id || req.query?.assistantSessionId || null;
-    if (!pin) return { kind: 'ui', assistantSessionId: bodySession ? String(bodySession) : null };
+    if (!pin) {
+      // The page: this boot's page secret cookie (the browser sends it by itself). Without a page session wired
+      // (a test, an older host) every pinless request is the page, as before.
+      if (pageSession && typeof pageSession.verify === 'function' && !pageSession.verify(req)) return { kind: 'unknown', assistantSessionId: bodySession ? String(bodySession) : null, pin: '', pageless: true };
+      return { kind: 'ui', assistantSessionId: bodySession ? String(bodySession) : null };
+    }
     if (dispatcher.get(pin)) return { kind: 'worker', forbidden: true, pin };
-    // A brain's pin resolves to its session (Claude pins the session id; the
-    // OpenCode brain pins assistant-oc-<24>, which must never be taken as an id).
+    // The session a request claims, for attribution once a credential has proven it a brain: a Claude brain's
+    // pin resolves to its session; the OpenCode brain pins assistant-oc-<24> (never taken as an id) and names
+    // the session in the body. The claim grants nothing on its own.
     const resolved = runtime?.resolveTerminal?.(pin) || null;
-    if (resolved) return { kind: 'assistant', assistantSessionId: resolved, pin };
-    if (/^assistant-oc-/.test(pin)) return { kind: 'assistant', assistantSessionId: bodySession ? String(bodySession) : null, pin };
-    if (/^assistant-/.test(pin)) return { kind: 'assistant', assistantSessionId: pin, pin };
-    return { kind: 'unknown', assistantSessionId: bodySession ? String(bodySession) : null, pin };
+    const claimed = resolved
+      || (/^assistant-oc-/.test(pin) ? (bodySession ? String(bodySession) : null)
+        : /^assistant-/.test(pin) ? pin
+          : (bodySession ? String(bodySession) : null));
+    return { kind: 'unknown', assistantSessionId: claimed, pin };
   }
   /**
    * The plan mode of the brain making this call: 'read-only' (a remote session
@@ -212,20 +229,56 @@ export function createAssistantApi({
   function orchestrationGuard(req, res, next) {
     const caller = callerContext(req);
     if (caller.forbidden) return res.status(403).json({ ok: false, code: 'AGENTS_NOT_PERMITTED', error: 'Dispatched workers cannot orchestrate other agents.' });
-    req.assistantCaller = caller;
-    next();
+    // The user's own page (this boot's page secret cookie): the only caller that orchestrates without being a brain.
+    if (caller.kind === 'ui') { req.assistantCaller = caller; return next(); }
+    // The only other caller allowed is an Assistant brain, and only its per-launch credential proves it (brainCaller):
+    // never a pin, never a session id, which a worker's environment and its task text both carry. This is the forged-
+    // and known-pin bypass the final pre-restart review found (run f283e53b, assistant-api.js:189): an
+    // `X-Synabun-Terminal: assistant-*` header, or a real live session id, used to pass here as the brain.
+    const brain = brainCaller(req);
+    if (brain) { req.assistantCaller = brain; return next(); }
+    return res.status(403).json({ ok: false, code: 'UI_ONLY', error: 'Orchestration is the user\'s (from SynaBun\'s own page) and the Assistant\'s brain\'s: this request is neither (no page secret, no brain launch credential a live session knows).' });
   }
   /**
-   * The caller when it is an assistant brain, else null. Brains pin their
-   * session (Claude) or assistant-oc-<24> (OpenCode); the Codex brain's MCP
-   * child pins codex-sp-<uuid>, which no session resolves, but it sends
-   * X-Synabun-Role: assistant. The UI, workers and other sessions never count.
+   * The caller when it is an assistant brain, else null. The one proof is the per-launch credential
+   * (X-Synabun-Brain-Token, SYNABUN_BRAIN_TOKEN in the brain's own environment only, minted per brain launch and
+   * resolved by runtime.sessionForBrainCredential over the live brains): a pin or a session id names nobody here,
+   * because any local process can send a header and a session id is not secret (a worker carries its own, and ids
+   * appear in task text). The credential's session is authoritative, whatever pin or body the request carries. The
+   * UI, workers and other sessions never count.
    */
   function brainCaller(req) {
+    if (req.assistantCaller?.credentialed) return req.assistantCaller;
+    if (String(req.get('x-synabun-role') || '').trim().toLowerCase() !== 'assistant') return null;
+    let session = null;
+    try { session = runtime?.sessionForBrainCredential?.(req.get('x-synabun-brain-token')) || null; } catch { session = null; }
+    if (!session) return null;
     const caller = req.assistantCaller || callerContext(req);
-    if (caller.kind === 'assistant') return caller;
-    if (caller.kind === 'unknown' && String(req.get('x-synabun-role') || '').trim().toLowerCase() === 'assistant') return caller;
-    return null;
+    return { ...caller, kind: 'assistant', assistantSessionId: String(session), credentialed: true };
+  }
+  /**
+   * Who may READ a run (GET /runs/:id, /result, /transcript): the owner's page (ui), a credential-verified
+   * Assistant brain (its session's runs, as today), or the worker of that very run — a worker's pin is its own
+   * run id, so it reads only itself, never another run. Everyone else (a pinless local process with no page
+   * secret, a worker naming another run) is refused. Listing and deletion are owner-or-brain only (never a worker):
+   * the list is not "its own run", and a finished run is cleared by the owner or the brain that owns its session.
+   */
+  function runReadAllowed(req, runId) {
+    const caller = callerContext(req);
+    if (caller.kind === 'ui') return true;
+    const brain = brainCaller(req);
+    if (brain) {
+      // A brain reads only its OWN session's runs (like DELETE): another session's run is not readable through the
+      // credential. A run with no session, or a sessionless brain, falls through as before (nothing to scope to).
+      const runSession = dispatcher.get(runId)?.assistantSessionId || null;
+      if (runSession && brain.assistantSessionId && String(runSession) !== String(brain.assistantSessionId)) return false;
+      return true;
+    }
+    if (caller.kind === 'worker' && caller.pin && String(caller.pin) === String(runId)) return true;
+    return false;
+  }
+  function refuseRunRead(res) {
+    return res.status(403).json({ ok: false, code: 'RUN_FORBIDDEN', error: 'This run is readable by the owner (from SynaBun\'s own page), its own worker and the Assistant brain of its session only.' });
   }
   /** A remote session whose workers only a person may answer (strict worker approvals below autonomous). */
   function humanApprovalRequired(assistantSessionId) {
@@ -363,9 +416,8 @@ export function createAssistantApi({
     try {
       const body = req.body || {};
       const spec = {
-        ...body,
+        ...dispatchInput(body),
         accountId: body.accountId || body.account_id || body.codexAccountId || body.claudeAccountId || null,
-        mcpProfile: body.mcpProfile || body.mcp_profile,
         permissionPolicy: body.permissionPolicy || body.permission_policy,
         maxMinutes: body.maxMinutes ?? body.max_minutes,
         budgetUsd: body.budgetUsd ?? body.budget_usd,
@@ -724,18 +776,25 @@ export function createAssistantApi({
   });
 
   router.get('/runs', (req, res) => {
+    // Listing is owner-or-brain only: a worker reads its own run by id, never the roster of every run.
+    const caller = callerContext(req);
+    const brain = brainCaller(req);
+    if (caller.kind !== 'ui' && !brain) return refuseRunRead(res);
     try {
       const active = req.query.active === '1' || req.query.activeOnly === '1';
+      // A brain sees only its OWN session's runs (its session id forced over whatever the query asks); the owner's
+      // page may list any session.
+      const scopedSession = (brain && caller.kind !== 'ui') ? (brain.assistantSessionId || null) : (req.query.assistantSessionId || null);
       res.json({
         ok: true,
         runs: dispatcher.list({
           activeOnly: active,
-          assistantSessionId: req.query.assistantSessionId || null,
+          assistantSessionId: scopedSession,
           workflowId: req.query.workflowId || null,
           status: req.query.status || null,
           limit: clampInt(req.query.limit, 1, 500, 100),
         }),
-        totals: dispatcher.totals({ assistantSessionId: req.query.assistantSessionId || null, workflowId: req.query.workflowId || null }),
+        totals: dispatcher.totals({ assistantSessionId: scopedSession, workflowId: req.query.workflowId || null }),
       });
     } catch (error) { sendError(res, error); }
   });
@@ -768,12 +827,19 @@ export function createAssistantApi({
       if (!assistantSessionId && !workflowId && req.assistantCaller.kind !== 'ui') {
         return res.status(400).json({ ok: false, code: 'SCOPE_REQUIRED', error: 'Pass assistant_session_id (your ASSISTANT_SESSION_ID) or workflow_id to stop runs.' });
       }
-      const result = await dispatcher.killAll({ assistantSessionId, workflowId, reason: body.reason || 'kill_all' });
+      const reason = body.reason || 'kill_all';
+      const result = await dispatcher.killAll({ assistantSessionId, workflowId, reason });
+      // Who stopped every run, when: the records only say `kill_all` (2026-10-24 had to be traced by elimination).
+      const caller = req.assistantCaller.kind === 'ui' ? 'the page' : `the brain of ${req.assistantCaller.assistantSessionId || 'an unknown session'}`;
+      const scope = [assistantSessionId ? `session ${assistantSessionId}` : null, workflowId ? `workflow ${workflowId}` : null].filter(Boolean).join(', ') || 'every session';
+      const stopped = Array.isArray(result?.stopped) ? result.stopped : [];
+      log('kill-all', `${new Date(now()).toISOString()} ${caller} stopped ${stopped.length} run(s) of ${scope} (${reason})${stopped.length ? `: ${stopped.join(', ')}` : ''}`);
       res.json(result);
     } catch (error) { sendError(res, error); }
   });
 
   router.get('/runs/:runId', (req, res) => {
+    if (!runReadAllowed(req, req.params.runId)) return refuseRunRead(res);
     const run = dispatcher.get(req.params.runId);
     if (!run) return res.status(404).json({ ok: false, code: 'RUN_NOT_FOUND', error: `Unknown run ${req.params.runId}` });
     const brain = brainCaller(req);
@@ -781,6 +847,7 @@ export function createAssistantApi({
     res.json({ ok: true, run: brain ? slimRunView(run) : run });
   });
   router.get('/runs/:runId/result', (req, res) => {
+    if (!runReadAllowed(req, req.params.runId)) return refuseRunRead(res);
     try {
       const out = dispatcher.transcript(req.params.runId, { format: 'result' });
       if (out?.result) {
@@ -791,6 +858,7 @@ export function createAssistantApi({
     } catch (error) { sendError(res, error); }
   });
   router.get('/runs/:runId/transcript', (req, res) => {
+    if (!runReadAllowed(req, req.params.runId)) return refuseRunRead(res);
     try {
       const format = req.query.format || 'tail';
       const out = dispatcher.transcript(req.params.runId, {
@@ -811,6 +879,7 @@ export function createAssistantApi({
   // path from the request; owner-only like everything here. sendFile answers
   // Range requests, so a video seeks.
   router.get('/runs/:runId/media/:n', async (req, res) => {
+    if (!runReadAllowed(req, req.params.runId)) return refuseRunRead(res);
     const notFound = () => res.status(404).json({ ok: false, code: 'MEDIA_NOT_FOUND', error: `No media ${req.params.n} for run ${req.params.runId}` });
     if (!/^\d{1,4}$/.test(String(req.params.n))) return notFound();
     let file = null;
@@ -900,10 +969,23 @@ export function createAssistantApi({
   router.post('/runs/:runId/stop', orchestrationGuard, async (req, res) => {
     try { res.json(await dispatcher.stop(req.params.runId, req.body?.reason || (req.assistantCaller.kind === 'ui' ? 'user' : 'assistant'))); } catch (error) { sendError(res, error); }
   });
-  // Finished runs are cleared from the agents tray by the user, never by an agent.
+  // Finished runs are cleared from the agents tray by the owner (the page) or the Assistant brain of the run's
+  // own session; never by a worker (even its own run). A brain's delete is scoped to its session's runs.
   router.delete('/runs/:runId', async (req, res) => {
-    if (callerContext(req).kind !== 'ui') return res.status(403).json({ ok: false, code: 'UI_ONLY', error: 'Finished runs are removed from the assistant panel only.' });
-    try { res.json(await dispatcher.remove(req.params.runId, { assistantSessionId: req.query.assistantSessionId || req.body?.assistantSessionId || null })); } catch (error) { sendError(res, error); }
+    const caller = callerContext(req);
+    const brain = brainCaller(req);
+    if (caller.kind !== 'ui' && !brain) return res.status(403).json({ ok: false, code: 'UI_ONLY', error: 'Finished runs are removed by the owner (from SynaBun\'s own page) or the Assistant brain of the run\'s session.' });
+    if (brain && caller.kind !== 'ui') {
+      // A brain removes only the runs of its own session: another session's run is left untouched.
+      const runSession = dispatcher.get(req.params.runId)?.assistantSessionId || null;
+      if (runSession && brain.assistantSessionId && String(runSession) !== String(brain.assistantSessionId)) {
+        return res.status(403).json({ ok: false, code: 'RUN_NOT_IN_SESSION', error: `Run ${req.params.runId} belongs to another assistant session` });
+      }
+    }
+    const assistantSessionId = (brain && caller.kind !== 'ui')
+      ? (brain.assistantSessionId || null)
+      : (req.query.assistantSessionId || req.body?.assistantSessionId || null);
+    try { res.json(await dispatcher.remove(req.params.runId, { assistantSessionId })); } catch (error) { sendError(res, error); }
   });
   router.post('/runs/clear-finished', async (req, res) => {
     if (callerContext(req).kind !== 'ui') return res.status(403).json({ ok: false, code: 'UI_ONLY', error: 'Finished runs are removed from the assistant panel only.' });
@@ -1261,6 +1343,23 @@ export function createAssistantApi({
     const value = req.body?.adminSandbox;
     if (typeof value !== 'boolean') return res.status(400).json({ ok: false, code: 'INVALID_VALUE', error: 'adminSandbox must be true or false.' });
     try { res.json({ ok: true, ...adminSandbox.set(value) }); } catch (error) { sendError(res, error); }
+  });
+
+  // ── Protect workers (lib/worker-guard-setting.js) ──────────────────────────
+  // What capability read-only / workspace means for every worker the dispatcher starts
+  // (lib/worker-confinement.js): enforce (default), warn, off. The user's setting: an agent cannot change it.
+  router.get('/worker-guard', (req, res) => {
+    if (!workerGuard) return res.status(503).json({ ok: false, code: 'WORKER_GUARD_UNAVAILABLE', error: 'The Protect workers setting is not available on this server' });
+    res.json({ ok: true, ...workerGuard.view() });
+  });
+  router.put('/worker-guard', requireJson, (req, res) => {
+    if (!workerGuard) return res.status(503).json({ ok: false, code: 'WORKER_GUARD_UNAVAILABLE', error: 'The Protect workers setting is not available on this server' });
+    if (callerContext(req).kind !== 'ui' || req.get('x-synabun-desktop-grant') || req.get('x-synabun-role')) {
+      return res.status(403).json({ ok: false, code: 'UI_ONLY', error: 'Only the user can change Protect workers.' });
+    }
+    const value = req.body?.mode;
+    if (typeof value !== 'string' || !workerGuard.view().modes.includes(value)) return res.status(400).json({ ok: false, code: 'INVALID_VALUE', error: `mode must be one of ${workerGuard.view().modes.join(', ')}.` });
+    try { res.json({ ok: true, ...workerGuard.set(value) }); } catch (error) { sendError(res, error); }
   });
 
   // ── sidepanel tab registry (UI heartbeat) ──────────────────────────────────

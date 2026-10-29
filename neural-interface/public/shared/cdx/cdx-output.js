@@ -1,3 +1,4 @@
+import { cxpText } from './cdx-copy.js';
 import { OUTPUT_LIMITS, boundedText, cleanTerminal, jsonAnswer, looksLikeStreamingJson, isPreformattedText, structuredValueModel, readableStructuredValue, parseUnifiedDiff, hasOverlongRun, outputOverflows, displayDiffPath } from './cdx-output-model.js';
 
 const sources = new WeakMap();
@@ -193,7 +194,7 @@ export function hydrateOutputControls(container) {
       watchCaps(root);
     } else if (button.dataset.outputAction === 'copy') {
       const text = sources.get(root)?.text ?? root.dataset.original ?? diffStates.get(root)?.raw ?? root.querySelector('.cxp-diff-source')?.textContent ?? '';
-      navigator.clipboard.writeText(text).then(() => { button.textContent = 'Copied'; setTimeout(() => { button.textContent = root.classList.contains('cxp-diff-view') ? 'Copy patch' : 'Copy'; }, 1500); }).catch(() => {});
+      navigator.clipboard.writeText(text).then(() => { button.textContent = 'Copied'; setTimeout(() => { button.textContent = root.classList.contains('cxp-diff-view') ? cxpText('copyPatch', 'Copy patch') : 'Copy'; }, 1500); }).catch(() => {});
     }
     event.stopPropagation();
   });
@@ -310,19 +311,19 @@ export function renderDiffView(container, files, { lazy = false, cwd = container
   if (!state) {
     state = { entries: new Map(), raw: '' }; diffStates.set(container, state);
     const controls = node('div', 'cxp-output-controls');
-    const copy = node('button', 'cxp-output-control', 'Copy patch'); copy.type = 'button'; copy.dataset.outputAction = 'copy'; controls.append(copy);
+    const copy = node('button', 'cxp-output-control', cxpText('copyPatch', 'Copy patch')); copy.type = 'button'; copy.dataset.outputAction = 'copy'; controls.append(copy);
     const source = node('pre', 'cxp-diff-source'); source.hidden = true;
     if (summaryEl) controls.insertBefore(summaryEl, copy);
     else controls.insertBefore(node('div', 'cxp-card-meta'), copy);
     container.replaceChildren(controls, source); hydrateOutputControls(container);
   }
   const summary = container.querySelector('.cxp-output-controls .cxp-card-meta');
-  if (summary && !summaryEl) summary.textContent = `${files.length} file change${files.length === 1 ? '' : 's'}`;
+  if (summary && !summaryEl) summary.textContent = cxpText(files.length === 1 ? 'oneFileChange' : 'fileChanges', files.length === 1 ? '1 file change' : '{count} file changes', { count: files.length });
   state.raw = files.map(file => file.raw || '').join('\n');
   let filesNote = container.querySelector('.cxp-diff-files-note');
   if (!filesNote) { filesNote = node('div', 'cxp-output-note cxp-diff-files-note'); container.append(filesNote); }
   filesNote.hidden = !files.some(file => file.filesTruncated);
-  filesNote.textContent = 'Remaining files omitted: preview limited to 100 files.';
+  filesNote.textContent = cxpText('filesLimit', 'Remaining files omitted: preview limited to 100 files.');
   const serialized = files.map(file => file.raw?.startsWith('diff --git ') ? file.raw : `diff --git a/${file.oldPath || file.path} b/${file.path}\n${file.status === 'renamed' ? `rename from ${file.oldPath}\nrename to ${file.path}\n` : ''}--- ${file.status === 'added' ? '/dev/null' : `a/${file.oldPath || file.path}`}\n+++ ${file.status === 'deleted' ? '/dev/null' : `b/${file.path}`}\n${file.raw || ''}`).join('\n');
   container.querySelector('.cxp-diff-source').textContent = boundedText(serialized, OUTPUT_LIMITS.input);
   const retained = new Set();
@@ -341,11 +342,11 @@ export function renderDiffView(container, files, { lazy = false, cwd = container
         const f = entry.file;
         if (!f) return;
         entry.built = true;
-        const message = f.binary ? 'Binary file; text diff unavailable.' : f.oversized ? 'Oversized patch; rendering omitted (200,000 characters / 2,000 lines per file limit). Raw patch is copyable.' : f.unavailable || !f.lines.length && !f.hunks.length && f.status !== 'renamed' ? 'Patch not supplied or not a unified diff.' : '';
+        const message = f.binary ? cxpText('binary', 'Binary file; text diff unavailable.') : f.oversized ? cxpText('oversized', 'Oversized patch; rendering omitted (200,000 characters / 2,000 lines per file limit). Raw patch is copyable.') : f.unavailable || !f.lines.length && !f.hunks.length && f.status !== 'renamed' ? cxpText('patchMissing', 'Patch not supplied or not a unified diff.') : '';
         entry.note.textContent = message; entry.note.hidden = !message;
         diffRows(f, entry.rows, message ? 0 : entry.full ? OUTPUT_LIMITS.diffLines : OUTPUT_LIMITS.diffPreview);
         entry.more.hidden = !!message || f.lines.length <= OUTPUT_LIMITS.diffPreview;
-        entry.more.textContent = entry.full ? 'Show fewer lines' : `Show full diff (${f.lines.length} lines)`;
+        entry.more.textContent = entry.full ? cxpText('fewerLines', 'Show fewer lines') : cxpText('fullDiff', 'Show full diff ({count} lines)', { count: f.lines.length });
         watchCap(entry.rows);
       };
       entry.build = build;
@@ -361,7 +362,7 @@ export function renderDiffView(container, files, { lazy = false, cwd = container
     entry.path.title = file.status === 'renamed' ? `${file.oldPath} → ${file.path}` : file.path;
     measureChanges(entry.path, () => fitDiffPath(entry.path, entry.file, container.dataset.cwd));
     fitDiffPath(entry.path, file, cwd);
-    entry.status.textContent = file.status;
+    entry.status.textContent = cxpText(`diff_${file.status}`, file.status);
     entry.stats.textContent = `+${file.added} −${file.removed}`;
     if (entry.built || !lazy || !observer) { if (entry.details.open || entry.built) entry.build(); }
     else { pending.set(entry.details, entry.build); observer.observe(entry.details); }

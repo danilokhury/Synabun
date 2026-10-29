@@ -17,6 +17,7 @@ import { forceCheckSynabunUpdate, openSynabunUpdateModal, synabunUpdateSourceLab
 import { requestServerRestart } from './ui-loading.js';
 import { desktopBridge, isDesktopApp } from './desktop-bridge.js';
 import { t } from './i18n.js';
+import { frameRect } from './app-frame.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -220,7 +221,7 @@ function fitDropdown(item) {
   dropdown.style.maxHeight = '';
   dropdown.classList.remove('menubar-dropdown--scroll');
   const top = item.getBoundingClientRect().bottom + 14;
-  const room = Math.floor(window.innerHeight - top - 12);
+  const room = Math.floor(frameRect().bottom - top - 12); // down to the app frame's bottom edge
   if (room > 120 && dropdown.scrollHeight > room) {
     dropdown.style.maxHeight = room + 'px';
     dropdown.classList.add('menubar-dropdown--scroll');
@@ -277,12 +278,6 @@ function wireSubmenus() {
     sync();
   });
   window.addEventListener('resize', () => { if (openSub) placeSubmenu(openSub.parent, openSub.panel); });
-  // The tour shows a submenu by name (ui-tutorial.js showStage); null closes it.
-  on('menubar:submenu', (name) => {
-    const row = name ? [...SUBMENUS.keys()].find(r => r.dataset.submenu === name) : null;
-    if (row && !row.hidden) openSubmenu(row);
-    else closeSubmenu();
-  });
 }
 
 function openSubmenu(row, { focusFirst = false } = {}) {
@@ -376,8 +371,9 @@ function submenuEntries(panel) {
     .filter(el => !el.hidden && !el.classList.contains('disabled') && getComputedStyle(el).display !== 'none');
 }
 
-// Right of the dropdown with its first entry level with the row; on the left when the window has no room
-// on the right, and kept inside the window. The dropdown's laid-out place (offsetTop/Left) is what its
+// Right of the dropdown with its first entry level with the row; on the left when the app frame has no room
+// on the right, and kept inside its right and bottom edges (the menu hangs from the bar, which is outside the
+// frame, so its left stays the window's). The dropdown's laid-out place (offsetTop/Left) is what its
 // drop-in animation does not move, so a submenu opened together with the menu (the tour) lines up too.
 function placeSubmenu(row, panel) {
   const dropdown = row.parentElement, host = panel.parentElement;
@@ -385,9 +381,10 @@ function placeSubmenu(row, panel) {
   const first = submenuEntries(panel)[0];
   const lead = first ? first.getBoundingClientRect().top - panelBox.top : 0;
   const top = dropdown.offsetTop + row.getBoundingClientRect().top - dropdown.getBoundingClientRect().top - lead;
+  const f = frameRect();
   let left = dropdown.offsetLeft + dropdown.offsetWidth + SUBMENU_GAP;
-  if (hostBox.left + left + panelBox.width > innerWidth - VIEWPORT_MARGIN) left = dropdown.offsetLeft - SUBMENU_GAP - panelBox.width;
-  const maxTop = innerHeight - VIEWPORT_MARGIN - panelBox.height - hostBox.top;
+  if (hostBox.left + left + panelBox.width > f.right - VIEWPORT_MARGIN) left = dropdown.offsetLeft - SUBMENU_GAP - panelBox.width;
+  const maxTop = f.bottom - VIEWPORT_MARGIN - panelBox.height - hostBox.top;
   panel.style.left = `${Math.max(VIEWPORT_MARGIN - hostBox.left, left)}px`;
   panel.style.top = `${Math.max(VIEWPORT_MARGIN - hostBox.top, Math.min(top, maxTop))}px`;
 }

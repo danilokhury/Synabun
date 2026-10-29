@@ -41,6 +41,14 @@
 // for the next look. Nothing else is looked for: the machine's processes are
 // never listed and searched for OpenCode, and a process SynaBun did not record
 // is never signalled.
+//
+// The same records keep SynaBun's quick tunnel (lib/cloudflared/tunnel.js): a
+// second set of them, in DATA_HOME/runtime/tunnels, whose kind is 'quick' and
+// whose command line is a cloudflared tunnel to this server's port
+// (createServeRecords `kinds` / `matchesCommand`: lib/cloudflared/tunnel.js
+// tunnelsToPort over commandArgs). A server that ends without its exit handlers (a native crash)
+// leaves its cloudflared running, the public address still pointing at the port
+// the next server takes: the next server ends it by these same rules.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
@@ -196,13 +204,14 @@ const sameScope = (a, b) => wholeScope(a) && wholeScope(b) && a.machine === b.ma
 
 /**
  * A record that proves which process it names: its identity whole, its port, the token of its spawn, where it was
- * written (machine, user, boot), and a command line that serves on its port.
+ * written (machine, user, boot), and a command line that serves on its port. `kinds` and `matches` are another set
+ * of records' own (the tunnel's: lib/cloudflared/tunnel.js tunnelsToPort).
  */
-export function wholeRecord(record, platform = process.platform) {
+export function wholeRecord(record, platform = process.platform, { kinds = SERVE_KINDS, matches = servesOnPort } = {}) {
   if (!record || typeof record !== 'object') return false;
-  if (!SERVE_KINDS.includes(record.kind) || !isPid(record.pid) || !isPort(record.port)) return false;
+  if (!kinds.includes(record.kind) || !isPid(record.pid) || !isPort(record.port)) return false;
   if (!str(record.startedAt) || !str(record.command) || !TOKEN.test(str(record.token)) || !wholeScope(record.scope)) return false;
-  return servesOnPort(record.command, record.port, platform);
+  return matches(record.command, record.port, platform);
 }
 
 /** An owner that can be told apart from any other process: its pid, start time and command line. */
@@ -223,9 +232,16 @@ const wholeOwner = (owner) => !!owner && isPid(owner.pid) && !!str(owner.started
  * @param {(pid: number) => boolean | null} [o.exists] does a process run under the pid (null: cannot be told)
  * @param {(pid: number, signal: string) => void} [o.kill] the signal itself (Windows: taskkill /T /F, any signal)
  * @param {number} [o.selfPid] process.pid
+ * @param {string[]} [o.kinds] the kinds these records hold (SERVE_KINDS; the tunnel's: ['quick'])
+ * @param {(command: string, port: number, platform: string) => boolean} [o.matchesCommand] is a command line one of
+ *   theirs on `port`? (servesOnPort; the tunnel's: lib/cloudflared/tunnel.js tunnelsToPort)
+ * @param {string} [o.noun] what one is called in the log ('serve', 'tunnel')
  */
 export function createServeRecords({
   dir,
+  kinds = SERVE_KINDS,
+  matchesCommand = servesOnPort,
+  noun = 'serve',
   selfPid = process.pid,
   self = () => readProcessIdentity(selfPid),
   scope = null,
@@ -248,6 +264,7 @@ export function createServeRecords({
   log = () => {},
 } = {}) {
   if (!dir) throw new Error('createServeRecords requires dir');
+  const whole = (record) => wholeRecord(record, platform, { kinds, matches: matchesCommand });
   const readScope = scope || (() => readHostScope());
   const readScopeAsync = scopeAsync || (scope ? async () => scope() : () => readHostScopeAsync());
   const signal = kill || ((pid, sig) => {
@@ -338,7 +355,7 @@ export function createServeRecords({
     }
     if (current.uid == null || current.uid === '') return 'unknown';
     if (String(current.uid) !== record.scope.uid) return 'gone';
-    if (!servesOnPort(current.command, record.port, platform)) return 'gone';
+    if (!matchesCommand(current.command, record.port, platform)) return 'gone';
     return 'token';
   }
   const tokenVerdict = (has) => (has === true ? 'same' : has === false ? 'gone' : 'unknown');
@@ -349,7 +366,7 @@ export function createServeRecords({
    * record stays). Read in full each time, right before a signal included.
    */
   function verifySync(record) {
-    if (!wholeRecord(record, platform)) return 'unknown';
+    if (!whole(record)) return 'unknown';
     const where = whereVerdict(record);
     if (where !== 'here') return where;
     const current = readIdentity(record.pid);
@@ -360,7 +377,7 @@ export function createServeRecords({
   }
   /** verifySync without holding the event loop while the OS answers. */
   async function verify(record) {
-    if (!wholeRecord(record, platform)) return 'unknown';
+    if (!whole(record)) return 'unknown';
     await scopeLater();
     const where = whereVerdict(record);
     if (where !== 'here') return where;
@@ -398,7 +415,7 @@ export function createServeRecords({
    * another live SynaBun's, one whose owner was never recorded or cannot be read, one of another machine or user.
    */
   function claimable(record) {
-    if (!wholeRecord(record, platform) || whereVerdict(record) !== 'here') return false;
+    if (!whole(record) || whereVerdict(record) !== 'here') return false;
     return ownedHere(record) || ownerEndedSync(record.owner) === 'ended';
   }
 
@@ -415,26 +432,26 @@ export function createServeRecords({
    */
   async function record({ kind, id = null, port, pid, token } = {}) {
     const n = Number(pid);
-    if (!SERVE_KINDS.includes(kind) || !isPid(n) || !isPort(Number(port)) || !TOKEN.test(str(token))) return null;
+    if (!kinds.includes(kind) || !isPid(n) || !isPort(Number(port)) || !TOKEN.test(str(token))) return null;
     const at = await scopeLater();
-    if (!at) { log(`no record for the ${kind} serve on port ${port}: the machine, the user or the boot could not be read`); return null; }
+    if (!at) { log(`no record for the ${kind} ${noun} on port ${port}: the machine, the user or the boot could not be read`); return null; }
     const identity = await readIdentityAsync(n);
-    if (!identity) { log(`no record for the ${kind} serve on port ${port}: the identity of process ${n} could not be read`); return null; }
+    if (!identity) { log(`no record for the ${kind} ${noun} on port ${port}: the identity of process ${n} could not be read`); return null; }
     const entry = {
       v: RECORD_VERSION, kind, id: id == null ? null : String(id), port: Number(port),
       pid: n, startedAt: identity.startedAt, command: identity.command, token,
       scope: { ...at }, owner: owner(), recordedAt: new Date(now()).toISOString(),
     };
-    if (!wholeRecord(entry, platform)) { log(`no record for the ${kind} serve on port ${port}: process ${n} is not a serve on that port (${identity.command})`); return null; }
+    if (!whole(entry)) { log(`no record for the ${kind} ${noun} on port ${port}: process ${n} is not a ${noun} on that port (${identity.command})`); return null; }
     if (platform === 'win32') {
-      if (!FINE_START.test(entry.startedAt)) { log(`no record for the ${kind} serve on port ${port}: the start time of process ${n} is not precise enough to tell it apart`); return null; }
+      if (!FINE_START.test(entry.startedAt)) { log(`no record for the ${kind} ${noun} on port ${port}: the start time of process ${n} is not precise enough to tell it apart`); return null; }
     } else {
-      if (String(identity.uid ?? '') !== at.uid) { log(`no record for the ${kind} serve on port ${port}: process ${n} is not this user's`); return null; }
-      if (await readTokenAsync(n, token, identity.command) !== true) { log(`no record for the ${kind} serve on port ${port}: process ${n} does not carry this start's token`); return null; }
+      if (String(identity.uid ?? '') !== at.uid) { log(`no record for the ${kind} ${noun} on port ${port}: process ${n} is not this user's`); return null; }
+      if (await readTokenAsync(n, token, identity.command) !== true) { log(`no record for the ${kind} ${noun} on port ${port}: process ${n} does not carry this start's token`); return null; }
     }
     const onFile = readFile(`${n}.json`);
     if (onFile && str(onFile.token) && onFile.token !== token && !issued.has(onFile.token) && await verify(onFile) === 'same') {
-      log(`no record for the ${kind} serve on port ${port}: process ${n} is on record for another start`);
+      log(`no record for the ${kind} ${noun} on port ${port}: process ${n} is on record for another start`);
       return null;
     }
     if (!write(entry)) return null;
@@ -451,7 +468,7 @@ export function createServeRecords({
       renameSync(tmp, path);
       return true;
     } catch (error) {
-      log(`could not write the record of the ${entry.kind} serve on port ${entry.port}: ${error?.message || error}`);
+      log(`could not write the record of the ${entry.kind} ${noun} on port ${entry.port}: ${error?.message || error}`);
       return false;
     }
   }
@@ -470,7 +487,7 @@ export function createServeRecords({
   function list({ kind = null, port = null } = {}) {
     return entries()
       .map(({ record: r }) => r)
-      .filter((r) => wholeRecord(r, platform) && (!kind || r.kind === kind) && (port == null || r.port === Number(port)))
+      .filter((r) => whole(r) && (!kind || r.kind === kind) && (port == null || r.port === Number(port)))
       .sort((a, b) => String(b.recordedAt || '').localeCompare(String(a.recordedAt || '')));
   }
 
@@ -565,7 +582,7 @@ export function createServeRecords({
       // The running server's own serves: its own stops end them, and their exits remove their records.
       if (ownedHere(entry)) continue;
       // A file that is no whole record proves nothing: it goes, and nothing is signalled.
-      if (!wholeRecord(entry, platform) || entry.pid !== pid) { unlink(name); result.dropped.push({ pid, why: 'not-a-record' }); continue; }
+      if (!whole(entry) || entry.pid !== pid) { unlink(name); result.dropped.push({ pid, why: 'not-a-record' }); continue; }
       // An earlier boot ended every process it had: the record goes, and nothing is signalled.
       if (there.boot !== at.boot) { remove(entry); result.dropped.push(about('earlier-boot')); continue; }
       const serveNow = await verify(entry);
@@ -575,7 +592,7 @@ export function createServeRecords({
       const ownerNow = await ownerEnded(entry.owner);
       if (ownerNow !== 'ended') { result.kept.push(about(ownerNow === 'running' ? 'owner-running' : 'owner-unknown')); continue; }
       // SynaBun's own serve, started by a SynaBun that has ended: nothing uses it any more.
-      log(`stopping a ${entry.kind} serve an earlier SynaBun left running on port ${entry.port} (pid ${entry.pid})`);
+      log(`stopping a ${entry.kind} ${noun} an earlier SynaBun left running on port ${entry.port} (pid ${entry.pid})`);
       const outcome = await stopLeftover(entry);
       if (outcome === 'stopped') { remove(entry); result.stopped.push(about('leftover')); continue; }
       if (outcome === 'gone') { remove(entry); result.dropped.push(about('process-gone')); continue; }
@@ -598,8 +615,9 @@ export function createServeRecords({
 
   return {
     dir, record, remove, list, verify, verifySync, claimable, ownedHere, answering, sweep,
-    /** A fresh token for one spawn, to put in its environment as SERVE_TOKEN_ENV. */
+    /** A fresh token for one spawn, to put in its environment as SERVE_TOKEN_ENV (`tokenEnv`). */
     newToken: () => newToken(),
+    tokenEnv: SERVE_TOKEN_ENV,
     /** Where this server runs: `{ machine, uid, boot }`, or null while the OS cannot tell all three. */
     scope: scopeNow,
   };

@@ -11,8 +11,11 @@ can always be drafted from the user's words.
   Review queue, and `create` (a worker drafts from sources). Without it: write the folder in a scratch place outside
   every runtime's skill folders and tell the owner to import it in Skills Studio (Create → Import); it is staged,
   scanned and installed only by the digest they review.
-- **A question tool** (`AskUserQuestion`, `choice`, `question`) or a chat channel: ask only what a wrong guess would
-  waste. Unattended (no question tool, or the run says so): ask nothing; assume and write the assumption down.
+- **A question tool** or a chat channel: ask only what a wrong guess would waste. Each runtime has its own: Claude
+  Code's `AskUserQuestion`; Codex's `request_user_input` (its own, when the harness offers it), or SynaBun's `choice`
+  (MCP form elicitation; when it answers `supported=false`, ask the same numbered choices once in plain text and
+  wait); OpenCode's `question` tool. Use the one your tool list has, never one it lacks. Unattended (no question tool,
+  or the run says so): ask nothing; assume and write the assumption down.
 - **The SynaBun browser**: the only way to read a web page. With `create`, SynaBun reads a `url` source with its
   own browser before the worker starts; drafting yourself, use `browser_navigate` and `browser_content`. Without
   it, a page source is "needs the SynaBun browser": stop that source, never fetch or open the page another way.

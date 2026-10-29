@@ -43,10 +43,14 @@ export function scanState(scan) {
   return { code: scan.gate === 'review' ? 'review' : 'findings', sev: scan.gate === 'review' ? 'warn' : 'info', found };
 }
 
-/** What the owner can do with a submission now. */
+/**
+ * What the owner can do with a submission now. Approving installs: a pending submission's first action is
+ * `approve_install` (approve, then install to the targets it named, in one go); `approve` alone stays. One approved
+ * but not installed (or installed in part, or whose install failed) offers `install`.
+ */
 export function reviewActions(review, { guest = false } = {}) {
   if (guest) return [];
-  if (review?.state === 'pending') return ['approve', 'request_changes', 'reject'];
+  if (review?.state === 'pending') return ['approve_install', 'approve', 'request_changes', 'reject'];
   if (review?.state === 'changes_requested') return ['reject'];
   if (['approved', 'partial', 'publish_failed'].includes(review?.state)) return ['install'];
   return [];
@@ -75,7 +79,7 @@ export function reviewCardModel(review, { guest = false } = {}) {
     targets: list(review?.targets).map((t) => ({ runtime: t?.runtime, scope: t?.scope || 'user', projectPath: t?.projectPath || null, accountId: t?.accountId || null })),
     installAs: typeof ev.installName === 'string' && ev.installName ? revealHidden(ev.installName) : null,
     lint: { errors: lintErrors, warnings: lintWarnings, resourceProblems: num(ev.lint?.resourceProblems) },
-    scan: { ...scanState(ev.scan), findings: list(ev.scan?.findings).slice(0, 10).map((f) => ({ severity: ['critical', 'high', 'medium', 'low', 'info'].includes(f?.severity) ? f.severity : 'low', message: String(f?.message ?? ''), file: f?.file || null, line: f?.line || null, ruleId: f?.ruleId || null })) },
+    scan: { ...scanState(ev.scan), findings: list(ev.scan?.findings).slice(0, 10).map((f) => ({ ...f, severity: ['critical', 'high', 'medium', 'low', 'info'].includes(f?.severity) ? f.severity : 'low', message: String(f?.message ?? ''), file: f?.file || null, line: f?.line || null, ruleId: f?.ruleId || null })) },
     authority: authorityRows(ev.authority),
     files: list(ev.diff?.files).map((f) => ({ path: String(f.path ?? ''), status: f.status })),
     fromRevisionId: ev.diff?.from?.revisionId || review?.baseApprovedRevisionId || null,

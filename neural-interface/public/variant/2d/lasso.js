@@ -18,6 +18,7 @@ let _lassoStart = null;
 let _lassoEnd = null;
 let _lassoCanvas = null;
 let _lassoCtx = null;
+let _lassoBox = { left: 0, top: 0 };
 
 // ═══════════════════════════════════════════
 // INIT
@@ -32,8 +33,9 @@ export function initLasso(_graphInstance) {
   if (!_lassoCanvas) return;
   _lassoCtx = _lassoCanvas.getContext('2d');
 
-  _lassoCanvas.width = window.innerWidth;
-  _lassoCanvas.height = window.innerHeight;
+  _onResize();
+  // It fills the app frame like the graph: an explorer opening resizes it without a window resize.
+  if (typeof ResizeObserver === 'function') new ResizeObserver(_onResize).observe(_lassoCanvas);
 
   document.addEventListener('pointerdown', _onPointerDown);
   document.addEventListener('pointermove', _onPointerMove);
@@ -50,6 +52,7 @@ function _onPointerDown(e) {
   // #wb-root: Shift+drag on the focus-mode whiteboard is its own marquee selection
   if (e.target.closest('#title-bar, #category-sidebar, .detail-card, #minimap, .glass, #wb-root')) return;
   _lassoActive = true;
+  _lassoBox = _lassoCanvas.getBoundingClientRect();
   _lassoStart = { x: e.clientX, y: e.clientY };
   _lassoEnd = { x: e.clientX, y: e.clientY };
   e.preventDefault();
@@ -59,10 +62,10 @@ function _onPointerMove(e) {
   if (!_lassoActive) return;
   _lassoEnd = { x: e.clientX, y: e.clientY };
 
-  // Draw selection rect
+  // Draw selection rect (client coordinates → the canvas's own: it sits in the app frame)
   _lassoCtx.clearRect(0, 0, _lassoCanvas.width, _lassoCanvas.height);
-  const x = Math.min(_lassoStart.x, _lassoEnd.x);
-  const y = Math.min(_lassoStart.y, _lassoEnd.y);
+  const x = Math.min(_lassoStart.x, _lassoEnd.x) - _lassoBox.left;
+  const y = Math.min(_lassoStart.y, _lassoEnd.y) - _lassoBox.top;
   const w = Math.abs(_lassoEnd.x - _lassoStart.x);
   const h = Math.abs(_lassoEnd.y - _lassoStart.y);
   _lassoCtx.strokeStyle = 'rgba(100, 180, 255, 0.6)';
@@ -120,8 +123,9 @@ export function clearLasso() {
 
 function _onResize() {
   if (!_lassoCanvas) return;
-  _lassoCanvas.width = window.innerWidth;
-  _lassoCanvas.height = window.innerHeight;
+  const box = _lassoCanvas.getBoundingClientRect();
+  _lassoCanvas.width = Math.round(box.width || window.innerWidth);
+  _lassoCanvas.height = Math.round(box.height || window.innerHeight);
 }
 
 /**

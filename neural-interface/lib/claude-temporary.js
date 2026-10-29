@@ -49,7 +49,7 @@ const READ_TOOLS = new Set([
 ]);
 // One tool, both: the actions that only read. Any other action is refused, an
 // action nobody listed included. `''` is the tool's own default action.
-// (`profile`: `set` writes the runtime's profile, to a file and to the server.)
+// (`tool_groups`: `add` / `set` write the runtime list, to a file and to the server.)
 const READ_ACTIONS = Object.freeze({
   memories: new Set(['recent', 'stats', 'by-category', 'by-project', 'get', 'get-batch', 'history', 'context']),
   category: new Set(['list']),
@@ -57,7 +57,7 @@ const READ_ACTIONS = Object.freeze({
   fb_groups: new Set(['worklist', 'list', 'stats']),
   image_staged: new Set(['list']),
   morelogin: new Set(['status', 'list']),
-  profile: new Set(['get']),
+  tool_groups: new Set(['get']),
 });
 // Acting on the outside world through the browser, an API or the desktop: what
 // Bash and Edit do too. They leave what they do where they do it (a post, a

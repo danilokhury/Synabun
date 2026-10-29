@@ -18,6 +18,7 @@ export function readFoldersStatus(answer) {
   return {
     available: true,
     sharedAgentsRoot: answer.config?.sharedAgentsRoot === true,
+    assistants: readAssistants(answer.assistants),
     bridges: { synabun, other },
     message: synabun === 0 ? { key: 'settings.redesign.skills.folders.bridgesNone' } : synabun === 1 ? { key: 'settings.redesign.skills.folders.bridgesOne' } : { key: 'settings.redesign.skills.folders.bridgesMany', params: { count: synabun } },
     others: other === 0 ? null : other === 1 ? { key: 'settings.redesign.skills.folders.othersOne' } : { key: 'settings.redesign.skills.folders.othersMany', params: { count: other } },
@@ -25,21 +26,51 @@ export function readFoldersStatus(answer) {
   };
 }
 
+const ASSISTANTS = ['claude', 'codex', 'opencode'];
+
+/**
+ * The owner's assistants (GET /v2/config `assistants`: chosen, detected, effective): one chip per runtime, on when
+ * it is in effect, and whether the list is the detected one (nothing chosen yet). A server from before this has none.
+ */
+export function readAssistants(view) {
+  if (!view || !Array.isArray(view.effective)) return null;
+  const effective = view.effective.filter((r) => ASSISTANTS.includes(r));
+  const detected = (Array.isArray(view.detected) ? view.detected : []).filter((r) => ASSISTANTS.includes(r));
+  return {
+    auto: !Array.isArray(view.chosen),
+    effective, detected,
+    chips: ASSISTANTS.map((id) => ({ id, key: RUNTIME[id], on: effective.includes(id), detected: detected.includes(id) })),
+    detectedWords: detected.map((id) => ({ key: RUNTIME[id] })),
+  };
+}
+
+/** The list a chip's click sends (PUT /v2/config `assistants`): toggled, never empty (the last one stays on). */
+export function toggledAssistants(effective, id) {
+  const now = (Array.isArray(effective) ? effective : []).filter((r) => ASSISTANTS.includes(r));
+  if (now.includes(id)) { const next = now.filter((r) => r !== id); return next.length ? next : now; }
+  return ASSISTANTS.filter((r) => now.includes(r) || r === id);
+}
+
 /**
  * The lines of a migration plan, one per bridge of SynaBun's, and whether anything would move. The prompt and
  * command files that are not SynaBun's are only counted (the status says how many): they are never moved, and a
- * line each would bury the ones that are.
+ * line each would bury the ones that are; except the bridge file of a skill SynaBun ships that is not proven its
+ * own (`offer`): that one is listed with a tick, "Move it too", and moves only once the owner confirms its bytes.
+ * @param {object} plan @param {Set<string>|string[]} [ticked] the offers the owner ticked (bridge ids)
  */
-export function readMigrationPlan(plan) {
+export function readMigrationPlan(plan, ticked = []) {
   const steps = Array.isArray(plan?.steps) ? plan.steps : [];
-  const lines = steps.filter((s) => s.action !== 'leave' || s.proof !== 'none' || s.ledgerRecord).map((s) => {
+  const on = new Set(ticked);
+  const lines = steps.filter((s) => s.action !== 'leave' || s.proof !== 'none' || s.ledgerRecord || s.offer).map((s) => {
     const params = { runtime: { key: RUNTIME[s.runtime] || RUNTIME.codex }, name: `/${s.name}`, destination: s.native?.destination || '', why: s.why || '' };
-    if (s.action === 'migrate') return { tone: 'ok', key: 'settings.redesign.skills.folders.stepMigrate', params };
+    if (s.action === 'migrate') return { tone: 'ok', key: s.proof === 'owner-confirmed' ? 'settings.redesign.skills.folders.stepConfirmed' : 'settings.redesign.skills.folders.stepMigrate', params, bridgeId: s.bridgeId, offer: s.proof === 'owner-confirmed' ? { digest: s.digest, on: true } : null };
     if (s.action === 'blocked') return { tone: 'warn', key: 'settings.redesign.skills.folders.stepBlocked', params };
+    if (s.offer) return { tone: 'offer', key: 'settings.redesign.skills.folders.stepOffer', params, bridgeId: s.bridgeId, offer: { digest: s.offer.digest, on: on.has(s.bridgeId) } };
     return { tone: 'muted', key: 'settings.redesign.skills.folders.stepLeave', params };
   });
   const movable = steps.filter((s) => s.action === 'migrate').length;
-  return { lines, movable, planDigest: typeof plan?.planDigest === 'string' ? plan.planDigest : null, empty: movable === 0 ? { key: 'settings.redesign.skills.folders.nothing' } : null };
+  const confirm = Object.fromEntries(steps.filter((s) => s.proof === 'owner-confirmed').map((s) => [s.bridgeId, s.digest]));
+  return { lines, movable, offered: steps.filter((s) => s.action === 'leave' && s.offer).length, confirm, planDigest: typeof plan?.planDigest === 'string' ? plan.planDigest : null, empty: movable === 0 ? { key: 'settings.redesign.skills.folders.nothing' } : null };
 }
 
 /** What a move answered: done, in part (which and why), nothing to do. */

@@ -6,6 +6,7 @@
 // listeners (used by the panel manager to spawn child panels).
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { createOutcomeNotifications } from './ocp-v2-outcome-notifications.js';
 import { getDefaultStore } from './ocp-v2-state.js';
 import { notify as uiNotify, NOTIF_TYPE } from '../ui-notifications.js';
 import { nativeLoopWindowId } from '../ui-native-window-id.js';
@@ -20,41 +21,18 @@ import { createAskTracker, createTurnClock, readOpenAsks, unreadAsksNotice, TURN
 // predates the list; cleared on every disconnect and refilled on reconnect.
 export const capabilities = createCapabilities();
 export const supports = (...types) => capabilities.hasAll(...types);
-// The @opencode-ai/sdk version the server answered `init` with ('' from a
-// server that does not say).
-let _sdkVersion = '';
-export const sdkVersion = () => _sdkVersion;
 
 const _notifiedPermissionIds = new Set();
-// Per-store DONE/ERROR dedup: once an outcome fires for a turn, suppress
-// duplicates until the next time `running` flips back to true (new turn).
-// ERROR locks out future DONE; DONE allows a later ERROR through.
-const _outcomeKey = new WeakMap();        // store → NOTIF_TYPE.DONE | NOTIF_TYPE.ERROR
-const _outcomeSubscribed = new WeakSet(); // stores already wired for reset
+const _outcomes = createOutcomeNotifications();
 
 function _fireOutcomeNotify(store, type) {
-  const last = _outcomeKey.get(store);
-  if (last === type) return;
-  if (last === NOTIF_TYPE.ERROR && type === NOTIF_TYPE.DONE) return;
-  _outcomeKey.set(store, type);
   const s = store.getState();
+  if (!_outcomes.take(s, type === NOTIF_TYPE.ERROR ? 'error' : 'done')) return;
   const baseLabel = s.sessionInfo?.title || s.sessionInfo?.info?.title || 'OpenCode';
   const label = s.parentSessionId ? `↳ ${baseLabel}` : baseLabel;
   try {
     uiNotify('panel', type, label, { panel: 'opencode', provider: 'opencode' });
   } catch (err) { console.warn('[ocp-v2-ws] outcome notify failed', err); }
-}
-
-function _ensureOutcomeReset(store) {
-  if (_outcomeSubscribed.has(store)) return;
-  _outcomeSubscribed.add(store);
-  try {
-    store.subscribe((event, state) => {
-      if (event?.type === 'running:set' && state.running) {
-        _outcomeKey.delete(store);
-      }
-    });
-  } catch (err) { console.warn('[ocp-v2-ws] outcome subscribe failed', err); }
 }
 
 let _ws = null;
@@ -146,7 +124,7 @@ function broadcastServerStatus(payload) {
 }
 
 // Why OpenCode cannot be used, as the server says it (an OpenCode version
-// SynaBun does not speak, a port held by an OpenCode 2 server it did not start,
+// SynaBun does not drive, a port held by an OpenCode server it did not start,
 // a web page where the API should be): one line in each panel's error list,
 // never a second copy of the same sentence while the panel keeps retrying.
 function broadcastServerProblem(text) {
@@ -173,7 +151,6 @@ export function disconnect() {
 export function subscribeSession(sessionId, store) {
   if (!store) return () => {};
   _allStores.add(store);
-  _ensureOutcomeReset(store);
   if (!sessionId) {
     // Not yet bound — caller should call again once a session exists.
     return () => { _allStores.delete(store); };
@@ -252,7 +229,6 @@ function handleMessage(msg) {
     p.timeout.cancel();
     if (msg.type === 'init:result') {
       capabilities.set(msg.capabilities);
-      if (typeof msg.sdkVersion === 'string') _sdkVersion = msg.sdkVersion;
       if (msg.ready === false && msg.problem) broadcastServerProblem(msg.problem);
       asksReady();
     }
@@ -382,7 +358,7 @@ export function isKnownDescendantSession(sessionId, ancestorId) {
 // ── What waits on the user, read from the server ───────────────────────────
 // The stream says what is asked and answered while the socket is up. What was asked before (the page loaded,
 // a panel was bound to another session, the socket was down) is read from the server (permission:list and
-// question:list, on OpenCode 1 and 2 alike), one session at a time: its clocks wait until then. After a
+// question:list), one session at a time: its clocks wait until then. After a
 // reconnect every bound session is read again (rebuildAsks). A list that cannot be read is read again a few
 // times; then the session's clocks count again and its panel says so (noteUnreadAsks).
 
@@ -663,17 +639,17 @@ export const api = {
   sessionMessages:(sessionId)     => request({ type: 'session:messages', sessionId }),
   sessionContext: ({ sessionId, cwd } = {}) => request({ type: 'session:context', sessionId, cwd }),
   // `human` / `greetingId`: lib/greeting/ (a server that does not know them ignores them).
-  send: ({ sessionId, parts, model, agent, mode, variant, cwd, mcpProfile, noAbortPrev, human, greetingId }) =>
-    request({ type: 'message:send', sessionId, parts, model, agent, mode, variant, cwd, mcpProfile, noAbortPrev: !!noAbortPrev, ...(human ? { human: true } : {}), ...(greetingId ? { greetingId } : {}) }, TURN_LIMIT_MS, { turnOf: sessionId }),
+  send: ({ sessionId, parts, model, agent, mode, variant, cwd, tools, noAbortPrev, human, greetingId }) =>
+    request({ type: 'message:send', sessionId, parts, model, agent, mode, variant, cwd, tools, noAbortPrev: !!noAbortPrev, ...(human ? { human: true } : {}), ...(greetingId ? { greetingId } : {}) }, TURN_LIMIT_MS, { turnOf: sessionId }),
   abort: (sessionId) => request({ type: 'message:abort', sessionId }),
-  compact: ({ sessionId, cwd, mcpProfile, model } = {}) => request({ type: 'session:compact', sessionId, cwd, mcpProfile, model }, 5 * 60 * 1000),
+  compact: ({ sessionId, cwd, tools } = {}) => request({ type: 'session:compact', sessionId, cwd, tools }, 5 * 60 * 1000),
   permissionReply: ({ sessionId, permissionId, response, cwd, message }) =>
     request({ type: 'permission:reply', sessionId, permissionId, response, cwd, message }),
   questionList:   ({ cwd, sessionId } = {})   => request({ type: 'question:list', cwd, sessionId }),
   questionReply:  ({ requestId, answers, cwd, sessionId }) => request({ type: 'question:reply', requestId, answers, cwd, sessionId }),
   questionReject: ({ requestId, sessionId })  => request({ type: 'question:reject', requestId, sessionId }),
-  mcpProfileGet:  (sessionId) => request({ type: 'mcp:profile:get', sessionId }),
-  mcpProfileSet:  (sessionId, profile) => request({ type: 'mcp:profile:set', sessionId, profile }, 45_000),
+  toolsGet:  (sessionId) => gated({ type: 'mcp:tools:get', sessionId }),
+  toolsSet:  (sessionId, tools) => gated({ type: 'mcp:tools:set', sessionId, tools }, 45_000),
 
   // ── Newer request types: sent only when the server lists them (see
   //    ocp-v2-caps.js); otherwise they resolve { ok:false, unsupported:true }.
@@ -684,16 +660,12 @@ export const api = {
   sessionUnrevert: ({ sessionId, cwd } = {}) => gated({ type: 'session:unrevert', sessionId, cwd }),
   sessionFork:     ({ sessionId, messageID, cwd } = {}) => gated({ type: 'session:fork', sessionId, messageID, cwd }),
   sessionChildren: ({ sessionId, cwd } = {}) => gated({ type: 'session:children', sessionId, cwd }),
-  sessionShare:    ({ sessionId, cwd } = {}) => gated({ type: 'session:share', sessionId, cwd }),
-  sessionUnshare:  ({ sessionId, cwd } = {}) => gated({ type: 'session:unshare', sessionId, cwd }),
-  sessionSharePolicy: ({ cwd } = {}) => gated({ type: 'session:share:policy', cwd }),
-  messageDelete:   ({ sessionId, messageID, cwd } = {}) => gated({ type: 'message:delete', sessionId, messageID, cwd }),
   commandList:     ({ cwd } = {}) => gated({ type: 'command:list', cwd }),
   // A command is a turn: it can run as long as a prompt does.
-  commandRun:      ({ sessionId, command, arguments: args, agent, model, variant, parts, cwd, mcpProfile } = {}) =>
-    gated({ type: 'command:run', sessionId, command, arguments: args, agent, model, variant, parts, cwd, mcpProfile }, TURN_LIMIT_MS, { turnOf: sessionId }),
-  sessionShell:    ({ sessionId, command, agent, model, cwd, mcpProfile } = {}) =>
-    gated({ type: 'session:shell', sessionId, command, agent, model, cwd, mcpProfile }, 10 * 60 * 1000),
+  commandRun:      ({ sessionId, command, arguments: args, agent, model, variant, parts, cwd, tools } = {}) =>
+    gated({ type: 'command:run', sessionId, command, arguments: args, agent, model, variant, parts, cwd, tools }, TURN_LIMIT_MS, { turnOf: sessionId }),
+  sessionShell:    ({ sessionId, command, agent, model, cwd, tools } = {}) =>
+    gated({ type: 'session:shell', sessionId, command, agent, model, cwd, tools }, 10 * 60 * 1000),
   findFiles:       ({ query, cwd, dirs } = {}) => gated({ type: 'find:files', query, cwd, dirs }, 10000),
   findSymbols:     ({ sessionId, query, cwd } = {}) => gated({ type: 'find:symbols', sessionId, query, cwd }, 10000),
   resourceList:    ({ sessionId, cwd } = {}) => gated({ type: 'resource:list', sessionId, cwd }, 15000),
@@ -703,14 +675,9 @@ export const api = {
   vcsGet:          ({ cwd } = {}) => gated({ type: 'vcs:get', cwd }),
   vcsStatus:       ({ cwd } = {}) => gated({ type: 'vcs:status', cwd }),
   vcsDiff:         ({ cwd, mode } = {}) => gated({ type: 'vcs:diff', cwd, mode }, 60_000),
-  worktreeList:    ({ cwd } = {}) => gated({ type: 'worktree:list', cwd }),
-  worktreeCreate:  ({ cwd, name } = {}) => gated({ type: 'worktree:create', cwd, name }, 60_000),
-  worktreeRemove:  ({ cwd, directory } = {}) => gated({ type: 'worktree:remove', cwd, directory }, 60_000),
   mcpStatus:       ({ sessionId, cwd } = {}) => gated({ type: 'mcp:status', sessionId, cwd }),
   mcpConnect:      ({ sessionId, name, cwd } = {}) => gated({ type: 'mcp:connect', sessionId, name, cwd }, 60_000),
   mcpDisconnect:   ({ sessionId, name, cwd } = {}) => gated({ type: 'mcp:disconnect', sessionId, name, cwd }, 60_000),
-  // OAuth: OpenCode opens the browser and waits for the callback.
-  mcpAuthenticate: ({ sessionId, name, cwd } = {}) => gated({ type: 'mcp:authenticate', sessionId, name, cwd }, 5 * 60 * 1000 + 5000),
   // Registers a server on the serve running this session and, with `persist`,
   // saves it to the OpenCode config in the same request (see ocp-v2-status.js).
   mcpAdd:          ({ sessionId, name, config, persist, cwd } = {}) => gated({ type: 'mcp:add', sessionId, name, config, persist: persist === true, cwd }, 60_000),

@@ -205,12 +205,25 @@ function policyLine(policy) {
     + 'Make reasonable assumptions and state them in your result. If you truly cannot proceed, finish with status needs_input and one precise question.';
 }
 
-function capabilityLine(capability) {
+/**
+ * The capability as the worker reads it. For read-only and workspace it also says what SynaBun enforces
+ * (lib/worker-confinement.js) under the Protect workers setting the run started with (state.guardMode): a
+ * refused call fails with its reason, so the worker adapts instead of retrying.
+ */
+function capabilityLine(capability, state = {}) {
+  const mode = String(state.guardMode || 'enforce');
+  const scratch = clean(state.scratchDir);
+  // OpenCode's Code Mode (lib/worker-confinement.js OPENCODE_CODE_MODE_TOOL) is off for an enforced worker: said here
+  // so the worker calls its tools directly instead of reaching for `execute`.
+  const codeMode = mode === 'enforce' && String(state.provider || state.profile || '') === 'opencode'
+    ? ' Code Mode (the execute tool) is off for protected workers: call every tool directly, SynaBun\'s MCP tools included.' : '';
+  const enforced = mode === 'enforce' ? ' Enforced by SynaBun: a call outside this is refused with the reason; do not retry it another way, work within the capability or report what you could not do.' + codeMode
+    : mode === 'warn' ? ' SynaBun notes a call outside this in the run\'s transcript as a warning.' : '';
   switch (String(capability || 'full')) {
     case 'read-only':
-      return 'CAPABILITY: read-only. You may read, search, and analyze; you must not modify files, run state-changing shell commands, or publish anything.';
+      return 'CAPABILITY: read-only. You may read, search and analyze anywhere; you must not modify files, run state-changing shell commands, or publish anything. The shell runs read-only commands only (rg, grep, ls, cat, head, tail, find, stat, diff, jq, git log / diff / status / show / blame, node --check, npm ls, curl without an output file); programs, test runners and writes to files are not available.' + enforced;
     case 'workspace':
-      return 'CAPABILITY: workspace. You may edit files inside the working directory and run the commands the task needs; do not touch unrelated locations.';
+      return `CAPABILITY: workspace. You may edit files inside the working directory${scratch ? `, the OS temp folder and your scratch folder (${scratch})` : ' and the OS temp folder'} and run the commands the task needs; nothing is written anywhere else (not under the home folder, another project or a tool's configuration such as ~/.claude, ~/.codex, ~/.agents, ~/.config/opencode or ~/.synabun). Shell commands that write elsewhere (redirections, cp, mv, rm, ln, tee, sed -i, git -C another folder, a global install) are refused.` + enforced;
     default:
       return 'CAPABILITY: full access as configured by the user.';
   }
@@ -290,10 +303,16 @@ export function briefBlock(brief) {
  */
 export function confinementBlock(state = {}) {
   if (!state.confinement) return null;
+  const provider = String(state.provider || state.profile || '');
+  const tools = provider === 'codex'
+    ? '- Your file tools work inside your working directory only. Write only under out/. Your shell runs in a sandbox that writes inside the working directory only, with no network: use it for nothing but looking at files; the draft is written with your file tools.'
+    : provider === 'opencode'
+      ? '- Your only tools are the file tools (read, glob, grep, list, edit, write), inside your working directory. Write only under out/: any other edit is refused.'
+      : '- Your only tools are Read, Write, Edit, Glob and Grep, inside your working directory. Write and Edit only under out/.';
   return [
     'CONFINEMENT (enforced by SynaBun: a call outside it is refused)',
-    '- Your only tools are Read, Write, Edit, Glob and Grep, inside your working directory. Write and Edit only under out/.',
-    '- No shell, no web, no MCP tools (no memory, no browser), no subagents, no notebooks. Everything you need is already in the working directory.',
+    tools,
+    '- No web, no MCP tools (no memory, no browser), no subagents, no notebooks. Everything you need is already in the working directory.',
     '- No memory in this run: SynaBun records what you make itself. Do not try to recall or remember.',
     '',
   ].join('\n');
@@ -329,9 +348,10 @@ export function buildTaskPrompt(state = {}) {
     AUTHORIZATION_LINE,
     '',
     `ROLE: You are an autonomous ${providerLabel(provider)} worker. ${policyLine(state.permissionPolicy)}`,
-    capabilityLine(state.capability),
+    capabilityLine(state.capability, state),
     quarantine,
     browserEnforcementBlock(state) || noBrowserBlock(state),
+    ...(!state.confinement ? ['EXTERNAL MCP: External servers are fixed for this run by mcp:<name> / mcp:* in its tool list. Unnamed servers are off. tool_groups changes SynaBun groups only; a different external server needs a new dispatch.', 'SYNABUN TOOLS: If a needed SynaBun capability is missing, call tool_groups get, then add its group. This changes only this runtime. If the host cannot refresh, finish blocked with "needs SynaBun tools: <ids>" so the Assistant can dispatch again with those groups.'] : []),
     computerEnforcementBlock(state),
     mediaBlock(state),
     designBlock(state),
@@ -384,6 +404,31 @@ export function buildFollowUpPrompt(text, state = {}, { turn = null, maxTurns = 
 
 export function buildResultRetryPrompt() {
   return `Your final message did not end with the ${RESULT_HEADING} block. Reply with only the ${RESULT_HEADING} block for the work you just did.`;
+}
+
+/**
+ * The turn that continues a run a server restart cut off mid-turn (assistant-dispatch.js resumeRun): the same Claude
+ * session, resumed in a new process. `at`: when the server went down, as "HH:MM" (lib/worker-resume.js clockTime).
+ * A browser run names the session and tab it has now (the old ones went with the server). `selfRestarts`: the run
+ * works in SynaBun's own folder, where an edit of the server's code restarts the server again.
+ */
+export function buildResumePrompt(state = {}, { at = '', selfRestarts = false } = {}) {
+  const project = clean(state.project) || 'global';
+  const runId = clean(state.runId) || 'unknown-run';
+  const lines = [
+    `SERVER RESTART (same run ${runId}, project "${project}"): SynaBun's server restarted${clean(at) ? ` at ${clean(at)}` : ''} while you were working on this task, and this conversation was resumed in a new process.`,
+    '- A tool call that was running then was cut off: its result is lost, and a command it started may or may not have finished.',
+    '- Check the actual state before you go on instead of assuming it: git status and git log, the files you were changing, test or build output, processes you started.',
+    '- Do not repeat a side effect that already happened (a commit, a push, a message or post sent, a memory stored, a deploy): check first.',
+  ];
+  if (state.usesBrowser && state.browserSessionId) {
+    lines.push(`- Your browser session is a new one: pass sessionId "${state.browserSessionId}"${state.browserTabId ? ` and tabId "${state.browserTabId}"` : ''} to every browser tool call from now on. The ones you had are gone, and so is the page you had open.`);
+  }
+  if (selfRestarts) {
+    lines.push('- This working directory is SynaBun itself: an edit of neural-interface/server.js or of anything under neural-interface/lib/ or mcp-server/dist/ (rebuilding mcp-server included) restarts the server again and cuts your turn off. Make such a change only when the task needs it, and as late as you can.');
+  }
+  lines.push('', `Then continue the task from where it stopped. Apply the same MEMORY and OUTPUT CONTRACT rules; end with the ${RESULT_HEADING} block.`);
+  return lines.join('\n');
 }
 
 const KEY_LINE = /^(status|summary|changes|follow[_ -]?ups?|next|question|media)\s*:\s*(.*)$/i;

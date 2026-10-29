@@ -305,8 +305,7 @@ export async function handlePostPlanAction(action, store) {
     const res = await api.compact({
       sessionId: at.sessionId,
       cwd: at.cwd || undefined,
-      mcpProfile: at.mcpProfile || undefined,
-      model: at.model || undefined,
+      tools: at.tools || undefined,
     });
     // The compaction was that session's. On another binding there is no plan
     // card of it to relabel and nobody to tell about its failure.

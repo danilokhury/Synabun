@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+<!-- DEPRECATED: 2D source retained on disk. Old bookmarks redirect to the 3D memory map. -->
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -13,21 +14,26 @@
 <link rel="manifest" href="/manifest.json">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@400;700&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/vendor/caveat/caveat.css">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
 <link href="https://db.onlinewebfonts.com/c/3284c3a32cf946466fb963369b3c5b2d?family=Disket+Mono" rel="stylesheet">
 <link rel="stylesheet" href="/shared/styles.css">
 <style>
   /* ═══════════════════════════════════════════
      2D VARIANT — Main Canvas
      ═══════════════════════════════════════════ */
+  /* The graph fills the app frame (styles.css APP FRAME); graph.js sizes its buffer and reads pointers from this box.
+     A canvas does not stretch between left and right: its size is written out. */
   #canvas-main {
     position: fixed;
-    top: 0; left: 0;
-    width: 100%; height: 100%;
+    top: var(--frame-top); left: var(--frame-left);
+    width: calc(100% - var(--sidebar-total-width, 0px) - 2 * var(--frame-gap));
+    height: calc(100dvh - var(--frame-top) - var(--frame-gap));
+    border-radius: var(--frame-radius);
     z-index: 1;
-    cursor: grab;
+    cursor: move;
   }
-  #canvas-main:active { cursor: grabbing; }
+  #canvas-main:active { cursor: move; }
 
   /* ═══════════════════════════════════════════
      2D VARIANT — Minimap
@@ -48,10 +54,10 @@
     box-shadow: 0 2px 20px rgba(0,0,0,0.4);
     transition: opacity 0.2s ease;
     opacity: 0; pointer-events: none;
-    cursor: grab;
+    cursor: move;
     user-select: none;
   }
-  #minimap:active { cursor: grabbing; }
+  #minimap:active { cursor: move; }
   #minimap.visible { opacity: 1; pointer-events: auto; }
   #minimap-canvas { width: 100%; height: 100%; display: block; }
   #minimap-label {
@@ -89,8 +95,9 @@
      ═══════════════════════════════════════════ */
   #lasso-canvas {
     position: fixed;
-    top: 0; left: 0;
-    width: 100%; height: 100%;
+    top: var(--frame-top); left: var(--frame-left);
+    width: calc(100% - var(--sidebar-total-width, 0px) - 2 * var(--frame-gap));
+    height: calc(100dvh - var(--frame-top) - var(--frame-gap));
     z-index: 5;
     pointer-events: none;
   }
@@ -123,7 +130,8 @@
   <div class="ctx-item ctx-item--danger" data-action="trash">Move to Trash</div>
 </div>
 
-<!-- Boot 2D variant -->
-<script type="module" src="/variant/2d/main.js"></script>
+<!-- Redirect the deprecated entry point (also works with a static host) -->
+<script type="module" src="/shared/page-session.js"></script>
+<script type="module" src="/shared/retired-2d.js"></script>
 </body>
 </html>

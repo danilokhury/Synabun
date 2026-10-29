@@ -1,3 +1,5 @@
+import { workerRestart } from '../worker-restart.js';
+import { t } from '../i18n.js';
 import { hostedSidepanelId, sidepanelHost } from '../ui-sidepanel-runtime.js';
 // ─────────────────────────────────────────────────────────────────────────────
 // OpenCode V2 — Panel container
@@ -10,20 +12,21 @@ import { hostedSidepanelId, sidepanelHost } from '../ui-sidepanel-runtime.js';
 
 import { state, emit, on } from '../state.js';
 import { storage } from '../storage.js';
+import { frameRect } from '../app-frame.js';
 import { fetchProjects } from '../api.js';
 import { injectStyles } from './ocp-v2-styles.js';
 import { connect, api, hasSessionStore, onSessionCompacted, onEvent, onReconnect, supports, isDescendantSession } from './ocp-v2-ws.js';
 import {
-  menuSessions, pickReusableEmptySession, shareView, SHARE_CONFIRM_TEXT, createPendingRenames, createStoppedShares,
+  menuSessions, pickReusableEmptySession, createPendingRenames,
   sessionBusyFromEvent, sessionBusyFromStatus, tabPillState, automationTurnPhase,
 } from './ocp-v2-sessions-logic.js';
 import {
-  forkSession, shareSession, unshareSession, undoLastTurn, restoreReverted,
+  forkSession, undoLastTurn, restoreReverted,
   loadSelectedSession, applySessionSelections, restoreDraftAttachments,
   readTranscriptExport, stopForNavigation, createSessionForNavigation, renameSession,
   navigateAfter, adoptReusableSession, landWithoutTabs, shouldNameCreatedSession, renameBox,
 } from './ocp-v2-session-actions.js';
-import { captureBinding, latestOnly, latestFor, createNavigation } from './ocp-v2-binding.js';
+import { captureBinding, latestFor, createNavigation } from './ocp-v2-binding.js';
 import { createConfirmations } from './ocp-v2-confirm-logic.js';
 import { syncConfirmRow } from './ocp-v2-confirm.js';
 import { closeWithPromptsConfirm, prefilledDraft, samePrompts } from './ocp-v2-composer-logic.js';
@@ -42,7 +45,7 @@ import { createAutoAcceptControl } from './ocp-v2-autoaccept-button.js';
 import { mountTodoWidget } from './ocp-v2-session-widgets.js';
 import { mountChangesBar } from './ocp-v2-changes.js';
 import { mountEnvironmentPopover } from './ocp-v2-status.js';
-import { watchWorktree, newSessionPlan, checkoutOutcome } from './ocp-v2-changes-logic.js';
+import { newSessionPlan, checkoutOutcome } from './ocp-v2-changes-logic.js';
 import { mountRenderer } from './ocp-v2-render.js';
 import { offerGreeting } from './ocp-v2-greeting.js';
 import { mountCompose, focusCompose, appendPathToCompose } from './ocp-v2-send.js';
@@ -108,6 +111,7 @@ const _sessionBusy = new Map();
 const _automationContinuedManually = new Set();
 const _automationManualSendInFlight = new Set();
 const _foreignActiveAutomationSessions = new Set();
+const _workerRestarts = new Map();
 const _workerEnds = new Map(); // sessionId -> end card of the dispatched worker it belongs to (ui-worker-end.js)
 let _renderer = null;
 let _visible = false;
@@ -136,30 +140,20 @@ let _composer = null;           // the primary panel's composer (mountCompose)
 let _cliBanner = null;          // the CLI banner and send-block (ui-cli-banner.js)
 let _cliWasBlocked = false;    // the banner held sends back last time it said (a change to usable heals the serve)
 // Where the panel goes. Every choice of the user (a tab, a session in the
-// menu, New session, a project, a worktree) begins an intent, and a navigation
+// menu, New session, a project) begins an intent, and a navigation
 // binds the panel only while its intent is the latest one: a later choice wins
 // over an older one that is still in flight (ocp-v2-binding.js). What the
 // panel starts by itself (boot, the recovery, an automation asking for focus)
 // only observes: it never overtakes a choice of the user.
 const _nav = createNavigation(getDefaultStore());
-// What publishes or destroys is asked in the panel, in two steps, never with a
-// native dialog (ocp-v2-confirm-logic.js). `surface` says where the question
-// is drawn: 'menu' under its row of the session menu, 'panel' above the
-// compose box, 'dialog' in the naming dialog.
+// What destroys is asked in the panel, in two steps, never with a native
+// dialog (ocp-v2-confirm-logic.js). `surface` says where the question is
+// drawn: 'menu' under its row of the session menu, 'panel' above the compose
+// box.
 const _confirms = createConfirmations({ store: getDefaultStore() });
 let _confirmSlotEl = null;
 const _menuConfirmAnchors = new Map();   // question key -> the menu row it is asked under
 _confirms.onChange(() => { syncSessionMenuConfirm(); syncPanelConfirm(); });
-// Share links whose sharing this panel stopped. OpenCode goes on reporting
-// them (createStoppedShares in ocp-v2-sessions-logic.js), so the store takes
-// such a link out of any session info it is handed, and so do the session
-// menu and the tab cache. One list for every window, kept across reloads.
-const STOR_STOPPED_SHARES = 'opencode-v2-stopped-shares';
-const _stoppedShares = createStoppedShares({
-  load: () => JSON.parse(storage.getItem(STOR_STOPPED_SHARES) || '{}'),
-  save: (entries) => storage.setItem(STOR_STOPPED_SHARES, JSON.stringify(entries)),
-});
-getDefaultStore().setSessionInfoFilter?.((info) => _stoppedShares.clean(info));
 
 function forkClonedOpenCodePersistence() {
   try {
@@ -469,6 +463,7 @@ function buildPanel() {
     onAttachPath: (path) => appendPathToCompose(path),
   });
   _contextMenu = mountContextMenu(actions, panel, getDefaultStore(), {
+    bounds: frameRect,   // the popover stays in the app frame
     compact: createCompactControl(getDefaultStore()),
     autoAccept: createAutoAcceptControl(getDefaultStore()),
     onManage: () => environment.open(),
@@ -585,10 +580,6 @@ function buildPanel() {
       const result = failIfRefused(await forkSession(getDefaultStore(), api), 'Fork failed');
       if (result?.ok) await openCreatedSession(result.session, { activate: !result.moved, nav });
     },
-    // Asked every time, in the session menu: /share only opens the question
-    // there, and its button publishes the transcript at a public URL.
-    share: () => shareActiveSession(),
-    unshare: () => stopSharingActiveSession(),
   };
   composer = _composer = mountCompose(compose, getDefaultStore(), {
     slashActions,
@@ -667,7 +658,6 @@ function buildPanel() {
     if (eventType !== 'session.updated' && eventType !== 'session.deleted' && eventType !== 'session.created') return;
     if (eventType === 'session.deleted') {
       const sid = ev?.info?.id || ev?.sessionID || ev?.sessionId;
-      if (sid) _stoppedShares.resume(sid);
       if (sid && _tabSessionIds.includes(sid)) {
         handlePillClose(sid).catch((err) => console.warn('[ocp-v2-panel] close of a deleted session failed', err));
       }
@@ -894,7 +884,7 @@ function updateOpenCodeTitleLocally(sessionId, title) {
     ? active.sessionInfo
     : _tabInfoCache.get(sessionId);
   const updated = { ...(current || {}), id: sessionId, title };
-  _tabInfoCache.set(sessionId, _stoppedShares.clean(updated));
+  _tabInfoCache.set(sessionId, updated);
   if (sessionId === active.sessionId) setSession(sessionId, updated);
   ensureTab(sessionId, updated);
   renderPill();
@@ -1088,8 +1078,6 @@ let _sessionMenuSearch = '';
 let _sessionMenuArchived = false;
 let _sessionMenuBodyEl = null;
 let _sessionMenuRefreshTimer = null;
-let _sharePolicy = null;            // OpenCode's `share` setting, read once per menu open
-const _sharePolicyReads = latestOnly();
 // The list under the search box: the newest read wins, and only for the
 // filters (search text, archived or not) the menu still shows.
 const _sessionMenuReads = latestFor();
@@ -1159,20 +1147,6 @@ async function renderSessionMenu() {
   _sessionMenuEl.appendChild(_sessionMenuBodyEl);
   _menuConfirmAnchors.clear();
 
-  // Whether sharing is allowed at all (D2: hidden when the config disables it).
-  // The policy is the project's: an answer for an earlier opening of the menu,
-  // or for the session the panel has left, is not this menu's.
-  _sharePolicy = null;
-  const policyIsFresh = _sharePolicyReads.begin();
-  const policyAt = captureBinding(getDefaultStore());
-  api.sessionSharePolicy({ cwd: policyAt.cwd || undefined }).then((res) => {
-    if (!policyIsFresh() || !policyAt.isCurrent()) return;
-    if (!replyFailed(res)) {
-      _sharePolicy = res.data?.share || 'manual';
-      scheduleSessionMenuRefresh(0);
-    }
-  }).catch(() => {});
-
   await refreshSessionMenuBody();
   setTimeout(() => input.focus(), 0);
 }
@@ -1210,8 +1184,7 @@ async function refreshSessionMenuBody() {
   const cwd = s.cwd || storage.getItem(STOR_PROJECT) || '';
   // Sessions of every project are listed, so one from another registered
   // project can be resumed; sub-agent sessions open from their parent instead.
-  // (A link whose sharing the panel stopped is not a share: the row says so.)
-  const all = menuSessions(sessions, { search }).slice(0, SESSION_MENU_LIMIT).map((row) => _stoppedShares.clean(row));
+  const all = menuSessions(sessions, { search }).slice(0, SESSION_MENU_LIMIT);
 
   body.innerHTML = '';
   _menuConfirmAnchors.clear();
@@ -1256,82 +1229,14 @@ async function refreshSessionMenuBody() {
   syncSessionMenuConfirm();
 }
 
-// Publishing is two steps, both in the panel. "Share session…" (or /share)
-// only asks: the question under it says what becomes public, and its button
-// shares. Nothing is published by one click, and never by a native dialog.
-async function shareActiveSession() {
-  const sid = getState().sessionId;
-  if (!sid) return null;
-  if (!_sessionMenuEl?.classList.contains('open')) openSessionMenu();
-  const result = await shareSession(getDefaultStore(), api, () => _confirms.ask({
-    key: `share:${sid}`, surface: 'menu', text: SHARE_CONFIRM_TEXT, confirmLabel: 'Share publicly',
-  }), { stopped: _stoppedShares });
-  if (result && result.ok === false && !result.cancelled && !result.moved) pushError({ message: result.error || 'Share failed' });
-  if (result?.ok && result.url) {
-    try { await navigator.clipboard.writeText(result.url); } catch {}
-    if (_sessionMenuEl?.classList.contains('open')) scheduleSessionMenuRefresh(0);
-    else openSessionMenu();
-  }
-  return result;
-}
-
-// Stop sharing: the link goes from everything the panel holds of that
-// session (the store, the tab cache, the menu), also when the panel was on
-// another session by the time OpenCode answered.
-async function stopSharingActiveSession() {
-  const sid = getState().sessionId;
-  const result = await unshareSession(getDefaultStore(), api, { stopped: _stoppedShares });
-  if (result && result.ok === false && !result.moved) pushError({ message: result.error || 'Could not stop sharing' });
-  if (sid) forgetStoppedShare(sid);
-  return result;
-}
-
-function forgetStoppedShare(sessionId) {
-  const cached = _tabInfoCache.get(sessionId);
-  if (cached) _tabInfoCache.set(sessionId, _stoppedShares.clean(cached));
-  const known = getState().knownSessions;
-  if (known?.has?.(sessionId)) known.set(sessionId, _stoppedShares.clean(known.get(sessionId)));
-  scheduleSessionMenuRefresh(0);
-}
-
-// Share / export / fork for the session that is open.
+// Export / fork for the session that is open.
 function appendActiveSessionActions(body, s) {
   if (!s.sessionId) return;
-  const share = shareView(s.sessionInfo, _sharePolicy, supports);
   const report = (result, fallback) => {
     if (result && result.ok === false && !result.cancelled && !result.moved) pushError({ message: result.error || fallback });
     return result;
   };
 
-  // Asked every time, under this item: the click only opens the question.
-  // (The item is there while its question is armed, whatever the policy read
-  // says by then: /share asks before that read is back.)
-  const shareKey = `share:${s.sessionId}`;
-  if ((share.canShare && _sharePolicy) || _confirms.isArmed(shareKey)) {
-    const shareItem = menuItem('Share session…', () => {
-      shareActiveSession().catch((err) => pushError({ message: err?.message || 'Share failed' }));
-    }, { muted: true });
-    _menuConfirmAnchors.set(shareKey, shareItem);
-    body.appendChild(shareItem);
-  }
-  if (share.showLink) {
-    body.appendChild(menuItem('Copy share link', async () => {
-      // A failed copy is reported in the session whose link it was.
-      const at = captureBinding(getDefaultStore());
-      try { await navigator.clipboard.writeText(share.url); } catch (err) {
-        if (at.isCurrent()) pushError({ message: err?.message || 'Copy failed' });
-      }
-    }, { muted: true, meta: 'public' }));
-    const url = document.createElement('div');
-    url.className = 'ocpv2-session-share-url';
-    url.textContent = share.url;
-    body.appendChild(url);
-  }
-  if (share.canUnshare) {
-    body.appendChild(menuItem('Stop sharing', () => {
-      stopSharingActiveSession().catch((err) => pushError({ message: err?.message || 'Could not stop sharing' }));
-    }, { muted: true }));
-  }
   if (s.messageOrder.length) {
     body.appendChild(menuItem('Export transcript', () => {
       closeSessionMenu();
@@ -1371,7 +1276,7 @@ function buildSessionMenuItem(sess, s, cwd, { archived, filters }) {
   labelEl.textContent = title;
   item.appendChild(labelEl);
 
-  const meta = [projectName, sess.share?.url ? 'shared' : ''].filter(Boolean).join(' · ');
+  const meta = projectName || '';
   if (meta) {
     const metaEl = document.createElement('span');
     metaEl.className = 'ocpv2-session-item-meta';
@@ -1567,7 +1472,7 @@ async function restoreSessionSelections(sid, info) {
     applySessionSelections(getDefaultStore(), full);
     // Fresh metadata too: keeps the title right after a switch.
     getDefaultStore().setSessionInfo(full);
-    _tabInfoCache.set(sid, _stoppedShares.clean({ ...(_tabInfoCache.get(sid) || {}), ...full }));
+    _tabInfoCache.set(sid, { ...(_tabInfoCache.get(sid) || {}), ...full });
     if (!info) ensureTab(sid, full);
   });
 }
@@ -1689,7 +1594,7 @@ async function boot() {
           const info = byId.get(sid);
           if (info) {
             liveTabs.push(sid);
-            _tabInfoCache.set(sid, _stoppedShares.clean(info));
+            _tabInfoCache.set(sid, info);
             ensureOpenCodeTitleState(sid, info, { manual: true });
           }
         }
@@ -1699,7 +1604,7 @@ async function boot() {
       if (!liveTabs.length && _pendingAutomationAttach?.sessionId) {
         const { sessionId, info } = _pendingAutomationAttach;
         liveTabs.push(sessionId);
-        _tabInfoCache.set(sessionId, _stoppedShares.clean(info || { id: sessionId }));
+        _tabInfoCache.set(sessionId, info || { id: sessionId });
         ensureOpenCodeTitleState(sessionId, info, { manual: true });
         _tabSessionIds = [...liveTabs];
         saveTabSessions();
@@ -1959,14 +1864,6 @@ function promptNameNewSession(targetSessionId = null) {
         <label class="ocpv2-name-modal-label">Branch</label>
         <select class="ocpv2-name-modal-select" data-role="branch" disabled></select>
       </div>
-      <div class="ocpv2-name-modal-row ocpv2-name-modal-worktree" hidden>
-        <label class="ocpv2-name-modal-label">Worktree</label>
-        <label class="ocpv2-name-modal-check">
-          <input type="checkbox" data-role="worktree" />
-          <span>Run in a new git worktree</span>
-        </label>
-      </div>
-      <div class="ocpv2-name-modal-worktrees" hidden></div>
       <input type="text" class="ocpv2-name-modal-input" placeholder="Session name..." maxlength="120" />
       <div class="ocpv2-name-modal-actions">
         <button type="button" class="ocpv2-name-modal-btn skip">Skip</button>
@@ -1991,14 +1888,6 @@ function promptNameNewSession(targetSessionId = null) {
 
   let branchOriginal = null;
   let branchesKnown = false;
-  // A session in a new worktree starts from what the project has checked out
-  // now; the project's own checkout is never switched for it.
-  const syncBranchLock = () => {
-    const locked = !!worktreeCheck?.checked;
-    if (locked && branchOriginal) branchSel.value = branchOriginal;
-    branchSel.disabled = locked || !branchesKnown;
-    branchSel.title = locked ? 'A new worktree starts from the branch the project has checked out.' : '';
-  };
   let branchRequest = 0;
   async function refreshBranches(path) {
     const request = ++branchRequest;
@@ -2021,75 +1910,13 @@ function promptNameNewSession(targetSessionId = null) {
       if (branchOriginal) branchSel.value = branchOriginal;
       branchesKnown = true;
     }
-    syncBranchLock();
+    branchSel.disabled = !branchesKnown;
   }
 
-  // Worktrees: an isolated checkout OpenCode creates for the session, so its
-  // edits stay out of the main working tree. Offered only when the server can.
-  const worktreeRow = overlay.querySelector('.ocpv2-name-modal-worktree');
-  const worktreeCheck = overlay.querySelector('input[data-role="worktree"]');
-  const worktreeList = overlay.querySelector('.ocpv2-name-modal-worktrees');
-  worktreeCheck?.addEventListener('change', syncBranchLock);
   refreshBranches(projectSel?.value || initialProject);
-  const worktreeReads = latestOnly();
-  // Removing a worktree is asked in the dialog, under its row.
-  const worktreeConfirmAnchors = new Map();
-  const dialogQuestion = (view) => view.surface === 'dialog';
-  const offWorktreeConfirm = _confirms.onChange(() => {
-    syncConfirmRow(_confirms, worktreeList, 'dialog', (key) => worktreeConfirmAnchors.get(key));
-  });
-  async function refreshWorktrees(path) {
-    // The rows are read again: a question about one of them is off.
-    _confirms.cancel(dialogQuestion);
-    worktreeConfirmAnchors.clear();
-    const canCreate = supports('worktree:create') && !!path;
-    worktreeRow.hidden = !canCreate;
-    if (!canCreate) worktreeCheck.checked = false;
-    syncBranchLock();
-    worktreeList.hidden = true;
-    worktreeList.textContent = '';
-    if (!path || !supports('worktree:list', 'worktree:remove')) return;
-    const latest = worktreeReads.begin();
-    const res = await api.worktreeList({ cwd: path }).catch(() => null);
-    // A newer read (another project picked, a worktree removed) owns the list.
-    if (!latest() || replyFailed(res) || !Array.isArray(res.data) || !res.data.length || projectSel?.value !== path) return;
-    worktreeList.hidden = false;
-    for (const tree of res.data) {
-      const row = document.createElement('div');
-      row.className = 'ocpv2-permission-more';
-      const name = document.createElement('code');
-      name.textContent = tree.branch ? `${tree.name} (${tree.branch})` : tree.name;
-      name.title = tree.directory;
-      const remove = document.createElement('button');
-      remove.type = 'button';
-      remove.className = 'ocpv2-permission-link';
-      remove.textContent = 'Remove';
-      remove.addEventListener('click', async () => {
-        // This click only asks; the button of the question removes it.
-        const key = `worktree-remove:${tree.directory}`;
-        worktreeConfirmAnchors.set(key, row);
-        const agreed = await _confirms.ask({
-          key, surface: 'dialog', confirmLabel: 'Remove worktree',
-          text: `Remove the worktree "${tree.name}"? Its directory and uncommitted changes are deleted.`,
-        });
-        if (!agreed) return;
-        const removed = await api.worktreeRemove({ cwd: path, directory: tree.directory }).catch((err) => ({ ok: false, error: err?.message }));
-        // The failure is about the worktree, not about a session: it is shown
-        // wherever the panel is. The list is this dialog's: it is read again
-        // only while the dialog is open and still on that project.
-        if (replyFailed(removed)) { pushError({ message: replyError(removed, 'Could not remove the worktree') }); return; }
-        if (done || projectSel?.value !== path) return;
-        refreshWorktrees(path);
-      });
-      row.append(name, remove);
-      worktreeList.appendChild(row);
-    }
-  }
-  refreshWorktrees(projectSel?.value || initialProject);
 
   projectSel?.addEventListener('change', () => {
     refreshBranches(projectSel.value);
-    refreshWorktrees(projectSel.value);
   });
 
   setTimeout(() => { input.focus(); input.select(); }, 10);
@@ -2098,8 +1925,6 @@ function promptNameNewSession(targetSessionId = null) {
   const close = () => {
     if (done) return;
     done = true;
-    offWorktreeConfirm();
-    _confirms.cancel(dialogQuestion);
     overlay.remove();
   };
 
@@ -2108,29 +1933,20 @@ function promptNameNewSession(targetSessionId = null) {
     const nextTitle = input.value.trim();
     const chosenProject = projectSel?.value || '';
     const chosenBranch = branchSel?.value || '';
-    const wantsWorktree = !!worktreeCheck?.checked && !!chosenProject;
     close();
     // Skip leaves the freshly-created session in place — same as Claude/Codex
     // where dismissing the rename modal keeps the empty new tab.
     if (cancel) return;
 
     const plan = newSessionPlan({
-      project: chosenProject, branch: chosenBranch, currentBranch: branchOriginal || '',
-      wantsWorktree, cwd: getState().cwd || '',
+      project: chosenProject, branch: chosenBranch, currentBranch: branchOriginal || '', cwd: getState().cwd || '',
     });
     const projectChanged = plan.projectChanged;
     // What Save starts is a navigation of its own when it creates a session
-    // (in a worktree, in another project): it owns the panel from this click
-    // on, unless the user chooses something else while it waits. A Save that
-    // only names the session navigates nowhere and begins no intent.
-    const nav = (plan.worktree || projectChanged) ? _nav.begin() : null;
-
-    // The worktree first: an isolated session never switches the branch of the
-    // project's own checkout.
-    if (plan.worktree) {
-      await startSessionInNewWorktree(chosenProject, nextTitle, nav);
-      return;
-    }
+    // (in another project): it owns the panel from this click on, unless the
+    // user chooses something else while it waits. A Save that only names the
+    // session navigates nowhere and begins no intent.
+    const nav = projectChanged ? _nav.begin() : null;
 
     if (plan.checkout) {
       // A session started after a failed switch would run on the wrong base.
@@ -2196,40 +2012,6 @@ function promptNameNewSession(targetSessionId = null) {
   overlay.addEventListener('click', (event) => {
     if (event.target === overlay) commit(true);
   });
-}
-
-// "Run in a new git worktree": OpenCode creates the worktree (and runs the
-// project's start command in it), then the session is created inside it. The
-// project stays the remembered default; only this session lives in the worktree.
-async function startSessionInNewWorktree(projectPath, title, nav = _nav.begin()) {
-  // Subscribe before creating: the ready event can beat the reply. Events are
-  // held until the reply names this worktree, so another creation finishing
-  // (or failing) first is not mistaken for this one.
-  const watch = watchWorktree(onEvent, { timeoutMs: 60_000 });
-  const created = await api.worktreeCreate({ cwd: projectPath }).catch((err) => ({ ok: false, error: err?.message }));
-  if (replyFailed(created) || !created.data?.directory) {
-    watch.cancel();
-    pushError({ message: replyError(created, 'Could not create the worktree') });
-    return;
-  }
-  watch.identify(created.data.name);
-  const state = await watch.result;
-  if (!state.ok) {
-    pushError({ message: state.error });
-    return;
-  }
-  // Up to a minute has passed. The session is created in the worktree either
-  // way; it takes the panel only when the user did not navigate meanwhile
-  // (`nav`), and is a tab otherwise.
-  if (nav.isCurrent()) {
-    const prevSid = getState().sessionId;
-    if (prevSid) ensureTab(prevSid, getState().sessionInfo);
-  }
-  try {
-    await startFreshSession({ title: title || undefined, cwd: created.data.directory, nav });
-  } catch (err) {
-    pushError({ message: err?.message || 'New session failed' });
-  }
 }
 
 async function closeCurrentSession() {
@@ -2356,7 +2138,7 @@ function saveTabSessions() {
 
 function ensureTab(sessionId, info = null) {
   if (!sessionId) return;
-  if (info) _tabInfoCache.set(sessionId, _stoppedShares.clean(info));
+  if (info) _tabInfoCache.set(sessionId, info);
   if (!_tabSessionIds.includes(sessionId)) {
     _tabSessionIds.push(sessionId);
     saveTabSessions();
@@ -2516,7 +2298,17 @@ async function closeTabByUser(sessionId, context) {
 // Assistant session that dispatched it.
 function workerEndCard(sessionId) {
   const view = sessionId ? _workerEnds.get(sessionId) : null;
-  if (!view) return null;
+  if (!view) {
+    const restart = _workerRestarts.get(sessionId);
+    if (!restart?.key) return null;
+    return { sig: restart.stamp, build: () => {
+      const el = document.createElement('div');
+      el.className = 'ocpv2-post-plan-card ocpv2-post-plan-body';
+      el.setAttribute('role', 'status');
+      el.textContent = t(restart.key);
+      return el;
+    } };
+  }
   return {
     sig: view.sig,
     build: () => buildWorkerEndCard(view, {
@@ -2727,7 +2519,9 @@ export async function attachOpenCodeAutomation(run, { focus = !!run?.focus, isCa
   // Establish ownership before connect()/boot(): native provider events use a
   // separate socket and may report a Task child while this attach is awaiting.
   const previousRunId = _automationRunIds.get(sessionId);
-  const running = run.status === 'starting' || run.status === 'running';
+  const restart = workerRestart(run);
+  const running = restart.active;
+  _workerRestarts.set(sessionId, restart);
   // The user continued this run's session by hand after the run ended: the tab stays theirs.
   const released = !running && previousRunId === run.runId
     && (_automationContinuedManually.has(sessionId) || _automationManualSendInFlight.has(sessionId));
@@ -2748,7 +2542,7 @@ export async function attachOpenCodeAutomation(run, { focus = !!run?.focus, isCa
     id: sessionId,
     title: run.title || 'Automation',
     directory: run.cwd || '',
-    mcpProfile: run.mcpProfile || null,
+    tools: run.tools || null,
     time: { updated: Date.now() },
   };
   if (!_booted) _pendingAutomationAttach = { sessionId, info };
@@ -2778,16 +2572,17 @@ export async function attachOpenCodeAutomation(run, { focus = !!run?.focus, isCa
     if (!_visible) await showPrimaryOpencodePanel();
     await switchToSession(sessionId, info, { nav });
   } else if (getState().sessionId === sessionId) {
-    setRunning(running);
+    setRunning(running && !restart.suspended);
     await rehydrateActiveSession().catch(() => {});
   }
-  if (getState().sessionId === sessionId) setRunning(running);
+  if (getState().sessionId === sessionId) setRunning(running && !restart.suspended);
+  _renderer?.render();
   // (A dispatched worker's failure, with its reason, is on its end card.)
   if (run.status === 'failed' && run.error && !isDispatchedRun(run) && getState().sessionId === sessionId
     && _tabInfoCache.get(sessionId)?._automationLifecycleError !== run.error) {
     const cachedInfo = _tabInfoCache.get(sessionId) || info;
     cachedInfo._automationLifecycleError = run.error;
-    _tabInfoCache.set(sessionId, _stoppedShares.clean(cachedInfo));
+    _tabInfoCache.set(sessionId, cachedInfo);
     pushError({ message: run.error });
   }
   trackWorkerEnd(run, { apply: (view) => showWorkerEnd(sessionId, view) });

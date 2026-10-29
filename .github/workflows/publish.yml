@@ -108,7 +108,7 @@ jobs:
         if: steps.registry.outputs.published != 'true'
         run: npm publish --provenance --access public --tag latest
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN || secrets.NPM }}
 
       - name: Notify Discord changelog
         if: success()

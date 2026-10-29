@@ -1,23 +1,26 @@
+import { wireDropdowns, closeDropdowns, setDropdownDisabled, dropdownOf } from '../cc-dropdown.js';
+import { configureToolPickerTranslation, toolPickerHTML, updateToolPicker, readToolPicker, toolWord } from '../tool-list-picker.js';
+import { toolListView } from '../tool-list-view.js';
 // ═══════════════════════════════════════════
 // SynaBun Assistant — brain picker (toolbar fields)
 // ═══════════════════════════════════════════
 // Dropdown fields for the brain: model (provider icon + model; switching
 // provider happens inside the model menu, grouped by provider), effort (or the
 // OpenCode agent), permission mode and account (Claude/Codex, inline only when
-// there is more than one to pick) in the composer row; project and MCP profile
+// there is more than one to pick) in the composer row; project and SynaBun tools
 // in the toolbar. Every field opens an asst-menu popover (it flips when there
-// is no room). A provider/account/profile change reports
+// is no room). A provider/account/tools change reports
 // { requiresSwitch: true } so the panel sends `switch_brain`.
 
 import {
   ensureModelsForProfile,
   fetchClaudeAccounts,
   fetchCodexAccounts,
-  fetchMcpProfilePresets,
+  fetchToolCatalog,
   fetchOpencodeAgents,
   getCachedClaudeAccounts,
   getCachedCodexAccounts,
-  getCachedMcpProfilePresets,
+  getCachedToolCatalog,
   getCachedOpencodeAgents,
   getClaudeWorkerAccountId,
   getCodexWorkerAccountId,
@@ -445,7 +448,7 @@ on('sync:assistant:catalog-changed', modelListsChanged);
 // Launch: the menus' lists are read once the page has painted, so the first model menu opens from them.
 if (typeof document !== 'undefined') {
   registerLaunchPrefetch('assistant-model-catalog', () => loadModelCatalog(), { order: 10, owner: true });
-  registerLaunchPrefetch('assistant-accounts', () => Promise.allSettled([fetchClaudeAccounts(), fetchCodexAccounts(), fetchMcpProfilePresets(), fetchOpencodeAgents()]), { order: 14, owner: true });
+  registerLaunchPrefetch('assistant-accounts', () => Promise.allSettled([fetchClaudeAccounts(), fetchCodexAccounts(), fetchToolCatalog(), fetchOpencodeAgents()]), { order: 14, owner: true });
 }
 
 function sameModel(selected, m) {
@@ -507,6 +510,7 @@ export async function openModelMenu(anchor, opts = {}) {
     try { catalog = await loadModelCatalog({ force: opts.forceReload === true }); } catch { failed = true; } finally { anchor.removeAttribute('aria-busy'); }
     if (!anchor.isConnected || (loading && currentMenu() !== loading.el)) return null;
   }
+  if (opts.shouldOpen && !opts.shouldOpen()) return null;
   const items = buildModelMenuItems(catalog);
   const menu = openMenu(anchor, {
     title: title || tr('assistant.brain.model', 'Model'),
@@ -635,7 +639,7 @@ function menuItemsSignature(items) {
 // Creation order is DOM order within a slot: model · effort · variant · mode · tests · account in the composer.
 // `effort` is the OpenCode agent for OpenCode; `variant` is OpenCode's effort (the model's variants).
 // `tests` is the session's Test density, not a brain field: it shows only while the host supplies a level.
-const FIELDS = ['model', 'effort', 'variant', 'mode', 'tests', 'account', 'project', 'mcp'];
+const FIELDS = ['model', 'effort', 'variant', 'mode', 'tests', 'account', 'project'];
 // Slot of each field: the composer row (the brain and how it acts) · the toolbar (where it works).
 const FIELD_GROUP = { model: 'brain', effort: 'brain', variant: 'brain', mode: 'brain', tests: 'brain', account: 'brain', project: 'context', mcp: 'context' };
 
@@ -650,6 +654,7 @@ const FIELD_GROUP = { model: 'brain', effort: 'brain', variant: 'brain', mode: '
  *          onProjects(projects) — the registered projects were (re)loaded }
  */
 export function createBrainPicker(host, hooks = {}) {
+  configureToolPickerTranslation(hooks.t);
   const t = tf(hooks.t);
   const placement = hooks.menuPlacement || 'below';
 
@@ -674,6 +679,31 @@ export function createBrainPicker(host, hooks = {}) {
     buttons[field] = btn;
   }
 
+  const toolsSlot = el('div', 'asst-tools-picker');
+  (single ? root : host.context || root).appendChild(toolsSlot);
+  const toolsLife = new AbortController();
+  wireDropdowns(toolsSlot, { signal: toolsLife.signal });
+  let toolsSessionId = null;
+  toolsSlot.addEventListener('cc-dropdown-open', () => { toolsSessionId = hooks.getSessionId?.() ?? null; }, { signal: toolsLife.signal });
+  toolsSlot.addEventListener('change', (event) => {
+    if (currentBrain().provider !== 'opencode' || toolsSessionId !== (hooks.getSessionId?.() ?? null)) return;
+    commit({ tools: readToolPicker(event.target, { inherit: false }) }, 'tools');
+  }, { signal: toolsLife.signal });
+  function renderTools(brain) {
+    if (toolsSessionId !== (hooks.getSessionId?.() ?? null)) closeDropdowns(toolsSlot, { cancel: true });
+    const catalog = getCachedToolCatalog();
+    toolsSlot.hidden = brain.provider !== 'opencode' || !catalog;
+    if (toolsSlot.hidden) { closeDropdowns(toolsSlot, { cancel: true }); toolsSlot.innerHTML = ''; return; }
+    let input = toolsSlot.querySelector('input');
+    const options = { catalog, includeServers: false, label: t('assistant.brain.mcp') };
+    const tools = brain.tools ?? [...new Set([...(catalog.default || []).filter(id => id !== 'git'), 'browser'])];
+    if (!input) {
+      toolsSlot.innerHTML = toolPickerHTML(`asst-tools-${globalThis.crypto.randomUUID()}`, tools, options);
+      input = toolsSlot.querySelector('input');
+    } else if (!dropdownOf(input)?.classList.contains('open')) updateToolPicker(input, tools, options);
+    setDropdownDisabled(input, hooks.getRunning?.() === true);
+  }
+
   let destroyed = false;
   let loading = null;
   // The empty state's "Choose a project" (mountEmptyProject): the project field's second button.
@@ -694,8 +724,7 @@ export function createBrainPicker(host, hooks = {}) {
         codex: getCachedCodexAccounts(),
       },
       agents: getCachedOpencodeAgents(),
-      mcpProfiles: getCachedMcpProfilePresets(),
-      defaultMcpProfile: 'full',
+      toolCatalog: getCachedToolCatalog(),
       projects: _projectsCache || [],
     };
   }
@@ -768,7 +797,7 @@ export function createBrainPicker(host, hooks = {}) {
     const efforts = effortsFor(brain);
     const level = efforts.find(e => e.id === brain.effort);
     const hasEfforts = efforts.some(e => e.id !== 'off');
-    const presets = getCachedMcpProfilePresets();
+    const toolCatalog = getCachedToolCatalog();
     return {
       meta,
       model: modelLabel(brain),
@@ -780,7 +809,7 @@ export function createBrainPicker(host, hooks = {}) {
       variant: level ? level.label : (brain.effort || t('assistant.brain.variantDefault', 'default variant')),
       project: brain.project ? projectLabel(brain.project, _projectsCache || []) : t('assistant.brain.projectHome', 'Home'),
       mode: permissionModeLabel(brain, (id, fallback) => t(`assistant.brain.modes.${id}`, fallback)),
-      mcp: presets[brain.mcpProfile]?.label || brain.mcpProfile || 'full',
+      mcp: toolListView(toolCatalog, brain.tools, { translate: hooks.t }).summary,
       account: ACCOUNT_PROVIDERS.has(brain.provider) ? accountLabel(brain) : '',
     };
   }
@@ -955,7 +984,7 @@ export function createBrainPicker(host, hooks = {}) {
     const testsLabel = tests ? testDensityLabel(tests, hooks.t) : '';
     setBtn('tests', { label: testsLabel, icon: testsIcon(testDensityBars(tests)), hidden: !tests, tooltip: `${t('assistant.tests.title', 'Test density')}: ${testsLabel}` });
     if (tests) buttons.tests.dataset.level = tests; else delete buttons.tests.dataset.level;
-    setBtn('mcp', { label: v.mcp, icon: ICON_PLUG, tooltip: `${t('assistant.brain.mcp', 'MCP tool profile')}: ${v.mcp}` });
+    renderTools(brain);
     renderEmptyProject(brain);
   }
 
@@ -1022,7 +1051,6 @@ export function createBrainPicker(host, hooks = {}) {
       { field: 'project', label: t('assistant.brain.project', 'Working project'), value: brain.project || v.project, icon: ICON_FOLDER, hidden: false },
       { field: 'mode', label: t('assistant.brain.mode', 'Permission mode'), value: v.mode, icon: ICON_SHIELD, hidden: false },
       { field: 'tests', label: t('assistant.tests.title', 'Test density'), value: testDensity() ? testDensityLabel(testDensity(), hooks.t) : '', icon: testsIcon(testDensityBars(testDensity())), hidden: !testDensity() },
-      { field: 'mcp', label: t('assistant.brain.mcp', 'MCP tool profile'), value: v.mcp, icon: ICON_PLUG, hidden: false },
       { field: 'account', label: t('assistant.brain.accountShort', 'Account'), value: accountValue(brain), icon: ICON_ACCOUNT, hidden: !ACCOUNT_PROVIDERS.has(brain.provider) },
     ];
   }
@@ -1038,7 +1066,7 @@ export function createBrainPicker(host, hooks = {}) {
 
   async function ensureLoaded(provider, { force = false } = {}) {
     // The catalog too: defaults resolve against the menu's list (context variants, disabled models out).
-    const jobs = [ensureModelsForProfile(provider, force), fetchMcpProfilePresets(force), loadModelCatalog()];
+    const jobs = [ensureModelsForProfile(provider, force), fetchToolCatalog(force), loadModelCatalog()];
     if (provider === 'codex') jobs.push(fetchCodexAccounts(force));
     if (provider === 'claude-code') jobs.push(fetchClaudeAccounts(force));
     if (provider === 'opencode') jobs.push(fetchOpencodeAgents(force));
@@ -1077,7 +1105,8 @@ export function createBrainPicker(host, hooks = {}) {
    * Open a field menu; `anchorOverride` (e.g. the toolbar "⋯") when the inline
    * button is hidden. `restoreFocus`: a pick sends focus back to the anchor.
    */
-  async function openField(field, anchorOverride = null, { restoreFocus = false } = {}) {
+  async function openField(field, anchorOverride = null, { restoreFocus = false, shouldOpen = () => true } = {}) {
+    if (!shouldOpen()) return;
     const anchor = anchorFor(field, anchorOverride);
     const brain = currentBrain();
     if (field === 'model') {
@@ -1088,6 +1117,7 @@ export function createBrainPicker(host, hooks = {}) {
       }
       await openModelMenu(anchor, {
         brain,
+        shouldOpen,
         t: hooks.t,
         placement,
         current: { provider: brain.provider, model: brain.model },
@@ -1126,7 +1156,7 @@ export function createBrainPicker(host, hooks = {}) {
       if (!_warmProviders.has(brain.provider)) {
         anchor.setAttribute('aria-busy', 'true');
         try { await ensureLoaded(brain.provider); } finally { anchor.removeAttribute('aria-busy'); }
-        if (destroyed || !anchor.isConnected) return;
+        if (destroyed || !anchor.isConnected || !shouldOpen()) return;
       } else {
         ensureLoaded(brain.provider).catch(() => {});
       }
@@ -1141,7 +1171,7 @@ export function createBrainPicker(host, hooks = {}) {
     if (!warm) {
       anchor.setAttribute('aria-busy', 'true');
       try { await ensureLoaded(brain.provider); } finally { anchor.removeAttribute('aria-busy'); }
-      if (destroyed || !anchor.isConnected) return;
+      if (destroyed || !anchor.isConnected || !shouldOpen()) return;
     }
     let shown = null;
     drawField(field, brain, (title, items, extra = {}) => {
@@ -1205,21 +1235,6 @@ export function createBrainPicker(host, hooks = {}) {
       items.push({ kind: 'separator' });
       items.push({ kind: 'input', placeholder: t('assistant.brain.projectCustom', 'Type a directory path…'), value: brain.project && !projects.some(p => p.path === brain.project) ? brain.project : '', restoreFocus, onSubmit: pick });
       menu(t('assistant.brain.project', 'Working project'), items, { width: 280, filter: projects.length > 8, filterPlaceholder: t('assistant.brain.filterProjects', 'Filter projects…'), onOpen: node => actor?.open(node), onClose: () => actor?.close() });
-      return;
-    }
-
-    if (field === 'mcp') {
-      const presets = getCachedMcpProfilePresets();
-      const items = Object.entries(presets).map(([id, preset]) => ({
-        kind: 'radio',
-        id,
-        label: preset?.label || id,
-        desc: preset?.description || '',
-        tag: preset?.tools != null ? `${preset.tools} ${t('assistant.brain.tools', 'tools')}` : '',
-        selected: id === brain.mcpProfile,
-        onSelect: () => commit({ mcpProfile: id }, 'mcp'),
-      }));
-      menu(t('assistant.brain.mcp', 'MCP tool profile'), items);
       return;
     }
 
@@ -1319,15 +1334,14 @@ export function createBrainPicker(host, hooks = {}) {
     if (provider === before.provider) return;
     await ensureLoaded(provider);
     if (destroyed) return;
-    const draft = { ...before, provider, model: model || '', effort: null, agent: null, accountId: null };
+    const draft = { ...before, provider, model: model || '', effort: null, agent: null, accountId: null, tools: null };
     // resolveBrainDefaults reads the new provider's catalog.
     const next = resolveBrainDefaults(draft, {
       models: { [provider]: resolvableModels(provider, draft.model) },
       efforts: { [provider]: effortsFor(normalizeBrain(draft)) },
       accounts: { 'claude-code': getCachedClaudeAccounts(), codex: getCachedCodexAccounts() },
       agents: getCachedOpencodeAgents(),
-      mcpProfiles: getCachedMcpProfilePresets(),
-      defaultMcpProfile: 'full',
+      toolCatalog: getCachedToolCatalog(),
       projects: _projectsCache || [],
     });
     if (model && !next.model) next.model = model;
@@ -1360,6 +1374,6 @@ export function createBrainPicker(host, hooks = {}) {
     mountEmptyProject,
     setBrain() { render(); },
     close: closeMenu,
-    destroy() { destroyed = true; fitObserver?.disconnect(); if (fitFrame && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(fitFrame); for (const off of offAccounts) { try { off?.(); } catch {} } closeMenu(); heroProjectMascot?.destroy(); Object.values(buttons).forEach((b) => b.remove()); heroProject?.remove(); heroProject = null; root.remove(); },
+    destroy() { toolsLife.abort(); toolsSlot.remove(); destroyed = true; fitObserver?.disconnect(); if (fitFrame && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(fitFrame); for (const off of offAccounts) { try { off?.(); } catch {} } closeMenu(); heroProjectMascot?.destroy(); Object.values(buttons).forEach((b) => b.remove()); heroProject?.remove(); heroProject = null; root.remove(); },
   };
 }

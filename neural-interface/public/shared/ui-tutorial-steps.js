@@ -1,5 +1,6 @@
-// The storyboard is shared by 2D and 3D. Copy lives in the `tutorial` namespace
-// of i18n/<locale>.json; this file only says what each step points at.
+// The project-exploration setup (ui-tutorial.js openSetup) and the exploration
+// prompt Settings → Projects shares. The Workspace tour's storyboard is
+// public/shared/tour/tour-beats.js.
 export function buildExplorePrompt(projectSlug) {
   const cat = projectSlug || 'project';
   const catProject = `${cat}-project`;
@@ -69,66 +70,3 @@ export const ONBOARDING_STEPS = [
   { id: 'onboarding-project-picker', kind: 'project' },
   { id: 'onboarding-memory-explain', kind: 'launch' },
 ];
-
-// A feature step:
-//   targets  ordered alternatives, [selector, copyKey = 'body', lastSelector?]. The first one on
-//            screen is annotated and its copy shown; `lastSelector` widens the outline to a run
-//            of controls. None on screen: the note stays, with the navigation.
-//   menu     a menubar dropdown opened while the step shows (closed again after); an object
-//            names it per variant ({ '3d': 'apps' }: none in the other).
-//   submenu  a submenu of that dropdown opened too, by its data-submenu name, same forms as `menu`.
-//   panel    'assistant' shows the Assistant panel for the step when that starts nothing
-//            (see assistantPanelPeekable); otherwise the last target, its button, is used.
-//   copy     per-variant copy key for the first target ({ '2d': 'body2d' }).
-const ASSISTANT_BUTTON = ['#topright-assistant-panel-btn', 'closed'];
-const ACTIVE_TAB = '#assistant-panel.open .asp-viewport.active';
-const ACTIVE_BAR = '#assistant-panel.open .asp-tab-bar.active';
-
-// With the workspace tools hidden (the toolbar's toggle) their controls are off screen, and the step outlines the
-// toggle that shows them.
-const TOOLS_TOGGLE = ['#topright-tools-btn'];
-
-export const FEATURE_STEPS = [
-  { id: 'explain-memory-explorer', chapter: 'memory', targets: [['#topright-memory-explorer-btn'], TOOLS_TOGGLE] },
-  // 3D: the Map submenu of Apps. 2D: the Graph menu.
-  { id: 'explain-graph', chapter: 'memory', menu: { '3d': 'apps' }, submenu: { '3d': 'map' }, copy: { '2d': 'body2d' },
-    targets: [['#menu-map-label', 'body', '#menu-map-rebuild'], ['[data-menu="graph"] > .menubar-label', 'body2d']] },
-  { id: 'explain-focus', chapter: 'workspace', targets: [['#wb-toolbar'], ['#titlebar-viz-toggle', 'graph']] },
-  { id: 'explain-workspaces', chapter: 'workspace', targets: [['#ws-indicator'], TOOLS_TOGGLE] },
-  { id: 'explain-terminals', chapter: 'tools', menu: 'apps', targets: [['#menu-terminal-claude', 'body', '#menu-terminal-opencode']] },
-  { id: 'explain-browser', chapter: 'tools', menu: 'apps', targets: [['#menu-terminal-browser']] },
-  { id: 'explain-side-panel', chapter: 'tools', targets: [['#topright-claude-panel-btn', 'body', '#topright-opencode-panel-btn']] },
-  { id: 'explain-automations', chapter: 'automation', menu: 'automations', targets: [['#menu-open-automation-studio']] },
-  { id: 'explain-schedules', chapter: 'automation', targets: [['#menubar-schedules-btn']] },
-  { id: 'assistant-start', chapter: 'assistant', panel: 'assistant', targets: [[`${ACTIVE_TAB} .asst-input`], ASSISTANT_BUTTON] },
-  { id: 'assistant-tools', chapter: 'assistant', panel: 'assistant', targets: [[`${ACTIVE_BAR} .asst-computer-toggle`], ASSISTANT_BUTTON] },
-  { id: 'assistant-route', chapter: 'assistant', panel: 'assistant', targets: [[`${ACTIVE_BAR} .asst-route-chip`], ASSISTANT_BUTTON] },
-  { id: 'assistant-track', chapter: 'assistant', panel: 'assistant',
-    targets: [[`${ACTIVE_TAB} .asst-usage-strip`], [`${ACTIVE_BAR} .asst-act-more`, 'more'], ASSISTANT_BUTTON] },
-  { id: 'explain-help', chapter: 'help', targets: [['#titlebar-tutorial-btn']] },
-];
-
-export const SKIP_HINT = { id: 'skip-hint', chapter: 'help', targets: [['#titlebar-tutorial-btn']] };
-
-export const CHAPTERS = [...new Set(FEATURE_STEPS.map(s => s.chapter))];
-
-export const TUTORIAL_STEPS = [...ONBOARDING_STEPS, { id: 'welcome', kind: 'welcome' }, ...FEATURE_STEPS];
-
-const WELCOME = TUTORIAL_STEPS.findIndex(s => s.id === 'welcome');
-
-// Existing numeric cursors migrate to retained step ids. The old onboarding
-// indices never make a returning user repeat CLI/model/project choices.
-export function resumeIndex(value, includeOnboarding = false) {
-  const direct = TUTORIAL_STEPS.findIndex(s => s.id === value);
-  if (direct >= 0) return includeOnboarding ? direct : Math.max(WELCOME, direct);
-  const legacy = ['onboarding-explore', 'onboarding-token-warning', 'onboarding-cli-picker', 'onboarding-model-picker',
-    'onboarding-project-picker', 'onboarding-memory-explain', 'welcome', 'explain-sessions', 'explain-gallery',
-    'explain-cost', 'explain-help', 'explain-focus', 'explain-fullscreen', 'explain-clock', 'explain-trash', 'explain-grid',
-    'explain-tile', 'explain-keybinds', 'explain-memory-explorer', 'explain-file-explorer', 'explain-bookmarks',
-    'explain-share', 'explain-workspaces', 'explain-side-panel', 'explain-menubar', 'explain-whiteboard-toolbar', 'feedback'];
-  if (value != null && /^\d+$/.test(value)) {
-    const mapped = TUTORIAL_STEPS.findIndex(s => s.id === legacy[Number(value)]);
-    return mapped >= WELCOME ? mapped : WELCOME;
-  }
-  return includeOnboarding ? 0 : WELCOME;
-}

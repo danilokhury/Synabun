@@ -16,12 +16,15 @@
 // PATH, so the update silently does nothing and the badge never clears.
 // ═══════════════════════════════════════════
 
-/** npm package name per tool key. */
+/**
+ * npm package name per tool key. OpenCode has none: npm's opencode-ai is
+ * OpenCode 1, which SynaBun does not drive, and OpenCode 2 is installed by its
+ * own script, Homebrew or WinGet (lib/opencode-protocol.js).
+ */
 export const NPM_PKGS = {
   'claude-code': '@anthropic-ai/claude-code',
   'codex': '@openai/codex',
   'gemini': '@google/gemini-cli',
-  'opencode': 'opencode-ai',
 };
 
 /**
@@ -33,7 +36,8 @@ export const BREW_FALLBACK_TOKENS = {
   'claude-code': 'claude-code',
   'codex': 'codex',
   'gemini': 'gemini-cli',
-  'opencode': 'opencode',
+  // OpenCode 2's own tap (its `opencode` formula there is still OpenCode 1).
+  'opencode': 'anomalyco/tap/opencode-v2',
 };
 
 /**
@@ -59,19 +63,18 @@ const SELF_UPDATERS = {
 };
 
 /**
- * OpenCode's `upgrade --method` accepts exactly these values. Mapping our
- * detected source onto it lets OpenCode do its own install-aware work for
- * the channels we cannot drive directly.
+ * The `upgrade --method` of OpenCode 2 for a detected source (its own installer
+ * script, a JavaScript package manager, WinGet). Mapping our detected source
+ * onto it lets OpenCode do its own install-aware work for the channels we
+ * cannot drive directly.
  */
 const OPENCODE_METHODS = {
   'standalone': 'curl',
   'npm': 'npm',
   'pnpm': 'pnpm',
   'bun': 'bun',
-  'brew-formula': 'brew',
-  'brew-cask': 'brew',
-  'choco': 'choco',
-  'scoop': 'scoop',
+  'yarn': 'yarn',
+  'winget': 'winget',
 };
 
 /** Sources that mean "a package manager other than the tool itself owns this". */
@@ -248,6 +251,15 @@ function planUpdateCommand(toolKey, installSource, { brewToken = null, platform 
       : `brew upgrade ${token}`;
   }
 
+  // OpenCode 2 updates itself through the channel it came from (brew is handled above).
+  if (toolKey === 'opencode') {
+    // Its installer script is bash: a copy in %USERPROFILE%\.opencode\bin on Windows is no OpenCode 2 install.
+    if (installSource === 'standalone' && platform === 'win32') return null;
+    if (OPENCODE_METHODS[installSource]) return `opencode upgrade --method ${OPENCODE_METHODS[installSource]}`;
+    if (['volta', 'scoop', 'choco'].includes(installSource)) return null; // not an OpenCode 2 channel: the caller shows a hint
+    return selfUpdate;
+  }
+
   if (!npmPkg) return selfUpdate;
 
   switch (installSource) {
@@ -255,24 +267,15 @@ function planUpdateCommand(toolKey, installSource, { brewToken = null, platform 
     case 'yarn':  return `yarn global add ${npmPkg}@latest`;
     case 'volta': return `volta install ${npmPkg}@latest`;
     case 'bun':
+      return `bun add -g ${npmPkg}@latest`;
     case 'pnpm':
-      // OpenCode drives these itself; the others take the plain global add.
-      if (toolKey === 'opencode') return `opencode upgrade --method ${OPENCODE_METHODS[installSource]}`;
-      return installSource === 'bun'
-        ? `bun add -g ${npmPkg}@latest`
-        : `pnpm add -g ${npmPkg}@latest`;
+      return `pnpm add -g ${npmPkg}@latest`;
     case 'scoop':
     case 'choco':
-      if (toolKey === 'opencode') return `opencode upgrade --method ${OPENCODE_METHODS[installSource]}`;
-      return null; // no safe automated path — caller shows a hint
     case 'winget':
-      return null;
+      return null; // no safe automated path — caller shows a hint
     case 'standalone':
       // The tool's own installer put it here, so its own updater is right.
-      // OpenCode's `curl` method runs its bash install script, which Windows
-      // does not have: a copy in %USERPROFILE%\.opencode\bin there came from
-      // the release archive (lib/cli-install.js) and has no updater to call.
-      if (toolKey === 'opencode') return platform === 'win32' ? null : 'opencode upgrade --method curl';
       return selfUpdate;
     case 'native':
       return selfUpdate;
@@ -373,10 +376,10 @@ export function installSourceLabel(source) {
 /**
  * The install command each vendor documents first for an operating system
  * (checked 2026-10-17): Anthropic's native installer (code.claude.com/docs/en/setup),
- * OpenAI's standalone installer (learn.chatgpt.com/docs/codex/cli), OpenCode's
- * install script (opencode.ai/docs; on Windows, where the script does not run,
- * npm, the first method its docs list that works in any terminal). These are
- * the same official sources the Install button runs (lib/cli-install.js).
+ * OpenAI's standalone installer (learn.chatgpt.com/docs/codex/cli), OpenCode 2's
+ * install script (https://opencode.ai/v2/install, the one `opencode upgrade`
+ * runs; on Windows, where the script does not run, WinGet). These are the same
+ * official sources the Install button runs (lib/cli-install.js).
  */
 export function vendorInstallCommand(toolKey, platform = process.platform) {
   const windows = platform === 'win32';
@@ -388,7 +391,7 @@ export function vendorInstallCommand(toolKey, platform = process.platform) {
         ? 'powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"'
         : 'curl -fsSL https://chatgpt.com/codex/install.sh | sh';
     case 'opencode':
-      return windows ? `npm install -g ${NPM_PKGS.opencode}` : 'curl -fsSL https://opencode.ai/install | bash';
+      return windows ? 'winget install --id Anomaly.OpenCode --exact' : 'curl -fsSL https://opencode.ai/v2/install | bash';
     default:
       return NPM_PKGS[toolKey] ? `npm install -g ${NPM_PKGS[toolKey]}` : '';
   }
@@ -420,6 +423,8 @@ export function buildInstallCommand(toolKey, installSource = 'unknown', { platfo
       ? `brew install --cask ${token}`
       : `brew install ${token}`;
   }
+  // OpenCode 2 has no npm package: its own installer whatever JavaScript package manager the machine uses.
+  if (toolKey === 'opencode') return vendorInstallCommand(toolKey, platform || process.platform);
   if (!npmPkg) return '';
   switch (installSource) {
     case 'bun':   return `bun add -g ${npmPkg}`;
@@ -437,10 +442,6 @@ function platformInstallCommand(toolKey, installSource, platform) {
   if (toolKey === 'claude-code') {
     if (windows && installSource === 'winget') return 'winget install Anthropic.ClaudeCode';
     return vendor;
-  }
-  if (toolKey === 'opencode' && windows) {
-    if (installSource === 'scoop') return 'scoop install opencode';
-    if (installSource === 'choco') return 'choco install opencode';
   }
   // A JavaScript package manager this machine already uses: keep to it.
   if (['npm', 'bun', 'pnpm', 'yarn', 'volta'].includes(installSource)) return null;

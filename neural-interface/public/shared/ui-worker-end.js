@@ -34,6 +34,10 @@ let _wired = false;
 
 function newer(next, current) {
   if (!current) return true;
+  // A run resumed after a server restart (`resumes` only grows) is newer whatever its version: a crash can lose the
+  // last saved versions of a run a page already saw.
+  const resumed = (Number(next?.resumes) || 0) - (Number(current?.resumes) || 0);
+  if (resumed) return resumed > 0;
   const a = Number(next?.version) || 0;
   const b = Number(current?.version) || 0;
   if (a !== b) return a > b;
