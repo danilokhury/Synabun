@@ -1,3 +1,13 @@
+# SynaBun v.2.1.2
+
+2.1.2 is a routine maintenance build. There is nothing new to try and no behavior changes to expect; it keeps the release packaging current between larger updates.
+
+## Changed
+
+- **Maintenance build** — Internal build and packaging metadata were refreshed. The app itself behaves exactly as it did in the previous release.
+
+---
+
 # SynaBun v.2.1.1
 
 A fix-focused release: Skills Studio gets a one-click fix panel, Antigravity conversations join Resume and memory, and a batch of Windows and panel bugs are cleaned up.
